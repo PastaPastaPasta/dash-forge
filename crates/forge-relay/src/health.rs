@@ -9,7 +9,12 @@
 //!   fell back to memory (its state dir was unusable), so an operator can alert on it.
 //!
 //! It never reads a request body and never delivers anything. Request heads are capped at
-//! 8 KiB and must arrive within 10 s; at most [`MAX_WAITING`] wake requests are held open.
+//! 8 KiB and must arrive within 10 s, a response must be written within 10 s, at most
+//! [`MAX_CONNECTIONS`] connections are served at once and at most [`MAX_WAITING`] wake
+//! requests are held open.
+//!
+//! Bind it to loopback or a private network: a client that can reach it can hold its
+//! connection slots and make health probes fail.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,8 +35,9 @@ const HEAD_TIMEOUT: Duration = Duration::from_secs(10);
 /// Wake requests held open at once; more are answered `503` at once.
 const MAX_WAITING: usize = 64;
 
-/// Connections served at once (each is held at most [`HEAD_TIMEOUT`] before it is
-/// authenticated); more are dropped.
+/// Connections served at once; more are dropped. A slot is held at most [`HEAD_TIMEOUT`] +
+/// [`REPLY_TIMEOUT`], or, for an authenticated wake request, also up to its wait
+/// ([`wake::MAX_WAIT_SECS`]).
 const MAX_CONNECTIONS: usize = 256;
 
 /// How long a response may take to write before the connection is dropped.

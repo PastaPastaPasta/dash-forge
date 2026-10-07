@@ -93,7 +93,9 @@ struct RunArgs {
     #[arg(long)]
     lookback: Option<u32>,
 
-    /// Bind address for the optional health/liveness listener (e.g. 127.0.0.1:8080).
+    /// Bind address for the optional health/liveness listener (e.g. 127.0.0.1:8080). Bind
+    /// loopback or a private network: a client that can reach it can fill its connection
+    /// slots and make health probes fail.
     #[arg(long)]
     listen: Option<String>,
 

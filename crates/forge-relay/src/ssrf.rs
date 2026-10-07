@@ -25,13 +25,18 @@
 //! reqwest re-resolves at connect time, so a rebinding record (public at check, private at
 //! connect) bypasses the guard. [`resolve_and_validate`] resolves the host **once** (async,
 //! with a timeout), validates **every** returned address, and returns them as `pinned_addrs`;
-//! the caller pins the client to exactly those (`ClientBuilder::resolve_to_addrs`), so the IP
-//! validated is the IP connected to. IP-literal URLs skip DNS. Redirects are disabled by the
-//! caller (a 30x to an internal host would bypass all of this).
+//! [`ValidatedTarget::client_builder`] pins the client to exactly those
+//! (`ClientBuilder::resolve_to_addrs`) and gives it a resolver that answers no name, so the
+//! pinned addresses are the only route: the IP validated is the IP connected to, and a host
+//! that does not match the pin fails instead of being resolved again. IP-literal URLs skip DNS.
+//! Redirects and environment proxies are off (a 30x to an internal host, or a proxy resolving
+//! the name itself, would bypass all of this), and [`ValidatedTarget::post`] sends to the
+//! validated URL, never to the original string.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
+use reqwest::dns::{Name, Resolve, Resolving};
 use reqwest::Url;
 
 use crate::error::{RelayError, Result};
@@ -52,6 +57,8 @@ fn v4_is_non_public(ip: Ipv4Addr) -> bool {
         || (o[0] == 100 && (o[1] & 0xC0) == 64)
         // 192.0.0.0/24 IETF protocol assignments.
         || (o[0] == 192 && o[1] == 0 && o[2] == 0)
+        // 192.88.99.0/24 deprecated 6to4 relay anycast (RFC 7526).
+        || (o[0] == 192 && o[1] == 88 && o[2] == 99)
         // 198.18.0.0/15 benchmarking (RFC 2544).
         || (o[0] == 198 && (o[1] & 0xFE) == 18)
         // 240.0.0.0/4 reserved (includes 255.255.255.255).
@@ -91,6 +98,22 @@ fn v6_is_non_public(ip: Ipv6Addr) -> bool {
     // ::/96 deprecated IPv4-compatible (`::a.b.c.d`); `::` and `::1` are handled above.
     if seg[..6].iter().all(|&s| s == 0) {
         return v4_is_non_public(embedded_v4(seg[6], seg[7]));
+    }
+    // ::ffff:0:0:0/96 IPv4-translated (RFC 2765).
+    if seg[..6] == [0, 0, 0, 0, 0xFFFF, 0] {
+        return v4_is_non_public(embedded_v4(seg[6], seg[7]));
+    }
+    // Special-purpose ranges that are never a public host: 100::/64 discard-only,
+    // 2001:2::/48 benchmarking, 2001:10::/28 ORCHID, 2001:20::/28 ORCHIDv2,
+    // 3fff::/20 documentation, 5f00::/16 SRv6 SIDs.
+    if (seg[0] == 0x0100 && seg[1..4] == [0, 0, 0])
+        || (seg[0] == 0x2001 && seg[1] == 0x0002 && seg[2] == 0)
+        || (seg[0] == 0x2001 && (seg[1] & 0xFFF0) == 0x0010)
+        || (seg[0] == 0x2001 && (seg[1] & 0xFFF0) == 0x0020)
+        || (seg[0] == 0x3FFF && (seg[1] & 0xF000) == 0)
+        || seg[0] == 0x5F00
+    {
+        return true;
     }
     // 64:ff9b::/96 NAT64 well-known prefix, and 64:ff9b:1::/48 local-use NAT64 (RFC 8215):
     // the target is the embedded IPv4 in the last 32 bits. The local-use prefix is
@@ -181,13 +204,33 @@ impl ValidatedTarget {
         self.pinned_addrs.as_deref()
     }
 
+    /// A client builder for this target: no redirects, no environment proxy, and DNS that
+    /// answers only the pinned addresses for this target's host ([`NoDns`] for any other
+    /// name). The caller adds timeouts and builds it.
+    pub fn client_builder(&self) -> reqwest::ClientBuilder {
+        let mut builder = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
+            .dns_resolver(std::sync::Arc::new(NoDns));
+        if let Some(addrs) = &self.pinned_addrs {
+            builder = builder.resolve_to_addrs(&self.host, addrs);
+        }
+        builder
+    }
+
+    /// A `POST` to exactly the validated URL, through `client` (from [`Self::client_builder`]).
+    pub fn post(&self, client: &reqwest::Client) -> reqwest::RequestBuilder {
+        client.post(self.url.clone())
+    }
+
     /// A hostname target pinned to `addrs`, without the checks, for tests of what a target
     /// drives (pools, clients).
     #[cfg(test)]
     pub(crate) fn pinned_for_test(url: &str, addrs: Vec<SocketAddr>) -> Self {
+        let url = Url::parse(url).unwrap();
         Self {
-            url: Url::parse(url).unwrap(),
-            host: String::new(),
+            host: url.host_str().unwrap_or_default().to_string(),
+            url,
             pinned_addrs: Some(addrs),
         }
     }
@@ -201,6 +244,18 @@ impl ValidatedTarget {
             (_, Some(url::Host::Ipv6(ip))) => ip.to_string(),
             _ => self.host.clone(),
         }
+    }
+}
+
+/// A DNS resolver that resolves nothing. A delivery client reaches a hostname only through
+/// the addresses pinned for it ([`ValidatedTarget::client_builder`]), so a host that does not
+/// match the pin fails to connect instead of being resolved again.
+struct NoDns;
+
+impl Resolve for NoDns {
+    fn resolve(&self, name: Name) -> Resolving {
+        let err = format!("{} has no validated address", name.as_str());
+        Box::pin(std::future::ready(Err(err.into())))
     }
 }
 
@@ -285,6 +340,9 @@ mod tests {
             "http://224.0.0.1/x",
             "http://198.18.0.1/x",
             "http://255.255.255.255/x",
+            "http://192.88.99.1/x",
+            // A zone id is not a valid URL host.
+            "http://[fe80::1%25eth0]/x",
         ] {
             assert!(refused(url).await, "{url} should be refused");
         }
@@ -440,6 +498,15 @@ mod tests {
             "fec0::1",
             "ff02::1",
             "2001:db8::1",
+            "::ffff:0:7f00:1",  // IPv4-translated 127.0.0.1
+            "::ffff:0:a00:1",   // IPv4-translated 10.0.0.1
+            "100::1",           // discard-only
+            "2001:2::1",        // benchmarking
+            "2001:10::1",       // ORCHID
+            "2001:2f:ffff::1",  // ORCHIDv2
+            "3fff::1",          // documentation
+            "3fff:fff::1",      // documentation, end of the /20
+            "5f00::1",          // SRv6 SIDs
         ] {
             assert!(ip_is_non_public(ip.parse().unwrap()), "{ip}");
         }
@@ -447,6 +514,10 @@ mod tests {
             "2606:4700:4700::1111",
             "64:ff9b::808:808",
             "2002:0808:0808::1",
+            "::ffff:0:808:808", // IPv4-translated 8.8.8.8
+            "100:0:0:1::1",     // past the discard-only /64
+            "2001:3::1",
+            "3fff:1000::1", // past the documentation /20
         ] {
             assert!(!ip_is_non_public(ip.parse().unwrap()), "{ip}");
         }
