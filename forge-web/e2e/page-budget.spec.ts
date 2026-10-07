@@ -1,6 +1,7 @@
 import { test, expect, type Page, type Request } from '@playwright/test'
 import { collectPageErrors, DAPI_METHOD, DAPI_RESEND_SLACK, decodeDocumentsRequest, DEMO, E2E_DEVNET, EMPTY, repoUrl, shot, showcaseRepo, waitForRepoResolved } from './helpers'
 import { quorumGuardLong } from './quorum-sync'
+import { loadSeedPulls } from './seed-summary'
 
 // Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
 test.beforeEach(quorumGuardLong)
@@ -234,6 +235,34 @@ test.describe('page request budget (S-1)', () => {
     expect(errors, errors.join('\n')).toEqual([])
     await shot(page, 'pb-08-activity-cold')
     await context.close()
+  })
+
+  /**
+   * Bot badges (UPDATE-1 `profile.bot`): a thread reads its participants' profiles in one batch
+   * once its data is in (one `$ownerId in` query, and one more for the operators any of them
+   * name), never once per author or per render wave.
+   */
+  test('pb-6. an issue thread and a PR conversation read the bot badges in at most 2 profile queries', async ({ browser }) => {
+    const merged = loadSeedPulls().merged
+    for (const [label, url, ready] of [
+      ['issue #3', repoUrl('issue', '&number=3'), (p: Page) => p.getByText('Done in docs/rules.md; closing.')],
+      [`PR #${merged}`, repoUrl('pull', `&number=${merged}`), (p: Page) => p.locator('main h1').first()],
+    ] as const) {
+      const context = await browser.newContext()
+      const page = await context.newPage()
+      const { errors } = collectPageErrors(page)
+      const dapi = recordDapi(page)
+      await page.goto(url, { waitUntil: 'domcontentloaded' })
+      await expect(ready(page)).toBeVisible({ timeout: 90_000 })
+      await settle(page)
+      const all = dapi.all()
+      const profileReads = all.filter((r) => r.method === 'getDocuments' && decodeDocumentsRequest(r.body)?.documentType === 'profile')
+      test.info().annotations.push({ type: 'dapi', description: `${label}: ${all.length} ${summary(all)}; profile reads ${profileReads.length}` })
+      expect(profileReads.length, `${label}: the bot badges' profile reads`).toBeLessThanOrEqual(2)
+      expect(all.length, summary(all)).toBeLessThanOrEqual(COLD_BUDGET)
+      expect(errors, errors.join('\n')).toEqual([])
+      await context.close()
+    }
   })
 
   /**

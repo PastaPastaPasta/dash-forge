@@ -29,10 +29,12 @@ const byKey = (a: ReleaseView, b: ReleaseView): number => a.createdAt - b.create
 /**
  * Every revision of `tag`'s release in `list`. A sealed revision lists its assets in its
  * encrypted manifest, not here, so its assets are left out (no change is claimed for them); the
- * target its first published revision records is the pin. A sealed draft is not a publish: it
- * counts as unpublished, so the release is first published when a revision leaves draft.
+ * target its first published revision records is the pin. A public revision's `targetOid` is the
+ * target, compared with the tag's history (a plaintext one beside sealed revisions is never read:
+ * a private repo's list has only sealed views). A sealed draft is not a publish: it counts as
+ * unpublished, so the release is first published when a revision leaves draft.
  */
-export function tagRevisions(list: ReleaseList, tag: string): { revisions: ProvenanceRevision[]; pin: string | null } {
+export function tagRevisions(list: ReleaseList, tag: string): { revisions: ProvenanceRevision[]; pin: string | null; target: string | null } {
   const all = [...list.current, ...list.previous].filter((r) => r.tagName === tag)
   const unpublishes = (r: ReleaseView): boolean => r.delta < 0 || r.sealed?.fields.unpublished === true || r.sealed?.fields.draft === true
   const revisions = all.map((r) => ({
@@ -43,14 +45,18 @@ export function tagRevisions(list: ReleaseList, tag: string): { revisions: Prove
     assets: r.sealed ? [] : r.assets.map((a) => ({ name: a.name, sha256: a.sha256 })),
   }))
   const first = all.filter((r) => !unpublishes(r)).sort(byKey)[0]
-  return { revisions, pin: first?.sealed?.fields.targetOid ?? null }
+  return {
+    revisions,
+    pin: first?.sealed?.fields.targetOid ?? null,
+    target: first !== undefined && first.sealed === undefined ? (first.targetOid ?? null) : null,
+  }
 }
 
 /** The provenance of `tag`'s release. */
 export async function readReleaseProvenance(sdk: EvoSDK, repo: RepoRef, list: ReleaseList, tag: string): Promise<ReleaseProvenance> {
   const history = await readTagHistory(sdk, repo, tag)
-  const { revisions, pin } = tagRevisions(list, tag)
-  return releaseProvenance({ ...history, revisions, pin })
+  const { revisions, pin, target } = tagRevisions(list, tag)
+  return releaseProvenance({ ...history, revisions, pin, target })
 }
 
 /**
@@ -77,8 +83,8 @@ export async function readAlteredReleaseTags(sdk: EvoSDK, repo: RepoRef, list: R
   const altered = new Set<string>()
   for (const tag of tags) {
     const hash = refNameHash(`refs/tags/${tag}`)
-    const { revisions, pin } = tagRevisions(list, tag)
-    const p = releaseProvenance({ refNameHash: bytesToHex(hash), updates: historyOf(hash), configs, revisions, pin })
+    const { revisions, pin, target } = tagRevisions(list, tag)
+    const p = releaseProvenance({ refNameHash: bytesToHex(hash), updates: historyOf(hash), configs, revisions, pin, target })
     if (p.tag !== 'missing' && provenanceAltered(p)) altered.add(tag)
   }
   return altered

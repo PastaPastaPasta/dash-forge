@@ -10,7 +10,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { compareKey, type ConfigDoc } from '../rules'
 import { queryAllDocuments, queryDocumentsWithProof, type PlainDocument } from '../sdk'
-import { DOC, stringArray, wellFormed, type RepoRef } from './contract'
+import { DOC, asIdentifierString, stringArray, wellFormed, type RepoRef } from './contract'
 import { repoSource } from './source'
 
 /** The current repo config surface most views need. */
@@ -20,6 +20,11 @@ export interface RepoConfig {
   readonly archived: boolean
   readonly backendUris: readonly string[]
   readonly backendMode: number
+  /**
+   * The repo a maintainer marked this one as moved to (`movedTo`, a repo id). Read on public repos
+   * only; absent when not moved, and on a document written before the field existed.
+   */
+  readonly movedTo?: string
 }
 
 function toConfigDoc(doc: PlainDocument): ConfigDoc {
@@ -43,7 +48,9 @@ function toRepoConfig(doc: PlainDocument): RepoConfig {
       backendUris = b['uris'].filter((x): x is string => typeof x === 'string')
     }
   }
+  const movedTo = asIdentifierString(doc['movedTo'])
   return {
+    ...(movedTo !== '' ? { movedTo } : {}),
     defaultBranch: typeof doc['defaultBranch'] === 'string' ? doc['defaultBranch'] : 'main',
     protectedPatterns: stringArray(doc, 'protectedPatterns') ?? [],
     archived: doc['archived'] === true,
@@ -138,7 +145,11 @@ export async function readConfig(sdk: EvoSDK, repo: RepoRef): Promise<RepoConfig
   const doc = documents.find((d) => wellFormed(repo, 'config', d))
   if (doc === undefined) return null
   // Without a session a private config shows only what is plaintext by design: the backend.
-  return repo.visibility === 'private' ? { ...toRepoConfig(doc), defaultBranch: 'main', protectedPatterns: [] } : toRepoConfig(doc)
+  if (repo.visibility === 'private') {
+    const { movedTo: _ignored, ...plain } = toRepoConfig(doc)
+    return { ...plain, defaultBranch: 'main', protectedPatterns: [] }
+  }
+  return toRepoConfig(doc)
 }
 
 /** Convenience: the default branch name (falls back to `main`). */

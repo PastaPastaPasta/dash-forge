@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 
 use crate::context::Ctx;
 use crate::fmt::{cost_json, cost_line, safe};
-use crate::ProfileCommand;
+use crate::{ProfileBotCommand, ProfileCommand};
 use forge_core::platform::PlatformClient;
 use forge_core::profile::{self as core_profile, ProfileWrite};
 use forge_core::rules::profile::{avatar_spec, AvatarSpec, ProfileFields, ProfileInput};
@@ -20,6 +20,7 @@ pub async fn run(ctx: &Ctx, cmd: &ProfileCommand) -> Result<()> {
         ProfileCommand::Set(args) => set(ctx, args).await,
         ProfileCommand::Delete => delete(ctx).await,
         ProfileCommand::Key(cmd) => crate::signing::run_key(ctx, cmd).await,
+        ProfileCommand::Bot(cmd) => bot(ctx, cmd).await,
     }
 }
 
@@ -60,6 +61,20 @@ async fn show(ctx: &Ctx, who: Option<&str>) -> Result<()> {
     let forge = ctx.target.require_v2()?;
     let id = identity_of(ctx, &client, who).await?;
     let profile = core_profile::read_profile(&client, forge, &id).await?;
+    // The badge needs both sides: the operator's profile is read only when this one names one.
+    // Best effort: an operator's profile that cannot be read leaves the badge unconfirmed.
+    let operator = core_profile::verified_operator(&client, forge, &id, profile.as_ref())
+        .await
+        .unwrap_or_default();
+    let claimed = profile
+        .as_ref()
+        .and_then(|p| p.bot.as_ref())
+        .and_then(|b| b.operator.clone());
+    let operates = profile
+        .as_ref()
+        .and_then(|p| p.bot.as_ref())
+        .map(|b| b.operates.clone())
+        .unwrap_or_default();
     ctx.emit(
         json!({
             "identityId": id,
@@ -70,6 +85,9 @@ async fn show(ctx: &Ctx, who: Option<&str>) -> Result<()> {
                 "avatar": serde_json::to_value(avatar_spec(p.fields.avatar_config.as_deref(), &id)).unwrap_or(Value::Null),
                 "pubkeys": p.pubkeys,
             })),
+            "bot": operator.as_ref().map(|o| json!({"operator": o})),
+            "claimedOperator": claimed,
+            "operates": operates,
         }),
         || {
             let Some(p) = &profile else {
@@ -86,6 +104,16 @@ async fn show(ctx: &Ctx, who: Option<&str>) -> Result<()> {
                 }
             };
             println!("identity   {id}");
+            match (&operator, &claimed) {
+                (Some(o), _) => println!("bot        operated by {o}"),
+                (None, Some(o)) => println!(
+                    "bot        names {o} as its operator, but {o} does not list it: no badge"
+                ),
+                (None, None) => {}
+            }
+            for b in &operates {
+                println!("operates   {b}");
+            }
             line("name", &f.display_name);
             line("company", &f.company);
             line("location", &f.location);
@@ -273,6 +301,100 @@ async fn set(ctx: &Ctx, args: &SetArgs) -> Result<()> {
             "cost": cost_json(spent, price),
         }),
         || println!("✓ profile {status} · {}", cost_line(spent, price)),
+    );
+    Ok(())
+}
+
+/// `dg profile bot operator|add|remove`: change the signer's own `bot` claim. Each side writes
+/// only its own profile, so the badge appears once both have.
+async fn bot(ctx: &Ctx, cmd: &ProfileBotCommand) -> Result<()> {
+    use forge_core::rules::profile::MAX_OPERATED_BOTS;
+    ctx.require_confirmable("dg profile bot")?;
+    let (client, bridge, identity) = ctx.connect_with_identity().await?;
+    let forge = ctx.target.require_v2()?;
+    let me = identity.id();
+    let stored = core_profile::read_profile(&client, forge, &me).await?;
+    let mut claim = stored
+        .as_ref()
+        .and_then(|p| p.bot.clone())
+        .unwrap_or_default();
+    let done = match cmd {
+        ProfileBotCommand::Operator { who } if who.trim().is_empty() => {
+            claim.operator = None;
+            "no longer names an operator".to_string()
+        }
+        ProfileBotCommand::Operator { who } => {
+            let op = crate::meta::identity_arg(&client, || Ok(me.clone()), who).await?;
+            if op == me {
+                return Err(crate::errors::usage("a bot cannot operate itself"));
+            }
+            claim.operator = Some(op.clone());
+            format!("names {op} as its operator; the badge shows once {op} runs `dg profile bot add {me}`")
+        }
+        ProfileBotCommand::Add { bot } => {
+            let b = crate::meta::identity_arg(&client, || Ok(me.clone()), bot).await?;
+            if b == me {
+                return Err(crate::errors::usage(
+                    "you cannot list yourself as your own bot",
+                ));
+            }
+            if !claim.operates.contains(&b) {
+                if claim.operates.len() >= MAX_OPERATED_BOTS {
+                    return Err(UserError::new(
+                        codes::USAGE,
+                        format!("your profile already lists {MAX_OPERATED_BOTS} bots, the most it holds"),
+                    )
+                    .fix("`dg profile bot remove <bot>` makes room")
+                    .into());
+                }
+                claim.operates.push(b.clone());
+            }
+            format!("lists {b} as a bot you operate")
+        }
+        ProfileBotCommand::Remove { bot } => {
+            let b = crate::meta::identity_arg(&client, || Ok(me.clone()), bot).await?;
+            claim.operates.retain(|x| *x != b);
+            format!("no longer lists {b}")
+        }
+    };
+    if stored
+        .as_ref()
+        .and_then(|p| p.bot.clone())
+        .unwrap_or_default()
+        == claim
+    {
+        ctx.emit(json!({"status": "unchanged"}), || {
+            println!("profile unchanged (it already says so)");
+        });
+        return Ok(());
+    }
+    let price = ctx.usd_price();
+    let quote = match &stored {
+        None => crate::quote::profile(32 * (1 + claim.operates.len() as u64)),
+        Some(_) => crate::quote::replace(32 * (1 + claim.operates.len() as u64)),
+    };
+    ctx.confirm_or_cancel(&format!(
+        "{} your public profile so it {done}? ({})",
+        if stored.is_none() { "Create" } else { "Update" },
+        cost_line(quote, price)
+    ))?;
+    let engine = core_profile::engine(&client, &identity, &bridge)?;
+    let before = client.get_balance(&me).await.unwrap_or(0);
+    let wrote = core_profile::write_bot(&engine, &client, forge, stored.as_ref(), &claim).await?;
+    let spent = crate::common::spent_since(&client, &me, before).await;
+    let (status, id) = match &wrote {
+        ProfileWrite::Created(id) => ("created", id),
+        ProfileWrite::Replaced(id) => ("updated", id),
+        ProfileWrite::Unchanged(id) => ("unchanged", id),
+    };
+    ctx.emit(
+        json!({
+            "status": status,
+            "documentId": id,
+            "bot": serde_json::to_value(&claim).unwrap_or(Value::Null),
+            "cost": cost_json(spent, price),
+        }),
+        || println!("✓ your profile {done} · {}", cost_line(spent, price)),
     );
     Ok(())
 }

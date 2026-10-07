@@ -40,6 +40,9 @@ pub const SPAN_SINGLE_READ_THRESHOLD: u64 = 64 * 1024;
 /// (any object that large already exceeds the single-read threshold).
 pub const SPAN_SENTINEL: u32 = u32::MAX;
 
+/// The prefix rows sort by: the oid, then `packRef` big-endian — `(oid, packRef)` order.
+const SORT_KEY_LEN: usize = OID_LEN + 2;
+
 const OFF_PACKREF: usize = OID_LEN;
 const OFF_OFFSET: usize = OFF_PACKREF + 2;
 const OFF_LENGTH: usize = OFF_OFFSET + 5;
@@ -119,9 +122,9 @@ impl ObjectLocator {
     /// [`Self::lookup`] returns the lowest-`packRef` copy, so which pack an OID resolves to
     /// does not change as fragments accumulate.
     pub fn merge(parts: &[&Self]) -> Self {
-        // Rows sort by their first OID_LEN+2 bytes: the oid, then packRef big-endian. That
-        // IS the (oid, packRef) order, so a plain byte comparison drives the k-way merge.
-        const KEY: usize = OID_LEN + 2;
+        // Rows sort by their first SORT_KEY_LEN bytes, which IS the (oid, packRef) order, so a
+        // plain byte comparison drives the k-way merge.
+        const KEY: usize = SORT_KEY_LEN;
         let total = parts.iter().map(|p| p.count).sum();
         let mut cursors = vec![0usize; parts.len()];
         let mut merged: Vec<[u8; LOCATOR_ROW_LEN]> = Vec::with_capacity(total);
@@ -214,15 +217,41 @@ impl ObjectLocator {
     }
 
     /// Parse a serialized locator for reading.
+    ///
+    /// Refuses a fanout that does not describe its rows: every entry is the cumulative row
+    /// count through that first byte, so the counts never fall and end at the row count, the
+    /// rows each bucket brackets all start with its byte, and the rows are in `(oid, packRef)`
+    /// order. [`Self::lookup`] and [`Self::merge`] index rows by those counts.
     pub fn parse(bytes: &[u8]) -> Result<Self> {
+        let bad = |what: &str| Error::Config(format!("locator {what}"));
         if bytes.len() < FANOUT_LEN {
-            return Err(Error::Config("locator shorter than fanout".into()));
+            return Err(bad("shorter than fanout"));
         }
-        let count = u32::from_be_bytes(bytes[255 * 4..256 * 4].try_into().unwrap()) as usize;
-        if bytes.len() != FANOUT_LEN + count * LOCATOR_ROW_LEN {
-            return Err(Error::Config(
-                "locator length inconsistent with fanout".into(),
-            ));
+        let fanout = |b: usize| {
+            u32::from_be_bytes(bytes[b * 4..b * 4 + 4].try_into().expect("4 bytes")) as usize
+        };
+        let count = fanout(255);
+        if count
+            .checked_mul(LOCATOR_ROW_LEN)
+            .and_then(|n| n.checked_add(FANOUT_LEN))
+            != Some(bytes.len())
+        {
+            return Err(bad("length inconsistent with fanout"));
+        }
+        let row = |i: usize| &bytes[FANOUT_LEN + i * LOCATOR_ROW_LEN..][..LOCATOR_ROW_LEN];
+        let mut lo = 0;
+        for b in 0..256 {
+            let hi = fanout(b);
+            if !(lo..=count).contains(&hi) {
+                return Err(bad("fanout is not cumulative"));
+            }
+            if (lo..hi).any(|i| usize::from(row(i)[0]) != b) {
+                return Err(bad("row outside its fanout bucket"));
+            }
+            lo = hi;
+        }
+        if (1..count).any(|i| row(i - 1)[..SORT_KEY_LEN] > row(i)[..SORT_KEY_LEN]) {
+            return Err(bad("rows out of order"));
         }
         Ok(Self {
             bytes: bytes.to_vec(),
@@ -342,4 +371,121 @@ fn u40_be(v: u64) -> Result<[u8; 5]> {
 
 fn sat_u32(v: u64) -> u32 {
     u32::try_from(v).unwrap_or(u32::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ObjectLocator, FANOUT_LEN, LOCATOR_ROW_LEN, OID_LEN};
+    use crate::pack::TestRng;
+
+    /// A row for `oid` in pack `pack_ref`, the rest of it `fill`.
+    fn row(oid: [u8; OID_LEN], pack_ref: u16, fill: u8) -> [u8; LOCATOR_ROW_LEN] {
+        let mut r = [fill; LOCATOR_ROW_LEN];
+        r[..OID_LEN].copy_from_slice(&oid);
+        r[OID_LEN..OID_LEN + 2].copy_from_slice(&pack_ref.to_be_bytes());
+        r
+    }
+
+    /// `fanout || rows` exactly as written, fanout entries taken as given.
+    fn raw(fanout: &[u32; 256], rows: &[[u8; LOCATOR_ROW_LEN]]) -> Vec<u8> {
+        let mut out: Vec<u8> = fanout.iter().flat_map(|f| f.to_be_bytes()).collect();
+        for r in rows {
+            out.extend(r);
+        }
+        out
+    }
+
+    #[test]
+    fn a_fanout_past_the_row_count_is_refused() {
+        // Bucket 0 claims a row, the total says there are none.
+        let mut fanout = [0u32; 256];
+        fanout[0] = 1;
+        assert!(ObjectLocator::parse(&raw(&fanout, &[])).is_err());
+    }
+
+    #[test]
+    fn a_falling_fanout_is_refused() {
+        let mut fanout = [1u32; 256];
+        fanout[0] = 2;
+        let rows = [row([0; OID_LEN], 0, 0)];
+        assert!(ObjectLocator::parse(&raw(&fanout, &rows)).is_err());
+    }
+
+    #[test]
+    fn a_row_outside_its_bucket_is_refused() {
+        // Counted in bucket 0 but its oid starts with 5.
+        let fanout = [1u32; 256];
+        let rows = [row([5; OID_LEN], 0, 0)];
+        assert!(ObjectLocator::parse(&raw(&fanout, &rows)).is_err());
+    }
+
+    #[test]
+    fn rows_out_of_order_are_refused() {
+        let fanout = [2u32; 256];
+        let mut hi = [0u8; OID_LEN];
+        hi[1] = 9;
+        let rows = [row(hi, 0, 0), row([0; OID_LEN], 0, 0)];
+        assert!(ObjectLocator::parse(&raw(&fanout, &rows)).is_err());
+        // The same oid twice, packRef descending, is out of (oid, packRef) order too.
+        let rows = [row([0; OID_LEN], 1, 0), row([0; OID_LEN], 0, 0)];
+        assert!(ObjectLocator::parse(&raw(&fanout, &rows)).is_err());
+    }
+
+    #[test]
+    fn a_written_locator_parses_and_looks_up() {
+        let mut rows = vec![
+            row([0; OID_LEN], 0, 1),
+            row([0; OID_LEN], 3, 2),
+            row([7; OID_LEN], 0, 3),
+            row([255; OID_LEN], 1, 4),
+        ];
+        rows.sort_unstable();
+        let built = ObjectLocator::from_sorted_rows(&rows);
+        let parsed = ObjectLocator::parse(built.as_bytes()).unwrap();
+        assert_eq!(parsed.object_count(), 4);
+        assert_eq!(parsed.lookup(&[0; OID_LEN]).unwrap().pack_ref, 0);
+        assert_eq!(parsed.lookup(&[255; OID_LEN]).unwrap().pack_ref, 1);
+        assert!(parsed.lookup(&[8; OID_LEN]).is_none());
+        assert!(ObjectLocator::parse(&built.as_bytes()[..=FANOUT_LEN]).is_err());
+    }
+
+    #[test]
+    fn random_locators_never_panic_lookup_or_merge() {
+        let mut rng = TestRng(0x2545_f491_4f6c_dd1d);
+        for _ in 0..3000 {
+            let count = rng.below(6);
+            let mut rows: Vec<[u8; LOCATOR_ROW_LEN]> = (0..count)
+                .map(|_| {
+                    let mut oid = [0u8; OID_LEN];
+                    oid[0] = u8::try_from(rng.below(4)).unwrap();
+                    oid[1] = rng.byte();
+                    row(oid, u16::from(rng.byte() % 3), rng.byte())
+                })
+                .collect();
+            rows.sort_unstable();
+            let mut bytes = ObjectLocator::from_sorted_rows(&rows).as_bytes().to_vec();
+            // Corrupt a few fanout entries or row bytes, keeping the total length.
+            for _ in 0..rng.below(3) {
+                if rng.below(2) == 0 {
+                    let b = rng.below(256);
+                    let v = u32::try_from(rng.below(count + 3)).unwrap();
+                    bytes[b * 4..b * 4 + 4].copy_from_slice(&v.to_be_bytes());
+                } else if bytes.len() > FANOUT_LEN {
+                    let at = FANOUT_LEN + rng.below(bytes.len() - FANOUT_LEN);
+                    bytes[at] = rng.byte();
+                }
+            }
+            let Ok(loc) = ObjectLocator::parse(&bytes) else {
+                continue;
+            };
+            for b in 0..4u8 {
+                let mut oid = [b; OID_LEN];
+                oid[1] = rng.byte();
+                let _ = loc.lookup(&oid);
+            }
+            let _ = loc.max_pack_ref();
+            let merged = ObjectLocator::merge(&[&loc, &loc]);
+            assert!(ObjectLocator::parse(merged.as_bytes()).is_ok());
+        }
+    }
 }

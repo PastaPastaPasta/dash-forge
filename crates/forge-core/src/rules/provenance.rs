@@ -15,6 +15,12 @@
 //! A tag deleted or racing at the first publish is not a late tag: its later tip is no baseline,
 //! so a push after the publish reads as a move.
 //!
+//! A public release records its tag's tip at publish (`target`: the first published revision's
+//! `release.targetOid`, UPDATE-1). It is the baseline only when the tag named nothing then, like
+//! a pin. When the tag did name something, the two must agree: a record that names another
+//! commit than the tag's history (`record_differs`) is an altered release. A sealed pin is not
+//! compared, because it may name the commit an annotated tag points at.
+//!
 //! Parity: `releaseProvenance` in `forge-web/lib/rules/releaseProvenance.ts` (vectors
 //! `release_provenance__*`).
 
@@ -141,6 +147,11 @@ pub struct ReleaseProvenance {
     pub tag: TagVerdict,
     /// Asset changes since the first publish.
     pub assets: AssetChanges,
+    /// The tag tip a public release records (`target`), lower-cased; `None` when it records
+    /// none (a sealed pin is not listed here: it is never compared).
+    pub recorded: Option<String>,
+    /// The release records (`target`) another tip than the tag held at the first publish.
+    pub record_differs: bool,
 }
 
 impl ReleaseProvenance {
@@ -152,6 +163,7 @@ impl ReleaseProvenance {
             self.tag,
             TagVerdict::Moved | TagVerdict::Deleted | TagVerdict::Diverged | TagVerdict::Missing
         ) || !self.assets.is_empty()
+            || self.record_differs
     }
 }
 
@@ -198,9 +210,30 @@ fn asset_changes(first: &ProvenanceRevision, newest: &ProvenanceRevision) -> Ass
     }
 }
 
+/// Each update of `walk` that changed the tip from `tip`, in order.
+fn moves_from(mut tip: Option<String>, walk: &[&RefUpdate]) -> Vec<TagMove> {
+    let mut moves = Vec::new();
+    for u in walk {
+        let to = (!is_null_oid(&u.new_oid)).then(|| u.new_oid.clone());
+        if to == tip {
+            continue;
+        }
+        moves.push(TagMove {
+            id: u.id.clone(),
+            at: u.created_at,
+            by: u.author.clone(),
+            from: tip.clone(),
+            to: to.clone(),
+        });
+        tip = to;
+    }
+    moves
+}
+
 /// The provenance of the release of one tag: `ref_name_hash` is `sha256(refs/tags/<tag>)`
 /// (hex), `updates` the tag's updates of both types, `revisions` every revision of the tag's
-/// release, `pin` the commit (or tag object) the release itself records, when it records one.
+/// release, `pin` the commit (or tag object) a sealed release records, and `target` the tag tip
+/// a public release records (`release.targetOid` of its first published revision).
 #[must_use]
 pub fn release_provenance(
     ref_name_hash: &str,
@@ -208,6 +241,7 @@ pub fn release_provenance(
     configs: &[ConfigDoc],
     revisions: &[ProvenanceRevision],
     pin: Option<&str>,
+    target: Option<&str>,
 ) -> ReleaseProvenance {
     let same = |a: &str, b: &str| a == b;
     let mut revisions: Vec<&ProvenanceRevision> = revisions.iter().collect();
@@ -238,10 +272,16 @@ pub fn release_provenance(
         .collect();
     let first_later = later.iter().position(|u| !is_null_oid(&u.new_oid));
     let late_tag = before.is_empty() && first_later.is_some();
+    let record = |o: Option<&str>| o.filter(|p| !is_null_oid(p)).map(str::to_ascii_lowercase);
+    let recorded = record(target);
+    // A public record must agree with the tag's history at the first publish.
+    let record_differs =
+        matches!((&recorded, &at_publish), (Some(t), Some(a)) if *t != a.oid.to_ascii_lowercase());
     // The release's own record counts only when the tag named nothing at the first publish.
-    let pin = pin
-        .filter(|p| !is_null_oid(p) && at_publish.is_none())
-        .map(str::to_ascii_lowercase);
+    let pin = recorded
+        .clone()
+        .or_else(|| record(pin))
+        .filter(|_| at_publish.is_none());
     let tag_baseline = if late_tag {
         first_later.map(|i| ProvenanceTip {
             oid: later[i].new_oid.clone(),
@@ -261,26 +301,11 @@ pub fn release_provenance(
     };
 
     // Moves: each later update that changed the tip, walked in the causal order.
-    let mut moves = Vec::new();
-    let mut tip = tag_baseline.as_ref().map(|t| t.oid.clone());
     let walk = match (late_tag, first_later) {
         (true, Some(i)) => &later[i + 1..],
         _ => &later[..],
     };
-    for u in walk {
-        let to = (!is_null_oid(&u.new_oid)).then(|| u.new_oid.clone());
-        if to == tip {
-            continue;
-        }
-        moves.push(TagMove {
-            id: u.id.clone(),
-            at: u.created_at,
-            by: u.author.clone(),
-            from: tip.clone(),
-            to: to.clone(),
-        });
-        tip = to;
-    }
+    let moves = moves_from(tag_baseline.as_ref().map(|t| t.oid.clone()), walk);
 
     let tag = if valid.is_empty() {
         TagVerdict::Missing
@@ -313,5 +338,7 @@ pub fn release_provenance(
         moves,
         tag,
         assets,
+        recorded,
+        record_differs,
     }
 }

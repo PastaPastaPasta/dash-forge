@@ -262,7 +262,11 @@ function NewReleaseDialog({
   const trimmedTag = tag.trim()
   // Whether the tag exists now: a release names a tag, and one that does not exist is created on
   // publish at the chosen branch (an edit's tag is fixed: never created from here).
-  const tagExists = home.tags.some((t) => t.refName === `${TAG_PREFIX}${trimmedTag}` && isLive(t))
+  const tagRef = home.tags.find((t) => t.refName === `${TAG_PREFIX}${trimmedTag}` && isLive(t)) ?? null
+  const tagExists = tagRef !== null
+  // What a public release records as its target: the tag's tip as this page read it (none while
+  // two pushes race on it).
+  const tagTip = tagRef?.state.state === 'resolved' ? tagRef.state.oid : null
   // A new revision of an existing tag supersedes it (newest per tag wins): what the form leaves
   // blank is kept, so a yank or a notes edit never drops the files (D-504). A sealed tag's newest
   // revision may be an unpublish: publishing again restores it.
@@ -363,6 +367,7 @@ function NewReleaseDialog({
           sealed: sealedRepo ? { draft: draftChoice ?? undefined, prerelease: prereleaseChoice ?? undefined, unpublished: unpublishing } : undefined,
           stored: pendingAssets ?? undefined,
           ...(newTag && targetOid !== null ? { createTag: { target: targetOid } } : {}),
+          ...(tagTip !== null && !sealedRepo ? { tagTip } : {}),
         },
         { policy, profiles },
         (e) => {

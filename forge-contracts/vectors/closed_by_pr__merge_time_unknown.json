@@ -1,0 +1,19 @@
+{
+  "name": "merge_time_unknown",
+  "description": "A merged PR whose merge time is not known cannot be checked against the close: a plain close.",
+  "rules": "v2",
+  "case": "closed_by_pr",
+  "input": {
+    "issue": 3,
+    "closedByPr": 7,
+    "closedAt": 1000,
+    "pr": {
+      "number": 7,
+      "merged": true,
+      "mergedAt": null,
+      "body": "Fixes #3",
+      "imported": false
+    }
+  },
+  "expected": null
+}
