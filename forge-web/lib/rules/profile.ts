@@ -199,3 +199,27 @@ export function checkProfile(input: ProfileInput): ProfileCheck {
   if (links.length > 0) normalized.links = links
   return { valid: true, invalid, normalized }
 }
+
+/**
+ * A profile's `bot` claim: on a bot's profile, the identity that operates it (`operator`); on an
+ * operator's, the bots it operates (`operates`, at most 8). Identity ids, base58.
+ */
+export interface BotClaim {
+  readonly operator?: string | null
+  readonly operates?: readonly string[] | null
+}
+
+/** The most bots one profile lists (`bot.operates` maxItems). */
+export const MAX_OPERATED_BOTS = 8
+
+/**
+ * The operator of `botId` when both sides agree: the bot's profile names an operator, that is
+ * another identity, and the operator's profile lists the bot. Null otherwise: a one-sided claim
+ * earns no badge, so nobody can label someone else a bot, and no bot can claim an operator who
+ * does not vouch for it. Parity: forge-core `rules::profile::bot_operator` (vectors `profile_bot__*`).
+ */
+export function botOperator(botId: string, bot: BotClaim | null | undefined, operator: BotClaim | null | undefined): string | null {
+  const claimed = bot?.operator
+  if (!claimed || claimed === botId) return null
+  return (operator?.operates ?? []).includes(botId) ? claimed : null
+}
