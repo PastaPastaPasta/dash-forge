@@ -133,6 +133,7 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         Command::Init(a) => ("repository not published", a.name.as_ref()),
         Command::Repo(Rp::Clone { repo, .. }) => ("repository not cloned", Some(repo)),
         Command::Repo(Rp::View { repo }) => ("could not show the repository", Some(repo)),
+        Command::Repo(Rp::Activity { repo, .. }) => ("could not read the activity", Some(repo)),
         Command::Repo(Rp::Fork { repo, .. }) => ("repository not forked", Some(repo)),
         Command::Repo(Rp::Sync { repo, .. }) => ("fork not synced", Some(repo)),
         Command::Repo(Rp::Reindex { repo, .. }) => ("browse index not published", Some(repo)),
@@ -259,6 +260,12 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
             ("storage command failed", Some(repo))
         }
         Command::Storage(S::Add(_)) => ("storage profile not added", None),
+        Command::Storage(S::Mirror(crate::StorageMirrorCommand::Add { repo, .. })) => {
+            ("mirror not recorded", Some(repo))
+        }
+        Command::Storage(S::Mirror(crate::StorageMirrorCommand::Remove { .. })) => {
+            ("mirror not removed", None)
+        }
         Command::Storage(_) => ("storage command failed", None),
         Command::Webhook(w) => w.context(),
         Command::Env(e) => e.context(),

@@ -1,0 +1,40 @@
+{
+  "name": "other_packs_ignored",
+  "description": "Records of other packs are ignored.",
+  "case": "pack_mirror_order",
+  "rules": "v2",
+  "input": {
+    "packHash": "abababababababababababababababababababababababababababababababab",
+    "listed": [
+      "abababababababababababababababababababababababababababababababab"
+    ],
+    "visibility": "public",
+    "mirrors": [
+      {
+        "id": "o1",
+        "ownerRole": "maintainer",
+        "createdAt": 1,
+        "packHash": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "kind": 1,
+        "uris": [
+          "https://other.example/p"
+        ]
+      },
+      {
+        "id": "m1",
+        "ownerRole": "writer",
+        "createdAt": 2,
+        "packHash": "abababababababababababababababababababababababababababababababab",
+        "kind": 1,
+        "uris": [
+          "https://this.example/p"
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "uris": [
+      "https://this.example/p"
+    ]
+  }
+}

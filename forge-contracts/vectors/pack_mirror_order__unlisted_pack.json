@@ -1,0 +1,28 @@
+{
+  "name": "unlisted_pack",
+  "description": "A pack the repository's manifests do not list reads no mirror.",
+  "case": "pack_mirror_order",
+  "rules": "v2",
+  "input": {
+    "packHash": "abababababababababababababababababababababababababababababababab",
+    "listed": [
+      "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+    ],
+    "visibility": "public",
+    "mirrors": [
+      {
+        "id": "m1",
+        "ownerRole": "maintainer",
+        "createdAt": 1,
+        "packHash": "abababababababababababababababababababababababababababababababab",
+        "kind": 1,
+        "uris": [
+          "https://maint.example/p"
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "uris": []
+  }
+}

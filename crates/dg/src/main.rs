@@ -32,12 +32,14 @@ mod long_body;
 mod maint;
 mod meta;
 mod milestone;
+mod pack_mirror;
 mod pin;
 mod pr;
 mod profile;
 mod prompt;
 mod publish;
 mod quote;
+mod ref_activity;
 mod release;
 mod release_verify;
 mod repo;
@@ -460,6 +462,19 @@ pub enum RepoCommand {
     View {
         /// The repository (`owner/name`).
         repo: String,
+    },
+    /// A branch's or tag's activity: every push, force-push, move and deletion, and every
+    /// change to its protection, newest first. Inside a clone, a push is checked against local
+    /// git to tell a force-push from a fast-forward.
+    Activity {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The branch (`main`), or with --tag the tag (`v1.0`); a full `refs/…` name also works.
+        #[arg(value_name = "REF")]
+        ref_name: String,
+        /// Name a tag rather than a branch.
+        #[arg(long)]
+        tag: bool,
     },
     /// List an owner's repositories.
     List {
@@ -1878,6 +1893,45 @@ pub enum StorageCommand {
         /// `remote.<name>.dash*` overrides), not just `dash.*`.
         #[arg(long)]
         remote: Option<String>,
+    },
+    /// Pack mirrors: another copy of a public repo's pack that readers try when its own copies
+    /// fail.
+    #[command(subcommand)]
+    Mirror(StorageMirrorCommand),
+}
+
+/// `dg storage mirror` subcommands.
+#[derive(Debug, Subcommand)]
+pub enum StorageMirrorCommand {
+    /// Record a mirror of one pack of a public repo: up to 4 `https://` URLs (no user name or
+    /// password) or `ipfs://<CID>` addresses. Readers check the bytes against the pack's hash
+    /// and try members' mirrors first.
+    Add {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The pack's hash (hex), as `dg storage status` lists it.
+        #[arg(value_name = "PACK")]
+        pack: String,
+        /// The addresses (1-4), all https or all IPFS.
+        #[arg(value_name = "URI", required = true)]
+        uris: Vec<String>,
+        /// Record it without first checking that the addresses serve the pack.
+        #[arg(long)]
+        no_verify: bool,
+    },
+    /// List the mirrors of a repo's packs (`--mine`: every mirror you recorded).
+    List {
+        /// The repository (`owner/name`); omit with --mine.
+        #[arg(required_unless_present = "mine")]
+        repo: Option<String>,
+        /// The mirrors you recorded, in every repo.
+        #[arg(long)]
+        mine: bool,
+    },
+    /// Delete one of your mirror records (part of its storage fee is refunded).
+    Remove {
+        /// The record's id (`dg storage mirror list --mine` shows them).
+        id: String,
     },
 }
 

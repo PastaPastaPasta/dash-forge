@@ -69,6 +69,7 @@ import {
 import { mapPooled, trimOldest } from './pool'
 import { openPrivateArtifact, readPrivateRange } from './private-packs'
 import { onPrivateSessionEnded } from '../repo/private-session'
+import { mirrorCopy, mirrorUrisOf, resetMirrorUris } from '../repo/pack-mirrors'
 
 /** Chunk queries in flight at once when one range spans more than a single query. */
 const CHUNK_QUERY_POOL = 6
@@ -530,6 +531,9 @@ export function resetExternalFetchState(): void {
   originSlots.clear()
   resetGatewayHealth()
   resetRepoGateways()
+  resetMirrorUris()
+  mirroredWhole.clear()
+  mirroredBytes = 0
 }
 
 /**
@@ -994,6 +998,89 @@ async function afterChunksFailed(
   }
 }
 
+/** The places a copy's failure names (`host: why` each), for {@link servedBy}'s `before`. */
+function failedPlaces(e: unknown): string[] {
+  return e instanceof PackUnavailableError ? e.reason.split('; ') : [errorText(e)]
+}
+
+/**
+ * A public repo's pack from its recorded mirrors (UPDATE-1), once every copy failed (`before`:
+ * their failures): the whole artifact, its size and sha256 checked like any copy's, so a mirror
+ * serving other bytes cannot answer, and one that ignores a size cap cannot stream forever. The
+ * ledger notes the pack survives on a mirror, and the copies that failed. Null when none is
+ * recorded or none serves.
+ */
+async function fromPackMirrors(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  manifest: PackManifest,
+  before: readonly string[],
+  cancel?: AbortSignal,
+): Promise<Uint8Array | null> {
+  if (repo.session !== undefined || cancel?.aborted) return null
+  const uris = await mirrorUrisOf(sdk, repo, manifest)
+  if (uris.length === 0) return null
+  try {
+    const bytes = await fetchExternalWhole(mirrorCopy(manifest, uris), readGatewaysFor(repoKey(repo)), servedBy(repo, manifest.packHash, undefined, before), cancel)
+    noteContentCheck(repoKey(repo), { mirroredPack: manifest.packHash })
+    return bytes
+  } catch {
+    // the copies' own failure is the one to report
+    return null
+  }
+}
+
+/**
+ * Packs a mirror served whole this session, for range reads (`repoKey:pack`), least recently
+ * used first. `size` is set once the read resolved; only those count toward the budget.
+ */
+const mirroredWhole = new Map<string, { read: Promise<Uint8Array | null>; size?: number }>()
+let mirroredBytes = 0
+
+/**
+ * Bytes of mirror-served packs kept for range reads. A pack larger than this is shared only
+ * while its read is in flight (the ranges a view asks at once), then dropped: a later range
+ * reads it again rather than holding it for the session.
+ */
+const MIRRORED_BYTES_KEPT = 64 * 1024 * 1024
+let mirroredBytesKept = MIRRORED_BYTES_KEPT
+
+/** Test hook: keep `bytes` of mirror-served packs (`null` restores {@link MIRRORED_BYTES_KEPT}). */
+export function overrideMirroredBytesKept(bytes: number | null): void {
+  mirroredBytesKept = bytes ?? MIRRORED_BYTES_KEPT
+}
+
+/** {@link fromPackMirrors} once per pack for range reads: each range is a slice of checked bytes. */
+function mirroredPack(sdk: EvoSDK, repo: RepoRef, manifest: PackManifest, before: readonly string[]): Promise<Uint8Array | null> {
+  const key = `${repoKey(repo)}:${manifest.packHash.toLowerCase()}`
+  const hit = mirroredWhole.get(key)
+  if (hit !== undefined) {
+    // Touch: re-insert so the map stays least recently used first.
+    mirroredWhole.delete(key)
+    mirroredWhole.set(key, hit)
+    return hit.read
+  }
+  const entry: { read: Promise<Uint8Array | null>; size?: number } = { read: Promise.resolve(null) }
+  entry.read = fromPackMirrors(sdk, repo, manifest, before).then((bytes) => {
+    if (mirroredWhole.get(key) !== entry) return bytes
+    if (bytes === null || bytes.length > mirroredBytesKept) {
+      mirroredWhole.delete(key)
+      return bytes
+    }
+    entry.size = bytes.length
+    mirroredBytes += bytes.length
+    for (const [k, e] of mirroredWhole) {
+      if (mirroredBytes <= mirroredBytesKept) break
+      if (e.size === undefined) continue // in flight: a range still awaits it
+      mirroredWhole.delete(k)
+      mirroredBytes -= e.size
+    }
+    return bytes
+  })
+  mirroredWhole.set(key, entry)
+  return entry.read
+}
+
 /** A ranged reader over one artifact (platform chunks or external URIs), optionally one copy. */
 export function artifactRangeFetch(
   sdk: EvoSDK,
@@ -1052,12 +1139,19 @@ export function artifactRangeFetch(
       return readPlain(chosen, start, end)
     }
     let lastErr: unknown
+    const failed: string[] = []
     for (const c of copies) {
       try {
         return await readPlain(c, start, end)
       } catch (e) {
         lastErr = e
+        failed.push(...failedPlaces(e))
       }
+    }
+    // Every copy failed: a public repo's recorded mirrors (UPDATE-1), read only now.
+    if (session === undefined) {
+      const whole = await mirroredPack(sdk, repo, manifest, failed)
+      if (whole !== null) return whole.subarray(start, Math.min(end, whole.length))
     }
     // The rail's "where the bytes came from" row lists the places that did not answer.
     if (lastErr instanceof PackUnavailableError) {
@@ -1140,6 +1234,8 @@ export async function loadArtifactBytesProgress(
       failures.push(e)
     }
   }
+  const mirrored = await fromPackMirrors(sdk, repo, manifest, failures.flatMap(failedPlaces), cancel)
+  if (mirrored !== null) return mirrored
   // One copy: its own error. Every copy external and unserved: the fallback clone's
   // "unavailable" case, which it reports rather than failing the clone on.
   if (failures.length === 1) throw failures[0]

@@ -52,6 +52,7 @@ pub async fn run(ctx: &Ctx, cmd: &StorageCommand) -> Result<()> {
             global,
         } => use_profiles(ctx, profiles, *replicas, *platform_fallback, *global).await,
         StorageCommand::Advertise { repo, remote } => advertise(ctx, repo, remote.as_deref()).await,
+        StorageCommand::Mirror(cmd) => crate::pack_mirror::run(ctx, cmd).await,
     }
 }
 

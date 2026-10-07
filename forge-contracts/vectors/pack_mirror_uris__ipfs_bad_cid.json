@@ -1,0 +1,15 @@
+{
+  "name": "ipfs_bad_cid",
+  "description": "A CID is letters and digits only.",
+  "case": "pack_mirror_uris",
+  "rules": "v2",
+  "input": {
+    "uris": [
+      "ipfs://bafy-x"
+    ]
+  },
+  "expected": {
+    "problem": "address",
+    "index": 0
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "plain_http",
+  "description": "Plain http is refused: readers would fetch it unencrypted.",
+  "case": "pack_mirror_uris",
+  "rules": "v2",
+  "input": {
+    "uris": [
+      "http://m.example.com/p"
+    ]
+  },
+  "expected": {
+    "problem": "address",
+    "index": 0
+  }
+}

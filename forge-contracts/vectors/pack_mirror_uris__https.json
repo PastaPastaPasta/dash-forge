@@ -1,0 +1,14 @@
+{
+  "name": "https",
+  "description": "One https address: kind 1.",
+  "case": "pack_mirror_uris",
+  "rules": "v2",
+  "input": {
+    "uris": [
+      "https://mirror.example.com/packs/abc.pack"
+    ]
+  },
+  "expected": {
+    "kind": 1
+  }
+}

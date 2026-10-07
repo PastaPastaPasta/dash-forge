@@ -1,0 +1,32 @@
+{
+  "name": "bad_addresses_skipped",
+  "description": "Addresses the contract would refuse are skipped, should one be read.",
+  "case": "pack_mirror_order",
+  "rules": "v2",
+  "input": {
+    "packHash": "abababababababababababababababababababababababababababababababab",
+    "listed": [
+      "abababababababababababababababababababababababababababababababab"
+    ],
+    "visibility": "public",
+    "mirrors": [
+      {
+        "id": "m1",
+        "ownerRole": "maintainer",
+        "createdAt": 1,
+        "packHash": "abababababababababababababababababababababababababababababababab",
+        "kind": 1,
+        "uris": [
+          "http://plain.example/p",
+          "https://u:p@cred.example/p",
+          "https://ok.example/p"
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "uris": [
+      "https://ok.example/p"
+    ]
+  }
+}
