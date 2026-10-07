@@ -1426,9 +1426,10 @@ export async function changeMemberRole(
   await writerRoleData(sdk, repo, to)
   if (memberDocOf(from) !== memberDocOf(to)) {
     const other = await findMembership(sdk, repo, to, memberId)
-    // A maintainer's demotion on a repo with members-only content writes the new role first: one
-    // that stands already is an interrupted change resuming, and goes on to the removal.
-    const resuming = keyed !== null && from === 'maintainer' && other?.role === to
+    // On a repo with members-only content a maintainer's demotion and a promotion to maintainer
+    // both write the new role first: one that stands already is an interrupted change resuming,
+    // and goes on (to the removal of the maintainer role, or of the writer document).
+    const resuming = keyed !== null && (from === 'maintainer' || to === 'maintainer') && other?.role === to
     if (other !== null && !resuming) throw new MemberRoleTakenError(memberId, other.role)
   }
   if ((await findConsent(sdk, repo, memberId)) === null) throw new ConsentMissingError(memberId)

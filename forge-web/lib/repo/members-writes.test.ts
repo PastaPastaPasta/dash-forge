@@ -225,9 +225,9 @@ describe('an edit keeps the audience it was written with (DESIGN §2.4)', () => 
 
 describe('no members-only text at rest', () => {
   it('a members-only composer keeps no draft in this browser', () => {
-    expect(commentDraftKey(REPO, ISSUE_PUBLIC, auth.identityId)).not.toBeNull()
+    expect(commentDraftKey(REPO, ISSUE_PUBLIC, auth.identityId, 'public')).not.toBeNull()
     expect(commentDraftKey(REPO, ISSUE_MEMBERS, auth.identityId, 'members')).toBeNull()
-    expect(commentDraftKey({ ...REPO, visibility: 'private' }, ISSUE_PUBLIC, auth.identityId)).toBeNull()
+    expect(commentDraftKey({ ...REPO, visibility: 'private' }, ISSUE_PUBLIC, auth.identityId, 'public')).toBeNull()
   })
 
   it('a members-only pending review lives in memory only: IndexedDB holds nothing of it', async () => {

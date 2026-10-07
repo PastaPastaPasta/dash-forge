@@ -176,6 +176,16 @@ describe('a members-only PR merges with a public message that names only its num
     expect(d.warning).toBe(MEMBERS_MESSAGE_WARNING)
   })
 
+  it('squash: the public-message warning stays when the authors are unknown or incomplete', () => {
+    const pr = { title: 'SECRET', body: '', number: 4, audience: 'members' as const }
+    const unread = squashDraft(pr, { error: 'node down' }, 'Me <m>', null).warning ?? ''
+    expect(unread.startsWith(MEMBERS_MESSAGE_WARNING)).toBe(true)
+    expect(unread).toMatch(/could not be read \(node down\)/)
+    const partial = squashDraft(pr, { authors: ['Ann <a@x>'], complete: false }, 'Me <m>', 'edited').warning ?? ''
+    expect(partial.startsWith(MEMBERS_MESSAGE_WARNING)).toBe(true)
+    expect(partial).toMatch(/more commits than the page lists/)
+  })
+
   it('merge commit: the default without a title is the subject alone (the panel passes no title for a members-only PR)', () => {
     expect(mergeMessage(4, 'feature', '')).toBe('Merge pull request #4 from feature\n')
   })
