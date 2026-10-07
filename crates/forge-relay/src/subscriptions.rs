@@ -34,7 +34,8 @@ use forge_core::platform::{IdentityKeyInfo, PlatformClient};
 use forge_core::rules::v2::Role;
 use forge_core::scope::RepoRef;
 use forge_core::webhooks::{
-    active_hooks, decrypt_secret, held_encryption_keys, wants_event, Webhook, WebhookReader,
+    active_hooks, decrypt_secret, held_encryption_keys, wants_event, SecretError, Webhook,
+    WebhookReader,
 };
 
 use crate::config::StaticWebhook;
@@ -215,16 +216,14 @@ async fn repo_subscriptions(
                 let keys = client.fetch_identity(&h.owner_id).await?.public_keys();
                 writer_keys.insert(h.owner_id.clone(), keys);
             }
-            match decrypt_secret(&h, &relay.keys, &writer_keys[&h.owner_id], contract_id) {
-                Ok(secret) => subs.push(WebhookSub {
-                    repo_id: repo_id.to_string(),
-                    hook_id: hook,
-                    url: h.url,
-                    events: h.events,
-                    secret,
-                    created_at: h.created_at,
-                    document_id: Some(h.document_id),
-                }),
+            match subscription_of(
+                repo_id,
+                &h,
+                &relay.keys,
+                &writer_keys[&h.owner_id],
+                contract_id,
+            ) {
+                Ok(sub) => subs.push(sub),
                 Err(e) => {
                     tracing::warn!(repo = %repo_id, hook, document = %h.document_id, reason = %e, "skipping webhook: cannot read its secret");
                 }
@@ -232,6 +231,28 @@ async fn repo_subscriptions(
         }
     }
     Ok(subs)
+}
+
+/// Step 5 for one hook of `repo_id`: its subscription, signed with the secret its own
+/// document carries, decrypted from its writer's key (`writer_keys`, the `$ownerId`'s on-chain
+/// keys) to the relay's. A ciphertext copied from another writer's document does not decrypt.
+fn subscription_of(
+    repo_id: &str,
+    h: &Webhook,
+    relay_keys: &BTreeMap<u32, PrivateKey>,
+    writer_keys: &[IdentityKeyInfo],
+    contract_id: &str,
+) -> std::result::Result<WebhookSub, SecretError> {
+    let secret = decrypt_secret(h, relay_keys, writer_keys, contract_id)?;
+    Ok(WebhookSub {
+        repo_id: repo_id.to_string(),
+        hook_id: h.hook_id_hex(),
+        url: h.url.clone(),
+        events: h.events.clone(),
+        secret,
+        created_at: h.created_at,
+        document_id: Some(h.document_id.clone()),
+    })
 }
 
 async fn is_maintainer(members: &MemberReader<'_>, repo: &RepoRef, identity: &str) -> Result<bool> {
@@ -406,6 +427,88 @@ mod tests {
             .map(|h| h.document_id)
             .collect();
         assert_eq!(got, ["d", "h"]);
+    }
+
+    fn encryption_key(id: u32, private: &PrivateKey) -> IdentityKeyInfo {
+        IdentityKeyInfo {
+            id,
+            purpose: "ENCRYPTION".into(),
+            security_level: "MEDIUM".into(),
+            key_type: "ECDSA_SECP256K1".into(),
+            public_key: private.public_key().to_vec(),
+            disabled: false,
+            bound_to: None,
+            bounds: None,
+        }
+    }
+
+    /// A maintainer of repo A who copies repo B's hook id and encrypted secret into a document
+    /// of A gets no subscription: the ciphertext only decrypts with B's writer's key, and A's
+    /// document is decrypted with its own writer's. B's hook keeps its own secret.
+    #[test]
+    fn a_secret_copied_from_another_repos_hook_yields_no_subscription() {
+        let relay = PrivateKey::from_slice(&[0x42; 32]).unwrap();
+        let relay_keys = BTreeMap::from([(4, PrivateKey::from_slice(&[0x42; 32]).unwrap())]);
+        let maint_b = PrivateKey::from_slice(&[0x21; 32]).unwrap();
+        let secret_b = forge_core::webhooks::generate_secret();
+        let mut hook_b = doc("b", 7, 10, ME, false);
+        hook_b.owner_id = "MAINT_B".into();
+        hook_b.repo_id = "REPO_B".into();
+        hook_b.secret =
+            forge_core::envelope::encrypt(&maint_b, &relay.public_key(), secret_b.expose())
+                .unwrap();
+        let sub_b = subscription_of(
+            "REPO_B",
+            &hook_b,
+            &relay_keys,
+            &[encryption_key(4, &maint_b)],
+            "C",
+        )
+        .unwrap();
+        assert_eq!(sub_b.secret.expose(), secret_b.expose());
+
+        // Repo A's document: B's hook id and ciphertext, written by A's maintainer, whose
+        // on-chain keys are the ones the relay decrypts with (whatever key id it names).
+        for scalar in 0x50..=0x6fu8 {
+            let maint_a = PrivateKey::from_slice(&[scalar; 32]).unwrap();
+            let mut hook_a = hook_b.clone();
+            hook_a.document_id = "a".into();
+            hook_a.owner_id = "MAINT_A".into();
+            hook_a.repo_id = "REPO_A".into();
+            hook_a.url = "https://attacker.example/h".into();
+            let keys_a = [encryption_key(4, &maint_a)];
+            assert!(
+                matches!(
+                    subscription_of("REPO_A", &hook_a, &relay_keys, &keys_a, "C"),
+                    Err(SecretError::Undecryptable(_))
+                ),
+                "writer key {scalar:#x}"
+            );
+        }
+
+        // A subscription is (repo, hook): the same hook id in two repos is two subscriptions.
+        let maint_a = PrivateKey::from_slice(&[0x50; 32]).unwrap();
+        let secret_a = forge_core::webhooks::generate_secret();
+        let mut hook_a = hook_b.clone();
+        hook_a.owner_id = "MAINT_A".into();
+        hook_a.repo_id = "REPO_A".into();
+        hook_a.secret =
+            forge_core::envelope::encrypt(&maint_a, &relay.public_key(), secret_a.expose())
+                .unwrap();
+        let sub_a = subscription_of(
+            "REPO_A",
+            &hook_a,
+            &relay_keys,
+            &[encryption_key(4, &maint_a)],
+            "C",
+        )
+        .unwrap();
+        assert_eq!(
+            (sub_a.repo_id.as_str(), sub_a.hook_id.as_str()),
+            ("REPO_A", sub_b.hook_id.as_str())
+        );
+        assert_eq!(sub_a.secret.expose(), secret_a.expose());
+        assert_ne!(sub_a.secret.expose(), sub_b.secret.expose());
     }
 
     #[test]
