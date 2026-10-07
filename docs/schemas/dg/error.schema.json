@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/error.schema.json",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/error.schema.json",
   "title": "dg --json: a failed command",
   "description": "Printed on stdout instead of the command's output when it fails. A command that finished part of its work adds that part's fields beside `error`.",
   "type": "object",

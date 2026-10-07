@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/pr-review.schema.json",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/pr-review.schema.json",
   "title": "dg pr review --json",
   "description": "A review: submitted, kept pending, or discarded.",
   "type": "object",
@@ -11,7 +11,7 @@
     "status": {
       "type": "string",
       "enum": [
-        "submitted",
+        "reviewed",
         "pending",
         "discarded",
         "no_pending_review"
@@ -42,6 +42,10 @@
     "landed": {},
     "failed": {},
     "resumed": {},
+    "counts": {
+      "type": "boolean",
+      "description": "Whether the verdict counts toward the required approvals (yours is an approver's)."
+    },
     "added": {
       "type": "integer"
     },
@@ -57,7 +61,13 @@
     "draftFile": {
       "type": "string"
     },
-    "discarded": {},
+    "discarded": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "description": "How many pending comments were thrown away; null when the pending review could not be read."
+    },
     "cost": {
       "$ref": "common.schema.json#/$defs/cost"
     }

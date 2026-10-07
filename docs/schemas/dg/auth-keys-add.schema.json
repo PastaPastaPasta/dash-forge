@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/auth-keys-add.schema.json",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/auth-keys-add.schema.json",
   "title": "dg auth keys add --json",
   "description": "A key added to the identity (a limited key, a browser key or an encryption key).",
   "type": "object",
@@ -62,8 +62,18 @@
     },
     "reply": {},
     "warning": {},
-    "contractGroup": {},
-    "groupWarning": {}
+    "unknownGroupMembers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "uncheckedGroupMembers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
   },
   "required": [
     "schemaVersion",

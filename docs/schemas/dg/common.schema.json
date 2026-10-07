@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/common.schema.json",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/common.schema.json",
   "title": "Shapes shared by dg's --json output",
   "$defs": {
     "cost": {
@@ -52,6 +52,210 @@
         ]
       },
       "description": "What a multi-step write did, in order."
+    },
+    "createSteps": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "enum": [
+          "created",
+          "resumed",
+          "existed"
+        ]
+      },
+      "description": "Each document a repository create needed, and whether this run wrote it, finished an interrupted run's write, or found it there already."
+    },
+    "issueQuery": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "open",
+            "closed",
+            "all"
+          ]
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "author": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "assignee": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mentions": {
+          "type": "boolean"
+        },
+        "sort": {
+          "type": "string"
+        },
+        "q": {
+          "type": "string"
+        },
+        "page": {
+          "type": "integer"
+        },
+        "notLabels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "noLabel": {
+          "type": "boolean"
+        },
+        "milestone": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "noMilestone": {
+          "type": "boolean"
+        },
+        "authorLogin": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scope": {
+          "type": "string",
+          "enum": [
+            "any",
+            "title",
+            "body"
+          ]
+        },
+        "comments": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "state",
+        "labels",
+        "sort",
+        "q"
+      ],
+      "description": "A parsed issue search: the filters it applied (the web's issue list query)."
+    },
+    "pullQuery": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "type": "string"
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "author": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "assignee": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sort": {
+          "type": "string"
+        },
+        "q": {
+          "type": "string"
+        },
+        "page": {
+          "type": "integer"
+        },
+        "notLabels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "noLabel": {
+          "type": "boolean"
+        },
+        "milestone": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "noMilestone": {
+          "type": "boolean"
+        },
+        "authorLogin": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scope": {
+          "type": "string",
+          "enum": [
+            "any",
+            "title",
+            "body"
+          ]
+        },
+        "comments": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "draft": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "reviewRequested": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "state",
+        "labels",
+        "sort",
+        "q"
+      ],
+      "description": "A parsed pull request search: the filters it applied."
     },
     "audience": {
       "type": "string",

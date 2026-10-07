@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/env-ls.schema.json",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/env-ls.schema.json",
   "title": "dg env ls --json",
   "description": "The repository's environments, or one environment's variables (names and types, not values).",
   "type": "object",

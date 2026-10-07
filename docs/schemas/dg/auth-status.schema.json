@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/auth-status.schema.json",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/auth-status.schema.json",
   "title": "dg auth status --json",
   "description": "Who is signed in on this computer, and the key's limits.",
   "type": "object",
@@ -122,9 +122,10 @@
     },
     "keyUnopened": {
       "type": [
-        "boolean",
+        "string",
         "null"
-      ]
+      ],
+      "description": "Why the stored key could not be opened here (it is sealed and no passphrase is available), or null."
     }
   },
   "required": [

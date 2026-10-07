@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/storage-use.schema.json",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/storage-use.schema.json",
   "title": "dg storage use --json",
   "description": "Which storage profiles pushes use.",
   "type": "object",
@@ -9,10 +9,8 @@
       "const": 1
     },
     "storage": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
+      "type": "string",
+      "description": "The profiles pushes store on, comma-separated, as git config `dash.storage` holds them."
     },
     "replicas": {},
     "platformFallback": {},

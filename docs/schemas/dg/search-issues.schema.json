@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/search-issues.schema.json",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/search-issues.schema.json",
   "title": "dg search issues --json",
   "description": "Issues matching a query.",
   "type": "object",
@@ -12,9 +12,14 @@
       "type": "string"
     },
     "query": {
-      "type": "string"
+      "$ref": "common.schema.json#/$defs/issueQuery"
     },
-    "notApplied": {},
+    "notApplied": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
     "total": {
       "type": "integer"
     },

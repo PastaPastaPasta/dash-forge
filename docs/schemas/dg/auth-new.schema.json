@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/auth-new.schema.json",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/auth-new.schema.json",
   "title": "dg auth new --json",
   "description": "A new identity and the key stored for this computer.",
   "type": "object",
@@ -75,8 +75,18 @@
         "null"
       ]
     },
-    "contractGroup": {},
-    "groupWarning": {}
+    "unknownGroupMembers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "uncheckedGroupMembers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
   },
   "required": [
     "schemaVersion",

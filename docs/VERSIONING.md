@@ -24,6 +24,8 @@ From 1.0, breaking changes to these come only in a major release.
 
 Every `dg` command run with `--json` prints one JSON object on stdout, and every such object, an error included, carries `"schemaVersion": 1`. [`docs/schemas/`](schemas/README.md) has a JSON Schema (draft 2020-12) for each command's object and lists the few commands that print no JSON: `dg completions`, `dg env run` (its output is the command's) and `dg api query`, which prints raw Platform documents as they are, like `gh api`.
 
+The exit code says which schema applies. A command that exits 0 prints its own command's object. One that exits non-zero prints the [error object](schemas/dg/error.schema.json); a command that finished part of its work (an import that stopped at `--max-spend`, a review submit that wrote some comments) adds that part's fields beside `error`. `dg env export` prints JSON only with `--output`: without it, it prints the variables as a .env file, even with `--json`.
+
 `schemaVersion` is the contract scripts can check:
 
 - **Adding a field doesn't change it.** Scripts should ignore fields they don't use. Each schema allows extra fields.

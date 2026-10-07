@@ -1,0 +1,26 @@
+{
+  "source": "emitter: crates/dg/src/maint.rs reindex_body() (cost null when the balance could not be read)",
+  "command": "repo reindex",
+  "args": [
+    "--yes",
+    "--json",
+    "repo",
+    "reindex",
+    "o/r"
+  ],
+  "exit": 0,
+  "expect": "valid",
+  "stdout": {
+    "status": "reindexed",
+    "repoId": "Bq9mN3x7Lq2kXv8sTcY4pR6wZ1hJ5fD2gA7eK9uW3nM",
+    "indexedPacks": 2,
+    "indexObjects": 40,
+    "skipped": [],
+    "locatorManifestId": "M",
+    "cost": null,
+    "history": {
+      "status": "skipped"
+    },
+    "schemaVersion": 1
+  }
+}

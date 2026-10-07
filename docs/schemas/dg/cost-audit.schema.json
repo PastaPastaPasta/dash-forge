@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/cost-audit.schema.json",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/cost-audit.schema.json",
   "title": "dg cost audit --json",
   "description": "What an identity spent, or what a repository's storage holds.",
   "type": "object",

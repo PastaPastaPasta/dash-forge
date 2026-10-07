@@ -1,15 +1,22 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/import.schema.json",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/import.schema.json",
   "title": "dg import --json",
-  "description": "What an import or re-sync mirrored (the Mirror Action reads this).",
+  "description": "What an import or re-sync mirrored (the Mirror Action reads this). A run that did not finish exits non-zero and prints the same object with `error` holding the error block, so it matches error.schema.json.",
   "type": "object",
   "properties": {
     "schemaVersion": {
       "const": 1
     },
     "status": {
-      "type": "string"
+      "type": "string",
+      "enum": [
+        "ok",
+        "dry_run",
+        "partial",
+        "cap_exceeded",
+        "error"
+      ]
     },
     "network": {
       "type": "string"
@@ -18,10 +25,106 @@
       "type": "string"
     },
     "repo": {
-      "type": "object"
+      "type": "object",
+      "properties": {
+        "owner": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        },
+        "created": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "owner",
+        "name",
+        "id",
+        "url",
+        "created"
+      ]
     },
     "counts": {
-      "type": "object"
+      "type": "object",
+      "properties": {
+        "refs": {
+          "type": "integer"
+        },
+        "packs": {
+          "type": "integer"
+        },
+        "packBytes": {
+          "type": "integer"
+        },
+        "issues": {
+          "type": "integer"
+        },
+        "prs": {
+          "type": "integer"
+        },
+        "comments": {
+          "type": "integer"
+        },
+        "reviews": {
+          "type": "integer"
+        },
+        "events": {
+          "type": "integer"
+        },
+        "transitions": {
+          "type": "integer"
+        },
+        "releases": {
+          "type": "integer"
+        },
+        "labels": {
+          "type": "integer"
+        },
+        "skipped": {
+          "type": "integer"
+        },
+        "gitSkipped": {
+          "type": "integer"
+        },
+        "unprovedMerges": {
+          "type": "integer"
+        },
+        "assetsOmitted": {
+          "type": "integer"
+        },
+        "assetsUnhashed": {
+          "type": "integer"
+        },
+        "assetsLinked": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "refs",
+        "packs",
+        "packBytes",
+        "issues",
+        "prs",
+        "comments",
+        "reviews",
+        "events",
+        "transitions",
+        "releases",
+        "labels",
+        "skipped",
+        "gitSkipped",
+        "unprovedMerges",
+        "assetsOmitted",
+        "assetsUnhashed",
+        "assetsLinked"
+      ]
     },
     "estimateCredits": {
       "type": "integer"
@@ -39,7 +142,33 @@
       ]
     },
     "key": {
-      "type": "object"
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "budgetCredits": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "remainingCredits": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "expiresAt": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      }
     },
     "warnings": {
       "type": "array",
@@ -48,10 +177,18 @@
       }
     },
     "error": {
-      "type": [
-        "string",
-        "null"
-      ]
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "$ref": "common.schema.json#/$defs/error"
+        }
+      ],
+      "description": "Null when the run finished; the error block when it did not (and dg exits non-zero)."
     }
   },
   "required": [

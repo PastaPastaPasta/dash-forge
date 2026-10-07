@@ -4,6 +4,10 @@
 
 Every `dg` command run with `--json` prints one JSON object with `"schemaVersion": 1`. The schemas here (JSON Schema draft 2020-12) describe each command's object. A failed command prints [`error.schema.json`](dg/error.schema.json) instead, and the shapes several commands share are in [`common.schema.json`](dg/common.schema.json). [Versioning](../VERSIONING.md#json-output) says when `schemaVersion` changes.
 
+The exit code says which schema applies: 0, the command's own; anything else, the error schema. A command that finished part of its work before it failed adds that part's fields beside `error`. `dg env export` prints JSON only with `--output`; without it, it prints a .env file.
+
+[`index.json`](dg/index.json) maps each command to its schema, for tools. The CLI end-to-end suite checks every `--json` output it captures against them (`e2e/cli/json_check.py`).
+
 | Command | Schema |
 |---|---|
 | `dg api query` | none: prints raw Platform documents as they are, with no `schemaVersion` (like `gh api`) |
@@ -88,6 +92,7 @@ Every `dg` command run with `--json` prints one JSON object with `"schemaVersion
 | `dg pr reopen` | [`pr-reopen.schema.json`](dg/pr-reopen.schema.json) |
 | `dg pr request-review` | [`pr-request-review.schema.json`](dg/pr-request-review.schema.json) |
 | `dg pr resolve` | [`pr-resolve.schema.json`](dg/pr-resolve.schema.json) |
+| `dg pr revert` | [`pr-revert.schema.json`](dg/pr-revert.schema.json) |
 | `dg pr review` | [`pr-review.schema.json`](dg/pr-review.schema.json) |
 | `dg pr status` | [`pr-status.schema.json`](dg/pr-status.schema.json) |
 | `dg pr suggestion apply` | [`pr-suggestion-apply.schema.json`](dg/pr-suggestion-apply.schema.json) |

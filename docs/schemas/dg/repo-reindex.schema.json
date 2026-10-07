@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/repo-reindex.schema.json",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/repo-reindex.schema.json",
   "title": "dg repo reindex --json",
   "description": "The browse index published again.",
   "type": "object",
@@ -9,16 +9,58 @@
       "const": 1
     },
     "status": {
-      "type": "string"
+      "type": "string",
+      "enum": [
+        "indexed",
+        "reindexed",
+        "unchanged",
+        "partial"
+      ]
     },
     "repoId": {
       "type": "string"
+    },
+    "indexedPacks": {
+      "type": "integer"
+    },
+    "indexObjects": {
+      "type": "integer"
+    },
+    "skipped": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "packHash": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
     },
     "missingPacks": {
       "type": "integer"
     },
     "history": {},
-    "locatorManifestId": {}
+    "locatorManifestId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "cost": {
+      "anyOf": [
+        {
+          "$ref": "common.schema.json#/$defs/cost"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Null when the balance could not be read after the write."
+    }
   },
   "required": [
     "schemaVersion",

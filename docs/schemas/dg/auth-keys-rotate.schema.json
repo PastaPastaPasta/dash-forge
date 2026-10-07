@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/auth-keys-rotate.schema.json",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/auth-keys-rotate.schema.json",
   "title": "dg auth keys rotate --json",
   "description": "The encryption key rotated, and the repositories it was re-shared to.",
   "type": "object",
@@ -64,12 +64,31 @@
         }
       }
     },
-    "disabledKeyIds": {},
+    "disabledKeyIds": {
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "storedAt": {
       "type": [
         "string",
         "null"
       ]
+    },
+    "storeError": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Why the new key could not be stored on this computer, or null."
     },
     "cost": {
       "$ref": "common.schema.json#/$defs/cost"

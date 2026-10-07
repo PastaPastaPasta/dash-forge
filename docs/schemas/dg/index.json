@@ -80,6 +80,7 @@
     "pr reopen": "pr-reopen.schema.json",
     "pr request-review": "pr-request-review.schema.json",
     "pr resolve": "pr-resolve.schema.json",
+    "pr revert": "pr-revert.schema.json",
     "pr review": "pr-review.schema.json",
     "pr status": "pr-status.schema.json",
     "pr suggestion apply": "pr-suggestion-apply.schema.json",
@@ -150,5 +151,12 @@
     "api query": "prints raw Platform documents as they are, with no `schemaVersion` (like `gh api`)",
     "completions": "prints a shell completion script",
     "env run": "runs a command with the environment; its output is the command's"
+  },
+  "error": "error.schema.json",
+  "jsonOnlyWith": {
+    "env export": [
+      "--output",
+      "-o"
+    ]
   }
 }

@@ -21,7 +21,8 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, 'dg')
-BASE = 'https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/'
+# Raw URLs, so a validator can fetch common.schema.json when it resolves a `$ref`.
+BASE = 'https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/'
 VERSION = 1
 
 # ---------------------------------------------------------------------------------------------
@@ -82,6 +83,20 @@ COMMON = {
               O({'credits': I, 'dash': F, 'usd': nl(F), 'usdPrice': nl(F)}, ['credits', 'dash'])),
     'steps': D('What a multi-step write did, in order.',
                A(O({'step': S, 'ok': B, 'detail': S}, ['step', 'ok']))),
+    'createSteps': D('Each document a repository create needed, and whether this run wrote it, finished an '
+                     'interrupted run\'s write, or found it there already.',
+                     {'type': 'object', 'additionalProperties': E('created', 'resumed', 'existed')}),
+    'issueQuery': D('A parsed issue search: the filters it applied (the web\'s issue list query).', O({
+        'state': E('open', 'closed', 'all'), 'labels': SA, 'author': nl(S), 'assignee': nl(S), 'mentions': B,
+        'sort': S, 'q': S, 'page': I, 'notLabels': SA, 'noLabel': B, 'milestone': nl(S), 'noMilestone': B,
+        'authorLogin': nl(S), 'scope': E('any', 'title', 'body'), 'comments': nl(S), 'reason': nl(S),
+    }, ['state', 'labels', 'sort', 'q'])),
+    'pullQuery': D('A parsed pull request search: the filters it applied.', O({
+        'state': S, 'labels': SA, 'author': nl(S), 'assignee': nl(S), 'sort': S, 'q': S, 'page': I,
+        'notLabels': SA, 'noLabel': B, 'milestone': nl(S), 'noMilestone': B, 'authorLogin': nl(S),
+        'scope': E('any', 'title', 'body'), 'comments': nl(S), 'reason': nl(S), 'draft': nl(B),
+        'reviewRequested': nl(S),
+    }, ['state', 'labels', 'sort', 'q'])),
     'audience': D('Who can read a document: everyone, the repository\'s members, or the people listed.',
                   E('public', 'members', 'specificPeople')),
     'oid': D('A git object id, lowercase hex.', {'type': 'string', 'pattern': '^[0-9a-f]{40}([0-9a-f]{24})?$'}),
@@ -115,9 +130,11 @@ COMMANDS = {}
 NO_JSON = {}
 
 
-def cmd(name, desc, props, req=()):
-    """`name`: the command words (`issue view`). `req`: fields every success has."""
-    COMMANDS[name] = (desc, props, list(req))
+def cmd(name, desc, props, req=(), one_of=()):
+    """`name`: the command words (`issue view`). `req`: fields every success has. `one_of`: when a
+    command prints one of several shapes, each as (the fields it narrows, the fields it requires);
+    exactly one must match."""
+    COMMANDS[name] = (desc, props, list(req), [O(p, r) for p, r in one_of])
 
 
 def none(name, why):
@@ -129,7 +146,8 @@ def write_result(extra, req=('status',)):
 
 
 # -- auth -------------------------------------------------------------------------------------
-GROUP = {'contractGroup': ANY, 'groupWarning': ANY}
+# The Forge contract group's members this dg does not know, and the ones it could not check.
+GROUP = {'unknownGroupMembers': SA, 'uncheckedGroupMembers': SA}
 cmd('auth new', 'A new identity and the key stored for this computer.', {
     'status': E('created'), 'identityId': S, 'network': S, 'keyId': I, 'budgetCredits': nl(I), 'expiresAt': nl(I),
     'storage': S, 'storedAt': S, 'encryptionKeyIds': A(I), 'assetLockTxid': S, 'proof': E('instant', 'chain'),
@@ -145,7 +163,9 @@ cmd('auth status', 'Who is signed in on this computer, and the key\'s limits.', 
     'limited': nl(B), 'capped': nl(B), 'boundDocumentType': nl(S), 'encryptionKeyIds': nl(A(I)),
     'budgetCredits': nl(I), 'budgetRemainingCredits': nl(I), 'expiresAt': nl(I), 'balanceCredits': nl(I),
     'balanceDash': nl(F), 'storage': nl(S), 'storedAt': nl(S), 'defaultIdentityId': nl(S),
-    'masterKeyStored': nl(B), 'keyUnopened': nl(B),
+    'masterKeyStored': nl(B),
+    'keyUnopened': D('Why the stored key could not be opened here (it is sealed and no passphrase is available), '
+                     'or null.', nl(S)),
 }, ['network', 'authenticated'])
 cmd('auth balance', 'An identity\'s proved balance.', {
     'identityId': S, 'network': S, 'balanceCredits': I, 'balanceDash': F,
@@ -162,7 +182,8 @@ cmd('auth keys disable', 'A key disabled on the identity.', {
 cmd('auth keys rotate', 'The encryption key rotated, and the repositories it was re-shared to.', {
     'status': E('added', 'replaced'), 'identityId': S, 'oldKeyIds': A(I), 'newKeyId': I,
     'repos': A(O({'repo': S, 'repoId': S, 'status': E('rotated', 'not_maintainer', 'failed'), 'detail': ANY})),
-    'askMaintainer': A(O({'repo': S, 'repoId': S})), 'disabledKeyIds': ANY, 'storedAt': nl(S), 'cost': COST,
+    'askMaintainer': A(O({'repo': S, 'repoId': S})), 'disabledKeyIds': nl(A(I)), 'storedAt': nl(S),
+    'storeError': D('Why the new key could not be stored on this computer, or null.', nl(S)), 'cost': COST,
 }, ['status', 'identityId', 'repos'])
 cmd('auth name register', 'A DPNS name registered for the identity.', {
     'status': E('registered'), 'name': S, 'identityId': S, 'cost': COST,
@@ -176,9 +197,12 @@ cmd('auth logout', 'Signed out on this computer.', {
 
 # -- repo -------------------------------------------------------------------------------------
 PUBLISH = {
-    'status': S, 'generation': ANY, 'repoId': S, 'ownerId': S, 'name': S, 'remoteUrl': S, 'webUrl': nl(S),
-    'storage': ANY, 'network': S, 'visibility': E('public', 'private'), 'protectedPatterns': SA, 'steps': STEPS,
-    'cost': COST, 'totalCost': COST, 'push': ANY,
+    'status': E('created', 'exists'), 'generation': ANY, 'repoId': S, 'ownerId': S, 'name': S, 'remoteUrl': S,
+    'webUrl': nl(S), 'storage': ANY, 'network': S, 'visibility': E('public', 'private'),
+    'protectedPatterns': D('What the config this run wrote protects; null when an earlier run wrote it.', nl(SA)),
+    'steps': R('createSteps'), 'cost': COST, 'totalCost': COST, 'remote': S, 'gitConfig': SA,
+    'push': nl(O({'remote': S, 'branch': S, 'oid': S, 'tracking': B, 'cost': COST, 'indexSkipped': ANY})),
+    'balanceCredits': nl(I),
 }
 cmd('repo create', 'A new repository.', PUBLISH, ['status', 'repoId', 'ownerId', 'name'])
 cmd('init', 'The current git repository published as a new repository.', PUBLISH, ['status', 'repoId', 'ownerId', 'name'])
@@ -186,9 +210,9 @@ cmd('repo clone', 'Where the repository was cloned.', {
     'remoteUrl': S, 'directory': S, 'network': S, 'gitConfig': ANY,
 }, ['remoteUrl', 'directory'])
 cmd('repo fork', 'A fork of a repository.', {
-    'status': S, 'repoId': S, 'ownerId': S, 'name': S, 'forkOf': ANY, 'parent': ANY, 'remoteUrl': S,
-    'manifestsWritten': I, 'platformPacksReferenced': I, 'manifestsExisting': I, 'unreferenceablePacks': ANY,
-    'refsWritten': I, 'cost': COST,
+    'status': E('forked', 'exists'), 'repoId': S, 'ownerId': S, 'name': S, 'forkOf': S, 'parent': S, 'remoteUrl': S,
+    'manifestsWritten': I, 'platformPacksReferenced': I, 'manifestsExisting': I, 'unreferenceablePacks': SA,
+    'refsWritten': D('The refs this run wrote to the fork.', SA), 'cost': COST,
 }, ['status', 'repoId'])
 cmd('repo sync', 'A fork brought up to date with its parent.', {'status': S}, ['status'])
 STAR = {'status': S, 'repo': S, 'starred': B, 'stars': nl(I), 'cost': NCOST}
@@ -201,8 +225,9 @@ cmd('repo topic', 'The repository\'s topics (and what changed).', {
     'repo': S, 'topics': SA, 'added': SA, 'removed': SA, 'cost': COST,
 }, ['repo', 'topics'])
 cmd('repo view', 'A repository: its refs, packs and members.', {
-    'repoId': S, 'ownerId': S, 'name': S, 'description': nl(S), 'visibility': E('public', 'private'), 'archived': B,
-    'defaultBranch': nl(S), 'refs': ANY, 'packCount': I, 'packBytes': I, 'members': ANY, 'remoteUrl': S,
+    'repoId': S, 'ownerId': S, 'name': S, 'description': nl(S), 'visibility': E('public', 'private'),
+    'archived': D('Whether the repository is archived; null when its config could not be read.', nl(B)),
+    'defaultBranch': nl(S), 'refs': A(O({'name': S, 'state': ANY}, ['name'])), 'packCount': I, 'packBytes': I, 'members': ANY, 'remoteUrl': S,
 }, ['repoId', 'ownerId', 'name', 'visibility'])
 cmd('repo list', 'An identity\'s repositories.', {
     'ownerId': S, 'count': I, 'repos': A(O({'name': S, 'repoId': S, 'description': nl(S)}, ['name', 'repoId'])),
@@ -219,9 +244,13 @@ cmd('repo keys repair', 'Keys shared again, or the key rotated, so every member 
     'skipped': ANY, 'cost': COST,
 }, ['status'])
 cmd('repo keys rotate', 'A new key epoch.', {'status': E('rotated'), 'rotation': R('rotation'), 'cost': COST}, ['status'])
-cmd('repo members enable', 'Members-only content turned on.', {
-    'status': E('enabled', 'finished', 'already_on'), 'repo': S, 'epoch': ANY, 'wrapped': ANY, 'skipped': ANY, 'cost': COST,
-}, ['status', 'repo'])
+cmd('repo members enable', 'Members-only content turned on. When it is on already and the key needs a repair (a '
+    'member with no key yet, a rotation), the command repairs it and prints what `dg repo keys repair` prints.', {
+    'status': S, 'repo': S, 'epoch': ANY, 'wrapped': ANY, 'skipped': ANY, 'cost': COST,
+}, ['status'], one_of=[
+    ({'status': E('enabled', 'finished', 'already_on')}, ['repo']),
+    ({'status': E('repaired', 'nothing_to_do'), 'rotated': nl(R('rotation')), 'nonMembers': ANY}, []),
+])
 cmd('repo members status', 'Whether members-only content is on, and who has no key yet.', {
     'repo': S, 'on': B, 'epoch': ANY, 'youCanRead': B, 'noKeyYet': ANY,
 }, ['repo', 'on'])
@@ -244,7 +273,9 @@ cmd('repo policy set', 'A new branch policy.', {
     'status': E('set', 'unchanged'), 'repo': S, 'policy': R('policy'), 'documentId': S, 'id': S, 'note': S, 'cost': COST,
 }, ['status', 'repo', 'policy'])
 cmd('repo reindex', 'The browse index published again.', {
-    'status': S, 'repoId': S, 'missingPacks': I, 'history': ANY, 'locatorManifestId': ANY,
+    'status': E('indexed', 'reindexed', 'unchanged', 'partial'), 'repoId': S, 'indexedPacks': I, 'indexObjects': I,
+    'skipped': A(O({'packHash': S, 'reason': S})), 'missingPacks': I, 'history': ANY, 'locatorManifestId': nl(S),
+    'cost': D('Null when the balance could not be read after the write.', NCOST),
 }, ['status'])
 ARCHIVE = {'status': S, 'repo': S, 'archived': B, 'configDocumentId': nl(S), 'cost': COST}
 cmd('repo archive', 'The repository archived (read-only).', ARCHIVE, ['status', 'repo', 'archived'])
@@ -341,9 +372,12 @@ cmd('pr checkout', 'The pull request\'s head checked out as a local branch.', {
     'pr': I, 'headOid': S, 'branch': S, 'sourceRepoId': S, 'fetched': B, 'branchCreated': B, 'switched': B,
 }, ['pr', 'headOid', 'branch'])
 cmd('pr review', 'A review: submitted, kept pending, or discarded.', {
-    'status': E('submitted', 'pending', 'discarded', 'no_pending_review'), 'pr': I, 'verdict': ANY, 'verdictLabel': ANY,
+    'status': E('reviewed', 'pending', 'discarded', 'no_pending_review'), 'pr': I, 'verdict': ANY, 'verdictLabel': ANY,
     'audience': AUD, 'commitOid': S, 'reviewId': nl(S), 'comments': A(ANY), 'documents': ANY, 'landed': ANY, 'failed': ANY,
-    'resumed': ANY, 'added': I, 'anchoredTo': S, 'headMoved': B, 'encrypted': B, 'draftFile': S, 'discarded': ANY, 'cost': COST,
+    'resumed': ANY, 'counts': D('Whether the verdict counts toward the required approvals (yours is an approver\'s).', B),
+    'added': I, 'anchoredTo': S, 'headMoved': B, 'encrypted': B, 'draftFile': S,
+    'discarded': D('How many pending comments were thrown away; null when the pending review could not be read.', nl(I)),
+    'cost': COST,
 }, ['status', 'pr'])
 cmd('pr comment', 'A comment on a pull request: general, inline, or a reply.', {
     'status': E('commented'), 'pr': I, 'commentId': S, 'kind': S, 'audience': AUD, 'replyTo': nl(S), 'location': ANY,
@@ -393,6 +427,12 @@ PRSTATE = {'status': S, 'pr': I, 'via': ANY, 'transitionId': S, 'kind': ANY, 'dr
 cmd('pr close', 'A pull request closed.', PRSTATE, ['status', 'pr'])
 cmd('pr reopen', 'A pull request reopened.', PRSTATE, ['status', 'pr'])
 cmd('pr diff', 'The pull request\'s diff.', {'pr': I, 'range': S, 'diffAvailable': B, 'diff': S}, ['pr', 'diff'])
+cmd('pr revert', 'A pull request that reverts a merged one, opened on a new branch.', {
+    'status': E('created'), 'pr': D('The merged pull request reverted.', I),
+    'number': D('The new pull request.', I), 'documentId': S, 'title': S, 'baseRef': S, 'headRef': S,
+    'revertCommit': OID, 'mergeOid': OID, 'landed': E('merge-commit', 'squash', 'rebase', 'fast-forward'),
+    'cost': COST, 'steps': STEPS,
+}, ['status', 'pr', 'number', 'documentId', 'baseRef', 'headRef', 'revertCommit'])
 
 # -- releases, labels, milestones -------------------------------------------------------------
 REL = {
@@ -496,7 +536,8 @@ cmd('storage test', 'A storage profile tried end to end.', {
     'profile': S, 'kind': S, 'ok': B, 'steps': A(OBJ), 'fixes': ANY,
 }, ['profile', 'ok'])
 cmd('storage use', 'Which storage profiles pushes use.', {
-    'storage': SA, 'replicas': ANY, 'platformFallback': ANY, 'scope': E('global', 'repo'), 'warnings': ANY,
+    'storage': D('The profiles pushes store on, comma-separated, as git config `dash.storage` holds them.', S),
+    'replicas': ANY, 'platformFallback': ANY, 'scope': E('global', 'repo'), 'warnings': ANY,
     'advertisedMode': ANY, 'existingPacks': ANY,
 }, ['storage', 'scope'])
 cmd('storage advertise', 'The storage the repository advertises to forks and mirrors.', {
@@ -538,12 +579,13 @@ cmd('ci reruns', 'The re-run requests written since a time.', {
 
 # -- search, status, doctor, import -----------------------------------------------------------
 cmd('search issues', 'Issues matching a query.', {
-    'repo': S, 'query': S, 'notApplied': ANY, 'total': I, 'count': I, 'hidden': I, 'membersOnly': I, 'hiddenOmitted': I,
+    'repo': S, 'query': R('issueQuery'), 'notApplied': SA, 'total': I, 'count': I, 'hidden': I, 'membersOnly': I,
+    'hiddenOmitted': I,
     'issues': A(O({'number': I, 'title': nl(S), 'state': E('open', 'closed'), 'author': S, 'labels': SA, 'assignees': SA,
                    'milestone': nl(S), 'createdAt': I, 'hiddenBy': R('hiddenBy')}, ['number', 'state', 'author'])),
 }, ['repo', 'query', 'count', 'issues'])
 cmd('search prs', 'Pull requests matching a query.', {
-    'repo': S, 'query': S, 'notApplied': ANY, 'total': I, 'count': I, 'searchedNewest': I, 'truncated': B,
+    'repo': S, 'query': R('pullQuery'), 'notApplied': SA, 'total': I, 'count': I, 'searchedNewest': I, 'truncated': B,
     'hiddenOmitted': I,
     'prs': A(O({'number': I, 'title': nl(S), 'state': E('open', 'closed', 'merged'), 'draft': B, 'author': S,
                 'labels': SA, 'assignees': SA, 'milestone': nl(S), 'baseRefName': S, 'headRefName': nl(S),
@@ -560,9 +602,19 @@ cmd('doctor', 'Each check of the setup, and what fixes it.', {
                                               'autoFix': nl(S)}, ['name', 'status', 'ok']))}, ['name', 'checks'])),
     'fixesApplied': A(ANY),
 }, ['ok', 'network', 'failed', 'warnings', 'sections'])
-cmd('import', 'What an import or re-sync mirrored (the Mirror Action reads this).', {
-    'status': S, 'network': S, 'source': S, 'repo': OBJ, 'counts': OBJ, 'estimateCredits': I, 'spentCredits': I,
-    'creditsPerDash': I, 'balanceCredits': nl(I), 'key': OBJ, 'warnings': SA, 'error': nl(S),
+IMPORT_COUNTS = ('refs', 'packs', 'packBytes', 'issues', 'prs', 'comments', 'reviews', 'events', 'transitions',
+                 'releases', 'labels', 'skipped', 'gitSkipped', 'unprovedMerges', 'assetsOmitted', 'assetsUnhashed',
+                 'assetsLinked')
+cmd('import', 'What an import or re-sync mirrored (the Mirror Action reads this). A run that did not finish exits '
+    'non-zero and prints the same object with `error` holding the error block, so it matches error.schema.json.', {
+    'status': E('ok', 'dry_run', 'partial', 'cap_exceeded', 'error'), 'network': S, 'source': S,
+    'repo': O({'owner': S, 'name': S, 'id': S, 'url': S, 'created': B}, ['owner', 'name', 'id', 'url', 'created']),
+    'counts': O({c: I for c in IMPORT_COUNTS}, IMPORT_COUNTS), 'estimateCredits': I, 'spentCredits': I,
+    'creditsPerDash': I, 'balanceCredits': nl(I),
+    'key': O({'id': nl(I), 'budgetCredits': nl(I), 'remainingCredits': nl(I), 'expiresAt': nl(I)}),
+    'warnings': SA,
+    'error': D('Null when the run finished; the error block when it did not (and dg exits non-zero).',
+               {'anyOf': [{'type': 'null'}, S, R('error')]}),
 }, ['status', 'network', 'source', 'repo', 'counts'])
 
 # -- environments -----------------------------------------------------------------------------
@@ -578,12 +630,17 @@ cmd('env get', 'One variable of an environment.', {'env': S, 'name': S, 'type': 
 for c, d in [('set', 'A variable set.'), ('unset', 'A variable removed.'), ('edit', 'An environment edited.'),
              ('import', 'Variables imported from a file.')]:
     cmd(f'env {c}', d, ENV_SAVE, ['status', 'env'])
-cmd('env export', 'An environment written to a file.', {
+cmd('env export', 'An environment written to a file. Only with `--output`: without it, `dg env export` prints '
+    'the variables as a .env file, not JSON, even with `--json`.', {
     'status': E('written'), 'env': S, 'file': S, 'entries': I, 'mode': S, 'ignored': ANY,
 }, ['status', 'env', 'file'])
 cmd('env history', 'An environment\'s saved versions.', {
     'env': S, 'state': ANY, 'heads': ANY, 'changes': A(OBJ), 'ignored': ANY,
 }, ['env', 'changes'])
+
+# A command that prints JSON only when given one of these flags (and otherwise prints its own
+# format, even with --json).
+JSON_ONLY_WITH = {'env export': ['--output', '-o']}
 
 # -- no --json output -------------------------------------------------------------------------
 none('completions', 'prints a shell completion script')
@@ -599,8 +656,8 @@ def file_of(name):
     return name.replace(' ', '-') + '.schema.json'
 
 
-def schema_of(name, desc, props, req):
-    return {
+def schema_of(name, desc, props, req, one_of):
+    schema = {
         '$schema': 'https://json-schema.org/draft/2020-12/schema',
         '$id': BASE + file_of(name),
         'title': f'dg {name} --json',
@@ -610,6 +667,9 @@ def schema_of(name, desc, props, req):
         'required': ['schemaVersion', *req],
         'additionalProperties': True,
     }
+    if one_of:
+        schema['oneOf'] = one_of
+    return schema
 
 
 def common_schema():
@@ -651,6 +711,13 @@ def readme():
         '[`common.schema.json`](dg/common.schema.json). [Versioning](../VERSIONING.md#json-output) says when '
         '`schemaVersion` changes.',
         '',
+        'The exit code says which schema applies: 0, the command\'s own; anything else, the error schema. A '
+        'command that finished part of its work before it failed adds that part\'s fields beside `error`. '
+        '`dg env export` prints JSON only with `--output`; without it, it prints a .env file.',
+        '',
+        '[`index.json`](dg/index.json) maps each command to its schema, for tools. The CLI end-to-end suite '
+        'checks every `--json` output it captures against them (`e2e/cli/json_check.py`).',
+        '',
         '| Command | Schema |',
         '|---|---|',
     ]
@@ -667,6 +734,8 @@ def index():
         'schemaVersion': VERSION,
         'commands': {n: file_of(n) for n in sorted(COMMANDS)},
         'noJson': dict(sorted(NO_JSON.items())),
+        'error': 'error.schema.json',
+        'jsonOnlyWith': {n: flags for n, flags in sorted(JSON_ONLY_WITH.items())},
     }
 
 
@@ -675,8 +744,8 @@ def outputs():
            os.path.join(OUT, 'error.schema.json'): dumps(error_schema()),
            os.path.join(OUT, 'index.json'): dumps(index()),
            os.path.join(HERE, 'README.md'): readme()}
-    for name, (desc, props, req) in COMMANDS.items():
-        out[os.path.join(OUT, file_of(name))] = dumps(schema_of(name, desc, props, req))
+    for name, (desc, props, req, one_of) in COMMANDS.items():
+        out[os.path.join(OUT, file_of(name))] = dumps(schema_of(name, desc, props, req, one_of))
     return out
 
 

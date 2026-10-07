@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/init.schema.json",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/init.schema.json",
   "title": "dg init --json",
   "description": "The current git repository published as a new repository.",
   "type": "object",
@@ -9,7 +9,11 @@
       "const": 1
     },
     "status": {
-      "type": "string"
+      "type": "string",
+      "enum": [
+        "created",
+        "exists"
+      ]
     },
     "generation": {},
     "repoId": {
@@ -42,13 +46,21 @@
       ]
     },
     "protectedPatterns": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "What the config this run wrote protects; null when an earlier run wrote it."
     },
     "steps": {
-      "$ref": "common.schema.json#/$defs/steps"
+      "$ref": "common.schema.json#/$defs/createSteps"
     },
     "cost": {
       "$ref": "common.schema.json#/$defs/cost"
@@ -56,7 +68,49 @@
     "totalCost": {
       "$ref": "common.schema.json#/$defs/cost"
     },
-    "push": {}
+    "remote": {
+      "type": "string"
+    },
+    "gitConfig": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "push": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "remote": {
+              "type": "string"
+            },
+            "branch": {
+              "type": "string"
+            },
+            "oid": {
+              "type": "string"
+            },
+            "tracking": {
+              "type": "boolean"
+            },
+            "cost": {
+              "$ref": "common.schema.json#/$defs/cost"
+            },
+            "indexSkipped": {}
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "balanceCredits": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    }
   },
   "required": [
     "schemaVersion",

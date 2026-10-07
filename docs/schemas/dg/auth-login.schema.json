@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/auth-login.schema.json",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/auth-login.schema.json",
   "title": "dg auth login --json",
   "description": "Signed in: the identity and the key stored for it.",
   "type": "object",
@@ -78,8 +78,18 @@
         }
       ]
     },
-    "contractGroup": {},
-    "groupWarning": {}
+    "unknownGroupMembers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "uncheckedGroupMembers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
   },
   "required": [
     "schemaVersion",

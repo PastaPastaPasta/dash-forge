@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/env-export.schema.json",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/env-export.schema.json",
   "title": "dg env export --json",
-  "description": "An environment written to a file.",
+  "description": "An environment written to a file. Only with `--output`: without it, `dg env export` prints the variables as a .env file, not JSON, even with `--json`.",
   "type": "object",
   "properties": {
     "schemaVersion": {

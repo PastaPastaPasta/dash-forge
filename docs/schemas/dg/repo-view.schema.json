@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/repo-view.schema.json",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/repo-view.schema.json",
   "title": "dg repo view --json",
   "description": "A repository: its refs, packs and members.",
   "type": "object",
@@ -31,7 +31,11 @@
       ]
     },
     "archived": {
-      "type": "boolean"
+      "type": [
+        "boolean",
+        "null"
+      ],
+      "description": "Whether the repository is archived; null when its config could not be read."
     },
     "defaultBranch": {
       "type": [
@@ -39,7 +43,21 @@
         "null"
       ]
     },
-    "refs": {},
+    "refs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "state": {}
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
     "packCount": {
       "type": "integer"
     },

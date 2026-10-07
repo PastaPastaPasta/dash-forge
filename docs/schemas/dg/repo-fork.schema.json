@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/repo-fork.schema.json",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/repo-fork.schema.json",
   "title": "dg repo fork --json",
   "description": "A fork of a repository.",
   "type": "object",
@@ -9,7 +9,11 @@
       "const": 1
     },
     "status": {
-      "type": "string"
+      "type": "string",
+      "enum": [
+        "forked",
+        "exists"
+      ]
     },
     "repoId": {
       "type": "string"
@@ -20,8 +24,12 @@
     "name": {
       "type": "string"
     },
-    "forkOf": {},
-    "parent": {},
+    "forkOf": {
+      "type": "string"
+    },
+    "parent": {
+      "type": "string"
+    },
     "remoteUrl": {
       "type": "string"
     },
@@ -34,9 +42,18 @@
     "manifestsExisting": {
       "type": "integer"
     },
-    "unreferenceablePacks": {},
+    "unreferenceablePacks": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
     "refsWritten": {
-      "type": "integer"
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "The refs this run wrote to the fork."
     },
     "cost": {
       "$ref": "common.schema.json#/$defs/cost"

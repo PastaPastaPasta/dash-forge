@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/auth-export.schema.json",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/auth-export.schema.json",
   "title": "dg auth export --json",
   "description": "The identity file written.",
   "type": "object",
@@ -35,8 +35,18 @@
     "network": {
       "type": "string"
     },
-    "contractGroup": {},
-    "groupWarning": {}
+    "unknownGroupMembers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "uncheckedGroupMembers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
   },
   "required": [
     "schemaVersion",

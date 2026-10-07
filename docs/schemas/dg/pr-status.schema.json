@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/schemas/dg/pr-status.schema.json",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/pr-status.schema.json",
   "title": "dg pr status --json",
   "description": "Your pull requests: the current branch's, the ones you opened, the ones waiting for your review.",
   "type": "object",
