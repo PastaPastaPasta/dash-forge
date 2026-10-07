@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/verify-commit.schema.json",
+  "title": "dg verify-commit --json",
+  "description": "Each commit's signature checked against the keys members publish.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "repo": {
+      "type": "string"
+    },
+    "commits": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "rev": {
+            "type": "string"
+          },
+          "oid": {
+            "type": "string"
+          },
+          "signature": {}
+        }
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "repo",
+    "commits"
+  ],
+  "additionalProperties": true
+}

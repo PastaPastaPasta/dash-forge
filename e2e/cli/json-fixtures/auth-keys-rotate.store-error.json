@@ -1,0 +1,47 @@
+{
+  "source": "emitter: crates/dg/src/auth/rekey.rs",
+  "command": "auth keys rotate",
+  "args": [
+    "--yes",
+    "--json",
+    "auth",
+    "keys",
+    "rotate"
+  ],
+  "exit": 0,
+  "expect": "valid",
+  "stdout": {
+    "status": "replaced",
+    "identityId": "4X5xgudNAwLhWEL3jgsisYszZXPnf33VbyaAqjbUB9Yi",
+    "oldKeyIds": [
+      3
+    ],
+    "newKeyId": 7,
+    "repos": [
+      {
+        "repo": "o/r",
+        "repoId": "Bq9mN3x7Lq2kXv8sTcY4pR6wZ1hJ5fD2gA7eK9uW3nM",
+        "status": "not_maintainer",
+        "detail": null
+      }
+    ],
+    "askMaintainer": [
+      {
+        "repo": "o/r",
+        "repoId": "Bq9mN3x7Lq2kXv8sTcY4pR6wZ1hJ5fD2gA7eK9uW3nM"
+      }
+    ],
+    "disabledKeyIds": [
+      3
+    ],
+    "storedAt": null,
+    "storeError": "the keychain refused the write",
+    "cost": {
+      "credits": 45300000,
+      "dash": 0.000453,
+      "usd": 0.011325,
+      "usdPrice": 25.0
+    },
+    "schemaVersion": 1
+  }
+}

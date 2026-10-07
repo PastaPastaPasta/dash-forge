@@ -1,0 +1,50 @@
+{
+  "source": "emitter: crates/dg/src/publish.rs run() body (steps: step -> outcome; protectedPatterns null when an earlier run wrote the config)",
+  "command": "repo create",
+  "args": [
+    "--yes",
+    "--json",
+    "repo",
+    "create",
+    "r",
+    "--storage",
+    "platform"
+  ],
+  "exit": 0,
+  "expect": "valid",
+  "stdout": {
+    "status": "created",
+    "generation": "v2",
+    "repoId": "Bq9mN3x7Lq2kXv8sTcY4pR6wZ1hJ5fD2gA7eK9uW3nM",
+    "ownerId": "4X5xgudNAwLhWEL3jgsisYszZXPnf33VbyaAqjbUB9Yi",
+    "name": "r",
+    "remoteUrl": "dash://4X5xgudNAwLhWEL3jgsisYszZXPnf33VbyaAqjbUB9Yi/r",
+    "webUrl": "https://forge.dashhq.org/4X5xgudNAwLhWEL3jgsisYszZXPnf33VbyaAqjbUB9Yi/r",
+    "storage": {
+      "profiles": [
+        "platform"
+      ],
+      "replicas": 1,
+      "source": "flag",
+      "mode": "platform",
+      "uris": []
+    },
+    "network": "devnet-sakura",
+    "visibility": "public",
+    "protectedPatterns": null,
+    "steps": {
+      "repo": "created",
+      "writer": "created",
+      "maintainer": "resumed",
+      "config": "existed"
+    },
+    "cost": {
+      "credits": 45300000,
+      "dash": 0.000453,
+      "usd": 0.011325,
+      "usdPrice": 25.0
+    },
+    "push": null,
+    "schemaVersion": 1
+  }
+}

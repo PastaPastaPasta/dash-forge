@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/release-verify.schema.json",
+  "title": "dg release verify --json",
+  "description": "Whether a release's tag and assets are still what was first published.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "repo": {
+      "type": "string"
+    },
+    "tag": {
+      "type": "string"
+    },
+    "altered": {
+      "type": "boolean"
+    },
+    "provenance": {},
+    "signature": {}
+  },
+  "required": [
+    "schemaVersion",
+    "repo",
+    "tag",
+    "altered"
+  ],
+  "additionalProperties": true
+}

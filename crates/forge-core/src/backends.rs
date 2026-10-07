@@ -7,8 +7,8 @@
 //!
 //! Layout:
 //! - [`PackBackend`] — the async trait every adapter implements (`scheme`, `caps`, `put`,
-//!   ranged `get`, `probe`). Object-safe via `async-trait` so the [`BackendRegistry`] can
-//!   hold heterogeneous backends behind `dyn`.
+//!   ranged `get`, `get_capped`, `probe`). Object-safe via `async-trait` so a caller can hold
+//!   heterogeneous backends behind `dyn`.
 //! - [`https`] — [`https::HttpsBackend`], read-only plain GET + HTTP Range (the simplest
 //!   adapter; validates the 206 ranged-read path the browse plane depends on).
 //! - [`s3`] — [`s3::S3Backend`], S3-compatible storage (AWS/R2/B2/MinIO): SigV4-signed
@@ -21,9 +21,11 @@
 //!   through the Platform [`WriteEngine`](crate::platform::WriteEngine).
 //! - [`gitmirror`] — [`gitmirror::GitMirrorBackend`], an existing git hoster as a byte
 //!   *source* (fetch + rebuild by tips; `git push --mirror` to write). CLI-only —
-//!   coverage-by-tips, not whole-pack-hash — so it is resolved outside [`verify_and_get`].
-//! - [`verify_and_get`] — the hash-check helper layered *on top of* `get`.
-//! - [`BackendRegistry`] — reader-side failover across a manifest's URIs.
+//!   coverage-by-tips, not whole-pack-hash — so it is resolved outside the hash-checked
+//!   reader.
+//!
+//! Reads of a manifest's copies go through [`crate::storage::PackReader`], which races them
+//! with bounded time and bytes and checks each against the manifest hash.
 
 use serde::{Deserialize, Serialize};
 
@@ -175,9 +177,9 @@ impl Health {
 /// A pack-byte storage backend.
 ///
 /// Mirrors the TypeScript reader trait in forge-web. Hash verification is *not* a
-/// backend responsibility; it lives in [`verify_and_get`] / the pack pipeline. Made
-/// object-safe with `async-trait` so the [`BackendRegistry`] can hold a mix of backend
-/// types behind `Box<dyn PackBackend>`.
+/// backend responsibility; it lives in [`crate::storage::PackReader`] / the pack pipeline.
+/// Made object-safe with `async-trait` so a caller can hold a mix of backend types behind
+/// `Box<dyn PackBackend>`.
 #[async_trait::async_trait]
 pub trait PackBackend: Send + Sync {
     /// URI scheme this backend serves (`platform | ipfs | s3 | https`).
@@ -196,22 +198,18 @@ pub trait PackBackend: Send + Sync {
         self.put(bytes, meta).await
     }
 
-    /// [`Self::get`] of a whole object, refusing a body larger than `max_bytes`. The
-    /// default reads then checks; HTTP backends override it to stop reading early.
-    async fn get_capped(&self, uri: &Uri, max_bytes: u64) -> Result<Vec<u8>> {
-        let bytes = self.get(uri, None).await?;
-        if bytes.len() as u64 > max_bytes {
-            return Err(Error::Io(format!(
-                "{uri} returned more than the expected {max_bytes} bytes"
-            )));
-        }
-        Ok(bytes)
-    }
+    /// [`Self::get`] of a whole object, refusing a body larger than `max_bytes`. A backend
+    /// that reads from a remote host stops reading as soon as the body passes the cap rather
+    /// than buffering it first, so there is no default.
+    async fn get_capped(&self, uri: &Uri, max_bytes: u64) -> Result<Vec<u8>>;
 
     /// Fetch bytes for `uri`, optionally restricted to `range` (partial clone / browse).
     ///
     /// A ranged read MUST be served as an HTTP `206 Partial Content` (or equivalent) —
     /// backends error rather than silently returning the whole object for a range.
+    ///
+    /// A whole read (`range` `None`) has no size bound: read a URI taken from a manifest
+    /// through [`crate::storage::PackReader`] or [`Self::get_capped`], never this.
     async fn get(&self, uri: &Uri, range: Option<ByteRange>) -> Result<Vec<u8>>;
 
     /// Probe the health/availability of `uri`.
@@ -222,11 +220,14 @@ pub trait PackBackend: Send + Sync {
 /// expected lowercase-hex SHA-256, returning [`Error::Integrity`] on mismatch.
 ///
 /// This is the "verification lives OUTSIDE the adapter" boundary from PRD 04: a backend
-/// that tampers with bytes can only cause a failed check here (→ registry failover),
+/// that tampers with bytes can only cause a failed check here (→ failover),
 /// never a corrupt clone. Ranged reads are deliberately *not* verified here — a slice
 /// cannot be checked against a whole-pack hash; the browse plane verifies partial reads
 /// via the locator/OID chain (architecture §6.3), out of this helper's scope.
-pub async fn verify_and_get(
+///
+/// Tests only: it has no time or size bound. Reads use [`crate::storage::PackReader`].
+#[cfg(test)]
+pub(crate) async fn verify_and_get(
     backend: &dyn PackBackend,
     uri: &Uri,
     expected_hash_hex: &str,
@@ -240,121 +241,16 @@ pub async fn verify_and_get(
     }
 }
 
-/// Reader-side failover across the URIs a `packManifest` records.
-///
-/// Holds one backend per scheme plus a scheme-preference order. [`get_verified`] orders
-/// the manifest's URIs by that preference, races them in windows of ≤2 (PRD 04 reader
-/// policy), verifies each candidate's hash, and falls through to the next window on
-/// failure — so a dead or tampered mirror is transparently bypassed. Platform chunks are
-/// the last resort in the default order.
-///
-/// [`get_verified`]: BackendRegistry::get_verified
-#[derive(Default)]
-pub struct BackendRegistry {
-    backends: Vec<Box<dyn PackBackend>>,
-    preference: Vec<String>,
-}
-
-impl BackendRegistry {
-    /// An empty registry with the default scheme preference (`https`, `s3`, `ipfs`, then
-    /// `platform` last — cheap external mirrors first, on-chain chunks as the backstop).
-    pub fn new() -> Self {
-        Self {
-            backends: Vec::new(),
-            preference: ["https", "s3", "ipfs", PLATFORM_SCHEME]
-                .iter()
-                .map(|s| (*s).to_string())
-                .collect(),
-        }
+/// `bytes`, unless longer than `max_bytes`: [`PackBackend::get_capped`] for a backend that
+/// assembles an object on this computer (Platform chunks, a git rebuild) instead of
+/// streaming it from a host.
+pub(crate) fn within_cap(uri: &Uri, bytes: Vec<u8>, max_bytes: u64) -> Result<Vec<u8>> {
+    if bytes.len() as u64 > max_bytes {
+        return Err(Error::Io(format!(
+            "{uri} returned more than the expected {max_bytes} bytes"
+        )));
     }
-
-    /// Register a backend (later registrations of the same scheme win).
-    pub fn register(&mut self, backend: Box<dyn PackBackend>) -> &mut Self {
-        let scheme = backend.scheme().to_string();
-        self.backends.retain(|b| b.scheme() != scheme);
-        self.backends.push(backend);
-        self
-    }
-
-    /// Override the scheme-preference order (most-preferred first). Schemes absent from
-    /// the list sort after every listed one, in registration order.
-    pub fn set_preference(&mut self, order: impl IntoIterator<Item = String>) -> &mut Self {
-        self.preference = order.into_iter().collect();
-        self
-    }
-
-    /// The preference rank of `scheme` (lower = tried earlier); unlisted schemes rank last.
-    fn rank(&self, scheme: &str) -> usize {
-        self.preference
-            .iter()
-            .position(|s| s == scheme)
-            .unwrap_or(usize::MAX)
-    }
-
-    /// Look up the backend serving `scheme`.
-    fn backend_for(&self, scheme: &str) -> Option<&dyn PackBackend> {
-        self.backends
-            .iter()
-            .find(|b| b.scheme() == scheme)
-            .map(AsRef::as_ref)
-    }
-
-    /// Order `uris` into the (backend, uri) attempt list a read should walk: URIs whose
-    /// scheme has no registered backend are dropped; the rest sort by scheme preference.
-    fn ordered_targets<'a>(&'a self, uris: &'a [Uri]) -> Vec<(&'a dyn PackBackend, &'a Uri)> {
-        let mut targets: Vec<(&dyn PackBackend, &Uri)> = uris
-            .iter()
-            .filter_map(|uri| {
-                let scheme = uri.scheme()?;
-                self.backend_for(scheme).map(|b| (b, uri))
-            })
-            .collect();
-        targets.sort_by_key(|(b, _)| self.rank(b.scheme()));
-        targets
-    }
-
-    /// Fetch a full pack from the first of `uris` that serves matching, hash-verified
-    /// bytes — racing ≤2 candidates at a time and falling through on failure.
-    ///
-    /// Returns [`Error::NotFound`] when no URI has a registered backend, or the last
-    /// underlying error when every candidate failed.
-    pub async fn get_verified(&self, uris: &[Uri], expected_hash_hex: &str) -> Result<Vec<u8>> {
-        let targets = self.ordered_targets(uris);
-        if targets.is_empty() {
-            return Err(Error::NotFound);
-        }
-
-        let mut last_err = Error::NotFound;
-        // Race the ordered candidates in windows of ≤2 (PRD 04: "≤2 parallel attempts").
-        for window in targets.chunks(2) {
-            let attempts = window.iter().map(|(backend, uri)| {
-                let expected = expected_hash_hex;
-                Box::pin(async move { verify_and_get(*backend, uri, expected).await })
-            });
-            match futures::future::select_ok(attempts).await {
-                Ok((bytes, _rest)) => return Ok(bytes),
-                Err(e) => last_err = e,
-            }
-        }
-        Err(last_err)
-    }
-
-    /// Probe every URI that has a registered backend, pairing each with its [`Health`].
-    pub async fn probe_all(&self, uris: &[Uri]) -> Vec<(Uri, Health)> {
-        let mut out = Vec::with_capacity(uris.len());
-        for uri in uris {
-            let Some(scheme) = uri.scheme() else { continue };
-            let Some(backend) = self.backend_for(scheme) else {
-                continue;
-            };
-            let health = backend
-                .probe(uri)
-                .await
-                .unwrap_or_else(|_| Health::down(std::time::Duration::ZERO));
-            out.push((uri.clone(), health));
-        }
-        out
-    }
+    Ok(bytes)
 }
 
 /// SHA-256 of `bytes`.
@@ -396,159 +292,5 @@ mod tests {
         );
         assert_eq!(m.size, 5);
         assert_eq!(m.pack_hash_bytes().unwrap().len(), 32);
-    }
-
-    // A minimal in-memory backend for exercising the registry policy offline (no docker).
-    struct MemBackend {
-        scheme: &'static str,
-        // uri.rest() -> bytes, or a poison flag that returns tampered bytes.
-        store: std::collections::HashMap<String, Vec<u8>>,
-        tamper: bool,
-        unreachable: bool,
-    }
-
-    impl MemBackend {
-        fn new(scheme: &'static str) -> Self {
-            Self {
-                scheme,
-                store: std::collections::HashMap::new(),
-                tamper: false,
-                unreachable: false,
-            }
-        }
-        fn with(mut self, key: &str, bytes: &[u8]) -> Self {
-            self.store.insert(key.to_string(), bytes.to_vec());
-            self
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl PackBackend for MemBackend {
-        fn scheme(&self) -> &'static str {
-            self.scheme
-        }
-        fn caps(&self) -> Caps {
-            Caps {
-                read_cli: true,
-                ..Default::default()
-            }
-        }
-        async fn put(&self, _bytes: &[u8], _meta: &PackMeta) -> Result<Vec<Uri>> {
-            Err(Error::Config("mem backend is read-only".into()))
-        }
-        async fn get(&self, uri: &Uri, range: Option<ByteRange>) -> Result<Vec<u8>> {
-            if self.unreachable {
-                return Err(Error::Io("mem backend unreachable".into()));
-            }
-            let key = uri.rest().unwrap_or_default();
-            let mut bytes = self.store.get(key).cloned().ok_or(Error::NotFound)?;
-            if self.tamper {
-                bytes.push(0xFF);
-            }
-            if let Some(r) = range {
-                let s = usize::try_from(r.start).unwrap();
-                let e = usize::try_from(r.end).unwrap().min(bytes.len());
-                bytes = bytes[s..e].to_vec();
-            }
-            Ok(bytes)
-        }
-        async fn probe(&self, uri: &Uri) -> Result<Health> {
-            let ok = !self.unreachable && self.store.contains_key(uri.rest().unwrap_or_default());
-            Ok(Health {
-                ok,
-                size: None,
-                latency: std::time::Duration::ZERO,
-            })
-        }
-    }
-
-    fn registry_with(backends: Vec<Box<dyn PackBackend>>) -> BackendRegistry {
-        let mut r = BackendRegistry::new();
-        for b in backends {
-            r.register(b);
-        }
-        r
-    }
-
-    #[tokio::test]
-    async fn registry_fails_over_from_bad_uri_to_good() {
-        let payload = b"the-real-pack-bytes";
-        let hash = hex::encode(sha256(payload));
-
-        // https backend is preferred but has nothing (NotFound); ipfs backend has the blob.
-        let https = MemBackend::new("https"); // empty store
-        let ipfs = MemBackend::new("ipfs").with("good", payload);
-        let reg = registry_with(vec![Box::new(https), Box::new(ipfs)]);
-
-        let uris = vec![
-            Uri("https://mirror.example/missing".into()),
-            Uri("ipfs://good".into()),
-        ];
-        let got = reg.get_verified(&uris, &hash).await.unwrap();
-        assert_eq!(got, payload);
-    }
-
-    #[tokio::test]
-    async fn registry_fails_over_past_a_tampering_backend() {
-        let payload = b"the-real-pack-bytes";
-        let hash = hex::encode(sha256(payload));
-
-        // Preferred https backend HAS the key but tampers → integrity fail → failover.
-        let mut https = MemBackend::new("https").with("blob", payload);
-        https.tamper = true;
-        let ipfs = MemBackend::new("ipfs").with("blob", payload);
-        let reg = registry_with(vec![Box::new(https), Box::new(ipfs)]);
-
-        let uris = vec![
-            Uri("https://mirror.example/blob".into()),
-            Uri("ipfs://blob".into()),
-        ];
-        let got = reg.get_verified(&uris, &hash).await.unwrap();
-        assert_eq!(got, payload);
-    }
-
-    #[tokio::test]
-    async fn registry_reports_not_found_when_no_backend_matches() {
-        let reg = registry_with(vec![Box::new(MemBackend::new("https"))]);
-        let uris = vec![Uri("ipfs://orphan".into())];
-        assert!(matches!(
-            reg.get_verified(&uris, "00").await,
-            Err(Error::NotFound)
-        ));
-    }
-
-    #[tokio::test]
-    async fn registry_errors_when_all_candidates_fail() {
-        let payload = b"data";
-        let hash = hex::encode(sha256(payload));
-        let https = MemBackend::new("https"); // empty
-        let ipfs = MemBackend::new("ipfs"); // empty
-        let reg = registry_with(vec![Box::new(https), Box::new(ipfs)]);
-        let uris = vec![
-            Uri("https://x/missing".into()),
-            Uri("ipfs://missing".into()),
-        ];
-        assert!(reg.get_verified(&uris, &hash).await.is_err());
-    }
-
-    #[test]
-    fn registry_orders_by_scheme_preference() {
-        let reg = registry_with(vec![
-            Box::new(MemBackend::new(PLATFORM_SCHEME)),
-            Box::new(MemBackend::new("ipfs")),
-            Box::new(MemBackend::new("https")),
-        ]);
-        let uris = vec![
-            Uri(format!("{PLATFORM_SCHEME}://c/h")),
-            Uri("ipfs://cid".into()),
-            Uri("https://host/x".into()),
-        ];
-        let ordered: Vec<&str> = reg
-            .ordered_targets(&uris)
-            .iter()
-            .map(|(b, _)| b.scheme())
-            .collect();
-        // Default preference: https, s3, ipfs, platform — platform last.
-        assert_eq!(ordered, vec!["https", "ipfs", PLATFORM_SCHEME]);
     }
 }

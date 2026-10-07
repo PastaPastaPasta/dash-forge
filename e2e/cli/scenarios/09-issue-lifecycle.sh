@@ -33,7 +33,7 @@ wait_open() { # wait_open <number> <want true|false>
   local _
   for _ in $(seq 1 10); do
     if dg_read_retry "$ID_OWNER" "$LOG-view.json" "$LOG-view.err" --json issue view "$REPO" "$1"; then
-      [[ "$(jq_py "$LOG-view.json" 'str(d["state"]["open"]).lower()')" == "$2" ]] && return 0
+      [[ "$(jq_py "$LOG-view.json" 'str(d["open"]).lower()')" == "$2" ]] && return 0
     fi
     sleep 3
   done
@@ -92,7 +92,7 @@ step "OWNER (maintainer) labels and comments"
 if dg_write "$ID_OWNER" "$LOG-label" issue label "$REPO" "$N" --add e2e; then
   labeled() {
     dg_read_retry "$ID_OWNER" "$LOG-lv.json" "$LOG-lv.err" --json issue view "$REPO" "$N" \
-      && [[ "$(jq_py "$LOG-lv.json" '",".join(d["state"]["labels"])')" == *e2e* ]]
+      && [[ "$(jq_py "$LOG-lv.json" '",".join(d["labels"])')" == *e2e* ]]
   }
   lab=1; for _ in $(seq 1 10); do labeled && { lab=0; break; }; sleep 3; done
   check "label reads back" test "$lab" -eq 0

@@ -1,0 +1,20 @@
+{
+  "source": "negative: the query is the parsed object",
+  "command": "search issues",
+  "args": [
+    "--json",
+    "search",
+    "issues",
+    "o/r",
+    "crash"
+  ],
+  "exit": 0,
+  "expect": "invalid",
+  "stdout": {
+    "schemaVersion": 1,
+    "repo": "o/r",
+    "query": "crash",
+    "count": 0,
+    "issues": []
+  }
+}

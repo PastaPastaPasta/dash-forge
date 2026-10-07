@@ -92,7 +92,7 @@ function type(el: HTMLTextAreaElement, value: string): void {
 
 describe('the merge commit message (review-parity M2)', () => {
   it('shows the default, writes an edited message, and refuses an empty one', async () => {
-    await act(async () => root.render(<PullMerge repo={repo} home={home} pull={pull} canMerge isMaintainer checkout="dg pr checkout 7" onMerged={() => undefined} />))
+    await act(async () => root.render(<PullMerge recheckMembers={async () => null} repo={repo} home={home} pull={pull} canMerge isMaintainer checkout="dg pr checkout 7" onMerged={() => undefined} />))
     await act(async () => undefined)
     expect(box().value).toBe('Merge pull request #7 from feature\n\nGreet')
     expect(host.querySelector('label[for="merge-message"]')?.textContent).toBe('Commit message')
@@ -110,7 +110,7 @@ describe('the merge commit message (review-parity M2)', () => {
   })
 
   it('passes no message when the default is kept (the engine writes the default)', async () => {
-    await act(async () => root.render(<PullMerge repo={repo} home={home} pull={pull} canMerge isMaintainer checkout="dg pr checkout 7" onMerged={() => undefined} />))
+    await act(async () => root.render(<PullMerge recheckMembers={async () => null} repo={repo} home={home} pull={pull} canMerge isMaintainer checkout="dg pr checkout 7" onMerged={() => undefined} />))
     await act(async () => undefined)
     await act(async () => submit().click())
     await act(async () => undefined)

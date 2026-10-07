@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/pr-comment.schema.json",
+  "title": "dg pr comment --json",
+  "description": "A comment on a pull request: general, inline, or a reply.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "commented"
+      ]
+    },
+    "pr": {
+      "type": "integer"
+    },
+    "commentId": {
+      "type": "string"
+    },
+    "kind": {
+      "type": "string"
+    },
+    "audience": {
+      "$ref": "common.schema.json#/$defs/audience"
+    },
+    "replyTo": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "location": {},
+    "commitOid": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "pr",
+    "commentId",
+    "kind"
+  ],
+  "additionalProperties": true
+}
