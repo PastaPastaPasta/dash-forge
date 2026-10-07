@@ -4,7 +4,10 @@
  * usePrivateHome — how the signed-in viewer reads a private repo (`docs/security/private-repos.md`
  * §5, §8; `ux-dx-spec.md` §6.3, §9), folded into the {@link RepoHome} every repo page renders.
  *
- * - Public repo: the home as it is.
+ * - Public repo: the home as it is, at once. For a signed-in member of one with members-only
+ *   content, its members-key session is loaded beside it and the home re-rendered with it on
+ *   `repo.lane` / `home.lane` ({@link withMembersSession}): only the content gate reads it, so the
+ *   public config, branches and packs stay exactly what everyone sees (DESIGN §4.1).
  * - Private repo: signed out → `signed-out`; not a member → `outsider`; a member whose browser
  *   holds no encryption key → `no-key`; a member with one → the home re-read through their
  *   decryption session (`member`), whose `repo.session` every read of the page then decrypts
@@ -17,6 +20,7 @@
 import { useEffect, useRef, useState } from 'react'
 
 import { useAuth } from '@/contexts/auth-context'
+import { base58Encode } from '@/lib/auth/base58'
 import { useAsync } from '@/hooks/use-async'
 import { useSdk } from '@/hooks/use-sdk'
 import { encryptionOps } from '@/lib/auth/encryption-key'
@@ -28,7 +32,8 @@ import {
   privateSessionGeneration,
   sessionUnwrapper,
 } from '@/lib/repo/private-session'
-import { loadPrivateHome, type RepoHome } from '@/lib/view'
+import { hasMembersKey } from '@/lib/repo/writes'
+import { loadPrivateHome, withMembersSession, type RepoHome } from '@/lib/view'
 import { forgetPrivateNav, sealRepoUrls } from '@/lib/view/private-nav'
 import type { RepoAddress } from '@/hooks/use-query-param'
 
@@ -95,10 +100,30 @@ export function usePrivateHome(home: RepoHome | null, addr: RepoAddress): Privat
   // Re-derive when the plain home is re-read (revalidation, Retry); the session itself is re-read
   // once its view-session TTL runs out, so new pushes and rotations show up.
   const revision = useRevision(home)
+  /** A public repo's home for this viewer: with their members-key session when they hold one. */
+  const membersHome = async (base: RepoHome, generation: number): Promise<RepoHome> => {
+    if (identity === null) return base
+    const members = await readMembershipsCached(sdk!, base.repo, network)
+    if (!members.some((m) => m.identity === identity)) return base
+    if (!(await hasMembersKey(sdk!, base.repo))) return { ...base, lane: { access: 'none' } }
+    const ops = await encryptionOps(sdk!, network, identity, base.repo.forge.collab)
+    if (ops === null) return { ...base, lane: { access: 'no-key' } }
+    if (controller.unlockScope() === 'signing') return { ...base, lane: { access: 'locked' } }
+    const session = await loadPrivateSessionCached(sdk!, base.repo, network, identity, sessionUnwrapper(ops))
+    if (generation !== privateSessionGeneration()) throw new Error('the vault locked; unlock to read members-only content')
+    // E311: a member nobody has shared the key with yet (added by an older client). No key, no
+    // wrap to them: a maintainer's Repair (the repair check) shares it.
+    const mine = session.wraps.some((w) => base58Encode(w.row.memberId) === identity)
+    if (session.resolution.keys.size === 0 && !mine) return { ...base, lane: { access: 'no-key-shared' } }
+    const out = withMembersSession(base, session)
+    warm.set(key, out)
+    return out
+  }
   const state = useAsync<RepoHome>(
     async () => {
       const base = home as RepoHome
       const generation = privateSessionGeneration()
+      if (!isPrivate) return membersHome(base, generation)
       if (identity === null) return { ...base, private: { access: 'signed-out' } }
       const members = await readMembershipsCached(sdk!, base.repo, network)
       if (!members.some((m) => m.identity === identity)) return { ...base, private: { access: 'outsider' } }
@@ -119,17 +144,26 @@ export function usePrivateHome(home: RepoHome | null, addr: RepoAddress): Privat
     // An unlock in this tab (inline, or from the sign-in sheet) re-resolves the repo.
     [key, ready, epoch, revision, unlockScope],
     {
-      // A kept session is still being picked up: wait, rather than show the signed-out state.
-      enabled: isPrivate && ready && sdk !== null && home !== null && !resuming,
+      // A kept session is still being picked up: wait, rather than show the signed-out state. A
+      // public repo's members-only content is looked up for a signed-in viewer only.
+      enabled: (isPrivate || identity !== null) && ready && sdk !== null && home !== null && !resuming,
       initial: () => {
         const hit = warm.get(key)
-        return hit !== undefined && hit.private?.access === 'member' && !hit.private.session.closed ? hit : undefined
+        if (hit === undefined) return undefined
+        if (hit.private?.access === 'member') return hit.private.session.closed ? undefined : hit
+        return hit.lane?.access === 'member' && !hit.lane.session.closed ? hit : undefined
       },
     },
   )
   reloadRef.current = state.reload
   if (home === null) return null
-  if (!isPrivate) return { home, pending: false, error: null, retry: state.reload }
+  // A public repo renders at once; once a member's members-key session is ready the page re-reads
+  // its discussion through it (`contentKey`). A failed lookup leaves the public view as it is.
+  if (!isPrivate) {
+    const data = state.data
+    const fresh = data !== null && state.error === null && data.repo.repoId === home.repo.repoId ? data : home
+    return { home: fresh, pending: false, error: null, retry: state.reload }
+  }
   if (state.error !== null) return { home, pending: false, error: state.error, retry: state.reload }
   if (state.data === null) return { home, pending: true, error: null, retry: state.reload }
   // Before anything renders a link: whatever address form reached this repo (a pinned id, a DPNS

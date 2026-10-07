@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-/** RC2 member roles: the Collaborators role picker (a reader only on a private repo) and badge. */
+/** RC2 member roles: the Collaborators role picker (a reader on public and private repos) and badge. */
 
 import { act, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -25,9 +25,9 @@ afterEach(() => {
 const offered = (): string[] => [...host.querySelectorAll('[role="radio"]')].map((b) => b.getAttribute('data-role') ?? '')
 
 describe('RolePicker', () => {
-  it('offers writer, triage and maintainer on a public repo: no reader', () => {
+  it('offers a reader on a public repo too (it reads the members-only content)', () => {
     act(() => root.render(<RolePicker value="writer" onChange={() => undefined} visibility="public" />))
-    expect(offered()).toEqual(['writer', 'triage', 'maintainer'])
+    expect(offered()).toEqual(['writer', 'triage', 'reader', 'maintainer'])
   })
 
   it('offers a reader on a private repo', () => {
@@ -62,12 +62,13 @@ describe('RolePicker', () => {
         ;(document.activeElement as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }))
       })
     }
-    expect(['writer', 'triage', 'maintainer'].map((r) => radio(r as Role).tabIndex)).toEqual([0, -1, -1])
+    expect(['writer', 'triage', 'reader', 'maintainer'].map((r) => radio(r as Role).tabIndex)).toEqual([0, -1, -1, -1])
     act(() => radio('writer').focus())
     press('ArrowRight')
     expect(document.activeElement).toBe(radio('triage'))
     expect(radio('triage').getAttribute('aria-checked')).toBe('true')
-    expect(['writer', 'triage', 'maintainer'].map((r) => radio(r as Role).tabIndex)).toEqual([-1, 0, -1])
+    expect(['writer', 'triage', 'reader', 'maintainer'].map((r) => radio(r as Role).tabIndex)).toEqual([-1, 0, -1, -1])
+    press('ArrowDown')
     press('ArrowDown')
     press('ArrowDown')
     expect(document.activeElement).toBe(radio('writer'))

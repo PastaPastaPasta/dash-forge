@@ -34,7 +34,7 @@ import { compositeOf, countsAt, docsAt, queryComposite, siblingOf, type Composit
 import { IncompleteReadError, queryAllDocuments, queryDocumentsWithProof, type DocumentQuery, type PlainDocument } from '../sdk'
 import { ISSUE_CLOSE, closeReasonOf, statusOfCode, type CloseReason } from '../rules/transition'
 import { compareKey } from '../rules/oid'
-import { DOC, asIdentifierString, num, repoKey, str, type RepoRef } from './contract'
+import { DOC, asIdentifierString, contentKey, num, str, type RepoRef } from './contract'
 import { EMPTY_LOG, feedQuery, groupFeed, onRepoInvalidated, readRepoFeedFrom, repoEpoch, sharedRepoCounts, sharedRepoFeed, toLog, type TargetLog } from './issues'
 import { newestLabels, type LabelDef } from './labels'
 import { HiddenTally, gateFor, type ContentGate } from './private-content'
@@ -515,7 +515,7 @@ export function indexCache<Row extends RowExtras>(
   // `withCounts`: a list page's load reads the proved counts beside its first chunk; a side read
   // (an issue page's backlinks) does not, and a later list page reads them then (`repoCountsOf`).
   return (sdk, repo, network, { withCounts = false } = {}) => {
-    const key = `${network}:${repo.forge.collab}:${repoKey(repo)}`
+    const key = `${network}:${repo.forge.collab}:${contentKey(repo)}`
     let hit = indexes.get(key)
     if (hit === undefined) {
       hit = loadListIndex(sdk, repo, network, type, view, { withFeed, withCounts })

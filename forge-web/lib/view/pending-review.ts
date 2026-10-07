@@ -17,17 +17,32 @@ import { plural } from './format'
  * device never sees it. It survives reloads and signing out and in again here (it is keyed by
  * network, identity and PR, not by session); a private repo's only lasts while this tab is open.
  */
-export function draftWhereabouts(privateRepo: boolean): string {
+export function draftWhereabouts(privateRepo: boolean, membersOnly = false): string {
+  if (membersOnly && !privateRepo) {
+    return 'Pending members-only comments are saved in this tab only (they are never written to disk): submit before closing it. Other browsers and devices do not see them.'
+  }
   return privateRepo
     ? 'Pending comments are saved in this tab only (a private repo’s are never written to disk): submit before closing it. Other browsers and devices do not see them.'
     : 'Pending comments are saved in this browser only, for this identity: other browsers and devices do not see them. They stay through reloads and signing out and in again here.'
 }
 
 /** A fresh local draft for `prId` anchored to `headOid`. */
-export function newReviewDraft(input: { draftId: string; network: string; identity: string; repoId: string; prId: string; headOid: string; private: boolean; now: number }): ReviewDraft {
+export function newReviewDraft(input: {
+  draftId: string
+  network: string
+  identity: string
+  repoId: string
+  prId: string
+  headOid: string
+  private: boolean
+  /** A public repo's members-only review: kept in memory only, like a private repo's. */
+  membersOnly?: boolean
+  now: number
+}): ReviewDraft {
   return {
     draftId: input.draftId,
     ...(input.private ? { private: true } : {}),
+    ...(!input.private && input.membersOnly === true ? { audience: 'members' as const } : {}),
     network: input.network,
     identity: input.identity,
     repoId: input.repoId,

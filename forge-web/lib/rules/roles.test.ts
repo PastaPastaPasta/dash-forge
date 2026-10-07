@@ -5,6 +5,8 @@ import {
   capabilitiesOf,
   claimedRole,
   grantableRoles,
+  holdsMembersKey,
+  READERS_IN_MEMBERS_KEY,
   isRoleGated,
   memberMayWriteEvent,
   membershipTitle,
@@ -121,9 +123,19 @@ describe('memberMayWriteEvent', () => {
   })
 })
 
+describe('holdsMembersKey', () => {
+  it('readers hold the members key of public repos while READERS_IN_MEMBERS_KEY is set; every role of a private one', () => {
+    for (const role of ['maintainer', 'writer', 'triage', 'reader'] as const) {
+      expect(holdsMembersKey(role, 'private')).toBe(true)
+      expect(holdsMembersKey(role, 'public')).toBe(role !== 'reader' || READERS_IN_MEMBERS_KEY)
+    }
+    expect(READERS_IN_MEMBERS_KEY).toBe(true)
+  })
+})
+
 describe('grantableRoles and roleLimit', () => {
-  it('offers a reader on a private repo only', () => {
-    expect(grantableRoles('public')).toEqual(['writer', 'triage', 'maintainer'])
+  it('offers a reader on public and private repos (a public one has members-only content to read)', () => {
+    expect(grantableRoles('public')).toEqual(['writer', 'triage', 'reader', 'maintainer'])
     expect(grantableRoles('private')).toEqual(['writer', 'triage', 'reader', 'maintainer'])
   })
 

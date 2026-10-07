@@ -19,9 +19,10 @@ import { storeArtifact } from '../storage/upload'
 import { writePackManifest } from './push'
 import type { RepoRef } from './contract'
 import { SEALED_TEXT_LIMIT, sealArtifact, sealedTextUse, type SealedKind } from './private-writes'
+import { storedAudience } from './members-writes'
 import { readRoleOracle } from './members'
 import { capabilitiesOf } from '../rules/roles'
-import type { Role } from '../rules/v2'
+import type { Audience, Role } from '../rules/v2'
 
 /** A `body` or `notes` field's own cap (5,120 characters and bytes). */
 export const FIELD_MAX = BODY_LIMIT.bytes
@@ -43,6 +44,12 @@ export function bodyRoom(repo: RepoRef, kind: LongBodyKind, others: Readonly<Rec
   if (repo.visibility !== 'private' || kind === 'release') return FIELD_MAX
   const rest = Object.fromEntries(Object.entries(others).filter(([k]) => k !== 'body'))
   return Math.min(FIELD_MAX, Math.max(0, SEALED_TEXT_LIMIT[kind] - sealedTextUse(kind, rest).used - provenanceBytes(others['imported'])))
+}
+
+/** The text room of a members-only `kind` beside `others` (the v0x03 cap: 32 bytes under a private repo's). */
+function membersBodyRoom(kind: SealedKind, others: Readonly<Record<string, unknown>>): number {
+  const rest = Object.fromEntries(Object.entries(others).filter(([k]) => k !== 'body'))
+  return Math.min(FIELD_MAX, Math.max(0, SEALED_TEXT_LIMIT[kind] - 32 - sealedTextUse(kind, rest).used))
 }
 
 /** The sealed records an importer's `imported.author` and `imported.url` take: 3 bytes of tag and length, then the text. */
@@ -118,9 +125,18 @@ export async function longBodyField(
   full: string,
   others: Readonly<Record<string, unknown>> = {},
   intent?: string,
+  /** A public repo's members-only text: it is never stored as a plaintext artifact. */
+  audience: Audience = 'public',
+  /** An edit of this stored document: checked again before a plaintext artifact is stored. */
+  editing?: { readonly type: string; readonly id: string },
 ): Promise<string> {
-  const room = bodyRoom(repo, kind, others)
+  const room = audience === 'members' && repo.visibility === 'public' && kind !== 'release' ? membersBodyRoom(kind, others) : bodyRoom(repo, kind, others)
   if (!needsLongBodyArtifact(full, room)) return full
+  // A members-only long body would go to a sealed kind-70 artifact under the members key, which
+  // is not written yet: refused, never stored in plaintext (as `dg` refuses it).
+  if (audience === 'members' && repo.visibility === 'public') {
+    throw new LongBodyRefusedError(`the text is too long: a members-only ${kind} holds at most ${room} bytes of text here (this one has ${utf8Bytes(full)}); shorten it, or split it into comments`)
+  }
   const bytes = utf8Bytes(full)
   if (bytes > LONG_BODY_MAX_BYTES) {
     throw new LongBodyRefusedError(`the text is ${bytes} bytes, and Dash Forge stores at most ${LONG_BODY_MAX_BYTES} bytes of one text`)
@@ -129,6 +145,11 @@ export async function longBodyField(
   // a `packManifest` from a maintainer or a role-1 writer only).
   if (!mayStoreLongBodies((await readRoleOracle(sdk, repo, auth.network)).currentRole(auth.identityId))) {
     throw new LongBodyRefusedError(`${tooLongFor(repo, kind, full, others)}. A longer text is stored as a repository artifact, which only the repo's maintainers and writers may record: shorten it, or split it into comments`)
+  }
+  // Backstop: a public repo's artifact is stored as plaintext for good, so an edit's long body is
+  // stored only when the document it edits is itself plaintext (read now, failing closed).
+  if (repo.visibility === 'public' && editing !== undefined && (await storedAudience(sdk, repo, editing.type, editing.id)).audience !== 'public') {
+    throw new LongBodyRefusedError(`this ${kind} is members-only: its text is never stored where everyone can read it; shorten it, or split it into comments`)
   }
   // The field must hold the trailer (its length does not depend on the hash): checked before
   // anything is paid for.

@@ -72,6 +72,11 @@ export interface RepoHome {
   /** A private repo: how this viewer reads it (set by the repo scaffold). */
   readonly private?: PrivateAccess
   /**
+   * A public repo with members-only content, read by a signed-in member: how they read it (set by
+   * the repo scaffold; absent for everyone else). With `member`, `repo.lane` holds the session.
+   */
+  readonly lane?: MembersAccess
+  /**
    * `branches` holds only the default branch and `tags` nothing: a home read for a page that
    * shows no other ref (an issue or PR list, {@link RepoHomeRefs}). A page that lists refs reads
    * its own home.
@@ -95,6 +100,26 @@ export type RepoHomeRefs = 'all' | 'default'
 export type PrivateAccess =
   | { readonly access: 'signed-out' | 'outsider' | 'no-key' | 'locked' }
   | { readonly access: 'member'; readonly session: PrivateSession }
+
+/**
+ * How a signed-in member reads a public repo's members-only content: `none`, it has none (nobody
+ * turned it on); `no-key`, their browser holds no encryption key; `locked`, the tab resumed
+ * signing-only; `no-key-shared`, no maintainer has shared the key with them yet (E311, a member
+ * added by an older client: a maintainer's Repair shares it); `member`, they read it through
+ * their members-key session (`repo.lane`). Never changes the public config, branches or packs.
+ */
+export type MembersAccess =
+  | { readonly access: 'none' | 'no-key' | 'locked' | 'no-key-shared' }
+  | { readonly access: 'member'; readonly session: PrivateSession }
+
+/**
+ * A member's view of a public repo's members-only content: the plain {@link RepoHome} with the
+ * members-key session on `repo.lane` (only the content gate reads it). Its config, default
+ * branch, branches, tags and backend are the public ones, untouched (DESIGN §4.1 acceptance).
+ */
+export function withMembersSession(home: RepoHome, session: PrivateSession): RepoHome {
+  return { ...home, repo: { ...home.repo, lane: session }, lane: { access: 'member', session } }
+}
 
 /**
  * A member's view of a private repo: the plain {@link RepoHome} re-read through `session` (the

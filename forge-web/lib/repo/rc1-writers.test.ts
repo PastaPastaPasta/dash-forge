@@ -31,6 +31,15 @@ const NEW_ID = '8rSFEyS7gidGdS4r8m22YtMEc519otpDNQ242Zw9c1Gb'
 
 // A lag retry waits about a block: no real time in tests.
 vi.mock('../sdk/facade', async (orig) => ({ ...(await orig<typeof import('../sdk/facade')>()), sleep: () => Promise.resolve() }))
+// Who a new document is for is read from its stored parents (members-writes.test.ts covers it);
+// these fixtures write to public threads.
+vi.mock('./members-writes', async (orig) => ({
+  ...(await orig<typeof import('./members-writes')>()),
+  targetAudience: async () => 'public',
+  childAudience: async () => 'public',
+  storedAudience: async () => ({ audience: 'public', doc: {} }),
+  repoHasMembersKey: async () => false,
+}))
 vi.mock('../sdk', async (importOriginal) => {
   const real = await importOriginal<typeof import('../sdk')>()
   return {
@@ -340,21 +349,20 @@ describe('RC2 member roles: every gated write claims its role (r), proved by the
     writerRole[BOB] = 2
   }
 
-  it('the owner grants a triage role: a writer document with role 2; a reader is for private repos only', async () => {
+  it('the owner grants a triage role: a writer document with role 2; a reader is grantable on a public repo too', async () => {
     present.add('consent')
     await grantMember(sdk, auth(ALICE), REPO, BOB, 'triage')
     const [w] = await judged()
     expect(w?.documentType).toBe('writer')
     expect(w?.data['role']).toBe(2)
-    await expect(grantMember(sdk, auth(ALICE), REPO, BOB, 'reader')).rejects.toThrow(/private/)
+    await expectRc1Valid('writer', membershipData(REPO, BOB, { role: 3 }), ALICE)
     await expectRc1Valid('writer', membershipData({ ...REPO, visibility: 'private' }, BOB, { role: 3 }), ALICE)
   })
 
-  it('a role change checks everything before deleting: the role still held, a reader only on private repos', async () => {
+  it('a role change checks everything before deleting: the role still held, the owner only', async () => {
     present.add('consent')
     present.add('writer') // their writer document, holding role 1 (writer)
     await expect(changeMemberRole(sdk, auth(ALICE), REPO, BOB, 'triage', 'writer')).rejects.toThrow(/no longer a triage/)
-    await expect(changeMemberRole(sdk, auth(ALICE), REPO, BOB, 'writer', 'reader')).rejects.toThrow(/private/)
     await expect(changeMemberRole(sdk, auth(BOB), REPO, BOB, 'writer', 'triage')).rejects.toThrow(/owner/)
     await expect(changeMemberRole(sdk, auth(ALICE), { ...REPO, visibility: 'private' }, BOB, 'writer', 'triage')).rejects.toThrow(/private/)
     expect(creates).toHaveLength(0)
