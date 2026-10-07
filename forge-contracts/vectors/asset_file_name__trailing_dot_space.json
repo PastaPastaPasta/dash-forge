@@ -1,0 +1,26 @@
+{
+  "name": "trailing_dot_space",
+  "description": "A name ending in a dot or a space, which Windows drops, is refused.",
+  "case": "asset_file_name",
+  "rules": "v2",
+  "input": {
+    "names": [
+      "x.",
+      "x ",
+      "x. .",
+      "a.tar.gz ",
+      "x..",
+      "PRN  ",
+      "aux."
+    ]
+  },
+  "expected": [
+    "trailingDotOrSpace",
+    "trailingDotOrSpace",
+    "trailingDotOrSpace",
+    "trailingDotOrSpace",
+    "trailingDotOrSpace",
+    "trailingDotOrSpace",
+    "trailingDotOrSpace"
+  ]
+}

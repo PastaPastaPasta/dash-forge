@@ -66,20 +66,33 @@ describe('release input rules', () => {
     expect(releaseTextProblem({ name: '', notes: 'x'.repeat(5121) })).toMatch(/notes/)
   })
 
-  it('refuses duplicate, path-like, disguised, empty, over-long and oversized assets', () => {
+  it('refuses duplicate, path-like, disguised, hidden, empty, over-long and oversized assets', () => {
+    const one = (name: string, size = 1) => assetFilesProblem([{ name, size }])
     expect(assetFilesProblem([{ name: 'a.tar.gz', size: 1 }, { name: 'b.zip', size: 2 }])).toBeNull()
     expect(assetFilesProblem([{ name: 'a', size: 1 }, { name: 'a', size: 1 }])).toMatch(/same name/)
-    expect(assetFilesProblem([{ name: '../a', size: 1 }])).toMatch(/plain file name/)
-    for (const name of ['C:x', 'a:stream', 'x\\y', '..']) expect(assetFilesProblem([{ name, size: 1 }])).toMatch(/plain file name/)
-    for (const name of ['CON', 'nul.txt', 'Com1.tar.gz', 'LPT¹', 'CONIN$', 'AUX .txt', 'x.', 'x ', '.git', '.GIT']) {
-      expect(assetFilesProblem([{ name, size: 1 }])).toMatch(/rename the file/)
-    }
-    for (const name of ['console.log', 'COM10', 'nulls.txt', '.hidden', 'a..b']) expect(assetFilesProblem([{ name, size: 1 }])).toBeNull()
-    expect(assetFilesProblem([{ name: 'a\u009bb', size: 1 }])).toMatch(/control/)
-    expect(assetFilesProblem([{ name: 'exe‮txt.sh', size: 1 }])).toMatch(/text-direction/)
-    expect(assetFilesProblem([{ name: 'empty.bin', size: 0 }])).toMatch(/empty/)
-    expect(assetFilesProblem([{ name: 'n'.repeat(256), size: 1 }])).toMatch(/255/)
-    expect(assetFilesProblem([{ name: 'big.iso', size: MAX_ASSET_BYTES + 1 }])).toMatch(/dg release create/)
+    expect(assetFilesProblem([{ name: 'README.txt', size: 1 }, { name: 'readme.TXT', size: 1 }])).toMatch(/same file/)
+    for (const name of ['../a', 'x\\y', 'a∕b']) expect(one(name)).toMatch(/is a path.*rename the file/)
+    for (const name of ['C:x', 'a:stream', 'a?b', 'a|b']) expect(one(name)).toMatch(/Windows refuses/)
+    for (const name of ['CON', 'nul.txt', 'Com1.tar.gz', 'LPT¹', 'CONIN$', 'AUX .txt']) expect(one(name)).toMatch(/device name/)
+    for (const name of ['x.', 'x ']) expect(one(name)).toMatch(/ends in a dot or a space/)
+    for (const name of ['.git', '.GIT', '.hidden', '.npmrc', '.zshenv']) expect(one(name)).toMatch(/starts with a dot/)
+    for (const name of ['-rf', '--output=x']) expect(one(name)).toMatch(/starts with a dash/)
+    for (const name of ['console.log', 'COM10', 'nulls.txt', 'a..b']) expect(one(name)).toBeNull()
+    for (const name of ['a\u009bb', 'a\u2028b', 'exe\u202etxt.sh']) expect(one(name)).toMatch(/control or text-direction/)
+    expect(one('..')).toMatch(/not a file name/)
+    expect(one('empty.bin', 0)).toMatch(/empty/)
+    // 255 UTF-8 bytes, not UTF-16 units.
+    expect(one('n'.repeat(255))).toBeNull()
+    expect(one('n'.repeat(256))).toMatch(/255 bytes/)
+    expect(one('é'.repeat(128))).toMatch(/255 bytes/)
+    expect(one('big.iso', MAX_ASSET_BYTES + 1)).toMatch(/dg release create/)
+  })
+
+  it('refuses an upload that saves as the same file as a kept asset, a differently cased one', () => {
+    const kept = [{ name: 'README.txt' }, { name: '.legacy' }]
+    expect(assetFilesProblem([{ name: 'readme.TXT', size: 1 }], kept)).toMatch(/name it README.txt to replace/)
+    // A kept name is not checked again; an upload of another name is fine.
+    expect(assetFilesProblem([{ name: 'app.zip', size: 1 }], kept)).toBeNull()
   })
 
   it('sizes the asset list before uploading, from the entries uploads will produce', () => {
