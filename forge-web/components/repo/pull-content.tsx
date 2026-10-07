@@ -57,7 +57,7 @@ import { STATE_FILL, STATE_TEXT } from '@/lib/design/state'
 import type { PullThread, RepoHome, TimelineItem } from '@/lib/view'
 import { ACL_NAME, ARCHIVED_REASON, forkSourcePrefix, isLive, isMembersOnlyTarget, loadPullOrMembersOnly, loadPullThread, plural, policyOf, pullActions, type CommentView, type MembersOnlyTarget } from '@/lib/view'
 import { QUOTE_CONFIRM, publicLineQuestion, publicTextOf, quotesMembersText } from '@/lib/view/audience'
-import { AudienceChip, AudienceWarnings, MembersOnlyTargetPage, closeWithComment, useAudienceWarnings, useComposerAudience, useMembersTexts, useQuoteGate, warningName } from '@/components/repo/audience'
+import { AudienceChip, AudienceWarnings, MEMBERS_CARD, MEMBERS_CARD_HEADER, MembersOnlyTargetPage, VisibleToMembers, closeWithComment, useAudienceWarnings, useComposerAudience, useMembersTexts, useQuoteGate, warningName } from '@/components/repo/audience'
 import { commentDraftKey, useDraftText } from '@/lib/view/draft-text'
 import { EditBase } from './edit-base'
 import { HiddenBanner, HideMenu, HideThreadControl, hideConfirm, hideCost } from '@/components/repo/moderation'
@@ -1415,9 +1415,10 @@ function PullPage({
               {threadCollapsed ? null : (
               <>
               {/* Description */}
-              <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
-                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 dark:border-anvil-800 dark:bg-anvil-900">
+              <div className={cn('overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800', pull.audience === 'members' && MEMBERS_CARD)}>
+                <div className={cn('flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 dark:border-anvil-800 dark:bg-anvil-900', pull.audience === 'members' && MEMBERS_CARD_HEADER)}>
                   <Byline author={pull.author} createdAt={pull.createdAt} origin={origin} verb="opened this" />
+                  {pull.audience === 'members' ? <VisibleToMembers /> : null}
                   <EditedMarker createdAt={pull.createdAt} updatedAt={pull.updatedAt} />
                 </div>
                 <div className="px-4 py-3">

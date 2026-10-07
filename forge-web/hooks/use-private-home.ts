@@ -115,6 +115,9 @@ export function usePrivateHome(home: RepoHome | null, addr: RepoAddress): Privat
     // wrap to them: a maintainer's Repair (the repair check) shares it.
     const mine = session.wraps.some((w) => base58Encode(w.row.memberId) === identity)
     if (session.resolution.keys.size === 0 && !mine) return { ...base, lane: { access: 'no-key-shared' } }
+    // Shared with them, and still nothing opens: this browser holds another encryption key than
+    // the one it was shared to (a wallet's, while theirs is held elsewhere). Not a reader here.
+    if (session.resolution.keys.size === 0) return { ...base, lane: { access: 'no-key' } }
     const out = withMembersSession(base, session)
     warm.set(key, out)
     return out

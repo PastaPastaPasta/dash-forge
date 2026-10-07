@@ -166,6 +166,10 @@ test('member: reads it, and "View as public" shows exactly what the outsider saw
   expect(steady(await page.getByTestId('thread-conversation').innerText())).toBe(outsiderThread)
   await page.getByTestId('exit-public-view').click()
   await expect(page.getByTestId('timeline-comment').filter({ hasText: MARKER })).toBeVisible({ timeout: 120_000 })
+  // The members-only issue itself: its opening post is labelled for members too.
+  await page.getByRole('link', { name: /^issues/i }).first().click()
+  await page.locator(`[data-testid="issue-row"][data-number="${SEALED}"]`).getByRole('link').first().click()
+  await expect(page.getByTestId('thread-conversation').getByTestId('visible-to-members').first()).toBeVisible({ timeout: 120_000 })
   await page.context().close()
 })
 

@@ -30,7 +30,8 @@ import type { RepoHome, IssueThread, MembersOnlyTarget, TimelineItem } from '@/l
 import { commentDraftKey, useDraftText } from '@/lib/view/draft-text'
 import { ACL_NAME, ARCHIVED_REASON, isMembersOnlyTarget, issueWriteShows, loadIssueOrMembersOnly } from '@/lib/view'
 import { publicTextOf, quotesMembersText } from '@/lib/view/audience'
-import { AudienceChip, AudienceWarnings, MembersOnlyTargetPage, closeWithComment, useAudienceWarnings, useComposerAudience, useMembersTexts, useQuoteGate } from '@/components/repo/audience'
+import { cn } from '@/lib/utils'
+import { AudienceChip, AudienceWarnings, MEMBERS_CARD, MEMBERS_CARD_HEADER, MembersOnlyTargetPage, VisibleToMembers, closeWithComment, useAudienceWarnings, useComposerAudience, useMembersTexts, useQuoteGate } from '@/components/repo/audience'
 import { readDuplicateTargets } from '@/lib/view/issues-view'
 import { closeWhyOf, closedAsWords, closedSkipped } from '@/lib/view/close-reason'
 import type { ClosedAs } from '@/lib/rules/transition'
@@ -542,9 +543,10 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
 
         {/* Body */}
         {threadCollapsed ? null : (
-        <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 dark:border-anvil-800 dark:bg-anvil-900">
+        <div className={cn('overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800', issue.audience === 'members' && MEMBERS_CARD)}>
+          <div className={cn('flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 dark:border-anvil-800 dark:bg-anvil-900', issue.audience === 'members' && MEMBERS_CARD_HEADER)}>
             <Byline author={issue.author} createdAt={issue.createdAt} origin={origin} verb="authored" />
+            {issue.audience === 'members' ? <VisibleToMembers /> : null}
             <EditedMarker createdAt={issue.createdAt} updatedAt={issue.updatedAt} />
           </div>
           <div className="px-4 py-3">
@@ -640,7 +642,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
           {lockedOutNow && !canToggle ? null : (
           <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
             {lockedOutNow ? <span /> : <CostPreview cost={commentCost} />}
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center justify-end gap-2">
               {canToggle && open ? (
                 <CloseIssueButton
                   number={issue.number}

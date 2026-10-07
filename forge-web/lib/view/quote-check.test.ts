@@ -93,6 +93,20 @@ describe('public text that repeats members-only text', () => {
     expect(quotesMembersText('try Tr0ub4dor3x', ['Tr0ub4dor3x'])).toBe(true)
   })
 
+  it('asks for a token copied out of a longer members-only text into a sentence', () => {
+    const members = ['Members-only note for the team.\n\nQAMARKwbx2-orchid-lantern-4471\n\nDo not share outside the repo.']
+    // Its own line, copied whole into a longer public line.
+    expect(quotesMembersText('Context from the team: QAMARKwbx2-orchid-lantern-4471', members)).toBe(true)
+    // One secret-looking word of it is enough.
+    expect(quotesMembersText('the code is qamarkwbx2 I think', members)).toBe(true)
+    expect(quotesMembersText('Use key Zx9pQ2rT7v for staging', ['Rotate: the staging key is Zx9pQ2rT7v until Monday, then a new one.'])).toBe(true)
+  })
+
+  it('does not ask for a commit id both texts name, nor for an ordinary short line', () => {
+    expect(quotesMembersText('Rebased onto 4f3c2a9b1e7d', ['Fixed in 4f3c2a9b1e7d, see the review'])).toBe(false)
+    expect(quotesMembersText('It works on linux here, thanks', ['works on linux\nsee you'])).toBe(false)
+  })
+
   it('checks extra members-only text too (the writer’s own unposted members-only text)', () => {
     expect(quotesMembersText('the vendor will sign it next week, keep quiet', [], { extra: ['The vendor will sign it next week.'] })).toBe(true)
     expect(quotesMembersText('Changes requested: see the review', INDEX, { extra: ['The vendor will sign it next week.'] })).toBe(false)

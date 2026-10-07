@@ -69,6 +69,7 @@ import { takePublicViewFocus, usePublicView } from '@/hooks/use-public-view'
 import { Author } from '@/components/author'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { UnlockMore, UNLOCK_MEMBERS_ONLY } from '@/components/auth/unlock-more'
+import type { Network } from '@/lib/constants'
 import { Button } from '@/components/ui/button'
 import { Dialog, useEscapeLayer } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
@@ -188,7 +189,7 @@ export function AudienceChip({ home, state, testId = 'audience-chip' }: { home: 
   const label = audienceLabel(audience, state.count?.total ?? null)
   const Icon = audience === 'public' ? Globe : Lock
   const pickable = choice.members !== null && (choice.publicAllowed || choice.members !== 'ok')
-  const chip = 'inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[12px] font-medium coarse:min-h-11'
+  const chip = 'inline-flex items-center gap-1 whitespace-nowrap rounded-full border px-2 py-0.5 text-[12px] font-medium coarse:min-h-11'
   const tone = audience === 'members' ? 'border-anvil-400 bg-anvil-100 text-anvil-800 dark:border-anvil-600 dark:bg-anvil-800 dark:text-anvil-100' : 'border-anvil-300 text-anvil-700 dark:border-anvil-700 dark:text-anvil-200'
   if (!pickable) {
     return (
@@ -518,6 +519,18 @@ export function closeWithComment<P extends { readonly comment?: string }>(gate: 
 // ---------------------------------------------------------------------------
 // Turning members-only content on
 // ---------------------------------------------------------------------------
+
+/**
+ * What a key-aware members change (add, remove, change a role in a repo with members-only content)
+ * waits on in this tab: the inline unlock while the encryption key is locked here (a reload keeps
+ * only the signing key), else null. `active`: its dialog is open and the change shares the key.
+ */
+export function useMembersKeyBlock(active: boolean, network: Network): JSX.Element | null {
+  const { identity, unlockScope } = useAuth()
+  const key = useAsync(() => encryptionKeyState(network, identity!), [network, identity ?? '', unlockScope ?? ''], { enabled: identity !== null && active })
+  if (!active || key.data !== 'locked') return null
+  return <UnlockMore title={UNLOCK_MEMBERS_ONLY} testId="members-key-unlock" forgot={false} />
+}
 
 /**
  * "Turn on members-only content?" (DESIGN §10, a maintainer): what it means, the measured cost

@@ -19,6 +19,10 @@
  *   short secret posted on its own), when it carries two content words of {@link WHOLE_CONTENT_MIN}
  *   characters together, or a word that looks like a secret (letters and digits, 8 or more), so a
  *   short ordinary remark ("Same issue on windows") does not ask;
+ * - a whole line of a members-only text, of at least {@link WHOLE_LINE_MIN} characters and worth it
+ *   on its own (as above), is in it: a token or a sentence on its own line copied into a longer one;
+ * - a word of a members-only text that looks like a secret (letters and digits, 8 or more, and not
+ *   only hex digits, which a commit id is) is in it;
  * - the address of a link or image in a members-only text (with a path) is in it: the canonical
  *   form keeps a link's text only, and the address is often the confidential part.
  * Runs, lines and texts made only of filler words (thanks, LGTM, "looks good to me") never count,
@@ -27,7 +31,7 @@
  *
  * Out of scope (a stated limit): members-only text of another repo, or one opened only in another
  * tab, and a secret shorter than {@link WHOLE_MIN} characters, or one copied out of a longer text
- * with fewer than the run lengths around it.
+ * with fewer than the run lengths around it that is neither on its own line nor secret-looking.
  */
 
 /** Consecutive words that count as copied. */
@@ -44,6 +48,10 @@ export const WHOLE_MIN = 8
 const CONTENT_MIN = 6
 /** Content characters a whole short members-only text needs, across two content words or more. */
 export const WHOLE_CONTENT_MIN = 12
+/** The shortest line of a members-only text found whole inside public text that counts. */
+export const WHOLE_LINE_MIN = 16
+/** The shortest word that can look like a secret. */
+const SECRET_WORD_MIN = 8
 
 /** Zero-width and other invisible format characters a copy can carry. */
 const INVISIBLE = /[­͏᠎​-‏‪-‮⁠-⁤⁦-⁩﻿]/g
@@ -122,11 +130,16 @@ function wholeWorthy(words: readonly string[]): boolean {
   let chars = 0
   for (const w of words) {
     if (FILLER.has(w)) continue
-    if (w.length >= 8 && /\p{L}/u.test(w) && /\p{N}/u.test(w)) return true
+    if (secretLike(w)) return true
     count += 1
     chars += w.length
   }
   return count >= 2 && chars >= WHOLE_CONTENT_MIN
+}
+
+/** Whether a canonical word looks like a secret: letters and digits, 8 or more, not only hex digits (a commit id). */
+function secretLike(w: string): boolean {
+  return w.length >= SECRET_WORD_MIN && /\p{L}/u.test(w) && /\p{N}/u.test(w) && !/^[0-9a-f]+$/.test(w)
 }
 
 /** The addresses of `text`'s links and images that name more than a site (a path, a query). */
@@ -185,8 +198,13 @@ export class QuoteIndex {
   readonly spans: ReadonlySet<string>
   /** Each text, canonical. */
   readonly texts: readonly string[]
-  /** The texts the reverse check looks for whole: at least {@link WHOLE_MIN} characters, worth it on their own. */
+  /**
+   * What the reverse check looks for whole: each text of at least {@link WHOLE_MIN} characters, and
+   * each line of at least {@link WHOLE_LINE_MIN}, worth it on their own.
+   */
   readonly whole: readonly string[]
+  /** Every word that looks like a secret. */
+  readonly secrets: ReadonlySet<string>
 
   /** `texts`: members-only texts, as stored (Markdown); their link addresses are looked for too. */
   constructor(texts: readonly string[]) {
@@ -194,8 +212,10 @@ export class QuoteIndex {
     const spans = new Set<string>()
     const canon = new Set<string>()
     const whole = new Set<string>()
+    const secrets = new Set<string>()
     for (const t of [...texts, ...texts.flatMap(linkAddresses)]) {
-      const words = canonicalLines(t).flatMap((l) => l.words)
+      const lines = canonicalLines(t)
+      const words = lines.flatMap((l) => l.words)
       if (words.length === 0) continue
       const c = words.join(' ')
       if (canon.has(c)) continue
@@ -203,11 +223,17 @@ export class QuoteIndex {
       for (const r of runsOf(words)) runs.add(r)
       for (const s of spansOf(words)) spans.add(s)
       if (c.length >= WHOLE_MIN && meaningful(words) && wholeWorthy(words)) whole.add(c)
+      for (const l of lines) {
+        const line = l.words.join(' ')
+        if (line.length >= WHOLE_LINE_MIN && meaningful(l.words) && wholeWorthy(l.words)) whole.add(line)
+      }
+      for (const w of words) if (secretLike(w)) secrets.add(w)
     }
     this.runs = runs
     this.spans = spans
     this.texts = [...canon]
     this.whole = [...whole]
+    this.secrets = secrets
   }
 
   /** Whether there is no members-only text to check against. */
@@ -254,6 +280,7 @@ function matches(draft: DraftParts, index: QuoteIndex, before: DraftParts | null
     if (index.texts.some((t) => hasWords(t, l)) && !was(l)) return true
   }
   for (const w of index.whole) if (w.length <= draft.joined.length && hasWords(draft.joined, w) && !was(w)) return true
+  for (const w of draft.words) if (index.secrets.has(w) && !was(w)) return true
   return false
 }
 

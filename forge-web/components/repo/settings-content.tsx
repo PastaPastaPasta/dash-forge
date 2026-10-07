@@ -17,7 +17,7 @@ import { ConsentMissingError, changeMemberRole, grantMember, invalidateMembers, 
 import { addMemberCost, planRotation, removalCost, removalEffect, roleChangeCost } from '@/lib/repo/private-members'
 import { usePrivateWrite } from '@/hooks/use-private-write'
 import { ConsentCheck, Invitations, mayAdd, useInviteAccepted } from '@/components/repo/invite-banner'
-import { MembersContentSetting, RemovalReads } from '@/components/repo/audience'
+import { MembersContentSetting, RemovalReads, useMembersKeyBlock } from '@/components/repo/audience'
 import type { Membership, Role as MemberRole } from '@/lib/rules/v2'
 import { NetworkBadge } from '@/components/ui/network-badge'
 import { previewCreate, previewDelete } from '@/lib/sdk'
@@ -134,6 +134,8 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
   // Whether the typed identity accepted, read before Add prices anything (QW4-036).
   const typed = memberId.trim() !== '' && idError === null ? memberId.trim() : null
   const consent = useInviteAccepted(repo, isOwner && repo.visibility !== 'private' ? typed : null)
+  // A key-aware change needs this tab's encryption key: offer the unlock instead of failing on it.
+  const keyBlock = useMembersKeyBlock(keyed && action !== null, network)
   const runAction = async (intent: string): Promise<void> => {
     if (!sdk || !signer || !action) throw new Error('sign in to continue')
     if (action.kind === 'change') {
@@ -355,6 +357,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
                     : previewCreate(memberDocOf(action.role))
           }
           confirmLabel={action?.kind === 'grant' ? 'Sign & add' : action?.kind === 'change' ? 'Sign & change' : 'Sign & remove'}
+          blocked={keyBlock}
           onConfirm={runAction}
         >
           {action?.kind === 'revoke' && keyed ? <RemovalReads lane={keyed} /> : null}

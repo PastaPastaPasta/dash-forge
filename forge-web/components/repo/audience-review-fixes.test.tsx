@@ -55,6 +55,7 @@ import {
   MembersOnlyTargetPage,
   PublicViewBanner,
   TurnOnMembersSheet,
+  useMembersKeyBlock,
   ViewAsPublicButton,
   useComposerAudience,
   useQuoteGate,
@@ -302,6 +303,28 @@ describe('the Turn on sheet', () => {
     await flush()
     expect(q('turn-on-reading-keys')).toBeNull()
     expect(q('turn-on-key-error')?.textContent).toContain("Your encryption key isn't available in this tab.")
+  })
+})
+
+describe('a key-aware members change (add, remove) in a tab whose key is locked', () => {
+  function Host({ active }: { active: boolean }): JSX.Element {
+    return <div data-testid="host">{useMembersKeyBlock(active, 'devnet')}</div>
+  }
+  it('offers the unlock while the key is locked, and nothing otherwise', async () => {
+    keyState = 'locked'
+    try {
+      act(() => root.render(<Host active />))
+      await flush()
+      expect(q('members-key-unlock')).not.toBeNull()
+      act(() => root.render(<Host active={false} />))
+      await flush()
+      expect(q('members-key-unlock')).toBeNull()
+    } finally {
+      keyState = 'open'
+    }
+    act(() => root.render(<Host active />))
+    await flush()
+    expect(q('members-key-unlock')).toBeNull()
   })
 })
 
