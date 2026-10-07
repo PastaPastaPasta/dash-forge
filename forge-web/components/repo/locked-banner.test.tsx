@@ -24,7 +24,6 @@ import { invalidateMembers, readViewerPermissions, type RepoRef } from '@/lib/re
 import { mockSdk, newSeen, type Doc, type Seen, type Store } from '@/lib/repo/drive-mock'
 import { bytesToBase64, hexToBase64, setPlatformVersion } from '@/lib/sdk'
 import { clearDpnsCache } from '@/lib/view/dpns'
-import { resetBans } from '@/lib/repo/bans'
 import { loadIssueThread, loadPullThread } from '@/lib/view/issues-view'
 import { LockToggle, LockedBanner, lockConfirm, lockStateText, lockViewerOf, type LockViewer } from './locked-banner'
 
@@ -109,7 +108,6 @@ describe('the lock bit is in the thread read (no request of its own)', () => {
     for (const locked of [false, true]) {
       // Each run from cold caches (members, names), as a first page view.
       invalidateMembers(repo, 'devnet')
-      resetBans()
       clearDpnsCache()
       const seen = newSeen()
       const sdk = mockSdk(store(locked), seen)
@@ -134,9 +132,10 @@ describe('the lock bit is in the thread read (no request of its own)', () => {
     expect(locked.seen.queries.filter((q) => q.documentTypeName === 'transition')).toHaveLength(0)
     expect(asked(locked.seen)).toEqual(asked(open.seen))
     // The page's whole budget: the composite, the names (one DPNS read), the base ref's history
-    // and config, the verdict count, and the repo's bans (one read per repo, kept a while).
-    expect(requests(locked.seen)).toBe(7)
-    expect(requests(open.seen)).toBe(7)
+    // and config, and the verdict count. Not the repo's bans: the page reads them beside the thread.
+    expect(requests(locked.seen)).toBe(6)
+    expect(requests(open.seen)).toBe(6)
+    expect(open.seen.queries.some((q) => q.documentTypeName === 'ban')).toBe(false)
   })
 
   it("the issue page's load: the same requests locked as unlocked", async () => {
@@ -144,7 +143,6 @@ describe('the lock bit is in the thread read (no request of its own)', () => {
     for (const locked of [false, true]) {
       // Each run from cold caches (members, names), as a first page view.
       invalidateMembers(repo, 'devnet')
-      resetBans()
       clearDpnsCache()
       const seen = newSeen()
       const thread = await loadIssueThread(mockSdk(store(locked), seen), repo, 2, 'devnet')
@@ -154,6 +152,8 @@ describe('the lock bit is in the thread read (no request of its own)', () => {
     expect([open.locked, locked.locked]).toEqual([false, true])
     expect(locked.seen.queries.filter((q) => q.documentTypeName === 'transition')).toHaveLength(0)
     expect(asked(locked.seen)).toEqual(asked(open.seen))
+    // The repo's bans are the page's own read, beside the thread: the issue never waits on them.
+    expect(open.seen.queries.some((q) => q.documentTypeName === 'ban')).toBe(false)
   })
 })
 

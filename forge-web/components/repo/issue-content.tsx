@@ -91,7 +91,7 @@ import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, privateCompo
 import { LongBodyNote, longEditBlock, useLongCompose, type LongCompose } from '@/components/repo/long-body'
 import { BODY_MAX, utf8Length } from '@/lib/view/issue-query'
 import { numberLabel, shownUpstreamNumber } from '@/lib/view/upstream'
-import { HiddenBanner, HideMenu, HideThreadControl, hideConfirm, hideCost } from '@/components/repo/moderation'
+import { HiddenBanner, HideMenu, HideThreadControl, hideConfirm, hideCost, useThreadModeration } from '@/components/repo/moderation'
 import { setHidden } from '@/lib/repo/moderation'
 import { moderationBlocked } from '@/lib/repo/moderation-fold'
 import { isHidden } from '@/lib/view/issues-view'
@@ -234,6 +234,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const commentEditLong = useLongCompose(home.repo, 'comment', editingComment?.body ?? '')
   const commentTooLong = commentLong.long ? commentLong.problem !== null : utf8Length(comment) > BODY_MAX
 
+  const moderation = useThreadModeration(sdk, ready, home.repo, data?.moderationInput, data?.moderation)
+
   if (!Number.isFinite(number)) return <EmptyState icon={CircleDot} title="No issue addressed" body="Add &number= to the URL." />
   if (loading && !data) return <LoadingBlock label="Loading issue" />
   if (error) return <ErrorState message={error} onRetry={reload} />
@@ -249,7 +251,6 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const isMember = holdings.data?.member === true
   // RC2 MOD: only a maintainer hides (consensus refuses a writer where the contract proves it).
   const isMaintainer = holdings.data !== null && holdings.data.maintain
-  const moderation = data.moderation
   const threadHidden = moderation?.thread ?? null
   const threadCollapsed = threadHidden !== null && !threadRevealed
   const postContext = { isMember, locked: meta.locked }

@@ -14,7 +14,6 @@ import { loadPullThread } from '../view/issues-view'
 import type { RepoRef } from './contract'
 import { mockSdk, newSeen, type Doc, type Store } from './drive-mock'
 import { invalidateMembers } from './members'
-import { resetBans } from './bans'
 import { readProvedVerdicts, verdictsQuery } from './verdicts'
 
 const FORGE: ForgeIds = { core: 'CORE', collab: 'COLLAB', community: 'COMMUNITY', group: 'GROUP' }
@@ -110,16 +109,15 @@ describe('proved verdict count (RC1 R-16)', () => {
 
   it('costs a PR view one composite and one grouped count, beside the fold it never replaces', async () => {
     invalidateMembers(REPO_REF)
-    resetBans()
     const seen = newSeen()
     const thread = await loadPullThread(mockSdk(store(), seen), REPO_REF, 1)
     expect(seen.composites).toHaveLength(1)
     // The verdict count is the view's only count or sum.
     expect(seen.counts).toEqual([verdictsQuery(REPO_REF, PATCH, HEAD)])
     expect(seen.sums).toHaveLength(0)
-    // The plain reads are the DPNS names, the base ref's history (the repo chrome's, in the app)
-    // and the repo's bans (one read per repo, kept a while).
-    expect(seen.queries.map((q) => q.documentTypeName).sort()).toEqual(['ban', 'config', 'domain', 'protectedRefUpdate', 'refUpdate'])
+    // The plain reads are the DPNS names and the base ref's history (the repo chrome's, in the app).
+    // Never the repo's bans: the page applies them when they land, so nothing on it waits on them.
+    expect(seen.queries.map((q) => q.documentTypeName).sort()).toEqual(['config', 'domain', 'protectedRefUpdate', 'refUpdate'])
     expect(thread?.verdicts).toEqual({ headOid: HEAD, approvals: 2, changesRequested: 1 })
     // The fold, which gates the merge, counts each reviewer once.
     expect(thread?.approvals?.approvers).toEqual([MAINT])

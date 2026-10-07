@@ -58,7 +58,7 @@ import type { PullThread, RepoHome, TimelineItem } from '@/lib/view'
 import { ACL_NAME, ARCHIVED_REASON, forkSourcePrefix, isLive, loadPullThread, plural, policyOf, pullActions, type CommentView } from '@/lib/view'
 import { commentDraftKey, useDraftText } from '@/lib/view/draft-text'
 import { EditBase } from './edit-base'
-import { HiddenBanner, HideMenu, HideThreadControl, hideConfirm, hideCost } from '@/components/repo/moderation'
+import { HiddenBanner, HideMenu, HideThreadControl, hideConfirm, hideCost, useThreadModeration } from '@/components/repo/moderation'
 import { setHidden } from '@/lib/repo/moderation'
 import { moderationBlocked } from '@/lib/repo/moderation-fold'
 import { isHidden } from '@/lib/view/issues-view'
@@ -595,7 +595,7 @@ function PullPage({
   const canMember = identity !== null && isMember && !archived && guard.disabledReason === null
   // RC2 MOD: maintainers hide; readers see collapsed rows, and a hidden PR opens behind a banner.
   const canModerate = canMember && holdings.data?.maintain === true
-  const moderation = thread.moderation
+  const moderation = useThreadModeration(sdk, ready, repo, thread.moderationInput, thread.moderation)
   const threadHidden = moderation?.thread ?? null
   const threadCollapsed = threadHidden !== null && !threadRevealed
 
@@ -757,9 +757,9 @@ function PullPage({
       viewer: identity,
       onEdit: (c, body) => setPending({ kind: 'edit-comment', id: c.id, body }),
       onDelete: (c) => setPending({ kind: 'delete-comment', id: c.id }),
-      ...(thread.moderation ? { hidden: thread.moderation } : {}),
+      ...(moderation ? { hidden: moderation } : {}),
     }),
-    [canResolve, resolvedKey, identity, setPending, thread.moderation],
+    [canResolve, resolvedKey, identity, setPending, moderation],
   )
   const commentCost = composeCost(repo, 'comment', { body: comment.trim() }, commentFirst)
   // A text over its field: stored whole by a maintainer or writer (forge-v2.md §6.3).

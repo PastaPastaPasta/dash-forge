@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test'
 import {
   collectPageErrors,
+  DAPI_METHOD,
   DEMO,
   E2E_DEVNET,
   EMPTY,
@@ -140,6 +141,23 @@ test.describe('forge-v2 read paths (devnet fixture)', () => {
     await page.goto(url('pull', `&number=${pulls.merged}`), { waitUntil: 'domcontentloaded' })
     await expectLanded(page, page.getByRole('heading', { name: /Document the fold rules/ }))
     await expect(page.getByText('Merged', { exact: true }).first()).toBeVisible()
+  })
+
+  test("v2-6b. a PR's page and diff never wait on the repo's bans read", async ({ page }) => {
+    // Every read of the repo's bans (`document_type` "ban") is held unanswered, as a stalled DAPI
+    // node would: the thread and its diff still land, the bans applying once they come back.
+    const BAN = Buffer.from([0x12, 0x03, ...Buffer.from('ban')])
+    let held = 0
+    await page.route(
+      (u) => DAPI_METHOD.exec(u.pathname)?.[1] === 'getDocuments',
+      async (route) => {
+        if (!(route.request().postDataBuffer()?.includes(BAN) ?? false)) return route.fallback()
+        held++
+      },
+    )
+    await page.goto(url('pull', `&number=${loadSeedPulls().reviewParity}&tab=files`), { waitUntil: 'domcontentloaded' })
+    await expectLanded(page, page.locator('table[data-layout]').first())
+    expect(held, 'the page asked for the bans').toBeGreaterThan(0)
   })
 
   test('v2-7. settings list members from membership documents', async ({ page }) => {

@@ -6,14 +6,15 @@
  * public on Platform anyway), and the banner of a hidden issue or PR.
  */
 
-import { useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { ChevronDown, Eye, EyeOff } from 'lucide-react'
 
 import { Author } from '@/components/author'
 import { useDismiss } from '@/components/repo/target-rail'
-import { HIDE_REASONS, type Hidden, type HideBlock, type HideReason } from '@/lib/rules/moderation'
+import { HIDE_REASONS, type Hidden, type HiddenItems, type HideBlock, type HideReason } from '@/lib/rules/moderation'
 import { banHidden, banReasonLabel } from '@/lib/rules/bans'
-import { readStandingBans } from '@/lib/repo/bans'
+import { readBans, readStandingBans } from '@/lib/repo/bans'
+import { foldModeration, withBans, type ModerationInput } from '@/lib/repo/moderation-fold'
 import { timeAgo } from '@/lib/view'
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { useAsync } from '@/hooks/use-async'
@@ -333,6 +334,23 @@ export function hideConfirm(
 }
 
 const NO_IDS: ReadonlyMap<string, Hidden> = new Map()
+
+/**
+ * A thread's collapses (`hides`, read with it from `input`) with the repo's maintainer bans applied
+ * (UPDATE-1). The thread read never reads the bans, so nothing on the page waits on them: until
+ * they land, or when their read fails (`readBans` answers none), the page shows the hides alone.
+ */
+export function useThreadModeration(
+  sdk: EvoSDK | null,
+  ready: boolean,
+  repo: RepoRef,
+  input: ModerationInput | undefined,
+  hides: HiddenItems | undefined,
+): HiddenItems | undefined {
+  const bans = useAsync(() => readBans(sdk!, repo), [ready, repoKey(repo)], { enabled: ready && sdk !== null })
+  const raw = bans.data
+  return useMemo(() => (input === undefined || raw == null || raw.length === 0 ? hides : foldModeration(withBans(input, raw))), [input, hides, raw])
+}
 
 /**
  * The list page's rows whose thread a maintainer hid (RC2 MOD), with who hid each and why, read
