@@ -132,7 +132,14 @@ def table(rows, names, markdown):
 def main():
     global VALIDATOR
     args = [a for a in sys.argv[1:] if not a.startswith('--')]
-    jobs = next((int(a.split('=', 1)[1]) for a in sys.argv[1:] if a.startswith('--jobs=')), os.cpu_count() or 1)
+    argv = sys.argv[1:]
+    jobs = os.cpu_count() or 1
+    for k, a in enumerate(argv):
+        if a == '--jobs' and k + 1 < len(argv):
+            jobs = int(argv[k + 1])
+            args.remove(argv[k + 1])
+        elif a.startswith('--jobs='):
+            jobs = int(a.split('=', 1)[1])
     if len(args) != 1:
         sys.exit(__doc__)
     VALIDATOR = os.path.abspath(args[0])
@@ -173,7 +180,7 @@ def main():
     print()
     for meta in (True, False):
         rows = [r for r in mv if (build.META in r[2]) == meta and len(r[1]) == len(r[2])]
-        for n in (names if meta else build.NAMES):
+        for n in (names if meta else build.NAMES) if rows else ():
             worst = max(rows, key=lambda r: r[1][n][1])
             print(f'{"with" if meta else "without"} forge-meta: largest {n} create transition {worst[1][n][1]} B '
                   f'({build.TRANSITION_LIMIT - worst[1][n][1]} B of room) in {worst[0]}')

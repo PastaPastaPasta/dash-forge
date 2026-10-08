@@ -12,10 +12,11 @@
 // scratch set such as the four-contract mainnet build (`python3 forge-contracts/schema/build.py
 // --mainnet --out <dir>`), registered on a devnet with a scratch deployer before mainnet (DESIGN
 // rev 4.1 phase M-C). A scratch set needs --record <path>, the deployment record it writes instead
-// of deployments/<network>.json; the network's own record and the contract snapshots under
-// deployments/contracts/ are refused as a --record, so a scratch run never touches the live
-// deployment. Its DAPI addresses come from --addresses, else the scratch record, else (read only)
-// the network's record.
+// of deployments/<network>.json. No file under forge-contracts/deployments/ (any network's record,
+// the contract snapshots) is accepted as a --record, a scratch record naming the network's own
+// forge-core or contract group is refused, and a recorded contract registered from another schema
+// stops the run, so a scratch run never touches or extends the live deployment. Its DAPI addresses
+// come from --addresses, else the scratch record, else (read only) the network's record.
 //
 // forge-meta (DESIGN rev 4.1 D44): when <dir> holds forge-meta.json it is registered fourth, after
 // forge-community, like the others: its schema names forge-core's id (FORGE_CORE_CONTRACT_ID), and
@@ -83,9 +84,9 @@
 // hash_double("contract_group" || owner || nonce) (rs-dpp contract_group::generate_contract_group_id).
 // The JS below derives the group id itself because evo-sdk exposes no helper; the Rust validator
 // (tools/contract-validate) prints a known-answer vector that --self-test checks.
-import { readFileSync, writeFileSync, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, resolve, join } from 'node:path';
+import { basename, dirname, resolve, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 
@@ -237,8 +238,15 @@ function selfTest(dir = DEFAULT_CONTRACTS_DIR) {
   if (recordPath({ network: 'devnet', devnetName: 'sakura', record: scratch, contractsDir: tmpdir() }) !== scratch) throw new Error('--record ignored');
   if (!refused({ network: 'devnet', devnetName: 'sakura', contractsDir: tmpdir() })) throw new Error('a scratch set without --record was accepted');
   if (!refused({ network: 'devnet', devnetName: 'sakura', record: live, contractsDir: tmpdir() })) throw new Error('--record naming the live record was accepted');
-  if (!refused({ network: 'devnet', devnetName: 'sakura', record: join(ROOT, 'deployments', 'contracts', 'devnet-sakura.json') })) {
-    throw new Error('--record naming a contract snapshot was accepted');
+  for (const file of [join('contracts', 'devnet-sakura.json'), 'testnet.json', 'devnet-bonsia.json', 'scratch.json']) {
+    if (!refused({ network: 'devnet', devnetName: 'sakura', record: join(ROOT, 'deployments', file) })) throw new Error(`--record deployments/${file} was accepted`);
+  }
+  // a case-folding filesystem would alias it to the live record
+  if (!refused({ network: 'devnet', devnetName: 'sakura', record: join(ROOT, 'Deployments', 'Devnet-Sakura.json') })) throw new Error('a case alias of the live record was accepted');
+  const liveDep = { v2: { forgeCore: { contractId: 'A', contractGroupId: 'G' }, contractGroupId: 'G' } };
+  if (!scratchRecordError({ v2: { forgeCore: { contractId: 'A' } } }, liveDep) || !scratchRecordError({ v2: { contractGroupId: 'G' } }, liveDep)
+      || scratchRecordError({}, liveDep) || scratchRecordError({ v2: { forgeCore: { contractId: 'B', contractGroupId: 'H' } } }, liveDep)) {
+    throw new Error('scratchRecordError misjudged a scratch record');
   }
   log('record self-test: ok (a scratch set writes only its --record)');
   // The record names the SDK the run used, read from the installed package (never a literal)
@@ -257,11 +265,21 @@ function selfTest(dir = DEFAULT_CONTRACTS_DIR) {
 function depPath(network, devnetName) {
   return join(ROOT, 'deployments', `${network === 'devnet' ? `devnet-${devnetName}` : network}.json`);
 }
+/** A path with its deepest existing directory resolved (symlinks) and folded to lower case (APFS and NTFS fold case). */
+function canonical(path) {
+  let dir = dirname(path);
+  const rest = [basename(path)];
+  while (!existsSync(dir) && dirname(dir) !== dir) {
+    rest.unshift(basename(dir));
+    dir = dirname(dir);
+  }
+  return join(existsSync(dir) ? realpathSync(dir) : dir, ...rest).toLowerCase();
+}
 /**
  * The record a run writes: deployments/<network>.json for the committed set, else `record`. A
  * scratch set (`contractsDir` other than forge-contracts/contracts) must name one, and no record may
- * be the network's own file or a contract snapshot (deployments/contracts/), so a scratch run never
- * touches the live deployment.
+ * be a file under forge-contracts/deployments/ (any network's record, the contract snapshots), so a
+ * scratch run never touches a live deployment.
  */
 export function recordPath({ network, devnetName, record, contractsDir = DEFAULT_CONTRACTS_DIR }) {
   const live = depPath(network, devnetName);
@@ -272,11 +290,18 @@ export function recordPath({ network, devnetName, record, contractsDir = DEFAULT
     return live;
   }
   const path = resolve(String(record));
-  const snapshots = join(ROOT, 'deployments', 'contracts');
-  if (path === live || path.startsWith(`${snapshots}/`)) {
-    throw new Error(`--record ${record}: a scratch record may not be the network's deployment file or a contract snapshot`);
+  if (canonical(path).startsWith(`${canonical(join(ROOT, 'deployments'))}/`)) {
+    throw new Error(`--record ${record}: a scratch record lives outside forge-contracts/deployments/ (the networks' records and snapshots)`);
   }
   return path;
+}
+/** A scratch record must not name the network's own forge-core or contract group: it would extend the live deployment. */
+export function scratchRecordError(scratch, live) {
+  const core = scratch?.v2?.forgeCore?.contractId;
+  const group = scratch?.v2?.contractGroupId ?? scratch?.v2?.forgeCore?.contractGroupId;
+  if (core && core === live?.v2?.forgeCore?.contractId) return `the scratch record names the network's forge-core ${core}: start it empty`;
+  if (group && group === (live?.v2?.contractGroupId ?? live?.v2?.forgeCore?.contractGroupId)) return `the scratch record names the network's contract group ${group}: start it empty`;
+  return null;
 }
 function readDep(file) {
   return existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {};
@@ -373,12 +398,17 @@ async function main() {
   // deploy-key-exchange.mjs and snapshot-contracts.mjs read them), else SDK discovery
   const depFile = recordPath({ network, devnetName, record: args.record, contractsDir });
   const dep = readDep(depFile);
+  const scratch = depFile !== depPath(network, devnetName);
   // A scratch record without addresses borrows the network's (read only)
-  const live = depFile === depPath(network, devnetName) ? dep : readDep(depPath(network, devnetName));
+  const live = scratch ? readDep(depPath(network, devnetName)) : dep;
+  if (scratch) {
+    const refused = scratchRecordError(dep, live);
+    if (refused) throw new Error(`--record ${args.record}: ${refused}`);
+  }
   const addresses = typeof args.addresses === 'string'
     ? args.addresses.split(',').map((s) => s.trim()).filter(Boolean)
     : (devnetName && (dep.dapiAddresses ?? dep.v2?.devnet?.addresses ?? live.dapiAddresses ?? live.v2?.devnet?.addresses)) || undefined;
-  if (depFile !== depPath(network, devnetName)) log(`scratch set ${contractsDir}: recording to ${depFile}`);
+  if (scratch) log(`scratch set ${contractsDir}: recording to ${depFile}`);
 
   const rec = JSON.parse(readFileSync(resolve(String(args.identity)), 'utf8'));
   const ownerId = rec.identityId;
@@ -445,6 +475,8 @@ async function main() {
     const onChain = await sdk.contracts.fetch(existing.contractId);
     if (onChain) {
       if (existing.schemaHash && existing.schemaHash !== currentHash) {
+        // a scratch set is registered whole from its own schemas: a stale one is a mistake, never reused
+        if (scratch) throw new Error(`${key}: ${existing.contractId} in the scratch record was registered from another schema; start a new --record`);
         const dependent = DEPENDENTS.find((c) => c.key === key);
         log(`${key}: WARNING ${existing.contractId} was registered from a different schema (${existing.schemaHash.slice(0, 12)}… != ${currentHash.slice(0, 12)}…); it is left as is${dependent ? ` (--only ${dependent.only} --force-new --same-group registers the current one)` : ''}`);
       }

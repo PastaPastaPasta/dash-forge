@@ -191,7 +191,9 @@ NEEDS = {
     'mainnet_aud': ('vis_collab', 'import_provenance', 'member_verdicts'),
     'mainnet_vis_via_repo': ('vis_core', 'vis_collab', 'hook_public'),
     'mainnet_member_role': ('member_roles', 'member_verdicts', 'import_provenance'),
-    'mainnet_bot_role': ('member_roles', 'wrap_member'),
+    # without L2 a role-4 row passes the role-blind asMember leaf, and so memberVerdict and
+    # i_provenance (DESIGN §8.2 row 15 is C2 + L2)
+    'mainnet_bot_role': ('member_roles', 'wrap_member', 'mainnet_member_role'),
     'mainnet_maint_kinds': ('member_roles',),
     'mainnet_check_aud': ('private_ci',),
     'mainnet_event_kinds': ('member_roles', 'event_as_maintainer'),
@@ -199,7 +201,7 @@ NEEDS = {
     'mainnet_event_target_aud': ('mainnet_aud',),
     'mainnet_author_event_enc': ('mainnet_aud',),
     # a bot's push gate admits role 4 rows, and forge-core holds it only with label, topic and
-    # packMirror moved to forge-meta (DESIGN rev 4.1 §8.3: core 17,769 B with them out)
+    # packMirror moved to forge-meta (create transition 18,129 B with them out, about 21 KB without)
     'mainnet_bot_push': ('mainnet_bot_role', 'layout_meta'),
 }
 # The RC2 items with a flag: forge-contracts/schema/variants.py validates every combination.
@@ -920,7 +922,9 @@ def build(flags):
         for t in ('issue', 'patch', 'comment', 'review'):
             s = ld[t]
             add_prop(s, 'aud', {"type": "integer", "minimum": 1, "maximum": 2})
-            s['dependentRequired'] = {"aud": ["enc"], "enc": ["epoch", "aud"]}
+            dr = s.setdefault('dependentRequired', {})
+            dr['aud'] = ["enc"]
+            dr['enc'] = dr.get('enc', []) + ["aud"]
             pc = s['propertyConstraints']
             pc['audMember'] = {"ifThen": [{"equal": ["aud", 1]}, {"present": "asMember"}]}
             pc['p_sealedIfPrivate'] = {"anyOf": [{"notEqual": ["vis", {"const": "private"}]},
@@ -1014,7 +1018,7 @@ def build(flags):
         ae = md['authorEvent']
         add_prop(ae, 'enc', {"$ref": "#/$defs/enc"})
         add_prop(ae, 'epoch', {"$ref": "#/$defs/u32"})
-        ae['dependentRequired'] = {"enc": ["epoch"]}
+        ae.setdefault('dependentRequired', {})['enc'] = ["epoch"]
         ae['propertyConstraints']['noPlain'] = {"anyOf": [{"absent": "enc"}, {"absent": "value"}]}
         if 'retargetValue' in ae['propertyConstraints']:
             # mainnet_retarget_value: a sealed retarget carries its base inside enc
@@ -1063,9 +1067,10 @@ def build(flags):
             {"anyOf": [{"present": "pg"}, {"present": "pp"}]},
             {"anyOf": [{"absent": "pp"}, {"startsWith": ["refName", "gp"]}]},
             {"anyOf": [{"absent": "pg"}, {"present": "enc"}]}]}, {"equal": ["r", 1]}]}
-        # The time check is a rule of its own, so botGrant reads no time and is judged before
-        # signing and by the offline vectors (a rule reading $createdAt is judged on chain only).
-        # A bot's update without gu fails the grant's `where {"until": "gu"}` (until is required).
+        # The time check is a rule of its own, so botGrant reads no time and the offline vectors
+        # judge it (contract-validate gives no times; a node judges grantLive with the block's,
+        # an SDK pre-check with the device clock). A bot's update without gu fails the grant's
+        # `where {"until": "gu"}` (until is required).
         ru['propertyConstraints']['grantLive'] = {"anyOf": [{"absent": "gu"}, {"lessThanOrEqual": ["$createdAt", "gu"]}]}
         # Packs and chunks admit the bot's row (r = 4: the writer leaf proves role 4) for the push
         # and long-body kinds only, never superseding others' packs; raising r alone would also
@@ -1113,9 +1118,11 @@ def _defs_used(contract):
 def split_meta(contracts, bot_push):
     """D44 (DESIGN rev 4.1 §8.3 item 0): move META_TYPES into forge-meta, registered last and
     enrolled in the same group. None of them is read by a rule, a total, a derived index or a
-    reference of its old contract (checked below), so the move changes no consensus rule; their
-    own references into their old contract name it by id (a later contract may refer to an earlier
-    one, never the reverse: book contract-keywords/refers-to.md:311,328 at v5.0.0-beta.3)."""
+    reference of its old contract, so the move changes no consensus rule. A reference left behind is
+    refused below; a total or a derived index reads only its own contract, so one left behind would
+    fail the registration parse (contract-validate). Their own references into their old contract
+    name it by id (a later contract may refer to an earlier one, never the reverse: book
+    contract-keywords/refers-to.md:311,328 at v5.0.0-beta.3)."""
     meta = {"$formatVersion": "1", "id": contracts['forge-core']['id'], "ownerId": contracts['forge-core']['ownerId'],
             "version": 1, "description": "Dash Forge v2 meta: repo keys, bans, labels, topics, pack mirrors, profiles, follows",
             "schemaDefs": {}, "documentSchemas": {}}
