@@ -9,9 +9,11 @@ name: Contracts
 # items, every combination of the RC2 flags (forge-contracts/schema/variants.py), and — for
 # each contract, which only ever changes by an in-place DataContractUpdate (platform-parity-spec
 # §6, UPDATE-1) — that the update from its registered schema is accepted. negative.sh then proves the
-# validator refuses each broken rule the design relies on. Last, every seed and verify script
-# runs against an in-memory chain (seed-offline.mjs), and each document it writes is judged the
-# same way.
+# validator refuses each broken rule the design relies on. The four-contract mainnet set
+# (`build.py --mainnet`: forge-meta and the mixed-visibility items of dash-forge-qa
+# design/mixed-visibility/DESIGN.md rev 4.1 §8.3) gets the same checks, and variants.py runs every
+# combination of its items. Last, every seed and verify script runs against an in-memory chain
+# (seed-offline.mjs), and each document it writes is judged the same way.
 on:
   pull_request:
     paths:
@@ -56,7 +58,11 @@ jobs:
         run: |
           python3 forge-contracts/schema/wherecheck.py
           python3 forge-contracts/schema/wherecheck.py --self-test
-      # The toolchain platform v5.0.0-beta.1 pins (its rust-toolchain.toml)
+          python3 forge-contracts/schema/build.py --mainnet --out "$RUNNER_TEMP/mainnet"
+          python3 forge-contracts/schema/vectors.py --mainnet --out "$RUNNER_TEMP/mainnet-vectors"
+          python3 forge-contracts/schema/wherecheck.py "$RUNNER_TEMP/mainnet"
+          python3 forge-contracts/schema/wherecheck.py --self-test "$RUNNER_TEMP/mainnet"
+      # The toolchain platform v5.0.0-beta.3 pins (its rust-toolchain.toml)
       - name: Install Rust 1.98.1
         run: rustup toolchain install 1.98.1 --profile minimal
       - uses: actions/cache@v4
@@ -65,27 +71,36 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target-contract-validate
-          key: contract-validate-${{ hashFiles('tools/contract-validate/Cargo.lock') }}
+          key: contract-validate-release-${{ hashFiles('tools/contract-validate/Cargo.lock') }}
+      # Release: variants.py runs it on every mainnet flag combination (about 1,700 runs)
       - name: Build the validator
-        run: cargo +1.98.1 build -q --locked --manifest-path tools/contract-validate/Cargo.toml
+        run: cargo +1.98.1 build -q --release --locked --manifest-path tools/contract-validate/Cargo.toml
       # registered/<contract>.v1.json are the schemas registered fresh at the v5 re-cut (devnet sakura, 2026-10-01): every
       # later change to any of the three must stay an in-place update of them (UPDATE-1, roadmap D4)
       - name: Validate forge-core, forge-collab and forge-community (each as an update of its registered schema)
         run: |
-          "$CARGO_TARGET_DIR/debug/contract-validate" --vectors forge-contracts/vectors/rc1 \
+          "$CARGO_TARGET_DIR/release/contract-validate" --vectors forge-contracts/vectors/rc1 \
             forge-contracts/contracts/forge-core.json \
             --expect-update forge-contracts/contracts/registered/forge-core.v1.json \
             forge-contracts/contracts/forge-collab.json \
             --expect-update forge-contracts/contracts/registered/forge-collab.v1.json \
             forge-contracts/contracts/forge-community.json \
             --expect-update forge-contracts/contracts/registered/forge-community.v1.json
+      # The mainnet registration: four contracts, forge-meta last, each keeping >= 2,000 B of room (D44)
+      - name: Validate the four-contract mainnet set
+        run: |
+          python3 forge-contracts/schema/build.py --mainnet --out "$RUNNER_TEMP/mainnet" \
+            --validate "$CARGO_TARGET_DIR/release/contract-validate"
+          "$CARGO_TARGET_DIR/release/contract-validate" --vectors "$RUNNER_TEMP/mainnet-vectors" \
+            "$RUNNER_TEMP"/mainnet/forge-{core,collab,community,meta}.json
       - name: Negative mutations are refused
         run: tools/contract-validate/negative.sh
       # RC2: S1, S2, S3, C1 and MOD are build.py flags decided at registration (fee probes), so every
       # combination of them must validate (with its own vectors) and fit the budget; so must each
-      # combination of the rider flags (QW-069, QW2-010) with every RC2 item on
-      - name: Every RC2 flag combination validates
-        run: python3 forge-contracts/schema/variants.py "$CARGO_TARGET_DIR/debug/contract-validate"
+      # combination of the rider flags (QW-069, QW2-010) with every RC2 item on, and every allowed
+      # combination of the mainnet items (build.MV_FLAGS), with and without forge-meta
+      - name: Every RC2 and mainnet flag combination validates
+        run: python3 forge-contracts/schema/variants.py "$CARGO_TARGET_DIR/release/contract-validate"
       # The RC2 registration fee probes (rc1-fee-probe.mjs --rc2): their six throwaway contracts,
       # cut from the build.py variants, differ in the gated item alone and parse under v5, and the
       # documents the live run writes are accepted
@@ -93,7 +108,7 @@ jobs:
         run: |
           node --test forge-contracts/scripts/lib/rc2-probe.test.mjs
           node forge-contracts/scripts/rc1-fee-probe.mjs --rc2 --emit "$RUNNER_TEMP/rc2-probe"
-          "$CARGO_TARGET_DIR/debug/contract-validate" --vectors "$RUNNER_TEMP/rc2-probe/vectors" \
+          "$CARGO_TARGET_DIR/release/contract-validate" --vectors "$RUNNER_TEMP/rc2-probe/vectors" \
             "$RUNNER_TEMP"/rc2-probe/contracts/rc2-*.json
       # The seed and verify scripts, run against an in-memory chain: the rules that need chain
       # state (references, dense numbers, transitions, totals) are judged in JS, then rs-dpp
@@ -102,11 +117,13 @@ jobs:
         run: |
           node --test forge-contracts/scripts/lib/offline-chain.test.mjs
           node forge-contracts/scripts/seed-offline.mjs --out "$RUNNER_TEMP/seed-vectors"
-          "$CARGO_TARGET_DIR/debug/contract-validate" --vectors "$RUNNER_TEMP/seed-vectors" \
+          "$CARGO_TARGET_DIR/release/contract-validate" --vectors "$RUNNER_TEMP/seed-vectors" \
             forge-contracts/contracts/forge-core.json \
             forge-contracts/contracts/forge-collab.json \
             forge-contracts/contracts/forge-community.json
       # Offline: the deploy script's id derivation matches the validator's known answer, and every
       # schema it registers loads with forge-core's id substituted (no SDK, no network)
       - name: Deploy script self-test
-        run: node forge-contracts/scripts/deploy-v2.mjs --self-test
+        run: |
+          node forge-contracts/scripts/deploy-v2.mjs --self-test
+          node forge-contracts/scripts/deploy-v2.mjs --self-test --contracts "$RUNNER_TEMP/mainnet"

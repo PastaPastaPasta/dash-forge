@@ -274,8 +274,11 @@ export const SHORT_URL_EXPAND_SOURCE = `function (pathname, base, reserved) {
     var ghRepo = dec(parts[2]);
     if (ghRepo === null || !${GITHUB_SEGMENT}.test(name) || !${GITHUB_SEGMENT}.test(ghRepo)) return null;
     var ghRest = parts.slice(3).join('/');
-    return base + '/github.com/?owner=' + encodeURIComponent(name) + '&name=' + encodeURIComponent(ghRepo.replace(/\\.git$/, '')) + (ghRest ? '&rest=' + encodeURIComponent(ghRest) : '');
+    return base + '/github.com/?owner=' + encodeURIComponent(name) + '&name=' + encodeURIComponent(ghRepo.replace(/\\.git$/i, '')) + (ghRest ? '&rest=' + encodeURIComponent(ghRest) : '');
   }
+  // A pasted clone URL ends in \`.git\`. No repo name does (the contract's \`nameNotDotGit\`), so one
+  // trailing \`.git\` is the clone form of the name, not part of it.
+  if (name.length > 4 && /\\.git$/i.test(name)) name = name.slice(0, -4);
   if (reserved.indexOf(owner.toLowerCase()) >= 0) return null;
   if (!${OWNER_SEGMENT}.test(owner) || !${NAME_SEGMENT}.test(name)) return null;
   var q = function (route, extra) {
@@ -355,15 +358,18 @@ export function expandShortPath(pathname: string, base: string, reserved: readon
     }
   }
   const owner = dec(parts[0]!)
-  const name = dec(parts[1]!)
+  let name = dec(parts[1]!)
   if (owner === null || name === null) return null
   const host = owner.toLowerCase()
   if ((host === 'github.com' || host === 'gh') && parts.length >= 3) {
     const ghRepo = dec(parts[2]!)
     if (ghRepo === null || !GITHUB_SEGMENT.test(name) || !GITHUB_SEGMENT.test(ghRepo)) return null
     const ghRest = parts.slice(3).join('/')
-    return `${base}/github.com/?owner=${encodeURIComponent(name)}&name=${encodeURIComponent(ghRepo.replace(/\.git$/, ''))}${ghRest ? `&rest=${encodeURIComponent(ghRest)}` : ''}`
+    return `${base}/github.com/?owner=${encodeURIComponent(name)}&name=${encodeURIComponent(ghRepo.replace(/\.git$/i, ''))}${ghRest ? `&rest=${encodeURIComponent(ghRest)}` : ''}`
   }
+  // A pasted clone URL ends in `.git`. No repo name does (the contract's `nameNotDotGit`), so one
+  // trailing `.git` is the clone form of the name, not part of it.
+  if (name.length > 4 && /\.git$/i.test(name)) name = name.slice(0, -4)
   if (reserved.includes(owner.toLowerCase())) return null
   if (!OWNER_SEGMENT.test(owner) || !NAME_SEGMENT.test(name)) return null
   const q = (route: string, extra: readonly string[]): string => {
