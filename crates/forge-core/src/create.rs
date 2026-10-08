@@ -487,9 +487,7 @@ pub async fn create_repo(
     }
 
     // 4. members-only content, for a public repo this run (or an interrupted one) created
-    let created_now = steps.iter().any(|(_, o)| *o != StepOutcome::Existed);
-    let members_only = if opts.members_only && opts.visibility == Visibility::Public && created_now
-    {
+    let members_only = if turn_on_members_only_now(&opts, &steps) {
         Some(turn_on_members_only(client, identity, bridge, &repo, &owner).await)
     } else {
         None
@@ -503,6 +501,15 @@ pub async fn create_repo(
         members_only,
         cost_credits: balance_before.saturating_sub(balance_after),
     })
+}
+
+/// Whether step 4 runs: asked for, a public repository, and this run wrote or finished one of its
+/// documents (a step `Created`, or `Resumed` from an interrupted run's journal). A re-run of a
+/// finished create, where every step `Existed`, turns nothing on.
+fn turn_on_members_only_now(opts: &CreateRepoOpts, steps: &[(&str, StepOutcome)]) -> bool {
+    opts.members_only
+        && opts.visibility == Visibility::Public
+        && steps.iter().any(|(_, o)| *o != StepOutcome::Existed)
 }
 
 /// Step 4: turn members-only content on in the repository just created. The owner's
@@ -895,6 +902,51 @@ mod tests {
             protect_problem(&opts).is_none(),
             "refs/heads/ + 89 is exactly 100"
         );
+    }
+
+    /// Step 4 runs for an asked-for public create that wrote or finished something; never for a
+    /// re-run of a finished one, a private repository, or a create that did not ask.
+    #[test]
+    fn members_only_runs_only_for_a_create_this_run_wrote_or_finished() {
+        use StepOutcome::{Created, Existed, Resumed};
+        let asked = CreateRepoOpts {
+            members_only: true,
+            ..CreateRepoOpts::public("p")
+        };
+        let steps =
+            |o: [StepOutcome; 3]| vec![("repo", o[0]), ("maintainer", o[1]), ("config", o[2])];
+        assert!(turn_on_members_only_now(
+            &asked,
+            &steps([Created, Created, Created])
+        ));
+        // a killed run's journal replays: Resumed, and step 4 runs again
+        assert!(turn_on_members_only_now(
+            &asked,
+            &steps([Resumed, Resumed, Resumed])
+        ));
+        // a repo that stood without its config: finishing it counts
+        assert!(turn_on_members_only_now(
+            &asked,
+            &steps([Existed, Existed, Created])
+        ));
+        // a re-run of a finished create
+        assert!(!turn_on_members_only_now(
+            &asked,
+            &steps([Existed, Existed, Existed])
+        ));
+        // not asked (forks, imports, --no-members-only), or private
+        assert!(!turn_on_members_only_now(
+            &CreateRepoOpts::public("p"),
+            &steps([Created, Created, Created])
+        ));
+        let private = CreateRepoOpts {
+            visibility: Visibility::Private,
+            ..asked
+        };
+        assert!(!turn_on_members_only_now(
+            &private,
+            &steps([Created, Created, Created])
+        ));
     }
 
     #[test]

@@ -151,6 +151,8 @@ test('s0. create the scratch repo', async ({ browser }) => {
   test.skip(Boolean(process.env['E2E_REFUSAL_REPO']), 'reusing E2E_REFUSAL_REPO')
   const page = await signedInWithKey(browser, await limitedKey(1_000_000_000n), '/new/')
   await page.getByLabel('Repository name').fill(SCRATCH)
+  // Not about members-only content: create without it (on by default where the browser holds a key).
+  await page.getByTestId('repo-members-only').uncheck()
   await page.getByRole('button', { name: 'Create repository' }).click()
   const dialog = page.getByRole('dialog')
   await expect(dialog.getByTestId('cost-preview')).toBeVisible()

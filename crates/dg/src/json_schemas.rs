@@ -295,8 +295,6 @@ fn search_queries_match() {
     );
 }
 
-/// `dg repo create` / `dg init`: `steps` maps each document to what this run did. `dg repo
-/// fork`: `refsWritten` lists the refs; an incomplete fork is printed with its error.
 /// `dg repo create` / `dg init`: `membersOnly` in each outcome (on, off and why, failed with the
 /// error block, null for a re-run that created nothing).
 #[test]
@@ -358,6 +356,8 @@ fn create_members_only_matches() {
     }
 }
 
+/// `dg repo create` / `dg init`: `steps` maps each document to what this run did. `dg repo
+/// fork`: `refsWritten` lists the refs; an incomplete fork is printed with its error.
 #[test]
 fn create_steps_and_forks_match() {
     use forge_core::create::{CreateRepoResult, StepOutcome};

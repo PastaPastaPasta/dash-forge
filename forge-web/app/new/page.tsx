@@ -60,6 +60,7 @@ import { previewCredits, sumPreviews } from '@/lib/sdk/cost'
 import { encryptionOps } from '@/lib/auth/encryption-key'
 import { onEncryptionKeyChange } from '@/lib/auth/vault'
 import { useAsync } from '@/hooks/use-async'
+import { toast } from '@/hooks/use-toasts'
 import type { Visibility } from '@/lib/rules/v2'
 import { errorMessage } from '@/lib/utils'
 import { onRadioGroupKeyDown, radioTabIndex } from '@/components/ui/radio-group'
@@ -154,19 +155,23 @@ export default function NewRepoPage(): JSX.Element {
   const usesKey = isPrivate || withMembers
   // A reloaded tab holds the signing key only: the encryption key needs an unlock here first.
   const needsUnlock = usesKey && unlockScope === 'signing'
+  // A public create waits only for an unlock: a key read that is slow or fails never holds it up
+  // (turning members-only content on then fails on its own, and the repo page offers it again).
   const privateBlocked = !usesKey
     ? null
     : needsUnlock
       ? isPrivate
         ? 'Unlock this tab to use your encryption key.'
         : 'Unlock this tab to use your encryption key, or untick members-only content.'
-      : ops.error !== null
-        ? `Couldn't read your encryption key: ${ops.error}`
-        : noKey
-          ? 'Add your encryption key to this browser first (Settings → Private repos).'
-          : ops.data == null
-            ? 'Checking your encryption key…'
-            : null
+      : !isPrivate
+        ? null
+        : ops.error !== null
+          ? `Couldn't read your encryption key: ${ops.error}`
+          : noKey
+            ? 'Add your encryption key to this browser first (Settings → Private repos).'
+            : ops.data == null
+              ? 'Checking your encryption key…'
+              : null
   const [confirm, setConfirm] = useState<CreateRepoInput | null>(null)
   const [progress, setProgress] = useState<Partial<Record<CreateRepoStep, StepState>> | null>(null)
   const [pending, setPending] = useState<RepoCreationJournal[]>([])
@@ -252,8 +257,10 @@ export default function NewRepoPage(): JSX.Element {
     } finally {
       reloadPending()
     }
-    // Members-only content that did not turn on: the repo page says so and offers to turn it on.
-    const membersFailed = result.membersOnly?.on === false ? '&membersOnly=failed' : ''
+    // Members-only content that did not turn on: say why here, and the repo page offers it again.
+    const failed = result.membersOnly?.on === false ? result.membersOnly.error : null
+    if (failed !== null) toast({ title: "Members-only content isn't on yet", detail: failed, tone: 'warn' })
+    const membersFailed = failed !== null ? '&membersOnly=failed' : ''
     router.push(`/repo/?owner=${encodeURIComponent(identity ?? '')}&name=${encodeURIComponent(result.name)}&created=1${membersFailed}`)
   }
 

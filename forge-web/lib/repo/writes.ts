@@ -1782,9 +1782,10 @@ export async function createRepo(
     return firstId(documents)
   }
   let repoId = await existingRepo()
-  // Members-only content is turned on only for a repo this creation makes (or an interrupted
-  // one made): typing the name of a repo that already stands finishes nothing new.
-  const creating = previous !== undefined || repoId === null
+  // Members-only content is turned on only for a repo this creation makes or finishes (or an
+  // interrupted one made): typing the name of a repo that already stands writes nothing new. As
+  // `dg`: any document this run writes, or a journal it resumes, counts.
+  let wrote = previous !== undefined || repoId === null
   await step('repo', async () => {
     if (repoId !== null) return
     const data: Record<string, unknown> = { name, visibility }
@@ -1810,6 +1811,7 @@ export async function createRepo(
   // 2. the owner's maintainer document (unique per repo + member)
   await step('maintainer', async () => {
     if ((await findMembership(sdk, repo, 'maintainer', ownerId)) !== null) return
+    wrote = true
     try {
       await createDocumentIdempotent(sdk, auth, {
         contractId: forge.core,
@@ -1833,6 +1835,7 @@ export async function createRepo(
     }
     const { documents } = await queryDocumentsWithProof(sdk, repoSource(repo).repoQuery(DOC.config, { limit: 1 }))
     if (documents.length > 0) return
+    wrote = true
     await createDocumentIdempotent(sdk, auth, {
       contractId: forge.core,
       documentType: DOC.config,
@@ -1852,7 +1855,7 @@ export async function createRepo(
   // turn it on. A closed tab keeps the journal, so "Finish creating" runs it again, reusing a
   // self-wrap that landed.
   let membersOnly: CreateRepoResult['membersOnly']
-  if (creating && createStepCount(input) === 4) {
+  if (wrote && createStepCount(input) === 4) {
     try {
       await step('members', async () => {
         const enable = privateCreate?.membersOnly

@@ -794,11 +794,14 @@ export function MembersContentSetting({ home, maintainer }: { home: RepoHome; ma
 /**
  * After a create whose "Turn on members-only content now" did not finish (`/new` adds
  * `membersOnly=failed`): the repo stands without it, so say so and offer the sheet, while it is
- * still off.
+ * still off. Only its owner sees it.
  */
 export function MembersOnlyCreateNotice({ home }: { home: RepoHome }): JSX.Element | null {
   const [turnOn, setTurnOn] = useState(false)
-  if (useParam('membersOnly') !== 'failed' || home.repo.visibility !== 'public' || home.lane?.access !== 'none') return null
+  const { identity } = useAuth()
+  const failed = useParam('membersOnly') === 'failed'
+  // Only for the owner who just created it: a shared link shows nobody else this.
+  if (!failed || identity !== home.repo.ownerId || home.repo.visibility !== 'public' || home.lane?.access !== 'none') return null
   return (
     <div className="mb-4 flex flex-wrap items-center gap-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense" role="status" data-testid="members-only-create-notice">
       <Lock className="h-3.5 w-3.5 shrink-0 text-anvil-500 dark:text-anvil-400" aria-hidden />

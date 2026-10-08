@@ -841,6 +841,11 @@ fn confirm_plan(
                 "  nothing to create (finishing a create an earlier run left undone is at most {})",
                 cost_line(create_quote, price)
             );
+            if visibility == forge_core::rules::v2::Visibility::Public
+                && plan.members == MembersPlan::On
+            {
+                println!("  if it was left undone, finishing it turns on members-only content");
+            }
         } else if opts.private {
             println!("Creating {who}");
             println!(
@@ -1058,7 +1063,9 @@ pub(crate) fn members_json(
 /// Why turning members-only content on failed, with the command that turns it on first.
 fn members_error(e: &std::sync::Arc<forge_core::Error>, repo: &str) -> UserError {
     let mut user = forge_core::user_error::classify(
-        [&**e as &(dyn std::error::Error + 'static)],
+        std::iter::successors(Some(&**e as &(dyn std::error::Error + 'static)), |e| {
+            e.source()
+        }),
         &forge_core::user_error::ErrorContext {
             goal: Some("members-only content not turned on"),
             repo: Some(repo),

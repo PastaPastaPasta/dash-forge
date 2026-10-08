@@ -200,19 +200,23 @@ describe('the hidden-items note of a public repo', () => {
 })
 
 describe('after a create whose members-only step failed', () => {
-  it('says so and offers Turn on while it is still off; nothing otherwise', async () => {
+  it('says so and offers Turn on while it is still off, to its owner only; nothing otherwise', async () => {
     params = { membersOnly: 'failed' }
+    // someone else's repo (a shared link): no notice
     act(() => root.render(<MembersOnlyCreateNotice home={homeWith({ access: 'none' })} />))
+    expect(q('members-only-create-notice')).toBeNull()
+    const mine = (lane: MembersAccess): RepoHome => ({ repo: { ...repo, ownerId: 'me' }, lane }) as unknown as RepoHome
+    act(() => root.render(<MembersOnlyCreateNotice home={mine({ access: 'none' })} />))
     expect(q('members-only-create-notice')?.textContent).toContain("members-only content isn't on yet")
     act(() => q('create-notice-turn-on')!.click())
     await flush()
     expect(q('confirm')?.textContent).toContain('Turn on members-only content?')
     // on by now (another tab turned it on): no notice
-    act(() => root.render(<MembersOnlyCreateNotice home={homeWith({ access: 'no-key' })} />))
+    act(() => root.render(<MembersOnlyCreateNotice home={mine({ access: 'no-key' })} />))
     expect(q('members-only-create-notice')).toBeNull()
     // no failure reported: no notice
     params = {}
-    act(() => root.render(<MembersOnlyCreateNotice home={homeWith({ access: 'none' })} />))
+    act(() => root.render(<MembersOnlyCreateNotice home={mine({ access: 'none' })} />))
     expect(q('members-only-create-notice')).toBeNull()
   })
 })

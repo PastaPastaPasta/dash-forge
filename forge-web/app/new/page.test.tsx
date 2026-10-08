@@ -41,8 +41,15 @@ vi.mock('@/contexts/auth-context', () => ({ useAuth: () => ({ identity: 'me', si
 vi.mock('@/hooks/use-sdk', () => ({ useSdk: () => ({ sdk: {}, ready: true }) }))
 vi.mock('@/hooks/use-write-guard', () => ({ useWriteGuard: () => ({ disabledReason: null, check: () => true }) }))
 const ops = { keyId: 4, keyIds: [4] }
-let held: typeof ops | null = ops
-vi.mock('@/lib/auth/encryption-key', () => ({ encryptionOps: async () => held }))
+let held: typeof ops | null | Error = ops
+vi.mock('@/lib/auth/encryption-key', () => ({
+  encryptionOps: async () => {
+    if (held instanceof Error) throw held
+    return held
+  },
+}))
+const toast = vi.fn()
+vi.mock('@/hooks/use-toasts', () => ({ toast: (t: unknown) => toast(t) }))
 vi.mock('@/lib/auth/vault', () => ({ onEncryptionKeyChange: () => () => undefined }))
 const createRepo = vi.fn()
 vi.mock('@/lib/repo', async (orig) => ({
@@ -66,6 +73,7 @@ beforeEach(() => {
   held = ops
   unlockScope = 'full'
   push.mockReset()
+  toast.mockReset()
   createRepo.mockReset()
   createRepo.mockResolvedValue({ repoId: 'R', name: 'demo', membersOnly: { on: true } })
 })
@@ -156,10 +164,19 @@ describe('/new: members-only content at creation', () => {
     expect(createButton().disabled).toBe(false)
   })
 
-  it('a failed members-only step opens the repo with the notice', async () => {
+  it('a failed members-only step says why and opens the repo with the notice', async () => {
     createRepo.mockResolvedValue({ repoId: 'R', name: 'demo', membersOnly: { on: false, error: 'quorum not found' } })
     await render()
     await createIt()
+    expect(toast).toHaveBeenCalledWith(expect.objectContaining({ detail: 'quorum not found', tone: 'warn' }))
     expect(push.mock.calls[0]?.[0]).toContain('&membersOnly=failed')
+  })
+
+  it('a key read that fails never holds up a public create', async () => {
+    held = new Error('forge-collab could not be read')
+    await render()
+    expect(box().checked).toBe(true)
+    expect(q('members-key-error')?.textContent).toContain('forge-collab could not be read')
+    expect(createButton().disabled).toBe(false)
   })
 })
