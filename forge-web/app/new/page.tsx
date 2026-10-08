@@ -227,7 +227,7 @@ export default function NewRepoPage(): JSX.Element {
     ...(withMembers ? { membersOnly: true } : {}),
   })
   const costOf = (i: CreateRepoInput) =>
-    i.visibility !== 'private' && i.membersOnly === true ? sumPreviews([previewRepoCreate(i, firsts), previewCredits(MEMBERS_ONLY_CREDITS)]) : previewRepoCreate(i, firsts)
+    createStepCount(i) === 4 ? sumPreviews([previewRepoCreate(i, firsts), previewCredits(MEMBERS_ONLY_CREDITS)]) : previewRepoCreate(i, firsts)
   const cost = costOf(name.trim() && nameError === null && branchError === null ? input() : { name: 'x', ...(withMembers ? { membersOnly: true } : {}) })
 
   const create = async (i: CreateRepoInput): Promise<void> => {
