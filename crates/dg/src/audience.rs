@@ -108,6 +108,9 @@ pub fn why_hint(repo: &RepoRef, why: Unopened) -> Option<String> {
             Some("the repository's keys could not be read just now; try again in a moment".to_string())
         }
         Unopened::Locked => Some(crate::common::UNLOCK_HINT.to_string()),
+        Unopened::NewerVersion => {
+            Some("written by a newer version of Forge; update dg to read it".to_string())
+        }
     }
 }
 
@@ -147,6 +150,7 @@ pub fn why_word(why: Unopened) -> &'static str {
         Unopened::NotForThisRepo => "notForThisRepo",
         Unopened::KeysUnreadable => "keysUnreadable",
         Unopened::Locked => "locked",
+        Unopened::NewerVersion => "newerVersion",
     }
 }
 

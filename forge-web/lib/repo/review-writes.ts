@@ -21,7 +21,7 @@ import { isLegalRefName, isRc1OidHex } from '../rules'
 import { RoleRefusedError } from '../rules/roles'
 import { rerunFields } from '../rules/ci-rerun'
 import { isMemberGateRefusal } from './role-claim'
-import { anchorOf, editKeepsAudience, groupReviewComments, isAuthorKind, type AnchorFields, type Audience, type Policy } from '../rules/v2'
+import { anchorOf, editKeepsAudience, groupReviewComments, isAuthorKind, issueStateV2, type AnchorFields, type Audience, type Policy } from '../rules/v2'
 import type { EventKind } from '../rules'
 import {
   precheckEdit,
@@ -36,7 +36,7 @@ import {
 } from '../sdk'
 import { DOC, asIdentifierString, byteFieldToHex, contentDocOf, num, str, type RepoRef } from './contract'
 import { childAudience, membersWriter, repoHasMembersKey, sealMembersEdit, storedAudience, type MembersWriter } from './members-writes'
-import { invalidateRepoFeed, readReviews } from './issues'
+import { invalidateRepoFeed, readReviews, readTargetLog } from './issues'
 import { readMemberships } from './members'
 import { readRunners } from './checks'
 import { PrivateWriteError, sealEdit } from './private-writes'
@@ -222,6 +222,9 @@ export function commentData(input: CommentInput, signer: string): Record<string,
 
 /** Post one comment (a "single comment", review-parity R2). */
 export async function postComment(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, input: CommentInput): Promise<WriteResult> {
+  // A maintainer's ban (UPDATE-1): inline comments, thread replies and suggestions are comments,
+  // refused before signing as `dg` does (E610).
+  await refuseIfBanned(sdk, repo, auth.network, auth.identityId)
   // A chosen audience is checked against the comment's parents first (DESIGN §3.3): a public reply
   // in a members-only thread is refused, never written.
   const options =
@@ -789,6 +792,34 @@ export async function setLabel(
 ): Promise<WriteResult> {
   const data = targetEventData(input.target, input.add ? 'labelAdd' : 'labelRemove', { value: input.label.trim() })
   return write(sdk, auth, repo, DOC.event, data, input.intent)
+}
+
+/**
+ * The labels `targetId` carries now, folded from its member events as read fresh. Null when they
+ * cannot be told (a private repo's sealed label values not readable here): the caller then goes
+ * by what it already had.
+ */
+export async function readCurrentLabels(sdk: EvoSDK, repo: RepoRef, targetId: string): Promise<ReadonlySet<string> | null> {
+  const log = await readTargetLog(sdk, repo, targetId)
+  if ((log.hiddenValues ?? 0) > 0) return null
+  // The fold the lists and pages use (events in their total order), not a second copy of it.
+  return new Set(issueStateV2(0, log.events).labels)
+}
+
+/**
+ * {@link setLabel} that first reads the target's labels and writes nothing when it is already as
+ * asked (someone else added or removed the label since the list was read): null, nothing spent.
+ * A label that cannot be read is written as {@link setLabel} would.
+ */
+export async function setLabelIfNeeded(
+  sdk: EvoSDK,
+  auth: WriteAuth,
+  repo: RepoRef,
+  input: { target: WriteTarget; label: string; add: boolean; intent?: string },
+): Promise<WriteResult | null> {
+  const now = await readCurrentLabels(sdk, repo, input.target.id)
+  if (now !== null && now.has(input.label.trim()) === input.add) return null
+  return setLabel(sdk, auth, repo, input)
 }
 
 /**

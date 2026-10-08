@@ -43,6 +43,7 @@ import type { Event } from '../rules'
 import type { WriteAuth } from '../sdk'
 import type { RepoRef } from './contract'
 import { hideData, hiddenRowIds, hiddenThreadIds, setHidden, threadHidesOf, threadModeration } from './moderation'
+import { isHiddenByHide } from '../view/issues-view'
 import { foldModeration, moderationBlocked, moderationInput, withBans } from './moderation-fold'
 
 const ALICE = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
@@ -129,6 +130,21 @@ describe('bans applied after the thread read', () => {
     expect(m.thread).toMatchObject({ by: CAROL, via: 'ban', banReason: 1 })
     expect(m.items[COMMENT]).toMatchObject({ via: 'item' })
     expect(m.items['c2']).toMatchObject({ via: 'ban' })
+  })
+
+  it("offers hide controls from the maintainers' hides only, never from a ban's collapse (Q5-B07)", () => {
+    const m = foldModeration(withBans(input(), [ban(CAROL)]))
+    // The thread is collapsed by the ban alone: not hidden for the controls, so Unhide is not offered.
+    expect(m.thread?.via).toBe('ban')
+    expect(isHiddenByHide(m, null)).toBe(false)
+    expect(moderationBlocked(input(), CAROL, null, !isHiddenByHide(m, null))).toBeNull()
+    // A comment a maintainer hid is hidden; one only the ban collapses is not.
+    expect(isHiddenByHide(m, COMMENT)).toBe(true)
+    expect(isHiddenByHide(m, 'c2')).toBe(false)
+    expect(isHiddenByHide(undefined, null)).toBe(false)
+    // A maintainer's hide of the thread on top of the ban is a hide.
+    const both = foldModeration(withBans(moderationInput({ events: [hide('e2', CAROL, null, 11)], thread: { id: ISSUE, author: BOB }, owner: ALICE, members, proved: false, comments: [] }), [ban(CAROL)]))
+    expect(isHiddenByHide(both, null)).toBe(true)
   })
 
   it('judges the bans with the members the thread was read with, and applies none without them', () => {

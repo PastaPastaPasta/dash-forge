@@ -39,7 +39,12 @@ const KEPT_TEXTS = 32
 async function fetchText(sdk: EvoSDK, repo: RepoRef, sha256: string, bytes: number): Promise<string> {
   const pack = await readPackCopies(sdk, repo, sha256, PACK_KIND.LONG_BODY, true)
   const cap = sizeCap(repo, bytes)
-  const fits = (m: PackManifest): boolean => (repo.visibility === 'private' ? m.sizeBytes <= cap : m.sizeBytes === cap)
+  // A public repository's copy is the text itself; one made public may also hold a copy sealed
+  // while it was private (`private-repos.md` §18.1), which opens only with the keys its owner
+  // published (`loadArtifactBytes`) and is otherwise skipped.
+  const sealedCap = sealedLength(bytes, 10)
+  const fits = (m: PackManifest): boolean =>
+    repo.visibility === 'private' ? m.sizeBytes <= cap : m.sizeBytes === cap || (m.sizeBytes > bytes && m.sizeBytes <= sealedCap)
   const copies = (pack?.copies ?? []).filter(fits)
   const first = copies[0]
   if (pack === null || first === undefined) throw new Error('no copy of it is recorded')

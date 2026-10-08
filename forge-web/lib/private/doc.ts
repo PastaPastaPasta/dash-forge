@@ -18,10 +18,19 @@ export const GRACE_BLOCKS = 240
 export const V1 = 0x01
 /** `enc` version of `config`, which carries `COMMIT_e` (§4.2). */
 export const V2 = 0x02
-/** `enc` version of members-only content in a public repository: AD-bound per-object key, key commitment (§4.1). */
+/**
+ * `enc` version of members-only content: AD-bound per-object key, key commitment (§4.1). Written
+ * in public repositories; readers also admit it in private ones (DESIGN D38).
+ */
 export const V3 = 0x03
 /** `enc` version of a specific-people letter (§4.1, `./named`), in either kind of repository, under `epoch = 0`. */
 export const V4 = 0x04
+/**
+ * The first `enc` version this client does not know (a bot's post, v0x05; a narrower branch's
+ * ref update, v0x06; anything later): a content document carrying one is shown as members-only
+ * and never opened (`unknownVersion`), so later envelopes do not break this reader.
+ */
+export const FIRST_UNKNOWN = 0x05
 const NONCE_LEN = 12
 const TAG_LEN = 16
 /** Smallest `enc`: version, nonce, tag (§4.1). */
@@ -84,10 +93,11 @@ export function padded(type: PrivateDocType, records: Uint8Array, room: number):
 export interface PrivateDoc {
   readonly type: PrivateDocType
   /**
-   * The document's `vis`, which consensus holds equal to its repository's visibility. It decides
-   * which content envelopes a reader admits: v0x01 only in a private repository, v0x03 only in a
-   * public one (v0x04 in either; config is v0x02 in both). Absent means private, so a caller that
-   * never sets it refuses members-only content rather than misreading it.
+   * The document's own `vis`, which consensus held equal to its repository's visibility when it
+   * was written. It decides which content envelopes a reader admits, whatever the repository is
+   * now (a repository made public keeps its earlier documents' `vis: "private"`, §18): v0x01 and
+   * v0x03 when private, v0x03 when public (v0x04 in either; config is v0x02 in both). Absent
+   * means private.
    */
   readonly vis?: 'public' | 'private'
   /** `$ownerId`. */
@@ -376,8 +386,10 @@ export function __unsafeSealMembersDocWithNonce(keys: EpochKeys, doc: PrivateDoc
 /**
  * Why a document is unreadable. `letter`: a well-framed specific-people letter (`enc` v0x04),
  * which the epoch keys cannot open; `./named`'s `openLetter` can, for its recipients.
+ * `unknownVersion`: an `enc` version this client does not know ({@link FIRST_UNKNOWN} on),
+ * written by a newer client for members (or fewer people); shown as members-only, never opened.
  */
-export type UnreadableReason = 'noEpoch' | 'noKey' | 'commitMismatch' | 'badTag' | 'late' | 'lateEdit' | 'letter'
+export type UnreadableReason = 'noEpoch' | 'noKey' | 'commitMismatch' | 'badTag' | 'late' | 'lateEdit' | 'letter' | 'unknownVersion'
 
 export type OpenResult =
   | { readonly status: 'readable'; readonly fields: DocFields }
@@ -434,10 +446,21 @@ export function letterFramed(doc: PrivateDoc, enc: Uint8Array): boolean {
 }
 
 /**
- * Whether `enc` has the shape its type and `vis` demand (§8.1 step 1): a private repository's
- * content is v0x01, a public repository's members-only content v0x03; a v0x01 `enc` in a public
- * repository or a v0x03 one in a private repository is malformed. A letter (v0x04) is framed
- * by {@link letterFramed}.
+ * Whether `enc` is a content envelope of a version this client does not know: a later client's
+ * members-only (or narrower) document, skipped and counted as members-only, never malformed
+ * (§4.1; forge-core `is_unknown_version`). Configs (and releases, which do not come here) have
+ * their own versions and stay strict.
+ */
+export function isUnknownVersion(type: PrivateDocType, enc: Uint8Array): boolean {
+  return type !== 'config' && enc.length > 0 && (enc[0] as number) >= FIRST_UNKNOWN
+}
+
+/**
+ * Whether `enc` has the shape its type and its own `vis` demand (§8.1 step 1): a private
+ * document's content is v0x01 or v0x03 (DESIGN D38), a public one's members-only content v0x03;
+ * a v0x01 `enc` on a public document is malformed. A letter (v0x04) is framed by
+ * {@link letterFramed}. A version from {@link FIRST_UNKNOWN} on is not framed here: see
+ * {@link openContent}.
  */
 function encShapeOk(doc: PrivateDoc, enc: Uint8Array): boolean {
   if (doc.type === 'config') return enc.length >= MIN_CONFIG_ENC && enc[0] === V2
@@ -446,7 +469,7 @@ function encShapeOk(doc: PrivateDoc, enc: Uint8Array): boolean {
     case V1:
       return !pub && enc.length >= MIN_ENC
     case V3:
-      return pub && enc.length >= MIN_MEMBERS_ENC
+      return enc.length >= MIN_MEMBERS_ENC
     case V4:
       return letterFramed(doc, enc)
     default:
@@ -589,6 +612,7 @@ function isHeight(h: number | undefined): h is number {
  * hold: a well-framed one is `letter` here and opens through `./named`'s `openLetter`.
  */
 export async function openContent(doc: StoredPrivateDoc, ctx: OpenContext): Promise<OpenResult> {
+  if (isUnknownVersion(doc.type, doc.enc)) return unreadable('unknownVersion')
   if (!encShapeOk(doc, doc.enc) || !isU32(doc.epoch)) return MALFORMED
   if (doc.enc[0] === V4) return unreadable('letter')
   const anchor = ctx.anchors.get(doc.epoch)

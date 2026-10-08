@@ -44,7 +44,7 @@ pub async fn run(ctx: &Ctx, cmd: &RepoKeysCommand) -> Result<()> {
 /// Dispatch a `repo members` subcommand.
 pub async fn run_members(ctx: &Ctx, cmd: &RepoMembersCommand) -> Result<()> {
     match cmd {
-        RepoMembersCommand::Enable { repo } => enable(ctx, repo).await,
+        RepoMembersCommand::Enable { repo } => Box::pin(enable(ctx, repo)).await,
         RepoMembersCommand::Status { repo } => members_status(ctx, repo).await,
     }
 }
@@ -81,6 +81,10 @@ fn alert_text(a: &Alert) -> String {
         ),
         Alert::EpochGap { epoch, author } => format!(
             "{} posted a config for epoch {epoch}, above a missing epoch number: it is not an epoch",
+            encode_identifier(*author)
+        ),
+        Alert::PublishedKeyMismatch { author, .. } => format!(
+            "{} published a key for this repo's history that doesn't match it: ignored",
             encode_identifier(*author)
         ),
         Alert::RotationRequired { epoch, members } if members.is_empty() => {

@@ -18,9 +18,8 @@ import type { MergeAudit } from '@/lib/rules/merge-audit'
 import type { ConfigDoc } from '@/lib/rules/types'
 import type { RepoRef } from '@/lib/repo'
 import type { HeadChecks } from '@/lib/repo/checks'
-import { ROLE_NOUN } from '@/lib/rules/roles'
 import type { PullThread } from '@/lib/view'
-import { UNMET_CAVEAT, auditHeadline, auditRows, auditedMerge, readMergeAudit } from '@/lib/view/merge-audit'
+import { UNMET_CAVEAT, auditHeadline, auditRows, auditedMerge, mergerRoleWords, readMergeAudit, uncountedBypassWhy } from '@/lib/view/merge-audit'
 import { cn } from '@/lib/utils'
 
 export function RulesAtMerge({
@@ -94,6 +93,11 @@ function AuditBody({ audit, thread }: { audit: MergeAudit; thread: PullThread })
           <Author identityId={audit.bypass.actor} /> recorded the bypass <Time ms={audit.bypass.createdAt} />
           {audit.bypass.value ? `: ${audit.bypass.value}.` : '.'}
         </p>
+      ) : audit.uncountedBypass !== null ? (
+        <p className="text-anvil-600 dark:text-anvil-300" data-testid="rules-at-merge-uncounted-bypass">
+          <Author identityId={audit.uncountedBypass.event.actor} /> recorded a bypass <Time ms={audit.uncountedBypass.event.createdAt} />
+          {audit.uncountedBypass.event.value ? `: ${audit.uncountedBypass.event.value}.` : '.'} {uncountedBypassWhy(audit.uncountedBypass)}
+        </p>
       ) : null}
       <dl className="grid grid-cols-[minmax(0,auto)_minmax(0,1fr)] gap-x-4 gap-y-1.5">
         <dt className="text-anvil-500 dark:text-anvil-400">Merged by</dt>
@@ -121,7 +125,7 @@ function MergerLine({ thread, audit }: { thread: PullThread; audit: MergeAudit }
   return (
     <>
       {actor !== '' ? <Author identityId={actor} /> : 'Unknown'}
-      {audit.mergerRole !== null ? `, ${ROLE_NOUN[audit.mergerRole]} at the time` : ', no membership at the time'}
+      {mergerRoleWords(audit)}
       {thread.pull.mergedAt !== undefined ? (
         <>
           {' · '}

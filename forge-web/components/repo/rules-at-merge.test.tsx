@@ -52,6 +52,8 @@ describe('RulesAtMerge', () => {
       checks: null,
       checksUnread: false,
       bypass: { id: 'e1', actor: 'maint', createdAt: 1001, oid: 'b'.repeat(40), value: 'required approvals: 0 of 1' },
+      codeOwnersUnaudited: false,
+      uncountedBypass: null,
       rulesChanged: true,
     })
     await act(async () => root.render(<RulesAtMerge sdk={{} as EvoSDK} repo={{} as RepoRef} thread={thread} configHistory={async () => []} pageChecks={null} />))
@@ -69,5 +71,41 @@ describe('RulesAtMerge', () => {
     expect(body?.textContent).toContain('0 of 1')
     expect(body?.textContent).toContain('required approvals: 0 of 1')
     expect(host.querySelector('[data-testid="rules-at-merge-changed"]')).not.toBeNull()
+  })
+
+  // Q5-A03: the maintainer who merged with a bypass was removed or changed role since.
+  it('shows a bypass whose writer has no current membership record, never "no bypass was recorded"', async () => {
+    read.mockResolvedValue({
+      verdict: 'unmet',
+      policy: { requiredApprovals: 1 },
+      protected: true,
+      mergerRole: null,
+      protectionUnmet: true,
+      approvals: { met: false, have: 0, need: 1, blockedBy: [] },
+      checks: null,
+      checksUnread: false,
+      codeOwnersUnaudited: false,
+      bypass: null,
+      uncountedBypass: { event: { id: 'e1', actor: 'maint', createdAt: 1001, oid: 'b'.repeat(40), value: 'required approvals: 0 of 1' }, role: null },
+      rulesChanged: false,
+    })
+    await act(async () => root.render(<RulesAtMerge sdk={{} as EvoSDK} repo={{} as RepoRef} thread={thread} configHistory={async () => []} pageChecks={null} />))
+    const details = host.querySelector('details') as HTMLDetailsElement
+    await act(async () => {
+      details.open = true
+      details.dispatchEvent(new Event('toggle'))
+    })
+    const body = host.querySelector('[data-testid="rules-at-merge-body"]')
+    expect(body?.getAttribute('data-verdict')).toBe('unmet')
+    const text = body?.textContent ?? ''
+    expect(text).not.toContain('no bypass was recorded')
+    expect(text).not.toContain('no membership at the time')
+    expect(text).toContain("A bypass was recorded, but its writer's role at the time can't be confirmed.")
+    expect(text).toContain('maint, no current membership record')
+    expect(text).toContain("main was protected, and the merger's role at the time can't be confirmed")
+    const line = host.querySelector('[data-testid="rules-at-merge-uncounted-bypass"]')?.textContent ?? ''
+    expect(line).toContain('maint recorded a bypass')
+    expect(line).toContain('required approvals: 0 of 1.')
+    expect(line).toContain("their role at the time can't be confirmed")
   })
 })

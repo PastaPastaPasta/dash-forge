@@ -35,6 +35,41 @@ const MIN_SEG_LOG2: u8 = 10;
 const MAX_SEG_LOG2: u8 = 20;
 const TAG_LEN: u64 = 16;
 
+/// What the first bytes of a stored artifact say it is (§3.2, `docs/security/private-repos.md`
+/// §18.2): a reader checks them before it hands bytes to git, and, in a converted repository,
+/// before it downloads a pack written while the repository was private.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Head {
+    /// Not a sealed artifact: no `DFPK` magic (a git pack starts `PACK`).
+    Plain,
+    /// A version-0x01 sealed artifact under key epoch `epoch`.
+    Sealed {
+        /// The header's epoch.
+        epoch: u32,
+    },
+    /// A `DFPK` header of another version: specific people (0x02) or a layout this client does
+    /// not know. Skipped, never fatal.
+    OtherVersion(u8),
+    /// Too short to tell (fewer than the 12 bytes up to the epoch).
+    Short,
+}
+
+/// [`Head`] of an artifact from its first bytes (at least 12 to read a version-0x01 epoch).
+#[must_use]
+pub fn sniff(head: &[u8]) -> Head {
+    let n = head.len().min(MAGIC.len());
+    if head[..n] != MAGIC[..n] {
+        return Head::Plain;
+    }
+    match head.get(4) {
+        None => Head::Short,
+        Some(&VERSION) => head.get(8..12).map_or(Head::Short, |e| Head::Sealed {
+            epoch: u32::from_be_bytes(e.try_into().expect("4 bytes")),
+        }),
+        Some(&v) => Head::OtherVersion(v),
+    }
+}
+
 /// A parsed, length-checked sealed-artifact header. Its fields are read-only views of the 36
 /// raw bytes (which are the AD of every segment), so they can never drift apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,8 +107,13 @@ impl PackHeader {
             .and_then(|b| b.try_into().ok())
             .ok_or(PrivateError::SealedPackCorrupt)?;
         let seg_log2 = raw[5];
+        // A DFPK header of another version (0x02 is sealed to specific people, later versions to
+        // keys this client does not know) is not this layout: skipped by readers, never read as
+        // corrupt (§3.2).
+        if raw[..4] == MAGIC && raw[4] != VERSION {
+            return Err(PrivateError::UnknownVersion(raw[4]));
+        }
         let ok = raw[..4] == MAGIC
-            && raw[4] == VERSION
             && (MIN_SEG_LOG2..=MAX_SEG_LOG2).contains(&seg_log2)
             && raw[6..8] == [0, 0];
         if !ok {

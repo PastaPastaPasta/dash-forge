@@ -36,7 +36,8 @@
               "type": "array",
               "items": {
                 "type": "string"
-              }
+              },
+              "description": "For a squash or rebase: files changed on both sides, not checked for the pull request's change."
             }
           },
           "required": [

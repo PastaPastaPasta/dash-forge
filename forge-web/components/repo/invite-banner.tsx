@@ -38,7 +38,7 @@ export const INVITE_PARAM = 'invite'
 
 /**
  * The role an invite link names (`&invite=triage`) when the owner could grant it on a repo of
- * `visibility` (every role, on every repo), else null (`&invite=1`, anything else). Only a
+ * `visibility` (every role but the owner's, public or private), else null (`&invite=1`, anything else). Only a
  * hint: the owner picks the role when they add the member.
  */
 export function invitedRole(param: string | null, visibility: 'public' | 'private'): Role | null {
@@ -145,7 +145,7 @@ export function InviteBanner({ repo }: { repo: RepoRef }): JSX.Element | null {
           <>
             <p>
               <Author identityId={repo.ownerId} link={false} /> invited you to collaborate on this repo{suggested}. Accepting lets them add you as a member
-              (they choose the role: maintainer, writer, triage{repo.visibility === 'private' ? ' or reader' : ''}); nobody can be made a member without it.
+              (they choose the role: maintainer, writer, triage or reader); nobody can be made a member without it.
             </p>
             {offered !== null ? <RoleWhat role={offered} /> : null}
             <Button

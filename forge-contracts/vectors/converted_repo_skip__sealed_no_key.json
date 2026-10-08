@@ -1,0 +1,16 @@
+{
+  "name": "sealed_no_key",
+  "description": "a DFPK header under epoch 0 with no key held: skipped without downloading the rest.",
+  "case": "converted_repo_skip",
+  "rules": "v2",
+  "input": {
+    "head": "4446504b010a0000000000000000000000000064f0e1d2c3b4a5968778695a4b3c2d1e0f",
+    "held": []
+  },
+  "expected": {
+    "skip": {
+      "reason": "noKey",
+      "epoch": 0
+    }
+  }
+}

@@ -68,7 +68,9 @@ import {
 } from './storage-status'
 import { mapPooled, trimOldest } from './pool'
 import { openPrivateArtifact, readPrivateRange } from './private-packs'
-import { onPrivateSessionEnded } from '../repo/private-session'
+import { onPrivateSessionEnded, type PrivateSession } from '../repo/private-session'
+import { knownConversion } from '../repo/converted'
+import { HEADER_LEN, PackError, maybeSealed, skipReason, sniff, type Conversion, type SkipReason } from '../private'
 import { mirrorCopy, mirrorUrisOf, resetMirrorUris } from '../repo/pack-mirrors'
 
 /** Chunk queries in flight at once when one range spans more than a single query. */
@@ -412,6 +414,55 @@ export class PackUnavailableError extends Error {
 }
 
 /**
+ * An artifact of a repository made public that this reader skips (`private-repos.md` §18.2;
+ * forge-core `ArtifactRead::Skipped`): stored encrypted while the repo was private under a key
+ * nobody published, or in a format a newer version of Forge writes. Read like a pack no mirror
+ * serves: reported, never fatal by itself.
+ */
+export class PackSkippedError extends PackUnavailableError {
+  constructor(
+    packHash: string,
+    readonly why: SkipReason,
+  ) {
+    const reason =
+      why.reason === 'noKey'
+        ? "stored encrypted while the repo was private, and its key wasn't made public"
+        : 'encrypted in a format a newer version of Forge writes'
+    super(packHash, [], false, reason)
+    this.message = `pack ${packHash.slice(0, 12)}… is not readable here: ${reason}`
+    this.name = 'PackSkippedError'
+  }
+
+  override get transport(): boolean {
+    return false
+  }
+}
+
+/**
+ * How a public repo's browse plane reads an artifact stored while it was private (§18.2): the
+ * repo's conversion facts, and the published keys it holds (`repo.published`). Null for a repo
+ * never made public (and a private one: its session opens everything).
+ */
+function convertedReads(repo: RepoRef): { readonly conversion: Conversion; readonly keys: PrivateSession | undefined } | null {
+  if (repo.visibility !== 'public' || repo.session !== undefined) return null
+  const conversion = knownConversion(repo.repoId) ?? null
+  return conversion === null ? null : { conversion, keys: repo.published }
+}
+
+/**
+ * `e`, or the skip it stands for: a `DFPK` header of a version this client does not open is
+ * skipped in any repo, never read as corrupt (§3.2).
+ */
+function skippedOr(e: unknown, packHash: string): unknown {
+  return e instanceof PackError && e.code === 'unknownVersion' ? new PackSkippedError(packHash, { reason: 'otherFormat', version: e.version ?? 0 }) : e
+}
+
+/** Why a converted repo's reader skips an artifact whose first bytes are `head`, holding `keys` (forge-core `skip_reason`). */
+function skipOf(head: Uint8Array, keys: PrivateSession | undefined): SkipReason | null {
+  return skipReason(head, (e) => keys?.ctx.keys.has(e) === true)
+}
+
+/**
  * The HTTP(S) URLs an external artifact can be fetched from, in order: the manifest's own
  * `http(s)` mirrors, then each `ipfs://<cid>` through every gateway in `gateways`. Schemes a
  * browser cannot fetch over HTTP (`s3://`, `platform://`) are skipped — an `s3://` locator
@@ -518,16 +569,34 @@ async function withSlotOf<T>(slots: { active: number; readonly waiting: (() => v
 // read that skips it still names it among the places that did not serve.
 const deadUrls = new Map<string, string>()
 
+/**
+ * URLs a ranged read found silent (a timeout), with when. A pack is read in many small ranges,
+ * and a dead copy would otherwise cost a full {@link EXTERNAL_FETCH_TIMEOUT_MS} on every one of
+ * them. Unlike {@link deadUrls} a timeout may be a bad moment, not a verdict, so it is only
+ * remembered for {@link TIMED_OUT_MEMORY_MS}, and only ranged reads skip it: a whole-body fetch
+ * still gets its one retry. "Try again" clears it.
+ */
+const timedOutUrls = new Map<string, { readonly why: string; readonly at: number }>()
+const TIMED_OUT_MEMORY_MS = 5 * 60_000
+
 
 /** "Try again": ask every mirror afresh, including the ones that failed this session. */
 export function forgetDeadMirrors(): void {
   deadUrls.clear()
+  timedOutUrls.clear()
   resetGatewayHealth()
+  // A mirror recorded since the page loaded (or a recorded copy that is back) must be seen: the
+  // mirror addresses are read again, and a pack a mirror served is fetched again rather than
+  // kept in front of the copies the retry is meant to ask.
+  resetMirrorUris()
+  mirroredWhole.clear()
+  mirroredBytes = 0
 }
 
 /** Test hook: forget the dead-URL list, the gateway probes and the per-origin queues. */
 export function resetExternalFetchState(): void {
   deadUrls.clear()
+  timedOutUrls.clear()
   originSlots.clear()
   resetGatewayHealth()
   resetRepoGateways()
@@ -663,14 +732,25 @@ function reasonsOf(failures: readonly Failure[]): string[] {
 async function mirrorUrls(
   manifest: PackManifest,
   gateways: readonly string[],
+  skipTimedOut = false,
 ): Promise<{ readonly urls: string[]; readonly live: string[]; readonly down: Failure[] }> {
   const urls = externalFetchUrls(manifest.uris, gateways)
+  const now = Date.now()
+  const whyNot = (url: string): string | undefined => {
+    const dead = deadUrls.get(url)
+    if (dead !== undefined || !skipTimedOut) return dead
+    const slow = timedOutUrls.get(url)
+    if (slow === undefined) return undefined
+    if (now - slow.at < TIMED_OUT_MEMORY_MS) return slow.why
+    timedOutUrls.delete(url)
+    return undefined
+  }
   const skipped = urls.flatMap((url) => {
-    const why = deadUrls.get(url)
+    const why = whyNot(url)
     return why === undefined ? [] : [failureAt(url, why)]
   })
   const { live, down } = await skipDeadGateways(
-    urls.filter((u) => !deadUrls.has(u)),
+    urls.filter((u) => whyNot(u) === undefined),
     new Set(manifest.uris),
   )
   return { urls, live, down: [...skipped, ...down] }
@@ -723,7 +803,7 @@ async function fetchExternalRange(
   gateways: readonly string[],
   onServed?: OnServed,
 ): Promise<Uint8Array> {
-  const { urls, live, down } = await mirrorUrls(manifest, gateways)
+  const { urls, live, down } = await mirrorUrls(manifest, gateways, true)
   const failed = [...down]
   for (const url of live) {
     try {
@@ -733,6 +813,7 @@ async function fetchExternalRange(
       return buf.length > end - start ? buf.subarray(start, end) : buf
     } catch (e) {
       if (e instanceof FetchFailure && e.answered) deadUrls.set(url, errorText(e))
+      else if (e instanceof FetchFailure && e.timedOut) timedOutUrls.set(url, { why: errorText(e), at: Date.now() })
       failed.push(failureAt(url, errorText(e)))
     }
   }
@@ -935,7 +1016,7 @@ export class StorageUnreachableError extends Error {
 
 /** The {@link UnavailablePack} a {@link PackUnavailableError} describes. */
 export function unavailableOf(e: PackUnavailableError): UnavailablePack {
-  return { packHash: e.packHash, hosts: e.hosts, reason: e.reason, corrupt: e.corrupt, unfollowed: e.unfollowed }
+  return { packHash: e.packHash, hosts: e.hosts, reason: e.reason, corrupt: e.corrupt, unfollowed: e.unfollowed, ...(e instanceof PackSkippedError ? { skipped: true as const } : {}) }
 }
 
 /**
@@ -1056,16 +1137,30 @@ export function overrideMirroredBytesKept(bytes: number | null): void {
   mirroredBytesKept = bytes ?? MIRRORED_BYTES_KEPT
 }
 
+/**
+ * The pack's read from its mirror this session (settled or in flight), if there is one: a pack
+ * a mirror already served whole is checked, so a range read takes it before asking the recorded
+ * copies that failed. Each use notes the mirror in the ledger again, so the storage row keeps
+ * saying the repo survives on one after the ledger was cleared.
+ */
+function cachedMirroredPack(repo: RepoRef, manifest: PackManifest): Promise<Uint8Array | null> | undefined {
+  const key = `${repoKey(repo)}:${manifest.packHash.toLowerCase()}`
+  const hit = mirroredWhole.get(key)
+  if (hit === undefined) return undefined
+  // Touch: re-insert so the map stays least recently used first.
+  mirroredWhole.delete(key)
+  mirroredWhole.set(key, hit)
+  return hit.read.then((bytes) => {
+    if (bytes !== null) noteContentCheck(repoKey(repo), { mirroredPack: manifest.packHash })
+    return bytes
+  })
+}
+
 /** {@link fromPackMirrors} once per pack for range reads: each range is a slice of checked bytes. */
 function mirroredPack(sdk: EvoSDK, repo: RepoRef, manifest: PackManifest, before: readonly string[]): Promise<Uint8Array | null> {
   const key = `${repoKey(repo)}:${manifest.packHash.toLowerCase()}`
-  const hit = mirroredWhole.get(key)
-  if (hit !== undefined) {
-    // Touch: re-insert so the map stays least recently used first.
-    mirroredWhole.delete(key)
-    mirroredWhole.set(key, hit)
-    return hit.read
-  }
+  const cached = cachedMirroredPack(repo, manifest)
+  if (cached !== undefined) return cached
   const entry: { read: Promise<Uint8Array | null>; size?: number } = { read: Promise.resolve(null) }
   entry.read = fromPackMirrors(sdk, repo, manifest, before).then((bytes) => {
     if (mirroredWhole.get(key) !== entry) return bytes
@@ -1087,53 +1182,110 @@ function mirroredPack(sdk: EvoSDK, repo: RepoRef, manifest: PackManifest, before
   return entry.read
 }
 
+/** Bytes `[start, end)` of one stored copy as they are (platform chunks or external URIs). */
+async function readCopyRange(sdk: EvoSDK, repo: RepoRef, copy: PackManifest, start: number, end: number): Promise<Uint8Array> {
+  if (copy.storage !== 0) {
+    // Chunks a `platform://` locator names first: on-chain, so no mirror can hold a browse
+    // hostage. A range cannot be hashed on its own; the reader re-hashes what it builds.
+    let lastErr: unknown
+    const chunkFailures: string[] = []
+    for (const at of platformLocatorReads(repo, copy)) {
+      try {
+        const bytes = await fetchPlatformRange(sdk, at.repo, at.manifest, start, end)
+        noteSource(repo, copy.packHash, undefined, copy.documentId)
+        return bytes
+      } catch (e) {
+        lastErr = e
+        chunkFailures.push(`platform: ${errorText(e)}`)
+      }
+    }
+    const gateways = readGatewaysFor(repoKey(repo))
+    if (lastErr !== undefined && externalFetchUrls(copy.uris, gateways).length === 0) {
+      throw new PackUnavailableError(copy.packHash, ['platform'], false, errorText(lastErr), unfollowedHosts(copy.uris))
+    }
+    return fetchExternalRange(copy, start, end, gateways, servedBy(repo, copy.packHash, copy.documentId, chunkFailures))
+  }
+  let bytes: Uint8Array
+  try {
+    bytes = await fetchPlatformRange(sdk, repo, copy, start, end)
+  } catch (e) {
+    // Chunks that cannot be read: the copy's external copies, if it recorded any.
+    return afterChunksFailed(repo, copy, copy.documentId, e, (gateways, served) =>
+      fetchExternalRange(copy, start, end, gateways, served),
+    )
+  }
+  noteSource(repo, copy.packHash, undefined, copy.documentId)
+  return bytes
+}
+
+/**
+ * The first {@link HEADER_LEN} bytes of a converted repo's pack, read before it is downloaded
+ * (forge-core `pack_head`): from the first of its copies that serves them, else null. Unverified:
+ * a host that lies costs a download, never a wrong read.
+ */
+async function packHead(sdk: EvoSDK, repo: RepoRef, copies: readonly PackManifest[]): Promise<Uint8Array | null> {
+  for (const c of copies) {
+    try {
+      return await readCopyRange(sdk, repo, c, 0, Math.min(HEADER_LEN, c.sizeBytes))
+    } catch {
+      // the next copy
+    }
+  }
+  return null
+}
+
+/**
+ * Whether a converted repo's pack (`copies`) is skipped **without downloading it** (forge-core
+ * `skip_before_download`): recorded while the repo may still have been private, and its first
+ * bytes are a sealed header under a key nobody published, or of a version this client does not
+ * open. Anything else is downloaded and judged whole.
+ */
+async function skipBeforeDownload(sdk: EvoSDK, repo: RepoRef, copies: readonly PackManifest[]): Promise<PackSkippedError | null> {
+  const reads = convertedReads(repo)
+  const first = copies[0]
+  if (reads === null || first === undefined || !copies.some((c) => maybeSealed(reads.conversion, c.createdAtBlockHeight ?? 0))) return null
+  const head = await packHead(sdk, repo, copies)
+  const why = head === null ? null : skipOf(head, reads.keys)
+  return why === null ? null : new PackSkippedError(first.packHash, why)
+}
+
 /** A ranged reader over one artifact (platform chunks or external URIs), optionally one copy. */
 export function artifactRangeFetch(
   sdk: EvoSDK,
   repo: RepoRef,
   manifest: PackManifest,
 ): (start: number, end: number, copy?: number) => Promise<Uint8Array> {
-  const readCopy = async (copy: PackManifest, start: number, end: number): Promise<Uint8Array> => {
-    if (copy.storage !== 0) {
-      // Chunks a `platform://` locator names first: on-chain, so no mirror can hold a browse
-      // hostage. A range cannot be hashed on its own; the reader re-hashes what it builds.
-      let lastErr: unknown
-      const chunkFailures: string[] = []
-      for (const at of platformLocatorReads(repo, copy)) {
-        try {
-          const bytes = await fetchPlatformRange(sdk, at.repo, at.manifest, start, end)
-          noteSource(repo, copy.packHash, undefined, copy.documentId)
-          return bytes
-        } catch (e) {
-          lastErr = e
-          chunkFailures.push(`platform: ${errorText(e)}`)
-        }
-      }
-      const gateways = readGatewaysFor(repoKey(repo))
-      if (lastErr !== undefined && externalFetchUrls(copy.uris, gateways).length === 0) {
-        throw new PackUnavailableError(copy.packHash, ['platform'], false, errorText(lastErr), unfollowedHosts(copy.uris))
-      }
-      return fetchExternalRange(copy, start, end, gateways, servedBy(repo, copy.packHash, copy.documentId, chunkFailures))
-    }
-    let bytes: Uint8Array
-    try {
-      bytes = await fetchPlatformRange(sdk, repo, copy, start, end)
-    } catch (e) {
-      // Chunks that cannot be read: the copy's external copies, if it recorded any.
-      return afterChunksFailed(repo, copy, copy.documentId, e, (gateways, served) =>
-        fetchExternalRange(copy, start, end, gateways, served),
-      )
-    }
-    noteSource(repo, copy.packHash, undefined, copy.documentId)
-    return bytes
-  }
+  const readCopy = (copy: PackManifest, start: number, end: number): Promise<Uint8Array> => readCopyRange(sdk, repo, copy, start, end)
   // A private repo's artifacts are sealed: the reader asks for PLAINTEXT ranges (locator rows
-  // index plaintext offsets), mapped to sealed segments through the session's header cache.
+  // index plaintext offsets), mapped to sealed segments through the session's header cache. A
+  // repository made public's copy recorded while it was private is checked by its first bytes:
+  // sealed under a published key, it reads the same way; otherwise it is skipped.
   const session = repo.session
+  const reads = convertedReads(repo)
+  const heads = new Map<string, Promise<Uint8Array>>()
+  const readConverted = async (c: PackManifest, start: number, end: number): Promise<Uint8Array> => {
+    if (reads === null || !maybeSealed(reads.conversion, c.createdAtBlockHeight ?? 0)) return readCopy(c, start, end)
+    let head = heads.get(c.documentId)
+    if (head === undefined) {
+      head = readCopy(c, 0, Math.min(HEADER_LEN, c.sizeBytes))
+      heads.set(c.documentId, head)
+      head.catch(() => heads.delete(c.documentId))
+    }
+    const bytes = await head
+    const why = skipOf(bytes, reads.keys)
+    if (why !== null) throw new PackSkippedError(c.packHash, why)
+    // Not skipped: a plaintext head reads as it is, a sealed one under a key the published hold.
+    const keys = reads.keys
+    if (sniff(bytes).kind !== 'sealed' || keys === undefined) return readCopy(c, start, end)
+    return readPrivateRange(keys, c, (s, e) => readCopy(c, s, e), start, end)
+  }
   const readPlain =
     session === undefined
-      ? readCopy
-      : (c: PackManifest, start: number, end: number) => readPrivateRange(session, c, (s, e) => readCopy(c, s, e), start, end)
+      ? readConverted
+      : (c: PackManifest, start: number, end: number) =>
+          readPrivateRange(session, c, (s, e) => readCopy(c, s, e), start, end).catch((e: unknown) => {
+            throw skippedOr(e, c.packHash)
+          })
   return async (start: number, end: number, copy?: number) => {
     // A range cannot be hashed on its own. The reader re-hashes every object it
     // builds from one and asks for a specific `copy` when the current one fails it; without
@@ -1144,18 +1296,28 @@ export function artifactRangeFetch(
       if (chosen === undefined) throw new Error(`pack ${manifest.packHash.slice(0, 12)}… has no copy ${copy}`)
       return readPlain(chosen, start, end)
     }
+    // A pack a mirror already served whole (checked against its hash) answers from memory:
+    // asking the dead recorded copies again would cost a timeout on every range.
+    if (session === undefined) {
+      const pending = cachedMirroredPack(repo, manifest)
+      const whole = pending === undefined ? null : await pending
+      if (whole !== null) return whole.subarray(start, Math.min(end, whole.length))
+    }
     let lastErr: unknown
     const failed: string[] = []
     for (const c of copies) {
       try {
         return await readPlain(c, start, end)
       } catch (e) {
+        // A skip here comes from one copy's unverified first bytes: the next copy may serve the
+        // pack, so it is one copy's failure like any other.
         lastErr = e
         failed.push(...failedPlaces(e))
       }
     }
-    // Every copy failed: a public repo's recorded mirrors (UPDATE-1), read only now.
-    if (session === undefined) {
+    // Every copy failed: a public repo's recorded mirrors (UPDATE-1), read only now (never for a
+    // skipped pack, whose whole bytes a mirror would serve sealed too).
+    if (session === undefined && !(lastErr instanceof PackSkippedError)) {
       const whole = await mirroredPack(sdk, repo, manifest, failed)
       if (whole !== null) return whole.subarray(start, Math.min(end, whole.length))
     }
@@ -1223,19 +1385,43 @@ export async function loadArtifactBytesProgress(
   // checked against `packHash` and never opened, nor recorded in the repo's content-check ledger
   // (not git content; {@link loadStoredArtifactBytes}).
   const session = stored ? undefined : repo.session
+  // A repository made public (§18.2): a pack recorded while it may have been private is checked
+  // by its first bytes before it is downloaded, and every pack by its bytes after.
+  const reads = stored ? null : convertedReads(repo)
+  if (reads !== null) {
+    const skipped = await skipBeforeDownload(sdk, repo, manifest.copies ?? [manifest])
+    if (skipped !== null) throw skipped
+  }
+  const opened = new WeakSet<Uint8Array>()
   const open = async (copy: PackManifest): Promise<Uint8Array> => {
     const bytes = await loadOneCopy(sdk, repo, copy, onProgress, cancel, !stored)
-    if (session === undefined) return bytes
+    const keys = session ?? openableWith(copy, bytes)
+    if (keys === undefined) return bytes
     try {
-      return await openPrivateArtifact(session, copy, bytes, manifest.copies ?? [copy])
+      const plain = await openPrivateArtifact(keys, copy, bytes, manifest.copies ?? [copy])
+      opened.add(plain)
+      return plain
     } catch (e) {
       // Sealed bytes that fail their packHash (or do not open) keep nothing in the chunk cache.
       if (copy.storage === 0) forgetChunks(repo, copy)
-      throw e
+      throw skippedOr(e, copy.packHash)
     }
   }
+  /**
+   * The published keys a public repo's whole copy opens with, once its bytes hash to its
+   * `packHash`: undefined for plaintext (handed on as it is); a sealed header nobody published a
+   * key for, or of another version, is skipped (forge-core `open_or_skip`). Any public repo's, not
+   * only one known to be made public: its config may not have been read yet.
+   */
+  const openableWith = (copy: PackManifest, bytes: Uint8Array): PrivateSession | undefined => {
+    const head = sniff(bytes).kind
+    if (stored || repo.visibility !== 'public' || head === 'plain' || head === 'short' || bytesToHex(sha256(bytes)) !== copy.packHash.toLowerCase()) return undefined
+    const why = skipOf(bytes, reads?.keys)
+    if (why !== null) throw new PackSkippedError(copy.packHash, why)
+    return reads?.keys
+  }
   const verified = (copy: PackManifest, bytes: Uint8Array): boolean =>
-    session !== undefined || bytesToHex(sha256(bytes)) === copy.packHash.toLowerCase()
+    session !== undefined || opened.has(bytes) || bytesToHex(sha256(bytes)) === copy.packHash.toLowerCase()
   // Every writer may hold a copy of a pack. Read them in `orderPackCopies` order
   // and keep the first whose bytes hash to `packHash`; a copy that does not, or that cannot
   // be read (a missing chunk, a dead mirror), is skipped (`forge-v2.md` §4 reader rule). A
@@ -1248,8 +1434,8 @@ export async function loadArtifactBytesProgress(
       if (copy.storage === 0) forgetChunks(repo, copy)
       failures.push(new Error(`copy ${shortId(copy.documentId)} does not hash to the pack`))
     } catch (e) {
-      // A cancelled load stops here: the next copy is not tried.
-      if (cancel?.aborted) throw e
+      // A cancelled load stops here: the next copy is not tried, nor a skipped pack's (same bytes).
+      if (cancel?.aborted || e instanceof PackSkippedError) throw e
       failures.push(e)
     }
   }
@@ -1475,6 +1661,8 @@ export interface UnavailablePack {
   readonly corrupt: boolean
   /** Recorded hosts no browser fetches (private or plain http; see {@link unfollowedHosts}). */
   readonly unfollowed?: readonly string[]
+  /** Not fetched at all: a repository made public's pack this reader cannot open ({@link PackSkippedError}); `reason` says why. */
+  readonly skipped?: true
 }
 
 /** The assembled browse context for a repo, or a reason it is unavailable. */
@@ -1609,8 +1797,8 @@ export async function loadBrowseContext(
   })
 
   // A public repo's large fragments are read a fanout slice at a time (QW3-001). A private repo's
-  // are sealed, and read whole as before.
-  const own = await publishedLocator(sdk, repo, manifests, livePacks, { ranged: repo.session === undefined })
+  // are sealed, and read whole as before, as are a repository made public's (some may be sealed).
+  const own = await publishedLocator(sdk, repo, manifests, livePacks, { ranged: repo.session === undefined && convertedReads(repo) === null })
   if (own === 'behind') return behind('index-behind')
   // A fork's own fragments index only the packs it pushed itself; the packs it holds by
   // reference to its parent (and the parent's parent) are indexed by theirs (QW-023).

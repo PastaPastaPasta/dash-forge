@@ -1,0 +1,16 @@
+{
+  "name": "public_ref_update_later_version",
+  "description": "A ref update in a later enc version is still never public content: the git plane reads plaintext only.",
+  "case": "content_well_formed",
+  "rules": "v2",
+  "input": {
+    "doc": {
+      "kind": "refUpdate",
+      "enc": "05000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "epoch": 0,
+      "refNameHash": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "visibility": "public"
+  },
+  "expected": false
+}

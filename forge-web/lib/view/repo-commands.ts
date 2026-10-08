@@ -42,6 +42,10 @@ export interface RepoCommands {
   readonly remoteAdd: string
   /** `git config dash.network … && …`: this repository's network, before its first push. */
   readonly setNetwork: string
+  /** `dg auth login <identity file> --network …`: signs `dg` in on this network. */
+  readonly authLogin: string
+  /** `dg auth new --network …`: makes an identity on this network. */
+  readonly authNew: string
 }
 
 /** The commands for `owner/name` on `config`'s network. */
@@ -55,5 +59,7 @@ export function repoCommands(owner: string, name: string, config: NetworkConfig 
     dgClone: `dg repo clone ${shellWord(`${owner}/${name}`)} ${dgNetworkFlags(config)}`,
     remoteAdd: `git remote add origin ${quoted}`,
     setNetwork: pairs.map(([k, v]) => `git config ${k} ${shellWord(v)}`).join(' && '),
+    authLogin: `dg auth login <identity file> ${dgNetworkFlags(config)}`,
+    authNew: `dg auth new ${dgNetworkFlags(config)}`,
   }
 }

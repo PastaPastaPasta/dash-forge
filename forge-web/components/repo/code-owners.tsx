@@ -259,25 +259,26 @@ export function useCodeOwnerStatus({
   approvals: Approvals | null
   members: readonly Membership[]
   author: string
-}): CodeOwnerStatus | 'unknown' | null {
+}): CodeOwnerJudge {
   const { sdk, ready, network } = useSdk(repoContractIds(repo))
   const on = policy?.requireCodeOwners === true
   const file = useCodeOwners(on ? reader : null, baseOid, readerKey)
   const paths = useMemo(() => (changes === null ? null : changedPaths(changes)), [changes])
   const names = useMemo(() => (file.data == null || paths === null ? [] : ownersOfPaths(file.data.owners, paths).filter((t) => ownerKind(t) === 'name')), [file.data, paths])
   const resolved = useAsync(() => resolveDpnsIds(sdk!, names, network), [names.join('\n'), network], { enabled: on && ready && sdk !== null && names.length > 0 })
-  if (!on || policy === null) return null
-  return codeOwnerVerdict({
-    policy,
-    file: file.error !== null ? 'failed' : !file.settled ? 'reading' : (file.data ?? null),
-    paths,
-    changesFailed,
-    approvals,
-    members,
-    author,
-    names,
-    resolved: resolved.error !== null ? 'failed' : resolved.data,
-  })
+  const fileState = file.error !== null ? ('failed' as const) : !file.settled ? ('reading' as const) : (file.data ?? null)
+  const resolvedState = resolved.error !== null ? ('failed' as const) : resolved.data
+  const withMembers = (m: readonly Membership[]): CodeOwnerStatus | 'unknown' | null =>
+    !on || policy === null ? null : codeOwnerVerdict({ policy, file: fileState, paths, changesFailed, approvals, members: m, author, names, resolved: resolvedState })
+  return { status: withMembers(members), withMembers }
+}
+
+/** {@link useCodeOwnerStatus}'s result: the status with the page's members, and the same rule for other members. */
+export interface CodeOwnerJudge {
+  /** Where the PR stands (null: not required; `'unknown'`: still being read). */
+  readonly status: CodeOwnerStatus | 'unknown' | null
+  /** The same judgement with `members` instead of the page's (the merge's click-time recheck). */
+  readonly withMembers: (members: readonly Membership[]) => CodeOwnerStatus | 'unknown' | null
 }
 
 /**

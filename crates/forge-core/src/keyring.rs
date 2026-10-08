@@ -136,7 +136,9 @@ pub const FIX_ADD_ENCRYPTION_KEY: &str = "dg auth keys add --encryption";
 
 /// The reader's own `ENCRYPTION` keys: the identity file's private keys whose public key is an
 /// `ENCRYPTION` key of the identity on chain (enabled or not: a wrap to a since-disabled key
-/// still opens history, §5.4 (1)), and which of them is usable to *send* with (enabled).
+/// still opens history, §5.4 (1)), and which of them is usable to *send* with (enabled). The
+/// default holds none (an anonymous reader's).
+#[derive(Default)]
 pub struct EncryptionKeys {
     /// key id → (private key, enabled on chain).
     keys: BTreeMap<u32, (PrivateKey, bool)>,
@@ -339,6 +341,21 @@ impl WrapDoc {
     }
 }
 
+/// Every `config` document as the conversion facts take it (§18): `vis`, epoch, height, id.
+pub fn config_stamps(configs: &[FetchedDocument]) -> Vec<crate::private::convert::ConfigStamp> {
+    configs
+        .iter()
+        .filter_map(|d| {
+            Some(crate::private::convert::ConfigStamp {
+                id: platform::decode_identifier(&d.id).ok()?,
+                epoch: d.field_u64("epoch").and_then(|e| u32::try_from(e).ok()),
+                private: d.field_str("vis").as_deref() == Some(Visibility::Private.as_str()),
+                height: d.created_at_block_height.unwrap_or(0),
+            })
+        })
+        .collect()
+}
+
 /// A `config` document of a private repository, flattened.
 fn config_row(d: &FetchedDocument) -> Option<ConfigRow> {
     Some(ConfigRow {
@@ -385,6 +402,11 @@ pub struct Keyring {
     config: PrivateConfig,
     /// Wraps this reader could not open, by epoch (for `dg repo keys status`).
     unreadable_wraps: Vec<u32>,
+    /// A repository made public (§18): its conversion facts. The epoch keys its owner published
+    /// are among the resolution's keys.
+    conversion: Option<crate::private::convert::Conversion>,
+    /// Loaded with no identity ([`Self::load_anonymous`]): no wraps, no identity keys.
+    anonymous: bool,
 }
 
 impl std::fmt::Debug for Keyring {
@@ -449,7 +471,34 @@ impl Keyring {
         reader: &str,
         enc: &EncryptionKeys,
     ) -> Result<Self> {
-        let reader_bytes = platform::decode_identifier(reader)?;
+        Self::load_as(io, repo, Some(platform::decode_identifier(reader)?), enc).await
+    }
+
+    /// The keys anyone holds for `repo` with no identity: none of its members' keys, only the
+    /// epoch keys the owner of a repository made public published (§18.3). Reads the members and
+    /// configs (the anchors) and, when the repository was made public, its owner's make-public
+    /// bundles; never a wrap or an identity.
+    pub async fn load_anonymous(client: &PlatformClient, repo: &RepoRef) -> Result<Self> {
+        let scope = repo.scope()?;
+        let core = client.fetch_contract(&scope.contract_id).await?;
+        let collab = client.fetch_contract(&repo.forge().collab).await?;
+        let io = KeyringIo {
+            client,
+            core: &core,
+            collab: &collab,
+            scope: &scope,
+        };
+        Self::load_as(&io, repo, None, &EncryptionKeys::default()).await
+    }
+
+    async fn load_as(
+        io: &KeyringIo<'_>,
+        repo: &RepoRef,
+        reader: Option<[u8; 32]>,
+        enc: &EncryptionKeys,
+    ) -> Result<Self> {
+        let anonymous = reader.is_none();
+        let reader_bytes = reader.unwrap_or([0; 32]);
         let members = MemberReader::new(io.client).list(repo).await?;
         let configs = io
             .client
@@ -460,18 +509,21 @@ impl Keyring {
                 &[QueryOrder::asc("$createdAt")],
             )
             .await?;
-        let wraps: Vec<WrapDoc> = io
-            .client
-            .query_all_documents(
-                io.collab,
-                DOC_REPO_KEY,
-                &io.scope.filters([]),
-                &[QueryOrder::asc("memberId")],
-            )
-            .await?
-            .iter()
-            .filter_map(WrapDoc::from_doc)
-            .collect();
+        let wraps: Vec<WrapDoc> = if anonymous {
+            Vec::new()
+        } else {
+            io.client
+                .query_all_documents(
+                    io.collab,
+                    DOC_REPO_KEY,
+                    &io.scope.filters([]),
+                    &[QueryOrder::asc("memberId")],
+                )
+                .await?
+                .iter()
+                .filter_map(WrapDoc::from_doc)
+                .collect()
+        };
         let mut keyring = Self {
             repo_id: io.scope.repo_id,
             visibility: repo.visibility,
@@ -484,9 +536,51 @@ impl Keyring {
             ctx: OpenContext::default(),
             config: PrivateConfig::default(),
             unreadable_wraps: Vec::new(),
+            conversion: None,
+            anonymous,
         };
         keyring.resolve(io, enc).await?;
+        Box::pin(keyring.resolve_conversion(io, repo)).await;
         Ok(keyring)
+    }
+
+    /// A repository made public (§18): its conversion facts, and the epoch keys its owner
+    /// published, checked against the anchors and added to the keys this reader holds. Reading
+    /// the bundles never fails the load: a bundle that cannot be read publishes nothing.
+    async fn resolve_conversion(&mut self, io: &KeyringIo<'_>, repo: &RepoRef) {
+        use crate::private::convert::{published_keys, Conversion};
+        let stamps = config_stamps(&self.configs);
+        let anchors = &self.resolution.anchors;
+        self.conversion = Conversion::of(self.visibility == Visibility::Public, &stamps, |e| {
+            anchors.contains_key(&e)
+        });
+        let Some(conversion) = self.conversion.filter(|c| c.seal_off_epoch.is_some()) else {
+            return;
+        };
+        let Ok(owner) = platform::decode_identifier(repo.owner_id()) else {
+            return;
+        };
+        let bundles = match crate::repo::RepoService::reader(io.client)
+            .make_public_bundles(repo)
+            .await
+        {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(error = %e, "the repository's make-public bundles could not be read; its earlier history stays unreadable to this reader");
+                return;
+            }
+        };
+        let (keys, alerts) = published_keys(
+            &self.repo_id,
+            &owner,
+            &conversion,
+            &self.resolution.anchors,
+            &bundles,
+        );
+        self.resolution
+            .add_published(&self.repo_id, &self.rows.configs, keys, alerts);
+        self.ctx = self.resolution.open_context(&self.repo_id);
+        self.config = self.decrypt_config();
     }
 
     async fn resolve(&mut self, io: &KeyringIo<'_>, enc: &EncryptionKeys) -> Result<()> {
@@ -505,7 +599,11 @@ impl Keyring {
             .filter(|m| m.role == Role::Maintainer)
             .filter_map(|m| platform::decode_identifier(&m.identity_id).ok())
             .collect();
-        let mut parties = members;
+        let mut parties = if self.anonymous {
+            BTreeSet::new()
+        } else {
+            members
+        };
         parties.extend(
             self.wraps
                 .iter()
@@ -795,7 +893,9 @@ impl Keyring {
                 .fix("ask that maintainer to re-wrap the older epoch to you")
                 .into(),
             ),
-            Alert::RotationRequired { .. } | Alert::EpochGap { .. } => None,
+            Alert::RotationRequired { .. }
+            | Alert::EpochGap { .. }
+            | Alert::PublishedKeyMismatch { .. } => None,
         })
     }
 
@@ -904,14 +1004,21 @@ impl Keyring {
         let Some(mut header) = header_of(kind, d) else {
             return Opened::Malformed;
         };
-        // Which envelope a document may carry follows its repository (private-repos.md §17):
-        // v0x01 in a private one, v0x03 (members-only) in a public one. The document's own
-        // `vis` (consensus holds it equal to the repository's) says which; a type without one
-        // (an `event`) is the repository's. A `vis` that is not this repository's is malformed.
-        match d.field_str("vis").as_deref() {
-            None => header.vis = self.visibility,
-            Some(v) if v == self.visibility.as_str() => {}
-            Some(_) => return Opened::Malformed,
+        // Which envelope a document may carry follows its OWN `vis` (private-repos.md §17, §18),
+        // which consensus held equal to its repository's visibility when it was written: a
+        // repository made public keeps its earlier documents' `vis: "private"`, and they open as
+        // private documents. A type without one (an `event`) is the repository's, except a
+        // v0x01 event in a repository made public, which only a private era wrote. A public
+        // document in a private repository cannot exist (a repository never becomes private):
+        // malformed.
+        match crate::private::convert::open_vis(
+            d.field_str("vis").as_deref(),
+            self.visibility,
+            self.conversion.is_some(),
+            enc.first().copied(),
+        ) {
+            Some(vis) => header.vis = vis,
+            None => return Opened::Malformed,
         }
         let opened = open_content(&self.ctx, &header, &enc);
         // judged by the newest write, as the late rule is: an edit re-seals the text
@@ -1028,6 +1135,7 @@ impl Keyring {
                 id: d.id.clone(),
                 created_at: d.created_at.unwrap_or(0),
                 protected_patterns: fields.protected_patterns.clone(),
+                author: Some(d.owner_id.clone()),
             });
             let key = |doc: &FetchedDocument| (doc.created_at.unwrap_or(0), doc.id.clone());
             if newest.as_ref().is_none_or(|(n, _)| key(d) > key(n)) {
@@ -1148,6 +1256,13 @@ pub fn sealed_error(e: &PrivateError) -> Error {
         .fix("removed? content from that epoch on is not readable to you; still a member? ask a maintainer to run `dg repo keys repair <owner>/<repo>`")
         .into(),
         PrivateError::SizeMismatch => Error::Integrity,
+        PrivateError::UnknownVersion(_) => UserError::new(
+            codes::NOT_A_KEY_HOLDER,
+            "a pack is encrypted in a format this version of Forge doesn't open",
+        )
+        .cause("a newer version of Forge wrote it, for a narrower audience")
+        .fix("update Forge; if it still doesn't open, it wasn't shared with you")
+        .into(),
         _ => UserError::new(
             codes::SEALED_PACK_CORRUPT,
             "a sealed pack failed its checks",
@@ -1247,6 +1362,9 @@ pub fn hidden_bucket(o: &Opened) -> Option<&'static str> {
         }
         Opened::Unreadable(Unreadable::EarlierUse) => {
             Some("sealed under an earlier use of its key epoch")
+        }
+        Opened::Unreadable(Unreadable::UnknownVersion) => {
+            Some("written by a newer version of Forge")
         }
         Opened::Unreadable(_) => Some("wrong or missing key"),
     }
@@ -3059,6 +3177,8 @@ mod tests {
                 rows: self.rows(),
                 config: PrivateConfig::default(),
                 unreadable_wraps: Vec::new(),
+                conversion: None,
+                anonymous: false,
             }
         }
     }

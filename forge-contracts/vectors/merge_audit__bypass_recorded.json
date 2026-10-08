@@ -72,6 +72,7 @@
     },
     "checks": null,
     "checksUnread": false,
+    "codeOwnersUnaudited": false,
     "bypass": {
       "id": "e1",
       "actor": "maint",
@@ -79,6 +80,7 @@
       "oid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "value": "required approvals: 0 of 1"
     },
+    "uncountedBypass": null,
     "rulesChanged": false
   }
 }

@@ -1,7 +1,7 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { cachedDpnsName, clearDpnsCache, displayDpnsName, looksLikeDpnsName, resolveDpnsId, seedFromDomains } from './dpns'
+import { cachedDpnsName, clearDpnsCache, displayDpnsName, DPNS_FAILURE_TTL_MS, dpnsReadFailed, looksLikeDpnsName, resolveDpnsId, resolveDpnsName, seedFromDomains } from './dpns'
 
 const A = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
 const B = 'Ehyw8VygZh5LjjYHUbKqgyJamgetiVPLFnJewrfmgQUs'
@@ -131,5 +131,37 @@ describe('resolveDpnsId (review: forward name -> id resolution)', () => {
     const query = vi.fn(async () => new Map([['id', domainDoc(A, 'alice')]]))
     await resolveDpnsId(fakeSdk(query), 'alice', 'devnet')
     expect(cachedDpnsName('devnet', A)).toBe('alice.dash')
+  })
+})
+
+describe('a failed reverse read is not a name that does not exist', () => {
+  afterEach(() => vi.useRealTimers())
+
+  it('is not cached as none: it reads again once its lifetime has passed', async () => {
+    vi.useFakeTimers()
+    const query = vi.fn().mockRejectedValueOnce(new Error('down')).mockResolvedValue(new Map([['id', domainDoc(A, 'alice')]]))
+    const sdk = fakeSdk(query)
+    expect(await resolveDpnsName(sdk, A, 'devnet')).toBeNull()
+    // Not a proven absence: nothing cached, and the failure is known as one.
+    expect(cachedDpnsName('devnet', A)).toBeUndefined()
+    expect(dpnsReadFailed('devnet', A)).toBe(true)
+    // Within its lifetime a page of pills does not hammer a node that is down.
+    expect(await resolveDpnsName(sdk, A, 'devnet')).toBeNull()
+    expect(query).toHaveBeenCalledTimes(1)
+    vi.advanceTimersByTime(DPNS_FAILURE_TTL_MS + 1)
+    expect(dpnsReadFailed('devnet', A)).toBe(false)
+    expect(await resolveDpnsName(sdk, A, 'devnet')).toBe('alice.dash')
+    expect(query).toHaveBeenCalledTimes(2)
+    expect(cachedDpnsName('devnet', A)).toBe('alice.dash')
+  })
+
+  it('caches a proven absence for good, unlike a failure', async () => {
+    const query = vi.fn(async () => new Map())
+    const sdk = fakeSdk(query)
+    expect(await resolveDpnsName(sdk, A, 'devnet')).toBeNull()
+    expect(cachedDpnsName('devnet', A)).toBeNull()
+    expect(dpnsReadFailed('devnet', A)).toBe(false)
+    expect(await resolveDpnsName(sdk, A, 'devnet')).toBeNull()
+    expect(query).toHaveBeenCalledTimes(1)
   })
 })

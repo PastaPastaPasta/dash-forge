@@ -39,6 +39,7 @@ use std::io::IsTerminal as _;
 use serde_json::{json, Value};
 
 use crate::error::Error as CoreError;
+use crate::rules::v2::Visibility;
 use crate::storage::ReplicationError;
 
 /// Where each code's page lives. Codes link to `<DOCS_URL>#<code lowercased>`.
@@ -61,6 +62,29 @@ pub fn web_page_url(page: &str, owner_id: &str, name: &str) -> String {
         uri_encode(owner_id, false),
         uri_encode(name, false)
     )
+}
+
+/// The short URL of a repo (`<origin>/<owner>/<name>`, the form the web app puts in its address
+/// bar and copies, `forge-web/lib/short-url.ts`), for a PUBLIC repo whose owner and name the
+/// web app's 404 shim expands back to the same page: an owner or name it refuses (`.hidden`) has
+/// none. Never for a private repo: its page address carries per-tab tokens, and a link made here
+/// would put the repo's name in an address that is read by whoever sees the terminal.
+pub fn short_repo_base(owner_id: &str, name: &str, visibility: Visibility) -> Option<String> {
+    let segment = |s: &str, extra: &[char]| {
+        let mut chars = s.chars();
+        chars.next().is_some_and(|c| c.is_ascii_alphanumeric())
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '-' || extra.contains(&c))
+    };
+    // The same patterns as `OWNER_SEGMENT` and `NAME_SEGMENT` in `forge-web/lib/short-url.ts`.
+    // An identity id is never one of the app's reserved first segments.
+    (visibility == Visibility::Public && segment(owner_id, &['.']) && segment(name, &['.', '_']))
+        .then(|| format!("{WEB_ORIGIN}/{owner_id}/{name}"))
+}
+
+/// A repo's page in the web app as a person should be shown it: the short URL of a public
+/// repo ([`short_repo_base`]), else the canonical [`web_url`].
+pub fn repo_link(owner_id: &str, name: &str, visibility: Visibility) -> String {
+    short_repo_base(owner_id, name, visibility).unwrap_or_else(|| web_url(owner_id, name))
 }
 
 /// Where to top up an identity's credits from any Dash wallet.
@@ -162,6 +186,25 @@ pub const CATALOGUE: &[(&str, &str)] = &[
     (codes::POLICY_NOT_MET, "branch policy not met"),
     (codes::SECRET_IN_PUSH, "possible secret in a public push"),
     (codes::BRANCH_IN_USE, "branch other pull requests use"),
+    (
+        codes::PUBLISHES_MEMBERS_ONLY,
+        "push would publish members-only commits",
+    ),
+    (
+        codes::CANNOT_CHECK_MEMBERS_ONLY,
+        "can't check for members-only commits",
+    ),
+    (codes::BRANCH_ALREADY_PUBLIC, "branch is already public"),
+    (
+        codes::MEMBERS_ONLY_TO_OTHER_REMOTE,
+        "members-only commits not pushed to another remote",
+    ),
+    (
+        codes::NEW_BRANCH_AUDIENCE,
+        "new branch: choose who can see it",
+    ),
+    (codes::MAKE_PUBLIC_BLOCKED, "can't make everything public"),
+    (codes::AGENT_NOT_ALLOWED, "bot can't be asked"),
 ];
 
 /// The stable codes. The first digit is the exit code.
@@ -295,6 +338,32 @@ pub mod codes {
     /// `dg pr merge --delete-branch` would delete a branch other open pull requests use as
     /// their head or base.
     pub const BRANCH_IN_USE: &str = "E808";
+    // E805, E806 and E810 below are reserved for the members-only branch guard (phase 3A),
+    // E809 and E811 for a new branch's audience (3A), E812 for a repository's going public
+    // (5A) and E813 for a bot's access (4B). Nothing reports them yet, so they are
+    // unused until those phases land. Never reuse a number for another meaning: E808 is
+    // `BRANCH_IN_USE`, not the new-branch refusal (that is E811).
+    /// A push to a public ref would publish commits from a members-only branch (reserved).
+    pub const PUBLISHES_MEMBERS_ONLY: &str = "E805";
+    /// A public push or a fetch cannot check for members-only commits: the encryption key is
+    /// not available (a locked key with a record of members-only branches, or no record at
+    /// all) (reserved).
+    pub const CANNOT_CHECK_MEMBERS_ONLY: &str = "E806";
+    /// A push asked for a branch to be members-only, but the branch is already public
+    /// (reserved).
+    pub const BRANCH_ALREADY_PUBLIC: &str = "E809";
+    /// The `pre-push` hook refused to push members-only commits to a remote that is not a
+    /// Dash Forge repository, or to a public ref (reserved).
+    pub const MEMBERS_ONLY_TO_OTHER_REMOTE: &str = "E810";
+    /// A new branch has no audience yet: no local intent, push option or per-clone default
+    /// chose Public or Members-only (reserved).
+    pub const NEW_BRANCH_AUDIENCE: &str = "E811";
+    /// Making a repository public with everything it holds is blocked: some content would
+    /// become public that the owner has not dealt with, such as an environment saved in the
+    /// old format (reserved).
+    pub const MAKE_PUBLIC_BLOCKED: &str = "E812";
+    /// A request to a bot is outside the access its maintainers gave it (reserved).
+    pub const AGENT_NOT_ALLOWED: &str = "E813";
 }
 
 /// An error a person can act on.
@@ -2121,6 +2190,36 @@ fn redact_token(t: &str) -> String {
 mod tests {
     use super::*;
     use crate::storage::{Replica, TargetFailure};
+
+    #[test]
+    fn a_public_repo_links_by_its_short_url_and_a_private_one_does_not() {
+        let owner = "HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr";
+        assert_eq!(
+            repo_link(owner, "my-project.v2_x", Visibility::Public),
+            format!("https://forge.dashhq.org/{owner}/my-project.v2_x")
+        );
+        // Private: the canonical link, with no more in it than before.
+        assert_eq!(
+            repo_link(owner, "secret", Visibility::Private),
+            format!("https://forge.dashhq.org/repo?owner={owner}&name=secret")
+        );
+        assert_eq!(short_repo_base(owner, "secret", Visibility::Private), None);
+        // A name or owner the web app's shim refuses has no short form (`NAME_SEGMENT`,
+        // `OWNER_SEGMENT` in forge-web/lib/short-url.ts).
+        for name in [".hidden", "-x", "_x", "a b", "a/b", "a%2Fb", ""] {
+            assert_eq!(
+                short_repo_base(owner, name, Visibility::Public),
+                None,
+                "{name:?}"
+            );
+        }
+        assert_eq!(short_repo_base("a_b", "x", Visibility::Public), None);
+        assert_eq!(short_repo_base("", "x", Visibility::Public), None);
+        assert_eq!(
+            repo_link(owner, ".hidden", Visibility::Public),
+            format!("https://forge.dashhq.org/repo?owner={owner}&name=.hidden")
+        );
+    }
 
     fn render(u: &UserError) -> String {
         u.render("", false)
