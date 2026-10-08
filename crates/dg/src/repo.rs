@@ -7,7 +7,7 @@
 //! parent's packs recorded by reference and its refs copied (`forge_core::fork`).
 //! Repositories cannot be deleted.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::process::Stdio;
 
