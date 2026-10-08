@@ -1,5 +1,6 @@
 //! Counters for `/metrics` (Prometheus text format). No labels carry a client address, and
 //! repository labels are never used: the series stay bounded however many repos are served.
+//! No counter tells a private repository from a missing one (`/metrics` may be public).
 
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -35,8 +36,11 @@ pub struct Metrics {
     pub mirrors_created: AtomicU64,
     /// Mirrors evicted by the disk cap.
     pub mirrors_evicted: AtomicU64,
-    /// Requests for private repositories (refused).
-    pub private_refused: AtomicU64,
+    /// Requests for a repository this gateway does not serve: absent, private or gone, counted
+    /// alike (a separate count of private ones would confirm that a private repository exists).
+    pub repo_not_found: AtomicU64,
+    /// Mirrors removed because Platform proved their repository gone.
+    pub mirrors_gone: AtomicU64,
     /// Wakes received from the relay.
     pub wakes: AtomicU64,
     /// Badge/feed/preview renders served from a stale cache because Platform failed.
@@ -88,7 +92,7 @@ impl Metrics {
     }
 
     /// Every counter: name, help and value.
-    fn counters(&self) -> [(&'static str, &'static str, &AtomicU64); 16] {
+    fn counters(&self) -> [(&'static str, &'static str, &AtomicU64); 17] {
         [
             (
                 "forge_gateway_requests_git_total",
@@ -156,9 +160,14 @@ impl Metrics {
                 &self.mirrors_evicted,
             ),
             (
-                "forge_gateway_private_refused_total",
-                "Requests for private repositories.",
-                &self.private_refused,
+                "forge_gateway_mirrors_gone_total",
+                "Mirrors removed because Platform proved the repository gone.",
+                &self.mirrors_gone,
+            ),
+            (
+                "forge_gateway_repo_not_found_total",
+                "Requests for a repository not served: absent, private or gone, alike.",
+                &self.repo_not_found,
             ),
             (
                 "forge_gateway_wakes_total",

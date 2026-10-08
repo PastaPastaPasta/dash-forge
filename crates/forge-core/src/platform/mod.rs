@@ -746,6 +746,19 @@ impl PlatformClient {
         Ok(self.remember(contract_id.to_string(), contract))
     }
 
+    /// Whether Platform proves contract `contract_id` absent now: one proved `getDataContract`,
+    /// past this process's memo and the disk cache. [`Error::ContractsMissing`] can also come
+    /// from one node's `contract not found` refusal, which proves nothing; a caller that acts
+    /// on an absence for good (forge-gateway deleting a mirror) confirms it here. `Ok(false)`
+    /// when the contract exists; an error when the read failed.
+    pub async fn contract_proved_absent(&self, contract_id: &str) -> Result<bool> {
+        let id = parse_id(contract_id, "contract id")?;
+        let fetched = retry_transient_read("fetch contract", || DataContract::fetch(&self.sdk, id))
+            .await
+            .map_err(|e| Error::Platform(format!("fetching contract {contract_id}: {e}")))?;
+        Ok(fetched.is_none())
+    }
+
     /// Register a proof-verified contract with the context provider (so proof verification
     /// of later writes against it can resolve it, see field docs) and this process's memo.
     fn remember(&self, contract_id: String, contract: DataContract) -> LoadedContract {

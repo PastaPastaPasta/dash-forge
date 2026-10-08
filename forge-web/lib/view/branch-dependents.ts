@@ -22,7 +22,7 @@ export function dependentsWarning(name: string, d: Dependents): string | null {
   if (d.pulls.length === 0) return d.searched !== null ? `No open pull request among the newest ${d.searched} uses ${name}.` : null
   const named = d.pulls
     .slice(0, MAX_NAMED)
-    .map((p) => `#${p.number} ${p.title || '(untitled)'} (${p.uses === 'base' ? 'merges into it' : 'its source branch'})`)
+    .map((p) => `#${p.number} ${p.title || '(untitled)'} (${p.uses === 'base' ? 'merges into it' : p.repoId != null ? 'its source branch, in another repository' : 'its source branch'})`)
     .join('; ')
   const more = d.pulls.length > MAX_NAMED ? `; and ${d.pulls.length - MAX_NAMED} more` : ''
   const bases = d.pulls.some((p) => p.uses === 'base')

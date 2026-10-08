@@ -201,7 +201,7 @@ dg collab list <your id>/project
 | Maintain / Admin | `maintainer` |
 | Triage, Read | none needed: anyone can open issues and PRs, comment and review |
 
-[Collaborating](collaborating.md#collaborators) says what each role can do. Only the repository's owner can add or remove members, and consensus enforces it.
+[Collaborating](collaborating.md#members) says what each role can do. Only the repository's owner can add or remove members, and consensus enforces it.
 
 A collaborator then clones and pushes with plain git. If your storage is a bucket, they need write access to it too: give them their own key for the same bucket, which they add with `dg storage add` and `dg storage use`. Or they can push to a bucket of their own. Readers find every pack through its on-chain manifest, wherever it is stored.
 
@@ -258,7 +258,7 @@ For example, the dry run of a repository with about 800 KiB of packs, 36 PRs, 20
 | **Reactions** | None: each one would be a paid document | A comment, or a review approval |
 | **Verified commits** | Supported for Ed25519 SSH and Ed25519/ECDSA OpenPGP keys you publish on your profile; RSA keys don't fit | `dg profile key add` ([Signed commits](identity-and-keys.md#signed-commits-and-verified-badges)) |
 | **Assignees** | Not imported; you can assign on Forge (`dg issue assign`) | Re-assign open items after the import |
-| **CODEOWNERS** | Read from the base branch; new PRs ask the owners for review ([Code owners](collaborating.md#code-owners)). Teams and e-mail owners are not asked, `@login` is read as a DPNS name, and "require review from code owners" is not a branch rule | Name people by DPNS name or identity id; ask for the approvals with the branch policy's required approvals |
+| **CODEOWNERS** | Read from the base branch; new PRs ask the owners for review ([Code owners](collaborating.md#code-owners)). Teams and e-mail owners are not asked, and `@login` is read as a DPNS name. "Require review from code owners" is a branch rule: `dg repo policy set --require-code-owners true`, or **Settings → Branches** ([Requiring a code owner's approval](collaborating.md#code-owners)) | Name people by DPNS name or identity id |
 | **Organizations and teams** | Repositories belong to one identity; members are per repository | A shared maintainer identity, or add each person to each repository |
 | **Transferring a repository** | Not possible: the owner is fixed | Create a repository under the new owner and push to it (history is unchanged) |
 | **Deleting a repository, issue or PR** | Not possible: they are permanent | Archive the repository (`dg repo archive`), close issues and PRs |

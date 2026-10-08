@@ -98,7 +98,7 @@ import { numberLabel, shownUpstreamNumber } from '@/lib/view/upstream'
 import { HiddenBanner, HideMenu, HideThreadControl, hideConfirm, hideCost, useThreadModeration } from '@/components/repo/moderation'
 import { setHidden } from '@/lib/repo/moderation'
 import { moderationBlocked } from '@/lib/repo/moderation-fold'
-import { isHidden } from '@/lib/view/issues-view'
+import { isHiddenByHide } from '@/lib/view/issues-view'
 import type { HideReason } from '@/lib/rules/moderation'
 import { AuthorRolesProvider } from '@/components/repo/author-roles'
 
@@ -617,8 +617,9 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
               ? {
                   moderate: ({ id }: { readonly kind: 'comment' | 'review'; readonly id: string }) => (
                     <HideMenu
-                      hidden={isHidden(moderation, id)}
-                      blocked={moderationBlocked(data.moderationInput, identity, id, !isHidden(moderation, id))}
+                      hidden={isHiddenByHide(moderation, id)}
+                      byBan={moderation?.items[id]?.via === 'ban'}
+                      blocked={moderationBlocked(data.moderationInput, identity, id, !isHiddenByHide(moderation, id))}
                       disabled={false}
                       onHide={(reason) => setPending({ kind: 'hide', item: id, what: 'comment', reason, hide: true })}
                       onUnhide={() => setPending({ kind: 'hide', item: id, what: 'comment', reason: null, hide: false })}
@@ -764,8 +765,9 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
             {canModerate ? (
               <div className="mt-2">
                 <HideThreadControl
-                  hidden={threadHidden !== null}
-                  blocked={moderationBlocked(data.moderationInput, identity, null, threadHidden === null)}
+                  hidden={isHiddenByHide(moderation, null)}
+                  byBan={moderation?.thread?.via === 'ban'}
+                  blocked={moderationBlocked(data.moderationInput, identity, null, !isHiddenByHide(moderation, null))}
                   noun="issue"
                   offerClose={open}
                   offerLock={!meta.locked}

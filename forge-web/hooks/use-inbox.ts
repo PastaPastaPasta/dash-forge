@@ -86,7 +86,13 @@ export function useUnreadCount(): number {
  */
 let banned: { readonly key: string; readonly byRepo: ReadonlyMap<string, ReadonlySet<string>> } = { key: '', byRepo: new Map() }
 
-/** How many repos' bans one poll reads at most (the newest items' repos first). */
+/**
+ * How many repos' bans one poll reads at most (the newest items' repos first). Known limits
+ * (Q5-B11, kept on purpose): the filter is empty until the first poll has read the bans, so a
+ * banned identity's item can show until then; and an item of a repo beyond this many is not
+ * filtered. The filter is a courtesy of the reader. The ban itself is refused on writes
+ * (`refuseIfBanned`) and on thread pages.
+ */
 const BAN_REPOS_READ = 20
 
 /**

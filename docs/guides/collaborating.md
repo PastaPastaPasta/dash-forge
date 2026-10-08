@@ -2,7 +2,7 @@
 
 Everything a team does on Forge is a signed document on Dash Platform: who may push, issues, comments, pull requests, reviews, merges and releases. There is no server in the middle to ask. Consensus decides who may write, and every client computes the same state from the same documents.
 
-1. [Collaborators](#collaborators)
+1. [Members](#members)
 2. [Private repositories](#private-repositories)
 3. [Members-only content in a public repository](#members-only-content-in-a-public-repository)
 4. [Issues](#issues)
@@ -13,43 +13,44 @@ Everything a team does on Forge is a signed document on Dash Platform: who may p
 
 The commands below take a repository as `<owner>/<name>`, where `<owner>` is the owner's **identity id** (base58) or **DPNS username** (`alice` or `alice.dash`, resolved with a proof-verified DPNS read). A bare `<name>` means one of your own repositories. Every argument naming an identity — `dg repo list --owner`, `dg collab add`/`remove`, `dg issue --author`/`--assignee`, `dg pr request-review`, `dg ci runner add`/`revoke` — accepts either form; a name is resolved once per process and cached.
 
-Reading a public repository needs no identity: `dg repo view`, `dg repo list --owner`, `dg issue list` / `view`, `dg pr list` / `view` / `diff` / `checkout` / `checks` / `commits`, `dg label list`, `dg collab list`, `dg release list` / `download`, `dg repo protect list` and `dg repo policy show` work signed out, and never open a key you have configured, so a passphrase-sealed key file is not unlocked just to read. A private repository's content is encrypted to its members, so reading one uses your identity, and without one it stops with [`E301`](../errors.md#e301).
+Reading a public repository needs no identity: `dg repo view`, `dg repo list --owner`, `dg issue list` / `view`, `dg pr list` / `view` / `diff` / `checkout` / `checks` / `commits`, `dg label list`, `dg collab list`, `dg release list` / `download`, `dg repo protect list` and `dg repo policy show` work signed out, and never open a key you have configured, so a passphrase-protected key file is not unlocked just to read. A private repository's content is encrypted to its members, so reading one uses your identity, and without one it stops with [`E301`](../errors.md#e301).
 
 ---
 
-## Collaborators
+## Members
 
-There are four roles. Consensus enforces what each role can write: a write the role does not allow is refused by Platform, and Forge's apps refuse it before you pay for it. Counting approvals is a rule Forge apps enforce: every app applies it alike ([Who enforces what](#who-enforces-what)).
+Members have one of four roles: **Read**, **Triage**, **Write** or **Maintain**. The **Owner** is the identity that created the repository. A **Bot** role for automated accounts is coming later. Consensus enforces what each role can write: a write the role does not allow is refused by Platform, and Forge's apps refuse it before you pay for it. Counting approvals is a rule Forge apps enforce: every app applies it alike ([Who enforces what](#who-enforces-what)).
 
 | Role | `--role` | Can | Closest GitHub role |
 |---|---|---|---|
-| Reader | `reader` (alias `read`) | Read the repository's encrypted content: a private repository, or a public repository's [members-only content](#members-only-content-in-a-public-repository) (it receives the key). Otherwise what anyone can do: open issues and PRs, comment and review, and as an author close or reopen their own issues and PRs, mark their own PRs draft or ready, request reviews on them and resolve their threads. | Read |
-| Triage | `triage` | Close, reopen and lock any issue or PR; label, assign, set milestones, request reviews and resolve review threads; create labels and milestones. **Not**: push, merge, mark a PR draft or ready, change a PR's base, dismiss reviews, pin, post check runs, or re-run checks. | Triage |
-| Writer | `writer` (default) | Everything triage can, plus push to unprotected branches, merge, mark draft or ready, change a PR's base, dismiss reviews, pin, post check runs, and re-run checks. | Write |
-| Maintainer | `maintainer` | Everything a writer can, plus protected branches, releases, repository settings (`config`, branch policy), webhooks and hiding comments. | Maintain, and most of Admin |
+| Read | `reader` (alias `read`) | Read the repository's encrypted content: a private repository, or a public repository's [members-only content](#members-only-content-in-a-public-repository) (it receives the key). Otherwise what anyone can do: open issues and PRs, comment and review, and as an author close or reopen their own issues and PRs, mark their own PRs draft or ready, request reviews on them and resolve their threads. | Read |
+| Triage | `triage` | Everything Read can, plus close, reopen and lock any issue or PR; label, assign, set milestones, request reviews and resolve review threads; create labels and milestones. **Not**: push, merge, mark a PR draft or ready, change a PR's base, dismiss reviews, pin, post check runs, or re-run checks. | Triage |
+| Write | `writer` (default; alias `write`) | Everything Triage can, plus push to unprotected branches, merge, mark draft or ready, change a PR's base, dismiss reviews, pin, post check runs, and re-run checks. | Write |
+| Maintain | `maintainer` (alias `maintain`) | Everything Write can, plus protected branches, releases, repository settings (`config`, branch policy), webhooks and hiding comments. | Maintain, and most of Admin |
+| Owner | n/a | Everything Maintain can (the Owner is enrolled as a maintainer when the repository is created), plus adding and removing members and editing the description and topics. | Admin |
 
-The repository owner alone adds and removes members, and edits the description and topics (GitHub's Admin). `--role write` and `--role maintain` are accepted as aliases.
+The repository's Owner alone adds and removes members, and edits the description and topics. The `--role` values `reader`, `triage`, `writer` and `maintainer` are the names `dg` has always taken, and `read`, `write` and `maintain` are accepted as aliases.
 
-Anyone, member or not, can open issues and PRs, comment and review. Approvals count toward a branch policy only from maintainers and writers: a triage member's or reader's approval is shown as **not counted**, and their request for changes does not block. Imported issues and comments (a mirror's provenance and upstream numbers) are trusted from the same people.
+Anyone, member or not, can open issues and PRs, comment and review. Approvals count toward a branch policy only from people with Write access or more: an approval from someone with Triage or Read access is shown as **not counted**, and their request for changes does not block. Imported issues and comments (a mirror's provenance and upstream numbers) are trusted from the same people.
 
-On a public repository everyone can read the public content already, so a reader is for its [members-only content](#members-only-content-in-a-public-repository): someone who should follow the members-only discussion without pushing or merging. `dg collab add --role reader` works on public repositories too, and the web app offers Reader there too. A member holds one writer document, so changing between writer, triage and reader replaces it: `dg collab add` with the new `--role` deletes the old document and writes the new one (their acceptance stands, so they need not accept again), and the web app's Settings → Members has **Change role** on public repositories. On a private repository `dg collab add` changes the role the same way without rotating the key, since the member stays a member; in the web app, remove the member and add them again, which rotates it as every removal does.
+On a public repository everyone can read the public content already, so the Read role is for its [members-only content](#members-only-content-in-a-public-repository): someone who should follow the members-only discussion and comment, without pushing or merging. Their approvals don't count. `dg collab add --role reader` works on public repositories too, and the web app offers Read there too. A member holds one `writer` document, so changing between Write, Triage and Read replaces it: `dg collab add` with the new `--role` deletes the old document and writes the new one (their acceptance stands, so they need not accept again), and the web app's Settings → Members has **Change role** on public repositories. On a private repository `dg collab add` changes the role the same way without rotating the key, since the member stays a member; in the web app, remove the member and add them again, which rotates it as every removal does.
 
-Adding a collaborator is two steps: the owner adds them, and the collaborator accepts. Consensus admits a `writer`/`maintainer` document only when it names the member's own `consent` document for the repo (`member_consent`), so nobody can be made a member, or spammed with an invitation, without agreeing first.
+Adding a member is two steps: the owner adds them, and they accept. Consensus admits a `writer`/`maintainer` document only when it names the member's own `consent` document for the repo (`member_consent`), so nobody can be made a member, or spammed with an invitation, without agreeing first.
 
 ```sh
-dg collab accept <owner>/<repo>              # the collaborator, first: records their consent
+dg collab accept <owner>/<repo>              # the new member, first: records their consent
 dg collab list   <owner>/<repo>
 dg collab add    <owner>/<repo> <identity id or DPNS name> --role writer   # or triage, reader, maintainer
 dg collab remove <owner>/<repo> <identity id or DPNS name> --role writer
 ```
 
-`dg collab list` shows each member's role. `dg collab remove --role writer` (or `triage`, `reader`) removes the member's writer document, whichever of the three it grants.
+`dg collab list` shows each member's role. `dg collab remove --role writer` (or `triage`, `reader`) removes the member's `writer` document, whichever of the three roles (Write, Triage or Read) it grants.
 
 If the owner runs `dg collab add` before the invitee has accepted, it is refused before anything is signed: *"`<identity>` has not accepted membership of `<repo>` yet"*, with the fix to ask them to run `dg collab accept`, then add them again. `dg collab add <owner>/<repo> <identity id> --wait 300` instead waits (printing that it is waiting) up to that many seconds for the acceptance to land, then adds them; with no `--wait` it checks once. `dg collab accept --withdraw` withdraws an earlier acceptance (a membership already granted stands until the owner removes it).
 
-From the web app, the invitee opens the repository's **invite link** (Settings → Members, on public and private repos alike) and clicks **Accept invitation**; the owner's Settings → Members lists **Pending invitations** (accepted, not added yet) with a role picker (writer, triage, maintainer and reader) and an **Add** button for each, and shows who is still waiting to accept after a refused add.
+From the web app, the invitee opens the repository's **invite link** (Settings → Members, on public and private repos alike) and clicks **Accept invitation**; the owner's Settings → Members lists **Pending invitations** (accepted, not added yet) with a role picker (Write, Triage, Maintain and Read) and an **Add** button for each, and shows who is still waiting to accept after a refused add.
 
-Adding or removing a collaborator is a write by the repository owner, signed with the owner's HIGH key.
+Adding or removing a member is a write by the repository owner, signed with the owner's HIGH key.
 
 ### Repository settings
 
@@ -85,13 +86,13 @@ The web app labels each rule with who enforces it:
 - **Enforced by Dash Platform.** Platform refuses a write that breaks the rule, whichever app sends it. Member roles, protected branches, and a limited key's budget and expiry work this way.
 - **Forge apps enforce this.** The web app, `dg` and the push helper apply the rule and won't send a write that breaks it. Platform doesn't check it, so a write made outside Forge's apps can ignore it. The branch policy and archiving work this way. A maintainer's override of the branch policy is recorded on the PR, where everyone can see it.
 
-The description and topics live on the repository document, which only its owner can edit. They are public even for a private repository. A private repository's other settings are encrypted: the CLI writes them sealed, and the web app does not write them yet.
+The description and topics live on the repository document, which only its owner can edit. They are public even for a private repository. A private repository's other settings are encrypted: the CLI writes them encrypted, and the web app does not write them yet.
 
 **Topics.** Up to 20 per repository, each 1–30 characters of lowercase letters, digits and single hyphens (`^[a-z0-9]+(-[a-z0-9]+)*$`, the same pattern GitHub topics use). `--topics` replaces the whole list; deletes and creates happen together, so a topic removed from the list stops counting toward Explore's per-topic browsing at once. A private repository's topics stay set on its repo document (still visible, since topics are public even for a private repo), but Forge writes no per-topic index document for a private repo, so its topics don't show up when someone browses Explore by topic.
 
 ### How access works
 
-A collaborator is a `writer` or `maintainer` document in Forge's shared forge-core contract, keyed by (repository, member). A `writer` document carries the role (writer, triage or reader), and every role-gated write claims a role that consensus checks against it. Only the repository owner can create one, and consensus enforces that. Every write-path document type (ref updates, packs, releases, config, events) names its gate, and consensus refuses a write whose author has no current membership document ([`E601`](../errors.md#e601), Platform code 40120).
+A member is a `writer` or `maintainer` document in Forge's shared forge-core contract, keyed by (repository, member). A `writer` document carries the role (Write, Triage or Read), and every role-gated write claims a role that consensus checks against it. Only the repository owner can create one, and consensus enforces that. Every write-path document type (ref updates, packs, releases, config, events) names its gate, and consensus refuses a write whose author has no current membership document ([`E601`](../errors.md#e601), Platform code 40120).
 
 - **Add** creates the membership document, naming the member's `consent`. **Remove** deletes it. The member's next write is refused.
 - **Consent stands on its own.** A `consent` document is not deleted when the owner removes the member, so adding them again later needs no new acceptance.
@@ -127,11 +128,11 @@ A private repository's content is encrypted on your machine before it leaves it,
 ```sh
 dg auth keys add --encryption                   # once per identity (see Identity and keys)
 dg repo create secret --private                 # or `dg init --private`
-git push dash://<you>/secret main               # packs are sealed, ref names encrypted
+git push dash://<you>/secret main               # packs and ref names are encrypted
 dg collab add    <you>/secret <identity id>     # membership + the key, wrapped to them
-dg collab add    <you>/secret <identity id> --role reader   # read-only: the key, and no member writes
+dg collab add    <you>/secret <identity id> --role reader   # Read: the key, and no member writes
 dg collab remove <you>/secret <identity id>     # delete + key rotation
-dg repo keys status <you>/secret                # epochs, who holds a key, pending repairs
+dg repo keys status <you>/secret                # key changes, who holds a key, pending repairs
 ```
 
 **What is hidden and what is not.** The encryption covers the content. What the network needs to enforce access stays visible:
@@ -139,10 +140,10 @@ dg repo keys status <you>/secret                # epochs, who holds a key, pendi
 | Encrypted (members only) | Visible to everyone |
 |---|---|
 | Code: every pack, index and browse artifact | That the repository exists; its name, owner, description, display name and topics |
-| Branch and tag names | Members and their roles (writer, triage or reader included); when each joined; key epochs and who rotated them |
+| Branch and tag names | Members and their roles (Write, Triage or Read included); when each joined; key changes and who made them |
 | Default branch and protected-branch patterns | When pushes, issues, PRs, comments and reviews happen, and who wrote each |
 | Issue and PR titles and bodies, comment and review text, an inline comment's file path; the labels and milestones set on them, and a dismissal's reason | Commit ids (`newOid`, PR heads): anyone who already knows a commit id can confirm the repo contains it |
-| A release's tag, name, notes, draft, pre-release, yanked and unpublished flags, and its asset list; each asset file | That a release revision was written, when and by whom; revisions of one tag within a key epoch share a keyed tag name; each asset file's size |
+| A release's tag, name, notes, draft, pre-release, yanked and unpublished flags, and its asset list; each asset file | That a release revision was written, when and by whom; revisions of one tag within one key version share a keyed tag name; each asset file's size |
 | | Sizes: pack sizes, object counts, the approximate length of every encrypted field |
 | | That a label was added, a milestone set or a review dismissed (the kind of each event), and when; who is assigned (the assignee identity is indexed for "assigned to me") |
 | | **Not encrypted in this release:** label definitions (`dg label create`: name, colour, description); check runs; webhook URLs |
@@ -151,7 +152,7 @@ Leave the description empty if the project's purpose is itself sensitive.
 
 **Every member needs an encryption key.** Private repositories wrap the key to each member's identity `ENCRYPTION` key. `dg collab add` checks the member has one and stops before writing anything if not ([`E306`](../errors.md#e306)); they add one with `dg auth keys add --encryption`, or **Settings → Private repos → Enable private repos** in the web app.
 
-**Readers.** A reader (`--role reader`) holds the key like any member and can read everything, and can write only what anyone can (issues, PRs, comments and reviews, all sealed). Their approvals do not count. Like any member, a reader could copy what they read.
+**Read access.** Someone with the Read role (`--role reader`) holds the key like any member and can read everything, and can write only what anyone can (issues, PRs, comments and reviews, all encrypted). Their approvals do not count. Like any member, they could copy what they read.
 
 **Removing a member rotates the key.** New pushes, issues and comments will be unreadable to the removed member. Everything they could already read stays readable to them: encryption can't take back what was shared. The rotation is one key wrap per remaining member plus one anchor document, so `dg collab remove` shows the cost first. You are wrapped first, so an interruption never locks you out; running `dg repo keys repair` finishes an interrupted rotation (the key is recovered from your own wrap on chain, never from a local file).
 
@@ -161,9 +162,9 @@ Leave the description empty if the project's purpose is itself sensitive.
 
 **No recovery.** If every member loses their encryption key (every copy of every identity file and mnemonic), the contents cannot be decrypted by anyone.
 
-Not supported for private repositories yet ([`E207`](../errors.md#e207)): forks (`dg repo fork`) and webhooks. Issues, PRs, comments and reviews are sealed; label definitions (`dg label create`) are allowed but stay public.
+Not supported for private repositories yet ([`E207`](../errors.md#e207)): forks (`dg repo fork`) and webhooks. Issues, PRs, comments and reviews are encrypted; label definitions (`dg label create`) are allowed but stay public.
 
-**Releases** of a private repository are sealed ([private repositories §16](../security/private-repos.md#16-sealed-releases)). The web app publishes, edits, yanks and unpublishes them (a maintainer's **Edit** on each release), and members download their files verified in the browser; `dg release create`, `dg release unpublish` and `dg release download` do the same from the command line. Each file you publish is encrypted in the tab before it goes to your own storage (an imported asset that could not be fetched and sealed stays an external link: its URL is hidden, but the file is not encrypted), named by the hash of the encrypted copy, and the asset list is an encrypted file too. A private release holds 1507 bytes of tag, name, notes preview and provenance: longer notes continue in the encrypted asset list, so they need storage of your own even without files. Draft and pre-release are labels every member sees, not access control. Every change is a new revision that carries the rest forward; two maintainers editing the same release at once both land, and the one written second is warned that it may have dropped the other's change.
+**Releases** of a private repository are encrypted ([private repositories §16](../security/private-repos.md#16-sealed-releases)). The web app publishes, edits, yanks and unpublishes them (a maintainer's **Edit** on each release), and members download their files verified in the browser; `dg release create`, `dg release unpublish` and `dg release download` do the same from the command line. Each file you publish is encrypted in the tab before it goes to your own storage (an imported asset that could not be fetched and encrypted stays an external link: its URL is hidden, but the file is not encrypted), named by the hash of the encrypted copy, and the asset list is an encrypted file too. A private release holds 1507 bytes of tag, name, notes preview and provenance: longer notes continue in the encrypted asset list, so they need storage of your own even without files. Draft and pre-release are labels every member sees, not access control. Every change is a new revision that carries the rest forward; two maintainers editing the same release at once both land, and the one written second is warned that it may have dropped the other's change.
 
 **Content a removed member wrote late.** A member removed from the repository who keeps writing under the old key, more than 240 blocks after the rotation, is hidden from every reader (the late-content rule). A clone that needs such a pack stops with [`E510`](../errors.md#e510) (`clone incomplete: N packs hidden by the late-content rule`).
 
@@ -172,6 +173,14 @@ Not supported for private repositories yet ([`E207`](../errors.md#e207)): forks 
 ## Members-only content in a public repository
 
 A public repository can keep some of its discussion **members-only**: issues, comments and reviews that only its members can read, beside everything public. Its code, branches and pull requests stay public. Everyone can still see that something was posted, by whom and when. [Who can read what](../security/audiences.md) explains the audiences, exactly what stays public, and what can still leak.
+
+**The words.** Forge uses the same words in `dg`, the web app and these guides:
+
+- **Audiences:** Public, All members (short: Members), Maintainers, Writers and maintainers, Specific people. "Members-only" describes anything that isn't public. Today a post can be Public or Members, and an environment Maintainers or All members. Writers and maintainers, and Specific people, are coming later.
+- **Roles:** Read, Triage, Write, Maintain, Owner, and Bot for an automated account (coming later). See [Members](#members).
+- **Verbs:** **Publish** (code), **Make public** (a post, such as a comment) and **Make this repo public** (a whole private repository). Each widens the audience for good and can't be undone. All three are coming later.
+- **Repository kinds:** **Public** and **Private**. "Private" means only a private repository, where everything is encrypted ([above](#private-repositories)).
+- **Access** is what a bot or a CI runner is given.
 
 ```sh
 dg repo members enable <owner>/<repo>                      # a maintainer, once; shows the cost first
@@ -196,15 +205,15 @@ dg pr review     <owner>/<repo> 7 --approve --members --body "…"
 
 - `dg collab add` shares the key with the new member (about 0.0007 DASH more). They read everything members-only, including what was posted before they joined. A member with no encryption key is added anyway and can do everything public. They get the key after they set one up and a maintainer runs `dg repo keys repair`.
 - `dg collab remove` changes the key (about 0.0007 DASH per remaining member, plus about 0.0006 DASH), and says so before you confirm: new members-only issues, comments and reviews will be unreadable to them, and what they could already read stays readable to them.
-- A role change between writer, triage and reader keeps the key: every role holds it, readers included.
+- A role change between Write, Triage and Read keeps the key: every role holds it, Read included.
 - The web app's **Settings → Members** does the same.
 - Change members only with an up-to-date Forge. A member added by an older build has no key yet and sees [`E311`](../errors.md#e311) until a maintainer shares it: **Repair** on the repo page, or `dg repo keys repair`. Nothing shares it automatically. A member removed by an older build keeps reading new content until `dg repo keys repair` changes the key. `dg repo keys status` shows both.
 
-**CI runners are not members.** A runner key (`dg ci runner add`) reports check runs and never receives the members key. If you make a runner's identity a reader, it reads everything members-only.
+**CI runners are not members.** A runner key (`dg ci runner add`) reports check runs and never receives the members key. If you give a runner's identity the Read role, it reads everything members-only.
 
-**Environments.** A repository's configuration and secrets can be kept outside git, encrypted for its **Maintainers** or its **Members**: see [Environments](environments.md).
+**Environments.** A repository's configuration and secrets can be kept outside git, encrypted for its **Maintainers** or for **All members**: see [Environments](environments.md).
 
-**Not yet.** Members-only pull requests, branches, code and releases, specific people, and making members-only discussion public are coming later. Search doesn't look inside members-only issues you can't read.
+**Not yet.** Members-only pull requests, branches, code and releases, the Writers and maintainers and Specific people audiences, and making members-only discussion public are coming later. Search doesn't look inside members-only issues you can't read.
 
 ---
 
@@ -237,9 +246,9 @@ A label the issue already has, or an assignee already assigned, is left alone: `
 
 **Who can change state.** The issue's author can close and reopen it (an `authorEvent`). Maintainers, writers and triage members can close, reopen, label and assign any issue (an `event`). `dg` picks the right one for you. Consensus refuses both from anyone else, and `dg` says so before anything is signed ([`E601`](../errors.md#e601)).
 
-**Edits.** Only the author can edit an issue's title or body, or a comment's body (`dg issue edit-comment` takes the comment's id from `dg issue view --json` or `dg pr view --comments --json`, and works for PR comments too): an edit replaces their document, so consensus admits it from them alone, members included. The earlier text stays readable on Platform to anyone who could read it, and the web shows "edited". Re-running an edit that already landed writes nothing. In a private repository the whole text is re-sealed (a PR's under the key epoch it was opened with, the others under the current one) and nothing is written in plaintext. An edit made against text someone else replaced in the meantime is refused before signing ([`E607`](../errors.md#e607)).
+**Edits.** Only the author can edit an issue's title or body, or a comment's body (`dg issue edit-comment` takes the comment's id from `dg issue view --json` or `dg pr view --comments --json`, and works for PR comments too): an edit replaces their document, so consensus admits it from them alone, members included. The earlier text stays readable on Platform to anyone who could read it, and the web shows "edited". Re-running an edit that already landed writes nothing. In a private repository the whole text is re-encrypted (a PR's under the key version it was opened with, the others under the current one) and nothing is written in plaintext. An edit made against text someone else replaced in the meantime is refused before signing ([`E607`](../errors.md#e607)).
 
-**Long text.** A body, comment or set of release notes holds 5,120 bytes on Platform (less in a private repository, where the title and other sealed text share the space). A maintainer or writer can post a longer one, up to 256 KiB: `dg` and the web store the full text as a repository artifact and the field keeps its first part and a hidden line naming it ([forge-v2.md §6.3](../contracts/forge-v2.md#63-long-bodies-a-text-longer-than-its-field-client-convention-p1-9)). Readers show the whole text; if the artifact cannot be read they show the first part and say the rest is missing. `dg` stores it on the repository's storage policy (`dash.storage`), else on Platform, and the confirmation says where and adds its cost (about 0.010 DASH for 20 KB on Platform; only one small manifest on your own storage). Triage members, readers and non-members cannot record artifacts, so their text stays within 5,120 bytes: split it into comments. Where it works: issue and PR descriptions, comments and release notes in `dg` (`dg pr comment` too, inline ones included) and on the web, where the composer says the text is stored whole and adds its cost (always on Platform); a review's summary on the web. Not yet: `dg pr review` drafts and the web's inline review comments, and a private repository's release notes on the web (use `dg release create`, which stores them on the repository's own storage).
+**Long text.** A body, comment or set of release notes holds 5,120 bytes on Platform (less in a private repository, where the title and other encrypted text share the space). A maintainer or writer can post a longer one, up to 256 KiB: `dg` and the web store the full text as a repository artifact and the field keeps its first part and a hidden line naming it ([forge-v2.md §6.3](../contracts/forge-v2.md#63-long-bodies-a-text-longer-than-its-field-client-convention-p1-9)). Readers show the whole text; if the artifact cannot be read they show the first part and say the rest is missing. `dg` stores it on the repository's storage policy (`dash.storage`), else on Platform, and the confirmation says where and adds its cost (about 0.010 DASH for 20 KB on Platform; only one small manifest on your own storage). People with Triage or Read access and non-members cannot record artifacts, so their text stays within 5,120 bytes: split it into comments. Where it works: issue and PR descriptions, comments and release notes in `dg` (`dg pr comment` too, inline ones included) and on the web, where the composer says the text is stored whole and adds its cost (always on Platform); a review's summary on the web. Not yet: `dg pr review` drafts and the web's inline review comments, and a private repository's release notes on the web (use `dg release create`, which stores them on the repository's own storage).
 
 **Assignees** are events naming the identity twice: as the value the state fold reads, and as the event's `refId`, so "assigned to me" is one indexed query (Explore and `--assignee me`).
 
@@ -527,7 +536,7 @@ A `CODEOWNERS` file names who owns which paths, in GitHub's format or GitLab's. 
 
 **When you open a PR,** on the web or with `dg pr create`, the owners of the files it changes (a renamed file counts under its old and new path) are asked for review, as GitHub does:
 
-- only current maintainers and writers are asked, never triage members, readers, non-members or you (GitHub likewise ignores a code owner without write access);
+- only current maintainers and writers are asked, never people with Triage or Read access, non-members or you (GitHub likewise ignores a code owner without write access);
 - at most 15 reviewers;
 - each request is one more document, included in the cost shown before you sign. A member writes them as `event`s; anyone else, as the PR's author, as `authorEvent`s (both kind 13).
 
@@ -535,7 +544,7 @@ The web form lists them under **Reviewers from code owners**, each with a box to
 
 **The Files tab** marks each owned file with a shield (filled when you own it). Select it for the owners and the `CODEOWNERS` line that decided them.
 
-**Requiring a code owner's approval.** Turn on **Require approval from code owners** in **Settings → Branches → Branch policy**, or run `dg repo policy set <owner>/<repo> --require-code-owners true`. Then every changed file that `CODEOWNERS` on the base branch assigns needs an approval from one of its owners before the PR can merge. The merge box names each file still waiting ("code owner approval: src/a.rs (@alice)"), and `dg pr merge` refuses with [`E804`](../errors.md#e804) naming the same files. An owner's approval counts as for the required approvals: on the PR's current head, not dismissed, not the PR's author, and from someone whose role counts toward the policy (a maintainer, or a writer unless only maintainers' approvals count). A file nobody owns needs nothing. The rule fails closed: a `CODEOWNERS` file that cannot be read blocks the merge, and a file owned only by teams, e-mail addresses, unregistered names or non-members cannot be approved until `CODEOWNERS` is fixed. A maintainer can bypass it like the rest of the policy, and the bypass is recorded on the PR.
+**Requiring a code owner's approval.** Turn on **Require approval from code owners** in **Settings → Branches → Branch policy**, or run `dg repo policy set <owner>/<repo> --require-code-owners true`. Then every changed file that `CODEOWNERS` on the base branch assigns needs an approval from one of its owners before the PR can merge. The merge box names each file still waiting ("code owner approval: src/a.rs (@alice)"), the **Branch rules** card names the files still waiting, and `dg pr merge` refuses with [`E804`](../errors.md#e804) naming the same files, together with any other rule left unmet. `dg pr view` reads no git, so it says "code owner approval is checked at merge" and never calls such a policy met (`--json`: `codeOwners` is `{"required": true, "checked": false}`, and `policyMet` is `null` when nothing else is unmet). `dg pr merge` reads the base and the head from the clone you run it in when the clone has them (and, in a shallow clone, their merge base), else fetches them. It lists the changed files with `git diff-tree`, so a submodule's new commit counts even when `.gitmodules` or your git config says to ignore it. An owner's approval counts as for the required approvals: on the PR's current head, not dismissed, not the PR's author, and from someone whose role counts toward the policy (a maintainer, or a writer unless only maintainers' approvals count). A file nobody owns needs nothing. The rule fails closed: a `CODEOWNERS` file that cannot be read blocks the merge, and a file owned only by teams, e-mail addresses, unregistered names or non-members cannot be approved until `CODEOWNERS` is fixed. A maintainer can bypass it like the rest of the policy, and the bypass is recorded on the PR.
 
 ---
 
@@ -588,7 +597,7 @@ The card turns red, and the release list marks the release **changed since publi
 
 A public release also records the commit its tag pointed at when you published it (the web's release form and `dg release create` both write it). The card shows it under **Release records** and turns red if the tag's history says the tag pointed somewhere else at that moment. If the tag moved while you had the release form open, publishing stops and asks you to reload, so the record is always what you saw. A release whose tag named nothing when it was published (it was deleted then, or pushed only later) is checked against its record instead of the tag's history.
 
-`dg release verify <owner>/<repo> <tag>` prints the same checks and exits with [E504](../errors.md#e504) when the release changed, so a script can stop before installing from the tag. Run it inside a clone that has fetched the tag (`git fetch --tags`) to check the tag's signature as well. A private repository's sealed release may record its commit; it is checked against that when its tag named nothing at the moment of publish (the tag's own history wins otherwise).
+`dg release verify <owner>/<repo> <tag>` prints the same checks and exits with [E504](../errors.md#e504) when the release changed, so a script can stop before installing from the tag. Run it inside a clone that has fetched the tag (`git fetch --tags`) to check the tag's signature as well. A private repository's encrypted release may record its commit; it is checked against that when its tag named nothing at the moment of publish (the tag's own history wins otherwise).
 
 ### Labels
 
@@ -615,7 +624,7 @@ dg milestone close  <owner>/<repo> v1.0             # --reopen to reopen
 dg issue milestone  <owner>/<repo> 12 v1.0
 ```
 
-On the web, **Issues → Milestones** lists them open and closed, with due dates and progress, and lets members create, edit, close, reopen and delete them. Like a label, a milestone keeps its title once defined. A milestone definition can be deleted only by the member who wrote it, so one another member also defined can be closed but not deleted. Milestones in a private repository are sealed, which this release does not do yet (web or `dg`).
+On the web, **Issues → Milestones** lists them open and closed, with due dates and progress, and lets members create, edit, close, reopen and delete them. Like a label, a milestone keeps its title once defined. A milestone definition can be deleted only by the member who wrote it, so one another member also defined can be closed but not deleted. Milestones in a private repository are encrypted, which this release does not do yet (web or `dg`).
 
 ### Stars
 
@@ -649,7 +658,7 @@ Every write shows its price before you sign, and a toast shows what it actually 
 
 **Releases from the browser.** On a repository's **Releases** tab, a maintainer sees **New release**. It works like `dg release create --asset`: the maintainer role is checked before anything uploads, each file (up to 256 MiB) goes to *your* storage from **Settings → Storage** (never to Platform), is verified by reading it back, and is recorded with its SHA-256. Anyone who downloads an asset from the release page gets it only if it hashes to the recorded value. The tag can be an existing one, or a new one: the form then says the tag is new and asks for the **Target** branch (the default branch first), and publishing first writes the tag as a lightweight tag at that branch's tip (one ref update, about 0.0007 DASH, nothing uploaded), as GitHub's "Create new tag on publish" does. A tag that was pushed meanwhile at another commit stops the publish before anything uploads. To make an annotated or signed tag, push it with git first.
 
-**Branches from the browser.** On the **Branches** page, maintainers and writers see **New branch** (a name and the branch to start from) and a delete button on each branch. Each is one ref update, about 0.0007 DASH, and nothing is uploaded: a new branch points at a commit the repository already stores. A branch matching a protected pattern is a maintainer's to create. The default branch and protected branches cannot be deleted from the web, as on GitHub: the button is disabled and says why (change the default, or a maintainer removes the protection in **Settings → Branches**, first). A branch is deleted only from the commit the page showed, so commits pushed since are never dropped unseen, and a branch deleted from the page can be **Restore**d there until you leave it. Its commits stay stored either way: deleting a branch deletes no pack. Triage members and readers see a line saying their role cannot create or delete branches.
+**Branches from the browser.** On the **Branches** page, maintainers and writers see **New branch** (a name and the branch to start from) and a delete button on each branch. Each is one ref update, about 0.0007 DASH, and nothing is uploaded: a new branch points at a commit the repository already stores. A branch matching a protected pattern is a maintainer's to create. The default branch and protected branches cannot be deleted from the web, as on GitHub: the button is disabled and says why (change the default, or a maintainer removes the protection in **Settings → Branches**, first). A branch is deleted only from the commit the page showed, so commits pushed since are never dropped unseen, and a branch deleted from the page can be **Restore**d there until you leave it. Its commits stay stored either way: deleting a branch deletes no pack. People with Triage or Read access see a line saying their role cannot create or delete branches.
 
 **Merging.** Writers and maintainers get a merge box on a public repository's PR. It checks the merge in the browser first, then offers what it can do: **Merge (fast-forward)**, **Create merge commit and merge**, **Squash and merge** (authored by the PR's author, committed by you, as on GitHub) or **Rebase and merge** (the PR's commits replayed on the base exactly as `git rebase` replays them, each keeping its author, committed by you), limited to the methods the branch policy allows. A rebase is checked on its own, since it can stop where a merge would not: when a commit would not apply cleanly the box names it and its files (git's rebase stops there too, so pick another method or rebase the branch yourself), and when the PR holds a merge commit or a commit's change may already be on the base it sends you to `dg pr merge --rebase`. A merge commit's and a squash's message can be edited in the box before merging. The browser merges a file both sides changed line by line, exactly as `git merge` does: the same merged file, byte for byte. When the two sides changed the same lines, or lines next to each other, git would stop with a conflict, and so does the browser: it lists the files and sends you to `dg pr merge`. A merge needs a commit name and email; the merge box asks for them in place when they are not set yet. It builds the pack, uploads it to your storage from **Settings → Storage** (it asks before storing on Platform), moves the branch and posts the `merge` event: the same steps as `dg pr merge`. These cases go to `dg pr merge`: lines both sides changed (a conflict, which `dg pr merge` reports too until you resolve it on the PR's branch), shapes only git merges (a file one side renamed or deleted and the other changed, a directory one side moved or removed, a file added on both sides, binary files, files over 2 MiB, files under a `.gitattributes`, whose merge rules the browser does not read), a private repository, a merge too large to build in the browser, and a history that changes `.gitmodules` or `.gitattributes` or holds an object git would reject. On a protected base branch only a maintainer can merge, in the browser or with `dg`; a writer sees **Protected branch — maintainers only**. **Mark as merged (done elsewhere)** only records a merge done some other way, and is offered once the head is on the base branch. While the branch policy is not met the merge is disabled; a maintainer can tick **bypass rules**, confirm the rules named, and merge: an event on the PR records the bypass, and nobody can delete it.
 
