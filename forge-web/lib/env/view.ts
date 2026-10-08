@@ -6,9 +6,23 @@
  * masks them.
  */
 
+import type { Role } from '../rules/v2'
 import type { Exposure } from './chain'
-import { compareStrings as cmp, type Audience, type VarType } from './format'
-import { currentOf, exposureFor, headOf, ignoredCount, ignoredNewerOf, shortHead, snapshotOf, unreadableCount, type EnvBook, type Head } from './loader'
+import { OLD_FORMAT_HISTORY_SENTENCE, OLD_FORMAT_SENTENCE, audienceLabel, compareStrings as cmp, membersKey, type Audience, type Group, type VarType } from './format'
+import {
+  currentOf,
+  exposureFor,
+  headOf,
+  ignoredCount,
+  ignoredNewerOf,
+  needsAttention,
+  oldFormatOf,
+  shortHead,
+  snapshotOf,
+  unreadableCount,
+  type EnvBook,
+  type Head,
+} from './loader'
 
 /** One entry as a card lists it. */
 export interface EntryView {
@@ -32,8 +46,16 @@ export interface EnvCardView {
   readonly kind: 'current' | 'conflict' | 'unreadable'
   /** Who can read it (the newest readable version's audience). */
   readonly audience: Audience | null
-  /** Maintainers: the recipients when it was saved (base58), the writer first; empty for Members. */
+  /** How the audience is told: "Maintainers", "Writers and maintainers + 1 more", "All members (old format)". */
+  readonly audienceLabel: string | null
+  /** The newest readable version is an old-format Members snapshot (under the members key). */
+  readonly membersKey: boolean
+  /** The people it was saved to (base58), the writer first, as of its last save; empty in the old format. */
   readonly readers: readonly string[]
+  /** What the old format left in it, when that needs attention (DESIGN §10). */
+  readonly oldFormat: OldFormatView | null
+  /** Maintainers only: who it misses or still includes against its audience now. */
+  readonly stale: readonly StaleItem[]
   /** The values in use (`current` only). */
   readonly entries: readonly EntryView[]
   /** Who saved the version in use, and when (every head of a conflict is in `conflict`). */
@@ -47,6 +69,41 @@ export interface EnvCardView {
   readonly unreadable: { readonly reason: string; readonly unfetched: boolean; readonly head: Head } | null
 }
 
+/** The old-format banner of one environment (DESIGN §10). */
+export interface OldFormatView {
+  /** {@link OLD_FORMAT_SENTENCE} when the latest version is old, else {@link OLD_FORMAT_HISTORY_SENTENCE}. */
+  readonly sentence: string
+  /** Names held in old-format versions not marked changed yet (only when the latest version is not old). */
+  readonly unmarked: readonly string[]
+  /** What to run: `dg env resave --env <name>` or `dg env mark-changed --env <name>`. */
+  readonly command: string
+}
+
+/** The repo's people, as the precise list of who an environment misses needs them. */
+export interface PeopleView {
+  /** The repository owner (base58): in every group. */
+  readonly owner: string
+  /** The current membership documents (an identity may hold two). */
+  readonly members: readonly { readonly identity: string; readonly role: Role }[]
+}
+
+/** Someone an environment's latest version misses, or still includes, against its audience now. */
+export interface StaleItem {
+  readonly who: string
+  /** `missing`: in its audience now, not in `to`. `extra`: in `to`, no longer in its audience. */
+  readonly kind: 'missing' | 'extra'
+  /** How they are told for `missing`: "a writer", "a maintainer", "added to it"... */
+  readonly role: string
+}
+
+/** What {@link environmentsView} knows about the viewer and the repo's people. */
+export interface ViewContext {
+  /** The viewer (base58), when this page may speak for them (signed in, unlocked). */
+  readonly viewer?: string | null
+  /** The repo's people: a maintainer's precise list needs them. */
+  readonly people?: PeopleView | null
+}
+
 export interface EnvPageView {
   readonly cards: readonly EnvCardView[]
   /** Environments this reader cannot name (counted, never named). */
@@ -55,6 +112,14 @@ export interface EnvPageView {
   readonly ignored: number
   /** The repository has no environment at all. */
   readonly empty: boolean
+  /**
+   * The viewer is not a maintainer and some environment is out of their reach: "An environment in
+   * this repo hasn't been shared with you" (E612), since from outside "not in its audience" and
+   * "in the group, not saved since" look the same.
+   */
+  readonly notShared: boolean
+  /** The viewer is a maintainer (`false` when unknown). */
+  readonly viewerMaintainer: boolean
 }
 
 /** `ms` as `YYYY-MM-DD HH:MM UTC` (as `dg` prints it). */
@@ -87,8 +152,88 @@ export function conflictHeadline(env: string, heads: readonly Head[], split: boo
   return authors.size > 1 ? `${authors.size} people changed ${env} at the same time` : `${env} was changed ${heads.length} times at the same time`
 }
 
+/** The E612 line for a viewer who is not a maintainer (DESIGN §10; `dg env ls` says it too). */
+export const NOT_SHARED_TEXT = "An environment in this repo hasn't been shared with you. If you should have access, ask a maintainer to save it again."
+
+const ROLE_WORD: Readonly<Record<Role, string>> = { maintainer: 'a maintainer', writer: 'a writer', triage: 'a triage member', reader: 'a reader' }
+const ROLE_ORDER: readonly Role[] = ['maintainer', 'writer', 'triage', 'reader']
+
+/** Whether a member with `role` is in `group` (forge-core `Group::includes`). */
+function groupIncludes(group: Group, role: Role): boolean {
+  if (group === 'maintainers') return role === 'maintainer'
+  if (group === 'writers') return role === 'maintainer' || role === 'writer'
+  return true
+}
+
+/**
+ * The people `audience` resolves to now (forge-core `resolve_people`): the people it adds, and
+ * for a group the owner and every member in it.
+ */
+export function resolvePeople(audience: Audience, people: PeopleView): Set<string> {
+  const out = new Set(audience.also)
+  if (audience.group !== null) {
+    const group = audience.group
+    out.add(people.owner)
+    for (const m of people.members) if (groupIncludes(group, m.role)) out.add(m.identity)
+  }
+  return out
+}
+
+function roleWord(people: PeopleView, who: string): string {
+  const best = ROLE_ORDER.find((r) => people.members.some((m) => m.identity === who && m.role === r))
+  if (best !== undefined) return ROLE_WORD[best]
+  return who === people.owner ? 'the owner' : 'added to it'
+}
+
+/**
+ * Who `env`'s latest version misses or still includes, against its audience now (forge-core
+ * `stale_of`, minus encryption-key changes, which only `dg` can check). The writer of the latest
+ * version is never listed as no longer covered. Old-format Members versions are the old-format
+ * banner's business.
+ */
+export function staleOf(book: EnvBook, env: string, people: PeopleView): StaleItem[] {
+  const cur = currentOf(book, env)
+  if (!cur.ok || membersKey(cur.snapshot)) return []
+  const snap = cur.snapshot
+  const state = book.resolution.environments.find((e) => e.env === env)
+  const lastHead = state?.heads[state.heads.length - 1]
+  const author = lastHead === undefined ? '' : headOf(book, lastHead).author
+  const expected = resolvePeople(snap.audience, people)
+  const to = new Set(snap.to)
+  const out: StaleItem[] = []
+  for (const who of [...expected].sort(cmp)) {
+    if (!to.has(who)) out.push({ who, kind: 'missing', role: roleWord(people, who) })
+  }
+  for (const who of snap.to) {
+    if (!expected.has(who) && who !== author) out.push({ who, kind: 'extra', role: '' })
+  }
+  return out
+}
+
+/** One line of the precise list (DESIGN §10): "dana is a writer, but staging hasn't been saved since." `name` is how the page names `item.who`. */
+export function staleLine(env: string, item: StaleItem, name: string): string {
+  return item.kind === 'missing'
+    ? `${name} is ${item.role}, but ${env} hasn't been saved since.`
+    : `${name} isn't in its audience any more, but can read ${env} until it's saved again.`
+}
+
+/** The command that saves `env` again. */
+export function resaveCommand(env: string): string {
+  return `dg env resave --env ${env}`
+}
+
+/** The old-format banner of `env`, when it needs one (forge-core `old_format_line`). */
+export function oldFormatView(book: EnvBook, env: string): OldFormatView | null {
+  const old = oldFormatOf(book, env)
+  if (old === null || !needsAttention(old)) return null
+  if (old.latest) return { sentence: OLD_FORMAT_SENTENCE, unmarked: [], command: resaveCommand(env) }
+  return { sentence: OLD_FORMAT_HISTORY_SENTENCE, unmarked: old.unmarked, command: `dg env mark-changed --env ${env}` }
+}
+
 /** Every environment of `book` as the page shows it. */
-export function environmentsView(book: EnvBook): EnvPageView {
+export function environmentsView(book: EnvBook, ctx: ViewContext = {}): EnvPageView {
+  const viewer = ctx.viewer ?? null
+  const viewerMaintainer = viewer !== null && book.maintainers.has(viewer)
   const cards = book.resolution.environments.map((state): EnvCardView => {
     const env = state.env
     const ignoredList = ignoredNewerOf(book, env)
@@ -96,10 +241,15 @@ export function environmentsView(book: EnvBook): EnvPageView {
     const ignored = last === undefined ? null : { head: last, more: ignoredList.length - 1 }
     // the newest readable version says who can read the environment
     const newest = [...state.heads].reverse().map((id) => snapshotOf(book, id)).find((s) => s !== null) ?? null
+    const old = newest !== null && membersKey(newest)
     const base = {
       env,
       audience: newest?.audience ?? null,
-      readers: newest?.audience === 'maintainers' ? newest.to : [],
+      audienceLabel: newest === null ? null : old ? 'All members (old format)' : audienceLabel(newest.audience),
+      membersKey: old,
+      readers: newest?.to ?? [],
+      oldFormat: oldFormatView(book, env),
+      stale: viewerMaintainer && ctx.people ? staleOf(book, env, ctx.people) : [],
       ignored,
     }
     const cur = currentOf(book, env)
@@ -121,7 +271,8 @@ export function environmentsView(book: EnvBook): EnvPageView {
   })
   const hidden = book.resolution.hidden.length
   const ignored = ignoredCount(book)
-  return { cards, hidden, ignored, empty: cards.length === 0 && hidden === 0 && ignored === 0 }
+  const notShared = viewer !== null && !viewerMaintainer && (hidden > 0 || cards.some((c) => c.kind === 'unreadable'))
+  return { cards, hidden, ignored, empty: cards.length === 0 && hidden === 0 && ignored === 0, notShared, viewerMaintainer }
 }
 
 /**
@@ -144,17 +295,20 @@ export function hiddenLine(hidden: number, named: number): string {
   return named === 0 ? count(hidden, 'environment') : `${hidden} more ${hidden === 1 ? 'environment' : 'environments'} you can't read`
 }
 
-/** One line of the removal checklist (DESIGN §10): "bob could read 2 dev values (and every past value of it). Rotate them at their source: A, B". */
+/**
+ * One line of the removal checklist (DESIGN §10): "bob could read 2 dev values (and every past
+ * value saved in the old format). Change them where they're used: A, B".
+ */
 export function exposureLine(member: string, e: Exposure): string {
   const n = e.names.length
-  const past = e.audience === 'members' ? ' (and every past value of it)' : ''
-  const rotate = n === 1 ? 'Rotate it at its source' : 'Rotate them at their source'
-  return `${member} could read ${n} ${e.env} ${n === 1 ? 'value' : 'values'}${past}. ${rotate}: ${e.names.join(', ')}`
+  const past = e.oldFormat ? ' (and every past value saved in the old format)' : ''
+  const change = n === 1 ? "Change it where it's used" : "Change them where they're used"
+  return `${member} could read ${n} ${e.env} ${n === 1 ? 'value' : 'values'}${past}. ${change}: ${e.names.join(', ')}`
 }
 
-/** The removal dialog's line when `member` stays a maintainer: nothing to rotate, they still read the environments. */
+/** The removal dialog's line when `member` stays a maintainer: nothing to change, they still read the environments. */
 export function keptAccessLine(member: string): string {
-  return `${member} stays a maintainer, so they can still read this repo's environments. Nothing needs rotating.`
+  return `${member} stays a maintainer, so they can still read this repo's environments. Nothing needs changing.`
 }
 
 /** What the removal dialog lists for `removed` ({@link exposureFor}), and the environments the remover can't read. */

@@ -14,10 +14,8 @@ import { describe, expect, it, vi } from 'vitest'
 import { EpochKeys, hexToBytes, type EpochKeyring, type EpochResolution, type OwnerKey } from '../private'
 import { SnapshotOpenError, type ManifestCheck } from './codec'
 import type { Snapshot } from './format'
+import { snapshotJson, type Json, type Obj } from './testing'
 import { readEnvironments, type EnvKeys, type EnvManifest, type EnvSources, type Opened } from './loader'
-
-type Json = null | boolean | number | string | Json[] | { [k: string]: Json }
-type Obj = { [k: string]: Json }
 
 const VECTORS_DIR = resolve(process.cwd(), '..', 'forge-contracts', 'vectors')
 const load = (op: string): [string, Obj, Json][] =>
@@ -67,7 +65,7 @@ describe('readEnvironments over the resolve vectors', () => {
       const open = async (m: ManifestCheck): Promise<Snapshot> => {
         const e = opened[m.packHash]
         if (e === undefined || o(e).env === undefined) throw new SnapshotOpenError('notARecipient')
-        return { env: s(o(e).env), audience: 'members', generatedAt: 0, to: [], vars: new Map() }
+        return { version: 1, env: s(o(e).env), audience: { group: 'members', also: [] }, id: null, generatedAt: 0, to: [], toKeys: [], markedChanged: [], vars: new Map() }
       }
       const keys: EnvKeys = { repoId: new Uint8Array(32), members: null, withReader: (use) => use(null), hasReader: true }
       const book = await readEnvironments(src, keys, open)
@@ -87,15 +85,7 @@ async function epochKeyring(repoId: Uint8Array, j: Json | undefined): Promise<Ep
 }
 
 function resultOf(o: Opened | undefined): Json {
-  if (o?.kind === 'snapshot') {
-    const snap = o.snapshot
-    const vars: Obj = {}
-    for (const [k, v] of snap.vars) Object.defineProperty(vars, k, { value: { type: v.type, value: v.value, note: v.note }, enumerable: true })
-    const out: Obj = { env: snap.env, audience: snap.audience, generatedAt: snap.generatedAt, vars }
-    if (snap.audience === 'maintainers') out.to = [...snap.to]
-    if (snap.savedFor !== undefined) out.savedFor = snap.savedFor
-    return { snapshot: out }
-  }
+  if (o?.kind === 'snapshot') return { snapshot: snapshotJson(o.snapshot) }
   if (o?.kind === 'refused') return { error: o.code }
   return { other: o?.kind ?? 'none' }
 }

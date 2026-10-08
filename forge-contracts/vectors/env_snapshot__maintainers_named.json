@@ -7,6 +7,7 @@
     "op": "open",
     "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
     "snapshot": {
+      "v": 1,
       "env": "production",
       "audience": "maintainers",
       "generatedAt": 1767225600000,
@@ -131,6 +132,7 @@
     "results": [
       {
         "snapshot": {
+          "v": 1,
           "env": "production",
           "audience": "maintainers",
           "generatedAt": 1767225600000,
@@ -160,6 +162,7 @@
       },
       {
         "snapshot": {
+          "v": 1,
           "env": "production",
           "audience": "maintainers",
           "generatedAt": 1767225600000,
@@ -189,6 +192,7 @@
       },
       {
         "snapshot": {
+          "v": 1,
           "env": "production",
           "audience": "maintainers",
           "generatedAt": 1767225600000,

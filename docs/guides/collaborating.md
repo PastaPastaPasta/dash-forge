@@ -202,7 +202,7 @@ dg pr review     <owner>/<repo> 7 --approve --members --body "…"
 
 **CI runners are not members.** A runner key (`dg ci runner add`) reports check runs and never receives the members key. If you make a runner's identity a reader, it reads everything members-only.
 
-**Environments.** A repository's configuration and secrets can be kept outside git, encrypted for its **Maintainers** or its **Members**: see [Environments](environments.md).
+**Environments.** A repository's configuration and secrets can be kept outside git, encrypted for the people you choose (Maintainers, Writers and maintainers, All members, or specific people): see [Environments](environments.md).
 
 **Not yet.** Members-only pull requests, branches, code and releases, specific people, and making members-only discussion public are coming later. Search doesn't look inside members-only issues you can't read.
 

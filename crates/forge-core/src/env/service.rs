@@ -10,6 +10,7 @@ use super::chain::{self, EnvHistory, EnvState, Exposure, Resolution, SnapshotRef
 use super::codec::{self, ManifestCheck, OpenError, OpenKeys};
 use super::format::{diff, Change, Snapshot, Var};
 use super::{Audience, MAX_RECIPIENTS};
+use crate::members::Member;
 use crate::error::{Error, Result};
 use crate::keyring::{recipient_key, PrivateSigner};
 use crate::keystore::BridgeIdentity;
@@ -44,8 +45,8 @@ pub enum Opened {
     Refused(OpenError),
     /// No copy could be fetched (the message, never content).
     Unfetched(String),
-    /// A Members snapshot under a members key its author could no longer use when it was saved
-    /// (the late-content rule sealed packs follow, `private-repos.md` §8.2).
+    /// An old-format Members snapshot under a members key its author could no longer use when it
+    /// was saved (the late-content rule sealed packs follow, `private-repos.md` §8.2).
     Late,
 }
 
@@ -80,6 +81,9 @@ pub struct Book {
     pub manifests: Vec<PackManifestInfo>,
     /// What each authorized snapshot came to, by manifest document id.
     pub opened: BTreeMap<String, Opened>,
+    /// The authorized snapshots stored in the old format (DFPK 0x01, under the members key), by
+    /// manifest document id, whether or not they opened here.
+    pub old_format: BTreeSet<String>,
     /// Authorization, the chains and their heads.
     pub resolution: Resolution,
 }
@@ -283,7 +287,7 @@ impl Book {
                     head: self.head(id),
                     pack_hash: m.map(|m| hex::encode(m.pack_hash)).unwrap_or_default(),
                     size_bytes: m.map_or(0, |m| m.size_bytes),
-                    audience: opened.map(|s| s.audience),
+                    audience: opened.map(|s| s.audience.clone()),
                     changes: opened.map(|s| diff(before, s)).unwrap_or_default(),
                     saved_for: opened.and_then(|s| s.saved_for.clone()),
                     unreadable: opened
@@ -317,6 +321,45 @@ impl Book {
             })
             .collect();
         chain::exposure(&histories, removed, held_members_key)
+    }
+
+    /// What the old format left in `env` (DESIGN §4.5, §10): whether its latest version is an
+    /// old-format Members snapshot, the names held in its old-format snapshots this reader opened
+    /// that are not marked changed in the latest version, and how many old-format snapshots did
+    /// not open here. `None` when it has none.
+    #[must_use]
+    pub fn old_format_of(&self, env: &str) -> Option<OldFormat> {
+        let state = self.state(env)?;
+        let old: Vec<&String> = state
+            .snapshots
+            .iter()
+            .filter(|id| self.old_format.contains(*id))
+            .collect();
+        if old.is_empty() {
+            return None;
+        }
+        let head = state.heads.last().and_then(|h| self.snapshot(h));
+        let marked: BTreeSet<&str> = head
+            .map(|h| h.marked_changed.iter().map(String::as_str).collect())
+            .unwrap_or_default();
+        let mut unmarked = BTreeSet::new();
+        let mut unopened = 0;
+        for id in &old {
+            match self.snapshot(id) {
+                Some(s) => unmarked.extend(
+                    s.vars
+                        .keys()
+                        .filter(|n| !marked.contains(n.as_str()))
+                        .cloned(),
+                ),
+                None => unopened += 1,
+            }
+        }
+        Some(OldFormat {
+            latest: state.heads.iter().any(|h| self.old_format.contains(h)),
+            unmarked: unmarked.into_iter().collect(),
+            unopened,
+        })
     }
 
     /// The `supersedes` a new snapshot of `env` writes ([`chain::window`]).
@@ -416,7 +459,10 @@ impl Book {
     pub fn base(&self, repo: &RepoRef, env: &str, keep: Option<&str>) -> Result<Base> {
         let from = |snap: &Snapshot, heads: usize| Base {
             vars: snap.vars.clone(),
-            audience: Some(snap.audience),
+            audience: Some(snap.audience.clone()),
+            id: snap.id,
+            version: snap.version,
+            marked_changed: snap.marked_changed.clone(),
             supersedes: self.window(env),
             heads,
         };
@@ -434,6 +480,9 @@ impl Book {
             Err(Blocked::Missing { .. }) => Ok(Base {
                 vars: BTreeMap::new(),
                 audience: None,
+                id: None,
+                version: 2,
+                marked_changed: Vec::new(),
                 supersedes: Vec::new(),
                 heads: 0,
             }),
@@ -464,7 +513,7 @@ impl Book {
                 utc(head.created_at),
                 head.short()
             ))
-            .fix("ask a maintainer who can read it to make any change: they save it for the current maintainers")
+            .fix("ask a maintainer who can read it to make any change, or to save it again for you")
             .note("nothing was written")
             .into()),
         }
@@ -533,13 +582,40 @@ pub fn unfetched_error(env: &str, head: &Head, reason: &str) -> Error {
 
 pub use super::chain::MAX_SUPERSEDES;
 
+/// What the old format left in one environment ([`Book::old_format_of`]).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OldFormat {
+    /// Its latest version is in the old format.
+    pub latest: bool,
+    /// Names held in old-format versions, not marked changed since.
+    pub unmarked: Vec<String>,
+    /// Old-format versions this reader can't open (their names are unknown here).
+    pub unopened: usize,
+}
+
+impl OldFormat {
+    /// Whether the banner is shown: the latest version is old, or old values may still be in
+    /// use.
+    #[must_use]
+    pub fn needs_attention(&self) -> bool {
+        self.latest || !self.unmarked.is_empty() || self.unopened > 0
+    }
+}
+
 /// Where a new snapshot starts ([`Book::base`]).
 #[derive(Debug, Clone)]
 pub struct Base {
     /// The entries to edit.
     pub vars: BTreeMap<String, Var>,
-    /// The environment's audience, when it exists.
+    /// The environment's audience, when it exists (an old snapshot's as the group of its word).
     pub audience: Option<Audience>,
+    /// The environment's id, when a version-2 snapshot of it exists.
+    pub id: Option<[u8; 16]>,
+    /// The version of the snapshot it starts from (2 for a new environment).
+    pub version: u8,
+    /// The names marked changed so far ([`Snapshot::marked_changed`]), carried forward.
+    pub marked_changed: Vec<String>,
     /// The `packHash`es the new snapshot supersedes.
     pub supersedes: Vec<[u8; 32]>,
     /// How many heads the environment has now (0 new, 1, or more when `keep` resolves a
@@ -547,11 +623,26 @@ pub struct Base {
     pub heads: usize,
 }
 
+impl Base {
+    /// The environment's id, or a fresh random one for its first version-2 save.
+    pub fn id_or_new(&self) -> Result<[u8; 16]> {
+        if let Some(id) = self.id {
+            return Ok(id);
+        }
+        let mut id = [0u8; 16];
+        getrandom::getrandom(&mut id)
+            .map_err(|e| Error::Config(format!("drawing an environment id: {e}")))?;
+        Ok(id)
+    }
+}
+
 /// A snapshot ready to save.
 #[derive(Debug, Clone)]
 pub struct Draft {
     /// The environment.
     pub env: String,
+    /// Its id ([`Base::id_or_new`]).
+    pub id: [u8; 16],
     /// Who can read it.
     pub audience: Audience,
     /// Every entry it holds.
@@ -560,6 +651,11 @@ pub struct Draft {
     pub supersedes: Vec<[u8; 32]>,
     /// Set when saving a removed maintainer's values again for them.
     pub saved_for: Option<String>,
+    /// The names marked changed ([`Snapshot::marked_changed`]).
+    pub marked_changed: Vec<String>,
+    /// The people the audience resolves to, when the caller worked them out (a membership
+    /// change's plan, from the member list as it will be); `None`: from the member documents now.
+    pub people: Option<BTreeSet<String>>,
 }
 
 /// A sealed snapshot not yet written ([`Environments::prepare`]).
@@ -571,9 +667,9 @@ pub struct Prepared {
     pub supersedes: Vec<[u8; 32]>,
     /// The sealed artifact.
     pub sealed: Vec<u8>,
-    /// Who it goes to (Maintainers; base58, the writer first).
+    /// Who it goes to (base58, the writer first).
     pub to: Vec<String>,
-    /// Maintainers left out because their identity has no usable encryption key.
+    /// People of the audience left out because their identity has no usable encryption key.
     pub skipped: Vec<String>,
 }
 
@@ -597,9 +693,9 @@ pub struct Saved {
     pub size_bytes: u64,
     /// Its audience.
     pub audience: Audience,
-    /// Who it was sent to (Maintainers; base58, the writer first).
+    /// Who it was sent to (base58, the writer first).
     pub to: Vec<String>,
-    /// Maintainers left out because their identity has no usable encryption key.
+    /// People of the audience left out because their identity has no usable encryption key.
     pub skipped: Vec<String>,
 }
 
@@ -612,10 +708,56 @@ pub fn snapshot_credits(sealed_len: u64) -> u64 {
     CHUNK_PER_BYTE * (sealed_len + CHUNK_OVERHEAD_BYTES) + CHUNK_FLAT + MANIFEST_FIRST
 }
 
-/// The largest a snapshot is sealed: the biggest bucket under the widest header.
-pub const MAX_SEALED: u64 = (super::format::MAX_SNAPSHOT
-    + crate::private::named::artifact_header_len(MAX_RECIPIENTS)
-    + 16) as u64;
+/// The largest a sealed snapshot may be: one Platform chunk. The biggest bucket under a header
+/// for 16 people fits; a large environment for many more people may not, and is refused before
+/// signing.
+pub const MAX_SEALED: u64 = crate::pack::DOC_PAYLOAD_MAX as u64;
+
+/// The people `audience` resolves to with `members` the repository's membership documents and
+/// `owner` its owner (base58, sorted): its group's members (the owner is in every group) and the
+/// people it adds. The writer is added at write time.
+#[must_use]
+pub fn resolve_people(audience: &Audience, owner: &str, members: &[Member]) -> BTreeSet<String> {
+    let mut out: BTreeSet<String> = audience.also.iter().cloned().collect();
+    if let Some(g) = audience.group {
+        out.insert(owner.to_owned());
+        out.extend(
+            members
+                .iter()
+                .filter(|m| g.includes(m.role))
+                .map(|m| m.identity_id.clone()),
+        );
+    }
+    out
+}
+
+/// E611: a first save without an audience.
+#[must_use]
+pub fn audience_required(env: &str) -> Error {
+    UserError::new(
+        codes::AUDIENCE_REQUIRED,
+        format!("choose who can read environment {env}"),
+    )
+    .cause("an environment has no default audience: you choose it when you first save it")
+    .fix(format!(
+        "dg env set … --env {env} --audience maintainers   # or writers, members, people --to @a,@b"
+    ))
+    .note("nothing was written")
+    .into()
+}
+
+/// E612: environments this member cannot read (DESIGN §4.5): "not in the audience" and "in the
+/// group, not saved since" look the same from outside, so the message is generic.
+#[must_use]
+pub fn not_shared_yet(repo: &RepoRef, env: Option<&str>) -> UserError {
+    let what = env.map_or_else(
+        || "An environment in this repo hasn't been shared with you".to_owned(),
+        |e| format!("{} has no environment {e} shared with you", repo.display()),
+    );
+    UserError::new(codes::NOT_SHARED_YET, what).fix(
+        "if you should have access, ask a maintainer to save it again (`dg env resave`)",
+    )
+}
 
 /// Environments of repositories, read and written as one identity (or anonymously).
 pub struct Environments<'a> {
@@ -688,10 +830,17 @@ impl<'a> Environments<'a> {
             maintainers.into_iter().map(|m| m.identity_id).collect();
         maintainers.extend(extra.map(str::to_owned));
         let authorized = authorized(&manifests, &maintainers);
-        let opened: BTreeMap<String, Opened> = self
-            .opener(repo, &svc, &authorized)
-            .await?
-            .open_all(&authorized);
+        let fetched = self.opener(repo, &svc, &authorized).await?;
+        let old_format: BTreeSet<String> = fetched
+            .fetched
+            .iter()
+            .filter(|(_, b)| {
+                b.as_ref()
+                    .is_ok_and(|b| b.get(4) == Some(&crate::private::pack::VERSION))
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        let opened: BTreeMap<String, Opened> = fetched.open_all(&authorized);
         let refs: Vec<SnapshotRef> = manifests.iter().map(snapshot_ref).collect();
         let by_hash: BTreeMap<[u8; 32], String> = authorized
             .iter()
@@ -708,6 +857,7 @@ impl<'a> Environments<'a> {
             maintainers,
             manifests,
             opened,
+            old_format,
             resolution,
         })
     }
@@ -824,10 +974,9 @@ impl<'a> Environments<'a> {
         .into())
     }
 
-    /// Seal `draft` as the next snapshot of its environment, for its audience (Members under the
-    /// members key at the write epoch, read fresh; Maintainers to every current maintainer with
-    /// a usable encryption key, the writer first). Refused unless the signer is a current
-    /// maintainer. Nothing is written: [`Self::store`] does that, after the caller has shown
+    /// Seal `draft` as the next snapshot of its environment: a letter to the people its audience
+    /// resolves to, each with a usable encryption key, the writer first. Refused unless the
+    /// signer is a current maintainer. Nothing is written: [`Self::store`] does that, after the caller has shown
     /// the plan and its cost.
     pub async fn prepare(&self, repo: &RepoRef, draft: &Draft) -> Result<Prepared> {
         self.require_maintainer(repo, &format!("change {}", draft.env))
@@ -845,7 +994,7 @@ impl<'a> Environments<'a> {
             }));
         }
         Ok(Prepared {
-            audience: draft.audience,
+            audience: draft.audience.clone(),
             supersedes,
             sealed,
             to,
@@ -863,53 +1012,55 @@ impl<'a> Environments<'a> {
             id,
             pack_hash: hex::encode(pack_hash),
             size_bytes: prepared.sealed.len() as u64,
-            audience: prepared.audience,
+            audience: prepared.audience.clone(),
             to: prepared.to.clone(),
             skipped: prepared.skipped.clone(),
         })
     }
 
-    /// The recipients of a Maintainers snapshot: `me` (the writer, slot 0), then every other
-    /// current maintainer by id with their highest usable ENCRYPTION key; and the maintainers
-    /// left out for having none.
+    /// The recipients of a snapshot: `me` (the writer, slot 0, with its key `me_key_id`), then
+    /// every one of `people` but `me` by id, each with their highest usable ENCRYPTION key; the
+    /// key id of every slot; and the people left out for having none.
     async fn recipients(
         &self,
         repo: &RepoRef,
         me: Recipient,
-        maintainers: &[String],
-    ) -> Result<(Vec<Recipient>, Vec<String>)> {
+        me_key_id: u32,
+        people: &BTreeSet<String>,
+    ) -> Result<(Vec<Recipient>, Vec<u32>, Vec<String>)> {
         let me_id = platform::encode_identifier(me.identity_id);
-        let mut others: Vec<String> = maintainers
-            .iter()
-            .filter(|id| **id != me_id)
-            .cloned()
-            .collect();
-        others.sort();
-        others.dedup();
         let core = repo.forge().core.clone();
         let mut recipients = vec![me];
+        let mut key_ids = vec![me_key_id];
         let mut skipped = Vec::new();
-        for other in others {
-            let keys = match self.client.fetch_identity(&other).await {
+        for other in people.iter().filter(|p| **p != me_id) {
+            let keys = match self.client.fetch_identity(other).await {
                 Ok(identity) => identity.public_keys(),
                 Err(Error::NotFound) => Vec::new(),
                 Err(e) => return Err(e),
             };
-            let key = recipient_key(&keys, &core)
-                .and_then(|k| <[u8; 33]>::try_from(k.public_key.as_slice()).ok());
+            let key = recipient_key(&keys, &core).and_then(|k| {
+                <[u8; 33]>::try_from(k.public_key.as_slice())
+                    .ok()
+                    .map(|pk| (k.id, pk))
+            });
             match key {
-                Some(public_key) => recipients.push(Recipient {
-                    identity_id: platform::decode_identifier(&other)?,
-                    public_key,
-                }),
-                None => skipped.push(other),
+                Some((id, public_key)) => {
+                    recipients.push(Recipient {
+                        identity_id: platform::decode_identifier(other)?,
+                        public_key,
+                    });
+                    key_ids.push(id);
+                }
+                None => skipped.push(other.clone()),
             }
         }
-        Ok((recipients, skipped))
+        Ok((recipients, key_ids, skipped))
     }
 
-    /// Seal `draft` for its audience: the bytes, who it goes to, and who was left out.
-    #[allow(clippy::too_many_lines)] // the snapshot, then one branch per audience
+    /// Seal `draft` as a letter to the people its audience resolves to (the member documents
+    /// now, or `draft.people`), the writer first: the bytes, who it goes to, and who was left
+    /// out.
     async fn seal(
         &self,
         repo: &RepoRef,
@@ -921,104 +1072,80 @@ impl<'a> Environments<'a> {
                 "saving an environment needs an identity",
             ))
         })?;
-        let generated_at = std::time::SystemTime::now()
+        let action = format!("save {}", draft.env);
+        let people = if let Some(p) = &draft.people {
+            p.clone()
+        } else {
+            let members = MemberReader::new(self.client).list(repo).await?;
+            resolve_people(&draft.audience, repo.owner_id(), &members)
+        };
+        let enc = signer.encryption_keys(repo);
+        let (sender_key_id, sender) = enc
+            .sender()
+            .ok_or_else(|| crate::keyring::no_encryption_key_held(&action))?;
+        let me_bytes = platform::decode_identifier(&signer.identity.id())?;
+        let (recipients, key_ids, skipped) = self
+            .recipients(
+                repo,
+                Recipient {
+                    identity_id: me_bytes,
+                    public_key: sender.public_key(),
+                },
+                sender_key_id,
+                &people,
+            )
+            .await?;
+        if recipients.len() > MAX_RECIPIENTS {
+            return Err(UserError::new(
+                codes::USAGE,
+                format!(
+                    "{action}: {} is {} people. An environment can be shared with at most {MAX_RECIPIENTS}.",
+                    draft.audience.label(),
+                    recipients.len()
+                ),
+            )
+            .fix("choose a smaller group or specific people (`--audience`)")
+            .note("nothing was written")
+            .into());
+        }
+        let mut snap = Snapshot::new(&draft.env, draft.id, draft.audience.clone(), draft.vars.clone());
+        snap.generated_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(0));
-        let mut snap = Snapshot {
-            env: draft.env.clone(),
-            audience: draft.audience,
-            generated_at,
-            saved_for: draft.saved_for.clone(),
-            to: Vec::new(),
-            vars: draft.vars.clone(),
-        };
-        let action = format!("save {}", draft.env);
-        let maintainers: Vec<String> = MemberReader::new(self.client)
-            .maintainers(repo)
-            .await?
-            .into_iter()
-            .map(|m| m.identity_id)
+        snap.saved_for.clone_from(&draft.saved_for);
+        snap.marked_changed.clone_from(&draft.marked_changed);
+        snap.to = recipients
+            .iter()
+            .map(|r| platform::encode_identifier(r.identity_id))
             .collect();
-        match draft.audience {
-            Audience::Members => {
-                let kr = signer.keyring(repo).await?;
-                // E312 when no members key exists (members-only content not turned on), E311
-                // when one does and none was shared with this maintainer yet
-                if !kr.has_members_key() {
-                    return Err(UserError::new(
-                        codes::MEMBERS_ONLY_OFF,
-                        format!(
-                            "{action}: members-only content is not turned on in {}",
-                            repo.display()
-                        ),
-                    )
-                    .cause("a Members environment is encrypted under the repo's members key, and no maintainer has set one up yet")
-                    .fix(format!(
-                        "turn it on: `dg repo members enable {}` (it shows the cost first)",
-                        repo.display()
-                    ))
-                    .fix("or save it for Maintainers: add `--audience maintainers`")
-                    .note("nothing was written")
-                    .into());
-                }
-                if kr.resolution().keys.is_empty() {
-                    return Err(crate::keyring::no_key_shared(repo));
-                }
-                let resolution = kr.resolution();
-                let epoch = resolution
-                    .write_epoch
-                    .filter(|e| resolution.keys.contains_key(e))
-                    .ok_or_else(|| no_members_key(repo, &action))?;
-                let keys = EpochKeys::derive(kr.repo_id(), epoch, &resolution.keys[&epoch]);
-                let sealed = codec::seal_members(&keys, &snap)
-                    .map_err(|e| Error::Config(format!("{action}: {e}")))?;
-                Ok((sealed, Vec::new(), Vec::new()))
-            }
-            Audience::Maintainers => {
-                let enc = signer.encryption_keys(repo);
-                let (sender_key_id, sender) = enc
-                    .sender()
-                    .ok_or_else(|| crate::keyring::no_encryption_key_held(&action))?;
-                let me = signer.identity.id();
-                let me_bytes = platform::decode_identifier(&me)?;
-                let (recipients, skipped) = self
-                    .recipients(
-                        repo,
-                        Recipient {
-                            identity_id: me_bytes,
-                            public_key: sender.public_key(),
-                        },
-                        &maintainers,
-                    )
-                    .await?;
-                if recipients.len() > MAX_RECIPIENTS {
-                    return Err(UserError::new(
-                        codes::UNSUPPORTED,
-                        format!(
-                            "{action}: {} maintainers have an encryption key, and a Maintainers environment goes to at most {MAX_RECIPIENTS} people",
-                            recipients.len()
-                        ),
-                    )
-                    .fix("use the Members audience (`--audience members`), or fewer maintainers")
-                    .note("nothing was written")
-                    .into());
-                }
-                snap.to = recipients
-                    .iter()
-                    .map(|r| platform::encode_identifier(r.identity_id))
-                    .collect();
-                let sealed = codec::seal_maintainers(
-                    &repo.scope()?.repo_id,
-                    sender,
-                    sender_key_id,
-                    &me_bytes,
-                    &recipients,
-                    &snap,
-                )
-                .map_err(|e| Error::Config(format!("{action}: {e}")))?;
-                Ok((sealed, snap.to.clone(), skipped))
-            }
+        snap.to_keys = key_ids;
+        let sealed = codec::seal_letter(
+            &repo.scope()?.repo_id,
+            sender,
+            sender_key_id,
+            &me_bytes,
+            &recipients,
+            &snap,
+        )
+        .map_err(|e| Error::Config(format!("{action}: {e}")))?;
+        if sealed.len() as u64 > MAX_SEALED {
+            return Err(UserError::new(
+                codes::USAGE,
+                format!(
+                    "{action}: {} values for {} people don't fit one save",
+                    snap.vars.len(),
+                    recipients.len()
+                ),
+            )
+            .cause(format!(
+                "the encrypted environment is {} bytes; one save holds at most {MAX_SEALED}",
+                sealed.len()
+            ))
+            .fix("split it into two environments, or share it with fewer people")
+            .note("nothing was written")
+            .into());
         }
+        Ok((sealed, snap.to, skipped))
     }
 }
 
@@ -1113,22 +1240,6 @@ pub fn utc(ms: u64) -> String {
         rem / 3600,
         rem % 3600 / 60
     )
-}
-
-/// Members audience without a members key to write under.
-fn no_members_key(repo: &RepoRef, action: &str) -> Error {
-    UserError::new(
-        codes::ROTATION_PENDING,
-        format!("{action}: the members key can't be written under right now"),
-    )
-    .cause(format!(
-        "a Members environment is encrypted under {}'s current members key, and a key change has not finished",
-        repo.display()
-    ))
-    .fix(format!("`dg repo keys repair {}` finishes it", repo.display()))
-    .fix("or save it for Maintainers instead: add `--audience maintainers`")
-    .note("nothing was written")
-    .into()
 }
 
 /// The authorized manifests (a current maintainer's, the first of each `packHash`), in

@@ -25,8 +25,8 @@ This page explains what each audience means, what a public repository can keep *
 | Audience | Who reads it | Changes when members change | Available |
 |---|---|---|---|
 | **Public** | Everyone | — | today |
-| **Members** | Every current member of the repository: maintainers, writers, triage members and readers. Members added later read it too, including what was posted before they joined. | yes | today, for issues, comments, reviews and environments |
-| **Specific people** | A list the writer picks, members or not. The writer is always on it. | no | **coming later**. Environments already use one fixed list, **Maintainers**: the repository's maintainers when each change is saved. |
+| **Members** | Every current member of the repository: maintainers, writers, triage members and readers. Members added later read it too, including what was posted before they joined. | yes | today, for issues, comments and reviews |
+| **Specific people** | A list the writer picks, members or not. The writer is always on it. | no | **coming later** for issues and comments. [Environments](../guides/environments.md) already go to specific people or a group (below). |
 
 The Members audience is encrypted on your computer or in your browser before anything is sent. Dash Platform stores the encrypted text. Nobody without the repository's members key can read it: not Platform nodes, not storage providers, not Forge's developers.
 
@@ -39,7 +39,7 @@ A **private** repository is different: everything in it is encrypted, code inclu
 | Issues | yes |
 | Comments on issues and pull requests | yes |
 | Reviews of a pull request (the review's text; its verdict stays public, [below](#what-everyone-can-still-see)) | yes |
-| [Environments](../guides/environments.md): configuration and secrets kept outside git | yes: **Members** or **Maintainers** |
+| [Environments](../guides/environments.md): configuration and secrets kept outside git | yes: always for a chosen audience, **Maintainers**, **Writers and maintainers**, **All members** or **Specific people**, encrypted for those people when it is saved |
 | Pull requests themselves, branches, commits and code | **coming later**. Everything you push to a public repository is public. |
 | Releases | **coming later** |
 | Label and milestone definitions | no, they stay public. Which label or milestone a members-only issue has is encrypted. |
@@ -141,7 +141,7 @@ And per kind of item:
 |---|---|---|
 | A members-only comment or review on a public issue or pull request | which issue or pull request it is on, and which comment it replies to; an inline comment's line numbers and commit; **a review's verdict** (approved, changes requested, commented), which counts toward the branch policy for everyone | the text, an inline comment's file path, the review's text |
 | A members-only issue | its number ("#12 · members-only"); when it was opened, closed, reopened or locked, and by whom; that a label or milestone was set or someone assigned, and **who** was assigned; the counts that include it | the title, the body, the names of its labels and milestone |
-| An environment | that the repository has environments and how many; for each change, who made it, when, and its size rounded up to 512 bytes; for a Maintainers environment, how many people it was sent to | its name, the names, types and notes of its entries, and every value |
+| An environment | that the repository has environments and how many; for each change, who made it, when, and its size rounded up to 512 bytes; how many people it was sent to | its name, who it is for, the names, types and notes of its entries, and every value |
 | The repository | that members-only content is on; when the members key changed; who shared the key with whom; the member list and roles (public on every repository) | the key |
 
 A review's verdict is public on purpose: everyone agrees on whether a pull request has its approvals, so a member and a non-member see the same merge button. A pull request's author who is not a member sees "Changes requested by @bob" and cannot read why. Add one public line saying what to fix.
@@ -165,7 +165,7 @@ A review's verdict is public on purpose: everyone agrees on whether a pull reque
 - **Everything in [What everyone can still see](#what-everyone-can-still-see).** Who talks, when, how much, and on which issue can say a lot. Leave out what the timing alone would give away.
 - **What members copy.** Any member can copy, quote or screenshot what they read. Quoting a members-only comment into a public reply publishes the quoted text.
 - **What removed members kept.** They keep everything posted before the removal. Removing someone protects only what comes after.
-- **Past values in a Members environment.** Everyone who becomes a member later can read every value ever stored there, including past values. Keep production credentials in a **Maintainers** environment, and rotate a secret at its source when someone leaves ([Environments](../guides/environments.md#removing-a-member)).
+- **Values saved in the old format.** An environment saved by Forge before October 2026 for Members can be read by anyone who becomes a member later, past values included. Save it again (`dg env resave --all`) and change those values where they're used. Environments saved since go only to the people their audience covers at that moment. Change a secret where it's used when someone leaves ([Environments](../guides/environments.md#removing-a-member)).
 - **Code.** Everything pushed to a public repository is public, forever, even if you delete it later. The push helper refuses some files that look like secrets and warns about others ([Secrets in a push](../guides/quick-start.md#secrets-in-a-push)), but it cannot know everything. Keep secrets in an environment instead.
 - **Your encryption key.** It reads every private repository and every members-only conversation you belong to. Keep it like your signing keys, and replace it after a lost device ([Identity and keys](../guides/identity-and-keys.md#replacing-it-after-a-lost-device)).
 - **Mentions.** Mentioning someone who is not a member in a members-only comment tells them nothing they can read, but they may learn that something was posted.
@@ -222,7 +222,7 @@ A members-only write by someone who is not a member stops with [E601](../errors.
 | **Members** | Every current member of the repository, and everyone who becomes one later. |
 | **members-only** | Readable by Members only. "A members-only comment." |
 | **Specific people** | A list the writer picks (coming later). |
-| **Maintainers** (environments) | The maintainers when the change was saved. |
+| **Maintainers**, **Writers and maintainers**, **All members** (environments) | The people in that group when the environment was last saved. |
 | **Turn on members-only content** | What a maintainer does once per repository (`dg repo members enable`). |
 | **Set up your encryption key** | What each person does once per identity (`dg auth keys add --encryption`). |
 | **Publish**, **Make public** | Widening code or discussion to everyone (coming later). It can't be undone. |

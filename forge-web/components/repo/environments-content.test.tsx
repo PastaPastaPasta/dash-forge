@@ -1,22 +1,25 @@
 // @vitest-environment jsdom
 /**
  * Settings → Environments (DESIGN §4.5, §10): the empty state, masked values with a local show
- * toggle that stores nothing, the Members sentence, "Access is granted, not logged.", the
+ * toggle that stores nothing, the audience label and who it was saved to, the old-format banner,
+ * a maintainer's list of who an environment misses, "Access is granted, not logged.", the
  * ignored-change warning, a conflict listing every version with the dg fix, counts (never names)
- * for environments the viewer can't read, the unlock prompt, and the removal checklist.
+ * for environments the viewer can't read and the note that one hasn't been shared, the unlock
+ * prompt, and the removal checklist.
  */
 
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { EnvPageView, EnvCardView, RemovalView } from '@/lib/env/view'
+import { OLD_FORMAT_HISTORY_SENTENCE, OLD_FORMAT_SENTENCE } from '@/lib/env'
+import type { EnvPageView, EnvCardView, RemovalView, StaleItem } from '@/lib/env/view'
 import type { RepoHome } from '@/lib/view'
 
 const { envState } = vi.hoisted(() => ({
   envState: { value: { state: { data: null, loading: true, error: null, cause: null, settled: false, reload: () => undefined }, locked: false } as unknown },
 }))
-vi.mock('@/hooks/use-environments', () => ({ useEnvironments: () => envState.value }))
+vi.mock('@/hooks/use-environments', () => ({ useEnvironments: () => envState.value, useRepoPeople: () => null }))
 vi.mock('@/hooks/use-dpns-name', () => ({ useDpnsName: (id: string) => (id === 'BOB' ? 'bob' : undefined) }))
 vi.mock('@/components/author', () => ({ Author: ({ identityId }: { identityId: string }) => <span data-testid="author">{identityId}</span> }))
 vi.mock('@/components/auth/unlock-more', () => ({
@@ -37,8 +40,12 @@ function card(over: Partial<EnvCardView>): EnvCardView {
   return {
     env: 'production',
     kind: 'current',
-    audience: 'maintainers',
+    audience: { group: 'maintainers', also: [] },
+    audienceLabel: 'Maintainers',
+    membersKey: false,
     readers: ['ALICE', 'CAROL'],
+    oldFormat: null,
+    stale: [],
     entries: [entry('DB_URL', SECRET), entry('STRIPE_KEY', 'QAMARK-stripe')],
     updated: head('8V2UnsMbU1xxxxxxxx', 'ALICE'),
     savedFor: null,
@@ -48,7 +55,17 @@ function card(over: Partial<EnvCardView>): EnvCardView {
     ...over,
   }
 }
-const page = (cards: EnvCardView[], hidden = 0): EnvPageView => ({ cards, hidden, ignored: 0, empty: cards.length === 0 && hidden === 0 })
+const page = (cards: EnvCardView[], hidden = 0, over: Partial<EnvPageView> = {}): EnvPageView => ({
+  cards,
+  hidden,
+  ignored: 0,
+  empty: cards.length === 0 && hidden === 0,
+  notShared: false,
+  viewerMaintainer: false,
+  ...over,
+})
+const oldDev = (over: Partial<EnvCardView> = {}): EnvCardView =>
+  card({ env: 'dev', audience: { group: 'members', also: [] }, audienceLabel: 'All members (old format)', membersKey: true, readers: [], ...over })
 
 let root: Root
 let host: HTMLDivElement
@@ -137,32 +154,66 @@ describe('EnvironmentsView', () => {
   })
 
   it('says how many changes were ignored, and is not empty when that is all there is', () => {
-    render(<EnvironmentsView view={{ cards: [], hidden: 0, ignored: 2, empty: false }} />)
+    render(<EnvironmentsView view={page([], 0, { ignored: 2, empty: false })} />)
     expect(byTestId('env-ignored-count')[0]?.textContent).toBe("2 changes by people who aren't maintainers now were ignored.")
     expect(byTestId('env-empty')).toHaveLength(0)
   })
 
-  it('names who can read a Maintainers environment, and who updated it when', () => {
+  it('names the audience, who it was last saved to, and who updated it when', () => {
     render(<EnvironmentsView view={page([card({})])} />)
-    expect(byTestId('env-readers')[0]?.textContent).toBe('ALICECAROL(maintainers when saved)')
+    expect(byTestId('env-audience')[0]?.textContent).toBe('Maintainers')
+    expect(byTestId('env-readers')[0]?.textContent).toBe('ALICECAROL(when last saved)')
     expect(byTestId('env-updated')[0]?.textContent).toBe('Updated by ALICE at 2026-10-05 08:41 UTC')
+    expect(byTestId('env-old-format')).toHaveLength(0)
+    expect(byTestId('env-stale')).toHaveLength(0)
     expect(text()).not.toContain('Readers, CI runners')
   })
 
-  it('carries the Members sentence on a Members environment', () => {
-    render(<EnvironmentsView view={page([card({ env: 'dev', audience: 'members', readers: [] })])} />)
+  it('tells a group plus people, and Specific people, as dg does', () => {
+    render(<EnvironmentsView view={page([card({ audienceLabel: 'Writers and maintainers + 1 more' }), card({ env: 'ci', audienceLabel: 'Specific people (3)' })])} />)
+    expect(byTestId('env-audience').map((a) => a.textContent)).toEqual(['Writers and maintainers + 1 more', 'Specific people (3)'])
+  })
+
+  it('shows the old-format banner on an environment saved under the members key, with the step to take', () => {
+    render(<EnvironmentsView view={page([oldDev({ oldFormat: { sentence: OLD_FORMAT_SENTENCE, unmarked: [], command: 'dg env resave --env dev' } })])} />)
+    expect(byTestId('env-audience')[0]?.textContent).toBe('All members (old format)')
     expect(byTestId('env-readers')[0]?.textContent).toBe('Every member of this repo')
-    expect(byTestId('env-members-sentence')[0]?.textContent).toBe(
-      'Readers, CI runners made members, and future members can read every value stored here, including past values.',
-    )
+    expect(byTestId('env-old-format')[0]?.textContent).toBe(`${OLD_FORMAT_SENTENCE}dg env resave --env dev`)
+    expect(byTestId('env-old-format')[0]?.querySelector('code')?.textContent).toBe('dg env resave --env dev')
+    expect(byTestId('env-old-format-unmarked')).toHaveLength(0)
+    expect(text()).not.toContain('Readers, CI runners')
+  })
+
+  it('shows the shorter note and the names not marked changed when only earlier versions are old', () => {
+    const oldFormat = { sentence: OLD_FORMAT_HISTORY_SENTENCE, unmarked: ['API_TOKEN', 'LOG_LEVEL'], command: 'dg env mark-changed --env dev' }
+    render(<EnvironmentsView view={page([card({ env: 'dev', audienceLabel: 'All members', oldFormat })])} />)
+    expect(byTestId('env-old-format')[0]?.textContent).toBe(`${OLD_FORMAT_HISTORY_SENTENCE}Not marked yet: API_TOKEN, LOG_LEVEL` + 'dg env mark-changed --env dev')
+    expect(byTestId('env-old-format-unmarked')[0]?.textContent).toBe('Not marked yet: API_TOKEN, LOG_LEVEL')
+  })
+
+  it("lists who an environment misses for a maintainer, with the step to save it again", () => {
+    const stale: StaleItem[] = [
+      { who: 'DANA', kind: 'missing', role: 'a writer' },
+      { who: 'BOB', kind: 'extra', role: '' },
+    ]
+    render(<EnvironmentsView view={page([card({ env: 'staging', stale })], 0, { viewerMaintainer: true })} />)
+    const lines = byTestId('env-stale-line').map((l) => l.textContent)
+    expect(lines).toEqual(["DANA is a writer, but staging hasn't been saved since.", "bob isn't in its audience any more, but can read staging until it's saved again."])
+    expect(byTestId('env-stale')[0]?.textContent).toContain('Save it again: dg env resave --env staging')
   })
 
   it('counts environments this viewer cannot read, never naming them', () => {
     render(<EnvironmentsView view={page([], 2)} />)
     expect(byTestId('env-hidden')[0]?.textContent).toBe('2 environments')
     expect(byTestId('env-card')).toHaveLength(0)
-    render(<EnvironmentsView view={page([card({ env: 'dev', audience: 'members', readers: [] })], 1)} />)
+    expect(byTestId('env-not-shared')).toHaveLength(0)
+    render(<EnvironmentsView view={page([oldDev()], 1)} />)
     expect(byTestId('env-hidden')[0]?.textContent).toBe("1 more environment you can't read")
+  })
+
+  it("tells a viewer who isn't a maintainer that an environment hasn't been shared with them", () => {
+    render(<EnvironmentsView view={page([oldDev()], 1, { notShared: true })} />)
+    expect(byTestId('env-not-shared')[0]?.textContent).toBe("An environment in this repo hasn't been shared with you. If you should have access, ask a maintainer to save it again.")
   })
 
   it('warns once about a newer change by someone who is not a maintainer now', () => {
@@ -212,26 +263,26 @@ describe('EnvironmentsContent', () => {
 })
 
 describe('RemovalLines', () => {
-  it('lists what a removed member could read, to rotate at its source', () => {
-    const view: RemovalView = { exposures: [{ env: 'dev', audience: 'members', names: ['API_TOKEN', 'API_URL'] }], unreadable: 1 }
+  it("lists what a removed member could read, to change where it's used", () => {
+    const view: RemovalView = { exposures: [{ env: 'dev', names: ['API_TOKEN', 'API_URL'], oldFormat: true }], unreadable: 1 }
     render(<RemovalLines view={view} name="bob" />)
     const lines = [...byTestId('env-removal')[0]!.querySelectorAll('p')].map((p) => p.textContent)
     expect(lines).toEqual([
-      'bob could read 2 dev values (and every past value of it). Rotate them at their source: API_TOKEN, API_URL',
+      "bob could read 2 dev values (and every past value saved in the old format). Change them where they're used: API_TOKEN, API_URL",
       "You can't read 1 environment here, so it isn't listed. bob may have been able to read values there.",
       "Removing someone can't take back what they could already read.",
     ])
   })
 
-  it('asks for no rotation when they stay a maintainer (only another role goes)', () => {
-    const view: RemovalView = { exposures: [{ env: 'dev', audience: 'members', names: ['API_TOKEN'] }], unreadable: 1 }
+  it('asks for no change when they stay a maintainer (only another role goes)', () => {
+    const view: RemovalView = { exposures: [{ env: 'dev', names: ['API_TOKEN'], oldFormat: true }], unreadable: 1 }
     render(<RemovalLines view={view} name="bob" staysMaintainer />)
     expect(byTestId('env-removal')).toHaveLength(0)
-    expect(text()).not.toContain('Rotate')
-    expect(byTestId('env-removal-kept')[0]?.textContent).toBe("bob stays a maintainer, so they can still read this repo's environments. Nothing needs rotating.")
+    expect(text()).not.toContain('Change them')
+    expect(byTestId('env-removal-kept')[0]?.textContent).toBe("bob stays a maintainer, so they can still read this repo's environments. Nothing needs changing.")
   })
 
-  it('says nothing when there is nothing to rotate', () => {
+  it('says nothing when there is nothing to change', () => {
     render(<RemovalLines view={{ exposures: [], unreadable: 0 }} name="bob" staysMaintainer />)
     expect(host.innerHTML).toBe('')
     render(<RemovalLines view={{ exposures: [], unreadable: 0 }} name="bob" />)

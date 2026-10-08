@@ -6,7 +6,9 @@ use std::fmt::Write as _;
 
 use zeroize::{Zeroize, Zeroizing};
 
-use super::{valid_env_name, valid_var_name, Audience, MAX_RECIPIENTS};
+use super::{
+    valid_env_name, valid_var_name, Audience, Group, MAX_RECIPIENTS, MAX_RECIPIENTS_V1,
+};
 
 /// Snapshots are padded to a multiple of this many bytes.
 pub const BUCKET: usize = 512;
@@ -75,18 +77,28 @@ impl std::fmt::Debug for Var {
 /// One environment as one snapshot holds it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
+    /// The artifact version: 2 for everything written from revision 4 on; 1 (phase 1) is read
+    /// only.
+    pub version: u8,
     /// The environment's name ([`valid_env_name`]).
     pub env: String,
-    /// Who can read it.
+    /// Who can read it. A version-1 snapshot reads as the group of its word, with nobody added.
     pub audience: Audience,
+    /// The environment's random id, fixed at its first save (version 2; `None` for version 1).
+    pub id: Option<[u8; 16]>,
     /// When the writer made it (ms since the epoch; informational: block height orders).
     pub generated_at: u64,
     /// Set on a snapshot a maintainer saved again for a removed maintainer, with the values they
     /// last saved: that maintainer (base58). History says "saved again for …".
     pub saved_for: Option<String>,
-    /// The recipients of a Maintainers snapshot in slot order (base58 identity ids, the writer
-    /// first), "as listed by the writer"; empty for Members.
+    /// The recipients in slot order (base58 identity ids, the writer first), "as listed by the
+    /// writer"; empty for an old-format Members snapshot.
     pub to: Vec<String>,
+    /// The ENCRYPTION key id each recipient's slot was sealed to, in `to` order (version 2).
+    pub to_keys: Vec<u32>,
+    /// Names whose values held in old-format snapshots were changed at their source (version 2;
+    /// sorted).
+    pub marked_changed: Vec<String>,
     /// The entries by name.
     pub vars: BTreeMap<String, Var>,
 }
@@ -123,7 +135,51 @@ fn push_str(out: &mut String, s: &str) {
     out.push('"');
 }
 
+/// Append `items` as a JSON array of strings.
+fn push_strs(out: &mut String, items: &[String]) {
+    out.push('[');
+    for (i, t) in items.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        push_str(out, t);
+    }
+    out.push(']');
+}
+
+/// Whether `ids` are canonical identity ids, none twice.
+fn distinct_ids(ids: &[String]) -> bool {
+    ids.iter()
+        .enumerate()
+        .all(|(i, t)| canonical_id(t) && !ids[..i].contains(t))
+}
+
 impl Snapshot {
+    /// A version-2 snapshot of `env` for `audience` with `vars`, its recipients still to be
+    /// filled in by the writer.
+    #[must_use]
+    pub fn new(env: &str, id: [u8; 16], audience: Audience, vars: BTreeMap<String, Var>) -> Self {
+        Self {
+            version: 2,
+            env: env.to_owned(),
+            audience,
+            id: Some(id),
+            generated_at: 0,
+            saved_for: None,
+            to: Vec::new(),
+            to_keys: Vec::new(),
+            marked_changed: Vec::new(),
+            vars,
+        }
+    }
+
+    /// Whether this is an old-format Members snapshot: version 1, under the members key (a DFPK
+    /// 0x01 file), readable by everyone who joins later.
+    #[must_use]
+    pub fn members_key(&self) -> bool {
+        self.version == 1 && self.audience.group == Some(Group::Members)
+    }
+
     /// Check what a reader checks: names, audience and recipients, and the time range.
     pub fn check(&self) -> Result<(), FormatError> {
         let bad = |why: String| Err(FormatError::Invalid(why));
@@ -144,53 +200,119 @@ impl Snapshot {
                 "{n:?} is not a variable name (letters, digits and `_`, not starting with a digit)"
             ));
         }
-        match self.audience {
-            Audience::Members if !self.to.is_empty() => {
-                bad("a Members snapshot lists no recipients".into())
-            }
-            Audience::Maintainers => {
-                if self.to.is_empty() || self.to.len() > MAX_RECIPIENTS {
+        match self.version {
+            1 => self.check_v1(),
+            2 => self.check_v2(),
+            v => bad(format!("version {v} is not a snapshot version")),
+        }
+    }
+
+    fn check_v1(&self) -> Result<(), FormatError> {
+        let bad = |why: String| Err(FormatError::Invalid(why));
+        if self.id.is_some()
+            || !self.to_keys.is_empty()
+            || !self.marked_changed.is_empty()
+            || !self.audience.also.is_empty()
+        {
+            return bad("a version-1 snapshot has no id, keys, marks or added people".into());
+        }
+        match self.audience.group {
+            Some(Group::Members) if self.to.is_empty() => Ok(()),
+            Some(Group::Members) => bad("an old-format Members snapshot lists no recipients".into()),
+            Some(Group::Maintainers) => {
+                if self.to.is_empty() || self.to.len() > MAX_RECIPIENTS_V1 || !distinct_ids(&self.to)
+                {
                     return bad(format!(
-                        "a Maintainers snapshot goes to 1 to {MAX_RECIPIENTS} people, not {}",
-                        self.to.len()
+                        "a version-1 Maintainers snapshot goes to 1 to {MAX_RECIPIENTS_V1} different people"
                     ));
-                }
-                for (i, t) in self.to.iter().enumerate() {
-                    if !canonical_id(t) || self.to[..i].contains(t) {
-                        return bad(format!(
-                            "{t:?} is not a recipient identity id, or is listed twice"
-                        ));
-                    }
                 }
                 Ok(())
             }
-            Audience::Members => Ok(()),
+            _ => bad("a version-1 snapshot is for Members or Maintainers".into()),
         }
+    }
+
+    fn check_v2(&self) -> Result<(), FormatError> {
+        let bad = |why: String| Err(FormatError::Invalid(why));
+        if self.id.is_none() {
+            return bad("a snapshot needs the environment's id".into());
+        }
+        let also = &self.audience.also;
+        if also.len() > MAX_RECIPIENTS
+            || !also.iter().all(|t| canonical_id(t))
+            || also.windows(2).any(|w| w[0] >= w[1])
+        {
+            return bad("the people added are not identity ids in order, each once".into());
+        }
+        if self.audience.group.is_none() && also.is_empty() {
+            return bad("a Specific-people environment names someone".into());
+        }
+        if self.to.is_empty() || self.to.len() > MAX_RECIPIENTS || !distinct_ids(&self.to) {
+            return bad(format!(
+                "an environment goes to 1 to {MAX_RECIPIENTS} different people, not {}",
+                self.to.len()
+            ));
+        }
+        if self.to_keys.len() != self.to.len() {
+            return bad("one key per recipient".into());
+        }
+        if !self.marked_changed.iter().all(|n| valid_var_name(n))
+            || self.marked_changed.windows(2).any(|w| w[0] >= w[1])
+        {
+            return bad("the names marked changed are not variable names in order, each once".into());
+        }
+        Ok(())
     }
 
     /// The canonical JSON (no padding).
     fn canonical(&self) -> Zeroizing<String> {
         let mut out = Zeroizing::new(String::with_capacity(256));
         out.push_str("{\"audience\":");
-        push_str(&mut out, self.audience.as_str());
+        if self.version == 1 {
+            let word = match self.audience.group {
+                Some(Group::Maintainers) => "maintainers",
+                _ => "members",
+            };
+            push_str(&mut out, word);
+        } else {
+            out.push_str("{\"also\":");
+            push_strs(&mut out, &self.audience.also);
+            out.push_str(",\"group\":");
+            match self.audience.group {
+                Some(g) => push_str(&mut out, g.as_str()),
+                None => out.push_str("null"),
+            }
+            out.push('}');
+        }
         out.push_str(",\"env\":");
         push_str(&mut out, &self.env);
         let _ = write!(out, ",\"generatedAt\":{}", self.generated_at);
+        if let Some(id) = &self.id {
+            let _ = write!(out, ",\"id\":\"{}\"", hex::encode(id));
+        }
+        if !self.marked_changed.is_empty() {
+            out.push_str(",\"markedChanged\":");
+            push_strs(&mut out, &self.marked_changed);
+        }
         if let Some(f) = &self.saved_for {
             out.push_str(",\"savedFor\":");
             push_str(&mut out, f);
         }
-        if self.audience == Audience::Maintainers {
-            out.push_str(",\"to\":[");
-            for (i, t) in self.to.iter().enumerate() {
+        if self.version == 2 || self.audience.group == Some(Group::Maintainers) {
+            out.push_str(",\"to\":");
+            push_strs(&mut out, &self.to);
+        }
+        if self.version == 2 {
+            out.push_str(",\"toKeys\":[");
+            for (i, k) in self.to_keys.iter().enumerate() {
                 if i > 0 {
                     out.push(',');
                 }
-                push_str(&mut out, t);
+                let _ = write!(out, "{k}");
             }
             out.push(']');
         }
-        out.push_str(",\"v\":1,\"vars\":{");
+        let _ = write!(out, ",\"v\":{},\"vars\":{{", self.version);
         for (i, (name, v)) in self.vars.iter().enumerate() {
             if i > 0 {
                 out.push(',');
@@ -227,8 +349,8 @@ impl Snapshot {
         Ok(out)
     }
 
-    /// Read an artifact plaintext: a bucket length, spaces as padding, a valid version-1 object,
-    /// and exactly the bytes [`Self::encode`] makes of it. `None` is malformed.
+    /// Read an artifact plaintext: a bucket length, spaces as padding, a valid version-1 or
+    /// version-2 object, and exactly the bytes [`Self::encode`] makes of it. `None` is malformed.
     #[must_use]
     pub fn decode(pt: &[u8]) -> Option<Self> {
         if pt.is_empty() || pt.len() > MAX_SNAPSHOT || !pt.len().is_multiple_of(BUCKET) {
@@ -242,8 +364,9 @@ impl Snapshot {
         (again.as_slice() == pt).then_some(snap)
     }
 
+    #[allow(clippy::too_many_lines)] // one field after another, as the module docs list them
     fn from_value(v: &serde_json::Value) -> Option<Self> {
-        const KEYS: [&str; 7] = [
+        const V1: [&str; 7] = [
             "audience",
             "env",
             "generatedAt",
@@ -252,19 +375,66 @@ impl Snapshot {
             "v",
             "vars",
         ];
+        const V2: [&str; 3] = ["id", "markedChanged", "toKeys"];
         let obj = v.as_object()?;
-        if obj.keys().any(|k| !KEYS.contains(&k.as_str())) || obj.get("v")?.as_u64()? != 1 {
+        let version = u8::try_from(obj.get("v")?.as_u64()?).ok()?;
+        let known = |k: &str| V1.contains(&k) || (version == 2 && V2.contains(&k));
+        if obj.keys().any(|k| !known(k)) {
             return None;
         }
-        let audience = Audience::parse(obj.get("audience")?.as_str()?)?;
-        let to = match (audience, obj.get("to")) {
-            (Audience::Maintainers, Some(t)) => t
-                .as_array()?
+        let strings = |x: &serde_json::Value| -> Option<Vec<String>> {
+            x.as_array()?
                 .iter()
-                .map(|x| x.as_str().map(str::to_owned))
-                .collect::<Option<Vec<_>>>()?,
-            (Audience::Members, None) => Vec::new(),
+                .map(|t| t.as_str().map(str::to_owned))
+                .collect()
+        };
+        let (audience, id, to_keys, marked_changed) = match version {
+            1 => {
+                let group = match obj.get("audience")?.as_str()? {
+                    "members" => Group::Members,
+                    "maintainers" => Group::Maintainers,
+                    _ => return None,
+                };
+                (Audience::group(group), None, Vec::new(), Vec::new())
+            }
+            2 => {
+                let a = obj.get("audience")?.as_object()?;
+                if a.len() != 2 {
+                    return None;
+                }
+                let group = match a.get("group")? {
+                    serde_json::Value::Null => None,
+                    g => Some(Group::parse(g.as_str()?)?),
+                };
+                let also = strings(a.get("also")?)?;
+                let id_hex = obj.get("id")?.as_str()?;
+                if id_hex.len() != 32 || id_hex.bytes().any(|c| c.is_ascii_uppercase()) {
+                    return None;
+                }
+                let id: [u8; 16] = hex::decode(id_hex).ok()?.try_into().ok()?;
+                let to_keys = obj
+                    .get("toKeys")?
+                    .as_array()?
+                    .iter()
+                    .map(|k| u32::try_from(k.as_u64()?).ok())
+                    .collect::<Option<Vec<u32>>>()?;
+                let marked = match obj.get("markedChanged") {
+                    Some(m) => {
+                        let m = strings(m)?;
+                        if m.is_empty() {
+                            return None;
+                        }
+                        m
+                    }
+                    None => Vec::new(),
+                };
+                (Audience { group, also }, Some(id), to_keys, marked)
+            }
             _ => return None,
+        };
+        let to = match obj.get("to") {
+            Some(t) => strings(t)?,
+            None => Vec::new(),
         };
         let mut vars = BTreeMap::new();
         for (name, entry) in obj.get("vars")?.as_object()? {
@@ -292,11 +462,15 @@ impl Snapshot {
             None => None,
         };
         let snap = Self {
+            version,
             env: obj.get("env")?.as_str()?.to_owned(),
             audience,
+            id,
             generated_at: obj.get("generatedAt")?.as_u64()?,
             saved_for,
             to,
+            to_keys,
+            marked_changed,
             vars,
         };
         snap.check().ok()?;
@@ -493,18 +667,23 @@ mod tests {
         }
     }
 
+    fn id(b: u8) -> String {
+        crate::platform::encode_identifier([b; 32])
+    }
+
     fn snap(vars: &[(&str, &str)]) -> Snapshot {
-        Snapshot {
-            env: "dev".into(),
-            audience: Audience::Members,
-            generated_at: 1,
-            saved_for: None,
-            to: Vec::new(),
-            vars: vars
-                .iter()
+        let mut s = Snapshot::new(
+            "dev",
+            [7; 16],
+            Audience::group(Group::Members),
+            vars.iter()
                 .map(|(k, v)| ((*k).to_owned(), var(v)))
                 .collect(),
-        }
+        );
+        s.generated_at = 1;
+        s.to = vec![id(1)];
+        s.to_keys = vec![2];
+        s
     }
 
     #[test]
@@ -534,16 +713,51 @@ mod tests {
     }
 
     #[test]
-    fn members_lists_nobody_and_maintainers_somebody() {
+    fn old_members_lists_nobody_and_old_maintainers_somebody() {
         let mut s = snap(&[]);
-        s.to = vec![crate::platform::encode_identifier([1; 32])];
-        assert!(s.check().is_err());
-        s.audience = Audience::Maintainers;
+        s.version = 1;
+        s.id = None;
+        s.to_keys.clear();
+        assert!(s.check().is_err(), "an old Members snapshot lists nobody");
+        s.audience = Audience::group(Group::Maintainers);
         assert!(s.check().is_ok());
         s.to.push(s.to[0].clone());
         assert!(s.check().is_err(), "listed twice");
         s.to = vec![];
         assert!(s.check().is_err());
+        s.audience = Audience::group(Group::Writers);
+        s.to = vec![id(1)];
+        assert!(s.check().is_err(), "no Writers group in version 1");
+    }
+
+    #[test]
+    fn a_letter_lists_its_people_once_with_a_key_each() {
+        let mut s = snap(&[]);
+        assert!(s.check().is_ok());
+        s.to_keys.push(3);
+        assert!(s.check().is_err(), "a key per recipient");
+        s.to_keys.pop();
+        s.audience = Audience::new(None, []);
+        assert!(s.check().is_err(), "Specific people names someone");
+        s.audience = Audience::new(None, [id(3), id(2)]);
+        let mut sorted = vec![id(2), id(3)];
+        sorted.sort();
+        assert_eq!(s.audience.also, sorted);
+        assert!(s.check().is_ok());
+        s.audience.also.reverse();
+        assert!(s.check().is_err(), "added people in order");
+        s.audience.also.reverse();
+        s.to = (0..=64).map(|b| id(b + 1)).collect();
+        s.to_keys = vec![1; 65];
+        assert!(s.check().is_err(), "at most 64");
+        s.to.pop();
+        s.to_keys.pop();
+        assert!(s.check().is_ok());
+        s.marked_changed = vec!["B".into(), "A".into()];
+        assert!(s.check().is_err(), "marks in order");
+        s.marked_changed.sort();
+        let pt = s.encode().unwrap();
+        assert_eq!(Snapshot::decode(&pt).unwrap(), s);
     }
 
     #[test]

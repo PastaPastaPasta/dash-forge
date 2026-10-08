@@ -2,10 +2,10 @@
 
 /**
  * useEnvironments — a repo's environments as this viewer can read them ({@link readEnvironments}),
- * for Settings → Environments and the member-removal confirmation. Members snapshots open with
- * the members key this tab already holds (a public repo's `home.lane` session, or a private
- * repo's session); Maintainers snapshots open with this browser's encryption keys, only while
- * the tab is unlocked. The book lives in this hook's state only: nothing decrypted is stored
+ * for Settings → Environments and the member-removal confirmation. An old-format Members snapshot
+ * opens with the members key this tab already holds (a public repo's `home.lane` session, or a
+ * private repo's session); every other snapshot is a letter that opens with this browser's
+ * encryption keys, only while the tab is unlocked. The book lives in this hook's state only: nothing decrypted is stored
  * (no IndexedDB, localStorage or service-worker copy), and it is dropped when the tab locks or
  * the members-key session changes.
  */
@@ -15,9 +15,10 @@ import { useAsync, type AsyncState } from '@/hooks/use-async'
 import { useSdk } from '@/hooks/use-sdk'
 import { encryptionKeyState, withLetterReader } from '@/lib/auth/encryption-key'
 import { readEnvironments, type EnvBook, type EnvKeys } from '@/lib/env/loader'
+import type { PeopleView } from '@/lib/env/view'
 import { sdkEnvSources } from '@/lib/env/sources'
 import { privateId } from '@/lib/private'
-import { repoContractIds } from '@/lib/repo'
+import { readMembershipsCached, repoContractIds } from '@/lib/repo'
 import type { PrivateSession } from '@/lib/repo/private-session'
 import type { RepoHome } from '@/lib/view'
 
@@ -38,6 +39,8 @@ export interface EnvironmentsState {
   readonly state: AsyncState<EnvironmentsRead>
   /** This tab holds a key it could open environments with, once unlocked. */
   readonly locked: boolean
+  /** The signed-in identity (base58), or `null`. */
+  readonly viewer: string | null
 }
 
 export function useEnvironments(home: RepoHome): EnvironmentsState {
@@ -60,7 +63,23 @@ export function useEnvironments(home: RepoHome): EnvironmentsState {
     [ready, network, repo.repoId, identity ?? '', unlockScope ?? '', session?.id ?? ''],
     { enabled: ready && sdk !== null },
   )
-  return { state, locked: asksToUnlock(home, state.data?.encryption ?? null) }
+  return { state, locked: asksToUnlock(home, state.data?.encryption ?? null), viewer: identity }
+}
+
+/**
+ * The repo's owner and current members, for a maintainer's precise list of who an environment
+ * misses (DESIGN §10). Read only when `enabled`; `null` until read or when the read fails (the
+ * list is left out then, the rest of the page stands).
+ */
+export function useRepoPeople(home: RepoHome, enabled: boolean): PeopleView | null {
+  const repo = home.repo
+  const { sdk, ready, network } = useSdk(repoContractIds(repo))
+  const state = useAsync<PeopleView>(
+    async () => ({ owner: repo.ownerId, members: await readMembershipsCached(sdk!, repo, network) }),
+    [ready, network, repo.repoId],
+    { enabled: enabled && ready && sdk !== null },
+  )
+  return state.data
 }
 
 /**

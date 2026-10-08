@@ -1,21 +1,55 @@
 /**
  * Environment snapshots: the artifact (canonical JSON padded to 512-byte buckets), names, and
- * the default-audience rule. The Rust twin is `crates/forge-core/src/env/format.rs` (normative
- * description in `crates/forge-core/src/env/mod.rs`); the `env_snapshot__*` vectors hold the two
- * equal (`conformance.test.ts`).
+ * audiences. The Rust twin is `crates/forge-core/src/env/format.rs` (normative description in
+ * `crates/forge-core/src/env/mod.rs`); the `env_snapshot__*` vectors hold the two equal
+ * (`conformance.test.ts`).
+ *
+ * Version 2 is what every writer makes from revision 4 on: an explicit audience, the
+ * environment's id, and the recipients (`to`, with the key id of each slot). Version 1 (phase 1)
+ * is read only: a Members snapshot under the members key (the "old format") or a Maintainers
+ * snapshot to at most 16 people. A version-1 snapshot reads as the group of its word with
+ * nobody added.
  */
 
 import { base58Encode, decodeIdentifier } from '../auth/base58'
+import { MAX_ARTIFACT_RECIPIENTS } from '../private'
 
 /** Snapshots are padded to a multiple of this many bytes. */
 export const BUCKET = 512
 /** The largest snapshot (24 buckets): it, its header and its tag always fit one Platform chunk. */
 export const MAX_SNAPSHOT = 12_288
-/** At most this many people receive a Maintainers snapshot, the writer included. */
-export const MAX_RECIPIENTS = 16
+/** At most this many people receive a snapshot, the writer included (the artifact letter's limit). */
+export const MAX_RECIPIENTS = MAX_ARTIFACT_RECIPIENTS
+/** A version-1 Maintainers snapshot went to at most this many people (the letter limit of phase 1). */
+export const MAX_RECIPIENTS_V1 = 16
 
-export type Audience = 'members' | 'maintainers'
+/** A role group an environment can be for. Groups resolve at write time and never include bots. */
+export type Group = 'maintainers' | 'writers' | 'members'
 export type VarType = 'secret' | 'variable'
+
+/** Who can read an environment: a group, a group plus people, or specific people (`group` null). */
+export interface Audience {
+  readonly group: Group | null
+  /** People added to the group, or the people of a Specific-people environment (base58, ascending, none twice). */
+  readonly also: readonly string[]
+}
+
+const GROUP_LABEL: Readonly<Record<Group, string>> = {
+  maintainers: 'Maintainers',
+  writers: 'Writers and maintainers',
+  members: 'All members',
+}
+
+/** The product name of a group, as every line says it. */
+export function groupLabel(g: Group): string {
+  return GROUP_LABEL[g]
+}
+
+/** How a person is told: "Maintainers", "Writers and maintainers + 1 more", "Specific people (3)". */
+export function audienceLabel(a: Audience): string {
+  if (a.group === null) return `Specific people (${a.also.length})`
+  return a.also.length === 0 ? GROUP_LABEL[a.group] : `${GROUP_LABEL[a.group]} + ${a.also.length} more`
+}
 
 /** One entry. */
 export interface EnvVar {
@@ -27,35 +61,47 @@ export interface EnvVar {
 
 /** One environment as one snapshot holds it. */
 export interface Snapshot {
+  /** The artifact version: 2 for everything written from revision 4 on; 1 (phase 1) is read only. */
+  readonly version: 1 | 2
   readonly env: string
+  /** Who can read it. A version-1 snapshot reads as the group of its word, with nobody added. */
   readonly audience: Audience
+  /** The environment's random id as 32 lowercase hex digits, fixed at its first save (version 2; `null` for version 1). */
+  readonly id: string | null
   /** When the writer made it (ms). */
   readonly generatedAt: number
   /** Set when a maintainer saved a removed maintainer's values again for them (base58). */
   readonly savedFor?: string
-  /** Maintainers only: the recipients in slot order (base58), the writer first; empty for Members. */
+  /** The recipients in slot order (base58), the writer first, as listed by the writer; empty for an old-format Members snapshot. */
   readonly to: readonly string[]
+  /** The ENCRYPTION key id each recipient's slot was sealed to, in `to` order (version 2; empty for version 1). */
+  readonly toKeys: readonly number[]
+  /** Names whose values held in old-format snapshots were changed at their source (version 2; sorted; usually empty). */
+  readonly markedChanged: readonly string[]
   /** The entries by name (a `Map`: a name like `__proto__` is just a name). */
   readonly vars: ReadonlyMap<string, EnvVar>
 }
 
 /**
- * The one rule for an environment's default audience (owner question 3): these names,
- * case-insensitively, default to Maintainers; every other name to Members. A trailing `*`
- * matches any rest. Same list as Rust's `env::MAINTAINERS_BY_DEFAULT`.
+ * Whether this is an old-format Members snapshot: version 1, under the members key (a DFPK 0x01
+ * file), readable by everyone who joins later.
  */
-export const MAINTAINERS_BY_DEFAULT: readonly string[] = ['production', 'prod*', 'staging', 'release*']
-
-/** The default audience of an environment named `name`. */
-export function defaultAudience(name: string): Audience {
-  const n = name.toLowerCase()
-  const hit = MAINTAINERS_BY_DEFAULT.some((p) => (p.endsWith('*') ? n.startsWith(p.slice(0, -1)) : n === p))
-  return hit ? 'maintainers' : 'members'
+export function membersKey(s: Snapshot): boolean {
+  return s.version === 1 && s.audience.group === 'members'
 }
 
-/** The sentence every Members environment carries (DESIGN §10, security review M2). */
-export const MEMBERS_SENTENCE =
-  'Readers, CI runners made members, and future members can read every value stored here, including past values.'
+/**
+ * What every snapshot of an old-format Members environment carries (DESIGN §10): its values are
+ * readable by anyone who joins later.
+ */
+export const OLD_FORMAT_SENTENCE =
+  "Saved in the old format: anyone who joins later can read the values saved this way. Save it again, then change those values where they're used."
+/**
+ * The same, once the latest version is saved again but earlier ones are still in the old format
+ * and their values are not all marked changed.
+ */
+export const OLD_FORMAT_HISTORY_SENTENCE =
+  "Earlier versions were saved in the old format: anyone who joins later can read the values saved that way. Change them where they're used, then mark them changed."
 /** The sentence every environment carries. */
 export const ACCESS_SENTENCE = 'Access is granted, not logged.'
 
@@ -99,6 +145,18 @@ function canonicalId(id: string): boolean {
   }
 }
 
+const HEX32 = /^[0-9a-f]{32}$/
+
+/** Whether `ids` are canonical identity ids, none twice. */
+function distinctIds(ids: readonly string[]): boolean {
+  return ids.every((t, i) => canonicalId(t) && !ids.slice(0, i).includes(t))
+}
+
+/** Whether `names` are strictly ascending (so each once) in plain `<` order. */
+function ascending(names: readonly string[]): boolean {
+  return names.every((n, i) => i === 0 || (names[i - 1] as string) < n)
+}
+
 /** Why a snapshot breaks a rule a reader would refuse, or `null`. */
 export function snapshotProblem(s: Snapshot): string | null {
   if (!validEnvName(s.env)) return `${JSON.stringify(s.env)} is not an environment name`
@@ -109,30 +167,70 @@ export function snapshotProblem(s: Snapshot): string | null {
     if (v.type !== 'secret' && v.type !== 'variable') return `${name} has an unknown type`
     if (!wellFormed(v.value) || !wellFormed(v.note)) return `${name} is not valid text`
   }
-  if (s.audience === 'members') return s.to.length === 0 ? null : 'a Members snapshot lists no recipients'
-  if (s.audience !== 'maintainers') return 'unknown audience'
-  if (s.to.length === 0 || s.to.length > MAX_RECIPIENTS) return `a Maintainers snapshot goes to 1 to ${MAX_RECIPIENTS} people`
-  const seen = new Set<string>()
-  for (const t of s.to) {
-    if (!canonicalId(t) || seen.has(t)) return `${JSON.stringify(t)} is not a recipient identity id, or is listed twice`
-    seen.add(t)
+  if (s.version === 1) return problemV1(s)
+  if (s.version === 2) return problemV2(s)
+  return 'unknown version'
+}
+
+function problemV1(s: Snapshot): string | null {
+  if (s.id !== null || s.toKeys.length > 0 || s.markedChanged.length > 0 || s.audience.also.length > 0) {
+    return 'a version-1 snapshot has no id, keys, marks or added people'
+  }
+  if (s.audience.group === 'members') return s.to.length === 0 ? null : 'an old-format Members snapshot lists no recipients'
+  if (s.audience.group === 'maintainers') {
+    if (s.to.length === 0 || s.to.length > MAX_RECIPIENTS_V1 || !distinctIds(s.to)) {
+      return `a version-1 Maintainers snapshot goes to 1 to ${MAX_RECIPIENTS_V1} different people`
+    }
+    return null
+  }
+  return 'a version-1 snapshot is for Members or Maintainers'
+}
+
+function problemV2(s: Snapshot): string | null {
+  if (s.id === null || !HEX32.test(s.id)) return "a snapshot needs the environment's id"
+  const also = s.audience.also
+  if (s.audience.group !== null && s.audience.group !== 'maintainers' && s.audience.group !== 'writers' && s.audience.group !== 'members') {
+    return 'unknown audience'
+  }
+  if (also.length > MAX_RECIPIENTS || !also.every(canonicalId) || !ascending(also)) {
+    return 'the people added are not identity ids in order, each once'
+  }
+  if (s.audience.group === null && also.length === 0) return 'a Specific-people environment names someone'
+  if (s.to.length === 0 || s.to.length > MAX_RECIPIENTS || !distinctIds(s.to)) {
+    return `an environment goes to 1 to ${MAX_RECIPIENTS} different people, not ${s.to.length}`
+  }
+  if (s.toKeys.length !== s.to.length || !s.toKeys.every((k) => Number.isInteger(k) && k >= 0 && k <= 0xffff_ffff)) {
+    return 'one key per recipient'
+  }
+  if (!s.markedChanged.every(validVarName) || !ascending(s.markedChanged)) {
+    return 'the names marked changed are not variable names in order, each once'
   }
   return null
 }
 
-/** The canonical JSON (sorted keys, no whitespace; `note` left out when empty; `to` for Maintainers only). */
+/** The canonical JSON (sorted keys, no whitespace; `note` left out when empty), as the Rust twin writes it. */
 function canonical(s: Snapshot): string {
   const str = (x: string) => JSON.stringify(x)
-  let out = `{"audience":${str(s.audience)},"env":${str(s.env)},"generatedAt":${s.generatedAt}`
+  const strs = (xs: readonly string[]) => `[${xs.map(str).join(',')}]`
+  let out = '{"audience":'
+  if (s.version === 1) {
+    out += str(s.audience.group === 'maintainers' ? 'maintainers' : 'members')
+  } else {
+    out += `{"also":${strs(s.audience.also)},"group":${s.audience.group === null ? 'null' : str(s.audience.group)}}`
+  }
+  out += `,"env":${str(s.env)},"generatedAt":${s.generatedAt}`
+  if (s.id !== null) out += `,"id":${str(s.id)}`
+  if (s.markedChanged.length > 0) out += `,"markedChanged":${strs(s.markedChanged)}`
   if (s.savedFor !== undefined) out += `,"savedFor":${str(s.savedFor)}`
-  if (s.audience === 'maintainers') out += `,"to":[${s.to.map(str).join(',')}]`
+  if (s.version === 2 || s.audience.group === 'maintainers') out += `,"to":${strs(s.to)}`
+  if (s.version === 2) out += `,"toKeys":[${s.toKeys.join(',')}]`
   const names = [...s.vars.keys()].sort(compareStrings)
   const entries = names.map((n) => {
     const v = s.vars.get(n) as EnvVar
     const note = v.note === '' ? '' : `"note":${str(v.note)},`
     return `${str(n)}:{${note}"type":${str(v.type)},"value":${str(v.value)}}`
   })
-  return `${out},"v":1,"vars":{${entries.join(',')}}}`
+  return `${out},"v":${s.version},"vars":{${entries.join(',')}}}`
 }
 
 export class SnapshotTooLargeError extends Error {
@@ -154,24 +252,58 @@ export function encodeSnapshot(s: Snapshot): Uint8Array {
   return out
 }
 
-const TOP_KEYS = new Set(['audience', 'env', 'generatedAt', 'savedFor', 'to', 'v', 'vars'])
+const V1_KEYS = ['audience', 'env', 'generatedAt', 'savedFor', 'to', 'v', 'vars']
+const V2_KEYS = ['id', 'markedChanged', 'toKeys']
 const VAR_KEYS = new Set(['note', 'type', 'value'])
 
 function isObject(x: unknown): x is Record<string, unknown> {
   return typeof x === 'object' && x !== null && !Array.isArray(x)
 }
 
+function stringsOf(x: unknown): string[] | null {
+  return Array.isArray(x) && x.every((t) => typeof t === 'string') ? (x as string[]) : null
+}
+
+function isGroup(x: unknown): x is Group {
+  return x === 'maintainers' || x === 'writers' || x === 'members'
+}
+
 function fromJson(obj: unknown): Snapshot | null {
-  if (!isObject(obj) || Object.keys(obj).some((k) => !TOP_KEYS.has(k)) || obj.v !== 1) return null
-  const { audience, env, generatedAt, vars } = obj
-  if (audience !== 'members' && audience !== 'maintainers') return null
+  if (!isObject(obj) || (obj.v !== 1 && obj.v !== 2)) return null
+  const version = obj.v
+  const known = new Set(version === 2 ? [...V1_KEYS, ...V2_KEYS] : V1_KEYS)
+  if (Object.keys(obj).some((k) => !known.has(k))) return null
+  const { env, generatedAt, vars } = obj
   if (typeof env !== 'string' || typeof generatedAt !== 'number' || !isObject(vars)) return null
+  let audience: Audience
+  let id: string | null = null
+  let toKeys: number[] = []
+  let markedChanged: string[] = []
+  if (version === 1) {
+    if (obj.audience !== 'members' && obj.audience !== 'maintainers') return null
+    audience = { group: obj.audience, also: [] }
+  } else {
+    const a = obj.audience
+    if (!isObject(a) || Object.keys(a).length !== 2 || !('group' in a) || !('also' in a)) return null
+    if (a.group !== null && !isGroup(a.group)) return null
+    const also = stringsOf(a.also)
+    if (also === null) return null
+    audience = { group: a.group, also }
+    if (typeof obj.id !== 'string' || !HEX32.test(obj.id)) return null
+    id = obj.id
+    if (!Array.isArray(obj.toKeys) || obj.toKeys.some((k) => typeof k !== 'number' || !Number.isInteger(k) || k < 0 || k > 0xffff_ffff)) return null
+    toKeys = obj.toKeys as number[]
+    if ('markedChanged' in obj) {
+      const m = stringsOf(obj.markedChanged)
+      if (m === null || m.length === 0) return null
+      markedChanged = m
+    }
+  }
   let to: string[] = []
-  if (audience === 'maintainers') {
-    if (!Array.isArray(obj.to) || obj.to.some((t) => typeof t !== 'string')) return null
-    to = obj.to as string[]
-  } else if ('to' in obj) {
-    return null
+  if ('to' in obj) {
+    const t = stringsOf(obj.to)
+    if (t === null) return null
+    to = t
   }
   const out = new Map<string, EnvVar>()
   for (const [name, e] of Object.entries(vars)) {
@@ -183,18 +315,22 @@ function fromJson(obj: unknown): Snapshot | null {
   }
   if ('savedFor' in obj && typeof obj.savedFor !== 'string') return null
   const s: Snapshot = {
+    version,
     env,
     audience,
+    id,
     generatedAt,
     ...(typeof obj.savedFor === 'string' ? { savedFor: obj.savedFor } : {}),
     to,
+    toKeys,
+    markedChanged,
     vars: out,
   }
   return snapshotProblem(s) === null ? s : null
 }
 
 /**
- * Read an artifact plaintext: a bucket length, spaces as padding, a valid version-1 object and
+ * Read an artifact plaintext: a bucket length, spaces as padding, a valid version-1 or version-2 object and
  * exactly the bytes {@link encodeSnapshot} makes of it. `null` is malformed.
  */
 export function decodeSnapshot(pt: Uint8Array): Snapshot | null {

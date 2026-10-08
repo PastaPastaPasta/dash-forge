@@ -1,6 +1,6 @@
 {
   "name": "removal_checklist",
-  "description": "removing someone lists the current value names they could read: every name of a Members environment when they held the members key (past values included), and a Maintainers value whose current value was in a snapshot sent to them. carol saw the old production snapshot: DB_URL is unchanged since, STRIPE_KEY is not.",
+  "description": "removing someone lists the current value names they could read: a name whose current value is in a snapshot sent to them (`to`), or in an old-format Members snapshot when they held the members key (`oldFormat`: that hands over every past value too). carol saw the old production snapshot: DB_URL is unchanged since, STRIPE_KEY is not; she held the members key, and dev's LOG_LEVEL is unchanged since its old-format snapshot.",
   "case": "env_snapshot",
   "rules": "v2",
   "input": {
@@ -10,7 +10,11 @@
         "env": "production",
         "heads": [
           {
-            "audience": "maintainers",
+            "v": 2,
+            "audience": {
+              "group": "maintainers",
+              "also": []
+            },
             "to": [
               "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
               "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3"
@@ -35,7 +39,11 @@
             }
           },
           {
-            "audience": "maintainers",
+            "v": 2,
+            "audience": {
+              "group": "maintainers",
+              "also": []
+            },
             "to": [
               "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
               "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3"
@@ -52,9 +60,17 @@
         "env": "dev",
         "heads": [
           {
-            "audience": "members",
+            "v": 2,
+            "audience": {
+              "group": "members",
+              "also": []
+            },
+            "to": [
+              "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+              "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3"
+            ],
             "vars": {
-              "API_TOKEN": "fake-dev",
+              "API_TOKEN": "fake-dev-2",
               "LOG_LEVEL": "debug"
             }
           }
@@ -65,6 +81,56 @@
             "vars": {
               "API_TOKEN": "fake-dev",
               "LOG_LEVEL": "debug"
+            }
+          },
+          {
+            "v": 2,
+            "audience": {
+              "group": "members",
+              "also": []
+            },
+            "to": [
+              "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+              "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3"
+            ],
+            "vars": {
+              "API_TOKEN": "fake-dev-2",
+              "LOG_LEVEL": "debug"
+            }
+          }
+        ]
+      },
+      {
+        "env": "ci",
+        "heads": [
+          {
+            "v": 2,
+            "audience": {
+              "group": "writers",
+              "also": []
+            },
+            "to": [
+              "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+              "56JrovLKjG1tmdJMfdxSCPppDkjHfLvkToexzcUgFvkX"
+            ],
+            "vars": {
+              "NPM_TOKEN": "fake-npm"
+            }
+          }
+        ],
+        "snapshots": [
+          {
+            "v": 2,
+            "audience": {
+              "group": "writers",
+              "also": []
+            },
+            "to": [
+              "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+              "56JrovLKjG1tmdJMfdxSCPppDkjHfLvkToexzcUgFvkX"
+            ],
+            "vars": {
+              "NPM_TOKEN": "fake-npm"
             }
           }
         ]
@@ -89,30 +155,44 @@
     "results": [
       [
         {
-          "env": "dev",
-          "audience": "members",
+          "env": "ci",
           "names": [
-            "API_TOKEN",
+            "NPM_TOKEN"
+          ],
+          "oldFormat": false
+        },
+        {
+          "env": "dev",
+          "names": [
             "LOG_LEVEL"
-          ]
+          ],
+          "oldFormat": true
         },
         {
           "env": "production",
-          "audience": "maintainers",
           "names": [
             "DB_URL"
-          ]
+          ],
+          "oldFormat": false
         }
       ],
       [
         {
+          "env": "dev",
+          "names": [
+            "API_TOKEN",
+            "LOG_LEVEL"
+          ],
+          "oldFormat": false
+        },
+        {
           "env": "production",
-          "audience": "maintainers",
           "names": [
             "DB_URL",
             "NEW_ONLY",
             "STRIPE_KEY"
-          ]
+          ],
+          "oldFormat": false
         }
       ],
       []

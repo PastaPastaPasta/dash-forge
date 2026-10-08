@@ -148,6 +148,8 @@ pub const CATALOGUE: &[(&str, &str)] = &[
     (codes::ARCHIVED, "repository archived"),
     (codes::EDIT_CONFLICT, "edited by someone else meanwhile"),
     (codes::ENV_CONFLICT, "environment changed at the same time"),
+    (codes::AUDIENCE_REQUIRED, "choose who can read the environment"),
+    (codes::NOT_SHARED_YET, "environment not shared with you yet"),
     (codes::BANNED, "banned from this repository"),
     (codes::UNREACHABLE, "Dash Platform unreachable"),
     (
@@ -270,6 +272,12 @@ pub mod codes {
     /// An environment two people changed at once: its values are not used until a maintainer
     /// keeps one version.
     pub const ENV_CONFLICT: &str = "E608";
+    /// A first save of an environment without an audience: there is no default (nothing
+    /// written).
+    pub const AUDIENCE_REQUIRED: &str = "E611";
+    /// An environment in the repository was not shared with this member (not in its audience,
+    /// or in its group and not saved since).
+    pub const NOT_SHARED_YET: &str = "E612";
     /// A maintainer banned the signer from the repository (a client rule: the tools refuse the
     /// banned identity's writes there).
     pub const BANNED: &str = "E610";
