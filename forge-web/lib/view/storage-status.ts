@@ -124,9 +124,12 @@ export function noteRepoGateways(key: string, source: RepoGatewaySource, uris: r
   repoGatewayMap.set(key, { ...sources, [source]: gatewaysIn(uris) })
 }
 
-/** A repo's own gateways: the config's first, then the members' manifests', capped. */
+/**
+ * A repo's own gateways: the config's first, then the members' manifests', capped. A key that
+ * names a session (`repoId#…`) recorded none of its own: the repo's, which its page read noted.
+ */
 function repoGateways(key: string): string[] {
-  const s = repoGatewayMap.get(key)
+  const s = repoGatewayMap.get(key) ?? repoGatewayMap.get(key.split('#')[0] as string)
   if (s === undefined) return []
   return [...new Set([...s.config, ...s.manifests])].slice(0, MAX_REPO_GATEWAYS)
 }
@@ -265,6 +268,8 @@ function reasonsByHost(pack: UnavailablePack): Map<string, string> {
  * reader can tell a retired gateway from content no gateway can find.
  */
 export function describePack(pack: UnavailablePack, gateways: readonly string[]): string[] {
+  // Skipped, never fetched (a repository made public's pack this reader cannot open): why.
+  if (pack.skipped === true) return [pack.reason]
   const gatewayHosts = new Set(gateways.map(urlHost))
   const places: string[] = []
   const ipfs: string[] = []

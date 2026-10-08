@@ -193,6 +193,46 @@ pub fn plan_manifests<'m>(
     out
 }
 
+/// The packs of a parent made public (`docs/security/private-repos.md` §18.2) that a fork must
+/// never record: those whose first bytes are a sealed header (`DFPK`), written while the parent
+/// was private. A fork has no key chain of its own, so nobody could open them from it, and a
+/// client older than the conversion reader would hand them to git as packs. Holding the
+/// parent's keys changes nothing: the fork's readers would still not. A pack that may be sealed
+/// and whose first bytes no copy serves refuses the fork (try again): it cannot be told apart.
+/// Empty for a parent that was never private.
+pub async fn sealed_parent_packs(
+    svc: &RepoService<'_>,
+    parent: &RepoRef,
+    manifests: &[PackManifestInfo],
+    roles: &RoleMap,
+) -> Result<BTreeSet<[u8; 32]>> {
+    let mut out = BTreeSet::new();
+    let Some(conversion) = svc.conversion(parent).await? else {
+        return Ok(out);
+    };
+    let contract = svc.repo_contract(parent).await?;
+    let reader = svc.repo_reader(parent, manifests, roles).await;
+    for copies in plan_manifests(manifests, roles, &BTreeSet::new()) {
+        if !copies
+            .iter()
+            .any(|m| conversion.may_be_sealed(m.created_at_block_height))
+        {
+            continue;
+        }
+        let Some(head) = svc.pack_head(parent, &contract, &copies, &reader).await else {
+            return Err(Error::Io(format!(
+                "pack {} of {} may hold content stored while it was private, and none of its copies answered; try again",
+                &hex::encode(copies[0].pack_hash)[..12],
+                parent.display()
+            )));
+        };
+        if crate::private::convert::skip_reason(&head, |_| false).is_some() {
+            out.insert(copies[0].pack_hash);
+        }
+    }
+    Ok(out)
+}
+
 /// Whether a fork copies a parent ref: its branches and tags, as a GitHub fork does. A
 /// mirror's PR heads (`refs/mirror/pull/<n>/head`) and any other namespace stay the parent's.
 pub fn forkable_ref(name: &str) -> bool {
@@ -347,9 +387,12 @@ pub fn plan_sync_manifests(
     roles: &RoleMap,
     fork_manifests: &[PackManifestInfo],
     fork_roles: &RoleMap,
+    sealed: &BTreeSet<[u8; 32]>,
 ) -> Result<SyncManifests> {
     let mut out = SyncManifests::default();
-    let has = recorded_packs(fork_manifests, fork_roles);
+    let mut has = recorded_packs(fork_manifests, fork_roles);
+    // a parent made public: its sealed packs are never recorded ([`sealed_parent_packs`])
+    has.extend(sealed);
     for copies in plan_manifests(parent_manifests, roles, &has) {
         match fork_manifest(parent, &copies)? {
             Some(m) => out.manifests.push(m),
@@ -492,7 +535,10 @@ pub async fn fork_repo(
         .filter(|m| m.owner_id == owner)
         .map(|m| m.pack_hash)
         .collect();
-    let plan = plan_manifests(&parent_manifests, &roles, &fork_has);
+    // a parent made public: its sealed packs are never recorded in the fork
+    let sealed = sealed_parent_packs(&svc, parent, &parent_manifests, &roles).await?;
+    let skip: BTreeSet<[u8; 32]> = fork_has.union(&sealed).copied().collect();
+    let plan = plan_manifests(&parent_manifests, &roles, &skip);
     let mut written = 0;
     let mut platform_referenced = 0;
     let mut unreferenceable = Vec::new();
@@ -839,6 +885,7 @@ mod tests {
             &RoleMap::new(),
             &fork_packs,
             &fork_roles,
+            &BTreeSet::new(),
         )
         .unwrap();
         assert_eq!(

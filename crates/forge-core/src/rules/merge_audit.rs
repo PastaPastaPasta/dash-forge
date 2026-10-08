@@ -12,7 +12,9 @@
 //!
 //! `review` and `checkRun` documents are deletable and revoked members' documents are gone, so a
 //! rule found unmet now may have been met then: readers say so. A recorded bypass is an
-//! immutable event and always stands. Shared with forge-web's `merge-audit.ts` through the
+//! immutable event and always stands. A bypass whose writer's maintainer role at the time no
+//! current membership document proves (removing a member or changing a role deletes the
+//! document) does not count, but it is reported ([`UncountedBypass`]), never hidden. Shared with forge-web's `merge-audit.ts` through the
 //! `merge_audit__*` vectors.
 
 use std::collections::BTreeSet;
@@ -78,6 +80,19 @@ pub struct BypassEvent {
     pub value: String,
 }
 
+/// A policy-bypass event for this merge that does not count: no current membership document
+/// shows its writer as a maintainer when they wrote it. Consensus admits kind 23 only from a
+/// maintainer or a role-1 writer, so the writer was one of the two; `role` is what the current
+/// documents say about then (`None`: none covers that time, so the role can't be confirmed).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UncountedBypass {
+    /// The event.
+    pub event: BypassEvent,
+    /// The writer's role when they wrote it, by the current membership documents.
+    pub role: Option<Role>,
+}
+
 /// What [`audit_merge`] judges.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -128,9 +143,11 @@ pub enum AuditVerdict {
     Met,
     /// A maintainer recorded a bypass of the rules for this merge.
     Bypassed,
-    /// A rule was not met by what is on chain now, and no bypass was recorded.
+    /// A rule was not met by what is on chain now, and no maintainer's bypass is proven (one
+    /// whose writer's role can't be confirmed is [`MergeAudit::uncounted_bypass`]).
     Unmet,
-    /// Nothing found unmet, but the required checks were not read.
+    /// Nothing found unmet, but a rule was not judged: the required checks were not read, or the
+    /// policy required code owners' approval, which this audit does not check.
     Unknown,
 }
 
@@ -145,7 +162,8 @@ pub struct MergeAudit {
     pub policy: Option<Policy>,
     /// The base branch was protected at the merge.
     pub protected: bool,
-    /// The merger's role at the merge (`None`: no current membership document says).
+    /// The merger's role at the merge (`None`: no current membership document covers it; the
+    /// merger may have been removed or had their role changed since).
     pub merger_role: Option<Role>,
     /// A protected base was merged by someone other than a maintainer.
     pub protection_unmet: bool,
@@ -155,8 +173,15 @@ pub struct MergeAudit {
     pub checks: Option<ChecksState>,
     /// The policy required checks and the runs were not read.
     pub checks_unread: bool,
+    /// The policy required code owners' approval (`requireCodeOwners`). Judging it needs the
+    /// CODEOWNERS file at the base, the changed paths and the owners' names, which this audit
+    /// does not read, so it is reported as not audited and the merge never reads as fully met.
+    pub code_owners_unaudited: bool,
     /// The bypass a maintainer recorded for this merge, the first one.
     pub bypass: Option<BypassEvent>,
+    /// Without a counted `bypass`: the first bypass event for this merge's commit whose writer
+    /// is not shown as a maintainer at the time by the current membership documents.
+    pub uncounted_bypass: Option<UncountedBypass>,
     /// The policy or the base's protection changed within [`RULES_CHANGE_WINDOW_MS`] before the merge.
     pub rules_changed: bool,
 }
@@ -238,17 +263,28 @@ fn runs_at(runs: &[CheckRunRow], at: u64) -> Vec<CheckRunRow> {
 }
 
 /// The first bypass recorded for this merge: only a maintainer's record naming the merge's
-/// commit counts (the merge box and `dg` write it right after the merge).
-fn recorded_bypass(input: &MergeAuditInput, oracle: &RoleOracle) -> Option<BypassEvent> {
-    input
+/// commit counts (the merge box and `dg` write it right after the merge). Without one, the first
+/// other record naming the commit, with its writer's role then as far as the current documents
+/// say.
+fn recorded_bypass(
+    input: &MergeAuditInput,
+    oracle: &RoleOracle,
+) -> (Option<BypassEvent>, Option<UncountedBypass>) {
+    let mut events: Vec<&BypassEvent> = input
         .bypasses
         .iter()
-        .filter(|b| {
-            b.oid.eq_ignore_ascii_case(&input.merge_oid)
-                && oracle.role_at(&b.actor, b.created_at) == Some(Role::Maintainer)
-        })
-        .min_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)))
-        .cloned()
+        .filter(|b| b.oid.eq_ignore_ascii_case(&input.merge_oid))
+        .collect();
+    events.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
+    let role = |b: &BypassEvent| oracle.role_at(&b.actor, b.created_at);
+    if let Some(b) = events.iter().find(|b| role(b) == Some(Role::Maintainer)) {
+        return (Some((*b).clone()), None);
+    }
+    let uncounted = events.first().map(|b| UncountedBypass {
+        event: (*b).clone(),
+        role: role(b),
+    });
+    (None, uncounted)
 }
 
 /// Judge a merge against the branch rules in force when it was recorded (see the module docs).
@@ -293,8 +329,9 @@ pub fn audit_merge(input: &MergeAuditInput) -> MergeAudit {
         _ => None,
     };
     let checks_unread = checks_required && input.runs.is_none();
+    let code_owners_unaudited = policy.as_ref().is_some_and(|p| p.require_code_owners);
 
-    let bypass = recorded_bypass(input, &oracle);
+    let (bypass, uncounted_bypass) = recorded_bypass(input, &oracle);
 
     let policy_changed = changed_before(
         &input.policies,
@@ -318,7 +355,7 @@ pub fn audit_merge(input: &MergeAuditInput) -> MergeAudit {
         AuditVerdict::Bypassed
     } else if unmet {
         AuditVerdict::Unmet
-    } else if checks_unread {
+    } else if checks_unread || code_owners_unaudited {
         AuditVerdict::Unknown
     } else if policy.is_none() && !protected {
         AuditVerdict::None
@@ -334,7 +371,9 @@ pub fn audit_merge(input: &MergeAuditInput) -> MergeAudit {
         approvals,
         checks,
         checks_unread,
+        code_owners_unaudited,
         bypass,
+        uncounted_bypass,
         rules_changed: policy_changed || protection_changed,
     }
 }

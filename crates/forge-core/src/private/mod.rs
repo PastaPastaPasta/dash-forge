@@ -18,6 +18,8 @@
 //! * [`wrap`]: the 47-byte `repoKey` wrap plaintext (§5.1);
 //! * [`release`]: sealed releases: the keyed `tagName`, the TLV, the open, the kind-4 asset
 //!   manifest and the reader's fold over a tag's revisions (§16);
+//! * [`bundle`]: make-public bundles (kind 7), and [`convert`]: what readers derive about a
+//!   repository made public, and the epoch keys its owner published (§18);
 //! * [`epoch`]: anchors, the current epoch, the chain walk, alerts and the repair check, as one
 //!   pure function over flattened rows (§5.3–§5.6).
 //!
@@ -31,6 +33,8 @@
 #[cfg(all(feature = "vectors", not(debug_assertions)))]
 compile_error!("the `vectors` feature (deterministic nonces and file ids) is for tests only; never enable it in a release build");
 
+pub mod bundle;
+pub mod convert;
 pub mod doc;
 pub mod epoch;
 pub mod keys;
@@ -52,7 +56,7 @@ use crate::error::{Error, Result};
 pub use doc::{open_content, DocHeader, OpenContext, Opened, Unreadable};
 pub use epoch::{resolve_epochs, Alert, EpochResolution, Repair};
 pub use keys::{EpochKey, EpochKeys};
-pub use pack::{PackHeader, SealedRange};
+pub use pack::{sniff, Head, PackHeader, SealedRange};
 pub use tlv::Fields;
 
 /// `GRACE_BLOCKS` of the late-content rule (§8.2, `FORGE_RULES_V2`).
@@ -124,6 +128,10 @@ pub enum PrivateError {
     /// A sealed artifact failed its checks (§3.5).
     #[error("sealed pack corrupt")]
     SealedPackCorrupt,
+    /// A `DFPK` header of a version this opener does not read (§3.2): skipped by readers, never
+    /// treated as corruption.
+    #[error("sealed artifact header version {0:#04x} is not one this client opens")]
+    UnknownVersion(u8),
     /// The storage length differs from the manifest's `sizeBytes` (§3.5 step 1).
     #[error("sealed pack length does not match the manifest's sizeBytes")]
     SizeMismatch,

@@ -54,6 +54,7 @@ import {
   type ReleaseStatus,
   type StoredRelease,
 } from './release'
+import { conversionOf, maybeSealed, openVis, publishedKeys, skipReason, type PublishedBundle } from './convert'
 import { ArtifactError, openLetter, openLetterArtifact, letterSharedKey, type LetterOpenResult, type OwnerKey } from './named'
 import { buildTlv, encodeRecipients, MalformedError, type DocFields, type PrivateDocType } from './tlv'
 import { WrapError, buildWrapPlaintext, openWrap, sealWrap, type WrapFacade } from './wrap'
@@ -85,8 +86,8 @@ interface Vector {
 
 const ROOT = resolve(process.cwd(), '..')
 const VECTORS_DIR = resolve(ROOT, 'forge-contracts', 'vectors')
-/** The private-repository cases and the mixed-visibility envelopes (members-only, specific people). */
-const CRYPTO_PREFIXES = ['private_', 'mixed_doc_', 'named_envelope', 'named_artifact']
+/** The private-repository cases, the mixed-visibility envelopes (members-only, specific people) and a repository made public's readers. */
+const CRYPTO_PREFIXES = ['private_', 'mixed_doc_', 'named_envelope', 'named_artifact', 'converted_repo_']
 const isCryptoCase = (name: string) => CRYPTO_PREFIXES.some((p) => name.startsWith(p))
 const PRIVATE_FILES = readdirSync(VECTORS_DIR)
   .filter((f) => isCryptoCase(f) && f.endsWith('.json'))
@@ -133,7 +134,24 @@ const RELEASE_MANIFEST = object({
 const MIXED_DOC = leaves(...DOC_KEYS, 'vis')
 const PARTY = leaves('identityId', 'priv', 'pub', 'keyId')
 
+const STORED_DOC = leaves(...DOC_KEYS, 'id', 'createdAtBlockHeight', 'updatedAtBlockHeight', 'enc')
+
 const SHAPES: Readonly<Record<string, Shape>> = {
+  converted_repo_open: object({
+    ...leafFields('repoId', 'stamp', 'repoVisibility', 'converted'),
+    context: OPEN_CONTEXT,
+    doc: STORED_DOC,
+  }),
+  converted_repo_facts: object({
+    ...leafFields('repoVisibility', 'existing', 'heights'),
+    configs: each(leaves('id', 'epoch', 'vis', 'height')),
+  }),
+  converted_repo_keys: object({
+    ...leafFields('repoId', 'repoOwner', 'sealOffEpoch'),
+    anchors: values(LEAF),
+    bundles: each(leaves('owner', 'bytes')),
+  }),
+  converted_repo_skip: leaves('head', 'held'),
   mixed_doc_seal: object({ ...leafFields('repoId', 'key', 'nonce'), doc: MIXED_DOC, fields: FIELDS }),
   mixed_doc_open: object({
     repoId: LEAF,
@@ -577,6 +595,47 @@ async function wrapRoundTrip(inp: Obj, keys: EpochKeys, raw: Uint8Array): Promis
 async function run(v: Vector): Promise<Json> {
   const inp = v.input
   switch (v.case) {
+    case 'converted_repo_open': {
+      const repoId = hex(inp, 'repoId')
+      const doc = storedDoc(obj(inp, 'doc'))
+      const vis = openVis(inp['stamp'], str(inp, 'repoVisibility') as 'public' | 'private', inp['converted'] === true, doc.enc[0])
+      if (vis === null) return { status: 'malformed' }
+      return openJson(await openContent({ ...doc, vis }, await openContextOf(repoId, obj(inp, 'context'))))
+    }
+    case 'converted_repo_facts': {
+      const existing = (inp['existing'] as number[]).map(Number)
+      const configs = arr(inp, 'configs').map((c) => ({
+        id: privateId(str(c, 'id')),
+        epoch: c['epoch'] === null ? null : num(c, 'epoch'),
+        private: str(c, 'vis') === 'private',
+        height: num(c, 'height'),
+      }))
+      const c = conversionOf(str(inp, 'repoVisibility') === 'public', configs, (e) => existing.includes(e))
+      if (c === null) return { converted: false }
+      return {
+        converted: true,
+        sealOffEpoch: c.sealOffEpoch,
+        markerHeight: c.markerHeight,
+        maybeSealed: (inp['heights'] as number[]).map((h) => maybeSealed(c, Number(h))),
+      }
+    }
+    case 'converted_repo_keys': {
+      const repoId = hex(inp, 'repoId')
+      const anchors = new Map(Object.entries(obj(inp, 'anchors')).map(([e, commit]) => [Number(e), { commit: hexToBytes(String(commit)) }]))
+      const bundles: PublishedBundle[] = arr(inp, 'bundles').map((b) => ({ owner: privateId(str(b, 'owner')), bytes: hex(b, 'bytes') }))
+      const sealOff = inp['sealOffEpoch']
+      const conversion = { sealOffEpoch: sealOff === null ? null : Number(sealOff), markerHeight: null }
+      const { keys, alerts } = await publishedKeys(repoId, privateId(str(inp, 'repoOwner')), conversion, anchors, bundles)
+      return {
+        keys: Object.fromEntries([...keys].sort(([a], [b]) => a - b).map(([e, k]) => [String(e), bytesToHex(k)])),
+        alerts: alerts.map((a): Json => ('author' in a ? { kind: a.kind, epoch: a.epoch, author: bytesToHex(a.author) } : { kind: a.kind, epoch: a.epoch })),
+      }
+    }
+    case 'converted_repo_skip': {
+      const held = (inp['held'] as number[]).map(Number)
+      const skip = skipReason(hex(inp, 'head'), (e) => held.includes(e))
+      return { skip: skip === null ? null : skip.reason === 'noKey' ? { reason: 'noKey', epoch: skip.epoch } : { reason: 'otherFormat', version: skip.version } }
+    }
     case 'private_kdf': {
       const repoId = hex(inp, 'repoId')
       const epoch = num(inp, 'epoch')

@@ -1,0 +1,33 @@
+{
+  "name": "never_private",
+  "description": "a public repository with a members key (sealed public anchors) was never private.",
+  "case": "converted_repo_facts",
+  "rules": "v2",
+  "input": {
+    "repoVisibility": "public",
+    "configs": [
+      {
+        "id": "f85219e287a8a7464f991e9187392a71961fc3433b2b2f9a58cb69a7e4ff94c7",
+        "epoch": 0,
+        "vis": "public",
+        "height": 10
+      },
+      {
+        "id": "cd80ded9fd5495fdae40773a3ca05cda567115f83781fc9a3f36068449d85ed6",
+        "epoch": 1,
+        "vis": "public",
+        "height": 20
+      }
+    ],
+    "existing": [
+      0,
+      1
+    ],
+    "heights": [
+      5
+    ]
+  },
+  "expected": {
+    "converted": false
+  }
+}

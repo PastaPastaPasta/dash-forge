@@ -7,7 +7,10 @@
  * - Public repo: the home as it is, at once. For a signed-in member of one with members-only
  *   content, its members-key session is loaded beside it and the home re-rendered with it on
  *   `repo.lane` / `home.lane` ({@link withMembersSession}): only the content gate reads it, so the
- *   public config, branches and packs stay exactly what everyone sees (DESIGN §4.1).
+ *   public config, branches and packs stay exactly what everyone sees (DESIGN §4.1). A repository
+ *   made public whose owner published keys of its earlier history (`private-repos.md` §18): every
+ *   reader, signed in or not, gets those keys on `repo.published` (its packs) and, without a
+ *   members-key session of their own, on `repo.lane` (its earlier discussion).
  * - Private repo: signed out → `signed-out`; not a member → `outsider`; a member whose browser
  *   holds no encryption key → `no-key`; a member with one → the home re-read through their
  *   decryption session (`member`), whose `repo.session` every read of the page then decrypts
@@ -27,6 +30,7 @@ import { readMembershipsCached, repoContractIds } from '@/lib/repo'
 import {
   invalidatePrivateSession,
   loadPrivateSessionCached,
+  loadPublishedSessionCached,
   onPrivateSessionsClosed,
   privateSessionGeneration,
   sessionUnwrapper,
@@ -34,6 +38,7 @@ import {
 import { hasMembersKey } from '@/lib/repo/writes'
 import { repoHasMembersKey } from '@/lib/repo/members-writes'
 import { membersAccessOf } from '@/lib/repo/members-access'
+import { knownConversion } from '@/lib/repo/converted'
 import { DOC } from '@/lib/repo/contract'
 import { repoSource } from '@/lib/repo/source'
 import { queryDocuments } from '@/lib/sdk'
@@ -84,6 +89,9 @@ function useRevision(home: RepoHome | null): number {
 export function usePrivateHome(home: RepoHome | null, addr: RepoAddress): PrivateHomeState | null {
   const repo = home?.repo ?? null
   const isPrivate = repo?.visibility === 'private'
+  // Made public with earlier epochs its owner may publish: the page's config read said so (it ran
+  // before this hook).
+  const converted = repo !== null && !isPrivate && knownConversion(repo.repoId)?.sealOffEpoch != null
   const { sdk, ready, network } = useSdk(repoContractIds(repo))
   const { identity, resuming, controller, unlockScope, lockedIdentity } = useAuth()
   // A locked session is still that member (QW2-033): on a public repo the viewer is the identity the
@@ -112,8 +120,14 @@ export function usePrivateHome(home: RepoHome | null, addr: RepoAddress): Privat
    * A public repo's home for this viewer: with their members-key session when they hold one (a
    * current member, or a member removed since who holds earlier key shares: `former`).
    */
-  const membersHome = async (base: RepoHome, generation: number): Promise<RepoHome> => {
-    if (viewer === null) return base
+  const membersHome = async (plainHome: RepoHome, generation: number): Promise<RepoHome> => {
+    // A repository made public: the keys its owner published, for everyone; none read, none kept.
+    const published = converted ? await loadPublishedSessionCached(sdk!, plainHome.repo, network).catch(() => null) : null
+    const keys = published !== null && published.resolution.keys.size > 0 ? published : null
+    const base: RepoHome = keys === null ? plainHome : { ...plainHome, repo: { ...plainHome.repo, published: keys } }
+    // Without a members-key session of their own, a reader opens the earlier history with them.
+    const outsider = (): RepoHome => (keys === null ? base : { ...base, repo: { ...base.repo, lane: keys } })
+    if (viewer === null) return outsider()
     const members = await readMembershipsCached(sdk!, base.repo, network)
     const isMember = members.some((m) => m.identity === viewer)
     const lane = await membersAccessOf({
@@ -132,8 +146,8 @@ export function usePrivateHome(home: RepoHome | null, addr: RepoAddress): Privat
         return session
       },
     })
-    if (lane === null) return base
-    if (lane.access !== 'member' && lane.access !== 'former') return { ...base, lane }
+    if (lane === null) return outsider()
+    if (lane.access !== 'member' && lane.access !== 'former') return { ...outsider(), lane }
     const out = withMembersSession(base, lane.session, lane.access)
     warm.set(key, out)
     return out
@@ -161,11 +175,11 @@ export function usePrivateHome(home: RepoHome | null, addr: RepoAddress): Privat
       return decrypted
     },
     // An unlock in this tab (inline, or from the sign-in sheet) re-resolves the repo.
-    [key, ready, epoch, revision, unlockScope],
+    [key, ready, epoch, revision, unlockScope, converted],
     {
       // A kept session is still being picked up: wait, rather than show the signed-out state. A
       // public repo's members-only content is looked up for a signed-in viewer only.
-      enabled: (isPrivate || viewer !== null) && ready && sdk !== null && home !== null && !resuming,
+      enabled: (isPrivate || viewer !== null || converted) && ready && sdk !== null && home !== null && !resuming,
       initial: () => {
         const hit = warm.get(key)
         if (hit === undefined) return undefined

@@ -1,6 +1,6 @@
 {
   "name": "bypass_by_writer_ignored",
-  "description": "A writer cannot bypass the rules: their bypass event does not count.",
+  "description": "A writer cannot bypass the rules: their bypass event does not count, and it is reported as an uncounted bypass by a writer, never hidden.",
   "case": "merge_audit",
   "rules": "v2",
   "input": {
@@ -72,7 +72,18 @@
     },
     "checks": null,
     "checksUnread": false,
+    "codeOwnersUnaudited": false,
     "bypass": null,
+    "uncountedBypass": {
+      "event": {
+        "id": "e1",
+        "actor": "writ",
+        "createdAt": 10000100,
+        "oid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "value": "required approvals: 0 of 1"
+      },
+      "role": "writer"
+    },
     "rulesChanged": false
   }
 }
