@@ -84,6 +84,20 @@ describe('shortRepoPath → shim → canonical route', () => {
     expect(expand(`/${id}/forge-v2-demo`)).toBe(`/repo/?owner=${id}&name=forge-v2-demo`)
   })
 
+  it('drops one trailing .git from the repo name, as a pasted clone URL has it', () => {
+    expect(expand('/alice/project.git')).toBe('/repo/?owner=alice&name=project')
+    expect(expand('/alice/project.git/')).toBe('/repo/?owner=alice&name=project')
+    expect(expand('/alice/project.GIT')).toBe('/repo/?owner=alice&name=project')
+    expect(expand('/alice/project.git/issues/7')).toBe('/repo/issue/?owner=alice&name=project&number=7')
+    expect(expand('/dash-forge/alice/project.git', '/dash-forge')).toBe('/dash-forge/repo/?owner=alice&name=project')
+    // Only one, and only at the end: a name has none (`nameNotDotGit`), so ".git" alone is no repo.
+    expect(expand('/alice/project.git.git')).toBe('/repo/?owner=alice&name=project.git')
+    expect(expand('/alice/my.gitx')).toBe('/repo/?owner=alice&name=my.gitx')
+    expect(expand('/alice/.git')).toBeNull()
+    // The GitHub alias already did this to the repo; its owner segment is left alone.
+    expect(expand('/gh/a/b.git')).toBe('/github.com/?owner=a&name=b')
+  })
+
   it('honors the base path both ways', () => {
     expect(expand('/dash-forge/alice/project/pull/7', '/dash-forge')).toBe('/dash-forge/repo/pull/?owner=alice&name=project&number=7')
     // The base path alone is not a repo, and a path outside the base is not ours.
@@ -312,11 +326,11 @@ describe('expandShortPath: the shim in TypeScript (CJ-6)', () => {
     ...owners.flatMap((owner) => targets.map((t) => shortRepoPath({ owner, name: 'project' }, t))),
     '/', '/alice', '/alice/project/', '/alice/project/wiki', '/alice/project/issues/0', '/alice/project/issues/abc', '/alice/project/pull/7/files/x',
     '/alice/project/releases/tag/v1', '/alice/project/releases/tag', '/alice/project/compare/v1..v2', '/alice/project/compare/...v2', '/alice/project/compare/a...b/c',
-    '/alice/project/commit/xyz', '/al%ZZce/project', '/alice/pro%2Fject', '/alice/project/tree/%E0%A4', '/github.com/dashpay/dash/issues/12', '/gh/a/b.git',
+    '/alice/project/commit/xyz', '/al%ZZce/project', '/alice/pro%2Fject', '/alice/project/tree/%E0%A4', '/github.com/dashpay/dash/issues/12', '/gh/a/b.git', '/alice/project.git', '/alice/project.git/', '/alice/project.git.git', '/alice/.git', '/alice/a.git/issues/7', '/dash-forge/alice/project.git',
     '/github.com/dashpay', '/dash-forge/alice/project/pull/7', '/dash-forge/', '/dash-forge/github.com/a/b', '/alice/project/blob/HEAD',
   ]
   // A seeded walk over segments that exercise every branch of the shim.
-  const pieces = ['alice', 'project', 'issues', 'pull', 'pulls', 'tree', 'blob', 'blame', 'commits', 'commit', 'compare', 'releases', 'tag', 'new', 'HEAD', '7', '0', 'files', 'x%2Fy', 'a...b', '..', 'abc123', '%E2%9C%93', '%ZZ', '']
+  const pieces = ['alice', 'project', 'project.git', 'issues', 'pull', 'pulls', 'tree', 'blob', 'blame', 'commits', 'commit', 'compare', 'releases', 'tag', 'new', 'HEAD', '7', '0', 'files', 'x%2Fy', 'a...b', '..', 'abc123', '%E2%9C%93', '%ZZ', '']
   let seed = 7
   const next = (n: number): number => (seed = (seed * 1103515245 + 12345) % 2147483648) % n
   for (let i = 0; i < 2000; i++) paths.push(`/${Array.from({ length: 1 + next(6) }, () => pieces[next(pieces.length)]).join('/')}`)

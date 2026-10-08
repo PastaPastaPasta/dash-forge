@@ -29,6 +29,16 @@ fn main() {
     let manifest_dir =
         std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("set by cargo"));
 
+    // Worktrees that share one CARGO_TARGET_DIR share this script's cached output, and every
+    // path watched below is absolute and outside the package, so cargo would never see that
+    // the script now runs for another checkout and would keep the first one's commit. A path
+    // inside the package is kept relative to the package root in cargo's fingerprint, so
+    // naming one makes cargo rerun the script when the package root changes.
+    println!(
+        "cargo:rerun-if-changed={}",
+        manifest_dir.join("build.rs").display()
+    );
+
     println!("cargo:rerun-if-env-changed=DASH_FORGE_BUILD_SHA");
     let sha = match std::env::var("DASH_FORGE_BUILD_SHA") {
         Ok(s) if !s.trim().is_empty() => s.trim().chars().take(12).collect(),

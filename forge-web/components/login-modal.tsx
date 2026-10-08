@@ -198,7 +198,7 @@ function describeView(view: View, limitedKeys: boolean): string {
   if (view === 'advanced') return 'A pasted key signs for this tab only, with whatever power it has.'
   if (view === 'wallet' || view === 'grant') return 'Your wallet sends this browser a key it derives for Dash Forge. Your recovery phrase and master key stay on the phone.'
   if (!limitedKeys) return `Dash Forge isn't available on ${networkName()} yet, so there's nothing to sign in to here.`
-  const limits = `at most ${BROWSER_KEY_DEFAULTS.budgetDash} DASH, only on Forge, for up to a year`
+  const limits = `at most ${BROWSER_KEY_DEFAULTS.budgetDash} DASH, only on Forge, for ${BROWSER_KEY_DEFAULTS.days} days by default (up to a year)`
   if (view === 'renew') return `A new key for this browser (${limits}) replaces the current one, which is disabled in the same update.`
   if (view === 'dg') return `dg registers a limited key for this browser (${limits}). Your recovery phrase stays out of the browser.`
   if (view === 'create' || view === 'import') return `Forge signs with a limited key: ${limits}.`

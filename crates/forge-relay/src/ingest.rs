@@ -1728,6 +1728,7 @@ mod tests {
             id: "cfg".into(),
             created_at: 500,
             protected_patterns: vec!["refs/heads/main".into()],
+            author: None,
         }];
         let main = ref_doc("refs/heads/main", "refs/heads/main");
         // After the config (the doc is at t=1000): only a protectedRefUpdate moves main.
