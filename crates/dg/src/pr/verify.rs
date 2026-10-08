@@ -20,7 +20,7 @@ use crate::common::Reader;
 use crate::context::Ctx;
 use crate::fmt::{short, short_identity};
 use crate::git;
-use forge_core::rules::merge_audit::{AuditVerdict, MergeAudit};
+use forge_core::rules::merge_audit::{AuditVerdict, MergeAudit, UncountedBypass};
 use forge_core::rules::v2::CheckState;
 
 /// `git merge-base --is-ancestor a b`: `Some(true)` (exit 0) or `Some(false)` (exit 1), `None`
@@ -258,10 +258,27 @@ pub(crate) async fn run(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
     Ok(())
 }
 
-/// `dg pr verify`'s "branch rules at merge" block: the verdict, then one line per rule (`!` first
-/// when unmet). Parity with the web's `auditRows` / `auditHeadline` (`lib/view/merge-audit.ts`).
-pub(crate) fn audit_lines(a: &MergeAudit, merger: &str, base: &str) -> Vec<String> {
-    let headline = match a.verdict {
+/// The line for a bypass recorded for the merge that does not count (the web's
+/// `uncountedBypassWhy`): its writer's role then can't be confirmed, or isn't maintainer.
+fn uncounted_bypass_line(u: &UncountedBypass) -> String {
+    format!(
+        "! bypass recorded by {}{}, not counted: {}",
+        short_identity(&u.event.actor),
+        if u.event.value.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", u.event.value)
+        },
+        u.role.map_or_else(
+            || "no current membership record, so their role at the time can't be confirmed".to_string(),
+            |r| format!("their current membership record shows {} at the time, and only a maintainer's bypass counts", r.noun())
+        )
+    )
+}
+
+/// The audit's headline (the web's `auditHeadline`).
+fn audit_headline(a: &MergeAudit) -> &'static str {
+    match a.verdict {
         AuditVerdict::None => "no branch rules applied",
         AuditVerdict::Met => "met the branch rules in force at the time",
         AuditVerdict::Bypassed => "a maintainer bypassed the branch rules and recorded it",
@@ -281,7 +298,13 @@ pub(crate) fn audit_lines(a: &MergeAudit, merger: &str, base: &str) -> Vec<Strin
             "code owner approval was required, and it is not audited"
         }
         AuditVerdict::Unknown => "the required checks could not be read",
-    };
+    }
+}
+
+/// `dg pr verify`'s "branch rules at merge" block: the verdict, then one line per rule (`!` first
+/// when unmet). Parity with the web's `auditRows` / `auditHeadline` (`lib/view/merge-audit.ts`).
+pub(crate) fn audit_lines(a: &MergeAudit, merger: &str, base: &str) -> Vec<String> {
+    let headline = audit_headline(a);
     let mark = |met: bool| if met { "  " } else { "! " };
     let bang = if a.verdict == AuditVerdict::Unmet {
         "! "
@@ -367,19 +390,7 @@ pub(crate) fn audit_lines(a: &MergeAudit, merger: &str, base: &str) -> Vec<Strin
         ));
     }
     if let Some(u) = &a.uncounted_bypass {
-        out.push(format!(
-            "! bypass recorded by {}{}, not counted: {}",
-            short_identity(&u.event.actor),
-            if u.event.value.is_empty() {
-                String::new()
-            } else {
-                format!(" ({})", u.event.value)
-            },
-            u.role.map_or_else(
-                || "no current membership record, so their role at the time can't be confirmed".to_string(),
-                |r| format!("their current membership record shows {} at the time, and only a maintainer's bypass counts", r.noun())
-            )
-        ));
+        out.push(uncounted_bypass_line(u));
     }
     if a.rules_changed {
         out.push("! the branch rules changed less than an hour before this merge".to_string());
