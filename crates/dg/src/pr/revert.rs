@@ -312,6 +312,8 @@ fn require_revertable(view: &PatchView, repo: &str, number: u64) -> Result<Strin
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn run(ctx: &Ctx, repo: &str, number: u64, branch: Option<&str>) -> Result<()> {
     let s = Session::open_for_write(ctx, repo, "revert not attempted").await?;
+    // A revert opens a pull request: refused (E610) for a banned writer before anything is pushed.
+    s.refuse_if_banned("pull request not created").await?;
     let (handle, collab) = (&s.repo, s.collab());
     let p = patch(&collab, handle, repo, number).await?;
     let view = collab.patch_view(handle, p).await?;
@@ -619,6 +621,26 @@ pub(crate) async fn run(ctx: &Ctx, repo: &str, number: u64, branch: Option<&str>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A banned writer's revert is refused (E610) before the branch is pushed and the PR opened
+    /// (Q5-B08). The check needs a chain, so this guards the order in `run`'s source.
+    #[test]
+    fn revert_refuses_a_banned_writer_before_it_pushes_or_opens() {
+        let src = include_str!("revert.rs");
+        let body = &src[src.find("pub(crate) async fn run(").expect("run")..];
+        let at = |needle: &str| {
+            body.find(needle)
+                .unwrap_or_else(|| panic!("missing {needle}"))
+        };
+        let open = at("Session::open_for_write(");
+        let ban = at("s.refuse_if_banned(");
+        assert!(open < ban, "the ban check follows open_for_write");
+        assert!(
+            ban < at("collab.create_patch("),
+            "the ban check precedes the PR create"
+        );
+        assert!(ban < at("\"push\""), "the ban check precedes the push");
+    }
 
     fn run(dir: &Path, args: &[&str]) -> String {
         git::git(

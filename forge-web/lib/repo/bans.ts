@@ -103,8 +103,14 @@ export class BannedError extends Error {
   }
 }
 
-/** Throw {@link BannedError} when `identity` is banned from `repo` (advisory: a failed read passes). */
+/**
+ * Throw {@link BannedError} when `identity` is banned from `repo` (advisory: a failed read passes).
+ * The bans are read fresh, not from the page's two-minute read: a tab must not post for minutes
+ * after a ban, or be refused for minutes after a lift. This is the one extra read, made only
+ * when something is about to be signed, never on a page load.
+ */
 export async function refuseIfBanned(sdk: EvoSDK, repo: RepoRef, network: Network, identity: string): Promise<void> {
+  invalidateBans(repo)
   const ban = (await readStandingBans(sdk, repo, network)).get(identity)
   if (ban !== undefined) throw new BannedError(ban)
 }
