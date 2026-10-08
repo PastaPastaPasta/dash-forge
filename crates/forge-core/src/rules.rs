@@ -1812,7 +1812,7 @@ mod tests {
         },
         Replace {
             kind: v2::ContentKind,
-            opened: crate::private::Fields,
+            opened: Box<crate::private::Fields>,
         },
         ReviewText {
             reviews: Vec<v2::CarrierReview>,

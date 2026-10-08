@@ -857,7 +857,8 @@ export async function loadPullOrMembersOnly(
     reviewers: approvals?.reviewers ?? [],
     members: members ?? [],
     labels,
-    hidden: tally.value,
+    // a review shown with its made-public text is not hidden any more
+    hidden: { ...tally.value, membersOnly: Math.max(0, tally.value.membersOnly - readReviews.counted.filter((r) => r.membersOnly === true && shown.carried.has(r.id)).length) },
     membersOnly: membersOnlyEntries(tally, readReviews.counted).filter((e) => !shown.carried.has(e.item.id)),
     eventValues: eventValues(log),
     ciReruns: log.ciReruns ?? [],

@@ -140,34 +140,7 @@ impl Collab<'_> {
             );
         }
         let opened = self.open_own(repo, kind, &stored).await?;
-        let changes = if kind == DocKind::Review {
-            let body = opened
-                .body
-                .filter(|b| !b.trim().is_empty())
-                .ok_or_else(|| {
-                    refused(
-                        "this review has no text to make public",
-                        "only its verdict was posted, and that is public already",
-                    )
-                })?;
-            MadePublic {
-                set: BTreeMap::from([("body".to_string(), body)]),
-                ..MadePublic::default()
-            }
-        } else {
-            let ck = content_kind_of(kind)
-                .ok_or_else(|| refused("this can't be made public", "it is not a post"))?;
-            make_public_changes(ck, &opened).map_err(|e| match e {
-                MakePublicRefusal::Imported => refused(
-                    "this post was imported, and its original author's name can't be made public",
-                    "published without it, the words would read as yours",
-                ),
-                MakePublicRefusal::Empty | MakePublicRefusal::NotEditable => refused(
-                    "this post has no text to make public",
-                    "its required text is missing",
-                ),
-            })?
-        };
+        let changes = planned_changes(kind, opened)?;
         let review_patch = if kind == DocKind::Review {
             id_field(&stored, "patchId")
         } else {
@@ -180,31 +153,8 @@ impl Collab<'_> {
             _ => None,
         };
         if let Some(t) = target {
-            let mut parent = if going_public.contains(&t) {
-                Audience::Public
-            } else {
-                self.target_audience(repo, &t).await?
-            };
-            if let Some(reply_to) = id_field(&stored, "replyTo") {
-                let collab = self.collab_contract(repo).await?;
-                let thread = self.thread_docs(repo, &collab, &t, &reply_to).await?.docs();
-                parent = thread
-                    .iter()
-                    .map(|d| {
-                        if going_public.contains(&d.id) {
-                            Audience::Public
-                        } else {
-                            stored_audience(d)
-                        }
-                    })
-                    .fold(parent, Audience::narrower);
-            }
-            if parent != Audience::Public {
-                return Err(refused(
-                    "this conversation is members-only, so a post in it can't be made public",
-                    "everyone could read it, and it answers text only members can read",
-                ));
-            }
+            self.require_public_conversation(repo, &t, &stored, going_public)
+                .await?;
         }
         if let Some(patch) = review_patch.as_deref() {
             if self.review_text_public(repo, patch, &stored.id).await? {
@@ -226,6 +176,45 @@ impl Collab<'_> {
             review_patch,
             stored,
         })
+    }
+
+    /// Refuse making a post public inside a conversation that is still members-only: its
+    /// target `target` and, for a reply, the comment it replies to and its root (DESIGN §3.3),
+    /// each counted as public when it is in `going_public`.
+    async fn require_public_conversation(
+        &self,
+        repo: &RepoRef,
+        target: &str,
+        stored: &FetchedDocument,
+        going_public: &BTreeSet<String>,
+    ) -> Result<()> {
+        let of = |d: &FetchedDocument| {
+            if going_public.contains(&d.id) {
+                Audience::Public
+            } else {
+                stored_audience(d)
+            }
+        };
+        let mut parent = if going_public.contains(target) {
+            Audience::Public
+        } else {
+            self.target_audience(repo, target).await?
+        };
+        if let Some(reply_to) = id_field(stored, "replyTo") {
+            let collab = self.collab_contract(repo).await?;
+            let thread = self
+                .thread_docs(repo, &collab, target, &reply_to)
+                .await?
+                .docs();
+            parent = thread.iter().map(of).fold(parent, Audience::narrower);
+        }
+        if parent == Audience::Public {
+            return Ok(());
+        }
+        Err(refused(
+            "this conversation is members-only, so a post in it can't be made public",
+            "everyone could read it, and it answers text only members can read",
+        ))
     }
 
     /// Make the planned post public, with `body` as the text its body field takes (a long
@@ -388,6 +377,38 @@ impl Collab<'_> {
             .into()),
         }
     }
+}
+
+/// The replace (for a review, the text its attached comment carries) that makes the opened
+/// `kind` post public, or why it cannot be.
+fn planned_changes(kind: DocKind, opened: Fields) -> Result<MadePublic> {
+    if kind == DocKind::Review {
+        let body = opened
+            .body
+            .filter(|b| !b.trim().is_empty())
+            .ok_or_else(|| {
+                refused(
+                    "this review has no text to make public",
+                    "only its verdict was posted, and that is public already",
+                )
+            })?;
+        return Ok(MadePublic {
+            set: BTreeMap::from([("body".to_string(), body)]),
+            ..MadePublic::default()
+        });
+    }
+    let ck = content_kind_of(kind)
+        .ok_or_else(|| refused("this can't be made public", "it is not a post"))?;
+    make_public_changes(ck, &opened).map_err(|e| match e {
+        MakePublicRefusal::Imported => refused(
+            "this post was imported, and its original author's name can't be made public",
+            "published without it, the words would read as yours",
+        ),
+        MakePublicRefusal::Empty | MakePublicRefusal::NotEditable => refused(
+            "this post has no text to make public",
+            "its required text is missing",
+        ),
+    })
 }
 
 /// Put each members-only review's made-public text in place (DESIGN §4.6): the public comment
