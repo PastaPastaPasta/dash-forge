@@ -14,7 +14,7 @@ import type { ForgeIds } from '../deployments'
 import { bytesToBase64, hexToBase64, setPlatformVersion, type DocumentQuery } from '../sdk'
 import { invalidateRepoFeed } from './issues'
 import { queryIssues } from './issue-index'
-import { pullsLinking, queryPulls, type PullSelection } from './pull-index'
+import { openPullsOnBranch, pullsLinking, queryPulls, type PullSelection } from './pull-index'
 import type { RepoRef } from './contract'
 import { mockSdk, newSeen, type Doc, type Seen, type Store } from './drive-mock'
 import { OUTCOME_REQUESTS, clearOutcomeCache, readOutcomeCounts } from './check-outcomes'
@@ -382,5 +382,68 @@ describe('pullsLinking (an issue\'s backlinks, QW-015)', () => {
     expect(got.pulls).toEqual([])
     expect(got.searched).toBeGreaterThanOrEqual(300)
     expect(got.searched).toBeLessThan(650)
+  })
+})
+
+describe('openPullsOnBranch (the branch-delete warning)', () => {
+  const FORK = '8H5JaQm8Z765UunuttoUuVsVMCmDoy2EBKgmGKYpdB2z'
+  const FEATURE = 'refs/heads/feature'
+  const FEATURE_HASH = bytesToBase64(sha256(new TextEncoder().encode(FEATURE)))
+  const forkRef = (visibility: 'public' | 'private' = 'public'): RepoRef => ({ forge: FORGE, repoId: FORK, ownerId: AUTHOR, name: 'fork', visibility })
+
+  /** The upstream's three PRs: #1 open from the fork's `feature`, #2 the same, closed; #3 from another branch. */
+  function upstreamStore(seen: Seen) {
+    const store = bigRepo(3, { churn: false })
+    const patches = store['COLLAB']!['patch']!
+    const from = (i: number, name: string): void => {
+      patches[i - 1]!['sourceRepoId'] = FORK
+      patches[i - 1]!['sourceRefName'] = name
+      patches[i - 1]!['sourceRefNameHash'] = bytesToBase64(sha256(new TextEncoder().encode(name)))
+    }
+    from(1, FEATURE)
+    from(2, FEATURE)
+    from(3, 'refs/heads/other')
+    store['COLLAB']!['transition']!.push({ $id: 'tclose2', $ownerId: MAINT, $createdAt: 9_000_000, repoId: REPO, targetId: PID(2), targetNumber: 2, targetKind: 1, kind: 11, delta: 1, asAuthor: 0 })
+    return { sdk: mockSdk(store, seen) }
+  }
+
+  it("names an open PR filed upstream from a fork's branch, which the fork's own PR list never holds", async () => {
+    const seen = newSeen()
+    const { sdk } = upstreamStore(seen)
+    invalidateRepoFeed(forkRef())
+    const found = await openPullsOnBranch(sdk, forkRef(), FEATURE, { network: 'devnet' })
+    expect(found.pulls).toEqual([{ number: 1, title: 'PR 1', uses: 'head', repoId: REPO }])
+    // One lookup by the source branch's (repo, name hash) index: a small, fixed number of requests.
+    const bySource = plainOf(seen, 'patch').filter((q) => (q.where ?? []).some(([f]) => f === 'sourceRefNameHash'))
+    expect(bySource).toHaveLength(1)
+    expect(bySource[0]?.where).toEqual([['sourceRepoId', '==', FORK], ['sourceRefNameHash', '==', FEATURE_HASH]])
+  })
+
+  it('leaves out the PR whose own page asks, and any other branch', async () => {
+    const seen = newSeen()
+    const { sdk } = upstreamStore(seen)
+    invalidateRepoFeed(forkRef())
+    expect((await openPullsOnBranch(sdk, forkRef(), FEATURE, { network: 'devnet', except: { repoId: REPO, number: 1 } })).pulls).toEqual([])
+    // The same number in another repository is another PR.
+    expect((await openPullsOnBranch(sdk, forkRef(), FEATURE, { network: 'devnet', except: { repoId: FORK, number: 1 } })).pulls).toHaveLength(1)
+    expect((await openPullsOnBranch(sdk, forkRef(), 'refs/heads/other', { network: 'devnet' })).pulls.map((p) => p.number)).toEqual([3])
+  })
+
+  it('does not name a PR twice when it is filed in the branch\'s own repository', async () => {
+    const seen = newSeen()
+    const { sdk } = upstreamStore(seen)
+    invalidateRepoFeed(repoRef())
+    // The upstream's own page: PR #1's head is a branch of another repo; nothing here uses `feature` as a base.
+    const found = await openPullsOnBranch(sdk, repoRef(), 'refs/heads/main', { network: 'devnet' })
+    expect(found.pulls.every((p) => p.uses === 'base')).toBe(true)
+    expect(found.pulls.some((p) => p.repoId != null)).toBe(false)
+  })
+
+  it('reads nothing by source branch for a private repository', async () => {
+    const seen = newSeen()
+    const { sdk } = upstreamStore(seen)
+    invalidateRepoFeed(forkRef('private'))
+    await openPullsOnBranch(sdk, forkRef('private'), FEATURE, { network: 'devnet' }).catch(() => undefined)
+    expect(plainOf(seen, 'patch').filter((q) => (q.where ?? []).some(([f]) => f === 'sourceRefNameHash'))).toHaveLength(0)
   })
 })

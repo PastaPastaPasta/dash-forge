@@ -32,10 +32,17 @@ Very little, and every part of it can be checked.
 - **Anyone can check it.** `dg verify-mirror https://<gateway>/<owner>/<name>.git` lists what the mirror serves (`git ls-remote`), folds the refs from Platform with proofs, and reports each ref as `match`, `stale` (an earlier tip of the ref, which moved after the snapshot) or `MISMATCH` (a tip the ref never had, a ref Platform does not have, an omission, or a manifest claim Platform does not back). The web app's clone box has a **verify** link that runs the same comparison in the browser for the branches and tags the page proved.
 - **The worst a dishonest or broken gateway can do is delay or omit,** and either shows. It can never make you accept code nobody pushed.
 - **It is never required.** `git clone dash://<owner>/<name>` reads Platform and storage directly. The survivability drill has a "gateway down" case: no crate on the `dash://` read path depends on the gateway, and the web clone box keeps working with the gateway unreachable.
-- **It holds no keys.** It reads anonymously. A **private repository is refused** with the same `404` as a repository that does not exist, so the gateway does not even confirm it exists. It never fetches one.
+- **It holds no keys.** It reads anonymously. A **private repository is refused** exactly as a repository that does not exist: the same `404` and text, cached for the same time, and counted in the same `/metrics` counter (`forge_gateway_repo_not_found_total`, which also counts absent and deleted repositories). So the gateway does not confirm that a private repository exists. It never fetches one.
 - **No push.** `git-receive-pack` answers `403`. Push with `dash://`, which signs your own push.
 
 How a refresh works: the gateway reads a proof-verified snapshot (chain tip first, then every ref, the default branch and the recorded packs), fetches the objects through the shipped `git-remote-dash` helper (the same proof-checked fetch every client runs) into a hidden staging namespace, checks every snapshot tip is present, and only then moves the served refs to exactly the snapshot's in one transaction. The manifest is written after the refs, so it never claims more than is served. A failed refresh changes nothing: the mirror keeps serving its last snapshot, whose manifest says how old it is.
+
+**When Platform cannot be read** (a DAPI outage), the gateway keeps serving what it has, for a while, and says so:
+
+- A repository resolved in the last hour is still served from its mirror. Past an hour without a successful read of its name, the gateway answers `503` instead: it can no longer show the repository still exists.
+- Every git, manifest and feed response served from a snapshot that may be behind carries `X-Forge-Stale: <seconds>`, the snapshot's age. A badge, feed or preview served from an expired render carries it too, with the render's age. Fresh responses have no such header.
+
+**When a repository is gone.** A repository is never deleted on a live network, but a reset devnet loses every one. Every refresh first reads the repository's `repo` document by id, with proofs. When Platform proves it absent (twice, 5 s apart, since a node a block behind can miss a repository just created), or the forge contracts are gone, or the document no longer has the owner and name the mirror served, the gateway removes the mirror, drops everything it cached about the repository, and answers `404` for it like any unknown repository. Only a proof counts: a failed read never removes a mirror, and a node that says a forge contract is missing is checked with a proved read of the contract first. At start, the gateway checks every mirror on its volume the same way (one proved read each) and removes the ones Platform lost, and a mirror of other forge contracts is removed without a read. A repository created again under the same name gets a new mirror.
 
 ## What you need
 
@@ -105,7 +112,7 @@ Every setting is a flag (`forge-gateway --help`) and an environment variable. Em
 | `GATEWAY_CACHE_MAX` | `20G` | Disk cap for all mirrors; the least recently served are evicted above it. |
 | `GATEWAY_REPO_MAX` | `2G` | The largest repository mirrored (its recorded packs). Larger ones answer `403` and point at `dash://`. |
 | `GATEWAY_POLL_SECS` | `120` | How often a warm mirror is checked against Platform. A check whose refs did not move costs a few proved reads and no fetch. |
-| `GATEWAY_WARM_HOURS` | `24` | A mirror served within this window is polled; older ones refresh on their next request. |
+| `GATEWAY_WARM_HOURS` | `24` | A mirror served within this window is polled; older ones refresh on their next request. The time of the last serve survives a restart (a `forge-gateway-served` file in the mirror); a refresh alone never makes a mirror warm. |
 | `GATEWAY_WAKE_URL` | none | A forge-relay whose `[wake]` stream announces pushes. |
 | `GATEWAY_WAKE_SECRET_FILE` | none | That relay's `[wake]` secret, in a file. |
 | `GATEWAY_TRUST_PROXY` | `none` (compose: `cloudflare`) | Which header names the client for rate limits: `none` (the TCP peer), `cloudflare` (`CF-Connecting-IP`), `x-forwarded-for` (its last entry). Set it only behind that proxy, or clients can pick their own address. |
@@ -175,7 +182,7 @@ GATEWAY_WAKE_SECRET_FILE=/run/secrets/wake
 
 `<owner>` is an identity id or a DPNS name. A README badge: `[![checks](https://git-forge.dashhq.org/badge/alice/project/ci.svg)](https://forge.dashhq.org/alice/project)`.
 
-Badges, feeds and previews are cached for `GATEWAY_RENDER_TTL_SECS`. When Platform cannot be read, the last render is served (marked by `Cache-Control: max-age=60`); a badge with nothing cached says `unavailable`.
+Badges, feeds and previews are cached for `GATEWAY_RENDER_TTL_SECS`. When Platform cannot be read, the last render is served (marked by `Cache-Control: max-age=60` and `X-Forge-Stale: <seconds>`); a badge with nothing cached says `unavailable`.
 
 ## Rate limits and abuse controls
 
@@ -209,7 +216,7 @@ Rules inserted with `-I` go first, so the `ESTABLISHED` rule, inserted last, kee
 
 - `GET /healthz`: `200 ok` while the process serves (the container health check).
 - `GET /readyz`: `200` when the newest Platform read succeeded, `503` with `"platform": "failing"` when the newest failed. Mirrors keep serving meanwhile; alert if it stays `503` for more than 10 minutes.
-- `GET /metrics` (Prometheus text): requests by route class, clones started and bytes streamed, rate-limited requests, refreshes (ok, failed, changed), mirrors created and evicted, private-repository refusals, relay wakes, stale renders, and gauges for mirrors, ready mirrors, bytes on disk and its cap, clones streaming, and the times of the last Platform success and failure. No series is labelled by repository or client. Suggested alerts: `forge_gateway_cache_bytes > 0.9 * forge_gateway_cache_max_bytes`; a rising `forge_gateway_refresh_failed_total`; `forge_gateway_upstream_last_ok_seconds` older than 15 minutes.
+- `GET /metrics` (Prometheus text): requests by route class, clones started and bytes streamed, rate-limited requests, refreshes (ok, failed, changed), mirrors created, evicted and removed because their repository is gone, requests for repositories not served (absent, private and gone counted together, so the counter never confirms a private repository), relay wakes, stale renders, and gauges for mirrors, ready mirrors, bytes on disk and its cap, clones streaming, and the times of the last Platform success and failure. No series is labelled by repository or client. Suggested alerts: `forge_gateway_cache_bytes > 0.9 * forge_gateway_cache_max_bytes`; a rising `forge_gateway_refresh_failed_total`; `forge_gateway_upstream_last_ok_seconds` older than 15 minutes.
 
 Restrict `/metrics` at the proxy if you do not want it public (it holds no personal data).
 
@@ -223,7 +230,7 @@ Never logged: client addresses, user agents, request headers, query strings and 
 
 Nothing in `GATEWAY_DATA_DIR` needs a backup: every mirror is rebuilt from Platform on its next request. Back up only your `.env` and the wake secret. Losing the volume costs a cold first clone per repository (the dash mirror took 299 s in the prototype).
 
-Upgrade: rebuild or pull the image and `docker compose up -d`. The mirrors on the volume are reused; a mirror whose manifest is missing or from another schema is removed and rebuilt. `SIGTERM` stops it gracefully (compose waits 30 s).
+Upgrade: rebuild or pull the image and `docker compose up -d`. The mirrors on the volume are reused; a mirror whose manifest is missing or from another schema is removed and rebuilt. A mirror is polled after a restart only if it was served within `GATEWAY_WARM_HOURS`; the others refresh on their next request. Mirrors left by an older build start cold. `SIGTERM` stops it gracefully (compose waits 30 s).
 
 ## Show it in the web app
 

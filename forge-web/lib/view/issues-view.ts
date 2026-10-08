@@ -420,16 +420,22 @@ export function issueWriteShows(t: IssueThread, w: IssueWrite): boolean {
     case 'deleteComment':
       return comment(w.id) === undefined
     case 'hide':
-      return isHidden(t.moderation, w.item) === w.hide
+      return isHiddenByHide(t.moderation, w.item) === w.hide
     case 'makePublic':
       return w.id === null ? t.issue.audience !== 'members' : comment(w.id)?.audience !== 'members'
   }
 }
 
-/** Whether `item` (null: the thread) is hidden in `m` (RC2 MOD). */
-export function isHidden(m: HiddenItems | undefined, item: string | null): boolean {
+/**
+ * Whether a maintainer's hide (a hide event, or an inline comment's review's) covers `item` (null:
+ * the thread). A writer's ban also collapses an item (the collapse readers see) but is not a hide: the
+ * hide and unhide controls follow this, so an unhide is never offered, or waited for, on an item
+ * only a ban collapses.
+ */
+export function isHiddenByHide(m: HiddenItems | undefined, item: string | null): boolean {
   if (m === undefined) return false
-  return item === null ? m.thread !== null : m.items[item] !== undefined
+  const h = item === null ? m.thread : m.items[item]
+  return h !== null && h !== undefined && h.via !== 'ban'
 }
 
 /** How a private repo's event values were read ({@link TargetLog}). */

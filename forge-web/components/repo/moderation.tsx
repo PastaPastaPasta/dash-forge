@@ -68,6 +68,7 @@ export function HideMenu({
   disabled,
   what = 'comment',
   blocked = null,
+  byBan = false,
 }: {
   hidden: boolean
   onHide: (reason: HideReason | null) => void
@@ -75,6 +76,8 @@ export function HideMenu({
   disabled: boolean
   what?: 'comment' | 'review'
   blocked?: HideBlock | null
+  /** Only its writer's ban collapses it: a hide then keeps it hidden after the ban is lifted. */
+  byBan?: boolean
 }): JSX.Element | null {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLSpanElement>(null)
@@ -102,7 +105,7 @@ export function HideMenu({
       </button>
       {open ? (
         <div role="menu" className="absolute right-0 top-full z-20 mt-1 w-56 rounded-md border border-anvil-200 bg-white p-1 text-dense shadow-lg dark:border-anvil-750 dark:bg-anvil-950">
-          <p className="px-2 py-1 text-[12px] text-anvil-500 dark:text-anvil-400">Hide this {what} from readers. Nothing is deleted: anyone can still expand it.</p>
+          <p className="px-2 py-1 text-[12px] text-anvil-500 dark:text-anvil-400">Hide this {what} from readers{byBan ? ', even after the ban is lifted' : ''}. Nothing is deleted: anyone can still expand it.</p>
           {HIDE_REASONS.map((r) => (
             <button
               key={r}
@@ -237,8 +240,11 @@ export function HideThreadControl({
   onHide,
   onUnhide,
   blocked = null,
+  byBan = false,
 }: {
   hidden: boolean
+  /** Only its author's ban collapses it: a hide then keeps it hidden after the ban is lifted. */
+  byBan?: boolean
   /** Why the write would change nothing (`moderationBlocked`), shown instead of the action. */
   blocked?: HideBlock | null
   noun: 'issue' | 'pull request'
@@ -279,7 +285,7 @@ export function HideThreadControl({
       data-testid="hide-thread-form"
     >
       <label className="block text-[12px] text-anvil-600 dark:text-anvil-400" htmlFor="hide-thread-reason">
-        Hide this {noun} from lists and readers (nothing is deleted)
+        Hide this {noun} from lists and readers{byBan ? ', even after the ban is lifted' : ''} (nothing is deleted)
       </label>
       <select id="hide-thread-reason" value={reason} onChange={(e) => setReason(e.target.value as HideReason | '')} className="w-full rounded-md border border-anvil-300 bg-white px-2 py-1 text-dense dark:border-anvil-700 dark:bg-anvil-950">
         {HIDE_REASONS.map((r) => (

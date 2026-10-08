@@ -3864,6 +3864,7 @@ pub fn config_doc(d: &FetchedDocument) -> ConfigDoc {
         id: d.id.clone(),
         created_at: d.created_at.unwrap_or(0),
         protected_patterns: scope::doc_text_list(d, "protectedPatterns"),
+        author: Some(d.owner_id.clone()),
     }
 }
 
@@ -5424,6 +5425,7 @@ mod tests {
             id: "a".into(),
             created_at: 100,
             protected_patterns: vec!["refs/heads/main".into()],
+            author: None,
         }];
         assert_eq!(
             super::ref_doc_type("refs/heads/main", &configs, false),
@@ -5461,11 +5463,13 @@ mod tests {
                 id: "a".into(),
                 created_at: 100,
                 protected_patterns: vec!["refs/heads/main".into()],
+                author: None,
             },
             ConfigDoc {
                 id: "b".into(),
                 created_at: 200,
                 protected_patterns: vec!["refs/heads/*".into()],
+                author: None,
             },
         ];
         assert_eq!(

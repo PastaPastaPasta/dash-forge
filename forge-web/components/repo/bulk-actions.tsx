@@ -12,7 +12,8 @@
  * (`lib/view/bulk.ts`).
  */
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { AlertTriangle, Check, ChevronDown, Circle, Loader2, Minus, Tag, X } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
@@ -22,17 +23,22 @@ import { useAuth } from '@/contexts/auth-context'
 import { useViewerRole } from '@/hooks/use-repo-chrome'
 import { useSdk } from '@/hooks/use-sdk'
 import { useWriteGuard } from '@/hooks/use-write-guard'
-import { IllegalTransitionError, repoContractIds, setLabel, setTargetState, type LabelDef } from '@/lib/repo'
+import { IllegalTransitionError, repoContractIds, setLabelIfNeeded, setTargetState, type LabelDef } from '@/lib/repo'
 import { capabilitiesOf } from '@/lib/rules/roles'
+import { statusOfCode } from '@/lib/rules/transition'
 import { SupersededWriteError, UnconfirmedWriteError, newIntent, previewCreate, sumPreviews, type CostPreview as Cost } from '@/lib/sdk'
 import type { RepoHome } from '@/lib/view'
 import { ARCHIVED_REASON } from '@/lib/view'
 import {
+  ALREADY_MERGED,
   actionTitle,
   allReopenable,
   doneWord,
+  unchangedSummary,
   unchangedWord,
   labelCoverage,
+  menuPlacement,
+  type MenuPlacement,
   nounFor,
   planBulk,
   retryable,
@@ -247,9 +253,14 @@ export function BulkBar({
   )
 }
 
-/** A small menu button: the panel opens below it, Escape or a pick closes it and returns focus. */
+/**
+ * A small menu button: the panel opens below it (above when there is no room), Escape or a pick
+ * closes it and returns focus. The panel is drawn on the page, not inside the list's box, whose
+ * edges clip anything that overflows it (on a phone, or under a short list).
+ */
 function Menu({ label, icon, testId, disabled, children }: { label: string; icon?: JSX.Element; testId: string; disabled: string | null; children: (close: () => void) => React.ReactNode }): JSX.Element {
   const [open, setOpen] = useState(false)
+  const [placement, setPlacement] = useState<MenuPlacement | null>(null)
   const id = useId()
   const button = useRef<HTMLButtonElement>(null)
   const panel = useRef<HTMLDivElement>(null)
@@ -257,9 +268,30 @@ function Menu({ label, icon, testId, disabled, children }: { label: string; icon
     setOpen(false)
     button.current?.focus()
   }, [])
+  useLayoutEffect(() => {
+    if (!open) {
+      setPlacement(null)
+      return
+    }
+    const place = (): void => {
+      const r = button.current?.getBoundingClientRect()
+      if (r) setPlacement(menuPlacement(r, { width: window.innerWidth, height: window.innerHeight }))
+    }
+    place()
+    window.addEventListener('resize', place)
+    window.addEventListener('scroll', place, true)
+    return () => {
+      window.removeEventListener('resize', place)
+      window.removeEventListener('scroll', place, true)
+    }
+  }, [open])
+  // Focus the first item once the panel is there, not on each reposition.
+  const shown = open && placement !== null
+  useEffect(() => {
+    if (shown) panel.current?.querySelector<HTMLElement>('button')?.focus()
+  }, [shown])
   useEffect(() => {
     if (!open) return
-    panel.current?.querySelector<HTMLElement>('button')?.focus()
     const onDown = (e: MouseEvent): void => {
       if (!panel.current?.contains(e.target as Node) && !button.current?.contains(e.target as Node)) setOpen(false)
     }
@@ -270,8 +302,10 @@ function Menu({ label, icon, testId, disabled, children }: { label: string; icon
     <div
       className="relative"
       onBlur={(e) => {
-        // Focus leaving the button and its panel closes the panel.
-        if (open && !e.currentTarget.contains(e.relatedTarget as Node | null)) setOpen(false)
+        // Focus leaving the button and its panel closes the panel (the panel is drawn elsewhere
+        // in the page, so it is checked by its own node).
+        const to = e.relatedTarget as Node | null
+        if (open && !e.currentTarget.contains(to) && !panel.current?.contains(to)) setOpen(false)
       }}
     >
       <Button
@@ -290,23 +324,33 @@ function Menu({ label, icon, testId, disabled, children }: { label: string; icon
         {label}
         <ChevronDown className="h-3.5 w-3.5" aria-hidden />
       </Button>
-      {open ? (
-        <div
-          ref={panel}
-          id={id}
-          role="dialog"
-          aria-label={label}
-          className="absolute left-0 z-20 mt-1 max-h-72 w-60 overflow-auto rounded-md border border-anvil-200 bg-white py-1 shadow-lg dark:border-anvil-700 dark:bg-anvil-900"
-          onKeyDown={(e) => {
-            if (e.key === 'Escape') {
-              e.stopPropagation()
-              close()
-            }
-          }}
-        >
-          {children(close)}
-        </div>
-      ) : null}
+      {shown
+        ? createPortal(
+            <div
+              ref={panel}
+              id={id}
+              role="dialog"
+              aria-label={label}
+              data-testid={`${testId}-menu`}
+              className="fixed z-40 overflow-auto rounded-md border border-anvil-200 bg-white py-1 shadow-lg dark:border-anvil-700 dark:bg-anvil-900"
+              style={{ left: placement.left, width: placement.width, maxHeight: placement.maxHeight, top: placement.top, bottom: placement.bottom }}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  e.stopPropagation()
+                  close()
+                } else if (e.key === 'Tab') {
+                  // The panel is drawn at the end of the page: Tab goes back to the button, where
+                  // the bar's own order continues.
+                  e.preventDefault()
+                  close()
+                }
+              }}
+            >
+              {children(close)}
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   )
 }
@@ -338,6 +382,8 @@ function BulkDialog({ kind, home, action, rows, onClose }: { kind: BulkKind; hom
   const [outcomes, setOutcomes] = useState<ReadonlyMap<string, BulkOutcome> | null>(null)
   const [running, setRunning] = useState(false)
   const stop = useRef(false)
+  // Items whose last write was sent and not yet shown: a retry finding them done finds its own work.
+  const maybeLanded = useRef(new Set<string>())
   const noun = nounFor(kind, plan.apply.length)
   const title = actionTitle(action, kind, plan.apply.length)
 
@@ -354,24 +400,34 @@ function BulkDialog({ kind, home, action, rows, onClose }: { kind: BulkKind; hom
       intent,
       shouldStop: () => stop.current,
       write: async (row, itemIntent) => {
+        // An earlier attempt of this item was sent and not yet shown: if the item is in the
+        // asked state now, that attempt landed and it is this batch's doing.
+        const mine = maybeLanded.current.has(row.id)
         try {
-          if (action.kind === 'label') {
-            await setLabel(sdk, signer, repo, { target: { id: row.id, number: row.number }, label: action.label, add: action.add, intent: itemIntent })
-          } else {
-            await setTargetState(sdk, signer, repo, {
-              target: { id: row.id, number: row.number, type: kind === 'issue' ? 'issue' : 'patch', author: row.author },
-              action: action.kind,
-              isMember: true,
-              intent: itemIntent,
-              ...(action.kind === 'close' && kind === 'issue' && action.reason !== undefined ? { closed: { reason: action.reason, duplicateOf: null } } : {}),
-            })
-          }
-          return { changed: true }
+          const result =
+            action.kind === 'label'
+              ? await setLabelIfNeeded(sdk, signer, repo, { target: { id: row.id, number: row.number }, label: action.label, add: action.add, intent: itemIntent })
+              : await setTargetState(sdk, signer, repo, {
+                  target: { id: row.id, number: row.number, type: kind === 'issue' ? 'issue' : 'patch', author: row.author },
+                  action: action.kind,
+                  isMember: true,
+                  intent: itemIntent,
+                  ...(action.kind === 'close' && kind === 'issue' && action.reason !== undefined ? { closed: { reason: action.reason, duplicateOf: null } } : {}),
+                })
+          // Nothing was written: it was already in the asked state (a close or reopen answers an
+          // empty document id, a label null). Someone else made the change, unless this item's
+          // own earlier attempt did.
+          return { changed: mine || (result !== null && result.documentId !== '') }
         } catch (e) {
           // An earlier attempt of this same item landed: it is written.
           if (e instanceof SupersededWriteError) return { changed: true }
-          // Someone else closed (or reopened) it since the list was read: nothing to write.
-          if (e instanceof IllegalTransitionError) return { changed: false }
+          // Someone else moved it since the list was read: nothing to write. A merged pull
+          // request is said to be merged, not closed.
+          if (e instanceof IllegalTransitionError) {
+            if ((e.code & 2) !== 0) return { changed: false, note: ALREADY_MERGED }
+            // Only when the state really is the asked one; any other refusal is this item's failure.
+            if (action.kind !== 'label' && statusOfCode(e.code).open === (action.kind === 'reopen')) return { changed: false }
+          }
           throw e
         }
       },
@@ -379,18 +435,26 @@ function BulkDialog({ kind, home, action, rows, onClose }: { kind: BulkKind; hom
         const f = writeFailure(e)
         return { message: f.message, unconfirmed: e instanceof UnconfirmedWriteError, stop: f.sheet !== null }
       },
-      onOutcome: (id, o) => setOutcomes((cur) => new Map(cur ?? []).set(id, o)),
+      onOutcome: (id, o) => {
+        if (o.status === 'unconfirmed') maybeLanded.current.add(id)
+        // Only a settled item forgets it: a failed or stopped retry leaves the earlier write able to land.
+        else if (o.status === 'done' || o.status === 'unchanged') maybeLanded.current.delete(id)
+        setOutcomes((cur) => new Map(cur ?? []).set(id, o))
+      },
     })
     setRunning(false)
   }
 
   const started = outcomes !== null
   const t = outcomes === null ? null : tally(outcomes)
+  // What "Retry" would take up again: what failed, is still arriving, or was not tried.
   const failed = plan.apply.filter((r) => retryable(outcomes?.get(r.id)))
   // Sent but not yet shown: they may still land, so they are not counted as failed.
   const arriving = t?.unconfirmed ?? 0
-  const notThrough = failed.length - arriving
-  const wrote = t !== null && t.done + t.unconfirmed > 0
+  // Left alone because the batch stopped first (asked to, or out of funds): not a failure.
+  const notTried = t?.stopped ?? 0
+  const notThrough = t?.failed ?? 0
+  const wrote = t !== null && t.done + t.unchanged + t.unconfirmed > 0
   const finished = started && !running
 
   return (
@@ -439,7 +503,7 @@ function BulkDialog({ kind, home, action, rows, onClose }: { kind: BulkKind; hom
                 }}
                 data-testid="bulk-retry"
               >
-                {arriving > 0 ? `Retry ${failed.length}` : `Retry ${failed.length} failed`}
+                {notThrough === 0 && arriving === 0 ? `Continue ${failed.length}` : arriving === 0 && notTried === 0 ? `Retry ${failed.length} failed` : `Retry ${failed.length}`}
               </Button>
             ) : null}
             <Button variant="primary" onClick={() => onClose(wrote)} data-testid="bulk-done">
@@ -473,11 +537,14 @@ function BulkDialog({ kind, home, action, rows, onClose }: { kind: BulkKind; hom
               {running
                 ? `${t.done + t.unchanged} of ${plan.apply.length} done…`
                 : failed.length === 0
-                  ? `${doneWord(action)}: ${plan.apply.length} ${noun}.`
+                  ? t.done === 0
+                    ? `Nothing was changed. ${unchangedSummary(t.unchanged)}`
+                    : [`${doneWord(action)}: ${t.done} ${nounFor(kind, t.done)}.`, t.unchanged > 0 ? unchangedSummary(t.unchanged) : ''].filter((x) => x !== '').join(' ')
                   : [
                       `${t.done + t.unchanged} of ${plan.apply.length} done.`,
                       notThrough > 0 ? `${notThrough} didn't go through.` : '',
                       arriving > 0 ? `${arriving} still arriving.` : '',
+                      notTried > 0 ? `${notTried} not tried.` : '',
                     ]
                       .filter((x) => x !== '')
                       .join(' ')}
@@ -493,9 +560,9 @@ function BulkDialog({ kind, home, action, rows, onClose }: { kind: BulkKind; hom
                     <p className="truncate">
                       <span className="font-mono text-anvil-500 dark:text-anvil-400">#{r.number}</span> {r.title || '(untitled)'}
                     </p>
-                    {o?.message ? <p className={cn('text-[12px]', o.status === 'failed' ? 'text-danger-700 dark:text-danger-400' : 'text-anvil-500 dark:text-anvil-400')}>{o.message}</p> : null}
+                    {o?.message && o.status !== 'unchanged' ? <p className={cn('text-[12px]', o.status === 'failed' ? 'text-danger-700 dark:text-danger-400' : 'text-anvil-500 dark:text-anvil-400')}>{o.message}</p> : null}
                     {o?.status === 'stopped' ? <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Not tried.</p> : null}
-                    {o?.status === 'unchanged' ? <p className="text-[12px] text-anvil-500 dark:text-anvil-400">{unchangedWord(action)}</p> : null}
+                    {o?.status === 'unchanged' ? <p className="text-[12px] text-anvil-500 dark:text-anvil-400">{o.message ?? unchangedWord(action)}</p> : null}
                   </div>
                 </li>
               )

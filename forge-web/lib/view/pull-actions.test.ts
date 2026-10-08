@@ -571,4 +571,31 @@ describe('code owner rules (requireCodeOwners)', () => {
     const pending = { met: false, unreadable: false, pending: [{ path: 'src/a.rs', owners: ['@alice'], approvable: true }, { path: 'ops/x', owners: ['@org/t'], approvable: false }] }
     expect(unmetRules(null, null, false, pending)).toEqual(['code owner approval: src/a.rs (@alice)', 'code owner approval: ops/x (@org/t; none of them can approve)'])
   })
+
+  it("a writer held back by code owners alone is told so, not that checks must pass (Q5-B03)", () => {
+    const met = { met: true, have: 0, need: 0, blockedBy: [] }
+    const pending = { met: false, unreadable: false, pending: [{ path: 'src/a.rs', owners: ['@alice'], approvable: true }] }
+    const hint = (codeOwners: Parameters<typeof pullActions>[0]['codeOwners']) => pullActions({ pull: pull(), viewer: WRITER, holdings: WRITE, policy: met, codeOwners }).mergeHint
+    expect(hint(pending)).toBe("The branch policy needs a code owner's approval of 1 file. Only a maintainer can bypass it.")
+    expect(hint({ met: false, unreadable: true, pending: [] })).toMatch(/^Couldn't read the code owners or the changed files/)
+    expect(hint('unknown')).toBe('Merging waits until the code owners and their approvals are read.')
+    expect(hint({ met: true, unreadable: false, pending: [] })).toBeNull()
+    // Failing checks still say so first.
+    const failing = { met: false, untrusted: 0, required: [{ name: 'build', state: 'missing' as const, runId: null }] }
+    expect(pullActions({ pull: pull(), viewer: WRITER, holdings: WRITE, policy: met, checks: failing, codeOwners: pending }).mergeHint).toMatch(/requires passing checks/)
+  })
+
+  it("the branch rules card's code owner line (Q5-B03)", async () => {
+    const { codeOwnersLine } = await import('./pull-actions')
+    expect(codeOwnersLine(null)).toBeNull()
+    expect(codeOwnersLine('unknown')).toEqual({ ok: false, text: 'Code owner approvals not read yet' })
+    expect(codeOwnersLine({ met: true, unreadable: false, pending: [] })).toEqual({ ok: true, text: "No changed file waits for a code owner's approval" })
+    expect(codeOwnersLine({ met: false, unreadable: true, pending: [] })?.ok).toBe(false)
+    const file = (path: string, approvable = true) => ({ path, owners: ['@alice'], approvable })
+    expect(codeOwnersLine({ met: false, unreadable: false, pending: [file('a'), file('b')] })).toEqual({ ok: false, text: "Waiting for a code owner's approval: a, b" })
+    expect(codeOwnersLine({ met: false, unreadable: false, pending: [file('a'), file('b'), file('c'), file('d', false), file('e', false)] })).toEqual({
+      ok: false,
+      text: "Waiting for a code owner's approval: a, b, c and 2 more. No owner of 2 files can approve, so fix CODEOWNERS on the base branch",
+    })
+  })
 })

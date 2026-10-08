@@ -573,7 +573,7 @@ pub enum RepoCommand {
         #[arg(value_name = "IDENTITY")]
         who: String,
     },
-    /// List the bans that count: those of the owner and current maintainers.
+    /// List every ban: who wrote it, whether it counts, and the one that decides.
     Bans {
         /// The repository (`owner/name`).
         repo: String,
@@ -1967,12 +1967,12 @@ pub enum StorageMirrorCommand {
         #[arg(long)]
         no_verify: bool,
     },
-    /// List the mirrors of a repo's packs (`--mine`: every mirror you recorded).
+    /// List the mirrors of a repo's packs (`--mine`: the ones you recorded, in every repo or just REPO).
     List {
-        /// The repository (`owner/name`); omit with --mine.
+        /// The repository (`owner/name`); omit with --mine to list every repo.
         #[arg(required_unless_present = "mine")]
         repo: Option<String>,
-        /// The mirrors you recorded, in every repo.
+        /// Only the mirrors you recorded (every repo, or just REPO).
         #[arg(long)]
         mine: bool,
     },

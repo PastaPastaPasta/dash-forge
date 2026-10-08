@@ -11,7 +11,7 @@ use forge_core::rules::ref_history::{ref_history, RefEvent, RefEventKind};
 
 use crate::common::Reader;
 use crate::context::Ctx;
-use crate::fmt::{safe, short};
+use crate::fmt::{safe, short, with_name};
 
 /// The full ref name `name` means: a `refs/…` name as given, else a tag or a branch.
 pub fn full_ref_name(name: &str, tag: bool) -> String {
@@ -83,6 +83,17 @@ fn describe(e: &RefEvent) -> String {
     }
 }
 
+/// The entries to list, newest first. A ref that never existed has no pushes, whatever its
+/// protection did: the web's Activity page says "No activity" there, so this lists nothing
+/// (`events` is empty in `--json` too).
+fn newest_first(mut events: Vec<RefEvent>) -> Vec<RefEvent> {
+    if !events.iter().any(|e| e.by.is_some()) {
+        events.clear();
+    }
+    events.reverse();
+    events
+}
+
 /// `dg repo activity`.
 pub async fn activity(ctx: &Ctx, repo: &str, name: &str, tag: bool) -> Result<()> {
     let s = Reader::open(ctx, repo).await?;
@@ -111,20 +122,41 @@ pub async fn activity(ctx: &Ctx, repo: &str, name: &str, tag: bool) -> Result<()
             .find(|((o, n), _)| o == old && n == new)
             .and_then(|(_, a)| *a)
     };
-    let mut events = ref_history(&ref_name, &hash, &updates, &configs, contains);
-    events.reverse();
+    let events = newest_first(ref_history(&ref_name, &hash, &updates, &configs, contains));
+    // Config changes carry no pusher: the config's own author wrote them.
+    let authors: std::collections::BTreeMap<&str, &str> = configs
+        .iter()
+        .filter_map(|c| Some((c.id.as_str(), c.author.as_deref()?)))
+        .collect();
+    let who_of = |e: &RefEvent| -> Option<String> {
+        e.by.clone()
+            .or_else(|| authors.get(e.id.as_str()).map(|a| (*a).to_string()))
+    };
+    // DPNS names for the human list only: no read in `--json`; a failed read shows the bare id.
+    let names = if ctx.json {
+        std::collections::BTreeMap::new()
+    } else {
+        let ids: Vec<String> = events.iter().filter_map(who_of).collect();
+        s.client
+            .dpns_first_names(ids.iter().map(String::as_str))
+            .await
+    };
     let display = s.repo.display();
     ctx.emit(
         json!({ "repo": display, "ref": ref_name, "events": events }),
         || {
             if events.is_empty() {
-                println!("nothing was ever pushed to {}", safe(&ref_name));
+                println!("No activity");
+                println!("Nothing has ever been pushed to {}.", safe(&ref_name));
                 return;
             }
             println!("{} of {}, newest first", safe(&ref_name), safe(&display));
             for e in &events {
                 let when = crate::cost::format_utc(e.at);
-                let who = e.by.as_deref().unwrap_or("a maintainer (config)");
+                let who = who_of(e).map_or_else(
+                    || "a maintainer (config)".to_string(),
+                    |id| with_name(&id, &names),
+                );
                 let mark = match e.kind {
                     RefEventKind::ForcePushed | RefEventKind::Moved => "!",
                     RefEventKind::ProtectionLifted | RefEventKind::Diverged => "~",
@@ -146,6 +178,33 @@ mod tests {
         assert_eq!(full_ref_name("main", false), "refs/heads/main");
         assert_eq!(full_ref_name("v1.0", true), "refs/tags/v1.0");
         assert_eq!(full_ref_name("refs/tags/v1.0", false), "refs/tags/v1.0");
+    }
+
+    #[test]
+    fn a_ref_never_pushed_lists_nothing_even_when_protected() {
+        let protection = RefEvent {
+            kind: RefEventKind::ProtectionAdded,
+            id: "c1".into(),
+            at: 1,
+            by: None,
+            from: None,
+            to: None,
+        };
+        assert!(newest_first(vec![protection.clone()]).is_empty());
+        // Once something was pushed, everything is listed, newest first.
+        let push = RefEvent {
+            kind: RefEventKind::Created,
+            id: "u1".into(),
+            at: 2,
+            by: Some("a".into()),
+            to: Some("b".repeat(40)),
+            ..protection.clone()
+        };
+        let got = newest_first(vec![protection, push]);
+        assert_eq!(
+            got.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
+            ["u1", "c1"]
+        );
     }
 
     #[test]

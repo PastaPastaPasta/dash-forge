@@ -4,8 +4,9 @@
 //! The rule (where the file is, how it parses and matches, whom to ask) is
 //! [`forge_core::rules::codeowners`], shared with the web by conformance vectors. This module
 //! only gathers its input from git: the code owners file at the base tip and the paths changed
-//! between the merge base and the head (`git diff --name-only --no-renames`, so a rename counts
-//! as its old and new path, as the web counts it). Both commits are read from the clone `dg`
+//! between the merge base and the head (`git diff-tree -r --name-only --no-renames`, so a rename
+//! counts as its old and new path, as the web counts it, and a submodule's new commit counts
+//! whatever `.gitmodules` or the clone's config says). Both commits are read from the clone `dg`
 //! runs in when it has them, else fetched over `dash://` into a scratch repository.
 
 use std::collections::BTreeMap;
@@ -77,9 +78,25 @@ pub fn read_code_owners(dir: &Path, commit: &str) -> Result<Option<(String, Code
     Ok(None)
 }
 
-/// The paths the PR changes: `git diff --name-only --no-renames` from the merge base of `base`
-/// and `head` (no merge base: the head's first parent) to `head`. A root head with no merge
-/// base changes every file it holds.
+/// How the changed paths are listed: the plumbing `diff-tree`, which lists every path from the
+/// repository root wherever dg runs (porcelain `git diff` follows `diff.relative` and drops the
+/// paths outside the current directory), as the web's tree diff lists them.
+/// `--ignore-submodules=none` counts a submodule's new commit even when `.gitmodules` (which the
+/// PR's author writes) or `diff.ignoreSubmodules` says `ignore = all`: `diff-tree` follows
+/// `.gitmodules` too without it. `--no-renames` lists a rename as both of its paths. A hidden
+/// path would be a code owner never asked (fail open).
+const CHANGED_PATHS_ARGS: [&str; 6] = [
+    "diff-tree",
+    "-r",
+    "-z",
+    "--name-only",
+    "--no-renames",
+    "--ignore-submodules=none",
+];
+
+/// The paths the PR changes: [`CHANGED_PATHS_ARGS`] from the merge base of `base` and `head`
+/// (no merge base: the head's first parent) to `head`. A root head with no merge base changes
+/// every file it holds.
 pub fn changed_paths(dir: &Path, base: &str, head: &str) -> Result<Vec<String>> {
     let from = git::git(dir, &["merge-base", base, head], &[]).or_else(|_| {
         git::git(
@@ -89,10 +106,11 @@ pub fn changed_paths(dir: &Path, base: &str, head: &str) -> Result<Vec<String>> 
         )
     });
     let out = match from {
-        Ok(from) => git::git_bytes(
-            dir,
-            &["diff", "--name-only", "--no-renames", "-z", &from, head],
-        )?,
+        Ok(from) => {
+            let mut args = CHANGED_PATHS_ARGS.to_vec();
+            args.extend([from.as_str(), head]);
+            git::git_bytes(dir, &args)?
+        }
         // Not the empty tree's oid: that differs between SHA-1 and SHA-256 repositories.
         Err(_) => git::git_bytes(
             dir,
@@ -104,6 +122,16 @@ pub fn changed_paths(dir: &Path, base: &str, head: &str) -> Result<Vec<String>> 
         .filter(|p| !p.is_empty())
         .map(|p| String::from_utf8_lossy(p).into_owned())
         .collect())
+}
+
+/// Whether the clone in `dir` can list the changes from `base` to `head`: it holds both commits
+/// and, when it is shallow, their merge base too. A shallow clone cut off above the merge base
+/// would list the changes from the wrong commit, or none at all, so the commits are fetched into
+/// a scratch repository instead.
+fn clone_can_diff(dir: &Path, base: &str, head: &str) -> bool {
+    git::has_object(dir, base)
+        && git::has_object(dir, head)
+        && (!git::is_shallow(dir) || git::git(dir, &["merge-base", base, head], &[]).is_ok())
 }
 
 /// Plan the code owner review requests of a PR from `head_oid` (in `source`) into `base_ref`
@@ -160,7 +188,7 @@ async fn plan_inner(
         return Ok(None);
     }
     let scratch;
-    let (dir, found) = if in_clone && git::has_object(cwd, head_oid) {
+    let (dir, found) = if in_clone && clone_can_diff(cwd, base_tip, head_oid) {
         (cwd, found)
     } else {
         git::require_branch_ref(base_ref)?;
@@ -327,6 +355,15 @@ fn owned_changes(dir: &Path, base: &str, head: &str) -> Result<Vec<String>> {
     changed_paths(dir, base, head)
 }
 
+/// Where a PR stands against its policy's `requireCodeOwners`, and why it could not be read.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CodeOwnerCheck {
+    /// The shared rule's verdict ([`code_owner_review`]).
+    pub status: CodeOwnerStatus,
+    /// Why the code owners or the changed files could not be read (`status.unreadable`).
+    pub unread: Option<String>,
+}
+
 /// Where a PR stands against its policy's `requireCodeOwners` (UPDATE-1): the shared rule
 /// [`code_owner_review`] over the code owners file at the base tip and the paths the PR changes.
 /// Both commits come from the clone `dg` runs in when it has them, else a scratch fetch. A read
@@ -337,23 +374,32 @@ pub async fn code_owner_status(
     handle: &Repo,
     view: &PatchView,
     policy: &Policy,
-) -> CodeOwnerStatus {
+) -> CodeOwnerCheck {
     if !policy.require_code_owners {
-        return CodeOwnerStatus {
-            met: true,
-            ..CodeOwnerStatus::default()
+        return CodeOwnerCheck {
+            status: CodeOwnerStatus {
+                met: true,
+                ..CodeOwnerStatus::default()
+            },
+            unread: None,
         };
     }
     match status_inner(ctx, s, handle, view, policy).await {
-        Ok(st) => st,
+        Ok(status) => CodeOwnerCheck {
+            status,
+            unread: None,
+        },
         Err(e) => {
             if !ctx.json {
                 eprintln!("note: the code owners could not be read: {e:#}");
             }
-            CodeOwnerStatus {
-                met: false,
-                unreadable: true,
-                pending: Vec::new(),
+            CodeOwnerCheck {
+                status: CodeOwnerStatus {
+                    met: false,
+                    unreadable: true,
+                    pending: Vec::new(),
+                },
+                unread: Some(format!("{e:#}")),
             }
         }
     }
@@ -371,7 +417,7 @@ async fn status_inner(
     };
     let cwd = std::env::current_dir().context("reading the current directory")?;
     let scratch;
-    let dir: &Path = if git::has_object(&cwd, &base_tip) && git::has_object(&cwd, &view.head) {
+    let dir: &Path = if clone_can_diff(&cwd, &base_tip, &view.head) {
         &cwd
     } else {
         if !ctx.json {
@@ -513,6 +559,87 @@ mod tests {
         assert_eq!(owners.owners_of("x"), ["@github"]);
         let (none, tip) = repo_with(&[("README.md", "hi")]);
         assert!(read_code_owners(none.path(), &tip).unwrap().is_none());
+    }
+
+    #[test]
+    fn the_clones_config_cannot_hide_a_changed_path() {
+        // Q5-B05: `.gitmodules` (the PR's author writes it) and `diff.ignoreSubmodules` say to
+        // ignore the submodule, and `diff.relative` is on, and dg runs in a subdirectory.
+        let (dir, _) = repo_with(&[("d/keep.txt", "k")]);
+        let p = dir.path();
+        let g = |args: &[&str]| git::git(p, args, &[]).unwrap();
+        std::fs::write(
+            p.join(".gitmodules"),
+            "[submodule \"m\"]\n\tpath = m\n\turl = ../m\n\tignore = all\n",
+        )
+        .unwrap();
+        let gitlink = |oid: &str| {
+            g(&[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("160000,{oid},m"),
+            ])
+        };
+        gitlink(&"1".repeat(40));
+        g(&["add", ".gitmodules"]);
+        g(&["commit", "-q", "-m", "submodule"]);
+        let base = g(&["rev-parse", "HEAD"]);
+        gitlink(&"2".repeat(40));
+        g(&["commit", "-q", "-m", "bump"]);
+        let head = g(&["rev-parse", "HEAD"]);
+        g(&["config", "diff.ignoreSubmodules", "all"]);
+        g(&["config", "diff.relative", "true"]);
+        // Porcelain `git diff` there lists nothing.
+        let porcelain =
+            git::git(&p.join("d"), &["diff", "--name-only", &base, &head], &[]).unwrap();
+        assert_eq!(porcelain, "");
+        assert_eq!(changed_paths(&p.join("d"), &base, &head).unwrap(), ["m"]);
+        assert_eq!(owned_changes(&p.join("d"), &base, &head).unwrap(), ["m"]);
+    }
+
+    #[test]
+    fn a_shallow_clone_without_the_merge_base_is_fetched_around() {
+        let (dir, base) = repo_with(&[("a.txt", "1")]);
+        let p = dir.path();
+        let g = |args: &[&str]| git::git(p, args, &[]).unwrap();
+        g(&["checkout", "-q", "-b", "topic"]);
+        std::fs::write(p.join("b.txt"), "2").unwrap();
+        g(&["add", "b.txt"]);
+        g(&["commit", "-q", "-m", "topic"]);
+        let head = g(&["rev-parse", "HEAD"]);
+        g(&["checkout", "-q", "-"]);
+        std::fs::write(p.join("c.txt"), "3").unwrap();
+        g(&["add", "c.txt"]);
+        g(&["commit", "-q", "-m", "next"]);
+        let tip = g(&["rev-parse", "HEAD"]);
+        assert!(clone_can_diff(p, &tip, &head));
+        assert!(!git::is_shallow(p));
+        // A depth-1 clone holds both tips but not their merge base (`base`).
+        let parent = tempfile::tempdir().unwrap();
+        let url = format!("file://{}", p.display());
+        git::git(
+            parent.path(),
+            &[
+                "clone",
+                "-q",
+                "--depth",
+                "1",
+                "--no-single-branch",
+                &url,
+                "shallow",
+            ],
+            &[],
+        )
+        .unwrap();
+        let shallow = parent.path().join("shallow");
+        assert!(git::is_shallow(&shallow));
+        assert!(git::has_object(&shallow, &tip) && git::has_object(&shallow, &head));
+        assert!(!git::has_object(&shallow, &base));
+        assert!(!clone_can_diff(&shallow, &tip, &head));
+        // Deep enough: the clone is used.
+        git::git(&shallow, &["fetch", "-q", "--unshallow", "origin"], &[]).unwrap();
+        assert!(clone_can_diff(&shallow, &tip, &head));
     }
 
     #[test]

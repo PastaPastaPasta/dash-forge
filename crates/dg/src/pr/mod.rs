@@ -1305,6 +1305,9 @@ async fn view(
     } else {
         Vec::new()
     };
+    // Q5-B02: `requireCodeOwners` needs git (CODEOWNERS on the base, the changed files), which
+    // view never fetches: it is named as checked at merge, and the policy is never called met.
+    let owners_at_merge = judged && policy.as_ref().is_some_and(|p| p.require_code_owners);
     let bypasses = policy_bypasses(&v);
     let dismissed: std::collections::BTreeMap<String, String> = review_state
         .dismissed_reviews
@@ -1359,8 +1362,12 @@ async fn view(
         "requiredCheckRunsError": checks.as_ref().err(),
         // The whole policy (approvals and checks), judged on an open PR only; `approvals` is
         // the count alone (QW4-060: `policyStatus.met` and `policyMet` said different things).
-        "policyMet": policy.as_ref().filter(|_| judged).map(|_| unmet.is_empty()),
+        // `null` too when only the code owner approvals are left: `dg pr merge` checks them.
+        "policyMet": policy.as_ref().filter(|_| judged).and_then(|_| policy_met(&unmet, owners_at_merge)),
         "unmetRules": unmet,
+        // The policy requires code owner approvals, which `dg pr merge` checks (`checked`:
+        // always false here); `null` when it does not, or the PR is not open.
+        "codeOwners": owners_at_merge.then(|| json!({ "required": true, "checked": false })),
         "policyBypasses": bypasses.iter().map(|b| json!({
             "id": b.id, "actor": b.actor, "rules": b.value, "mergeOid": b.oid, "createdAt": b.created_at,
             "namesThisMerge": merged_at(&v, b.oid.as_deref().unwrap_or_default()),
@@ -1521,11 +1528,18 @@ async fn view(
                 );
                 if !judged {
                     println!("policy: {approvals}");
-                } else if unmet.is_empty() {
+                } else if unmet.is_empty() && !owners_at_merge {
                     println!("policy: met ({approvals})");
+                } else if unmet.is_empty() {
+                    println!("policy: the other rules are met ({approvals}); {OWNERS_AT_MERGE}");
                 } else {
                     // Rule text carries check names reported by members and runners.
-                    println!("policy: not met: {}", safe(&unmet.join("; ")));
+                    let owners = if owners_at_merge {
+                        format!(". {}", crate::repo_settings::capitalize(OWNERS_AT_MERGE))
+                    } else {
+                        String::new()
+                    };
+                    println!("policy: not met: {}{owners}", safe(&unmet.join("; ")));
                 }
                 if let Some(line) = checks_words(&checks) {
                     println!("required checks: {line}");
@@ -1901,19 +1915,8 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
         Method::Rebase => Some(METHOD_REBASE),
         Method::Merge => None,
     };
-    let MergeRights {
-        policy,
-        mut bypassed,
-    } = require_merge_rights(&s, handle, &view, method_bit, a.override_policy).await?;
-    // `requireCodeOwners` (UPDATE-1): its own git read, after the policy's other rules.
-    if let Some(p) = policy.as_ref().filter(|p| p.require_code_owners) {
-        let rules =
-            owners::code_owner_rules(&owners::code_owner_status(ctx, &s, handle, &view, p).await);
-        if !rules.is_empty() && !a.override_policy {
-            return Err(code_owners_refusal(&rules, &handle.display(), number).into());
-        }
-        bypassed.extend(rules);
-    }
+    let MergeRights { policy, bypassed } =
+        require_merge_rights(ctx, &s, handle, &view, method_bit, a.override_policy).await?;
     // A recorded merge is permanent: `--event-only` names a commit that must contain the PR.
     if let Some(oid) = &merge_oid {
         require_merge_contains_pr(ctx, handle, &view, oid)?;
@@ -2531,6 +2534,7 @@ struct MergeRights {
 /// `protectedRefUpdate` can move it), and that holds for `--event-only` too: recording a merge
 /// into a branch the writer could not have pushed is the same claim.
 async fn require_merge_rights(
+    ctx: &Ctx,
     s: &Session,
     handle: &Repo,
     view: &PatchView,
@@ -2583,18 +2587,41 @@ async fn require_merge_rights(
         Ok(None) => Ok(None),
         Err(e) => Err(anyhow::Error::from(e)),
     };
-    let rights = judge_policy(read, override_policy, method, &handle.display(), number)?;
     // DASH_FORGE_SKIP_WRITE_PRECHECK skips only the consensus-backed protected-branch check (so
     // consensus can be seen refusing it); the policy is a client rule nothing else enforces.
-    if maintainer || !forge_core::collab::v2::precheck_enabled() {
-        return Ok(rights);
-    }
+    // Decided before the code owners are read (a writer's merge into a protected base cannot
+    // happen whatever they say), refused after the policy, which is named first.
     let base = view.merge_base.ref_name.as_str();
-    let svc = forge_core::repo::RepoService::new(&s.client, &s.identity, &s.bridge);
-    let Ok(patterns) = svc.protected_patterns(handle).await else {
-        return Ok(rights);
+    let protected_base = !maintainer
+        && forge_core::collab::v2::precheck_enabled()
+        && forge_core::repo::RepoService::new(&s.client, &s.identity, &s.bridge)
+            .protected_patterns(handle)
+            .await
+            .is_ok_and(|patterns| forge_core::rules::matches_protected(base, &patterns));
+    // `requireCodeOwners` (UPDATE-1): its own git read (maybe a fetch), judged with the policy's
+    // other rules so one refusal names every rule left unmet. Not read when the merge is refused
+    // whatever it says: a protected base, an unread standing without the override, or a merge
+    // method the policy does not allow.
+    let code_owners = match &read {
+        Ok(Some((p, standing)))
+            if p.require_code_owners
+                && !protected_base
+                && (standing.is_ok() || override_policy)
+                && method_allowed(p, method) =>
+        {
+            Some(owners::code_owner_status(ctx, s, handle, view, p).await)
+        }
+        _ => None,
     };
-    if !forge_core::rules::matches_protected(base, &patterns) {
+    let rights = judge_policy(
+        read,
+        code_owners.as_ref(),
+        override_policy,
+        method,
+        &handle.display(),
+        number,
+    )?;
+    if !protected_base {
         return Ok(rights);
     }
     Err(UserError::new(
@@ -2606,8 +2633,13 @@ async fn require_merge_rights(
     )
     .cause("the base branch matches the repo's protected patterns, and you are a writer")
     .fix("ask a maintainer to merge it (`dg pr merge` as a maintainer)")
-    .note("checked before fetching or paying for anything; no merge event was posted")
+    .note("checked before anything was pushed or paid; no merge event was posted")
     .into())
+}
+
+/// Whether `policy` allows the merge-method bit `method` (`None`: not known yet; 0 allows any).
+fn method_allowed(policy: &forge_core::rules::review::Policy, method: Option<u8>) -> bool {
+    method.is_none_or(|m| policy.merge_methods == 0 || policy.merge_methods & m != 0)
 }
 
 /// The `git` argv of a merge's push to the base: the storage overrides as `-c`, no second cost
@@ -2705,7 +2737,7 @@ fn checks_refusal(
         )
         .cause(cause)
         .fix(format!("`dg pr checks {repo} {number}` shows the runs; a maintainer can merge with `--override-policy`"))
-        .note("checked before fetching or paying for anything; no merge event was posted"),
+        .note("checked before anything was pushed or paid; no merge event was posted"),
     )
 }
 
@@ -2719,8 +2751,7 @@ fn policy_refusal(
     repo: &str,
     number: u64,
 ) -> Option<UserError> {
-    let method_ok =
-        method.is_none_or(|m| policy.merge_methods == 0 || policy.merge_methods & m != 0);
+    let method_ok = method_allowed(policy, method);
     if status.met && method_ok {
         return None;
     }
@@ -2785,6 +2816,7 @@ type PolicyStanding = (
 /// allowed merge methods of a policy it could read.
 fn judge_policy(
     read: Result<Option<(forge_core::rules::review::Policy, Result<PolicyStanding>)>>,
+    code_owners: Option<&owners::CodeOwnerCheck>,
     override_policy: bool,
     method: Option<u8>,
     repo: &str,
@@ -2807,10 +2839,15 @@ fn judge_policy(
             if let Some(u) = policy_refusal(&policy, &met, method, repo, number) {
                 return Err(u.into());
             }
-            let bypassed = match standing {
+            let mut bypassed = match standing {
                 Ok((status, checks)) => unmet_rules(&policy, &status, checks.as_ref()),
                 Err(_) => vec![STANDING_UNREAD.to_string()],
             };
+            bypassed.extend(
+                code_owners
+                    .map(|c| owners::code_owner_rules(&c.status))
+                    .unwrap_or_default(),
+            );
             Ok(MergeRights {
                 policy: Some(policy),
                 bypassed,
@@ -2819,21 +2856,23 @@ fn judge_policy(
         Ok(Some((_, Err(e)))) => Err(unread(&e, "'s approvals or checks")),
         Ok(Some((policy, Ok((status, checks))))) => {
             if let Some(u) = policy_refusal(&policy, &status, method, repo, number) {
-                return Err(name_every_unmet_rule(
-                    u,
-                    &policy,
-                    &status,
-                    checks.as_ref(),
-                    repo,
-                    number,
-                )
-                .into());
+                // A merge method refusal stands alone: no override lifts it.
+                if status.met {
+                    return Err(u.into());
+                }
+                let others = unmet_rules(&policy, &status, checks.as_ref());
+                let u = name_every_unmet_rule(u, &policy, &status, checks.as_ref(), repo, number);
+                return Err(with_code_owners(u, &others, code_owners, repo, number).into());
             }
             if let Some(u) = checks
                 .as_ref()
                 .and_then(|c| checks_refusal(c, repo, number))
             {
-                return Err(u.into());
+                let others = unmet_rules(&policy, &status, checks.as_ref());
+                return Err(with_code_owners(u, &others, code_owners, repo, number).into());
+            }
+            if let Some(c) = code_owners.filter(|c| !c.status.met) {
+                return Err(code_owners_refusal(c, repo, number).into());
             }
             Ok(MergeRights {
                 policy: Some(policy),
@@ -2872,17 +2911,100 @@ fn name_every_unmet_rule(
         ))
 }
 
-/// E804: the policy requires a code owner's approval of files that have none (`rules`: one line
-/// each, [`owners::code_owner_rules`]).
-fn code_owners_refusal(rules: &[String], repo: &str, number: u64) -> UserError {
-    UserError::new(
-        codes::POLICY_NOT_MET,
-        format!("merge refused: pull request #{number} of {repo} needs a code owner's approval"),
-    )
-    .cause(rules.join("; "))
-    .fix("ask an owner of each file (named in CODEOWNERS on the base branch) to approve")
-    .fix("a maintainer can merge with `--override-policy` (recorded on the PR)")
-    .note("checked before anything was pushed or paid; no merge event was posted")
+/// E804: the policy requires a code owner's approval of files that have none, or the code owners
+/// could not be read (the rule fails closed). The cause names each file
+/// ([`owners::code_owner_rules`]); the fixes say what helps in each case.
+fn code_owners_refusal(check: &owners::CodeOwnerCheck, repo: &str, number: u64) -> UserError {
+    let message = if check.status.unreadable {
+        format!("merge refused: the code owner approvals of pull request #{number} of {repo} could not be checked")
+    } else {
+        format!("merge refused: pull request #{number} of {repo} needs a code owner's approval")
+    };
+    let u = UserError::new(codes::POLICY_NOT_MET, message)
+        .cause(owners::code_owner_rules(&check.status).join("; "));
+    code_owner_fixes(u, check, repo, number)
+        .fix("a maintainer can merge with `--override-policy` (recorded on the PR)")
+        .note("checked before anything was pushed or paid; no merge event was posted")
+}
+
+/// A refusal for the policy's other rules (`others`, one line each, [`unmet_rules`]) that names
+/// the code owner approvals left unmet too (one E804 for all of them, not one after another),
+/// with their fixes.
+fn with_code_owners(
+    u: UserError,
+    others: &[String],
+    check: Option<&owners::CodeOwnerCheck>,
+    repo: &str,
+    number: u64,
+) -> UserError {
+    let Some(check) = check.filter(|c| !c.status.met) else {
+        return u;
+    };
+    let mut rules = others.to_vec();
+    rules.extend(owners::code_owner_rules(&check.status));
+    let u = u.cause(rules.join("; "));
+    code_owner_fixes(u, check, repo, number)
+}
+
+/// The fixes for unmet code owner approvals, by case: the files could not be read (retry, and
+/// why), owners who can approve (ask them), or files no owner can approve (fix `CODEOWNERS`).
+fn code_owner_fixes(
+    u: UserError,
+    check: &owners::CodeOwnerCheck,
+    repo: &str,
+    number: u64,
+) -> UserError {
+    const SHOWN: usize = 3;
+    if check.status.unreadable {
+        let why = check
+            .unread
+            .as_deref()
+            .map_or_else(String::new, |w| format!(" ({})", crate::fmt::safe(w)));
+        return u.fix(format!(
+            "retry: reading CODEOWNERS on the base branch, the changed files or an owner's name failed{why}"
+        ));
+    }
+    let (can, cannot): (Vec<_>, Vec<_>) = check.status.pending.iter().partition(|p| p.approvable);
+    let u = if can.is_empty() {
+        u
+    } else {
+        u.fix(format!(
+            "ask an owner of each file (named in CODEOWNERS on the base branch) to approve (`dg pr review {repo} {number} --approve`)"
+        ))
+    };
+    if cannot.is_empty() {
+        return u;
+    }
+    // The first few by name, as the web's branch rules card names them.
+    let files: Vec<String> = cannot
+        .iter()
+        .take(SHOWN)
+        .map(|p| crate::fmt::safe(&p.path).into_owned())
+        .collect();
+    let files = if cannot.len() > SHOWN {
+        format!("{} and {} more", files.join(", "), cannot.len() - SHOWN)
+    } else {
+        files.join(", ")
+    };
+    u.fix(format!(
+        "no owner of {files} can approve: an owner must be a registered name or identity id, not the PR's author, with a role that counts toward the policy. Fix CODEOWNERS on the base branch, or give an owner that role"
+    ))
+}
+
+/// `dg pr view`'s line for a policy that requires code owner approvals: view reads no git, so
+/// it leaves them to `dg pr merge`.
+const OWNERS_AT_MERGE: &str = "code owner approval is checked at merge (`dg pr merge`)";
+
+/// `policyMet` of `dg pr view --json`: false with a rule unmet, true with none, and unknown
+/// (`None`) when only the code owner approvals are left, which only `dg pr merge` checks.
+fn policy_met(unmet: &[String], owners_at_merge: bool) -> Option<bool> {
+    if !unmet.is_empty() {
+        Some(false)
+    } else if owners_at_merge {
+        None
+    } else {
+        Some(true)
+    }
 }
 
 /// The confirmation's clause for a merge that bypasses the branch policy (QW4-048): the bypass
@@ -4295,17 +4417,19 @@ pub(crate) mod tests {
             )))
         };
         // No override: refused (a maintainer too; QW-001).
-        let e = judge_policy(unmet(), false, None, "o/r", 7).err().unwrap();
+        let e = judge_policy(unmet(), None, false, None, "o/r", 7)
+            .err()
+            .unwrap();
         assert!(format!("{e:#}").contains("0 of 1 required approval from maintainers"));
         // The override bypasses the approvals, and names them for the record.
-        let r = judge_policy(unmet(), true, None, "o/r", 7).unwrap();
+        let r = judge_policy(unmet(), None, true, None, "o/r", 7).unwrap();
         assert_eq!(
             r.bypassed,
             ["required approvals: 0 of 1 (maintainers only)"]
         );
         assert!(r.policy.is_some());
         // …but not the allowed merge methods, and does not claim it would.
-        let e = judge_policy(unmet(), true, Some(METHOD_FF), "o/r", 7)
+        let e = judge_policy(unmet(), None, true, Some(METHOD_FF), "o/r", 7)
             .err()
             .unwrap();
         let u = e.downcast_ref::<UserError>().unwrap().to_json().to_string();
@@ -4314,7 +4438,7 @@ pub(crate) mod tests {
         assert!(!u.contains("can merge anyway"), "{u}");
         // A met policy is no bypass, override or not.
         let met = || Ok(Some((policy(1, false, 0), Ok((status(1, 1), None)))));
-        assert!(judge_policy(met(), true, None, "o/r", 7)
+        assert!(judge_policy(met(), None, true, None, "o/r", 7)
             .unwrap()
             .bypassed
             .is_empty());
@@ -4326,14 +4450,141 @@ pub(crate) mod tests {
                 Err(anyhow::anyhow!("down")),
             )))
         };
-        assert!(judge_policy(blind(), false, None, "o/r", 7).is_err());
-        assert!(judge_policy(blind(), true, Some(METHOD_MERGE), "o/r", 7).is_err());
-        let r = judge_policy(blind(), true, Some(METHOD_SQUASH), "o/r", 7).unwrap();
+        assert!(judge_policy(blind(), None, false, None, "o/r", 7).is_err());
+        assert!(judge_policy(blind(), None, true, Some(METHOD_MERGE), "o/r", 7).is_err());
+        let r = judge_policy(blind(), None, true, Some(METHOD_SQUASH), "o/r", 7).unwrap();
         assert_eq!(r.bypassed, [STANDING_UNREAD]);
         // An unreadable policy refuses without the override (a maintainer too), and is named with it.
-        assert!(judge_policy(Err(anyhow::anyhow!("down")), false, None, "o/r", 7).is_err());
-        let r = judge_policy(Err(anyhow::anyhow!("down")), true, None, "o/r", 7).unwrap();
+        assert!(judge_policy(Err(anyhow::anyhow!("down")), None, false, None, "o/r", 7).is_err());
+        let r = judge_policy(Err(anyhow::anyhow!("down")), None, true, None, "o/r", 7).unwrap();
         assert_eq!(r.bypassed, [POLICY_UNREAD]);
+    }
+
+    fn owner_check(pending: &[(&str, bool)], unreadable: bool) -> owners::CodeOwnerCheck {
+        use forge_core::rules::codeowners::{CodeOwnerStatus, PendingFile};
+        owners::CodeOwnerCheck {
+            status: CodeOwnerStatus {
+                met: pending.is_empty() && !unreadable,
+                unreadable,
+                pending: pending
+                    .iter()
+                    .map(|(path, approvable)| PendingFile {
+                        path: (*path).to_string(),
+                        owners: vec!["@alice".to_string()],
+                        approvable: *approvable,
+                    })
+                    .collect(),
+            },
+            unread: unreadable.then(|| "git fetch failed".to_string()),
+        }
+    }
+
+    fn refusal(e: &anyhow::Error) -> serde_json::Value {
+        e.downcast_ref::<UserError>().unwrap().to_json()["error"].clone()
+    }
+
+    #[test]
+    fn one_refusal_names_the_code_owners_with_the_other_rules() {
+        let owed = owner_check(&[("src/a.rs", true)], false);
+        let short = || Ok(Some((policy(1, false, 0), Ok((status(0, 1), None)))));
+        // Approvals short and a code owner pending: one E804 naming both.
+        let e = judge_policy(short(), Some(&owed), false, None, "o/r", 7)
+            .err()
+            .unwrap();
+        let u = refusal(&e);
+        assert_eq!(
+            u["cause"],
+            "required approvals: 0 of 1; code owner approval: src/a.rs (@alice)"
+        );
+        assert!(
+            u["fix"].to_string().contains("ask an owner of each file"),
+            "{u}"
+        );
+        // Approvals met: the code owner refusal alone.
+        let met = || Ok(Some((policy(1, false, 0), Ok((status(1, 1), None)))));
+        let e = judge_policy(met(), Some(&owed), false, None, "o/r", 7)
+            .err()
+            .unwrap();
+        let u = refusal(&e);
+        assert_eq!(u["cause"], "code owner approval: src/a.rs (@alice)");
+        assert!(u["message"]
+            .to_string()
+            .contains("needs a code owner's approval"));
+        // The override bypasses them all, and the record names them all.
+        let r = judge_policy(short(), Some(&owed), true, None, "o/r", 7).unwrap();
+        assert_eq!(
+            r.bypassed,
+            [
+                "required approvals: 0 of 1",
+                "code owner approval: src/a.rs (@alice)"
+            ]
+        );
+        // Met code owners change nothing.
+        let none = owner_check(&[], false);
+        assert!(judge_policy(met(), Some(&none), false, None, "o/r", 7).is_ok());
+        // A merge method refusal stands alone.
+        let squash = || {
+            Ok(Some((
+                policy(0, false, METHOD_SQUASH),
+                Ok((status(0, 0), None)),
+            )))
+        };
+        let e = judge_policy(squash(), Some(&owed), false, Some(METHOD_FF), "o/r", 7)
+            .err()
+            .unwrap();
+        assert!(!refusal(&e)["cause"].to_string().contains("code owner"));
+    }
+
+    #[test]
+    fn the_code_owner_refusal_is_worded_for_each_case() {
+        let fixes = |c: &owners::CodeOwnerCheck| {
+            code_owners_refusal(c, "o/r", 7).to_json()["error"].clone()
+        };
+        // Unreadable: retry, and why; not "ask an owner".
+        let u = fixes(&owner_check(&[], true));
+        assert!(
+            u["message"].to_string().contains("could not be checked"),
+            "{u}"
+        );
+        let f = u["fix"].to_string();
+        assert!(f.contains("retry") && f.contains("git fetch failed"), "{u}");
+        assert!(!f.contains("ask an owner"), "{u}");
+        // No owner can approve: fix CODEOWNERS; not "ask an owner".
+        let u = fixes(&owner_check(&[("ops/x", false)], false));
+        let f = u["fix"].to_string();
+        assert!(
+            f.contains("no owner of ops/x can approve") && f.contains("Fix CODEOWNERS"),
+            "{u}"
+        );
+        assert!(!f.contains("ask an owner"), "{u}");
+        // Many: the first few by name.
+        let many: Vec<String> = (0..5).map(|i| format!("f{i}")).collect();
+        let many: Vec<(&str, bool)> = many.iter().map(|f| (f.as_str(), false)).collect();
+        let u = fixes(&owner_check(&many, false));
+        assert!(
+            u["fix"]
+                .to_string()
+                .contains("no owner of f0, f1, f2 and 2 more can approve"),
+            "{u}"
+        );
+        // Both kinds: both fixes, and the override.
+        let u = fixes(&owner_check(&[("src/a.rs", true), ("ops/x", false)], false));
+        let f = u["fix"].to_string();
+        assert!(
+            f.contains("ask an owner") && f.contains("no owner of ops/x"),
+            "{u}"
+        );
+        assert!(f.contains("--override-policy"), "{u}");
+    }
+
+    #[test]
+    fn view_never_calls_a_code_owner_policy_met() {
+        assert_eq!(policy_met(&[], false), Some(true));
+        assert_eq!(policy_met(&[], true), None);
+        assert_eq!(
+            policy_met(&["required approvals: 0 of 1".into()], true),
+            Some(false)
+        );
     }
 
     #[test]

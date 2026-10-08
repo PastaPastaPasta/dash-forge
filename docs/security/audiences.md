@@ -1,10 +1,10 @@
-# Who can read what: Public, Members and Specific people
+# Who can read what: the audiences
 
-Everything in a Dash Forge repository has an **audience**: Public, Members or Specific people. You can always choose a narrower audience for something new. You widen it only by publishing it or making it public, and that can't be undone.
+Everything in a Dash Forge repository has an **audience**: Public, All members, Maintainers, Writers and maintainers, or Specific people. You can always choose a narrower audience for something new. You widen it only by publishing it or making it public, and that can't be undone.
 
 This page explains what each audience means, what a public repository can keep **members-only** today, who can read it, what everyone can still see, and what members-only content does not protect against. For a wholly private repository, where everything is encrypted, see [Private repositories](../guides/collaborating.md#private-repositories).
 
-1. [The three audiences](#the-three-audiences)
+1. [The audiences](#the-audiences)
 2. [What can be members-only today](#what-can-be-members-only-today)
 3. [Who can read members-only content](#who-can-read-members-only-content)
 4. [Turn on members-only content](#turn-on-members-only-content)
@@ -20,15 +20,19 @@ This page explains what each audience means, what a public repository can keep *
 
 ---
 
-## The three audiences
+## The audiences
 
 | Audience | Who reads it | Changes when members change | Available |
 |---|---|---|---|
-| **Public** | Everyone | — | today |
-| **Members** | Every current member of the repository: maintainers, writers, triage members and readers. Members added later read it too, including what was posted before they joined. | yes | today, for issues, comments, reviews and environments |
-| **Specific people** | A list the writer picks, members or not. The writer is always on it. | no | **coming later**. Environments already use one fixed list, **Maintainers**: the repository's maintainers when each change is saved. |
+| **Public** | Everyone. | n/a | today |
+| **All members** (short: **Members**) | Everyone with a role in the repository, including people with Read access, now and in future. Bots aren't included. People added later read it too, including what was posted before they joined. People removed later keep what they could already read. | yes | today, for issues, comments, reviews and environments |
+| **Maintainers** | The maintainers when it was saved. A maintainer added later reads it from the next change on, not what was saved before. | no | today, for environments |
+| **Writers and maintainers** | The people with Write access or more right now. | no | **coming later** |
+| **Specific people** | A list the writer picks, up to 16 people, members or not. The writer is always on it. Replying with someone added lets them read from that reply on, not earlier ones. | no | **coming later** |
 
-The Members audience is encrypted on your computer or in your browser before anything is sent. Dash Platform stores the encrypted text. Nobody without the repository's members key can read it: not Platform nodes, not storage providers, not Forge's developers.
+"Members-only" is the adjective for anything that isn't public. It can be any of the four audiences below Public.
+
+Members-only content is encrypted on your computer or in your browser before anything is sent. Dash Platform stores the encrypted text. Nobody without a key it was encrypted to can read it: not Platform nodes, not storage providers, not Forge's developers.
 
 A **private** repository is different: everything in it is encrypted, code included, and it has no public side. This page is about members-only content inside a **public** repository.
 
@@ -39,7 +43,7 @@ A **private** repository is different: everything in it is encrypted, code inclu
 | Issues | yes |
 | Comments on issues and pull requests | yes |
 | Reviews of a pull request (the review's text; its verdict stays public, [below](#what-everyone-can-still-see)) | yes |
-| [Environments](../guides/environments.md): configuration and secrets kept outside git | yes: **Members** or **Maintainers** |
+| [Environments](../guides/environments.md): configuration and secrets kept outside git | yes: **All members** or **Maintainers** |
 | Pull requests themselves, branches, commits and code | **coming later**. Everything you push to a public repository is public. |
 | Releases | **coming later** |
 | Label and milestone definitions | no, they stay public. Which label or milestone a members-only issue has is encrypted. |
@@ -52,13 +56,22 @@ Who something is for is fixed when it is posted. Editing a members-only comment 
 
 | Who | Reads members-only content? |
 |---|---|
-| The owner and maintainers | yes |
-| Writers and triage members | yes |
-| Readers | yes. On a public repository the **reader** role exists for exactly this: someone who should read the members-only discussion without pushing or merging. |
-| A CI runner | **no**, by default. A runner's key reports check runs and is not a membership. If you make the runner's identity a reader, it reads everything members-only, like any reader. |
-| Someone added later | yes, everything, including what was posted before they joined |
+| **Owner** and people with **Maintain** access | yes |
+| People with **Write** or **Triage** access | yes |
+| People with **Read** access | yes. On a public repository the Read role exists for exactly this: someone who should read the members-only discussion and comment, without pushing, approving or merging. |
+| A **Bot** | **no**, by default. A bot is an automated account. It can post comments and reviews, can't push, approve or merge, and reads members-only content only when someone asks it to. Bots arrive later. |
+| A CI runner | **no**, by default. A runner's key reports check runs and is not a membership. If you give the runner's identity the Read role, it reads everything members-only, like anyone else with Read access. |
+| Someone added later | in an All members audience, yes: everything, including what was posted before they joined. In a Maintainers environment, from the next change on. |
 | Someone removed | what was posted **before** the removal, for good. Nothing posted afterwards. Encryption can't take back what was already shared. |
 | Anyone else | no. They see that something was posted, by whom and when ([below](#what-everyone-can-still-see)). |
+
+What each role can do:
+
+- **Read:** can read members-only content and comment. Can't push. Their approvals don't count.
+- **Triage:** can also close, label and assign.
+- **Write:** can also push, approve and merge.
+- **Maintain:** can also change settings, protected branches, releases and environments.
+- **Owner:** everything above, and adds and removes members.
 
 Removing a member changes the key, so what is posted afterwards is unreadable to them. Adding a member shares the key with them. Both happen in `dg collab add` and `dg collab remove`, which show the cost first ([Collaborating](../guides/collaborating.md#members-only-content-in-a-public-repository)).
 
@@ -156,7 +169,7 @@ A review's verdict is public on purpose: everyone agrees on whether a pull reque
 | A hosted read-only mirror of the code | no | the public repository only |
 | A current member | yes | |
 | A removed member | everything posted before the removal, forever | sizes and timing afterwards |
-| A CI runner | no, unless you make its identity a reader | |
+| A CI runner | no, unless you give its identity the Read role | |
 | Someone who builds a modified Forge | no | they can post encrypted text, as anyone may. No member's Forge app shows a comment or review from someone who was not a member. An issue gets its numbered row, like any members-only issue. |
 | A tampered copy of the web app that you unlock | everything you can read | [Verify the app you loaded](../guides/verify-the-app.md), or run your own copy |
 
@@ -165,7 +178,7 @@ A review's verdict is public on purpose: everyone agrees on whether a pull reque
 - **Everything in [What everyone can still see](#what-everyone-can-still-see).** Who talks, when, how much, and on which issue can say a lot. Leave out what the timing alone would give away.
 - **What members copy.** Any member can copy, quote or screenshot what they read. Quoting a members-only comment into a public reply publishes the quoted text.
 - **What removed members kept.** They keep everything posted before the removal. Removing someone protects only what comes after.
-- **Past values in a Members environment.** Everyone who becomes a member later can read every value ever stored there, including past values. Keep production credentials in a **Maintainers** environment, and rotate a secret at its source when someone leaves ([Environments](../guides/environments.md#removing-a-member)).
+- **Past values in an All members environment.** Everyone who becomes a member later can read every value ever stored there, including past values. Keep production credentials in a **Maintainers** environment, and rotate a secret at its source when someone leaves ([Environments](../guides/environments.md#removing-a-member)).
 - **Code.** Everything pushed to a public repository is public, forever, even if you delete it later. The push helper refuses some files that look like secrets and warns about others ([Secrets in a push](../guides/quick-start.md#secrets-in-a-push)), but it cannot know everything. Keep secrets in an environment instead.
 - **Your encryption key.** It reads every private repository and every members-only conversation you belong to. Keep it like your signing keys, and replace it after a lost device ([Identity and keys](../guides/identity-and-keys.md#replacing-it-after-a-lost-device)).
 - **Mentions.** Mentioning someone who is not a member in a members-only comment tells them nothing they can read, but they may learn that something was posted.
@@ -216,15 +229,35 @@ A members-only write by someone who is not a member stops with [E601](../errors.
 
 ## Words used on this page
 
+Forge uses the same words in `dg`, the web app and these pages.
+
+**Audiences**
+
 | Word | Means |
 |---|---|
 | **Public** | Everyone can read it. |
-| **Members** | Every current member of the repository, and everyone who becomes one later. |
-| **members-only** | Readable by Members only. "A members-only comment." |
+| **All members** (short: **Members**) | Everyone with a role in the repository, now and in future. Bots aren't included. |
+| **Maintainers** | The maintainers when it was saved. |
+| **Writers and maintainers** | The people with Write access or more right now (coming later). |
 | **Specific people** | A list the writer picks (coming later). |
-| **Maintainers** (environments) | The maintainers when the change was saved. |
-| **Turn on members-only content** | What a maintainer does once per repository (`dg repo members enable`). |
-| **Set up your encryption key** | What each person does once per identity (`dg auth keys add --encryption`). |
-| **Publish**, **Make public** | Widening code (coming later) or discussion (your own posts, today) to everyone. It can't be undone. |
+| **members-only** | Anything that isn't public. "A members-only comment." |
+
+**Roles:** **Read**, **Triage**, **Write**, **Maintain**, **Owner** and **Bot** (an automated account; coming later). What each can do is [above](#who-can-read-members-only-content).
+
+**Verbs**
+
+| Word | Means |
+|---|---|
+| **Publish** | Widen code to everyone (coming later). It can't be undone. |
+| **Make public** | Widen a post, such as a comment, to everyone. Today the author does it for their own posts. It can't be undone. |
+| **Make this repo public** | Widen a whole private repository. It can't be undone: it can never be private again (coming later). |
+
+**Repository kinds:** **Public** and **Private**. "Private" means only a private repository, where everything in it is encrypted. A public repository can hold members-only content, but it is never called private.
+
+**Access** is what a bot or a CI runner is given: what it may post or read, and until when.
+
+**Setting up:** **Turn on members-only content** is what a maintainer does once per repository (`dg repo members enable`). **Set up your encryption key** is what each person does once per identity (`dg auth keys add --encryption`).
+
+**Words Forge doesn't use.** Forge is moving its apps and pages off sealed, lane, named, restricted, reveal, epoch, key letter and disclosure, and off "grant" as a noun. Say "encrypted", "the key changed", "access" or "who can read it" instead.
 
 How it is built: [Private repositories §17](private-repos.md#17-mixed-repositories-members-only-content-in-a-public-repository) and [forge-v2.md §5](../contracts/forge-v2.md#5-private-repositories).
