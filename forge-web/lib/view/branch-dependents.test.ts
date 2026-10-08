@@ -11,6 +11,13 @@ describe('dependentsWarning', () => {
     expect(deleteNeedsForce(d)).toBe(true)
   })
 
+  it("says when a PR that uses the branch is filed in another repository (a fork's branch)", () => {
+    const d = { pulls: [{ number: 9, title: 'Fix', uses: 'head' as const, repoId: 'UP' }], searched: null }
+    expect(dependentsWarning('feature', d)).toBe(
+      '1 open pull request uses feature: #9 Fix (its source branch, in another repository). A pull request whose source branch is deleted stops following new pushes.',
+    )
+  })
+
   it('says nothing when no PR uses it, and how far it looked when it did not read every PR', () => {
     expect(dependentsWarning('x', { pulls: [], searched: null })).toBeNull()
     expect(dependentsWarning('x', { pulls: [], searched: 500 })).toBe('No open pull request among the newest 500 uses x.')
