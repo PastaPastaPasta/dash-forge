@@ -309,6 +309,7 @@ pub enum Command {
 
 /// Options `dg repo create` and `dg init` share.
 #[derive(Debug, Clone, clap::Args)]
+#[allow(clippy::struct_excessive_bools)] // independent command-line switches
 pub struct CreateOptions {
     /// Where pushes store packs: comma-separated storage profile names (`platform` is built
     /// in). Default: git config `dash.storage`, else your only profile; with neither, the
@@ -346,6 +347,12 @@ pub struct CreateOptions {
     /// writers propose changes with pull requests. Change it later with `dg repo protect`.
     #[arg(long)]
     pub no_protect: bool,
+    /// Don't turn on members-only content. By default a new public repository turns it on at
+    /// once (about 0.0011 DASH, shown before you confirm), so members can post comments,
+    /// reviews and issues only members can read. Turn it on later with `dg repo members
+    /// enable`. A private repository is members-only already.
+    #[arg(long)]
+    pub no_members_only: bool,
 }
 
 impl CreateOptions {

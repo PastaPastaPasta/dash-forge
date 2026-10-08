@@ -83,10 +83,19 @@ else
   cat "$LOG-protect.err" >&2; bad "dg repo protect list failed"
 fi
 
+step "members-only content is on from creation (the default; --no-members-only opts out)"
+if dg_read_retry "$ID_OWNER" "$LOG-members.json" "$LOG-members.err" --json repo members status "${E2E_OWNER_ID}/${NAME}"; then
+  check "members-only content on" assert_eq "True" "$(jq_py "$LOG-members.json" 'd["on"]')"
+  check "the owner reads it" assert_eq "True" "$(jq_py "$LOG-members.json" 'd["youCanRead"]')"
+else
+  cat "$LOG-members.err" >&2; bad "dg repo members status failed"
+fi
+
 step "a second dg init changes nothing"
 if _retry "$LOG-init2.err" _init "$LOG-init2" --json; then
   check "status exists" assert_eq "exists" "$(jq_py "$LOG-init2.out" 'd["status"]')"
   check "create cost 0" assert_eq "0" "$(jq_py "$LOG-init2.out" 'd["cost"]["credits"]')"
+  check "a re-run turns nothing on" assert_eq "None" "$(jq_py "$LOG-init2.out" 'd.get("membersOnly")')"
   check "--json names the pushed commit" assert_eq "$TIP" "$(jq_py "$LOG-init2.out" 'd["push"]["oid"]')"
   check "--json carries the web URL" assert_contains "$(jq_py "$LOG-init2.out" 'd["webUrl"]')" "name=${NAME}"
 else

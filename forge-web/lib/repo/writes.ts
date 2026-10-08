@@ -74,6 +74,7 @@ import { LAG_RETRY_MS, retryAfterLag } from './lag-retry'
 import { sleep } from '../sdk/facade'
 import { retryWhileMissing } from '../view/retry'
 import { noteParticipation } from '../view/participation'
+import { errorMessage } from '../utils'
 
 /** The release rule that reads the tag's live total (RC1 O-04). */
 const ONE_LIVE_RULE: ReadonlySet<string> = new Set(['oneLive'])
@@ -1562,6 +1563,11 @@ export interface CreateRepoInput {
    * ({@link defaultProtectedPatterns}): the New repository form's default. A fork leaves it off.
    */
   readonly protect?: boolean
+  /**
+   * Turn members-only content on right after the config (a public repo; DESIGN §11 Q3): the New
+   * repository form's default. Forks and mirrors leave it off, as they copy a public repo.
+   */
+  readonly membersOnly?: boolean
 }
 
 /** The protected patterns a create's first config carries: none, or the default set. */
@@ -1569,13 +1575,20 @@ export function createPatterns(input: CreateRepoInput): string[] {
   return input.protect === true ? defaultProtectedPatterns(input.defaultBranch ?? 'main') : []
 }
 
-/** The steps of a repo creation, in order. */
-export type CreateRepoStep = 'repo' | 'maintainer' | 'config'
+/** The steps of a repo creation, in order (`members` only when the input asks for it). */
+export type CreateRepoStep = 'repo' | 'maintainer' | 'config' | 'members'
+
+/** How many steps a creation of `input` has. */
+export function createStepCount(input: CreateRepoInput): number {
+  return input.visibility !== 'private' && input.membersOnly === true ? 4 : 3
+}
 
 /**
  * What a private create (`private-repos.md` §5.3) needs to write its epoch 0: the vault's
  * encryption operations, and the writer of the key and anchor (`private-members.ts`
- * `createEpochZero`, passed in so this module stays below the key-rotation code).
+ * `createEpochZero`, passed in so this module stays below the key-rotation code). A public
+ * create that turns members-only content on needs the same operations and `membersOnly`
+ * (`private-members.ts` `enableMembersContent`).
  */
 export interface PrivateCreate {
   readonly ops: EncryptionOps
@@ -1585,9 +1598,13 @@ export interface PrivateCreate {
     intent: string,
     protectedPatterns: readonly string[],
   ) => Promise<boolean>
+  readonly membersOnly?: (c: { sdk: EvoSDK; auth: WriteAuth; repo: RepoRef; network: Network; ops: EncryptionOps }, intent: string) => Promise<boolean>
 }
 
-/** A repo creation's journal entry (IndexedDB), kept until all three documents exist. */
+/**
+ * A repo creation's journal entry (IndexedDB), kept until all three documents exist and, when
+ * asked for, members-only content was turned on (or turning it on failed).
+ */
 export interface RepoCreationJournal {
   readonly network: Network
   readonly ownerId: string
@@ -1601,6 +1618,12 @@ export interface RepoCreationJournal {
 export interface CreateRepoResult {
   readonly repoId: string
   readonly name: string
+  /**
+   * Members-only content, when the input asked for it: `on`, or why it is not (the repo stands
+   * without it, and Turn on members-only content turns it on). Absent when not asked for, or
+   * when this run adopted a repo that already existed.
+   */
+  readonly membersOnly?: { readonly on: true } | { readonly on: false; readonly error: string }
 }
 
 /** The byte limits the `repo` schema sets (maxBytes counts UTF-8 bytes, not characters). */
@@ -1759,6 +1782,10 @@ export async function createRepo(
     return firstId(documents)
   }
   let repoId = await existingRepo()
+  // Members-only content is turned on only for a repo this creation makes or finishes (or an
+  // interrupted one made): typing the name of a repo that already stands writes nothing new. As
+  // `dg`: any document this run writes, or a journal it resumes, counts.
+  let wrote = previous !== undefined || repoId === null
   await step('repo', async () => {
     if (repoId !== null) return
     const data: Record<string, unknown> = { name, visibility }
@@ -1784,6 +1811,7 @@ export async function createRepo(
   // 2. the owner's maintainer document (unique per repo + member)
   await step('maintainer', async () => {
     if ((await findMembership(sdk, repo, 'maintainer', ownerId)) !== null) return
+    wrote = true
     try {
       await createDocumentIdempotent(sdk, auth, {
         contractId: forge.core,
@@ -1807,6 +1835,7 @@ export async function createRepo(
     }
     const { documents } = await queryDocumentsWithProof(sdk, repoSource(repo).repoQuery(DOC.config, { limit: 1 }))
     if (documents.length > 0) return
+    wrote = true
     await createDocumentIdempotent(sdk, auth, {
       contractId: forge.core,
       documentType: DOC.config,
@@ -1821,7 +1850,27 @@ export async function createRepo(
     })
   })
 
+  // 4. members-only content (DESIGN §11 Q3): the owner's epoch-0 key and the settings-free
+  // anchor. Its failure is not the create's: the repo stands without it and the page says how to
+  // turn it on. A closed tab keeps the journal, so "Finish creating" runs it again, reusing a
+  // self-wrap that landed.
+  let membersOnly: CreateRepoResult['membersOnly']
+  if (wrote && createStepCount(input) === 4) {
+    try {
+      await step('members', async () => {
+        const enable = privateCreate?.membersOnly
+        if (privateCreate === undefined || enable === undefined) throw new Error('your encryption key is not available in this browser')
+        // A node a block behind would read the owner as no maintainer yet.
+        await retryWhileMissing(() => findMembership(sdk, repo, 'maintainer', ownerId), 5)
+        await enable({ sdk, auth, repo, network: auth.network, ops: privateCreate.ops }, key)
+      })
+      membersOnly = { on: true }
+    } catch (e) {
+      membersOnly = { on: false, error: errorMessage(e, 'it could not be turned on') }
+    }
+  }
+
   await idbDelete('journal', key)
   invalidateMembers(repo, auth.network)
-  return { repoId, name }
+  return { repoId, name, ...(membersOnly !== undefined ? { membersOnly } : {}) }
 }

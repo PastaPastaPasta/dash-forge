@@ -284,7 +284,7 @@ Footer, always: *"This app is served by GitHub Pages. If you don't trust that, p
 Prompts appear only when stdin is a tty and neither `--yes` nor `--json` is set; every prompt prints its flag equivalent afterwards. `--json` shapes are stable per command (`dg <cmd> --json --schema`).
 
 ### 7.2 `dg repo create` / `dg init`
-`dg repo create [name] [--push] [--private] [--storage <profiles>] [--replicas n] [--description s] [--default-branch main] [--from-github <url>]`. `name` defaults to the normalized cwd basename; `--push` adds `origin` and pushes the current branch with `-u`; storage defaults to global `dash.storage` and asks if unset (§1c); `--from-github` hands off to the importer.
+`dg repo create [name] [--push] [--private] [--no-members-only] [--storage <profiles>] [--replicas n] [--description s] [--default-branch main] [--from-github <url>]`. `name` defaults to the normalized cwd basename; `--push` adds `origin` and pushes the current branch with `-u`; storage defaults to global `dash.storage` and asks if unset (§1c); `--from-github` hands off to the importer.
 
 ### 7.3 Error message style guide
 Format (stderr, human mode):
