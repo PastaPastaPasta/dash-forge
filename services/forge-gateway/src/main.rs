@@ -13,8 +13,32 @@ use forge_gateway::mirror::Mirrors;
 use forge_gateway::upstream::{PlatformUpstream, Upstream};
 use forge_gateway::{router, AppState, Config};
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    unset_empty_settings();
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("starting the async runtime")?
+        .block_on(run())
+}
+
+/// "Empty values count as unset" (docs/hosting/forge-gateway.md). The compose file passes every
+/// setting it lists as `${VAR:-}`, so one left unset arrives as an empty string, which clap takes
+/// as a value and refuses for a path (`GATEWAY_WAKE_SECRET_FILE`). Runs before the runtime
+/// starts any thread, so removing variables races nothing.
+fn unset_empty_settings() {
+    let empty: Vec<_> = std::env::vars_os()
+        .filter(|(key, value)| {
+            value.is_empty() && key.to_str().is_some_and(|k| k.starts_with("GATEWAY_"))
+        })
+        .map(|(key, _)| key)
+        .collect();
+    for key in empty {
+        std::env::remove_var(key);
+    }
+}
+
+async fn run() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()

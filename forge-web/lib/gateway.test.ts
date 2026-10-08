@@ -30,7 +30,7 @@ describe('gatewayConfig', () => {
   it('is off without a URL and labels the operator', () => {
     expect(gatewayConfig({})).toBeNull()
     expect(gatewayConfig({ url: '  ' })).toBeNull()
-    expect(gatewayConfig({ url: 'https://git.forge.dashhq.org/' })).toEqual({ url: 'https://git.forge.dashhq.org', label: 'dashhq gateway' })
+    expect(gatewayConfig({ url: 'https://git-forge.dashhq.org/' })).toEqual({ url: 'https://git-forge.dashhq.org', label: 'dashhq gateway' })
     expect(gatewayConfig({ url: 'http://localhost:8080', label: 'my gateway' })).toEqual({ url: 'http://localhost:8080', label: 'my gateway' })
   })
 
