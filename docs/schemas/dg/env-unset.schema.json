@@ -36,7 +36,10 @@
     },
     "spent": {
       "$ref": "common.schema.json#/$defs/cost"
-    }
+    },
+    "markedChanged": {},
+    "saved": {},
+    "notSaved": {}
   },
   "required": [
     "schemaVersion",

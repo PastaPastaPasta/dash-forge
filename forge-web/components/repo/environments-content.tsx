@@ -5,7 +5,10 @@
  * environments as this viewer can read them, read-only. Changes are made with `dg env`.
  *
  * - Only environments this viewer can open are named. The rest are counted ("2 environments",
- *   "1 more environment you can't read"), never named.
+ *   "1 more environment you can't read"), never named; a viewer who isn't a maintainer is told
+ *   one hasn't been shared with them. A maintainer also sees who each environment misses.
+ * - Each card names its audience and the people it was last saved to; one saved in the old
+ *   format says so, with the `dg` step to take.
  * - Values are masked until asked for, one at a time. A shown value lives in this page's memory
  *   only: never logged, never stored, and gone when the page is left.
  * - A conflict lists every version and how to keep one with `dg`; a change by someone who isn't
@@ -20,7 +23,7 @@ import Link from 'next/link'
 import { AlertTriangle, ChevronLeft, Eye, EyeOff, KeyRound, Lock, Users } from 'lucide-react'
 
 import type { RepoHome } from '@/lib/view'
-import { ACCESS_SENTENCE, MEMBERS_SENTENCE } from '@/lib/env'
+import { ACCESS_SENTENCE } from '@/lib/env'
 import { shortHead, type Head } from '@/lib/env/loader'
 import {
   environmentsView,
@@ -29,15 +32,19 @@ import {
   ignoredLine,
   ignoredWarning,
   keptAccessLine,
+  NOT_SHARED_TEXT,
   removalView,
+  resaveCommand,
+  staleLine,
   unreadableLine,
   utc,
   type EntryView,
   type EnvCardView,
   type EnvPageView,
   type RemovalView,
+  type StaleItem,
 } from '@/lib/env/view'
-import { useEnvironments } from '@/hooks/use-environments'
+import { useEnvironments, useRepoPeople } from '@/hooks/use-environments'
 import { useDpnsName } from '@/hooks/use-dpns-name'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { Author } from '@/components/author'
@@ -65,8 +72,12 @@ export function EnvironmentsContent({ home, addr }: { home: RepoHome; addr: Repo
 }
 
 function Environments({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
-  const { state, locked } = useEnvironments(home)
-  const view = state.data === null ? null : environmentsView(state.data.book)
+  const { state, locked, viewer } = useEnvironments(home)
+  const book = state.data?.book ?? null
+  // A maintainer's precise list of who an environment misses needs the repo's people.
+  const people = useRepoPeople(home, viewer !== null && book?.maintainers.has(viewer) === true)
+  // A locked tab opens nothing, so it is told to unlock rather than that nothing was shared.
+  const view = book === null ? null : environmentsView(book, { viewer: locked ? null : viewer, people })
   return (
     <div className="max-w-3xl space-y-5" data-testid="environments">
       <Link
@@ -137,6 +148,11 @@ export function EnvironmentsView({ view, onRetry }: { view: EnvPageView; onRetry
           {hiddenLine(view.hidden, view.cards.length)}
         </p>
       ) : null}
+      {view.notShared ? (
+        <p role="note" className="text-dense text-anvil-600 dark:text-anvil-300" data-testid="env-not-shared">
+          {NOT_SHARED_TEXT}
+        </p>
+      ) : null}
       {view.ignored > 0 ? (
         <p className="text-dense text-anvil-600 dark:text-anvil-300" data-testid="env-ignored-count">
           {ignoredLine(view.ignored)}
@@ -166,10 +182,12 @@ function EnvCard({ card, shown, toggle, onRetry }: { card: EnvCardView; shown: R
         <h3 id={titleId} className="min-w-0 break-all font-mono text-dense font-semibold">
           {card.env}
         </h3>
-        {card.audience !== null ? <AudienceChip audience={card.audience} /> : null}
+        {card.audienceLabel !== null ? <AudienceChip label={card.audienceLabel} everyone={card.membersKey} /> : null}
       </header>
       <div className="space-y-3 px-4 py-3">
         {card.audience !== null ? <WhoCanRead card={card} /> : null}
+        {card.oldFormat !== null ? <OldFormatNote env={card.env} old={card.oldFormat} /> : null}
+        {card.stale.length > 0 ? <StaleList env={card.env} items={card.stale} /> : null}
         {card.ignored !== null ? <IgnoredNote env={card.env} ignored={card.ignored} /> : null}
         {card.kind === 'current' ? (
           <>
@@ -196,11 +214,11 @@ function EnvCard({ card, shown, toggle, onRetry }: { card: EnvCardView; shown: R
   )
 }
 
-function AudienceChip({ audience }: { audience: 'members' | 'maintainers' }): JSX.Element {
+function AudienceChip({ label, everyone }: { label: string; everyone: boolean }): JSX.Element {
   return (
-    <span className="inline-flex items-center gap-1 rounded-full border border-anvil-200 px-2 py-0.5 text-[12px] text-anvil-700 dark:border-anvil-700 dark:text-anvil-200">
-      {audience === 'members' ? <Users className="h-3 w-3" aria-hidden /> : <Lock className="h-3 w-3" aria-hidden />}
-      {audience === 'members' ? 'Members' : 'Maintainers'}
+    <span className="inline-flex items-center gap-1 rounded-full border border-anvil-200 px-2 py-0.5 text-[12px] text-anvil-700 dark:border-anvil-700 dark:text-anvil-200" data-testid="env-audience">
+      {everyone ? <Users className="h-3 w-3" aria-hidden /> : <Lock className="h-3 w-3" aria-hidden />}
+      {label}
     </span>
   )
 }
@@ -209,24 +227,62 @@ function WhoCanRead({ card }: { card: EnvCardView }): JSX.Element {
   return (
     <div className="text-dense">
       <p className="text-anvil-600 dark:text-anvil-300">Who can read this</p>
-      {card.audience === 'maintainers' ? (
+      {card.membersKey ? (
+        <p className="mt-1" data-testid="env-readers">
+          Every member of this repo
+        </p>
+      ) : (
         <p className="mt-1 flex flex-wrap items-center gap-1.5" data-testid="env-readers">
           {card.readers.map((id) => (
             <Author key={id} identityId={id} link={false} />
           ))}
-          <span className="text-[12px] text-anvil-500 dark:text-anvil-400">(maintainers when saved)</span>
+          <span className="text-[12px] text-anvil-500 dark:text-anvil-400">(when last saved)</span>
         </p>
-      ) : (
-        <>
-          <p className="mt-1" data-testid="env-readers">
-            Every member of this repo
-          </p>
-          <p className="mt-1 text-[12px] text-caution-700 dark:text-caution-400" data-testid="env-members-sentence">
-            {MEMBERS_SENTENCE}
-          </p>
-        </>
       )}
     </div>
+  )
+}
+
+/** The old-format banner (DESIGN §10): what is readable by anyone who joins later, and the `dg` step. */
+function OldFormatNote({ env, old }: { env: string; old: NonNullable<EnvCardView['oldFormat']> }): JSX.Element {
+  return (
+    <div role="note" className="space-y-1 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense text-anvil-700 dark:text-anvil-200" data-testid="env-old-format" data-env={env}>
+      <p className="flex items-start gap-2">
+        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-caution-700 dark:text-caution-400" aria-hidden />
+        <span className="min-w-0 break-words">{old.sentence}</span>
+      </p>
+      {old.unmarked.length > 0 ? (
+        <p className="break-words pl-6" data-testid="env-old-format-unmarked">
+          Not marked yet: {old.unmarked.join(', ')}
+        </p>
+      ) : null}
+      <p className="pl-6">
+        <code className="break-words font-mono text-[12px]">{old.command}</code>
+      </p>
+    </div>
+  )
+}
+
+/** A maintainer's precise list (DESIGN §10): who an environment's latest save misses or still includes. */
+function StaleList({ env, items }: { env: string; items: readonly StaleItem[] }): JSX.Element {
+  return (
+    <div role="note" className="space-y-1 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense text-anvil-700 dark:text-anvil-200" data-testid="env-stale">
+      {items.map((item) => (
+        <StaleLineText key={`${item.kind}:${item.who}`} env={env} item={item} />
+      ))}
+      <p>
+        Save it again: <code className="break-words font-mono text-[12px]">{resaveCommand(env)}</code>
+      </p>
+    </div>
+  )
+}
+
+function StaleLineText({ env, item }: { env: string; item: StaleItem }): JSX.Element {
+  const name = useIdentityText(item.who)
+  return (
+    <p className="break-words" data-testid="env-stale-line">
+      {staleLine(env, item, name)}
+    </p>
   )
 }
 
@@ -334,7 +390,7 @@ function Conflict({
 
 /**
  * The member-removal hook (DESIGN §10, `dg collab remove`'s checklist): the environments and
- * current value names `member` could read, to rotate at their source. Reads only while shown.
+ * current value names `member` could read, to change where they're used. Reads only while shown.
  */
 export function EnvironmentsRemoval({
   home,
@@ -345,7 +401,7 @@ export function EnvironmentsRemoval({
   home: RepoHome
   member: string
   heldMembersKey: boolean
-  /** They keep a maintainer role (only another role goes): nothing to rotate, they still read them. */
+  /** They keep a maintainer role (only another role goes): nothing to change, they still read them. */
   staysMaintainer?: boolean
 }): JSX.Element | null {
   const { state } = useEnvironments(home)

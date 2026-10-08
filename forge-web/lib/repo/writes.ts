@@ -1245,28 +1245,28 @@ function keyedResult(keyShared = true): MembershipResult {
  * a maintainer runs the repair check.
  */
 /**
- * A repo with environment snapshots (kind 8): a maintainer's removal, demotion or promotion
- * changes whose snapshots count, which `dg` handles (it saves the affected environments again
- * first) and the web does not yet.
+ * A repo with environment snapshots (kind 8): every environment is a letter to the people its
+ * audience covered when it was saved, so any member change (adding, removing, promoting or
+ * demoting anyone) leaves some environment saved for the wrong people, and a maintainer change
+ * also changes whose snapshots count (D24). `dg` plans those changes and saves the affected
+ * environments again; the web does not yet, so it refuses every member change before anything is
+ * signed.
  */
 export class EnvironmentsMembershipError extends Error {
-  constructor(change: 'remove' | 'promote') {
-    super(
-      change === 'remove'
-        ? 'This repo has environments. Remove or demote maintainers with dg for now.'
-        : 'This repo has environments. Make maintainers with dg for now.',
-    )
+  constructor() {
+    super('This repo has environments. Add, remove or change members with dg for now.')
     this.name = 'EnvironmentsMembershipError'
   }
 }
 
 /**
- * Refuse a maintainer change in a repo that has environments ({@link EnvironmentsMembershipError}),
- * before anything is written. Public repos check it here; the key-aware flows in
- * `private-members.ts` (private repos, and public ones with a members key) check it again first.
+ * Refuse a member change (any grant, revoke or role change) in a repo that has environments
+ * ({@link EnvironmentsMembershipError}), before anything is written. Public repos check it here;
+ * the key-aware flows in `private-members.ts` (private repos, and public ones with a members key)
+ * check it again first. Accepting an invitation is not a member change and is never refused.
  */
-export async function refuseMaintainerChangeWithEnvironments(sdk: EvoSDK, repo: RepoRef, change: 'remove' | 'promote'): Promise<void> {
-  if ((await readNewestManifestOfKind(sdk, repo, PACK_KIND.ENV_SNAPSHOT)) !== null) throw new EnvironmentsMembershipError(change)
+export async function refuseMemberChangeWithEnvironments(sdk: EvoSDK, repo: RepoRef): Promise<void> {
+  if ((await readNewestManifestOfKind(sdk, repo, PACK_KIND.ENV_SNAPSHOT)) !== null) throw new EnvironmentsMembershipError()
 }
 
 export interface MembershipResult extends WriteResult {
@@ -1362,7 +1362,7 @@ export async function grantMember(
   ops?: EncryptionOps | null,
 ): Promise<MembershipResult> {
   if (repo.visibility === 'private') throw new PrivateMembershipError('add')
-  if (role === 'maintainer') await refuseMaintainerChangeWithEnvironments(sdk, repo, 'promote')
+  await refuseMemberChangeWithEnvironments(sdk, repo)
   const keyed = await membersKeyContext(sdk, auth, repo, ops)
   if (keyed === null) return grantMembershipDoc(sdk, auth, repo, memberId, role, intent)
   const added = await keyed.flows.addPrivateMember(keyed.c, memberId, role, intent ?? `members:add:${memberId}:${role}`)
@@ -1426,7 +1426,7 @@ export async function revokeMember(
   ops?: EncryptionOps | null,
 ): Promise<DeleteResult> {
   if (repo.visibility === 'private') throw new PrivateMembershipError('remove')
-  if (role === 'maintainer') await refuseMaintainerChangeWithEnvironments(sdk, repo, 'remove')
+  await refuseMemberChangeWithEnvironments(sdk, repo)
   const keyed = await membersKeyContext(sdk, auth, repo, ops)
   if (keyed === null) return revokeMembershipDoc(sdk, auth, repo, memberId, role)
   await keyed.flows.removePrivateMember(keyed.c, memberId, role, intent ?? `members:remove:${memberId}:${role}`)
@@ -1459,8 +1459,7 @@ export async function changeMemberRole(
   ops?: EncryptionOps | null,
 ): Promise<MembershipResult> {
   if (repo.visibility === 'private') throw new PrivateMembershipError('remove')
-  if (from === 'maintainer') await refuseMaintainerChangeWithEnvironments(sdk, repo, 'remove')
-  else if (to === 'maintainer') await refuseMaintainerChangeWithEnvironments(sdk, repo, 'promote')
+  await refuseMemberChangeWithEnvironments(sdk, repo)
   const keyed = await membersKeyContext(sdk, auth, repo, ops)
   if (auth.identityId !== repo.ownerId) throw new Error('only the repo owner can change roles')
   if (memberId === repo.ownerId) throw new Error("the owner's own role does not change")

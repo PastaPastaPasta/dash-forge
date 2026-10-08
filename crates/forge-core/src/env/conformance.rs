@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use super::chain::{self, EnvHistory, SnapshotRef};
 use super::codec::{self, ManifestCheck, OpenKeys};
 use super::format::{Snapshot, Var, VarType};
-use super::{default_audience, Audience};
+use super::{Audience, Group};
 use crate::envelope::PrivateKey;
 use crate::private::named::{OwnerKey, Reader, Recipient};
 use crate::private::{EpochKey, EpochKeys};
@@ -53,46 +53,98 @@ fn snapshot_ref(m: &Value) -> SnapshotRef {
     }
 }
 
-fn snapshot_of(v: &Value) -> Snapshot {
+fn vars_of(v: &Value, plain: bool) -> BTreeMap<String, Var> {
+    v.as_object()
+        .unwrap()
+        .iter()
+        .map(|(k, e)| {
+            let var = if plain {
+                Var {
+                    value: e.as_str().unwrap().into(),
+                    kind: VarType::Secret,
+                    note: String::new(),
+                }
+            } else {
+                Var {
+                    value: e["value"].as_str().unwrap().into(),
+                    kind: if e["type"] == "secret" {
+                        VarType::Secret
+                    } else {
+                        VarType::Variable
+                    },
+                    note: e["note"].as_str().unwrap_or("").into(),
+                }
+            };
+            (k.clone(), var)
+        })
+        .collect()
+}
+
+/// A vector's snapshot JSON (version 1 when `v` is absent); `plain`: `vars` maps names to values.
+fn snapshot_from(v: &Value, plain: bool) -> Snapshot {
+    let version = u8::try_from(v.get("v").and_then(Value::as_u64).unwrap_or(1)).unwrap();
+    let audience = if version == 1 {
+        Audience::group(Group::parse(v["audience"].as_str().unwrap()).unwrap())
+    } else {
+        Audience {
+            group: v["audience"]["group"]
+                .as_str()
+                .map(|g| Group::parse(g).unwrap()),
+            also: strings(Some(&v["audience"]["also"])),
+        }
+    };
     Snapshot {
-        env: v["env"].as_str().unwrap().into(),
-        audience: Audience::parse(v["audience"].as_str().unwrap()).unwrap(),
-        generated_at: v["generatedAt"].as_u64().unwrap(),
+        version,
+        env: v.get("env").and_then(Value::as_str).unwrap_or("x").into(),
+        audience,
+        id: v.get("id").map(|i| bytes(i).try_into().unwrap()),
+        generated_at: v.get("generatedAt").and_then(Value::as_u64).unwrap_or(0),
         saved_for: v.get("savedFor").map(|f| f.as_str().unwrap().to_owned()),
         to: strings(v.get("to")),
-        vars: v["vars"]
-            .as_object()
-            .unwrap()
-            .iter()
-            .map(|(k, e)| {
-                (
-                    k.clone(),
-                    Var {
-                        value: e["value"].as_str().unwrap().into(),
-                        kind: if e["type"] == "secret" {
-                            VarType::Secret
-                        } else {
-                            VarType::Variable
-                        },
-                        note: e["note"].as_str().unwrap_or("").into(),
-                    },
-                )
+        to_keys: v
+            .get("toKeys")
+            .map(|k| {
+                k.as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|x| u32::try_from(x.as_u64().unwrap()).unwrap())
+                    .collect()
             })
-            .collect(),
+            .unwrap_or_default(),
+        marked_changed: strings(v.get("markedChanged")),
+        vars: vars_of(&v["vars"], plain),
     }
+}
+
+fn snapshot_of(v: &Value) -> Snapshot {
+    snapshot_from(v, false)
 }
 
 fn snapshot_json(s: &Snapshot) -> Value {
     let mut out = json!({
+        "v": s.version,
         "env": s.env,
-        "audience": s.audience.as_str(),
         "generatedAt": s.generated_at,
         "vars": s.vars.iter().map(|(k, v)| (k.clone(), json!({
             "type": v.kind.as_str(), "value": v.value, "note": v.note,
         }))).collect::<serde_json::Map<String, Value>>(),
     });
-    if s.audience == Audience::Maintainers {
+    if s.version == 1 {
+        let old_format = s.members_key();
+        let word = if old_format { "members" } else { "maintainers" };
+        out["audience"] = json!(word);
+        if !old_format {
+            out["to"] = json!(s.to);
+        }
+    } else {
+        out["audience"] = json!({
+            "group": s.audience.group.map(Group::as_str),
+            "also": s.audience.also,
+        });
+        out["id"] = json!(s.id.map(hex::encode));
         out["to"] = json!(s.to);
+        out["toKeys"] = json!(s.to_keys);
+        out["markedChanged"] = json!(s.marked_changed);
     }
     if let Some(f) = &s.saved_for {
         out["savedFor"] = json!(f);
@@ -214,7 +266,7 @@ fn run_open(inp: &Value) -> Value {
                 .iter()
                 .map(|i| bytes(i).try_into().unwrap())
                 .collect();
-            codec::seal_maintainers_with(
+            codec::seal_letter_with(
                 &repo_id,
                 sender,
                 u32::try_from(seal["senderKeyId"].as_u64().unwrap()).unwrap(),
@@ -282,28 +334,7 @@ fn run_resolve(inp: &Value) -> Value {
 }
 
 fn run_exposure(inp: &Value) -> Value {
-    let snap = |v: &Value| Snapshot {
-        env: "x".into(),
-        audience: Audience::parse(v["audience"].as_str().unwrap()).unwrap(),
-        generated_at: 0,
-        saved_for: None,
-        to: strings(v.get("to")),
-        vars: v["vars"]
-            .as_object()
-            .unwrap()
-            .iter()
-            .map(|(k, val)| {
-                (
-                    k.clone(),
-                    Var {
-                        value: val.as_str().unwrap().into(),
-                        kind: VarType::Secret,
-                        note: String::new(),
-                    },
-                )
-            })
-            .collect(),
-    };
+    let snap = |v: &Value| snapshot_from(v, true);
     let envs: Vec<(String, Vec<Snapshot>, Vec<Snapshot>)> = inp["environments"]
         .as_array()
         .unwrap()
@@ -369,8 +400,6 @@ fn run(v: &Value) -> Value {
             let heads = strings(Some(&c["heads"]));
             json!(chain::window(&refs, &heads).iter().map(hex::encode).collect::<Vec<_>>())
         }).collect::<Vec<_>>() }),
-        "defaultAudience" => json!({ "results": inp["names"].as_array().unwrap().iter()
-            .map(|n| default_audience(n.as_str().unwrap()).as_str()).collect::<Vec<_>>() }),
         other => panic!("unknown env_snapshot op {other}"),
     }
 }

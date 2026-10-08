@@ -1,0 +1,203 @@
+{
+  "name": "v2_group_also",
+  "description": "a group plus people: Writers and maintainers and the CI bot named in `also` (groups never include bots). `markedChanged` lists names whose values held in old-format snapshots were changed at their source (`dg env mark-changed`).",
+  "case": "env_snapshot",
+  "rules": "v2",
+  "input": {
+    "op": "open",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "snapshot": {
+      "v": 2,
+      "env": "ci",
+      "audience": {
+        "group": "writers",
+        "also": [
+          "CPgxaoiRp7knANyAbodBdjPNFy7BVqtW8hMPhXFqT54k"
+        ]
+      },
+      "generatedAt": 1767225600000,
+      "vars": {
+        "NPM_TOKEN": {
+          "type": "secret",
+          "value": "fake-npm",
+          "note": ""
+        }
+      },
+      "id": "5af7aba87d74996e5b6cef1216ba37e0",
+      "to": [
+        "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+        "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+        "86tPu2zvVZuJrhjfe6GAJYdwZvsM9pNLhJcZM8NAjVxG",
+        "CPgxaoiRp7knANyAbodBdjPNFy7BVqtW8hMPhXFqT54k"
+      ],
+      "toKeys": [
+        4,
+        3,
+        3,
+        3
+      ],
+      "markedChanged": [
+        "OLD_TOKEN"
+      ]
+    },
+    "seal": {
+      "senderKeyId": 4,
+      "sender": {
+        "identityId": "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+        "keys": [
+          "2ad1b589f470e72d6946b4924abacbed51bb782d293e76cc8541010dec32ddb3"
+        ]
+      },
+      "recipients": [
+        {
+          "identityId": "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+          "pub": "021d144ab1f60cb016060ab65044c6cc99287f65bcddb72ed65aca72fd61ff0082"
+        },
+        {
+          "identityId": "8fcef67268ac484a9ff85e6548ec6f5b3fb7a70feef773ea35daac8dc042e688",
+          "pub": "02bf17b1a250a78519af75826803dc13b2182a3ce97a7badb50135cb3194e2388a"
+        },
+        {
+          "identityId": "6983d325810def364424409135bb8c6cecca0ba0ea80f229c0f46a455a836275",
+          "pub": "025b0a23ba6f307d8a7c52f37a1daeca4a56aafebdefcd75ce6eeca2dc47ef31a0"
+        },
+        {
+          "identityId": "a94083d7ce430f63f95a3da5edb61a7030ee8f4a6f2dec203a81851900a0e4b9",
+          "pub": "0203d8bc6f98fa13b61ff219eba01e08b4bf494e929163185d66e255199b3de28c"
+        }
+      ],
+      "kObj": "a0512ef4aebbf58f3292ec6896480a7a716853a6bf62f7ebfc0e30f66f55fb72",
+      "fileId": "475c1f8b15fc6ff55de1c5487761be1e",
+      "ivs": [
+        "8fd66ee476cc8963a2e300c6e1244930",
+        "91856a2c078ebb87eb11679b17677f91",
+        "2380c69acf08c9e783e4c637ea7d3590",
+        "3064da32913639349f82af01e8181905"
+      ]
+    },
+    "manifest": {
+      "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+      "packHash": "268a538d98cf9f45cdb2fbe082ae76b80d9cb22bb1597d880120455c1bdd6cdc",
+      "sizeBytes": 853
+    },
+    "sealed": "4446504b020e0000040000000421747861db5a6fc6872dc4e667014bd822b2335acee43ab3c3b5e87697b07b628fd66ee476cc8963a2e300c6e124493025326fd85dde3114a9adb603600f7ba33aec00d171ce1a6edca9eb357d4a6ee407194b2e822381f0b1caca72968893f691856a2c078ebb87eb11679b17677f9134e1b8e1c721cb7a891adbed414bc3f5d9b5bfd929c1028b3a2f1e7ff462fe4a8fa2279c8b5530f7507b581a4e01eaed2380c69acf08c9e783e4c637ea7d3590aed00a04bb5ad2b3119380075875454cd8e8c6617689da227e524fe6515b4284496b6373d3d55766fc0584b4876f46913064da32913639349f82af01e8181905d9cefef7f9d0f1f09c91503bebd0d6c5fa49b3837f4694b689c10878a5f222b916052cdc87c549d89becb43c6c85147a0000000000000200475c1f8b15fc6ff55de1c5487761be1e8cf38ed2bba13bd142edf19cc37e90fc27bbe32da67040b3c9709bfd240ece8f483e070e923d55649fce374099c0358348d7f5d1a6fa63e1ebb1e92137070f3cc219c13bd1c5f1bd7245c570203e9fccaf2cdd0f8557e3e5617b746ca6a6e62bb3309fe6148d11385e337ec3c8cafb51a4a98f78488db3f9d2892b49c53f7bebaaca0efb36f9f53dc0303a6e15a110e96da7f29bb39ee8705474eaf7e7eb030c1f3864f920cb534115713325e6f7be638ee68c625ea3a69f333fb78c4b83f6c117154c4dcd5f59845549ebc961c122df107f3d6a19e8e78c86478c9cfb1b12b2d3aadd56cabde84e133238a62c72a2816bf3133b516a891bc5cad60393835ca7aea4d00aed7476d2a0accf0776193322f5f2e4d0ef89bd5a6ef2d448436eee8a2d2ad09950a0d01913fca0e691389ab8f84cdaf3fad912ad9eceba4168c223f6b8660690847a001763ff4e2eb16929ffdd4de2f280dd9ed708b637fc7aab9e630c3f009bf2766075ef199653865f185df4567c13309a40e3b9d2f0a7f4434f8d18967917adf11037244e523e8f6f1ac28755b27acd0ba5a4b4e52da063dcf89e810cb13a38dc3ea9fd329eeea1373e8472fe151969123313c453a4960611d7f271ab108c5c359c47d017a8177995ee1609344899b9344a71868188cc92e20a878f28b96ef4d0cdb084d3c515f42cd96568bf8bd50cb53ab38069da9a53e7dfff14271b3a8c534614e983cba19272e570",
+    "ownerKeys": [
+      {
+        "id": 4,
+        "purpose": 1,
+        "keyType": 0,
+        "data": "021d144ab1f60cb016060ab65044c6cc99287f65bcddb72ed65aca72fd61ff0082"
+      }
+    ],
+    "readers": [
+      {
+        "reader": {
+          "identityId": "a94083d7ce430f63f95a3da5edb61a7030ee8f4a6f2dec203a81851900a0e4b9",
+          "keys": [
+            "e38ceca406b9c409fd3c58928db757202667b019db16c6d16765e91c3e63f4a2"
+          ]
+        },
+        "epochKeys": []
+      },
+      {
+        "reader": {
+          "identityId": "6983d325810def364424409135bb8c6cecca0ba0ea80f229c0f46a455a836275",
+          "keys": [
+            "0abadf5fa1f7846dfa8e073bd9b40da5c2d54e1b0b6b9a0139fc4077bd25f155"
+          ]
+        },
+        "epochKeys": []
+      },
+      {
+        "reader": {
+          "identityId": "3ccad8405e96a830932809a33cf77267873831cf5e1183cfd83d275378ddf810",
+          "keys": [
+            "800419f853a2e11eeb44d05d603918884d93a42258c72df493c7d252e30130e8"
+          ]
+        },
+        "epochKeys": []
+      }
+    ]
+  },
+  "expected": {
+    "plaintextHex": "7b2261756469656e6365223a7b22616c736f223a5b2243506778616f695270376b6e414e7941626f6442646a504e467937425671745738684d50685846715435346b225d2c2267726f7570223a2277726974657273227d2c22656e76223a226369222c2267656e6572617465644174223a313736373232353630303030302c226964223a223561663761626138376437343939366535623663656631323136626133376530222c226d61726b65644368616e676564223a5b224f4c445f544f4b454e225d2c22746f223a5b22374c685666684b6a524d58766662557257367754457956704b353641563645614e346b576f31374b6b764466222c2241674e4c68573848476a544678564e4d72504344697952516d726b4e365a52594572784c5438485850386133222c223836745075327a76565a754a72686a66653647414a5964775a76734d39704e4c684a635a4d384e416a567847222c2243506778616f695270376b6e414e7941626f6442646a504e467937425671745738684d50685846715435346b225d2c22746f4b657973223a5b342c332c332c335d2c2276223a322c2276617273223a7b224e504d5f544f4b454e223a7b2274797065223a22736563726574222c2276616c7565223a2266616b652d6e706d227d7d7d20202020202020202020202020202020202020202020202020202020202020202020202020",
+    "packHash": "268a538d98cf9f45cdb2fbe082ae76b80d9cb22bb1597d880120455c1bdd6cdc",
+    "results": [
+      {
+        "snapshot": {
+          "v": 2,
+          "env": "ci",
+          "audience": {
+            "group": "writers",
+            "also": [
+              "CPgxaoiRp7knANyAbodBdjPNFy7BVqtW8hMPhXFqT54k"
+            ]
+          },
+          "generatedAt": 1767225600000,
+          "vars": {
+            "NPM_TOKEN": {
+              "type": "secret",
+              "value": "fake-npm",
+              "note": ""
+            }
+          },
+          "id": "5af7aba87d74996e5b6cef1216ba37e0",
+          "to": [
+            "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+            "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "86tPu2zvVZuJrhjfe6GAJYdwZvsM9pNLhJcZM8NAjVxG",
+            "CPgxaoiRp7knANyAbodBdjPNFy7BVqtW8hMPhXFqT54k"
+          ],
+          "toKeys": [
+            4,
+            3,
+            3,
+            3
+          ],
+          "markedChanged": [
+            "OLD_TOKEN"
+          ]
+        }
+      },
+      {
+        "snapshot": {
+          "v": 2,
+          "env": "ci",
+          "audience": {
+            "group": "writers",
+            "also": [
+              "CPgxaoiRp7knANyAbodBdjPNFy7BVqtW8hMPhXFqT54k"
+            ]
+          },
+          "generatedAt": 1767225600000,
+          "vars": {
+            "NPM_TOKEN": {
+              "type": "secret",
+              "value": "fake-npm",
+              "note": ""
+            }
+          },
+          "id": "5af7aba87d74996e5b6cef1216ba37e0",
+          "to": [
+            "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+            "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "86tPu2zvVZuJrhjfe6GAJYdwZvsM9pNLhJcZM8NAjVxG",
+            "CPgxaoiRp7knANyAbodBdjPNFy7BVqtW8hMPhXFqT54k"
+          ],
+          "toKeys": [
+            4,
+            3,
+            3,
+            3
+          ],
+          "markedChanged": [
+            "OLD_TOKEN"
+          ]
+        }
+      },
+      {
+        "error": "notARecipient"
+      }
+    ]
+  }
+}

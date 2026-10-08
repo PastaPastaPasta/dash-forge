@@ -360,9 +360,10 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
           blocked={keyBlock}
           onConfirm={runAction}
         >
-          {/* What they could read: members-only discussion and the repo's environments, to rotate
-              at its source. Nothing is listed when they keep a role that holds the key. A
-              maintainer's removal is refused while the repo has environments (dg handles it). */}
+          {/* What they could read: members-only discussion and the repo's environments, to change
+              where they're used. Nothing is listed when they keep a role that holds the key. Every
+              member change (add, remove, promote, demote) is refused while the repo has
+              environments, before anything is signed: dg plans it and saves them again. */}
           {action?.kind === 'revoke' && keyed && removalEffect(memberRows, action.member, action.role) !== 'none'
             ? <RemovalReads lane={keyed} />
             : null}

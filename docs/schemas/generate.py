@@ -528,7 +528,8 @@ cmd('verify-app', 'A deployed copy of the web app checked against a published bu
     'files': ANY, 'matched': ANY, 'differ': ANY, 'missing': ANY, 'ok': B,
 }, ['url', 'ok'])
 cmd('collab add', 'A member added, or their role changed.', {
-    'status': S, 'member': S, 'role': S, 'previousRole': nl(S), 'environmentsSavedFirst': ANY, 'documentId': S, 'id': S,
+    'status': S, 'member': S, 'role': S, 'previousRole': nl(S), 'environmentsSavedFirst': ANY,
+    'environmentsSavedAgain': ANY, 'environmentPlan': ANY, 'documentId': S, 'id': S,
     'repo': S, 'cost': COST, 'keyShared': B, 'keyPending': ANY, 'rotation': nl(R('rotation')),
 }, ['status', 'member', 'role'])
 cmd('collab accept', 'An invitation accepted (or withdrawn).', {
@@ -536,7 +537,7 @@ cmd('collab accept', 'An invitation accepted (or withdrawn).', {
 }, ['status', 'repo'])
 cmd('collab remove', 'A member removed.', {
     'status': E('removed', 'not_a_member'), 'member': S, 'role': S, 'repo': S, 'rotation': nl(R('rotation')),
-    'droppedEpochs': ANY, 'losingMembers': ANY, 'environments': ANY, 'resavedEnvironments': ANY,
+    'droppedEpochs': ANY, 'losingMembers': ANY, 'environments': ANY, 'resavedEnvironments': ANY, 'environmentPlan': ANY,
 }, ['status', 'member'])
 cmd('collab list', 'The repository\'s members and their roles.', {
     'count': I, 'members': A(OBJ), 'ownerId': S, 'roles': {'const': True},
@@ -677,15 +678,19 @@ cmd('import', 'What an import or re-sync mirrored (the Mirror Action reads this)
 # -- environments -----------------------------------------------------------------------------
 ENV_SAVE = {
     'status': E('saved', 'unchanged'), 'env': S, 'audience': ANY, 'to': ANY, 'skipped': ANY, 'changes': ANY, 'id': S,
-    'packHash': S, 'sizeBytes': I, 'quote': COST, 'spent': COST,
+    'packHash': S, 'sizeBytes': I, 'quote': COST, 'spent': COST, 'markedChanged': ANY, 'saved': ANY, 'notSaved': ANY,
 }
 cmd('env ls', 'The repository\'s environments, or one environment\'s variables (names and types, not values).', {
     'environments': A(OBJ), 'hidden': ANY, 'ignored': ANY, 'env': S, 'audience': ANY, 'to': ANY, 'updatedBy': S,
+    'oldFormat': ANY, 'needsSaving': ANY,
     'updatedAt': I, 'entries': A(O({'name': S, 'type': S, 'note': nl(S)})),
 })
 cmd('env get', 'One variable of an environment.', {'env': S, 'name': S, 'type': S, 'value': S}, ['env', 'name', 'value'])
 for c, d in [('set', 'A variable set.'), ('unset', 'A variable removed.'), ('edit', 'An environment edited.'),
-             ('import', 'Variables imported from a file.')]:
+             ('import', 'Variables imported from a file.'), ('audience', 'An environment saved for a new audience.'),
+             ('share', 'People given access to an environment.'), ('unshare', 'People\'s access to an environment taken away.'),
+             ('resave', 'Environments saved again for the people their audiences cover now.'),
+             ('mark-changed', 'Values saved in the old format recorded as changed where they\'re used.')]:
     cmd(f'env {c}', d, ENV_SAVE, ['status', 'env'])
 cmd('env export', 'An environment written to a file. Only with `--output`: without it, `dg env export` prints '
     'the variables as a .env file, not JSON, even with `--json`.', {

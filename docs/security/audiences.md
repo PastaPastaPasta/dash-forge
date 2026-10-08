@@ -26,9 +26,9 @@ This page explains what each audience means, what a public repository can keep *
 |---|---|---|---|
 | **Public** | Everyone. | n/a | today |
 | **All members** (short: **Members**) | Everyone with a role in the repository, including people with Read access, now and in future. Bots aren't included. People added later read it too, including what was posted before they joined. People removed later keep what they could already read. | yes | today, for issues, comments, reviews and environments |
-| **Maintainers** | The maintainers when it was saved. A maintainer added later reads it from the next change on, not what was saved before. | no | today, for environments |
-| **Writers and maintainers** | The people with Write access or more right now. | no | **coming later** |
-| **Specific people** | A list the writer picks, up to 16 people, members or not. The writer is always on it. Replying with someone added lets them read from that reply on, not earlier ones. | no | **coming later** |
+| **Maintainers** | The owner and maintainers when it was saved. Someone made a maintainer later reads an environment once it is saved again (Forge does that in the same step), never what was saved before. | no | today, for environments |
+| **Writers and maintainers** | The people with Write access or more when it was saved. | no | today, for environments; **coming later** for issues and comments |
+| **Specific people** | A list the writer picks, up to 16 people (64 for an environment), members or not. The writer is always on it. Replying with someone added lets them read from that reply on, not earlier ones. | no | today, for environments; **coming later** for issues and comments |
 
 "Members-only" is the adjective for anything that isn't public. It can be any of the four audiences below Public.
 
@@ -43,7 +43,7 @@ A **private** repository is different: everything in it is encrypted, code inclu
 | Issues | yes |
 | Comments on issues and pull requests | yes |
 | Reviews of a pull request (the review's text; its verdict stays public, [below](#what-everyone-can-still-see)) | yes |
-| [Environments](../guides/environments.md): configuration and secrets kept outside git | yes: **All members** or **Maintainers** |
+| [Environments](../guides/environments.md): configuration and secrets kept outside git | yes: always for a chosen audience, **Maintainers**, **Writers and maintainers**, **All members** or **Specific people**, encrypted for those people when it is saved |
 | Pull requests themselves, branches, commits and code | **coming later**. Everything you push to a public repository is public. |
 | Releases | **coming later** |
 | Label and milestone definitions | no, they stay public. Which label or milestone a members-only issue has is encrypted. |
@@ -61,7 +61,7 @@ Who something is for is fixed when it is posted. Editing a members-only comment 
 | People with **Read** access | yes. On a public repository the Read role exists for exactly this: someone who should read the members-only discussion and comment, without pushing, approving or merging. |
 | A **Bot** | **no**, by default. A bot is an automated account. It can post comments and reviews, can't push, approve or merge, and reads members-only content only when someone asks it to. Bots arrive later. |
 | A CI runner | **no**, by default. A runner's key reports check runs and is not a membership. If you give the runner's identity the Read role, it reads everything members-only, like anyone else with Read access. |
-| Someone added later | in an All members audience, yes: everything, including what was posted before they joined. In a Maintainers environment, from the next change on. |
+| Someone added later | in an All members audience, yes: everything, including what was posted before they joined. In an environment, its current values once it is saved again for them (Forge does that when it adds them), never earlier ones. |
 | Someone removed | what was posted **before** the removal, for good. Nothing posted afterwards. Encryption can't take back what was already shared. |
 | Anyone else | no. They see that something was posted, by whom and when ([below](#what-everyone-can-still-see)). |
 
@@ -156,7 +156,7 @@ And per kind of item:
 |---|---|---|
 | A members-only comment or review on a public issue or pull request | which issue or pull request it is on, and which comment it replies to; an inline comment's line numbers and commit; **a review's verdict** (approved, changes requested, commented), which counts toward the branch policy for everyone | the text, an inline comment's file path, the review's text |
 | A members-only issue | its number ("#12 · members-only"); when it was opened, closed, reopened or locked, and by whom; that a label or milestone was set or someone assigned, and **who** was assigned; the counts that include it | the title, the body, the names of its labels and milestone |
-| An environment | that the repository has environments and how many; for each change, who made it, when, and its size rounded up to 512 bytes; for a Maintainers environment, how many people it was sent to | its name, the names, types and notes of its entries, and every value |
+| An environment | that the repository has environments and how many; for each change, who made it, when, and its size rounded up to 512 bytes; how many people it was sent to | its name, who it is for, the names, types and notes of its entries, and every value |
 | The repository | that members-only content is on; when the members key changed; who shared the key with whom; the member list and roles (public on every repository) | the key |
 
 A review's verdict is public on purpose: everyone agrees on whether a pull request has its approvals, so a member and a non-member see the same merge button. A pull request's author who is not a member sees "Changes requested by @bob" and cannot read why. Add one public line saying what to fix.
@@ -180,7 +180,7 @@ A review's verdict is public on purpose: everyone agrees on whether a pull reque
 - **Everything in [What everyone can still see](#what-everyone-can-still-see).** Who talks, when, how much, and on which issue can say a lot. Leave out what the timing alone would give away.
 - **What members copy.** Any member can copy, quote or screenshot what they read. Quoting a members-only comment into a public reply publishes the quoted text.
 - **What removed members kept.** They keep everything posted before the removal. Removing someone protects only what comes after.
-- **Past values in an All members environment.** Everyone who becomes a member later can read every value ever stored there, including past values. Keep production credentials in a **Maintainers** environment, and rotate a secret at its source when someone leaves ([Environments](../guides/environments.md#removing-a-member)).
+- **Values saved in the old format.** An environment saved by Forge before October 2026 for All members can be read by anyone who becomes a member later, past values included. Save it again (`dg env resave --all`) and change those values where they're used. Environments saved since go only to the people their audience covers at that moment. Change a secret where it's used when someone leaves ([Environments](../guides/environments.md#removing-a-member)).
 - **Code.** Everything pushed to a public repository is public, forever, even if you delete it later. The push helper refuses some files that look like secrets and warns about others ([Secrets in a push](../guides/quick-start.md#secrets-in-a-push)), but it cannot know everything. Keep secrets in an environment instead.
 - **Your encryption key.** It reads every private repository and every members-only conversation you belong to. Keep it like your signing keys, and replace it after a lost device ([Identity and keys](../guides/identity-and-keys.md#replacing-it-after-a-lost-device)).
 - **Mentions.** Mentioning someone who is not a member in a members-only comment tells them nothing they can read, but they may learn that something was posted.
@@ -240,7 +240,7 @@ Forge uses the same words in `dg`, the web app and these pages.
 | **Public** | Everyone can read it. |
 | **All members** (short: **Members**) | Everyone with a role in the repository, now and in future. Bots aren't included. |
 | **Maintainers** | The maintainers when it was saved. |
-| **Writers and maintainers** | The people with Write access or more right now (coming later). |
+| **Writers and maintainers** | The people with Write access or more (environments today; coming later for discussion). |
 | **Specific people** | A list the writer picks (coming later). |
 | **members-only** | Anything that isn't public. "A members-only comment." |
 

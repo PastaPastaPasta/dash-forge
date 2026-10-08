@@ -1,0 +1,138 @@
+{
+  "name": "v2_people",
+  "description": "Specific people: no group (`group` null), the people in `also` (sorted; the person who set the audience is one of them), members or not: dave is not a member and reads it; bob, a maintainer, does not.",
+  "case": "env_snapshot",
+  "rules": "v2",
+  "input": {
+    "op": "open",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "snapshot": {
+      "v": 2,
+      "env": "deploy",
+      "audience": {
+        "group": null,
+        "also": [
+          "6uEvtSgQjdQsaPw3qBRpr21Acb7WfAshhVKRzDNKCjRY",
+          "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf"
+        ]
+      },
+      "generatedAt": 1767225600000,
+      "vars": {
+        "DEPLOY_KEY": {
+          "type": "secret",
+          "value": "fake-deploy",
+          "note": ""
+        }
+      },
+      "id": "5af7aba87d74996e5b6cef1216ba37e0",
+      "to": [
+        "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+        "6uEvtSgQjdQsaPw3qBRpr21Acb7WfAshhVKRzDNKCjRY"
+      ],
+      "toKeys": [
+        4,
+        3
+      ],
+      "markedChanged": []
+    },
+    "seal": {
+      "senderKeyId": 4,
+      "sender": {
+        "identityId": "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+        "keys": [
+          "2ad1b589f470e72d6946b4924abacbed51bb782d293e76cc8541010dec32ddb3"
+        ]
+      },
+      "recipients": [
+        {
+          "identityId": "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+          "pub": "021d144ab1f60cb016060ab65044c6cc99287f65bcddb72ed65aca72fd61ff0082"
+        },
+        {
+          "identityId": "57ac62e92e47a65079dd33aa33abbbe3434824ff864261f7c56531e92cb21bef",
+          "pub": "03ad19dbe1d8e095c586e0d21d22f7e97526e5f2a31771263e11bdce9194a824ec"
+        }
+      ],
+      "kObj": "db58ed14cca15d14398ee8788c8db0db9b2aa8279dc3f85e629605086761b404",
+      "fileId": "71cfdd324ac1b09d2bfca6b5f8892a05",
+      "ivs": [
+        "98f76d84328c4ed47aad2b026d29e0d0",
+        "e1020c02eae14cf73b3c872148f36860"
+      ]
+    },
+    "manifest": {
+      "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+      "packHash": "3061a01434bca92f9dd472553e2f322ad3d5754b946a024df591320cba95c5d1",
+      "sizeBytes": 725
+    },
+    "sealed": "4446504b020e00000200000004eddb9db9083e6b84500ef495ac28616f947a880718bf40a62f0646a44875718098f76d84328c4ed47aad2b026d29e0d08e06622a1939d7be5015654336d9b3fdcc1a777192760cd47b98716139b6ad3db5dee48042bb7afa157ba9c7d8eaf09ee1020c02eae14cf73b3c872148f36860dbf956e16e2272b4350563dbe4a3562444d93881804aac349dfed29bc5e9ea8d7d065c6d2533c07506e47f935271ea0e000000000000020071cfdd324ac1b09d2bfca6b5f8892a05681a93a5916e24383f76caab962eff90e92a1c1a7440349f90648c4fa61907bf7eae9f63e9909b1523ce165726ad14ec312c33253bdb52ef8f19927e64a7e418587e740c11959c81e0f6e8e4f26afe315b6272d1b7bd38d79731e674d335390667eb74d620eea23ed149d914a114ec6791f3178bfd28f52f3559689983f955013d07b0b9ea2a989d83b1bcb3b76d168f97e8d358f939c823e29b199c0c978bf6047521241f07700d26176c377033444502db05c490f03ead42c7db4ca5f156999fcf396bb510b2bee8e9f0f01d98120b6654b6089f59809a0c8c8e011b755ca7046e0b32f04e109d7997de09d5a8d3b31c4279d0baf67f4f8f0674fc58e33c388644e1cf3568e544937cf46d657646ba09597d3559a1dc88a5e497898228bae8b83e21d42562db0cab1835a94efab9dc880c23a1e0e1e59159c81569a786d481104847243d80e26979ba29b9b49ab8e9fddc3d0fc9646b1a2e2ca7fbee9588db73e94800ac6fcf20946c2233b88a4707db4c1e05f1c6864b1a87f2f4c62dfe064ac4f55856b9d47c665acf5519f7323c57012a88523e8f5a085cbff0b0e6a9cc2abd50644eaac8a681c13e54bc2b0f1fe565b830d5a3762e1d11c446c0f263ee904bdad97bd736d5b54d5e2207a784526aad3c27803fbc423162aa3a4c11a74055f8a9a4a07cd4c12ef2a01d0b40a1126a70af85053452c0b08f087aad1c1edb6f316f7e47f1ef1a3654a9d2a637423f",
+    "ownerKeys": [
+      {
+        "id": 4,
+        "purpose": 1,
+        "keyType": 0,
+        "data": "021d144ab1f60cb016060ab65044c6cc99287f65bcddb72ed65aca72fd61ff0082"
+      }
+    ],
+    "readers": [
+      {
+        "reader": {
+          "identityId": "57ac62e92e47a65079dd33aa33abbbe3434824ff864261f7c56531e92cb21bef",
+          "keys": [
+            "4960c41071d54b6daf47871e2349e514b5b66717abe00281a2ca8ae4efcbf91e"
+          ]
+        },
+        "epochKeys": []
+      },
+      {
+        "reader": {
+          "identityId": "8fcef67268ac484a9ff85e6548ec6f5b3fb7a70feef773ea35daac8dc042e688",
+          "keys": [
+            "99905f5e10fe3d19ebf9e2a51a5c872d1a54f749f46bd565529d638c325ef955"
+          ]
+        },
+        "epochKeys": []
+      }
+    ]
+  },
+  "expected": {
+    "plaintextHex": "7b2261756469656e6365223a7b22616c736f223a5b2236754576745367516a645173615077337142527072323141636237576641736868564b527a444e4b436a5259222c22374c685666684b6a524d58766662557257367754457956704b353641563645614e346b576f31374b6b764466225d2c2267726f7570223a6e756c6c7d2c22656e76223a226465706c6f79222c2267656e6572617465644174223a313736373232353630303030302c226964223a223561663761626138376437343939366535623663656631323136626133376530222c22746f223a5b22374c685666684b6a524d58766662557257367754457956704b353641563645614e346b576f31374b6b764466222c2236754576745367516a645173615077337142527072323141636237576641736868564b527a444e4b436a5259225d2c22746f4b657973223a5b342c335d2c2276223a322c2276617273223a7b224445504c4f595f4b4559223a7b2274797065223a22736563726574222c2276616c7565223a2266616b652d6465706c6f79227d7d7d20202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020",
+    "packHash": "3061a01434bca92f9dd472553e2f322ad3d5754b946a024df591320cba95c5d1",
+    "results": [
+      {
+        "snapshot": {
+          "v": 2,
+          "env": "deploy",
+          "audience": {
+            "group": null,
+            "also": [
+              "6uEvtSgQjdQsaPw3qBRpr21Acb7WfAshhVKRzDNKCjRY",
+              "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf"
+            ]
+          },
+          "generatedAt": 1767225600000,
+          "vars": {
+            "DEPLOY_KEY": {
+              "type": "secret",
+              "value": "fake-deploy",
+              "note": ""
+            }
+          },
+          "id": "5af7aba87d74996e5b6cef1216ba37e0",
+          "to": [
+            "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+            "6uEvtSgQjdQsaPw3qBRpr21Acb7WfAshhVKRzDNKCjRY"
+          ],
+          "toKeys": [
+            4,
+            3
+          ],
+          "markedChanged": []
+        }
+      },
+      {
+        "error": "notARecipient"
+      }
+    ]
+  }
+}

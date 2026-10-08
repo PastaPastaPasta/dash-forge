@@ -119,13 +119,14 @@ async function publicRefNamesMatch(doc: PrivateDoc, fields: DocFields): Promise<
 }
 
 /**
- * The writer's checks of a recipient list (slot order): 1 to 16 recipients, 32-byte identity ids
- * and 33-byte compressed keys, the sender (`ownerId`, `senderSecret`'s key) first, no identity
- * twice. Throws {@link MalformedError}.
+ * The writer's checks of a recipient list (slot order): 1 to `max` recipients (16 for a letter or
+ * document, {@link MAX_ARTIFACT_RECIPIENTS} for a sealed artifact), 32-byte identity ids and
+ * 33-byte compressed keys, the sender (`ownerId`, `senderSecret`'s key) first, no identity twice.
+ * Throws {@link MalformedError}.
  */
-function checkRecipients(recipients: readonly LetterRecipient[], ownerId: Uint8Array, senderSecret: Uint8Array): void {
+function checkRecipients(max: number, recipients: readonly LetterRecipient[], ownerId: Uint8Array, senderSecret: Uint8Array): void {
   const n = recipients.length
-  if (n < 1 || n > MAX_LETTER_RECIPIENTS) throw new MalformedError(`a letter has 1 to ${MAX_LETTER_RECIPIENTS} recipients`)
+  if (n < 1 || n > max) throw new MalformedError(`a letter has 1 to ${max} recipients`)
   for (const r of recipients) {
     if (r.identityId.length !== 32) throw new MalformedError('an identity id is 32 bytes')
     if (r.publicKey.length !== 33) throw new MalformedError('a recipient key is a 33-byte compressed key')
@@ -166,7 +167,7 @@ async function sealWith(
 ): Promise<LetterSealed> {
   const n = recipients.length
   if (doc.epoch !== 0 || !letterKind(doc.type)) throw new MalformedError('a letter is an issue, PR, comment, review or event under epoch 0')
-  checkRecipients(recipients, doc.ownerId, senderSecret)
+  checkRecipients(MAX_LETTER_RECIPIENTS, recipients, doc.ownerId, senderSecret)
   if (nonce.length !== NONCE_LEN) throw new RangeError('a nonce is 12 bytes')
   const records = buildTlv(fields, { type: doc.type, epoch: 0 })
   if (!(await publicRefNamesMatch(doc, fields))) throw new MalformedError('a ref name does not match its hash')
@@ -360,6 +361,12 @@ export async function openLetter(
 
 /** The header version of a sealed artifact keyed by a per-artifact `K_obj` wrapped to specific people (§3.2). */
 export const ARTIFACT_VERSION = 0x02
+/**
+ * At most this many recipients of a sealed artifact (DFPK 0x02), the sender included: `n` is a
+ * byte, and 64 slots make a 4,165-byte header (an environment snapshot). Letters and documents
+ * stay at {@link MAX_LETTER_RECIPIENTS}. Same as forge-core `named::MAX_ARTIFACT_RECIPIENTS`.
+ */
+export const MAX_ARTIFACT_RECIPIENTS = 64
 /** The segment size writers use (`L = 14`, as for DFPK version 0x01). */
 export const ARTIFACT_SEG_LOG2 = 14
 
@@ -410,7 +417,7 @@ async function sealArtifactWith(
   sealSlot: SlotSealer,
 ): Promise<Bytes> {
   const n = recipients.length
-  checkRecipients(recipients, ownerId, senderSecret)
+  checkRecipients(MAX_ARTIFACT_RECIPIENTS, recipients, ownerId, senderSecret)
   if (fileId.length !== 16 || segLog2 < 10 || segLog2 > 20) throw new RangeError('a 16-byte fileId and 10 <= L <= 20')
   const obj = await objKeys(repoId, kObj)
   const slotPlaintext = concat(new Uint8Array([SLOT_VERSION]), obj.commit.subarray(0, 14), kObj)
@@ -507,7 +514,7 @@ export async function openLetterArtifact(
   }
   const n = sealed[8] as number
   const headerLen = artifactHeaderLength(n)
-  if (n < 1 || n > MAX_LETTER_RECIPIENTS || sealed.length < headerLen) throw corrupt()
+  if (n < 1 || n > MAX_ARTIFACT_RECIPIENTS || sealed.length < headerLen) throw corrupt()
   const header = bytes(sealed.slice(0, headerLen))
   const block = header.subarray(8, 45 + LETTER_SLOT_LEN * n)
   const view = new DataView(header.buffer)

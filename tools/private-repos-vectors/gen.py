@@ -2416,7 +2416,7 @@ def open_named_artifact(sealed, size_bytes, owner_keys, reader_id, reader_privs)
         return dict(error="sealedPackCorrupt")
     n = sealed[8]
     hl = 69 + 64 * n
-    if not 1 <= n <= 16 or len(sealed) < hl:
+    if not 1 <= n <= 64 or len(sealed) < hl:
         return dict(error="sealedPackCorrupt")
     hdr, block = sealed[:hl], sealed[8:45 + 64 * n]
     plen, file_id, S = struct.unpack(">Q", hdr[hl - 24:hl - 16])[0], hdr[hl - 16:], 1 << sealed[5]

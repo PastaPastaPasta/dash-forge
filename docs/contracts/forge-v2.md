@@ -349,7 +349,7 @@ A **public** repo may hold members-only issues, comments and reviews beside its 
   | Kind | Use |
   |---|---|
   | 7 | make-public bundle: plaintext keys that make sealed content public (`private-repos.md` §18.3); readers honour only the epoch keys the owner of a repository made public published |
-  | 8 | **environment snapshot**: one environment's canonical JSON, DFPK `0x01` under the members key (audience Members) or DFPK `0x02` to the current maintainers (audience Maintainers); `supersedes` names earlier snapshots. Written by maintainers only by client rule: consensus admits a manifest from any role-1 writer, and readers count a snapshot only from a current maintainer |
+  | 8 | **environment snapshot**: one environment's canonical JSON, a DFPK `0x02` letter to the people its audience (a group, a group plus people, or specific people) covers when it is saved, at most 64 (phase-1 snapshots under the members key, DFPK `0x01`, are read only); `supersedes` names earlier snapshots. Written by maintainers only by client rule: consensus admits a manifest from any role-1 writer, and readers count a snapshot only from a current maintainer |
   | 9 | environment registry: reserved |
   | 10 | branch grant: reserved |
   | 64–69 | the members-only form of kinds 0–5 (64 + k): reserved |

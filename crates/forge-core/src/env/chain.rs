@@ -26,7 +26,6 @@ use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::format::Snapshot;
-use super::Audience;
 
 /// One kind-8 `packManifest`, as the chain reads it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -369,37 +368,35 @@ pub struct EnvHistory<'a> {
 
 /// What a removed person could read in one environment.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Exposure {
     /// The environment.
     pub env: String,
-    /// Its audience (the newest head's).
-    pub audience: Audience,
     /// The names of current values they could read, sorted.
     pub names: Vec<String>,
+    /// They held the members key and the environment has an old-format Members snapshot, which
+    /// handed over every past value too.
+    pub old_format: bool,
 }
 
 /// The removal checklist (DESIGN §4.5 "Audit and exposure"): for `removed` (base58), who held the
 /// members key when `held_members_key`, the current value names they could read: a name of a
 /// readable head whose current value appears in some snapshot of the environment they could open
-/// (any Members snapshot when they held the members key, which hands over past values too; a
-/// Maintainers snapshot that lists them). Only environments with at least one name, by name.
+/// (a snapshot whose `to` lists them, or an old-format Members snapshot when they held the members
+/// key). Only environments with at least one name, by name.
 #[must_use]
 pub fn exposure(envs: &[EnvHistory<'_>], removed: &str, held_members_key: bool) -> Vec<Exposure> {
     let mut out: Vec<Exposure> = Vec::new();
+    let could =
+        |s: &Snapshot| (s.members_key() && held_members_key) || s.to.iter().any(|t| t == removed);
     for e in envs {
-        let Some(last) = e.heads.last() else {
-            continue;
-        };
         let mut names = BTreeSet::new();
         for head in e.heads {
             for (name, v) in &head.vars {
-                let seen = e.snapshots.iter().any(|s| {
-                    s.vars.get(name).is_some_and(|o| o.value == v.value)
-                        && match s.audience {
-                            Audience::Members => held_members_key,
-                            Audience::Maintainers => s.to.iter().any(|t| t == removed),
-                        }
-                });
+                let seen = e
+                    .snapshots
+                    .iter()
+                    .any(|s| s.vars.get(name).is_some_and(|o| o.value == v.value) && could(s));
                 if seen {
                     names.insert(name.clone());
                 }
@@ -408,8 +405,8 @@ pub fn exposure(envs: &[EnvHistory<'_>], removed: &str, held_members_key: bool) 
         if !names.is_empty() {
             out.push(Exposure {
                 env: e.env.to_owned(),
-                audience: last.audience,
                 names: names.into_iter().collect(),
+                old_format: held_members_key && e.snapshots.iter().any(|s| s.members_key()),
             });
         }
     }
