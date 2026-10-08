@@ -176,7 +176,7 @@ A public repository can keep some of its discussion **members-only**: issues, co
 
 **The words.** Forge uses the same words in `dg`, the web app and these guides:
 
-- **Audiences:** Public, All members (short: Members), Maintainers, Writers and maintainers, Specific people. "Members-only" describes anything that isn't public. Today a post can be Public or Members, and an environment Maintainers or All members. Writers and maintainers, and Specific people, are coming later.
+- **Audiences:** Public, All members (short: Members), Maintainers, Writers and maintainers, Specific people. "Members-only" describes anything that isn't public. A post (an issue, comment or review) and an environment can have any of them.
 - **Roles:** Read, Triage, Write, Maintain, Owner, and Bot for an automated account (coming later). See [Members](#members).
 - **Verbs:** **Publish** (code), **Make public** (a post, such as a comment) and **Make this repo public** (a whole private repository). Each widens the audience for good and can't be undone. All three are coming later.
 - **Repository kinds:** **Public** and **Private**. "Private" means only a private repository, where everything is encrypted ([above](#private-repositories)).
@@ -197,6 +197,14 @@ dg pr review     <owner>/<repo> 7 --approve --members --body "…"
 
 **Replies follow what they answer.** Without `--members`, a comment on a members-only issue, or a reply to a members-only comment, is members-only. A public reply inside a members-only conversation is refused before anything is signed. Edits keep the audience.
 
+**Messages to specific people.** `--to` sends an issue, comment or review to a role group as it is now (`--to maintainers`, or `--to writers` for writers and maintainers) or to people you name (`--to @alice,@bob`, members or not), up to 16 people with you. Only they can read it; everyone else sees that it was posted and to how many people. It needs no members-only content turned on, but each person needs an encryption key. Replies go to the same people (a group as it is now) and `--to` on a reply adds people, who read from that reply on. [Who can read what](../security/audiences.md#send-a-message-to-specific-people) has the details.
+
+```sh
+dg issue create  <owner>/<repo> --to maintainers --title "…" --body "…"
+dg issue comment <owner>/<repo> 12 --to @alice,@bob --body "…"
+dg pr review     <owner>/<repo> 7 --comment --to writers --body "…"
+```
+
 **Reading.** Members read members-only items in `dg issue view`/`list` and `dg pr view`/`list`, marked "members-only". Everyone else sees `#3 · members-only issue by @alice · open`, "3 members-only comments hidden, shown as placeholders (you're not a member of alice/shop)", and lists that say how many rows they can't read ("Issues 3 (1 members-only; only members of alice/shop can read them)"). In `--json`, every item has `"audience"` and `"readable"`. A `dg` key protected by a passphrase is asked for on the terminal. Without a terminal (or with `--json`, and no `DASH_FORGE_PASSPHRASE`), a member sees the items as locked instead. A removed member still reads what was posted before the removal.
 
 **From the web app**, members read members-only issues, comments and reviews after one unlock per tab, and a reply in a members-only conversation stays members-only. Choose **Members** on a composer's audience chip for a new issue or comment; everyone else sees members-only rows and placeholders, and **View as public** shows you what they see.
@@ -215,7 +223,7 @@ dg pr review     <owner>/<repo> 7 --approve --members --body "…"
 
 **Environments.** A repository's configuration and secrets can be kept outside git, encrypted for the people you choose (Maintainers, Writers and maintainers, All members, or specific people): see [Environments](environments.md).
 
-**Not yet.** Members-only pull requests, branches, code and releases, the Writers and maintainers and Specific people audiences for discussion (environments have them), and making members-only discussion public are coming later. Search doesn't look inside members-only issues you can't read.
+**Not yet.** Members-only pull requests (and pull requests for specific people), branches, code and releases, and making members-only discussion public are coming later. Search doesn't look inside members-only issues you can't read.
 
 ---
 

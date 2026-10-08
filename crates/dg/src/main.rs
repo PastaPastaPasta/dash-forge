@@ -843,7 +843,14 @@ pub enum IssueCommand {
         /// something was posted, by whom and when). Needs your encryption key, and members-only
         /// content turned on in the repository (`dg repo members enable`).
         #[arg(long, alias = "private")]
-        members: bool,
+        members: bool,        /// Send it to specific people only: `@alice,@bob` (DPNS names or identity ids), or a
+        /// role group, `maintainers` or `writers` (writers and maintainers), as it is now. You are
+        /// always included; up to 16 people. Only they can read it (everyone still sees that
+        /// something was posted, by whom, when, and to how many people). Each needs an encryption
+        /// key. In a conversation for specific people, replies go to its people anyway and `--to`
+        /// adds people (they read from that reply on).
+        #[arg(long, value_name = "WHO", value_delimiter = ',', conflicts_with = "members")]
+        to: Vec<String>,
     },
     /// Edit an issue: its title and body (its author only), labels, assignees and milestone
     /// (maintainers, writers and triage members), as `gh issue edit` does. One confirmation for
@@ -879,7 +886,14 @@ pub enum IssueCommand {
         /// something was posted, by whom and when). Needs your encryption key, and members-only
         /// content turned on in the repository (`dg repo members enable`).
         #[arg(long, alias = "private")]
-        members: bool,
+        members: bool,        /// Send it to specific people only: `@alice,@bob` (DPNS names or identity ids), or a
+        /// role group, `maintainers` or `writers` (writers and maintainers), as it is now. You are
+        /// always included; up to 16 people. Only they can read it (everyone still sees that
+        /// something was posted, by whom, when, and to how many people). Each needs an encryption
+        /// key. In a conversation for specific people, replies go to its people anyway and `--to`
+        /// adds people (they read from that reply on).
+        #[arg(long, value_name = "WHO", value_delimiter = ',', conflicts_with = "members")]
+        to: Vec<String>,
     },
     /// Edit one of your comments (on an issue or a PR): its body only. In a private repo the
     /// text is re-sealed; an edit made while someone else's landed is refused (E607).
@@ -1534,6 +1548,14 @@ pub struct PrReviewArgs {
     /// members-only content turned on in the repository (`dg repo members enable`).
     #[arg(long, alias = "private")]
     pub members: bool,
+    /// Send it to specific people only: `@alice,@bob` (DPNS names or identity ids), or a
+    /// role group, `maintainers` or `writers` (writers and maintainers), as it is now. You are
+    /// always included; up to 16 people. Only they can read it (everyone still sees that
+    /// something was posted, by whom, when, and to how many people). Each needs an encryption
+    /// key. In a conversation for specific people, replies go to its people anyway and `--to`
+    /// adds people (they read from that reply on).
+    #[arg(long, value_name = "WHO", value_delimiter = ',', conflicts_with = "members")]
+    pub to: Vec<String>,
     /// The summary and the inline comments, in order.
     #[command(flatten)]
     pub inline: pr::inline::InlineArgs,
@@ -1576,6 +1598,14 @@ pub struct PrCommentArgs {
     /// members-only thread replies are members-only anyway.
     #[arg(long, alias = "private")]
     pub members: bool,
+    /// Send it to specific people only: `@alice,@bob` (DPNS names or identity ids), or a
+    /// role group, `maintainers` or `writers` (writers and maintainers), as it is now. You are
+    /// always included; up to 16 people. Only they can read it (everyone still sees that
+    /// something was posted, by whom, when, and to how many people). Each needs an encryption
+    /// key. In a conversation for specific people, replies go to its people anyway and `--to`
+    /// adds people (they read from that reply on).
+    #[arg(long, value_name = "WHO", value_delimiter = ',', conflicts_with = "members")]
+    pub to: Vec<String>,
 }
 
 /// `dg pr merge` arguments.

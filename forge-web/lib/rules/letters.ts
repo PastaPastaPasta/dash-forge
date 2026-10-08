@@ -103,12 +103,11 @@ function sorted(ids: Iterable<string>): string[] {
 }
 
 /**
- * Who a letter goes to, or why it is refused (the module docs; checked in this order: a narrower
- * list, people named with no key, non-members under a members-only parent, too many).
+ * Everyone a letter would go to before anyone without a key is left out (the writer included),
+ * and the people named one by one; or the refusals that come before keys are known.
  */
-export function letterPlan(i: LetterInput): LetterPlan | LetterRefusal {
+function wanted(i: LetterInput): { want: Set<string>; named: Set<string> } | LetterRefusal {
   const { owner, sender, members, parents } = i
-  const keyless = new Set(i.keyless)
   const want = new Set<string>([sender])
   const named = new Set<string>()
   if (i.exact !== null) {
@@ -124,6 +123,28 @@ export function letterPlan(i: LetterInput): LetterPlan | LetterRefusal {
     }
     for (const p of named) want.add(p)
   }
+  return { want, named }
+}
+
+/**
+ * The identities a letter could go to, the writer included: whose encryption keys a writer reads
+ * before calling {@link letterPlan} (with the ones that have none as `keyless`).
+ */
+export function letterCandidates(i: LetterInput): string[] | LetterRefusal {
+  const w = wanted(i)
+  return 'error' in w ? w : sorted(w.want)
+}
+
+/**
+ * Who a letter goes to, or why it is refused (the module docs; checked in this order: a narrower
+ * list, people named with no key, non-members under a members-only parent, too many).
+ */
+export function letterPlan(i: LetterInput): LetterPlan | LetterRefusal {
+  const { owner, sender, members, parents } = i
+  const keyless = new Set(i.keyless)
+  const w = wanted(i)
+  if ('error' in w) return w
+  const { want, named } = w
   const noKey = sorted([...named].filter((p) => p !== sender && keyless.has(p)))
   if (noKey.length > 0) return { error: 'noEncryptionKey', people: noKey }
   if (i.membersOnlyParent) {
@@ -151,4 +172,14 @@ export function letterPlan(i: LetterInput): LetterPlan | LetterRefusal {
 /** Whether `p` is a refusal. */
 export function isLetterRefusal(p: LetterPlan | LetterRefusal): p is LetterRefusal {
   return 'error' in p
+}
+
+/** The preset's name (DESIGN §10). */
+export function letterGroupLabel(group: LetterGroup): string {
+  return group === 'maintainers' ? 'Maintainers' : 'Writers and maintainers'
+}
+
+/** How a recipient list names a group: "maintainers when sent". */
+export function letterGroupWhenSent(group: LetterGroup): string {
+  return group === 'maintainers' ? 'maintainers when sent' : 'writers and maintainers when sent'
 }

@@ -124,9 +124,11 @@ impl<'f> Planned<'f> {
         audience: Audience,
     ) -> Result<Self> {
         let room = field.room_for(repo.visibility, audience, imported);
-        let targets = forge_core::rules::long_body::needs_artifact(full, room)
-            .then(BodyTargets::resolve)
-            .transpose()?;
+        let long = forge_core::rules::long_body::needs_artifact(full, room);
+        if long && audience == Audience::SpecificPeople {
+            return Err(forge_core::collab::long_body::letter_too_long(room).into());
+        }
+        let targets = long.then(BodyTargets::resolve).transpose()?;
         Ok(Self {
             field,
             full: full.to_string(),

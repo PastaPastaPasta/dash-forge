@@ -957,7 +957,7 @@ async fn list(
                             forge_core::collab::v2::TargetKind::Patch,
                             &x.log
                         ),
-                        crate::audience::sealed_noun(x.placeholder.audience, "pull request"),
+                        crate::audience::sealed_noun(&x.placeholder, "pull request"),
                         crate::audience::at_name(&x.placeholder.author, &names),
                         safe(&hid)
                     ),
@@ -1103,6 +1103,7 @@ fn reviews_json(
                 "bodyIncomplete": incomplete.get(&r.document_id),
                 "createdAt": r.created_at,
                 "audience": crate::audience::json(r.audience),
+                "letter": r.letter.as_ref().map(crate::audience::letter_json),
                 // a members-only review this reader cannot open: its verdict counts (D15)
                 "readable": !r.members_only,
             })
@@ -1130,6 +1131,7 @@ fn comments_json(
                 "anchor": forge_core::rules::v2::anchor_of(&c.anchor),
                 "createdAt": c.created_at,
                 "audience": crate::audience::json(c.audience),
+                "letter": c.letter.as_ref().map(crate::audience::letter_json),
             })
         })
         .collect()
@@ -1226,9 +1228,19 @@ async fn view(
     // members-only comments, marked beside their author when printed
     let members_ids: std::collections::BTreeSet<&str> = comments
         .iter()
-        .filter(|c| crate::audience::marked(handle, c.audience))
+        .filter(|c| c.letter.is_none() && crate::audience::marked(handle, c.audience))
         .map(|c| c.document_id.as_str())
         .collect();
+    let letters: std::collections::BTreeMap<&str, &forge_core::collab::v2::LetterInfo> =
+        comments
+            .iter()
+            .filter_map(|c| c.letter.as_ref().map(|l| (c.document_id.as_str(), l)))
+            .chain(
+                reviews
+                    .iter()
+                    .filter_map(|r| r.letter.as_ref().map(|l| (r.document_id.as_str(), l))),
+            )
+            .collect();
     let printed_conv = if (show_hidden || moderation.items.is_empty()) && incomplete.is_empty() {
         None
     } else {
@@ -1433,10 +1445,25 @@ async fn view(
             .chain(bypasses.iter().map(|b| b.actor.as_str()))
             // who hid the thread or a review, for its "hidden by" line
             .chain(moderation.thread.iter().map(|h| h.by.as_str()))
-            .chain(moderation.items.values().map(|h| h.by.as_str()));
+            .chain(moderation.items.values().map(|h| h.by.as_str()))
+            // the people of the messages to specific people (DESIGN §10: names after posting)
+            .chain(
+                letters
+                    .values()
+                    .flat_map(|l| l.recipients.iter().map(String::as_str)),
+            );
         client.dpns_first_names(ids).await
     };
     let who = |id: &str| crate::fmt::with_name(id, &names);
+    let me = s.viewer().unwrap_or_default();
+    let mark = |id: &str| match letters.get(id) {
+        Some(l) => format!(
+            " · to {}",
+            crate::audience::letter_to(&l.recipients, l.group, Some(me), &names)
+        ),
+        None if members_ids.contains(id) => " · members-only".to_string(),
+        None => String::new(),
+    };
     ctx.emit(
         out,
         || {
@@ -1583,12 +1610,16 @@ async fn view(
                     short(&r.commit_oid),
                     short(&r.document_id),
                     if r.members_only {
-                        ""
+                        String::new()
+                    } else if r.letter.is_some() {
+                        mark(&r.document_id)
                     } else {
-                        crate::audience::suffix(handle, r.audience)
+                        crate::audience::suffix(handle, r.audience).to_string()
                     }
                 );
-                if r.members_only {
+                if r.members_only && r.audience == forge_core::rules::v2::Audience::SpecificPeople {
+                    println!("  review text for specific people (its verdict counts)");
+                } else if r.members_only {
                     // DESIGN §10: "Approved by @bob · review text visible to members"
                     println!("  review text visible to members (its verdict counts)");
                 }
@@ -1610,7 +1641,7 @@ async fn view(
                 }
             }
             if show_comments {
-                print_conversations(printed_conv.as_ref().unwrap_or(&conv), &members_ids);
+                print_conversations(printed_conv.as_ref().unwrap_or(&conv), &mark);
                 if !placeholders.is_empty() {
                     println!("\nMembers-only");
                     for m in &placeholders {
@@ -1618,7 +1649,7 @@ async fn view(
                             "  — {} [{}]: [{}]",
                             who(&m.author),
                             short(&m.document_id),
-                            crate::audience::sealed_noun(m.audience, "comment")
+                            crate::audience::sealed_noun(m, "comment")
                         );
                     }
                 }
@@ -1698,16 +1729,10 @@ fn check_word(state: forge_core::rules::v2::CheckState) -> &'static str {
 }
 
 /// The threads under their file and line, then the general comments.
-fn print_conversations(conv: &threads::Conversations, members: &std::collections::BTreeSet<&str>) {
-    // " · members-only" beside a members-only comment's author, added here (never written into
-    // the comment: who wrote it is what the hunk-trust check reads)
-    let mark = |id: &str| {
-        if members.contains(id) {
-            " · members-only"
-        } else {
-            ""
-        }
-    };
+fn print_conversations(conv: &threads::Conversations, mark: &dyn Fn(&str) -> String) {
+    // " · members-only" (or " · to bob and you" for a message to specific people) beside a
+    // comment's author, added here (never written into the comment: who wrote it is what the
+    // hunk-trust check reads)
     let mut last_path = "";
     for t in &conv.threads {
         if t.anchor.path != last_path {
@@ -4044,6 +4069,7 @@ pub(crate) mod tests {
             imported: None,
             upstream_number: None,
             audience: forge_core::rules::v2::Audience::Public,
+            letter: None,
         };
         PatchView {
             state: forge_core::rules::PrState::default(),

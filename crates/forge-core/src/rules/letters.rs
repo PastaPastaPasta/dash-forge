@@ -170,12 +170,12 @@ fn sorted(s: impl IntoIterator<Item = String>) -> Vec<String> {
     s.into_iter().collect::<BTreeSet<_>>().into_iter().collect()
 }
 
-/// Who a letter goes to, or why it is refused (the module docs; checked in this order: a
-/// narrower list, people named with no key, non-members under a members-only parent, too many).
-pub fn plan(i: &LetterInput) -> Result<LetterPlan, LetterRefusal> {
-    let (owner, sender, members) = (i.owner.as_str(), &i.sender, &i.members[..]);
-    let keyless: BTreeSet<&String> = i.keyless.iter().collect();
-    let mut want: BTreeSet<String> = BTreeSet::from([sender.clone()]);
+/// Everyone a letter would go to before anyone without a key is left out (the writer
+/// included), and the people named one by one; or the refusals that come before keys are known
+/// (no recipients, a narrower list). What a writer fetches keys for before [`plan`].
+fn wanted(i: &LetterInput) -> Result<(BTreeSet<String>, BTreeSet<String>), LetterRefusal> {
+    let (owner, members) = (i.owner.as_str(), &i.members[..]);
+    let mut want: BTreeSet<String> = BTreeSet::from([i.sender.clone()]);
     let mut named: BTreeSet<String> = BTreeSet::new();
     if let Some(exact) = &i.exact {
         want.extend(exact.iter().cloned());
@@ -205,6 +205,21 @@ pub fn plan(i: &LetterInput) -> Result<LetterPlan, LetterRefusal> {
         }
         want.extend(named.iter().cloned());
     }
+    Ok((want, named))
+}
+
+/// The identities a letter could go to, the writer included: whose encryption keys a writer
+/// reads before calling [`plan`] (with the ones that have none as `keyless`).
+pub fn candidates(i: &LetterInput) -> Result<BTreeSet<String>, LetterRefusal> {
+    wanted(i).map(|(want, _)| want)
+}
+
+/// Who a letter goes to, or why it is refused (the module docs; checked in this order: a
+/// narrower list, people named with no key, non-members under a members-only parent, too many).
+pub fn plan(i: &LetterInput) -> Result<LetterPlan, LetterRefusal> {
+    let (owner, sender, members) = (i.owner.as_str(), &i.sender, &i.members[..]);
+    let keyless: BTreeSet<&String> = i.keyless.iter().collect();
+    let (want, named) = wanted(i)?;
     let no_key = sorted(
         named
             .iter()
@@ -261,4 +276,34 @@ pub fn plan(i: &LetterInput) -> Result<LetterPlan, LetterRefusal> {
         skipped,
         group,
     })
+}
+
+/// "1 person" / "3 people".
+#[must_use]
+pub fn people(n: usize) -> String {
+    if n == 1 {
+        "1 person".to_owned()
+    } else {
+        format!("{n} people")
+    }
+}
+
+impl LetterGroup {
+    /// The preset's name (DESIGN §10): "Maintainers", "Writers and maintainers".
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            LetterGroup::Maintainers => "Maintainers",
+            LetterGroup::Writers => "Writers and maintainers",
+        }
+    }
+
+    /// How a recipient list names it: "maintainers when sent".
+    #[must_use]
+    pub fn when_sent(self) -> &'static str {
+        match self {
+            LetterGroup::Maintainers => "maintainers when sent",
+            LetterGroup::Writers => "writers and maintainers when sent",
+        }
+    }
 }

@@ -23,6 +23,9 @@
     "audience": {
       "$ref": "common.schema.json#/$defs/audience"
     },
+    "letter": {
+      "$ref": "common.schema.json#/$defs/letter"
+    },
     "cost": {
       "$ref": "common.schema.json#/$defs/cost"
     }

@@ -181,6 +181,12 @@
     "audience": {
       "$ref": "common.schema.json#/$defs/audience"
     },
+    "recipients": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
     "readable": {
       "type": "boolean"
     },

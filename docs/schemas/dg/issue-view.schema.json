@@ -36,6 +36,15 @@
     "audience": {
       "$ref": "common.schema.json#/$defs/audience"
     },
+    "letter": {
+      "$ref": "common.schema.json#/$defs/letter"
+    },
+    "recipients": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
     "readable": {
       "type": "boolean"
     },
@@ -111,6 +120,9 @@
           "bodyIncomplete": {},
           "audience": {
             "$ref": "common.schema.json#/$defs/audience"
+          },
+          "letter": {
+            "$ref": "common.schema.json#/$defs/letter"
           },
           "createdAt": {
             "type": "integer"
