@@ -4,7 +4,7 @@ Full pyramid with emphasis on **real end-to-end testing against live networks**,
 
 ## 1. Test infrastructure: identities & funding
 
-forge-v2 (shared contracts forge-core + forge-collab, Platform protocol 14; [contracts/forge-v2.md](../contracts/forge-v2.md)) targets **devnet sakura** (the RC2 contracts, registered 2026-10-01 on Platform v5.0.0-beta.1 and again on 2026-10-07 after sakura's Platform reset onto 5.0.0-beta.2; bonsia with the RC1 contracts until 2026-10-01, moutai until 2026-09-29), so every live suite runs there. Testnet runs resume once protocol 14 reaches testnet and forge-v2 is registered there.
+forge-v2 (shared contracts forge-core + forge-collab, Platform protocol 14; [contracts/forge-v2.md](../contracts/forge-v2.md)) targets **devnet sakura** (the RC2 contracts, registered 2026-10-01 on Platform v5.0.0-beta.1, again on 2026-10-07 after sakura's Platform reset onto 5.0.0-beta.2, and again on 2026-10-08, with the same ids, after its reset onto 5.0.0-beta.3; bonsia with the RC1 contracts until 2026-10-01, moutai until 2026-09-29), so every live suite runs there. Testnet runs resume once protocol 14 reaches testnet and forge-v2 is registered there.
 
 ### 1.1 Obtaining identities (devnet sakura)
 
@@ -16,7 +16,7 @@ forge-v2 (shared contracts forge-core + forge-collab, Platform protocol 14; [con
 
 | Env | Purpose |
 |---|---|
-| **Devnet sakura** (protocol 14, drive 5.0.0-beta.2) | All integration + e2e suites; contract re-registration rehearsals (`deploy-v2.mjs --force-new`) |
+| **Devnet sakura** (protocol 14, drive 5.0.0-beta.3) | All integration + e2e suites; contract re-registration rehearsals (`deploy-v2.mjs --force-new`) |
 | Testnet | The same suites once protocol 14 and forge-v2 are live there |
 | Mainnet | Production smoke (§8) after forge-v2 is registered there |
 

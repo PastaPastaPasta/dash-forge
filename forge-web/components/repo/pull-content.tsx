@@ -1629,7 +1629,7 @@ function PullPage({
                         let dependents: Dependents | null = null
                         if (sdk !== null && src !== null && ref !== null) {
                           setCheckingDependents(true)
-                          dependents = await openPullsOnBranch(sdk, src, ref, { except: src.repoId === repo.repoId ? pull.number : null, network }).catch(
+                          dependents = await openPullsOnBranch(sdk, src, ref, { except: { repoId: repo.repoId, number: pull.number }, network }).catch(
                             (e: unknown): Dependents => ({ error: errorMessage(e, 'the read failed') }),
                           )
                           setCheckingDependents(false)
