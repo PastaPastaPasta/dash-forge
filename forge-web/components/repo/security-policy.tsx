@@ -75,12 +75,12 @@ const HEADER_DELAY_MS = 1500
 /**
  * The security policy on the default branch: the file, or `null` when the repo has none (also for
  * a private repo, an empty one, and a lookup that failed), or `undefined` while it is read.
- * `enabled: false` reads nothing and answers `null`.
+ * `enabled: false` reads nothing: it answers what an earlier lookup of this tip found, else `undefined`.
  */
 export function useSecurityPolicy(home: RepoHome, enabled = true): SecurityPolicyFile | null | undefined {
   // Members-only content is not involved: only a public repo's public files are read.
-  const eligible = enabled && home.repo.visibility === 'public'
-  const { tip, reader, unavailable } = useDefaultBranchReader(home, eligible)
+  const eligible = home.repo.visibility === 'public'
+  const { tip, reader, unavailable } = useDefaultBranchReader(home, eligible && enabled)
   const key = tip === null ? '' : foundKey(home, tip)
   const state = useAsync<{ readonly file: SecurityPolicyFile | null }>(
     () => lookUp(home, reader!, tip!),
@@ -93,9 +93,11 @@ export function useSecurityPolicy(home: RepoHome, enabled = true): SecurityPolic
 }
 
 /** "Security policy" in the repo header, when the default branch has one. */
-export function SecurityPolicyLink({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element | null {
-  // On every repo page, so it waits for the page's own reads instead of competing with them.
-  const later = useAfter(HEADER_DELAY_MS, home.repo.visibility === 'public')
+export function SecurityPolicyLink({ home, addr, load }: { home: RepoHome; addr: RepoAddress; load: boolean }): JSX.Element | null {
+  // On every repo page, so it costs no request of its own where the page does not already read the
+  // code (`load`: the Code tab's pages): there it shows what an earlier lookup of the tip found,
+  // and it waits for the page's own reads before it looks.
+  const later = useAfter(HEADER_DELAY_MS, load && home.repo.visibility === 'public')
   const policy = useSecurityPolicy(home, later)
   if (!policy) return null
   return (

@@ -150,7 +150,7 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
           {home.repo.visibility === 'private' ? <PrivateChip home={home} /> : null}
           <MembersChip home={home} />
           <BackendBadge backend={home.backend} />
-          <SecurityPolicyLink home={home} addr={addr} />
+          <SecurityPolicyLink home={home} addr={addr} load={current === 'code'} />
         </div>
         <div className="ml-auto flex flex-wrap items-center gap-2">
           <CodeSearchBox addr={addr} />

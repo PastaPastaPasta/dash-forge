@@ -69,7 +69,7 @@ const text = (): string => host.textContent ?? ''
 describe('Security policy link', () => {
   it('shows when the default branch has a policy, and goes to the page', async () => {
     find.mockResolvedValue({ path: '.github/SECURITY.md', oid: 'x' })
-    await renderHeader(<SecurityPolicyLink home={home('public', 'with')} addr={addr} />)
+    await renderHeader(<SecurityPolicyLink home={home('public', 'with')} addr={addr} load />)
     const link = host.querySelector<HTMLAnchorElement>('[data-testid="security-policy-link"]')
     expect(link?.textContent).toBe('Security policy')
     expect(link?.getAttribute('href')).toContain('/repo/security')
@@ -78,21 +78,21 @@ describe('Security policy link', () => {
 
   it('is absent when there is no policy, and never reads a private repo', async () => {
     find.mockResolvedValue(null)
-    await renderHeader(<SecurityPolicyLink home={home('public', 'without')} addr={addr} />)
+    await renderHeader(<SecurityPolicyLink home={home('public', 'without')} addr={addr} load />)
     expect(host.querySelector('[data-testid="security-policy-link"]')).toBeNull()
     find.mockClear()
-    await renderHeader(<SecurityPolicyLink home={home('private', 'sealed')} addr={addr} />)
+    await renderHeader(<SecurityPolicyLink home={home('private', 'sealed')} addr={addr} load />)
     expect(host.querySelector('[data-testid="security-policy-link"]')).toBeNull()
     expect(find).not.toHaveBeenCalled()
   })
 
   it('is absent for a repo with no commits yet, and when the lookup fails', async () => {
     tipFor.tip = null
-    await renderHeader(<SecurityPolicyLink home={home('public', 'empty')} addr={addr} />)
+    await renderHeader(<SecurityPolicyLink home={home('public', 'empty')} addr={addr} load />)
     expect(find).not.toHaveBeenCalled()
     tipFor.tip = 'tip-2'
     find.mockRejectedValue(new Error('storage down'))
-    await renderHeader(<SecurityPolicyLink home={home('public', 'broken')} addr={addr} />)
+    await renderHeader(<SecurityPolicyLink home={home('public', 'broken')} addr={addr} load />)
     expect(host.querySelector('[data-testid="security-policy-link"]')).toBeNull()
   })
 })
@@ -168,5 +168,21 @@ describe('Security policy page', () => {
     await act(async () => undefined)
     expect(host.querySelector('[data-testid="security-policy-unshown"]')?.textContent).toContain('too large')
     expect(host.querySelector('[data-testid="security-policy-unshown"] a')?.getAttribute('href')).toContain('/repo/blob')
+  })
+})
+
+describe('Security policy link where the page does not read the code', () => {
+  it('reads nothing, and shows what an earlier lookup found', async () => {
+    find.mockResolvedValue({ path: 'SECURITY.md', oid: 'x' })
+    const h = home('public', 'quiet')
+    await render(<SecurityPolicyLink home={h} addr={addr} load={false} />)
+    expect(find).not.toHaveBeenCalled()
+    expect(host.querySelector('[data-testid="security-policy-link"]')).toBeNull()
+    // The Code tab (or the issue form) looks it up ...
+    await renderHeader(<SecurityPolicyLink home={h} addr={addr} load />)
+    expect(host.querySelector('[data-testid="security-policy-link"]')).not.toBeNull()
+    // ... and the next page, which reads nothing, shows it.
+    await render(<SecurityPolicyLink home={h} addr={addr} load={false} />)
+    expect(host.querySelector('[data-testid="security-policy-link"]')).not.toBeNull()
   })
 })
