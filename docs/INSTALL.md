@@ -1,9 +1,10 @@
 # Installing Dash Forge
 
-> **Current release: [v0.1.0](https://github.com/PastaPastaPasta/dash-forge/releases/tag/v0.1.0)**
-> ([release notes](releases/v0.1.0.md), [changelog](../CHANGELOG.md)). It targets devnet
-> sakura only; Forge is not on testnet or mainnet yet. The version policy is in
-> [VERSIONING.md](VERSIONING.md).
+> **No release is published yet.** Until one is, build from source:
+> [Build from source](#build-from-source) below has the commands. The prebuilt binaries
+> and the install script described here work once a release exists; until then the script
+> stops and points back to the source build. Forge runs on devnet sakura only; it is not on
+> testnet or mainnet yet. The version policy is in [VERSIONING.md](VERSIONING.md).
 
 Every release on [GitHub Releases](https://github.com/PastaPastaPasta/dash-forge/releases)
 ships prebuilt binaries, so you do not need Rust, `protoc`, or the Platform SDK source to use
@@ -188,8 +189,16 @@ Your configuration and identities in `~/.config/dash-forge` are left untouched.
 
 ## Build from source
 
-See [BUILDING.md](BUILDING.md). You need Rust (the version is pinned by
-`rust-toolchain.toml`) and `protoc` 25 or newer.
+This works from any commit and needs no release. You need Rust (the version is pinned by
+`rust-toolchain.toml`) and `protoc` 25 or newer; [BUILDING.md](BUILDING.md) has the details.
+
+```sh
+git clone https://github.com/PastaPastaPasta/dash-forge && cd dash-forge
+cargo install --locked --path crates/dg
+cargo install --locked --path crates/git-remote-dash
+```
+
+`cargo install` puts both binaries in `~/.cargo/bin`.
 
 ## For maintainers: cutting a release
 
