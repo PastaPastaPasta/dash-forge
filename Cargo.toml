@@ -49,7 +49,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 #
 # Bumping the tag: change PLATFORM_TAG below in ALL SEVEN entries together, run
 # `cargo update -p dash-sdk`, and commit the resulting Cargo.lock.
-# PLATFORM_TAG = v5.0.0-beta.2
+# PLATFORM_TAG = v5.0.0-beta.3
 # TODO(sdk-5.0-final): a pre-release tag (the 4.2 line renamed; still protocol 14), pinned for
 # forge-v2 RC2 on devnets. Move to v5.0.0 when it is tagged, in lockstep with forge-web's
 # @dashevo/evo-sdk pin. v5 dpp refuses beta.7's `immutableAllowSetting` on every parse, so this
@@ -58,19 +58,19 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 # mocks/offline-testing are dropped (default-features = false) so only the live network
 # client is built. `dapi-grpc` with the `client` feature is pulled in directly to keep the
 # network transport + TLS stubs compiled after dropping the SDK's default feature set.
-dash-sdk = { git = "https://github.com/dashpay/platform.git", tag = "v5.0.0-beta.2", default-features = false }
-dapi-grpc = { git = "https://github.com/dashpay/platform.git", tag = "v5.0.0-beta.2", default-features = false, features = ["core", "platform", "client"] }
-drive-proof-verifier = { git = "https://github.com/dashpay/platform.git", tag = "v5.0.0-beta.2", default-features = false }
-rs-sdk-trusted-context-provider = { git = "https://github.com/dashpay/platform.git", tag = "v5.0.0-beta.2" }
-simple-signer = { git = "https://github.com/dashpay/platform.git", tag = "v5.0.0-beta.2" }
+dash-sdk = { git = "https://github.com/dashpay/platform.git", tag = "v5.0.0-beta.3", default-features = false }
+dapi-grpc = { git = "https://github.com/dashpay/platform.git", tag = "v5.0.0-beta.3", default-features = false, features = ["core", "platform", "client"] }
+drive-proof-verifier = { git = "https://github.com/dashpay/platform.git", tag = "v5.0.0-beta.3", default-features = false }
+rs-sdk-trusted-context-provider = { git = "https://github.com/dashpay/platform.git", tag = "v5.0.0-beta.3" }
+simple-signer = { git = "https://github.com/dashpay/platform.git", tag = "v5.0.0-beta.3" }
 # The `encryptedFor` scheme (`ecdh-secp256k1-aes256-cbc`, DIP-15 ECDH + AES-256-CBC) from the
 # same tag, so forge-core's envelope matches Platform byte for byte. Small (no dashcore); used
 # by `forge_core::envelope`. `secp256k1` is the version it exposes in its API (it must unify).
-platform-encryption = { git = "https://github.com/dashpay/platform.git", tag = "v5.0.0-beta.2" }
+platform-encryption = { git = "https://github.com/dashpay/platform.git", tag = "v5.0.0-beta.3" }
 # rs-dpp itself, for forge-core's test-only RC1 conformance runner (`validation` +
 # `json-conversion`: parse the generated contracts and run document-property validation). It is
 # the package the SDK re-exports, so it unifies to one copy; no normal build depends on it.
-dpp = { git = "https://github.com/dashpay/platform.git", tag = "v5.0.0-beta.2", default-features = false }
+dpp = { git = "https://github.com/dashpay/platform.git", tag = "v5.0.0-beta.3", default-features = false }
 secp256k1 = { version = "0.30", features = ["std"] }
 
 # Workspace-wide lints. CI runs `cargo clippy --all-targets -- -D warnings`, which

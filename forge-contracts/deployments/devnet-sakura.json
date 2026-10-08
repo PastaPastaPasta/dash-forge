@@ -27,10 +27,10 @@
       "status": "registered",
       "sizeBytes": 17642,
       "schemaHash": "28940bb805f649483c9fac2469715ba7d95c8c5b7c5e7fccd124386e63856324",
-      "balanceBefore": "799868463140",
-      "deployedAt": "2026-10-07T05:49:59.584Z",
-      "costCredits": "68742846050",
-      "costDash": 0.6874284605
+      "balanceBefore": "799868179520",
+      "deployedAt": "2026-10-08T18:59:54.120Z",
+      "costCredits": "68742794690",
+      "costDash": 0.6874279469
     },
     "forgeCollab": {
       "contractId": "BTEsn5BmsSWF8ahQLJjohy392vnpD2NgPnTjAVEUCWKh",
@@ -40,10 +40,10 @@
       "status": "registered",
       "sizeBytes": 17739,
       "schemaHash": "8271807fa2c7e6702e554861732da6a7b6388425cba9e5b7a4f34bc10e8a7a81",
-      "balanceBefore": "731125617090",
-      "deployedAt": "2026-10-07T05:50:02.669Z",
-      "costCredits": "46666809860",
-      "costDash": 0.4666680986
+      "balanceBefore": "731125384830",
+      "deployedAt": "2026-10-08T18:59:58.266Z",
+      "costCredits": "46666959860",
+      "costDash": 0.4666695986
     },
     "forgeCommunity": {
       "contractId": "FASrkH8LH77EjvUPH3bRsgmpUdBtsqALEkBRAqefkMu1",
@@ -53,20 +53,20 @@
       "status": "registered",
       "sizeBytes": 17619,
       "schemaHash": "54c42914861ada413e7af72db2120ac937e38ee2b398726676cd4d842d64b848",
-      "balanceBefore": "684458807230",
-      "deployedAt": "2026-10-07T05:50:04.570Z",
-      "costCredits": "57705649680",
-      "costDash": 0.5770564968
+      "balanceBefore": "684458424970",
+      "deployedAt": "2026-10-08T19:00:01.307Z",
+      "costCredits": "57705752400",
+      "costDash": 0.577057524
     },
     "contractGroupId": "3ucJjgTBDtk5ywQEGi6gF38yMqiRbFjKpbTdoUvVnchC",
     "contractGroup": {
       "id": "3ucJjgTBDtk5ywQEGi6gF38yMqiRbFjKpbTdoUvVnchC",
       "name": "dash-forge",
       "owner": "DQRPV2Pa8pwurewkLY84ACCZ1qWm4pnoUucQgAmk4S2r",
-      "verifiedAt": "2026-10-07T05:50:04.846Z"
+      "verifiedAt": "2026-10-08T19:00:01.617Z"
     },
     "protocolVersion": 14,
-    "sdk": "@dashevo/evo-sdk@5.0.0-beta.2",
+    "sdk": "@dashevo/evo-sdk@5.0.0-beta.3",
     "devnet": {
       "name": "sakura",
       "addresses": [
@@ -91,7 +91,7 @@
     "ownerId": "DQRPV2Pa8pwurewkLY84ACCZ1qWm4pnoUucQgAmk4S2r",
     "identityNonce": "4",
     "copyOf": "7UaqHGBJBbRLJ4fUWS45cnud8PPUugJWoGTt1SKwHJ2P",
-    "deployedAt": "2026-10-07T05:50:15.690Z",
-    "costDash": 0.1407956
+    "deployedAt": "2026-10-08T19:00:14.798Z",
+    "costDash": 0.1407956136
   }
 }
