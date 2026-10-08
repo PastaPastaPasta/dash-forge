@@ -222,7 +222,7 @@ expect_reject mainnet-core-names-meta core '.documentSchemas.refUpdate.propertie
 # B1: a grant is deletable (by its writer) and is matched on the ref's hash and the grant's until
 expect_reject mainnet-grant-as-permanent core '.documentSchemas.refUpdate.properties.pg.refersTo.type = "permanentDocument"'
 expect_reject mainnet-grant-scope-vs-name core '.documentSchemas.refUpdate.properties.pg.refersTo.where.scope = "refName"' '40126'
-expect_reject mainnet-grant-until-vs-prefix core '.documentSchemas.refUpdate.properties.pp.refersTo.where.until = "gp"' '40126'
+expect_reject mainnet-grant-until-vs-name core '.documentSchemas.refUpdate.properties.pp.refersTo.where.until = "refName"' '40126'
 expect_reject mainnet-grant-bot-row-role-vs-string core '.documentSchemas.pushGrant.properties.botId.refersTo.where.role = "prefix"' '40126'
 # The bot's role and claims are load-bearing in the vectors
 expect_reject mainnet-push-r-max-1 core '.documentSchemas.refUpdate.properties.r.maximum = 1' 'vectors disagree'
