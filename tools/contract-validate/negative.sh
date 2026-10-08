@@ -1,19 +1,23 @@
 #!/usr/bin/env bash
 # Negative checks: each mutation below breaks one protocol-14 rule the forge-v2 design relies on,
 # and the validator must refuse every one of them. A validator that accepts a broken contract
-# proves nothing about the real ones.
+# proves nothing about the real ones. The committed three-contract set first, then the four-contract
+# mainnet set (`build.py --mainnet`, dash-forge-qa design/mixed-visibility/DESIGN.md rev 4.1 §8.3).
 #
 #   tools/contract-validate/negative.sh
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
+schema="$here/../../forge-contracts/schema"
 contracts="$here/../../forge-contracts/contracts"
 vectors="$here/../../forge-contracts/vectors/rc1"
+names=(forge-core forge-collab forge-community)
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.cache/dash-forge-target-contract-validate}"
-# Pinned like the rs-dpp tag it builds against (platform v5.0.0-beta.1's rust-toolchain.toml)
-cargo +1.98.1 build -q --locked --manifest-path "$here/Cargo.toml"
-bin="$CARGO_TARGET_DIR/debug/contract-validate"
+# Pinned like the rs-dpp tag it builds against (platform v5.0.0-beta.3's rust-toolchain.toml). Release:
+# variants.py runs it on every mainnet flag combination, so CI builds this one.
+cargo +1.98.1 build -q --release --locked --manifest-path "$here/Cargo.toml"
+bin="$CARGO_TARGET_DIR/release/contract-validate"
 
 fails=0
 # expect_reject <label> <which: core|collab|community> <jq filter> [<reason regex>]
@@ -22,9 +26,10 @@ fails=0
 expect_reject() {
   local label="$1" which="$2" filter="$3" want="${4:-}" dir="$work/$1"
   mkdir -p "$dir"
-  cp "$contracts/forge-core.json" "$contracts/forge-collab.json" "$contracts/forge-community.json" "$dir/"
+  local files=()
+  for n in "${names[@]}"; do cp "$contracts/$n.json" "$dir/"; files+=("$dir/$n.json"); done
   jq "$filter" "$contracts/forge-$which.json" > "$dir/forge-$which.json"
-  if "$bin" --vectors "$vectors" "$dir/forge-core.json" "$dir/forge-collab.json" "$dir/forge-community.json" > "$dir/out" 2>&1; then
+  if "$bin" --vectors "$vectors" "${files[@]}" > "$dir/out" 2>&1; then
     echo "NOT REJECTED: $label"
     fails=$((fails + 1))
   elif [ -n "$want" ] && ! grep -qE "$want" "$dir/out"; then
@@ -108,19 +113,23 @@ expect_reject dense-without-countable-patch-index collab '.documentSchemas.patch
 # Each rule is load-bearing: without it, a vector that breaks only that rule is accepted. One
 # mutation per (type, rule) that some refused vector names as its reason; a type left with no
 # rule loses the empty propertyConstraints too, so the schema itself stays valid.
-rules=()
-while IFS= read -r line; do rules+=("$line"); done < <(for c in core collab community; do
-  jq -r --arg c "$c" --slurpfile k "$contracts/forge-$c.json" \
-    '.[] | select(.expect == "refused") | select(.why as $w | ($k[0].documentSchemas[.type].propertyConstraints // {}) | has($w)) | "\($c) \(.type) \(.why)"' \
-    "$vectors/forge-$c.json"
-done | sort -u)
-[ "${#rules[@]}" -gt 0 ] || { echo "no rule is named by a refused vector: the vectors did not load"; exit 1; }
-for line in "${rules[@]}"; do
-  read -r which type rule <<<"$line"
-  expect_reject "without-$type-$rule" "$which" \
-    "del(.documentSchemas.$type.propertyConstraints.$rule) | if .documentSchemas.$type.propertyConstraints == {} then del(.documentSchemas.$type.propertyConstraints) else . end" \
-    "expected refused by $rule, got accepted"
-done
+every_rule_is_load_bearing() {
+  local rules=() line which type rule
+  while IFS= read -r line; do rules+=("$line"); done < <(for n in "${names[@]}"; do
+    c="${n#forge-}"
+    jq -r --arg c "$c" --slurpfile k "$contracts/forge-$c.json" \
+      '.[] | select(.expect == "refused") | select(.why as $w | ($k[0].documentSchemas[.type].propertyConstraints // {}) | has($w)) | "\($c) \(.type) \(.why)"' \
+      "$vectors/forge-$c.json"
+  done | sort -u)
+  [ "${#rules[@]}" -gt 0 ] || { echo "no rule is named by a refused vector: the vectors did not load"; exit 1; }
+  for line in "${rules[@]}"; do
+    read -r which type rule <<<"$line"
+    expect_reject "${1:-}without-$type-$rule" "$which" \
+      "del(.documentSchemas.$type.propertyConstraints.$rule) | if .documentSchemas.$type.propertyConstraints == {} then del(.documentSchemas.$type.propertyConstraints) else . end" \
+      "expected refused by $rule, got accepted"
+  done
+}
+every_rule_is_load_bearing
 expect_reject dense-without-countable-index collab '.documentSchemas.issue.indices |= map(if .name == "perRepo" then del(.countable) else . end)'
 expect_reject sum-without-summable-index collab '.documentSchemas.transition.indices |= map(if .name == "perTarget" then del(.summable) else . end)'
 expect_reject summed-property-optional collab '.documentSchemas.transition.required -= ["delta"]'
@@ -197,6 +206,42 @@ expect_update_refused update-changes-a-rule '.documentSchemas.label.propertyCons
 if jq -e '.documentSchemas.writer.properties.role' "$contracts/forge-core.json" > /dev/null; then
   expect_update_refused update-drops-a-role-where 'del(.documentSchemas.refUpdate.ownerRefersTo.anyOf[1].where.role)'
 fi
+
+# ---- The mainnet set: four contracts, the mixed-visibility items (DESIGN rev 4.1 §8.3) ----
+contracts="$work/mainnet/contracts"
+vectors="$work/mainnet/vectors"
+names=(forge-core forge-collab forge-community forge-meta)
+python3 "$schema/build.py" --mainnet --out "$contracts" > /dev/null
+python3 "$schema/vectors.py" --mainnet --out "$vectors" > /dev/null
+"$bin" --vectors "$vectors" "$contracts"/forge-{core,collab,community,meta}.json > "$work/mainnet.out" 2>&1 \
+  || { echo "the mainnet set does not validate:"; tail -20 "$work/mainnet.out"; exit 1; }
+every_rule_is_load_bearing mainnet-
+# D44: forge-meta's references name forge-core by id, and forge-core cannot name forge-meta (registered after it)
+expect_reject mainnet-meta-ref-without-contract-id meta '.documentSchemas.label.ownerRefersTo.anyOf |= map(del(.contractId))'
+expect_reject mainnet-core-names-meta core '.documentSchemas.refUpdate.properties.pp.refersTo.contractId = "FORGE_META_CONTRACT_ID"' 'left unresolved'
+# B1: a grant is deletable (by its writer) and is matched on the ref's hash and the grant's until
+expect_reject mainnet-grant-as-permanent core '.documentSchemas.refUpdate.properties.pg.refersTo.type = "permanentDocument"'
+expect_reject mainnet-grant-scope-vs-name core '.documentSchemas.refUpdate.properties.pg.refersTo.where.scope = "refName"' '40126'
+expect_reject mainnet-grant-until-vs-name core '.documentSchemas.refUpdate.properties.pp.refersTo.where.until = "refName"' '40126'
+expect_reject mainnet-grant-bot-row-role-vs-string core '.documentSchemas.pushGrant.properties.botId.refersTo.where.role = "prefix"' '40126'
+# The bot's role and claims are load-bearing in the vectors
+expect_reject mainnet-push-r-max-1 core '.documentSchemas.refUpdate.properties.r.maximum = 1' 'vectors disagree'
+expect_reject mainnet-pack-r-max-1 core '.documentSchemas.packManifest.properties.r.maximum = 1' 'vectors disagree'
+expect_reject mainnet-writer-role-max-3 core '.documentSchemas.writer.properties.role.maximum = 3' 'vectors disagree'
+expect_reject mainnet-wrap-mr-optional meta '.documentSchemas.repoKey.required -= ["mr"]' 'expected refused by required, got accepted'
+expect_reject mainnet-wrap-mr-admits-bot meta '.documentSchemas.repoKey.properties.mr.maximum = 4' 'expected refused by maximum, got accepted'
+# C1, L1, M1: the conditional immutables are load-bearing in the replace vectors
+expect_reject mainnet-visibility-frozen-outright core '.documentSchemas.repo.immutable |= map(if type == "object" and .property == "visibility" then "visibility" else . end)' 'replace.json vectors disagree'
+expect_reject mainnet-visibility-free core '.documentSchemas.repo.immutable |= map(select(type == "string" or .property != "visibility"))' 'replace.json vectors disagree'
+expect_reject mainnet-aud-free collab '.documentSchemas.issue.immutable |= map(select(type == "string" or .property != "aud"))' 'replace.json vectors disagree'
+expect_reject mainnet-aud-frozen-outright collab '.documentSchemas.comment.immutable |= map(if type == "object" and .property == "aud" then "aud" else . end)' 'replace.json vectors disagree'
+expect_reject mainnet-path-free collab '.documentSchemas.comment.immutable |= map(select(type == "string" or .property != "path"))' 'replace.json vectors disagree'
+expect_reject mainnet-path-frozen-outright collab '.documentSchemas.comment.immutable |= map(if type == "object" and .property == "path" then "path" else . end)' 'replace.json vectors disagree'
+expect_reject mainnet-path-settable-on-public collab '.documentSchemas.comment.immutable |= map(if type == "object" and .property == "path" then .when.anyOf |= map(select(. != {"absent": "$old.aud"})) else . end)' 'replace.json vectors disagree'
+expect_reject mainnet-check-aud-mutable community '.documentSchemas.checkRun.immutable -= ["aud"]' 'replace.json vectors disagree'
+# L1: aud present <=> enc present
+expect_reject mainnet-aud-without-enc collab '.documentSchemas.issue.dependentRequired = {"enc": ["epoch", "aud"]}' 'vectors disagree'
+expect_reject mainnet-enc-without-aud collab '.documentSchemas.comment.dependentRequired = {"aud": ["enc"], "enc": ["epoch"]}' 'vectors disagree'
 
 if [ "$fails" -ne 0 ]; then
   echo "$fails mutation(s) were NOT rejected"
