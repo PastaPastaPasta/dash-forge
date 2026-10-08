@@ -135,7 +135,7 @@ export function LoginModal(): JSX.Element {
       {intent && view !== 'grant' ? (
         <p data-testid="signin-intent" className="mb-3 rounded-md bg-anvil-100 px-3 py-2 text-dense text-anvil-700 dark:bg-anvil-800 dark:text-anvil-200">
           {intent.privateRepo
-            ? 'Private repos are encrypted for their members. Import your identity with "Enable private repos" ticked: this browser then keeps your encryption key and opens the private repos you are a member of. Reading costs nothing.'
+            ? 'Private repos are encrypted for their members. Import your identity with "Read and write members-only and private content" ticked: this browser then keeps your encryption key and opens the private repos you are a member of. Reading costs nothing.'
             : intent.credits !== undefined
               ? `Once you're signed in, this costs at most about ${creditsAsDash(intent.credits)} DASH, paid from your identity's balance (often less: the exact price shows before you confirm).`
               : "Once you're signed in, you see what it costs and confirm before anything is signed."}
@@ -833,9 +833,9 @@ function ImportView({ onDone, onStored, renew = false }: { onDone: () => void; o
           data-testid="enable-private-repos"
         />
         <span>
-          <span className="font-medium">Enable private repos</span>
+          <span className="font-medium">Read and write members-only and private content</span>
           <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">
-            Also keep this identity&apos;s encryption key here, protected the same way. {ENCRYPTION_KEY_BLAST_RADIUS}
+            Also keep this identity&apos;s encryption key here, protected the same way. It opens members-only content in public repos and the private repos you belong to. {ENCRYPTION_KEY_BLAST_RADIUS}
           </span>
           {dropsEncryption ? (
             <span className={cn('mt-1 block text-[12px]', enablePrivate ? 'text-anvil-600 dark:text-anvil-300' : 'text-caution-700 dark:text-caution-400')} data-testid="import-keeps-encryption">

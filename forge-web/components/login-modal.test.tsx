@@ -335,9 +335,13 @@ describe('QA wave 2 (bonsia): sign-in intent and polish', () => {
     act(() => useUiStore.getState().openLogin(undefined, undefined, { action: 'read this private repo', privateRepo: true }))
     await flush()
     expect(host.ownerDocument.body.textContent).toMatch(/Sign in to read this private repo/)
-    expect(q('[data-testid="signin-intent"]')!.textContent).toMatch(/Enable private repos/)
+    expect(q('[data-testid="signin-intent"]')!.textContent).toMatch(/Read and write members-only and private content/)
     await click(q('[data-testid="tile-import"]'))
     expect(q<HTMLInputElement>('[data-testid="enable-private-repos"]')!.checked).toBe(true)
+    // D25: the box also opens members-only content in public repos, so it does not say "private" alone.
+    const label = q('[data-testid="enable-private-repos"]')!.closest('label')!.textContent!
+    expect(label).toMatch(/^Read and write members-only and private content/)
+    expect(label).toMatch(/members-only content in public repos/)
   })
 
   it('QW2-031: an identity file for another network is refused when it is picked', async () => {
