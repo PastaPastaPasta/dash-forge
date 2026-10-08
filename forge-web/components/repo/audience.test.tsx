@@ -97,7 +97,7 @@ describe('the audience chip', () => {
     expect(picker.textContent).toContain('Who can read this?')
     expect(picker.textContent).toContain('Members (3)')
     // the reader is counted; the runner that is a member reads as a CI bot (D23)
-    expect(picker.textContent).toContain('Current and future members of this repo (3, including 1 reader and 1 CI bot).')
+    expect(picker.textContent).toContain('Current and future members of this repo (3, including 1 with Read access and 1 CI bot).')
     const members = host.querySelector<HTMLInputElement>('[data-testid="audience-option-members"] input')!
     expect(members.disabled).toBe(false)
     act(() => members.click())

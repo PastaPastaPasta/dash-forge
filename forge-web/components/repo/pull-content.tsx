@@ -1981,6 +1981,7 @@ function PullPage({
                     ensure={reviewDraft.ensure}
                     isMember={isMember}
                     role={viewerRole}
+                    roleKnown={holdings.settled}
                     isAuthor={isAuthor}
                     locked={thread.locked}
                     lineExists={(path, side, line) => knownLines.current.get(path)?.has(lineKey(path, side, line)) ?? false}

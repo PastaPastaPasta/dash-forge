@@ -246,12 +246,13 @@ pub fn check_grant(repo: &RepoRef, member: &str, role: Role) -> Result<()> {
         return Err(UserError::new(
             codes::REJECTED,
             format!(
-                "you own {}: the owner cannot take the {role} role",
-                repo.display()
+                "you own {}: the owner cannot take {} access",
+                repo.display(),
+                role.label()
             ),
         )
         .cause("the owner holds every right through its ownership and maintainer document")
-        .fix("add the owner as a maintainer or writer, or give the role to another identity")
+        .fix("give the owner Maintain or Write access, or give this access to another identity")
         .note("nothing was written")
         .into());
     }

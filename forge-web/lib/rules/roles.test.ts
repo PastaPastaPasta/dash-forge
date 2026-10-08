@@ -180,10 +180,10 @@ describe('whoCan: copy names every role the table lets act (QW4-032)', () => {
 
 describe('membershipTitle: a membership toast names the role (QW4-033)', () => {
   it('says the role granted, removed or changed to, not the document type', () => {
-    expect(membershipTitle('grant', 'triage')).toBe('Triage member added')
-    expect(membershipTitle('grant', 'writer')).toBe('Writer added')
-    expect(membershipTitle('grant', 'maintainer')).toBe('Maintainer added')
-    expect(membershipTitle('revoke', 'reader')).toBe('Reader removed')
-    expect(membershipTitle('change', 'triage')).toBe('Role changed to Triage')
+    expect(membershipTitle('grant', 'triage')).toBe('Added with Triage access')
+    expect(membershipTitle('grant', 'writer')).toBe('Added with Write access')
+    expect(membershipTitle('grant', 'maintainer')).toBe('Added with Maintain access')
+    expect(membershipTitle('revoke', 'reader')).toBe('Read access removed')
+    expect(membershipTitle('change', 'triage')).toBe('Changed to Triage access')
   })
 })

@@ -513,9 +513,7 @@ struct KeyPlan {
 fn add_plan(has_key: bool, role: Role, change_from: Option<Role>) -> KeyPlan {
     KeyPlan {
         wrap: has_key && holds_members_key(role),
-        rotate: has_key
-            && change_from.is_some_and(holds_members_key)
-            && !holds_members_key(role),
+        rotate: has_key && change_from.is_some_and(holds_members_key) && !holds_members_key(role),
     }
 }
 
@@ -678,9 +676,9 @@ async fn rotate_after_removal(
                 tokio::time::sleep(DELETE_VISIBLE_DELAY).await;
                 roles = reader.roles_of(repo, member).await?;
             }
-            let keeps_key = roles.iter().any(|m| {
-                doc_type(m.role) != removed_type && holds_members_key(m.role)
-            });
+            let keeps_key = roles
+                .iter()
+                .any(|m| doc_type(m.role) != removed_type && holds_members_key(m.role));
             if keeps_key {
                 Vec::new()
             } else {
@@ -756,7 +754,10 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
                 .collect();
             let width = shown.iter().map(|s| s.chars().count()).max().unwrap_or(0);
             for (who, m) in shown.iter().zip(&members) {
-                println!("  {who:<width$}  {}", role_word(handle, &m.identity_id, m.role));
+                println!(
+                    "  {who:<width$}  {}",
+                    role_word(handle, &m.identity_id, m.role)
+                );
             }
         },
     );

@@ -93,8 +93,8 @@ export const ROLE_HOLDER: Readonly<Record<Role, string>> = {
  * `writer` document's own title, "Writer added", is wrong for the triage and reader roles).
  */
 export function membershipTitle(kind: 'grant' | 'revoke' | 'change', role: Role): string {
-  if (kind === 'change') return `Role changed to ${ROLE_LABEL[role]}`
-  return `${ROLE_HOLDER[role]} ${kind === 'grant' ? 'added' : 'removed'}`
+  if (kind === 'change') return `Changed to ${ROLE_LABEL[role]} access`
+  return kind === 'grant' ? `Added with ${ROLE_LABEL[role]} access` : `${ROLE_LABEL[role]} access removed`
 }
 
 /**

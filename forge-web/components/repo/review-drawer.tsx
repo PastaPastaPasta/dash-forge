@@ -191,6 +191,7 @@ export function ReviewDrawer({
   ensure,
   isMember,
   role = null,
+  roleKnown = true,
   isAuthor = false,
   locked,
   lineExists,
@@ -225,6 +226,8 @@ export function ReviewDrawer({
    * it the same way).
    */
   role?: Role | null
+  /** The viewer's role has been read: until then an approve or request changes is not submitted. */
+  roleKnown?: boolean
   /**
    * The viewer opened this PR: their own approve / request changes never counts
    * (`countApprovals`, as on GitHub), so only a comment-only review is offered (`dg pr review`
@@ -254,8 +257,6 @@ export function ReviewDrawer({
   const [chosen, setVerdict] = useState<VerdictInput>(draft?.verdict ?? 'comment')
   // A draft saved with a verdict before the viewer's authorship was known still submits as a comment.
   const verdict: VerdictInput = isAuthor ? 'comment' : chosen
-  // A Read or Triage reviewer's approve or request changes: refused, with the comment it can be.
-  const refused = verdictRefusal(role, verdict)
   // "Post as a comment": the verdict becomes a comment, then the review is submitted as one.
   const [asComment, setAsComment] = useState(false)
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null)
@@ -277,6 +278,12 @@ export function ReviewDrawer({
   // The summary and verdict are part of the draft: kept in this browser as they change (shortly
   // after typing stops), so closing the panel or reloading the page loses neither.
   const frozen = draft !== null && submitStarted(draft)
+  // A Read or Triage reviewer's approve or request changes: refused, with the comment it can be
+  // (DESIGN §10). Until the viewer's role is read, no verdict is submitted. A submit already
+  // under way keeps its verdict until its review is written, so it is refused the same way and
+  // can only be discarded.
+  const refused = verdictRefusal(role, frozen ? (draft.reviewId === undefined ? draft.verdict : 'comment') : verdict)
+  const roleUnread = !roleKnown && verdict !== 'comment'
   // Members-only text is never kept on disk: the draft says so before its summary is saved.
   const textChoice = textAudience.audience
   useEffect(() => {
@@ -316,7 +323,7 @@ export function ReviewDrawer({
 
   const submit = (): void => {
     if (!sdk || !signer || identity === null || planned === null) return
-    if (!frozen && refused !== null) return
+    if (refused !== null || (!frozen && roleUnread)) return
     if (cost === null || !guard.check(cost, 'collab')) return
     if (!frozen && verdict === 'comment' && summary.trim() === '' && count === 0) {
       setError('Write a summary or add a comment first.')
@@ -435,9 +442,16 @@ export function ReviewDrawer({
           ) : null}
           {note ? <p className="text-[12px] text-anvil-600 dark:text-anvil-300">{note}</p> : null}
           {frozen ? (
-            <p className="text-dense">
-              Submitting your {VERDICT_WORDS[draft!.verdict]}: {draft!.reviewId ? `the review and ${draft!.comments.filter((c) => c.landedId).length} of ${plural(count, 'comment')} have landed.` : 'nothing has landed yet.'}
-            </p>
+            <>
+              <p className="text-dense">
+                Submitting your {VERDICT_WORDS[draft!.verdict]}: {draft!.reviewId ? `the review and ${draft!.comments.filter((c) => c.landedId).length} of ${plural(count, 'comment')} have landed.` : 'nothing has landed yet.'}
+              </p>
+              {refused !== null ? (
+                <p role="alert" className="rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense text-anvil-800 dark:text-anvil-100" data-testid="review-verdict-refused">
+                  {refused} Discard this review, then post it again as a comment.
+                </p>
+              ) : null}
+            </>
           ) : (
             <>
               <MarkdownEditor id="review-summary" label="Review summary" value={summary} onChange={setSummary} placeholder="Leave a summary (optional)" />
@@ -535,7 +549,7 @@ export function ReviewDrawer({
                   {frozen ? 'Discard the rest' : 'Discard'}
                 </Button>
               ) : null}
-              <Button size="sm" variant="primary" onClick={submit} loading={progress !== null} disabled={guard.disabledReason !== null || progress !== null || lineQuotes || (!frozen && refused !== null)}>
+              <Button size="sm" variant="primary" onClick={submit} loading={progress !== null} disabled={guard.disabledReason !== null || progress !== null || lineQuotes || refused !== null || (!frozen && roleUnread)}>
                 {frozen || error ? 'Retry' : 'Submit review'}
               </Button>
             </div>

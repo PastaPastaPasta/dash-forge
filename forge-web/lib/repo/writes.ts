@@ -28,7 +28,7 @@ import type { ForgeIds } from '../deployments'
 import { base58Encode, decodeIdentifier } from '../auth/base58'
 import { idbDelete, idbEntries, idbGet, idbPut } from '../idb'
 import { isGitRefName, type EventKind } from '../rules'
-import { denseNumber, isAuthorKind, namesDenseRule, normalizeRepoName as normalizeV2RepoName, type Audience, type ClosedAs, type Role, type StateAction, type Visibility } from '../rules/v2'
+import { RoleOracle, denseNumber, isAuthorKind, namesDenseRule, normalizeRepoName as normalizeV2RepoName, type Audience, type ClosedAs, type Role, type StateAction, type Visibility } from '../rules/v2'
 import { fetchIdentityKeys, heldKeysText, usableEncryptionKey, type EncryptionOps } from '../auth/encryption-key'
 import {
   ConsensusRefusal,
@@ -131,8 +131,8 @@ export interface PostContext {
   /** The target's conversation is locked (its transition sum is 16 or more). */
   readonly locked?: boolean
   /**
-   * The signer's role (as last read), when the page knows it: a review's approve or request
-   * changes from Read or Triage is refused before signing ({@link refuseVerdictForRole}).
+   * The signer's role, as {@link settledPost} reads it for an approve or request changes (which
+   * {@link refuseVerdictForRole} refuses from Read or Triage before signing).
    */
   readonly role?: Role | null
 }
@@ -179,12 +179,16 @@ export function commentProof(signer: string, post: PostContext | undefined): Rec
  * `post` with its membership settled for a review of `verdict`: a non-member's approve or request
  * changes is recorded as 4/5, which never counts, and a non-member's post to a locked thread is
  * refused, so a "not a member" read (still loading, failed, or cached from before they were
- * added) is read again, uncached, before it decides either.
+ * added) is read again, uncached, before it decides either. An approve or request changes always
+ * reads the signer's role now (`role`), which {@link refuseVerdictForRole} judges: a page's role
+ * may be unread or stale.
  */
 export async function settledPost(sdk: EvoSDK, repo: RepoRef, signer: string, post: PostContext, verdict: VerdictInput): Promise<PostContext> {
-  if (post.isMember || (verdict === 'comment' && post.locked !== true)) return post
+  const verdictGiven = verdict !== 'comment'
+  if (!verdictGiven && (post.isMember || post.locked !== true)) return post
   const members = await readMemberships(sdk, repo)
-  return members.some((m) => m.identity === signer) ? { ...post, isMember: true } : post
+  const role = new RoleOracle(members).currentRole(signer)
+  return { ...post, isMember: post.isMember || role !== null, ...(verdictGiven ? { role } : {}) }
 }
 
 /** An issue or PR a write refers to: its document id and number. */
@@ -844,9 +848,9 @@ export async function createReview(
 ): Promise<WriteResult> {
   // A maintainer's ban (UPDATE-1): refused before signing, as `dg` does (E610).
   await refuseIfBanned(sdk, repo, auth.network, auth.identityId)
-  refuseVerdictForRole(input.post, input.verdict)
   if (!isRc1OidHex(input.commitOid)) throw new Error('a review names a 20- or 32-byte commit')
   const post = await settledPost(sdk, repo, auth.identityId, input.post, input.verdict)
+  refuseVerdictForRole(post, input.verdict)
   if (lockedOut(post)) throw new Error(LOCKED_REASON)
   // Who its text is for (its verdict is always public, D15): the PR's, unless asked narrower.
   const audience = await childAudience(sdk, repo, { targetId: input.patchId, ...(input.audience ? { requested: input.audience } : {}) })

@@ -30,6 +30,20 @@ function statedVerdict(code: number): 'approve' | 'changes' | null {
   return code === 2 || code === 5 ? 'changes' : null
 }
 
+/**
+ * The role of a member whose approve or request changes written at `at` does not count for their
+ * role (DESIGN D15: Read or Triage access): the role they held then when it was not an approver's,
+ * else their role now when it no longer is. Null for a non-member (then or now) and for an
+ * approver then and now. Parity: `dg`'s `threads::member_without_verdict`.
+ */
+export function memberWithoutVerdict(oracle: RoleOracle, identity: string, at: number): Role | null {
+  const now = oracle.currentRole(identity)
+  const then = oracle.roleAt(identity, at)
+  if (now === null || then === null) return null
+  if (!isApprover(then)) return then
+  return isApprover(now) ? null : now
+}
+
 export type ReviewerStanding =
   | { readonly kind: 'approved'; readonly role: Role }
   | { readonly kind: 'changes'; readonly role: Role }
@@ -86,7 +100,7 @@ export function summarizeReviews(
     } else if (role === null || !oracle.memberAt(reviewer, r.createdAt)) {
       rows.push({ reviewer, standing: { kind: 'not-member', verdict } })
     } else if (!isApprover(role) || !oracle.approverAt(reviewer, r.createdAt)) {
-      rows.push({ reviewer, standing: { kind: 'not-approver', verdict, role } })
+      rows.push({ reviewer, standing: { kind: 'not-approver', verdict, role: memberWithoutVerdict(oracle, reviewer, r.createdAt) ?? role } })
     } else {
       rows.push({ reviewer, standing: { kind: 'stale', verdict, commitOid: r.commitOid } })
     }
@@ -143,7 +157,11 @@ export interface ReviewerCardRow {
   readonly reviewedOid: string | null
   /** Why their newest review was dismissed. */
   readonly dismissReason: string | null
-  /** Their current role (null: not a member now). */
+  /**
+   * The role their standing names: the one they held when they wrote their newest review when it
+   * gave no counted verdict then ({@link memberWithoutVerdict}), else their current role (null:
+   * not a member now).
+   */
   readonly role?: Role | null
 }
 
@@ -215,7 +233,7 @@ export function reviewerRows(
       dismissId: counted.has(id) ? counting.get(id)?.id ?? null : null,
       reviewedOid: review?.commitOid ?? null,
       dismissReason: dismissal ?? null,
-      role: oracle.currentRole(id),
+      role: (review === undefined ? null : memberWithoutVerdict(oracle, id, review.createdAt)) ?? oracle.currentRole(id),
     }
   })
   return rows.sort((a, b) => Number(b.requested) - Number(a.requested) || (a.identity < b.identity ? -1 : a.identity > b.identity ? 1 : 0))

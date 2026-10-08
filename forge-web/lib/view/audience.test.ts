@@ -41,12 +41,12 @@ describe('who the Members audience is', () => {
 
   it('says the picker sentence with honest counts (product M3)', () => {
     expect(membersSentence({ total: 12, readers: 2, bots: 1 })).toBe(
-      'Current and future members of this repo (12, including 2 readers and 1 CI bot). Members removed later keep what they could already read. Maintainers can make it public later.',
+      'Current and future members of this repo (12, including 2 with Read access and 1 CI bot). Members removed later keep what they could already read. Maintainers can make it public later.',
     )
     expect(membersSentence({ total: 3, readers: 0, bots: 0 })).toBe(
       'Current and future members of this repo (3). Members removed later keep what they could already read. Maintainers can make it public later.',
     )
-    expect(membersSentence({ total: 4, readers: 1, bots: 0 })).toContain('(4, including 1 reader)')
+    expect(membersSentence({ total: 4, readers: 1, bots: 0 })).toContain('(4, including 1 with Read access)')
   })
 
   it('labels the chip', () => {

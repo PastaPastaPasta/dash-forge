@@ -24,6 +24,13 @@ vi.mock('./members-writes', async (orig) => ({
   storedAudience: async () => ({ audience: 'public', doc: {} }),
   repoHasMembersKey: async () => false,
 }))
+// The signer's role, read before an approve or request changes is signed (DESIGN D15): a writer
+// unless a test says otherwise.
+let signerRole: 'writer' | 'reader' | 'triage' = 'writer'
+vi.mock('./members', async (orig) => ({
+  ...(await orig<typeof import('./members')>()),
+  readMemberships: async () => [{ identity: 'CJao2MVHL4x3f2Ko2xTUibnZ8G1t9exTPtvJnCbHAgDH', role: signerRole, createdAt: 0 }],
+}))
 vi.mock('../sdk', async (importOriginal) => {
   const real = await importOriginal<typeof import('../sdk')>()
   return {
@@ -338,6 +345,20 @@ describe('pending review submit', () => {
     expect(out).toEqual({ reviewId: D(1), commentIds: [D(2), D(3), D(4)] })
     expect(progress).toEqual([0, 1, 2, 3, 4])
     expect(await loadReviewDraft('devnet', BOB, PR)).toBeUndefined()
+  })
+
+  it.each([['reader'], ['triage']] as const)('refuses a %s member’s request for changes before anything is written or the draft is marked attempted', async (role) => {
+    signerRole = role
+    try {
+      await saveReviewDraft(draft())
+      await expect(submitReviewDraft(sdk, auth(BOB), REPO, draft(), { isMember: true, role: 'writer' }, undefined, NO_CHAIN)).rejects.toThrow(
+        'Only people with Write access or more can request changes.',
+      )
+      expect(writes).toEqual([])
+      expect((await loadReviewDraft('devnet', BOB, PR))?.attemptedAt).toBeUndefined()
+    } finally {
+      signerRole = 'writer'
+    }
   })
 
   it('resumes after a failure at comment 2 of 3 without rewriting what landed', async () => {

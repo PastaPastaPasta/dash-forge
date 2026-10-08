@@ -3638,10 +3638,7 @@ mod tests {
             ["alice", "bob", "carol"]
         );
         // the rotator is wrapped first even when not listed yet (a lagging read)
-        assert_eq!(
-            targets_of(&[], "alice", &[]),
-            ["alice"]
-        );
+        assert_eq!(targets_of(&[], "alice", &[]), ["alice"]);
     }
 
     #[test]

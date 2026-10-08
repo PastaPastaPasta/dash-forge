@@ -49,8 +49,8 @@ describe('role badges', () => {
     expect(owner?.getAttribute('title')).toBe('Owner of this repository')
     expect(owner?.querySelector('[aria-hidden]')?.textContent).toBe('Owner')
     expect(owner?.querySelector('.sr-only')?.textContent).toBe('Owner of this repository')
-    expect(badgeFor('maint')?.textContent).toContain('Maintainer')
-    expect(badgeFor('tri')?.getAttribute('title')).toBe('Triage member of this repository')
+    expect(badgeFor('maint')?.querySelector('[aria-hidden]')?.textContent).toBe('Maintain')
+    expect(badgeFor('tri')?.getAttribute('title')).toBe('Triage access to this repository')
   })
 
   it('shows none for a stranger, a mirrored item or a page without roles', () => {

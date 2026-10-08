@@ -48,7 +48,7 @@ function draftOf(over: Partial<ReviewDraft> = {}): ReviewDraft {
 
 let host: HTMLDivElement
 let root: Root
-function show(draft: ReviewDraft, role: Role | null, isMember = role !== null): void {
+function show(draft: ReviewDraft, role: Role | null, isMember = role !== null, roleKnown = true): void {
   act(() =>
     root.render(
       <ReviewDrawer
@@ -64,6 +64,7 @@ function show(draft: ReviewDraft, role: Role | null, isMember = role !== null): 
         ensure={() => draft}
         isMember={isMember}
         role={role}
+        roleKnown={roleKnown}
         locked={false}
         lineExists={() => true}
         onSubmitted={() => undefined}
@@ -119,6 +120,24 @@ describe('the review drawer refuses verdicts from Read and Triage', () => {
   it.each([['writer'], ['maintainer']] as const)('a %s approves as before', (role) => {
     show(draftOf({ verdict: 'approve', summary: 'Ship it.' }), role)
     expect(q('review-verdict-refused')).toBeNull()
+    expect(button('Submit review')?.disabled).toBe(false)
+  })
+
+  it('an interrupted submit of a refused verdict can only be discarded, never retried', () => {
+    show(draftOf({ verdict: 'approve', summary: 'Looks right to me.', attemptedAt: 5 }), 'reader')
+    expect(q('review-verdict-refused')?.textContent).toContain('Discard this review, then post it again as a comment.')
+    expect(button('Post as a comment')).toBeUndefined()
+    expect(button('Retry')?.disabled).toBe(true)
+    expect(button('Discard the rest')).toBeDefined()
+  })
+
+  it('submits no verdict until the viewer’s role is read', () => {
+    show(draftOf({ verdict: 'approve', summary: 'Ship it.' }), null, true, false)
+    expect(button('Submit review')?.disabled).toBe(true)
+  })
+
+  it('submits a comment before the viewer’s role is read', () => {
+    show(draftOf({ verdict: 'comment', summary: 'A note.' }), null, true, false)
     expect(button('Submit review')?.disabled).toBe(false)
   })
 

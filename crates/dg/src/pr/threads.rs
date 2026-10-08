@@ -233,8 +233,26 @@ pub struct ReviewerRow {
     pub reviewed_oid: Option<String>,
     /// Why their newest review was dismissed.
     pub dismiss_reason: Option<String>,
-    /// Their current role (`None`: not a member now).
+    /// The role their standing names: the one they held when they wrote their newest review
+    /// when it gave no counted verdict then ([`member_without_verdict`]), else their current
+    /// role (`None`: not a member now).
     pub role: Option<Role>,
+}
+
+/// The role of a member whose approve or request changes written at `at` does not count for
+/// their role (DESIGN D15: Read or Triage access): the role they held then when it was not an
+/// approver's, else their role now when it no longer is. `None` for a non-member (at `at` or
+/// now) and for an approver then and now.
+pub fn member_without_verdict(oracle: &RoleOracle, identity: &str, at: u64) -> Option<Role> {
+    let now = oracle.current_role(identity)?;
+    let then = oracle.role_at(identity, at)?;
+    if !then.is_approver() {
+        Some(then)
+    } else if !now.is_approver() {
+        Some(now)
+    } else {
+        None
+    }
 }
 
 impl ReviewerRow {
@@ -355,7 +373,9 @@ pub fn reviewer_rows(
                 review_id: review.map(|r| r.document_id.clone()),
                 reviewed_oid: review.map(|r| r.commit_oid.clone()),
                 dismiss_reason: dismissal.map(str::to_string),
-                role: oracle.current_role(id),
+                role: review
+                    .and_then(|r| member_without_verdict(oracle, id, r.created_at))
+                    .or_else(|| oracle.current_role(id)),
             }
         })
         .collect();
@@ -531,6 +551,33 @@ mod tests {
         c.body = "nit\n\n```suggestion\nlet x = 1;\n```".into();
         let conv = threads(&[c], H1, &[]);
         assert_eq!(conv.threads[0].comments[0].suggestions, ["let x = 1;"]);
+    }
+
+    #[test]
+    fn a_verdict_that_does_not_count_names_the_role_it_was_written_under() {
+        let doc = |id: &str, role, at| Membership {
+            identity: id.into(),
+            role,
+            created_at: at,
+        };
+        let oracle = RoleOracle::new(vec![
+            doc("rdr", Role::Reader, 10),
+            doc("tri", Role::Triage, 10),
+            doc("w", Role::Writer, 10),
+            doc("late", Role::Writer, 100),
+        ]);
+        assert_eq!(
+            member_without_verdict(&oracle, "rdr", 50),
+            Some(Role::Reader)
+        );
+        assert_eq!(
+            member_without_verdict(&oracle, "tri", 50),
+            Some(Role::Triage)
+        );
+        assert_eq!(member_without_verdict(&oracle, "w", 50), None);
+        // not a member when they reviewed: not this rule's (shown as not a member)
+        assert_eq!(member_without_verdict(&oracle, "late", 50), None);
+        assert_eq!(member_without_verdict(&oracle, "stranger", 50), None);
     }
 
     #[test]

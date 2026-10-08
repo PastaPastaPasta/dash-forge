@@ -245,10 +245,11 @@ pub async fn require_member(client: &PlatformClient, repo: &RepoRef, signer: &st
     // trusted (provenance counts only from maintainers and role-1 writers).
     if let Some(role) = role {
         return Err(anyhow::anyhow!(
-            "{signer} is a {role} of {}: the mirror identity pushes and writes imported items \
-             that readers trust only from maintainers and writers, so it must be a maintainer \
-             (or a writer, without releases). The owner runs `dg collab add {} {signer} --role \
-             maintainer`",
+            "{signer} has {} access to {}: the mirror identity pushes and writes imported items \
+             that readers trust only from maintainers and writers, so it needs Maintain access \
+             (or Write, without releases). The owner runs `dg collab add {} {signer} --role \
+             maintain`",
+            role.label(),
             repo.display(),
             repo.display()
         ));

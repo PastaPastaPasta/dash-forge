@@ -63,7 +63,7 @@ export const PUBLIC_SENTENCE = 'Anyone can read it, now and forever.'
  * and CI bots only when there are any.
  */
 export function membersSentence(c: MembersCount): string {
-  const extras = [c.readers > 0 ? plural(c.readers, 'reader') : null, c.bots > 0 ? plural(c.bots, 'CI bot') : null].filter((x): x is string => x !== null)
+  const extras = [c.readers > 0 ? `${c.readers} with Read access` : null, c.bots > 0 ? plural(c.bots, 'CI bot') : null].filter((x): x is string => x !== null)
   const counted = extras.length === 0 ? `${c.total}` : `${c.total}, including ${extras.join(' and ')}`
   return `Current and future members of this repo (${counted}). Members removed later keep what they could already read. Maintainers can make it public later.`
 }

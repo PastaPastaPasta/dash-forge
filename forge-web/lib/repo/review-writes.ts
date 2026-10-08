@@ -549,8 +549,6 @@ export async function submitReviewDraft(
   reads?: SubmitReads,
 ): Promise<SubmittedReview> {
   if (draft.identity !== auth.identityId) throw new Error('this pending review belongs to another identity')
-  // Read and Triage give no verdict (DESIGN D15): refused before signing, unless already written.
-  if (draft.reviewId === undefined) refuseVerdictForRole(post, draft.verdict)
   // A maintainer's ban (UPDATE-1): refused before signing, as `dg` does (E610).
   await refuseIfBanned(sdk, repo, auth.network, auth.identityId)
   // A private repo: the reconcile reads the draft's landed comments decrypted, which needs the
@@ -601,14 +599,17 @@ async function submitWith(
     const prior = (await chain.reviews()).filter((r) => r.reviewer === draft.identity).map((r) => r.id)
     current = { ...current, priorReviews: prior }
   }
+  // Settled once for the review and all its comments: they must agree on who is writing.
+  const settled = await settledPost(sdk, repo, auth.identityId, post, draft.verdict)
+  // Read and Triage give no verdict (DESIGN D15): refused before anything is signed or the draft
+  // is marked attempted, unless its review is already written.
+  if (current.reviewId === undefined) refuseVerdictForRole(settled, draft.verdict)
   if (current.attemptedAt === undefined) current = { ...current, attemptedAt: Date.now() }
   // Saved before the first write, so a crash after it leaves a draft that reconciles.
   if (current !== draft) await saveReviewDraft(current)
   const total = 1 + draft.comments.length
   const done = () => (current.reviewId ? 1 : 0) + current.comments.filter((c) => c.landedId).length
   onProgress?.({ done: done(), total })
-  // Settled once for the review and all its comments: they must agree on who is writing.
-  const settled = await settledPost(sdk, repo, auth.identityId, post, draft.verdict)
   let reviewId = current.reviewId
   if (reviewId === undefined) {
     const r = await write(sdk, auth, repo, DOC.review, reviewData({

@@ -684,7 +684,15 @@ async fn submit(
     if draft.review_id.is_none() && forge_core::collab::v2::precheck_enabled() {
         let role = collab.signer_role(&s.repo).await?;
         let verdict = Verdict::from_code(draft.verdict.unwrap_or(3));
-        if let Some(e) = forge_core::members::verdict_refusal(role, verdict, &s.repo) {
+        if let Some(mut e) = forge_core::members::verdict_refusal(role, verdict, &s.repo) {
+            // An interrupted submit keeps its verdict: it is dropped first, then sent again.
+            if resumed {
+                e = e.fix(format!(
+                    "drop the interrupted submit first (nothing of it was written): \
+                     `dg pr review {} {} --discard`",
+                    a.repo, a.number
+                ));
+            }
             return Err(e
                 .fix(format!(
                     "post it as a comment: the same command with `--comment` in its place \

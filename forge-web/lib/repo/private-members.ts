@@ -996,7 +996,7 @@ export async function addPrivateMember(c: PrivateWriteContext, memberId: string,
     const changed = [...new Set([...(await anchorChanges(s, new IdSet([...maintainersOf(s), id]))), ...above])].sort((a, b) => a - b)
     if (changed.length > 0) {
       throw new PrivateMembersError(
-        `${short(memberId)} can't be made a maintainer of this repo again, because an earlier key of theirs would take over. Add them as a writer, or make another identity of theirs the maintainer.`,
+        `${short(memberId)} can't be given Maintain access to this repo again, because an earlier key of theirs would take over. Give them Write access, or give another identity of theirs Maintain access.`,
         'E310',
         undefined,
         changed,

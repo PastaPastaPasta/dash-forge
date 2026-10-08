@@ -21,7 +21,7 @@ import { MembersContentSetting, RemovalReads, useMembersKeyBlock } from '@/compo
 import type { Membership, Role as MemberRole } from '@/lib/rules/v2'
 import { NetworkBadge } from '@/components/ui/network-badge'
 import { previewCreate, previewDelete } from '@/lib/sdk'
-import { ROLE_LABEL, ROLE_NOUN, grantableRoles, holdsMembersKey, membershipTitle } from '@/lib/rules/roles'
+import { ROLE_LABEL, grantableRoles, holdsMembersKey, membershipTitle } from '@/lib/rules/roles'
 import { namedAction } from '@/lib/spend-toast'
 import { RoleBadge, RolePicker, RoleSummary } from '@/components/repo/role-picker'
 import { decodeIdentifier } from '@/lib/auth'
@@ -325,20 +325,20 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
           onClose={() => setAction(null)}
           title={
             action?.kind === 'grant'
-              ? `Add ${ROLE_NOUN[action.role]}`
+              ? `Add with ${ROLE_LABEL[action.role]} access`
               : action?.kind === 'change'
-                ? `Change role to ${ROLE_LABEL[action.to]}`
+                ? `Change to ${ROLE_LABEL[action.to]} access`
                 : action?.kind === 'revoke'
-                  ? `Remove ${ROLE_NOUN[action.role]}`
+                  ? `Remove ${ROLE_LABEL[action.role]} access`
                   : 'Remove member'
           }
           // The toast says the role granted, not the document type (QW4-033: triage was "Writer added").
           toast={action === null ? undefined : namedAction(membershipTitle(action.kind, action.kind === 'change' ? action.to : action.role))}
           description={
             action?.kind === 'grant'
-              ? `Adds ${shortId(action.member)} as ${ROLE_NOUN[action.role]}.${keyed ? ' They get the key to members-only content too, so they can read it.' : ''}`
+              ? `Gives ${shortId(action.member)} ${ROLE_LABEL[action.role]} access.${keyed ? ' They get the key to members-only content too, so they can read it.' : ''}`
               : action?.kind === 'change'
-                ? `Makes ${shortId(action.member)} ${ROLE_NOUN[action.to]} instead of ${ROLE_NOUN[action.role]}. They don't need to accept again.`
+                ? `Changes ${shortId(action.member)}'s access from ${ROLE_LABEL[action.role]} to ${ROLE_LABEL[action.to]}. They don't need to accept again.`
                 : keyed
                   ? 'Removes them from this repo and changes the key to its members-only content.'
                   : 'Removes them from this repo. Their past pushes and comments stay. Anything new they try is refused.'
