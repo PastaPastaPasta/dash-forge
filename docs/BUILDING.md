@@ -184,7 +184,7 @@ activates there ([mainnet-runbook.md](mainnet-runbook.md)). Until then, pass
 with `dg auth login --network devnet --devnet-name sakura`, which saves the network in
 `~/.config/dash-forge/config.toml`.
 
-**Devnet sakura** (Platform 5.0.0-beta.2 since its Platform reset on 2026-10-06, chain id `dash-devnet-sakura`) replaced bonsia on
+**Devnet sakura** (Platform 5.0.0-beta.3 since its second Platform reset on 2026-10-08, chain id `dash-devnet-sakura`) replaced bonsia on
 2026-10-01, and the defaults (Makefile `DEVNET`, `E2E_DEVNET`, the Pages and e2e workflows,
 `ipfs-release.sh`) target it. `devnet-sakura.json` records its chain id, 13 DAPI addresses and
 quorum service (`https://quorums.sakura.networks.dash.org`), so `--devnet-name sakura` works
