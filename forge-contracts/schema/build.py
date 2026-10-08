@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Build the RC2 registration (forge-core, forge-collab, forge-community) from the base schemas.
+"""Build the RC2 registration (forge-core, forge-collab, forge-community) from the base schemas,
+and with --mainnet the four-contract mainnet set (plus forge-meta, DESIGN rev 4.1 D44).
 
   python3 forge-contracts/schema/build.py [--check] [--off flag,flag] [--on flag,flag] [--out <dir>]
-                                          [--validate <contract-validate>] [--gate <b7gate>]
+                                          [--mainnet] [--validate <contract-validate>] [--gate <b7gate>]
 
 `base/` holds the three schemas registered-to-be before RC1 (the #154 build: the `refersTo`
 grammar with WIPE-DECISIONS D-2..D-5 applied), with checkRun's set-once fields written as
@@ -18,11 +19,14 @@ the new core).
             so the committed contracts always match FLAGS. A registration-time decision (a fee
             probe that turns an RC2 item off) is made by flipping its default in FLAGS and
             regenerating, never by registering an --out variant.
---out       write the three files to this directory instead of forge-contracts/contracts.
---validate  run tools/contract-validate (rs-dpp v5.0.0-beta.1) on the result and print each
+--out       write the three files (four with `layout_meta`) to this directory instead of
+            forge-contracts/contracts.
+--mainnet   turn on every built MAINNET_FLAGS item (the four-contract layout and the mixed-visibility
+            items of DESIGN rev 4.1 §8.3 included): the fresh mainnet registration. Needs --out.
+--validate  run tools/contract-validate (rs-dpp v5.0.0-beta.3) on the result and print each
             contract's serialized size and create-transition size against the D-12 budget and
             the 20,480-byte transition limit. forge-contracts/schema/variants.py does this for
-            every combination of the RC2 flags.
+            every combination of the RC2 flags and of the mainnet items.
 --gate      run b7gate (design/final-schema/b7gate, rs-dpp v4.2.0-beta.7): RC1 only, since beta.7
             refuses RC2's forge-community (an `immutable` entry that is an object).
 
@@ -45,11 +49,18 @@ CONTRACTS = os.path.join(os.path.dirname(HERE), 'contracts')
 # The schemas each network registered (version 1); an in-place update is validated against them.
 REGISTERED = os.path.join(CONTRACTS, 'registered')
 NAMES = ('forge-core', 'forge-collab', 'forge-community')
+# The fourth contract (MAINNET_FLAGS `layout_meta`, DESIGN rev 4.1 D44), registered after the three
+META = 'forge-meta'
 CORE = 'FORGE_CORE_CONTRACT_ID'
 COLLAB = 'FORGE_COLLAB_CONTRACT_ID'
+COMMUNITY = 'FORGE_COMMUNITY_CONTRACT_ID'
+PLACEHOLDER = {'forge-core': CORE, 'forge-collab': COLLAB, 'forge-community': COMMUNITY}
 
 # D-12: aim for TARGET gate bytes per contract; CEILING is hard (>= 2 KB of real signed room).
 TARGET, CEILING = 17408, 17832
+# DESIGN rev 4.1 D44: the four-contract mainnet set waives the ceiling where its measured sizes need
+# it, and every contract keeps at least ROOM_MIN bytes between its create transition and the limit.
+ROOM_MIN = 2000
 # Protocol 14's max_state_transition_size (v5: rs-platform-version system_limits/v4.rs:108)
 TRANSITION_LIMIT = 20480
 
@@ -141,11 +152,56 @@ MAINNET_FLAGS = dict(
     mainnet_retarget_value=False,  # authorEvent: kind 8 names its new base in `value`; `value` only on kind 8
     mainnet_moved_to_public=False,  # config: no plaintext movedTo beside a sealed config (noPlain)
     mainnet_mirror_public=False,   # packMirror: a stranger's mirror only for a public repo (where vis)
+    # ---- Mixed visibility (dash-forge-qa design/mixed-visibility/DESIGN.md rev 4.1 §8.3, items 0-11).
+    # Rule numbers (row N) are §8.2's; docs/contracts/forge-v2.md §9.1 describes each.
+    layout_meta=False,             # 0 D44: a fourth contract, forge-meta, registered last, takes repoKey, ban,
+                                   #   label, topic, packMirror, profile and follow (no rule reads them)
+    mainnet_aud=False,             # 1 L1: aud on issue/patch/comment/review; aud = 1 => asMember; a private
+                                   #   repo's content is aud + asMember; aud only ever dropped (rows 1-3)
+    mainnet_one_way_visibility=False,  # 2 C1: repo.visibility frozen once public (private -> public, once; row 18)
+    mainnet_vis_via_repo=False,    # 3 L3 + C4: comment, review, refUpdate, protectedRefUpdate, config, release,
+                                   #   webhook prove vis against the repo, not the target or the member row (rows 17, 41)
+    mainnet_member_role=False,     # 4 L2: mRole proved by the asMember writer leaf; verdicts 1/2 and provenance
+                                   #   need mRole <= 1 (rows 5, 6)
+    mainnet_bot_role=False,        # 5 C2 + L4: writer.role 4 (Bot); repoKey.mr, so a wrap never goes to a bot (row 14)
+    mainnet_maint_kinds=False,     # 6 C3: packManifest r = 0 is maintainer-only; kinds 7, 8, 9, 11 need it (rows 9-11)
+    mainnet_check_aud=False,       # 7 M1: checkRun.aud; a private or aud run carries no text, may carry a log link (rows 12, 13)
+    mainnet_event_kinds=False,     # 8 M2: triage writes only the triage event kinds; kind 23 maintainer-only (rows 7, 8)
+    mainnet_event_target_aud=False,  # 9 M4: event.tAud = the target's aud; no plaintext value on a sealed target (row 16)
+    mainnet_author_event_enc=False,  # 10 M3: authorEvent enc/epoch and tAud; no plaintext value on a sealed target (row 19)
+    mainnet_bot_push=False,        # 11 B1: pushGrant; a bot's refUpdate (r = 4) only under a live grant of a current
+                                   #   maintainer; bot packs and chunks of the push kinds only (rows 42-45)
     # Declared, not built: each needs a design pass and a re-cut test before it can be switched on.
     mainnet_consensus_archive=False,  # repo.archived refuses every gated write (client-rules #10)
     mainnet_epoch_writes=False,    # sealed writes only under the current epoch (client-rules §11-18)
 )
 MAINNET_UNBUILT = ('mainnet_consensus_archive', 'mainnet_epoch_writes')
+# The mixed-visibility items (DESIGN rev 4.1 §8.3), in its order: variants.py validates every
+# combination of them, with and without the four-contract layout.
+MV_FLAGS = ('layout_meta', 'mainnet_aud', 'mainnet_one_way_visibility', 'mainnet_vis_via_repo', 'mainnet_member_role',
+            'mainnet_bot_role', 'mainnet_maint_kinds', 'mainnet_check_aud', 'mainnet_event_kinds',
+            'mainnet_event_target_aud', 'mainnet_author_event_enc', 'mainnet_bot_push')
+# What each flag needs: a `where` naming a property the other adds (else 40126 at registration), a
+# rule rewriting one the other adds, or (B1) the room only the four-contract layout leaves in
+# forge-core. build() refuses a combination that breaks one.
+NEEDS = {
+    'hook_public': ('vis_core',), 'vis_collab': ('layout_events_out',), 'import_provenance': ('layout_events_out',),
+    'thread_lock': ('import_provenance',), 'member_verdicts': ('import_provenance',), 'wrap_member': ('vis_core',),
+    'layout_meta': ('layout_events_out', 'layout_repokey_collab'),
+    'mainnet_aud': ('vis_collab', 'import_provenance', 'member_verdicts'),
+    'mainnet_vis_via_repo': ('vis_core', 'vis_collab', 'hook_public'),
+    'mainnet_member_role': ('member_roles', 'member_verdicts', 'import_provenance'),
+    'mainnet_bot_role': ('member_roles', 'wrap_member'),
+    'mainnet_maint_kinds': ('member_roles',),
+    'mainnet_check_aud': ('private_ci',),
+    'mainnet_event_kinds': ('member_roles', 'event_as_maintainer'),
+    # tAud is the target's aud: the referenced issue and patch must carry it
+    'mainnet_event_target_aud': ('mainnet_aud',),
+    'mainnet_author_event_enc': ('mainnet_aud',),
+    # a bot's push gate admits role 4 rows, and forge-core holds it only with label, topic and
+    # packMirror moved to forge-meta (DESIGN rev 4.1 §8.3: core 17,769 B with them out)
+    'mainnet_bot_push': ('mainnet_bot_role', 'layout_meta'),
+}
 # The RC2 items with a flag: forge-contracts/schema/variants.py validates every combination.
 RC2_FLAGS = ('check_evidence_freeze', 'review_to_author', 'review_author', 'fused_star', 'event_as_maintainer',
              'member_roles')
@@ -158,6 +214,23 @@ WRITER_EVENT_KINDS = [8, 15, 16, 19, 20, 23]
 ROLE_GATED = {'refUpdate': 1, 'packManifest': 1, 'chunk': 1, 'transition': 2, 'event': 2, 'label': 2,
               'milestone': 2, 'checkRun': 1}
 WRITER_TRANSITION_KINDS = [13, 14, 15]
+# M2: the event kinds triage may write (forge-v2.md §2.1): label +/-, assign, unassign, thread
+# resolve and unresolve, review request and its removal, milestone set and clear. Every other kind,
+# and every kind defined later, is closed to triage.
+TRIAGE_EVENT_KINDS = [4, 5, 6, 7, 11, 12, 13, 14, 17, 18]
+# M2: a policy bypass (23) proves its writer a maintainer, as a hide does
+BYPASS_KIND = 23
+# C3: the pack-manifest kinds only a maintainer writes (r = 0): make-public bundle 7, environment
+# snapshot 8, reserved 9, access notice 11
+MAINT_PACK_KINDS = [7, 8, 9, 11]
+# B1: the pack-manifest kinds a bot (r = 4) writes: a push's pack (0) and browse index (1), a long
+# body (6), and their members-only forms (64, 65, 70 = 64 + 6)
+BOT_PACK_KINDS = [0, 1, 6, 64, 65, 70]
+# B1: a push grant lasts at most 90 days (ms)
+GRANT_TTL_MS = 90 * 24 * 3600 * 1000
+# D44: the types forge-meta takes, from the contract that holds them in the three-contract set
+META_TYPES = {'forge-collab': ('repoKey', 'ban'), 'forge-core': ('label', 'topic', 'packMirror'),
+              'forge-community': ('profile', 'follow')}
 # The riders: independent of the RC2 items (other types and properties), so variants.py turns
 # each off only with every RC2 item on, the largest build.
 RIDER_FLAGS = ('close_reason', 'review_hunk')
@@ -261,11 +334,10 @@ def build(flags):
     f = flags
     # Flags that only register together: a `where` naming a stamp needs the stamp (else 40126 at
     # registration), and collab's provenance and stamps only fit with events moved out (O-01).
-    needs = {'hook_public': 'vis_core', 'vis_collab': 'layout_events_out', 'import_provenance': 'layout_events_out',
-             'thread_lock': 'import_provenance', 'member_verdicts': 'import_provenance', 'wrap_member': 'vis_core'}
-    for flag, dep in needs.items():
-        if f[flag] and not f[dep]:
-            sys.exit(f'{flag} needs {dep}')
+    for flag, deps in NEEDS.items():
+        for dep in deps:
+            if f[flag] and not f[dep]:
+                sys.exit(f'{flag} needs {dep}')
 
     # ======================= layout (D-11) =======================
     if f['layout_events_out']:
@@ -818,10 +890,270 @@ def build(flags):
                           "unique": True}],
                      "required": ["$createdAt", "repoId", "identityId"], "additionalProperties": False}
 
+    # ======================= mixed visibility (DESIGN rev 4.1 §8.3) =======================
+    # A fresh registration only: each adds a rule, a reference or a required field to a type that
+    # exists, which no update can (§9). Row numbers are DESIGN §8.2's; forge-v2.md §9.1 has each.
+    def thaw(t, name, when):
+        """Freeze `name` only while `when` holds, where it was frozen outright."""
+        t['immutable'] = [e for e in t.get('immutable', []) if e != name]
+        freeze(t, name, when=when)
+
+    def drop_where(leaf, key):
+        leaf.get('where', {}).pop(key, None)
+        if leaf.get('where') == {}:
+            del leaf['where']
+
+    def repo_vis(t, contract=None):
+        """`repoId` proves the document's `vis` equal to the repo's `visibility` (C4, L3)."""
+        ref = {"type": "permanentDocument", "contractId": contract, "documentType": "repo", "where": {"visibility": "vis"}}
+        if contract is None:
+            del ref['contractId']
+        t['properties']['repoId'] = ident(refersTo=ref, position=t['properties']['repoId']['position'])
+
+    if up['mainnet_aud']:
+        # L1 (rows 1-3). absent = Public, 1 = Members, 2 = a letter. "aud present <=> enc present";
+        # a members-only document is a member's (aud = 1 => asMember); a private repo's content is
+        # aud + asMember, so a stranger writes nothing into it. The author's replace may drop aud
+        # (making it public) and never add or change it; the plaintext fields a sealed document
+        # cannot carry become settable once, in that replace (review is immutable): frozen when
+        # stored, when the stored document is public, and while the written one keeps aud.
+        for t in ('issue', 'patch', 'comment', 'review'):
+            s = ld[t]
+            add_prop(s, 'aud', {"type": "integer", "minimum": 1, "maximum": 2})
+            s['dependentRequired'] = {"aud": ["enc"], "enc": ["epoch", "aud"]}
+            pc = s['propertyConstraints']
+            pc['audMember'] = {"ifThen": [{"equal": ["aud", 1]}, {"present": "asMember"}]}
+            pc['p_sealedIfPrivate'] = {"anyOf": [{"notEqual": ["vis", {"const": "private"}]},
+                                                 {"allOf": [{"present": "aud"}, {"present": "asMember"}]}]}
+            if t != 'review':
+                freeze(s, 'aud', when={"anyOf": [{"absent": "$old.aud"}, {"present": "aud"}]})
+        for t, props in (('comment', ('path', 'diffHunk')), ('patch', ('baseRefName', 'sourceRefName'))):
+            for p in props:
+                if p in ld[t]['properties']:
+                    thaw(ld[t], p, {"anyOf": [{"present": f"$old.{p}"}, {"absent": "$old.aud"}, {"present": "aud"}]})
+
+    if up['mainnet_one_way_visibility']:
+        # C1 (row 18). Free while private, frozen once public; only the owner replaces a repo.
+        thaw(cd['repo'], 'visibility', {"equal": ["$old.visibility", {"const": "public"}]})
+
+    if up['mainnet_vis_via_repo']:
+        # L3 (row 17): a comment's or review's vis is the repo's, so a converted repo's old threads
+        # take public replies. C4 (row 41): the git-plane types and webhooks prove vis against the
+        # repo, not the member row, so no member row is re-issued when a repo goes public.
+        for t in ('comment', 'review'):
+            repo_vis(ld[t], CORE)
+        for leaf in leaves(ld['comment']['properties']['targetId']['refersTo']):
+            drop_where(leaf, 'vis')
+        drop_where(ld['review']['properties']['patchId']['refersTo'], 'vis')
+        for t in ('refUpdate', 'protectedRefUpdate', 'config', 'release'):
+            repo_vis(cd[t])
+            for leaf in leaves(cd[t]['ownerRefersTo']):
+                drop_where(leaf, 'vis')
+        repo_vis(md['webhook'], CORE)
+        drop_where(md['webhook']['ownerRefersTo'], 'vis')
+
+    if up['mainnet_member_role']:
+        # L2 (rows 5, 6). A member restates its current role on every post (the asMember reference
+        # is re-checked on each replace); a maintainer's is unproved and may be left out (reads 0).
+        for t in ('issue', 'patch', 'comment', 'review'):
+            add_prop(ld[t], 'mRole', {"type": "integer", "minimum": 1, "maximum": 4})
+        next(leaf for leaf in leaves(collab['schemaDefs']['member']['refersTo'])
+             if leaf['documentType'] == 'writer')['where'] = {"role": "mRole"}
+        proved = {"allOf": [{"present": "asMember"}, {"lessThanOrEqual": ["mRole", 1]}]}
+        ld['review']['propertyConstraints']['memberVerdict'] = {"ifThenElse": [
+            {"in": ["verdict", [1, 2]]}, proved, {"ifThen": [{"in": ["verdict", [4, 5]]}, {"absent": "asMember"}]}]}
+        for t in ('issue', 'patch'):
+            ld[t]['propertyConstraints']['i_provenance'] = {"anyOf": [
+                {"allOf": [{"absent": "imported"}, {"absent": "upstreamNumber"}]}, proved]}
+        for t in ('comment', 'review'):
+            ld[t]['propertyConstraints']['i_provenance'] = {"anyOf": [{"absent": "imported"}, proved]}
+
+    if up['mainnet_bot_role']:
+        # C2: a Bot member row (role 4) passes no triage or push gate (r <= 2 there, B1 aside).
+        # L4 (row 14): a wrap names its recipient's role, proved by the writer leaf, never 4.
+        cd['writer']['properties']['role']['maximum'] = 4
+        rk = rk_home['repoKey']
+        add_prop(rk, 'mr', {"type": "integer", "minimum": 1, "maximum": 3}, required=True)
+        next(leaf for leaf in leaves(rk['properties']['memberId']['refersTo'])
+             if leaf['documentType'] == 'writer')['where'] = {"role": "mr"}
+
+    if up['mainnet_maint_kinds']:
+        # C3 (rows 9-11). writer.role is never 0, so only the maintainer operand admits r = 0.
+        pm = cd['packManifest']
+        pm['properties']['r']['minimum'] = 0
+        pm['propertyConstraints']['maintKinds'] = {"ifThen": [{"in": ["kind", MAINT_PACK_KINDS]}, {"equal": ["r", 0]}]}
+
+    if up['mainnet_check_aud']:
+        # M1 (rows 12, 13): the runner declares a members-only run (aud 1, frozen); a private or
+        # members-only run carries no text, and may carry an opaque log link (logSha256 required).
+        add_prop(cr, 'aud', {"type": "integer", "minimum": 1, "maximum": 1}, immutable=True)
+        del cr['propertyConstraints']['privateNoText']
+        cr['propertyConstraints']['sealedNoText'] = {"anyOf": [
+            {"allOf": [{"notEqual": ["vis", {"const": "private"}]}, {"absent": "aud"}]},
+            {"allOf": [{"absent": "summary"}, {"absent": "detailsUrl"}, {"absent": "artifacts"}, {"absent": "externalId"}]}]}
+
+    if up['mainnet_event_kinds']:
+        # M2 (rows 7, 8): an allow-list, so kinds 26, 27 and every kind defined later are closed to
+        # triage. Kind 23 joins the hide kinds in hideByMaint (asMaintainer = $ownerId): the same
+        # condition as a rule of its own, 79 B smaller (DESIGN Appendix E7).
+        ev = ev_home['event']
+        ev['propertyConstraints']['t_triageKinds'] = {"ifThen": [{"equal": ["r", 2]}, {"in": ["kind", TRIAGE_EVENT_KINDS]}]}
+        ev['propertyConstraints']['hideByMaint']['ifThen'][0] = {"in": ["kind", [BYPASS_KIND] + HIDE_KINDS]}
+
+    for flag, t in (('mainnet_event_target_aud', 'event'), ('mainnet_author_event_enc', 'authorEvent')):
+        if up[flag]:
+            # M4 (row 16), M3 (row 19): the target's aud, proved by the targetId reference (absent on
+            # both sides agrees), and no plaintext value on a members-only or letter target
+            s = md[t]
+            add_prop(s, 'tAud', {"type": "integer", "minimum": 1, "maximum": 2})
+            for leaf in leaves(s['properties']['targetId']['refersTo']):
+                leaf['where']['aud'] = 'tAud'
+            s['propertyConstraints']['tAudSealed'] = {"anyOf": [{"absent": "tAud"}, {"absent": "value"}]}
+    if up['mainnet_author_event_enc']:
+        # M3 (row 19): an author's retitle or retarget of a sealed item is sealed too
+        ae = md['authorEvent']
+        add_prop(ae, 'enc', {"$ref": "#/$defs/enc"})
+        add_prop(ae, 'epoch', {"$ref": "#/$defs/u32"})
+        ae['dependentRequired'] = {"enc": ["epoch"]}
+        ae['propertyConstraints']['noPlain'] = {"anyOf": [{"absent": "enc"}, {"absent": "value"}]}
+        if 'retargetValue' in ae['propertyConstraints']:
+            # mainnet_retarget_value: a sealed retarget carries its base inside enc
+            ae['propertyConstraints']['retargetValue'] = {"ifThenElse": [
+                {"equal": ["kind", 8]}, {"anyOf": [{"present": "value"}, {"present": "enc"}]}, {"absent": "value"}]}
+
+    if up['mainnet_bot_push']:
+        # B1 (rows 42-45; DESIGN §4.9 "Pushing", D42). A maintainer's pushGrant names one bot row
+        # (role 4) and either one exact members-only ref (scope: its refNameHash) or a public ref
+        # prefix, until at most 90 days after it is written. A bot's refUpdate claims r = 4 and
+        # names a grant by id: pg (exact) or pp (prefix), two properties because a deletable
+        # document by id is no anyOf operand. The grant's `where` pins the repo, the bot
+        # ($ownerId), the granter (grantor, whose maintainer row must still exist), the until (gu)
+        # and the scope or prefix (gp); botGrant needs $createdAt <= gu, a ref under gp, and
+        # enc for an exact grant, so an exact grant never yields a public ref. Everyone else
+        # sends r = 1. protectedRefUpdate stays maintainer-only.
+        def grant(match):
+            return {"type": "deletableDocument", "documentType": "pushGrant",
+                    "where": dict({"repoId": "repoId", "botId": "$ownerId", "until": "gu", "$ownerId": "grantor"}, **match)}
+        cd['pushGrant'] = {
+            "type": "object", "documentsMutable": False, "canBeDeleted": True,
+            "ownerRefersTo": find_leaf("maintainer"),
+            "properties": {
+                "repoId": {"$ref": "#/$defs/id", "position": 0},
+                "botId": ident(refersTo=dict(find_leaf("writer"), where={"role": "br"}), position=1),
+                "br": {"type": "integer", "minimum": 4, "maximum": 4, "position": 2},
+                "scope": {"$ref": "#/$defs/h32", "position": 3},
+                "prefix": {"type": "string", "minLength": 1, "maxLength": 255, "maxBytes": 255, "position": 4},
+                "until": {"type": "integer", "minimum": 0, "position": 5}},
+            # a bot's grants, oldest first (the runner and readers find them here)
+            "indices": [{"name": "byBot", "properties": [{"repoId": "asc"}, {"botId": "asc"}, {"$createdAt": "asc"}]}],
+            "required": ["$createdAt", "repoId", "botId", "br", "until"], "additionalProperties": False,
+            "propertyConstraints": {
+                "ttl90": {"allOf": [{"greaterThan": ["until", "$createdAt"]},
+                                    {"lessThanOrEqual": ["until", {"add": ["$createdAt", GRANT_TTL_MS]}]}]},
+                "oneScope": {"anyOf": [{"allOf": [{"present": "scope"}, {"absent": "prefix"}]},
+                                       {"allOf": [{"absent": "scope"}, {"present": "prefix"}]}]}}}
+        ru = cd['refUpdate']
+        ru['properties']['r']['maximum'] = 4
+        add_prop(ru, 'pg', ident(refersTo=grant({"scope": "refNameHash"})))
+        add_prop(ru, 'pp', ident(refersTo=grant({"prefix": "gp"})))
+        add_prop(ru, 'grantor', ident(refersTo=find_leaf("maintainer")))
+        add_prop(ru, 'gp', {"type": "string", "minLength": 1, "maxLength": 255, "maxBytes": 255})
+        add_prop(ru, 'gu', {"type": "integer", "minimum": 0})
+        ru['propertyConstraints']['botGrant'] = {"ifThenElse": [{"equal": ["r", 4]}, {"allOf": [
+            {"anyOf": [{"present": "pg"}, {"present": "pp"}]},
+            {"anyOf": [{"absent": "pp"}, {"startsWith": ["refName", "gp"]}]},
+            {"anyOf": [{"absent": "pg"}, {"present": "enc"}]}]}, {"equal": ["r", 1]}]}
+        # The time check is a rule of its own, so botGrant reads no time and is judged before
+        # signing and by the offline vectors (a rule reading $createdAt is judged on chain only).
+        # A bot's update without gu fails the grant's `where {"until": "gu"}` (until is required).
+        ru['propertyConstraints']['grantLive'] = {"anyOf": [{"absent": "gu"}, {"lessThanOrEqual": ["$createdAt", "gu"]}]}
+        # Packs and chunks admit the bot's row (r = 4: the writer leaf proves role 4) for the push
+        # and long-body kinds only, never superseding others' packs; raising r alone would also
+        # admit triage (2) and readers (3), so the other writers keep r in {0, 1}.
+        pm = cd['packManifest']
+        pm['properties']['r']['maximum'] = 4
+        pm['propertyConstraints']['botPack'] = {"ifThenElse": [{"equal": ["r", 4]}, {"allOf": [
+            {"in": ["kind", BOT_PACK_KINDS]}, {"absent": "supersedes"}]}, {"in": ["r", [0, 1]]}]}
+        ch = cd['chunk']
+        ch['properties']['r']['maximum'] = 4
+        ch.setdefault('propertyConstraints', {})['botChunk'] = {"in": ["r", [1, 4]]}
+
     core['description'] = "Dash Forge v2 core: repositories, refs, packs, members, releases, labels, topics"
     collab['description'] = "Dash Forge v2 collaboration: issues, pull requests, transitions, comments, reviews, repo keys"
     comm['description'] = "Dash Forge v2 community: events, milestones, runners, check runs, policies, stars, webhooks"
-    return {'forge-core': core, 'forge-collab': collab, 'forge-community': comm}
+    contracts = {'forge-core': core, 'forge-collab': collab, 'forge-community': comm}
+    if f['layout_meta']:
+        contracts[META] = split_meta(contracts, f['mainnet_bot_push'])
+    return contracts
+
+
+def _walk(node, fn):
+    """Call fn on every dict in a JSON tree."""
+    if isinstance(node, dict):
+        fn(node)
+        for v in node.values():
+            _walk(v, fn)
+    elif isinstance(node, list):
+        for x in node:
+            _walk(x, fn)
+
+
+def _defs_used(contract):
+    """The schemaDefs a contract's document types (and the defs they use) name by `$ref`."""
+    used, todo = set(), [contract['documentSchemas']]
+    while todo:
+        found = set()
+        _walk(todo.pop(), lambda d: found.add(d['$ref'].split('/')[-1]) if isinstance(d.get('$ref'), str) else None)
+        for name in found - used:
+            used.add(name)
+            todo.append(contract['schemaDefs'][name])
+    return used
+
+
+def split_meta(contracts, bot_push):
+    """D44 (DESIGN rev 4.1 §8.3 item 0): move META_TYPES into forge-meta, registered last and
+    enrolled in the same group. None of them is read by a rule, a total, a derived index or a
+    reference of its old contract (checked below), so the move changes no consensus rule; their
+    own references into their old contract name it by id (a later contract may refer to an earlier
+    one, never the reverse: book contract-keywords/refers-to.md:311,328 at v5.0.0-beta.3)."""
+    meta = {"$formatVersion": "1", "id": contracts['forge-core']['id'], "ownerId": contracts['forge-core']['ownerId'],
+            "version": 1, "description": "Dash Forge v2 meta: repo keys, bans, labels, topics, pack mirrors, profiles, follows",
+            "schemaDefs": {}, "documentSchemas": {}}
+    moved = {}
+    for src, types in META_TYPES.items():
+        c = contracts[src]
+        for t in types:
+            if t not in c['documentSchemas']:
+                continue
+            s = c['documentSchemas'].pop(t)
+
+            def name_source(d, src=src):
+                if d.get('type') in ('permanentDocument', 'deletableDocument') and 'documentType' in d:
+                    d.setdefault('contractId', PLACEHOLDER[src])
+            _walk(s, name_source)
+            meta['documentSchemas'][t] = s
+            moved[t] = src
+            for d in _defs_used({'documentSchemas': s, 'schemaDefs': c['schemaDefs']}):
+                dd = copy.deepcopy(c['schemaDefs'][d])
+                _walk(dd, name_source)
+                if meta['schemaDefs'].setdefault(d, dd) != dd:
+                    sys.exit(f'forge-meta: $defs.{d} differs between the contracts its types come from')
+
+    # Nothing left behind may refer to a moved type in its old contract
+    for name, c in contracts.items():
+        def check(d, name=name):
+            if d.get('documentType') in moved:
+                target = next((n for n, ph in PLACEHOLDER.items() if ph == d.get('contractId')), name)
+                if target == moved[d['documentType']]:
+                    sys.exit(f'{name} refers to {d["documentType"]}, which moved to forge-meta')
+        _walk(c['documentSchemas'], check)
+        _walk(c['schemaDefs'], check)
+        for d in set(c['schemaDefs']) - _defs_used(c):
+            del c['schemaDefs'][d]
+    contracts['forge-core']['description'] = "Dash Forge v2 core: repositories, refs, packs, members, releases" + (
+        ", push grants" if bot_push else "")
+    contracts['forge-collab']['description'] = "Dash Forge v2 collaboration: issues, pull requests, transitions, comments, reviews"
+    return meta
 
 
 def dumps(j):
@@ -870,7 +1202,7 @@ def validate(validator, contracts, vectors=None):
     (exit code, its output, {name: (contract bytes, create-transition bytes)})."""
     with tempfile.TemporaryDirectory() as tmp:
         paths = []
-        for name in NAMES:
+        for name in contracts:
             paths.append(os.path.join(tmp, f'{name}.json'))
             open(paths[-1], 'w').write(dumps(contracts[name]))
         r = subprocess.run([validator, *(['--vectors', vectors] if vectors else []), *paths],
@@ -889,6 +1221,14 @@ def budget_note(n):
     return 'over the ceiling' if n > CEILING else 'over the target' if n > TARGET else 'ok'
 
 
+def over_budget(contracts, size):
+    """Whether one contract's (serialized, create-transition) size fails its set's budget: the
+    D-12 ceiling for the three-contract set, and at least ROOM_MIN bytes of room under the
+    transition limit for the four-contract set, whose ceiling D44 waives."""
+    n, st = size
+    return TRANSITION_LIMIT - st < ROOM_MIN if META in contracts else n > CEILING
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--check', action='store_true')
@@ -905,12 +1245,19 @@ def main():
         on = ','.join(filter(None, [on, *(k for k in MAINNET_FLAGS if k not in MAINNET_UNBUILT)]))
     variant = bool(a.off or on)
     contracts = build(flags_from(a.off, on))
-    targets = {n: os.path.join(a.out or CONTRACTS, f'{n}.json') for n in NAMES}
+    if META in contracts and not a.out:
+        sys.exit('the four-contract layout is a fresh registration: write it with --out <dir>')
+    targets = {n: os.path.join(a.out or CONTRACTS, f'{n}.json') for n in contracts}
     texts = {k: dumps(contracts[k]) for k in targets}
     if a.check and variant:
         sys.exit('--check compares the full build: use it without --off/--on')
     if a.check:
         stale = [p for k, p in targets.items() if not os.path.exists(p) or open(p).read() != texts[k]]
+        # the committed set is the three contracts devnets register; forge-meta is --mainnet only
+        meta = os.path.join(CONTRACTS, f'{META}.json')
+        if os.path.exists(meta):
+            stale.append(meta)
+            print(f'stale: {os.path.relpath(meta)} (forge-meta is built with --mainnet --out <dir> only)')
         for p in stale:
             print(f'stale: {os.path.relpath(p)} (re-run forge-contracts/schema/build.py)')
         # The registered v1 schemas are frozen copies of what devnet sakura registered on
@@ -931,14 +1278,18 @@ def main():
     failed = False
     if a.validate:
         code, out, sizes = validate(a.validate, contracts)
-        for name in NAMES:
+        for name in contracts:
             if name not in sizes:
                 print(f'{name:16} REFUSED: {out[-1500:]}')
+                failed = True
                 continue
             n, st = sizes[name]
             print(f'{name:16} {n:6} B  target {TARGET} ({TARGET - n:+}), ceiling {CEILING} ({CEILING - n:+})  {budget_note(n)};'
-                  f'  create transition {st} B ({100 * st / TRANSITION_LIMIT:.1f} % of {TRANSITION_LIMIT})')
-            failed = failed or n > CEILING
+                  f'  create transition {st} B ({100 * st / TRANSITION_LIMIT:.1f} % of {TRANSITION_LIMIT},'
+                  f' {TRANSITION_LIMIT - st} B of room)')
+            failed = failed or over_budget(contracts, sizes[name])
+        if META in contracts:
+            print(f'four-contract set (D44): the D-12 ceiling is waived; each contract keeps >= {ROOM_MIN} B of room')
         failed = failed or code != 0
     if a.gate:
         for name, n in gate(a.gate, contracts).items():

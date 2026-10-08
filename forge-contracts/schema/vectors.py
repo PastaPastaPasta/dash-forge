@@ -3,11 +3,13 @@
 forge-contracts/vectors/rc1/<contract>.json, with the replace vectors in <contract>.replace.json
 and the index vectors in <contract>.indices.json (see its README for the format).
 
-  python3 forge-contracts/schema/vectors.py [--check] [--off flag,flag] [--on flag,flag] [--out <dir>]
-                                            [--gate <b7gate>]
+  python3 forge-contracts/schema/vectors.py [--check] [--off flag,flag] [--on flag,flag] [--mainnet]
+                                            [--out <dir>] [--gate <b7gate>]
 
 --check     write nothing; exit 1 when the committed vectors differ from a fresh generation.
 --off/--on  the vectors of a build.py variant (the same flags): written only to --out.
+--mainnet   the vectors of `build.py --mainnet` (every built MAINNET_FLAGS item on, the four-contract
+            layout included): written only to --out.
 --out       write the files to this directory instead of forge-contracts/vectors/rc1.
 --gate      also judge every create case with b7gate --cases (rs-dpp v4.2.0-beta.7) against the
             committed contracts and fail on any mismatch (RC1 only: beta.7 refuses RC2's
@@ -39,13 +41,16 @@ AP.add_argument('--check', action='store_true')
 AP.add_argument('--gate')
 AP.add_argument('--off', default='')
 AP.add_argument('--on', default='')
+AP.add_argument('--mainnet', action='store_true')
 AP.add_argument('--out')
 ARGS = AP.parse_args() if __name__ == '__main__' else AP.parse_args([])
+if ARGS.mainnet:
+    ARGS.on = ','.join(filter(None, [ARGS.on, *(k for k in build.MAINNET_FLAGS if k not in build.MAINNET_UNBUILT)]))
 F = build.flags_from(ARGS.off, ARGS.on)
 REPO = os.path.dirname(os.path.dirname(HERE))
 CONTRACTS = os.path.join(REPO, 'forge-contracts', 'contracts')
 OUT = os.path.join(REPO, 'forge-contracts', 'vectors', 'rc1')
-NAMES = ('forge-core', 'forge-collab', 'forge-community')
+NAMES = tuple(build.build(F))   # the three contracts, and forge-meta with `layout_meta`
 IDS = {'FORGE_CORE_CONTRACT_ID': 'A2KL77ngVM1ft1t1em2XKt1rWCBZANdAJMyfWrDGCcd1',
        'FORGE_COLLAB_CONTRACT_ID': 'C1zHeeG7EUudXdB5ZyDQnXVU35hrCfvd1fRCybXEqaPS'}
 
@@ -110,6 +115,13 @@ CONTRACT_OF.update({t: 'forge-community' for t in ('event', 'authorEvent', 'mile
 
 if F['fused_star']:
     del BASE['starBeat']   # C1: the star carries the trending window
+
+
+def home(t):
+    """The contract a type's vectors go to: forge-meta takes META_TYPES with `layout_meta` (D44)."""
+    if F['layout_meta'] and any(t in ts for ts in build.META_TYPES.values()):
+        return build.META
+    return CONTRACT_OF[t]
 # RC2 member roles: a writer document carries its role, and every writer-gated type its claimed `r`
 # (1: the role a maintainer, an author, a runner or a role-1 writer sends)
 ROLE_GATED = build.ROLE_GATED
@@ -117,6 +129,19 @@ if F['member_roles']:
     BASE['writer']['role'] = 1
     for _t in ROLE_GATED:
         BASE[_t]['r'] = 1
+# The mainnet set (MAINNET_FLAGS): what every document of a type now carries
+AUD = F['mainnet_aud']
+# L1: a members-only collab document is a member's (aud 1 + asMember); a private repo's content is
+# always one. Sealed collab cases add it on the mainnet set, so each keeps the reason it names.
+MS = dict(aud=1, asMember={"$id": OWNER}) if AUD else {}
+# L2: a review's imported provenance needs a member's proof too
+MEMBER_PROOF = dict(asMember={"$id": OWNER}) if F['mainnet_member_role'] else {}
+if F['mainnet_bot_role']:
+    BASE['repoKey']['mr'] = 1          # L4: the recipient's role (a maintainer's self wrap sends 1)
+if F['mainnet_release_target']:
+    BASE['release']['targetOid'] = {"$b": [1, 20]}   # a public publish names its commit
+# ...and a sealed revision never does (targetOnPublish)
+NO_TARGET = dict(targetOid=DROP) if F['mainnet_release_target'] else {}
 
 CASES = []
 REPLACES = []   # (contract) <contract>.replace.json: a replace of `stored` by `doc`
@@ -226,7 +251,8 @@ ok('R-02', 'sealed private protected ref', 'protectedRefUpdate', refName=DROP, v
 no('R-02', 'private protected ref with plaintext name', 'protectedRefUpdate', 'noPlain', vis='private')
 ok('R-02', 'sealed private config with plaintext backend', 'config', defaultBranch=DROP, protectedPatterns=DROP, vis='private', archived=True, **SEALED)
 no('R-02', 'private config with plaintext branch', 'config', 'noPlain', vis='private')
-ok('R-02', 'sealed private release', 'release', tagName='-Ab3_x9QkZ', name=DROP, notes=DROP, assets=DROP, vis='private', delta=0, **SEALED)
+ok('R-02', 'sealed private release', 'release', tagName='-Ab3_x9QkZ', name=DROP, notes=DROP, assets=DROP, vis='private', delta=0,
+   **SEALED, **NO_TARGET)
 no('R-02', 'private plaintext release', 'release', 'noPlain', vis='private')
 
 
@@ -236,7 +262,7 @@ def sealed_release(name):
     with open(os.path.join(REPO, 'forge-contracts', 'vectors', f'private_release_seal__{name}.json')) as f:
         p = json.load(f)['expected']['props']
     return dict(signer=0x22, repoId=i(0x11), tagName=p['tagName'], vis=p['vis'], delta=p['delta'],
-                enc={"$hex": p['enc']}, epoch=p['epoch'], name=DROP, notes=DROP, assets=DROP)
+                enc={"$hex": p['enc']}, epoch=p['epoch'], name=DROP, notes=DROP, assets=DROP, **NO_TARGET)
 
 
 ok('R-02', 'sealed release v1.0.0 (§16 vector)', 'release', **sealed_release('v1_0_0'))
@@ -340,8 +366,8 @@ no('O-05', 'size over 1 TiB', 'packManifest', 'sizeNonNeg', storage=1, chunkCoun
 # ---------------- INV-11 free tightenings ----------------
 ok('INV-11', 'config enc of 61 B', 'config', defaultBranch=DROP, protectedPatterns=DROP, vis='private', **SEALED)
 no('INV-11', 'config enc of 60 B (v1 envelope)', 'config', 'encV2', defaultBranch=DROP, protectedPatterns=DROP, vis='private', enc=b(5, 60), epoch=0)
-no('INV-11', 'enc of 28 B', 'issue', 'minItems', title=DROP, body=DROP, vis='private', enc=b(5, 28), epoch=0)
-ok('INV-11', 'enc of 29 B', 'issue', title=DROP, body=DROP, vis='private', enc=b(5, 29), epoch=0)
+no('INV-11', 'enc of 28 B', 'issue', 'minItems', title=DROP, body=DROP, vis='private', enc=b(5, 28), epoch=0, **MS)
+ok('INV-11', 'enc of 29 B', 'issue', title=DROP, body=DROP, vis='private', enc=b(5, 29), epoch=0, **MS)
 no('INV-11', 'duplicate protected patterns', 'config', 'uniqueItems', protectedPatterns=['refs/heads/main', 'refs/heads/main'])
 
 # ---------------- CL-8 label grammar ----------------
@@ -351,16 +377,19 @@ for n in (' bug', 'bug ', 'a\tb', 'a\nb', ' '):
     no('CL-8', f'label {n!r}', 'label', 'pattern', name=n)
 
 # ---------------- R-03 private => sealed (collab) ----------------
-ok('R-03', 'sealed private issue', 'issue', title=DROP, body=DROP, vis='private', **SEALED)
+ok('R-03', 'sealed private issue', 'issue', title=DROP, body=DROP, vis='private', **SEALED, **MS)
 no('R-03', 'private issue with a plaintext title', 'issue', 'p_sealedIfPrivate', vis='private')
 no('R-03', 'issue without vis', 'issue', 'required', vis=DROP)
 no('R-03', 'issue vis internal', 'issue', 'enum', vis='internal')
 no('R-03', 'private patch in plaintext', 'patch', 'p_sealedIfPrivate', vis='private')
-ok('R-03', 'sealed private comment', 'comment', body=DROP, vis='private', **SEALED)
+ok('R-03', 'sealed private comment', 'comment', body=DROP, vis='private', **SEALED, **MS)
 no('R-03', 'private comment in plaintext', 'comment', 'p_sealedIfPrivate', vis='private')
-no('R-03', 'private inline comment with a plaintext path and enc', 'comment', 'noPlain', body=DROP, path='src/a.rs', vis='private', **SEALED)
-ok('R-03', 'private bodyless member approval', 'review', verdict=1, body=DROP, asMember=i(OWNER), vis='private')
-ok('R-03', 'private imported comment verdict with createdAt only', 'review', body=DROP, imported={"createdAt": 1}, vis='private')
+no('R-03', 'private inline comment with a plaintext path and enc', 'comment', 'noPlain', body=DROP, path='src/a.rs', vis='private', **SEALED, **MS)
+# L1: on the mainnet set a private review is always sealed (aud), even a bodyless approval
+ok('R-03', 'private bodyless member approval', 'review', **dict(dict(verdict=1, body=DROP, asMember=i(OWNER), vis='private'),
+                                                                  **(dict(SEALED, **MS) if AUD else {})))
+ok('R-03', 'private imported comment verdict with createdAt only', 'review', body=DROP, imported={"createdAt": 1}, vis='private',
+   **(dict(SEALED, **MS) if AUD else dict(MEMBER_PROOF)))
 no('R-03', 'private review with a plaintext body', 'review', 'p_sealedIfPrivate', vis='private')
 
 # ---------------- R-04 import provenance ----------------
@@ -375,7 +404,8 @@ no('R-04', 'imported comment without a proof', 'comment', 'i_provenance', import
 ok('R-04', 'imported comment with a proof', 'comment', imported=IMP, asMember=i(OWNER))
 no('R-04', 'proof naming another identity', 'issue', 'm_self', asMember=i(9))
 no('R-04', 'patch proof naming another identity', 'patch', 'm_self', asMember=i(9))
-no('R-04', 'sealed private import without a proof', 'issue', 'i_provenance', title=DROP, body=DROP, vis='private', imported={"createdAt": 1}, **SEALED)
+no('R-04', 'sealed private import without a proof', 'issue', 'i_provenance', title=DROP, body=DROP, vis='private', imported={"createdAt": 1}, **SEALED,
+   **(dict(aud=2) if AUD else {}))
 
 # ---------------- R-14 reply thread ----------------
 ok('R-14', 'reply to a root', 'comment', replyTo=i(6))
@@ -501,11 +531,15 @@ no('O-07', 'no outcome', 'checkRun', 'required', outcome=DROP)
 
 # ---------------- R-18 private CI ----------------
 ok('R-18', 'private completed run with no text', 'checkRun', vis='private', detailsUrl=DROP, summary=DROP, externalId=DROP)
+NO_TEXT = 'sealedNoText' if F['mainnet_check_aud'] else 'privateNoText'   # M1 renames and loosens the rule
 for p, v in (('summary', 'ok'), ('detailsUrl', 'https://ci.example.com/1'), ('externalId', 'gh-1'), ('artifacts', '[]')):
-    no('R-18', f'private run with {p}', 'checkRun', 'privateNoText', vis='private',
+    no('R-18', f'private run with {p}', 'checkRun', NO_TEXT, vis='private',
        **{k: DROP for k in ('detailsUrl', 'summary', 'externalId') if k != p}, **{p: v})
-no('R-18', 'private run with a log URL', 'checkRun', 'privateNoText', vis='private', detailsUrl=DROP, summary=DROP, externalId=DROP,
-   logUrl='https://logs.example.com/1', logSha256=b(1, 32))
+PRIVATE_LOG = dict(vis='private', detailsUrl=DROP, summary=DROP, externalId=DROP, logUrl='https://logs.example.com/1', logSha256=b(1, 32))
+if F['mainnet_check_aud']:
+    ok('M1', 'private run with an opaque log link', 'checkRun', **PRIVATE_LOG)
+else:
+    no('R-18', 'private run with a log URL', 'checkRun', 'privateNoText', **PRIVATE_LOG)
 no('R-18', 'run without vis', 'checkRun', 'required', vis=DROP)
 no('R-18', 'run vis internal', 'checkRun', 'enum', vis='internal')
 
@@ -536,9 +570,9 @@ no('base', 'protected ref with neither name nor enc', 'protectedRefUpdate', 'has
 no('base', 'issue with neither title nor enc', 'issue', 'hasTitle', title=DROP)
 no('base', 'patch with neither title nor enc', 'patch', 'hasTitle', title=DROP)
 no('base', 'comment with neither body nor enc', 'comment', 'hasBody', body=DROP)
-no('base', 'sealed issue with a plaintext title', 'issue', 'noPlain', **SEALED)
-no('base', 'sealed patch with a plaintext base ref', 'patch', 'noPlain', title=DROP, **SEALED)
-no('base', 'sealed review with a plaintext body', 'review', 'noPlain', **SEALED)
+no('base', 'sealed issue with a plaintext title', 'issue', 'noPlain', **SEALED, **MS)
+no('base', 'sealed patch with a plaintext base ref', 'patch', 'noPlain', title=DROP, **SEALED, **MS)
+no('base', 'sealed review with a plaintext body', 'review', 'noPlain', **SEALED, **MS)
 no('base', 'sealed label with a plaintext colour', 'label', 'noPlain', description=DROP, **SEALED)
 no('base', 'sealed event with a plaintext value', 'event', 'noPlain', **SEALED)
 no('base', 'label event without a value', 'event', 'needValue', value=DROP)
@@ -649,7 +683,7 @@ if F['review_hunk']:
     ok('QW2-010', 'a hunk of 1024 bytes', 'comment', diffHunk='@@ -1 +1 @@\n+' + 'x' * 1011, **REVIEW_COMMENT)
     no('QW2-010', 'a hunk over 1024 bytes', 'comment', 'maxBytes', diffHunk='@@ -1 +1 @@\n+' + '\u00e9' * 600, **REVIEW_COMMENT)
     no('QW2-010', 'an empty hunk', 'comment', 'minLength', diffHunk='', **REVIEW_COMMENT)
-    no('QW2-010', 'a sealed comment with a plaintext hunk', 'comment', 'noPlain', body=DROP, vis='private', diffHunk=HUNK, **SEALED)
+    no('QW2-010', 'a sealed comment with a plaintext hunk', 'comment', 'noPlain', body=DROP, vis='private', diffHunk=HUNK, **SEALED, **MS)
     STORED_RC = doc('comment', diffHunk=HUNK, **REVIEW_COMMENT)
     replace('QW2-010', 'an imported review comment\'s body edited', 'comment', STORED_RC, None, body='hi (edited)')
     replace('QW2-010', 'a hunk changed', 'comment', STORED_RC, '40128', diffHunk='@@ -1 +1 @@\n+forged')
@@ -689,14 +723,20 @@ if F['member_roles']:
     ok('ROLES', 'a triage writer (role 2)', 'writer', role=2)
     ok('ROLES', 'a reader (role 3)', 'writer', role=3)
     no('ROLES', 'writer role 0', 'writer', 'minimum', role=0)
-    no('ROLES', 'writer role 4', 'writer', 'maximum', role=4)
+    if F['mainnet_bot_role']:
+        ok('C2', 'a bot (role 4)', 'writer', role=4)
+        no('C2', 'writer role 5', 'writer', 'maximum', role=5)
+    else:
+        no('ROLES', 'writer role 4', 'writer', 'maximum', role=4)
     no('ROLES', 'writer without a role', 'writer', 'required', role=DROP)
     for t in ROLE_GATED:
         no('ROLES', f'{t} without r', t, 'required', r=DROP)
-        no('ROLES', f'{t} claiming r 0', t, 'minimum', r=0)
-    # push class and check runs: role 1 only
+        if not (t == 'packManifest' and F['mainnet_maint_kinds']):   # C3: r 0 is the maintainer's claim
+            no('ROLES', f'{t} claiming r 0', t, 'minimum', r=0)
+    # push class and check runs: role 1 only (B1: and the bot's 4, so the push rules refuse 2)
+    BOT_RULE = {'refUpdate': 'botGrant', 'packManifest': 'botPack', 'chunk': 'botChunk'}
     for t in (t for t, hi in ROLE_GATED.items() if hi == 1):
-        no('ROLES', f'{t} claiming triage (r 2)', t, 'maximum', r=2)
+        no('ROLES', f'{t} claiming triage (r 2)', t, BOT_RULE[t] if F['mainnet_bot_push'] and t in BOT_RULE else 'maximum', r=2)
     # labels and milestones: writer or triage, never a reader
     for t in ('label', 'milestone'):
         ok('ROLES', f'{t} by triage (r 2)', t, r=2)
@@ -724,16 +764,21 @@ if F['member_roles']:
                       ('review request remove', dict(kind=14, value=DROP, refId=i(9))),
                       ('milestone set', dict(kind=17, value='v1')), ('milestone clear', dict(kind=18, value='v1'))):
         ok('ROLES', f'triage {label} event', 'event', r=2, **kw)
+    # (M2: a policy bypass proves its writer a maintainer, as a hide does)
+    BYPASS_PROOF = dict(asMaintainer=i(OWNER)) if F['mainnet_event_kinds'] else {}
     for label, kw in (('retarget', dict(kind=8, value='refs/heads/dev')),
                       ('review dismiss', dict(kind=15, value='stale', refId=i(5))),
                       ('head update', dict(kind=16, value=DROP, oid=b(2, 20))), ('pin', dict(kind=19, value=DROP)),
-                      ('unpin', dict(kind=20, value=DROP)), ('policy bypass', dict(kind=23, value='1 approval', oid=b(2, 20)))):
+                      ('unpin', dict(kind=20, value=DROP)), ('policy bypass', dict(kind=23, value='1 approval', oid=b(2, 20), **BYPASS_PROOF))):
         ok('ROLES', f'writer {label} event (r 1)', 'event', **kw)
         no('ROLES', f'triage {label} event', 'event', 't_triageKinds', r=2, **kw)
     no('ROLES', 'event claiming reader (r 3)', 'event', 'maximum', r=3)
     # t_triageKinds names the kinds triage may not write: a later client-convention kind (kind is
     # 4..255) stays open to triage, as kind 23 would have been without the rule
-    ok('ROLES', 'triage event of an unassigned convention kind (30)', 'event', r=2, kind=30, value=DROP)
+    if F['mainnet_event_kinds']:   # M2: an allow-list closes every later kind to triage
+        no('M2', 'triage event of an unassigned convention kind (30)', 'event', 't_triageKinds', r=2, kind=30, value=DROP)
+    else:
+        ok('ROLES', 'triage event of an unassigned convention kind (30)', 'event', r=2, kind=30, value=DROP)
 else:
     no('ROLES', 'no role property', 'writer', 'additionalProperties', role=1)
     no('ROLES', 'no r property', 'transition', 'additionalProperties', r=1)
@@ -758,6 +803,8 @@ else:
 CONTRACT_OF.update(packMirror='forge-core', ban='forge-collab')
 if F['pack_mirror']:
     BASE['packMirror'] = {"repoId": i(1), "packHash": i(4), "kind": 1, "uris": ["https://mirror.example.com/p/abc.pack"]}
+    if F['mainnet_mirror_public']:
+        BASE['packMirror']['vis'] = 'public'
     ok('base', 'packMirror ok', 'packMirror')
     ok('U1', 'a stranger records an ipfs copy', 'packMirror', signer=9, kind=2, uris=['ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi'])
     ok('U1', 'four uris', 'packMirror', uris=[f'https://m{n}.example.com/p' for n in range(4)])
@@ -798,7 +845,11 @@ else:
     no('U1', 'no bot property', 'profile', 'additionalProperties', bot={"operator": i(9)})
 if F['author_retarget']:
     ok('U1', 'the author retargets its PR (kind 8)', 'authorEvent', kind=8, refId=DROP, value='refs/heads/dev')
-    ok('U1', 'an author kind 8 without a value (readers ignore it)', 'authorEvent', kind=8, refId=DROP)
+    if F['mainnet_retarget_value']:
+        no('MN', 'an author kind 8 without a value', 'authorEvent', 'retargetValue', kind=8, refId=DROP)
+        no('MN', 'an author resolve with a value', 'authorEvent', 'retargetValue', value='refs/heads/dev')
+    else:
+        ok('U1', 'an author kind 8 without a value (readers ignore it)', 'authorEvent', kind=8, refId=DROP)
     no('U1', 'an author kind 9', 'authorEvent', 'enum', kind=9, refId=DROP)
     no('U1', 'a value over 120 characters', 'authorEvent', 'maxLength', kind=8, refId=DROP, value='x' * 121)
 else:
@@ -818,11 +869,182 @@ if F['repo_ban']:
 else:
     index('U1', 'no ban type', 'ban', None, False)
 
-# Rules that read a total, a time or a height: judged on chain only (forge-contracts/scripts/rc1-live.mjs).
+# ---------------- the other mainnet-only rules (forge-v2.md §9.1) ----------------
+if F['mainnet_release_target']:
+    no('MN', 'a public publish without targetOid', 'release', 'targetOnPublish', targetOid=DROP)
+    no('MN', 'a sealed revision naming targetOid', 'release', 'targetOnPublish', tagName='-Ab3_x9QkZ', name=DROP, notes=DROP,
+       assets=DROP, vis='private', delta=0, **SEALED)
+    ok('MN', 'an unpublish without targetOid', 'release', delta=-1, targetOid=DROP)
+if F['mainnet_moved_to_public']:
+    no('MN', 'a sealed config with a plaintext movedTo', 'config', 'noPlain', defaultBranch=DROP, protectedPatterns=DROP,
+       vis='private', movedTo=i(9), **SEALED)
+if F['mainnet_mirror_public']:
+    no('MN', 'a mirror record for a private repo', 'packMirror', 'enum', vis='private')
+    no('MN', 'a mirror record without vis', 'packMirror', 'required', vis=DROP)
+
+# ---------------- mixed visibility (dash-forge-qa design/mixed-visibility/DESIGN.md rev 4.1 §8.3) ----------------
+# Item ids: L1 aud, C1 one-way visibility, L2 mRole, C2/L4 the Bot role, C3 maintainer-only pack
+# kinds, M1 checkRun.aud, M2 event kinds, M4 event.tAud, M3 authorEvent enc, B1 push grants. The
+# references (asMember's role, the grant's `where`, the target's aud) are judged on chain (M-C).
+MEMBER = dict(asMember=i(OWNER))
+PLAIN = {'issue': dict(title=DROP, body=DROP), 'patch': dict(title=DROP, baseRefName=DROP, sourceRefName=DROP),
+         'comment': dict(body=DROP), 'review': dict(body=DROP)}
+if AUD:
+    for t, plain in PLAIN.items():
+        ok('L1', f'members-only {t} (aud 1) by a member', t, **plain, **SEALED, aud=1, **MEMBER)
+        ok('L1', f'{t} letter (aud 2) by a stranger on a public repo', t, **plain, **SEALED, aud=2)
+        ok('L1', f'private {t} letter (aud 2) by a member', t, **plain, **SEALED, aud=2, vis='private', **MEMBER)
+        no('L1', f'members-only {t} without asMember', t, 'audMember', **plain, **SEALED, aud=1)
+        no('L1', f'private {t} letter by a stranger', t, 'p_sealedIfPrivate', **plain, **SEALED, aud=2, vis='private')
+        no('L1', f'sealed {t} without aud', t, 'required', **plain, **SEALED, **MEMBER)
+        no('L1', f'plaintext {t} with aud', t, 'required', aud=1, **MEMBER)
+        no('L1', f'{t} aud 3', t, 'maximum', **plain, **SEALED, aud=3)
+        no('L1', f'{t} aud 0', t, 'minimum', **plain, **SEALED, aud=0)
+    # The author's replace may drop aud (Make public), never add or change it; the fields a sealed
+    # document cannot carry in plaintext are set in that replace, and only then
+    PUBLIC_AGAIN = {'issue': dict(title='A bug', body='text'), 'comment': dict(body='hi'),
+                    'patch': dict(title='A fix', baseRefName='refs/heads/main', sourceRefName='refs/heads/fix')}
+    for t, fields in PUBLIC_AGAIN.items():
+        sealed = doc(t, **PLAIN[t], **SEALED, aud=1, **MEMBER)
+        replace('L1', f'the author makes a members-only {t} public', t, sealed, None, aud=DROP, enc=DROP, epoch=DROP, **fields)
+        replace('L1', f'a members-only {t} edited (still sealed)', t, sealed, None, enc=b(6, 61))
+        replace('L1', f'aud added to a public {t}', t, doc(t, **MEMBER), '40128', **{k: DROP for k in PLAIN[t]}, **SEALED, aud=1)
+        replace('L1', f'a members-only {t} turned into a letter', t, sealed, '40128', aud=2)
+        replace('L1', f'a letter {t} turned members-only', t, doc(t, **PLAIN[t], **SEALED, aud=2, **MEMBER), '40128', aud=1)
+    INLINE = dict(commitOid=b(1, 20), line=5, side=1)
+    sealed_inline = doc('comment', body=DROP, **INLINE, **SEALED, aud=1, **MEMBER)
+    replace('L1', 'a members-only inline comment made public with its path', 'comment', sealed_inline, None,
+            aud=DROP, enc=DROP, epoch=DROP, body='hi', path='src/a.rs')
+    replace('L1', 'a path added to a public comment', 'comment', doc('comment', **INLINE), '40128', path='src/a.rs')
+    replace('L1', 'a public inline comment\'s path changed', 'comment', doc('comment', **INLINE, path='src/a.rs'), '40128', path='src/b.rs')
+    if F['review_hunk']:
+        replace('L1', 'a members-only review comment made public with its hunk', 'comment', sealed_inline, None,
+                aud=DROP, enc=DROP, epoch=DROP, body='hi', path='src/a.rs', diffHunk=HUNK)
+    replace('L1', 'a public PR\'s base branch name changed', 'patch', doc('patch'), '40128', baseRefName='refs/heads/dev')
+
+if F['mainnet_one_way_visibility']:
+    PRIVATE_REPO = doc('repo', visibility='private', defaultBranch=DROP)
+    replace('C1', 'the owner makes a private repo public', 'repo', PRIVATE_REPO, None, visibility='public', defaultBranch='main')
+    replace('C1', 'a public repo made private', 'repo', doc('repo'), '40128', visibility='private', defaultBranch=DROP)
+    replace('C1', 'a private repo renamed (name stays frozen)', 'repo', PRIVATE_REPO, '40128', name='other')
+
+if F['mainnet_member_role']:
+    ok('L2', 'a role-1 writer approves (mRole 1)', 'review', verdict=1, mRole=1, **MEMBER)
+    ok('L2', 'a maintainer approves (mRole left out reads 0)', 'review', verdict=1, **MEMBER)
+    for r, who in ((2, 'triage'), (3, 'a reader'), (4, 'a bot')):
+        no('L2', f'{who} approves (mRole {r})', 'review', 'memberVerdict', verdict=1, mRole=r, **MEMBER)
+        ok('L2', f'{who} comments on a PR (verdict 3, mRole {r})', 'review', verdict=3, mRole=r, **MEMBER)
+    no('L2', 'triage requests changes (mRole 2)', 'review', 'memberVerdict', verdict=2, mRole=2, **MEMBER)
+    no('L2', 'mRole 5', 'issue', 'maximum', mRole=5, **MEMBER)
+    no('L2', 'mRole 0', 'comment', 'minimum', mRole=0, **MEMBER)
+    ok('L2', 'an import by a role-1 writer (mRole 1)', 'issue', imported=IMP, upstreamNumber=7761, mRole=1, **MEMBER)
+    no('L2', 'an import by triage (mRole 2)', 'issue', 'i_provenance', imported=IMP, upstreamNumber=7761, mRole=2, **MEMBER)
+    no('L2', 'an upstream number from a reader (mRole 3)', 'patch', 'i_provenance', upstreamNumber=12, mRole=3, **MEMBER)
+    no('L2', 'an imported comment by a bot (mRole 4)', 'comment', 'i_provenance', imported=IMP, mRole=4, **MEMBER)
+    ok('L2', 'an imported review with a proof', 'review', imported=IMP, **MEMBER)
+    no('L2', 'an imported review without a proof', 'review', 'i_provenance', imported=IMP)
+    no('L2', 'an imported review by triage (mRole 2)', 'review', 'i_provenance', imported=IMP, mRole=2, **MEMBER)
+
+if F['mainnet_bot_role']:
+    ok('L4', 'a wrap to a reader (mr 3)', 'repoKey', memberId=i(9), mr=3)
+    no('L4', 'a wrap to a bot (mr 4)', 'repoKey', 'maximum', memberId=i(9), mr=4)
+    no('L4', 'a wrap without mr', 'repoKey', 'required', mr=DROP)
+
+if F['mainnet_maint_kinds']:
+    ok('C3', "a maintainer's kind-0 pack (r 0)", 'packManifest', r=0)
+    for k in build.MAINT_PACK_KINDS:
+        ok('C3', f"a maintainer's kind-{k} manifest (r 0)", 'packManifest', kind=k, r=0)
+        no('C3', f"a writer's kind-{k} manifest (r 1)", 'packManifest', 'maintKinds', kind=k)
+    ok('C3', "a writer's kind-10 key letter (r 1)", 'packManifest', kind=10)
+
+if F['mainnet_check_aud']:
+    AUD_RUN = dict(aud=1, detailsUrl=DROP, summary=DROP, externalId=DROP)
+    ok('M1', 'a members-only run with no text', 'checkRun', **AUD_RUN)
+    ok('M1', 'a members-only run with an opaque log link', 'checkRun', **AUD_RUN, logUrl='ipfs://bafy1', logSha256=b(1, 32))
+    for p, v in (('summary', 'ok'), ('detailsUrl', 'https://ci.example.com/1'), ('externalId', 'gh-1'), ('artifacts', '[]')):
+        no('M1', f'a members-only run with {p}', 'checkRun', 'sealedNoText', **dict(AUD_RUN, **{p: v}))
+    no('M1', 'checkRun aud 2', 'checkRun', 'maximum', **dict(AUD_RUN, aud=2))
+    NO_TEXT_RUN = doc('checkRun', status='in_progress', conclusion=DROP, completedAt=DROP, outcome=0, detailsUrl=DROP,
+                      summary=DROP, externalId=DROP)
+    replace('M1', 'aud added to a stored run', 'checkRun', NO_TEXT_RUN, '40128', aud=1)
+    replace('M1', 'aud dropped from a stored run', 'checkRun', dict(NO_TEXT_RUN, aud=1), '40128', aud=DROP)
+
+if F['mainnet_event_kinds']:
+    for k in (26, 27, 255):
+        no('M2', f'triage event kind {k}', 'event', 't_triageKinds', r=2, kind=k, value=DROP)
+    ok('M2', 'a writer asks for a CI re-run (26)', 'event', kind=26, value=DROP, refId=i(1))
+    ok('M2', 'a writer asks a bot (27)', 'event', kind=27, refId=i(9))
+    no('M2', 'a policy bypass without asMaintainer', 'event', 'hideByMaint', kind=23, value='1 approval', oid=b(2, 20))
+    no('M2', 'a policy bypass naming another maintainer', 'event', 'hideByMaint', kind=23, value='1 approval', oid=b(2, 20),
+       asMaintainer=i(9))
+
+if F['mainnet_event_target_aud']:
+    ok('M4', 'a sealed label on a members-only target (tAud 1)', 'event', tAud=1, value=DROP, **SEALED)
+    ok('M4', 'a sealed assign on a members-only target', 'event', tAud=1, kind=6, value=DROP, refId=i(9), **SEALED)
+    ok('M4', 'a head update on a members-only PR (no value)', 'event', tAud=1, kind=16, value=DROP, oid=b(2, 20))
+    no('M4', 'a plaintext label on a members-only target', 'event', 'tAudSealed', tAud=1)
+    no('M4', 'a plaintext milestone on a letter (tAud 2)', 'event', 'tAudSealed', tAud=2, kind=17, value='v1')
+    no('M4', 'event tAud 3', 'event', 'maximum', tAud=3, value=DROP, **SEALED)
+
+if F['mainnet_author_event_enc']:
+    ok('M3', 'a sealed author retarget on a members-only PR', 'authorEvent', kind=8, refId=DROP, tAud=1, **SEALED)
+    ok('M3', 'an author resolve on a members-only PR', 'authorEvent', tAud=1)
+    no('M3', 'a sealed author retarget with a plaintext value', 'authorEvent', 'noPlain', kind=8, refId=DROP,
+       value='refs/heads/dev', **SEALED)
+    no('M3', 'an author event enc without epoch', 'authorEvent', 'required', kind=8, refId=DROP, enc=b(5, 61))
+    no('M3', 'a plaintext author retarget on a members-only PR', 'authorEvent', 'tAudSealed', kind=8, refId=DROP,
+       value='refs/heads/dev', tAud=1)
+    no('M3', 'authorEvent tAud 3', 'authorEvent', 'maximum', tAud=3)
+
+if F['mainnet_bot_push']:
+    # B1. The grant, then a bot's (signer 9, role 4) refUpdate, packManifest and chunk. Whether
+    # the named grant matches (repo, bot, granter, until, scope or prefix), the granter is still a
+    # maintainer and the bot row is live are references, and grantLive and ttl90 read the block
+    # time: all judged on chain (M-C).
+    CONTRACT_OF['pushGrant'] = 'forge-core'
+    UNTIL = 1767776000000
+    BASE['pushGrant'] = {"repoId": i(1), "botId": i(9), "br": 4, "prefix": "refs/heads/bot/ci-bot/", "until": UNTIL}
+    ok('base', 'pushGrant ok', 'pushGrant')
+    ok('B1', 'an exact members-only grant', 'pushGrant', prefix=DROP, scope=b(2, 32))
+    no('B1', 'a grant with a scope and a prefix', 'pushGrant', 'oneScope', scope=b(2, 32))
+    no('B1', 'a grant with neither', 'pushGrant', 'oneScope', prefix=DROP)
+    no('B1', 'a grant to a role-3 row', 'pushGrant', 'minimum', br=3)
+    no('B1', 'a grant without until', 'pushGrant', 'required', until=DROP)
+    no('B1', 'an empty prefix', 'pushGrant', 'minLength', prefix='')
+    BOT_PUSH = dict(signer=9, r=4, refName='refs/heads/bot/ci-bot/fix-1', pp=i(20), grantor=i(OWNER),
+                    gp='refs/heads/bot/ci-bot/', gu=UNTIL)
+    BOT_SEALED = dict(signer=9, r=4, refName=DROP, pg=i(21), grantor=i(OWNER), gu=UNTIL, **SEALED)
+    ok('B1', "a bot's push under a prefix grant", 'refUpdate', **BOT_PUSH)
+    ok('B1', "a bot's push to one public branch granted by its full name", 'refUpdate',
+       **dict(BOT_PUSH, refName='refs/heads/fix-auth', gp='refs/heads/fix-auth'))
+    ok('B1', "a bot's sealed push under an exact grant", 'refUpdate', **BOT_SEALED)
+    no('B1', 'a bot push naming no grant', 'refUpdate', 'botGrant', **dict(BOT_PUSH, pp=DROP))
+    no('B1', 'a bot push outside its prefix', 'refUpdate', 'botGrant', **dict(BOT_PUSH, refName='refs/heads/main'))
+    no('B1', 'a bot push beside its prefix (no separator)', 'refUpdate', 'botGrant',
+       **dict(BOT_PUSH, refName='refs/heads/bot/ci-bot2', gp='refs/heads/bot/ci-bot/'))
+    no('B1', 'a prefix grant named without its prefix', 'refUpdate', 'botGrant', **dict(BOT_PUSH, gp=DROP))
+    no('B1', 'a sealed bot push through a prefix grant', 'refUpdate', 'botGrant', **dict(BOT_PUSH, refName=DROP), **SEALED)
+    no('B1', 'a public bot push through an exact grant', 'refUpdate', 'botGrant',
+       **dict(BOT_SEALED, refName='refs/heads/feature', enc=DROP, epoch=DROP))
+    ok('B1', 'a human push names no grant (r 1)', 'refUpdate')
+    no('B1', 'refUpdate r 5', 'refUpdate', 'maximum', r=5)
+    for k in build.BOT_PACK_KINDS:
+        ok('B1', f"a bot's kind-{k} manifest", 'packManifest', signer=9, r=4, kind=k)
+    for k in (2, 3, 4, 7, 8, 10, 11, 66):
+        no('B1', f"a bot's kind-{k} manifest", 'packManifest', 'botPack', signer=9, r=4, kind=k)
+    no('B1', "a bot's manifest superseding others", 'packManifest', 'botPack', signer=9, r=4, supersedes=b(2, 32))
+    no('B1', 'packManifest claiming a reader (r 3)', 'packManifest', 'botPack', r=3)
+    ok('B1', "a bot's chunk", 'chunk', signer=9, r=4)
+    no('B1', 'chunk claiming a reader (r 3)', 'chunk', 'botChunk', r=3)
+    no('B1', 'chunk r 5', 'chunk', 'maximum', r=5)
+
+# Rules that read a total, a time or a height: judged on chain only (forge-contracts/scripts/rc1-live.mjs;
+# the mainnet set's in M-C).
 LIVE_ONLY = {('issue', 'dense'), ('patch', 'dense'), ('transition', 'c1_closedAfter'), ('transition', 'c2_openAfter'),
              ('transition', 'c3_mergedAfter'), ('transition', 'c4_draftAfter'), ('transition', 'c5_draftClosedAfter'),
              ('transition', 'c6_lockedAfter'), ('comment', 'lockGate'), ('review', 'lockGate'),
-             ('packManifest', 'platformChunks'), ('release', 'oneLive'), ('topic', 'atMost20'), ('checkRun', 'notFuture')}
+             ('packManifest', 'platformChunks'), ('release', 'oneLive'), ('topic', 'atMost20'), ('checkRun', 'notFuture'),
+             ('refUpdate', 'grantLive'), ('pushGrant', 'ttl90')}
 
 
 def uncovered():
@@ -862,7 +1084,7 @@ def split():
             key = (c['type'], c['name'])
             assert key not in seen, key
             seen.add(key)
-            out.setdefault(f"{CONTRACT_OF[c['type']]}{suffix}.json", []).append(c)
+            out.setdefault(f"{home(c['type'])}{suffix}.json", []).append(c)
     return out
 
 
