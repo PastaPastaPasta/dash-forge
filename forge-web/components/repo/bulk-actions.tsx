@@ -33,7 +33,9 @@ import {
   ALREADY_MERGED,
   actionTitle,
   allReopenable,
+  closeBlocked,
   doneWord,
+  unchangedNote,
   unchangedSummary,
   unchangedWord,
   labelCoverage,
@@ -157,6 +159,8 @@ export function BulkBar({
     onBusy?.(true)
   }
   const reopen = allReopenable(selectedRows)
+  // Nothing selected is open (merged or closed already): Close would sign nothing.
+  const closeDisabled = disabled ?? closeBlocked(selectedRows)
   // Leaving the page mid-batch releases the page's hold on its rows.
   const onBusyRef = useRef(onBusy)
   onBusyRef.current = onBusy
@@ -187,7 +191,7 @@ export function BulkBar({
               Reopen
             </Button>
           ) : kind === 'issue' ? (
-            <Menu label="Close" testId="bulk-close" disabled={disabled}>
+            <Menu label="Close" testId="bulk-close" disabled={closeDisabled}>
               {(close) => (
                 <>
                   <MenuItem onClick={() => { close(); setAction({ kind: 'close', reason: 'completed' }) }}>Close as completed</MenuItem>
@@ -196,7 +200,7 @@ export function BulkBar({
               )}
             </Menu>
           ) : (
-            <Button size="sm" variant="outline" disabled={disabled !== null} title={disabled ?? undefined} onClick={() => setAction({ kind: 'close' })} data-testid="bulk-close">
+            <Button size="sm" variant="outline" disabled={closeDisabled !== null} title={closeDisabled ?? undefined} onClick={() => setAction({ kind: 'close' })} data-testid="bulk-close">
               Close
             </Button>
           )}
@@ -525,7 +529,7 @@ function BulkDialog({ kind, home, action, rows, onClose }: { kind: BulkKind; hom
           </ul>
           {plan.unchanged > 0 ? (
             <p className="text-anvil-500 dark:text-anvil-400" data-testid="bulk-unchanged">
-              {`${plan.unchanged} selected ${plan.unchanged === 1 ? 'is' : 'are'} already that way and ${plan.unchanged === 1 ? 'is' : 'are'} left as ${plan.unchanged === 1 ? 'it is' : 'they are'}.`}
+              {unchangedNote(plan)}
             </p>
           ) : null}
           {plan.apply.length === 0 ? <p>Nothing to change.</p> : <CostPreview cost={cost} />}
