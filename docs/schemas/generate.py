@@ -576,7 +576,8 @@ cmd('storage advertise', 'The storage the repository advertises to forks and mir
     'status': E('advertised', 'unchanged'), 'mode': ANY, 'uris': SA, 'configDocId': nl(S),
 }, ['status'])
 PACK_MIRROR = O({
-    'documentId': S, 'by': D('Its writer\'s identity id.', S), 'repoId': S, 'packHash': S,
+    'documentId': S, 'by': D('Its writer\'s identity id.', S), 'repoId': S,
+    'repo': D('The repository as `owner/name`; absent when it no longer resolves.', S), 'packHash': S,
     'kind': D('1: https addresses; 2: IPFS addresses.', I), 'uris': SA, 'createdAt': I,
 }, ['documentId', 'by', 'repoId', 'packHash', 'kind', 'uris', 'createdAt'])
 cmd('storage mirror add', 'A pack mirror recorded.', {
