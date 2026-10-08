@@ -45,6 +45,7 @@ import { queryPulls, contentKey, repoContractIds, rowFiltersOf, type PullListPag
 import { pastLastPage } from '@/lib/view/issue-query'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
+import { useMembersOnlyComments } from '@/hooks/use-members-only-comments'
 import { useAuth } from '@/contexts/auth-context'
 import { useRepoWriteGeneration } from '@/hooks/use-repo-chrome'
 import { useRepoTotals } from '@/components/repo/use-repo-totals'
@@ -159,6 +160,8 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
   // RC2 MOD: PRs a maintainer hid are left out of the list behind a toggle (counts stay as proved).
   const [showHidden, setShowHidden] = useState(false)
   const hiddenIds = useHiddenThreads(sdk, ready, home.repo, network, data?.rows)
+  // A public thread's count includes its members-only comments, so the row says how many (DESIGN §4.1).
+  const membersOnlyComments = useMembersOnlyComments(sdk, ready, home.repo, data?.rows)
   const rows = (data?.rows ?? []).filter((r) => showHidden || !hiddenIds.has(r.id))
   const hiddenOnPage = (data?.rows ?? []).filter((r) => hiddenIds.has(r.id)).length
   // Bulk close and label (members who may close and label; nothing read until they act).
@@ -276,7 +279,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
                   </div>
                   <div className="flex shrink-0 items-center gap-3 pt-0.5">
                     <AssigneeAvatars ids={p.state.assignees} />
-                    <CommentCount n={p.comments} membersOnly={p.membersOnly || p.audience === 'members' ? p.comments ?? 0 : 0} />
+                    <CommentCount n={p.comments} membersOnly={p.membersOnly || p.audience === 'members' ? p.comments ?? 0 : membersOnlyComments.get(p.id) ?? 0} />
                   </div>
                 </li>
               )

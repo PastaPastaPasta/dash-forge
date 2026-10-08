@@ -16,7 +16,8 @@ import type { HiddenCounts } from '@/lib/repo/private-content'
 
 vi.mock('next/link', () => ({ default: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) => <a href={href} {...rest}>{children}</a> }))
 vi.mock('@/hooks/use-sdk', () => ({ useSdk: () => ({ sdk: {}, ready: true, network: 'devnet' }) }))
-vi.mock('@/contexts/auth-context', () => ({ useAuth: () => ({ identity: 'me', unlockScope: 'full' }) }))
+const auth = vi.hoisted(() => ({ identity: 'me' as string | null, locked: false }))
+vi.mock('@/contexts/auth-context', () => ({ useAuth: () => ({ identity: auth.identity, locked: auth.locked, unlockScope: 'full' }) }))
 vi.mock('@/components/author', () => ({ Author: ({ identityId }: { identityId: string }) => <span>@{identityId}</span> }))
 vi.mock('@/components/auth/unlock-more', () => ({
   UNLOCK_MEMBERS_ONLY: 'Unlock to read members-only content',
@@ -46,6 +47,7 @@ vi.mock('@/lib/repo', async (orig) => ({
 
 import { AudienceChip, MembersOnlyCreateNotice, MembersOnlyRow, MembersOnlySummary, MembersOnlyTargetPage, useComposerAudience } from './audience'
 import { HiddenNote } from './hidden-note'
+import { useUiStore } from '@/hooks/use-ui-store'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -60,6 +62,9 @@ beforeEach(() => {
   document.body.appendChild(host)
   root = createRoot(host)
   members = [m('alice', 'maintainer'), m('bob', 'writer'), m('bot', 'reader')]
+  auth.identity = 'me'
+  auth.locked = false
+  useUiStore.getState().closeLogin()
   params = {}
 })
 afterEach(() => {
@@ -164,6 +169,17 @@ describe('what a reader who cannot open it sees', () => {
     expect(q('members-only-locked')?.textContent).toContain('3 members-only comments')
     act(() => q('members-only-unlock')!.click())
     expect(q('members-only-unlock-panel')?.textContent).toBe('Unlock to read members-only content')
+  })
+
+  it('a member whose whole session is locked: "3 members-only comments · Unlock to read" opens the header\'s Unlock (R8)', () => {
+    auth.identity = null
+    auth.locked = true
+    act(() => root.render(<MembersOnlySummary entries={[entry('comment', 'alice'), entry('comment', 'bob'), entry('comment', 'bob')]} lane={{ access: 'locked' } as MembersAccess} />))
+    expect(q('members-only-locked')?.textContent).toBe('3 members-only comments · Unlock to read')
+    expect(useUiStore.getState().loginOpen).toBe(false)
+    act(() => q('members-only-unlock')!.click())
+    expect(useUiStore.getState().loginOpen).toBe(true)
+    expect(useUiStore.getState().loginView).toBeNull()
   })
 
   it('the "#N · members-only" page, never "not found"', () => {
