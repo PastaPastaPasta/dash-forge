@@ -4,7 +4,9 @@
  *
  * DPNS stores `domain` documents whose `records.identity` points at an identity. A reverse
  * lookup (`records.identity == id`) yields the human name shown in the identity pill. Results
- * are cached per session; failures degrade to the abbreviated id (never throw to the UI).
+ * are cached per session; failures degrade to the abbreviated id (never throw to the UI). A failed
+ * read is not a name that does not exist: it is remembered for {@link DPNS_FAILURE_TTL_MS} only,
+ * so a later render reads again.
  *
  * Forward resolution (name -> id, L-43) uses the contract's unique `parentNameAndLabel` index
  * (`normalizedParentDomainName asc, normalizedLabel asc` — dpns-contract schema v2) and the same
@@ -22,6 +24,10 @@ import { NETWORKS, type Network } from '../constants'
 import { queryDocuments } from '../sdk'
 
 const cache = new Map<string, string | null>()
+/** How long a failed read is believed: it is not proof of "no name", so after this a read retries. */
+export const DPNS_FAILURE_TTL_MS = 15_000
+/** When each id's last read failed (key -> time). Never read as a name: see {@link dpnsReadFailed}. */
+const failedAt = new Map<string, number>()
 /** The cache key of `id`'s name on `network`. */
 const keyOf = (network: Network, id: string): string => `${network}:${id}`
 /** Batched lookups in flight ({@link prefetchDpnsNames}), per key: a per-id read waits for them. */
@@ -44,7 +50,21 @@ function nameOf(doc: Record<string, unknown>): string | null {
   return null
 }
 
-/** Reverse-resolve an identity id to a DPNS name, or null. Never throws. */
+/**
+ * Whether the last read of `id`'s name failed, recently enough to be believed. Such an id has no
+ * cached answer: null from {@link resolveDpnsName} then means "could not read", not "no name".
+ */
+export function dpnsReadFailed(network: Network, id: string): boolean {
+  const at = failedAt.get(keyOf(network, id))
+  return at !== undefined && Date.now() - at < DPNS_FAILURE_TTL_MS
+}
+
+/**
+ * Reverse-resolve an identity id to a DPNS name, or null. Never throws. A failed read answers null
+ * without caching it: callers that must tell it from "no name" ask {@link dpnsReadFailed}, and
+ * the next read after {@link DPNS_FAILURE_TTL_MS} tries again (until then it is not repeated, so a
+ * page of failing pills does not hammer a node that is down).
+ */
 export async function resolveDpnsName(
   sdk: EvoSDK,
   identityId: string,
@@ -54,6 +74,7 @@ export async function resolveDpnsName(
   await pending.get(key)
   const cached = cache.get(key)
   if (cached !== undefined) return cached
+  if (dpnsReadFailed(network, identityId)) return null
 
   const dpns = NETWORKS[network].dpnsContractId
   try {
@@ -65,9 +86,10 @@ export async function resolveDpnsName(
     })
     const name = docs[0] ? nameOf(docs[0]) : null
     cache.set(key, name)
+    failedAt.delete(key)
     return name
   } catch {
-    cache.set(key, null)
+    failedAt.set(key, Date.now())
     return null
   }
 }
@@ -90,6 +112,7 @@ export async function lookupDpnsName(sdk: EvoSDK, identityId: string, network: N
   })
   const name = docs[0] ? nameOf(docs[0]) : null
   cache.set(key, name)
+  failedAt.delete(key)
   return name
 }
 
@@ -133,6 +156,7 @@ export function seedFromDomains(network: Network, looked: readonly string[], dom
 /** Forget every cached name (tests). */
 export function clearDpnsCache(): void {
   cache.clear()
+  failedAt.clear()
   idLookups.clear()
 }
 
