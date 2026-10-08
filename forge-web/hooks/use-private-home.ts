@@ -85,7 +85,11 @@ export function usePrivateHome(home: RepoHome | null, addr: RepoAddress): Privat
   const repo = home?.repo ?? null
   const isPrivate = repo?.visibility === 'private'
   const { sdk, ready, network } = useSdk(repoContractIds(repo))
-  const { identity, resuming, controller, unlockScope } = useAuth()
+  const { identity, resuming, controller, unlockScope, lockedIdentity } = useAuth()
+  // A locked session is still that member (QW2-033): on a public repo the viewer is the identity the
+  // Unlock would open, so a member sees "Unlock to read" over members-only content, not an outsider's
+  // placeholders. Private repos wait for the unlock as before.
+  const viewer = identity ?? lockedIdentity
   // Re-resolve once every session closed (the vault locked, or the encryption key changed).
   const [epoch, setEpoch] = useState(0)
   useEffect(() => onPrivateSessionsClosed(() => setEpoch((n) => n + 1)), [])
@@ -100,7 +104,7 @@ export function usePrivateHome(home: RepoHome | null, addr: RepoAddress): Privat
       refreshListeners.delete(l)
     }
   }, [repoId])
-  const key = repo === null ? '' : `${network}:${repo.repoId}:${identity ?? ''}`
+  const key = repo === null ? '' : `${network}:${repo.repoId}:${(isPrivate ? identity : viewer) ?? ''}`
   // Re-derive when the plain home is re-read (revalidation, Retry); the session itself is re-read
   // once its view-session TTL runs out, so new pushes and rotations show up.
   const revision = useRevision(home)
@@ -109,20 +113,21 @@ export function usePrivateHome(home: RepoHome | null, addr: RepoAddress): Privat
    * current member, or a member removed since who holds earlier key shares: `former`).
    */
   const membersHome = async (base: RepoHome, generation: number): Promise<RepoHome> => {
-    if (identity === null) return base
+    if (viewer === null) return base
     const members = await readMembershipsCached(sdk!, base.repo, network)
-    const isMember = members.some((m) => m.identity === identity)
+    const isMember = members.some((m) => m.identity === viewer)
     const lane = await membersAccessOf({
-      identity,
+      identity: viewer,
       isMember,
       // A non-member's answer comes from the page's own config read (no read of its own).
       hasMembersKey: () => (isMember ? hasMembersKey(sdk!, base.repo) : repoHasMembersKey(sdk!, base.repo)),
-      ops: () => encryptionOps(sdk!, network, identity, base.repo.forge.collab),
-      locked: () => controller.unlockScope() === 'signing',
+      ops: () => encryptionOps(sdk!, network, viewer, base.repo.forge.collab),
+      // No session at all (the vault locked), or one resumed with the signing key only.
+      locked: () => identity === null || controller.unlockScope() === 'signing',
       holdsShare: async () =>
-        (await queryDocuments(sdk!, repoSource(base.repo).repoQuery(DOC.repoKey, { where: [['memberId', '==', identity]], orderBy: [['memberId', 'asc']], limit: 1 }))).length > 0,
+        (await queryDocuments(sdk!, repoSource(base.repo).repoQuery(DOC.repoKey, { where: [['memberId', '==', viewer]], orderBy: [['memberId', 'asc']], limit: 1 }))).length > 0,
       session: async (ops) => {
-        const session = await loadPrivateSessionCached(sdk!, base.repo, network, identity, sessionUnwrapper(ops))
+        const session = await loadPrivateSessionCached(sdk!, base.repo, network, viewer, sessionUnwrapper(ops))
         if (generation !== privateSessionGeneration()) throw new Error('the vault locked; unlock to read members-only content')
         return session
       },
@@ -160,7 +165,7 @@ export function usePrivateHome(home: RepoHome | null, addr: RepoAddress): Privat
     {
       // A kept session is still being picked up: wait, rather than show the signed-out state. A
       // public repo's members-only content is looked up for a signed-in viewer only.
-      enabled: (isPrivate || identity !== null) && ready && sdk !== null && home !== null && !resuming,
+      enabled: (isPrivate || viewer !== null) && ready && sdk !== null && home !== null && !resuming,
       initial: () => {
         const hit = warm.get(key)
         if (hit === undefined) return undefined
@@ -172,7 +177,7 @@ export function usePrivateHome(home: RepoHome | null, addr: RepoAddress): Privat
   reloadRef.current = state.reload
   // A public repo read for a signed-in viewer before their members access is known: marked, so
   // members-only placeholders wait rather than speak to an outsider (one object per home).
-  const laneUnknown = !isPrivate && home !== null && identity !== null && state.error === null && (state.data === null || state.data.repo.repoId !== home.repo.repoId)
+  const laneUnknown = !isPrivate && home !== null && viewer !== null && state.error === null && (state.data === null || state.data.repo.repoId !== home.repo.repoId)
   const loadingHome = useMemo<RepoHome | null>(() => (laneUnknown && home !== null ? { ...home, laneLoading: true } : null), [laneUnknown, home])
   if (home === null) return null
   // A public repo renders at once; once a member's members-key session is ready the page re-reads

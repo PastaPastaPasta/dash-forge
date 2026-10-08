@@ -62,6 +62,7 @@ import {
   type MembersCount,
 } from '@/lib/view/audience'
 import { useAuth } from '@/contexts/auth-context'
+import { useUiStore } from '@/hooks/use-ui-store'
 import { useAsync } from '@/hooks/use-async'
 import { useSdk } from '@/hooks/use-sdk'
 import { usePrivateWrite } from '@/hooks/use-private-write'
@@ -652,6 +653,8 @@ export function MembersOnlyRow({ entry }: { entry: MembersOnlyEntry }): JSX.Elem
  */
 export function MembersOnlySummary({ entries, lane }: { entries: readonly MembersOnlyEntry[]; lane: MembersAccess | undefined }): JSX.Element | null {
   const [unlocking, setUnlocking] = useState(false)
+  const { identity } = useAuth()
+  const openLogin = useUiStore((s) => s.openLogin)
   const why = memberCantRead(lane)
   if (why === null || entries.length === 0) return null
   return (
@@ -662,7 +665,7 @@ export function MembersOnlySummary({ entries, lane }: { entries: readonly Member
         {why === 'locked' ? (
           <>
             <span aria-hidden> · </span>
-            <button type="button" className="hit-area font-medium text-forge-700 hover:underline dark:text-forge-400" aria-expanded={unlocking} onClick={() => setUnlocking((u) => !u)} data-testid="members-only-unlock">
+            <button type="button" className="hit-area font-medium text-forge-700 hover:underline dark:text-forge-400" aria-expanded={identity === null ? undefined : unlocking} onClick={() => (identity === null ? openLogin() : setUnlocking((u) => !u))} data-testid="members-only-unlock">
               Unlock to read
             </button>
           </>

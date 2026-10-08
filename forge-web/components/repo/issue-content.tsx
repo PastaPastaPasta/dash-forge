@@ -331,6 +331,11 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const labelDefs = new Map(labels.map((l) => [l.name, l]))
 
   const postComment = async (confirmed = false): Promise<void> => {
+    // A locked session's "Unlock to comment" opens the unlock before there is any text to post.
+    if (!identity && locked) {
+      guard.check(commentCost, 'collab', 'comment')
+      return
+    }
     if (posting || comment.trim() === '' || commentTooLong || !guard.check(commentCost, 'collab', 'comment')) return
     if (!sdk || !signer) return
     if (quoting && !confirmed) {
@@ -708,7 +713,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                   variant="primary"
                   onClick={() => void postComment()}
                   loading={posting}
-                  disabled={composeBlock !== null || comment.trim() === '' || commentTooLong || guard.disabledReason !== null}
+                  disabled={composeBlock !== null || (!identity && locked ? false : comment.trim() === '' || commentTooLong || guard.disabledReason !== null)}
                   title={guard.disabledReason ?? undefined}
                 >
                   {identity ? 'Comment' : locked ? 'Unlock to comment' : 'Sign in to comment'}

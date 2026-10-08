@@ -869,6 +869,11 @@ function PullPage({
   )
 
   const postComment = async (confirmed = false): Promise<void> => {
+    // A locked session's "Unlock to comment" opens the unlock before there is any text to post.
+    if (!identity && locked) {
+      guard.check(commentCost, 'collab', 'comment')
+      return
+    }
     if (posting || comment.trim() === '' || commentTooLong || !guard.check(commentCost, 'collab', 'comment')) return
     if (!sdk || !signer) return
     if (quoting && !confirmed) {
@@ -1847,7 +1852,7 @@ function PullPage({
                         variant="primary"
                         onClick={() => void postComment()}
                         loading={posting}
-                        disabled={comment.trim() === '' || commentTooLong || guard.disabledReason !== null}
+                        disabled={!identity && locked ? false : comment.trim() === '' || commentTooLong || guard.disabledReason !== null}
                         title={guard.disabledReason ?? undefined}
                       >
                         {identity ? 'Comment' : locked ? 'Unlock to comment' : 'Sign in to comment'}
