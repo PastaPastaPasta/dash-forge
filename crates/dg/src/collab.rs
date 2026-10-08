@@ -12,10 +12,11 @@
 //!
 //! On a repository with a **members key** — every private repository, and a public one with
 //! members-only content turned on (`dg repo members enable`, DESIGN §4.1) — add also wraps the
-//! current key epoch to the new member (every human role holds it, readers included), and remove rotates the key after the delete (a new
-//! epoch wrapped to every remaining member, you first, then its anchor). Past content stays
-//! readable to the removed member: encryption can't take back what was shared. This keys on
-//! the members key existing, never on visibility alone (`keyring::has_members_key`). A private
+//! current key epoch to the new member (every human role holds it, readers included), and remove
+//! rotates the key after the delete (a new epoch wrapped to every remaining member, you first,
+//! then its anchor). Past content stays readable to the removed member: encryption can't take
+//! back what was shared. This keys on the members key existing, never on visibility alone
+//! (`keyring::has_members_key`). A private
 //! repository refuses an add before anything is written when the member has no encryption key;
 //! a public one adds them and says the key will be shared once they have one.
 

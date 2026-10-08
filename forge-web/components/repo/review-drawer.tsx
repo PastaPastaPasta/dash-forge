@@ -284,6 +284,7 @@ export function ReviewDrawer({
   // can only be discarded.
   const refused = verdictRefusal(role, frozen ? (draft.reviewId === undefined ? draft.verdict : 'comment') : verdict)
   const roleUnread = !roleKnown && verdict !== 'comment'
+  const verdictBlocked = refused !== null || (!frozen && roleUnread)
   // Members-only text is never kept on disk: the draft says so before its summary is saved.
   const textChoice = textAudience.audience
   useEffect(() => {
@@ -323,7 +324,7 @@ export function ReviewDrawer({
 
   const submit = (): void => {
     if (!sdk || !signer || identity === null || planned === null) return
-    if (refused !== null || (!frozen && roleUnread)) return
+    if (verdictBlocked) return
     if (cost === null || !guard.check(cost, 'collab')) return
     if (!frozen && verdict === 'comment' && summary.trim() === '' && count === 0) {
       setError('Write a summary or add a comment first.')
@@ -549,7 +550,7 @@ export function ReviewDrawer({
                   {frozen ? 'Discard the rest' : 'Discard'}
                 </Button>
               ) : null}
-              <Button size="sm" variant="primary" onClick={submit} loading={progress !== null} disabled={guard.disabledReason !== null || progress !== null || lineQuotes || refused !== null || (!frozen && roleUnread)}>
+              <Button size="sm" variant="primary" onClick={submit} loading={progress !== null} disabled={guard.disabledReason !== null || progress !== null || lineQuotes || verdictBlocked}>
                 {frozen || error ? 'Retry' : 'Submit review'}
               </Button>
             </div>

@@ -222,7 +222,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
                     <div className="flex flex-wrap items-center gap-3">
                       <Author identityId={m.identity} link={false} />
                       <RoleBadge role={m.role} owner={m.identity === repo.ownerId} />
-                      {m.identity === repo.ownerId ? null : isOwner && repo.visibility !== 'private' ? (
+                      {m.identity !== repo.ownerId && isOwner && repo.visibility !== 'private' ? (
                         <div className="ml-auto flex gap-2">
                           <Button size="sm" variant="outline" disabled={guard.disabledReason !== null} aria-expanded={changing === rowKey} onClick={() => setChanging((c) => (c === rowKey ? null : rowKey))}>
                             Change role

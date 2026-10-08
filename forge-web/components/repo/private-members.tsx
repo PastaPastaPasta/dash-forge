@@ -182,7 +182,7 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
           <div key={`${m.role}:${m.identity}`} className="flex items-center gap-3 border-b border-anvil-100 px-4 py-2.5 last:border-b-0 dark:border-anvil-850">
             <Author identityId={m.identity} link={false} />
             <RoleBadge role={m.role} owner={m.identity === repo.ownerId} />
-            {m.identity === repo.ownerId ? null : isOwner ? (
+            {m.identity !== repo.ownerId && isOwner ? (
               <Button
                 size="sm"
                 variant="danger"
