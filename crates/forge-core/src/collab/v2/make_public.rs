@@ -360,7 +360,7 @@ impl Collab<'_> {
             return Err(Error::NotFound);
         }
         let opened = match self.lane_keys(repo).await? {
-            DocKeys::Held(kr) => kr.open(kind, stored),
+            DocKeys::Held(kr, _) => kr.open(kind, stored),
             DocKeys::None(_) => Opened::Malformed,
         };
         match opened {
