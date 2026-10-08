@@ -58,7 +58,10 @@ pub async fn run(ctx: &Ctx, cmd: &RepoCommand) -> Result<()> {
         RepoCommand::Watch { repo } => watch(ctx, repo, true).await,
         RepoCommand::Unwatch { repo } => watch(ctx, repo, false).await,
         RepoCommand::Topic { repo, add, remove } => topic(ctx, repo, add, remove).await,
-        RepoCommand::View { repo } => Box::pin(view(ctx, repo)).await,
+        RepoCommand::View {
+            repo,
+            skip_security_policy,
+        } => Box::pin(view(ctx, repo, *skip_security_policy)).await,
         RepoCommand::Activity {
             repo,
             ref_name,
@@ -670,7 +673,7 @@ async fn topic(ctx: &Ctx, repo: &str, add: &[String], remove: &[String]) -> Resu
 }
 
 /// View a repo: resolved refs, default branch, pack manifests, members.
-async fn view(ctx: &Ctx, repo: &str) -> Result<()> {
+async fn view(ctx: &Ctx, repo: &str, skip_security_policy: bool) -> Result<()> {
     let r = Reader::open(ctx, repo).await?;
     let (client, handle) = (&r.client, &r.repo);
     let svc = r.service();
@@ -725,6 +728,7 @@ async fn view(ctx: &Ctx, repo: &str) -> Result<()> {
         default_branch.as_deref(),
         &refs,
         total_bytes,
+        skip_security_policy,
     );
 
     ctx.emit(
@@ -808,13 +812,14 @@ fn security_policy(
     default_branch: Option<&str>,
     refs: &[(String, forge_core::rules::RefState)],
     pack_bytes: u64,
+    skip: bool,
 ) -> PolicyLookup {
     let unchecked = |note: Option<String>| PolicyLookup {
         path: None,
         checked: false,
         note,
     };
-    if handle.visibility == Visibility::Private {
+    if skip || handle.visibility == Visibility::Private {
         return unchecked(None);
     }
     // An empty repo (no default branch, or no tip yet) has no policy to find.
@@ -831,6 +836,10 @@ fn security_policy(
             note: None,
         };
     };
+    // Read from Platform, but handed to git as an argument: only an object id goes through.
+    if !git::is_oid(&tip) {
+        return unchecked(None);
+    }
     let found = std::env::current_dir()
         .ok()
         .filter(|cwd| git::has_object(cwd, &tip))
@@ -865,7 +874,11 @@ fn security_policy_fetched(
     default_ref: &str,
     tip: &str,
 ) -> Result<Option<&'static str>> {
-    git::require_branch_ref(default_ref)?;
+    // The default branch is a repo setting anyone may have written: only a plain branch is
+    // handed to git as a refspec.
+    if !git::is_plain_branch_ref(default_ref) {
+        anyhow::bail!("the default branch {default_ref:?} is not a plain branch");
+    }
     if !ctx.json {
         eprintln!("Fetching the default branch to look for a security policy…");
     }

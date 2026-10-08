@@ -17,11 +17,19 @@ import type { BrowseReader } from '@/lib/browse'
 import { cn } from '@/lib/utils'
 import { onRadioGroupKeyDown, radioTabIndex } from '@/components/ui/radio-group'
 
-/** The default branch's tip and a reader for it (null until both are known, or while not `enabled`: nothing is loaded then). */
-export function useDefaultBranchReader(home: RepoHome, enabled: boolean): { readonly tip: string | null; readonly reader: BrowseReader | null } {
+/**
+ * The default branch's tip and a reader for it (null until both are known, or while not `enabled`:
+ * nothing is loaded then). `unavailable`: the browse context settled without a reader (storage a
+ * browser cannot reach, an index not published, no packs), so none is coming.
+ */
+export function useDefaultBranchReader(
+  home: RepoHome,
+  enabled: boolean,
+): { readonly tip: string | null; readonly reader: BrowseReader | null; readonly unavailable: boolean } {
   const tip = tipOidOf(selectRef(home.branches, home.tags, home.defaultBranch, '').ref) || null
   const browse = useBrowse(enabled && tip ? home.repo : null)
-  return { tip, reader: browse.data?.kind === 'ready' ? browse.data.context.reader : null }
+  const reader = browse.data?.kind === 'ready' ? browse.data.context.reader : null
+  return { tip, reader, unavailable: reader === null && browse.settled && (browse.error !== null || browse.data !== null) }
 }
 
 /** What "Open an issue" offers (null while it is read, or when nothing could be). */

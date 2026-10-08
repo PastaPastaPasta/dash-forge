@@ -10,7 +10,8 @@
 
 /// Where the policy is looked for, in order: the first path that is a regular file at the
 /// default branch's tip is the repo's security policy.
-pub const SECURITY_POLICY_PATHS: [&str; 3] = [".github/SECURITY.md", "SECURITY.md", "docs/SECURITY.md"];
+pub const SECURITY_POLICY_PATHS: [&str; 3] =
+    [".github/SECURITY.md", "SECURITY.md", "docs/SECURITY.md"];
 
 /// The first of [`SECURITY_POLICY_PATHS`] for which `is_file` holds.
 pub fn security_policy_path(is_file: impl Fn(&str) -> bool) -> Option<&'static str> {

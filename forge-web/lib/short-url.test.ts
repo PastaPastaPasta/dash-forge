@@ -123,6 +123,8 @@ describe('GitHub URLs that map onto an existing page (L-27)', () => {
     ['/alice/project/labels', '/repo/labels/?owner=alice&name=project'],
     ['/alice/project/milestones', '/repo/milestones/?owner=alice&name=project'],
     ['/alice/project/security', '/repo/security/?owner=alice&name=project'],
+    // GitHub's own address of the policy.
+    ['/alice/project/security/policy', '/repo/security/?owner=alice&name=project'],
     // A short commit id, in any case, opens the commit page (which resolves prefixes).
     ['/alice/project/commit/ABCDEF1', '/repo/commit/?owner=alice&name=project&oid=abcdef1'],
     // GitHub's release permalink.

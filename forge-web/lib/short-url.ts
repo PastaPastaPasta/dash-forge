@@ -314,6 +314,8 @@ export const SHORT_URL_EXPAND_SOURCE = `function (pathname, base, reserved) {
   if ((kind === 'pull' || kind === 'pulls') && number && tail.length === 1 && /^(files|commits|checks)$/.test(tail[0])) {
     return q('/repo/pull/', ['number', number, 'tab', tail[0]]);
   }
+  // GitHub's policy page, \`/security/policy\`.
+  if (kind === 'security' && arg === 'policy' && rest.length === 2) return q('/repo/security/', []);
   if (tail.length > 0) return null;
   if (kind === 'commits') return q('/repo/commits/', ['ref', ref]);
   if (kind === 'issues' && rest.length === 1) return q('/repo/issues/', []);
@@ -403,6 +405,8 @@ export function expandShortPath(pathname: string, base: string, reserved: readon
   if ((kind === 'pull' || kind === 'pulls') && number && tail.length === 1 && /^(files|commits|checks)$/.test(tail[0]!)) {
     return q('/repo/pull/', ['number', number, 'tab', tail[0]!])
   }
+  // GitHub's policy page, `/security/policy`.
+  if (kind === 'security' && arg === 'policy' && rest.length === 2) return q('/repo/security/', [])
   if (tail.length > 0) return null
   if (kind === 'commits') return q('/repo/commits/', ['ref', ref])
   if (kind === 'issues' && rest.length === 1) return q('/repo/issues/', [])

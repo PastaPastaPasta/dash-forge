@@ -463,6 +463,10 @@ pub enum RepoCommand {
     View {
         /// The repository (`owner/name`).
         repo: String,
+        /// Don't look for the repo's security policy. Outside a clone of it, `dg` downloads the
+        /// default branch to look; this skips that.
+        #[arg(long)]
+        skip_security_policy: bool,
     },
     /// A branch's or tag's activity: every push, force-push, move and deletion, and every
     /// change to its protection, newest first. Inside a clone, a push is checked against local

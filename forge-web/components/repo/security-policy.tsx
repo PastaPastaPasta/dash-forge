@@ -11,6 +11,7 @@
  * browser cannot reach shows no link and the "contact a maintainer" hint.
  */
 
+import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { ExternalLink, FileText, ShieldCheck } from 'lucide-react'
 import { useAsync } from '@/hooks/use-async'
@@ -22,6 +23,7 @@ import { CopyLinkButton } from '@/components/ui/copy-link'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { repoKey } from '@/lib/repo'
 import { selectRef, tipOidOf, type RepoHome } from '@/lib/view'
+import { trimOldest } from '@/lib/view/pool'
 import { sessionCached } from '@/lib/view/session-cache'
 import { findSecurityPolicy, readSecurityPolicy, type SecurityPolicyFile } from '@/lib/view/security-policy'
 import type { BrowseReader } from '@/lib/browse'
@@ -32,6 +34,43 @@ const FOUND_TTL_MS = 10 * 60_000
 const foundKey = (home: RepoHome, tip: string): string => `securityPolicy:${repoKey(home.repo)}:${tip}`
 /** Lookups that settled this session (a warm page paints with no flash of the old state). */
 const settled = new Map<string, SecurityPolicyFile | null>()
+const KEEP_SETTLED = 100
+
+/** The lookup already settled under `key` this session, if any. */
+function settledLookup(key: string): { readonly file: SecurityPolicyFile | null } | undefined {
+  return settled.has(key) ? { file: settled.get(key) ?? null } : undefined
+}
+
+/**
+ * The policy at `tip`, looked up once per tip and shared by the header, the issue form and the
+ * page. A lookup that failed is no policy: the header shows no link, the hint says to contact a
+ * maintainer.
+ */
+function lookUp(home: RepoHome, reader: BrowseReader, tip: string): Promise<{ readonly file: SecurityPolicyFile | null }> {
+  const key = foundKey(home, tip)
+  return sessionCached(key, FOUND_TTL_MS, () => findSecurityPolicy(reader, tip)).then(
+    (file) => {
+      settled.set(key, file)
+      trimOldest(settled, KEEP_SETTLED)
+      return { file }
+    },
+    () => ({ file: null }),
+  )
+}
+
+/** Whether `ms` have passed since this mounted (false until then). */
+function useAfter(ms: number, enabled: boolean): boolean {
+  const [after, setAfter] = useState(false)
+  useEffect(() => {
+    if (!enabled) return
+    const t = setTimeout(() => setAfter(true), ms)
+    return () => clearTimeout(t)
+  }, [ms, enabled])
+  return after
+}
+
+/** The header waits this long before reading the policy, so the page's own reads go first. */
+const HEADER_DELAY_MS = 1500
 
 /**
  * The security policy on the default branch: the file, or `null` when the repo has none (also for
@@ -41,28 +80,23 @@ const settled = new Map<string, SecurityPolicyFile | null>()
 export function useSecurityPolicy(home: RepoHome, enabled = true): SecurityPolicyFile | null | undefined {
   // Members-only content is not involved: only a public repo's public files are read.
   const eligible = enabled && home.repo.visibility === 'public'
-  const { tip, reader } = useDefaultBranchReader(home, eligible)
+  const { tip, reader, unavailable } = useDefaultBranchReader(home, eligible)
   const key = tip === null ? '' : foundKey(home, tip)
   const state = useAsync<{ readonly file: SecurityPolicyFile | null }>(
-    () =>
-      sessionCached(key, FOUND_TTL_MS, () => findSecurityPolicy(reader!, tip!)).then(
-        (file) => {
-          settled.set(key, file)
-          return { file }
-        },
-        // A lookup that failed is no policy: the header shows no link, the hint says to contact a maintainer.
-        () => ({ file: null }),
-      ),
+    () => lookUp(home, reader!, tip!),
     [key, reader === null ? 0 : 1],
-    { enabled: reader !== null && tip !== null, initial: () => (key !== '' && settled.has(key) ? { file: settled.get(key) ?? null } : undefined) },
+    { enabled: reader !== null && tip !== null, initial: () => settledLookup(key) },
   )
-  if (!eligible || tip === null) return null
+  // Nothing to find: a private or empty repo, or code no browser can read.
+  if (!eligible || tip === null || unavailable) return null
   return state.data === null ? undefined : state.data.file
 }
 
 /** "Security policy" in the repo header, when the default branch has one. */
 export function SecurityPolicyLink({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element | null {
-  const policy = useSecurityPolicy(home)
+  // On every repo page, so it waits for the page's own reads instead of competing with them.
+  const later = useAfter(HEADER_DELAY_MS, home.repo.visibility === 'public')
+  const policy = useSecurityPolicy(home, later)
   if (!policy) return null
   return (
     <Link
@@ -112,30 +146,34 @@ export function SecurityPolicyContent({ home, addr }: { home: RepoHome; addr: Re
         </h1>
         <CopyLinkButton repo={addr} target={{ kind: 'security' }} className="ml-auto" />
       </div>
-      {home.repo.visibility !== 'public' || tipOid === null ? (
+      {home.repo.visibility !== 'public' ? (
+        <NoPolicy isPrivate />
+      ) : tipOid === null ? (
         <NoPolicy />
       ) : (
         <BrowseBoundary repo={home.repo} addr={addr}>
-          {(reader) => <PolicyBody reader={reader} tipOid={tipOid} branch={selected.name} addr={addr} />}
+          {(reader) => <PolicyBody home={home} reader={reader} tipOid={tipOid} branch={selected.name} addr={addr} />}
         </BrowseBoundary>
       )}
     </div>
   )
 }
 
-function NoPolicy(): JSX.Element {
-  return <EmptyState icon={ShieldCheck} title="This repo has no security policy." body="To report a vulnerability, contact a maintainer privately." />
+function NoPolicy({ isPrivate = false }: { isPrivate?: boolean }): JSX.Element {
+  const title = isPrivate ? 'Security policies are shown for public repos.' : 'This repo has no security policy.'
+  return <EmptyState icon={ShieldCheck} title={title} body="To report a vulnerability, contact a maintainer privately." />
 }
 
-function PolicyBody({ reader, tipOid, branch, addr }: { reader: BrowseReader; tipOid: string; branch: string; addr: RepoAddress }): JSX.Element {
-  const found = useAsync(() => findSecurityPolicy(reader, tipOid), [tipOid])
-  const file = found.data
+function PolicyBody({ home, reader, tipOid, branch, addr }: { home: RepoHome; reader: BrowseReader; tipOid: string; branch: string; addr: RepoAddress }): JSX.Element {
+  const found = useAsync(() => lookUp(home, reader, tipOid), [tipOid], { initial: () => settledLookup(foundKey(home, tipOid)) })
+  const file = found.data?.file ?? null
   const text = useAsync(() => readSecurityPolicy(reader, file!), [file?.oid ?? ''], { enabled: file !== null })
+  const slash = file === null ? -1 : file.path.lastIndexOf('/')
+  const dir = file === null || slash < 0 ? '' : file.path.slice(0, slash)
+  const markdownRepo = useMemo<MarkdownRepoContext>(() => ({ addr, refParam: '', dir, reader, tipOid }), [addr, dir, reader, tipOid])
   if (found.error) return <ErrorState message={found.error} onRetry={found.reload} />
   if (!found.settled) return <LoadingBlock label="Reading the security policy" />
   if (file === null) return <NoPolicy />
-  const dir = file.path.includes('/') ? file.path.slice(0, file.path.lastIndexOf('/')) : ''
-  const markdownRepo: MarkdownRepoContext = { addr, refParam: '', dir, reader, tipOid }
   const blobHref = repoHref('/repo/blob', addr, { path: file.path })
   return (
     <section aria-label="Security policy" className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800" data-testid="security-policy">
