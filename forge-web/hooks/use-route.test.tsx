@@ -118,6 +118,33 @@ describe('useShortAddressBar', () => {
     expect(bar()).toBe(`/${ID}/tools#L3`)
   })
 
+  it('drops `created=1` from the bar, and the page still reads it from the route', () => {
+    const replace = vi.spyOn(window.history, 'replaceState')
+    load('/repo/issue/?owner=alice&name=project&number=7&created=1')
+    expect(bar()).toBe('/alice/project/issues/7#L3')
+    // One replaceState (no navigation, no history entry), with the router's own state.
+    expect(replace).toHaveBeenCalledTimes(2)
+    expect(replace.mock.calls.at(-1)?.[0]).toEqual({ __NA: true, tree: 'T' })
+    expect(seen.search).toBe('owner=alice&name=project&number=7&created=1')
+  })
+
+  it('drops `created=1` from a canonical route the bar keeps (a private repo), and nothing else', () => {
+    const replace = vi.spyOn(window.history, 'replaceState')
+    load('/repo/?owner=alice&name=secret&created=1', 'private')
+    expect(bar()).toBe('/repo/?owner=alice&name=secret#L3')
+    load('/repo/?owner=alice&name=secret&sealed=t1', 'private')
+    expect(bar()).toBe('/repo/?owner=alice&name=secret&sealed=t1#L3')
+    // The loads' own two writes, and the one that dropped the param.
+    expect(replace).toHaveBeenCalledTimes(3)
+  })
+
+  it('waits for the owner’s name before it drops `created=1` from a public repo’s bar too', () => {
+    load(`/repo/?owner=${ID}&name=project&created=1`, 'public', READING)
+    expect(bar()).toBe(`/repo/?owner=${ID}&name=project&created=1#L3`)
+    render(`/repo/?owner=${ID}&name=project&created=1`, 'public', 'alice.dash')
+    expect(bar()).toBe('/alice/project#L3')
+  })
+
   it('leaves an entry the router did not write alone', () => {
     window.history.replaceState(null, '', '/repo/?owner=alice&name=project')
     const replace = vi.spyOn(window.history, 'replaceState')

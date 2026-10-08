@@ -371,7 +371,7 @@ dash: 5NGj…/nas-demo ← main (864183b, 5 objects, 448 B)
 dash: storage      → nas · Platform stores manifest + refs only, est 0.0032 DASH
 dash: nas          ████████████████ 448 B  verified   0.7 s
 dash: platform     manifest 2 · refUpdate 1     est 0.0032 DASH
-dash: done · Platform charged ≈0.0028 DASH · remaining 0.9938 DASH · https://forge.dashhq.org/repo?owner=5NGj…&name=nas-demo
+dash: done · Platform charged ≈0.0028 DASH · remaining 0.9938 DASH · https://forge.dashhq.org/5NGj…/nas-demo
 ```
 
 **The same profile also takes CI logs.** `dg ci report <owner>/<repo> --sha <commit> --name build --status completed --conclusion success --log build.log --storage nas` (see [CI and check runs](ci.md)) uploads a run's log to this bucket and records its `https://s3.example.org/forge/...` URL on chain. Nothing extra to set up: the tunnel or reverse-proxy TLS you put in front of the store for pushes is exactly what a self-hosted CI runner needs too, since the web app (served over https) refuses to fetch a plain-http log.

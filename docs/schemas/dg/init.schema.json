@@ -62,6 +62,40 @@
     "steps": {
       "$ref": "common.schema.json#/$defs/createSteps"
     },
+    "membersOnly": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": [
+                "on",
+                "off",
+                "failed"
+              ]
+            },
+            "reason": {
+              "type": "string",
+              "enum": [
+                "skipped",
+                "noEncryptionKey"
+              ]
+            },
+            "error": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "status"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Whether members-only content is on after the create: null for a private repository and for a re-run that created nothing; `off` with `reason` (`skipped`: --no-members-only; `noEncryptionKey`); `failed` with the `error` object (the repository stands without it)."
+    },
     "cost": {
       "$ref": "common.schema.json#/$defs/cost"
     },

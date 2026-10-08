@@ -45,6 +45,8 @@ function repoPath(path: string, extra = ''): string {
 test('w1. owner creates a repo and sees the push commands', async ({ browser }) => {
   const page = await signedIn(browser, 'OWNER', '/new/')
   await page.getByLabel('Repository name').fill(REPO)
+  // Not about members-only content: create without it (on by default where the browser holds a key).
+  await page.getByTestId('repo-members-only').uncheck()
   await page.getByLabel('Description').fill('Created by the forge-v2 write spec')
   await expect(page.getByTestId('cost-preview')).toContainText('DASH')
   await page.getByRole('button', { name: 'Create repository' }).click()
