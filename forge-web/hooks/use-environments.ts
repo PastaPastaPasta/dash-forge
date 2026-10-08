@@ -5,9 +5,9 @@
  * for Settings → Environments and the member-removal confirmation. An old-format Members snapshot
  * opens with the members key this tab already holds (a public repo's `home.lane` session, or a
  * private repo's session); every other snapshot is a letter that opens with this browser's
- * encryption keys, only while the tab is unlocked. The book lives in this hook's state only: nothing decrypted is stored
- * (no IndexedDB, localStorage or service-worker copy), and it is dropped when the tab locks or
- * the members-key session changes.
+ * encryption keys, only while the tab is unlocked. The book lives in this hook's state only:
+ * nothing decrypted is stored (no IndexedDB, localStorage or service-worker copy), and it is
+ * dropped when the tab locks or the members-key session changes.
  */
 
 import { useAuth } from '@/contexts/auth-context'

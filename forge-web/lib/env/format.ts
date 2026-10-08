@@ -40,11 +40,6 @@ const GROUP_LABEL: Readonly<Record<Group, string>> = {
   members: 'All members',
 }
 
-/** The product name of a group, as every line says it. */
-export function groupLabel(g: Group): string {
-  return GROUP_LABEL[g]
-}
-
 /** How a person is told: "Maintainers", "Writers and maintainers + 1 more", "Specific people (3)". */
 export function audienceLabel(a: Audience): string {
   if (a.group === null) return `Specific people (${a.also.length})`

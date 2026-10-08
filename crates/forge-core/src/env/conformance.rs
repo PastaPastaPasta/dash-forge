@@ -130,13 +130,10 @@ fn snapshot_json(s: &Snapshot) -> Value {
         }))).collect::<serde_json::Map<String, Value>>(),
     });
     if s.version == 1 {
-        let word = if s.members_key() {
-            "members"
-        } else {
-            "maintainers"
-        };
+        let old_format = s.members_key();
+        let word = if old_format { "members" } else { "maintainers" };
         out["audience"] = json!(word);
-        if !s.members_key() {
+        if !old_format {
             out["to"] = json!(s.to);
         }
     } else {

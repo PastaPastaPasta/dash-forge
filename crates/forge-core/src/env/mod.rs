@@ -5,8 +5,8 @@
 //! An environment (`dev`, `staging`, `production`, any name) holds typed entries. Each change
 //! writes a **snapshot** of one whole environment: a `packManifest` of kind 8
 //! ([`crate::pack::KIND_ENV_SNAPSHOT`]) whose artifact is the environment as canonical JSON,
-//! a letter to its audience's people. No contract property is added: kind 8 and `supersedes` are plain
-//! `packManifest` fields every live contract admits (DESIGN §1, S1 case 16).
+//! a letter to its audience's people. No contract property is added: kind 8 and `supersedes` are
+//! plain `packManifest` fields every live contract admits (DESIGN §1, S1 case 16).
 //!
 //! # The artifact (normative; `env_snapshot__v2_*`, `env_snapshot__padding`, `env_snapshot__decode_refused`)
 //!

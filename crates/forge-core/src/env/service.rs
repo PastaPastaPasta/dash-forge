@@ -13,8 +13,7 @@ use super::{Audience, MAX_RECIPIENTS};
 use crate::error::{Error, Result};
 use crate::keyring::{recipient_key, PrivateSigner};
 use crate::keystore::BridgeIdentity;
-use crate::members::Member;
-use crate::members::MemberReader;
+use crate::members::{Member, MemberReader};
 use crate::platform::{self, LoadedIdentity, PlatformClient};
 use crate::private::named::{OwnerKey, Reader, Recipient};
 use crate::private::EpochKeys;
@@ -338,10 +337,16 @@ impl Book {
         if old.is_empty() {
             return None;
         }
-        let head = state.heads.last().and_then(|h| self.snapshot(h));
-        let marked: BTreeSet<&str> = head
-            .map(|h| h.marked_changed.iter().map(String::as_str).collect())
-            .unwrap_or_default();
+        let latest = state.heads.iter().any(|h| self.old_format.contains(h));
+        // what is marked is in the latest version: a reader who can't open it can't tell
+        let Some(head) = state.heads.last().and_then(|h| self.snapshot(h)) else {
+            return Some(OldFormat {
+                latest,
+                unmarked: Vec::new(),
+                unopened: 0,
+            });
+        };
+        let marked: BTreeSet<&str> = head.marked_changed.iter().map(String::as_str).collect();
         let mut unmarked = BTreeSet::new();
         let mut unopened = 0;
         for id in &old {
@@ -356,7 +361,7 @@ impl Book {
             }
         }
         Some(OldFormat {
-            latest: state.heads.iter().any(|h| self.old_format.contains(h)),
+            latest,
             unmarked: unmarked.into_iter().collect(),
             unopened,
         })
@@ -982,8 +987,8 @@ impl<'a> Environments<'a> {
 
     /// Seal `draft` as the next snapshot of its environment: a letter to the people its audience
     /// resolves to, each with a usable encryption key, the writer first. Refused unless the
-    /// signer is a current maintainer. Nothing is written: [`Self::store`] does that, after the caller has shown
-    /// the plan and its cost.
+    /// signer is a current maintainer. Nothing is written: [`Self::store`] does that, after the
+    /// caller has shown the plan and its cost.
     pub async fn prepare(&self, repo: &RepoRef, draft: &Draft) -> Result<Prepared> {
         self.require_maintainer(repo, &format!("change {}", draft.env))
             .await?;

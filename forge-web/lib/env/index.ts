@@ -21,7 +21,6 @@ export {
   decodeSnapshot,
   diffSnapshots,
   encodeSnapshot,
-  groupLabel,
   membersKey,
   snapshotProblem,
   validEnvName,

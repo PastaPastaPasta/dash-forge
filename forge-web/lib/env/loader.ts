@@ -2,8 +2,9 @@
  * Reading a repository's environments in the browser: every kind-8 manifest and the current
  * maintainers, then every snapshot a current maintainer wrote, fetched, checked against its
  * manifest's `packHash` and opened (an old-format Members snapshot under the members key, every
- * other with this browser's encryption keys), then {@link resolveSnapshots} (strict D24). The twin of forge-core
- * `env::service::Environments::read` and its `Book`: the same inputs give `dg env ls`'s answer.
+ * other with this browser's encryption keys), then {@link resolveSnapshots} (strict D24). The
+ * twin of forge-core `env::service::Environments::read` and its `Book`: the same inputs give
+ * `dg env ls`'s answer.
  *
  * Nothing here is kept: the caller holds the {@link EnvBook} in memory for as long as it shows it.
  * The I/O is injected ({@link EnvSources}, {@link EnvKeys}); `sources.ts` binds it to the SDK.
@@ -338,9 +339,12 @@ export function oldFormatOf(book: EnvBook, env: string): OldFormat | null {
   if (state === undefined) return null
   const old = state.snapshots.filter((id) => book.oldFormat.has(id))
   if (old.length === 0) return null
+  const latest = state.heads.some((h) => book.oldFormat.has(h))
   const newest = state.heads[state.heads.length - 1]
   const head = newest === undefined ? null : snapshotOf(book, newest)
-  const marked = new Set(head?.markedChanged ?? [])
+  // what is marked is in the latest version: a reader who can't open it can't tell
+  if (head === null) return { latest, unmarked: [], unopened: 0 }
+  const marked = new Set(head.markedChanged)
   const unmarked = new Set<string>()
   let unopened = 0
   for (const id of old) {
@@ -348,7 +352,7 @@ export function oldFormatOf(book: EnvBook, env: string): OldFormat | null {
     if (s === null) unopened++
     else for (const name of s.vars.keys()) if (!marked.has(name)) unmarked.add(name)
   }
-  return { latest: state.heads.some((h) => book.oldFormat.has(h)), unmarked: [...unmarked].sort(cmp), unopened }
+  return { latest, unmarked: [...unmarked].sort(cmp), unopened }
 }
 
 /** Whether the banner is shown: the latest version is old, or old values may still be in use. */

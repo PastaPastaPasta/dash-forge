@@ -8,7 +8,7 @@
 
 import type { Role } from '../rules/v2'
 import type { Exposure } from './chain'
-import { OLD_FORMAT_HISTORY_SENTENCE, OLD_FORMAT_SENTENCE, audienceLabel, compareStrings as cmp, membersKey, type Audience, type Group, type VarType } from './format'
+import { OLD_FORMAT_HISTORY_SENTENCE, OLD_FORMAT_SENTENCE, audienceLabel, compareStrings as cmp, membersKey, type Audience, type Group, type Snapshot, type VarType } from './format'
 import {
   currentOf,
   exposureFor,
@@ -230,6 +230,10 @@ export function oldFormatView(book: EnvBook, env: string): OldFormatView | null 
   return { sentence: OLD_FORMAT_HISTORY_SENTENCE, unmarked: old.unmarked, command: `dg env mark-changed --env ${env}` }
 }
 
+function cardAudienceLabel(s: Snapshot): string {
+  return membersKey(s) ? 'All members (old format)' : audienceLabel(s.audience)
+}
+
 /** Every environment of `book` as the page shows it. */
 export function environmentsView(book: EnvBook, ctx: ViewContext = {}): EnvPageView {
   const viewer = ctx.viewer ?? null
@@ -245,7 +249,7 @@ export function environmentsView(book: EnvBook, ctx: ViewContext = {}): EnvPageV
     const base = {
       env,
       audience: newest?.audience ?? null,
-      audienceLabel: newest === null ? null : old ? 'All members (old format)' : audienceLabel(newest.audience),
+      audienceLabel: newest === null ? null : cardAudienceLabel(newest),
       membersKey: old,
       readers: newest?.to ?? [],
       oldFormat: oldFormatView(book, env),
