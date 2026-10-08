@@ -14,11 +14,18 @@ export const WRITER_SEG_LOG2 = 14
 const MIN_SEG_LOG2 = 10
 const MAX_SEG_LOG2 = 20
 
-/** Why a sealed artifact cannot be read (§3.5). */
-export type PackErrorCode = 'sizeMismatch' | 'sealedPackCorrupt' | 'noKey' | 'outOfRange'
+/**
+ * Why a sealed artifact cannot be read (§3.5). `unknownVersion`: a `DFPK` header of a version
+ * this opener does not read (§3.2), skipped by readers and never treated as corruption.
+ */
+export type PackErrorCode = 'sizeMismatch' | 'sealedPackCorrupt' | 'noKey' | 'outOfRange' | 'unknownVersion'
 
 export class PackError extends Error {
-  constructor(readonly code: PackErrorCode) {
+  constructor(
+    readonly code: PackErrorCode,
+    /** `unknownVersion`: the header's version byte. */
+    readonly version?: number,
+  ) {
     super(`sealed artifact: ${code}`)
     this.name = 'PackError'
   }
@@ -30,6 +37,34 @@ export class PackError extends Error {
   get corrupt(): boolean {
     return this.code === 'sealedPackCorrupt' || this.code === 'sizeMismatch'
   }
+}
+
+/**
+ * What the first bytes of a stored artifact say it is (§3.2, §18.2; forge-core `private::Head`):
+ * a reader checks them before it hands bytes to git and, in a repository made public, before it
+ * downloads a pack written while the repository was private.
+ *
+ * - `plain`: no `DFPK` magic (a git pack starts `PACK`);
+ * - `sealed`: a version-0x01 sealed artifact under key epoch `epoch`;
+ * - `otherVersion`: a `DFPK` header of another version (specific people, 0x02, or a layout this
+ *   client does not know): skipped, never fatal;
+ * - `short`: too short to tell (fewer than the 12 bytes up to the epoch).
+ */
+export type Head =
+  | { readonly kind: 'plain' }
+  | { readonly kind: 'sealed'; readonly epoch: number }
+  | { readonly kind: 'otherVersion'; readonly version: number }
+  | { readonly kind: 'short' }
+
+/** {@link Head} of an artifact from its first bytes (at least 12 to read a version-0x01 epoch). */
+export function sniff(head: Uint8Array): Head {
+  const n = Math.min(head.length, MAGIC.length)
+  for (let i = 0; i < n; i++) if (head[i] !== MAGIC[i]) return { kind: 'plain' }
+  const version = head[4]
+  if (version === undefined) return { kind: 'short' }
+  if (version !== PACK_VERSION) return { kind: 'otherVersion', version }
+  if (head.length < 12) return { kind: 'short' }
+  return { kind: 'sealed', epoch: new DataView(head.buffer, head.byteOffset + 8, 4).getUint32(0) }
 }
 
 /** The 36-byte header of a sealed artifact. */
@@ -61,16 +96,20 @@ export function encodeHeader(epoch: number, plaintextLen: number, fileId: Uint8A
 
 /**
  * Parse and check a header (§3.5 step 2, without the length check, which needs the sealed
- * length). Throws `sealedPackCorrupt`.
+ * length). Throws `sealedPackCorrupt`, or `unknownVersion` for a `DFPK` header of another
+ * version.
  */
 export function parseHeader(sealed: Uint8Array): PackHeader {
   if (sealed.length < HEADER_LEN) throw new PackError('sealedPackCorrupt')
   const raw = sealed.slice(0, HEADER_LEN)
   const view = new DataView(raw.buffer)
   const segLog2 = raw[5] as number
+  const magic = MAGIC.every((b, i) => raw[i] === b)
+  // A DFPK header of another version (0x02 is sealed to specific people, later versions to keys
+  // this client does not know) is not this layout: skipped by readers, never read as corrupt.
+  if (magic && raw[4] !== PACK_VERSION) throw new PackError('unknownVersion', raw[4])
   if (
-    MAGIC.some((b, i) => raw[i] !== b) ||
-    raw[4] !== PACK_VERSION ||
+    !magic ||
     segLog2 < MIN_SEG_LOG2 ||
     segLog2 > MAX_SEG_LOG2 ||
     view.getUint16(6) !== 0

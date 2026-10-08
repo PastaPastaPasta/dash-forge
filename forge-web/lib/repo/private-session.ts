@@ -28,16 +28,18 @@ import {
   openContextOf,
   resolveEpochs,
   type ConfigRow,
+  type Conversion,
   type EpochKeys,
   type EpochResolution,
   type OpenContext,
+  type PublishedBundle,
   type WrapRow,
   WrapError,
 } from '../private'
 import { compareKey, type ConfigDoc, type RefUpdate } from '../rules'
 import type { Membership, Role } from '../rules/v2'
 import { queryAllDocuments, type PlainDocument } from '../sdk'
-import { DOC, asIdentifierString, num, str, stringArray, type RepoRef } from './contract'
+import { DOC, asIdentifierString, num, str, stringArray, withoutSessions, type RepoRef } from './contract'
 import type { RepoConfig } from './config'
 import { readMemberships } from './members'
 import { holdsMembersKey } from '../rules/roles'
@@ -51,6 +53,7 @@ import {
   type ContentGate,
 } from './private-content'
 import { clearMembersTexts, noteOpenedDoc } from './members-texts'
+import { readMakePublicBundles, repoConversion, withPublishedKeys } from './converted'
 import { repoSource } from './source'
 
 /** How long a session serves page views before it is read again. */
@@ -111,6 +114,13 @@ export interface PrivateSession {
    * approval for another contract registers one). Absent when a held key opens a wrap here.
    */
   readonly missingKey?: { readonly keyId: number; readonly otherApproval: boolean } | null
+  /**
+   * A repository made public (`private-repos.md` §18): its conversion facts. The epoch keys its
+   * owner published are among `resolution.keys`. Null for any other repo.
+   */
+  readonly conversion: Conversion | null
+  /** The epochs of `resolution.keys` only the published keys open (none of the reader's own). */
+  readonly publishedEpochs: ReadonlySet<number>
   /** Whether the session is closed (vault locked, key changed). */
   readonly closed: boolean
   /** End this session now (its keys and caches are dropped; its gate admits nothing). */
@@ -128,6 +138,8 @@ export interface SessionSource {
   repoKeys(): Promise<PlainDocument[]>
   /** An identity's public keys, or null when it could not be read. */
   identityKeys(identityId: string): Promise<readonly EncKeyLike[] | null>
+  /** A repository made public's make-public bundles (kind 7) by its owner, hash-checked; none when absent. */
+  makePublicBundles?(): Promise<PublishedBundle[]>
 }
 
 /** The reader's side: decrypt one of its wraps (the vault's {@link EncryptionOps} in production). */
@@ -290,6 +302,12 @@ export async function loadPrivateSession(input: {
    * pre-posted anchor or wrap as current (§5.4 C1).
    */
   readonly drop?: readonly { readonly identity: string; readonly role?: Role }[]
+  /**
+   * The session holds only the keys the owner of a repository made public published (no reader
+   * identity, no wraps): a document none of them opens is members-only to it
+   * ({@link loadPublishedSessionCached}).
+   */
+  readonly published?: boolean
 }): Promise<PrivateSession> {
   const { repo, network, reader, source, unwrapper } = input
   const generation = closeGeneration
@@ -345,15 +363,21 @@ export async function loadPrivateSession(input: {
   }
 
   const configRows = configDocs.map(parseConfigRow).filter((c): c is ConfigRow => c !== null)
-  const resolution = await resolveEpochs({
+  const resolved = await resolveEpochs({
     repoId,
     reader: readerId,
     memberships: keyHolders.map((m) => ({ identity: decodeIdentifier(m.identity), role: m.role })),
     configs: configRows,
     wraps: wraps.map((w) => w.row),
   })
+  // A repository made public (§18): the keys its owner published open what was written before;
+  // a bundle that cannot be read publishes nothing, never failing the session.
+  const conversion = repo.visibility === 'public' ? repoConversion(repo, configDocs, (e) => resolved.anchors.has(e)) : null
+  const bundles =
+    conversion?.sealOffEpoch != null && source.makePublicBundles !== undefined ? await source.makePublicBundles().catch(() => [] as PublishedBundle[]) : []
+  const resolution = conversion === null ? resolved : await withPublishedKeys(resolved, repoId, repo, conversion, bundles)
   const ctx = openContextOf(resolution)
-  const gate = sessionGate(repo, ctx)
+  const gate = sessionGate(repo, ctx, { converted: conversion !== null, published: input.published === true })
 
   // The config timeline: every config that opens (§4.2 commitment first), as plaintext. Configs
   // under epochs this reader holds no key for are not in it, so protected-ref routing cannot see
@@ -417,6 +441,8 @@ export async function loadPrivateSession(input: {
     memberKeys,
     suspectManifests: new Set(),
     configRows,
+    conversion,
+    publishedEpochs: new Set([...resolution.keys.keys()].filter((e) => !resolved.keys.has(e))),
     loadedAt: Date.now(),
     close: () => undefined,
     get closed() {
@@ -477,8 +503,20 @@ export function sdkSessionSource(sdk: EvoSDK, repo: RepoRef): SessionSource {
         }),
       ),
     identityKeys: (id) => fetchIdentityKeys(sdk, id),
+    makePublicBundles: () => readMakePublicBundles(sdk, repo),
   }
 }
+
+/**
+ * The reads of a session that holds only a repository made public's published keys: memberships
+ * and configs (the anchors) and the owner's bundles; no key shares and no identity keys.
+ */
+export function publishedSessionSource(sdk: EvoSDK, repo: RepoRef): SessionSource {
+  return { ...sdkSessionSource(sdk, repo), repoKeys: async () => [], identityKeys: async () => null }
+}
+
+/** The reader of a published-keys session: nobody (no wrap names it, no membership holds it). */
+const NOBODY = base58Encode(new Uint8Array(32))
 
 const sessionCache = new Map<string, { at: number; promise: Promise<PrivateSession>; session?: PrivateSession }>()
 
@@ -497,10 +535,25 @@ export function loadPrivateSessionCached(
   reader: string,
   unwrapper: SessionUnwrapper | null,
 ): Promise<PrivateSession> {
-  const key = cacheKey(network, repo, reader)
+  return cachedSession(cacheKey(network, repo, reader), () => loadPrivateSession({ repo, network, reader, source: sdkSessionSource(sdk, repo), unwrapper }))
+}
+
+/**
+ * The session every reader of a repository made public holds alike: only the epoch keys its
+ * owner published (§18.3), from the view-session cache when fresh. Its gate opens what they open
+ * and shows the rest as members-only.
+ */
+export function loadPublishedSessionCached(sdk: EvoSDK, repo: RepoRef, network: Network): Promise<PrivateSession> {
+  const plain = withoutSessions(repo)
+  return cachedSession(cacheKey(network, plain, `${NOBODY}:published`), () =>
+    loadPrivateSession({ repo: plain, network, reader: NOBODY, source: publishedSessionSource(sdk, plain), unwrapper: null, published: true }),
+  )
+}
+
+function cachedSession(key: string, load: () => Promise<PrivateSession>): Promise<PrivateSession> {
   const hit = sessionCache.get(key)
   if (hit !== undefined && Date.now() - hit.at < SESSION_TTL_MS && hit.session?.closed !== true) return hit.promise
-  const promise = loadPrivateSession({ repo, network, reader, source: sdkSessionSource(sdk, repo), unwrapper })
+  const promise = load()
   const entry: { at: number; promise: Promise<PrivateSession>; session?: PrivateSession } = { at: Date.now(), promise }
   sessionCache.set(key, entry)
   promise.then((s) => {

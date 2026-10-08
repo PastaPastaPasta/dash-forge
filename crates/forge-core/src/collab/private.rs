@@ -495,10 +495,10 @@ mod tests {
             Visibility::Public
         ));
         let mut header = header_of(DocKind::Comment, &d).unwrap();
-        // read as a private repository's document, v0x03 is refused
+        // read as a private repository's document, v0x03 opens too (DESIGN D38's reader half)
         assert!(matches!(
             open_content(&ctx(), &header, &d.field_bytes("enc").unwrap()),
-            crate::private::Opened::Malformed
+            crate::private::Opened::Readable(_)
         ));
         header.vis = Visibility::Public;
         let back = open_doc(

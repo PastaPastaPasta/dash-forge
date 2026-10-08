@@ -1,14 +1,15 @@
 {
-  "name": "v03_in_private_refused",
-  "description": "a v0x03 enc on a private repository's document is malformed: members-only content exists only in public repositories.",
-  "case": "mixed_doc_open",
+  "name": "old_comment_outsider",
+  "description": "the same comment for a reader with no key: Unreadable(NoKey), a members-only placeholder.",
+  "case": "converted_repo_open",
   "rules": "v2",
   "input": {
     "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "stamp": "private",
+    "repoVisibility": "public",
+    "converted": true,
     "context": {
-      "keys": {
-        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
-      },
+      "keys": {},
       "anchors": {
         "0": {
           "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
@@ -22,11 +23,12 @@
       "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
       "epoch": 0,
       "targetId": "3333333333333333333333333333333333333333333333333333333333333333",
-      "enc": "03000102030405060708090a0bf9a7fa2b8dc201ec7c98681cdcfcfdd62d0c8514308e08b3254c75e528853e9f68c2c84f9892eab0fdb7a611874cf68f179a64d1f255e203d2fcd039a43f1e5e4427ffea6920a5296635807834ce89db33640789703539675c630fe4e0e9e440fa0941eba61eeb6f2957e4f93ebbccfe",
+      "enc": "01000102030405060708090a0b1c700785b15b980d3a1234c4a842916b996917a345806af736e5eb28f6efbcd1660143aba2334a616f353f0c817d80f2b95914a4101e95dbdb8972",
       "createdAtBlockHeight": 50
     }
   },
   "expected": {
-    "status": "malformed"
+    "status": "unreadable",
+    "reason": "noKey"
   }
 }

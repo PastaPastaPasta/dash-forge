@@ -203,6 +203,8 @@ Two cases have their own message:
 
 `git fetch`, `git pull`, `git ls-remote` (and any push or `dg` command that reads the refs) also stop with E307 when the repository's newest ref updates are encrypted with a newer key you don't hold, typically after you were removed and the key was rotated. The refs you can still read are from before the rotation, so they are not reported as current ("Already up to date" would be wrong). As on GitHub, a removed collaborator's clone stops getting updates; what it already has stays.
 
+A clone or fetch of a **public repository that was private before** stops with E307 (`clone incomplete: the history you asked for needs packs your keys don't open`) only when the history you asked for needs a pack stored encrypted while the repository was private, and the owner did not make that history public. Forge recognises such packs from their first bytes and leaves them out without downloading them; the branches the owner published never need them. A pack encrypted in a format a newer version of Forge writes is left out the same way: update Forge. An older version of Forge can't clone such a repository: [the first version that can](security/private-repos.md#184-the-minimum-client-version).
+
 *Protocol detail:* no `repoKey` wrap from a current maintainer opens the repository for your identity.
 
 ## E308

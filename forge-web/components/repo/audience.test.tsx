@@ -177,7 +177,7 @@ describe('what a reader who cannot open it sees', () => {
 })
 
 describe('the hidden-items note of a public repo', () => {
-  const by = (over: Partial<HiddenCounts>): HiddenCounts => ({ notEncrypted: 0, wrongKey: 0, late: 0, lateEdit: 0, membersOnly: 0, letter: 0, ...over })
+  const by = (over: Partial<HiddenCounts>): HiddenCounts => ({ notEncrypted: 0, wrongKey: 0, late: 0, lateEdit: 0, membersOnly: 0, letter: 0, unknownVersion: 0, ...over })
 
   it('calls encrypted items nobody proved a member wrote "private messages from people outside this repo"', () => {
     act(() => root.render(<HiddenNote hidden={3} what="comment" home={homeWith()} by={by({ membersOnly: 3 })} shown={1} />))

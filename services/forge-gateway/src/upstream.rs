@@ -259,8 +259,13 @@ impl PlatformUpstream {
             svc.read_default_branch(r),
             svc.read_pack_manifests(r),
         )?;
+        // A repository made public (private-repos.md §18.2): the packs it stored while private
+        // are sealed, and the gateway, a non-member, opens only those whose keys the owner
+        // published. git-remote-dash skips the rest without downloading them, so they neither
+        // count toward the mirror's size nor appear in its manifest.
+        let skipped = sealed_packs(&svc, r, &manifests).await;
         let mut packs: BTreeMap<String, ManifestPack> = BTreeMap::new();
-        for m in &manifests {
+        for m in manifests.iter().filter(|m| !skipped.contains(&m.pack_hash)) {
             let hash = hex::encode(m.pack_hash);
             packs
                 .entry(hash.clone())
@@ -281,6 +286,48 @@ impl PlatformUpstream {
             packs: packs.into_values().collect(),
         }))
     }
+}
+
+/// The git packs of a repository made public that this anonymous reader skips without
+/// downloading ([`RepoService::skip_before_download`] with the published keys). Empty for any
+/// other repository, and when the facts cannot be read (every pack then counts, as before).
+async fn sealed_packs(
+    svc: &RepoService<'_>,
+    repo: &RepoRef,
+    manifests: &[forge_core::repo::PackManifestInfo],
+) -> std::collections::BTreeSet<[u8; 32]> {
+    let mut out = std::collections::BTreeSet::new();
+    let Ok(Some(conversion)) = svc.conversion(repo).await else {
+        return out;
+    };
+    let Ok(contract) = svc.repo_contract(repo).await else {
+        return out;
+    };
+    let keys = svc.public_keys(repo).await;
+    let roles = svc.copy_roles(repo).await.unwrap_or_default();
+    let git: Vec<forge_core::repo::PackManifestInfo> = manifests
+        .iter()
+        .filter(|m| m.kind == u64::from(forge_core::pack::KIND_GIT_PACK))
+        .cloned()
+        .collect();
+    let reader = svc.repo_reader(repo, &git, &roles).await;
+    for (hash, copies) in forge_core::repo::group_by_hash(&git) {
+        if svc
+            .skip_before_download(
+                repo,
+                &contract,
+                &copies,
+                &reader,
+                &conversion,
+                keys.as_deref(),
+            )
+            .await
+            .is_some()
+        {
+            out.insert(hash);
+        }
+    }
+    out
 }
 
 /// What a failed read says about the thing it read.

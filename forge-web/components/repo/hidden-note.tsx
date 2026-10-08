@@ -67,7 +67,7 @@ export function HiddenNote({
       </p>
     )
   }
-  const encrypted = by === undefined ? 0 : Math.max(0, by.membersOnly + by.letter + by.wrongKey + by.late + by.lateEdit - shown)
+  const encrypted = by === undefined ? 0 : Math.max(0, by.membersOnly + by.letter + by.unknownVersion + by.wrongKey + by.late + by.lateEdit - shown)
   const other = by === undefined ? Math.max(0, hidden - shown) : by.notEncrypted
   if (encrypted <= 0 && other <= 0) return null
   return (
