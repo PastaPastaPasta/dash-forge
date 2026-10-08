@@ -5,8 +5,8 @@
 # `e2e-<run-id>` for Maintainers: one snapshot. `dg env run` injects its values into a child
 # process; `dg env export -o` writes a 0600 file inside a git work tree, adds it to
 # .git/info/exclude and `git check-ignore` confirms it, and `git status` does not list it.
-# CONTRIB (not a maintainer) is refused a change before signing (E601) and cannot read the
-# environment. The values are fake, made for the run.
+# A new environment without --audience is refused before signing (E611). CONTRIB (not a
+# maintainer) is refused a change before signing (E601) and cannot read the environment (E612). The values are fake, made for the run.
 SCENARIO_NAME="40 environments (import, run, export -o, check-ignore)"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
 harness_init
@@ -24,10 +24,14 @@ dg_as "$ID_OWNER" --yes --json env import "$REPO" "$LOG.env" --env "$ENV_NAME" -
   >"$LOG-import.json" 2>"$LOG-import.err" \
   || { cat "$LOG-import.err" "$LOG-import.json" >&2; is_flake "$LOG-import.err" && skip_scenario "import flaked"; bad "import failed"; finish_scenario; }
 check "saved" assert_eq "saved" "$(jq_py "$LOG-import.json" 'd["status"]')"
-check "for Maintainers" assert_eq "maintainers" "$(jq_py "$LOG-import.json" 'd["audience"]')"
+check "for Maintainers" assert_eq "maintainers" "$(jq_py "$LOG-import.json" 'd["audience"]["group"]')"
 check "three entries in one change" assert_eq "3" "$(jq_py "$LOG-import.json" 'len(d["changes"])')"
 check "sent to OWNER first" assert_eq "$IDID_OWNER" "$(jq_py "$LOG-import.json" 'd["to"][0]')"
 check "a padded size" assert_eq "0" "$(jq_py "$LOG-import.json" '(d["sizeBytes"] - 69 - 64*len(d["to"]) - 16) % 512')"
+
+step "a new environment without an audience is refused before signing (E611)"
+dg_as "$ID_OWNER" --yes --json env set "$REPO" E2E_ENV_A=alpha --env "${ENV_NAME}-none" >"$LOG-noaud.json" 2>"$LOG-noaud.err"
+check "E611" assert_eq "E611" "$(jq_py "$LOG-noaud.json" 'd["error"]["code"]')"
 
 step "dg env run injects the values into the child only"
 dg_read_retry "$ID_OWNER" "$LOG-run.out" "$LOG-run.err" env run "$REPO" --env "$ENV_NAME" -- \
@@ -57,7 +61,7 @@ step "CONTRIB, not a maintainer, can neither change nor read it"
 dg_as "$ID_CONTRIB" --yes --json env set "$REPO" E2E_ENV_A=evil --env "$ENV_NAME" >"$LOG-contrib-set.json" 2>"$LOG-contrib-set.err"
 check "change refused (E601)" assert_eq "E601" "$(jq_py "$LOG-contrib-set.json" 'd["error"]["code"]')"
 dg_as "$ID_CONTRIB" --json env get "$REPO" E2E_ENV_A --env "$ENV_NAME" >"$LOG-contrib-get.json" 2>"$LOG-contrib-get.err"
-check "read refused" assert_eq "E102" "$(jq_py "$LOG-contrib-get.json" 'd["error"]["code"]')"
+check "read refused: not shared with them (E612)" assert_eq "E612" "$(jq_py "$LOG-contrib-get.json" 'd["error"]["code"]')"
 check "no value in CONTRIB's output" assert_not_file_contains "$LOG-contrib-get.json" "$SECRET"
 
 finish_scenario

@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/env-set.schema.json",
-  "title": "dg env set --json",
-  "description": "A variable set.",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/env-mark-changed.schema.json",
+  "title": "dg env mark-changed --json",
+  "description": "Values saved in the old format recorded as changed where they're used.",
   "type": "object",
   "properties": {
     "schemaVersion": {

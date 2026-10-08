@@ -1,0 +1,191 @@
+{
+  "name": "v2_members",
+  "description": "All members: every human member role when it was saved, readers and triage included, as a letter (never the members key). An outsider is not a recipient.",
+  "case": "env_snapshot",
+  "rules": "v2",
+  "input": {
+    "op": "open",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "snapshot": {
+      "v": 2,
+      "env": "dev",
+      "audience": {
+        "group": "members",
+        "also": []
+      },
+      "generatedAt": 1767225600000,
+      "vars": {
+        "LOG_LEVEL": {
+          "type": "variable",
+          "value": "debug",
+          "note": ""
+        }
+      },
+      "id": "5af7aba87d74996e5b6cef1216ba37e0",
+      "to": [
+        "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+        "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+        "56JrovLKjG1tmdJMfdxSCPppDkjHfLvkToexzcUgFvkX",
+        "86tPu2zvVZuJrhjfe6GAJYdwZvsM9pNLhJcZM8NAjVxG"
+      ],
+      "toKeys": [
+        4,
+        3,
+        3,
+        3
+      ],
+      "markedChanged": []
+    },
+    "seal": {
+      "senderKeyId": 4,
+      "sender": {
+        "identityId": "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+        "keys": [
+          "2ad1b589f470e72d6946b4924abacbed51bb782d293e76cc8541010dec32ddb3"
+        ]
+      },
+      "recipients": [
+        {
+          "identityId": "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+          "pub": "021d144ab1f60cb016060ab65044c6cc99287f65bcddb72ed65aca72fd61ff0082"
+        },
+        {
+          "identityId": "8fcef67268ac484a9ff85e6548ec6f5b3fb7a70feef773ea35daac8dc042e688",
+          "pub": "02bf17b1a250a78519af75826803dc13b2182a3ce97a7badb50135cb3194e2388a"
+        },
+        {
+          "identityId": "3ccad8405e96a830932809a33cf77267873831cf5e1183cfd83d275378ddf810",
+          "pub": "026e30ff71fd069a535f7f75eee8118a4342cb224934cc4fb34959ca59814c9feb"
+        },
+        {
+          "identityId": "6983d325810def364424409135bb8c6cecca0ba0ea80f229c0f46a455a836275",
+          "pub": "025b0a23ba6f307d8a7c52f37a1daeca4a56aafebdefcd75ce6eeca2dc47ef31a0"
+        }
+      ],
+      "kObj": "36591ec7bce790ea42de64e4c24e3d9b8ef595dca88f547a3ee46f6bfece9f90",
+      "fileId": "e1ec2b44b380b16f9993c343ed842849",
+      "ivs": [
+        "4f31852c111aad1b8287a9e94c731ea2",
+        "95b8f08e850781f2e00972d6be50eca2",
+        "707cd99fca31c86e6e816791d784380b",
+        "ef089bf53d18f4515088e3d9d3257b49"
+      ]
+    },
+    "manifest": {
+      "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+      "packHash": "9dd164e1fc5b0f2646e01228ce658963244a6cefc6153b647f86bc6a52b6854b",
+      "sizeBytes": 853
+    },
+    "sealed": "4446504b020e00000400000004a5a91e5b036dc185a9090cd64225d997039ed0ccdffdaa74409ff6b969fcc9fb4f31852c111aad1b8287a9e94c731ea272dfed217a8c1dd673e593b2aa216c797f795c22282c28936d700c7e7c7bda2805ff3fb5976cb3dd272f1b9596fedde695b8f08e850781f2e00972d6be50eca27a6833816d5199b81ebd31e5b0056e453cc9ace93d04ec50cb853c4771eadc7e6bcef26704db74e3e9022b5d43f8e764707cd99fca31c86e6e816791d784380b4354f2d952648d6267b737cdfe79d5da52532d58e4fdb8e28b3a80f84a5a77896df08af841d6345c91f31324240e4937ef089bf53d18f4515088e3d9d3257b49bd62a92c2d880a4be9aee118b9fa11c43dbcbfa657f839b5bb762bffd0f57900bf8671e45f4a94bc898c19a859ef043c0000000000000200e1ec2b44b380b16f9993c343ed8428490cbe1ec917879a98bf5f155061e2ba50e24252546e6a303897964823c3084305715821ec29374dec5160e1006c70cc3a14917227681b6ddf24cde43367aa5a8a8253693a9d078ca75dd11d9a5ce423bdd924eb6ae4ad001491dca463ee7c0e570260b4164b85ae2f43f83f263d0ae1b5cd1889c35864279ed2a5cd65e7709961dacf5f421d17cece122d9474f6b6c53b5fd54958b4f09d20ef9a667dd196dc7a80bd2db48c0ff49c86e09ad009016ea74fd729ccf67c9ee3d9eca980baf6c264e557589d420cb00a966e96b20bbec5e86138c1c1c1cd8ceb0e310100de2157baebbcfd62ba0af6b261b2840419378fb14386f33dbe7c42628957e3f1c8b6c2fb13dd4b921ac62c11ea0f6cd2b969727ba085bbe1a4159ed629c6d8255c01fbf9da2f9b695b27089b918de2280e31b799c1e5b1fe3bb641ad026383ce1775b1767b9bd508ab2ce477a41f6893fe719096858ef7b00f90ea70dcb60263753ffa01c35becf198ae3332ae0eb91c35d67ef4febf8a3deb64a862ed5af41965a811dfa423f267b5aabf37feb300281a493129dc56d94bde734a1ba674acdbf7f0ae6baf12d108452a9125ef4c6b31135540acc83fc6a4c1d3667783cbbe8c72efc66d3a5895bccc80824f0265a191e900167e9f1162a7719ded5655d33b57ba2953c80bd48277ac4449807ffcf5dfcfc06d3f84df919c1ab0adef2974a6a3e8f471f05de073bf02d9c80c8a4ea13bf0586343",
+    "ownerKeys": [
+      {
+        "id": 4,
+        "purpose": 1,
+        "keyType": 0,
+        "data": "021d144ab1f60cb016060ab65044c6cc99287f65bcddb72ed65aca72fd61ff0082"
+      }
+    ],
+    "readers": [
+      {
+        "reader": {
+          "identityId": "3ccad8405e96a830932809a33cf77267873831cf5e1183cfd83d275378ddf810",
+          "keys": [
+            "800419f853a2e11eeb44d05d603918884d93a42258c72df493c7d252e30130e8"
+          ]
+        },
+        "epochKeys": []
+      },
+      {
+        "reader": {
+          "identityId": "6983d325810def364424409135bb8c6cecca0ba0ea80f229c0f46a455a836275",
+          "keys": [
+            "0abadf5fa1f7846dfa8e073bd9b40da5c2d54e1b0b6b9a0139fc4077bd25f155"
+          ]
+        },
+        "epochKeys": []
+      },
+      {
+        "reader": {
+          "identityId": "57ac62e92e47a65079dd33aa33abbbe3434824ff864261f7c56531e92cb21bef",
+          "keys": [
+            "4960c41071d54b6daf47871e2349e514b5b66717abe00281a2ca8ae4efcbf91e"
+          ]
+        },
+        "epochKeys": []
+      }
+    ]
+  },
+  "expected": {
+    "plaintextHex": "7b2261756469656e6365223a7b22616c736f223a5b5d2c2267726f7570223a226d656d62657273227d2c22656e76223a22646576222c2267656e6572617465644174223a313736373232353630303030302c226964223a223561663761626138376437343939366535623663656631323136626133376530222c22746f223a5b22374c685666684b6a524d58766662557257367754457956704b353641563645614e346b576f31374b6b764466222c2241674e4c68573848476a544678564e4d72504344697952516d726b4e365a52594572784c5438485850386133222c2235364a726f764c4b6a4731746d644a4d6664785343507070446b6a48664c766b546f65787a63556746766b58222c223836745075327a76565a754a72686a66653647414a5964775a76734d39704e4c684a635a4d384e416a567847225d2c22746f4b657973223a5b342c332c332c335d2c2276223a322c2276617273223a7b224c4f475f4c4556454c223a7b2274797065223a227661726961626c65222c2276616c7565223a226465627567227d7d7d2020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020",
+    "packHash": "9dd164e1fc5b0f2646e01228ce658963244a6cefc6153b647f86bc6a52b6854b",
+    "results": [
+      {
+        "snapshot": {
+          "v": 2,
+          "env": "dev",
+          "audience": {
+            "group": "members",
+            "also": []
+          },
+          "generatedAt": 1767225600000,
+          "vars": {
+            "LOG_LEVEL": {
+              "type": "variable",
+              "value": "debug",
+              "note": ""
+            }
+          },
+          "id": "5af7aba87d74996e5b6cef1216ba37e0",
+          "to": [
+            "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+            "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "56JrovLKjG1tmdJMfdxSCPppDkjHfLvkToexzcUgFvkX",
+            "86tPu2zvVZuJrhjfe6GAJYdwZvsM9pNLhJcZM8NAjVxG"
+          ],
+          "toKeys": [
+            4,
+            3,
+            3,
+            3
+          ],
+          "markedChanged": []
+        }
+      },
+      {
+        "snapshot": {
+          "v": 2,
+          "env": "dev",
+          "audience": {
+            "group": "members",
+            "also": []
+          },
+          "generatedAt": 1767225600000,
+          "vars": {
+            "LOG_LEVEL": {
+              "type": "variable",
+              "value": "debug",
+              "note": ""
+            }
+          },
+          "id": "5af7aba87d74996e5b6cef1216ba37e0",
+          "to": [
+            "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+            "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3",
+            "56JrovLKjG1tmdJMfdxSCPppDkjHfLvkToexzcUgFvkX",
+            "86tPu2zvVZuJrhjfe6GAJYdwZvsM9pNLhJcZM8NAjVxG"
+          ],
+          "toKeys": [
+            4,
+            3,
+            3,
+            3
+          ],
+          "markedChanged": []
+        }
+      },
+      {
+        "error": "notARecipient"
+      }
+    ]
+  }
+}

@@ -117,6 +117,7 @@
       {
         "name": "canonical",
         "snapshot": {
+          "v": 1,
           "env": "dev",
           "audience": "members",
           "generatedAt": 1767225600000,
@@ -208,6 +209,7 @@
       {
         "name": "control_escaped_lowercase",
         "snapshot": {
+          "v": 1,
           "env": "dev",
           "audience": "members",
           "generatedAt": 1767225600000,
@@ -227,6 +229,7 @@
       {
         "name": "line_separator_and_astral_raw",
         "snapshot": {
+          "v": 1,
           "env": "dev",
           "audience": "members",
           "generatedAt": 1767225600000,
