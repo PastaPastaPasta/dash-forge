@@ -9,7 +9,7 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { base58Encode } from '../auth/base58'
+import { base58Decode, base58Encode } from '../auth/base58'
 import type { DocumentQuery } from '../sdk'
 import type { RepoRef } from './contract'
 
@@ -29,12 +29,14 @@ const B = id('thread-b')
 const C = id('thread-c')
 
 const enc = (first: number): Uint8Array => Uint8Array.from([first, 1, 2, 3])
-const comment = (n: number, target: string, sealed: 0x03 | 0x04 | null): Record<string, unknown> => ({
+/** A comment of `target`: plaintext, or sealed (`enc` v0x03 or the letter v0x04) with `asMember` unless said not to. */
+const comment = (n: number, target: string, sealed: 0x03 | 0x04 | null, asMember = true): Record<string, unknown> => ({
   $id: id(`c${n}`),
   $ownerId: id('who'),
   $createdAt: n,
+  repoId: REPO.repoId,
   targetId: target,
-  ...(sealed === null ? { body: 'hello' } : { enc: enc(sealed), epoch: 0 }),
+  ...(sealed === null ? { body: 'hello' } : { enc: enc(sealed), epoch: 0, ...(asMember ? { asMember: id('who') } : {}) }),
 })
 
 /** An SDK answering every comment query with `docs`, recording the queries. */
@@ -69,10 +71,29 @@ describe('membersOnlyCommentCounts', () => {
     expect(seen[0]?.where).toEqual([['targetId', 'in', [A, B].sort()]])
   })
 
-  it('counts a specific-people letter as no members-only comment', async () => {
+  it('counts what the thread page shows as a members-only placeholder: no letter, nothing without asMember', async () => {
     const seen: DocumentQuery[] = []
-    const got = await membersOnlyCommentCounts(sdkWith(() => [comment(1, A, 0x04), comment(2, A, 0x03)], seen), REPO, [{ id: A, comments: 2 }])
+    const docs = [comment(1, A, 0x04), comment(2, A, 0x03), comment(3, A, 0x03, false)]
+    const got = await membersOnlyCommentCounts(sdkWith(() => docs, seen), REPO, [{ id: A, comments: 3 }])
     expect(got.get(A)).toBe(1)
+  })
+
+  it('reads a thread id the SDK returns as base64 as the base58 id of its row', async () => {
+    const seen: DocumentQuery[] = []
+    const b64 = btoa(String.fromCharCode(...base58Decode(A)))
+    const got = await membersOnlyCommentCounts(sdkWith(() => [{ ...comment(1, A, 0x03), targetId: b64 }], seen), REPO, [{ id: A, comments: 1 }])
+    expect(got.get(A)).toBe(1)
+  })
+
+  it('answers a thread only when it was read to the count its row proves, and remembers nothing else', async () => {
+    const seen: DocumentQuery[] = []
+    let docs = [comment(1, A, 0x03)]
+    const sdk = sdkWith(() => docs, seen)
+    // the node is a comment behind (the row proves 2): no label, nothing remembered
+    expect((await membersOnlyCommentCounts(sdk, REPO, [{ id: A, comments: 2 }])).size).toBe(0)
+    docs = [comment(1, A, 0x03), comment(2, A, 0x03)]
+    expect((await membersOnlyCommentCounts(sdk, REPO, [{ id: A, comments: 2 }])).get(A)).toBe(2)
+    expect(seen).toHaveLength(2)
   })
 
   it('reads nothing for a repo without members-only content, a private repo or a page with no comments', async () => {

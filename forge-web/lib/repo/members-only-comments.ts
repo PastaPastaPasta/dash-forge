@@ -9,19 +9,26 @@
  * repo's list costs nothing more than before. The answer is the same for every reader (it counts
  * sealed documents, it opens none), and it is remembered for the count it was read at, so a
  * thread that gained a comment is read again and the rest are not.
+ *
+ * What counts is what the thread page shows as a members-only placeholder (DESIGN D14): a
+ * well-formed sealed comment that carries `asMember`. Sealed text without it is hidden and
+ * counted there as "from people outside this repo", and a specific-people letter is not
+ * members-only, so neither is in the label.
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { queryAllDocuments } from '../sdk'
-import { DOC, str, type RepoRef } from './contract'
+import { DOC, asIdentifierString, type RepoRef } from './contract'
 import { onRepoInvalidated } from './issues'
 import { repoHasMembersKey } from './members-writes'
-import { docAudience } from './private-content'
+import { defaultGate, placeholderShown } from './private-content'
 import { repoSource } from './source'
 
 /** Threads one read covers (an `in` clause holds at most this many values). */
 const IN_MAX = 100
+/** Pages of comments (100 each) one read goes through; threads the read did not reach have no label. */
+const MAX_PAGES = 3
 /** Counts remembered across pages; the oldest go first. */
 const MAX_REMEMBERED = 2000
 
@@ -61,18 +68,28 @@ export async function membersOnlyCommentCounts(sdk: EvoSDK, repo: RepoRef, threa
   const docs = await queryAllDocuments(
     sdk,
     repoSource(repo).targetQuery(DOC.comment, { where: [['targetId', 'in', [...unread].sort()]], orderBy: [['targetId', 'asc']] }),
+    { maxPages: MAX_PAGES },
   )
-  const sealed = new Map<string, number>()
+  // Per thread: the comments read, and how many of them are members-only.
+  const read = new Map<string, { all: number; sealed: number }>()
+  const gate = defaultGate(repo)
   for (const d of docs) {
-    if (docAudience(d) !== 'members') continue
-    const target = str(d, 'targetId')
-    sealed.set(target, (sealed.get(target) ?? 0) + 1)
+    const target = asIdentifierString(d['targetId'])
+    const t = read.get(target) ?? { all: 0, sealed: 0 }
+    t.all += 1
+    const admitted = await gate.admit('comment', d)
+    if (!admitted.ok && admitted.placeholder !== undefined && admitted.placeholder.audience === 'members' && placeholderShown(admitted.placeholder)) t.sealed += 1
+    read.set(target, t)
   }
   for (const id of unread) {
-    const n = sealed.get(id) ?? 0
+    const t = read.get(id)
+    const comments = wanted.get(id)!
+    // Only a thread read to the count its row proves is answered: a node behind, or a read cut at
+    // its page limit, leaves the row with its plain count, and the next load reads it again.
+    if (t === undefined || t.all !== comments) continue
     if (known.size >= MAX_REMEMBERED) known.delete(known.keys().next().value as string)
-    known.set(keyOf(repo, id, wanted.get(id)!), n)
-    if (n > 0) out.set(id, n)
+    known.set(keyOf(repo, id, comments), t.sealed)
+    if (t.sealed > 0) out.set(id, t.sealed)
   }
   return out
 }
