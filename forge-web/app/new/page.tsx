@@ -259,7 +259,7 @@ export default function NewRepoPage(): JSX.Element {
     }
     // Members-only content that did not turn on: say why here, and the repo page offers it again.
     const failed = result.membersOnly?.on === false ? result.membersOnly.error : null
-    if (failed !== null) toast({ title: "Members-only content isn't on yet", detail: failed, tone: 'warn' })
+    if (failed !== null) toast({ title: "Members-only content isn't set up yet", detail: failed, tone: 'warn' })
     const membersFailed = failed !== null ? '&membersOnly=failed' : ''
     router.push(`/repo/?owner=${encodeURIComponent(identity ?? '')}&name=${encodeURIComponent(result.name)}&created=1${membersFailed}`)
   }

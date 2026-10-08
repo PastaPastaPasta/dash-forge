@@ -207,7 +207,7 @@ describe('after a create whose members-only step failed', () => {
     expect(q('members-only-create-notice')).toBeNull()
     const mine = (lane: MembersAccess): RepoHome => ({ repo: { ...repo, ownerId: 'me' }, lane }) as unknown as RepoHome
     act(() => root.render(<MembersOnlyCreateNotice home={mine({ access: 'none' })} />))
-    expect(q('members-only-create-notice')?.textContent).toContain("members-only content isn't on yet")
+    expect(q('members-only-create-notice')?.textContent).toBe("Your repo is created. Members-only content isn't set up yet.Finish setting up")
     act(() => q('create-notice-turn-on')!.click())
     await flush()
     expect(q('confirm')?.textContent).toContain('Turn on members-only content?')

@@ -46,6 +46,11 @@ vi.mock('../sdk/write', async (orig) => {
     ...real,
     createDocumentIdempotent: async (_sdk: unknown, auth: { identityId: string }, p: { documentType: string; data: Doc; intent?: string }) => {
       intents.push(p.intent)
+      // A fault injected between the owner's key share and the anchor (the anchor never lands).
+      if (failAnchor && p.documentType === 'config' && p.data['enc'] !== undefined) {
+        failAnchor = false
+        throw new Error('test fault injected at enable-after-share')
+      }
       // Someone else holds this number (the unique `(repoId, number)` index refuses it).
       if ((p.documentType === 'issue' || p.documentType === 'patch') && squatted.has(p.data['number'] as number)) {
         squatted.delete(p.data['number'] as number)
@@ -62,6 +67,7 @@ vi.mock('../sdk/write', async (orig) => {
 vi.mock('../sdk/facade', async (orig) => ({ ...(await orig<typeof import('../sdk/facade')>()), sleep: async () => undefined }))
 
 let members: Membership[] = []
+let failAnchor = false
 /** Issue / PR numbers another writer takes first (their write refuses ours once). */
 const squatted = new Set<number>()
 /** How many sessions were loaded (one per write action, not per document). */
@@ -376,6 +382,23 @@ describe('public create with members-only content on (DESIGN §11 Q3)', () => {
     const noKey = await createRepo(sdk, auth, FORGE, { name: 'nokey-public', membersOnly: true })
     expect(noKey.membersOnly).toMatchObject({ on: false })
     expect(chain['repo']).toHaveLength(1)
+  })
+
+  it('a fault between the owner key share and the anchor leaves a repo that Finish setting up completes', async () => {
+    reset()
+    // the share lands, then the setup dies before the anchor (DESIGN rev 4.1 §4.1)
+    failAnchor = true
+    const created = await createRepo(sdk, auth, FORGE, { name: 'half', membersOnly: true }, undefined, withMembers)
+    expect(created.membersOnly).toEqual({ on: false, error: 'test fault injected at enable-after-share' })
+    expect(chain['repoKey']).toHaveLength(1)
+    expect(chain['config']).toHaveLength(1)
+    // Finish setting up (the Turn on sheet's enableMembersContent): the anchor, under the share's key
+    const ref: RepoRef = { forge: FORGE, repoId: created.repoId, ownerId: b58(ALICE), name: 'half', visibility: 'public' }
+    await enableMembersContent({ sdk, auth, repo: ref, network: 'devnet', ops }, 'finish')
+    expect(chain['repoKey']).toHaveLength(1)
+    expect(chain['config']).toHaveLength(2)
+    const s = await loadPrivateSession({ repo: ref, network: 'devnet', reader: b58(ALICE), source: sdkSessionSource(sdk, ref), unwrapper: sessionUnwrapper(ops) })
+    expect(s.resolution.writeEpoch).toBe(0)
   })
 
   it('a closed tab resumes the members step from the journal; an existing repo without one is never changed', async () => {

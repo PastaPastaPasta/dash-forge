@@ -1067,20 +1067,24 @@ fn members_error(e: &std::sync::Arc<forge_core::Error>, repo: &str) -> UserError
             e.source()
         }),
         &forge_core::user_error::ErrorContext {
-            goal: Some("members-only content not turned on"),
+            goal: Some("your repo is created, but members-only content isn't set up yet"),
             repo: Some(repo),
             ..forge_core::user_error::ErrorContext::default()
         },
     );
-    user.fix.insert(
-        0,
-        format!("turn it on: `dg repo members enable {repo}` (a maintainer)"),
-    );
-    user.note = Some(match user.note.take() {
-        Some(n) => format!("{n}; the repository was created without members-only content"),
-        None => "the repository was created without members-only content".into(),
-    });
+    // DESIGN rev 4.1 §4.1: finishing it is `dg repo members enable`, which completes a half
+    // setup (it reuses an owner key share that landed without its anchor).
+    user.fix.insert(0, format!("dg repo members enable {repo}"));
     user
+}
+
+/// The warning a create prints when members-only content was not set up: the create itself
+/// succeeded (exit 0), so it is a `warning:`, not an `error:` block.
+fn members_warning(user: &UserError) -> String {
+    let block = user.render("", false);
+    block
+        .strip_prefix("error:")
+        .map_or_else(|| block.clone(), |rest| format!("warning:{rest}"))
 }
 
 /// The create's members-only line: on, or why not and how to turn it on.
@@ -1092,7 +1096,7 @@ fn print_members(result: &forge_core::create::CreateRepoResult, members: Members
             println!("✓ members-only content on: members can post things only members can read");
         }
         Some(MembersOnly::Failed(e)) => {
-            members_error(e, &repo).eprint("");
+            eprint!("{}", members_warning(&members_error(e, &repo)));
         }
         None if members == MembersPlan::NoKey && !result.already_existed() => {
             println!(
@@ -1775,6 +1779,20 @@ mod tests {
                 && no_key.contains("dg repo members enable o/r"),
             "{no_key}"
         );
+    }
+
+    /// A failed members-only setup is a warning naming the repo's state and the one fix.
+    #[test]
+    fn a_failed_members_only_setup_warns_with_the_fix() {
+        let e = std::sync::Arc::new(forge_core::Error::Config("test fault".into()));
+        let text = members_warning(&members_error(&e, "o/r"));
+        assert!(
+            text.starts_with(
+                "warning: your repo is created, but members-only content isn't set up yet"
+            ),
+            "{text}"
+        );
+        assert!(text.contains("fix:   dg repo members enable o/r"), "{text}");
     }
 
     /// Split a command line the way a POSIX shell does for single-quoted words.

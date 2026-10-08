@@ -805,9 +805,9 @@ export function MembersOnlyCreateNotice({ home }: { home: RepoHome }): JSX.Eleme
   return (
     <div className="mb-4 flex flex-wrap items-center gap-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense" role="status" data-testid="members-only-create-notice">
       <Lock className="h-3.5 w-3.5 shrink-0 text-anvil-500 dark:text-anvil-400" aria-hidden />
-      <span className="flex-1">Your repo was created, but members-only content isn&apos;t on yet. You can turn it on now or later in Settings.</span>
+      <span className="flex-1">Your repo is created. Members-only content isn&apos;t set up yet.</span>
       <Button size="sm" variant="outline" onClick={() => setTurnOn(true)} data-testid="create-notice-turn-on">
-        {TURN_ON}
+        Finish setting up
       </Button>
       {turnOn ? <TurnOnMembersSheet home={home} open={turnOn} onClose={() => setTurnOn(false)} /> : null}
     </div>
