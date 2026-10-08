@@ -85,7 +85,7 @@ describe('mergeAuditInput', () => {
     const audit = auditMerge(input!)
     expect(audit.verdict).toBe('unmet')
     expect(auditRows(audit, 'refs/heads/main')).toEqual([
-      { key: 'protected', label: 'Protected branch', text: 'main was protected, and this merge was not recorded by a maintainer', met: false },
+      { key: 'protected', label: 'Protected branch', text: 'main was protected, and no current membership record shows the merger as a maintainer then', met: false },
       { key: 'approvals', label: 'Required approvals', text: 'None', met: null },
       { key: 'check:build', label: 'Check build', text: 'failed', met: false },
     ])
@@ -101,5 +101,19 @@ describe('mergeAuditInput', () => {
     expect(readMemberships).toHaveBeenCalledTimes(1)
     expect(audit?.verdict).toBe('met')
     expect(audit?.mergerRole).toBe('maintainer')
+  })
+})
+
+// Q5-B04: a policy requiring code owners' approval is never shown as fully met.
+describe('code owners at merge', () => {
+  it('says code owners were not audited, and the merge is not met', () => {
+    const audit = auditMerge({
+      mergedAt: 100, merger: 'm', mergeOid: MERGE, mergeHead: HEAD, prAuthor: 'auth',
+      policies: [{ id: 'p1', createdAt: 10, policy: { requiredApprovals: 0, requireCodeOwners: true } }],
+    })
+    expect(audit.verdict).toBe('unknown')
+    expect(audit.codeOwnersUnaudited).toBe(true)
+    expect(auditHeadline(audit)).toBe("Code owner approval was required, and it isn't audited here, so this merge couldn't be checked against every rule.")
+    expect(auditRows(audit, 'refs/heads/main')).toContainEqual({ key: 'codeOwners', label: 'Code owners', text: 'Approval required; not audited', met: null })
   })
 })

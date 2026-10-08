@@ -70,7 +70,9 @@
     },
     "checks": null,
     "checksUnread": true,
+    "codeOwnersUnaudited": false,
     "bypass": null,
+    "uncountedBypass": null,
     "rulesChanged": false
   }
 }

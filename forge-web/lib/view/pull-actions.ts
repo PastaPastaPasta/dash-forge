@@ -31,7 +31,7 @@
 import { isOidHex, isPlainBranchRef, matchesProtected, type Holdings } from '../rules'
 import { capabilitiesOf, roleLimit } from '../rules/roles'
 import { linkedIssues, type Approvals, type ChecksState, type CodeOwnerStatus, type Policy, type PolicyStatus } from '../rules/v2'
-import type { MergeVerdict } from '../rules/merge-content'
+import type { MergeContent } from '../rules/merge-content'
 import type { PullView } from '../repo'
 import type { ProvedVerdicts } from '../repo/verdicts'
 import { branchName, plural } from './format'
@@ -653,11 +653,26 @@ export function unrecordedMergeCandidate({ pull, canMerge }: UnrecordedMergeInpu
  * "Record merge of <commit>": the base tip to record as this PR's merge when a merge moved the
  * base but its merge transition was never written (the browser merge stopped between the ref
  * update and the merge event, or a merge was pushed with git). Offered only when the merge check
- * (`mergeContent`, the same rule `dg pr merge --event-only` applies) says the tip contains the PR
- * or is a squash or rebase of it; null otherwise. The commit is a valid tip of the base, so the
- * recorded merge counts.
+ * (`mergeContent`, the same rule `dg pr merge --event-only` applies) says the tip contains the PR,
+ * or is a squash or rebase of it with no `combined` path; null otherwise. A combined path is one
+ * the base changed too: the check only sees that both sides changed it, never that the tip's
+ * version holds the PR's change, so an unrelated push to a file the PR also edits looks the same
+ * (Q5-A01). A recorded merge is final, so that case is {@link unverifiedMerge} instead. The
+ * commit is a valid tip of the base, so the recorded merge counts.
  */
-export function unrecordedMerge(i: UnrecordedMergeInputs, verdict: MergeVerdict | null): string | null {
-  if (!unrecordedMergeCandidate(i) || verdict === null) return null
-  return verdict === 'contains' || verdict === 'squash' || verdict === 'rebase' ? i.pull.baseTipOid.toLowerCase() : null
+export function unrecordedMerge(i: UnrecordedMergeInputs, content: MergeContent | null): string | null {
+  if (!unrecordedMergeCandidate(i) || content === null) return null
+  const verified = content.verdict === 'contains' || ((content.verdict === 'squash' || content.verdict === 'rebase') && content.combined.length === 0)
+  return verified ? i.pull.baseTipOid.toLowerCase() : null
+}
+
+/**
+ * The base tip that makes this PR's changes except on paths the base changed too (a squash or
+ * rebase verdict with `combined` paths): not offered for recording in the browser
+ * ({@link unrecordedMerge}). The page says those files can't be checked and points to
+ * `dg pr merge --event-only`. Null otherwise.
+ */
+export function unverifiedMerge(i: UnrecordedMergeInputs, content: MergeContent | null): string | null {
+  if (!unrecordedMergeCandidate(i) || content === null) return null
+  return (content.verdict === 'squash' || content.verdict === 'rebase') && content.combined.length > 0 ? i.pull.baseTipOid.toLowerCase() : null
 }

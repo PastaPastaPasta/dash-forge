@@ -1,11 +1,11 @@
 {
-  "name": "bypass_by_writer_ignored",
-  "description": "A writer cannot bypass the rules: their bypass event does not count, and it is reported as an uncounted bypass by a writer, never hidden.",
+  "name": "code_owners_required_not_audited",
+  "description": "Q5-B04: the policy in force at the merge required code owners' approval. The audit does not read CODEOWNERS or the changed paths, so it reports code owners as not audited and the verdict is unknown, never met, even with the approvals met.",
   "case": "merge_audit",
   "rules": "v2",
   "input": {
     "mergedAt": 10000000,
-    "merger": "writ",
+    "merger": "maint",
     "mergeOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "mergeHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "prAuthor": "auth",
@@ -17,7 +17,8 @@
           "requiredApprovals": 1,
           "approverRole": 0,
           "requireChecks": false,
-          "mergeMethods": 0
+          "mergeMethods": 0,
+          "requireCodeOwners": true
         }
       }
     ],
@@ -39,51 +40,43 @@
         "createdAt": 10
       }
     ],
-    "reviews": [],
+    "reviews": [
+      {
+        "id": "r1",
+        "reviewer": "maint2",
+        "verdict": 1,
+        "commitOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "createdAt": 5000000
+      }
+    ],
     "dismissals": [],
     "runs": [],
     "runners": [],
-    "bypasses": [
-      {
-        "id": "e1",
-        "actor": "writ",
-        "createdAt": 10000100,
-        "oid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        "value": "required approvals: 0 of 1"
-      }
-    ]
+    "bypasses": []
   },
   "expected": {
-    "verdict": "unmet",
+    "verdict": "unknown",
     "policy": {
       "requiredApprovals": 1,
       "approverRole": 0,
       "requireChecks": false,
-      "mergeMethods": 0
+      "mergeMethods": 0,
+      "requireCodeOwners": true
     },
     "protected": false,
-    "mergerRole": "writer",
+    "mergerRole": "maintainer",
     "protectionUnmet": false,
     "approvals": {
-      "met": false,
-      "have": 0,
+      "met": true,
+      "have": 1,
       "need": 1,
       "blockedBy": []
     },
     "checks": null,
     "checksUnread": false,
-    "codeOwnersUnaudited": false,
+    "codeOwnersUnaudited": true,
     "bypass": null,
-    "uncountedBypass": {
-      "event": {
-        "id": "e1",
-        "actor": "writ",
-        "createdAt": 10000100,
-        "oid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        "value": "required approvals: 0 of 1"
-      },
-      "role": "writer"
-    },
+    "uncountedBypass": null,
     "rulesChanged": false
   }
 }

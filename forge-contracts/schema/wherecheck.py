@@ -14,7 +14,10 @@ contract parse (b7gate, DataContract::from_json) does not run:
          identifier
 
   python3 forge-contracts/schema/wherecheck.py [contracts-dir]      (default: forge-contracts/contracts)
-  python3 forge-contracts/schema/wherecheck.py --self-test
+
+A directory holding forge-meta.json too (`build.py --mainnet --out <dir>`, DESIGN rev 4.1 D44) is
+checked as the four-contract set, forge-meta registered last.
+  python3 forge-contracts/schema/wherecheck.py --self-test [contracts-dir]
 
 tools/contract-validate runs the same port in Rust against rs-dpp's parsed model; this one reads
 the JSON directly, so it also runs where no Rust toolchain is at hand, and CI runs both.
@@ -26,7 +29,9 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 NAMES = ('forge-core', 'forge-collab', 'forge-community')
-PLACEHOLDERS = {'FORGE_CORE_CONTRACT_ID': 'forge-core', 'FORGE_COLLAB_CONTRACT_ID': 'forge-collab'}
+META = 'forge-meta'   # the fourth contract of the mainnet set, registered last
+PLACEHOLDERS = {'FORGE_CORE_CONTRACT_ID': 'forge-core', 'FORGE_COLLAB_CONTRACT_ID': 'forge-collab',
+                'FORGE_COMMUNITY_CONTRACT_ID': 'forge-community', 'FORGE_META_CONTRACT_ID': META}
 IDENTIFIER = 'application/x.dash.dpp.identifier'
 
 
@@ -237,7 +242,8 @@ def check(contracts):
 
 
 def load(d):
-    return {n: json.load(open(os.path.join(d, f'{n}.json'))) for n in NAMES}
+    names = NAMES + ((META,) if os.path.exists(os.path.join(d, f'{META}.json')) else ())
+    return {n: json.load(open(os.path.join(d, f'{n}.json'))) for n in names}
 
 
 def self_test(d):
@@ -276,6 +282,26 @@ def self_test(d):
         ('40126', 'a claim the writer leaf cannot read', lambda cs: cs['forge-community']['documentSchemas']['checkRun']['ownerRefersTo']['anyOf'][2].update({"where": {"rank": "r"}})),
         ('unported', 'an inList reference', lambda cs: cs['forge-community']['documentSchemas']['star']['properties']['repoId'].update({"refersTo": {"type": "permanentDocument", "documentType": "event", "inList": "x"}})),
     ]
+    if META in base:
+        # The four-contract mainnet set (build.py --mainnet): forge-meta's references name forge-core
+        # by id, nothing refers forward to forge-meta, and the B1, L4 and M4 `where` pairs type-check
+        core, meta = (lambda cs: cs['forge-core']['documentSchemas']), (lambda cs: cs[META]['documentSchemas'])
+        cases += [
+            ('40121', 'a moved type whose gate lost its contractId (forge-meta has no writer)',
+             lambda cs: [leaf.pop('contractId') for leaf in meta(cs)['label']['ownerRefersTo']['anyOf']]),
+            ('40121', 'forge-core referring forward to forge-meta',
+             lambda cs: core(cs)['refUpdate']['properties']['pg']['refersTo'].update({"contractId": "FORGE_META_CONTRACT_ID", "documentType": "label"})),
+            ('40126', 'an exact grant matched against the ref name instead of its hash',
+             lambda cs: core(cs)['refUpdate']['properties']['pg']['refersTo']['where'].update({"scope": "refName"})),
+            ('40126', 'a grant until compared with a string',
+             lambda cs: core(cs)['refUpdate']['properties']['pp']['refersTo']['where'].update({"until": "gp"})),
+            ('40122', 'a grant referred to as a permanent document',
+             lambda cs: core(cs)['refUpdate']['properties']['pg']['refersTo'].update({"type": "permanentDocument"})),
+            ('40126', 'a wrap role compared with the epoch (u32)',
+             lambda cs: meta(cs)['repoKey']['properties']['memberId']['refersTo']['anyOf'][1]['where'].update({"role": "epoch"})),
+            ('40126', "an event's tAud compared with its kind's string value",
+             lambda cs: cs['forge-community']['documentSchemas']['event']['properties']['targetId']['refersTo']['anyOf'][0]['where'].update({"aud": "value"})),
+        ]
     bad = 0
     for code, what, fn in cases:
         got = mutated(fn)

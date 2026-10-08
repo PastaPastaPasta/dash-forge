@@ -440,13 +440,17 @@ mod tests {
             .collect()
     }
 
-    /// The mainnet build requires `vis: "public"` on a mirror; the testnet build has no such
-    /// property. The writer stamps it exactly where the contract declares it, and both builds
-    /// accept what it writes.
+    /// The mainnet rule `mainnet_mirror_public` requires `vis: "public"` on a mirror; the testnet
+    /// build has no such property. The writer stamps it exactly where the contract declares it,
+    /// and both builds accept what it writes. (The rule alone, on forge-core: the full `--mainnet`
+    /// set moves `packMirror` to forge-meta, which clients read from phase M-B on.)
     #[test]
     fn a_mirror_carries_vis_where_the_contract_requires_it() {
         let uris = vec!["https://m.example.com/p.pack".to_string()];
-        for (args, vis) in [(&["--mainnet"][..], true), (&[][..], false)] {
+        for (args, vis) in [
+            (&["--on", "mainnet_mirror_public"][..], true),
+            (&[][..], false),
+        ] {
             let c = built_core(args);
             let core = LoadedContract::for_tests(c.clone());
             let props = mirror_props(&core, &repo(), HASH, 1, &uris).expect("props");
