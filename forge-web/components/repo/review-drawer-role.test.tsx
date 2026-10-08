@@ -123,11 +123,11 @@ describe('the review drawer refuses verdicts from Read and Triage', () => {
     expect(button('Submit review')?.disabled).toBe(false)
   })
 
-  it('an interrupted submit of a refused verdict can only be discarded, never retried', () => {
+  it('an interrupted submit of a refused verdict points to Discard; Retry stays (it adopts a landed review, and refuses before signing)', () => {
     show(draftOf({ verdict: 'approve', summary: 'Looks right to me.', attemptedAt: 5 }), 'reader')
     expect(q('review-verdict-refused')?.textContent).toContain('Discard this review, then post it again as a comment.')
     expect(button('Post as a comment')).toBeUndefined()
-    expect(button('Retry')?.disabled).toBe(true)
+    expect(button('Retry')?.disabled).toBe(false)
     expect(button('Discard the rest')).toBeDefined()
   })
 

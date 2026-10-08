@@ -130,7 +130,7 @@ test.describe('forge-v2 read paths (devnet fixture)', () => {
     await expectLanded(page, page.getByRole('heading', { name: /Greet by name/ }))
     const approvals = page.getByRole('region', { name: 'Approvals' })
     // MAINTAINER's seeded approval; the write spec (v2-writes w6) may have added OWNER's.
-    await expect(approvals.getByText(/approved · maintainer/).first()).toBeVisible()
+    await expect(approvals.getByText(/approved · Maintain access/).first()).toBeVisible()
     await expect(page.getByText(/Objects live in this repo/)).toBeVisible()
     // The diff (the Files changed tab) reads both sides through the browse plane.
     await page.getByRole('tab', { name: /Files changed/ }).click()

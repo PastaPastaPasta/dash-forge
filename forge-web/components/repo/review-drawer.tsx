@@ -280,11 +280,12 @@ export function ReviewDrawer({
   const frozen = draft !== null && submitStarted(draft)
   // A Read or Triage reviewer's approve or request changes: refused, with the comment it can be
   // (DESIGN §10). Until the viewer's role is read, no verdict is submitted. A submit already
-  // under way keeps its verdict until its review is written, so it is refused the same way and
-  // can only be discarded.
+  // under way keeps its verdict until its review is written, so it says so and points to Discard.
   const refused = verdictRefusal(role, frozen ? (draft.reviewId === undefined ? draft.verdict : 'comment') : verdict)
   const roleUnread = !roleKnown && verdict !== 'comment'
-  const verdictBlocked = refused !== null || (!frozen && roleUnread)
+  // A submit under way stays retryable: its submit adopts a review that already landed, and refuses
+  // the verdict before signing anything new.
+  const verdictBlocked = !frozen && (refused !== null || roleUnread)
   // Members-only text is never kept on disk: the draft says so before its summary is saved.
   const textChoice = textAudience.audience
   useEffect(() => {

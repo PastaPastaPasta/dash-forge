@@ -559,7 +559,7 @@ describe('burn and contiguity review', () => {
     // CAROL (a maintainer back then) pre-posted a config for epoch 2; she is a writer now.
     const evil = new Uint8Array(32).fill(0x67)
     await anchor(CAROL, await EpochKeys.import(REPO, 2, evil), { defaultBranch: 'main', prevEpoch: 1, prevEpochKey: new Uint8Array(32).fill(1) })
-    await expect(addPrivateMember(ctx, b58(CAROL), 'maintainer', 'regrant-2')).rejects.toMatchObject({ epochs: [2], message: /can't be made a maintainer of this repo again/ })
+    await expect(addPrivateMember(ctx, b58(CAROL), 'maintainer', 'regrant-2')).rejects.toMatchObject({ epochs: [2], message: /can't be given Maintain access to this repo again/ })
     expect(isMaintainerNow(CAROL)).toBe(false)
   })
 

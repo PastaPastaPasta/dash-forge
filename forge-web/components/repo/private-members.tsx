@@ -258,7 +258,7 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
         onClose={() => setAdding(false)}
         title={`Add with ${ROLE_LABEL[role]} access`}
         toast={namedAction(membershipTitle('grant', role))}
-        description={`Gives ${shortId(trimmed)} ${ROLE_LABEL[role]} access and shares the repo's key with them.${role === 'reader' ? ' With Read access they can read the repo and its history but change nothing.' : ''}`}
+        description={`Gives ${shortId(trimmed)} ${ROLE_LABEL[role]} access and shares the repo's key with them.${role === 'reader' ? ' With Read access they can read the repo and its history, open issues and pull requests, and comment, but not push or approve.' : ''}`}
         cost={addMemberCost(role)}
         confirmLabel="Sign & add"
         onConfirm={async (intent) => {

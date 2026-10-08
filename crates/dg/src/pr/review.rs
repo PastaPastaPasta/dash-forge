@@ -680,8 +680,12 @@ async fn submit(
     };
     // Only Write and Maintain approve or request changes (DESIGN §3.5, D15): a Read or Triage
     // member's verdict is refused before anything is signed, with the comment it can be instead.
-    // A review already written (a resumed submit's) is not asked again.
-    if draft.review_id.is_none() && forge_core::collab::v2::precheck_enabled() {
+    // A review already signed (a resumed submit's, landed or not) is not asked again: its saved
+    // transition is broadcast as it was, or adopted when it landed, and consensus judges it.
+    if draft.review_id.is_none()
+        && draft.review_intent.is_none()
+        && forge_core::collab::v2::precheck_enabled()
+    {
         let role = collab.signer_role(&s.repo).await?;
         let verdict = Verdict::from_code(draft.verdict.unwrap_or(3));
         if let Some(mut e) = forge_core::members::verdict_refusal(role, verdict, &s.repo) {
