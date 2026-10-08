@@ -13,6 +13,7 @@ function thread(over: {
   pinned?: boolean
   locked?: boolean
   milestone?: string | null
+  moderation?: IssueThread['moderation']
   title?: string
   body?: string
 }): IssueThread {
@@ -24,11 +25,28 @@ function thread(over: {
     },
     timeline: (over.comments ?? []).map((c) => ({ kind: 'comment', at: 0, comment: { ...c, author: 'a', createdAt: 0, replyTo: null } })),
     labels: (over.defs ?? []).map((name) => ({ name })),
+    ...(over.moderation ? { moderation: over.moderation } : {}),
     meta: { milestone: over.milestone ?? null, pinned: over.pinned ?? false, pinnedAt: null, locked: over.locked ?? false },
   } as unknown as IssueThread
 }
 
+const BANNED = { by: 'm', reason: null, at: 1, eventId: 'b1', via: 'ban' as const, banReason: 1 }
+const HIDDEN = { by: 'm', reason: null, at: 1, eventId: 'e1', via: 'item' as const }
+
 describe('issueWriteShows', () => {
+  it('a hide shows only once a maintainer\'s hide covers the item, not when only a ban collapses it (Q5-B07)', () => {
+    const banned = thread({ moderation: { thread: BANNED, items: { c1: BANNED }, counted: [] } })
+    for (const item of [null, 'c1']) {
+      expect(issueWriteShows(banned, { kind: 'hide', item, hide: true })).toBe(false)
+      expect(issueWriteShows(banned, { kind: 'hide', item, hide: false })).toBe(true)
+    }
+    const hidden = thread({ moderation: { thread: HIDDEN, items: { c1: HIDDEN }, counted: [] } })
+    for (const item of [null, 'c1']) {
+      expect(issueWriteShows(hidden, { kind: 'hide', item, hide: true })).toBe(true)
+      expect(issueWriteShows(hidden, { kind: 'hide', item, hide: false })).toBe(false)
+    }
+  })
+
   it('a posted comment shows once its document is in the timeline', () => {
     expect(issueWriteShows(thread({}), { kind: 'comment', id: 'c1' })).toBe(false)
     expect(issueWriteShows(thread({ comments: [{ id: 'c1', body: 'x' }] }), { kind: 'comment', id: 'c1' })).toBe(true)

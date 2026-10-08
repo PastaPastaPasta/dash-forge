@@ -382,7 +382,11 @@ fn a_mirror_list_matches_its_schema() {
     };
     assert_valid(
         "storage mirror list",
-        &json!({ "mirrors": [crate::pack_mirror::mirror_json(&m)] }),
+        &json!({ "mirrors": [crate::pack_mirror::mirror_json(&m, None)] }),
+    );
+    assert_valid(
+        "storage mirror list",
+        &json!({ "mirrors": [crate::pack_mirror::mirror_json(&m, Some("alice/project"))] }),
     );
 }
 

@@ -518,16 +518,34 @@ async function withSlotOf<T>(slots: { active: number; readonly waiting: (() => v
 // read that skips it still names it among the places that did not serve.
 const deadUrls = new Map<string, string>()
 
+/**
+ * URLs a ranged read found silent (a timeout), with when. A pack is read in many small ranges,
+ * and a dead copy would otherwise cost a full {@link EXTERNAL_FETCH_TIMEOUT_MS} on every one of
+ * them. Unlike {@link deadUrls} a timeout may be a bad moment, not a verdict, so it is only
+ * remembered for {@link TIMED_OUT_MEMORY_MS}, and only ranged reads skip it: a whole-body fetch
+ * still gets its one retry. "Try again" clears it.
+ */
+const timedOutUrls = new Map<string, { readonly why: string; readonly at: number }>()
+const TIMED_OUT_MEMORY_MS = 5 * 60_000
+
 
 /** "Try again": ask every mirror afresh, including the ones that failed this session. */
 export function forgetDeadMirrors(): void {
   deadUrls.clear()
+  timedOutUrls.clear()
   resetGatewayHealth()
+  // A mirror recorded since the page loaded (or a recorded copy that is back) must be seen: the
+  // mirror addresses are read again, and a pack a mirror served is fetched again rather than
+  // kept in front of the copies the retry is meant to ask.
+  resetMirrorUris()
+  mirroredWhole.clear()
+  mirroredBytes = 0
 }
 
 /** Test hook: forget the dead-URL list, the gateway probes and the per-origin queues. */
 export function resetExternalFetchState(): void {
   deadUrls.clear()
+  timedOutUrls.clear()
   originSlots.clear()
   resetGatewayHealth()
   resetRepoGateways()
@@ -663,14 +681,25 @@ function reasonsOf(failures: readonly Failure[]): string[] {
 async function mirrorUrls(
   manifest: PackManifest,
   gateways: readonly string[],
+  skipTimedOut = false,
 ): Promise<{ readonly urls: string[]; readonly live: string[]; readonly down: Failure[] }> {
   const urls = externalFetchUrls(manifest.uris, gateways)
+  const now = Date.now()
+  const whyNot = (url: string): string | undefined => {
+    const dead = deadUrls.get(url)
+    if (dead !== undefined || !skipTimedOut) return dead
+    const slow = timedOutUrls.get(url)
+    if (slow === undefined) return undefined
+    if (now - slow.at < TIMED_OUT_MEMORY_MS) return slow.why
+    timedOutUrls.delete(url)
+    return undefined
+  }
   const skipped = urls.flatMap((url) => {
-    const why = deadUrls.get(url)
+    const why = whyNot(url)
     return why === undefined ? [] : [failureAt(url, why)]
   })
   const { live, down } = await skipDeadGateways(
-    urls.filter((u) => !deadUrls.has(u)),
+    urls.filter((u) => whyNot(u) === undefined),
     new Set(manifest.uris),
   )
   return { urls, live, down: [...skipped, ...down] }
@@ -723,7 +752,7 @@ async function fetchExternalRange(
   gateways: readonly string[],
   onServed?: OnServed,
 ): Promise<Uint8Array> {
-  const { urls, live, down } = await mirrorUrls(manifest, gateways)
+  const { urls, live, down } = await mirrorUrls(manifest, gateways, true)
   const failed = [...down]
   for (const url of live) {
     try {
@@ -733,6 +762,7 @@ async function fetchExternalRange(
       return buf.length > end - start ? buf.subarray(start, end) : buf
     } catch (e) {
       if (e instanceof FetchFailure && e.answered) deadUrls.set(url, errorText(e))
+      else if (e instanceof FetchFailure && e.timedOut) timedOutUrls.set(url, { why: errorText(e), at: Date.now() })
       failed.push(failureAt(url, errorText(e)))
     }
   }
@@ -1056,16 +1086,30 @@ export function overrideMirroredBytesKept(bytes: number | null): void {
   mirroredBytesKept = bytes ?? MIRRORED_BYTES_KEPT
 }
 
+/**
+ * The pack's read from its mirror this session (settled or in flight), if there is one: a pack
+ * a mirror already served whole is checked, so a range read takes it before asking the recorded
+ * copies that failed. Each use notes the mirror in the ledger again, so the storage row keeps
+ * saying the repo survives on one after the ledger was cleared.
+ */
+function cachedMirroredPack(repo: RepoRef, manifest: PackManifest): Promise<Uint8Array | null> | undefined {
+  const key = `${repoKey(repo)}:${manifest.packHash.toLowerCase()}`
+  const hit = mirroredWhole.get(key)
+  if (hit === undefined) return undefined
+  // Touch: re-insert so the map stays least recently used first.
+  mirroredWhole.delete(key)
+  mirroredWhole.set(key, hit)
+  return hit.read.then((bytes) => {
+    if (bytes !== null) noteContentCheck(repoKey(repo), { mirroredPack: manifest.packHash })
+    return bytes
+  })
+}
+
 /** {@link fromPackMirrors} once per pack for range reads: each range is a slice of checked bytes. */
 function mirroredPack(sdk: EvoSDK, repo: RepoRef, manifest: PackManifest, before: readonly string[]): Promise<Uint8Array | null> {
   const key = `${repoKey(repo)}:${manifest.packHash.toLowerCase()}`
-  const hit = mirroredWhole.get(key)
-  if (hit !== undefined) {
-    // Touch: re-insert so the map stays least recently used first.
-    mirroredWhole.delete(key)
-    mirroredWhole.set(key, hit)
-    return hit.read
-  }
+  const cached = cachedMirroredPack(repo, manifest)
+  if (cached !== undefined) return cached
   const entry: { read: Promise<Uint8Array | null>; size?: number } = { read: Promise.resolve(null) }
   entry.read = fromPackMirrors(sdk, repo, manifest, before).then((bytes) => {
     if (mirroredWhole.get(key) !== entry) return bytes
@@ -1143,6 +1187,13 @@ export function artifactRangeFetch(
       const chosen = copies[copy]
       if (chosen === undefined) throw new Error(`pack ${manifest.packHash.slice(0, 12)}… has no copy ${copy}`)
       return readPlain(chosen, start, end)
+    }
+    // A pack a mirror already served whole (checked against its hash) answers from memory:
+    // asking the dead recorded copies again would cost a timeout on every range.
+    if (session === undefined) {
+      const pending = cachedMirroredPack(repo, manifest)
+      const whole = pending === undefined ? null : await pending
+      if (whole !== null) return whole.subarray(start, Math.min(end, whole.length))
     }
     let lastErr: unknown
     const failed: string[] = []

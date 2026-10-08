@@ -66,7 +66,7 @@ import { deleteNeedsForce, dependentsWarning, type Dependents } from '@/lib/view
 import { HiddenBanner, HideMenu, HideThreadControl, hideConfirm, hideCost, useThreadModeration } from '@/components/repo/moderation'
 import { setHidden } from '@/lib/repo/moderation'
 import { moderationBlocked } from '@/lib/repo/moderation-fold'
-import { isHidden } from '@/lib/view/issues-view'
+import { isHiddenByHide } from '@/lib/view/issues-view'
 import type { HideReason } from '@/lib/rules/moderation'
 import { bypassValue, deleteBranchOffer, deleteBranchProblem, prLinkedIssues, requiredChecksLine, unrecordedMerge, unrecordedMergeCandidate, unverifiedMerge } from '@/lib/view/pull-actions'
 import {
@@ -1077,7 +1077,7 @@ function PullPage({
           if (!thread.locked) await setLock(sdk, signer, repo, { target: stateTarget, lock: true, isMember: caps.canLock, intent: `${intent}:lock` })
         }
         // With "also close and lock", until the close and the lock show as well.
-        refresh((t) => isHidden(t.moderation, p.item) === p.hide && (!p.closeAndLock || (!t.pull.state.open && t.locked)))
+        refresh((t) => isHiddenByHide(t.moderation, p.item) === p.hide && (!p.closeAndLock || (!t.pull.state.open && t.locked)))
         return
       case 'edit-comment': {
         const c = thread.comments.find((x) => x.id === p.id)
@@ -1552,8 +1552,9 @@ function PullPage({
                     ? {
                         moderate: ({ kind, id }: { readonly kind: 'comment' | 'review'; readonly id: string }) => (
                           <HideMenu
-                            hidden={isHidden(moderation, id)}
-                            blocked={moderationBlocked(thread.moderationInput, identity, id, !isHidden(moderation, id))}
+                            hidden={isHiddenByHide(moderation, id)}
+                            byBan={moderation?.items[id]?.via === 'ban'}
+                            blocked={moderationBlocked(thread.moderationInput, identity, id, !isHiddenByHide(moderation, id))}
                             what={kind}
                             disabled={false}
                             onHide={(reason) => confirmEvent({ kind: 'hide', item: id, what: kind, reason, hide: true })}
@@ -1631,7 +1632,7 @@ function PullPage({
                         let dependents: Dependents | null = null
                         if (sdk !== null && src !== null && ref !== null) {
                           setCheckingDependents(true)
-                          dependents = await openPullsOnBranch(sdk, src, ref, { except: src.repoId === repo.repoId ? pull.number : null, network }).catch(
+                          dependents = await openPullsOnBranch(sdk, src, ref, { except: { repoId: repo.repoId, number: pull.number }, network }).catch(
                             (e: unknown): Dependents => ({ error: errorMessage(e, 'the read failed') }),
                           )
                           setCheckingDependents(false)
@@ -2147,8 +2148,9 @@ function PullPage({
                 {canModerate ? (
                   <div className="mt-2">
                     <HideThreadControl
-                      hidden={threadHidden !== null}
-                      blocked={moderationBlocked(thread.moderationInput, identity, null, threadHidden === null)}
+                      hidden={isHiddenByHide(moderation, null)}
+                      byBan={moderation?.thread?.via === 'ban'}
+                      blocked={moderationBlocked(thread.moderationInput, identity, null, !isHiddenByHide(moderation, null))}
                       noun="pull request"
                       offerClose={open}
                       offerLock={!thread.locked}
