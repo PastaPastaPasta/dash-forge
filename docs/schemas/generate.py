@@ -383,6 +383,10 @@ cmd('pr view', 'A pull request: its state, head, reviews, threads and comments.'
     'generalComments': A(OBJ), 'comments': A(OBJ), 'hiddenComments': ANY, 'hiddenReviews': ANY, 'moderation': ANY,
     'hiddenEventValues': ANY, 'plaintextEventValues': ANY, 'audience': AUD, 'readable': B, 'why': S,
     'membersOnlyComments': A(OBJ), 'membersOnlyHidden': I, 'membersOnlyReviewsHidden': I, 'mergeContent': ANY,
+    'policyMet': D('Whether the open PR meets the branch policy; null with no policy, on a PR that is not open, or when only code owner approvals are left (`dg pr merge` checks them).', nl(B)),
+    'unmetRules': D('The branch rules left unmet, one line each, as `dg pr merge` names them (code owner approvals are not checked here).', SA),
+    'codeOwners': D('The policy requires code owner approvals, which `dg pr merge` checks (`checked` is always false here); null when it does not, or the PR is not open.', nl(O({'required': B, 'checked': B}, ['required', 'checked']))),
+    'requiredCheckRuns': ANY, 'requiredCheckRunsError': ANY, 'policyBypasses': A(OBJ),
 }, ['number', 'id', 'author', 'state', 'labels', 'assignees', 'readable'])
 cmd('pr verify', 'Whether a merged pull request\'s recorded merge contains it.', {
     'pr': I, 'merged': B, 'mergeContent': nl(O({'oid': S, 'verdict': E('contains', 'squash', 'rebase', 'missing', 'unknown'),
@@ -576,7 +580,8 @@ cmd('storage advertise', 'The storage the repository advertises to forks and mir
     'status': E('advertised', 'unchanged'), 'mode': ANY, 'uris': SA, 'configDocId': nl(S),
 }, ['status'])
 PACK_MIRROR = O({
-    'documentId': S, 'by': D('Its writer\'s identity id.', S), 'repoId': S, 'packHash': S,
+    'documentId': S, 'by': D('Its writer\'s identity id.', S), 'repoId': S,
+    'repo': D('The repository as `owner/name`; absent when it no longer resolves.', S), 'packHash': S,
     'kind': D('1: https addresses; 2: IPFS addresses.', I), 'uris': SA, 'createdAt': I,
 }, ['documentId', 'by', 'repoId', 'packHash', 'kind', 'uris', 'createdAt'])
 cmd('storage mirror add', 'A pack mirror recorded.', {

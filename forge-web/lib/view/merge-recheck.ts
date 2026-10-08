@@ -3,7 +3,8 @@
  * membership (and, when a required check is counted, its runners) read then, uncached. The page's
  * own reads can be minutes old: a member revoked since must not carry a merge (as the merger, as a
  * counted approver, or as a trusted check reporter), and a maintainer made a writer must not
- * bypass the branch rules. The reviews, the policy and the check runs are the page's.
+ * bypass the branch rules. The reviews, the policy, the check runs and the code owners file are the
+ * page's; the approvals they count are judged again with the members read at the click.
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
@@ -13,12 +14,12 @@ import { readRunnersFresh } from '../repo/checks'
 import type { RepoRef } from '../repo/contract'
 import { holdingsOfRole, readMembershipsFresh } from '../repo/members'
 import { checksState, type CheckRunRow } from '../rules/parity'
-import { meetsPolicy, RoleOracle, type Approvals, type ChecksState, type Membership, type Policy, type PolicyStatus } from '../rules/v2'
+import { meetsPolicy, RoleOracle, type Approvals, type ChecksState, type CodeOwnerStatus, type Membership, type Policy, type PolicyStatus } from '../rules/v2'
 import { pullActions, type PullActionInputs } from './pull-actions'
 
 export interface MergeRecheck {
-  /** The gate's inputs as the page judged them, less the three that follow the membership. */
-  readonly gate: Omit<PullActionInputs, 'holdings' | 'policy' | 'checks'>
+  /** The gate's inputs as the page judged them, less the four that follow the membership. */
+  readonly gate: Omit<PullActionInputs, 'holdings' | 'policy' | 'checks' | 'codeOwners'>
   /** The branch policy in force (null: none; `'unknown'`: unread). */
   readonly policy: Policy | null | 'unknown'
   /** How the page found the approvals stand against it. */
@@ -32,6 +33,11 @@ export interface MergeRecheck {
   readonly checks: (oracle: RoleOracle, runners: ReadonlySet<string> | null) => ChecksState | null | 'unknown'
   /** The checks count runners' runs: read the runners again too. */
   readonly readsRunners: boolean
+  /**
+   * Where the PR stands against `requireCodeOwners` with `members` (null: not required). Absent:
+   * not required.
+   */
+  readonly codeOwners?: (members: readonly Membership[]) => CodeOwnerStatus | null | 'unknown'
   /** The rules the merger confirmed bypassing (empty: none). */
   readonly bypass: readonly string[]
 }
@@ -47,7 +53,7 @@ export function mergeMembersProblem(members: readonly Membership[], r: MergeRech
   const oracle = new RoleOracle([...members])
   const status = r.approvals !== null && r.policy !== null && r.policy !== 'unknown' ? meetsPolicy(r.approvals, oracle, r.policy) : r.status
   const role = r.gate.viewer === null ? null : oracle.currentRole(r.gate.viewer)
-  const now = pullActions({ ...r.gate, holdings: holdingsOfRole(role), policy: status, checks: r.checks(oracle, runners) })
+  const now = pullActions({ ...r.gate, holdings: holdingsOfRole(role), policy: status, checks: r.checks(oracle, runners), codeOwners: r.codeOwners?.(members) ?? null })
   if (!now.canMerge) return `${CHANGED} ${now.mergeHint ?? 'You can no longer merge this pull request.'}`
   if (now.unmetRules.length === r.bypass.length && now.unmetRules.every((rule, i) => rule === r.bypass[i])) return null
   // The merge box lists the rules as they stand now (the page re-reads on a refusal).
@@ -88,6 +94,8 @@ export interface PageMerge {
   readonly requiredChecks: ChecksState | null | 'unknown'
   /** The head's check runs and the runners the page read (null: not read yet). */
   readonly checkRuns: { readonly rows: readonly CheckRunRow[]; readonly runners: ReadonlySet<string> } | null
+  /** The page's code owner rule, judged with given members ({@link MergeRecheck.codeOwners}); absent: not required. */
+  readonly codeOwners?: MergeRecheck['codeOwners']
 }
 
 /**
@@ -105,6 +113,7 @@ export function pageMergeRecheck(page: PageMerge, bypass: readonly string[]): Me
     approvals: page.approvals,
     checks: (oracle, runners) => (counted === null ? requiredChecks : checksState(counted.runs.rows, page.gate.pull.headOid, oracle, runners ?? counted.runs.runners, counted.policy)),
     readsRunners: counted !== null,
+    ...(page.codeOwners === undefined ? {} : { codeOwners: page.codeOwners }),
     bypass,
   }
 }

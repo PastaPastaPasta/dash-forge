@@ -167,6 +167,21 @@ pub async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::CommandFactory;
+
+    /// `dg repo bans` lists every ban, not only those that count (Q5-B11 help text).
+    #[test]
+    fn the_bans_help_says_it_lists_every_ban() {
+        let cmd = crate::Cli::command();
+        let repo = cmd.find_subcommand("repo").expect("repo");
+        let about = repo
+            .find_subcommand("bans")
+            .and_then(|c| c.get_about())
+            .expect("about")
+            .to_string();
+        assert!(about.starts_with("List every ban"), "{about}");
+        assert!(!about.contains("that count"), "{about}");
+    }
 
     #[test]
     fn reasons_are_named() {

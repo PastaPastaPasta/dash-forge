@@ -51,7 +51,7 @@ Messages never include secrets. Storage credentials are referenced by `env:` or 
 
 **What to do:** check the owner id and the name (`dg repo list --owner <identity id>`). Also check the network, because a repo created on testnet does not exist on mainnet: `dg doctor` shows which network and contracts are in use.
 
-`dg` also reports E102 before anything is written when a command names a ref the repository does not have: a pull request's base branch (`dg pr create --base`), or a release's tag (`dg release create --tag`; push the tag first). The message lists the branches or tags it does have. `dg issue label … add` does the same for a label the repository does not define (define it first with `dg label create`), and a DPNS name that is not registered names the network it was looked up on.
+`dg` also reports E102 before anything is written when a command names a ref the repository does not have: a pull request's base branch (`dg pr create --base`), or a release's tag (`dg release create --tag`; push the tag first). The message lists the branches or tags it does have. `dg issue label … add` does the same for a label the repository does not define (define it first with `dg label create`), and a DPNS name that is not registered names the network it was looked up on. `dg storage mirror add` reports it, before anything is paid, when the repository lists no pack with that hash (`dg storage status <repo>` lists them).
 
 ## E103
 
@@ -95,7 +95,7 @@ The message lists the conflicting files.
 
 **What to do:** see `dg <command> --help`.
 
-`dg storage mirror add` reports E201, before anything is signed, for addresses a mirror can't hold (more than 4, a mix of https and IPFS, a user name or password in a URL, an `ipfs://` address with a path) and for an address on this machine or a private network (`localhost`, `127.0.0.1`, `192.168.…`): other readers never fetch from those. Record a public https address or an `ipfs://` CID.
+`dg storage mirror add` reports E201, before anything is signed, for addresses a mirror can't hold (more than 4, a mix of https and IPFS, a user name or password in a URL, an `ipfs://` address with a path) and for an address other readers never fetch: one on this machine or a private network (`localhost`, `127.0.0.1`, `192.168.…`, `198.18.…`, and the IPv6 forms that embed them), one that is not a valid address, or a temporary tunnel name (`*.trycloudflare.com`, `*.ts.net`), which a push refuses too. Record a stable public https address or an `ipfs://` CID.
 
 ## E202
 
@@ -135,7 +135,7 @@ A `config.toml` that does not parse is E204 too, from every `dg` command and fro
 
 ## E207
 
-**Not supported for a private repository.** The operation would publish a private repository's content unencrypted, or needs keys that only its members hold, so `dg` refuses it before writing anything. In this release that covers forks of a private repository, webhooks, and verifying ref tips without the repository's keys. Releases are supported: a private repository's releases are sealed ([private repositories §16](security/private-repos.md#16-sealed-releases)), and `dg release create`, `dg release unpublish` and `dg release download` handle them.
+**Not supported for a private repository.** The operation would publish a private repository's content unencrypted, or needs keys that only its members hold, so `dg` refuses it before writing anything. In this release that covers forks of a private repository, webhooks, mirrors of its packs (`dg storage mirror add`: its packs are sealed to its members), and verifying ref tips without the repository's keys. Releases are supported: a private repository's releases are sealed ([private repositories §16](security/private-repos.md#16-sealed-releases)), and `dg release create`, `dg release unpublish` and `dg release download` handle them.
 
 **What to do:** none within the private repository in this release. The label definitions (`dg label create`) and the other plaintext items in [private-repos §7](security/private-repos.md#7-metadata-that-stays-visible) are allowed but visible to everyone; `dg` says so before it writes them.
 
@@ -508,11 +508,11 @@ A devnet name that does not exist is reported here too, because a lookup failure
 
 ## E804
 
-**Branch policy not met.** `dg pr merge` checked the repository's branch `policy` (`dg repo policy show`) and it is not satisfied: fewer counted approvals than it requires (from maintainers only, when it says so), required checks that are not passing (`cause: required checks not passing: lint failing`), a merge method it does not allow, or the policy could not be read. The cause names every unmet rule (`required approvals: 0 of 1; required check `build`: missing`). Forge apps enforce the policy; Dash Platform doesn't check it. Nothing was pushed and no merge event was posted.
+**Branch policy not met.** `dg pr merge` checked the repository's branch `policy` (`dg repo policy show`) and it is not satisfied: fewer counted approvals than it requires (from maintainers only, when it says so), required checks that are not passing (`cause: required checks not passing: lint failing`), a merge method it does not allow, changed files still waiting for a code owner's approval (`code owner approval: src/a.rs (@alice)`, when the policy requires code owners), or the policy could not be read. The cause names every unmet rule in one refusal (`required approvals: 0 of 1; required check `build`: missing; code owner approval: src/a.rs (@alice)`). The code owners are read from git (`CODEOWNERS` on the base branch and the changed files), from the clone you run `dg` in when it has the commits, else fetched; a `CODEOWNERS` file or changed files that cannot be read count as not met. Forge apps enforce the policy; Dash Platform doesn't check it. Nothing was pushed and no merge event was posted.
 
 `dg pr checks` reports E804 (exit 8, as `gh pr checks` does for a pending check) while a check the branch policy requires is missing or still running. A run from a source the policy does not pin for that check is listed but not counted.
 
-**What to do:** get the missing approvals (`dg pr review --approve` by a member other than the PR author, whose own approval never counts), get the failing checks to pass (`dg pr checks <owner>/<repo> <n>` shows the runs), or use an allowed method. A maintainer can bypass the approvals and checks with `--override-policy`; the merge then records the bypassed rules on the PR as a policy-bypass event, which nobody can delete. The allowed merge methods still apply.
+**What to do:** get the missing approvals (`dg pr review --approve` by a member other than the PR author, whose own approval never counts), get the failing checks to pass (`dg pr checks <owner>/<repo> <n>` shows the runs), ask an owner of each file waiting for one to approve, or use an allowed method. A file no owner can approve (owned only by teams, e-mail addresses, unregistered names, the PR's author or people whose role doesn't count) needs `CODEOWNERS` on the base branch fixed. When the code owners could not be read, retry: the refusal says what failed. A maintainer can bypass the approvals, checks and code owner approvals with `--override-policy`; the merge then records the bypassed rules on the PR as a policy-bypass event, which nobody can delete. The allowed merge methods still apply.
 
 ## E807
 

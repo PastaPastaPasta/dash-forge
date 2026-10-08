@@ -106,6 +106,14 @@ describe('HideMenu', () => {
     act(() => (host.querySelector('[data-testid="unhide-item"]') as HTMLButtonElement).click())
     expect(onUnhide).toHaveBeenCalled()
   })
+
+  it('says a hide outlasts the ban when only the ban collapses the comment (Q5-B07)', () => {
+    act(() => root.render(<HideMenu hidden={false} byBan onHide={vi.fn()} onUnhide={vi.fn()} disabled={false} />))
+    act(() => (host.querySelector('[data-testid="hide-item"]') as HTMLButtonElement).click())
+    expect(host.querySelector('[role="menu"]')?.textContent).toContain('even after the ban is lifted')
+    act(() => root.render(<HideMenu hidden={false} onHide={vi.fn()} onUnhide={vi.fn()} disabled={false} />))
+    expect(host.querySelector('[role="menu"]')?.textContent ?? '').not.toContain('ban')
+  })
 })
 
 describe('a revealed hidden row in a list (QW4-038)', () => {

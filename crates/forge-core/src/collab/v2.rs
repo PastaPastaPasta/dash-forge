@@ -2007,6 +2007,17 @@ fn no_move(target: &Target, code: i64, action: StateAction, actor: Actor) -> Err
     .into()
 }
 
+/// `requireCodeOwners` needs the community contract's policy field for it.
+fn code_owner_policy_supported(community: &LoadedContract) -> Result<()> {
+    if community.has_property(DOC_POLICY, POLICY_REQUIRE_CODE_OWNERS) {
+        Ok(())
+    } else {
+        Err(Error::Config(
+            "this network's Forge doesn't support requiring code owner approval yet".into(),
+        ))
+    }
+}
+
 /// The properties of a `policy` (without `repoId`). Refuses what forge-community would: over
 /// 10 approvals, an unknown approver role, merge methods over 15, more than 10 required checks
 /// (or a repeated, empty or oversized name), and check sources that do not pair up with the
@@ -6580,14 +6591,17 @@ impl<'a> Collab<'a> {
         self.require_role(repo, Role::Maintainer, "set the branch policy")
             .await?;
         let community = self.community_contract(repo).await?;
-        if policy.require_code_owners
-            && !community.has_property(DOC_POLICY, POLICY_REQUIRE_CODE_OWNERS)
-        {
-            return Err(Error::Config(
-                "this network's Forge doesn't support requiring code owner approval yet".into(),
-            ));
+        if policy.require_code_owners {
+            code_owner_policy_supported(&community)?;
         }
         self.write(repo, &community, DOC_POLICY, props).await
+    }
+
+    /// Refuse when this network's Forge cannot store a policy's `requireCodeOwners` (an older
+    /// community contract): checked before a confirm prompt, so nobody is asked to pay for a
+    /// write that cannot land. [`Self::set_policy`] checks it again.
+    pub async fn require_code_owner_policy_support(&self, repo: &RepoRef) -> Result<()> {
+        code_owner_policy_supported(&self.community_contract(repo).await?)
     }
 
     // --- releases and labels (forge-core) ---------------------------------------------------
@@ -8777,6 +8791,18 @@ mod fused_star_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// QA5 CO-8: a policy's `requireCodeOwners` is checked against the community contract on its
+    /// own, so `dg repo policy set` refuses before its cost prompt where the field is missing.
+    #[test]
+    fn requiring_code_owners_needs_the_policy_field() {
+        let community = crate::test_support::rc1::loaded(crate::layout::ForgeContract::Community);
+        assert!(code_owner_policy_supported(&community).is_ok());
+        // forge-collab has no `policy` document type: no field.
+        let without = crate::platform::wrap::test_contract();
+        let e = code_owner_policy_supported(&without).unwrap_err();
+        assert!(e.to_string().contains("code owner approval"), "{e}");
+    }
 
     /// A long body's create is keyed alike before its artifact is stored (any hash, as
     /// `dg` plans it) and after (the stored field), so an interrupted create is replayed

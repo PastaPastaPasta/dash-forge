@@ -764,6 +764,10 @@ async fn set_policy(ctx: &Ctx, args: &RepoPolicySetArgs) -> Result<()> {
         );
         return Ok(());
     }
+    // Before the estimate and the prompt: an older Forge cannot store it, and the refusal must come before anyone is asked to pay (QA5 CO-8).
+    if next.require_code_owners {
+        collab.require_code_owner_policy_support(&s.repo).await?;
+    }
     if !ctx.json {
         println!("Setting the branch policy of {}", s.repo.display());
         println!(

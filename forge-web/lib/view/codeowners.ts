@@ -67,8 +67,9 @@ export function readCodeOwners(reader: ObjectReader, commitOid: string): Promise
 
 /**
  * The paths a change set touches, as the code owners rule reads them: every added, deleted or
- * modified path, a rename as both its old and its new path (so the set is `git diff --name-only
- * --no-renames`, whatever rename detection a client ran).
+ * modified path (a submodule's new commit too), a rename as both its old and its new path (so the
+ * set is `git diff-tree -r --name-only --no-renames --ignore-submodules=none`, as `dg` lists it,
+ * whatever rename detection a client ran).
  */
 export function changedPaths(changes: readonly FileChange[]): string[] {
   const out = new Set<string>()

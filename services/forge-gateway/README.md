@@ -26,7 +26,7 @@ Code map:
 | `src/limits.rs`, `src/cache.rs` | Per-client token buckets and concurrency; the render cache. |
 | `src/badge.rs`, `src/feed.rs`, `src/og.rs` | Badge SVG and shields JSON; Atom; preview cards (resvg). |
 | `src/wake.rs` | forge-relay wake stream client (`forge-wake-v1`). |
-| `tests/gateway.rs` | End to end with a stub upstream: plain `git` clones, fetches, push refused, private refused, Platform down, eviction, limits. |
+| `tests/gateway.rs` | End to end with a stub upstream: plain `git` clones, fetches, push refused, private refused, Platform down, a repository proved gone, restarts, eviction, limits. |
 
 The manifest schema and the comparison `dg verify-mirror` runs live in forge-core
 (`crates/forge-core/src/mirror.rs`).

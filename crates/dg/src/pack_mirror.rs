@@ -8,15 +8,16 @@ use serde_json::json;
 
 use forge_core::pack_mirror::{
     check_serves, delete_mirror, mirror_of_owner, mirrors_by, mirrors_of, record_mirror,
-    uri_problem_words, PackMirror, ServeCheck, DOC_PACK_MIRROR,
+    require_support, uri_problem_words, PackMirror, ServeCheck, DOC_PACK_MIRROR,
 };
 use forge_core::rules::pack_mirror::{check_mirror_uris, UriCheck};
 use forge_core::rules::v2::Visibility;
+use forge_core::storage::egress::{may_fetch, Trusted};
 use forge_core::storage::publish::{publish_problem, PublishProblem};
 use forge_core::storage::read::PackReader;
 use forge_core::user_error::{codes, UserError};
 
-use crate::common::{Reader, Session};
+use crate::common::{resolve_for, Reader, RepoRef, Session};
 use crate::context::Ctx;
 use crate::fmt::{cost_json, cost_line, safe};
 use crate::StorageMirrorCommand;
@@ -38,7 +39,7 @@ pub async fn run(ctx: &Ctx, cmd: &StorageMirrorCommand) -> Result<()> {
     }
 }
 
-/// E204 for addresses the shared rule refuses (checked before anything is read or signed).
+/// E201 for addresses the shared rule refuses (checked before anything is read or signed).
 fn bad_uris(check: &UriCheck) -> anyhow::Error {
     UserError::new(
         codes::USAGE,
@@ -51,12 +52,37 @@ fn bad_uris(check: &UriCheck) -> anyhow::Error {
     .into()
 }
 
-/// The addresses among `uris` other readers never follow: loopback and private-network hosts
-/// (their egress guard refuses them), each as written.
-fn private_addresses(uris: &[String]) -> Vec<&str> {
+/// Why other readers never use an address ([`unusable_addresses`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Unusable {
+    /// Not a URL a reader can parse (`https://host:99999/p`).
+    Invalid,
+    /// Loopback, a private network or another address a reader's egress guard refuses.
+    Private,
+    /// A temporary tunnel name (`trycloudflare.com`, `ts.net`), which push refuses too.
+    Tunnel,
+}
+
+/// The `https://` addresses among `uris` other readers never fetch, each as written: the
+/// readers' own egress rule ([`may_fetch`], with no configured origins, since another reader has
+/// none of this machine's), and the temporary tunnels a push refuses to record.
+fn unusable_addresses(uris: &[String]) -> Vec<(&str, Unusable)> {
+    let none = Trusted::default();
     uris.iter()
-        .filter(|u| matches!(publish_problem(u), Some(PublishProblem::PrivateHost)))
-        .map(String::as_str)
+        .filter(|u| u.starts_with("https://"))
+        .filter_map(|u| {
+            let problem = publish_problem(u);
+            let why = if matches!(problem, Some(PublishProblem::NotAUrl)) {
+                Unusable::Invalid
+            } else if !may_fetch(u, &none) || matches!(problem, Some(PublishProblem::PrivateHost)) {
+                Unusable::Private
+            } else if matches!(problem, Some(PublishProblem::TemporaryTunnel)) {
+                Unusable::Tunnel
+            } else {
+                return None;
+            };
+            Some((u.as_str(), why))
+        })
         .collect()
 }
 
@@ -67,25 +93,48 @@ fn refuse_unusable(uris: &[String]) -> Result<()> {
     if matches!(check, UriCheck::Refused { .. }) {
         return Err(bad_uris(&check));
     }
-    let private = private_addresses(uris);
-    if !private.is_empty() {
-        bail!(UserError::new(
-            codes::USAGE,
+    let unusable = unusable_addresses(uris);
+    // The first kind found, in the order of how final it is.
+    let Some(kind) = [Unusable::Invalid, Unusable::Private, Unusable::Tunnel]
+        .into_iter()
+        .find(|k| unusable.iter().any(|(_, why)| why == k))
+    else {
+        return Ok(());
+    };
+    let named = unusable
+        .iter()
+        .filter(|(_, why)| *why == kind)
+        .map(|(u, _)| safe(u).into_owned())
+        .collect::<Vec<_>>();
+    let many = named.len() > 1;
+    let (what, cause) = match kind {
+        Unusable::Invalid => (
+            format!("{} {} a valid address", named.join(", "), if many { "are not" } else { "is not" }),
+            "a reader cannot request an address it cannot parse",
+        ),
+        Unusable::Private => (
             format!(
-                "mirror not recorded: {} {} on this machine or a private network",
-                private
-                    .iter()
-                    .map(|u| safe(u).into_owned())
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                if private.len() == 1 { "is" } else { "are" }
-            )
-        )
-        .cause("other readers never fetch from a loopback or private-network address")
-        .fix("record a public https address, or an ipfs:// CID")
-        .note("checked before anything was signed; nothing was written or paid"));
-    }
-    Ok(())
+                "{} {} on this machine or a private network",
+                named.join(", "),
+                if many { "are" } else { "is" }
+            ),
+            "other readers never fetch from a loopback, private-network or otherwise non-public address",
+        ),
+        Unusable::Tunnel => (
+            format!(
+                "{} {} a temporary tunnel address",
+                named.join(", "),
+                if many { "are" } else { "is" }
+            ),
+            "a quick tunnel's name changes when it restarts, so the record would soon point nowhere",
+        ),
+    };
+    bail!(
+        UserError::new(codes::USAGE, format!("mirror not recorded: {what}"))
+            .cause(cause)
+            .fix("record a stable public https address, or an ipfs:// CID")
+            .note("checked before anything was signed; nothing was written or paid")
+    );
 }
 
 /// The addresses must serve the pack: a mirror that cannot is a record nobody can use. E504 when
@@ -142,6 +191,8 @@ async fn add(ctx: &Ctx, repo: &str, pack: &str, uris: &[String], no_verify: bool
         .fix(format!("`dg storage status {repo}` lists its packs")));
     };
     let core = s.client.fetch_contract(&s.repo.forge().core).await?;
+    // Before the download and the cost prompt: a network without the type cannot record one.
+    require_support(&core)?;
     // One record per pack each: a second would be refused at consensus, after paying for it.
     if let Some(mine) = mirror_of_owner(&s.client, &core, &s.repo, &pack, &s.identity.id()).await? {
         bail!(UserError::new(
@@ -198,8 +249,8 @@ async fn add(ctx: &Ctx, repo: &str, pack: &str, uris: &[String], no_verify: bool
     Ok(())
 }
 
-pub(crate) fn mirror_json(m: &PackMirror) -> serde_json::Value {
-    json!({
+pub(crate) fn mirror_json(m: &PackMirror, repo: Option<&str>) -> serde_json::Value {
+    let mut v = json!({
         "documentId": m.id,
         "by": m.owner_id,
         "repoId": m.repo_id,
@@ -207,11 +258,33 @@ pub(crate) fn mirror_json(m: &PackMirror) -> serde_json::Value {
         "kind": m.kind,
         "uris": m.uris,
         "createdAt": m.created_at,
-    })
+    });
+    if let Some(repo) = repo {
+        v["repo"] = json!(repo);
+    }
+    v
+}
+
+/// `owner/name` of each repository `mirrors` are for, by repo id; a repository that no longer
+/// resolves has no entry (its id is shown instead).
+async fn repo_names(
+    client: &forge_core::platform::PlatformClient,
+    mirrors: &[PackMirror],
+) -> std::collections::BTreeMap<String, String> {
+    let mut names = std::collections::BTreeMap::new();
+    for m in mirrors {
+        if names.contains_key(&m.repo_id) {
+            continue;
+        }
+        if let Ok(r) = forge_core::resolve::resolve_id(client, &m.repo_id).await {
+            names.insert(m.repo_id.clone(), r.display());
+        }
+    }
+    names
 }
 
 async fn list(ctx: &Ctx, repo: Option<&str>, mine: bool) -> Result<()> {
-    let mirrors = if mine {
+    let (mirrors, names) = if mine {
         let client = ctx.connect().await?;
         let me = match ctx.identity_id_hint() {
             Some(id) => id,
@@ -219,7 +292,16 @@ async fn list(ctx: &Ctx, repo: Option<&str>, mine: bool) -> Result<()> {
         };
         let forge = ctx.target.require_v2()?;
         let core = client.fetch_contract(&forge.core).await?;
-        mirrors_by(&client, &core, &me).await?
+        let mut mirrors = mirrors_by(&client, &core, &me).await?;
+        // `list REPO --mine`: only the mirrors you recorded for that repository.
+        if let Some(repo) = repo {
+            let want = resolve_for(&client, Some(&me), &RepoRef::parse(repo)?)
+                .await?
+                .repo_id;
+            mirrors.retain(|m| m.repo_id == want);
+        }
+        let names = repo_names(&client, &mirrors).await;
+        (mirrors, names)
     } else {
         let r = Reader::open_unsealed(ctx, repo.unwrap_or_default()).await?;
         let core = r.client.fetch_contract(&r.repo.forge().core).await?;
@@ -233,10 +315,18 @@ async fn list(ctx: &Ctx, repo: Option<&str>, mine: bool) -> Result<()> {
         for h in hashes {
             out.extend(mirrors_of(&r.client, &core, &r.repo, &h, &members).await?);
         }
-        out
+        let names = std::collections::BTreeMap::from([(r.repo.repo_id.clone(), r.repo.display())]);
+        (out, names)
+    };
+    // The repository of a record: its name when it resolved, else its id.
+    let repo_of = |m: &PackMirror| {
+        names
+            .get(&m.repo_id)
+            .cloned()
+            .unwrap_or_else(|| m.repo_id.clone())
     };
     ctx.emit(
-        json!({ "mirrors": mirrors.iter().map(mirror_json).collect::<Vec<_>>() }),
+        json!({ "mirrors": mirrors.iter().map(|m| mirror_json(m, names.get(&m.repo_id).map(String::as_str))).collect::<Vec<_>>() }),
         || {
             if mirrors.is_empty() {
                 println!("no pack mirrors recorded");
@@ -244,8 +334,9 @@ async fn list(ctx: &Ctx, repo: Option<&str>, mine: bool) -> Result<()> {
             }
             for m in &mirrors {
                 println!(
-                    "{}  pack {}  by {}  {}",
+                    "{}  {}  pack {}  by {}  {}",
                     m.id,
+                    safe(&repo_of(m)),
                     &m.pack_hash[..12.min(m.pack_hash.len())],
                     m.owner_id,
                     m.uris
@@ -286,26 +377,84 @@ async fn remove(ctx: &Ctx, id: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::private_addresses;
+    use super::{refuse_unusable, unusable_addresses, Unusable};
+    use forge_core::user_error::{codes, UserError};
+
+    fn uris(list: &[&str]) -> Vec<String> {
+        list.iter().map(ToString::to_string).collect()
+    }
 
     #[test]
     fn loopback_and_private_hosts_are_refused_public_ones_kept() {
-        let uris: Vec<String> = [
+        let list = uris(&[
             "https://m.example.com/p",
             "https://127.0.0.1:8443/p",
             "https://192.168.1.4/p",
             "https://localhost/p",
             "ipfs://bafyq",
-        ]
-        .map(String::from)
-        .to_vec();
+        ]);
         assert_eq!(
-            private_addresses(&uris),
+            unusable_addresses(&list),
             [
-                "https://127.0.0.1:8443/p",
-                "https://192.168.1.4/p",
-                "https://localhost/p"
+                ("https://127.0.0.1:8443/p", Unusable::Private),
+                ("https://192.168.1.4/p", Unusable::Private),
+                ("https://localhost/p", Unusable::Private)
             ]
         );
+    }
+
+    /// The readers' egress guard refuses more than the old host list did; a mirror at any of
+    /// these would be paid for and never read.
+    #[test]
+    fn every_address_a_reader_refuses_is_refused_before_anything_is_paid() {
+        for bad in [
+            "https://198.18.0.5/p",
+            "https://198.19.255.1/p",
+            "https://[64:ff9b::c0a8:105]/p",
+            "https://[2002:c0a8:105::1]/p",
+            "https://[::7f00:1]/p",
+            "https://[::1]/p",
+            "https://224.0.0.1/p",
+            "https://nas.local/p",
+        ] {
+            let e = refuse_unusable(&uris(&[bad])).expect_err(bad);
+            let u = e.downcast_ref::<UserError>().expect(bad);
+            assert_eq!(u.code, codes::USAGE, "{bad}");
+            assert!(
+                u.message.contains("private network"),
+                "{bad}: {}",
+                u.message
+            );
+        }
+        // An address no reader can parse is refused too, not read as an IPFS problem.
+        let e = refuse_unusable(&uris(&["https://a.b:99999/p"])).unwrap_err();
+        let u = e.downcast_ref::<UserError>().unwrap();
+        assert_eq!(u.code, codes::USAGE);
+        assert!(u.message.contains("not a valid address"), "{}", u.message);
+    }
+
+    #[test]
+    fn temporary_tunnels_are_refused_as_a_push_refuses_them() {
+        for bad in [
+            "https://random-words.trycloudflare.com/p.pack",
+            "https://box.tail1234.ts.net/p.pack",
+        ] {
+            let e = refuse_unusable(&uris(&[bad])).expect_err(bad);
+            let u = e.downcast_ref::<UserError>().expect(bad);
+            assert_eq!(u.code, codes::USAGE, "{bad}");
+            assert!(u.message.contains("temporary tunnel"), "{}", u.message);
+        }
+    }
+
+    #[test]
+    fn public_addresses_pass() {
+        // r2.dev is only a warning for a push (rate-limited, but public).
+        refuse_unusable(&uris(&[
+            "https://m.example.com/p",
+            "https://pub-1.r2.dev/p.pack",
+            "https://[2606:4700::1111]/p",
+        ]))
+        .unwrap();
+        refuse_unusable(&uris(&["ipfs://bafybeigdyrzt"])).unwrap();
     }
 }

@@ -316,6 +316,17 @@ pub fn mirror_props(
     Ok(props)
 }
 
+/// Whether `core` has the `packMirror` type, as an error naming the network when it does not.
+/// Callers check it before any download or cost prompt that a record would follow.
+pub fn require_support(core: &LoadedContract) -> Result<()> {
+    if core.has_document_type(DOC_PACK_MIRROR) {
+        return Ok(());
+    }
+    Err(Error::Config(
+        "this network's Forge doesn't support pack mirrors yet".into(),
+    ))
+}
+
 /// Record a mirror of `pack_hash` of `repo` at `uris` as the signer. Refused before signing for
 /// a private repository, for addresses the shared rule refuses, and on a contract without the
 /// type. Returns the document id.
@@ -337,11 +348,7 @@ pub async fn record_mirror(
             uri_problem_words(&check).unwrap_or_default(),
         ));
     };
-    if !core.has_document_type(DOC_PACK_MIRROR) {
-        return Err(Error::Config(
-            "this network's Forge doesn't support pack mirrors yet".into(),
-        ));
-    }
+    require_support(core)?;
     let props = mirror_props(core, repo, pack_hash, kind, uris)?;
     engine.create_document(core, DOC_PACK_MIRROR, props).await
 }
@@ -380,9 +387,9 @@ mod tests {
         }
     }
 
-    /// forge-core as `forge-contracts/schema/build.py` builds it with `args`, parsed with full
-    /// validation under protocol 14 (as `test_support::rc1` parses the committed one).
-    fn built_core(args: &[&str]) -> DataContract {
+    /// forge-core as `forge-contracts/schema/build.py` builds it with `args`, as JSON with the
+    /// test owner's contract id.
+    fn built_core_json(args: &[&str]) -> serde_json::Value {
         let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../forge-contracts");
         let dir = tempfile::tempdir().expect("temp dir");
         let out = std::process::Command::new("python3")
@@ -403,8 +410,18 @@ mod tests {
         let id = DataContract::generate_data_contract_id_v0(owner, 1);
         json["id"] = serde_json::Value::String(id.to_string(Encoding::Base58));
         json["ownerId"] = serde_json::Value::String(owner.to_string(Encoding::Base58));
+        json
+    }
+
+    /// `json` parsed with full validation under protocol 14 (as `test_support::rc1` parses the
+    /// committed one).
+    fn parsed_core(json: serde_json::Value) -> DataContract {
         let pv = PlatformVersion::get(14).expect("protocol 14");
         DataContract::from_json(json, true, pv).expect("forge-core parses")
+    }
+
+    fn built_core(args: &[&str]) -> DataContract {
+        parsed_core(built_core_json(args))
     }
 
     /// The schema's verdict on a create of `props` by a stranger.
@@ -442,6 +459,23 @@ mod tests {
                 assert!(!schema_errors(&c, &bare).is_empty(), "mainnet requires vis");
             }
         }
+    }
+
+    #[test]
+    fn a_network_without_the_mirror_type_is_named() {
+        assert!(require_support(&LoadedContract::for_tests(built_core(&[]))).is_ok());
+        // The same contract without the type.
+        let mut json = built_core_json(&[]);
+        json["documentSchemas"]
+            .as_object_mut()
+            .expect("documentSchemas")
+            .remove(DOC_PACK_MIRROR)
+            .expect("the type exists");
+        let err = require_support(&LoadedContract::for_tests(parsed_core(json))).unwrap_err();
+        assert!(
+            err.to_string().contains("doesn't support pack mirrors"),
+            "{err}"
+        );
     }
 
     #[test]
