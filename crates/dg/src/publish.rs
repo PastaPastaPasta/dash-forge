@@ -727,7 +727,7 @@ fn members_line(members: MembersPlan, repo: &str, price: Option<f64>) -> Option<
     match members {
         MembersPlan::Private => None,
         MembersPlan::On => Some(format!(
-            "members-only content {}   (your key; --no-members-only to skip)",
+            "members-only content           {}   (your key; --no-members-only to skip)",
             cost_line(enable_estimate(1), price)
         )),
         MembersPlan::Skipped => Some(format!(

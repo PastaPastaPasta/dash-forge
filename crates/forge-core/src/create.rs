@@ -487,11 +487,7 @@ pub async fn create_repo(
     }
 
     // 4. members-only content, for a public repo this run (or an interrupted one) created
-    let members_only = if turn_on_members_only_now(&opts, &steps) {
-        Some(turn_on_members_only(client, identity, bridge, &repo, &owner).await)
-    } else {
-        None
-    };
+    let members_only = turn_on_members_only(client, identity, bridge, &repo, &opts, &steps).await;
 
     journal.finish();
     let balance_after = client.get_balance(&owner).await.unwrap_or(balance_before);
@@ -512,36 +508,41 @@ fn turn_on_members_only_now(opts: &CreateRepoOpts, steps: &[(&str, StepOutcome)]
         && steps.iter().any(|(_, o)| *o != StepOutcome::Existed)
 }
 
-/// Step 4: turn members-only content on in the repository just created. The owner's
-/// `maintainer` document is waited for first (a node a block behind would read the owner as
-/// no maintainer); any failure is reported, never raised.
+/// Step 4, when [`turn_on_members_only_now`]: turn members-only content on in the repository
+/// just created. The owner's `maintainer` document is waited for first (a node a block behind
+/// would read the owner as no maintainer); any failure is reported, never raised.
 async fn turn_on_members_only(
     client: &PlatformClient,
     identity: &LoadedIdentity,
     bridge: &BridgeIdentity,
     repo: &RepoRef,
-    owner: &str,
-) -> MembersOnly {
+    opts: &CreateRepoOpts,
+    steps: &[(&str, StepOutcome)],
+) -> Option<MembersOnly> {
+    if !turn_on_members_only_now(opts, steps) {
+        return None;
+    }
     let signer = crate::keyring::PrivateSigner {
         client,
         identity,
         bridge,
     };
-    for attempt in 0..FIND_ATTEMPTS {
-        match MemberReader::new(client)
-            .role_doc(repo, owner, Role::Maintainer)
-            .await
-        {
-            Ok(Some(_)) => break,
-            Ok(None) if attempt + 1 < FIND_ATTEMPTS => tokio::time::sleep(FIND_DELAY).await,
-            // Still unseen, or the read failed: enabling says why it can't.
-            _ => break,
+    for attempt in 1..=FIND_ATTEMPTS {
+        let seen = MemberReader::new(client)
+            .role_doc(repo, &identity.id(), Role::Maintainer)
+            .await;
+        // Seen, or the read failed (enabling then says why it can't), or out of attempts.
+        if !matches!(seen, Ok(None)) || attempt == FIND_ATTEMPTS {
+            break;
         }
+        tokio::time::sleep(FIND_DELAY).await;
     }
-    match crate::keyring::enable_members_key(&signer, repo).await {
-        Ok(done) => MembersOnly::On(done),
-        Err(e) => MembersOnly::Failed(std::sync::Arc::new(e)),
-    }
+    Some(
+        match crate::keyring::enable_members_key(&signer, repo).await {
+            Ok(done) => MembersOnly::On(done),
+            Err(e) => MembersOnly::Failed(std::sync::Arc::new(e)),
+        },
+    )
 }
 
 /// A private create needs an `ENCRYPTION` key the identity file holds (§9 "Create"): checked
