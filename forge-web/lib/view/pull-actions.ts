@@ -146,6 +146,34 @@ export function codeOwnerRules(status: CodeOwnerStatus | null | 'unknown'): stri
   return status.pending.map((p) => `code owner approval: ${p.path} (${p.owners.join(' ')}${p.approvable ? '' : '; none of them can approve'})`)
 }
 
+/** The merge hint for a writer when only the code owner approvals stop the merge. */
+function codeOwnersHint(status: CodeOwnerStatus | 'unknown'): string {
+  if (status === 'unknown') return 'Merging waits until the code owners and their approvals are read.'
+  if (status.unreadable) return "Couldn't read the code owners or the changed files, so merging is blocked. Only a maintainer can bypass it."
+  return `The branch policy needs a code owner's approval of ${plural(status.pending.length, 'file')}. Only a maintainer can bypass it.`
+}
+
+/** Changed files the branch-rules card names before "and n more". */
+const OWNED_SHOWN = 3
+
+/**
+ * The branch-rules card's line for `requireCodeOwners`: the files still waiting for a code
+ * owner's approval (the first few by name), and those no owner can approve. Null when the policy
+ * does not require it.
+ */
+export function codeOwnersLine(status: CodeOwnerStatus | null | 'unknown'): { readonly ok: boolean; readonly text: string } | null {
+  if (status === null) return null
+  if (status === 'unknown') return { ok: false, text: 'Code owner approvals not read yet' }
+  if (status.unreadable) return { ok: false, text: "Couldn't read the code owners or the changed files, so merging is blocked" }
+  if (status.met) return { ok: true, text: "No changed file waits for a code owner's approval" }
+  const paths = status.pending.map((p) => p.path)
+  const more = paths.length - OWNED_SHOWN
+  const shown = paths.slice(0, OWNED_SHOWN).join(', ') + (more > 0 ? ` and ${more} more` : '')
+  const stuck = status.pending.filter((p) => !p.approvable).length
+  const text = `Waiting for a code owner's approval: ${shown}`
+  return { ok: false, text: stuck === 0 ? text : `${text}. No owner of ${plural(stuck, 'file')} can approve, so fix CODEOWNERS on the base branch` }
+}
+
 /**
  * The branch-rules card's line for the policy's required checks (QW2-052): the ones not passing
  * on the head, by name ("lint", "e2e (pending)"), never those that pass; once all pass, the
@@ -455,8 +483,12 @@ export function pullActions({ pull, viewer, holdings, protectedPatterns = [], po
       mergeHint = `The branch policy needs ${plural(policy.need, 'approval')} (${policy.have} so far; the PR author's own never counts). Only a maintainer can bypass it.`
     } else if (policy !== null && typeof policy === 'object' && policy.blockedBy.length > 0) {
       mergeHint = `${policy.blockedBy.length === 1 ? 'A reviewer' : 'Reviewers'} requested changes. Merging waits until the changes are approved or the review is dismissed. Only a maintainer can bypass it.`
-    } else if (policyUnmet) {
+    } else if (checks === 'unknown' || (checks !== null && !checks.met)) {
       mergeHint = 'The branch policy requires passing checks on the head. Only a maintainer can bypass it.'
+    } else if (codeOwners !== null && (codeOwners === 'unknown' || !codeOwners.met)) {
+      mergeHint = codeOwnersHint(codeOwners)
+    } else if (policyUnmet) {
+      mergeHint = 'The branch rules are not met. Only a maintainer can bypass them.'
     }
   }
 

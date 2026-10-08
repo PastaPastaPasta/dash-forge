@@ -383,6 +383,10 @@ cmd('pr view', 'A pull request: its state, head, reviews, threads and comments.'
     'generalComments': A(OBJ), 'comments': A(OBJ), 'hiddenComments': ANY, 'hiddenReviews': ANY, 'moderation': ANY,
     'hiddenEventValues': ANY, 'plaintextEventValues': ANY, 'audience': AUD, 'readable': B, 'why': S,
     'membersOnlyComments': A(OBJ), 'membersOnlyHidden': I, 'membersOnlyReviewsHidden': I, 'mergeContent': ANY,
+    'policyMet': D('Whether the open PR meets the branch policy; null with no policy, on a PR that is not open, or when only code owner approvals are left (`dg pr merge` checks them).', nl(B)),
+    'unmetRules': D('The branch rules left unmet, one line each, as `dg pr merge` names them (code owner approvals are not checked here).', SA),
+    'codeOwners': D('The policy requires code owner approvals, which `dg pr merge` checks (`checked` is always false here); null when it does not, or the PR is not open.', nl(O({'required': B, 'checked': B}, ['required', 'checked']))),
+    'requiredCheckRuns': ANY, 'requiredCheckRunsError': ANY, 'policyBypasses': A(OBJ),
 }, ['number', 'id', 'author', 'state', 'labels', 'assignees', 'readable'])
 cmd('pr verify', 'Whether a merged pull request\'s recorded merge contains it.', {
     'pr': I, 'merged': B, 'mergeContent': nl(O({'oid': S, 'verdict': E('contains', 'squash', 'rebase', 'missing', 'unknown'),
