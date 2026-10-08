@@ -487,7 +487,11 @@ pub async fn create_repo(
     }
 
     // 4. members-only content, for a public repo this run (or an interrupted one) created
-    let members_only = turn_on_members_only(client, identity, bridge, &repo, &opts, &steps).await;
+    // Boxed: the key setup's future is large, and every create flow awaits this one.
+    let members_only = Box::pin(turn_on_members_only(
+        client, identity, bridge, &repo, &opts, &steps,
+    ))
+    .await;
 
     journal.finish();
     let balance_after = client.get_balance(&owner).await.unwrap_or(balance_before);

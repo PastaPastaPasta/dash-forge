@@ -312,7 +312,7 @@ fn create_members_only_matches() {
         (
             result(
                 StepOutcome::Created,
-                Some(MembersOnly::On(Default::default())),
+                Some(MembersOnly::On(forge_core::keyring::Enabled::default())),
             ),
             MembersPlan::On,
             "on",

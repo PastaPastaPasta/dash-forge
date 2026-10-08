@@ -309,6 +309,7 @@ pub enum Command {
 
 /// Options `dg repo create` and `dg init` share.
 #[derive(Debug, Clone, clap::Args)]
+#[allow(clippy::struct_excessive_bools)] // independent command-line switches
 pub struct CreateOptions {
     /// Where pushes store packs: comma-separated storage profile names (`platform` is built
     /// in). Default: git config `dash.storage`, else your only profile; with neither, the
