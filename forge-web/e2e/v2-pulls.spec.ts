@@ -62,6 +62,8 @@ async function confirmWrite(page: Page, label: RegExp): Promise<void> {
 test('c1. owner creates a repo', async ({ browser }) => {
   const page = await signedIn(browser, 'OWNER', '/new/')
   await page.getByLabel('Repository name').fill(REPO)
+  // Not about members-only content: create without it (on by default where the browser holds a key).
+  await page.getByTestId('repo-members-only').uncheck()
   await page.getByRole('button', { name: 'Create repository' }).click()
   await confirmWrite(page, /sign & create/i)
   await expect(page.getByRole('region', { name: 'Empty repository' })).toBeVisible({ timeout: 90_000 })

@@ -216,6 +216,9 @@ pub async fn create(
         // A mirror follows its source, which may move tags and the default branch on its own;
         // its maintainers protect what they want with `dg repo protect`.
         protect: false,
+        // An import mirrors a public upstream: members-only content stays off until a
+        // maintainer turns it on (`dg repo members enable`).
+        members_only: false,
     };
     let res = create_repo(
         client,

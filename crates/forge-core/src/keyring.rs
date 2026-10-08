@@ -1927,6 +1927,8 @@ pub async fn enable_members_key(signer: &PrivateSigner<'_>, repo: &RepoRef) -> R
             Some(k) => k,
             None => self_wrap(signer, &w, 0, EpochKey::generate()?).await?.0,
         };
+        // The one half state (the owner's key share without its anchor): a re-run reuses the share.
+        test_fault("enable-after-share")?;
         let input = AnchorInput {
             epoch: 0,
             key: &key,
