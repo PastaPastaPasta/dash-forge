@@ -7,8 +7,9 @@ A sibling of gen.py, whose crypto helpers it reuses (DFPK 0x01 seal under an epo
 seal to specific people, the parties and their keys). Every vector it writes has case
 `env_snapshot` and an `input.op` naming what it checks: `format` (the canonical padded artifact),
 `decode` (what a reader refuses), `open` (seal and open one snapshot, D24's packHash and sender
-checks), `resolve` (authorization, the chain and fork detection), `exposure` (the removal
-checklist) and `defaultAudience` (the name rule). The Rust harness (`forge_core::env`) and the
+checks), `resolve` (authorization, the chain and fork detection) and `exposure` (the removal
+checklist). Version-1 snapshots (phase 1) stay readable; every `v2_*` vector is the version-2 artifact
+writers make from revision 4 on (D9, D34). The Rust harness (`forge_core::env`) and the
 TypeScript harness (`forge-web/lib/env`) run every file and must reproduce it exactly.
 
 The normative description of each step is in `crates/forge-core/src/env/mod.rs`.
@@ -33,10 +34,15 @@ SAFE_INT = (1 << 53) - 1
 ENV_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")  # fullmatch: `$` would admit a trailing newline
 VAR_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
 TYPES = ("secret", "variable")
+# Version 1 (phase 1, read only): the audience is a word, Members (a DFPK 0x01 file under the members key) or
+# Maintainers (a DFPK 0x02 letter to at most 16 people).
 AUDIENCES = ("members", "maintainers")
-MAX_RECIPIENTS = 16
-# The one name rule (owner question 3): these names default to Maintainers, every other to Members.
-MAINTAINERS_BY_DEFAULT = ("production", "prod*", "staging", "release*")
+MAX_RECIPIENTS_V1 = 16
+# Version 2 (revision 4, D9, D34): every snapshot is a DFPK 0x02 letter to the people its audience resolves to at
+# write time, at most 64; the audience is a group (or none: specific people) plus extra people.
+GROUPS = ("maintainers", "writers", "members")
+MAX_RECIPIENTS = 64
+U32_MAX = (1 << 32) - 1
 
 B58 = gen.B58
 
@@ -52,24 +58,34 @@ def b58decode(s):
     return out if len(out) == 32 and b58(out) == s else None
 
 
-def default_audience(name):
-    n = name.lower()
-    for p in MAINTAINERS_BY_DEFAULT:
-        if (p.endswith("*") and n.startswith(p[:-1])) or n == p:
-            return "maintainers"
-    return "members"
-
-
 # --- the artifact ---------------------------------------------------------------------------------
 
 
+def version(s):
+    return s.get("v", 1)
+
+
+def vars_obj(vs):
+    return {k: dict({"type": v["type"], "value": v["value"]}, **({"note": v["note"]} if v.get("note") else {}))
+            for k, v in vs.items()}
+
+
 def snapshot_obj(s):
-    """The JSON object of snapshot `s` (`note` left out when empty; `to` only for maintainers)."""
-    obj = {"v": 1, "env": s["env"], "audience": s["audience"], "generatedAt": s["generatedAt"],
-           "vars": {k: dict({"type": v["type"], "value": v["value"]}, **({"note": v["note"]} if v.get("note") else {}))
-                    for k, v in s["vars"].items()}}
-    if s["audience"] == "maintainers":
+    """The JSON object of snapshot `s`. Version 1: `note` left out when empty, `to` only for maintainers. Version
+    2: `markedChanged` left out when empty; `audience` an object with `group` (null for specific people) and
+    `also`; `id`, `to` and `toKeys` always."""
+    obj = {"v": version(s), "env": s["env"], "audience": s["audience"], "generatedAt": s["generatedAt"],
+           "vars": vars_obj(s["vars"])}
+    if version(s) == 1:
+        if s["audience"] == "maintainers":
+            obj["to"] = list(s["to"])
+    else:
+        obj["audience"] = dict(group=s["audience"]["group"], also=list(s["audience"]["also"]))
+        obj["id"] = s["id"]
         obj["to"] = list(s["to"])
+        obj["toKeys"] = list(s["toKeys"])
+        if s.get("markedChanged"):
+            obj["markedChanged"] = list(s["markedChanged"])
     if s.get("savedFor"):
         obj["savedFor"] = s["savedFor"]
     return obj
@@ -82,36 +98,72 @@ def encode(s):
     return None if size > MAX_SNAPSHOT else raw + b" " * (size - len(raw))
 
 
+def ids_ok(xs, lo, hi, ordered=False):
+    """A list of `lo`..`hi` canonical base58 identity ids, none twice (and ascending when `ordered`)."""
+    return isinstance(xs, list) and lo <= len(xs) <= hi and all(b58decode(t) is not None for t in xs) \
+        and len(set(map(str, xs))) == len(xs) and (not ordered or xs == sorted(xs))
+
+
 def valid(obj):
-    """Whether `obj` (parsed JSON) is a version-1 snapshot; returns the snapshot dict or None."""
+    """Whether `obj` (parsed JSON) is a version-1 or version-2 snapshot; returns the snapshot dict or None."""
     is_int = lambda x: isinstance(x, int) and not isinstance(x, bool)
-    if not isinstance(obj, dict) or not set(obj) <= {"v", "env", "audience", "generatedAt", "savedFor", "to", "vars"}:
+    if not isinstance(obj, dict) or not is_int(obj.get("v")) or obj["v"] not in (1, 2):
         return None
-    if obj.get("v") != 1 or not is_int(obj.get("v")) or not isinstance(obj.get("env"), str) \
-            or not ENV_NAME.fullmatch(obj["env"]) or obj.get("audience") not in AUDIENCES \
+    v = obj["v"]
+    keys = {"v", "env", "audience", "generatedAt", "savedFor", "to", "vars"}
+    if v == 2:
+        keys |= {"id", "toKeys", "markedChanged"}
+    if not set(obj) <= keys:
+        return None
+    if not isinstance(obj.get("env"), str) or not ENV_NAME.fullmatch(obj["env"]) \
             or not is_int(obj.get("generatedAt")) or not 0 <= obj["generatedAt"] <= SAFE_INT \
             or not isinstance(obj.get("vars"), dict):
         return None
-    if obj["audience"] == "maintainers":
-        to = obj.get("to")
-        if not isinstance(to, list) or not 1 <= len(to) <= MAX_RECIPIENTS or len(set(map(str, to))) != len(to) \
-                or any(b58decode(t) is None for t in to):
+    s = dict(v=v, env=obj["env"], generatedAt=obj["generatedAt"])
+    if v == 1:
+        if obj.get("audience") not in AUDIENCES:
             return None
-    elif "to" in obj:
-        return None
+        s["audience"] = obj["audience"]
+        if obj["audience"] == "maintainers":
+            if not ids_ok(obj.get("to"), 1, MAX_RECIPIENTS_V1):
+                return None
+            s["to"] = list(obj["to"])
+        elif "to" in obj:
+            return None
+    else:
+        aud = obj.get("audience")
+        if not isinstance(aud, dict) or set(aud) != {"group", "also"} \
+                or (aud["group"] is not None and aud["group"] not in GROUPS) \
+                or not ids_ok(aud["also"], 0, MAX_RECIPIENTS, ordered=True) \
+                or (aud["group"] is None and not aud["also"]):
+            return None
+        if not isinstance(obj.get("id"), str) or not re.fullmatch(r"[0-9a-f]{32}", obj["id"]):
+            return None
+        if not ids_ok(obj.get("to"), 1, MAX_RECIPIENTS):
+            return None
+        keys_ = obj.get("toKeys")
+        if not isinstance(keys_, list) or len(keys_) != len(obj["to"]) \
+                or any(not is_int(k) or not 0 <= k <= U32_MAX for k in keys_):
+            return None
+        marked = obj.get("markedChanged", [])
+        if "markedChanged" in obj and (not isinstance(marked, list) or not marked):
+            return None
+        if any(not isinstance(n, str) or not VAR_NAME.fullmatch(n) for n in marked) \
+                or marked != sorted(set(marked)):
+            return None
+        s.update(audience=dict(group=aud["group"], also=list(aud["also"])), id=obj["id"], to=list(obj["to"]),
+                 toKeys=list(keys_), markedChanged=list(marked))
     if "savedFor" in obj and b58decode(obj["savedFor"]) is None:
         return None
     out_vars = {}
-    for k, v in obj["vars"].items():
-        if not VAR_NAME.fullmatch(k) or not isinstance(v, dict) or not set(v) <= {"type", "value", "note"}:
+    for k, e in obj["vars"].items():
+        if not VAR_NAME.fullmatch(k) or not isinstance(e, dict) or not set(e) <= {"type", "value", "note"}:
             return None
-        if v.get("type") not in TYPES or not isinstance(v.get("value"), str) \
-                or not isinstance(v.get("note", ""), str):
+        if e.get("type") not in TYPES or not isinstance(e.get("value"), str) \
+                or not isinstance(e.get("note", ""), str):
             return None
-        out_vars[k] = dict(type=v["type"], value=v["value"], note=v.get("note", ""))
-    s = dict(env=obj["env"], audience=obj["audience"], generatedAt=obj["generatedAt"], vars=out_vars)
-    if obj["audience"] == "maintainers":
-        s["to"] = list(obj["to"])
+        out_vars[k] = dict(type=e["type"], value=e["value"], note=e.get("note", ""))
+    s["vars"] = out_vars
     if "savedFor" in obj:
         s["savedFor"] = obj["savedFor"]
     return s
@@ -136,14 +188,24 @@ def decode(pt):
 
 
 def snapshot_json(s):
-    """A decoded snapshot as the vectors carry it (`note` always present)."""
-    out = dict(env=s["env"], audience=s["audience"], generatedAt=s["generatedAt"],
+    """A decoded snapshot as the vectors carry it (`v` and `note` always present; for version 2 `markedChanged`
+    always present)."""
+    out = dict(v=version(s), env=s["env"], audience=s["audience"], generatedAt=s["generatedAt"],
                vars={k: dict(type=v["type"], value=v["value"], note=v.get("note", "")) for k, v in s["vars"].items()})
-    if s["audience"] == "maintainers":
-        out["to"] = list(s["to"])
+    if version(s) == 1:
+        if s["audience"] == "maintainers":
+            out["to"] = list(s["to"])
+    else:
+        out.update(audience=dict(group=s["audience"]["group"], also=list(s["audience"]["also"])), id=s["id"],
+                   to=list(s["to"]), toKeys=list(s["toKeys"]), markedChanged=list(s.get("markedChanged", [])))
     if s.get("savedFor"):
         out["savedFor"] = s["savedFor"]
     return out
+
+
+def members_key(s):
+    """Whether `s` is an old-format Members snapshot (version 1, DFPK 0x01 under the members key)."""
+    return version(s) == 1 and s["audience"] == "members"
 
 
 # --- opening one snapshot (D24: the owner-signed packHash first, then the key from $ownerId only) -------
@@ -182,24 +244,26 @@ def open_snapshot(manifest, sealed, owner_keys, reader, epoch_keys):
         return dict(error="sizeMismatch")
     if len(sealed) < 9 or sealed[:4] != b"DFPK":
         return dict(error="sealedPackCorrupt")
-    version = sealed[4]
-    if version == 0x01:
+    envelope = sealed[4]
+    if envelope == 0x01:
         r = open_members_pack(sealed, {e["epoch"]: bytes.fromhex(e["key"]) for e in epoch_keys})
         if "error" in r:
             return r
-        plain, audience = r["plain"], "members"
-    elif version == 0x02:
+        plain = r["plain"]
+    elif envelope == 0x02:
         r = open_named_artifact(sealed, manifest["sizeBytes"], owner_keys, bytes.fromhex(reader["identityId"]),
                                 [int(k, 16) for k in reader["keys"]])
         if "error" in r:
             return r
-        plain, audience = bytes.fromhex(r["plaintextHex"]), "maintainers"
+        plain = bytes.fromhex(r["plaintextHex"])
     else:
         return dict(error="sealedPackCorrupt")
     s = decode(plain)
-    if s is None or s["audience"] != audience:
+    # a DFPK 0x01 file holds only an old-format Members snapshot; a 0x02 letter anything else, its `to` one entry per
+    # slot with the manifest owner first
+    if s is None or members_key(s) != (envelope == 0x01):
         return dict(error="malformed")
-    if audience == "maintainers" and (len(s["to"]) != sealed[8] or s["to"][0] != manifest["ownerId"]):
+    if envelope == 0x02 and (len(s["to"]) != sealed[8] or s["to"][0] != manifest["ownerId"]):
         return dict(error="malformed")
     return dict(snapshot=snapshot_json(s))
 
@@ -310,21 +374,21 @@ def window(snapshots, heads):
 
 def exposure(environments, removed, held_members_key):
     """`environments`: [{env, heads: [snapshot], snapshots: [snapshot]}] with readable snapshots
-    {audience, to?, vars: {NAME: value}}. Which current value names `removed` could read."""
+    {v?, audience, to?, vars: {NAME: value}}. Which current value names `removed` could read: a name of a head whose
+    current value is in some snapshot of the environment they could open (an old-format Members snapshot when they
+    held the members key, or any snapshot whose `to` lists them). `oldFormat`: they held the members key and the
+    environment has an old-format Members snapshot, which hands over every past value too."""
     out = []
     for e in environments:
         names = set()
+        could = lambda s: (members_key(s) and held_members_key) or removed in s.get("to", [])
         for head in e["heads"]:
             for name, value in head["vars"].items():
-                for s in e["snapshots"]:
-                    if s["vars"].get(name) != value:
-                        continue
-                    if (s["audience"] == "members" and held_members_key) or \
-                            (s["audience"] == "maintainers" and removed in s.get("to", [])):
-                        names.add(name)
-                        break
+                if any(s["vars"].get(name) == value and could(s) for s in e["snapshots"]):
+                    names.add(name)
         if names:
-            out.append(dict(env=e["env"], audience=e["heads"][-1]["audience"], names=sorted(names)))
+            old = held_members_key and any(members_key(s) for s in e["snapshots"])
+            out.append(dict(env=e["env"], names=sorted(names), oldFormat=old))
     return sorted(out, key=lambda x: x["env"])
 
 
@@ -752,31 +816,184 @@ def promotion_vectors():
 def exposure_vectors():
     p = lambda to, **vs: dict(audience="maintainers", to=[B(x) for x in to], vars=vs)
     mem = lambda **vs: dict(audience="members", vars=vs)
+    l2 = lambda group, to, **vs: dict(v=2, audience=dict(group=group, also=[]), to=[B(x) for x in to], vars=vs)
     prod_old = p([ALICE, CAROL], STRIPE_KEY="sk_test_old", DB_URL="postgres://fake/1")
-    prod_new = p([ALICE, BOB], STRIPE_KEY="sk_test_new", DB_URL="postgres://fake/1", NEW_ONLY="x")
-    dev = mem(API_TOKEN="fake-dev", LOG_LEVEL="debug")
+    prod_new = l2("maintainers", [ALICE, BOB], STRIPE_KEY="sk_test_new", DB_URL="postgres://fake/1", NEW_ONLY="x")
+    dev_old = mem(API_TOKEN="fake-dev", LOG_LEVEL="debug")
+    dev_new = l2("members", [ALICE, BOB], API_TOKEN="fake-dev-2", LOG_LEVEL="debug")
+    ci = l2("writers", [ALICE, CAROL], NPM_TOKEN="fake-npm")
     envs = [dict(env="production", heads=[prod_new], snapshots=[prod_old, prod_new]),
-            dict(env="dev", heads=[dev], snapshots=[dev])]
+            dict(env="dev", heads=[dev_new], snapshots=[dev_old, dev_new]),
+            dict(env="ci", heads=[ci], snapshots=[ci])]
     cases = [dict(removed=B(CAROL), heldMembersKey=True), dict(removed=B(BOB), heldMembersKey=False),
              dict(removed=B(NAMED_OUTSIDER), heldMembersKey=False)]
     results = [exposure(envs, c["removed"], c["heldMembersKey"]) for c in cases]
-    assert results[0] == [dict(env="dev", audience="members", names=["API_TOKEN", "LOG_LEVEL"]),
-                          dict(env="production", audience="maintainers", names=["DB_URL"])]
-    assert results[1] == [dict(env="production", audience="maintainers", names=["DB_URL", "NEW_ONLY", "STRIPE_KEY"])]
+    assert results[0] == [dict(env="ci", names=["NPM_TOKEN"], oldFormat=False),
+                          dict(env="dev", names=["LOG_LEVEL"], oldFormat=True),
+                          dict(env="production", names=["DB_URL"], oldFormat=False)], results[0]
+    assert results[1] == [dict(env="dev", names=["API_TOKEN", "LOG_LEVEL"], oldFormat=False),
+                          dict(env="production", names=["DB_URL", "NEW_ONLY", "STRIPE_KEY"], oldFormat=False)]
     assert results[2] == []
-    vector("removal_checklist", "removing someone lists the current value names they could read: every name of a "
-           "Members environment when they held the members key (past values included), and a Maintainers value "
-           "whose current value was in a snapshot sent to them. carol saw the old production snapshot: DB_URL is "
-           "unchanged since, STRIPE_KEY is not.",
+    vector("removal_checklist", "removing someone lists the current value names they could read: a name whose current "
+           "value is in a snapshot sent to them (`to`), or in an old-format Members snapshot when they held the members "
+           "key (`oldFormat`: that hands over every past value too). carol saw the old production snapshot: DB_URL is "
+           "unchanged since, STRIPE_KEY is not; she held the members key, and dev's LOG_LEVEL is unchanged since its "
+           "old-format snapshot.",
            dict(op="exposure", environments=envs, cases=cases), dict(results=results))
 
 
-def default_audience_vectors():
-    names = ["production", "Production", "prod", "prod-eu", "products", "staging", "staging-2", "release",
-             "release-1.2", "releases", "dev", "test", "preview", "my-production", "qa"]
-    vector("default_audience", "the one name rule (owner question 3): production, prod*, staging and release* "
-           "default to Maintainers, case-insensitively; every other name to Members.",
-           dict(op="defaultAudience", names=names), dict(results=[default_audience(n) for n in names]))
+BOT = gen.named_party("ci-bot")
+# enough people for the largest letter (64 slots)
+CROWD = [gen.named_party(f"m{i}") for i in range(1, 60)]
+ENV_ID = sha256(b"dash-forge vectors: env id production")[:16].hex()
+
+
+def v2(env, group, also, to, vars_, marked=(), saved_for=None, id_=ENV_ID, key_ids=None):
+    """A version-2 snapshot of `env` for `group` (or None) plus `also`, sent to `to` (parties, the writer first)."""
+    s = dict(v=2, env=env, audience=dict(group=group, also=sorted(B(p) for p in also)), id=id_,
+             generatedAt=GENERATED_AT, to=[B(p) for p in to], toKeys=key_ids or [4] + [3] * (len(to) - 1),
+             markedChanged=sorted(marked), vars=vars_)
+    if saved_for:
+        s["savedFor"] = B(saved_for)
+    return s
+
+
+def open_v2_vector(name, desc, snap, recipients, readers, expect_open, label):
+    plain, k_obj, file_id, ivs, sealed = sealed_maintainers(snap, recipients[0], recipients, label=label)
+    man = manifest_of(recipients[0], sealed)
+    okeys = [owner_key(recipients[0])]
+    rs = [dict(reader=reader_json(p), epochKeys=[]) for p in readers]
+    results = [open_snapshot(man, sealed, okeys, r["reader"], []) for r in rs]
+    for p, r in zip(readers, results):
+        assert (r == dict(snapshot=snapshot_json(snap))) == (p in expect_open), (name, p["name"], r)
+        assert p in expect_open or r == dict(error="notARecipient"), (name, r)
+    assert sealed[8] == len(recipients)
+    vector(name, desc,
+           dict(op="open", repoId=H(repoId), snapshot=snapshot_json(snap),
+                seal=dict(senderKeyId=4, sender=reader_json(recipients[0]), recipients=[dict(identityId=H(p["id"]),
+                          pub=H(p["pub"])) for p in recipients], kObj=H(k_obj), fileId=H(file_id),
+                          ivs=[H(i) for i in ivs]),
+                manifest=man, sealed=H(sealed), ownerKeys=okeys, readers=rs),
+           dict(plaintextHex=H(plain), packHash=man["packHash"], results=results))
+
+
+def v2_vectors():
+    prod_vars = {"STRIPE_KEY": var("sk_test_fake_2"), "DB_URL": var("postgres://fake:fake@db.example/prod")}
+    snap = v2("production", "maintainers", [], [ALICE, BOB], prod_vars)
+    open_v2_vector("v2_maintainers", "a version-2 snapshot for Maintainers is a DFPK 0x02 letter to the owner and "
+                   "maintainers when it was saved (`to`, the writer first; `toKeys` the encryption key each slot was "
+                   "sealed to); `audience` is {group, also}; `id` is fixed at the environment's first save. A writer and "
+                   "an outsider are not recipients.", snap, [ALICE, BOB], [ALICE, BOB, WRITER, NAMED_OUTSIDER],
+                   [ALICE, BOB], b"v2 maintainers")
+    snap = v2("staging", "writers", [], [ALICE, BOB, WRITER], {"API_TOKEN": var("fake-staging")})
+    open_v2_vector("v2_writers", "Writers and maintainers: the owner, the maintainers and the role-1 writers when it "
+                   "was saved. carol (a reader) is not a recipient.", snap, [ALICE, BOB, WRITER],
+                   [ALICE, WRITER, CAROL], [ALICE, WRITER], b"v2 writers")
+    snap = v2("dev", "members", [], [ALICE, BOB, CAROL, WRITER], {"LOG_LEVEL": var("debug", "variable")})
+    open_v2_vector("v2_members", "All members: every human member role when it was saved, readers and triage "
+                   "included, as a letter (never the members key). An outsider is not a recipient.", snap,
+                   [ALICE, BOB, CAROL, WRITER], [CAROL, WRITER, NAMED_OUTSIDER], [CAROL, WRITER], b"v2 members")
+    snap = v2("deploy", None, [ALICE, NAMED_OUTSIDER], [ALICE, NAMED_OUTSIDER], {"DEPLOY_KEY": var("fake-deploy")})
+    open_v2_vector("v2_people", "Specific people: no group (`group` null), the people in `also` (sorted; the person who "
+                   "set the audience is one of them), members or not: dave is not a member and reads it; bob, a "
+                   "maintainer, does not.", snap, [ALICE, NAMED_OUTSIDER], [NAMED_OUTSIDER, BOB],
+                   [NAMED_OUTSIDER], b"v2 people")
+    snap = v2("ci", "writers", [BOT], [ALICE, BOB, WRITER, BOT], {"NPM_TOKEN": var("fake-npm")},
+              marked=["OLD_TOKEN"])
+    open_v2_vector("v2_group_also", "a group plus people: Writers and maintainers and the CI bot named in `also` "
+                   "(groups never include bots). `markedChanged` lists names whose values held in old-format "
+                   "snapshots were changed at their source (`dg env mark-changed`).", snap,
+                   [ALICE, BOB, WRITER, BOT], [BOT, WRITER, CAROL], [BOT, WRITER], b"v2 group also")
+    crowd = [ALICE, BOB, CAROL, WRITER, BOT] + CROWD
+    assert len(crowd) == 64
+    snap = v2("dev", "members", [], crowd, {"LOG_LEVEL": var("info", "variable")})
+    open_v2_vector("v2_sixty_four", "an environment letter holds at most 64 recipients (n is a u8; 64 slots make a "
+                   "4,165-byte header): the last slot opens like the first.", snap, crowd,
+                   [crowd[-1], ALICE, NAMED_OUTSIDER], [crowd[-1], ALICE], b"v2 sixty four")
+
+    # format: the canonical v2 artifact
+    cases = []
+    for snap in (v2("dev", "members", [], [ALICE], {}),
+                 v2("production", None, [ALICE, BOB], [ALICE, BOB],
+                    {"DB_URL": var("postgres://fake/1", note="primary"), "GREETING": var("héllo\n", "variable")},
+                    marked=["A_OLD", "B_OLD"], saved_for=CAROL, key_ids=[4, 7])):
+        pt = encode(snap)
+        assert snapshot_json(decode(pt)) == snapshot_json(snap)
+        cases.append(dict(snapshot=snapshot_json(snap), plaintextHex=H(pt), sizeBytes=len(pt)))
+    vector("v2_padding", "version 2 is canonical JSON too (sorted keys, `audience` {also, group}, `group` null for "
+           "specific people, `id` 32 lowercase hex digits, `markedChanged` left out when empty, `toKeys` beside `to`), "
+           "padded with spaces to a multiple of 512 bytes.",
+           dict(op="format", cases=[dict(snapshot=c["snapshot"]) for c in cases]),
+           dict(results=[{k: v for k, v in c.items() if k != "snapshot"} for c in cases]))
+
+    good = encode(v2("dev", "members", [], [ALICE, BOB], {"A": var("1")}))
+    raw = good.rstrip(b" ")
+
+    def pad(b):
+        return b + b" " * (-(-len(b) // 512) * 512 - len(b)) if b else b
+
+    sixty_five = canonical_json(snapshot_obj(v2("dev", "members", [], [ALICE, BOB, CAROL, WRITER, BOT] + CROWD
+                                                 + [NAMED_OUTSIDER], {})))
+    cases = [
+        ("canonical", good, True),
+        ("group_writers", pad(raw.replace(b'"group":"members"', b'"group":"writers"')), True),
+        ("group_unknown", pad(raw.replace(b'"group":"members"', b'"group":"triage"')), False),
+        ("people_without_anyone", pad(raw.replace(b'"group":"members"', b'"group":null')), False),
+        ("audience_a_word", pad(raw.replace(b'{"also":[],"group":"members"}', b'"members"')), False),
+        ("no_id", pad(raw.replace(b'"id":"' + ENV_ID.encode() + b'",', b"")), False),
+        ("id_uppercase", pad(raw.replace(ENV_ID.encode(), ENV_ID.upper().encode())), False),
+        ("id_short", pad(raw.replace(ENV_ID.encode(), ENV_ID[:30].encode())), False),
+        ("to_keys_short", pad(raw.replace(b'"toKeys":[4,3]', b'"toKeys":[4]')), False),
+        ("to_keys_negative", pad(raw.replace(b'"toKeys":[4,3]', b'"toKeys":[4,-3]')), False),
+        ("marked_empty", pad(raw.replace(b'"to":', b'"markedChanged":[],"to":', 1)), False),
+        ("marked_unsorted", pad(raw.replace(b'"to":', b'"markedChanged":["B","A"],"to":', 1)), False),
+        ("marked_sorted", pad(raw.replace(b'"to":', b'"markedChanged":["A","B"],"to":', 1)), True),
+        ("marked_bad_name", pad(raw.replace(b'"to":', b'"markedChanged":["1A"],"to":', 1)), False),
+        ("also_unsorted", pad(canonical_json(dict(snapshot_obj(v2("dev", "members", [], [ALICE], {})),
+                                                  audience=dict(group="members", also=sorted([B(ALICE), B(BOB)])[::-1])))), False),
+        ("sixty_five_recipients", pad(sixty_five), False),
+        ("version_1_with_id", pad(b'{"audience":"members","env":"dev","generatedAt":1767225600000,"id":"' + ENV_ID.encode()
+                                  + b'","v":1,"vars":{}}'), False),
+        ("version_3", pad(raw.replace(b'"v":2', b'"v":3')), False),
+    ]
+    for name, pt, ok in cases:
+        assert (decode(pt) is not None) == ok, name
+    vector("v2_decode_refused", "a version-2 reader takes only the exact canonical bytes: `group` one of maintainers, "
+           "writers, members or null (null needs someone in `also`), `also` sorted, `id` 32 lowercase hex digits, one "
+           "`toKeys` entry per `to` entry (u32), `markedChanged` sorted variable names and never empty, at most 64 "
+           "recipients; version-2 keys on a version-1 object and an unknown version are malformed.",
+           dict(op="decode", cases=[dict(name=n, plaintextHex=H(pt)) for n, pt, _ in cases]),
+           dict(results=[dict(name=n, snapshot=snapshot_json(decode(pt))) if ok else dict(name=n, error="malformed")
+                         for n, pt, ok in cases]))
+
+    # envelopes: a v2 snapshot is never under the members key; an old Members snapshot never a letter; 65 slots refused
+    snap = v2("dev", "members", [], [ALICE, BOB], {"A": var("1")})
+    _, _, wsealed = sealed_members(snap, label=b"v2 under members key")
+    man = manifest_of(ALICE, wsealed)
+    r1 = open_snapshot(man, wsealed, [], reader_json(BOB), [dict(epoch=0, key=H(K0))])
+    old = dict(env="dev", audience="members", generatedAt=GENERATED_AT, vars={"A": var("1")})
+    _, _, _, _, lsealed = sealed_maintainers(old, ALICE, [ALICE, BOB], label=b"members as letter")
+    man2 = manifest_of(ALICE, lsealed)
+    r2 = open_snapshot(man2, lsealed, [owner_key(ALICE)], reader_json(BOB), [])
+    many = [ALICE, BOB, CAROL, WRITER, BOT] + CROWD + [NAMED_OUTSIDER]
+    big = v2("dev", "members", [], many[:64], {})
+    k_obj = sha256(b"dash-forge vectors: env snapshot kObj sixty five")
+    file_id = sha256(b"dash-forge vectors: env snapshot fileId sixty five")[:16]
+    ivs = [sha256(b"dash-forge vectors: env snapshot iv sixty five %d" % i)[:16] for i in range(65)]
+    _, msealed = seal_named_artifact(ALICE, 4, many, encode(big), k_obj, file_id, ivs)
+    man3 = manifest_of(ALICE, msealed)
+    r3 = open_snapshot(man3, msealed, [owner_key(ALICE)], reader_json(BOB), [])
+    assert r1 == r2 == dict(error="malformed") and r3 == dict(error="sealedPackCorrupt"), (r1, r2, r3)
+    vector("v2_envelope_refused", "a version-2 snapshot in a DFPK 0x01 file (under the members key) and an old Members "
+           "snapshot in a 0x02 letter disagree with their envelope: malformed. A letter header with 65 slots is "
+           "refused before any slot is tried.",
+           dict(op="open", repoId=H(repoId), cases=[
+               dict(manifest=man, sealed=H(wsealed), ownerKeys=[], reader=reader_json(BOB),
+                    epochKeys=[dict(epoch=0, key=H(K0))]),
+               dict(manifest=man2, sealed=H(lsealed), ownerKeys=[owner_key(ALICE)], reader=reader_json(BOB), epochKeys=[]),
+               dict(manifest=man3, sealed=H(msealed), ownerKeys=[owner_key(ALICE)], reader=reader_json(BOB),
+                    epochKeys=[])]),
+           dict(results=[r1, r2, r3]))
 
 
 def build():
@@ -788,7 +1005,7 @@ def build():
     long_run_vectors()
     promotion_vectors()
     exposure_vectors()
-    default_audience_vectors()
+    v2_vectors()
 
 
 def write_vectors(out_dir):

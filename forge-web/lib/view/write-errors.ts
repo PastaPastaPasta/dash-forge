@@ -12,6 +12,7 @@
  * refusal, as the last words, so a bug report can quote it.
  */
 
+import { isUnreachableError } from '../sdk/unreachable'
 import {
   BUDGET_EXCEEDED_CODE,
   CONTEST_FULL_CODE,
@@ -133,6 +134,16 @@ function neededDetail(what: (has: string) => string, has: bigint | undefined, re
   return ` ${what(creditsAsDash(Number(has)))}, and this change needs ${creditsAsDash(Number(required))} DASH.`
 }
 
+/**
+ * A failure no node answered: the browser's fetch failed, the connection dropped, or the request
+ * timed out. Narrower than {@link isUnreachableError}, whose "transport error" also wraps a node's
+ * answer (a gRPC InvalidArgument refusal travels the same way).
+ */
+const NO_ANSWER = /failed to fetch|fetch failed|networkerror|network error|load failed|connection (?:refused|reset)|internet disconnected|\bunavailable\b|deadline exceeded|timed out|timeout/i
+
+/** A write that could not reach Platform ({@link NO_ANSWER}). */
+export const UNREACHABLE_WRITE = "Couldn't reach Dash Platform, so this change may not have been sent. Check your connection, then try again."
+
 export function writeFailure(e: unknown): WriteFailure {
   const out = (message: string, sheet: TopUpReason | null = null): WriteFailure => ({ message, sheet })
   // Plain sentences of their own: may still land, was superseded, or another write holds the lock.
@@ -161,5 +172,8 @@ export function writeFailure(e: unknown): WriteFailure {
   // A nonce taken by another write of this identity (another tab, device or the CLI) that
   // reached here unsettled: say so plainly, never as raw SDK text.
   if (isNonceUsedError(e)) return out(refusalSentence(new ConsensusRefusal(INVALID_NONCE_CODE, '')))
+  // Nothing answered (a transport error, "Failed to fetch"): say so, never the raw gRPC text. A
+  // delete or replace whose read-back timed out may still land, so it says "may not".
+  if (isUnreachableError(e) && NO_ANSWER.test(errorMessage(e, ''))) return out(UNREACHABLE_WRITE)
   return out(errorMessage(e, 'the write failed'))
 }

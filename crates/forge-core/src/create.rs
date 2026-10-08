@@ -16,6 +16,13 @@
 //! an `ENCRYPTION` key, checked before anything is written. The epoch key is never stored
 //! locally: a create interrupted after the wrap recovers it by unwrapping the wrap.
 //!
+//! A **public** repository created with [`CreateRepoOpts::members_only`] (DESIGN §11 Q3: on by
+//! default in `dg repo create`, `dg init` and the web's form; never for forks, imports or
+//! mirrors) adds a step 4: members-only content turned on at once, the owner's epoch-0
+//! self-wrap and the settings-free anchor ([`crate::keyring::enable_members_key`]). Its failure
+//! is not the create's: the repository stands without members-only content, and the result
+//! says so ([`MembersOnly::Failed`]); `dg repo members enable` turns it on later.
+//!
 //! **Resumable, never double-paying.** Before each document is broadcast, its signed
 //! transition is saved to a journal (`$XDG_STATE_HOME/dash-forge/journals/`). A session
 //! that dies anywhere — before a broadcast, mid-broadcast, between steps — is resumed by
@@ -23,7 +30,10 @@
 //! bytes (which land at most once) and is then confirmed by fetching the document; a step
 //! without one first checks whether its document already exists. Only a step that provably
 //! has no document and no pending transition signs a new one. The journal is deleted once
-//! all three documents exist.
+//! all three documents exist and step 4, when asked for, has run: a session killed during step 4
+//! keeps its journal, so the re-run replays steps 1–3 (`Resumed`) and runs step 4 again, which
+//! reuses its own epoch-0 self-wrap if that landed. A re-run of a finished create (every step
+//! `Existed`) never turns members-only content on.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -75,6 +85,10 @@ pub struct CreateRepoOpts {
     /// clients' create flows turn it on unless the user opts out; a fork leaves it off, as
     /// GitHub's forks carry no branch protection.
     pub protect: bool,
+    /// Turn members-only content on right after the config (step 4; public repositories only).
+    /// The clients' create flows set it unless the user opts out; forks, imports and mirrors
+    /// leave it off, as they copy a public repository.
+    pub members_only: bool,
 }
 
 impl CreateRepoOpts {
@@ -90,6 +104,7 @@ impl CreateRepoOpts {
             visibility: Visibility::Public,
             fork_of: None,
             protect: false,
+            members_only: false,
         }
     }
 
@@ -115,6 +130,16 @@ pub enum StepOutcome {
     Existed,
 }
 
+/// How step 4, turning members-only content on, ended.
+#[derive(Debug, Clone)]
+pub enum MembersOnly {
+    /// It is on: this run posted the anchor, or finished an interrupted run's.
+    On(crate::keyring::Enabled),
+    /// It is not on: the repository stands without it, and nothing half-made needs repairing
+    /// beyond what turning it on again does (it reuses a landed self-wrap).
+    Failed(std::sync::Arc<Error>),
+}
+
 /// The result of [`create_repo`].
 #[derive(Debug, Clone)]
 pub struct CreateRepoResult {
@@ -122,6 +147,9 @@ pub struct CreateRepoResult {
     pub repo: RepoRef,
     /// `repo`, `maintainer` and `config`, in order, with how each ended.
     pub steps: Vec<(&'static str, StepOutcome)>,
+    /// Step 4: `None` when it was not asked for, or when this run created nothing (a re-run of
+    /// a finished create).
+    pub members_only: Option<MembersOnly>,
     /// The owner's balance change across the session, in credits (what it cost).
     pub cost_credits: u64,
 }
@@ -458,13 +486,67 @@ pub async fn create_repo(
         steps.push((Step::Config.doc_type(), outcome));
     }
 
+    // 4. members-only content, for a public repo this run (or an interrupted one) created
+    // Boxed: the key setup's future is large, and every create flow awaits this one.
+    let members_only = Box::pin(turn_on_members_only(
+        client, identity, bridge, &repo, &opts, &steps,
+    ))
+    .await;
+
     journal.finish();
     let balance_after = client.get_balance(&owner).await.unwrap_or(balance_before);
     Ok(CreateRepoResult {
         repo,
         steps,
+        members_only,
         cost_credits: balance_before.saturating_sub(balance_after),
     })
+}
+
+/// Whether step 4 runs: asked for, a public repository, and this run wrote or finished one of its
+/// documents (a step `Created`, or `Resumed` from an interrupted run's journal). A re-run of a
+/// finished create, where every step `Existed`, turns nothing on.
+fn turn_on_members_only_now(opts: &CreateRepoOpts, steps: &[(&str, StepOutcome)]) -> bool {
+    opts.members_only
+        && opts.visibility == Visibility::Public
+        && steps.iter().any(|(_, o)| *o != StepOutcome::Existed)
+}
+
+/// Step 4, when [`turn_on_members_only_now`]: turn members-only content on in the repository
+/// just created. The owner's `maintainer` document is waited for first (a node a block behind
+/// would read the owner as no maintainer); any failure is reported, never raised.
+async fn turn_on_members_only(
+    client: &PlatformClient,
+    identity: &LoadedIdentity,
+    bridge: &BridgeIdentity,
+    repo: &RepoRef,
+    opts: &CreateRepoOpts,
+    steps: &[(&str, StepOutcome)],
+) -> Option<MembersOnly> {
+    if !turn_on_members_only_now(opts, steps) {
+        return None;
+    }
+    let signer = crate::keyring::PrivateSigner {
+        client,
+        identity,
+        bridge,
+    };
+    for attempt in 1..=FIND_ATTEMPTS {
+        let seen = MemberReader::new(client)
+            .role_doc(repo, &identity.id(), Role::Maintainer)
+            .await;
+        // Seen, or the read failed (enabling then says why it can't), or out of attempts.
+        if !matches!(seen, Ok(None)) || attempt == FIND_ATTEMPTS {
+            break;
+        }
+        tokio::time::sleep(FIND_DELAY).await;
+    }
+    Some(
+        match crate::keyring::enable_members_key(&signer, repo).await {
+            Ok(done) => MembersOnly::On(done),
+            Err(e) => MembersOnly::Failed(std::sync::Arc::new(e)),
+        },
+    )
 }
 
 /// A private create needs an `ENCRYPTION` key the identity file holds (§9 "Create"): checked
@@ -825,6 +907,51 @@ mod tests {
             protect_problem(&opts).is_none(),
             "refs/heads/ + 89 is exactly 100"
         );
+    }
+
+    /// Step 4 runs for an asked-for public create that wrote or finished something; never for a
+    /// re-run of a finished one, a private repository, or a create that did not ask.
+    #[test]
+    fn members_only_runs_only_for_a_create_this_run_wrote_or_finished() {
+        use StepOutcome::{Created, Existed, Resumed};
+        let asked = CreateRepoOpts {
+            members_only: true,
+            ..CreateRepoOpts::public("p")
+        };
+        let steps =
+            |o: [StepOutcome; 3]| vec![("repo", o[0]), ("maintainer", o[1]), ("config", o[2])];
+        assert!(turn_on_members_only_now(
+            &asked,
+            &steps([Created, Created, Created])
+        ));
+        // a killed run's journal replays: Resumed, and step 4 runs again
+        assert!(turn_on_members_only_now(
+            &asked,
+            &steps([Resumed, Resumed, Resumed])
+        ));
+        // a repo that stood without its config: finishing it counts
+        assert!(turn_on_members_only_now(
+            &asked,
+            &steps([Existed, Existed, Created])
+        ));
+        // a re-run of a finished create
+        assert!(!turn_on_members_only_now(
+            &asked,
+            &steps([Existed, Existed, Existed])
+        ));
+        // not asked (forks, imports, --no-members-only), or private
+        assert!(!turn_on_members_only_now(
+            &CreateRepoOpts::public("p"),
+            &steps([Created, Created, Created])
+        ));
+        let private = CreateRepoOpts {
+            visibility: Visibility::Private,
+            ..asked
+        };
+        assert!(!turn_on_members_only_now(
+            &private,
+            &steps([Created, Created, Created])
+        ));
     }
 
     #[test]

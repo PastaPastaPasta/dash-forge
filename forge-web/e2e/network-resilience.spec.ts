@@ -245,6 +245,8 @@ test.describe('network resilience: refresh under navigation and writes', () => {
 
     const name = `nr6-${Date.now().toString(36)}`
     await page.getByLabel('Repository name').fill(name)
+    // Not about members-only content: create without it (on by default where the browser holds a key).
+    await page.getByTestId('repo-members-only').uncheck()
     await page.getByRole('button', { name: 'Create repository' }).click()
     const dialog = page.getByRole('dialog')
     await expect(dialog.getByTestId('cost-preview')).toBeVisible()

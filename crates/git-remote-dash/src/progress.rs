@@ -80,12 +80,20 @@ impl Progress {
 #[derive(Debug)]
 pub struct FetchMeter {
     enabled: bool,
-    packs: usize,
-    bytes: u64,
     /// [`forge_core::platform::large_read_bytes`] when the meter started.
     platform_start: u64,
-    /// Packs and bytes done, and when the line was last drawn.
-    state: std::sync::Mutex<(usize, u64, Option<std::time::Instant>)>,
+    state: std::sync::Mutex<MeterState>,
+}
+
+/// A [`FetchMeter`]'s counts: packs and bytes in all (less those [`FetchMeter::skip`]ped), done,
+/// and when the line was last drawn.
+#[derive(Debug)]
+struct MeterState {
+    packs: usize,
+    bytes: u64,
+    done_packs: usize,
+    done_bytes: u64,
+    drawn: Option<std::time::Instant>,
 }
 
 /// The least time between two redraws of the fetch line.
@@ -97,10 +105,14 @@ impl FetchMeter {
     pub fn new(enabled: bool, packs: usize, bytes: u64) -> Self {
         Self {
             enabled: enabled && packs > 0,
-            packs,
-            bytes,
             platform_start: forge_core::platform::large_read_bytes(),
-            state: std::sync::Mutex::new((0, 0, None)),
+            state: std::sync::Mutex::new(MeterState {
+                packs,
+                bytes,
+                done_packs: 0,
+                done_bytes: 0,
+                drawn: None,
+            }),
         }
     }
 
@@ -114,33 +126,44 @@ impl FetchMeter {
         self.update(1, bytes);
     }
 
+    /// One pack of `bytes` bytes will not be downloaded after all (a repack superseded it and
+    /// the superseding pack is here): it leaves the totals, so the line still ends at 100%.
+    pub fn skip(&self, bytes: u64) {
+        let mut s = self.lock();
+        s.packs = s.packs.saturating_sub(1);
+        s.bytes = s.bytes.saturating_sub(bytes);
+    }
+
     /// Redraw with the bytes received so far, while a pack is in flight.
     pub fn tick(&self) {
         self.update(0, 0);
     }
 
-    fn update(&self, packs: usize, bytes: u64) {
-        let mut s = self
-            .state
+    fn lock(&self) -> std::sync::MutexGuard<'_, MeterState> {
+        self.state
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        s.0 += packs;
-        s.1 += bytes;
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn update(&self, packs: usize, bytes: u64) {
+        let mut s = self.lock();
+        s.done_packs += packs;
+        s.done_bytes += bytes;
         if !self.enabled {
             return;
         }
-        if s.2.is_none_or(|t| t.elapsed() >= FETCH_REDRAW) {
-            s.2 = Some(std::time::Instant::now());
-            let line = fetch_line(s.0, self.packs, self.received(s.1), self.bytes);
-            draw(&format!("\r{line}"));
+        if s.drawn.is_none_or(|t| t.elapsed() >= FETCH_REDRAW) {
+            s.drawn = Some(std::time::Instant::now());
+            draw(&format!("\r{}", self.line(&s)));
         }
     }
 
-    /// The bytes received: the finished packs' `done`, or the Platform bytes read since the
-    /// meter started when that is more, never past the total.
-    fn received(&self, done: u64) -> u64 {
+    /// The line for `s`. The bytes received: the finished packs', or the Platform bytes read
+    /// since the meter started when that is more, never past the total.
+    fn line(&self, s: &MeterState) -> String {
         let platform = forge_core::platform::large_read_bytes().saturating_sub(self.platform_start);
-        done.max(platform.min(self.bytes))
+        let received = s.done_bytes.max(platform.min(s.bytes));
+        fetch_line(s.done_packs, s.packs, received, s.bytes)
     }
 
     /// The final line, `…, done.`, once every pack is done.
@@ -151,12 +174,12 @@ impl FetchMeter {
         if !self.enabled {
             return;
         }
-        let s = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let line = fetch_line(s.0, self.packs, self.received(s.1), self.bytes);
-        draw(&format!("\r{line}{}\n", if ok { ", done." } else { "" }));
+        let s = self.lock();
+        draw(&format!(
+            "\r{}{}\n",
+            self.line(&s),
+            if ok { ", done." } else { "" }
+        ));
     }
 }
 
@@ -745,7 +768,23 @@ mod tests {
         let m = FetchMeter::new(false, 2, 10);
         m.advance(5);
         m.finish(true);
-        assert_eq!(m.state.lock().unwrap().0, 1);
+        assert_eq!(m.state.lock().unwrap().done_packs, 1);
         assert!(!FetchMeter::new(true, 0, 0).enabled);
+    }
+
+    /// Q5-B15: a pack a fetch skips (a repack superseded it) leaves the totals, so the line
+    /// still ends at 100% over the packs really downloaded.
+    #[test]
+    fn a_skipped_pack_leaves_the_totals() {
+        let m = FetchMeter::new(false, 3, 30);
+        m.skip(10);
+        m.advance(10);
+        m.advance(10);
+        let s = m.lock();
+        assert_eq!(
+            (s.done_packs, s.packs, s.done_bytes, s.bytes),
+            (2, 2, 20, 20)
+        );
+        assert!(fetch_line(s.done_packs, s.packs, s.done_bytes, s.bytes).contains("100% (2/2)"));
     }
 }

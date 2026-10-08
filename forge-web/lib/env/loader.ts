@@ -1,9 +1,10 @@
 /**
  * Reading a repository's environments in the browser: every kind-8 manifest and the current
  * maintainers, then every snapshot a current maintainer wrote, fetched, checked against its
- * manifest's `packHash` and opened (Members under the members key, Maintainers with this browser's
- * encryption keys), then {@link resolveSnapshots} (strict D24). The twin of forge-core
- * `env::service::Environments::read` and its `Book`: the same inputs give `dg env ls`'s answer.
+ * manifest's `packHash` and opened (an old-format Members snapshot under the members key, every
+ * other with this browser's encryption keys), then {@link resolveSnapshots} (strict D24). The
+ * twin of forge-core `env::service::Environments::read` and its `Book`: the same inputs give
+ * `dg env ls`'s answer.
  *
  * Nothing here is kept: the caller holds the {@link EnvBook} in memory for as long as it shows it.
  * The I/O is injected ({@link EnvSources}, {@link EnvKeys}); `sources.ts` binds it to the SDK.
@@ -22,7 +23,7 @@ import {
 import { mapPooled } from '../view/pool'
 import { exposureOf, resolveSnapshots, type EnvState, type Exposure, type Resolution, type SnapshotRef } from './chain'
 import { openSnapshot, SnapshotOpenError, openErrorReason, type OpenErrorCode } from './codec'
-import { MAX_RECIPIENTS, MAX_SNAPSHOT, compareStrings as cmp, type Snapshot } from './format'
+import { MAX_RECIPIENTS, MAX_SNAPSHOT, compareStrings as cmp, membersKey, type Snapshot } from './format'
 
 /** One kind-8 `packManifest`, as the reader keeps it. */
 export interface EnvManifest extends SnapshotRef {
@@ -37,7 +38,7 @@ export type Opened =
   | { readonly kind: 'snapshot'; readonly snapshot: Snapshot }
   | { readonly kind: 'refused'; readonly code: OpenErrorCode }
   | { readonly kind: 'unfetched'; readonly message: string }
-  /** A Members snapshot under a members key its author could no longer use when it was saved (§8.2). */
+  /** An old-format Members snapshot under a members key its author could no longer use when it was saved (§8.2). */
   | { readonly kind: 'late' }
   /** Not fetched: this reader holds nothing that could open it (a signed-out or locked viewer). */
   | { readonly kind: 'skipped' }
@@ -66,6 +67,11 @@ export interface EnvBook {
   readonly manifests: readonly EnvManifest[]
   /** What each authorized snapshot came to, by manifest document id. */
   readonly opened: ReadonlyMap<string, Opened>
+  /**
+   * The authorized snapshots stored in the old format (DFPK 0x01, under the members key), by
+   * manifest document id, whether or not they opened here.
+   */
+  readonly oldFormat: ReadonlySet<string>
   readonly resolution: Resolution
 }
 
@@ -99,7 +105,7 @@ export interface EnvKeys {
   readonly hasReader: boolean
 }
 
-/** The DFPK version byte of a Members snapshot (a pack) and of a Maintainers one (to specific people). */
+/** The DFPK version byte of an old-format Members snapshot (a pack) and of a letter (to specific people). */
 const PACK_VERSION = 0x01
 const LETTER_VERSION = 0x02
 
@@ -150,6 +156,7 @@ export async function readEnvironments(sources: EnvSources, keys: EnvKeys, open:
   const maintainers = new Set(list)
   const counted = authorized(manifests, maintainers)
   const opened = new Map<string, Opened>()
+  const oldFormat = new Set<string>()
   if (keys.members === null && !keys.hasReader) {
     for (const m of counted) opened.set(m.id, { kind: 'skipped' })
   } else {
@@ -163,7 +170,7 @@ export async function readEnvironments(sources: EnvSources, keys: EnvKeys, open:
         return { kind: 'unfetched', message: e instanceof Error ? e.message : String(e) }
       }
     })
-    // a Maintainers snapshot's sender key comes from its manifest owner's identity only
+    // a letter's sender key comes from its manifest owner's identity only
     const owners = [...new Set(counted.filter((_, i) => { const b = fetched[i]; return b instanceof Uint8Array && b[4] === LETTER_VERSION }).map((m) => m.ownerId))]
     const ownerKeys = new Map<string, readonly OwnerKey[]>(await Promise.all(owners.map(async (o) => [o, await sources.ownerKeys(o)] as const)))
     const epochKeys: EpochKeyring = keys.members?.keys ?? new Map()
@@ -188,13 +195,19 @@ export async function readEnvironments(sources: EnvSources, keys: EnvKeys, open:
       }
     })
   }
+  // old format: a DFPK 0x01 copy that passed the packHash and size checks (it opened, or failed
+  // only for want of a key), never a damaged copy
+  for (const m of counted) {
+    const o = opened.get(m.id)
+    if ((o?.kind === 'snapshot' && membersKey(o.snapshot)) || (o?.kind === 'refused' && o.code === 'noKey') || o?.kind === 'late') oldFormat.add(m.id)
+  }
   const envByHash = new Map<string, string>()
   for (const m of counted) {
     const o = opened.get(m.id)
     if (o?.kind === 'snapshot') envByHash.set(m.packHash, o.snapshot.env)
   }
   const resolution = resolveSnapshots(maintainers, manifests, (h) => envByHash.get(h) ?? null)
-  return { maintainers, manifests, opened, resolution }
+  return { maintainers, manifests, opened, oldFormat, resolution }
 }
 
 /** A head, as a conflict or a warning names it. */
@@ -303,6 +316,48 @@ export function exposureFor(book: EnvBook, removed: string, heldMembersKey: bool
     removed,
     heldMembersKey,
   )
+}
+
+/** What the old format left in one environment ({@link oldFormatOf}). */
+export interface OldFormat {
+  /** Its latest version is in the old format. */
+  readonly latest: boolean
+  /** Names held in old-format versions, not marked changed since (sorted). */
+  readonly unmarked: readonly string[]
+  /** Old-format versions this reader can't open (their names are unknown here). */
+  readonly unopened: number
+}
+
+/**
+ * What the old format left in `env` (DESIGN §4.5, §10): whether its latest version is an
+ * old-format Members snapshot, the names held in its old-format snapshots this reader opened that
+ * are not marked changed in the latest version, and how many old-format snapshots did not open
+ * here. `null` when it has none (forge-core `Book::old_format_of`).
+ */
+export function oldFormatOf(book: EnvBook, env: string): OldFormat | null {
+  const state = stateOf(book, env)
+  if (state === undefined) return null
+  const old = state.snapshots.filter((id) => book.oldFormat.has(id))
+  if (old.length === 0) return null
+  const latest = state.heads.some((h) => book.oldFormat.has(h))
+  const newest = state.heads[state.heads.length - 1]
+  const head = newest === undefined ? null : snapshotOf(book, newest)
+  // what is marked is in the latest version: a reader who can't open it can't tell
+  if (head === null) return { latest, unmarked: [], unopened: 0 }
+  const marked = new Set(head.markedChanged)
+  const unmarked = new Set<string>()
+  let unopened = 0
+  for (const id of old) {
+    const s = snapshotOf(book, id)
+    if (s === null) unopened++
+    else for (const name of s.vars.keys()) if (!marked.has(name)) unmarked.add(name)
+  }
+  return { latest, unmarked: [...unmarked].sort(cmp), unopened }
+}
+
+/** Whether the banner is shown: the latest version is old, or old values may still be in use. */
+export function needsAttention(o: OldFormat): boolean {
+  return o.latest || o.unmarked.length > 0 || o.unopened > 0
 }
 
 /** Environments this reader cannot read at all: hidden ones and those whose latest change does not open here. */

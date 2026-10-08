@@ -10,7 +10,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { MarkdownEditor } from '@/components/repo/issue-bits'
-import { DRAFT_TTL_MS, MAX_DRAFTS, clearDrafts, commentDraftKey, commentEditDraftKey, editDraftKey, newIssueDraftKey, readDraft, useDraftState, useDraftText, useEditDraft, useQuotedUntilEmptied, writeDraft, type DraftPersist } from './draft-text'
+import { DRAFT_TTL_MS, MAX_DRAFTS, clearDrafts, commentDraftKey, commentEditDraftKey, discardedEdits, editDraftKey, newIssueDraftKey, readDraft, useDraftState, useDraftText, useEditDraft, useQuotedUntilEmptied, writeDraft, type DraftPersist } from './draft-text'
 import { quotesMembersText } from './audience'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -268,8 +268,11 @@ describe('useEditDraft', () => {
     act(() => root.render(<Editor rev={2} />))
     expect(api!.value).toBeNull()
     expect(api!.dropped).toBe(true)
+    // What was discarded, so the page can say where (Q5-A11).
+    expect(api!.droppedValue).toEqual({ title: 't', body: 'old', rev: 1 })
     act(() => api!.set({ title: 'Saved', body: 'new', rev: 2 }))
     expect(api!.dropped).toBe(false)
+    expect(api!.droppedValue).toBeNull()
   })
 
   it('holds the stored edit while it saves, keeps it again only when nothing was sent', async () => {
@@ -427,5 +430,20 @@ describe('MarkdownEditor shortcut', () => {
     key({ ctrlKey: true })
     expect(onSubmit).toHaveBeenCalledTimes(2)
     expect(field().getAttribute('aria-keyshortcuts')).toBe('Meta+Enter Control+Enter')
+  })
+})
+
+describe('discardedEdits (Q5-A11)', () => {
+  it('marks a discarded comment edit at its comment, and names it in the box, never as the description', () => {
+    const d = discardedEdits(false, { id: 'c2' }, ['c1', 'c2'])
+    expect(d.atComment).toBe('c2')
+    expect(d.boxNote).toMatch(/^Your unsaved edit of a comment was discarded/)
+    expect(d.boxNote).not.toMatch(/description/)
+  })
+  it('names what was discarded', () => {
+    expect(discardedEdits(false, { id: 'gone' }, ['c1'])).toEqual({ atComment: null, boxNote: expect.stringMatching(/^Your unsaved edit of a comment/) })
+    expect(discardedEdits(true, null, []).boxNote).toMatch(/^Your unsaved edit of the description was discarded/)
+    expect(discardedEdits(true, { id: 'c1' }, ['c1'])).toEqual({ atComment: 'c1', boxNote: expect.stringMatching(/^Your unsaved edits of the description and of a comment/) })
+    expect(discardedEdits(false, null, ['c1'])).toEqual({ atComment: null, boxNote: null })
   })
 })

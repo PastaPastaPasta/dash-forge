@@ -387,7 +387,10 @@ export async function forkRepoV2(
       ...(input.defaultBranch ? { defaultBranch: input.defaultBranch } : {}),
       forkOf: parent.repoId,
     },
-    (step, state) => onProgress?.({ step, state }),
+    // A fork never turns members-only content on, so `members` never runs.
+    (step, state) => {
+      if (step !== 'members') onProgress?.({ step, state })
+    },
   )
   const fork: RepoRef = { forge: parent.forge, repoId: created.repoId, ownerId: owner, name, visibility: 'public' }
 

@@ -35,8 +35,12 @@ use super::tlv::{self, Fields};
 use super::PrivateError;
 use crate::envelope::{self, PrivateKey, SharedKey};
 
-/// At most this many recipients, the sender included.
+/// At most this many recipients of a letter, the sender included (the slots sit in one 5,120 B
+/// field).
 pub const MAX_RECIPIENTS: usize = 16;
+/// At most this many recipients of a sealed artifact (DFPK 0x02), the sender included: `n` is a
+/// u8, and 64 slots make a 4,165-byte header (`private-repos.md` §3.7; an environment letter).
+pub const MAX_ARTIFACT_RECIPIENTS: usize = 64;
 /// One slot: the IV and three CBC blocks of the 47-byte slot plaintext.
 pub const SLOT_LEN: usize = 64;
 /// The slot plaintext's version byte: a specific-people slot (a `repoKey` wrap is `0x01`).
@@ -207,8 +211,11 @@ pub fn seal_with(
 }
 
 /// The slot block `n ‖ senderKeyId ‖ COMMIT_obj ‖ n × slot` of `K_obj` for `recipients`, after
-/// the sender-first and no-duplicate checks. Shared by letters and sealed artifacts.
+/// the sender-first, no-duplicate and at-most-`max` checks. Shared by letters and sealed
+/// artifacts.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn slot_block(
+    max: usize,
     sender: &PrivateKey,
     sender_key_id: u32,
     owner_id: &[u8; 32],
@@ -219,10 +226,7 @@ pub(crate) fn slot_block(
 ) -> Result<Vec<u8>, PrivateError> {
     let n = recipients.len();
     let first = recipients.first().ok_or(PrivateError::Malformed)?;
-    if n > MAX_RECIPIENTS
-        || first.identity_id != *owner_id
-        || first.public_key != sender.public_key()
-    {
+    if n > max || first.identity_id != *owner_id || first.public_key != sender.public_key() {
         return Err(PrivateError::Malformed);
     }
     for (i, r) in recipients.iter().enumerate() {
@@ -284,6 +288,7 @@ fn seal_inner(
 
     let obj = ObjKeys::derive(repo_id, k_obj);
     let block = slot_block(
+        MAX_RECIPIENTS,
         sender,
         sender_key_id,
         &header.owner_id,
@@ -565,6 +570,7 @@ fn seal_artifact_inner(
     }
     let obj = ObjKeys::derive(repo_id, k_obj);
     let block = slot_block(
+        MAX_ARTIFACT_RECIPIENTS,
         sender,
         sender_key_id,
         owner_id,
@@ -631,7 +637,7 @@ pub fn open_artifact(
     }
     let n = usize::from(sealed[8]);
     let header_len = artifact_header_len(n);
-    if !(1..=MAX_RECIPIENTS).contains(&n) || sealed.len() < header_len {
+    if !(1..=MAX_ARTIFACT_RECIPIENTS).contains(&n) || sealed.len() < header_len {
         return Err(corrupt);
     }
     let header = &sealed[..header_len];

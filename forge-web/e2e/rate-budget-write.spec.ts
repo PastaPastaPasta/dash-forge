@@ -50,6 +50,8 @@ test('rbw-1. a browser key and a repo, written through the request budget', asyn
   // 2. Create a repo: a document create through the write engine.
   const name = `p1-gate-${Date.now().toString(36)}`
   await page.getByLabel('Repository name').fill(name)
+  // Not about members-only content: create without it (on by default where the browser holds a key).
+  await page.getByTestId('repo-members-only').uncheck()
   await page.getByRole('button', { name: 'Create repository' }).click()
   const dialog = page.getByRole('dialog')
   await expect(dialog.getByTestId('cost-preview')).toBeVisible()
