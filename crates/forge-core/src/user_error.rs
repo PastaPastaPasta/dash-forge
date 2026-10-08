@@ -314,15 +314,16 @@ pub mod codes {
     /// `dg pr merge --delete-branch` would delete a branch other open pull requests use as
     /// their head or base.
     pub const BRANCH_IN_USE: &str = "E808";
-    // E805, E806, E809 and E810 below are reserved for the members-only branch guard (phase
-    // 3A) and E811 to E813 for the choice of a new branch's audience (3A), a repository's
-    // going public (5A) and a bot's access (4B). Nothing reports them yet, so they are
+    // E805, E806 and E810 below are reserved for the members-only branch guard (phase 3A),
+    // E809 and E811 for a new branch's audience (3A), E812 for a repository's going public
+    // (5A) and E813 for a bot's access (4B). Nothing reports them yet, so they are
     // unused until those phases land. Never reuse a number for another meaning: E808 is
     // `BRANCH_IN_USE`, not the new-branch refusal (that is E811).
     /// A push to a public ref would publish commits from a members-only branch (reserved).
     pub const PUBLISHES_MEMBERS_ONLY: &str = "E805";
     /// A public push or a fetch cannot check for members-only commits: the encryption key is
-    /// not available and the clone has no record of what it holds (reserved).
+    /// not available (a locked key with a record of members-only branches, or no record at
+    /// all) (reserved).
     pub const CANNOT_CHECK_MEMBERS_ONLY: &str = "E806";
     /// A push asked for a branch to be members-only, but the branch is already public
     /// (reserved).

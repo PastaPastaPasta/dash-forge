@@ -544,7 +544,7 @@ error: E805 pushing refs/heads/main would publish 3 commits from members-only br
 
 ## E806
 
-**Can't check for members-only commits.** *Reserved: this version doesn't report it yet. It arrives with members-only branches.* This clone has fetched members-only branches, and your encryption key isn't available, so a public push can't be checked, and a fetch would quietly show only the public view. Forge refuses rather than guess.
+**Can't check for members-only commits.** *Reserved: this version doesn't report it yet. It arrives with members-only branches.* Your encryption key isn't available, so Forge can't tell which commits in this clone are members-only. A public push can't be checked, and a fetch would quietly show only the public view. Forge refuses rather than guess.
 
 ```
 error: E806 can't check for members-only commits: your encryption key isn't available
@@ -552,7 +552,7 @@ error: E806 can't check for members-only commits: your encryption key isn't avai
   fix: dg auth unlock, then push again
 ```
 
-**What to do:** unlock your encryption key with `dg auth unlock`, then run the command again. A key protected by a passphrase needs a terminal, or `DASH_FORGE_PASSPHRASE`.
+**What to do:** unlock your encryption key with `dg auth unlock`, then run the command again. A key protected by a passphrase needs a terminal, or `DASH_FORGE_PASSPHRASE`. A clone that never held members-only commits can start its record with `dg doctor --init-ledger`.
 
 ## E809
 
@@ -567,7 +567,7 @@ error: E809 fix-auth is already public; nothing already pushed can be hidden
 
 ## E810
 
-**Members-only commits not pushed to another remote.** *Reserved: this version doesn't report it yet. It arrives with members-only branches.* Your `pre-push` hook found members-only commits from a Dash Forge repository in what you are pushing to a remote that is not that repository (GitHub, for example), or to a public branch of it, and stopped the push.
+**Members-only commits not pushed to another remote.** *Reserved: this version doesn't report it yet. It arrives with members-only branches.* Your `pre-push` hook found members-only commits from a Dash Forge repository in what you are pushing to a remote that is not a Dash Forge remote (GitHub, for example), or to a public branch of one, and stopped the push.
 
 ```
 pre-push: E810 refs/heads/main contains members-only commits from dash://o/r; not pushing to github
@@ -578,7 +578,7 @@ pre-push: E810 refs/heads/main contains members-only commits from dash://o/r; no
 
 ## E811
 
-**New branch: choose who can see it.** *Reserved: this version doesn't report it yet. It arrives with members-only branches.* You pushed a branch Forge hasn't seen before, in a public repository that has members-only content on, and nothing says who should see it: not `dg branch new --members`, not a push option, and not the clone's `dash.newBranches` setting. Forge asks once per clone and signs nothing.
+**New branch: choose who can see it.** *Reserved: this version doesn't report it yet. It arrives with members-only branches.* You pushed a branch Forge hasn't seen before, in a public repository that has members-only content on, and nothing says who should see it: no `dg branch new --members`, no push option, no `branch.<name>.dashAudience` setting, no commits built on a members-only branch, and no `dash.newBranches` setting for the clone. Forge asks once per clone and signs nothing.
 
 ```
 error: E811 new branch fix-auth: choose who can see it
@@ -592,7 +592,7 @@ This is not [E808](#e808), which is the refusal to delete a branch other pull re
 
 ## E812
 
-**Can't make everything public.** *Reserved: this version doesn't report it yet. It arrives with making a whole repository public.* Making a repository public with everything in it would publish something that isn't safe to publish yet. The message names it. An environment with values saved in the old format is one case: anyone who joined later could read those values, and they would become public.
+**Can't make everything public.** *Reserved: this version doesn't report it yet. It arrives with making a whole repository public.* Making a repository public with everything in it would publish something that isn't safe to publish yet. The message names it. Today the only case is an environment with values saved in the old format: anyone who joined later could read those values, and they would become public.
 
 ```
 error: E812 can't make everything public: environment production has values saved in the old format, which would become public

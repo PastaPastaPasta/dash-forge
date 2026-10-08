@@ -1,4 +1,4 @@
-# Who can read what: Public, Members and Specific people
+# Who can read what: the audiences
 
 Everything in a Dash Forge repository has an **audience**: Public, All members, Maintainers, Writers and maintainers, or Specific people. You can always choose a narrower audience for something new. You widen it only by publishing it or making it public, and that can't be undone.
 
@@ -26,13 +26,13 @@ This page explains what each audience means, what a public repository can keep *
 |---|---|---|---|
 | **Public** | Everyone. | n/a | today |
 | **All members** (short: **Members**) | Everyone with a role in the repository, including people with Read access, now and in future. Bots aren't included. People added later read it too, including what was posted before they joined. People removed later keep what they could already read. | yes | today, for issues, comments, reviews and environments |
-| **Maintainers** | The current maintainers when it was saved. People who become maintainers later see it only if someone adds them. | no | today, for environments |
+| **Maintainers** | The maintainers when it was saved. A maintainer added later reads it from the next change on, not what was saved before. | no | today, for environments |
 | **Writers and maintainers** | The people with Write access or more right now. | no | **coming later** |
 | **Specific people** | A list the writer picks, up to 16 people, members or not. The writer is always on it. Replying with someone added lets them read from that reply on, not earlier ones. | no | **coming later** |
 
 "Members-only" is the adjective for anything that isn't public. It can be any of the four audiences below Public.
 
-Members-only content is encrypted on your computer or in your browser before anything is sent. Dash Platform stores the encrypted text. Nobody without the repository's key can read it: not Platform nodes, not storage providers, not Forge's developers.
+Members-only content is encrypted on your computer or in your browser before anything is sent. Dash Platform stores the encrypted text. Nobody without a key it was encrypted to can read it: not Platform nodes, not storage providers, not Forge's developers.
 
 A **private** repository is different: everything in it is encrypted, code included, and it has no public side. This page is about members-only content inside a **public** repository.
 
@@ -61,13 +61,13 @@ Who something is for is fixed when it is posted. Editing a members-only comment 
 | People with **Read** access | yes. On a public repository the Read role exists for exactly this: someone who should read the members-only discussion and comment, without pushing, approving or merging. |
 | A **Bot** | **no**, by default. A bot is an automated account. It can post comments and reviews, can't push, approve or merge, and reads members-only content only when someone asks it to. Bots arrive later. |
 | A CI runner | **no**, by default. A runner's key reports check runs and is not a membership. If you give the runner's identity the Read role, it reads everything members-only, like anyone else with Read access. |
-| Someone added later | yes, everything, including what was posted before they joined |
+| Someone added later | in an All members audience, yes: everything, including what was posted before they joined. In a Maintainers environment, from the next change on. |
 | Someone removed | what was posted **before** the removal, for good. Nothing posted afterwards. Encryption can't take back what was already shared. |
 | Anyone else | no. They see that something was posted, by whom and when ([below](#what-everyone-can-still-see)). |
 
 What each role can do:
 
-- **Read:** can read members-only content and comment. Can't push or approve.
+- **Read:** can read members-only content and comment. Can't push. Their approvals don't count.
 - **Triage:** can also close, label and assign.
 - **Write:** can also push, approve and merge.
 - **Maintain:** can also change settings, protected branches, releases and environments.
@@ -258,6 +258,6 @@ Forge uses the same words in `dg`, the web app and these pages.
 
 **Setting up:** **Turn on members-only content** is what a maintainer does once per repository (`dg repo members enable`). **Set up your encryption key** is what each person does once per identity (`dg auth keys add --encryption`).
 
-**Words Forge doesn't use.** Forge's apps and pages never say sealed, lane, named, restricted, reveal, epoch, key letter or disclosure, and never use "grant" as a noun. Say "encrypted", "the key changed", "access" or "who can read it" instead.
+**Words Forge doesn't use.** Forge is moving its apps and pages off sealed, lane, named, restricted, reveal, epoch, key letter and disclosure, and off "grant" as a noun. Say "encrypted", "the key changed", "access" or "who can read it" instead.
 
 How it is built: [Private repositories §17](private-repos.md#17-mixed-repositories-members-only-content-in-a-public-repository) and [forge-v2.md §5](../contracts/forge-v2.md#5-private-repositories).
