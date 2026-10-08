@@ -30,7 +30,7 @@ import { TrustPanel } from '@/components/ui/trust-panel'
 import { repoHref, useExpiredLink, type RepoAddress } from '@/hooks/use-query-param'
 import { SignedOutView } from '@/contexts/auth-context'
 import { usePublicView } from '@/hooks/use-public-view'
-import { PublicViewBanner, ViewAsPublicButton } from '@/components/repo/audience'
+import { MembersOnlyCreateNotice, PublicViewBanner, ViewAsPublicButton } from '@/components/repo/audience'
 
 export function RepoScaffold({
   addr,
@@ -216,6 +216,7 @@ function ScaffoldBody({
       <RepoHeader home={home} addr={addr} />
       <InviteBanner repo={home.repo} />
       <PrivateBanner home={home} />
+      <MembersOnlyCreateNotice home={home} />
       <ViewAsPublicButton home={home} />
       {rail ? (
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_296px]">

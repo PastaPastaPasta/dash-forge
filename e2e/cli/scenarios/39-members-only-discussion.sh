@@ -30,9 +30,14 @@ fail_with() { cat "$1.err" "$1.json" >&2 2>/dev/null; is_flake "$1.err" && skip_
 # A write: --yes --json, stdout to <out>.json, stderr to <out>.err.
 w() { local id="$1" out="$2"; shift 2; dg_as "$id" -y --json "$@" >"${out}.json" 2>"${out}.err"; }
 
-step "OWNER creates a public repo, pushes main and feature, turns members-only content on"
+step "OWNER creates a public repo (members-only content on from creation), pushes main and feature"
 _retry "$LOG-create.err" _dg_read "$ID_OWNER" "$LOG-create.json" "$LOG-create.err" \
     --yes --json repo create "$NAME" --storage platform || fail_with "$LOG-create" "repo create"
+# A retry after a flaky first attempt finds the repo: its members-only status is then not reported.
+case "$(json_field "$LOG-create.json" 'd["membersOnly"] and d["membersOnly"]["status"]')" in
+  on|None) ok "members-only content turned on at creation" ;;
+  *) bad "members-only content at creation: $(cat "$LOG-create.json")" ;;
+esac
 seed_tiny_repo "$SRC" main >/dev/null
 git -C "$SRC" checkout -q -b feature
 printf 'feature %s\n' "$RUN_ID" >"$SRC/feature.txt"
@@ -40,6 +45,7 @@ git -C "$SRC" add -A && git -C "$SRC" commit -q -m "feature ${RUN_ID}"
 git_dash_retry "$ID_OWNER" "$LOG-push" -C "$SRC" push "$REMOTE" \
     "refs/heads/main:refs/heads/main" "refs/heads/feature:refs/heads/feature" \
   || { cat "$LOG-push.err" >&2; is_flake "$LOG-push.err" && skip_scenario "push flaked"; bad "push failed"; finish_scenario; }
+# Already on (or finished here after a retried create): enable says so, or shares what is missing.
 w "$ID_OWNER" "$LOG-enable" repo members enable "$REPO" || fail_with "$LOG-enable" "members enable"
 if collab_accept "$ID_COLLAB" "$REPO" "$LOG-add" && w "$ID_OWNER" "$LOG-add" collab add "$REPO" "$IDID_COLLAB" --role writer; then
   [[ "$(json_field "$LOG-add.json" 'd["keyShared"]')" == True ]] && ok "COLLAB added as a writer; key shared" || bad "added without the key"

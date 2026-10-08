@@ -146,7 +146,9 @@ const { addEvent, createComment, createIssue, createPatch, createReview, createR
 const { readableEvents } = await import('./private-content')
 const { writeRefUpdate } = await import('./push')
 const { loadPrivateSession, sdkSessionSource, sessionUnwrapper } = await import('./private-session')
-const { createEpochZero } = await import('./private-members')
+const { createEpochZero, enableMembersContent } = await import('./private-members')
+const { idbPut } = await import('../idb')
+const { pendingRepoCreations } = await import('./writes')
 
 async function session() {
   return loadPrivateSession({ repo: REPO_REF, network: 'devnet', reader: b58(ALICE), source: sdkSessionSource(sdk, REPO_REF), unwrapper: sessionUnwrapper(ops) })
@@ -316,6 +318,87 @@ describe('private create', () => {
     for (const k of Object.keys(chain)) delete chain[k]
     await expect(createRepo(sdk, auth, FORGE, { name: 'nokey', visibility: 'private' })).rejects.toThrow(/encryption key/)
     expect(chain['repo']).toBeUndefined()
+  })
+})
+
+describe('public create with members-only content on (DESIGN §11 Q3)', () => {
+  const withMembers = { ops, epochZero: createEpochZero, membersOnly: enableMembersContent }
+  const reset = (): void => {
+    for (const k of Object.keys(chain)) delete chain[k]
+    members = [{ identity: b58(ALICE), role: 'maintainer', createdAt: 1 }]
+  }
+
+  it('writes repo, maintainer and the plaintext config, then the owner self-wrap and the settings-free anchor', async () => {
+    reset()
+    const created = await createRepo(sdk, auth, FORGE, { name: 'mixed', defaultBranch: 'trunk', protect: true, membersOnly: true }, undefined, withMembers)
+    expect(created.membersOnly).toEqual({ on: true })
+    const configs = chain['config'] ?? []
+    expect(configs).toHaveLength(2)
+    // the public config first, readable by everyone
+    expect(configs[0]?.['defaultBranch']).toBe('trunk')
+    expect(configs[0]?.['enc']).toBeUndefined()
+    // then the epoch-0 anchor: sealed, `vis: "public"`, no settings in plaintext
+    const anchor = configs[1] as Doc
+    expect(anchor['epoch']).toBe(0)
+    expect(anchor['enc']).toBeDefined()
+    expect(anchor['defaultBranch']).toBeUndefined()
+    expect(anchor['protectedPatterns']).toBeUndefined()
+    expect(chain['repoKey']).toHaveLength(1)
+    expect(chain['repoKey']?.[0]?.['memberId']).toBe(b58(ALICE))
+    const ref: RepoRef = { forge: FORGE, repoId: created.repoId, ownerId: b58(ALICE), name: 'mixed', visibility: 'public' }
+    const s = await loadPrivateSession({ repo: ref, network: 'devnet', reader: b58(ALICE), source: sdkSessionSource(sdk, ref), unwrapper: sessionUnwrapper(ops) })
+    expect(s.resolution.writeEpoch).toBe(0)
+    expect(await pendingRepoCreations('devnet', b58(ALICE))).toHaveLength(0)
+  })
+
+  it('unticked: no key and no anchor', async () => {
+    reset()
+    const created = await createRepo(sdk, auth, FORGE, { name: 'plain' }, undefined, withMembers)
+    expect(created.membersOnly).toBeUndefined()
+    expect(chain['config']).toHaveLength(1)
+    expect(chain['repoKey']).toBeUndefined()
+  })
+
+  it('a failure leaves the repo without it, says why, and ends the journal', async () => {
+    reset()
+    const created = await createRepo(sdk, auth, FORGE, { name: 'failing', membersOnly: true }, undefined, {
+      ...withMembers,
+      membersOnly: async () => {
+        throw new Error('quorum not found')
+      },
+    })
+    expect(created.membersOnly).toEqual({ on: false, error: 'quorum not found' })
+    expect(chain['repo']).toHaveLength(1)
+    expect(chain['config']).toHaveLength(1)
+    expect(await pendingRepoCreations('devnet', b58(ALICE))).toHaveLength(0)
+    // without the encryption key in this browser: the same, never a thrown create
+    reset()
+    const noKey = await createRepo(sdk, auth, FORGE, { name: 'nokey-public', membersOnly: true })
+    expect(noKey.membersOnly).toMatchObject({ on: false })
+    expect(chain['repo']).toHaveLength(1)
+  })
+
+  it('a closed tab resumes the members step from the journal; an existing repo without one is never changed', async () => {
+    reset()
+    // the repo, its maintainer and config stand; the tab closed during the members step
+    const first = await createRepo(sdk, auth, FORGE, { name: 'closed' }, undefined, withMembers)
+    // typing the name of a repo that stands, without a journal, turns nothing on
+    const adopted = await createRepo(sdk, auth, FORGE, { name: 'closed', membersOnly: true }, undefined, withMembers)
+    expect(adopted.membersOnly).toBeUndefined()
+    expect(chain['repoKey']).toBeUndefined()
+    await idbPut('journal', `create-repo:devnet:${b58(ALICE)}:closed`, {
+      network: 'devnet',
+      ownerId: b58(ALICE),
+      input: { name: 'closed', membersOnly: true },
+      repoId: first.repoId,
+      done: ['repo', 'maintainer', 'config'],
+      startedAt: 1,
+    })
+    const resumed = await createRepo(sdk, auth, FORGE, { name: 'closed', membersOnly: true }, undefined, withMembers)
+    expect(resumed.membersOnly).toEqual({ on: true })
+    expect(chain['repo']).toHaveLength(1)
+    expect(chain['repoKey']).toHaveLength(1)
+    expect(await pendingRepoCreations('devnet', b58(ALICE))).toHaveLength(0)
   })
 })
 

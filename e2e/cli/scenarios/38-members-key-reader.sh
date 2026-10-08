@@ -27,7 +27,7 @@ json_field() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); prin
 
 step "OWNER creates a public repo and pushes main"
 if ! _retry "$LOG-create.err" _dg_read "$ID_OWNER" "$LOG-create.json" "$LOG-create.err" \
-    --yes --json repo create "$NAME" --storage platform; then
+    --yes --json repo create "$NAME" --storage platform --no-members-only; then
   cat "$LOG-create.err" >&2
   is_flake "$LOG-create.err" && skip_scenario "create failed on a transport flake"
   bad "public create failed"; finish_scenario

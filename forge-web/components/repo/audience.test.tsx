@@ -35,6 +35,8 @@ vi.mock('@/components/confirm-dialog', () => ({
 vi.mock('@/hooks/use-private-write', () => ({ usePrivateWrite: () => ({ context: null, done: () => undefined }) }))
 vi.mock('@/lib/auth/encryption-key', () => ({ encryptionKeyState: async () => 'open' }))
 vi.mock('@/lib/repo/checks', () => ({ readRunners: async () => ['bot'] }))
+let params: Record<string, string> = {}
+vi.mock('@/hooks/use-query-param', () => ({ useParam: (name: string) => params[name] ?? '' }))
 let members: Membership[] = []
 vi.mock('@/lib/repo', async (orig) => ({
   ...(await orig<typeof import('@/lib/repo')>()),
@@ -42,7 +44,7 @@ vi.mock('@/lib/repo', async (orig) => ({
   readMembershipsCached: async () => members,
 }))
 
-import { AudienceChip, MembersOnlyRow, MembersOnlySummary, MembersOnlyTargetPage, useComposerAudience } from './audience'
+import { AudienceChip, MembersOnlyCreateNotice, MembersOnlyRow, MembersOnlySummary, MembersOnlyTargetPage, useComposerAudience } from './audience'
 import { HiddenNote } from './hidden-note'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -58,6 +60,7 @@ beforeEach(() => {
   document.body.appendChild(host)
   root = createRoot(host)
   members = [m('alice', 'maintainer'), m('bob', 'writer'), m('bot', 'reader')]
+  params = {}
 })
 afterEach(() => {
   act(() => root.unmount())
@@ -193,5 +196,23 @@ describe('the hidden-items note of a public repo', () => {
   it('names other unreadable items plainly', () => {
     act(() => root.render(<HiddenNote hidden={1} what="issue" home={homeWith()} by={by({ notEncrypted: 1 })} />))
     expect(q('hidden-note')?.textContent).toBe("1 issue isn't shown: not readable in this repo.")
+  })
+})
+
+describe('after a create whose members-only step failed', () => {
+  it('says so and offers Turn on while it is still off; nothing otherwise', async () => {
+    params = { membersOnly: 'failed' }
+    act(() => root.render(<MembersOnlyCreateNotice home={homeWith({ access: 'none' })} />))
+    expect(q('members-only-create-notice')?.textContent).toContain("members-only content isn't on yet")
+    act(() => q('create-notice-turn-on')!.click())
+    await flush()
+    expect(q('confirm')?.textContent).toContain('Turn on members-only content?')
+    // on by now (another tab turned it on): no notice
+    act(() => root.render(<MembersOnlyCreateNotice home={homeWith({ access: 'no-key' })} />))
+    expect(q('members-only-create-notice')).toBeNull()
+    // no failure reported: no notice
+    params = {}
+    act(() => root.render(<MembersOnlyCreateNotice home={homeWith({ access: 'none' })} />))
+    expect(q('members-only-create-notice')).toBeNull()
   })
 })

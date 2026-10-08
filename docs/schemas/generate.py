@@ -202,7 +202,13 @@ PUBLISH = {
     'status': E('created', 'exists'), 'generation': ANY, 'repoId': S, 'ownerId': S, 'name': S, 'remoteUrl': S,
     'webUrl': nl(S), 'storage': ANY, 'network': S, 'visibility': E('public', 'private'),
     'protectedPatterns': D('What the config this run wrote protects; null when an earlier run wrote it.', nl(SA)),
-    'steps': R('createSteps'), 'cost': COST, 'totalCost': COST, 'remote': S, 'gitConfig': SA,
+    'steps': R('createSteps'),
+    'membersOnly': D('Whether members-only content is on after the create: null for a private repository and for a '
+                     're-run that created nothing; `off` with `reason` (`skipped`: --no-members-only; '
+                     '`noEncryptionKey`); `failed` with the `error` object (the repository stands without it).',
+                     nl(O({'status': E('on', 'off', 'failed'), 'reason': E('skipped', 'noEncryptionKey'), 'error': OBJ},
+                          ['status']))),
+    'cost': COST, 'totalCost': COST, 'remote': S, 'gitConfig': SA,
     'push': nl(O({'remote': S, 'branch': S, 'oid': S, 'tracking': B, 'cost': COST, 'indexSkipped': ANY})),
     'balanceCredits': nl(I),
 }

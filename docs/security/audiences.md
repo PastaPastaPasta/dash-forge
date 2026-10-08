@@ -66,7 +66,9 @@ Every member needs an **encryption key** on their identity to receive the member
 
 ## Turn on members-only content
 
-A maintainer turns it on once per repository:
+A new public repository has it on from the start: `dg repo create`, `dg init` and the web app's **New repository** form turn it on right after creating the repository (about 0.0011 DASH, shown before you confirm), unless you opt out with `--no-members-only` or untick **Turn on members-only content now**. It needs an encryption key: without one, the repository is created with it off and you are told how to add a key. If turning it on fails, the repository still exists without it, and `dg` (or the repository page in the web app) says how to turn it on. Imports (`dg import`), mirrors and forks start with it off, since they copy a public repository.
+
+For any other repository, a maintainer turns it on once:
 
 ```sh
 dg repo members enable <owner>/<repo>

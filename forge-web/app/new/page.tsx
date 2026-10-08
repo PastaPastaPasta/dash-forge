@@ -12,6 +12,12 @@
  * create --private` prints, and its third step is the owner's epoch-0 key plus the sealed
  * anchor config (`private-repos.md` §5.3): four documents.
  *
+ * A public repo turns members-only content on at creation unless its creator unticks "Turn on
+ * members-only content now" (DESIGN §11 Q3): a fourth step, the owner's key and the settings-free
+ * anchor (`enableMembersContent`), priced like the Turn on sheet. It needs the encryption key in
+ * this browser; without one the box is off and says how to set one up. If the step fails the repo
+ * stands without it, and the repo page offers to turn it on.
+ *
  * On a network without forge-v2 the page shows "not deployed".
  */
 
@@ -40,13 +46,17 @@ import {
   suggestRepoName,
   pendingRepoCreations,
   previewRepoCreate,
+  createStepCount,
   type CreateRepoInput,
   type CreateRepoStep,
   type PrivateCreate,
   type RepoCreationJournal,
   repoCreationFirsts,
 } from '@/lib/repo'
-import { createEpochZero } from '@/lib/repo/private-members'
+import { createEpochZero, enableMembersContent } from '@/lib/repo/private-members'
+import { aboutDash, enableEstimate, SET_UP_KEY } from '@/lib/view/audience'
+import { PRIVATE_REPOS_SETTINGS } from '@/lib/settings-links'
+import { previewCredits, sumPreviews } from '@/lib/sdk/cost'
 import { encryptionOps } from '@/lib/auth/encryption-key'
 import { onEncryptionKeyChange } from '@/lib/auth/vault'
 import { useAsync } from '@/hooks/use-async'
@@ -58,7 +68,11 @@ const STEPS: readonly { step: CreateRepoStep; label: string; privateLabel?: stri
   { step: 'repo', label: 'The repo' },
   { step: 'maintainer', label: 'You, as its first maintainer' },
   { step: 'config', label: 'Initial config (default branch)', privateLabel: 'Your repo key and the sealed config (default branch)' },
+  { step: 'members', label: 'Members-only content (your key)' },
 ]
+
+/** The members-only checkbox's cost: the Turn on sheet's estimate for one member, the owner. */
+const MEMBERS_ONLY_CREDITS = enableEstimate(1)
 
 /**
  * What a private create states before it spends: the facts `dg repo create --private` prints
@@ -80,7 +94,10 @@ function protectionNote(i: CreateRepoInput): string {
 }
 
 type StepState = 'todo' | 'running' | 'done'
-const INITIAL_PROGRESS: Record<CreateRepoStep, StepState> = { repo: 'todo', maintainer: 'todo', config: 'todo' }
+/** A creation's steps, all to do; `members` only when it turns members-only content on. */
+function initialProgress(i: CreateRepoInput): Partial<Record<CreateRepoStep, StepState>> {
+  return { repo: 'todo', maintainer: 'todo', config: 'todo', ...(createStepCount(i) === 4 ? { members: 'todo' as const } : {}) }
+}
 
 export default function NewRepoPage(): JSX.Element {
   const router = useRouter()
@@ -102,6 +119,8 @@ export default function NewRepoPage(): JSX.Element {
   const [visibility, setVisibility] = useState<Visibility>('public')
   // D6: a new repo protects its default branch and tags unless its creator opts out.
   const [protect, setProtect] = useState(true)
+  // DESIGN §11 Q3: a new public repo turns members-only content on unless its creator opts out.
+  const [membersOnly, setMembersOnly] = useState(true)
   const branchShown = defaultBranch.trim() || 'main'
   // `/new/?visibility=private` (the Private repositories page's button) starts on Private, after
   // hydration so the static page and the first client render agree.
@@ -109,30 +128,47 @@ export default function NewRepoPage(): JSX.Element {
     if (new URLSearchParams(window.location.search).get('visibility') === 'private') setVisibility('private')
   }, [])
   const isPrivate = visibility === 'private'
-  // A private create wraps its key from the encryption key in this browser's vault.
+  // A private create wraps its key from the encryption key in this browser's vault, and so does
+  // a public one that turns members-only content on: read it for both.
   const ops = useAsync(
     () => encryptionOps(sdk!, DEFAULT_NETWORK, identity!, forge!.collab),
-    [ready, identity ?? '', forge?.core ?? '', isPrivate, unlockScope ?? ''],
-    { enabled: isPrivate && sdk !== null && identity !== null && forge !== null },
+    [ready, identity ?? '', forge?.core ?? '', unlockScope ?? ''],
+    { enabled: sdk !== null && identity !== null && forge !== null },
   )
   // Re-read when a key is added (Settings in another tab, or this one) or the tab regains focus.
   const reloadOps = ops.reload
   useEffect(() => {
-    if (!isPrivate) return
     const off = onEncryptionKeyChange(reloadOps)
     window.addEventListener('focus', reloadOps)
     return () => {
       off()
       window.removeEventListener('focus', reloadOps)
     }
-  }, [isPrivate, reloadOps])
+  }, [reloadOps])
   // Only a settled answer of "no key" says so; a failed read says what failed.
-  const noKey = isPrivate && ops.settled && ops.error === null && ops.data === null
+  const keyMissing = ops.settled && ops.error === null && ops.data === null
+  const noKey = isPrivate && keyMissing
+  // Members-only content at creation: ticked, and possible here (no key in this browser turns the
+  // box off and says how to set one up).
+  const withMembers = !isPrivate && membersOnly && !keyMissing
+  const usesKey = isPrivate || withMembers
   // A reloaded tab holds the signing key only: the encryption key needs an unlock here first.
-  const needsUnlock = isPrivate && unlockScope === 'signing'
-  const privateBlocked = !isPrivate ? null : needsUnlock ? 'Unlock this tab to use your encryption key.' : ops.error !== null ? `Couldn't read your encryption key: ${ops.error}` : noKey ? 'Add your encryption key to this browser first (Settings → Private repos).' : ops.data == null ? 'Checking your encryption key…' : null
+  const needsUnlock = usesKey && unlockScope === 'signing'
+  const privateBlocked = !usesKey
+    ? null
+    : needsUnlock
+      ? isPrivate
+        ? 'Unlock this tab to use your encryption key.'
+        : 'Unlock this tab to use your encryption key, or untick members-only content.'
+      : ops.error !== null
+        ? `Couldn't read your encryption key: ${ops.error}`
+        : noKey
+          ? 'Add your encryption key to this browser first (Settings → Private repos).'
+          : ops.data == null
+            ? 'Checking your encryption key…'
+            : null
   const [confirm, setConfirm] = useState<CreateRepoInput | null>(null)
-  const [progress, setProgress] = useState<Record<CreateRepoStep, StepState> | null>(null)
+  const [progress, setProgress] = useState<Partial<Record<CreateRepoStep, StepState>> | null>(null)
   const [pending, setPending] = useState<RepoCreationJournal[]>([])
 
   const reloadPending = useCallback(() => {
@@ -174,7 +210,8 @@ export default function NewRepoPage(): JSX.Element {
     resuming !== null &&
     ((resuming.input.description ?? '') !== description.trim() ||
       (resuming.input.defaultBranch ?? 'main') !== (defaultBranch.trim() || 'main') ||
-      (resuming.input.protect === true) !== protect)
+      (resuming.input.protect === true) !== protect ||
+      (!isPrivate && (resuming.input.membersOnly === true) !== withMembers))
 
   const input = (): CreateRepoInput => ({
     name: repoName ?? '',
@@ -182,28 +219,31 @@ export default function NewRepoPage(): JSX.Element {
     ...(defaultBranch.trim() && defaultBranch.trim() !== 'main' ? { defaultBranch: defaultBranch.trim() } : {}),
     ...(isPrivate ? { visibility: 'private' as const } : {}),
     ...(protect ? { protect: true } : {}),
+    ...(withMembers ? { membersOnly: true } : {}),
   })
-  const costOf = (i: CreateRepoInput) => previewRepoCreate(i, firsts)
-  const cost = costOf(name.trim() && nameError === null && branchError === null ? input() : { name: 'x' })
+  const costOf = (i: CreateRepoInput) =>
+    i.visibility !== 'private' && i.membersOnly === true ? sumPreviews([previewRepoCreate(i, firsts), previewCredits(MEMBERS_ONLY_CREDITS)]) : previewRepoCreate(i, firsts)
+  const cost = costOf(name.trim() && nameError === null && branchError === null ? input() : { name: 'x', ...(withMembers ? { membersOnly: true } : {}) })
 
   const create = async (i: CreateRepoInput): Promise<void> => {
     if (!signer || !forge) throw new Error('sign in first')
     if (!sdk) throw new Error('still connecting to Dash Platform: try again in a moment')
-    setProgress(INITIAL_PROGRESS)
+    setProgress(initialProgress(i))
     let result
     try {
       // Without an encryption key createRepo refuses a private create before writing anything.
+      // Turning members-only content on without one ends with the repo and a note instead.
       let privateCreate: PrivateCreate | undefined
-      if (i.visibility === 'private') {
+      if (i.visibility === 'private' || i.membersOnly === true) {
         const o = await encryptionOps(sdk, DEFAULT_NETWORK, signer.identityId, forge.collab)
-        if (o !== null) privateCreate = { ops: o, epochZero: createEpochZero }
+        if (o !== null) privateCreate = { ops: o, epochZero: createEpochZero, membersOnly: enableMembersContent }
       }
       result = await createRepo(
         sdk,
         signer,
         forge,
         i,
-        (step, state) => setProgress((p) => ({ ...(p ?? INITIAL_PROGRESS), [step]: state === 'start' ? 'running' : 'done' })),
+        (step, state) => setProgress((p) => ({ ...(p ?? initialProgress(i)), [step]: state === 'start' ? 'running' : 'done' })),
         privateCreate,
       )
     } catch (e) {
@@ -212,7 +252,9 @@ export default function NewRepoPage(): JSX.Element {
     } finally {
       reloadPending()
     }
-    router.push(`/repo/?owner=${encodeURIComponent(identity ?? '')}&name=${encodeURIComponent(result.name)}&created=1`)
+    // Members-only content that did not turn on: the repo page says so and offers to turn it on.
+    const membersFailed = result.membersOnly?.on === false ? '&membersOnly=failed' : ''
+    router.push(`/repo/?owner=${encodeURIComponent(identity ?? '')}&name=${encodeURIComponent(result.name)}&created=1${membersFailed}`)
   }
 
   if (!isForgeDeployed()) {
@@ -255,7 +297,7 @@ export default function NewRepoPage(): JSX.Element {
         {pending.map((j) => (
           <div key={j.input.name} className="mb-4 flex flex-wrap items-center gap-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense">
             <span className="flex-1">
-              Creating <span className="font-mono">{j.input.name}</span> did not finish ({j.done.length} of 3 steps).
+              Creating <span className="font-mono">{j.input.name}</span> did not finish ({j.done.length} of {createStepCount(j.input)} steps).
             </span>
             <Button size="sm" variant="primary" onClick={() => setConfirm(j.input)}>
               Finish creating {j.input.name}
@@ -320,6 +362,49 @@ export default function NewRepoPage(): JSX.Element {
               ))}
             </div>
           </fieldset>
+          {!isPrivate ? (
+            <div className="flex items-start gap-2.5 rounded-md border border-anvil-200 p-3 dark:border-anvil-750" data-testid="members-only-create">
+              <input
+                id="repo-members-only"
+                type="checkbox"
+                className="mt-0.5 h-4 w-4 shrink-0 accent-forge-700"
+                checked={withMembers}
+                disabled={keyMissing}
+                onChange={(e) => setMembersOnly(e.target.checked)}
+                aria-describedby="repo-members-only-hint"
+                data-testid="repo-members-only"
+              />
+              <div className="min-w-0">
+                <label htmlFor="repo-members-only" className="text-dense font-medium">
+                  Turn on members-only content now <span className="font-normal text-anvil-500 dark:text-anvil-400">(about {aboutDash(MEMBERS_ONLY_CREDITS)})</span>
+                </label>
+                <p id="repo-members-only-hint" className="text-[12px] text-anvil-500 dark:text-anvil-400">
+                  {keyMissing ? (
+                    <>
+                      Members-only content needs your encryption key in this browser.{' '}
+                      <Link href={PRIVATE_REPOS_SETTINGS} className="hit-area font-medium text-forge-700 underline dark:text-forge-400">
+                        {SET_UP_KEY}
+                      </Link>
+                      , or turn it on later in Settings.
+                    </>
+                  ) : withMembers ? (
+                    'Members can post comments, reviews and issues only members can read. Everyone can still see that something was posted, by whom and when.'
+                  ) : (
+                    'Members can only post what everyone can read. A maintainer can turn it on later in Settings.'
+                  )}
+                </p>
+                {withMembers && needsUnlock ? (
+                  <div className="mt-2">
+                    <UnlockMore title="Unlock to turn on members-only content" testId="new-members-unlock" />
+                  </div>
+                ) : withMembers && ops.error !== null ? (
+                  <p className="mt-1 text-[12px] text-danger-700 dark:text-danger-400" data-testid="members-key-error">
+                    Couldn&apos;t read your encryption key: {ops.error}
+                  </p>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
           {isPrivate ? (
             <div className="rounded-md border border-anvil-200 p-3 text-[12px] text-anvil-600 dark:border-anvil-750 dark:text-anvil-300" data-testid="private-facts">
               <ul className="list-disc space-y-0.5 pl-4">
@@ -403,7 +488,7 @@ export default function NewRepoPage(): JSX.Element {
 
           {progress ? (
             <ol aria-label="Creation steps" className="space-y-1 rounded-md border border-anvil-200 p-3 dark:border-anvil-800">
-              {STEPS.map(({ step, label, privateLabel }) => (
+              {STEPS.filter(({ step }) => progress[step] !== undefined).map(({ step, label, privateLabel }) => (
                 <li key={step} className="flex items-center gap-2 text-dense">
                   {progress[step] === 'done' ? (
                     <Check className="h-4 w-4 text-verify-700 dark:text-verify-400" aria-hidden />
@@ -440,7 +525,7 @@ export default function NewRepoPage(): JSX.Element {
         description={
           confirm?.visibility === 'private'
             ? `You'll be its maintainer. ${protectionNote(confirm)}${PRIVATE_FACTS.map((f) => f.charAt(0).toUpperCase() + f.slice(1)).join('. ')}. The name and visibility are permanent, and repos can be archived but not deleted.`
-            : `You'll be its maintainer. ${confirm ? protectionNote(confirm) : ''}The name is permanent, and repos can be archived but not deleted.`
+            : `You'll be its maintainer. ${confirm ? protectionNote(confirm) : ''}${confirm?.membersOnly === true ? 'Members-only content will be on: members can post things only members can read. ' : ''}The name is permanent, and repos can be archived but not deleted.`
         }
         cost={confirm ? costOf(confirm) : cost}
         confirmLabel="Sign & create"
