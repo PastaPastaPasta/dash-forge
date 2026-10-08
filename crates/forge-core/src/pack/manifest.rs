@@ -47,6 +47,11 @@ pub const KIND_HISTORY_VERSIONS: u8 = 5;
 /// (sealed in a private repository; forge-v2.md §6.3). `objectCount` 0, no `tips`, no
 /// `supersedes`.
 pub const KIND_LONG_BODY: u8 = 6;
+/// `packManifest.kind == 7`: a make-public bundle ([`crate::private::bundle`]), plaintext: keys
+/// that make sealed content readable to everyone. Readers honour only the epoch keys a converted
+/// repository's owner published (`docs/security/private-repos.md` §18.3) until maintainer bundles
+/// ship; a private repository's bundles are ignored.
+pub const KIND_MAKE_PUBLIC: u8 = 7;
 /// `packManifest.kind == 8`: an environment snapshot ([`crate::env`]): `objectCount` 0, no
 /// `tips`; `supersedes` names the `packHash` of the snapshot(s) it replaces (one, every head of
 /// a fork it resolves, or none for an environment's first). Unlike kinds 1-6, a newer snapshot

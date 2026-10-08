@@ -300,6 +300,12 @@ export const PACK_KIND = {
    */
   LONG_BODY: 6,
   /**
+   * A make-public bundle (`lib/private/bundle.ts`, `private-repos.md` §18.3), plaintext: keys that
+   * make sealed content readable to everyone. Readers honour only the epoch keys a repository made
+   * public's owner published; a private repository's bundles are ignored.
+   */
+  MAKE_PUBLIC: 7,
+  /**
    * An environment snapshot (`lib/env`): one environment's configuration and secrets, encrypted
    * for Maintainers or Members, naming the snapshots it replaces in `supersedes`.
    */
