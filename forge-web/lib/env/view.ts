@@ -1,5 +1,5 @@
 /**
- * What Settings → Environments and the removal dialog show, from an {@link EnvBook}: one card per
+ * What Settings → Environments and a removal's checklist show, from an {@link EnvBook}: one card per
  * environment this reader can name, the count of those it cannot, and the sentences (DESIGN §10;
  * `dg env ls`, `dg env get`'s warning and E608, `dg collab remove`'s checklist say the same).
  * Pure: the page renders it, vitest pins it. Values stay in the cards in memory only; the page
@@ -11,7 +11,6 @@ import type { Exposure } from './chain'
 import { OLD_FORMAT_HISTORY_SENTENCE, OLD_FORMAT_SENTENCE, audienceLabel, compareStrings as cmp, membersKey, type Audience, type Group, type Snapshot, type VarType } from './format'
 import {
   currentOf,
-  exposureFor,
   headOf,
   ignoredCount,
   ignoredNewerOf,
@@ -19,7 +18,6 @@ import {
   oldFormatOf,
   shortHead,
   snapshotOf,
-  unreadableCount,
   type EnvBook,
   type Head,
 } from './loader'
@@ -310,22 +308,6 @@ export function exposureLine(member: string, e: Exposure): string {
   const past = e.oldFormat ? ' (and every past value saved in the old format)' : ''
   const change = n === 1 ? "Change it where it's used" : "Change them where they're used"
   return `${member} could read ${n} ${e.env} ${n === 1 ? 'value' : 'values'}${past}. ${change}: ${e.names.join(', ')}`
-}
-
-/** The removal dialog's line when `member` stays a maintainer: nothing to change, they still read the environments. */
-export function keptAccessLine(member: string): string {
-  return `${member} stays a maintainer, so they can still read the environments shared with maintainers.`
-}
-
-/** What the removal dialog lists for `removed` ({@link exposureFor}), and the environments the remover can't read. */
-export interface RemovalView {
-  readonly exposures: readonly Exposure[]
-  /** Environments the remover can't read: the member may have read values there. */
-  readonly unreadable: number
-}
-
-export function removalView(book: EnvBook, removed: string, heldMembersKey: boolean): RemovalView {
-  return { exposures: exposureFor(book, removed, heldMembersKey), unreadable: unreadableCount(book) }
 }
 
 /** The removal dialog's line for environments the remover can't read (as `dg collab remove` says it). */

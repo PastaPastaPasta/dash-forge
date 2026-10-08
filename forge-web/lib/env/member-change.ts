@@ -16,9 +16,10 @@
 
 import type { Membership, Role } from '../rules/v2'
 import { sleep } from '../sdk/facade'
-import { exposureOf, type Exposure } from './chain'
-import { audienceLabel, compareStrings as cmp, type Snapshot } from './format'
-import { snapshotOf, stateOf, unreadableCount, type EnvBook } from './loader'
+import { errText } from '../storage/util'
+import type { Exposure } from './chain'
+import { audienceLabel, compareStrings as cmp } from './format'
+import { exposureFor, snapshotOf, stateOf, unreadableCount, type EnvBook } from './loader'
 import { membersAfter, pinsCredits, planPromotion, planRegroup, planRemoval, wroteSnapshots, type NotUpdated, type PeopleKeys, type Pin } from './regroup'
 import { baseOf, newEnvId, prepareSave, storeSave, type EnvSaver } from './write'
 
@@ -124,20 +125,10 @@ export async function planMemberChange(io: MemberEnvIO, change: MemberChange, me
     removal,
     regroup: regroup.pins,
     notUpdated,
-    exposures: change.kind === 'revoke' && leaves ? removalExposures(book, member, heldMembersKey) : [],
+    exposures: change.kind === 'revoke' && leaves ? exposureFor(book, member, heldMembersKey) : [],
     unreadable: change.kind === 'revoke' && leaves ? unreadableCount(book) : 0,
     credits: pinsCredits(all),
   }
-}
-
-/** The removal checklist of `member` (forge-core `Book::exposure`). */
-export function removalExposures(book: EnvBook, member: string, heldMembersKey: boolean): Exposure[] {
-  const pick = (ids: readonly string[]) => ids.map((id) => snapshotOf(book, id)).filter((s): s is Snapshot => s !== null)
-  return exposureOf(
-    book.resolution.environments.map((e) => ({ env: e.env, heads: pick(e.heads), snapshots: pick(e.snapshots) })),
-    member,
-    heldMembersKey,
-  )
 }
 
 /** One line of what the saves did. */
@@ -211,10 +202,6 @@ function safeBaseId(book: EnvBook, env: string): string | null {
   }
 }
 
-function errText(e: unknown): string {
-  return e instanceof Error ? e.message : String(e)
-}
-
 /** The change itself failed after the first saves were made: `saves` says what they did. */
 export class MemberChangeFailed extends Error {
   constructor(
@@ -274,15 +261,14 @@ export async function runMemberChange(
   if (plan.regroup.length === 0 && plan.notUpdated.length === 0 && waitFor.length === 0) return { saves, notUpdated: [], gone: [] }
   const book = await readUntil(io, (b) => waitFor.every((h) => b.manifests.some((m) => m.packHash === h)))
   if (book === null) return { saves: [...saves, { kind: 'unread', reason: "couldn't read the environments to save them again" }], notUpdated: [], gone: [] }
-  const fresh = book
   let people: PeopleKeys
   try {
-    people = await peopleKeys(io, fresh, owner, saver.me, await io.members(), plan.after)
+    people = await peopleKeys(io, book, owner, saver.me, await io.members(), plan.after)
   } catch (e) {
     return { saves: [...saves, { kind: 'unread', reason: `couldn't read the members to save the environments again (${errText(e)})` }], notUpdated: [], gone: [] }
   }
   // against the members as planned: a node a block behind may not list the change yet
-  const regroup = planRegroup(fresh, { ...people, members: [...plan.after] }, saver.me, plan.after, plan.leaves ? plan.change.member : null)
+  const regroup = planRegroup(book, { ...people, members: [...plan.after] }, saver.me, plan.after, plan.leaves ? plan.change.member : null)
   const done = await savePins(io, saver, regroup.pins)
   const gone: { who: string; exposure: Exposure }[] = []
   // what people who lose access but stay members could read (a demotion's, or one role of
@@ -290,7 +276,7 @@ export async function runMemberChange(
   if (plan.change.kind !== 'grant' && !plan.leaves) {
     for (const p of regroup.pins) {
       for (const who of p.gone) {
-        for (const exposure of removalExposures(fresh, who, false).filter((e) => e.env === p.env)) gone.push({ who, exposure })
+        for (const exposure of exposureFor(book, who, false).filter((e) => e.env === p.env)) gone.push({ who, exposure })
       }
     }
   }

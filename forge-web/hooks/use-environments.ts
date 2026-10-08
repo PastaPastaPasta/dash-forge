@@ -93,6 +93,7 @@ export function useEnvWriter(home: RepoHome): { readonly saver: EnvSaver; readon
   const { identity, signer } = useAuth()
   return useMemo(() => {
     if (!ready || sdk === null || signer === null || identity === null) return null
+    const saver = sdkEnvSaver(sdk, signer, repo, network)
     const io: MemberEnvIO = {
       read: async (asMaintainer) => {
         const sources = sdkEnvSources(sdk, repo)
@@ -101,11 +102,11 @@ export function useEnvWriter(home: RepoHome): { readonly saver: EnvSaver; readon
       },
       members: () => readMembershipsFresh(sdk, repo, network),
       keys: async (ids) => {
-        const got = await sdkEnvSaver(sdk, signer, repo, network).keysOf(ids)
+        const got = await saver.keysOf(ids)
         return new Map([...got].map(([id, k]) => [id, k === null ? null : k.keyId]))
       },
     }
-    return { saver: sdkEnvSaver(sdk, signer, repo, network), io }
+    return { saver, io }
     // `home` changes identity on every repo read; what the writer uses of it is the repo and its key session
   }, [ready, sdk, signer, identity, network, repo.repoId, membersSessionOf(home)?.id ?? '']) // eslint-disable-line react-hooks/exhaustive-deps
 }

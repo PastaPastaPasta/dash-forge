@@ -15,13 +15,13 @@ import { useMemo, useState, type ReactNode } from 'react'
 import { AlertTriangle } from 'lucide-react'
 
 import type { RepoHome } from '@/lib/view'
-import type { CostPreview } from '@/lib/sdk'
-import { previewCredits } from '@/lib/sdk'
+import { previewCredits, type CostPreview } from '@/lib/sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useAuth } from '@/contexts/auth-context'
 import { useDpnsName } from '@/hooks/use-dpns-name'
 import { useEnvWriter, useEnvironments, useRepoPeople } from '@/hooks/use-environments'
-import { MemberChangeFailed, planMemberChange, removalExposures, runMemberChange, type MemberChange, type MemberChangeOutcome, type MemberEnvPlan } from '@/lib/env/member-change'
+import { exposureFor } from '@/lib/env/loader'
+import { MemberChangeFailed, planMemberChange, planPins, runMemberChange, type MemberChange, type MemberChangeOutcome, type MemberEnvPlan } from '@/lib/env/member-change'
 import { notUpdatedLine, outcomeLine, pinLine, planHeadline } from '@/lib/env/plan-view'
 import { exposureLine, unreadableLine } from '@/lib/env/view'
 import type { Exposure } from '@/lib/env'
@@ -44,7 +44,7 @@ function idsOf(plan: MemberEnvPlan | null, outcome: MemberEnvOutcome | null): st
   const ids = new Set<string>()
   if (plan !== null) {
     ids.add(plan.change.member)
-    for (const p of [...plan.first, ...plan.removal, ...plan.regroup]) for (const id of [...p.added, ...p.gone]) ids.add(id)
+    for (const p of planPins(plan)) for (const id of [...p.added, ...p.gone]) ids.add(id)
     for (const n of plan.notUpdated) {
       if (n.kind === 'unreadable') ids.add(n.author)
       if (n.kind === 'hidden') for (const a of n.authors) ids.add(a)
@@ -145,7 +145,7 @@ export function useMemberEnvFlow(home: RepoHome, change: MemberChange | null, he
       // the change and every save: Platform needs the whole amount available
       return previewCredits(base.credits + plan.credits)
     },
-    confirmLabel: (fallback, verb) => (plan !== null && plan.first.length + plan.removal.length + plan.regroup.length > 0 ? `Save and ${verb}` : fallback),
+    confirmLabel: (fallback, verb) => (plan !== null && planPins(plan).length > 0 ? `Save and ${verb}` : fallback),
     run: async (doChange, precheck) => {
       if (change === null || !hasEnvironments || plan === null || writer === null) {
         await doChange()
@@ -180,7 +180,7 @@ function BlockedNote({ text }: { text: string }): JSX.Element {
 export function MemberEnvPlanView({ flow }: { flow: MemberEnvFlow }): JSX.Element | null {
   const plan = flow.plan
   if (plan === null) return null
-  const pins = [...plan.first, ...plan.removal, ...plan.regroup]
+  const pins = planPins(plan)
   if (pins.length === 0 && plan.notUpdated.length === 0 && plan.exposures.length === 0 && plan.unreadable === 0) return null
   return (
     <WithNames
@@ -244,7 +244,7 @@ export function MemberEnvOutcomeView({ home, flow }: { home: RepoHome; flow: Mem
   if (outcome === null) return null
   // a checklist item is done once none of its values is still one they could read
   const stillReadable = (who: string, e: Exposure): boolean =>
-    book === null || removalExposures(book, who, false).some((x) => x.env === e.env && x.names.some((n) => e.names.includes(n)))
+    book === null || exposureFor(book, who, false).some((x) => x.env === e.env && x.names.some((n) => e.names.includes(n)))
   return (
     <WithNames
       ids={[outcome.member, ...idsOf(null, outcome)]}

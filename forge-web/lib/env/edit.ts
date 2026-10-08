@@ -31,12 +31,15 @@ export interface SavePlan {
   readonly unchanged: boolean
 }
 
+/** The help line under the audience picker and the confirmation's note on who joins later (DESIGN §10). */
+export const JOINERS_LINE = "People who join this group later get the current values when it's saved again, never earlier ones."
+
 /** E611 (DESIGN §10): an environment has no default audience. */
 export function audienceRequiredText(env: string): string {
   return `Choose who can read ${env}. An environment has no default audience: you choose it when you first save it.`
 }
 
-function sameAudience(a: Audience | null, b: Audience): boolean {
+export function sameAudience(a: Audience | null, b: Audience): boolean {
   return a !== null && a.group === b.group && a.also.length === b.also.length && a.also.every((x, i) => x === b.also[i])
 }
 
@@ -126,7 +129,7 @@ export function saveNoteText(env: string, note: SaveNote, name: (id: string) => 
     case 'audience':
       return `Who can read it changes from ${note.from} to ${note.to}. Earlier versions stay readable by whoever could read them.`
     case 'joiners':
-      return "People who join this group later get the current values when it's saved again, never earlier ones."
+      return JOINERS_LINE
     case 'oldFormat':
       return "This saves it in the new format. Values saved in the old format stay readable by anyone who joins later: change them where they're used, then mark them changed."
     case 'skipped':

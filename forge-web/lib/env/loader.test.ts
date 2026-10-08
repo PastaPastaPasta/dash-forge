@@ -14,9 +14,9 @@ import { base58Encode } from '../auth/base58'
 import { EpochKeys, type EpochResolution, type LetterReader, type OwnerKey } from '../private'
 import { sealLetterSnapshot, sealOldMembersSnapshotForVectors } from './codec'
 import type { Audience, EnvVar, Snapshot } from './format'
-import { MAX_SEALED, currentOf, oldFormatOf, readEnvironments, type EnvKeys, type EnvManifest, type EnvSources } from './loader'
+import { MAX_SEALED, currentOf, exposureFor, oldFormatOf, readEnvironments, unreadableCount, type EnvKeys, type EnvManifest, type EnvSources } from './loader'
 import { OLD_FORMAT_HISTORY_SENTENCE, OLD_FORMAT_SENTENCE } from './format'
-import { NOT_SHARED_TEXT, conflictHeadline, environmentsView, exposureLine, hiddenLine, ignoredWarning, removalView, staleLine, unreadableLine, utc } from './view'
+import { NOT_SHARED_TEXT, conflictHeadline, environmentsView, exposureLine, hiddenLine, ignoredWarning, staleLine, unreadableLine, utc } from './view'
 
 const repoId = new Uint8Array(32).fill(0x11)
 const secret = (b: number) => new Uint8Array(32).fill(b)
@@ -370,25 +370,24 @@ describe('the removal checklist', () => {
   it('a writer who held the members key could read dev, not production', async () => {
     const { all } = await fixture()
     const book = await readEnvironments(sources(all), await viewer(alice, 1, true))
-    const r = removalView(book, B, true)
-    expect(r.exposures).toEqual([{ env: 'dev', names: ['API_TOKEN'], oldFormat: true }])
-    expect(r.unreadable).toBe(0)
-    expect(exposureLine('bob', r.exposures[0]!)).toBe("bob could read 1 dev value (and every past value saved in the old format). Change it where it's used: API_TOKEN")
-    expect(removalView(book, B, false).exposures).toEqual([])
+    const r = exposureFor(book, B, true)
+    expect(r).toEqual([{ env: 'dev', names: ['API_TOKEN'], oldFormat: true }])
+    expect(unreadableCount(book)).toBe(0)
+    expect(exposureLine('bob', r[0]!)).toBe("bob could read 1 dev value (and every past value saved in the old format). Change it where it's used: API_TOKEN")
+    expect(exposureFor(book, B, false)).toEqual([])
   })
 
   it('a former maintainer named in production lists its values', async () => {
     const { all } = await fixture()
     const book = await readEnvironments(sources(all), await viewer(alice, 1, true))
-    const r = removalView(book, C, false)
-    expect(r.exposures).toEqual([{ env: 'production', names: ['DB_URL', 'STRIPE_KEY'], oldFormat: false }])
-    expect(exposureLine('carol', r.exposures[0]!)).toBe("carol could read 2 production values. Change them where they're used: DB_URL, STRIPE_KEY")
+    const r = exposureFor(book, C, false)
+    expect(r).toEqual([{ env: 'production', names: ['DB_URL', 'STRIPE_KEY'], oldFormat: false }])
+    expect(exposureLine('carol', r[0]!)).toBe("carol could read 2 production values. Change them where they're used: DB_URL, STRIPE_KEY")
   })
 
   it('names how many environments the remover cannot read', async () => {
     const { all } = await fixture()
-    const r = removalView(await readEnvironments(sources(all), await viewer(bob, 2, true)), 'x', true)
-    expect(r.unreadable).toBe(1)
+    expect(unreadableCount(await readEnvironments(sources(all), await viewer(bob, 2, true)))).toBe(1)
     expect(unreadableLine('dave', 1)).toBe("You can't read 1 environment here, so it isn't listed. dave may have been able to read values there.")
   })
 })

@@ -7,10 +7,11 @@
 import { ROLE_NOUN } from '../rules/roles'
 import { creditsAsDash } from '../view/format'
 import { audienceLabel } from './format'
-import type { MemberChange, MemberEnvPlan, SaveOutcome } from './member-change'
+import { planPins, type MemberChange, type MemberEnvPlan, type SaveOutcome } from './member-change'
 import type { NotUpdated, Pin } from './regroup'
 import { changeSummary } from './edit'
 import { count } from './view'
+import { tooManyText } from './write'
 
 type Name = (id: string) => string
 
@@ -22,10 +23,9 @@ function list(envs: readonly string[]): string {
 /** The environments a plan saves again whose readers gain or lose `member`. */
 export function accessOf(plan: MemberEnvPlan): { readonly gains: string[]; readonly loses: string[] } {
   const m = plan.change.member
-  const pins = [...plan.first, ...plan.removal, ...plan.regroup]
   return {
     gains: [...new Set(plan.regroup.filter((p) => p.added.includes(m)).map((p) => p.env))],
-    loses: [...new Set(pins.filter((p) => p.gone.includes(m)).map((p) => p.env))],
+    loses: [...new Set(planPins(plan).filter((p) => p.gone.includes(m)).map((p) => p.env))],
   }
 }
 
@@ -34,7 +34,7 @@ export function accessOf(plan: MemberEnvPlan): { readonly gains: string[]; reado
  * staging, ci. Saving them again costs about 0.004 DASH." `null` when it saves nothing.
  */
 export function planHeadline(plan: MemberEnvPlan, name: Name): string | null {
-  const saves = plan.first.length + plan.removal.length + plan.regroup.length
+  const saves = planPins(plan).length
   if (saves === 0) return null
   const who = name(plan.change.member)
   const { gains, loses } = accessOf(plan)
@@ -79,7 +79,7 @@ export function notUpdatedLine(n: NotUpdated, name: Name): string {
     case 'onlyRemoved':
       return `${n.env}: not updated: it is only for ${name(n.member)}. Give it another audience.`
     case 'tooMany':
-      return `${n.env}: not updated: ${audienceLabel(n.audience)} is ${n.n} people. An environment can be shared with at most 64. Choose a smaller group or specific people.`
+      return `${n.env}: not updated: ${tooManyText(n.audience, n.n)}`
     case 'tooLarge':
       return `${n.env}: not updated: its values for ${n.n} people don't fit one save. Split it, or share it with fewer people.`
     case 'hidden': {

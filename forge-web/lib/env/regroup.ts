@@ -21,9 +21,10 @@ import { memberDocOf } from '../repo/members'
 import type { Membership, Role } from '../rules/v2'
 import { changedEnvironments, resolveSnapshots, type EnvState, type Resolution } from './chain'
 import { compareStrings as cmp, diffSnapshots, MAX_RECIPIENTS, membersKey, type Audience, type Change, type Snapshot } from './format'
+import { sameAudience } from './edit'
 import { currentOf, headOf, snapshotOf, stateOf, type EnvBook, type EnvManifest } from './loader'
 import { resolvePeople, type PeopleView } from './view'
-import { MAX_SEALED, estimatedSealedSize, hashesOf, joined, snapshotCredits, windowOf, windowOver } from './write'
+import { MAX_SEALED, estimatedSealedSize, hashesOf, joined, manifestsOf, snapshotCredits, windowOf, windowOver } from './write'
 
 /** The repo's people and their current encryption keys, as a plan needs them. */
 export interface PeopleKeys extends PeopleView {
@@ -126,10 +127,6 @@ export function membersAfter(before: readonly Membership[], member: string, role
 /** `snap`'s audience without `removed` among the people it adds (dg `audience_without`). */
 export function audienceWithout(snap: Snapshot, removed: string | null): Audience {
   return removed === null ? snap.audience : { group: snap.audience.group, also: snap.audience.also.filter((p) => p !== removed) }
-}
-
-function sameAudience(a: Audience, b: Audience): boolean {
-  return a.group === b.group && a.also.length === b.also.length && a.also.every((x, i) => x === b.also[i])
 }
 
 /** Who made the latest change to `env` (empty when none; dg `last_author`). */
@@ -271,7 +268,7 @@ function previousByOther(book: EnvBook, state: EnvState, head: EnvManifest, auth
  * among `counted`, newest first (dg `kept_ancestors`).
  */
 function keptAncestors(book: EnvBook, counted: readonly string[], kept: readonly string[], head: EnvManifest): string[] {
-  const manifests = counted.map((id) => manifest(book, id)).filter((m): m is EnvManifest => m !== undefined)
+  const manifests = manifestsOf(book, counted)
   const seen = new Set<string>()
   const todo = [head]
   const found: EnvManifest[] = []

@@ -53,7 +53,8 @@ export interface Base {
   readonly heads: number
 }
 
-function manifestsOf(book: EnvBook, ids: readonly string[]): EnvManifest[] {
+/** The manifests of `ids` that `book` holds, in order. */
+export function manifestsOf(book: EnvBook, ids: readonly string[]): EnvManifest[] {
   return ids.map((id) => book.manifests.find((m) => m.id === id)).filter((m): m is EnvManifest => m !== undefined)
 }
 

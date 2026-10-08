@@ -14,8 +14,6 @@
  *   only: never logged, never stored, and gone when the page is left.
  * - A conflict lists every version and how to keep one with `dg`; a change by someone who isn't
  *   a maintainer now is ignored, with one warning naming it (D24).
- *
- * {@link EnvironmentsRemoval} is the member-removal hook: what a removed member could read.
  */
 
 import { useEffect, useMemo, useState } from 'react'
@@ -28,24 +26,19 @@ import { ACCESS_SENTENCE } from '@/lib/env'
 import { shortHead, type Head } from '@/lib/env/loader'
 import {
   environmentsView,
-  exposureLine,
   hiddenLine,
   ignoredLine,
   ignoredWarning,
-  keptAccessLine,
   NOT_SHARED_TEXT,
-  removalView,
   resaveCommand,
   staleLine,
-  unreadableLine,
   utc,
   type EntryView,
   type EnvCardView,
   type EnvPageView,
-  type RemovalView,
   type StaleItem,
 } from '@/lib/env/view'
-import { useEnvWriter, useEnvironments, useRepoPeople } from '@/hooks/use-environments'
+import { useEnvWriter, useEnvironments, useRepoPeople, type EnvironmentsRead } from '@/hooks/use-environments'
 import { EnvChangeDialog, type EnvChangeContext, type EnvChangeMode } from '@/components/repo/environment-editor'
 import { useDpnsName } from '@/hooks/use-dpns-name'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
@@ -111,11 +104,7 @@ function Environments({ home, addr }: { home: RepoHome; addr: RepoAddress }): JS
           </div>
         ) : (
           <p className="mt-1 text-dense text-anvil-600 dark:text-anvil-300" data-testid="env-edit-hint">
-            {!maintainer
-              ? 'Only maintainers can change environments, here or with dg: '
-              : state.data?.encryption === 'none'
-                ? 'Add your encryption key to this browser (Settings → Members-only and private content) to change them here, or use dg: '
-                : 'Unlock this tab to change them here, or use dg: '}
+            {editHint(maintainer, state.data?.encryption)}
             <code className="font-mono text-[12px]">dg env set NAME --env production</code>
           </p>
         )}
@@ -135,6 +124,13 @@ function Environments({ home, addr }: { home: RepoHome; addr: RepoAddress }): JS
       </p>
     </div>
   )
+}
+
+/** Why this tab can't change environments, leading into the `dg` command. */
+function editHint(maintainer: boolean, encryption: EnvironmentsRead['encryption'] | undefined): string {
+  if (!maintainer) return 'Only maintainers can change environments, here or with dg: '
+  if (encryption === 'none') return 'Add your encryption key to this browser (Settings → Members-only and private content) to change them here, or use dg: '
+  return 'Unlock this tab to change them here, or use dg: '
 }
 
 /** What a maintainer can start from the list: one change, opened in {@link EnvChangeDialog}. */
@@ -225,7 +221,6 @@ function EnvCard({
   actions: EnvActions | null
 }): JSX.Element {
   const titleId = `env-${card.env}-title`
-  const env = card.env
   return (
     <section aria-labelledby={titleId} className="rounded-lg border border-anvil-200 dark:border-anvil-800" data-testid="env-card">
       <header className="flex flex-wrap items-center gap-2 border-b border-anvil-100 px-4 py-2.5 dark:border-anvil-850">
@@ -235,10 +230,10 @@ function EnvCard({
         {card.audienceLabel !== null ? <AudienceChip label={card.audienceLabel} everyone={card.membersKey} /> : null}
         {actions !== null && card.kind === 'current' ? (
           <div className="ml-auto flex flex-wrap gap-2">
-            <Button size="sm" variant="outline" onClick={() => actions.start({ kind: 'values', env })} data-testid="env-edit">
+            <Button size="sm" variant="outline" onClick={() => actions.start({ kind: 'values', env: card.env })} data-testid="env-edit">
               <Pencil className="h-3.5 w-3.5" aria-hidden /> Edit values
             </Button>
-            <Button size="sm" variant="outline" onClick={() => actions.start({ kind: 'audience', env })} data-testid="env-change-audience">
+            <Button size="sm" variant="outline" onClick={() => actions.start({ kind: 'audience', env: card.env })} data-testid="env-change-audience">
               Change who can read this
             </Button>
           </div>
@@ -309,6 +304,16 @@ function WhoCanRead({ card }: { card: EnvCardView }): JSX.Element {
  */
 function OldFormatNote({ env, old, actions }: { env: string; old: NonNullable<EnvCardView['oldFormat']>; actions: EnvActions | null }): JSX.Element {
   const latest = old.latest
+  let step: JSX.Element | null = <code className="break-words font-mono text-[12px]">{old.command}</code>
+  if (actions !== null) {
+    // Mark changed has nothing to mark until a name is listed
+    step =
+      latest || old.unmarked.length > 0 ? (
+        <Button size="sm" variant="outline" onClick={() => actions.start(latest ? { kind: 'again', env } : { kind: 'mark', env })} data-testid={latest ? 'env-old-format-resave' : 'env-mark-changed'}>
+          {latest ? 'Save it again' : 'Mark changed'}
+        </Button>
+      ) : null
+  }
   return (
     <div role="note" className="space-y-1 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense text-anvil-700 dark:text-anvil-200" data-testid="env-old-format" data-env={env}>
       <p className="flex items-start gap-2">
@@ -320,15 +325,7 @@ function OldFormatNote({ env, old, actions }: { env: string; old: NonNullable<En
           Not marked yet: {old.unmarked.join(', ')}
         </p>
       ) : null}
-      <p className="pl-6">
-        {actions !== null && !latest && old.unmarked.length === 0 ? null : actions !== null ? (
-          <Button size="sm" variant="outline" onClick={() => actions.start(latest ? { kind: 'again', env } : { kind: 'mark', env })} data-testid={latest ? 'env-old-format-resave' : 'env-mark-changed'}>
-            {latest ? 'Save it again' : 'Mark changed'}
-          </Button>
-        ) : (
-          <code className="break-words font-mono text-[12px]">{old.command}</code>
-        )}
-      </p>
+      <p className="pl-6">{step}</p>
     </div>
   )
 }
@@ -469,54 +466,6 @@ function Conflict({
         Compare them with <code className="font-mono text-[12px]">dg env history --env {env}</code>, then a maintainer keeps one:{' '}
         <code className="break-words font-mono text-[12px]">dg env edit --env {env} --keep &lt;id&gt;</code>
       </p>
-    </div>
-  )
-}
-
-/**
- * The member-removal hook (DESIGN §10, `dg collab remove`'s checklist): the environments and
- * current value names `member` could read, to change where they're used. Reads only while shown.
- */
-export function EnvironmentsRemoval({
-  home,
-  member,
-  heldMembersKey,
-  staysMaintainer = false,
-}: {
-  home: RepoHome
-  member: string
-  heldMembersKey: boolean
-  /** They keep a maintainer role (only another role goes): nothing to change, they still read them. */
-  staysMaintainer?: boolean
-}): JSX.Element | null {
-  const { state } = useEnvironments(home)
-  const name = useIdentityText(member)
-  if (state.error !== null) {
-    return <p className="text-[12px] text-caution-700 dark:text-caution-400">Couldn&apos;t list the environments {name} could read: {state.error}</p>
-  }
-  if (state.data === null) return <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Checking which environments {name} could read…</p>
-  return <RemovalLines view={removalView(state.data.book, member, heldMembersKey)} name={name} staysMaintainer={staysMaintainer} />
-}
-
-/** The checklist's lines (pure props: the component tests render it). */
-export function RemovalLines({ view, name, staysMaintainer = false }: { view: RemovalView; name: string; staysMaintainer?: boolean }): JSX.Element | null {
-  if (view.exposures.length === 0 && view.unreadable === 0) return null
-  if (staysMaintainer) {
-    return (
-      <p className="text-dense text-anvil-700 dark:text-anvil-200" data-testid="env-removal-kept">
-        {keptAccessLine(name)}
-      </p>
-    )
-  }
-  return (
-    <div className="space-y-1 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense text-anvil-700 dark:text-anvil-200" data-testid="env-removal">
-      {view.exposures.map((e) => (
-        <p key={e.env} className="break-words">
-          {exposureLine(name, e)}
-        </p>
-      ))}
-      {view.unreadable > 0 ? <p>{unreadableLine(name, view.unreadable)}</p> : null}
-      <p className="text-[12px] text-anvil-600 dark:text-anvil-300">Removing someone can&apos;t take back what they could already read.</p>
     </div>
   )
 }

@@ -16,6 +16,7 @@ import type { WriteAuth } from '../sdk'
 import type { RepoRef } from '../repo/contract'
 import { readMaintainers } from '../repo/members'
 import { putPlatformChunks, writePackManifest } from '../repo/push'
+import { sha256Hex } from '../storage/sigv4'
 import { mapPooled } from '../view/pool'
 import * as secp from '@noble/secp256k1'
 import { sealLetterSnapshot } from './codec'
@@ -23,10 +24,6 @@ import { EnvSaveError, type EnvSaver, type PersonKey, type Sender } from './writ
 
 /** Identities fetched at once for their keys. */
 const KEY_WINDOW = 8
-
-async function sha256Hex(b: Uint8Array): Promise<string> {
-  return bytesToHex(new Uint8Array(await crypto.subtle.digest('SHA-256', new Uint8Array(b))))
-}
 
 export function sdkEnvSaver(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, network: Network): EnvSaver {
   const me = auth.identityId

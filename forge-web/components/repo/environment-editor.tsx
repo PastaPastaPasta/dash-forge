@@ -20,15 +20,16 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { Eye, EyeOff, FileUp, Plus, Trash2, X } from 'lucide-react'
 
 import { ACCESS_SENTENCE, MAX_RECIPIENTS, audienceLabel, validEnvName, validVarName, type Audience, type EnvVar, type Group, type VarType } from '@/lib/env'
-import { DotenvError, applySet, changeSummary, draftOf, markChangedNames, parseDotenv, planSave, saveNotes, saveNoteText, sentToText, type SavePlan } from '@/lib/env/edit'
+import { DotenvError, JOINERS_LINE, changeSummary, draftOf, markChangedNames, parseDotenv, planSave, saveNotes, saveNoteText, sentToText, type SavePlan } from '@/lib/env/edit'
+import { compareStrings as cmp } from '@/lib/env/format'
 import type { EnvBook } from '@/lib/env/loader'
 import { resolvePeople, type PeopleView } from '@/lib/env/view'
-import { EnvSaveError, prepareSave, storeSave, type Prepared } from '@/lib/env/write'
+import { EnvSaveError, prepareSave, storeSave, tooManyText, type EnvSaver, type Prepared } from '@/lib/env/write'
 import type { MemberEnvIO } from '@/lib/env/member-change'
-import type { EnvSaver } from '@/lib/env/write'
 import { decodeIdentifier } from '@/lib/auth'
 import { base58Encode } from '@/lib/auth/base58'
 import { previewCredits } from '@/lib/sdk'
+import { errText } from '@/lib/storage/util'
 import { onRadioGroupKeyDown, radioTabIndex } from '@/components/ui/radio-group'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Dialog } from '@/components/ui/dialog'
@@ -38,8 +39,7 @@ import { Author } from '@/components/author'
 import { useDpnsName } from '@/hooks/use-dpns-name'
 import { shortId } from '@/lib/utils'
 
-/** The help lines under the picker (DESIGN §10). */
-export const JOINERS_LINE = "People who join this group later get the current values when it's saved again, never earlier ones."
+/** The help line under the picker, after {@link JOINERS_LINE} (DESIGN §10). */
 export const REMOVED_LINE = "People removed keep what they could read; you'll get a list of values to change."
 
 const GROUPS: readonly Group[] = ['maintainers', 'writers', 'members']
@@ -73,11 +73,6 @@ export function audienceSize(a: Audience, people: PeopleView, viewer: string): n
   const all = resolvePeople(a, people)
   all.add(viewer)
   return all.size
-}
-
-/** The "Too many" sentence (DESIGN §10). */
-export function tooManyLine(a: Audience, n: number): string {
-  return `${audienceLabel(a)} is ${n} people. An environment can be shared with at most ${MAX_RECIPIENTS}. Choose a smaller group or specific people.`
 }
 
 /** An identity id typed into a field, or why it isn't one. */
@@ -250,7 +245,7 @@ export function AudiencePicker({
       ) : null}
       {chosen !== null && size !== null && size > MAX_RECIPIENTS ? (
         <p role="alert" className="text-dense text-danger-700 dark:text-danger-400" data-testid="env-too-many">
-          {tooManyLine(chosen, size)}
+          {tooManyText(chosen, size)}
         </p>
       ) : null}
       <div className="space-y-0.5 text-[12px] text-anvil-500 dark:text-anvil-400">
@@ -276,7 +271,7 @@ function rowsOf(vars: ReadonlyMap<string, EnvVar>, focus: readonly string[]): Ro
   const names = [...vars.keys()].sort((a, b) => {
     const fa = focus.includes(a) ? 0 : 1
     const fb = focus.includes(b) ? 0 : 1
-    return fa - fb || (a < b ? -1 : a > b ? 1 : 0)
+    return fa - fb || cmp(a, b)
   })
   return names.map((name, i) => {
     const v = vars.get(name) as EnvVar
@@ -360,14 +355,12 @@ function EntriesEditor({ rows, setRows, focus }: { rows: readonly Row[]; setRows
     }
     setRows((rs) => {
       const out = [...rs]
-      const typed = new Map<string, EnvVar>()
-      applySet(typed, values, secret)
       let k = nextKey(out)
-      for (const [name, v] of typed) {
+      for (const [name, value] of values) {
         const at = out.findIndex((r) => r.name === name)
         const type = secret ? 'secret' : at >= 0 ? (out[at] as Row).type : 'variable'
-        if (at >= 0) out[at] = { ...(out[at] as Row), value: v.value, type }
-        else out.push({ key: k++, name, saved: false, value: v.value, type, note: '' })
+        if (at >= 0) out[at] = { ...(out[at] as Row), value, type }
+        else out.push({ key: k++, name, saved: false, value, type, note: '' })
       }
       return out
     })
@@ -478,7 +471,7 @@ export function EnvChangeDialog({ mode, ctx, onClose, onSaved }: { mode: EnvChan
         setPlan(planSave(ctx.book, mode.env, { change: (n) => void n.markedChanged.push(...picked.names) }))
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(errText(e))
     }
     // only a new change resets it: a re-read of the page must not throw away a form or a confirmation
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -525,9 +518,8 @@ function EnvForm({
   }, [mode])
   const [name, setName] = useState(env0)
   const [choice, setChoice] = useState<AudienceChoice>(current === null ? NO_CHOICE : choiceOf(current.audience, ctx.viewer))
-  const [rows, setRowsState] = useState<Row[]>(() => (current === null ? [] : rowsOf(current.vars, mode.kind === 'values' ? (mode.focus ?? []) : [])))
+  const [rows, setRows] = useState<Row[]>(() => (current === null ? [] : rowsOf(current.vars, mode.kind === 'values' ? (mode.focus ?? []) : [])))
   const [error, setError] = useState<string | null>(null)
-  const setRows = (f: (rows: Row[]) => Row[]): void => setRowsState((rs) => f(rs))
   const env = name.trim()
   const audience = audienceOf(choice, ctx.viewer)
   const size = audience !== null && ctx.people !== null ? audienceSize(audience, ctx.people, ctx.viewer) : null
@@ -557,7 +549,7 @@ function EnvForm({
         }),
       )
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(errText(e))
     }
   }
   return (
@@ -625,7 +617,7 @@ function SaveConfirm({ plan, ctx, onClose, onSaved }: { plan: SavePlan; ctx: Env
         const p = await prepareSave(ctx.saver, draftOf(plan, people))
         if (live) setPrepared(p)
       } catch (e) {
-        if (live) setProblem(e instanceof Error ? e.message : String(e))
+        if (live) setProblem(errText(e))
       }
     })()
     return () => {
