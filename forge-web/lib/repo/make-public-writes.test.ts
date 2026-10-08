@@ -106,6 +106,13 @@ describe('the author makes their own members-only post public', () => {
     forgetStoredDoc(REPO, 'comment', MINE)
   })
 
+  it('a Read-role reviewer may make their review’s text public: it is a comment, not a verdict', async () => {
+    await makeReviewTextPublic(sdk, auth, REPO, { reviewId: MY_REVIEW, patchId: PR, text: 'From a reader.', post: { isMember: true, locked: false, role: 'reader' } })
+    expect(writes).toHaveLength(1)
+    expect(writes[0]?.documentType).toBe('comment')
+    expect(writes[0]?.data['verdict']).toBeUndefined()
+  })
+
   it('a review on a locked PR: the member’s attached comment carries the proof', async () => {
     await makeReviewTextPublic(sdk, auth, REPO, { reviewId: MY_REVIEW, patchId: PR, text: 'Locked, still public.', post: { isMember: true, locked: true } })
     expect(writes[0]?.data['asMember']).toBeDefined()
