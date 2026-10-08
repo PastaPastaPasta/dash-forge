@@ -190,7 +190,7 @@ pub fn fallback_lines(fallbacks: &[Fallback], repo: &str) -> Vec<String> {
     let mirrored = fallbacks.iter().filter(|f| f.mirror).count();
     if mirrored > 0 {
         out.push(format!(
-            "hint: no recorded copy of {} served, only a pack mirror someone else may delete; a maintainer or writer restores the copies with `dg reseed {repo}`",
+            "hint: no recorded copy of {} served, only a pack mirror someone else may delete; whoever holds the storage the pack was pushed to restores the copies with `dg reseed {repo} --profile <name>` (<name>: the storage profile it was pushed with; inside a clone, add `--from-local`)",
             if mirrored == 1 { "a pack".to_string() } else { format!("{mirrored} packs") }
         ));
     }
@@ -2107,7 +2107,7 @@ mod tests {
         let lines = fallback_lines(&[f(1), m], "o/r");
         assert_eq!(
             lines.last().map(String::as_str),
-            Some("hint: no recorded copy of a pack served, only a pack mirror someone else may delete; a maintainer or writer restores the copies with `dg reseed o/r`")
+            Some("hint: no recorded copy of a pack served, only a pack mirror someone else may delete; whoever holds the storage the pack was pushed to restores the copies with `dg reseed o/r --profile <name>` (<name>: the storage profile it was pushed with; inside a clone, add `--from-local`)")
         );
     }
 

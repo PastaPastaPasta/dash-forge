@@ -30,6 +30,7 @@ import { onPrivateSessionEnded } from '../repo/private-session'
 import {
   loadArtifactBytesProgress,
   missingObjectError,
+  PackSkippedError,
   PackUnavailableError,
   repoReader,
   StorageUnreachableError,
@@ -133,8 +134,9 @@ export function restoreFallback(
   const existing = cachedFallback(repoKey(repo), livePacks)
   if (existing !== null) return existing
 
-  // A private repo's decrypted clone is never persisted, so there is nothing to restore.
-  if (repo.visibility === 'private') return Promise.resolve(null)
+  // A private repo's decrypted clone is never persisted, so there is nothing to restore; nor a
+  // repository made public's read with published keys.
+  if (repo.visibility === 'private' || repo.published !== undefined) return Promise.resolve(null)
   const restoreKey = `${repoKey(repo)}\0${manifestKey}`
   const restoring = restores.get(restoreKey)
   if (restoring !== undefined) return restoring
@@ -284,7 +286,16 @@ async function downloadPacks(
         continue
       }
       const base = fetched
-      const bytes = await loadArtifactBytesProgress(sdk, repo, manifest, (done) => report(base + done))
+      let bytes: Uint8Array
+      try {
+        bytes = await loadArtifactBytesProgress(sdk, repo, manifest, (done) => report(base + done))
+      } catch (e) {
+        // A repository made public's pack this reader cannot open is skipped, as an unserved
+        // external pack is: never fatal by itself.
+        if (!(e instanceof PackSkippedError)) throw e
+        outcomes.push({ manifest, unavailable: { ...unavailableOf(e), packHash: manifest.packHash } })
+        continue
+      }
       fetched += manifest.sizeBytes
       outcomes.push({ manifest, bytes })
     }
@@ -357,7 +368,9 @@ async function runFallback(
 
   const packs = got.map((o) => o.bytes)
   const manifests = got.map((o) => o.manifest)
-  const isPrivate = repo.visibility === 'private'
+  // Decrypted packs (a private repo's, or a repository made public's opened with published keys)
+  // had their sealed bytes checked against `packHash` before they were opened.
+  const isPrivate = repo.visibility === 'private' || repo.published !== undefined
   try {
     validatePacks(packs, manifests, !isPrivate)
   } catch (e) {
@@ -393,7 +406,8 @@ async function runFallback(
   const reader = repoReader(sdk, repo, locator, packSource, manifests, unavailable)
   // Only a complete clone is persisted. A skipped pack's mirror may come back, and a reload
   // is the natural moment to try it again; a persisted partial clone would never retry.
-  // A private repo's clone is decrypted: it is never written to browser storage.
+  // A private repo's clone is decrypted: it is never written to browser storage (nor a
+  // repository made public's read with published keys).
   if (unavailable.length === 0 && !isPrivate) {
     await storeFallback(repoKey(repo), livePacks, { locator: locatorBytes, packs })
   }

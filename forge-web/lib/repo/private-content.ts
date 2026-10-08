@@ -22,8 +22,8 @@
  */
 
 import { decodeIdentifier } from '../auth/base58'
-import { openContent, propOf, type DocFields, type OpenContext, type PrivateDocType, type StoredPrivateDoc, type UnreadableReason } from '../private'
-import { ENC_SPECIFIC_PEOPLE, type Audience, type ContentKind } from '../rules/v2'
+import { openContent, openVis, propOf, type DocFields, type OpenContext, type PrivateDocType, type StoredPrivateDoc, type UnreadableReason } from '../private'
+import { ENC_SPECIFIC_PEOPLE, type Audience, type ContentKind, type Visibility } from '../rules/v2'
 import { base64ToBytes, type PlainDocument } from '../sdk'
 import { asIdentifierString, num, wellFormed, type RepoRef } from './contract'
 import { noteMembersKey } from './members-key-cache'
@@ -31,14 +31,15 @@ import { noteMembersKey } from './members-key-cache'
 /**
  * Why a document is hidden. `membersOnly`: a members-only document of a public repo this reader
  * holds no key for; `letter`: a specific-people document (`enc` v0x04), opened only by its
- * recipients (not in this release).
+ * recipients (not in this release); `unknownVersion`: encrypted in a format a later version of
+ * Forge writes (`enc` v0x05 on), never opened here.
  */
-export type HiddenReason = 'notEncrypted' | 'wrongKey' | 'late' | 'lateEdit' | 'membersOnly' | 'letter'
+export type HiddenReason = 'notEncrypted' | 'wrongKey' | 'late' | 'lateEdit' | 'membersOnly' | 'letter' | 'unknownVersion'
 
 /** Hidden documents, by reason. */
 export type HiddenCounts = Readonly<Record<HiddenReason, number>>
 
-const NO_HIDDEN: HiddenCounts = { notEncrypted: 0, wrongKey: 0, late: 0, lateEdit: 0, membersOnly: 0, letter: 0 }
+const NO_HIDDEN: HiddenCounts = { notEncrypted: 0, wrongKey: 0, late: 0, lateEdit: 0, membersOnly: 0, letter: 0, unknownVersion: 0 }
 
 /** The sentence each reason is shown with. */
 export const HIDDEN_REASON_TEXT: Readonly<Record<HiddenReason, string>> = {
@@ -48,6 +49,7 @@ export const HIDDEN_REASON_TEXT: Readonly<Record<HiddenReason, string>> = {
   lateEdit: 'edited after its author was removed; the original text is gone',
   membersOnly: 'members-only',
   letter: 'for specific people',
+  unknownVersion: 'written by a newer version of Forge',
 }
 
 export function totalHidden(h: HiddenCounts): number {
@@ -255,14 +257,18 @@ export function blockHeightOf(doc: PlainDocument, field: '$createdAtBlockHeight'
 }
 
 /**
- * The {@link StoredPrivateDoc} of a raw document of `type`: its plaintext bind fields as bytes.
- * Null when a field the AD needs cannot be decoded (the caller treats that as malformed).
+ * The {@link StoredPrivateDoc} of a raw document of `type`: its plaintext bind fields as bytes,
+ * opened under its own `vis` stamp (`openVis`, `private-repos.md` §18.1: a repository made public,
+ * `converted`, keeps its earlier documents private). Null when a field the AD needs cannot be
+ * decoded, or the stamp cannot be this repo's (the caller treats that as malformed).
  */
-function storedPrivateDoc(type: PrivateDocType, doc: PlainDocument, vis: RepoRef['visibility'] = 'private'): StoredPrivateDoc | null {
+function storedPrivateDoc(type: PrivateDocType, doc: PlainDocument, repository: Visibility, converted = false): StoredPrivateDoc | null {
   const ownerId = idField(doc, '$ownerId')
   const id = idField(doc, '$id')
   const enc = bytesField(doc, 'enc')
   if (ownerId === undefined || enc === undefined || doc['epoch'] == null) return null
+  const vis = openVis(doc['vis'], repository, converted, enc[0])
+  if (vis === null) return null
   const updated = blockHeightOf(doc, '$updatedAtBlockHeight')
   const base = {
     type,
@@ -370,7 +376,7 @@ export function privateGate(repo: RepoRef, ctx: OpenContext): ContentGate {
     visibility: repo.visibility,
     async admit(type, doc) {
       if (!wellFormedAs(repo, type, doc)) return { ok: false, reason: 'notEncrypted' }
-      const stored = storedPrivateDoc(type, doc)
+      const stored = storedPrivateDoc(type, doc, 'private')
       if (stored === null) return { ok: false, reason: 'notEncrypted' }
       const opened = await openContent(stored, ctx)
       if (opened.status === 'readable') {
@@ -391,6 +397,8 @@ export function privateGate(repo: RepoRef, ctx: OpenContext): ContentGate {
           return { ok: false, reason: 'notEncrypted' }
         case 'letter':
           return { ok: false, reason: 'letter' }
+        case 'unknownVersion':
+          return { ok: false, reason: 'unknownVersion' }
         default:
           return { ok: false, reason: 'wrongKey' }
       }
@@ -416,24 +424,38 @@ export function hiddenReasonOf(reason: UnreadableReason): HiddenReason {
       return 'notEncrypted'
     case 'letter':
       return 'letter'
+    case 'unknownVersion':
+      return 'unknownVersion'
     default:
       return 'wrongKey'
   }
 }
 
+/** How a public repo's {@link laneGate} reads: whether the repo was made public, and whether its reader is no member. */
+export interface LaneOptions {
+  /** The repo was made public (`private-repos.md` §18): its earlier documents open as private ones. */
+  readonly converted?: boolean
+  /**
+   * The reader holds only the keys the owner of a repository made public published: a document
+   * none of them opens is members-only to it, as to any reader without a key ({@link publicGate}).
+   */
+  readonly published?: boolean
+}
+
 /**
  * A public repo's gate over a member's members-key {@link OpenContext} (DESIGN §4.1): **per
  * document**. A plaintext document passes through as the public gate admits it; a sealed one
- * (members-only `enc` v0x03) opens with `vis: "public"` and comes back with its fields as
- * plaintext and {@link AUDIENCE_FIELD} set; one that does not open is its placeholder.
+ * (members-only `enc` v0x03, or a repository made public's earlier content) opens under its own
+ * `vis` and comes back with its fields as plaintext and {@link AUDIENCE_FIELD} set; one that does
+ * not open is its placeholder.
  */
-export function laneGate(repo: RepoRef, ctx: OpenContext): ContentGate {
+export function laneGate(repo: RepoRef, ctx: OpenContext, options: LaneOptions = {}): ContentGate {
   return {
     visibility: repo.visibility,
     async admit(type, doc) {
       if (!wellFormedAs(repo, type, doc)) return { ok: false, reason: 'notEncrypted' }
       if (!isSealedDoc(doc)) return { ok: true, doc }
-      const stored = storedPrivateDoc(type, doc, 'public')
+      const stored = storedPrivateDoc(type, doc, repo.visibility, options.converted === true)
       if (stored === null) return { ok: false, reason: 'notEncrypted' }
       const opened = await openContent(stored, ctx)
       if (opened.status === 'readable') {
@@ -442,16 +464,23 @@ export function laneGate(repo: RepoRef, ctx: OpenContext): ContentGate {
         return { ok: true, doc: out }
       }
       if (opened.status === 'malformed') return { ok: false, reason: 'notEncrypted' }
+      if (options.published === true && (opened.reason === 'noKey' || opened.reason === 'noEpoch')) {
+        noteMembersKey(repo.repoId)
+        return unopened(type, doc, 'noKey', 'membersOnly')
+      }
       const reason = hiddenReasonOf(opened.reason)
-      const why: Unopened = reason === 'notEncrypted' ? 'notForThisRepo' : 'notReadable'
+      // a later client's envelope is members-only to this reader, as to one without a key
+      let why: Unopened = 'notReadable'
+      if (reason === 'notEncrypted') why = 'notForThisRepo'
+      else if (reason === 'unknownVersion') why = 'noKey'
       return unopened(type, doc, why, reason)
     },
   }
 }
 
 /** The gate of a reader's session over `ctx`: a private repo's {@link privateGate}, a public repo's {@link laneGate}. */
-export function sessionGate(repo: RepoRef, ctx: OpenContext): ContentGate {
-  return repo.visibility === 'private' ? privateGate(repo, ctx) : laneGate(repo, ctx)
+export function sessionGate(repo: RepoRef, ctx: OpenContext, options: LaneOptions = {}): ContentGate {
+  return repo.visibility === 'private' ? privateGate(repo, ctx) : laneGate(repo, ctx, options)
 }
 
 /** Admit every document of `docs`, in order: the admitted ones and the hidden tally. */

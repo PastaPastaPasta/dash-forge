@@ -27,17 +27,7 @@ You need two programs on your `PATH`:
 - `dg`: the command-line tool, shaped like GitHub's `gh`;
 - `git-remote-dash`: the git remote helper. Git runs it whenever a URL starts with `dash://`.
 
-### Prebuilt binaries (Linux and macOS)
-
-This one line installs the latest release's checksum-verified binaries into `~/.local/bin`:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/install.sh | sh
-```
-
-[INSTALL.md](../INSTALL.md) covers what the script checks (the SHA-256, and the build attestation when `gh` is installed), manual downloads (Windows included), `cargo binstall`, and pinning a version.
-
-### Or build from source
+### Build from source
 
 You need Rust (the repository pins the version; rustup installs it for you) and `protoc` 25 or newer. [BUILDING.md](../BUILDING.md) explains both.
 
@@ -48,6 +38,16 @@ cargo install --locked --path crates/git-remote-dash
 ```
 
 `cargo install` puts both binaries in `~/.cargo/bin`, which rustup already added to your `PATH`.
+
+### Prebuilt binaries (Linux and macOS), once a release is published
+
+No release is published yet, so this script stops with a message that points back to the build above. When one is, this one line installs the latest release's checksum-verified binaries into `~/.local/bin`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/install.sh | sh
+```
+
+[INSTALL.md](../INSTALL.md) covers what the script checks (the SHA-256, and the build attestation when `gh` is installed), manual downloads (Windows included), `cargo binstall`, and pinning a version.
 
 ### Check the install
 
@@ -179,7 +179,7 @@ Creating 8hJm…/my-project on devnet-sakura
   packs → r2-main (1 of 1 must confirm); Platform: manifest + refs only
   (storage: git config dash.storage; recorded in the repository's public config, which readers and the web follow; `--storage <profile|platform>` records another)
 Proceed? [Y/n] y
-✓ created  https://forge.dashhq.org/repo?owner=8hJm…&name=my-project
+✓ created  https://forge.dashhq.org/8hJm…/my-project
 ✓ remote 'origin' → dash://8hJm…/my-project
 ✓ git config dash.storage=r2-main, dash.network=devnet, dash.devnetName=sakura
 dash: 8hJm…/my-project ← main (8f3e2a1, 312 objects, 1.2 MiB)
@@ -190,13 +190,13 @@ dash: stored pack 6ce98e05facd (1.2 MiB, 312 objects)
 dash: pack 6ce98e05facd (1.2 MiB) stored on r2-main (1 verified)
 dash: updated main → 8f3e2a1
 dash: history index published (full, 42 paths, 1 commits)
-dash: done · Platform charged ≈0.0052 DASH · remaining 0.0426 DASH · https://forge.dashhq.org/repo?owner=8hJm…&name=my-project
+dash: done · Platform charged ≈0.0052 DASH · remaining 0.0426 DASH · https://forge.dashhq.org/8hJm…/my-project
 To dash://8hJm…/my-project
  * [new branch]      main -> main
 branch 'main' set up to track 'origin/main'.
 ✓ main → 8f3e2a1   this push ~0.0052 DASH
   total ~0.0068 DASH (create ~0.0016 DASH + push ~0.0052 DASH) · balance 0.0426 DASH
-Open it: https://forge.dashhq.org/repo?owner=8hJm…&name=my-project
+Open it: https://forge.dashhq.org/8hJm…/my-project
 ```
 
 (The charges are the ones measured on devnet sakura on 2026-10-01 for a first push to your own bucket; the size and paths are illustrative. On a testnet or devnet, DASH is test money and `dg` prints no dollar figures; only on mainnet does it add `≈ $…`. See [Costs](costs.md).)
@@ -267,7 +267,7 @@ dash: storage      → r2-main · Platform stores manifest + refs only, est 0.00
 dash: r2-main      ████████████████ 245 B  verified   0.2 s
 dash: platform     manifest 4 · refUpdate 1     est 0.0058 DASH
 dash: history index published (full, 3 paths, 2 commits)
-dash: done · Platform charged ≈0.0040 DASH · remaining 0.0390 DASH · https://forge.dashhq.org/repo?owner=8hJm…&name=my-project
+dash: done · Platform charged ≈0.0040 DASH · remaining 0.0390 DASH · https://forge.dashhq.org/8hJm…/my-project
 ```
 
 (The numbers are illustrative. Yours depend on the size of the push; a later push costs a little less than the first, and the estimate is an upper bound. See [Costs](costs.md).)

@@ -372,6 +372,12 @@ fn last_lines(s: &str, n: usize) -> String {
     lines[lines.len().saturating_sub(n)..].join(" | ")
 }
 
+/// Whether `dir`'s repository is a shallow clone: its history stops early, so a merge base it
+/// cannot find may still exist.
+pub fn is_shallow(dir: &Path) -> bool {
+    git(dir, &["rev-parse", "--is-shallow-repository"], &[]).is_ok_and(|s| s == "true")
+}
+
 /// Whether `oid` is an object in `dir`'s repository.
 pub fn has_object(dir: &Path, oid: &str) -> bool {
     git_ok(dir, &["cat-file", "-e", &format!("{oid}^{{commit}}")])

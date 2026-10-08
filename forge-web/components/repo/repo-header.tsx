@@ -132,16 +132,20 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
         {/* The chips wrap below the title on a narrow screen rather than squeezing it. */}
         <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2 text-prose">
           {/* The page's h1 (L-60), the repo's owner / name, unless the view has its own title. */}
-          <TitleTag className="flex min-w-0 max-w-full items-center gap-2 text-prose font-normal" data-testid="repo-title">
-            {/* The owner keeps its own width (capped at 45vw) and the name truncates: a pill
-                squeezed below its width drew over the name (the id inside it cannot shrink). */}
-            <span className="flex shrink-0">
-              <Author identityId={home.repo.ownerId} link className="min-w-0 max-w-[45vw] sm:max-w-none" />
+          <TitleTag className="flex min-w-0 max-w-full flex-wrap items-center gap-x-2 gap-y-1 text-prose font-normal" data-testid="repo-title">
+            {/* The owner keeps its own width, name and id both, up to the line: a pill squeezed
+                below its width drew over the name (the id inside it cannot shrink), and capped at
+                45vw it cut a DPNS name to three letters on a phone. "/ name" goes under it when the
+                two do not fit one line, and the name truncates. */}
+            <span className="flex min-w-0 max-w-full shrink-0">
+              <Author identityId={home.repo.ownerId} link className="min-w-0 max-w-full" />
             </span>
-            <span className="text-anvil-300 dark:text-anvil-600" aria-hidden>/</span>
-            <Link href={repoHref('/repo', addr)} className="hit-area min-w-0 truncate font-mono font-semibold text-anvil-900 hover:text-forge-800 dark:text-anvil-50 dark:hover:text-forge-400">
-              {home.repo.name || addr.name}
-            </Link>
+            <span className="flex min-w-0 max-w-full items-center gap-2">
+              <span className="text-anvil-300 dark:text-anvil-600" aria-hidden>/</span>
+              <Link href={repoHref('/repo', addr)} className="hit-area min-w-0 truncate font-mono font-semibold text-anvil-900 hover:text-forge-800 dark:text-anvil-50 dark:hover:text-forge-400">
+                {home.repo.name || addr.name}
+              </Link>
+            </span>
           </TitleTag>
           {home.repo.visibility === 'private' ? <PrivateChip home={home} /> : null}
           <MembersChip home={home} />

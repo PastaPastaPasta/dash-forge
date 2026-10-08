@@ -90,8 +90,9 @@ export default function GettingStartedPage(): JSX.Element {
         <Section icon={<KeyRound className="h-4 w-4 text-fg-muted" aria-hidden />} title="Signing in gives this browser a limited key">
           <p>
             Your master key is used once, to give this browser a key that can spend at most {BROWSER_KEY_DEFAULTS.budgetDash} DASH, only on
-            Forge, for {BROWSER_KEY_DEFAULTS.days} days. A passkey or passphrase protects it. The master key and recovery phrase are never stored.
+            Forge, for {BROWSER_KEY_DEFAULTS.days} days by default (up to a year).
           </p>
+          <p>A passkey or passphrase protects it. The master key and recovery phrase are never stored.</p>
         </Section>
 
         <Section icon={<Terminal className="h-4 w-4 text-fg-muted" aria-hidden />} title="From the terminal">

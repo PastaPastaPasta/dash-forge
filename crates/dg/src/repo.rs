@@ -7,7 +7,7 @@
 //! parent's packs recorded by reference and its refs copied (`forge_core::fork`).
 //! Repositories cannot be deleted.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Stdio;
 
@@ -74,7 +74,7 @@ pub async fn run(ctx: &Ctx, cmd: &RepoCommand) -> Result<()> {
             backend_set(ctx, repo, mode.mode(), mode.label()).await
         }
         RepoCommand::Keys(cmd) => crate::keys::run(ctx, cmd).await,
-        RepoCommand::Members(cmd) => crate::keys::run_members(ctx, cmd).await,
+        RepoCommand::Members(cmd) => Box::pin(crate::keys::run_members(ctx, cmd)).await,
         RepoCommand::Edit(args) => crate::repo_settings::edit(ctx, args).await,
         RepoCommand::Protect(cmd) => crate::repo_settings::protect(ctx, cmd).await,
         RepoCommand::Policy(cmd) => crate::repo_settings::policy(ctx, cmd).await,
@@ -230,9 +230,14 @@ async fn fork(ctx: &Ctx, repo: &str, name: Option<&str>, default_branch_only: bo
         Box::pin(repo_fork_defaults(&client, &parent))
     );
     let parent_packs = parent_packs.context("reading the parent's packs")?;
+    // a parent made public: its sealed packs are never recorded in the fork
+    let sealed =
+        forge_core::fork::sealed_parent_packs(&svc, &parent, &parent_packs, &BTreeMap::new())
+            .await
+            .context("checking the parent's packs")?;
     // The manifests the fork will write, with the URIs each records (each adds to its price).
     let planned: Vec<forge_core::repo::PackManifestInput> =
-        forge_core::fork::plan_manifests(&parent_packs, &BTreeMap::new(), &BTreeSet::new())
+        forge_core::fork::plan_manifests(&parent_packs, &BTreeMap::new(), &sealed)
             .iter()
             .filter_map(|copies| {
                 forge_core::fork::fork_manifest(&parent, copies)

@@ -154,7 +154,8 @@ test('1. OWNER creates a private repo in the browser: four facts, key and sealed
   await expect(page.getByRole('dialog')).toContainText('members keep whatever they could already read')
   await shot(page, '02-create-confirm')
   await page.getByRole('button', { name: /sign & create/i }).click()
-  await page.waitForURL(/created=1/, { timeout: 300_000 })
+  // The page drops `created=1` from the bar once it has read it: match the route, not the param.
+  await page.waitForURL(/\/repo\/\?/, { timeout: 300_000 })
   await waitForRepoResolved(page, 120_000)
   await expect(page.getByTestId('private-chip')).toHaveText(/Private · decrypted with your key \(epoch 0\)/, { timeout: 120_000 })
   await shot(page, '03-created')

@@ -1,0 +1,84 @@
+{
+  "name": "bypass_by_removed_maintainer_unconfirmed",
+  "description": "The maintainer who merged with a bypass has since been removed (or had their role changed, which deletes and rewrites the membership document), so no current document covers the merge. Fail safe: the bypass does not count and the verdict is unmet, but the event is reported with an unconfirmed role (null), and the merger's role is null (no current record, not 'none at the time').",
+  "case": "merge_audit",
+  "rules": "v2",
+  "input": {
+    "mergedAt": 10000000,
+    "merger": "gone",
+    "mergeOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "mergeHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "prAuthor": "auth",
+    "policies": [
+      {
+        "id": "p1",
+        "createdAt": 100,
+        "policy": {
+          "requiredApprovals": 1,
+          "approverRole": 0,
+          "requireChecks": false,
+          "mergeMethods": 0
+        }
+      }
+    ],
+    "protection": [],
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "gone",
+        "role": "writer",
+        "createdAt": 20000000
+      }
+    ],
+    "reviews": [],
+    "dismissals": [],
+    "runs": [],
+    "runners": [],
+    "bypasses": [
+      {
+        "id": "e1",
+        "actor": "gone",
+        "createdAt": 10000100,
+        "oid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "value": "required approvals: 0 of 1"
+      }
+    ]
+  },
+  "expected": {
+    "verdict": "unmet",
+    "policy": {
+      "requiredApprovals": 1,
+      "approverRole": 0,
+      "requireChecks": false,
+      "mergeMethods": 0
+    },
+    "protected": false,
+    "mergerRole": null,
+    "protectionUnmet": false,
+    "approvals": {
+      "met": false,
+      "have": 0,
+      "need": 1,
+      "blockedBy": []
+    },
+    "checks": null,
+    "checksUnread": false,
+    "codeOwnersUnaudited": false,
+    "bypass": null,
+    "uncountedBypass": {
+      "event": {
+        "id": "e1",
+        "actor": "gone",
+        "createdAt": 10000100,
+        "oid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "value": "required approvals: 0 of 1"
+      },
+      "role": null
+    },
+    "rulesChanged": false
+  }
+}

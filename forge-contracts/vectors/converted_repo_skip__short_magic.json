@@ -1,0 +1,13 @@
+{
+  "name": "short_magic",
+  "description": "four bytes of magic and nothing else: too short to tell, downloaded and judged whole.",
+  "case": "converted_repo_skip",
+  "rules": "v2",
+  "input": {
+    "head": "4446504b",
+    "held": []
+  },
+  "expected": {
+    "skip": null
+  }
+}

@@ -864,12 +864,21 @@ impl ReportPlan {
     }
 }
 
-/// The web page that shows a commit's check runs: the commit page of the repo.
+/// The web page that shows a commit's check runs: the commit page of the repo, by its short URL
+/// (`/<owner>/<name>/commit/<oid>`) when the repo is public and the web app's 404 shim opens
+/// that oid (4 to 40 hex digits: a 64-digit SHA-256 id has only the canonical route).
 pub fn commit_web_url(repo: &RepoRef, oid: &str) -> String {
-    format!(
-        "{}&oid={oid}",
-        crate::user_error::web_page_url("repo/commit/", repo.owner_id(), repo.name())
-    )
+    let shim_opens_oid =
+        (4..=40).contains(&oid.len()) && oid.bytes().all(|b| b.is_ascii_hexdigit());
+    match crate::user_error::short_repo_base(repo.owner_id(), repo.name(), repo.visibility)
+        .filter(|_| shim_opens_oid)
+    {
+        Some(base) => format!("{base}/commit/{oid}"),
+        None => format!(
+            "{}&oid={oid}",
+            crate::user_error::web_page_url("repo/commit/", repo.owner_id(), repo.name())
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -1637,8 +1646,24 @@ mod tests {
             visibility: crate::rules::v2::Visibility::Public,
         };
         assert_eq!(
-            commit_web_url(&repo, "abc"),
-            "https://forge.dashhq.org/repo/commit/?owner=alice&name=proj&oid=abc"
+            commit_web_url(&repo, "5950173cee3d651ec03af8c7257bf764a843d747"),
+            "https://forge.dashhq.org/alice/proj/commit/5950173cee3d651ec03af8c7257bf764a843d747"
+        );
+        // An oid the shim does not open (too short, or a 64-digit SHA-256 id) keeps the canonical link.
+        for oid in ["abc", &"a".repeat(64)] {
+            assert_eq!(
+                commit_web_url(&repo, oid),
+                format!("https://forge.dashhq.org/repo/commit/?owner=alice&name=proj&oid={oid}")
+            );
+        }
+        // A private repo keeps the canonical link, and a name the short form refuses does too.
+        let private = RepoRef {
+            visibility: crate::rules::v2::Visibility::Private,
+            ..repo.clone()
+        };
+        assert_eq!(
+            commit_web_url(&private, "5950173c"),
+            "https://forge.dashhq.org/repo/commit/?owner=alice&name=proj&oid=5950173c"
         );
     }
 }

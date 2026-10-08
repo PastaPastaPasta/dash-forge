@@ -228,6 +228,19 @@ impl<'a> PlatformBackend<'a> {
     }
 }
 
+/// The scope a `platform://` locator's chunks are read from, which must be in `contract`.
+fn scope_in(loc: &PlatformLocator, contract: &LoadedContract) -> Result<DocScope> {
+    let scope = loc.scope()?;
+    if scope.contract_id != contract.id() {
+        return Err(Error::Config(format!(
+            "platform locator names contract {}, not {}",
+            scope.contract_id,
+            contract.id()
+        )));
+    }
+    Ok(scope)
+}
+
 /// Read the whole pack a `platform://` locator names from its `chunk` documents and join
 /// them: a READ, so it needs only a connection — no identity or signing key (a clone of a
 /// public repo must work anonymously). The locator's scope must be in `contract`. The caller
@@ -237,19 +250,43 @@ pub async fn read_platform_pack(
     contract: &LoadedContract,
     loc: &PlatformLocator,
 ) -> Result<Vec<u8>> {
-    let scope = loc.scope()?;
-    if scope.contract_id != contract.id() {
-        return Err(Error::Config(format!(
-            "platform locator names contract {}, not {}",
-            scope.contract_id,
-            contract.id()
-        )));
-    }
+    let scope = scope_in(loc, contract)?;
     let chunks = read_chunks_in(client, contract, &scope, loc).await?;
     if chunks.is_empty() {
         return Err(Error::NotFound);
     }
     Ok(join(&chunks))
+}
+
+/// The first `n` bytes of the pack a `platform://` locator names, from its first chunk alone
+/// (`seq` 0): enough to tell a sealed artifact's header (§3.2) without reading the rest. NOT
+/// hash-verified: a caller decides only whether to download the whole pack, which is verified.
+pub async fn read_platform_head(
+    client: &PlatformClient,
+    contract: &LoadedContract,
+    loc: &PlatformLocator,
+    n: usize,
+) -> Result<Vec<u8>> {
+    let scope = scope_in(loc, contract)?;
+    let docs = client
+        .query_documents(
+            contract,
+            CHUNK_DOC_TYPE,
+            &scope.chunk_filters(&loc.owner, loc.pack_hash)?,
+            &[QueryOrder::asc(FIELD_SEQ)],
+            1,
+            None,
+        )
+        .await?;
+    let first = docs
+        .first()
+        .map(|d| decode_chunk_doc(&d.fields))
+        .transpose()?
+        .filter(|c| c.seq == 0)
+        .ok_or(Error::NotFound)?;
+    let mut head: Vec<u8> = first.fields.concat();
+    head.truncate(n);
+    Ok(head)
 }
 
 /// Every `chunk` document of `loc.owner`'s copy of `loc.pack_hash` in `scope` (complete,

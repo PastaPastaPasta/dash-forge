@@ -1,0 +1,36 @@
+{
+  "name": "unknown_v05_private",
+  "description": "the same enc version 0x05 on a private repository's document: Unreadable(UnknownVersion).",
+  "case": "converted_repo_open",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "stamp": null,
+    "repoVisibility": "private",
+    "converted": false,
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        }
+      },
+      "members": []
+    },
+    "doc": {
+      "type": "comment",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "targetId": "3333333333333333333333333333333333333333333333333333333333333333",
+      "enc": "05000102030405060708090a0bf9a7fa2b8dc201ec7c98681cdcfcfdd62d0c8514308e08b3254c75e528853e9f68c2c5558f96fca1eaaaab098149e3d0179a64d1f241ee0b9de6ca6da223470d5625a3a96f37e16e4741f03834dc89db33640789703539675c630fe4e0e9e4408b34c9b046a9d4eb131bce11a57c4650",
+      "createdAtBlockHeight": 50
+    }
+  },
+  "expected": {
+    "status": "unreadable",
+    "reason": "unknownVersion"
+  }
+}

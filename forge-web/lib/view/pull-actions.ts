@@ -31,7 +31,7 @@
 import { isOidHex, isPlainBranchRef, matchesProtected, type Holdings } from '../rules'
 import { capabilitiesOf, roleLimit } from '../rules/roles'
 import { linkedIssues, type Approvals, type ChecksState, type CodeOwnerStatus, type Policy, type PolicyStatus } from '../rules/v2'
-import type { MergeVerdict } from '../rules/merge-content'
+import type { MergeContent } from '../rules/merge-content'
 import type { PullView } from '../repo'
 import type { ProvedVerdicts } from '../repo/verdicts'
 import { branchName, plural } from './format'
@@ -144,6 +144,34 @@ export function codeOwnerRules(status: CodeOwnerStatus | null | 'unknown'): stri
   if (status === 'unknown') return ['code owner approval: not read yet']
   if (status.unreadable) return ['code owner approval: the code owners or the changed files could not be read']
   return status.pending.map((p) => `code owner approval: ${p.path} (${p.owners.join(' ')}${p.approvable ? '' : '; none of them can approve'})`)
+}
+
+/** The merge hint for a writer when only the code owner approvals stop the merge. */
+function codeOwnersHint(status: CodeOwnerStatus | 'unknown'): string {
+  if (status === 'unknown') return 'Merging waits until the code owners and their approvals are read.'
+  if (status.unreadable) return "Couldn't read the code owners or the changed files, so merging is blocked. Only a maintainer can bypass it."
+  return `The branch policy needs a code owner's approval of ${plural(status.pending.length, 'file')}. Only a maintainer can bypass it.`
+}
+
+/** Changed files the branch-rules card names before "and n more". */
+const OWNED_SHOWN = 3
+
+/**
+ * The branch-rules card's line for `requireCodeOwners`: the files still waiting for a code
+ * owner's approval (the first few by name), and those no owner can approve. Null when the policy
+ * does not require it.
+ */
+export function codeOwnersLine(status: CodeOwnerStatus | null | 'unknown'): { readonly ok: boolean; readonly text: string } | null {
+  if (status === null) return null
+  if (status === 'unknown') return { ok: false, text: 'Code owner approvals not read yet' }
+  if (status.unreadable) return { ok: false, text: "Couldn't read the code owners or the changed files, so merging is blocked" }
+  if (status.met) return { ok: true, text: "No changed file waits for a code owner's approval" }
+  const paths = status.pending.map((p) => p.path)
+  const more = paths.length - OWNED_SHOWN
+  const shown = paths.slice(0, OWNED_SHOWN).join(', ') + (more > 0 ? ` and ${more} more` : '')
+  const stuck = status.pending.filter((p) => !p.approvable).length
+  const text = `Waiting for a code owner's approval: ${shown}`
+  return { ok: false, text: stuck === 0 ? text : `${text}. No owner of ${plural(stuck, 'file')} can approve, so fix CODEOWNERS on the base branch` }
 }
 
 /**
@@ -455,8 +483,12 @@ export function pullActions({ pull, viewer, holdings, protectedPatterns = [], po
       mergeHint = `The branch policy needs ${plural(policy.need, 'approval')} (${policy.have} so far; the PR author's own never counts). Only a maintainer can bypass it.`
     } else if (policy !== null && typeof policy === 'object' && policy.blockedBy.length > 0) {
       mergeHint = `${policy.blockedBy.length === 1 ? 'A reviewer' : 'Reviewers'} requested changes. Merging waits until the changes are approved or the review is dismissed. Only a maintainer can bypass it.`
-    } else if (policyUnmet) {
+    } else if (checks === 'unknown' || (checks !== null && !checks.met)) {
       mergeHint = 'The branch policy requires passing checks on the head. Only a maintainer can bypass it.'
+    } else if (codeOwners !== null && (codeOwners === 'unknown' || !codeOwners.met)) {
+      mergeHint = codeOwnersHint(codeOwners)
+    } else if (policyUnmet) {
+      mergeHint = 'The branch rules are not met. Only a maintainer can bypass them.'
     }
   }
 
@@ -621,11 +653,26 @@ export function unrecordedMergeCandidate({ pull, canMerge }: UnrecordedMergeInpu
  * "Record merge of <commit>": the base tip to record as this PR's merge when a merge moved the
  * base but its merge transition was never written (the browser merge stopped between the ref
  * update and the merge event, or a merge was pushed with git). Offered only when the merge check
- * (`mergeContent`, the same rule `dg pr merge --event-only` applies) says the tip contains the PR
- * or is a squash or rebase of it; null otherwise. The commit is a valid tip of the base, so the
- * recorded merge counts.
+ * (`mergeContent`, the same rule `dg pr merge --event-only` applies) says the tip contains the PR,
+ * or is a squash or rebase of it with no `combined` path; null otherwise. A combined path is one
+ * the base changed too: the check only sees that both sides changed it, never that the tip's
+ * version holds the PR's change, so an unrelated push to a file the PR also edits looks the same
+ * (Q5-A01). A recorded merge is final, so that case is {@link unverifiedMerge} instead. The
+ * commit is a valid tip of the base, so the recorded merge counts.
  */
-export function unrecordedMerge(i: UnrecordedMergeInputs, verdict: MergeVerdict | null): string | null {
-  if (!unrecordedMergeCandidate(i) || verdict === null) return null
-  return verdict === 'contains' || verdict === 'squash' || verdict === 'rebase' ? i.pull.baseTipOid.toLowerCase() : null
+export function unrecordedMerge(i: UnrecordedMergeInputs, content: MergeContent | null): string | null {
+  if (!unrecordedMergeCandidate(i) || content === null) return null
+  const verified = content.verdict === 'contains' || ((content.verdict === 'squash' || content.verdict === 'rebase') && content.combined.length === 0)
+  return verified ? i.pull.baseTipOid.toLowerCase() : null
+}
+
+/**
+ * The base tip that makes this PR's changes except on paths the base changed too (a squash or
+ * rebase verdict with `combined` paths): not offered for recording in the browser
+ * ({@link unrecordedMerge}). The page says those files can't be checked and points to
+ * `dg pr merge --event-only`. Null otherwise.
+ */
+export function unverifiedMerge(i: UnrecordedMergeInputs, content: MergeContent | null): string | null {
+  if (!unrecordedMergeCandidate(i) || content === null) return null
+  return (content.verdict === 'squash' || content.verdict === 'rebase') && content.combined.length > 0 ? i.pull.baseTipOid.toLowerCase() : null
 }

@@ -59,14 +59,37 @@ const REQUEST_TIMEOUT_BEYOND_COLD_WAIT: Duration = Duration::from_secs(120);
 const RESOLVE_TTL: Duration = Duration::from_secs(300);
 const RESOLVE_MISS_TTL: Duration = Duration::from_secs(60);
 
+/// How old a resolution may be and still be used while Platform cannot be read. Past this a
+/// request answers `503` rather than keep serving a repository nobody can show still exists
+/// (a reset devnet looks like an outage until Platform answers again).
+const RESOLVE_STALE_MAX: Duration = Duration::from_secs(3600);
+
+/// The header on a response served from data older than Platform could confirm, because a
+/// Platform read failed: the data's age in seconds (the mirror's snapshot, or the render).
+pub const STALE_HEADER: &str = "x-forge-stale";
+
 /// The most `owner/name` resolutions kept.
 const MAX_RESOLVED: usize = 50_000;
 
 /// Entries in the feed.
 const FEED_ENTRIES: usize = 30;
 
-/// A resolution and when it was made (`None`: no such repository).
+/// A resolution and when it was made (`None`: no such public repository).
 type Resolved = (Instant, Option<RepoInfo>);
+
+/// Resolutions by `(owner, name)` as the request named them.
+type ResolveCache = Mutex<HashMap<(String, String), Resolved>>;
+
+/// Snapshot tips by repo id ([`AppState::tips`]).
+type TipsCache = Mutex<HashMap<String, (Instant, Arc<RepoTips>)>>;
+
+/// A repository a request names, resolved.
+struct Target {
+    info: RepoInfo,
+    /// Platform could not be read, so this is a resolution older than [`RESOLVE_TTL`] (and
+    /// younger than [`RESOLVE_STALE_MAX`]).
+    stale: bool,
+}
 
 /// A repository's branch and tag tips (`refs/heads/main` → oid) and its default branch, as the
 /// mirror's manifest or a proved snapshot names them.
@@ -92,11 +115,11 @@ pub struct AppState {
     new_mirror_rate: RateLimiter,
     clone_per_client: ClientConcurrency,
     clones: Arc<Semaphore>,
-    renders: RenderCache,
-    resolved: Mutex<HashMap<(String, String), Resolved>>,
+    renders: Arc<RenderCache>,
+    resolved: Arc<ResolveCache>,
     /// Snapshot tips of repositories without a mirror, by repo id, for the render TTL: a badge
     /// for any `?branch=` costs at most one snapshot read per repository per TTL.
-    tips: Mutex<HashMap<String, (Instant, Arc<RepoTips>)>>,
+    tips: Arc<TipsCache>,
     fonts: Arc<resvg::usvg::fontdb::Database>,
     allowed: Mutex<HashSet<String>>,
 }
@@ -105,15 +128,30 @@ impl AppState {
     /// State over `mirrors`.
     pub fn new(cfg: Arc<Config>, mirrors: Arc<Mirrors>, metrics: Arc<Metrics>) -> Self {
         let minute = Duration::from_secs(60);
+        let renders = Arc::new(RenderCache::new(
+            Duration::from_secs(cfg.render_ttl_secs),
+            10_000,
+        ));
+        let resolved = Arc::<ResolveCache>::default();
+        let tips = Arc::<TipsCache>::default();
+        {
+            // A repository proved gone answers 404 at once: nothing cached keeps it alive.
+            let (renders, resolved, tips) = (
+                Arc::clone(&renders),
+                Arc::clone(&resolved),
+                Arc::clone(&tips),
+            );
+            mirrors.on_gone(move |repo| forget_repo(&renders, &resolved, &tips, &repo.repo_id));
+        }
         Self {
             rate: RateLimiter::new(cfg.rate_per_min, minute),
             clone_rate: RateLimiter::new(cfg.clones_per_min, minute),
             new_mirror_rate: RateLimiter::new(cfg.new_mirrors_per_hour, Duration::from_secs(3600)),
             clone_per_client: ClientConcurrency::new(cfg.clones_per_client),
             clones: Arc::new(Semaphore::new(cfg.clones_max.max(1))),
-            renders: RenderCache::new(Duration::from_secs(cfg.render_ttl_secs), 10_000),
-            resolved: Mutex::default(),
-            tips: Mutex::default(),
+            renders,
+            resolved,
+            tips,
             fonts: og::fonts(cfg.font_dir.as_deref()),
             allowed: Mutex::default(),
             cfg,
@@ -130,6 +168,11 @@ impl AppState {
             .insert(repo.repo_id.clone());
     }
 
+    /// Drop everything cached about `repo_id` (Platform proved it gone).
+    fn forget(&self, repo_id: &str) {
+        forget_repo(&self.renders, &self.resolved, &self.tips, repo_id);
+    }
+
     fn gauges(&self) -> Gauges {
         let (mirrors, mirrors_ready, cache_bytes) = self.mirrors.stats();
         Gauges {
@@ -143,6 +186,34 @@ impl AppState {
 }
 
 type St = State<Arc<AppState>>;
+
+/// Drop every cached resolution, render and snapshot tip of `repo_id`.
+fn forget_repo(renders: &RenderCache, resolved: &ResolveCache, tips: &TipsCache, repo_id: &str) {
+    renders.forget_repo(repo_id);
+    resolved
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .retain(|_, (_, info)| info.as_ref().is_none_or(|i| i.repo_id != repo_id));
+    tips.lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .remove(repo_id);
+}
+
+/// Mark `r` as served from data `age` old that Platform could not confirm ([`STALE_HEADER`]).
+fn mark_stale(mut r: Response, age: Duration) -> Response {
+    r.headers_mut()
+        .insert(STALE_HEADER, HeaderValue::from(age.as_secs()));
+    r
+}
+
+/// `r`, marked stale when the mirror `slot` serves may be behind Platform: its last refresh
+/// failed, or the repository was resolved from a stale resolution.
+fn mark_mirror(r: Response, slot: &Slot, target_stale: bool) -> Response {
+    match slot.snapshot_age() {
+        Some(age) if target_stale || slot.refresh_failing() => mark_stale(r, age),
+        _ => r,
+    }
+}
 
 /// The router.
 pub fn router(state: Arc<AppState>) -> Router {
@@ -262,9 +333,15 @@ fn too_many(wait: Duration, msg: &str) -> Response {
 }
 
 fn cors(mut r: Response) -> Response {
-    r.headers_mut().insert(
+    let h = r.headers_mut();
+    h.insert(
         header::ACCESS_CONTROL_ALLOW_ORIGIN,
         HeaderValue::from_static("*"),
+    );
+    // The web app's verify check reads it.
+    h.insert(
+        header::ACCESS_CONTROL_EXPOSE_HEADERS,
+        HeaderValue::from_static(STALE_HEADER),
     );
     r
 }
@@ -300,18 +377,20 @@ fn remember(
 }
 
 /// Resolve `owner/name` to a public repository this gateway serves, or the response that says
-/// why not. A failed Platform read falls back to the last resolution (a mirror keeps serving
-/// while Platform is down).
-async fn resolve(state: &AppState, owner: &str, name: &str) -> Result<RepoInfo, Box<Response>> {
+/// why not. A failed Platform read falls back to the last resolution if it is at most
+/// [`RESOLVE_STALE_MAX`] old (a mirror keeps serving through a short outage). A private
+/// repository is cached and answered exactly as an absent one.
+async fn resolve(state: &AppState, owner: &str, name: &str) -> Result<Target, Box<Response>> {
     let net = state.mirrors.upstream().network();
     let absent = || {
-        text(
+        Metrics::inc(&state.metrics.repo_not_found);
+        Box::new(text(
             StatusCode::NOT_FOUND,
             format!("no public repository {owner}/{name} on {net}\n"),
-        )
+        ))
     };
     if !segment_ok(owner, 64) || !segment_ok(name, 100) {
-        return Err(Box::new(absent()));
+        return Err(absent());
     }
     let key = (owner.to_string(), name.to_string());
     let cached = state
@@ -320,7 +399,7 @@ async fn resolve(state: &AppState, owner: &str, name: &str) -> Result<RepoInfo, 
         .unwrap_or_else(PoisonError::into_inner)
         .get(&key)
         .cloned();
-    let info = match cached.clone() {
+    let (info, from_stale) = match cached.clone() {
         Some((at, info))
             if at.elapsed()
                 < if info.is_some() {
@@ -329,11 +408,15 @@ async fn resolve(state: &AppState, owner: &str, name: &str) -> Result<RepoInfo, 
                     RESOLVE_MISS_TTL
                 } =>
         {
-            info
+            (info, false)
         }
         _ => match state.mirrors.upstream().resolve(owner, name).await {
             Ok(info) => {
                 state.metrics.upstream(true);
+                // As absent, cached alike: a gateway never serves (or confirms) a private
+                // repository.
+                let info = info.filter(|i| i.public);
+                recheck_replaced(state, cached.and_then(|(_, old)| old), info.as_ref());
                 remember(
                     &mut state
                         .resolved
@@ -342,13 +425,13 @@ async fn resolve(state: &AppState, owner: &str, name: &str) -> Result<RepoInfo, 
                     key,
                     info.clone(),
                 );
-                info
+                (info, false)
             }
             Err(e) => {
                 state.metrics.upstream(false);
                 tracing::warn!(error = %format!("{e:#}"), "resolve failed");
-                match cached {
-                    Some((_, info)) => info,
+                match stale_fallback(cached) {
+                    Some((_, info)) => (info, true),
                     None => {
                         return Err(Box::new(text(
                             StatusCode::SERVICE_UNAVAILABLE,
@@ -360,13 +443,8 @@ async fn resolve(state: &AppState, owner: &str, name: &str) -> Result<RepoInfo, 
         },
     };
     let Some(info) = info else {
-        return Err(Box::new(absent()));
+        return Err(absent());
     };
-    if !info.public {
-        // As absent: a gateway never serves (or confirms) a private repository.
-        Metrics::inc(&state.metrics.private_refused);
-        return Err(Box::new(absent()));
-    }
     let listed = state
         .allowed
         .lock()
@@ -378,7 +456,34 @@ async fn resolve(state: &AppState, owner: &str, name: &str) -> Result<RepoInfo, 
             format!("{owner}/{name} is not mirrored by this gateway (it serves only the repositories its operator lists)\n"),
         )));
     }
-    Ok(info)
+    Ok(Target {
+        info,
+        stale: from_stale,
+    })
+}
+
+/// The resolution a request may use while Platform cannot be read: the last one, if it is at
+/// most [`RESOLVE_STALE_MAX`] old.
+fn stale_fallback(cached: Option<Resolved>) -> Option<Resolved> {
+    cached.filter(|(at, _)| at.elapsed() < RESOLVE_STALE_MAX)
+}
+
+/// After Platform resolved a name to `now` (or to nothing): a mirror of what the name meant
+/// before (`old`, or another repository with the same owner and name: one deleted and created
+/// again) is refreshed, so a repository that is gone is proved gone and removed now rather
+/// than left on disk, or served again after a restart.
+fn recheck_replaced(state: &AppState, old: Option<RepoInfo>, now: Option<&RepoInfo>) {
+    let others = now.map_or_else(Vec::new, |n| state.mirrors.find(&n.owner_id, &n.name));
+    for slot in old
+        .filter(|o| state.mirrors.known(&o.repo_id))
+        .map(|o| state.mirrors.slot(&o))
+        .into_iter()
+        .chain(others)
+    {
+        if now.is_none_or(|n| n.repo_id != slot.repo.repo_id) {
+            state.mirrors.trigger(&slot);
+        }
+    }
 }
 
 /// The mirror of `repo`, ready to serve, or the response that says why not. Starting a new
@@ -404,8 +509,29 @@ async fn ready_mirror(
         .await
     {
         Ok(()) => Ok(slot),
-        Err(u) => Err(Box::new(unavailable(&u))),
+        Err(u) => Err(Box::new(refused(state, &u))),
     }
+}
+
+/// [`unavailable`], counting a repository proved gone as not found.
+fn refused(state: &AppState, u: &Unavailable) -> Response {
+    if *u == Unavailable::Gone {
+        Metrics::inc(&state.metrics.repo_not_found);
+    }
+    unavailable(u)
+}
+
+/// The answer when `slot` was ready a moment ago and serves nothing now: removed because
+/// Platform proved its repository gone (`404`), or evicted (try again).
+fn not_served(state: &AppState, slot: &Slot) -> Response {
+    refused(
+        state,
+        &if slot.gone() {
+            Unavailable::Gone
+        } else {
+            Unavailable::Pending
+        },
+    )
 }
 
 fn unavailable(u: &Unavailable) -> Response {
@@ -430,6 +556,10 @@ fn unavailable(u: &Unavailable) -> Response {
         Unavailable::Failed(_) => text(
             StatusCode::SERVICE_UNAVAILABLE,
             "this repository cannot be mirrored right now (Dash Platform or its storage is unreachable); clone it with dash://\n",
+        ),
+        Unavailable::Gone => text(
+            StatusCode::NOT_FOUND,
+            "this repository is no longer on Dash Platform\n",
         ),
     }
 }
@@ -457,8 +587,8 @@ async fn info_refs(
             )
         }
     }
-    let info = match resolve(&state, &owner, repo_name(&repo)).await {
-        Ok(i) => i,
+    let Target { info, stale } = match resolve(&state, &owner, repo_name(&repo)).await {
+        Ok(t) => t,
         Err(r) => return *r,
     };
     let slot = match ready_mirror(&state, ip, &info).await {
@@ -466,7 +596,7 @@ async fn info_refs(
         Err(r) => return *r,
     };
     let Some(guard) = state.mirrors.checkout(&slot) else {
-        return unavailable(&Unavailable::Pending);
+        return not_served(&state, &slot);
     };
     let req = BackendRequest {
         method: "GET".into(),
@@ -484,7 +614,7 @@ async fn info_refs(
     )
     .await
     {
-        Ok(r) => cors(r),
+        Ok(r) => cors(mark_mirror(r, &slot, stale)),
         Err(e) => {
             tracing::warn!(error = %format!("{e:#}"), "info/refs failed");
             text(
@@ -509,8 +639,8 @@ async fn upload_pack(
     body: Body,
 ) -> Response {
     Metrics::inc(&state.metrics.requests_git);
-    let info = match resolve(&state, &owner, repo_name(&repo)).await {
-        Ok(i) => i,
+    let Target { info, stale } = match resolve(&state, &owner, repo_name(&repo)).await {
+        Ok(t) => t,
         Err(r) => return *r,
     };
     if let Err(wait) = state.clone_rate.check(ip) {
@@ -557,7 +687,7 @@ async fn upload_pack(
         return r;
     };
     let Some(guard) = state.mirrors.checkout(&slot) else {
-        return unavailable(&Unavailable::Pending);
+        return not_served(&state, &slot);
     };
     Metrics::inc(&state.metrics.upload_packs);
     let req = BackendRequest {
@@ -582,7 +712,7 @@ async fn upload_pack(
     )
     .await
     {
-        Ok(r) => r,
+        Ok(r) => mark_mirror(r, &slot, stale),
         Err(e) => {
             tracing::warn!(error = %format!("{e:#}"), "upload-pack failed");
             text(
@@ -606,8 +736,8 @@ async fn manifest_route(
     Path((owner, repo)): Path<(String, String)>,
 ) -> Response {
     Metrics::inc(&state.metrics.requests_other);
-    let info = match resolve(&state, &owner, repo_name(&repo)).await {
-        Ok(i) => i,
+    let Target { info, stale } = match resolve(&state, &owner, repo_name(&repo)).await {
+        Ok(t) => t,
         Err(r) => return cors(*r),
     };
     let slot = match ready_mirror(&state, ip, &info).await {
@@ -615,10 +745,10 @@ async fn manifest_route(
         Err(r) => return cors(*r),
     };
     let Some(m) = slot.manifest() else {
-        return cors(unavailable(&Unavailable::Pending));
+        return cors(not_served(&state, &slot));
     };
     let body = serde_json::to_string_pretty(&*m).unwrap_or_default();
-    cors(
+    cors(mark_mirror(
         (
             [
                 (header::CONTENT_TYPE, "application/json"),
@@ -627,7 +757,9 @@ async fn manifest_route(
             body,
         )
             .into_response(),
-    )
+        &slot,
+        stale,
+    ))
 }
 
 async fn repo_page(State(state): St, Path((owner, repo)): Path<(String, String)>) -> Response {
@@ -673,7 +805,7 @@ where
     let ttl = state.renders.ttl().as_secs();
     let expired = match state.renders.get(&key) {
         Lookup::Fresh(r) => return respond(r, ttl),
-        Lookup::Stale(r) => Some(r),
+        Lookup::Stale(r, age) => Some((r, age)),
         Lookup::Miss => None,
     };
     match render().await {
@@ -685,9 +817,9 @@ where
         Err(e) => {
             state.metrics.upstream(false);
             tracing::warn!(error = %format!("{e:#}"), "render failed");
-            if let Some(r) = expired {
+            if let Some((r, age)) = expired {
                 Metrics::inc(&state.metrics.stale_renders);
-                return respond(r, 60);
+                return mark_stale(respond(r, 60), age);
             }
             match fallback() {
                 Some(r) => respond(r, 60),
@@ -749,7 +881,7 @@ async fn badge_route(
         Kind::Issues => "issues",
     };
     let info = match resolve(&state, &owner, &name).await {
-        Ok(i) => i,
+        Ok(t) => t.info,
         Err(r) => {
             // Platform failing (503) is not a missing repository (404).
             let status = r.status();
@@ -865,7 +997,10 @@ async fn repo_tips(state: &AppState, info: &RepoInfo) -> anyhow::Result<Arc<Repo
     if let Some(t) = cached {
         return Ok(t);
     }
-    let snap = state.mirrors.upstream().snapshot(info).await?;
+    let Some(snap) = state.mirrors.upstream().snapshot(info).await? else {
+        state.forget(&info.repo_id);
+        anyhow::bail!("{} is no longer on Dash Platform", info.repo_id);
+    };
     let t = Arc::new(RepoTips {
         tips: snap.tips(),
         default_branch: snap.default_branch,
@@ -912,8 +1047,8 @@ async fn feed_route(
             "feeds: releases.atom, commits.atom, issues.atom\n",
         );
     }
-    let info = match resolve(&state, &owner, &name).await {
-        Ok(i) => i,
+    let Target { info, stale } = match resolve(&state, &owner, &name).await {
+        Ok(t) => t,
         Err(r) => return *r,
     };
     // The commit feed reads the mirror (git log), so it needs one.
@@ -932,29 +1067,34 @@ async fn feed_route(
     let key = format!("feed:{}:{kind}:{owner}", info.repo_id);
     let s = Arc::clone(&state);
     let kind = kind.to_string();
-    cors(
-        cached(
-            &state,
-            key,
-            || async move {
-                let entries = feed_entries(&s, &info, &kind, slot, &web, &net).await?;
-                let xml = Feed {
-                    id: feed_id,
-                    title: format!("{owner}/{name} {kind}"),
-                    self_url,
-                    link: web,
-                    entries,
-                }
-                .render();
-                Ok(Rendered {
-                    content_type: "application/atom+xml; charset=utf-8",
-                    body: Bytes::from(xml),
-                })
-            },
-            || None,
-        )
-        .await,
+    let mirror = slot.clone();
+    let resp = cached(
+        &state,
+        key,
+        || async move {
+            let entries = feed_entries(&s, &info, &kind, slot, &web, &net).await?;
+            let xml = Feed {
+                id: feed_id,
+                title: format!("{owner}/{name} {kind}"),
+                self_url,
+                link: web,
+                entries,
+            }
+            .render();
+            Ok(Rendered {
+                content_type: "application/atom+xml; charset=utf-8",
+                body: Bytes::from(xml),
+            })
+        },
+        || None,
     )
+    .await;
+    // The commit feed is the mirror's log: as stale as the mirror (a stale render says so
+    // already).
+    cors(match mirror {
+        Some(slot) if !resp.headers().contains_key(STALE_HEADER) => mark_mirror(resp, &slot, stale),
+        _ => resp,
+    })
 }
 
 /// A feed's entries, newest first. `web` is the repository's page; the commit feed reads the
@@ -1046,7 +1186,7 @@ async fn og_route(State(state): St, Path((owner, file)): Path<(String, String)>)
         None => (file.clone(), false),
     };
     let info = match resolve(&state, &owner, &name).await {
-        Ok(i) => i,
+        Ok(t) => t.info,
         Err(r) => return *r,
     };
     let owner_label = og::short_owner(&owner);
@@ -1195,6 +1335,25 @@ mod tests {
         }
         remember(&mut m, ("o".into(), "new".into()), None);
         assert_eq!(m.len(), 1);
+    }
+
+    #[test]
+    fn a_stale_resolution_is_used_for_an_hour_at_most() {
+        let info = Some(RepoInfo {
+            repo_id: "R".into(),
+            owner_id: "O".into(),
+            name: "n".into(),
+            public: true,
+        });
+        let used = |r: Option<Resolved>| stale_fallback(r).map(|(_, i)| i.is_some());
+        assert_eq!(used(None), None);
+        let ago = |secs| Instant::now().checked_sub(Duration::from_secs(secs));
+        let Some(minutes) = ago(600) else { return };
+        assert_eq!(used(Some((minutes, info.clone()))), Some(true));
+        assert_eq!(used(Some((minutes, None))), Some(false));
+        if let Some(hours) = ago(RESOLVE_STALE_MAX.as_secs() + 60) {
+            assert_eq!(used(Some((hours, info))), None);
+        }
     }
 
     #[test]

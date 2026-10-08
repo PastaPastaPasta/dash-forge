@@ -42,7 +42,12 @@ export type MergeVerdict = 'contains' | 'squash' | 'rebase' | 'missing' | 'unkno
 
 export interface MergeContent {
   readonly verdict: MergeVerdict
-  /** For a squash or a rebase: paths git combined with base changes, sorted. Empty otherwise. */
+  /**
+   * For a squash or a rebase: paths the base changed too whose merged blob is not the PR's,
+   * sorted. Empty otherwise. The rule only sees that both sides changed them, never that the
+   * merged blob holds the PR's change (an unrelated push to the same file looks the same), so
+   * readers present them as unchecked and the web records no such merge (Q5-A01).
+   */
   readonly combined: readonly string[]
 }
 

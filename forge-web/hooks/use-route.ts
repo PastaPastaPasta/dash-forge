@@ -15,7 +15,7 @@ import { useEffect, useMemo } from 'react'
 // eslint-disable-next-line no-restricted-imports -- the one place that reads the router's own URL
 import { usePathname as useRouterPathname, useSearchParams as useRouterSearchParams, type ReadonlyURLSearchParams } from 'next/navigation'
 
-import { BASE_PATH, canonicalOfShort, sameRoute, shortRouteFor } from '@/lib/short-url'
+import { BASE_PATH, canonicalOfShort, JUST_CREATED_PARAM, sameRoute, shortRouteFor } from '@/lib/short-url'
 
 /** `pathname?search`, as one string. */
 const routeKey = (pathname: string, search: string): string => (search ? `${pathname}?${search}` : pathname)
@@ -113,15 +113,23 @@ export function useShortAddressBar(visibility: string, ownerName: string | null 
   const pathname = useRouterPathname()
   const search = useRouterSearchParams().toString()
   useEffect(() => {
-    if (visibility !== 'public' || ownerName === undefined) return
+    if (visibility === 'public' && ownerName === undefined) return
     // Only an entry the router wrote: its state (`__NA` and its tree) keeps Next's patched
     // replaceState from treating this as a restore. Any other entry is left alone.
     const state: unknown = window.history.state
     if (state === null || typeof state !== 'object' || !('__NA' in state)) return
     const canonical = canonicalRoute(pathname, search)
     const at = canonical.indexOf('?')
-    const short = shortRouteFor(at < 0 ? canonical : canonical.slice(0, at), at < 0 ? '' : canonical.slice(at + 1), ownerName)
-    if (short === null) return
+    const short = visibility === 'public' ? shortRouteFor(at < 0 ? canonical : canonical.slice(0, at), at < 0 ? '' : canonical.slice(at + 1), ownerName) : null
+    if (short === null) {
+      // No short form to show: the address bar keeps the route, less the param a page just
+      // created reads once (it is read from the router's route, which this does not touch).
+      const url = new URL(window.location.href)
+      if (!url.searchParams.has(JUST_CREATED_PARAM)) return
+      url.searchParams.delete(JUST_CREATED_PARAM)
+      window.history.replaceState(state, '', `${url.pathname}${url.search}${url.hash}`)
+      return
+    }
     const href = `${BASE_PATH}${short}`
     const here = `${window.location.pathname}${window.location.search}`
     if (here === href) return

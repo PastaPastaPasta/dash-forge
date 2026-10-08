@@ -276,8 +276,11 @@ export const SHORT_URL_EXPAND_SOURCE = `function (pathname, base, reserved) {
     var ghRepo = dec(parts[2]);
     if (ghRepo === null || !${GITHUB_SEGMENT}.test(name) || !${GITHUB_SEGMENT}.test(ghRepo)) return null;
     var ghRest = parts.slice(3).join('/');
-    return base + '/github.com/?owner=' + encodeURIComponent(name) + '&name=' + encodeURIComponent(ghRepo.replace(/\\.git$/, '')) + (ghRest ? '&rest=' + encodeURIComponent(ghRest) : '');
+    return base + '/github.com/?owner=' + encodeURIComponent(name) + '&name=' + encodeURIComponent(ghRepo.replace(/\\.git$/i, '')) + (ghRest ? '&rest=' + encodeURIComponent(ghRest) : '');
   }
+  // A pasted clone URL ends in \`.git\`. No repo name does (the contract's \`nameNotDotGit\`), so one
+  // trailing \`.git\` is the clone form of the name, not part of it.
+  if (name.length > 4 && /\\.git$/i.test(name)) name = name.slice(0, -4);
   if (reserved.indexOf(owner.toLowerCase()) >= 0) return null;
   if (!${OWNER_SEGMENT}.test(owner) || !${NAME_SEGMENT}.test(name)) return null;
   var q = function (route, extra) {
@@ -359,15 +362,18 @@ export function expandShortPath(pathname: string, base: string, reserved: readon
     }
   }
   const owner = dec(parts[0]!)
-  const name = dec(parts[1]!)
+  let name = dec(parts[1]!)
   if (owner === null || name === null) return null
   const host = owner.toLowerCase()
   if ((host === 'github.com' || host === 'gh') && parts.length >= 3) {
     const ghRepo = dec(parts[2]!)
     if (ghRepo === null || !GITHUB_SEGMENT.test(name) || !GITHUB_SEGMENT.test(ghRepo)) return null
     const ghRest = parts.slice(3).join('/')
-    return `${base}/github.com/?owner=${encodeURIComponent(name)}&name=${encodeURIComponent(ghRepo.replace(/\.git$/, ''))}${ghRest ? `&rest=${encodeURIComponent(ghRest)}` : ''}`
+    return `${base}/github.com/?owner=${encodeURIComponent(name)}&name=${encodeURIComponent(ghRepo.replace(/\.git$/i, ''))}${ghRest ? `&rest=${encodeURIComponent(ghRest)}` : ''}`
   }
+  // A pasted clone URL ends in `.git`. No repo name does (the contract's `nameNotDotGit`), so one
+  // trailing `.git` is the clone form of the name, not part of it.
+  if (name.length > 4 && /\.git$/i.test(name)) name = name.slice(0, -4)
   if (reserved.includes(owner.toLowerCase())) return null
   if (!OWNER_SEGMENT.test(owner) || !NAME_SEGMENT.test(name)) return null
   const q = (route: string, extra: readonly string[]): string => {
@@ -493,7 +499,8 @@ const sortedParams = (q: URLSearchParams): string => JSON.stringify([...q].sort(
  * address bar shows it once the page has loaded (CJ-6). The owner is written by `ownerName`, their
  * DPNS name, when the page has read it (`alice` for `alice.dash`), else as the route writes it.
  * Every param the short path does not carry stays in its query (`?q=`, `?repo=`, `?page=`), as the
- * shim carries the query through.
+ * shim carries the query through, except {@link JUST_CREATED_PARAM}: a link copied from the bar
+ * should not make the next reader retry a not-found.
  *
  * Null when this build hands out no short URLs, the route has no short form, or the shim would not
  * open exactly this route again: `expand(short(route))` must give back every param.
@@ -519,9 +526,14 @@ export function sameRoute(a: string, b: string): boolean {
   return key(a) === key(b)
 }
 
+/** The param a page just created carries (`/new`, a new issue or pull request): the page reads it once. */
+export const JUST_CREATED_PARAM = 'created'
+
 /** {@link shortRouteFor} with the owner written as `owner` (the route's own when undefined). */
 function shortRouteWith(pathname: string, search: string, owner: string | undefined): string | null {
   const params = new URLSearchParams(search)
+  // `created=1` only tells the page just made it to retry a not-found read: not part of its link.
+  params.delete(JUST_CREATED_PARAM)
   const repo = { owner: owner ?? params.get('owner') ?? '', name: params.get('name') ?? '' }
   if (!hasShortPath(repo)) return null
   const found = targetOf(bareRoute(pathname), params)

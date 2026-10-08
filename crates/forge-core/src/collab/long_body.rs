@@ -380,12 +380,17 @@ impl Collab<'_> {
             crate::pack::KIND_LONG_BODY
         };
         let cap = if sealed { sealed_cap(bytes) } else { bytes };
+        // A members-only document of a repository made public may have been written while it
+        // was private (`private-repos.md` §18.1): its long body is then a kind-6 artifact
+        // sealed under that era's key, which the same members keys open. A public field never
+        // takes a sealed copy (its size is exact).
+        let era_kind = members.then_some(u64::from(crate::pack::KIND_LONG_BODY));
         let copies: Vec<&PackManifestInfo> = view
             .manifests
             .iter()
             .filter(|m| {
                 m.pack_hash == sha256
-                    && m.kind == u64::from(kind)
+                    && (m.kind == u64::from(kind) || Some(m.kind) == era_kind)
                     && if sealed {
                         m.size_bytes <= cap
                     } else {
@@ -442,7 +447,7 @@ impl Collab<'_> {
         sealed: &[u8],
     ) -> Result<Vec<u8>> {
         let kr = match self.lane_keys(repo).await? {
-            super::v2::DocKeys::Held(kr) => kr,
+            super::v2::DocKeys::Held(kr, _) => kr,
             super::v2::DocKeys::None(_) => {
                 return Err(Error::Config(
                     "it is members-only, and not readable with your keys".into(),

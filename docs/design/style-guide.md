@@ -67,7 +67,7 @@ colors: {
 ### Signature elements
 1. **Verification chip** — every repo view carries a compact chip row: `refs ✓ proof · packs ✓ sha256 · src: platform/ipfs/s3`. Colors per semantic palette. Clicking opens the trust panel explaining the verification chain.
 2. **Cost preview** — any write button shows cost inline before signing, **DASH primary, USD secondary** (`~0.0003 DASH ≈ $0.01`); destructive deletes show refund estimate in green. Running spend surfaced in settings.
-3. **Identity pill** — identicon + DPNS name + short identity id; consistent everywhere an owner/author appears. The identicon is drawn from SHA-256 of the whole id, never from the profile's own picture, and the id shows its first 7 and last 5 characters (`G6D3ejK…7nB2q`, `shortId`), as the Dash wallets' approval screens do: an identity id is a hash an attacker can grind until its prefix matches someone else's, so a prefix alone never identifies anyone. Anywhere else a raw identity or document id is shown in text, it uses the same 7…5 form. On an issue or pull request, each author carries a role badge (Owner, Maintainer, Writer, Triage, Reader) from the repository's current membership documents.
+3. **Identity pill** — identicon + DPNS name + short identity id; consistent everywhere an owner/author appears. The identicon is drawn from SHA-256 of the whole id, never from the profile's own picture, and the id shows its first 7 and last 5 characters (`G6D3ejK…7nB2q`, `shortId`), as the Dash wallets' approval screens do: an identity id is a hash an attacker can grind until its prefix matches someone else's, so a prefix alone never identifies anyone. Anywhere else a raw identity or document id is shown in text, it uses the same 7…5 form. On an issue or pull request, each author carries a role badge (Owner, Maintain, Write, Triage, Read; Bot for an automated account) from the repository's current membership documents.
 4. **Backend badge** — `platform` (Lucide `Link2`), `ipfs` (`Globe`), `s3`/`https` (`HardDrive`), `mixed` (`Link2` + `Globe`) on repo headers and clone box. Line icons, never emoji (they render differently per OS).
 
 ### Accessibility
@@ -170,11 +170,15 @@ A string no user reads (a developer error, a log line) opts out with a `copy-lin
 | **limited key**: the spend-capped key Forge signs with; "this browser's key" only where the location matters | browser key, signing key | |
 | **balance**: the identity's DASH; **budget**: what a limited key may still spend | credits as a unit | Show amounts in DASH. |
 | **top up** (verb), **top-up** (noun) | Add credits, Add budget | |
-| **member**; roles **maintainer**, **writer**, **triage**, **reader** | collaborator, writer document | `dg collab` keeps its name; its help says "members". |
+| **member**; roles **Read**, **Triage**, **Write**, **Maintain**, **Owner**, **Bot** | collaborator, writer document, reader, writer, maintainer as a role name | `dg collab` keeps its name and its `--role` values; its help says "members" and the role words. |
 | **owner**: the identity that created the repo | | |
 | **Dash Platform** at first mention, then **Platform** | the chain, on chain, on-chain | "Stored on Platform", "public on Platform" |
 | **verified** (Verification card states); **checked** for one check | proved, proof-checked, hash-checked | Proof detail belongs on the Verification card and in the verification guide. |
 | **encrypted** | sealed | |
+| **audiences**: Public, All members (short: Members), Maintainers, Writers and maintainers, Specific people; **members-only** for anything not public | named, restricted, lane | "Private" only for a private repository. |
+| **Publish** (code), **Make public** (a post), **Make this repo public** (a whole private repo) | reveal, disclose, unseal | |
+| **access**: what a bot or runner is given | grant (as a noun), key letter | |
+| **Turn on members-only content** (a repo); **Set up your encryption key** (an identity) | | |
 | **storage**, "your storage", "the owner's storage" | packs, manifests, chunks (outside storage settings and the merge steps) | |
 | **branches and tags** | refs (in the UI) | `dg` output and the docs keep "ref" for git users. |
 | **devnet sakura** in prose (`networkName()`); badge "Devnet · sakura" | devnet-sakura (the network key) | |
@@ -183,6 +187,6 @@ A string no user reads (a developer error, a log line) opts out with a `copy-lin
 | **archived** | read-only mark | |
 | **hidden** (moderation) | | |
 
-These terms stay out of the UI and belong to the contract docs: contract, document, document type, fold, consensus, gate, epoch, wrap, stamp, quorum (except on the Platform-failure screens), DAPI node, transition, RC1, RC2, forge-v2, PV14.
+These terms stay out of the UI and belong to the contract docs: contract, document, document type, fold, consensus, gate, epoch, key letter, lane, wrap, stamp, quorum (except on the Platform-failure screens), DAPI node, transition, RC1, RC2, forge-v2, PV14.
 
 Every PR that changes UI or CLI copy is checked against this section.

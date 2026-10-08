@@ -54,7 +54,7 @@
       "issue #4 skipped"
     ],
     "error": {
-      "code": "E806",
+      "code": "E106",
       "message": "some items were not mirrored",
       "cause": "1 item skipped",
       "fix": [
@@ -62,7 +62,7 @@
       ],
       "note": null,
       "docs": null,
-      "exitCode": 8
+      "exitCode": 1
     },
     "schemaVersion": 1
   }
