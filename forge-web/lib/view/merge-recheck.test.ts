@@ -14,6 +14,7 @@ import { checksState, type CheckRunRow } from '../rules/parity'
 import { meetsPolicy, RoleOracle, type Approvals, type Membership, type Policy } from '../rules/v2'
 import type { DocumentQuery } from '../sdk'
 import { readRunnersCached } from '../repo/checks'
+import { codeOwnerReview, parseCodeOwners } from '../rules/codeowners'
 import { markMerged, MERGE_OFFLINE, MERGE_UNCONFIRMED, mergeMembersProblem, pageMergeRecheck, recheckMergeMembers, recheckPageMerge, type MergeRecheck, type PageMerge } from './merge-recheck'
 import { pullActions } from './pull-actions'
 
@@ -110,6 +111,46 @@ describe('mergeMembersProblem', () => {
     expect(offered(atLoad, r)).toMatchObject({ canMerge: true, unmetRules: [] })
     expect(mergeMembersProblem(atLoad, r)).toBeNull()
     expect(mergeMembersProblem([writer(VIEWER)], r)).toMatch(/^Something changed since the page loaded/)
+  })
+})
+
+describe('the code owner rule at the click (Q5-B01)', () => {
+  const OWNERS: Policy = { requiredApprovals: 0, requireCodeOwners: true }
+  const owners = parseCodeOwners('src/ @rev\n')
+  const NONE: Approvals = { approvers: [], changesRequested: [] }
+  /** `requireCodeOwners` over one owned file, `src/a.ts`, owned by `@rev` (REVIEWER). */
+  const judge = (approvals: Approvals) => (members: readonly Membership[]) =>
+    codeOwnerReview({ kind: 'parsed', owners }, ['src/a.ts'], approvals, new RoleOracle([...members]), OWNERS, new Map([['@rev', REVIEWER]]), pull.author)
+  const offeredWith = (atLoad: readonly Membership[], r: MergeRecheck) => {
+    const role = new RoleOracle([...atLoad]).currentRole(VIEWER)
+    return pullActions({ ...r.gate, holdings: { member: role !== null, maintain: role === 'maintainer', role }, policy: r.status, codeOwners: r.codeOwners?.(atLoad) ?? null })
+  }
+
+  it("a maintainer's bypass of a pending code owner approval goes ahead", () => {
+    const atLoad = [maintainer(VIEWER), writer(REVIEWER)]
+    const r0: MergeRecheck = { ...recheck(atLoad, OWNERS, NONE), codeOwners: judge(NONE) }
+    const unmet = offeredWith(atLoad, r0).unmetRules
+    expect(unmet).toEqual(['code owner approval: src/a.ts (@rev)'])
+    expect(mergeMembersProblem(atLoad, { ...r0, bypass: unmet })).toBeNull()
+    // Without the code owners in the recheck, the bypass never matched (the defect).
+    expect(mergeMembersProblem(atLoad, { ...r0, codeOwners: undefined, bypass: unmet })).toMatch(/branch rules to bypass are different now/)
+  })
+
+  it('the owner who approved was revoked since the page loaded: the rule is judged again', () => {
+    const atLoad = [writer(VIEWER), writer(REVIEWER)]
+    const r: MergeRecheck = { ...recheck(atLoad, OWNERS, APPROVED), codeOwners: judge(APPROVED) }
+    expect(offeredWith(atLoad, r)).toMatchObject({ canMerge: true, unmetRules: [] })
+    expect(mergeMembersProblem(atLoad, r)).toBeNull()
+    const problem = mergeMembersProblem([writer(VIEWER)], r)
+    expect(problem).toMatch(/^Something changed since the page loaded/)
+    expect(problem).toContain("code owner's approval of 1 file")
+  })
+
+  it('the page passes its code owner rule through', () => {
+    const codeOwners = judge(NONE)
+    const page: PageMerge = { gate: { pull, viewer: VIEWER }, policy: OWNERS, status: meetsPolicy(NONE, new RoleOracle([]), OWNERS), approvals: NONE, requiredChecks: null, checkRuns: null, codeOwners }
+    expect(pageMergeRecheck(page, []).codeOwners).toBe(codeOwners)
+    expect(pageMergeRecheck({ ...page, codeOwners: undefined }, []).codeOwners).toBeUndefined()
   })
 })
 

@@ -743,7 +743,8 @@ pub async fn reseed(
         Some(name) => profile_backend(name)?,
         None => build_external_backend(to)?.ok_or_else(|| {
             crate::errors::usage(
-                "`dg reseed` needs a target: --profile <name> (or legacy --to ipfs|s3)",
+                "`dg reseed` needs a target: --profile <name> (or legacy --to ipfs|s3); to restore lost \
+                 copies from a clone, use `dg reseed <repo> --from-local`",
             )
         })?,
     };

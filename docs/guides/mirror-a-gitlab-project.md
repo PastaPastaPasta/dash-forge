@@ -21,11 +21,7 @@ This guide covers:
 
 You need:
 
-- `dg`, `git-remote-dash` and `forge-import`. The [quick start's](quick-start.md#1-install) install script adds the importer when you ask for it:
-  ```sh
-  curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/v0.1.0/install.sh | DASH_FORGE_VERSION=0.1.0 DASH_FORGE_BINARIES="dg git-remote-dash forge-import" sh
-  ```
-  From a source clone, `cargo install --locked --path crates/forge-import` builds it instead.
+- `dg`, `git-remote-dash` and `forge-import`. [Build them from a source clone](quick-start.md#1-install): `cargo install --locked --path crates/forge-import` adds the importer to the two it installs. Once a release is published, the [install script](../INSTALL.md#install-script-linux-and-macos) can fetch all three, with `DASH_FORGE_BINARIES="dg git-remote-dash forge-import"` set.
 - A funded identity, exported as `DASH_FORGE_KEY` ([quick start, steps 2–3](quick-start.md#2-get-an-identity)).
 - A GitLab access token with the **`read_api`** scope, in `GITLAB_TOKEN`. For a private project, give it **`read_repository`** too. A project access token scoped to the one project is enough (Settings > Access tokens).
   - Without a token, the importer reads what GitLab shows anonymously: the project, its issues and merge requests, releases and the code. On gitlab.com, anonymous reads of comments, discussions and labels are refused (`401`), so a run without a token imports items without their threads and says so.
@@ -81,15 +77,16 @@ GitLab's own push mirroring cannot target Forge: it accepts only `http://`, `htt
 
 Both jobs run only on protected refs. That is where the protected key is available, and an unprotected branch's pipeline must never reach it.
 
-Add to the project's `.gitlab-ci.yml`, pinning a Dash Forge release (the tag in the URL and `FORGE_VERSION` must agree):
+Add to the project's `.gitlab-ci.yml`, pinning a Dash Forge commit you have reviewed (the commit in the URL and `FORGE_SOURCE_REF` must agree). No release is published yet; once one is, you can pin its tag in the URL and set `FORGE_VERSION` to its version instead:
 
 ```yaml
 include:
-  - remote: https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/v0.1.0/integrations/gitlab/dash-forge-mirror.yml
+  - remote: https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/<40-character commit>/integrations/gitlab/dash-forge-mirror.yml
 
 variables:
   FORGE_REPO: dash://<owner identity id>/<repo name>
-  FORGE_VERSION: "0.1.0"
+  FORGE_VERSION: ""                              # no release is published yet: build from the commit
+  FORGE_SOURCE_REF: <40-character commit>        # the same commit as in the URL
   FORGE_IMPORT: "true"
   FORGE_COST_CAP: "0.05"
 ```

@@ -51,7 +51,7 @@ Messages never include secrets. Storage credentials are referenced by `env:` or 
 
 **What to do:** check the owner id and the name (`dg repo list --owner <identity id>`). Also check the network, because a repo created on testnet does not exist on mainnet: `dg doctor` shows which network and contracts are in use.
 
-`dg` also reports E102 before anything is written when a command names a ref the repository does not have: a pull request's base branch (`dg pr create --base`), or a release's tag (`dg release create --tag`; push the tag first). The message lists the branches or tags it does have. `dg issue label … add` does the same for a label the repository does not define (define it first with `dg label create`), and a DPNS name that is not registered names the network it was looked up on.
+`dg` also reports E102 before anything is written when a command names a ref the repository does not have: a pull request's base branch (`dg pr create --base`), or a release's tag (`dg release create --tag`; push the tag first). The message lists the branches or tags it does have. `dg issue label … add` does the same for a label the repository does not define (define it first with `dg label create`), and a DPNS name that is not registered names the network it was looked up on. `dg storage mirror add` reports it, before anything is paid, when the repository lists no pack with that hash (`dg storage status <repo>` lists them).
 
 ## E103
 
@@ -95,7 +95,7 @@ The message lists the conflicting files.
 
 **What to do:** see `dg <command> --help`.
 
-`dg storage mirror add` reports E201, before anything is signed, for addresses a mirror can't hold (more than 4, a mix of https and IPFS, a user name or password in a URL, an `ipfs://` address with a path) and for an address on this machine or a private network (`localhost`, `127.0.0.1`, `192.168.…`): other readers never fetch from those. Record a public https address or an `ipfs://` CID.
+`dg storage mirror add` reports E201, before anything is signed, for addresses a mirror can't hold (more than 4, a mix of https and IPFS, a user name or password in a URL, an `ipfs://` address with a path) and for an address other readers never fetch: one on this machine or a private network (`localhost`, `127.0.0.1`, `192.168.…`, `198.18.…`, and the IPv6 forms that embed them), one that is not a valid address, or a temporary tunnel name (`*.trycloudflare.com`, `*.ts.net`), which a push refuses too. Record a stable public https address or an `ipfs://` CID.
 
 ## E202
 
@@ -135,7 +135,7 @@ A `config.toml` that does not parse is E204 too, from every `dg` command and fro
 
 ## E207
 
-**Not supported for a private repository.** The operation would publish a private repository's content unencrypted, or needs keys that only its members hold, so `dg` refuses it before writing anything. In this release that covers forks of a private repository, webhooks, and verifying ref tips without the repository's keys. Releases are supported: a private repository's releases are sealed ([private repositories §16](security/private-repos.md#16-sealed-releases)), and `dg release create`, `dg release unpublish` and `dg release download` handle them.
+**Not supported for a private repository.** The operation would publish a private repository's content unencrypted, or needs keys that only its members hold, so `dg` refuses it before writing anything. In this release that covers forks of a private repository, webhooks, mirrors of its packs (`dg storage mirror add`: its packs are sealed to its members), and verifying ref tips without the repository's keys. Releases are supported: a private repository's releases are sealed ([private repositories §16](security/private-repos.md#16-sealed-releases)), and `dg release create`, `dg release unpublish` and `dg release download` handle them.
 
 **What to do:** none within the private repository in this release. The label definitions (`dg label create`) and the other plaintext items in [private-repos §7](security/private-repos.md#7-metadata-that-stays-visible) are allowed but visible to everyone; `dg` says so before it writes them.
 
@@ -518,11 +518,11 @@ A devnet name that does not exist is reported here too, because a lookup failure
 
 ## E804
 
-**Branch policy not met.** `dg pr merge` checked the repository's branch `policy` (`dg repo policy show`) and it is not satisfied: fewer counted approvals than it requires (from maintainers only, when it says so), required checks that are not passing (`cause: required checks not passing: lint failing`), a merge method it does not allow, or the policy could not be read. The cause names every unmet rule (`required approvals: 0 of 1; required check `build`: missing`). Forge apps enforce the policy; Dash Platform doesn't check it. Nothing was pushed and no merge event was posted.
+**Branch policy not met.** `dg pr merge` checked the repository's branch `policy` (`dg repo policy show`) and it is not satisfied: fewer counted approvals than it requires (from maintainers only, when it says so), required checks that are not passing (`cause: required checks not passing: lint failing`), a merge method it does not allow, changed files still waiting for a code owner's approval (`code owner approval: src/a.rs (@alice)`, when the policy requires code owners), or the policy could not be read. The cause names every unmet rule in one refusal (`required approvals: 0 of 1; required check `build`: missing; code owner approval: src/a.rs (@alice)`). The code owners are read from git (`CODEOWNERS` on the base branch and the changed files), from the clone you run `dg` in when it has the commits, else fetched; a `CODEOWNERS` file or changed files that cannot be read count as not met. Forge apps enforce the policy; Dash Platform doesn't check it. Nothing was pushed and no merge event was posted.
 
 `dg pr checks` reports E804 (exit 8, as `gh pr checks` does for a pending check) while a check the branch policy requires is missing or still running. A run from a source the policy does not pin for that check is listed but not counted.
 
-**What to do:** get the missing approvals (`dg pr review --approve` by a member other than the PR author, whose own approval never counts), get the failing checks to pass (`dg pr checks <owner>/<repo> <n>` shows the runs), or use an allowed method. A maintainer can bypass the approvals and checks with `--override-policy`; the merge then records the bypassed rules on the PR as a policy-bypass event, which nobody can delete. The allowed merge methods still apply.
+**What to do:** get the missing approvals (`dg pr review --approve` by a member other than the PR author, whose own approval never counts), get the failing checks to pass (`dg pr checks <owner>/<repo> <n>` shows the runs), ask an owner of each file waiting for one to approve, or use an allowed method. A file no owner can approve (owned only by teams, e-mail addresses, unregistered names, the PR's author or people whose role doesn't count) needs `CODEOWNERS` on the base branch fixed. When the code owners could not be read, retry: the refusal says what failed. A maintainer can bypass the approvals, checks and code owner approvals with `--override-policy`; the merge then records the bypassed rules on the PR as a policy-bypass event, which nobody can delete. The allowed merge methods still apply.
 
 ## E807
 
@@ -539,3 +539,87 @@ A private key, AWS key or token only warns when its file is in a `test`, `tests`
 **What to do:** retarget the pull requests based on it (`dg pr edit <owner>/<repo> <n> --base <branch>`), or merge without `--delete-branch` and delete the branch once nothing needs it, or pass `--force-delete-branch` to delete it anyway.
 
 Only the repository's newest 100 pull requests are checked. When there are older ones, or some can't be read, the error (or, when none was found, the merge's output) says they were not checked.
+
+## E805
+
+**Would publish members-only commits.** *Reserved: this version doesn't report it yet. It arrives with members-only branches.* A push to a public branch would publish commits that belong to a members-only branch. Anything pushed to a public branch can't be taken back, so the push helper refuses the whole push before it signs or stores anything. The message names the first commits (`a1b2c3d Fix bounds check`) and how many there are, and git shows `! [remote rejected] main -> main (would publish members-only commits)`.
+
+```
+error: E805 pushing refs/heads/main would publish 3 commits from members-only branch sec/cve-77
+       a1b2c3d Fix bounds check
+       ...
+  fix: dg publish sec/cve-77 --onto main                 # one new public commit; the members-only history stays members-only
+       git push -o publish-private=<oid> origin main      # publish these 3 commits as they are
+```
+
+**What to do:** `dg publish <branch> --onto <public branch>` makes one new public commit, and the members-only history stays members-only. If you mean to publish the commits as they are, push with `-o publish-private=<oid>`. That is a publication and can't be undone.
+
+## E806
+
+**Can't check for members-only commits.** *Reserved: this version doesn't report it yet. It arrives with members-only branches.* Your encryption key isn't available, so Forge can't tell which commits in this clone are members-only. A public push can't be checked, and a fetch would quietly show only the public view. Forge refuses rather than guess.
+
+```
+error: E806 can't check for members-only commits: your encryption key isn't available
+       this clone has fetched members-only branches, so a public push can't be checked without it
+  fix: dg auth unlock, then push again
+```
+
+**What to do:** unlock your encryption key with `dg auth unlock`, then run the command again. A key protected by a passphrase needs a terminal, or `DASH_FORGE_PASSPHRASE`. A clone that never held members-only commits can start its record with `dg doctor --init-ledger`.
+
+## E809
+
+**Branch is already public.** *Reserved: this version doesn't report it yet. It arrives with members-only branches.* You asked for a members-only branch with a name that is already public. Nothing already pushed can be hidden, so Forge doesn't offer to hide it.
+
+```
+error: E809 fix-auth is already public; nothing already pushed can be hidden
+  fix: dg branch new --members fix-auth-2     # start a members-only branch from here
+```
+
+**What to do:** start a members-only branch from where you are with a new name (`dg branch new --members <new name>`), and carry on there.
+
+## E810
+
+**Members-only commits not pushed to another remote.** *Reserved: this version doesn't report it yet. It arrives with members-only branches.* Your `pre-push` hook found members-only commits from a Dash Forge repository in what you are pushing to a remote that is not a Dash Forge remote (GitHub, for example), or to a public branch of one, and stopped the push.
+
+```
+pre-push: E810 refs/heads/main contains members-only commits from dash://o/r; not pushing to github
+          git push --no-verify publishes them
+```
+
+**What to do:** push only branches that don't hold members-only commits, or publish them first with `dg publish`. `git push --no-verify` skips the hook and publishes the commits to that remote. That is a publication, and no check can stop it.
+
+## E811
+
+**New branch: choose who can see it.** *Reserved: this version doesn't report it yet. It arrives with members-only branches.* You pushed a branch Forge hasn't seen before, in a public repository that has members-only content on, and nothing says who should see it: no `dg branch new --members`, no push option, no `branch.<name>.dashAudience` setting, no commits built on a members-only branch, and no `dash.newBranches` setting for the clone. Forge asks once per clone and signs nothing.
+
+```
+error: E811 new branch fix-auth: choose who can see it
+  fix: git config dash.newBranches public     # or members; then push again
+       dg branch new --members fix-auth        # for one branch
+```
+
+**What to do:** set `git config dash.newBranches public` (or `members`) for this clone and push again, or make the one branch members-only with `dg branch new --members <branch>`. A branch that is public stays public: nothing already pushed can be hidden ([E809](#e809)).
+
+This is not [E808](#e808), which is the refusal to delete a branch other pull requests use.
+
+## E812
+
+**Can't make everything public.** *Reserved: this version doesn't report it yet. It arrives with making a whole repository public.* Making a repository public with everything in it would publish something that isn't safe to publish yet. The message names it. Today the only case is an environment with values saved in the old format: anyone who joined later could read those values, and they would become public.
+
+```
+error: E812 can't make everything public: environment production has values saved in the old format, which would become public
+  fix: dg env resave --env production, change every listed value where it's used, then dg env mark-changed --env production
+```
+
+**What to do:** do what the fix line says for each item listed, then run the command again. Or choose **Code only**, which publishes the code and leaves everything else members-only.
+
+## E813
+
+**Bot can't be asked.** *Reserved: this version doesn't report it yet. It arrives with bot access.* You asked a bot to work on something outside the access its maintainers gave it. For example, the bot can only be asked by people with Write access or more, and you have Triage access. Nothing was signed, and nothing was sent to the bot.
+
+```
+error: E813 @ci-bot can't be asked by people with Triage access in o/r
+  fix: ask a maintainer to change @ci-bot's access, or ask someone with Write access
+```
+
+**What to do:** ask someone with Write access to ask the bot, or ask a maintainer to change who can ask it (Settings → Bots and runners).

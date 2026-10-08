@@ -20,8 +20,8 @@ pub struct Rendered {
 pub enum Lookup {
     /// Within its lifetime.
     Fresh(Rendered),
-    /// Expired, usable if a new render fails.
-    Stale(Rendered),
+    /// Expired, usable if a new render fails; with its age.
+    Stale(Rendered, Duration),
     /// Nothing.
     Miss,
 }
@@ -48,7 +48,7 @@ impl RenderCache {
         let e = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
         match e.get(key) {
             Some((at, r)) if at.elapsed() < self.ttl => Lookup::Fresh(r.clone()),
-            Some((_, r)) => Lookup::Stale(r.clone()),
+            Some((at, r)) => Lookup::Stale(r.clone(), at.elapsed()),
             None => Lookup::Miss,
         }
     }
@@ -66,6 +66,14 @@ impl RenderCache {
             }
         }
         e.insert(key, (Instant::now(), r));
+    }
+
+    /// Drop every render of repository `repo_id` (keys are `<kind>:<repo id>:…`).
+    pub fn forget_repo(&self, repo_id: &str) {
+        self.entries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|k, _| k.split(':').nth(1) != Some(repo_id));
     }
 
     /// The lifetime (for `Cache-Control`).
@@ -92,9 +100,27 @@ mod tests {
         c.put("a".into(), r("1"));
         assert!(matches!(c.get("a"), Lookup::Fresh(_)));
         std::thread::sleep(Duration::from_millis(40));
-        assert!(matches!(c.get("a"), Lookup::Stale(_)));
+        assert!(matches!(c.get("a"), Lookup::Stale(_, age) if age >= Duration::from_millis(40)));
         c.put("b".into(), r("2"));
         c.put("c".into(), r("3"));
         assert!(matches!(c.get("a"), Lookup::Miss), "the oldest went first");
+    }
+
+    #[test]
+    fn a_repos_renders_are_forgotten_together() {
+        let c = RenderCache::new(Duration::from_secs(60), 10);
+        for k in [
+            "badge:R1:stars.svg:",
+            "feed:R1:issues:alice",
+            "og:R1:alice:true",
+        ] {
+            c.put(k.into(), r("x"));
+        }
+        c.put("badge:R12:stars.svg:".into(), r("y"));
+        c.forget_repo("R1");
+        assert!(matches!(c.get("badge:R1:stars.svg:"), Lookup::Miss));
+        assert!(matches!(c.get("feed:R1:issues:alice"), Lookup::Miss));
+        assert!(matches!(c.get("og:R1:alice:true"), Lookup::Miss));
+        assert!(matches!(c.get("badge:R12:stars.svg:"), Lookup::Fresh(_)));
     }
 }

@@ -199,7 +199,52 @@
     "membersOnlyReviewsHidden": {
       "type": "integer"
     },
-    "mergeContent": {}
+    "mergeContent": {},
+    "policyMet": {
+      "type": [
+        "boolean",
+        "null"
+      ],
+      "description": "Whether the open PR meets the branch policy; null with no policy, on a PR that is not open, or when only code owner approvals are left (`dg pr merge` checks them)."
+    },
+    "unmetRules": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "The branch rules left unmet, one line each, as `dg pr merge` names them (code owner approvals are not checked here)."
+    },
+    "codeOwners": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "required": {
+              "type": "boolean"
+            },
+            "checked": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "required",
+            "checked"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The policy requires code owner approvals, which `dg pr merge` checks (`checked` is always false here); null when it does not, or the PR is not open."
+    },
+    "requiredCheckRuns": {},
+    "requiredCheckRunsError": {},
+    "policyBypasses": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    }
   },
   "required": [
     "schemaVersion",

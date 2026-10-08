@@ -23,6 +23,10 @@
           "repoId": {
             "type": "string"
           },
+          "repo": {
+            "type": "string",
+            "description": "The repository as `owner/name`; absent when it no longer resolves."
+          },
           "packHash": {
             "type": "string"
           },
