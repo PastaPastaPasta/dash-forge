@@ -12,7 +12,7 @@
  * - QW-051: "Forget this key" asks in an in-app dialog, not `window.confirm`.
  * - QA wave 2: Unlock preselects the identity used last (QW2-025); forgetting the last key moves
  *   to the tile list (QW2-027); an unfinished identity creation is offered first (QW2-030);
- *   signing in to read a private repo ticks "Enable private repos" (QW2-016); an identity file
+ *   signing in to read a private repo ticks "Read and write members-only and private content" (QW2-016); an identity file
  *   for another network is refused as it is picked (QW2-031).
  */
 
@@ -387,7 +387,7 @@ describe('QA wave 3 (bonsia): the import form', () => {
     expect(body).toMatch(/Disables key #6 and registers/)
     // The encryption key this tab holds moves with the renewal: no unticked box saying otherwise.
     expect(q('[data-testid="enable-private-repos"]')).toBeNull()
-    expect(q('[data-testid="import-carries-encryption"]')!.textContent).toMatch(/Private repos stay enabled/)
+    expect(q('[data-testid="import-carries-encryption"]')!.textContent).toMatch(/Members-only and private content stays readable/)
     await click(byText('Recovery phrase'))
     expect(q<HTMLInputElement>('#import-id')!.value).toBe(ID)
     expect(q<HTMLInputElement>('#import-id')!.readOnly).toBe(true)

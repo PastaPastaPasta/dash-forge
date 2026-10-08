@@ -411,7 +411,7 @@ fn print_done(done: &Done<'_>, cost: &str) {
             names(&ask)
         );
     }
-    println!("  other browsers and computers: add the new key from the recovery phrase (web: Settings → Private repos)");
+    println!("  other browsers and computers: add the new key from the recovery phrase (web: Settings → Members-only and private content)");
 }
 
 fn report_json(done: &Done<'_>, cost: &Value) -> Value {

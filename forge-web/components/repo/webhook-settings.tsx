@@ -5,7 +5,7 @@
  * maintainer, adding and removing them from the browser, as `dg webhook add | list | remove`
  * does (`lib/repo/webhooks.ts`). A hook asks a relay identity (forge-relay) to POST GitHub-shaped
  * events to a URL; its secret is encrypted from the writer's encryption key to the relay's, so
- * adding one needs the encryption key in this browser (Settings → Private repos). Public repos only.
+ * adding one needs the encryption key in this browser (Settings → Members-only and private content). Public repos only.
  */
 
 import Link from 'next/link'
@@ -193,7 +193,7 @@ export function WebhookSettings({ home, maintainer }: { home: RepoHome; maintain
               Adding a webhook here (or removing one another maintainer also wrote) needs your encryption key in this browser (the secret is
               encrypted from it):{' '}
               <Link href="/settings/#enc-key-title" className="hit-area text-forge-700 underline dark:text-forge-400">
-                Settings → Private repos
+                Settings → Members-only and private content
               </Link>
               . Or use <span className="font-mono">dg webhook add</span> with an identity file that holds it.
             </p>
@@ -201,7 +201,7 @@ export function WebhookSettings({ home, maintainer }: { home: RepoHome; maintain
             <p className="text-[12px] text-caution-700 dark:text-caution-400">
               The encryption key in this browser is no longer an enabled key of your identity. Add or replace it in{' '}
               <Link href="/settings/#enc-key-title" className="hit-area text-forge-700 underline dark:text-forge-400">
-                Settings → Private repos
+                Settings → Members-only and private content
               </Link>
               .
             </p>

@@ -242,7 +242,7 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
           {keyCheck.error ? <p className="mt-1 text-[12px] text-danger-700 dark:text-danger-400">Couldn&apos;t read that identity: {keyCheck.error}</p> : null}
           {awaiting !== trimmed ? <ConsentCheck identity={trimmed !== '' && idError === null ? trimmed : null} check={consent} /> : null}
           {locked ? (
-            <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">Unlock with your encryption key (Settings → Private repos) to add or remove members.</p>
+            <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">Unlock with your encryption key (Settings → Members-only and private content) to add or remove members.</p>
           ) : null}
           <Invitations
             repo={repo}

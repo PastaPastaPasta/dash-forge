@@ -1,10 +1,11 @@
 /**
  * Deep links into Settings. A page that tells a member to add their encryption key links to
- * the Private repos card itself, not the top of a long page (QW2-016).
+ * the Members-only and private content card itself, not the top of a long page (QW2-016).
  */
 
-/** The Private repos card's element id on /settings/ (`EncryptionKeyPanel`). */
+/** The Members-only and private content card's element id on /settings/ (`EncryptionKeyPanel`). */
+// The id predates the card's name; kept so existing links keep working.
 export const PRIVATE_REPOS_ANCHOR = 'private-repos'
 
-/** Settings → Private repos. */
+/** Settings → Members-only and private content. */
 export const PRIVATE_REPOS_SETTINGS = `/settings/#${PRIVATE_REPOS_ANCHOR}`

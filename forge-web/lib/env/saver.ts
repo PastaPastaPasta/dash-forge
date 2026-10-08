@@ -44,7 +44,7 @@ export function sdkEnvSaver(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, network
       // the newest held key that is still a usable encryption key of the identity
       const usable = keys.filter((k) => held.includes(k.keyId) && isUsableEncryptionKey(k, core)).sort((a, b) => b.keyId - a.keyId)[0]
       if (usable === undefined) {
-        throw new EnvSaveError("This browser doesn't hold a usable encryption key of yours, so it can't save an environment. Add it under Settings → Private repos.")
+        throw new EnvSaveError("This browser doesn't hold a usable encryption key of yours, so it can't save an environment. Add it under Settings → Members-only and private content.")
       }
       return { identity: me, keyId: usable.keyId, publicKey: hexToBytes(usable.data) }
     },

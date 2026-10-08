@@ -121,7 +121,7 @@ function watched(k: WasmKey): WatchedKey {
 
 /** The notice when a renewal could not carry the encryption key over. */
 const ENCRYPTION_KEY_DROPPED =
-  'Your encryption key for private repos was sealed with the previous key, which was locked when you renewed it, so it was not carried over. Add it again in Settings → Private repos.'
+  'Your encryption key for private repos was sealed with the previous key, which was locked when you renewed it, so it was not carried over. Add it again in Settings → Members-only and private content.'
 
 /** The public (key-free) session snapshot. */
 export interface AuthSession {
@@ -962,7 +962,7 @@ export class AuthController {
       if (keyId === null) {
         this.setState({
           notice:
-            'This identity has no encryption key that your file or phrase can open, so private repos are not enabled yet. Settings → Private repos registers one (one master-key signature).',
+            'This identity has no encryption key that your file or phrase can open, so members-only and private content is not readable here yet. Settings → Members-only and private content registers one (one master-key signature).',
         })
       }
     } catch (e) {
@@ -1190,7 +1190,7 @@ export class AuthController {
       const outcome = await adoptWalletEncryptionKey(sdk, this.network, identityId, forge.core, options.encryptionKeys, options.justRegistered === true ? { attempts: 5 } : {})
       return { outcome, notice: outcome.missing !== null && !outcome.missing.otherApproval ? ENCRYPTION_KEY_ELSEWHERE : null }
     } catch (e) {
-      return { outcome: null, notice: `Private repos could not be enabled: ${errorMessage(e)}` }
+      return { outcome: null, notice: `Members-only and private content could not be enabled: ${errorMessage(e)}` }
     }
   }
 
