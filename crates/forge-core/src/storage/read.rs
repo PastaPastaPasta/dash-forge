@@ -37,6 +37,10 @@ pub const MIN_TRANSFER_DEADLINE: Duration = Duration::from_secs(120);
 /// failed by this text, and gives the fix that applies (QW2-078).
 pub const NO_FOLLOWED_COPY: &str = "no recorded copy is one this computer reads from";
 
+/// What a read's error says of the pack mirrors it tried after every recorded copy failed
+/// (`; pack mirrors tried: host (why), host (why)`): the words that start that clause.
+pub const MIRRORS_TRIED: &str = "pack mirrors tried";
+
 /// The slowest sustained rate a candidate may deliver at before its deadline cuts it off
 /// (1 MiB/s): a 2 GiB pack gets ~34 minutes. A host that stalls outright is cut off much
 /// sooner by the HTTP client's idle `read_timeout` (see [`super::http_client`]).

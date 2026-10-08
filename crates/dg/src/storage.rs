@@ -1427,9 +1427,9 @@ async fn advertise(ctx: &Ctx, repo: &str, remote: Option<&str>) -> Result<()> {
 async fn status(ctx: &Ctx, repo: &str) -> Result<()> {
     // A read: a public repository's key is never opened (QW-034: a sealed key without a
     // terminal failed this with E303).
-    let reader = crate::common::Reader::open(ctx, repo).await?;
-    let handle = reader.repo.clone();
-    let svc = reader.service();
+    let opened = crate::common::Reader::open(ctx, repo).await?;
+    let handle = opened.repo.clone();
+    let svc = opened.service();
     let manifests = svc.read_pack_manifests(&handle).await.unwrap_or_default();
     let scope = handle.scope()?;
     let roles = svc.copy_roles(&handle).await.unwrap_or_default();
@@ -1443,6 +1443,16 @@ async fn status(ctx: &Ctx, repo: &str) -> Result<()> {
         uris.dedup();
         let locator = scope.locator(&m.owner_id, &hex::encode(m.pack_hash));
         let rows = probe_rows(m, &uris, &locator, &reader).await;
+        // A pack whose recorded copies are down may still be read from a mirror someone
+        // recorded for it; say so beside the DOWN rows.
+        let own_copies_down = rows.iter().any(|r| r["ok"] == json!(false))
+            && !rows.iter().any(|r| r["ok"] == json!(true));
+        let mirror =
+            if own_copies_down && handle.visibility == forge_core::rules::v2::Visibility::Public {
+                Some(mirror_status(&opened.client, &handle, m, &roles, &reader).await)
+            } else {
+                None
+            };
         packs.push(json!({
             "packHash": hex::encode(m.pack_hash),
             "uploader": m.owner_id,
@@ -1453,6 +1463,7 @@ async fn status(ctx: &Ctx, repo: &str) -> Result<()> {
             "chunkCount": m.chunk_count,
             "storageTier": if m.storage == 0 { "platform" } else { "external" },
             "mirrors": rows,
+            "packMirror": mirror,
         }));
     }
 
@@ -1487,10 +1498,94 @@ async fn status(ctx: &Ctx, repo: &str) -> Result<()> {
                         println!("    [{mark}] {}", m["uri"].as_str().unwrap_or(""));
                     }
                 }
+                if let Some(line) = mirror_line(&p["packMirror"]) {
+                    println!("    {line}");
+                }
             }
         },
     );
     Ok(())
+}
+
+/// How many of a pack's recorded mirrors `dg storage status` probes (members' first).
+const MIRRORS_PROBED: usize = 5;
+
+/// Whether a pack whose own copies are down is still answered by a mirror someone recorded for
+/// it (`dg storage mirror add`): `{ "checked": true, "recorded": n, "serving": { uri, by } | null }`,
+/// or `{ "checked": false, "detail": why }` when the records could not be read. A mirror
+/// "answers" when a probe finds the pack's size there, as for the other copies: the bytes are
+/// not downloaded or hashed here (a clone checks them against the pack's hash).
+async fn mirror_status(
+    client: &forge_core::platform::PlatformClient,
+    repo: &forge_core::scope::RepoRef,
+    m: &forge_core::repo::PackManifestInfo,
+    roles: &forge_core::repo::RoleMap,
+    reader: &PackReader,
+) -> serde_json::Value {
+    let checked = async {
+        let core = client.fetch_contract(&repo.forge().core).await?;
+        let members: Vec<String> = roles.keys().cloned().collect();
+        let hash = hex::encode(m.pack_hash);
+        forge_core::pack_mirror::mirrors_of(client, &core, repo, &hash, &members).await
+    }
+    .await;
+    let mut mirrors = match checked {
+        Ok(found) => found,
+        Err(e) => {
+            return json!({
+                "checked": false,
+                "detail": forge_core::user_error::one_line(&e.to_string()),
+            })
+        }
+    };
+    let recorded = mirrors.len();
+    // Members' records first, as a reader tries them.
+    mirrors.sort_by_key(|x| (!roles.contains_key(&x.owner_id), x.created_at));
+    for mirror in mirrors.iter().take(MIRRORS_PROBED) {
+        let uris: Vec<String> = mirror.uris.clone();
+        for row in probe_uris(&uris, reader).await {
+            let size_ok = row["sizeBytes"]
+                .as_u64()
+                .is_none_or(|n| m.size_bytes == 0 || n == m.size_bytes);
+            if row["ok"] == json!(true) && size_ok {
+                return json!({
+                    "checked": true,
+                    "recorded": recorded,
+                    "serving": { "uri": row["uri"], "by": mirror.owner_id },
+                });
+            }
+        }
+    }
+    json!({ "checked": true, "recorded": recorded, "serving": serde_json::Value::Null })
+}
+
+/// The line under a pack's DOWN rows that says what its mirrors do ([`mirror_status`]); `None`
+/// when mirrors do not apply (a private repository) or the pack's own copies answer.
+fn mirror_line(mirror: &serde_json::Value) -> Option<String> {
+    if mirror.is_null() {
+        return None;
+    }
+    if mirror["checked"] == json!(false) {
+        return Some(format!(
+            "pack mirrors not checked: {}",
+            crate::fmt::safe(mirror["detail"].as_str().unwrap_or("could not be read"))
+        ));
+    }
+    let recorded = mirror["recorded"].as_u64().unwrap_or(0);
+    if recorded == 0 {
+        return Some("no pack mirror recorded for it".into());
+    }
+    let serving = &mirror["serving"];
+    if serving.is_null() {
+        return Some(format!(
+            "no recorded pack mirror answers either ({recorded} recorded)"
+        ));
+    }
+    Some(format!(
+        "served by a pack mirror: {} (recorded by {}; it answers with a pack of this size, the bytes are not checked here)",
+        crate::fmt::safe(serving["uri"].as_str().unwrap_or("")),
+        serving["by"].as_str().unwrap_or("")
+    ))
 }
 
 /// A `packManifest.kind` by name: what the artifact is (`forge_core::pack` `KIND_*`).
@@ -1522,6 +1617,23 @@ async fn probe_rows(
     platform_locator: &str,
     reader: &PackReader,
 ) -> Vec<serde_json::Value> {
+    let mut rows = Vec::new();
+    // Platform tier (storage == 0) means the bytes are on-chain chunk docs.
+    if m.storage == 0 || m.uris.is_empty() {
+        rows.push(json!({
+            "uri": platform_locator,
+            "scheme": "platform",
+            "ok": m.chunk_count > 0,
+            "detail": "on-chain chunk documents",
+        }));
+    }
+    rows.extend(probe_uris(uris, reader).await);
+    rows
+}
+
+/// The availability rows for `uris`: every http(s) URL, every `ipfs://` CID on every
+/// configured gateway, and the credentialed `s3://` locators.
+async fn probe_uris(uris: &[String], reader: &PackReader) -> Vec<serde_json::Value> {
     use futures::StreamExt as _;
     let mut probe_urls: Vec<String> = Vec::new();
     for u in uris {
@@ -1540,15 +1652,6 @@ async fn probe_rows(
     probe_urls.dedup();
 
     let mut rows = Vec::new();
-    // Platform tier (storage == 0) means the bytes are on-chain chunk docs.
-    if m.storage == 0 || m.uris.is_empty() {
-        rows.push(json!({
-            "uri": platform_locator,
-            "scheme": "platform",
-            "ok": m.chunk_count > 0,
-            "detail": "on-chain chunk documents",
-        }));
-    }
     // A few at a time, in order: each probe ends by its own timeout.
     let healths: Vec<_> = futures::stream::iter(&probe_urls)
         .map(|url| reader.probe(url))
@@ -1596,6 +1699,38 @@ pub(crate) mod tests {
             crate::Command::Storage(StorageCommand::Add(a)) => *a,
             _ => panic!("expected storage add"),
         }
+    }
+
+    #[test]
+    fn a_down_pack_says_what_its_mirrors_do() {
+        // Q5: `storage status` showed DOWN with no word about a mirror serving it.
+        assert_eq!(
+            mirror_line(&serde_json::Value::Null),
+            None,
+            "no mirror to say anything of"
+        );
+        let served = json!({ "checked": true, "recorded": 2, "serving": { "uri": "https://m.example/p.pack", "by": "EnwFStj" } });
+        let line = mirror_line(&served).unwrap();
+        assert!(
+            line.starts_with("served by a pack mirror: https://m.example/p.pack"),
+            "{line}"
+        );
+        assert!(line.contains("recorded by EnwFStj"), "{line}");
+        let none = json!({ "checked": true, "recorded": 2, "serving": null });
+        assert_eq!(
+            mirror_line(&none).unwrap(),
+            "no recorded pack mirror answers either (2 recorded)"
+        );
+        let empty = json!({ "checked": true, "recorded": 0, "serving": null });
+        assert_eq!(
+            mirror_line(&empty).unwrap(),
+            "no pack mirror recorded for it"
+        );
+        let unread = json!({ "checked": false, "detail": "could not reach Dash Platform" });
+        assert_eq!(
+            mirror_line(&unread).unwrap(),
+            "pack mirrors not checked: could not reach Dash Platform"
+        );
     }
 
     fn profiles(toml: &str) -> StorageProfiles {

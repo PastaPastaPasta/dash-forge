@@ -552,13 +552,51 @@ fn checkout(cfg: &Config, cache: &Path, oid: &str, dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The paths changed between `range` (a `git diff` revision range) in the cache.
-fn changed_paths(cfg: &Config, cache: &Path, range: &str) -> Option<Vec<String>> {
-    let mut c = Command::new(&cfg.bin.git);
-    c.arg("--git-dir")
-        .arg(cache)
-        .args(["diff", "--name-only", "--no-renames", "-z", range]);
-    let out = output(&mut c, "git diff")
+/// How the changed paths are listed: the plumbing `diff-tree`, which no user config alters
+/// (porcelain `git diff` follows `diff.relative` and `diff.ignoreSubmodules`, and `.gitmodules`
+/// the PR's author writes), run against the bare cache so every path is listed from the top.
+/// `--ignore-submodules=none` counts a submodule's new commit even when a setting says to ignore
+/// it, and `--no-renames` lists a rename as both of its paths. A path hidden from this list
+/// would hide it from a workflow's `paths` filter and skip a required workflow. The same
+/// arguments as `dg pr create`'s code owner lookup (`crates/dg/src/pr/owners.rs`).
+const CHANGED_PATHS_ARGS: [&str; 6] = [
+    "diff-tree",
+    "-r",
+    "-z",
+    "--name-only",
+    "--no-renames",
+    "--ignore-submodules=none",
+];
+
+/// The paths changed from `from` to `to` in the cache. With `since_merge_base` the change is
+/// from the two commits' merge base (`git diff from...to`, a PR's changes); otherwise between
+/// the two commits themselves (`from..to`, a push's).
+fn changed_paths(
+    cfg: &Config,
+    cache: &Path,
+    from: &str,
+    to: &str,
+    since_merge_base: bool,
+) -> Option<Vec<String>> {
+    let range = format!("{from}{}{to}", if since_merge_base { "..." } else { ".." });
+    let read = || -> Result<String> {
+        let from = if since_merge_base {
+            let mut mb = Command::new(&cfg.bin.git);
+            mb.arg("--git-dir")
+                .arg(cache)
+                .args(["merge-base", from, to]);
+            output(&mut mb, "git merge-base")?.trim().to_string()
+        } else {
+            from.to_string()
+        };
+        let mut c = Command::new(&cfg.bin.git);
+        c.arg("--git-dir")
+            .arg(cache)
+            .args(CHANGED_PATHS_ARGS)
+            .args([from.as_str(), to]);
+        output(&mut c, "git diff-tree")
+    };
+    let out = read()
         .map_err(|e| eprintln!("forge-runner: the changes {range} could not be read: {e:#}"))
         .ok()?;
     Some(
@@ -807,7 +845,7 @@ fn fetch_run(
             let changed = p
                 .before
                 .as_deref()
-                .and_then(|b| changed_paths(cfg, &cache, &format!("{b}..{}", p.oid)));
+                .and_then(|b| changed_paths(cfg, &cache, b, &p.oid, false));
             (changed, None, event_json(&repo.repo, p))
         }
         Trigger::Schedule { push, cron, .. } => {
@@ -838,7 +876,7 @@ fn fetch_run(
                 .ok();
             let changed = base
                 .as_deref()
-                .and_then(|b| changed_paths(cfg, &cache, &format!("{b}...{}", pr.head_oid)));
+                .and_then(|b| changed_paths(cfg, &cache, b, &pr.head_oid, true));
             let event = pull_event_json(&repo.repo, ev, base.as_deref(), &url, trusted);
             (changed, Some(short_ref(pr.base()).to_string()), event)
         }
@@ -1981,6 +2019,71 @@ mod tests {
             redact("t=abcd1234 q=xyz789 ab", &values),
             "t=*** q=*** ab",
             "too-short values are left"
+        );
+    }
+
+    /// A workflow's `paths` filter reads this list: user config (`diff.ignoreSubmodules`,
+    /// `diff.relative`) must not hide a path from it, or a required workflow is skipped.
+    #[test]
+    fn the_changed_paths_ignore_the_diff_config_that_would_hide_a_submodule() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path();
+        let git = |args: &[&str]| -> String {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args([
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@t",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        git(&["init", "-q", "-b", "main"]);
+        std::fs::create_dir_all(dir.join("docs")).unwrap();
+        std::fs::write(dir.join("docs/a.md"), "1").unwrap();
+        git(&["add", "docs/a.md"]);
+        git(&["commit", "-q", "-m", "one"]);
+        let base = git(&["rev-parse", "HEAD"]);
+        // The user's config says not to show submodules; the PR also writes a .gitmodules that
+        // says `ignore = all`.
+        git(&["config", "diff.ignoreSubmodules", "all"]);
+        git(&["config", "diff.relative", "true"]);
+        std::fs::write(dir.join(".gitmodules"), "[submodule \"sub\"]\n\tpath = vendor/sub\n\turl = https://example.com/s.git\n\tignore = all\n").unwrap();
+        std::fs::write(dir.join("docs/a.md"), "2").unwrap();
+        git(&["add", ".gitmodules", "docs/a.md"]);
+        git(&[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("160000,{base},vendor/sub"),
+        ]);
+        git(&["commit", "-q", "-m", "two"]);
+        let head = git(&["rev-parse", "HEAD"]);
+        let c = cfg("");
+        let cache = dir.join(".git");
+        let mut push = changed_paths(&c, &cache, &base, &head, false).unwrap();
+        push.sort();
+        assert_eq!(push, [".gitmodules", "docs/a.md", "vendor/sub"]);
+        // A PR's `base...head` lists the same from the merge base.
+        let mut pr = changed_paths(&c, &cache, &base, &head, true).unwrap();
+        pr.sort();
+        assert_eq!(pr, push);
+        // An unreadable range is no list, so no path filter is applied (the caller says so).
+        assert_eq!(
+            changed_paths(&c, &cache, &"0".repeat(40), &head, false),
+            None
         );
     }
 

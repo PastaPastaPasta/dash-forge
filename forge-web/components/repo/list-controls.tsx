@@ -58,12 +58,18 @@ export interface ListSearch<Q> {
   readonly clear: () => void
 }
 
+/** Whether two query strings hold the same parameters, in any order. */
+export function sameParams(a: URLSearchParams, b: { toString(): string }): boolean {
+  const norm = (p: { toString(): string }): string => [...new URLSearchParams(p.toString())].map(([k, v]) => `${k}=${v}`).sort().join('&')
+  return norm(a) === norm(b)
+}
+
 /** What the box and its note read of a {@link ListSearch}, whatever the list's query type. */
 export type SearchState = Omit<ListSearch<never>, 'change' | 'clear'>
 
 /**
  * A list whose query lives in the URL (`parse` reads it, `toParams` writes it with
- * `router.replace`), with its search box: `author:` / `assignee:` DPNS names are resolved to
+ * `router.push`, or `replace` when it only rewrites a linked `?q=`), with its search box: `author:` / `assignee:` DPNS names are resolved to
  * identity ids before the qualifiers are lifted (L-43), in a typed submit and, once connected, in
  * a linked `?q=`; the newest submit, tab, filter or page change wins, so an overtaken lookup
  * neither applies its result nor leaves the spinner on.
@@ -89,11 +95,15 @@ export function useListQuery<Q extends { readonly page: number }>({
   const pathname = usePathname()
   const params = useSearchParams()
   const query = useMemo(() => parse(params), [params, parse])
-  const setQuery = (next: Q): void => {
+  // A tab, filter, sort, page or submitted search is a step the viewer took, so Back undoes it
+  // (as GitHub's list does). Rewriting a link the viewer opened (a `?q=` name looked up) is not.
+  const setQuery = (next: Q, how: 'push' | 'replace' = 'push'): void => {
     const q = new URLSearchParams({ owner: addr.owner, name: addr.name })
     if (addr.repoId) q.set('repo', addr.repoId)
     for (const [k, v] of toParams(next)) q.append(k, v)
-    router.replace(`${pathname}?${q.toString()}`, { scroll: false })
+    // The list this URL already shows: no new entry (the same click twice, the same search again).
+    if (sameParams(q, params)) return
+    router[how](`${pathname}?${q.toString()}`, { scroll: false })
   }
   // The linked `?q=`, capped as the query parsers cap it (a crafted link cannot force unbounded DPNS reads).
   const linkedQ = params.get('q')?.slice(0, Q_MAX) ?? null
@@ -115,7 +125,7 @@ export function useListQuery<Q extends { readonly page: number }>({
   const value = search ?? grammar.text(query)
 
   // `base` carries what `text` itself does not encode (a linked `?q=` beside its `label=`/`sort=` params).
-  const resolveAndApply = async (text: string, base: Q): Promise<void> => {
+  const resolveAndApply = async (text: string, base: Q, how: 'push' | 'replace' = 'push'): Promise<void> => {
     const id = ++current.current
     const stillWanted = (): boolean => mounted.current && current.current === id
     setNotReady(!sdk && dpnsAuthorCandidates(text).length > 0)
@@ -125,7 +135,7 @@ export function useListQuery<Q extends { readonly page: number }>({
       if (!stillWanted()) return
       setDropped(grammar.unresolved(resolved.text))
       setNotFound(resolved.notFound)
-      setQuery({ ...grammar.parse(resolved.text, base), page: base.page })
+      setQuery({ ...grammar.parse(resolved.text, base), page: base.page }, how)
       // Back to the URL-driven text only if the box still holds what was submitted.
       setSearch((held) => (held === text ? null : held))
     } finally {
@@ -142,7 +152,7 @@ export function useListQuery<Q extends { readonly page: number }>({
     const hasNames = dpnsAuthorCandidates(raw).length > 0
     if (hasNames && (!ready || !sdk)) return
     pending.current = null
-    if (hasNames && linkedQ === raw) void resolveAndApply(raw, query)
+    if (hasNames && linkedQ === raw) void resolveAndApply(raw, query, 'replace')
     // eslint-disable-next-line react-hooks/exhaustive-deps -- once, when the SDK becomes ready; `pending` guards re-entry.
   }, [ready, sdk])
 

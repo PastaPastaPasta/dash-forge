@@ -278,21 +278,39 @@ pub fn skip_text(reason: SkipReason) -> &'static str {
 
 /// Print the plan (human output only).
 pub fn print_plan(plan: &OwnerPlan) {
+    for line in plan_lines(plan) {
+        println!("{line}");
+    }
+}
+
+/// The plan's lines. An owner who is the same person as one already asked (named once by identity
+/// id and once by `@name`) is not listed: they are asked, so "not asked" would say the opposite.
+/// `--json` keeps every skip.
+fn plan_lines(plan: &OwnerPlan) -> Vec<String> {
+    let mut lines = Vec::new();
     if plan.requests.request.is_empty() {
-        println!(
+        lines.push(format!(
             "{} names owners of these changes, but none can be asked for review:",
             plan.file
-        );
+        ));
     } else {
-        println!(
+        lines.push(format!(
             "Code owners ({}) to ask for review: {}",
             plan.file,
             plan.requests.request.join(", ")
-        );
+        ));
     }
     for skip in &plan.requests.skipped {
-        println!("  not asked: {} ({})", skip.token, skip_text(skip.reason));
+        if skip.reason == SkipReason::Duplicate {
+            continue;
+        }
+        lines.push(format!(
+            "  not asked: {} ({})",
+            skip.token,
+            skip_text(skip.reason)
+        ));
     }
+    lines
 }
 
 /// Ask each planned reviewer for review on the PR just opened (`number`, document `id`). A
@@ -517,6 +535,40 @@ mod tests {
         g(&["commit", "-q", "-m", "c"]);
         let tip = g(&["rev-parse", "HEAD"]);
         (dir, tip)
+    }
+
+    #[test]
+    fn one_person_named_by_id_and_by_name_is_asked_once_and_not_reported_as_unasked() {
+        use forge_core::rules::codeowners::{OwnerRequests, SkippedOwner};
+        let id = "Ci5gt9ffsNLwPvFoTZgZ3zJkZ6QBnY1h3nRrVuH4w8ek";
+        let plan = |skipped: Vec<SkippedOwner>| OwnerPlan {
+            file: ".github/CODEOWNERS".into(),
+            requests: OwnerRequests {
+                request: vec![id.into()],
+                skipped,
+            },
+            route: StateRoute::Author,
+        };
+        let skip = |token: &str, reason| SkippedOwner {
+            token: token.into(),
+            reason,
+            identity: Some(id.into()),
+        };
+        // The same identity named again: asked above, so nothing says "not asked".
+        let lines = plan_lines(&plan(vec![skip("@alice.dash", SkipReason::Duplicate)]));
+        assert_eq!(
+            lines,
+            [format!(
+                "Code owners (.github/CODEOWNERS) to ask for review: {id}"
+            )]
+        );
+        // A real skip still is.
+        let lines = plan_lines(&plan(vec![
+            skip("@alice.dash", SkipReason::Duplicate),
+            skip("@carol", SkipReason::NotApprover),
+        ]));
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert_eq!(lines[1], "  not asked: @carol (not a maintainer or writer)");
     }
 
     #[test]

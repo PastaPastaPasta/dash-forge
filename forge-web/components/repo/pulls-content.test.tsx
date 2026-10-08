@@ -17,8 +17,16 @@ vi.mock('next/link', async () => {
 })
 let search = ''
 const replaced: string[] = []
+/** The navigations that added a history entry (a push), as opposed to rewriting the current one. */
+const pushed: string[] = []
 vi.mock('next/navigation', () => ({
-  useRouter: () => ({ replace: (href: string) => replaced.push(href), push: () => undefined }),
+  useRouter: () => ({
+    replace: (href: string) => replaced.push(href),
+    push: (href: string) => {
+      replaced.push(href)
+      pushed.push(href)
+    },
+  }),
   usePathname: () => '/repo/pulls/',
   useSearchParams: () => new URLSearchParams(search),
 }))
@@ -142,6 +150,7 @@ beforeEach(() => {
   dotGate = null
   dotReads.length = 0
   replaced.length = 0
+  pushed.length = 0
   asked.length = 0
   answers = []
   laterGate = null
@@ -343,6 +352,36 @@ describe('PullsContent (L-44)', () => {
     await submit('is:merged label:bug author:alice.dash parser')
     expect(replaced.at(-1)).toBe(`/repo/pulls/?owner=o&name=n&state=merged&label=bug&author=${ALICE}&q=parser`)
     expect(el.querySelector('[data-testid="pull-search-dropped"]')).toBeNull()
+  })
+
+  it('adds a history entry for a submitted search or a tab, not for typing or a repeat, and rewrites a linked name in place (Q5)', async () => {
+    await render()
+    const input = el.querySelector('#pull-search') as HTMLInputElement
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+    for (const typed of ['f', 'fi', 'fix']) {
+      act(() => {
+        setValue.call(input, typed)
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+    }
+    // Every keystroke so far left the URL alone.
+    expect(replaced).toEqual([])
+    await submit('is:pr fix')
+    expect(pushed).toEqual(['/repo/pulls/?owner=o&name=n&state=all&q=fix'])
+    // The list the URL already shows is not pushed again.
+    search = 'owner=o&name=n&state=all&q=fix'
+    await render()
+    await submit('is:pr fix')
+    expect(pushed).toHaveLength(1)
+    // A name in a linked `?q=` is looked up and written over the link, not added after it.
+    search = 'owner=o&name=n&q=author%3Aalice.dash'
+    pushed.length = 0
+    replaced.length = 0
+    act(() => root.unmount())
+    root = createRoot(el)
+    await render()
+    expect(replaced.at(-1)).toBe(`/repo/pulls/?owner=o&name=n&author=${ALICE}`)
+    expect(pushed).toEqual([])
   })
 
   it('intersects state qualifiers: is:closed is:unmerged is the closed-without-merging PRs (QW4-007)', async () => {

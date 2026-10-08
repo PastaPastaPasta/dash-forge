@@ -1752,6 +1752,8 @@ export type UnindexedReason =
   | 'no-index'
   /** Fragments exist but leave live packs unindexed, or disagree about the pack space. */
   | 'index-behind'
+  /** A fragment exists but could not be fetched or parsed: the index is there, it did not answer. */
+  | 'index-unreachable'
 
 /**
  * Assemble a repo's browse availability: the merged published index plus a pack source over
@@ -1800,6 +1802,7 @@ export async function loadBrowseContext(
   // are sealed, and read whole as before, as are a repository made public's (some may be sealed).
   const own = await publishedLocator(sdk, repo, manifests, livePacks, { ranged: repo.session === undefined && convertedReads(repo) === null })
   if (own === 'behind') return behind('index-behind')
+  if (own === 'unreachable') return behind('index-unreachable')
   // A fork's own fragments index only the packs it pushed itself; the packs it holds by
   // reference to its parent (and the parent's parent) are indexed by theirs (QW-023).
   const lineage: Ancestor[] = []
@@ -1987,8 +1990,9 @@ function openFragment(sdk: EvoSDK, repo: RepoRef, m: PackManifest): Promise<Obje
 
 /**
  * The merged index `repo`'s published fragments make over `space` (its live pack space): null
- * when it published none, `behind` when they cannot be trusted over this space (or will not
- * load). Coverage is the caller's: a fragment may index only part of the space.
+ * when it published none, `behind` when they cannot be trusted over this space, `unreachable`
+ * when they will not load or parse. Coverage is the caller's: a fragment may index only part of
+ * the space.
  *
  * `ranged`: a fragment stored on Platform of {@link RANGED_INDEX_MIN_BYTES} or more is not
  * downloaded; the answer is then an {@link ObjectIndex} reading it a chunk at a time, and only when
@@ -2003,7 +2007,7 @@ async function publishedLocator(
   manifests: readonly PackManifest[],
   space: readonly PackManifest[],
   { ranged = false, progressKey = repoKey(repo) }: { readonly ranged?: boolean; readonly progressKey?: string } = {},
-): Promise<ObjectLocator | ObjectIndex | null | 'behind'> {
+): Promise<ObjectLocator | ObjectIndex | null | 'behind' | 'unreachable'> {
   const fragments = locatorFragments(manifests)
   if (fragments.length === 0) return null
 
@@ -2049,7 +2053,7 @@ async function publishedLocator(
     }
     locator = ObjectLocator.merge(parts as ObjectLocator[])
   } catch {
-    return 'behind'
+    return 'unreachable'
   }
   // Out-of-range refs mean the fragments were built over a different pack space than the
   // one derived here — a prefix check cannot see this, a bounds check can.
@@ -2117,7 +2121,7 @@ async function inheritedIndex(
     const parentSpace = locatorPackSpace(manifests)
     // Whole: a fork remaps every row of its parent's index into its own pack space.
     const published = await publishedLocator(sdk, parent, manifests, parentSpace, { progressKey })
-    if (published === 'behind' || (published !== null && !(published instanceof ObjectLocator))) return null
+    if (published === 'behind' || published === 'unreachable' || (published !== null && !(published instanceof ObjectLocator))) return null
     const full =
       published !== null && coversSpace(published, parentSpace) ? published : await withAncestors(sdk, parent, published, parentSpace, lineage, depth + 1, progressKey)
     if (full === null) return null
