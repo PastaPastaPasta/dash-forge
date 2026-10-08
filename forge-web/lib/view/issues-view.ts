@@ -179,12 +179,13 @@ export function withReviewTexts(
   shown: readonly ReviewView[],
   counted: readonly ReviewView[],
   comments: readonly CommentView[],
+  hidden: (commentId: string) => boolean = () => false,
 ): { readonly reviews: ReviewView[]; readonly comments: CommentView[]; readonly carried: ReadonlySet<string> } {
   const all = new Map<string, ReviewView>()
   for (const r of [...counted, ...shown]) all.set(r.id, r)
   const carriers = reviewTextCarriers(
     [...all.values()].map((r) => ({ id: r.id, reviewer: r.reviewer, sealed: r.audience === 'members' || r.membersOnly === true })),
-    comments.map((c) => ({
+    comments.filter((c) => !hidden(c.id)).map((c) => ({
       id: c.id,
       owner: c.author,
       reviewId: c.reviewId,
@@ -205,7 +206,6 @@ export function withReviewTexts(
     return { ...rest, body: c?.body ?? '', ...(c?.long ? { long: c.long } : {}), madePublic: true }
   }
   const reviews = [...all.values()]
-    .filter((r) => r.membersOnly !== true || carried.has(r.id))
     .filter((r) => shown.some((x) => x.id === r.id) || carried.has(r.id))
     .map((r) => (carried.has(r.id) ? madePublic(r) : r))
     .sort((a, b) => compareKey({ id: a.id, createdAt: a.createdAt }, { id: b.id, createdAt: b.createdAt }))
@@ -839,11 +839,13 @@ export async function loadPullOrMembersOnly(
   const [approvals, verdicts, hidesAreProved] = await Promise.all([readApprovals(members, policy, countedReviews, review, pull.author), verdictsRead, proved])
   // The repo's bans are not read here: the page applies them when they land (`withBans`), so
   // nothing on it, the diff included, waits on that read.
-  // A members-only review whose author made its text public shows that text, for everyone (§4.6).
-  const shown = withReviewTexts(reviews, readReviews.counted, comments)
-  const modInput = moderationInput({ events: log.events, thread: { id, author: pull.author }, owner: repo.ownerId, members: members ?? [], proved: hidesAreProved, comments: shown.comments, reviews: shown.reviews, membersUnread: members === null })
+  const modInput = moderationInput({ events: log.events, thread: { id, author: pull.author }, owner: repo.ownerId, members: members ?? [], proved: hidesAreProved, comments, reviews, membersUnread: members === null })
+  const moderation = foldModeration(modInput)
+  // A members-only review whose author made its text public shows that text, for everyone (§4.6),
+  // unless a maintainer hid the comment carrying it.
+  const shown = withReviewTexts(reviews, readReviews.counted, comments, (c) => moderation.items[c] !== undefined)
   return {
-    moderation: foldModeration(modInput),
+    moderation,
     moderationInput: modInput,
     pull,
     timeline: mergeTimeline(shown.comments, log.events, log.authorEvents, shown.reviews, tally.total > 0, transitions),

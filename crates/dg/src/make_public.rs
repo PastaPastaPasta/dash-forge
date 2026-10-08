@@ -4,11 +4,14 @@
 //! Someone else's post is refused before anything is signed. Every post named is checked first,
 //! and nothing is written unless all of them can be made public.
 
+use std::collections::BTreeSet;
+
 use anyhow::Result;
 use serde_json::json;
 
 use forge_core::collab::long_body::BodyField;
 use forge_core::collab::v2::{Collab, MakePublicPlan, TargetKind, TargetRead};
+use forge_core::platform::FetchedDocument;
 use forge_core::private::DocKind;
 use forge_core::rules::v2::Audience;
 use forge_core::scope::RepoRef;
@@ -34,9 +37,19 @@ struct Post {
 pub async fn run(ctx: &Ctx, repo: &str, posts: &[String]) -> Result<()> {
     let s = Session::open_for_write(ctx, repo, "nothing made public").await?;
     let collab = s.collab();
-    let mut planned = Vec::new();
+    // every post is found first, so a comment whose issue is made public in the same command
+    // counts its conversation as public
+    let mut found = Vec::new();
     for p in posts {
-        planned.push(plan(&collab, &s.repo, p).await?);
+        found.push(find(&collab, &s.repo, p).await?);
+    }
+    let going: BTreeSet<String> = found.iter().map(|(_, d)| d.id.clone()).collect();
+    let mut planned = Vec::new();
+    for post in found {
+        let post = plan(&collab, &s.repo, post, &going).await?;
+        // nothing is stored for a replace that would be refused
+        collab.check_make_public(&s.repo, &post.plan)?;
+        planned.push(post);
     }
     let bodies = planned
         .iter()
@@ -79,14 +92,30 @@ pub async fn run(ctx: &Ctx, repo: &str, posts: &[String]) -> Result<()> {
     let before = s.balance().await;
     let mut written = Vec::new();
     for (p, b) in planned.iter().zip(&bodies) {
-        let field = match b {
-            Some(b) => Some(b.field_text(&collab, &s.repo, None).await?),
-            None => None,
+        let one = async {
+            let field = match b {
+                Some(b) => Some(b.field_text(&collab, &s.repo, None).await?),
+                None => None,
+            };
+            anyhow::Ok(
+                collab
+                    .make_public(&s.repo, &p.plan, field.as_deref())
+                    .await?,
+            )
         };
-        let id = collab
-            .make_public(&s.repo, &p.plan, field.as_deref())
-            .await?;
-        written.push((p, id));
+        match one.await {
+            Ok(id) => written.push((p, id)),
+            // say what is public already: the headline alone ("nothing made public") would not
+            Err(e) if !written.is_empty() => {
+                let done: Vec<String> = written.iter().map(|(p, _)| label(&p.plan)).collect();
+                return Err(e.context(format!(
+                    "made public: {}; then {} failed",
+                    done.join(", "),
+                    label(&p.plan)
+                )));
+            }
+            Err(e) => return Err(e),
+        }
     }
     let spent = s.spent_since(before).await;
     let price = ctx.usd_price();
@@ -154,8 +183,12 @@ fn body_field(plan: &MakePublicPlan) -> BodyField<'_> {
     }
 }
 
-/// Find and plan post `arg` of `repo`: a document id, or an issue's or PR's number (`3`, `#3`).
-async fn plan(collab: &Collab<'_>, repo: &RepoRef, arg: &str) -> Result<Post> {
+/// Find post `arg` of `repo`: a document id, or an issue's or PR's number (`3`, `#3`).
+async fn find(
+    collab: &Collab<'_>,
+    repo: &RepoRef,
+    arg: &str,
+) -> Result<(DocKind, FetchedDocument)> {
     let id = match arg.trim_start_matches('#').parse::<u32>() {
         Ok(n) => number_id(collab, repo, n).await?,
         Err(_) => {
@@ -163,8 +196,8 @@ async fn plan(collab: &Collab<'_>, repo: &RepoRef, arg: &str) -> Result<Post> {
             arg.to_string()
         }
     };
-    let Some((kind, stored)) = collab.find_post(repo, &id).await? else {
-        return Err(UserError::new(
+    collab.find_post(repo, &id).await?.ok_or_else(|| {
+        UserError::new(
             codes::NOT_FOUND,
             format!(
                 "{} is not an issue, pull request, comment or review of {}",
@@ -173,9 +206,19 @@ async fn plan(collab: &Collab<'_>, repo: &RepoRef, arg: &str) -> Result<Post> {
             ),
         )
         .fix(format!("{POST_IDS} lists the ids"))
-        .into());
-    };
-    let mut plan = collab.make_public_plan(repo, kind, stored).await?;
+        .into()
+    })
+}
+
+/// Plan making post `stored` public, its long body read whole; `going`: the ids of every post of
+/// this command (a comment's conversation counts them as public).
+async fn plan(
+    collab: &Collab<'_>,
+    repo: &RepoRef,
+    (kind, stored): (DocKind, FetchedDocument),
+    going: &BTreeSet<String>,
+) -> Result<Post> {
+    let mut plan = collab.make_public_plan(repo, kind, stored, going).await?;
     let mut body = plan.changes.set.get("body").cloned();
     if let Some(b) = body.as_mut() {
         // a long body continues in a members-only artifact: read it whole, so the public one

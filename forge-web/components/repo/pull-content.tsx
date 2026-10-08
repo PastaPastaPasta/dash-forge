@@ -672,6 +672,11 @@ function PullPage({
   // One confirm at a time: a write asked for while one is open (a picker applying on the same
   // click that opens another action) never silently replaces it.
   const setPending = useCallback((p: SetStateAction<Pending | null>) => setPendingState((cur) => (typeof p === 'function' ? p(cur) : p === null ? null : cur ?? p)), [])
+  // DESIGN §4.6: make the author's own members-only comment public (an inline one loses its file name).
+  const makeCommentPublic = useCallback(
+    (c: CommentView) => setPending({ kind: 'make-public', id: c.id, quoted: quotedPost(c.body, c.author, 'comment'), losesFile: c.anchor !== null }),
+    [setPending, quotedPost],
+  )
   // "Close with comment": the comment a close already posted, by the confirm's intent, so a retry
   // of a close that failed after it never posts the comment twice.
   const closeComment = useRef<{ intent: string; id: string } | null>(null)
@@ -847,12 +852,10 @@ function PullPage({
       // A public comment's edit is public text: it asks first when it repeats members-only text.
       onEdit: (c, body) => quoteCheck(publicTextOf(body, c.audience, pullAudience), membersTexts, () => setPending({ kind: 'edit-comment', id: c.id, body }), { before: c.body }),
       onDelete: (c) => setPending({ kind: 'delete-comment', id: c.id }),
-      ...(home.repo.visibility === 'public'
-        ? { onMakePublic: (c: CommentView) => setPending({ kind: 'make-public', id: c.id, quoted: quotedPost(c.body, c.author, 'comment'), losesFile: c.anchor !== null }) }
-        : {}),
+      ...(home.repo.visibility === 'public' ? { onMakePublic: makeCommentPublic } : {}),
       ...(moderation ? { hidden: moderation } : {}),
     }),
-    [canResolve, resolvedKey, identity, setPending, moderation, quoteCheck, membersTexts, pullAudience, quotedPost, home.repo.visibility],
+    [canResolve, resolvedKey, identity, setPending, moderation, quoteCheck, membersTexts, pullAudience, makeCommentPublic, home.repo.visibility],
   )
   const commentCost = composeCost(repo, 'comment', { body: comment.trim() }, commentFirst, audience.audience)
   const quoting = audience.audience === 'public' && quotesMembersText(comment, membersTexts)
@@ -1101,7 +1104,7 @@ function PullPage({
         return
       }
       case 'make-review-public':
-        await makeReviewTextPublic(sdk, signer, repo, { reviewId: p.id, patchId: pull.id, text: p.text, intent })
+        await makeReviewTextPublic(sdk, signer, repo, { reviewId: p.id, patchId: pull.id, text: p.text, post: postContext, intent })
         refresh((t) => t.reviews.some((r) => r.id === p.id && r.madePublic === true))
         return
       case 'edit-comment': {
@@ -1616,9 +1619,7 @@ function PullPage({
                       onSave: (id, body) => quoteCheck(publicTextOf(body, item.comment.audience, pull.audience), membersTexts, () => setPending({ kind: 'edit-comment', id, body }), { before: item.comment.body }),
                       onDelete: (id) => setPending({ kind: 'delete-comment', id }),
                       // DESIGN §4.6: the author's own members-only comment, on a public repo.
-                      ...(item.comment.audience === 'members' && repo.visibility === 'public'
-                        ? { onMakePublic: (c: CommentView) => setPending({ kind: 'make-public', id: c.id, quoted: quotedPost(c.body, c.author, 'comment'), losesFile: c.anchor !== null }) }
-                        : {}),
+                      ...(item.comment.audience === 'members' && repo.visibility === 'public' ? { onMakePublic: makeCommentPublic } : {}),
                       links,
                       replies: repliesOf.get(item.comment.id) ?? [],
                       trust,

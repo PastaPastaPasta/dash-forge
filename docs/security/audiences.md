@@ -46,7 +46,7 @@ A **private** repository is different: everything in it is encrypted, code inclu
 
 A reply follows what it answers: a comment on a members-only issue, or a reply to a members-only comment, is members-only too. A members-only comment on a public issue or pull request is fine. A public reply inside a members-only conversation is refused before anything is signed.
 
-Who something is for is fixed when it is posted. Editing a members-only comment or issue keeps it members-only, and Forge refuses to edit a public one into a members-only one. Making members-only discussion public later is **coming later**. Until then, post a new public comment.
+Who something is for is fixed when it is posted. Editing a members-only comment or issue keeps it members-only, and Forge refuses to edit a public one into a members-only one. The one exception: the author of a members-only issue, comment or review can **make it public** (`dg make-public`, or **Make public** in the web app). Everyone can read it from then on, as it reads at that moment; earlier versions of an issue stay members-only, and it can't be undone. A review stays as it was written: its text is added as a public comment on it, which every reader shows in its place. Nobody can make someone else's post public yet, and nothing becomes members-only again. See [Collaborating](../guides/collaborating.md).
 
 ## Who can read members-only content
 
@@ -225,6 +225,6 @@ A members-only write by someone who is not a member stops with [E601](../errors.
 | **Maintainers** (environments) | The maintainers when the change was saved. |
 | **Turn on members-only content** | What a maintainer does once per repository (`dg repo members enable`). |
 | **Set up your encryption key** | What each person does once per identity (`dg auth keys add --encryption`). |
-| **Publish**, **Make public** | Widening code or discussion to everyone (coming later). It can't be undone. |
+| **Publish**, **Make public** | Widening code (coming later) or discussion (your own posts, today) to everyone. It can't be undone. |
 
 How it is built: [Private repositories §17](private-repos.md#17-mixed-repositories-members-only-content-in-a-public-repository) and [forge-v2.md §5](../contracts/forge-v2.md#5-private-repositories).

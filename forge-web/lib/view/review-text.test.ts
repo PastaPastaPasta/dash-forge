@@ -67,6 +67,15 @@ describe('withReviewTexts', () => {
   })
 })
 
+describe('withReviewTexts and moderation', () => {
+  it('a carrier a maintainer hid is not the review’s text', () => {
+    const r = review('R1', { membersOnly: true })
+    const got = withReviewTexts([], [r], [comment('C1')], (id) => id === 'C1')
+    expect(got.reviews).toEqual([])
+    expect(got.comments.map((c) => c.id)).toEqual(['C1'])
+  })
+})
+
 describe('quotedMembersPost', () => {
   beforeEach(() => clearMembersTexts())
 

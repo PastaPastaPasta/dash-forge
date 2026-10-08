@@ -1,0 +1,26 @@
+{
+  "name": "review_text_commit_only_ignored",
+  "description": "A comment naming a commit is a review comment (a made-public file-level one), not the text.",
+  "case": "make_public",
+  "rules": "v2",
+  "input": {
+    "op": "reviewText",
+    "reviews": [
+      {
+        "id": "R1",
+        "reviewer": "bob",
+        "sealed": true
+      }
+    ],
+    "comments": [
+      {
+        "id": "C1",
+        "owner": "bob",
+        "reviewId": "R1",
+        "createdAt": 10,
+        "commitOid": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+      }
+    ]
+  },
+  "expected": {}
+}

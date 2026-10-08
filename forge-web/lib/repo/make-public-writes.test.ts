@@ -44,7 +44,7 @@ import { base58Encode } from '../auth/base58'
 import type { WriteAuth } from '../sdk'
 import type { RepoRef } from './contract'
 import { makePostPublic, makeReviewTextPublic, provenanceOf } from './make-public-writes'
-import { childAudience } from './members-writes'
+import { childAudience, forgetStoredDoc } from './members-writes'
 
 const id = (b: number): Uint8Array => new Uint8Array(32).fill(b)
 const b58 = (u: Uint8Array): string => base58Encode(u)
@@ -100,8 +100,15 @@ describe('the author makes their own members-only post public', () => {
     expect('epoch' in c && c['epoch'] === undefined).toBe(true)
     // the membership proof stays (it is re-checked) unless the author is no longer a member
     expect('asMember' in c).toBe(false)
-    // a public reply under it is possible now
-    expect(await childAudience(sdk, REPO, { targetId: ISSUE_PUBLIC, requested: 'public' })).toBe('public')
+    // a public reply to it is possible now, in this tab too (its sealed copy is forgotten)
+    stored[MINE] = { $id: MINE, repoId: REPO.repoId, $ownerId: BOB, body: 'We rotated the key.', targetId: ISSUE_PUBLIC }
+    expect(await childAudience(sdk, REPO, { targetId: ISSUE_PUBLIC, replyTo: MINE, requested: 'public' })).toBe('public')
+    forgetStoredDoc(REPO, 'comment', MINE)
+  })
+
+  it('a review on a locked PR: the member’s attached comment carries the proof', async () => {
+    await makeReviewTextPublic(sdk, auth, REPO, { reviewId: MY_REVIEW, patchId: PR, text: 'Locked, still public.', post: { isMember: true, locked: true } })
+    expect(writes[0]?.data['asMember']).toBeDefined()
   })
 
   it('an issue: its title and body; and a former member drops the proof', async () => {
@@ -136,8 +143,8 @@ describe('the author makes their own members-only post public', () => {
 
 describe('every other audience change is refused before signing', () => {
   it("someone else's post", async () => {
-    await expect(makePostPublic(sdk, auth, REPO, { type: 'comment', id: THEIRS, opened: { body: 'x' } })).rejects.toThrow(/Only maintainers can make other people's posts public/i)
-    await expect(makeReviewTextPublic(sdk, auth, REPO, { reviewId: THEIR_REVIEW, patchId: PR, text: 'x' })).rejects.toThrow(/other people's posts/)
+    await expect(makePostPublic(sdk, auth, REPO, { type: 'comment', id: THEIRS, opened: { body: 'x' } })).rejects.toThrow(/Only its author can make this post public/)
+    await expect(makeReviewTextPublic(sdk, auth, REPO, { reviewId: THEIR_REVIEW, patchId: PR, text: 'x' })).rejects.toThrow(/Only its author/)
     expect(replaces).toEqual([])
     expect(writes).toEqual([])
   })
@@ -147,6 +154,8 @@ describe('every other audience change is refused before signing', () => {
     await expect(makePostPublic(sdk, auth, { ...REPO, visibility: 'private' }, { type: 'comment', id: MINE, opened: { body: 'x' } })).rejects.toThrow(/private/)
     await expect(makePostPublic(sdk, auth, REPO, { type: 'issue', id: MY_ISSUE, opened: { title: 't', importedAuthor: 'octocat' } })).rejects.toThrow(/imported/)
     await expect(makePostPublic(sdk, auth, REPO, { type: 'comment', id: ON_MEMBERS_ISSUE, opened: { body: 'x' } })).rejects.toThrow(/conversation is members-only/)
+    await expect(makePostPublic(sdk, auth, REPO, { type: 'patch', id: PR, opened: { title: 't' } })).rejects.toThrow(/pull request can't be made public/)
+    await expect(makeReviewTextPublic(sdk, auth, REPO, { reviewId: MY_REVIEW, patchId: ISSUE_PUBLIC, text: 'x' })).rejects.toThrow(/not on this pull request/)
     expect(replaces).toEqual([])
   })
 

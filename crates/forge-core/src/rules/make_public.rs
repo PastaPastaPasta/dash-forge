@@ -112,6 +112,7 @@ pub fn make_public_changes(
     if opened.imported_author.is_some() || opened.imported_url.is_some() {
         return Err(MakePublicRefusal::Imported);
     }
+    // blank is Unicode White_Space only (`char::is_whitespace`), as the contract's `\S` reads it
     let text = |v: &Option<String>| v.as_ref().filter(|s| !s.trim().is_empty()).cloned();
     let (title, body) = (text(&opened.title), text(&opened.body));
     let mut out = MadePublic {
@@ -147,7 +148,7 @@ pub fn make_public_changes(
 
 /// A review, as [`review_text_carriers`] takes it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CarrierReview {
     /// `$id`.
     pub id: String,
@@ -160,7 +161,7 @@ pub struct CarrierReview {
 
 /// A comment, as [`review_text_carriers`] takes it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CarrierComment {
     /// `$id`.
     pub id: String,

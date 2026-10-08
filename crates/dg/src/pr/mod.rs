@@ -1175,9 +1175,6 @@ async fn view(
     let approvals = approvals_over(&reviews, &v, &oracle);
     let (mut comments, members_only, malformed_comments) =
         collab.comments_read(handle, &doc_id).await?;
-    // A members-only review whose author made its text public: that text, for everyone (DESIGN
-    // §4.6); the comment carrying it is not listed again.
-    let made_public = forge_core::collab::v2::apply_review_texts(&mut reviews, &mut comments);
     let (members_only, uncounted_reviews) = (
         s.placeholders(members_only),
         s.placeholders(uncounted_reviews),
@@ -1219,6 +1216,12 @@ async fn view(
     let moderation = collab
         .hidden_items(handle, &v.patch.target(), &v.log, &comments, &reviews)
         .await?;
+    // A members-only review whose author made its text public: that text, for everyone (DESIGN
+    // §4.6); the comment carrying it is not listed again (unless a maintainer hid it).
+    let made_public =
+        forge_core::collab::v2::apply_review_texts(&mut reviews, &mut comments, |id| {
+            moderation.item(id).is_some()
+        });
     let trusted = |who: &str| {
         who == handle.owner_id()
             || oracle.current_role(who) == Some(forge_core::rules::v2::Role::Maintainer)

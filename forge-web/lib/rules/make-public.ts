@@ -32,6 +32,14 @@ export function audienceEdit(visibility: Visibility, stored: ContentDoc, edited:
   return edited.epoch == null && gitPlaneWellFormed(edited) ? 'makesPublic' : 'malformed'
 }
 
+/**
+ * Whether `s` is only Unicode White_Space (Rust `char::is_whitespace`, as the contract's `\S`
+ * reads it): not `String.prototype.trim`, which also strips U+FEFF and keeps U+0085.
+ */
+export function blank(s: string): boolean {
+  return /^[\t\n\v\f\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*$/.test(s)
+}
+
 /** Why a document cannot be made public by its author's edit. */
 export type MakePublicRefusal = 'imported' | 'empty' | 'notEditable'
 
@@ -48,7 +56,7 @@ export interface MadePublic {
 /** The replace that makes a sealed `kind` document public from its opened content, or why not. */
 export function makePublicChanges(kind: ContentKind, opened: DocFields): MadePublic | { readonly error: MakePublicRefusal } {
   if (opened.importedAuthor !== undefined || opened.importedUrl !== undefined) return { error: 'imported' }
-  const text = (v: string | undefined): string | null => (v !== undefined && v.trim() !== '' ? v : null)
+  const text = (v: string | undefined): string | null => (v !== undefined && !blank(v) ? v : null)
   const set: Record<string, string> = {}
   const lost: string[] = []
   if (kind === 'issue' || kind === 'patch') {

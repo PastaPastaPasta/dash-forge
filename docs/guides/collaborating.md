@@ -204,7 +204,9 @@ dg pr review     <owner>/<repo> 7 --approve --members --body "…"
 
 **Environments.** A repository's configuration and secrets can be kept outside git, encrypted for its **Maintainers** or its **Members**: see [Environments](environments.md).
 
-**Not yet.** Members-only pull requests, branches, code and releases, specific people, and making members-only discussion public are coming later. Search doesn't look inside members-only issues you can't read.
+**Make your own posts public.** The author of a members-only issue, comment or review can make it public, at any role: `dg make-public <repo> <id or number>…`, or **Make public** beside your own members-only post in the web app. Everyone can read it as it reads now; earlier versions of an issue stay members-only. It can't be undone. A review's text is added as a public comment on your review, shown in its place as "Review text made public by @you". On the current network an inline comment's file name can't be made public, so it shows without it, and an imported post can't be made public. A post inside a members-only conversation can't be made public on its own, and other people's posts can't be made public yet. The web app warns when the text quotes someone else's members-only words.
+
+**Not yet.** Members-only pull requests, branches, code and releases, specific people, and making other people's posts public are coming later. Search doesn't look inside members-only issues you can't read.
 
 ---
 

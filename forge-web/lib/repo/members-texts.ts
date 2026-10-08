@@ -46,23 +46,22 @@ function changed(repoId: string | null): void {
   })
 }
 
+/** `repoId`'s map in `byRepoId`, created on first use. */
+function perRepo<V>(byRepoId: Map<string, Map<string, V>>, repoId: string): Map<string, V> {
+  let docs = byRepoId.get(repoId)
+  if (docs === undefined) {
+    docs = new Map()
+    byRepoId.set(repoId, docs)
+  }
+  return docs
+}
+
 /** Remember the text fields of members-only document `docId` of `repoId`, opened in this tab. */
 export function noteMembersText(repoId: string, docId: string, fields: readonly unknown[], meta?: MembersPostMeta): void {
   const texts = fields.filter((t): t is string => typeof t === 'string' && t.trim() !== '')
   if (texts.length === 0 || repoId === '' || docId === '') return
-  if (meta !== undefined) {
-    let metas = metaByRepo.get(repoId)
-    if (metas === undefined) {
-      metas = new Map()
-      metaByRepo.set(repoId, metas)
-    }
-    metas.set(docId, meta)
-  }
-  let docs = byRepo.get(repoId)
-  if (docs === undefined) {
-    docs = new Map()
-    byRepo.set(repoId, docs)
-  }
+  if (meta !== undefined) perRepo(metaByRepo, repoId).set(docId, meta)
+  const docs = perRepo(byRepo, repoId)
   const had = docs.get(docId)
   if (had !== undefined && had.length === texts.length && had.every((t, i) => t === texts[i])) return
   docs.set(docId, texts)

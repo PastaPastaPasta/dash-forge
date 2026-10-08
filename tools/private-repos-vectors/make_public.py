@@ -72,10 +72,19 @@ def audience_edit(visibility, stored, edited, author, signer):
     return "makesPublic" if edited.get("epoch") is None and public_well_formed(edited) else "malformed"
 
 
+# Unicode White_Space (Rust `char::is_whitespace`, the contract's `\\S`): not str.strip, which also
+# strips U+001C..U+001F, nor JS trim, which strips U+FEFF.
+WHITE_SPACE = set("\t\n\v\f\r \u0085\u00a0\u1680\u2028\u2029\u202f\u205f\u3000") | {chr(c) for c in range(0x2000, 0x200B)}
+
+
+def blank(s):
+    return all(c in WHITE_SPACE for c in s)
+
+
 def make_public_changes(kind, opened):
     if "importedAuthor" in opened or "importedUrl" in opened:
         return dict(error="imported")
-    text = lambda f: opened[f] if isinstance(opened.get(f), str) and opened[f].strip() != "" else None
+    text = lambda f: opened[f] if isinstance(opened.get(f), str) and not blank(opened[f]) else None
     out = dict(set={}, remove=["enc", "epoch"], lost=[])
     if kind in ("issue", "patch"):
         if kind == "patch":
@@ -178,6 +187,10 @@ def replace_vectors():
          "Sealed import provenance cannot be published (imported is immutable), so the item is refused."),
         ("edit_replace_empty_comment_refused", "comment", dict(body="   "),
          "A comment whose opened body is blank has nothing to publish."),
+        ("edit_replace_next_line_only_refused", "comment", dict(body="\u0085\u2003"),
+         "Blank is Unicode White_Space only: U+0085 and U+2003 leave nothing to publish."),
+        ("edit_replace_byte_order_mark_kept", "comment", dict(body="\ufeff"),
+         "U+FEFF is not White_Space (the contract's \\S matches it): the body is kept."),
         ("edit_replace_review_refused", "review", dict(body="Blocking."),
          "A review is immutable: its text goes public by an attached comment, never by a replace."),
     ]
@@ -201,6 +214,8 @@ def review_text_vectors():
         ("review_text_inline_comment_ignored", [review],
          [c("C1", line=4, commitOid="ab" * 20), c("C2", path="src/lib.rs"), c("C3", replyTo="C0")],
          "A comment with a line, a path or a reply is a review comment, not the review's text."),
+        ("review_text_commit_only_ignored", [review], [c("C1", commitOid="cd" * 20)],
+         "A comment naming a commit is a review comment (a made-public file-level one), not the text."),
         ("review_text_sealed_comment_ignored", [review], [c("C1", sealed=True)],
          "A members-only comment does not make anything public."),
         ("review_text_public_review_untouched", [dict(review, sealed=False)], [c("C1")],
