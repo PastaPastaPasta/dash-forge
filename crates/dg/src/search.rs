@@ -228,7 +228,7 @@ async fn mirror_trust(s: &Reader, q: &IssueQuery) -> Result<Option<RoleOracle>> 
 /// How many matches maintainers hid, and the flag that shows them (nothing when none).
 fn print_hidden_omitted(omitted: usize) {
     if omitted > 0 {
-        println!("({omitted} hidden by maintainers; --include-hidden shows them)");
+        println!("({omitted} hidden by maintainers or a ban; --include-hidden shows them)");
     }
 }
 

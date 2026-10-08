@@ -59,7 +59,7 @@ import type { PullThread, RepoHome, TimelineItem } from '@/lib/view'
 import { ACL_NAME, ARCHIVED_REASON, forkSourcePrefix, isLive, isMembersOnlyTarget, loadPullOrMembersOnly, loadPullThread, plural, policyOf, pullActions, type CommentView, type MembersOnlyTarget } from '@/lib/view'
 import { QUOTE_CONFIRM, publicLineQuestion, publicTextOf, quotesMembersText } from '@/lib/view/audience'
 import { AudienceChip, AudienceWarnings, MEMBERS_CARD, MEMBERS_CARD_HEADER, MembersOnlyTargetPage, VisibleToMembers, closeWithComment, useAudienceWarnings, useComposerAudience, useMembersTexts, useQuoteGate, warningName } from '@/components/repo/audience'
-import { commentDraftKey, commentEditDraftKey, editDraftKey, useDraftText, useEditDraft } from '@/lib/view/draft-text'
+import { commentDraftKey, commentEditDraftKey, discardedEdits, editDraftKey, useDraftText, useEditDraft } from '@/lib/view/draft-text'
 import { EditBase } from './edit-base'
 import { RulesAtMerge } from './rules-at-merge'
 import { deleteNeedsForce, dependentsWarning, type Dependents } from '@/lib/view/branch-dependents'
@@ -170,7 +170,7 @@ import { PullMerge, useMergeSlot } from '@/components/repo/pull-merge'
 import type { CloseIssuesOption } from '@/components/repo/merge-panel'
 import { LINKED_ISSUES_MAX, linkedIssueTargets } from '@/lib/view/jump'
 import { EventValuesNote, HiddenNote } from '@/components/repo/hidden-note'
-import { EditedMarker, MarkdownEditor } from '@/components/repo/issue-bits'
+import { EditedMarker, MarkdownEditor, withDiscardedEdit } from '@/components/repo/issue-bits'
 import { AssigneePicker, LabelPicker, MilestonePicker, SidebarSection, applySetChange, assigneesConfirm, labelsConfirm, setChangeShows, stateToggleLabel, type SetChange } from '@/components/repo/target-rail'
 import { readMilestones } from '@/lib/repo/milestones'
 import { ReviewersCard } from '@/components/repo/reviewers-card'
@@ -700,7 +700,8 @@ function PullPage({
   )
   const editingComment = commentDraft.value
   const setEditingComment = (e: { id: string; body: string } | null): void => commentDraft.set(e === null ? null : { id: e.id, body: e.body, rev: commentOf(e.id)?.revision ?? null })
-  const editsDropped = editDraft.dropped || commentDraft.dropped
+  // Q5-A11: the note sits where the discarded edit was (its comment, or the description box).
+  const discarded = discardedEdits(editDraft.dropped, commentDraft.droppedValue, thread.comments.map((c) => c.id))
 
   // Which subtrees this viewer's comment, review or event would create (D-011). Read only once
   // the viewer turns to a write (typing, or a confirm opening); the previews are upper bounds
@@ -1534,9 +1535,9 @@ function PullPage({
                   <EditedMarker createdAt={pull.createdAt} updatedAt={pull.updatedAt} />
                 </div>
                 <div className="px-4 py-3">
-                  {editsDropped && editing === null && editingComment === null ? (
+                  {discarded.boxNote !== null && editing === null && editingComment === null ? (
                     <p role="status" className="mb-2 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="edit-draft-dropped">
-                      Your unsaved edit was discarded: it changed on Platform since you started.
+                      {discarded.boxNote}
                     </p>
                   ) : null}
                   {editing ? (
@@ -1582,8 +1583,8 @@ function PullPage({
                     : {})}
                   eventText={eventText}
                   anchorContext={anchorContext}
-                  renderComment={(item) =>
-                    commentSlots({
+                  renderComment={(item) => {
+                    const slots = commentSlots({
                       item,
                       viewer: identity,
                       editing: editingComment,
@@ -1605,7 +1606,9 @@ function PullPage({
                       suggestions: suggest.actions,
                       carry: withCarried,
                     })
-                  }
+                    if (item.comment.id !== discarded.atComment || editingComment !== null) return slots
+                    return { ...slots, header: withDiscardedEdit(slots.header) }
+                  }}
                 />
               ) : null}
               </>
@@ -1781,6 +1784,13 @@ function PullPage({
                   active: mergeSlot === 'shown',
                   unmetRules: actions.unmetRules,
                   canBypass: actions.canBypass,
+                  // The same conditions the record boxes above render on.
+                  recordAbove:
+                    recordOid !== null && unrecordedCheck.data !== null
+                      ? { kind: 'record', oid: recordOid }
+                      : unverifiedOid !== null && unrecordedCheck.data
+                        ? { kind: 'command', oid: unverifiedOid }
+                        : null,
                   allowedMethods: policyNow?.mergeMethods ?? 0,
                   squashAuthors: commits.error
                     ? { error: commits.error }
