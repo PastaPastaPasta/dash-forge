@@ -175,7 +175,7 @@ pub async fn run(url: String, secret: Vec<u8>, mirrors: Arc<Mirrors>, metrics: A
                 }
                 for r in &answer.repos {
                     if let Some((owner, name)) = r.name.split_once('/') {
-                        if let Some(slot) = mirrors.find(owner, name) {
+                        for slot in mirrors.find(owner, name) {
                             mirrors.trigger(&slot);
                         }
                     }

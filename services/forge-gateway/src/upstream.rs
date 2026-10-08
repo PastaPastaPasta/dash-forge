@@ -12,10 +12,11 @@ use async_trait::async_trait;
 use forge_core::collab::v2::Collab;
 use forge_core::error::Error as CoreError;
 use forge_core::mirror::ManifestPack;
-use forge_core::platform::{ChainTip, PlatformClient};
+use forge_core::platform::{ChainTip, FetchedDocument, LoadedContract, PlatformClient};
 use forge_core::repo::{RefRecord, RepoService};
+use forge_core::resolve::DOC_REPO;
 use forge_core::rules::v2::Visibility;
-use forge_core::scope::RepoRef;
+use forge_core::scope::{visibility_of, RepoRef};
 use forge_core::user_error::codes;
 
 /// A repository as the gateway addresses it.
@@ -125,8 +126,13 @@ pub trait Upstream: Send + Sync + 'static {
     /// `owner/name` (owner an identity id or DPNS name), or `None` when there is no such
     /// repository. An error is a failed read, not an absence.
     async fn resolve(&self, owner: &str, name: &str) -> Result<Option<RepoInfo>>;
-    /// The snapshot one refresh serves.
-    async fn snapshot(&self, repo: &RepoInfo) -> Result<Snapshot>;
+    /// The snapshot one refresh serves, or `None` when Platform proves `repo` gone: its `repo`
+    /// document (or the forge-core contract holding it) is absent, or it no longer is the
+    /// public repository `repo` names. An error is a failed read, never a "gone".
+    async fn snapshot(&self, repo: &RepoInfo) -> Result<Option<Snapshot>>;
+    /// Whether `repo` is still on Platform: `false` only when proved gone, as for
+    /// [`Self::snapshot`]. Cheaper than a snapshot (no ref reads).
+    async fn exists(&self, repo: &RepoInfo) -> Result<bool>;
     /// Where `git fetch` reads the objects.
     fn fetch_source(&self, repo: &RepoInfo) -> FetchSource;
     /// The repository's description.
@@ -142,6 +148,12 @@ pub trait Upstream: Send + Sync + 'static {
     /// The newest issues no maintainer hid, newest first.
     async fn issues(&self, repo: &RepoInfo, limit: usize) -> Result<Vec<IssueEntry>>;
 }
+
+/// How long after a `repo` document read absent it is read again before the repository counts
+/// as gone. A repository is never deleted (forge-core's `repo` has `canBeDeleted: false`), so
+/// one node's "absent" is as likely a node behind the one that resolved a repository just
+/// created as a reset network.
+const CONFIRM_GONE_AFTER: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// How long before the chain tip a manifest claims to reflect: a DAPI node answering the
 /// ref read may be a few blocks behind the one that answered the tip read, and a manifest
@@ -189,15 +201,119 @@ impl PlatformUpstream {
             visibility: Visibility::Public,
         })
     }
+
+    /// Whether `e` proves the thing read absent. A missing forge contract counts only once a
+    /// proved read of forge-core confirms it: one node's `contract not found` proves nothing.
+    async fn proves_absent(&self, e: &CoreError) -> bool {
+        match failure(e) {
+            Failure::Absent => true,
+            Failure::Read => false,
+            Failure::ContractsMissing => self
+                .client
+                .contract_proved_absent(&self.forge_core)
+                .await
+                .unwrap_or(false),
+        }
+    }
+
+    /// Whether the `repo` document with `repo`'s id is still the public repository `repo`
+    /// names, proved. An absence is read again [`CONFIRM_GONE_AFTER`] later before it counts.
+    async fn read_repo(
+        &self,
+        core: &LoadedContract,
+        repo: &RepoInfo,
+    ) -> forge_core::error::Result<bool> {
+        let read = || async {
+            let doc = self
+                .client
+                .fetch_document(core, DOC_REPO, &repo.repo_id)
+                .await?;
+            Ok::<_, CoreError>(doc.is_some_and(|d| still_same(&d, repo)))
+        };
+        if read().await? {
+            return Ok(true);
+        }
+        tokio::time::sleep(CONFIRM_GONE_AFTER).await;
+        read().await
+    }
+
+    /// [`Upstream::snapshot`]'s reads: the `repo` document by id with the chain tip, then (the
+    /// repository still there) every ref, the default branch and the packs. On a reset network
+    /// a repository's refs read as none at all, so without the document check a repository
+    /// that is gone would be served as an empty one.
+    async fn read_snapshot(
+        &self,
+        r: &RepoRef,
+        repo: &RepoInfo,
+    ) -> forge_core::error::Result<Option<Snapshot>> {
+        let core = self.client.fetch_contract(&r.forge.core).await?;
+        // The tip first: every update up to it is then in the ref reads that follow.
+        let (present, tip) =
+            futures::try_join!(self.read_repo(&core, repo), self.client.chain_tip())?;
+        if !present {
+            return Ok(None);
+        }
+        let svc = RepoService::reader(&self.client);
+        let (records, default_branch, manifests) = futures::try_join!(
+            svc.read_ref_records(r),
+            svc.read_default_branch(r),
+            svc.read_pack_manifests(r),
+        )?;
+        let mut packs: BTreeMap<String, ManifestPack> = BTreeMap::new();
+        for m in &manifests {
+            let hash = hex::encode(m.pack_hash);
+            packs
+                .entry(hash.clone())
+                .and_modify(|p| p.copies += 1)
+                .or_insert(ManifestPack {
+                    pack_hash: hash,
+                    copies: 1,
+                    size_bytes: m.size_bytes,
+                });
+        }
+        Ok(Some(Snapshot {
+            records,
+            default_branch,
+            tip: ChainTip {
+                height: tip.height,
+                time_ms: tip.time_ms.saturating_sub(SNAPSHOT_MARGIN_MS),
+            },
+            packs: packs.into_values().collect(),
+        }))
+    }
 }
 
-/// Whether `e` says the thing does not exist (rather than that the read failed).
-fn is_absent(e: &CoreError) -> bool {
+/// What a failed read says about the thing it read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Failure {
+    /// Platform proved it absent.
+    Absent,
+    /// A forge contract may be missing (a reset devnet); confirm before acting on it.
+    ContractsMissing,
+    /// The read failed: nothing is known.
+    Read,
+}
+
+fn failure(e: &CoreError) -> Failure {
     match e {
-        CoreError::NotFound => true,
-        CoreError::User(u) => [codes::NOT_FOUND, codes::INVALID_REPO_REF].contains(&u.code),
-        _ => false,
+        CoreError::NotFound => Failure::Absent,
+        CoreError::User(u) if [codes::NOT_FOUND, codes::INVALID_REPO_REF].contains(&u.code) => {
+            Failure::Absent
+        }
+        CoreError::ContractsMissing { .. } => Failure::ContractsMissing,
+        CoreError::User(u) if u.code == codes::NOT_DEPLOYED => Failure::ContractsMissing,
+        _ => Failure::Read,
     }
+}
+
+/// Whether `doc`, the `repo` document with `repo`'s id, is still the public repository `repo`
+/// names (same owner and name). A repository that moved owner or name, or turned private, is
+/// not the one this mirror serves.
+fn still_same(doc: &FetchedDocument, repo: &RepoInfo) -> bool {
+    doc.id == repo.repo_id
+        && doc.owner_id == repo.owner_id
+        && doc.field_str("name").as_deref() == Some(repo.name.as_str())
+        && visibility_of(doc) == Visibility::Public
 }
 
 fn info_of(r: &RepoRef) -> RepoInfo {
@@ -222,42 +338,31 @@ impl Upstream for PlatformUpstream {
     async fn resolve(&self, owner: &str, name: &str) -> Result<Option<RepoInfo>> {
         match forge_core::resolve::resolve_named(&self.client, owner, name).await {
             Ok(r) => Ok(Some(info_of(&r))),
-            Err(e) if is_absent(&e) => Ok(None),
+            Err(e) if self.proves_absent(&e).await => Ok(None),
             Err(e) => Err(anyhow!(e).context(format!("resolving {owner}/{name}"))),
         }
     }
 
-    async fn snapshot(&self, repo: &RepoInfo) -> Result<Snapshot> {
+    async fn snapshot(&self, repo: &RepoInfo) -> Result<Option<Snapshot>> {
         let r = self.repo_ref(repo)?;
-        let svc = RepoService::reader(&self.client);
-        // The tip first: every update up to it is then in the reads that follow.
-        let tip = self.client.chain_tip().await?;
-        let (records, default_branch, manifests) = futures::try_join!(
-            svc.read_ref_records(&r),
-            svc.read_default_branch(&r),
-            svc.read_pack_manifests(&r),
-        )?;
-        let mut packs: BTreeMap<String, ManifestPack> = BTreeMap::new();
-        for m in &manifests {
-            let hash = hex::encode(m.pack_hash);
-            packs
-                .entry(hash.clone())
-                .and_modify(|p| p.copies += 1)
-                .or_insert(ManifestPack {
-                    pack_hash: hash,
-                    copies: 1,
-                    size_bytes: m.size_bytes,
-                });
+        match Box::pin(self.read_snapshot(&r, repo)).await {
+            Ok(s) => Ok(s),
+            Err(e) if self.proves_absent(&e).await => Ok(None),
+            Err(e) => Err(anyhow!(e).context(format!("reading {}", repo.repo_id))),
         }
-        Ok(Snapshot {
-            records,
-            default_branch,
-            tip: ChainTip {
-                height: tip.height,
-                time_ms: tip.time_ms.saturating_sub(SNAPSHOT_MARGIN_MS),
-            },
-            packs: packs.into_values().collect(),
-        })
+    }
+
+    async fn exists(&self, repo: &RepoInfo) -> Result<bool> {
+        let r = self.repo_ref(repo)?;
+        let read = async {
+            let core = self.client.fetch_contract(&r.forge.core).await?;
+            self.read_repo(&core, repo).await
+        };
+        match read.await {
+            Ok(present) => Ok(present),
+            Err(e) if self.proves_absent(&e).await => Ok(false),
+            Err(e) => Err(anyhow!(e).context(format!("reading {}", repo.repo_id))),
+        }
     }
 
     fn fetch_source(&self, repo: &RepoInfo) -> FetchSource {
@@ -369,5 +474,72 @@ impl Upstream for PlatformUpstream {
                 document_id: v.issue.document_id.clone(),
             })
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use forge_core::platform::FieldValue;
+    use forge_core::user_error::UserError;
+
+    #[test]
+    fn only_a_proved_absence_or_a_missing_contract_is_more_than_a_failed_read() {
+        assert_eq!(failure(&CoreError::NotFound), Failure::Absent);
+        assert_eq!(
+            failure(&UserError::new(codes::NOT_FOUND, "no DPNS name").into()),
+            Failure::Absent
+        );
+        // E702 on a reset devnet: the contract has to be proved absent before it counts.
+        let missing = CoreError::ContractsMissing {
+            network: "devnet sakura".into(),
+            detail: "contract X: Platform proved it absent".into(),
+        };
+        assert_eq!(failure(&missing), Failure::ContractsMissing);
+        assert_eq!(
+            failure(&UserError::new(codes::NOT_DEPLOYED, "not deployed").into()),
+            Failure::ContractsMissing
+        );
+        for read in [
+            CoreError::Platform("proved chain-tip read failed: timeout".into()),
+            UserError::new(codes::UNEXPECTED, "boom").into(),
+        ] {
+            assert_eq!(failure(&read), Failure::Read, "{read:?}");
+        }
+    }
+
+    #[test]
+    fn a_repo_document_must_still_be_the_public_repo_the_mirror_serves() {
+        let repo = RepoInfo {
+            repo_id: "R1".into(),
+            owner_id: "O1".into(),
+            name: "proj".into(),
+            public: true,
+        };
+        let doc = |id: &str, owner: &str, name: &str, visibility: Option<&str>| {
+            let mut fields = BTreeMap::from([("name".to_string(), FieldValue::text(name))]);
+            if let Some(v) = visibility {
+                fields.insert("visibility".into(), FieldValue::text(v));
+            }
+            FetchedDocument {
+                id: id.into(),
+                owner_id: owner.into(),
+                created_at: None,
+                created_at_block_height: None,
+                updated_at_block_height: None,
+                updated_at: None,
+                fields,
+                revision: None,
+            }
+        };
+        assert!(still_same(&doc("R1", "O1", "proj", None), &repo));
+        assert!(still_same(&doc("R1", "O1", "proj", Some("public")), &repo));
+        assert!(!still_same(&doc("R2", "O1", "proj", None), &repo));
+        assert!(!still_same(&doc("R1", "O2", "proj", None), &repo));
+        assert!(!still_same(&doc("R1", "O1", "renamed", None), &repo));
+        assert!(!still_same(
+            &doc("R1", "O1", "proj", Some("private")),
+            &repo
+        ));
     }
 }
