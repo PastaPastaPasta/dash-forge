@@ -159,6 +159,7 @@ import { headAt, type MergeContent } from '@/lib/rules/merge-content'
 import { CopyLinkButton } from '@/components/ui/copy-link'
 import { TabStrip } from '@/components/ui/tab-strip'
 import { CopyRow } from '@/components/ui/copy-row'
+import { UnverifiedMergeNote } from '@/components/repo/unverified-merge-note'
 import { Field, Input } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
@@ -1668,7 +1669,14 @@ function PullPage({
                   onRecord={() => setPending({ kind: 'mark-merged', bypass: actions.unmetRules, oid: recordOid })}
                 />
               ) : unverifiedOid !== null && unrecordedCheck.data && !mergeBusy ? (
-                <UnverifiedMergeNote oid={unverifiedOid} base={base} combined={unrecordedCheck.data.combined} command={`dg pr merge ${repo.ownerId}/${repo.name} ${pull.number} --event-only --merge-oid ${unverifiedOid}${actions.unmetRules.length > 0 ? ' --override-policy' : ''}`} />
+                <UnverifiedMergeNote
+                  oid={unverifiedOid}
+                  base={base}
+                  combined={unrecordedCheck.data.combined}
+                  prPaths={cmp === null || cmp.truncated || cmp.fellBack === true ? null : cmp.changes.flatMap((c) => (c.oldPath ? [c.path, c.oldPath] : [c.path]))}
+                  bypass={actions.unmetRules.length > 0}
+                  command={`dg pr merge ${repo.ownerId}/${repo.name} ${pull.number} --event-only --merge-oid ${unverifiedOid}${actions.unmetRules.length > 0 ? ' --override-policy' : ''}`}
+                />
               ) : null}
 
               {/* Merge box */}
@@ -2676,26 +2684,6 @@ function RecordMergeBox({
       <Button variant="primary" size="sm" onClick={onRecord} disabled={disabledReason !== null} title={disabledReason ?? undefined} data-testid="record-merge">
         Record merge of {oid.slice(0, 7)}
       </Button>
-    </section>
-  )
-}
-
-/**
- * The base tip makes this PR's changes except in files the base changed too. Whether the tip's
- * version of those files holds the PR's change can't be checked here (an unrelated push to the
- * same file looks the same), so no "Record merge" is offered: a recorded merge is final.
- */
-function UnverifiedMergeNote({ oid, base, combined, command }: { oid: string; base: string; combined: readonly string[]; command: string }): JSX.Element {
-  const more = combined.length > 3 ? ` and ${combined.length - 3} more` : ''
-  const files = `${plural(combined.length, 'file')} (${combined.slice(0, 3).join(', ')}${more})`
-  return (
-    <section aria-label="Possible unrecorded merge" className="rounded-lg border border-anvil-300 px-4 py-3 text-dense dark:border-anvil-700" data-testid="unverified-merge-box">
-      <p className="font-medium">This pull request may already be on {base}</p>
-      <p className="text-anvil-600 dark:text-anvil-300">
-        {base} is at <Oid value={oid} chars={7} copyable={false} />. It makes this pull request&apos;s changes, except in {files} that {base} also changed after the pull request branched off.
-        Changes on both sides can&apos;t be checked automatically. If this commit is the merge, record it with:
-      </p>
-      <CopyRow text={command} label="Copy the command" className="mt-2" />
     </section>
   )
 }

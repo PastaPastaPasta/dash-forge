@@ -31,7 +31,36 @@
     "healthy": {
       "type": "integer"
     },
-    "missingLocally": {}
+    "missingLocally": {},
+    "superseded": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "With --from-local: packs a readable repack replaces, skipped."
+    },
+    "unreachable": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "packHash": {
+            "type": "string"
+          },
+          "hosts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "packHash",
+          "hosts"
+        ]
+      },
+      "description": "With --from-local: packs whose recorded hosts do not answer, not uploaded."
+    }
   },
   "required": [
     "schemaVersion",

@@ -98,12 +98,15 @@ export async function readMergeAudit(
   return input === null ? null : auditMerge(input)
 }
 
-/** One rule's line: what applied, and whether the merge met it (null: informational). */
+/**
+ * One rule's line: what applied, and whether the merge met it (null: informational;
+ * 'unconfirmed': the current records can't tell, as for a merger with no membership record).
+ */
 export interface AuditRow {
   readonly key: string
   readonly label: string
   readonly text: string
-  readonly met: boolean | null
+  readonly met: boolean | 'unconfirmed' | null
 }
 
 const CHECK_WORDS = { passed: 'passed', failing: 'failed', pending: 'still running at the merge', missing: 'not reported' } as const
@@ -120,9 +123,9 @@ export function auditRows(a: MergeAudit, baseRefName: string): AuditRow[] {
           text: !a.protectionUnmet
             ? `${base} was protected; a maintainer merged it`
             : a.mergerRole === null
-              ? `${base} was protected, and the merger's role at the time can't be confirmed`
+              ? `Unconfirmed: ${base} was protected, and the merger has no current membership record`
               : `${base} was protected, and no current membership record shows the merger as a maintainer then`,
-          met: !a.protectionUnmet,
+          met: !a.protectionUnmet ? true : a.mergerRole === null ? 'unconfirmed' : false,
         }
       : { key: 'protected', label: 'Protected branch', text: `${base} was not protected`, met: null },
   )
@@ -153,7 +156,19 @@ export function auditRows(a: MergeAudit, baseRefName: string): AuditRow[] {
   return rows
 }
 
-/** The audit's headline. */
+/**
+ * Whether the current records show a rule unmet, beyond what only can't be confirmed (a merger
+ * with no current membership record). Parity: dg `confirmed_unmet` (pr/verify.rs).
+ */
+export function confirmedUnmet(a: MergeAudit): boolean {
+  return (a.protectionUnmet && a.mergerRole !== null) || (a.approvals !== null && !a.approvals.met) || (a.checks !== null && !a.checks.met)
+}
+
+/**
+ * The audit's headline. An `unmet` verdict whose only gaps can't be confirmed (the merger's role,
+ * or the role of whoever recorded a bypass) says so rather than "did not meet"; the verdict stays
+ * `unmet`. Parity: dg `audit_headline`.
+ */
 export function auditHeadline(a: MergeAudit): string {
   switch (a.verdict) {
     case 'none':
@@ -162,11 +177,17 @@ export function auditHeadline(a: MergeAudit): string {
       return 'This merge met the branch rules in force at the time.'
     case 'bypassed':
       return 'A maintainer bypassed the branch rules to merge this, and recorded it.'
-    case 'unmet':
-      if (a.uncountedBypass === null) return 'This merge did not meet the branch rules in force at the time, and no bypass was recorded.'
-      return a.uncountedBypass.role === null
-        ? "This merge did not meet the branch rules in force at the time. A bypass was recorded, but its writer's role at the time can't be confirmed."
-        : 'This merge did not meet the branch rules in force at the time. A bypass was recorded, but no current membership record shows its writer as a maintainer then.'
+    case 'unmet': {
+      const confirmed = confirmedUnmet(a)
+      const lead = confirmed ? 'This merge did not meet the branch rules in force at the time' : "This merge can't be confirmed against the branch rules (the merger has no current membership record)"
+      if (a.uncountedBypass === null) return `${lead}, and no bypass was recorded.`
+      if (a.uncountedBypass.role === null) {
+        return confirmed
+          ? "A bypass was recorded for this merge, but it can't be confirmed. Without it, the merge did not meet the branch rules in force at the time."
+          : "A bypass was recorded for this merge, but it can't be confirmed."
+      }
+      return `${lead}. A bypass was recorded, but no current membership record shows the person who recorded it as a maintainer then.`
+    }
     case 'unknown':
       if (a.checksUnread && a.codeOwnersUnaudited) return "The required checks couldn't be read and code owner approval isn't audited here, so this merge couldn't be checked against every rule."
       if (a.codeOwnersUnaudited) return "Code owner approval was required, and it isn't audited here, so this merge couldn't be checked against every rule."
@@ -180,8 +201,9 @@ export function mergerRoleWords(a: MergeAudit): string {
 }
 
 /**
- * Why a bypass recorded for this merge does not count, after "<writer> recorded a bypass <when>":
- * its writer's role then can't be confirmed, or the current record shows another role.
+ * Why a bypass recorded for this merge does not count, after "<who> recorded a bypass <when>": the
+ * role then of the person who recorded it can't be confirmed, or the current record shows
+ * another role.
  */
 export function uncountedBypassWhy(u: UncountedBypass): string {
   return u.role === null

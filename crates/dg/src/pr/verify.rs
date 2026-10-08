@@ -259,7 +259,8 @@ pub(crate) async fn run(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
 }
 
 /// The line for a bypass recorded for the merge that does not count (the web's
-/// `uncountedBypassWhy`): its writer's role then can't be confirmed, or isn't maintainer.
+/// `uncountedBypassWhy`): the role then of the person who recorded it can't be confirmed, or
+/// isn't maintainer.
 fn uncounted_bypass_line(u: &UncountedBypass) -> String {
     format!(
         "! bypass recorded by {}{}, not counted: {}",
@@ -276,28 +277,50 @@ fn uncounted_bypass_line(u: &UncountedBypass) -> String {
     )
 }
 
-/// The audit's headline (the web's `auditHeadline`).
-fn audit_headline(a: &MergeAudit) -> &'static str {
+/// Whether the current documents show a rule unmet, beyond what only can't be confirmed (a
+/// merger with no current membership record). The web's `confirmedUnmet`.
+fn confirmed_unmet(a: &MergeAudit) -> bool {
+    (a.protection_unmet && a.merger_role.is_some())
+        || a.approvals.as_ref().is_some_and(|s| !s.met)
+        || a.checks.as_ref().is_some_and(|c| !c.met)
+}
+
+/// The audit's headline (the web's `auditHeadline`). An `unmet` verdict whose only gaps can't be
+/// confirmed (the merger's or a bypass's recorder's role) says so rather than "did not meet";
+/// the verdict itself stays `unmet`.
+fn audit_headline(a: &MergeAudit) -> String {
     match a.verdict {
-        AuditVerdict::None => "no branch rules applied",
-        AuditVerdict::Met => "met the branch rules in force at the time",
-        AuditVerdict::Bypassed => "a maintainer bypassed the branch rules and recorded it",
-        AuditVerdict::Unmet => match &a.uncounted_bypass {
-            None => "did not meet the branch rules in force at the time, and no bypass was recorded",
-            Some(u) if u.role.is_none() => {
-                "did not meet the branch rules in force at the time; a bypass was recorded, but its writer's role at the time can't be confirmed"
+        AuditVerdict::None => "no branch rules applied".into(),
+        AuditVerdict::Met => "met the branch rules in force at the time".into(),
+        AuditVerdict::Bypassed => "a maintainer bypassed the branch rules and recorded it".into(),
+        AuditVerdict::Unmet => {
+            let confirmed = confirmed_unmet(a);
+            let lead = if confirmed {
+                "did not meet the branch rules in force at the time"
+            } else {
+                "can't be confirmed (the merger has no current membership record)"
+            };
+            match &a.uncounted_bypass {
+                None => format!("{lead}, and no bypass was recorded"),
+                Some(u) if u.role.is_none() => {
+                    if confirmed {
+                        "a bypass was recorded, but it can't be confirmed; without it, the merge did not meet the branch rules in force at the time".into()
+                    } else {
+                        "a bypass was recorded, but it can't be confirmed".into()
+                    }
+                }
+                Some(_) => format!(
+                    "{lead}; a bypass was recorded, but no current membership record shows the person who recorded it as a maintainer then"
+                ),
             }
-            Some(_) => {
-                "did not meet the branch rules in force at the time; a bypass was recorded, but no current membership record shows its writer as a maintainer then"
-            }
-        },
+        }
         AuditVerdict::Unknown if a.checks_unread && a.code_owners_unaudited => {
-            "the required checks could not be read, and code owner approval is not audited"
+            "the required checks could not be read, and code owner approval is not audited".into()
         }
         AuditVerdict::Unknown if a.code_owners_unaudited => {
-            "code owner approval was required, and it is not audited"
+            "code owner approval was required, and it is not audited".into()
         }
-        AuditVerdict::Unknown => "the required checks could not be read",
+        AuditVerdict::Unknown => "the required checks could not be read".into(),
     }
 }
 
@@ -306,10 +329,11 @@ fn audit_headline(a: &MergeAudit) -> &'static str {
 pub(crate) fn audit_lines(a: &MergeAudit, merger: &str, base: &str) -> Vec<String> {
     let headline = audit_headline(a);
     let mark = |met: bool| if met { "  " } else { "! " };
-    let bang = if a.verdict == AuditVerdict::Unmet {
-        "! "
-    } else {
-        ""
+    // An unmet verdict whose only gaps can't be confirmed is a question, not a failure.
+    let bang = match a.verdict {
+        AuditVerdict::Unmet if confirmed_unmet(a) => "! ",
+        AuditVerdict::Unmet => "? ",
+        _ => "",
     };
     let mut out = vec![format!("{bang}branch rules at merge: {headline}")];
     out.push(format!(
@@ -322,7 +346,7 @@ pub(crate) fn audit_lines(a: &MergeAudit, merger: &str, base: &str) -> Vec<Strin
     ));
     if a.protected {
         out.push(if a.protection_unmet && a.merger_role.is_none() {
-            format!("! protected branch: {base} was protected, and the merger's role at the time can't be confirmed")
+            format!("? protected branch: unconfirmed ({base} was protected, and the merger has no current membership record)")
         } else if a.protection_unmet {
             format!("! protected branch: {base} was protected, and no current membership record shows the merger as a maintainer then")
         } else {
@@ -676,7 +700,7 @@ mod tests {
         let lines = audit_lines(&audit, "gone", "main");
         assert_eq!(
             lines[0],
-            "! branch rules at merge: did not meet the branch rules in force at the time; a bypass was recorded, but its writer's role at the time can't be confirmed"
+            "! branch rules at merge: a bypass was recorded, but it can't be confirmed; without it, the merge did not meet the branch rules in force at the time"
         );
         assert!(lines.contains(&"  merged by gone, no current membership record".to_string()));
         assert!(lines.contains(&"! bypass recorded by gone (required approvals: 0 of 1), not counted: no current membership record, so their role at the time can't be confirmed".to_string()));
@@ -684,6 +708,36 @@ mod tests {
         assert_eq!(json["uncountedBypass"]["event"]["actor"], "gone");
         assert_eq!(json["uncountedBypass"]["role"], serde_json::Value::Null);
         assert_eq!(json["bypass"], serde_json::Value::Null);
+    }
+
+    /// A protected base merged by someone with no current membership record: the protection
+    /// rule is unconfirmed, not "not met", and with nothing else unmet the headline says the
+    /// merge can't be confirmed. The verdict stays `unmet` (fail-safe).
+    #[test]
+    fn a_merger_with_no_record_is_unconfirmed_not_unmet() {
+        use forge_core::rules::merge_audit::{audit_merge, MergeAuditInput, ProtectionDoc};
+        let input = MergeAuditInput {
+            merged_at: 100,
+            merger: "gone".into(),
+            merge_oid: "b".repeat(40),
+            merge_head: "a".repeat(40),
+            pr_author: "auth".into(),
+            protection: vec![ProtectionDoc {
+                id: "c1".into(),
+                created_at: 1,
+                protected: true,
+            }],
+            ..MergeAuditInput::default()
+        };
+        let audit = audit_merge(&input);
+        assert_eq!(audit.verdict, AuditVerdict::Unmet);
+        let lines = audit_lines(&audit, "gone", "main");
+        assert_eq!(
+            lines[0],
+            "? branch rules at merge: can't be confirmed (the merger has no current membership record), and no bypass was recorded"
+        );
+        assert!(lines.contains(&"? protected branch: unconfirmed (main was protected, and the merger has no current membership record)".to_string()));
+        assert_eq!(serde_json::to_value(&audit).unwrap()["verdict"], "unmet");
     }
 
     #[test]

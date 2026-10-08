@@ -670,14 +670,105 @@ pub struct Reseeded {
 }
 
 /// The result of [`RepoService::reseed_from_local`].
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LocalReseedReport {
     /// Packs re-uploaded from the local clone.
     pub restored: Vec<LocalReseed>,
-    /// Packs whose recorded copies still verified (skipped).
+    /// Packs whose recorded copies still verified at their public addresses (skipped).
     pub healthy: Vec<[u8; 32]>,
     /// Packs that needed restoring but have no local copy in this clone.
     pub missing: Vec<[u8; 32]>,
+    /// Packs a repack superseded whose consolidated pack is readable (skipped: its objects are
+    /// there, so readers need not read these).
+    pub superseded: Vec<[u8; 32]>,
+    /// Packs whose recorded addresses are all on hosts that do not answer: re-uploading
+    /// through the same storage cannot make them readable (not uploaded).
+    pub unreachable: Vec<UnreachablePack>,
+}
+
+/// A pack [`RepoService::reseed_from_local`] could not restore because the hosts its manifest
+/// records do not answer (the storage's public address is gone, Q5-B16).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnreachablePack {
+    /// The pack.
+    pub pack_hash: [u8; 32],
+    /// The recorded hosts, `host[:port]`.
+    pub hosts: Vec<String>,
+}
+
+/// What [`RepoService::reseed_from_local`] did with one manifest's pack.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LocalOutcome {
+    /// Its recorded copy verified at a public address.
+    Healthy,
+    /// Uploaded from the clone; `readable`: to an address its manifests record that readers
+    /// follow, so it is readable again.
+    Restored {
+        /// What was uploaded where.
+        restored: LocalReseed,
+        /// Readable again.
+        readable: bool,
+    },
+    /// Needed restoring, but this clone has no copy.
+    Missing,
+    /// Its recorded hosts do not answer (the hosts).
+    Unreachable(Vec<String>),
+}
+
+/// Run `each` over `packs` (each pack's hash and copies, [`group_by_hash`]) the way a reader
+/// needs them (Q5-B17): a repack before the packs it supersedes
+/// ([`crate::storage::supersede::round_now`]), and a superseded pack only while no readable pack
+/// superseding it is known (healthy, or restored where readers find it). The skipped ones are
+/// reported as `superseded`.
+async fn in_supersede_rounds<'p, 'm, F, Fut>(
+    packs: &'p [([u8; 32], Vec<&'m PackManifestInfo>)],
+    claims: &crate::storage::supersede::Claims,
+    mut each: F,
+) -> Result<LocalReseedReport>
+where
+    F: FnMut(&'p ([u8; 32], Vec<&'m PackManifestInfo>)) -> Fut,
+    Fut: std::future::Future<Output = Result<LocalOutcome>>,
+{
+    use crate::storage::supersede::{covered_packs, round_now};
+    let mut report = LocalReseedReport::default();
+    let mut readable: BTreeSet<[u8; 32]> = BTreeSet::new();
+    let mut pending: Vec<&'p ([u8; 32], Vec<&'m PackManifestInfo>)> = packs.iter().collect();
+    loop {
+        let covered = covered_packs(claims, |h| readable.contains(h));
+        let (skipped, left): (Vec<_>, Vec<_>) =
+            pending.into_iter().partition(|p| covered.contains(&p.0));
+        report.superseded.extend(skipped.iter().map(|p| p.0));
+        if left.is_empty() {
+            return Ok(report);
+        }
+        let hashes: Vec<[u8; 32]> = left.iter().map(|p| p.0).collect();
+        let now = round_now(&hashes, claims);
+        let (round, rest): (Vec<_>, Vec<_>) = left.into_iter().partition(|p| now.contains(&p.0));
+        for pack in round {
+            let hash = pack.0;
+            match each(pack).await? {
+                LocalOutcome::Healthy => {
+                    readable.insert(hash);
+                    report.healthy.push(hash);
+                }
+                LocalOutcome::Restored {
+                    restored,
+                    readable: ok,
+                } => {
+                    if ok {
+                        readable.insert(hash);
+                    }
+                    report.restored.push(restored);
+                }
+                LocalOutcome::Missing => report.missing.push(hash),
+                LocalOutcome::Unreachable(hosts) => report.unreachable.push(UnreachablePack {
+                    pack_hash: hash,
+                    hosts,
+                }),
+            }
+        }
+        pending = rest;
+    }
 }
 
 /// One pack [`RepoService::reseed_from_local`] re-uploaded.
@@ -2490,7 +2581,11 @@ impl<'a> RepoService<'a> {
     /// and readers find it again.
     ///
     /// Packs with no local copy are reported in `missing`; packs whose recorded copies
-    /// still verify are skipped unless `force`. Writes nothing to Platform.
+    /// still verify at their public addresses (a reader without this user's storage keys gets
+    /// them) are skipped unless `force`. A pack whose recorded hosts do not answer at all is
+    /// reported in `unreachable` and not uploaded: only a new recorded copy helps there
+    /// (`dg repack --profile`). A pack a readable repack superseded is reported in
+    /// `superseded` (Q5-B17). Writes nothing to Platform.
     pub async fn reseed_from_local(
         &self,
         repo: &RepoRef,
@@ -2513,41 +2608,76 @@ impl<'a> RepoService<'a> {
         }
         let contract = self.repo_contract(repo).await?;
         let roles = self.copy_roles(repo).await.unwrap_or_default();
-        let reader = self.repo_reader(repo, &manifests, &roles).await;
-        let mut report = LocalReseedReport::default();
-        for m in &live {
+        // Q5-B16: health is what a reader WITHOUT this user's storage keys gets, at the
+        // recorded public addresses: the owner's own signed `s3://` read is no help to anyone
+        // else. A pack whose copies record no public address at all (a bucket with no public
+        // URL) has nothing else to judge by, so the signed read judges it, as before.
+        let signed = self.repo_reader(repo, &manifests, &roles).await;
+        let public = self
+            .repo_reader(repo, &manifests, &roles)
+            .await
+            .without_signed_reads();
+        // Q5-B17: a pack a readable repack superseded needs no copy of its own. `--pack` asks
+        // for one pack by name and `--force` for every pack, so neither skips any.
+        let claims = if only.is_some() || force {
+            crate::storage::supersede::Claims::new()
+        } else {
+            crate::storage::supersede::superseded_by(&manifests, &roles)
+        };
+        // One entry per pack, with every uploader's copy of it: readers try them all.
+        let packs = group_by_hash(&live);
+        let (contract, roles, signed, public) = (&contract, &roles, &signed, &public);
+        in_supersede_rounds(&packs, &claims, |(hash, copies)| async move {
+            let hash = *hash;
+            let uris: Vec<String> = copies.iter().flat_map(|m| m.uris.clone()).collect();
+            let reader = if public.has_candidates(&uris) {
+                public
+            } else {
+                signed
+            };
             if !force
                 && self
-                    .fetch_artifact_from(repo, &contract, m, &reader)
+                    .fetch_best_copy(repo, contract, copies, roles, reader)
                     .await
                     .is_ok()
             {
-                report.healthy.push(m.pack_hash);
-                continue;
+                return Ok(LocalOutcome::Healthy);
+            }
+            // The storage's public address is gone: the same bytes under the same key would
+            // still be unreadable, and an upload anywhere else is recorded nowhere.
+            if let Some(hosts) = public.unreachable_hosts(&uris).await {
+                return Ok(LocalOutcome::Unreachable(hosts));
             }
             // A private repo's recorded bytes are sealed; a fetched clone holds plaintext, so
             // only the pusher's kept copy can restore them.
             let local = match repo.visibility {
-                Visibility::Public => crate::storage::local::find_local_pack(git_dir, m.pack_hash)?,
-                Visibility::Private => crate::storage::local::find_kept_pack(git_dir, m.pack_hash)?,
+                Visibility::Public => crate::storage::local::find_local_pack(git_dir, hash)?,
+                Visibility::Private => crate::storage::local::find_kept_pack(git_dir, hash)?,
             };
             let Some(bytes) = local else {
-                report.missing.push(m.pack_hash);
-                continue;
+                return Ok(LocalOutcome::Missing);
             };
             let meta = PackMeta::for_bytes(&bytes);
             let rep = crate::storage::replicate(targets, &bytes, &meta, required)
                 .await
                 .map_err(|e| Error::Io(format!("pack {}: {e}", meta.pack_hash)))?;
-            let uris = rep.uris();
-            let restored = uris.iter().any(|u| m.uris.contains(u));
-            report.restored.push(LocalReseed {
-                pack_hash: m.pack_hash,
-                uris,
-                restored_recorded_uri: restored,
-            });
-        }
-        Ok(report)
+            let stored = rep.uris();
+            let recorded: Vec<&String> = stored.iter().filter(|u| uris.contains(u)).collect();
+            // Readable again only at an address the reader that judged it follows: a match on
+            // the `s3://` locator alone does not make the public address work.
+            let readable = recorded
+                .iter()
+                .any(|u| reader.has_candidates(std::slice::from_ref(*u)));
+            Ok(LocalOutcome::Restored {
+                restored: LocalReseed {
+                    pack_hash: hash,
+                    restored_recorded_uri: !recorded.is_empty(),
+                    uris: stored,
+                },
+                readable,
+            })
+        })
+        .await
     }
 
     /// Publish the consolidated browse index for a repack, reporting failure as `None`
@@ -5061,6 +5191,76 @@ mod tests {
         assert!(super::restores_recorded(&[&mine, &theirs], &cid));
         assert!(!super::restores_recorded(&[&mine, &theirs], &other));
         assert!(!super::restores_recorded(&[], &same), "nothing recorded");
+    }
+
+    /// Q5-B17: `dg reseed --from-local` handles a repack before the packs it superseded, and
+    /// skips those once the repack is readable; while it is not, they are handled (and a pack
+    /// with no local copy is reported missing, not a failure).
+    #[tokio::test]
+    async fn local_reseed_skips_packs_a_readable_repack_superseded() {
+        use super::{group_by_hash, in_supersede_rounds, LocalOutcome, LocalReseed};
+        fn restored(h: u8, readable: bool) -> LocalOutcome {
+            LocalOutcome::Restored {
+                restored: LocalReseed {
+                    pack_hash: [h; 32],
+                    uris: Vec::new(),
+                    restored_recorded_uri: true,
+                },
+                readable,
+            }
+        }
+        let roles: RoleMap = [("owner".to_string(), Role::Maintainer)].into();
+        let mut repack = manifest("r", 3, 0, 3);
+        repack.supersedes = vec![[1; 32], [2; 32]];
+        // Pack 1 has two uploaders' copies: it is one pack, handled once.
+        let mut second = manifest("a2", 4, 0, 1);
+        second.owner_id = "other".into();
+        let live = vec![
+            manifest("a", 1, 0, 1),
+            second,
+            manifest("b", 2, 0, 2),
+            repack,
+        ];
+        let claims = crate::storage::supersede::superseded_by(&live, &roles);
+        let packs = group_by_hash(&live);
+        let run = |outcome: fn(u8) -> LocalOutcome| {
+            let (packs, claims) = (&packs, &claims);
+            async move {
+                let seen = std::cell::RefCell::new(Vec::new());
+                let report = in_supersede_rounds(packs, claims, |(h, _)| {
+                    seen.borrow_mut().push(h[0]);
+                    let o = outcome(h[0]);
+                    async move { Ok(o) }
+                })
+                .await
+                .unwrap();
+                (report, seen.into_inner())
+            }
+        };
+        // The repack is healthy: the packs it replaces are never looked at.
+        let (report, seen) = run(|_| LocalOutcome::Healthy).await;
+        assert_eq!(seen, [3]);
+        assert_eq!(report.healthy, [[3; 32]]);
+        assert_eq!(report.superseded, [[1; 32], [2; 32]]);
+        // Restored where readers find it: readable again, so the same.
+        let (report, seen) = run(|h| restored(h, true)).await;
+        assert_eq!((seen, report.superseded.len()), (vec![3], 2));
+        // Restored only where readers don't look: the old packs are still needed.
+        let (report, seen) = run(|h| restored(h, false)).await;
+        assert_eq!((seen, report.superseded.len()), (vec![3, 1, 2], 0));
+        // The repack can't be restored here: the old packs are handled after it, once each.
+        let (report, seen) = run(|h| {
+            if h == 3 {
+                LocalOutcome::Unreachable(vec!["gone.example".into()])
+            } else {
+                LocalOutcome::Missing
+            }
+        })
+        .await;
+        assert_eq!(seen, [3, 1, 2]);
+        assert!(report.superseded.is_empty());
+        assert_eq!(report.missing, [[1; 32], [2; 32]]);
+        assert_eq!(report.unreachable[0].hosts, ["gone.example"]);
     }
 
     /// A manifest stub carrying only what the packRef space is derived from.

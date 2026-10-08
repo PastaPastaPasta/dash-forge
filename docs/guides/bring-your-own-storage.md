@@ -511,6 +511,13 @@ The command looks for the pack's exact bytes in two places:
 
 It verifies the SHA-256, uploads to the targets (at least `dash.replicas` must confirm), and reports which recorded copies are readable again. Copies it stored at **new** locations can't be added to the immutable manifest, so they are only printed. Re-upload through the pack's original profile to make the recorded copy readable again, or record the new location as a mirror (next section).
 
+A pack counts as healthy only when a recorded **public** address serves it, as it would to anyone else. Your own storage profile reading the bucket with its keys doesn't count, unless the pack records no public address at all (a bucket with no public URL). A few cases are reported rather than uploaded:
+- **The recorded host is gone** (its name doesn't resolve or it refuses connections, while the rest of the network answers), not just the object. Uploading the same bytes there again can't help, so the pack is listed with its host. If the host comes back, run the command again. If it is gone for good, a maintainer or writer records the repository at storage that works with `dg repack <owner>/<repo> --profile <new profile>`.
+- **A repack replaced the pack.** When the consolidated pack is readable (healthy or just restored), the older packs it supersedes are skipped: their objects are in it.
+- **This clone has no copy.** Run the command in a clone that has the pack, such as the one that pushed it.
+
+When a pack is left unreadable the command exits with [E503](../errors.md#e503), after restoring what it could.
+
 Plain `dg reseed --profile <name>` (without `--from-local`) re-uploads packs to a target. It downloads each pack first, from a recorded copy or, when none is left, from a [pack mirror](#mirroring-a-pack), so it needs no clone. It is for maintainers and writers only, because a new copy is recorded as your own pack manifest, and it refuses anyone else before uploading. Through the profile a pack was pushed with, it re-creates the address a recorded copy names and says so. For a pack you already recorded, an upload to any other address is reported as not recorded (`dg repack --profile <name>` is the way to record your packs at a new address).
 
 ## Mirroring a pack

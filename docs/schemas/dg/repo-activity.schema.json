@@ -44,7 +44,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "Who pushed, or for a protection change who wrote the config; null when unknown."
           },
           "from": {
             "type": [

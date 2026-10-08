@@ -414,3 +414,20 @@ describe('QW4-022: creating an identity is titled as sign-up', () => {
     expect(q('[role="dialog"] h2')?.textContent).toBe('Sign in to Dash Forge')
   })
 })
+
+describe('Q5-C04: the key lifetime is worded for each path', () => {
+  it('the tile list says an import can pick up to a year, and a new key is renewed later', async () => {
+    auth.vaults = []
+    act(() => useUiStore.getState().openLogin())
+    await flush()
+    const text = host.ownerDocument.body.textContent ?? ''
+    expect(text).toContain('for 90 days by default. An import can pick up to a year; a new identity\'s key can be renewed for up to a year later.')
+    expect(text).not.toContain('you can renew it for up to a year later')
+    // Create fixes the lifetime; Import offers the picker.
+    await click(q('[data-testid="tile-create"]'))
+    expect(host.ownerDocument.body.textContent).toContain('for 90 days; you can renew it for up to a year later')
+    await click(byText('All options'))
+    await click(q('[data-testid="tile-import"]'))
+    expect(host.ownerDocument.body.textContent).toContain('for 90 days by default (up to a year)')
+  })
+})

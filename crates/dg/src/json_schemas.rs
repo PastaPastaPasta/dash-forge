@@ -398,6 +398,33 @@ fn create_steps_and_forks_match() {
     );
 }
 
+/// `dg reseed --from-local` (Q5-B16, Q5-B17): packs a repack superseded, and packs whose
+/// recorded hosts do not answer, in the result and in the E503 it exits with.
+#[test]
+fn local_reseed_matches() {
+    let repo = test_repo("r");
+    let mut report = forge_core::repo::LocalReseedReport {
+        healthy: vec![[3; 32]],
+        superseded: vec![[1; 32]],
+        ..Default::default()
+    };
+    assert_valid(
+        "reseed",
+        &crate::maint::local_reseed_json(&repo, "s3-main", &report),
+    );
+    report.missing.push([2; 32]);
+    report.unreachable.push(forge_core::repo::UnreachablePack {
+        pack_hash: [4; 32],
+        hosts: vec!["gone.example".into()],
+    });
+    let body = crate::maint::local_reseed_json(&repo, "s3-main", &report);
+    assert_valid("reseed", &body);
+    assert_error_valid(
+        &body,
+        &crate::maint::local_reseed_error(&repo, &report).expect("an error"),
+    );
+}
+
 /// `dg repo reindex`: `cost` is null when the balance could not be read. `dg repo members
 /// enable` hands a key that needs repair to `dg repo keys repair`, and prints its shape.
 #[test]
