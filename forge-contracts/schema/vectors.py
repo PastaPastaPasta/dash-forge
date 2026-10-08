@@ -45,7 +45,7 @@ AP.add_argument('--mainnet', action='store_true')
 AP.add_argument('--out')
 ARGS = AP.parse_args() if __name__ == '__main__' else AP.parse_args([])
 if ARGS.mainnet:
-    ARGS.on = ','.join(filter(None, [ARGS.on, *(k for k in build.MAINNET_FLAGS if k not in build.MAINNET_UNBUILT)]))
+    ARGS.on = ','.join(filter(None, [ARGS.on, *build.MAINNET_BUILT]))
 F = build.flags_from(ARGS.off, ARGS.on)
 REPO = os.path.dirname(os.path.dirname(HERE))
 CONTRACTS = os.path.join(REPO, 'forge-contracts', 'contracts')
@@ -736,7 +736,7 @@ if F['member_roles']:
     # push class and check runs: role 1 only (B1: and the bot's 4, so the push rules refuse 2)
     BOT_RULE = {'refUpdate': 'botGrant', 'packManifest': 'botPack', 'chunk': 'botChunk'}
     for t in (t for t, hi in ROLE_GATED.items() if hi == 1):
-        no('ROLES', f'{t} claiming triage (r 2)', t, BOT_RULE[t] if F['mainnet_bot_push'] and t in BOT_RULE else 'maximum', r=2)
+        no('ROLES', f'{t} claiming triage (r 2)', t, BOT_RULE.get(t, 'maximum') if F['mainnet_bot_push'] else 'maximum', r=2)
     # labels and milestones: writer or triage, never a reader
     for t in ('label', 'milestone'):
         ok('ROLES', f'{t} by triage (r 2)', t, r=2)

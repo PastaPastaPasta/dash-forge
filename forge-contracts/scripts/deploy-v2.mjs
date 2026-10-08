@@ -297,10 +297,11 @@ export function recordPath({ network, devnetName, record, contractsDir = DEFAULT
 }
 /** A scratch record must not name the network's own forge-core or contract group: it would extend the live deployment. */
 export function scratchRecordError(scratch, live) {
+  const groupOf = (dep) => dep?.v2?.contractGroupId ?? dep?.v2?.forgeCore?.contractGroupId;
   const core = scratch?.v2?.forgeCore?.contractId;
-  const group = scratch?.v2?.contractGroupId ?? scratch?.v2?.forgeCore?.contractGroupId;
+  const group = groupOf(scratch);
   if (core && core === live?.v2?.forgeCore?.contractId) return `the scratch record names the network's forge-core ${core}: start it empty`;
-  if (group && group === (live?.v2?.contractGroupId ?? live?.v2?.forgeCore?.contractGroupId)) return `the scratch record names the network's contract group ${group}: start it empty`;
+  if (group && group === groupOf(live)) return `the scratch record names the network's contract group ${group}: start it empty`;
   return null;
 }
 function readDep(file) {
@@ -664,9 +665,8 @@ async function main() {
   }
   if (update !== null) {
     // The recorded ids stand in for the placeholders (a dependent's schema names the earlier ones)
-    const ids = Object.fromEntries([{ key: 'forgeCore', schemaName: 'forge-core' }, ...DEPENDENTS]
-      .filter((c) => v2[c.key]?.contractId).map((c) => [placeholderFor(c.schemaName), v2[c.key].contractId]));
     const all = [{ key: 'forgeCore', schemaName: 'forge-core', only: 'core' }, ...DEPENDENTS];
+    const ids = Object.fromEntries(all.filter((c) => v2[c.key]?.contractId).map((c) => [placeholderFor(c.schemaName), v2[c.key].contractId]));
     for (const c of all.filter((x) => update === 'all' || x.only === update)) {
       report.steps.push(await updateContract({ key: c.key, schemaName: c.schemaName, substitutions: c.key === 'forgeCore' ? {} : ids }));
     }

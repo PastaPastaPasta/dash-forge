@@ -176,6 +176,7 @@ MAINNET_FLAGS = dict(
     mainnet_epoch_writes=False,    # sealed writes only under the current epoch (client-rules §11-18)
 )
 MAINNET_UNBUILT = ('mainnet_consensus_archive', 'mainnet_epoch_writes')
+MAINNET_BUILT = [k for k in MAINNET_FLAGS if k not in MAINNET_UNBUILT]   # what --mainnet turns on
 # The mixed-visibility items (DESIGN rev 4.1 §8.3), in its order: variants.py validates every
 # combination of them, with and without the four-contract layout.
 MV_FLAGS = ('layout_meta', 'mainnet_aud', 'mainnet_one_way_visibility', 'mainnet_vis_via_repo', 'mainnet_member_role',
@@ -1108,7 +1109,11 @@ def _defs_used(contract):
     used, todo = set(), [contract['documentSchemas']]
     while todo:
         found = set()
-        _walk(todo.pop(), lambda d: found.add(d['$ref'].split('/')[-1]) if isinstance(d.get('$ref'), str) else None)
+
+        def collect(d):
+            if isinstance(d.get('$ref'), str):
+                found.add(d['$ref'].split('/')[-1])
+        _walk(todo.pop(), collect)
         for name in found - used:
             used.add(name)
             todo.append(contract['schemaDefs'][name])
@@ -1140,7 +1145,8 @@ def split_meta(contracts, bot_push):
             _walk(s, name_source)
             meta['documentSchemas'][t] = s
             moved[t] = src
-            for d in _defs_used({'documentSchemas': s, 'schemaDefs': c['schemaDefs']}):
+            used = _defs_used({'documentSchemas': s, 'schemaDefs': c['schemaDefs']})
+            for d in (d for d in c['schemaDefs'] if d in used):   # in the source's order: a stable build
                 dd = copy.deepcopy(c['schemaDefs'][d])
                 _walk(dd, name_source)
                 if meta['schemaDefs'].setdefault(d, dd) != dd:
@@ -1249,7 +1255,7 @@ def main():
     a = ap.parse_args()
     on = a.on
     if a.mainnet:
-        on = ','.join(filter(None, [on, *(k for k in MAINNET_FLAGS if k not in MAINNET_UNBUILT)]))
+        on = ','.join(filter(None, [on, *MAINNET_BUILT]))
     variant = bool(a.off or on)
     contracts = build(flags_from(a.off, on))
     if META in contracts and not a.out:

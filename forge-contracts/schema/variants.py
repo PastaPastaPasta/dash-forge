@@ -35,6 +35,7 @@ prints every row. Combinations run in parallel (--jobs, default the CPU count).
 A probe variant to register (and measure) is the same build:
   python3 forge-contracts/schema/build.py --off review_to_author --out /tmp/probe-s2
 """
+import collections
 import concurrent.futures
 import itertools
 import os
@@ -55,7 +56,7 @@ MV_SHORT = {'layout_meta': 'META', 'mainnet_aud': 'L1', 'mainnet_one_way_visibil
             'mainnet_event_kinds': 'M2', 'mainnet_event_target_aud': 'M4', 'mainnet_author_event_enc': 'M3',
             'mainnet_bot_push': 'B1'}
 # The mainnet flags that are not mixed-visibility items: on in every mainnet row, as --mainnet has them
-MAINNET_OTHERS = [k for k in build.MAINNET_FLAGS if k not in build.MAINNET_UNBUILT and k not in build.MV_FLAGS]
+MAINNET_OTHERS = [k for k in build.MAINNET_BUILT if k not in build.MV_FLAGS]
 
 
 def combinations():
@@ -73,6 +74,11 @@ def combinations():
         yield [f]
 
 
+# One validated combination: its label, {contract: (bytes, create-transition bytes)}, the contracts
+# built, whether it failed, and the validator's output.
+Row = collections.namedtuple('Row', 'label sizes names bad out')
+
+
 def allowed(on):
     flags = build.flags_from('', ','.join(MAINNET_OTHERS + list(on)))
     return all(not flags[f] or flags[d] for f, deps in build.NEEDS.items() for d in deps)
@@ -86,7 +92,7 @@ def mv_combinations():
             yield on
 
 
-def run(off, on):
+def run(validator, off, on):
     """Build the variant, generate its vectors and validate; return (exit code, output, sizes, contracts)."""
     with tempfile.TemporaryDirectory() as tmp:
         vectors = os.path.join(tmp, 'vectors')
@@ -95,12 +101,12 @@ def run(off, on):
         contracts = build.build(build.flags_from(off, on))
         if gen.returncode != 0:
             return gen.returncode, f'vectors.py --off {off!r} --on {on!r} failed:\n{gen.stdout}{gen.stderr}', {}, contracts
-        code, out, sizes = build.validate(VALIDATOR, contracts, vectors)
+        code, out, sizes = build.validate(validator, contracts, vectors)
         return code, out, sizes, contracts
 
 
-def judge(label, off, on, mainnet):
-    code, out, sizes, contracts = run(off, on)
+def judge(validator, label, off, on, mainnet):
+    code, out, sizes, contracts = run(validator, off, on)
     names = list(contracts)
     bad = code != 0 or set(sizes) != set(names)
     if mainnet:
@@ -108,7 +114,7 @@ def judge(label, off, on, mainnet):
         bad = bad or (build.META in contracts and any(build.over_budget(contracts, s) for s in sizes.values()))
     else:
         bad = bad or any(n > build.CEILING for n, _ in sizes.values())
-    return label, sizes, names, bad, out
+    return Row(label, sizes, names, bad, out)
 
 
 def cell(s):
@@ -130,7 +136,6 @@ def table(rows, names, markdown):
 
 
 def main():
-    global VALIDATOR
     args = [a for a in sys.argv[1:] if not a.startswith('--')]
     argv = sys.argv[1:]
     jobs = os.cpu_count() or 1
@@ -142,7 +147,7 @@ def main():
             jobs = int(a.split('=', 1)[1])
     if len(args) != 1:
         sys.exit(__doc__)
-    VALIDATOR = os.path.abspath(args[0])
+    validator = os.path.abspath(args[0])
     markdown = '--markdown' in sys.argv
     with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
         rc2 = []
@@ -151,23 +156,21 @@ def main():
             u1_off = [f for f in build.UPDATE1_FLAGS if f in off_flags]
             if len(u1_off) < len(build.UPDATE1_FLAGS):
                 label += '+U1' + ''.join(f'-{f}' for f in u1_off)
-            rc2.append(pool.submit(judge, label, ','.join(off_flags), '', False))
-        mv = [pool.submit(judge, 'MN+' + ('+'.join(MV_SHORT[f] for f in on) or 'none'), '', ','.join(MAINNET_OTHERS + on), True)
+            rc2.append(pool.submit(judge, validator, label, ','.join(off_flags), '', False))
+        mv = [pool.submit(judge, validator, 'MN+' + ('+'.join(MV_SHORT[f] for f in on) or 'none'), '', ','.join(MAINNET_OTHERS + on), True)
               for on in mv_combinations()]
         rc2 = [f.result() for f in rc2]
         mv = [f.result() for f in mv]
-    failed = 0
-    for label, _, _, bad, out in rc2 + mv:
-        if bad:
-            failed += 1
-            print(f'{label}: FAILED\n{out[-3000:]}', file=sys.stderr)
+    failed = [r for r in rc2 + mv if r.bad]
+    for r in failed:
+        print(f'{r.label}: FAILED\n{r.out[-3000:]}', file=sys.stderr)
 
     table(rc2, build.NAMES, markdown)
     print(f'\nbudget: target {build.TARGET} B, ceiling {build.CEILING} B per contract; '
-          f'limit {build.TRANSITION_LIMIT} B per transition. {len(rc2) - sum(r[3] for r in rc2)}/{len(rc2)} RC2 combinations valid.\n')
+          f'limit {build.TRANSITION_LIMIT} B per transition. {sum(not r.bad for r in rc2)}/{len(rc2)} RC2 combinations valid.\n')
 
     # The mainnet matrix: the full set, each item left out of it and each alone, then the worst case
-    every = {r[0]: r for r in mv}
+    every = {r.label: r for r in mv}
     full = 'MN+' + '+'.join(MV_SHORT[f] for f in build.MV_FLAGS)
     pick = [full]
     for f in build.MV_FLAGS:
@@ -179,13 +182,13 @@ def main():
     table(shown, names, markdown)
     print()
     for meta in (True, False):
-        rows = [r for r in mv if (build.META in r[2]) == meta and len(r[1]) == len(r[2])]
+        rows = [r for r in mv if (build.META in r.names) == meta and len(r.sizes) == len(r.names)]
         for n in (names if meta else build.NAMES) if rows else ():
-            worst = max(rows, key=lambda r: r[1][n][1])
-            print(f'{"with" if meta else "without"} forge-meta: largest {n} create transition {worst[1][n][1]} B '
-                  f'({build.TRANSITION_LIMIT - worst[1][n][1]} B of room) in {worst[0]}')
+            worst = max(rows, key=lambda r: r.sizes[n][1])
+            print(f'{"with" if meta else "without"} forge-meta: largest {n} create transition {worst.sizes[n][1]} B '
+                  f'({build.TRANSITION_LIMIT - worst.sizes[n][1]} B of room) in {worst.label}')
     print(f'\nmainnet: with forge-meta each contract keeps >= {build.ROOM_MIN} B of room (D44); without it, the transition '
-          f'limit only. {len(mv) - sum(r[3] for r in mv)}/{len(mv)} mainnet combinations valid.')
+          f'limit only. {sum(not r.bad for r in mv)}/{len(mv)} mainnet combinations valid.')
     sys.exit(1 if failed else 0)
 
 
