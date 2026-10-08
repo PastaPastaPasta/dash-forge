@@ -274,7 +274,7 @@ export const SHORT_URL_EXPAND_SOURCE = `function (pathname, base, reserved) {
     var ghRepo = dec(parts[2]);
     if (ghRepo === null || !${GITHUB_SEGMENT}.test(name) || !${GITHUB_SEGMENT}.test(ghRepo)) return null;
     var ghRest = parts.slice(3).join('/');
-    return base + '/github.com/?owner=' + encodeURIComponent(name) + '&name=' + encodeURIComponent(ghRepo.replace(/\\.git$/, '')) + (ghRest ? '&rest=' + encodeURIComponent(ghRest) : '');
+    return base + '/github.com/?owner=' + encodeURIComponent(name) + '&name=' + encodeURIComponent(ghRepo.replace(/\\.git$/i, '')) + (ghRest ? '&rest=' + encodeURIComponent(ghRest) : '');
   }
   // A pasted clone URL ends in \`.git\`. No repo name does (the contract's \`nameNotDotGit\`), so one
   // trailing \`.git\` is the clone form of the name, not part of it.
@@ -365,7 +365,7 @@ export function expandShortPath(pathname: string, base: string, reserved: readon
     const ghRepo = dec(parts[2]!)
     if (ghRepo === null || !GITHUB_SEGMENT.test(name) || !GITHUB_SEGMENT.test(ghRepo)) return null
     const ghRest = parts.slice(3).join('/')
-    return `${base}/github.com/?owner=${encodeURIComponent(name)}&name=${encodeURIComponent(ghRepo.replace(/\.git$/, ''))}${ghRest ? `&rest=${encodeURIComponent(ghRest)}` : ''}`
+    return `${base}/github.com/?owner=${encodeURIComponent(name)}&name=${encodeURIComponent(ghRepo.replace(/\.git$/i, ''))}${ghRest ? `&rest=${encodeURIComponent(ghRest)}` : ''}`
   }
   // A pasted clone URL ends in `.git`. No repo name does (the contract's `nameNotDotGit`), so one
   // trailing `.git` is the clone form of the name, not part of it.

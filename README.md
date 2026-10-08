@@ -45,7 +45,7 @@
 - **Check everything.** A Verification card on every repository page says what was proven and how, including a cross-check of the quorum keys against a second source.
 - **Wire up CI.** `dg webhook add` plus a relay you run yourself (`forge-relay`) turn on-chain activity into GitHub-shaped webhooks, with a durable retry queue.
 
-**Coming soon:** editing files in the browser, and browser merges for private repositories (`dg` has them). The [release notes](docs/releases/v0.1.0.md#known-limitations) list what else is not there yet.
+**Coming soon:** editing files in the browser, and browser merges for private repositories (`dg` has them). The [release notes](docs/releases/v0.1.0.md#known-limitations) (not published yet) list what else is not there yet.
 
 ## Guides
 

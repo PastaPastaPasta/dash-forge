@@ -96,6 +96,8 @@ describe('shortRepoPath → shim → canonical route', () => {
     expect(expand('/alice/.git')).toBeNull()
     // The GitHub alias already did this to the repo; its owner segment is left alone.
     expect(expand('/gh/a/b.git')).toBe('/github.com/?owner=a&name=b')
+    expect(expand('/gh/a/b.GIT')).toBe('/github.com/?owner=a&name=b')
+    expect(expand('/github.com/a/b.Git/issues/3')).toBe('/github.com/?owner=a&name=b&rest=issues%2F3')
   })
 
   it('honors the base path both ways', () => {
@@ -326,7 +328,7 @@ describe('expandShortPath: the shim in TypeScript (CJ-6)', () => {
     ...owners.flatMap((owner) => targets.map((t) => shortRepoPath({ owner, name: 'project' }, t))),
     '/', '/alice', '/alice/project/', '/alice/project/wiki', '/alice/project/issues/0', '/alice/project/issues/abc', '/alice/project/pull/7/files/x',
     '/alice/project/releases/tag/v1', '/alice/project/releases/tag', '/alice/project/compare/v1..v2', '/alice/project/compare/...v2', '/alice/project/compare/a...b/c',
-    '/alice/project/commit/xyz', '/al%ZZce/project', '/alice/pro%2Fject', '/alice/project/tree/%E0%A4', '/github.com/dashpay/dash/issues/12', '/gh/a/b.git', '/alice/project.git', '/alice/project.git/', '/alice/project.git.git', '/alice/.git', '/alice/a.git/issues/7', '/dash-forge/alice/project.git',
+    '/alice/project/commit/xyz', '/al%ZZce/project', '/alice/pro%2Fject', '/alice/project/tree/%E0%A4', '/github.com/dashpay/dash/issues/12', '/gh/a/b.git', '/gh/a/b.GIT', '/github.com/a/b.Git/issues/3', '/alice/project.git', '/alice/project.git/', '/alice/project.git.git', '/alice/.git', '/alice/a.git/issues/7', '/dash-forge/alice/project.git',
     '/github.com/dashpay', '/dash-forge/alice/project/pull/7', '/dash-forge/', '/dash-forge/github.com/a/b', '/alice/project/blob/HEAD',
   ]
   // A seeded walk over segments that exercise every branch of the shim.

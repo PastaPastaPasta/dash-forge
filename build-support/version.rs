@@ -29,11 +29,12 @@ fn main() {
     let manifest_dir =
         std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("set by cargo"));
 
-    // Worktrees that share one CARGO_TARGET_DIR share this script's cached output, and every
-    // path watched below is absolute and outside the package, so cargo would never see that
-    // the script now runs for another checkout and would keep the first one's commit. A path
-    // inside the package is kept relative to the package root in cargo's fingerprint, so
-    // naming one makes cargo rerun the script when the package root changes.
+    // Worktrees that share one CARGO_TARGET_DIR share this script's cached output. Every path
+    // watched below is absolute and outside the package, so in another worktree the saved path
+    // list is unchanged and cargo would keep the first checkout's commit. Cargo saves a path
+    // inside the package relative to the package root: `build.rs` is saved as `build.rs`, but
+    // the paths the script emits for another worktree resolve to that worktree's own absolute
+    // `build.rs`. The lists then differ and cargo reruns the script.
     println!(
         "cargo:rerun-if-changed={}",
         manifest_dir.join("build.rs").display()
