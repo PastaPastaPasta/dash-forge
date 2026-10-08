@@ -6,7 +6,7 @@
   "demo": {
     "owner": "Amc7FjA3CJLae4stwztokTumqCX8KfDCkA3zNwVVYRZB",
     "name": "forge-v2-demo",
-    "repoId": "J7cPnrdgQ2kHwXUeK4VcK5PsYmG4fntfKpFDCHSZxgo1",
+    "repoId": "8cTSCZw3sq46KVRhbP38sbMhdhuJarNWX7dnv4f5BG4t",
     "reviewParityPull": 7
   },
   "pulls": {
@@ -17,7 +17,7 @@
   "empty": {
     "owner": "8E6SKLu7be66ovhuxtTCoV7x8Bbj22otPpTzMLbhEUUG",
     "name": "forge-v2-empty",
-    "repoId": "HKVhvNpE5PN687nxFbm92cqya5uufmxut5sXDk5ChkYU"
+    "repoId": "2wDa6E1Pbwr96ZXda8BBPyAa7ze5ieAMzyFGHNX5iH3n"
   },
   "check": {
     "name": "fixture-ci",
