@@ -29,7 +29,6 @@
             "type": "string",
             "enum": [
               "issue",
-              "pull request",
               "comment",
               "review"
             ]

@@ -216,7 +216,7 @@ pub enum Command {
     /// Repository members (maintainers, writers, triage members and readers).
     #[command(subcommand)]
     Collab(CollabCommand),
-    /// Make your own members-only posts public: issues, pull requests, comments and reviews.
+    /// Make your own members-only posts public: issues, comments and reviews.
     /// Everyone can read them from then on; earlier versions stay members-only. This can't be
     /// undone.
     MakePublic {

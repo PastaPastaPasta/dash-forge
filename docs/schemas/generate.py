@@ -529,7 +529,7 @@ cmd('collab remove', 'A member removed.', {
 }, ['status', 'member'])
 cmd('make-public', 'Your own members-only posts made public: each one edited to Public, or a review given a public comment that carries its text.', {
     'status': E('madePublic'), 'cost': COST,
-    'posts': A(O({'id': S, 'kind': E('issue', 'pull request', 'comment', 'review'), 'number': nl(I), 'written': S,
+    'posts': A(O({'id': S, 'kind': E('issue', 'comment', 'review'), 'number': nl(I), 'written': S,
                   'lost': SA}, ['id', 'kind', 'written'])),
 }, ['status', 'posts'])
 cmd('collab list', 'The repository\'s members and their roles.', {

@@ -14,6 +14,7 @@ Commands:
   verify-commit  Check commits' signatures against the keys a repository's owner and members publish on their profiles: the web's Verified / Unverified badges, for a clone's commits
   verify-mirror  Check a plain-git mirror of a repository (a gateway's https clone URL) against Dash Platform: each ref it serves is a match, stale (behind) or a MISMATCH
   collab         Repository members (maintainers, writers, triage members and readers)
+  make-public    Make your own members-only posts public: issues, comments and reviews. Everyone can read them from then on; earlier versions stay members-only. This can't be undone
   cost           Cost estimates and spend audits
   repack         Consolidate a repo's packs into one superseding pack (deletes nothing on Platform)
   reseed         Re-upload packs and record the new copies (maintainers and writers; --from-local writes nothing to Platform)

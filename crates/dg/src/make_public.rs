@@ -1,6 +1,7 @@
 //! `dg make-public`: an author makes their own members-only posts public (mixed-visibility
-//! DESIGN §4.6, §10). An issue, pull request or comment is edited to Public as it reads now; a
-//! review, which cannot be edited, gets a public comment attached to it that carries its text.
+//! DESIGN §4.6, §10). An issue or comment is edited to Public as it reads now (a pull request
+//! waits for members-only PRs, phase 3); a review, which cannot be edited, gets a public comment
+//! attached to it that carries its text.
 //! Someone else's post is refused before anything is signed. Every post named is checked first,
 //! and nothing is written unless all of them can be made public.
 
@@ -90,33 +91,7 @@ pub async fn run(ctx: &Ctx, repo: &str, posts: &[String]) -> Result<()> {
         cost_line(quote, ctx.usd_price())
     ))?;
     let before = s.balance().await;
-    let mut written = Vec::new();
-    for (p, b) in planned.iter().zip(&bodies) {
-        let one = async {
-            let field = match b {
-                Some(b) => Some(b.field_text(&collab, &s.repo, None).await?),
-                None => None,
-            };
-            anyhow::Ok(
-                collab
-                    .make_public(&s.repo, &p.plan, field.as_deref())
-                    .await?,
-            )
-        };
-        match one.await {
-            Ok(id) => written.push((p, id)),
-            // say what is public already: the headline alone ("nothing made public") would not
-            Err(e) if !written.is_empty() => {
-                let done: Vec<String> = written.iter().map(|(p, _)| label(&p.plan)).collect();
-                return Err(e.context(format!(
-                    "made public: {}; then {} failed",
-                    done.join(", "),
-                    label(&p.plan)
-                )));
-            }
-            Err(e) => return Err(e),
-        }
-    }
+    let written = write_all(&collab, &s.repo, &planned, &bodies).await?;
     let spent = s.spent_since(before).await;
     let price = ctx.usd_price();
     ctx.emit(
@@ -145,6 +120,39 @@ pub async fn run(ctx: &Ctx, repo: &str, posts: &[String]) -> Result<()> {
         },
     );
     Ok(())
+}
+
+/// Make every planned post public, in order. A failure after the first says which are public
+/// already: the headline alone ("nothing made public") would not.
+async fn write_all<'p>(
+    collab: &Collab<'_>,
+    repo: &RepoRef,
+    planned: &'p [Post],
+    bodies: &[Option<Planned<'_>>],
+) -> Result<Vec<(&'p Post, String)>> {
+    let mut written: Vec<(&Post, String)> = Vec::new();
+    for (p, b) in planned.iter().zip(bodies) {
+        let one = async {
+            let field = match b {
+                Some(b) => Some(b.field_text(collab, repo, None).await?),
+                None => None,
+            };
+            anyhow::Ok(collab.make_public(repo, &p.plan, field.as_deref()).await?)
+        };
+        match one.await {
+            Ok(id) => written.push((p, id)),
+            Err(e) if !written.is_empty() => {
+                let done: Vec<String> = written.iter().map(|(p, _)| label(&p.plan)).collect();
+                return Err(e.context(format!(
+                    "made public: {}; then {} failed",
+                    done.join(", "),
+                    label(&p.plan)
+                )));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(written)
 }
 
 /// The question §10 asks before a post is made public.
@@ -189,12 +197,11 @@ async fn find(
     repo: &RepoRef,
     arg: &str,
 ) -> Result<(DocKind, FetchedDocument)> {
-    let id = match arg.trim_start_matches('#').parse::<u32>() {
-        Ok(n) => number_id(collab, repo, n).await?,
-        Err(_) => {
-            crate::common::document_id_arg(arg, "post id", POST_IDS)?;
-            arg.to_string()
-        }
+    let id = if let Ok(n) = arg.trim_start_matches('#').parse::<u32>() {
+        number_id(collab, repo, n).await?
+    } else {
+        crate::common::document_id_arg(arg, "post id", POST_IDS)?;
+        arg.to_string()
     };
     collab.find_post(repo, &id).await?.ok_or_else(|| {
         UserError::new(
