@@ -265,8 +265,20 @@ pub(crate) fn audit_lines(a: &MergeAudit, merger: &str, base: &str) -> Vec<Strin
         AuditVerdict::None => "no branch rules applied",
         AuditVerdict::Met => "met the branch rules in force at the time",
         AuditVerdict::Bypassed => "a maintainer bypassed the branch rules and recorded it",
-        AuditVerdict::Unmet => {
-            "did not meet the branch rules in force at the time, and no bypass was recorded"
+        AuditVerdict::Unmet => match &a.uncounted_bypass {
+            None => "did not meet the branch rules in force at the time, and no bypass was recorded",
+            Some(u) if u.role.is_none() => {
+                "did not meet the branch rules in force at the time; a bypass was recorded, but its writer's role at the time can't be confirmed"
+            }
+            Some(_) => {
+                "did not meet the branch rules in force at the time; a bypass was recorded, but no current membership record shows its writer as a maintainer then"
+            }
+        },
+        AuditVerdict::Unknown if a.checks_unread && a.code_owners_unaudited => {
+            "the required checks could not be read, and code owner approval is not audited"
+        }
+        AuditVerdict::Unknown if a.code_owners_unaudited => {
+            "code owner approval was required, and it is not audited"
         }
         AuditVerdict::Unknown => "the required checks could not be read",
     };
@@ -281,13 +293,15 @@ pub(crate) fn audit_lines(a: &MergeAudit, merger: &str, base: &str) -> Vec<Strin
         "  merged by {}{}",
         short_identity(merger),
         a.merger_role.map_or_else(
-            || ", no membership at the time".to_string(),
+            || ", no current membership record".to_string(),
             |r| format!(", {} at the time", r.noun())
         )
     ));
     if a.protected {
-        out.push(if a.protection_unmet {
-            format!("! protected branch: {base} was protected, and the merge was not recorded by a maintainer")
+        out.push(if a.protection_unmet && a.merger_role.is_none() {
+            format!("! protected branch: {base} was protected, and the merger's role at the time can't be confirmed")
+        } else if a.protection_unmet {
+            format!("! protected branch: {base} was protected, and no current membership record shows the merger as a maintainer then")
         } else {
             format!("  protected branch: {base} was protected; a maintainer merged it")
         });
@@ -338,6 +352,9 @@ pub(crate) fn audit_lines(a: &MergeAudit, merger: &str, base: &str) -> Vec<Strin
             ));
         }
     }
+    if a.code_owners_unaudited {
+        out.push("  code owners: approval required; not audited".to_string());
+    }
     if let Some(b) = &a.bypass {
         out.push(format!(
             "  bypass recorded by {}{}",
@@ -347,6 +364,21 @@ pub(crate) fn audit_lines(a: &MergeAudit, merger: &str, base: &str) -> Vec<Strin
             } else {
                 format!(": {}", b.value)
             }
+        ));
+    }
+    if let Some(u) = &a.uncounted_bypass {
+        out.push(format!(
+            "! bypass recorded by {}{}, not counted: {}",
+            short_identity(&u.event.actor),
+            if u.event.value.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", u.event.value)
+            },
+            u.role.map_or_else(
+                || "no current membership record, so their role at the time can't be confirmed".to_string(),
+                |r| format!("their current membership record shows {} at the time, and only a maintainer's bypass counts", r.noun())
+            )
         ));
     }
     if a.rules_changed {
@@ -382,10 +414,11 @@ pub(crate) fn verdict_words(c: &MergeContent) -> String {
     let combined = if c.combined.is_empty() {
         String::new()
     } else {
+        // Files both sides changed: the rule sees that, never that the merge's version holds
+        // the PR's change (an unrelated push to the same file looks the same, Q5-A01).
         format!(
-            ", combined with base changes in {} file{}",
-            c.combined.len(),
-            if c.combined.len() == 1 { "" } else { "s" }
+            ", except {} and not checked for this PR's change",
+            both_sides(&c.combined)
         )
     };
     match c.verdict {
@@ -395,6 +428,26 @@ pub(crate) fn verdict_words(c: &MergeContent) -> String {
         MergeVerdict::Missing => "does not contain this PR's commits".to_string(),
         MergeVerdict::Unknown => "could not be checked: its commits could not be read".to_string(),
     }
+}
+
+/// `combined` for people: "2 files changed on both sides (a.rs, b.rs)", naming three at most.
+pub(crate) fn both_sides(combined: &[String]) -> String {
+    let n = combined.len();
+    let more = if n > 3 {
+        format!(" and {} more", n - 3)
+    } else {
+        String::new()
+    };
+    format!(
+        "{n} file{} changed on both sides ({}{more})",
+        if n == 1 { "" } else { "s" },
+        combined
+            .iter()
+            .take(3)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 /// The verdict's JSON name (`contains`, `squash`, `rebase`, `missing`, `unknown`).
@@ -514,6 +567,103 @@ mod tests {
             .last()
             .unwrap()
             .contains("judged by what is on Platform now"));
+    }
+
+    /// Q5-A01: files both sides changed are never worded as a plain squash.
+    #[test]
+    fn combined_files_are_worded_as_unchecked() {
+        let c = MergeContent {
+            verdict: MergeVerdict::Squash,
+            combined: vec!["CHANGELOG.md".into()],
+        };
+        assert_eq!(
+            verdict_words(&c),
+            "is a squash of this PR, except 1 file changed on both sides (CHANGELOG.md) and not checked for this PR's change"
+        );
+        let clean = MergeContent {
+            verdict: MergeVerdict::Squash,
+            combined: Vec::new(),
+        };
+        assert_eq!(verdict_words(&clean), "is a squash of this PR");
+    }
+
+    /// Q5-B04: a policy requiring code owners' approval is never read as fully met.
+    #[test]
+    fn audit_lines_say_code_owners_were_not_audited() {
+        use forge_core::rules::merge_audit::{audit_merge, MergeAuditInput, PolicyDoc};
+        use forge_core::rules::review::Policy;
+        let input = MergeAuditInput {
+            merged_at: 100,
+            merger: "m".into(),
+            merge_oid: "b".repeat(40),
+            merge_head: "a".repeat(40),
+            pr_author: "auth".into(),
+            policies: vec![PolicyDoc {
+                id: "p1".into(),
+                created_at: 10,
+                policy: Policy {
+                    require_code_owners: true,
+                    ..Policy::default()
+                },
+            }],
+            ..MergeAuditInput::default()
+        };
+        let audit = audit_merge(&input);
+        assert_eq!(audit.verdict, AuditVerdict::Unknown);
+        let lines = audit_lines(&audit, "m", "main");
+        assert_eq!(
+            lines[0],
+            "branch rules at merge: code owner approval was required, and it is not audited"
+        );
+        assert!(lines.contains(&"  code owners: approval required; not audited".to_string()));
+        let json = serde_json::to_value(&audit).unwrap();
+        assert_eq!(json["codeOwnersUnaudited"], true);
+        assert_eq!(json["verdict"], "unknown");
+    }
+
+    /// Q5-A03: the maintainer who merged with a bypass was removed (or changed role) since. The
+    /// bypass is shown as recorded but unconfirmed, never "no bypass was recorded", and the
+    /// merger has no current record rather than "no membership at the time".
+    #[test]
+    fn audit_lines_report_a_bypass_whose_writer_left() {
+        use forge_core::rules::merge_audit::PolicyDoc;
+        use forge_core::rules::merge_audit::{audit_merge, BypassEvent, MergeAuditInput};
+        use forge_core::rules::review::Policy;
+        let input = MergeAuditInput {
+            merged_at: 100,
+            merger: "gone".into(),
+            merge_oid: "b".repeat(40),
+            merge_head: "a".repeat(40),
+            pr_author: "auth".into(),
+            policies: vec![PolicyDoc {
+                id: "p1".into(),
+                created_at: 10,
+                policy: Policy {
+                    required_approvals: 1,
+                    ..Policy::default()
+                },
+            }],
+            bypasses: vec![BypassEvent {
+                id: "e1".into(),
+                actor: "gone".into(),
+                created_at: 101,
+                oid: "b".repeat(40),
+                value: "required approvals: 0 of 1".into(),
+            }],
+            ..MergeAuditInput::default()
+        };
+        let audit = audit_merge(&input);
+        let lines = audit_lines(&audit, "gone", "main");
+        assert_eq!(
+            lines[0],
+            "! branch rules at merge: did not meet the branch rules in force at the time; a bypass was recorded, but its writer's role at the time can't be confirmed"
+        );
+        assert!(lines.contains(&"  merged by gone, no current membership record".to_string()));
+        assert!(lines.contains(&"! bypass recorded by gone (required approvals: 0 of 1), not counted: no current membership record, so their role at the time can't be confirmed".to_string()));
+        let json = serde_json::to_value(&audit).unwrap();
+        assert_eq!(json["uncountedBypass"]["event"]["actor"], "gone");
+        assert_eq!(json["uncountedBypass"]["role"], serde_json::Value::Null);
+        assert_eq!(json["bypass"], serde_json::Value::Null);
     }
 
     #[test]

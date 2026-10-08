@@ -386,7 +386,7 @@ cmd('pr view', 'A pull request: its state, head, reviews, threads and comments.'
 }, ['number', 'id', 'author', 'state', 'labels', 'assignees', 'readable'])
 cmd('pr verify', 'Whether a merged pull request\'s recorded merge contains it.', {
     'pr': I, 'merged': B, 'mergeContent': nl(O({'oid': S, 'verdict': E('contains', 'squash', 'rebase', 'missing', 'unknown'),
-                                                'combined': SA}, ['oid', 'verdict'])),
+                                                'combined': D('For a squash or rebase: files changed on both sides, not checked for the pull request\'s change.', SA)}, ['oid', 'verdict'])),
     'rulesAtMerge': ANY,
 }, ['pr', 'merged', 'mergeContent'])
 cmd('pr checkout', 'The pull request\'s head checked out as a local branch.', {
@@ -434,8 +434,9 @@ cmd('pr commits', 'The pull request\'s commits.', {
 cmd('pr merge', 'A pull request merged (or a merge recorded).', {
     'status': E('merged', 'merge_recorded', 'already_merged'), 'pr': I, 'method': S, 'mergeOid': S, 'transitionId': S,
     'merged': B, 'mergeOnBase': ANY, 'branchDeleted': ANY, 'branchCheckNote': nl(S), 'bypassedRules': ANY,
-    'checksNotPassing': ANY, 'closedIssues': ANY, 'linkedIssuesOmitted': ANY, 'linkedIssuesImported': ANY, 'cost': COST,
-    'steps': STEPS,
+    'checksNotPassing': ANY, 'closedIssues': ANY, 'linkedIssuesOmitted': ANY, 'linkedIssuesImported': ANY,
+    'uncheckedFiles': D('With --event-only: files the base changed too, not checked for the pull request\'s change.', SA),
+    'cost': COST, 'steps': STEPS,
 }, ['status', 'pr', 'merged'])
 cmd('pr update-branch', 'The base merged into the pull request\'s branch.', {
     'status': E('updated', 'up_to_date'), 'pr': I, 'written': B, 'headOid': S, 'baseOid': S, 'eventId': nl(S), 'steps': STEPS,

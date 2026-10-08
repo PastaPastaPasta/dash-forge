@@ -12,7 +12,10 @@
  * stood at the merge.
  *
  * Reviews and check runs are deletable and revoked members' documents are gone, so a rule found
- * unmet now may have been met then: readers say so. A recorded bypass is immutable and stands.
+ * unmet now may have been met then: readers say so. A recorded bypass is immutable and stands. A
+ * bypass whose writer no current membership document shows as a maintainer then (removing a
+ * member or changing a role deletes the document) does not count, but it is reported
+ * ({@link UncountedBypass}), never hidden.
  */
 
 import { compareKey } from './oid'
@@ -54,6 +57,17 @@ export interface BypassEvent {
   readonly value: string
 }
 
+/**
+ * A policy-bypass event for this merge that does not count: no current membership document shows
+ * its writer as a maintainer when they wrote it. Consensus admits kind 23 only from a maintainer
+ * or a role-1 writer; `role` is what the current documents say about then (null: none covers that
+ * time, so the role can't be confirmed). Parity: forge-core `UncountedBypass`.
+ */
+export interface UncountedBypass {
+  readonly event: BypassEvent
+  readonly role: Role | null
+}
+
 export interface MergeAuditInput {
   /** The merge transition's `$createdAt` (ms). */
   readonly mergedAt: number
@@ -80,8 +94,10 @@ export interface MergeAuditInput {
 
 /**
  * `none`: no rule applied (no policy, unprotected base); `met`; `bypassed`: a maintainer recorded
- * a bypass for this merge; `unmet`: a rule is not met by what is on chain now and no bypass was
- * recorded; `unknown`: nothing found unmet, but the required checks were not read.
+ * a bypass for this merge; `unmet`: a rule is not met by what is on chain now and no maintainer's
+ * bypass is proven (see {@link MergeAudit.uncountedBypass}); `unknown`: nothing found unmet, but a
+ * rule was not judged (the required checks were not read, or the policy required code owners'
+ * approval, which this audit does not check).
  */
 export type AuditVerdict = 'none' | 'met' | 'bypassed' | 'unmet' | 'unknown'
 
@@ -91,7 +107,7 @@ export interface MergeAudit {
   readonly policy: Policy | null
   /** The base branch was protected at the merge. */
   readonly protected: boolean
-  /** The merger's role at the merge (null: no current membership document says). */
+  /** The merger's role at the merge (null: no current membership document covers it; they may have been removed or changed role since). */
   readonly mergerRole: Role | null
   /** A protected base was merged by someone other than a maintainer. */
   readonly protectionUnmet: boolean
@@ -101,8 +117,16 @@ export interface MergeAudit {
   readonly checks: ChecksState | null
   /** The policy required checks and the runs were not read. */
   readonly checksUnread: boolean
+  /**
+   * The policy required code owners' approval. Judging it needs the CODEOWNERS file at the base,
+   * the changed paths and the owners' names, which this audit does not read: reported as not
+   * audited, so the merge never reads as fully met.
+   */
+  readonly codeOwnersUnaudited: boolean
   /** The first bypass a maintainer recorded for this merge. */
   readonly bypass: BypassEvent | null
+  /** Without a counted `bypass`: the first bypass event for this merge's commit whose writer is not shown as a maintainer then. */
+  readonly uncountedBypass: UncountedBypass | null
   /** The policy or the base's protection changed within {@link RULES_CHANGE_WINDOW_MS} before the merge. */
   readonly rulesChanged: boolean
 }
@@ -138,6 +162,7 @@ function samePolicy(a: Policy, b: Policy): boolean {
     (a.approverRole ?? 0) === (b.approverRole ?? 0) &&
     (a.requireChecks ?? false) === (b.requireChecks ?? false) &&
     (a.mergeMethods ?? 0) === (b.mergeMethods ?? 0) &&
+    (a.requireCodeOwners ?? false) === (b.requireCodeOwners ?? false) &&
     list(a.requiredChecks) === list(b.requiredChecks) &&
     list(a.requiredCheckSources) === list(b.requiredCheckSources)
   )
@@ -190,14 +215,15 @@ export function auditMerge(input: MergeAuditInput): MergeAudit {
         )
       : null
   const checksUnread = checksRequired && runs === null
+  const codeOwnersUnaudited = policy?.requireCodeOwners === true
 
   // Only a maintainer's record for this merge's commit counts (the merge box and `dg` write it
-  // right after the merge).
+  // right after the merge); any other record for it is reported, not hidden.
   const mergeOid = input.mergeOid.toLowerCase()
-  const bypass =
-    [...(input.bypasses ?? [])]
-      .filter((b) => b.oid.toLowerCase() === mergeOid && oracle.roleAt(b.actor, b.createdAt) === 'maintainer')
-      .sort(compareKey)[0] ?? null
+  const events = (input.bypasses ?? []).filter((b) => b.oid.toLowerCase() === mergeOid).sort(compareKey)
+  const bypass = events.find((b) => oracle.roleAt(b.actor, b.createdAt) === 'maintainer') ?? null
+  const first = bypass === null ? (events[0] ?? null) : null
+  const uncountedBypass = first === null ? null : { event: first, role: oracle.roleAt(first.actor, first.createdAt) }
 
   const rulesChanged =
     changedBefore(policies, at, (a, b) => samePolicy(a.policy, b.policy), () => true) ||
@@ -205,7 +231,7 @@ export function auditMerge(input: MergeAuditInput): MergeAudit {
 
   const unmet = protectionUnmet || (approvals !== null && !approvals.met) || (checks !== null && !checks.met)
   const verdict: AuditVerdict =
-    bypass !== null ? 'bypassed' : unmet ? 'unmet' : checksUnread ? 'unknown' : policy === null && !isProtected ? 'none' : 'met'
+    bypass !== null ? 'bypassed' : unmet ? 'unmet' : checksUnread || codeOwnersUnaudited ? 'unknown' : policy === null && !isProtected ? 'none' : 'met'
   return {
     verdict,
     policy,
@@ -215,7 +241,9 @@ export function auditMerge(input: MergeAuditInput): MergeAudit {
     approvals,
     checks,
     checksUnread,
+    codeOwnersUnaudited,
     bypass,
+    uncountedBypass,
     rulesChanged,
   }
 }

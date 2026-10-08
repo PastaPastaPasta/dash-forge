@@ -1,11 +1,11 @@
 {
-  "name": "bypass_by_writer_ignored",
-  "description": "A writer cannot bypass the rules: their bypass event does not count, and it is reported as an uncounted bypass by a writer, never hidden.",
+  "name": "bypass_by_maintainer_after_an_unconfirmed_one_counts",
+  "description": "An earlier bypass for the merge by someone with no current membership record does not count, but a later one by a maintainer does: the verdict is bypassed and no uncounted bypass is reported.",
   "case": "merge_audit",
   "rules": "v2",
   "input": {
     "mergedAt": 10000000,
-    "merger": "writ",
+    "merger": "maint",
     "mergeOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "mergeHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "prAuthor": "auth",
@@ -45,8 +45,15 @@
     "runners": [],
     "bypasses": [
       {
+        "id": "e0",
+        "actor": "gone",
+        "createdAt": 10000050,
+        "oid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "value": "required approvals: 0 of 1"
+      },
+      {
         "id": "e1",
-        "actor": "writ",
+        "actor": "maint",
         "createdAt": 10000100,
         "oid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "value": "required approvals: 0 of 1"
@@ -54,7 +61,7 @@
     ]
   },
   "expected": {
-    "verdict": "unmet",
+    "verdict": "bypassed",
     "policy": {
       "requiredApprovals": 1,
       "approverRole": 0,
@@ -62,7 +69,7 @@
       "mergeMethods": 0
     },
     "protected": false,
-    "mergerRole": "writer",
+    "mergerRole": "maintainer",
     "protectionUnmet": false,
     "approvals": {
       "met": false,
@@ -73,17 +80,14 @@
     "checks": null,
     "checksUnread": false,
     "codeOwnersUnaudited": false,
-    "bypass": null,
-    "uncountedBypass": {
-      "event": {
-        "id": "e1",
-        "actor": "writ",
-        "createdAt": 10000100,
-        "oid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        "value": "required approvals: 0 of 1"
-      },
-      "role": "writer"
+    "bypass": {
+      "id": "e1",
+      "actor": "maint",
+      "createdAt": 10000100,
+      "oid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "value": "required approvals: 0 of 1"
     },
+    "uncountedBypass": null,
     "rulesChanged": false
   }
 }

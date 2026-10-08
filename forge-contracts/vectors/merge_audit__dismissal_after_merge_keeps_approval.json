@@ -77,7 +77,9 @@
     },
     "checks": null,
     "checksUnread": false,
+    "codeOwnersUnaudited": false,
     "bypass": null,
+    "uncountedBypass": null,
     "rulesChanged": false
   }
 }
