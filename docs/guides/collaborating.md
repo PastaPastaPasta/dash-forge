@@ -19,20 +19,20 @@ Reading a public repository needs no identity: `dg repo view`, `dg repo list --o
 
 ## Collaborators
 
-There are four roles. Consensus enforces what each role can write: a write the role does not allow is refused by Platform, and Forge's apps refuse it before you pay for it. Counting approvals is a rule Forge apps enforce: every app applies it alike ([Who enforces what](#who-enforces-what)).
+There are four roles, named as on GitHub: **Read**, **Triage**, **Write** and **Maintain**, plus the repository's **Owner**. Every role holds the key to the repository's encrypted content, on public and private repositories alike. Consensus enforces what each role can write: a write the role does not allow is refused by Platform, and Forge's apps refuse it before you pay for it. Counting approvals is a rule Forge apps enforce: every app applies it alike ([Who enforces what](#who-enforces-what)).
 
 | Role | `--role` | Can | Closest GitHub role |
 |---|---|---|---|
-| Reader | `reader` (alias `read`) | Read the repository's encrypted content: a private repository, or a public repository's [members-only content](#members-only-content-in-a-public-repository) (it receives the key). Otherwise what anyone can do: open issues and PRs, comment and review, and as an author close or reopen their own issues and PRs, mark their own PRs draft or ready, request reviews on them and resolve their threads. | Read |
-| Triage | `triage` | Close, reopen and lock any issue or PR; label, assign, set milestones, request reviews and resolve review threads; create labels and milestones. **Not**: push, merge, mark a PR draft or ready, change a PR's base, dismiss reviews, pin, post check runs, or re-run checks. | Triage |
-| Writer | `writer` (default) | Everything triage can, plus push to unprotected branches, merge, mark draft or ready, change a PR's base, dismiss reviews, pin, post check runs, and re-run checks. | Write |
-| Maintainer | `maintainer` | Everything a writer can, plus protected branches, releases, repository settings (`config`, branch policy), webhooks and hiding comments. | Maintain, and most of Admin |
+| Read | `reader` (alias `read`) | Read the repository's encrypted content: a private repository, or a public repository's [members-only content](#members-only-content-in-a-public-repository) (it receives the key). Otherwise what anyone can do: open issues and PRs, comment and review, and as an author close or reopen their own issues and PRs, mark their own PRs draft or ready, request reviews on them and resolve their threads. Comment-only reviews: an approve or request for changes is refused, with an offer to post it as a comment. | Read |
+| Triage | `triage` | Close, reopen and lock any issue or PR; label, assign, set milestones, request reviews and resolve review threads; create labels and milestones. **Not**: push, merge, mark a PR draft or ready, change a PR's base, dismiss reviews, pin, post check runs, or re-run checks; nor, like Read, approve or request changes. | Triage |
+| Write | `writer` (default; alias `write`) | Everything triage can, plus push to unprotected branches, approve or request changes, merge, mark draft or ready, change a PR's base, dismiss reviews, pin, post check runs, and re-run checks. | Write |
+| Maintain | `maintainer` (alias `maintain`) | Everything a writer can, plus protected branches, releases, repository settings (`config`, branch policy), webhooks and hiding comments. | Maintain, and most of Admin |
 
-The repository owner alone adds and removes members, and edits the description and topics (GitHub's Admin). `--role write` and `--role maintain` are accepted as aliases.
+The repository owner alone adds and removes members, and edits the description and topics (GitHub's Admin). `dg collab list`, `dg collab add` and the web app's Members settings show the role words (Read, Triage, Write, Maintain, Owner); `--role` and `--json` output use the names in the table's second column.
 
-Anyone, member or not, can open issues and PRs, comment and review. Approvals count toward a branch policy only from maintainers and writers: a triage member's or reader's approval is shown as **not counted**, and their request for changes does not block. Imported issues and comments (a mirror's provenance and upstream numbers) are trusted from the same people.
+Anyone, member or not, can open issues and PRs, comment and review. Only people with Write access or more approve or request changes: for Read and Triage members, `dg pr review --approve` (or `--request-changes`) and the web's **Approve** and **Request changes** stop before anything is signed with *"Only people with Write access or more can approve."* and offer to post the review as a comment (`dg pr review --comment`, or **Post as a comment**). Approvals count toward a branch policy only from maintainers and writers: an approval that another client wrote for a Read or Triage member is shown as *"Read access; doesn't count"*, a non-member's as not counting, and neither blocks. Imported issues and comments (a mirror's provenance and upstream numbers) are trusted from the same people.
 
-On a public repository everyone can read the public content already, so a reader is for its [members-only content](#members-only-content-in-a-public-repository): someone who should follow the members-only discussion without pushing or merging. `dg collab add --role reader` works on public repositories too, and the web app offers Reader there too. A member holds one writer document, so changing between writer, triage and reader replaces it: `dg collab add` with the new `--role` deletes the old document and writes the new one (their acceptance stands, so they need not accept again), and the web app's Settings → Members has **Change role** on public repositories. On a private repository `dg collab add` changes the role the same way without rotating the key, since the member stays a member; in the web app, remove the member and add them again, which rotates it as every removal does.
+On a public repository everyone can read the public content already, so a reader is for its [members-only content](#members-only-content-in-a-public-repository): someone who should follow the members-only discussion without pushing or merging. `dg collab add --role reader` works on public repositories too, and the web app offers Read there too. A member holds one writer document, so changing between writer, triage and reader replaces it: `dg collab add` with the new `--role` deletes the old document and writes the new one (their acceptance stands, so they need not accept again), and the web app's Settings → Members has **Change role** on public repositories. On a private repository `dg collab add` changes the role the same way without rotating the key, since the member stays a member; in the web app, remove the member and add them again, which rotates it as every removal does.
 
 Adding a collaborator is two steps: the owner adds them, and the collaborator accepts. Consensus admits a `writer`/`maintainer` document only when it names the member's own `consent` document for the repo (`member_consent`), so nobody can be made a member, or spammed with an invitation, without agreeing first.
 
@@ -43,11 +43,11 @@ dg collab add    <owner>/<repo> <identity id or DPNS name> --role writer   # or 
 dg collab remove <owner>/<repo> <identity id or DPNS name> --role writer
 ```
 
-`dg collab list` shows each member's role. `dg collab remove --role writer` (or `triage`, `reader`) removes the member's writer document, whichever of the three it grants.
+`dg collab list` shows each member's access (Owner, Maintain, Write, Triage or Read). `dg collab remove --role writer` (or `triage`, `reader`) removes the member's writer document, whichever of the three it grants.
 
 If the owner runs `dg collab add` before the invitee has accepted, it is refused before anything is signed: *"`<identity>` has not accepted membership of `<repo>` yet"*, with the fix to ask them to run `dg collab accept`, then add them again. `dg collab add <owner>/<repo> <identity id> --wait 300` instead waits (printing that it is waiting) up to that many seconds for the acceptance to land, then adds them; with no `--wait` it checks once. `dg collab accept --withdraw` withdraws an earlier acceptance (a membership already granted stands until the owner removes it).
 
-From the web app, the invitee opens the repository's **invite link** (Settings → Members, on public and private repos alike) and clicks **Accept invitation**; the owner's Settings → Members lists **Pending invitations** (accepted, not added yet) with a role picker (writer, triage, maintainer and reader) and an **Add** button for each, and shows who is still waiting to accept after a refused add.
+From the web app, the invitee opens the repository's **invite link** (Settings → Members, on public and private repos alike) and clicks **Accept invitation**; the owner's Settings → Members lists **Pending invitations** (accepted, not added yet) with a role picker (Read, Triage, Write and Maintain) and an **Add** button for each, and shows who is still waiting to accept after a refused add.
 
 Adding or removing a collaborator is a write by the repository owner, signed with the owner's HIGH key.
 
@@ -139,7 +139,7 @@ dg repo keys status <you>/secret                # epochs, who holds a key, pendi
 | Encrypted (members only) | Visible to everyone |
 |---|---|
 | Code: every pack, index and browse artifact | That the repository exists; its name, owner, description, display name and topics |
-| Branch and tag names | Members and their roles (writer, triage or reader included); when each joined; key epochs and who rotated them |
+| Branch and tag names | Members and their roles (Read, Triage and Write included); when each joined; key epochs and who rotated them |
 | Default branch and protected-branch patterns | When pushes, issues, PRs, comments and reviews happen, and who wrote each |
 | Issue and PR titles and bodies, comment and review text, an inline comment's file path; the labels and milestones set on them, and a dismissal's reason | Commit ids (`newOid`, PR heads): anyone who already knows a commit id can confirm the repo contains it |
 | A release's tag, name, notes, draft, pre-release, yanked and unpublished flags, and its asset list; each asset file | That a release revision was written, when and by whom; revisions of one tag within a key epoch share a keyed tag name; each asset file's size |
@@ -151,7 +151,7 @@ Leave the description empty if the project's purpose is itself sensitive.
 
 **Every member needs an encryption key.** Private repositories wrap the key to each member's identity `ENCRYPTION` key. `dg collab add` checks the member has one and stops before writing anything if not ([`E306`](../errors.md#e306)); they add one with `dg auth keys add --encryption`, or **Settings → Private repos → Enable private repos** in the web app.
 
-**Readers.** A reader (`--role reader`) holds the key like any member and can read everything, and can write only what anyone can (issues, PRs, comments and reviews, all sealed). Their approvals do not count. Like any member, a reader could copy what they read.
+**Readers.** A member with Read access (`--role reader`) holds the key like any member and can read everything, and can write only what anyone can (issues, PRs, comments and comment-only reviews, all sealed); they cannot approve or request changes. Like any member, a reader could copy what they read.
 
 **Removing a member rotates the key.** New pushes, issues and comments will be unreadable to the removed member. Everything they could already read stays readable to them: encryption can't take back what was shared. The rotation is one key wrap per remaining member plus one anchor document, so `dg collab remove` shows the cost first. You are wrapped first, so an interruption never locks you out; running `dg repo keys repair` finishes an interrupted rotation (the key is recovered from your own wrap on chain, never from a local file).
 

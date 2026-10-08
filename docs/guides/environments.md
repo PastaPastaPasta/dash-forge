@@ -100,7 +100,7 @@ error: 2 people changed production at the same time, so its values can't be used
 `dg collab remove` lists the environments the member could read and the names of the current values they could see, so you know what to rotate at its source (the database password at the database, the API key at its provider):
 
 ```
-Removed <identity> (writer) from alice/shop.
+Removed <identity>'s Write access to alice/shop.
 <identity> could read 2 dev values (and every past value of it). Rotate them at the source: API_TOKEN, API_URL
 ```
 
