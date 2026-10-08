@@ -38,10 +38,13 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import type { MembersOnlyCount } from './members-only-counts'
 
 import { DEFAULT_NETWORK, type Network } from '../constants'
-import { IncompleteReadError } from '../sdk'
-import type { RepoRef } from './contract'
+import { IncompleteReadError, bytesToBase64, queryAllDocuments, type PlainDocument } from '../sdk'
+import { DOC, byteFieldToHex, num, str, type RepoRef } from './contract'
 import { compareRows, eventFiltered, rowMatches, selectionFiltered, type RowFilters } from './issue-index'
-import { baseRefReaders, countsSettled, incompletePullView, readPull, type BaseRefReaders, type PullView } from './issues'
+import { baseRefReaders, countsSettled, incompletePullView, readPull, titleOf, type BaseRefReaders, type PullView } from './issues'
+import { refNameHash } from './push'
+import { repoSource } from './source'
+import { readStateCodes } from './transitions'
 import { MEMBERS_ONLY_ROW } from './private-content'
 import { PR_CLOSE, PR_DRAFT_CLOSE, PR_MERGE, statusOfCode } from '../rules/transition'
 import { linkedIssues } from '../rules/review'
@@ -411,31 +414,87 @@ export interface PullOnBranch {
   readonly title: string
   /** `base`: it merges into the branch; `head`: its commits come from it. */
   readonly uses: 'base' | 'head'
+  /** The repository the PR is filed in, when it is not the branch's own (a PR opened from a fork's branch); else null. */
+  readonly repoId?: string | null
 }
 
 /** How many chunks of PRs (100 each, newest first) the branch-delete check looks through at most. */
 const ON_BRANCH_CHUNKS = 5
 
 /**
- * The open PRs of `repo` that use the branch `refName` (`refs/heads/…`): as their base (the
- * newest retarget's, so the member events are read) or, opened from this repo, as their head.
- * Read when a branch is about to be deleted, never on a page load, from the pull index the PR
- * list shares, through the newest {@link ON_BRANCH_CHUNKS} chunks; `searched` says when the
- * answer covers only those. `except` leaves one PR out (the PR whose page deletes its branch).
+ * The open PRs, filed in any repository, whose head is the branch `refName` of `repo` (the
+ * `sourceRef` index on `(sourceRepoId, sourceRefNameHash)`, as forge-core's `patches_from_branch`
+ * reads it): a PR opened upstream from a fork's branch is filed in the upstream's index, which
+ * the fork's own PR list never holds. One query for the PRs, one proved sum per 100 of them for
+ * their state. `except` leaves one PR out. A private repo's branch names are keyed hashes, so none
+ * match it: nothing is read.
+ */
+export async function openPullsFromBranch(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  refName: string,
+  except: { readonly repoId: string; readonly number: number } | null = null,
+): Promise<readonly (PullOnBranch & { readonly repoId: string })[]> {
+  if (repo.visibility === 'private') return []
+  const docs = await queryAllDocuments(
+    sdk,
+    repoSource(repo).targetQuery(DOC.patch, {
+      where: [
+        ['sourceRepoId', '==', repo.repoId],
+        ['sourceRefNameHash', '==', bytesToBase64(refNameHash(refName))],
+      ],
+      orderBy: [
+        ['sourceRepoId', 'asc'],
+        ['sourceRefNameHash', 'asc'],
+      ],
+    }),
+  )
+  // The query matched the hash: a document that names another branch is malformed, not this one's.
+  // forge-core's `patches_from_branch` also drops a patch that is not well formed; this keeps a
+  // members-only one (no plain name) too, which only adds a warning where a branch is in use.
+  const named = docs.filter((d: PlainDocument) => {
+    const name = str(d, 'sourceRefName')
+    return name === refName || (name === '' && byteFieldToHex(d, 'enc') !== '')
+  })
+  const ids = named.map((d) => str(d, '$id')).filter((id) => id !== '')
+  if (ids.length === 0) return []
+  const batches: string[][] = []
+  for (let i = 0; i < ids.length; i += 100) batches.push(ids.slice(i, i + 100))
+  const codes = new Map<string, number>()
+  for (const m of await Promise.all(batches.map((b) => readStateCodes(sdk, repo, b)))) for (const [id, code] of m) codes.set(id, code)
+  return named.flatMap((d) => {
+    const id = str(d, '$id')
+    const repoId = str(d, 'repoId')
+    const number = num(d, 'number')
+    if (id === '' || repoId === '' || !statusOfCode(codes.get(id) ?? 0).open) return []
+    if (except !== null && except.repoId === repoId && except.number === number) return []
+    return [{ number, title: titleOf(d, 'patch'), uses: 'head' as const, repoId }]
+  })
+}
+
+/**
+ * The open PRs that use the branch `refName` (`refs/heads/…`) of `repo`: as their base (the PRs
+ * of `repo` only; the newest retarget's, so the member events are read) or as their head, whether
+ * they are filed in `repo` or upstream of it, from a fork's branch ({@link openPullsFromBranch}).
+ * Read when a branch is about to be deleted, never on a page load: the pull index the PR
+ * list shares, through the newest {@link ON_BRANCH_CHUNKS} chunks (`searched` says when the
+ * answer covers only those), and the branch's own `sourceRef` lookup, which has no such limit.
+ * `except` leaves one PR out (the PR whose page deletes its branch).
  */
 export async function openPullsOnBranch(
   sdk: EvoSDK,
   repo: RepoRef,
   refName: string,
-  { except = null, network = DEFAULT_NETWORK }: { readonly except?: number | null; readonly network?: Network } = {},
+  { except = null, network = DEFAULT_NETWORK }: { readonly except?: { readonly repoId: string; readonly number: number } | null; readonly network?: Network } = {},
 ): Promise<{ readonly pulls: readonly PullOnBranch[]; readonly searched: number | null }> {
-  const index = await indexOf(sdk, repo, network)
+  const exceptHere = except !== null && except.repoId === repo.repoId ? except.number : null
+  const [index, fromBranch] = await Promise.all([indexOf(sdk, repo, network), openPullsFromBranch(sdk, repo, refName, except)])
   const sameRepo = (r: PullRow): boolean => r.sourceId === '' || r.sourceId === repo.repoId
   const usesOf = (r: PullRow): PullOnBranch['uses'] | null =>
     r.mergeBaseRefName === refName ? 'base' : sameRepo(r) && r.sourceRefName === refName ? 'head' : null
   const selected = await selectRows(sdk, index, {
     candidates: null,
-    matches: (r) => r.state.open && r.number !== except && usesOf(r) !== null,
+    matches: (r) => r.state.open && r.number !== exceptHere && usesOf(r) !== null,
     cmp: compareRows('newest'),
     direction: 'desc',
     want: 50,
@@ -444,8 +503,11 @@ export async function openPullsOnBranch(
     needLogs: true,
     maxChunks: ON_BRANCH_CHUNKS,
   })
-  return {
-    pulls: selected.rows.map((r) => ({ number: r.number, title: r.title, uses: usesOf(r) ?? 'base' })),
-    searched: selected.complete ? null : selected.searched,
-  }
+  const here: PullOnBranch[] = selected.rows.map((r) => ({ number: r.number, title: r.title, uses: usesOf(r) ?? 'base' }))
+  // A PR the index walk already named is not named twice (one filed in `repo` itself).
+  const named = new Set(here.map((p) => p.number))
+  const elsewhere = fromBranch
+    .filter((p) => p.repoId !== repo.repoId || !named.has(p.number))
+    .map((p) => ({ ...p, repoId: p.repoId === repo.repoId ? null : p.repoId }))
+  return { pulls: [...here, ...elsewhere], searched: selected.complete ? null : selected.searched }
 }

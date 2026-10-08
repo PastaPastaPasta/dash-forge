@@ -283,6 +283,8 @@ export {
   saveReviewDraft,
   setAssignee,
   setLabel,
+  setLabelIfNeeded,
+  readCurrentLabels,
   setMilestone,
   setThreadFlag,
   setPolicy,
