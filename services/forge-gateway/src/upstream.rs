@@ -101,6 +101,16 @@ pub struct ReleaseEntry {
     pub document_id: String,
 }
 
+/// A repository's open issues, as the issues badge reads them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct OpenIssues {
+    /// How many are open (proved). The count is public and includes the members-only ones: that
+    /// an issue exists, who opened it and its state are public.
+    pub open: u64,
+    /// How many of those are members-only, so the badge can say so ("3 open (2 members-only)").
+    pub members_only: u64,
+}
+
 /// An issue as a feed reads it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IssueEntry {
@@ -139,8 +149,8 @@ pub trait Upstream: Send + Sync + 'static {
     async fn description(&self, repo: &RepoInfo) -> Result<String>;
     /// Its star count (proved).
     async fn stars(&self, repo: &RepoInfo) -> Result<u64>;
-    /// Its open issues (proved counts).
-    async fn open_issues(&self, repo: &RepoInfo) -> Result<u64>;
+    /// Its open issues (proved counts), and how many of them are members-only.
+    async fn open_issues(&self, repo: &RepoInfo) -> Result<OpenIssues>;
     /// The newest run per check name on `oid`.
     async fn checks(&self, repo: &RepoInfo, oid: &str) -> Result<Vec<Check>>;
     /// The live releases, in release order (highest version first).
@@ -406,12 +416,22 @@ impl Upstream for PlatformUpstream {
         Ok(Collab::reader(&self.client).star_count(&r).await?)
     }
 
-    async fn open_issues(&self, repo: &RepoInfo) -> Result<u64> {
+    async fn open_issues(&self, repo: &RepoInfo) -> Result<OpenIssues> {
         let r = self.repo_ref(repo)?;
-        Ok(Collab::reader(&self.client)
-            .repo_state_counts(&r)
-            .await?
-            .issues_open)
+        let collab = Collab::reader(&self.client);
+        let open = collab.repo_state_counts(&r).await?.issues_open;
+        // The members-only share is read from the issues themselves, and only for a repository
+        // that has members-only content turned on: any other repo's badge costs what it did.
+        let members_only = if open > 0 && forge_core::keyring::has_members_key(&self.client, &r).await? {
+            let sealed = collab.issues_with_state_read(&r).await?.members_only;
+            sealed.iter().filter(|x| x.state.open).count() as u64
+        } else {
+            0
+        };
+        Ok(OpenIssues {
+            open,
+            members_only: members_only.min(open),
+        })
     }
 
     async fn checks(&self, repo: &RepoInfo, oid: &str) -> Result<Vec<Check>> {
