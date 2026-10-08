@@ -71,6 +71,8 @@ export interface EnvCardView {
 
 /** The old-format banner of one environment (DESIGN §10). */
 export interface OldFormatView {
+  /** Its latest version is in the old format (Save it again); else earlier ones are (Mark changed). */
+  readonly latest: boolean
   /** {@link OLD_FORMAT_SENTENCE} when the latest version is old, else {@link OLD_FORMAT_HISTORY_SENTENCE}. */
   readonly sentence: string
   /** Names held in old-format versions not marked changed yet (only when the latest version is not old). */
@@ -226,8 +228,8 @@ export function resaveCommand(env: string): string {
 export function oldFormatView(book: EnvBook, env: string): OldFormatView | null {
   const old = oldFormatOf(book, env)
   if (old === null || !needsAttention(old)) return null
-  if (old.latest) return { sentence: OLD_FORMAT_SENTENCE, unmarked: [], command: resaveCommand(env) }
-  return { sentence: OLD_FORMAT_HISTORY_SENTENCE, unmarked: old.unmarked, command: `dg env mark-changed --env ${env}` }
+  if (old.latest) return { latest: true, sentence: OLD_FORMAT_SENTENCE, unmarked: [], command: resaveCommand(env) }
+  return { latest: false, sentence: OLD_FORMAT_HISTORY_SENTENCE, unmarked: old.unmarked, command: `dg env mark-changed --env ${env}` }
 }
 
 function cardAudienceLabel(s: Snapshot): string {

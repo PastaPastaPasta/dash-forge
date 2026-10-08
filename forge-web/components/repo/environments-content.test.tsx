@@ -19,7 +19,7 @@ import type { RepoHome } from '@/lib/view'
 const { envState } = vi.hoisted(() => ({
   envState: { value: { state: { data: null, loading: true, error: null, cause: null, settled: false, reload: () => undefined }, locked: false } as unknown },
 }))
-vi.mock('@/hooks/use-environments', () => ({ useEnvironments: () => envState.value, useRepoPeople: () => null }))
+vi.mock('@/hooks/use-environments', () => ({ useEnvironments: () => envState.value, useRepoPeople: () => null, useEnvWriter: () => null }))
 vi.mock('@/hooks/use-dpns-name', () => ({ useDpnsName: (id: string) => (id === 'BOB' ? 'bob' : undefined) }))
 vi.mock('@/components/author', () => ({ Author: ({ identityId }: { identityId: string }) => <span data-testid="author">{identityId}</span> }))
 vi.mock('@/components/auth/unlock-more', () => ({
@@ -175,7 +175,7 @@ describe('EnvironmentsView', () => {
   })
 
   it('shows the old-format banner on an environment saved under the members key, with the step to take', () => {
-    render(<EnvironmentsView view={page([oldDev({ oldFormat: { sentence: OLD_FORMAT_SENTENCE, unmarked: [], command: 'dg env resave --env dev' } })])} />)
+    render(<EnvironmentsView view={page([oldDev({ oldFormat: { latest: true, sentence: OLD_FORMAT_SENTENCE, unmarked: [], command: 'dg env resave --env dev' } })])} />)
     expect(byTestId('env-audience')[0]?.textContent).toBe('All members (old format)')
     expect(byTestId('env-readers')[0]?.textContent).toBe('Every member of this repo')
     expect(byTestId('env-old-format')[0]?.textContent).toBe(`${OLD_FORMAT_SENTENCE}dg env resave --env dev`)
@@ -185,7 +185,7 @@ describe('EnvironmentsView', () => {
   })
 
   it('shows the shorter note and the names not marked changed when only earlier versions are old', () => {
-    const oldFormat = { sentence: OLD_FORMAT_HISTORY_SENTENCE, unmarked: ['API_TOKEN', 'LOG_LEVEL'], command: 'dg env mark-changed --env dev' }
+    const oldFormat = { latest: false, sentence: OLD_FORMAT_HISTORY_SENTENCE, unmarked: ['API_TOKEN', 'LOG_LEVEL'], command: 'dg env mark-changed --env dev' }
     render(<EnvironmentsView view={page([card({ env: 'dev', audienceLabel: 'All members', oldFormat })])} />)
     expect(byTestId('env-old-format')[0]?.textContent).toBe(`${OLD_FORMAT_HISTORY_SENTENCE}Not marked yet: API_TOKEN, LOG_LEVEL` + 'dg env mark-changed --env dev')
     expect(byTestId('env-old-format-unmarked')[0]?.textContent).toBe('Not marked yet: API_TOKEN, LOG_LEVEL')
@@ -257,7 +257,7 @@ describe('EnvironmentsContent', () => {
     envState.value = { state: { data: null, loading: true, error: null, cause: null, settled: false, reload: () => undefined }, locked: true }
     render(<EnvironmentsContent home={home} addr={addr} />)
     expect(host.querySelector('button')?.textContent).toBe('Unlock to read members-only content')
-    expect(text()).toContain('Edit with dg: dg env set NAME --env production')
+    expect(text()).toContain('Only maintainers can change environments, here or with dg: dg env set NAME --env production')
     expect(byTestId('env-access-sentence')[0]?.textContent).toBe('Access is granted, not logged.')
   })
 })

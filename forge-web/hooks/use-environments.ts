@@ -10,15 +10,20 @@
  * dropped when the tab locks or the members-key session changes.
  */
 
+import { useMemo } from 'react'
 import { useAuth } from '@/contexts/auth-context'
 import { useAsync, type AsyncState } from '@/hooks/use-async'
 import { useSdk } from '@/hooks/use-sdk'
 import { encryptionKeyState, withLetterReader } from '@/lib/auth/encryption-key'
 import { readEnvironments, type EnvBook, type EnvKeys } from '@/lib/env/loader'
+import type { MemberEnvIO } from '@/lib/env/member-change'
+import { sdkEnvSaver } from '@/lib/env/saver'
+import type { EnvSaver } from '@/lib/env/write'
+import type { Network } from '@/lib/constants'
 import type { PeopleView } from '@/lib/env/view'
 import { sdkEnvSources } from '@/lib/env/sources'
 import { privateId } from '@/lib/private'
-import { readMembershipsCached, repoContractIds } from '@/lib/repo'
+import { readMembershipsCached, readMembershipsFresh, repoContractIds } from '@/lib/repo'
 import type { PrivateSession } from '@/lib/repo/private-session'
 import type { RepoHome } from '@/lib/view'
 
@@ -43,27 +48,66 @@ export interface EnvironmentsState {
   readonly viewer: string | null
 }
 
-export function useEnvironments(home: RepoHome): EnvironmentsState {
+/** `enabled` false: nothing is read (a dialog not open yet). */
+export function useEnvironments(home: RepoHome, enabled = true): EnvironmentsState {
   const repo = home.repo
   const { sdk, ready, network } = useSdk(repoContractIds(repo))
   const { identity, unlockScope } = useAuth()
   const session = membersSessionOf(home)
   const state = useAsync<EnvironmentsRead>(
     async () => {
-      const encryption = identity === null ? 'none' : await encryptionKeyState(network, identity)
-      const reader = encryption === 'open' && identity !== null ? identity : null
-      const keys: EnvKeys = {
-        repoId: privateId(repo.repoId),
-        members: session === null ? null : { keys: session.resolution.keys, resolution: session.resolution },
-        withReader: (use) => (reader === null ? use(null) : withLetterReader(network, reader, use)),
-        hasReader: reader !== null,
-      }
+      const { keys, encryption } = await envKeysOf(home, network, identity)
       return { book: await readEnvironments(sdkEnvSources(sdk!, repo), keys), encryption }
     },
     [ready, network, repo.repoId, identity ?? '', unlockScope ?? '', session?.id ?? ''],
-    { enabled: ready && sdk !== null },
+    { enabled: enabled && ready && sdk !== null },
   )
   return { state, locked: asksToUnlock(home, state.data?.encryption ?? null), viewer: identity }
+}
+
+/**
+ * What `identity` opens `home`'s environments with: the members key this tab holds, and this
+ * browser's encryption keys while they are unlocked (`encryption`).
+ */
+export async function envKeysOf(home: RepoHome, network: Network, identity: string | null): Promise<{ readonly keys: EnvKeys; readonly encryption: EnvironmentsRead['encryption'] }> {
+  const session = membersSessionOf(home)
+  const encryption = identity === null ? 'none' : await encryptionKeyState(network, identity)
+  const reader = encryption === 'open' && identity !== null ? identity : null
+  const keys: EnvKeys = {
+    repoId: privateId(home.repo.repoId),
+    members: session === null ? null : { keys: session.resolution.keys, resolution: session.resolution },
+    withReader: (use) => (reader === null ? use(null) : withLetterReader(network, reader, use)),
+    hasReader: reader !== null,
+  }
+  return { keys, encryption }
+}
+
+/**
+ * The reads and writes a maintainer's environment change makes in this tab ({@link EnvSaver},
+ * {@link MemberEnvIO}), or `null` while signed out or before the SDK is ready. Reads are fresh
+ * every time: a plan never decides from a cached member list.
+ */
+export function useEnvWriter(home: RepoHome): { readonly saver: EnvSaver; readonly io: MemberEnvIO } | null {
+  const repo = home.repo
+  const { sdk, ready, network } = useSdk(repoContractIds(repo))
+  const { identity, signer } = useAuth()
+  return useMemo(() => {
+    if (!ready || sdk === null || signer === null || identity === null) return null
+    const io: MemberEnvIO = {
+      read: async (asMaintainer) => {
+        const sources = sdkEnvSources(sdk, repo)
+        const withExtra = asMaintainer === undefined ? sources : { ...sources, maintainers: async () => [...new Set([...(await sources.maintainers()), asMaintainer])] }
+        return readEnvironments(withExtra, (await envKeysOf(home, network, identity)).keys)
+      },
+      members: () => readMembershipsFresh(sdk, repo, network),
+      keys: async (ids) => {
+        const got = await sdkEnvSaver(sdk, signer, repo, network).keysOf(ids)
+        return new Map([...got].map(([id, k]) => [id, k === null ? null : k.keyId]))
+      },
+    }
+    return { saver: sdkEnvSaver(sdk, signer, repo, network), io }
+    // `home` changes identity on every repo read; what the writer uses of it is the repo and its key session
+  }, [ready, sdk, signer, identity, network, repo.repoId, membersSessionOf(home)?.id ?? '']) // eslint-disable-line react-hooks/exhaustive-deps
 }
 
 /**

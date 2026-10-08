@@ -1206,12 +1206,13 @@ async function membersKeyContext(
   auth: WriteAuth,
   repo: RepoRef,
   ops: EncryptionOps | null | undefined,
+  environmentsPlanned = false,
 ): Promise<{ readonly c: import('./private-members').PrivateWriteContext; readonly flows: typeof import('./private-members') } | null> {
   if (repo.visibility !== 'public' || !(await hasMembersKey(sdk, repo))) return null
   if (ops === null || ops === undefined) throw new MembersKeyMembershipError()
   // Loaded on use: `private-members.ts` imports this module.
   const flows = await import('./private-members')
-  return { c: { sdk, auth, repo, network: auth.network, ops }, flows }
+  return { c: { sdk, auth, repo, network: auth.network, ops, environmentsPlanned }, flows }
 }
 
 /** What a key-aware membership change returns in place of its several writes. */
@@ -1228,24 +1229,26 @@ function keyedResult(keyShared = true): MembershipResult {
  * A repo with environment snapshots (kind 8): every environment is a letter to the people its
  * audience covered when it was saved, so any member change (adding, removing, promoting or
  * demoting anyone) leaves some environment saved for the wrong people, and a maintainer change
- * also changes whose snapshots count (D24). `dg` plans those changes and saves the affected
- * environments again; the web does not yet, so it refuses every member change before anything is
- * signed.
+ * also changes whose snapshots count (D24). The web plans those saves and makes them around the
+ * change (`lib/env/member-change.ts`, as `dg collab add|remove` does); a change made without that
+ * plan is refused before anything is signed.
  */
 export class EnvironmentsMembershipError extends Error {
   constructor() {
-    super('This repo has environments. Add, remove or change members with dg for now.')
+    super('This repo has environments: a member change saves them again for the people they cover, so it has to be planned with them first. Nothing was changed.')
     this.name = 'EnvironmentsMembershipError'
   }
 }
 
 /**
  * Refuse a member change (any grant, revoke or role change) in a repo that has environments
- * ({@link EnvironmentsMembershipError}), before anything is written. Public repos check it here;
- * the key-aware flows in `private-members.ts` (private repos, and public ones with a members key)
- * check it again first. Accepting an invitation is not a member change and is never refused.
+ * ({@link EnvironmentsMembershipError}) unless the caller `planned` their saves, before anything
+ * is written. Public repos check it here; the key-aware flows in `private-members.ts` (private
+ * repos, and public ones with a members key) check it again first. Accepting an invitation is not
+ * a member change and is never refused.
  */
-export async function refuseMemberChangeWithEnvironments(sdk: EvoSDK, repo: RepoRef): Promise<void> {
+export async function refuseMemberChangeWithEnvironments(sdk: EvoSDK, repo: RepoRef, planned = false): Promise<void> {
+  if (planned) return
   if ((await readNewestManifestOfKind(sdk, repo, PACK_KIND.ENV_SNAPSHOT)) !== null) throw new EnvironmentsMembershipError()
 }
 
@@ -1340,10 +1343,12 @@ export async function grantMember(
   role: Role,
   intent?: string,
   ops?: EncryptionOps | null,
+  /** The caller planned and makes the environment saves this change needs ({@link refuseMemberChangeWithEnvironments}). */
+  environmentsPlanned = false,
 ): Promise<MembershipResult> {
   if (repo.visibility === 'private') throw new PrivateMembershipError('add')
-  await refuseMemberChangeWithEnvironments(sdk, repo)
-  const keyed = await membersKeyContext(sdk, auth, repo, ops)
+  await refuseMemberChangeWithEnvironments(sdk, repo, environmentsPlanned)
+  const keyed = await membersKeyContext(sdk, auth, repo, ops, environmentsPlanned)
   if (keyed === null) return grantMembershipDoc(sdk, auth, repo, memberId, role, intent)
   const added = await keyed.flows.addPrivateMember(keyed.c, memberId, role, intent ?? `members:add:${memberId}:${role}`)
   return keyedResult(added.shared)
@@ -1404,10 +1409,12 @@ export async function revokeMember(
   role: Role,
   intent?: string,
   ops?: EncryptionOps | null,
+  /** The caller planned and makes the environment saves this change needs. */
+  environmentsPlanned = false,
 ): Promise<DeleteResult> {
   if (repo.visibility === 'private') throw new PrivateMembershipError('remove')
-  await refuseMemberChangeWithEnvironments(sdk, repo)
-  const keyed = await membersKeyContext(sdk, auth, repo, ops)
+  await refuseMemberChangeWithEnvironments(sdk, repo, environmentsPlanned)
+  const keyed = await membersKeyContext(sdk, auth, repo, ops, environmentsPlanned)
   if (keyed === null) return revokeMembershipDoc(sdk, auth, repo, memberId, role)
   await keyed.flows.removePrivateMember(keyed.c, memberId, role, intent ?? `members:remove:${memberId}:${role}`)
   return { deleted: true, actualCredits: null }
@@ -1437,10 +1444,12 @@ export async function changeMemberRole(
   to: Role,
   intent?: string,
   ops?: EncryptionOps | null,
+  /** The caller planned and makes the environment saves this change needs. */
+  environmentsPlanned = false,
 ): Promise<MembershipResult> {
   if (repo.visibility === 'private') throw new PrivateMembershipError('remove')
-  await refuseMemberChangeWithEnvironments(sdk, repo)
-  const keyed = await membersKeyContext(sdk, auth, repo, ops)
+  await refuseMemberChangeWithEnvironments(sdk, repo, environmentsPlanned)
+  const keyed = await membersKeyContext(sdk, auth, repo, ops, environmentsPlanned)
   if (auth.identityId !== repo.ownerId) throw new Error('only the repo owner can change roles')
   if (memberId === repo.ownerId) throw new Error("the owner's own role does not change")
   if (from === to) throw new Error(`they are already a ${to}`)

@@ -312,6 +312,11 @@ export interface PrivateWriteContext {
   readonly repo: RepoRef
   readonly network: Network
   readonly ops: EncryptionOps
+  /**
+   * The caller planned the environment saves this member change needs and makes them around it
+   * (`lib/env/member-change.ts`). Without it a repo with environments refuses the change.
+   */
+  readonly environmentsPlanned?: boolean
 }
 
 export type RotationStep =
@@ -974,8 +979,8 @@ async function postAnchor(
  * transitions.
  */
 export async function addPrivateMember(c: PrivateWriteContext, memberId: string, role: Role, intent: string): Promise<AddOutcome> {
-  // Environments are letters to the people their audience covered: `dg` plans a member change and saves them again first.
-  await refuseMemberChangeWithEnvironments(c.sdk, c.repo)
+  // Environments are letters to the people their audience covered: the change is planned with their saves, or refused.
+  await refuseMemberChangeWithEnvironments(c.sdk, c.repo, c.environmentsPlanned === true)
   if ((await retryWhileMissing(() => findConsent(c.sdk, c.repo, memberId), CONSENT_LAG_RETRIES)) === null) throw new ConsentMissingError(memberId)
   const keys = await fetchIdentityKeys(c.sdk, memberId)
   const canReceive = usableEncryptionKey(keys ?? [], c.repo.forge.core) !== null
@@ -1096,8 +1101,9 @@ export async function removePrivateMember(
   intent: string,
   onStep?: (s: RotationStep) => void,
 ): Promise<number | null> {
-  // Environments are letters to the people their audience covered (and a maintainer's snapshots stop counting, D24): refused before any re-anchor is paid for.
-  await refuseMemberChangeWithEnvironments(c.sdk, c.repo)
+  // Environments are letters to the people their audience covered (and a maintainer's snapshots
+  // stop counting, D24): unless their saves are planned, refused before any re-anchor is paid for.
+  await refuseMemberChangeWithEnvironments(c.sdk, c.repo, c.environmentsPlanned === true)
   // §5.3: a maintainer's anchors stop counting when their role goes. Re-anchor each of their
   // epochs that stays ({@link epochsToReanchor}) first, so no kept epoch falls back.
   // The rotation after the delete chains from the epoch that stays current: refuse now, before

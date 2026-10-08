@@ -244,7 +244,7 @@ describe('the old format', () => {
     expect(oldFormatOf(book, 'dev')).toEqual({ latest: true, unmarked: ['API_TOKEN'], unopened: 0 })
     expect(oldFormatOf(book, 'production')).toBeNull()
     const cards = environmentsView(book).cards
-    expect(cards.find((c) => c.env === 'dev')?.oldFormat).toEqual({ sentence: OLD_FORMAT_SENTENCE, unmarked: [], command: OLD('resave') })
+    expect(cards.find((c) => c.env === 'dev')?.oldFormat).toEqual({ latest: true, sentence: OLD_FORMAT_SENTENCE, unmarked: [], command: OLD('resave') })
     expect(cards.find((c) => c.env === 'production')?.oldFormat).toBeNull()
     expect(OLD_FORMAT_SENTENCE).toBe("Saved in the old format: anyone who joins later can read the values saved this way. Save it again, then change those values where they're used.")
   })
@@ -263,7 +263,7 @@ describe('the old format', () => {
     const book = await readEnvironments(sources([dev1, dev2]), await viewer(alice, 1, true))
     expect(oldFormatOf(book, 'dev')).toEqual({ latest: false, unmarked: ['API_TOKEN'], unopened: 0 })
     const banner = environmentsView(book).cards[0]?.oldFormat
-    expect(banner).toEqual({ sentence: OLD_FORMAT_HISTORY_SENTENCE, unmarked: ['API_TOKEN'], command: OLD('mark-changed') })
+    expect(banner).toEqual({ latest: false, sentence: OLD_FORMAT_HISTORY_SENTENCE, unmarked: ['API_TOKEN'], command: OLD('mark-changed') })
     expect(environmentsView(book).cards[0]?.audienceLabel).toBe('All members')
   })
 
@@ -281,7 +281,7 @@ describe('the old format', () => {
     // carol reads the letter with her encryption key but holds no members key
     const book = await readEnvironments(sources([dev1, dev2]), await viewer(carol, 3, false))
     expect(oldFormatOf(book, 'dev')).toEqual({ latest: false, unmarked: [], unopened: 1 })
-    expect(environmentsView(book).cards[0]?.oldFormat).toEqual({ sentence: OLD_FORMAT_HISTORY_SENTENCE, unmarked: [], command: OLD('mark-changed') })
+    expect(environmentsView(book).cards[0]?.oldFormat).toEqual({ latest: false, sentence: OLD_FORMAT_HISTORY_SENTENCE, unmarked: [], command: OLD('mark-changed') })
   })
 })
 
