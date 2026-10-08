@@ -1550,11 +1550,23 @@ async fn mirror_status(
         &mirrors,
         roles,
     );
-    for uri in order.iter().take(MIRRORS_PROBED) {
-        for row in probe_uris(std::slice::from_ref(uri), reader).await {
-            let size_ok = row["sizeBytes"]
-                .as_u64()
-                .is_none_or(|n| m.size_bytes == 0 || n == m.size_bytes);
+    // Four at a time, in order: each probe ends by its own timeout, so a pack costs at most
+    // `MIRRORS_PROBED / 4` of them whatever the mirrors do.
+    let probed = order.len().min(MIRRORS_PROBED);
+    let answers: Vec<Vec<serde_json::Value>> = {
+        use futures::StreamExt as _;
+        futures::stream::iter(order.iter().take(MIRRORS_PROBED))
+            .map(|uri| probe_uris(std::slice::from_ref(uri), reader))
+            .buffered(4)
+            .collect()
+            .await
+    };
+    for (uri, rows) in order.iter().zip(answers) {
+        for row in rows {
+            let size = row["sizeBytes"].as_u64();
+            // A size the probe reports must be the pack's; none reported (no Content-Length)
+            // still answers, and is said to be unknown.
+            let size_ok = size.is_none_or(|n| m.size_bytes == 0 || n == m.size_bytes);
             if row["ok"] == json!(true) && size_ok {
                 // Several records may hold one address: the one a reader ranks first is credited.
                 let by = mirrors
@@ -1565,12 +1577,20 @@ async fn mirror_status(
                 return json!({
                     "checked": true,
                     "recorded": recorded,
-                    "serving": { "uri": row["uri"], "by": by },
+                    "addresses": order.len(),
+                    "probed": probed,
+                    "serving": { "uri": row["uri"], "by": by, "sizeKnown": size.is_some() },
                 });
             }
         }
     }
-    json!({ "checked": true, "recorded": recorded, "serving": serde_json::Value::Null })
+    json!({
+        "checked": true,
+        "recorded": recorded,
+        "addresses": order.len(),
+        "probed": probed,
+        "serving": serde_json::Value::Null,
+    })
 }
 
 /// The line under a pack's DOWN rows that says what its mirrors do ([`mirror_status`]); `None`
@@ -1591,12 +1611,27 @@ fn mirror_line(mirror: &serde_json::Value) -> Option<String> {
     }
     let serving = &mirror["serving"];
     if serving.is_null() {
+        let (addresses, probed) = (
+            mirror["addresses"].as_u64().unwrap_or(0),
+            mirror["probed"].as_u64().unwrap_or(0),
+        );
+        // Addresses past the probe limit were not tried: not the same as not answering.
+        if addresses > probed {
+            return Some(format!(
+                "none of the first {probed} of {addresses} recorded pack mirror addresses answers; the rest were not checked ({recorded} recorded)"
+            ));
+        }
         return Some(format!(
             "no recorded pack mirror answers either ({recorded} recorded)"
         ));
     }
+    let size = if serving["sizeKnown"] == json!(false) {
+        "it did not report a size"
+    } else {
+        "it answers with a pack of this size"
+    };
     Some(format!(
-        "served by a pack mirror: {} (recorded by {}; it answers with a pack of this size, the bytes are not checked here)",
+        "served by a pack mirror: {} (recorded by {}; {size}, the bytes are not checked here)",
         crate::fmt::safe(serving["uri"].as_str().unwrap_or("")),
         serving["by"].as_str().unwrap_or("")
     ))

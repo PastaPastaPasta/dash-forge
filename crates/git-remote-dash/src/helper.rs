@@ -1440,7 +1440,19 @@ fn unfollowed_places(unreadable: &[Unreadable]) -> Option<Vec<String>> {
 /// generic `io error:` / `GET request failed:` layers or the gateway hint (a fix line says
 /// it).
 fn brief(error: &str) -> String {
-    let text = error.split(" — ").next().unwrap_or(error);
+    // The mirrors clause a read appends (`; pack mirrors …`) is kept whole: only the reasons
+    // before it, and its own tail, are cut at a ` — ` hint, so a reason that holds one (an S3
+    // credential hint) does not take the clause with it.
+    let marker = format!("; {}", forge_core::storage::read::MIRRORS_CLAUSE);
+    let (head, clause) = match error.split_once(&marker) {
+        Some((head, rest)) => (head, Some(rest)),
+        None => (error, None),
+    };
+    let cut = |t: &str| t.split(" — ").next().unwrap_or(t).to_string();
+    let mut text = cut(head);
+    if let Some(rest) = clause {
+        text = format!("{text}{marker}{}", cut(rest));
+    }
     let text = text
         .replace("io error: ", "")
         .replace("GET request failed: ", "");
@@ -4092,6 +4104,20 @@ mod tests {
             "{cause}"
         );
         assert!(!cause.contains("add a gateway"), "{cause}");
+        // A recorded copy's reason with a ` — ` of its own (an S3 credential hint) is cut there,
+        // and the mirrors clause after it stays.
+        let s3 = Unreadable {
+            hash: "f".repeat(64),
+            error: "io error: no external copy verified (1 candidate(s)): S3 profile b (HTTP 403 — check the credentials); pack mirrors tried: m.example (HTTP 404)".into(),
+        };
+        let cause = packs_unreadable("OWNER/repo", true, &[s3], 1, None)
+            .cause
+            .unwrap();
+        assert!(!cause.contains("check the credentials"), "{cause}");
+        assert!(
+            cause.contains("pack mirrors tried: m.example (HTTP 404)"),
+            "{cause}"
+        );
         // Recorded only where no reader follows, and mirrors refused: both are said, and the
         // clause is not read as one more recorded place.
         let private = Unreadable {

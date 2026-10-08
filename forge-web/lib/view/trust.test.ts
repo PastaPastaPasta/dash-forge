@@ -210,6 +210,14 @@ describe('where the bytes came from row', () => {
       }),
     )
     expect(r.source.detail).toBe("mirror.example. Also recorded: other.example (not tried). Didn't answer: pub-9a1.r2.dev (HTTP 530), ipfs gateway ipfs.io (down: HTTP 429).")
+    // A gateway that failed is its host's own try: a recorded https address on it is not "not tried".
+    const gw = deriveTrust(
+      inputs({
+        checks: checks({ objectsVerified: 1, sources: ['platform'], unreachable: ['ipfs gateway ipfs.io (down: HTTP 429)'] }),
+        configuredUris: ['https://ipfs.io/ipfs/bafy', 'ipfs://bafy'],
+      }),
+    )
+    expect(gw.source.detail).not.toContain('not tried')
     // A copy that failed while another served is named once too.
     const fell = deriveTrust(
       inputs({ checks: checks({ objectsVerified: 1, sources: ['platform'], fellBackFrom: ['pub-9a1.r2.dev (HTTP 404)'] }), configuredUris: ['https://pub-9a1.r2.dev/forge'] }),

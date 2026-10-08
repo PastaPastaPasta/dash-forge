@@ -2030,6 +2030,11 @@ mod tests {
         let dir = d.path();
         let git = |args: &[&str]| -> String {
             let out = Command::new("git")
+                // A hook or caller may point git at another repository.
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_OBJECT_DIRECTORY")
+                .env_remove("GIT_INDEX_FILE")
                 .arg("-C")
                 .arg(dir)
                 .args([

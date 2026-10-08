@@ -60,7 +60,10 @@ export interface ListSearch<Q> {
 
 /** A query string's parameters, in any order, as one string: equal for the same parameters. */
 export function paramsKey(p: { toString(): string }): string {
-  return [...new URLSearchParams(p.toString())].map(([k, v]) => `${k}=${v}`).sort().join('&')
+  // Encoded, so `q=a%26sort%3Doldest` and `q=a&sort=oldest` are not the same key.
+  const sorted = new URLSearchParams(p.toString())
+  sorted.sort()
+  return sorted.toString()
 }
 
 /** Whether two query strings hold the same parameters, in any order. */

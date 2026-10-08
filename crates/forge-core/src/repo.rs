@@ -4366,7 +4366,9 @@ fn restores_recorded(copies: &[&PackManifestInfo], uris: &[String]) -> bool {
 
 /// `last`, the error of a read whose every recorded copy failed, with `clause` (what became of
 /// the pack mirrors) after it, so the cause names every place that was tried and not only the
-/// recorded copies. Only an I/O failure carries it: another error is not about copies.
+/// recorded copies. An I/O failure or a failed integrity check (a copy that served bytes which
+/// do not hash to the pack) carries it, the latter as its message plus the clause; another error
+/// is not about copies.
 ///
 /// Callers cut an error at `; ` (one place each) and at ` — ` (the reader's hint), so the clause
 /// holds neither (a refused mirror's reason may), and the hint, when there is one, stays last.
@@ -4378,6 +4380,7 @@ fn with_mirror_clause(last: Error, clause: &str) -> Error {
             Some(reasons) => format!("{reasons}; {clause}{IPFS_GATEWAY_HINT}"),
             None => format!("{why}; {clause}"),
         }),
+        Error::Integrity => Error::Io(format!("{}; {clause}", Error::Integrity)),
         other => other,
     }
 }
@@ -5088,6 +5091,16 @@ mod tests {
         assert!(
             named.ends_with("; pack mirrors tried: m (denied - see the bucket, retry)"),
             "{named}"
+        );
+        // A copy whose bytes did not hash to the pack: its message stays, the clause follows.
+        let integrity =
+            super::with_mirror_clause(Error::Integrity, "pack mirrors tried: m (404)").to_string();
+        assert_eq!(
+            integrity,
+            format!(
+                "io error: {}; pack mirrors tried: m (404)",
+                Error::Integrity
+            )
         );
         // Not an I/O failure: it is not about copies, and is left as it was.
         assert!(matches!(
