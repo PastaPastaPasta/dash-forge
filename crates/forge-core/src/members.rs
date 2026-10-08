@@ -185,8 +185,8 @@ pub fn role_limits(role: Role, repo: &RepoRef) -> Option<String> {
         )),
         Role::Reader => Some(format!(
             "{}: readers can read members-only content, comment, review with comments and open \
-             issues and pull requests, but cannot approve or change state (push, label, assign, \
-             close or reopen, set milestones, post check runs or re-run them)",
+             issues and pull requests, but cannot change state (push, label, assign, close or \
+             reopen, set milestones, post check runs or re-run them) or approve",
             you_are(role, repo)
         )),
     }
