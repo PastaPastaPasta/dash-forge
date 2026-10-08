@@ -11,15 +11,23 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Pack mirrors (UPDATE-1) are read only after every copy failed: these tests count the copies'
 // own reads, so the mirror read is stubbed (none recorded) unless a test sets addresses.
 const mirrorUris: { value: string[] } = { value: [] }
-vi.mock('../repo/pack-mirrors', async (orig) => ({
-  ...(await orig<typeof import('../repo/pack-mirrors')>()),
-  mirrorUrisOf: async () => mirrorUris.value,
-}))
+const mirrorUriResets = { count: 0 }
+vi.mock('../repo/pack-mirrors', async (orig) => {
+  const real = await orig<typeof import('../repo/pack-mirrors')>()
+  return {
+    ...real,
+    mirrorUrisOf: async () => mirrorUris.value,
+    resetMirrorUris: () => {
+      mirrorUriResets.count += 1
+      real.resetMirrorUris()
+    },
+  }
+})
 
 import { CHUNK_PAYLOAD_MAX, PACK_KIND } from '../constants'
 import type { PackManifest, RepoRef } from '../repo'
@@ -33,6 +41,7 @@ import {
   buildPackSource,
   CHUNK_QUERIES_IN_FLIGHT,
   clearChunkCache,
+  forgetDeadMirrors,
   loadArtifactBytesProgress,
   loadBrowseContext,
   loadStoredArtifactBytes,
@@ -41,7 +50,7 @@ import {
   resetExternalFetchState,
 } from './browse-source'
 import { memoryArtifactStore, setIndexArtifactStore } from './index-cache'
-import { contentChecks, resetContentChecks } from './content-checks'
+import { clearUnreachable, contentChecks, resetContentChecks } from './content-checks'
 import { repoKey } from '../repo'
 
 // These fixtures reuse short fake packHashes ('aa', 'bb') with DIFFERENT bytes per suite —
@@ -1122,6 +1131,111 @@ describe('fork pack via a platform:// locator', () => {
       resetExternalFetchState()
       resetContentChecks()
     }
+  })
+
+  describe('a repo only a mirror serves', () => {
+    const dead = 'https://dead.example/p'
+    const deadManifest = (): PackManifest => ({
+      ...forkManifest(`platform://CORE/PARENT/gone/${hash}`),
+      uris: [`platform://CORE/PARENT/gone/${hash}`, dead],
+    })
+    let deadAsked = 0
+    let mirrorAsked = 0
+
+    beforeEach(() => {
+      deadAsked = 0
+      mirrorAsked = 0
+      vi.useFakeTimers()
+      vi.stubGlobal('fetch', (url: string, init?: RequestInit) => {
+        if (String(url).includes('dead.example')) {
+          deadAsked += 1
+          // A host that never answers: only the reader's own deadline ends the request.
+          return new Promise((_, reject) => init?.signal?.addEventListener('abort', () => reject(new Error('aborted'))))
+        }
+        mirrorAsked += 1
+        return Promise.resolve(new Response(bytes.slice()))
+      })
+      mirrorUris.value = ['https://honest.example/p']
+      resetExternalFetchState()
+      resetContentChecks()
+    })
+
+    afterEach(() => {
+      overrideMirroredBytesKept(null)
+      mirrorUris.value = []
+      vi.useRealTimers()
+      vi.unstubAllGlobals()
+      resetExternalFetchState()
+      resetContentChecks()
+    })
+
+    /** A range read, letting the 15 s deadline of every silent copy it waits on pass. */
+    async function rangeAfterTimeouts(read: (s: number, e: number) => Promise<Uint8Array>, start: number, end: number): Promise<Uint8Array> {
+      let done = false
+      const pending = read(start, end).finally(() => {
+        done = true
+      })
+      // The copies are asked after some async work: keep the clock moving until it settles.
+      for (let i = 0; i < 200 && !done; i++) {
+        await vi.advanceTimersByTimeAsync(1_000)
+        await new Promise<void>((resolve) => process.nextTick(resolve))
+      }
+      return pending
+    }
+
+    it('answers later ranges from the checked mirror pack before asking the dead copies again', async () => {
+      const { sdk } = parentSdk(bytes)
+      const read = artifactRangeFetch(sdk, FORK, deadManifest())
+      expect(Array.from(await rangeAfterTimeouts(read, 0, 8))).toEqual(Array.from(bytes.subarray(0, 8)))
+      expect(deadAsked).toBe(1)
+      for (const start of [8, 16, 24]) {
+        expect(Array.from(await read(start, start + 8))).toEqual(Array.from(bytes.subarray(start, start + 8)))
+      }
+      expect(deadAsked).toBe(1)
+      expect(mirrorAsked).toBe(1)
+    })
+
+    it('remembers a silent copy for a while when the mirror pack is not kept, until "Try again" or the memory runs out', async () => {
+      const { sdk } = parentSdk(bytes)
+      overrideMirroredBytesKept(total - 1) // never kept: every range goes through the copies again
+      const read = artifactRangeFetch(sdk, FORK, deadManifest())
+      await rangeAfterTimeouts(read, 0, 8)
+      expect(deadAsked).toBe(1)
+      // The second range does not wait out the deadline again.
+      expect(Array.from(await read(8, 16))).toEqual(Array.from(bytes.subarray(8, 16)))
+      expect(Array.from(await read(16, 24))).toEqual(Array.from(bytes.subarray(16, 24)))
+      expect(deadAsked).toBe(1)
+      // "Try again" asks it afresh.
+      forgetDeadMirrors()
+      await rangeAfterTimeouts(read, 24, 32)
+      expect(deadAsked).toBe(2)
+      // A timeout may have been a bad moment: after five minutes it is asked again.
+      await read(32, 40)
+      expect(deadAsked).toBe(2)
+      vi.setSystemTime(Date.now() + 5 * 60_000 + 1)
+      await rangeAfterTimeouts(read, 40, 48)
+      expect(deadAsked).toBe(3)
+    })
+
+    it('"Try again" reads the mirror records again, and the storage row keeps saying a mirror serves the repo', async () => {
+      const { sdk } = parentSdk(bytes)
+      const read = artifactRangeFetch(sdk, FORK, deadManifest())
+      await rangeAfterTimeouts(read, 0, 8)
+      expect(contentChecks('FORK').mirroredPacks).toEqual([hash])
+      // The retry clears what the card reported, and forgets the mirror addresses it memoised.
+      const resets = mirrorUriResets.count
+      forgetDeadMirrors()
+      clearUnreachable('FORK')
+      expect(mirrorUriResets.count).toBe(resets + 1)
+      expect(contentChecks('FORK').mirroredPacks).toEqual([])
+      // The retry's reads find the mirror again and say so.
+      await rangeAfterTimeouts(read, 0, 8)
+      expect(contentChecks('FORK').mirroredPacks).toEqual([hash])
+      // Even a read answered from the kept pack notes it after the ledger is cleared.
+      clearUnreachable('FORK')
+      await read(8, 16)
+      expect(contentChecks('FORK').mirroredPacks).toEqual([hash])
+    })
   })
 
   it('drops the least recently used mirror-served pack once the kept bytes pass the budget', async () => {

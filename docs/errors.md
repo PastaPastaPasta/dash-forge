@@ -51,7 +51,7 @@ Messages never include secrets. Storage credentials are referenced by `env:` or 
 
 **What to do:** check the owner id and the name (`dg repo list --owner <identity id>`). Also check the network, because a repo created on testnet does not exist on mainnet: `dg doctor` shows which network and contracts are in use.
 
-`dg` also reports E102 before anything is written when a command names a ref the repository does not have: a pull request's base branch (`dg pr create --base`), or a release's tag (`dg release create --tag`; push the tag first). The message lists the branches or tags it does have. `dg issue label … add` does the same for a label the repository does not define (define it first with `dg label create`), and a DPNS name that is not registered names the network it was looked up on.
+`dg` also reports E102 before anything is written when a command names a ref the repository does not have: a pull request's base branch (`dg pr create --base`), or a release's tag (`dg release create --tag`; push the tag first). The message lists the branches or tags it does have. `dg issue label … add` does the same for a label the repository does not define (define it first with `dg label create`), and a DPNS name that is not registered names the network it was looked up on. `dg storage mirror add` reports it, before anything is paid, when the repository lists no pack with that hash (`dg storage status <repo>` lists them).
 
 ## E103
 
@@ -95,7 +95,7 @@ The message lists the conflicting files.
 
 **What to do:** see `dg <command> --help`.
 
-`dg storage mirror add` reports E201, before anything is signed, for addresses a mirror can't hold (more than 4, a mix of https and IPFS, a user name or password in a URL, an `ipfs://` address with a path) and for an address on this machine or a private network (`localhost`, `127.0.0.1`, `192.168.…`): other readers never fetch from those. Record a public https address or an `ipfs://` CID.
+`dg storage mirror add` reports E201, before anything is signed, for addresses a mirror can't hold (more than 4, a mix of https and IPFS, a user name or password in a URL, an `ipfs://` address with a path) and for an address other readers never fetch: one on this machine or a private network (`localhost`, `127.0.0.1`, `192.168.…`, `198.18.…`, and the IPv6 forms that embed them), one that is not a valid address, or a temporary tunnel name (`*.trycloudflare.com`, `*.ts.net`), which a push refuses too. Record a stable public https address or an `ipfs://` CID.
 
 ## E202
 
@@ -135,7 +135,7 @@ A `config.toml` that does not parse is E204 too, from every `dg` command and fro
 
 ## E207
 
-**Not supported for a private repository.** The operation would publish a private repository's content unencrypted, or needs keys that only its members hold, so `dg` refuses it before writing anything. In this release that covers forks of a private repository, webhooks, and verifying ref tips without the repository's keys. Releases are supported: a private repository's releases are sealed ([private repositories §16](security/private-repos.md#16-sealed-releases)), and `dg release create`, `dg release unpublish` and `dg release download` handle them.
+**Not supported for a private repository.** The operation would publish a private repository's content unencrypted, or needs keys that only its members hold, so `dg` refuses it before writing anything. In this release that covers forks of a private repository, webhooks, mirrors of its packs (`dg storage mirror add`: its packs are sealed to its members), and verifying ref tips without the repository's keys. Releases are supported: a private repository's releases are sealed ([private repositories §16](security/private-repos.md#16-sealed-releases)), and `dg release create`, `dg release unpublish` and `dg release download` handle them.
 
 **What to do:** none within the private repository in this release. The label definitions (`dg label create`) and the other plaintext items in [private-repos §7](security/private-repos.md#7-metadata-that-stays-visible) are allowed but visible to everyone; `dg` says so before it writes them.
 
