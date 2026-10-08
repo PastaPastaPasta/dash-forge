@@ -329,7 +329,7 @@ fn create_members_only_matches() {
         ),
         (
             result(StepOutcome::Created, None),
-            MembersPlan::NoKey,
+            MembersPlan::NoKey { on_identity: true },
             "off",
         ),
         (result(StepOutcome::Existed, None), MembersPlan::On, ""),

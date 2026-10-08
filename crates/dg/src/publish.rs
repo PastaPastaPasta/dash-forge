@@ -99,8 +99,21 @@ pub(crate) enum MembersPlan {
     On,
     /// `--no-members-only`.
     Skipped,
-    /// The default, but the identity file holds no usable encryption key to share it with.
-    NoKey,
+    /// The default, but the key `dg` signs with holds no usable encryption key to share it
+    /// with. `on_identity`: the identity has one on chain (this computer just doesn't hold it).
+    NoKey { on_identity: bool },
+}
+
+impl MembersPlan {
+    /// How to get an encryption key `dg` can use: store the identity's, or add one.
+    fn key_fix(self) -> &'static str {
+        match self {
+            MembersPlan::NoKey { on_identity: false } => {
+                "your identity has no encryption key: `dg auth keys add --encryption` adds one"
+            }
+            _ => "the key dg stored holds no encryption key: `dg auth status` says how to store yours",
+        }
+    }
 }
 
 /// Which command is running.
@@ -700,7 +713,12 @@ async fn members_plan(
     Ok(if held.sender().is_some() {
         MembersPlan::On
     } else {
-        MembersPlan::NoKey
+        MembersPlan::NoKey {
+            on_identity: identity
+                .public_keys()
+                .iter()
+                .any(|k| k.purpose == "ENCRYPTION" && !k.disabled),
+        }
     })
 }
 
@@ -715,9 +733,9 @@ fn members_line(members: MembersPlan, repo: &str, price: Option<f64>) -> Option<
         MembersPlan::Skipped => Some(format!(
             "members-only content stays off: `dg repo members enable {repo}` turns it on later"
         )),
-        MembersPlan::NoKey => Some(format!(
-            "members-only content stays off: your identity file has no encryption key \
-             (`dg auth keys add --encryption`, then `dg repo members enable {repo}`)"
+        MembersPlan::NoKey { .. } => Some(format!(
+            "members-only content stays off: {}; then `dg repo members enable {repo}`",
+            members.key_fix()
         )),
     }
 }
@@ -1053,7 +1071,7 @@ pub(crate) fn members_json(
         (None, MembersPlan::Skipped) if !result.already_existed() => {
             json!({ "status": "off", "reason": "skipped" })
         }
-        (None, MembersPlan::NoKey) if !result.already_existed() => {
+        (None, MembersPlan::NoKey { .. }) if !result.already_existed() => {
             json!({ "status": "off", "reason": "noEncryptionKey" })
         }
         _ => Value::Null,
@@ -1098,9 +1116,10 @@ fn print_members(result: &forge_core::create::CreateRepoResult, members: Members
         Some(MembersOnly::Failed(e)) => {
             eprint!("{}", members_warning(&members_error(e, &repo)));
         }
-        None if members == MembersPlan::NoKey && !result.already_existed() => {
+        None if matches!(members, MembersPlan::NoKey { .. }) && !result.already_existed() => {
             println!(
-                "  members-only content is off: add an encryption key (`dg auth keys add --encryption`), then `dg repo members enable {repo}`"
+                "  members-only content is off: {}; then `dg repo members enable {repo}`",
+                members.key_fix()
             );
         }
         None => {}
@@ -1773,11 +1792,17 @@ mod tests {
             skipped.contains("stays off") && skipped.contains("dg repo members enable o/r"),
             "{skipped}"
         );
-        let no_key = members_line(MembersPlan::NoKey, "o/r", None).unwrap();
+        let none = members_line(MembersPlan::NoKey { on_identity: false }, "o/r", None).unwrap();
         assert!(
-            no_key.contains("dg auth keys add --encryption")
-                && no_key.contains("dg repo members enable o/r"),
-            "{no_key}"
+            none.contains("dg auth keys add --encryption")
+                && none.contains("dg repo members enable o/r"),
+            "{none}"
+        );
+        // the identity has one and this computer doesn't hold it: never "add one"
+        let held = members_line(MembersPlan::NoKey { on_identity: true }, "o/r", None).unwrap();
+        assert!(
+            held.contains("dg auth status") && !held.contains("keys add"),
+            "{held}"
         );
     }
 
