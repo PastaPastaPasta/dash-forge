@@ -677,8 +677,13 @@ impl Helper {
             Some(c) if c > 0 => Charge::Measured(c),
             _ => Charge::Estimated(est_credits),
         };
-        let (text, event) =
-            progress::done_line(charge, after, conn.repo.owner_id(), conn.repo.name());
+        let (text, event) = progress::done_line(
+            charge,
+            after,
+            conn.repo.owner_id(),
+            conn.repo.name(),
+            conn.repo.visibility,
+        );
         progress.emit(&text, &event);
         progress::report(&event);
     }

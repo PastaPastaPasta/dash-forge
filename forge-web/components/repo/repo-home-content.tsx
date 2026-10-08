@@ -259,6 +259,10 @@ function EmptyRepoState({ home, addr, branch }: { home: RepoHome; addr: RepoAddr
         </h2>
       </div>
       <h3 className="mb-1.5 text-dense font-medium">Push an existing repository</h3>
+      <p className="mb-1.5 text-[12px] text-anvil-600 dark:text-anvil-300" data-testid="empty-repo-sign-in">
+        Pushing needs <span className="font-mono">dg</span> signed in. Run <span className="font-mono">dg auth login &lt;identity file&gt;</span> first,
+        or <span className="font-mono">dg auth new</span> to make an identity.
+      </p>
       <CopyRow text={cmd.remoteAdd} label="Copy the remote add command" />
       <CopyRow text={cmd.setNetwork} label="Copy the network setting" />
       <CopyRow text={`git push -u origin ${shellWord(branch.replace(/^refs\/heads\//, ''))}`} label="Copy the push command" />

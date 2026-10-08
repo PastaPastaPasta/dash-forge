@@ -29,7 +29,7 @@ use forge_core::repo::BACKEND_URIS_V2;
 use forge_core::resolve::repo_slug;
 use forge_core::storage::policy::git_config_scoped;
 use forge_core::storage::{human_bytes, ResolvedPolicy, StoragePolicy, StorageProfiles};
-use forge_core::user_error::{codes, dash, web_url, UserError};
+use forge_core::user_error::{codes, dash, repo_link, UserError};
 
 use crate::context::Ctx;
 use crate::fmt::{cost_json, cost_line, REPO_CREATE_ESTIMATE_CREDITS};
@@ -844,7 +844,7 @@ async fn publish(ctx: &Ctx, name: Option<&str>, opts: &CreateOptions, flow: Flow
     .await
     .context("creating the repository")?;
     let repo = &result.repo;
-    let url = web_url(repo.owner_id(), repo.name());
+    let url = repo_link(repo.owner_id(), repo.name(), repo.visibility);
     // The config is the last step. Only one this run signed is reported: a resumed one was
     // signed by an earlier run, whose flags this one may not share.
     let config_written = result

@@ -486,7 +486,8 @@ const sortedParams = (q: URLSearchParams): string => JSON.stringify([...q].sort(
  * address bar shows it once the page has loaded (CJ-6). The owner is written by `ownerName`, their
  * DPNS name, when the page has read it (`alice` for `alice.dash`), else as the route writes it.
  * Every param the short path does not carry stays in its query (`?q=`, `?repo=`, `?page=`), as the
- * shim carries the query through.
+ * shim carries the query through, except {@link JUST_CREATED_PARAM}: a link copied from the bar
+ * should not make the next reader retry a not-found.
  *
  * Null when this build hands out no short URLs, the route has no short form, or the shim would not
  * open exactly this route again: `expand(short(route))` must give back every param.
@@ -512,9 +513,14 @@ export function sameRoute(a: string, b: string): boolean {
   return key(a) === key(b)
 }
 
+/** The param a page just created carries (`/new`, a new issue or pull request): the page reads it once. */
+export const JUST_CREATED_PARAM = 'created'
+
 /** {@link shortRouteFor} with the owner written as `owner` (the route's own when undefined). */
 function shortRouteWith(pathname: string, search: string, owner: string | undefined): string | null {
   const params = new URLSearchParams(search)
+  // `created=1` only tells the page just made it to retry a not-found read: not part of its link.
+  params.delete(JUST_CREATED_PARAM)
   const repo = { owner: owner ?? params.get('owner') ?? '', name: params.get('name') ?? '' }
   if (!hasShortPath(repo)) return null
   const found = targetOf(bareRoute(pathname), params)
