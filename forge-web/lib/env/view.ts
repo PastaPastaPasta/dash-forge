@@ -308,7 +308,7 @@ export function exposureLine(member: string, e: Exposure): string {
 
 /** The removal dialog's line when `member` stays a maintainer: nothing to change, they still read the environments. */
 export function keptAccessLine(member: string): string {
-  return `${member} stays a maintainer, so they can still read this repo's environments. Nothing needs changing.`
+  return `${member} stays a maintainer, so they can still read the environments shared with maintainers.`
 }
 
 /** What the removal dialog lists for `removed` ({@link exposureFor}), and the environments the remover can't read. */

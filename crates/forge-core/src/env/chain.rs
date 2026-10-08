@@ -387,7 +387,8 @@ pub struct Exposure {
 #[must_use]
 pub fn exposure(envs: &[EnvHistory<'_>], removed: &str, held_members_key: bool) -> Vec<Exposure> {
     let mut out: Vec<Exposure> = Vec::new();
-    let could = |s: &Snapshot| (s.members_key() && held_members_key) || s.to.iter().any(|t| t == removed);
+    let could =
+        |s: &Snapshot| (s.members_key() && held_members_key) || s.to.iter().any(|t| t == removed);
     for e in envs {
         let mut names = BTreeSet::new();
         for head in e.heads {

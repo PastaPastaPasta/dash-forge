@@ -226,10 +226,7 @@ pub(crate) fn slot_block(
 ) -> Result<Vec<u8>, PrivateError> {
     let n = recipients.len();
     let first = recipients.first().ok_or(PrivateError::Malformed)?;
-    if n > max
-        || first.identity_id != *owner_id
-        || first.public_key != sender.public_key()
-    {
+    if n > max || first.identity_id != *owner_id || first.public_key != sender.public_key() {
         return Err(PrivateError::Malformed);
     }
     for (i, r) in recipients.iter().enumerate() {

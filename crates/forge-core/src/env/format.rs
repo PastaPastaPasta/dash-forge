@@ -6,9 +6,7 @@ use std::fmt::Write as _;
 
 use zeroize::{Zeroize, Zeroizing};
 
-use super::{
-    valid_env_name, valid_var_name, Audience, Group, MAX_RECIPIENTS, MAX_RECIPIENTS_V1,
-};
+use super::{valid_env_name, valid_var_name, Audience, Group, MAX_RECIPIENTS, MAX_RECIPIENTS_V1};
 
 /// Snapshots are padded to a multiple of this many bytes.
 pub const BUCKET: usize = 512;
@@ -218,9 +216,13 @@ impl Snapshot {
         }
         match self.audience.group {
             Some(Group::Members) if self.to.is_empty() => Ok(()),
-            Some(Group::Members) => bad("an old-format Members snapshot lists no recipients".into()),
+            Some(Group::Members) => {
+                bad("an old-format Members snapshot lists no recipients".into())
+            }
             Some(Group::Maintainers) => {
-                if self.to.is_empty() || self.to.len() > MAX_RECIPIENTS_V1 || !distinct_ids(&self.to)
+                if self.to.is_empty()
+                    || self.to.len() > MAX_RECIPIENTS_V1
+                    || !distinct_ids(&self.to)
                 {
                     return bad(format!(
                         "a version-1 Maintainers snapshot goes to 1 to {MAX_RECIPIENTS_V1} different people"
@@ -259,7 +261,9 @@ impl Snapshot {
         if !self.marked_changed.iter().all(|n| valid_var_name(n))
             || self.marked_changed.windows(2).any(|w| w[0] >= w[1])
         {
-            return bad("the names marked changed are not variable names in order, each once".into());
+            return bad(
+                "the names marked changed are not variable names in order, each once".into(),
+            );
         }
         Ok(())
     }

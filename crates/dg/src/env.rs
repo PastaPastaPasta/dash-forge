@@ -112,16 +112,35 @@ async fn audience_of(s: &Session, opts: &AudienceOpts) -> Result<Option<Audience
             let mut people = identities(s, &opts.to).await?;
             people.extend(identities(s, &opts.also).await?);
             people.push(s.identity.id());
-            Ok(Some(Audience::new(None, people)))
+            too_many(Audience::new(None, people)).map(Some)
         }
         _ if !opts.to.is_empty() => Err(usage(
             "--to goes with --audience people; to add people to a group, use --also",
         )),
-        group => Ok(Some(Audience::new(
+        group => too_many(Audience::new(
             group.group(),
             identities(s, &opts.also).await?,
-        ))),
+        ))
+        .map(Some),
     }
+}
+
+/// `audience`, unless it names more people than an environment can be shared with (DESIGN §10).
+fn too_many(audience: Audience) -> Result<Audience> {
+    let max = forge_core::env::MAX_RECIPIENTS;
+    if audience.also.len() <= max {
+        return Ok(audience);
+    }
+    Err(UserError::new(
+        codes::USAGE,
+        format!(
+            "that is {} people. An environment can be shared with at most {max}.",
+            audience.also.len()
+        ),
+    )
+    .fix("choose a smaller group or fewer people")
+    .note("nothing was written")
+    .into())
 }
 
 /// `dg env` subcommands.
@@ -457,10 +476,19 @@ pub async fn run(ctx: &Ctx, cmd: &EnvCommand) -> Result<()> {
             };
             change_audience(ctx, repo, env, &opts).await
         }
-        EnvCommand::Share { repo, env, people } => share(ctx, repo, env, people, true).await,
-        EnvCommand::Unshare { repo, env, people } => share(ctx, repo, env, people, false).await,
+        EnvCommand::Share { repo, env, people } => {
+            let (repo, people) = shift_people(repo, people);
+            share(ctx, &repo, env, &people, true).await
+        }
+        EnvCommand::Unshare { repo, env, people } => {
+            let (repo, people) = shift_people(repo, people);
+            share(ctx, &repo, env, &people, false).await
+        }
         EnvCommand::Resave { repo, env, all } => resave(ctx, repo, env.as_deref(), *all).await,
-        EnvCommand::MarkChanged { repo, env, names } => mark_changed(ctx, repo, env, names).await,
+        EnvCommand::MarkChanged { repo, env, names } => {
+            let (repo, names) = shift_entries(repo, names);
+            mark_changed(ctx, &repo, env, &names).await
+        }
     }
 }
 
@@ -480,6 +508,19 @@ fn shift_entries(repo: &str, entries: &[String]) -> (String, Vec<String>) {
             (here, all)
         }
         _ => (repo.to_owned(), entries.to_vec()),
+    }
+}
+
+/// As [`shift_entries`], for people: inside a clone, an argument in the repository slot that
+/// can't be a repository (no `/`) is the first person.
+fn shift_people(repo: &str, people: &[String]) -> (String, Vec<String>) {
+    match (repo.contains('/'), crate::storage::clone_repo()) {
+        (false, Some(here)) => {
+            let mut all = vec![repo.to_owned()];
+            all.extend(people.iter().cloned());
+            (here, all)
+        }
+        _ => (repo.to_owned(), people.to_vec()),
     }
 }
 
@@ -582,7 +623,10 @@ fn blocked_error(repo: &Repo, env: &str, blocked: Blocked, maintainer: bool) -> 
                 format!("the latest change to {env} can't be read by you"),
             )
             .cause(cause)
-            .fix(format!("ask {} to save it again (`dg env resave --env {env}`)", head.author))
+            .fix(format!(
+                "ask {} to save it again (`dg env resave --env {env}`)",
+                head.author
+            ))
             .note("each change can be read only by the people it was saved for")
             .into()
         }
@@ -623,6 +667,8 @@ fn old_format_line(book: &Book, env: &str) -> Option<String> {
 struct Stale {
     who: String,
     why: String,
+    /// Saving it again fixes this (not so for someone with no encryption key yet).
+    fixed_by_saving: bool,
 }
 
 /// The repository's members and their current encryption key ids, read once for the precise
@@ -634,11 +680,15 @@ struct People {
 }
 
 impl People {
-    async fn read(s: &Session, book: &Book) -> Result<Self> {
+    /// The members now, and the encryption keys of every one of them, of `extra`, and of
+    /// everyone the environments of `book` this reader can read name.
+    async fn read(s: &Session, book: &Book, extra: &[String]) -> Result<Self> {
         let members = MemberReader::new(&s.client).list(&s.repo).await?;
         let owner = s.repo.owner_id().to_owned();
         let mut ids: BTreeSet<String> = members.iter().map(|m| m.identity_id.clone()).collect();
         ids.insert(owner.clone());
+        ids.insert(s.identity.id());
+        ids.extend(extra.iter().cloned());
         for e in &book.resolution.environments {
             if let Ok(snap) = book.current(&e.env) {
                 ids.extend(snap.to.iter().cloned());
@@ -662,17 +712,6 @@ impl People {
             keys,
         })
     }
-
-    fn role_word(&self, id: &str) -> &'static str {
-        match forge_core::members::best_role(&self.members, id) {
-            Some(Role::Maintainer) => "a maintainer",
-            Some(Role::Writer) => "a writer",
-            Some(Role::Triage) => "a triage member",
-            Some(Role::Reader) => "a reader",
-            None if id == self.owner => "the owner",
-            None => "added to it",
-        }
-    }
 }
 
 /// Who `env`'s latest version misses or still includes, against its audience now, and whose key
@@ -681,40 +720,70 @@ fn stale_of(book: &Book, env: &str, people: &People) -> Vec<Stale> {
     let Ok(snap) = book.current(env) else {
         return Vec::new();
     };
+    let author = book.heads(env).pop().map(|h| h.author).unwrap_or_default();
+    stale_against(snap, &snap.audience, &author, people, &people.members, env)
+}
+
+/// [`stale_of`] for `snap` (written by `author`) against `audience` with `members` the
+/// membership (now, or as a change will leave it).
+fn stale_against(
+    snap: &Snapshot,
+    audience: &Audience,
+    author: &str,
+    people: &People,
+    members: &[Member],
+    env: &str,
+) -> Vec<Stale> {
     if snap.members_key() {
         return Vec::new();
     }
-    let author = book.heads(env).pop().map(|h| h.author).unwrap_or_default();
-    let expected = resolve_people(&snap.audience, &people.owner, &people.members);
+    let expected = resolve_people(audience, &people.owner, members);
     let to: BTreeSet<&String> = snap.to.iter().collect();
+    let role_word = |who: &str| match forge_core::members::best_role(members, who) {
+        Some(Role::Maintainer) => "a maintainer",
+        Some(Role::Writer) => "a writer",
+        Some(Role::Triage) => "a triage member",
+        Some(Role::Reader) => "a reader",
+        None if who == people.owner => "the owner",
+        None => "added to it",
+    };
     let mut out = Vec::new();
     for who in expected.iter().filter(|p| !to.contains(p)) {
-        let why = if people.keys.get(who).copied().flatten().is_none() {
-            format!("{who} has no encryption key yet, so {env} can't be shared with them")
-        } else {
-            format!("{who} is {}, but {env} hasn't been saved since", people.role_word(who))
-        };
+        let keyless = people.keys.get(who).copied().flatten().is_none();
         out.push(Stale {
             who: who.clone(),
-            why,
+            why: if keyless {
+                format!("{who} has no encryption key yet, so {env} can't be shared with them")
+            } else {
+                format!(
+                    "{who} is {}, but {env} hasn't been saved since",
+                    role_word(who)
+                )
+            },
+            fixed_by_saving: !keyless,
         });
     }
     for who in snap
         .to
         .iter()
-        .filter(|p| !expected.contains(*p) && **p != author)
+        .filter(|p| !expected.contains(*p) && *p != author)
     {
         out.push(Stale {
             who: who.clone(),
-            why: format!("{who} isn't in its audience any more, but can read {env} until it's saved again"),
+            why: format!(
+                "{who} isn't in its audience any more, but can read {env} until it's saved again"
+            ),
+            fixed_by_saving: true,
         });
     }
-    for (who, key) in snap.to.iter().zip(&snap.to_keys) {
+    // slot 0 is the writer's own, sealed with the key they sent with
+    for (who, key) in snap.to.iter().zip(&snap.to_keys).skip(1) {
         if let Some(Some(now)) = people.keys.get(who) {
             if now != key {
                 out.push(Stale {
                     who: who.clone(),
                     why: format!("{who}'s encryption key changed since {env} was saved"),
+                    fixed_by_saving: true,
                 });
             }
         }
@@ -732,7 +801,7 @@ async fn ls_env(ctx: &Ctx, s: &Session, book: &Book, env: &str) -> Result<()> {
     let snap = current(book, s, env)?;
     let head = &book.heads(env)[0];
     let stale = if is_maintainer(book, s) {
-        stale_of(book, env, &People::read(s, book).await?)
+        stale_of(book, env, &People::read(s, book, &[]).await?)
     } else {
         Vec::new()
     };
@@ -758,7 +827,11 @@ async fn ls_env(ctx: &Ctx, s: &Session, book: &Book, env: &str) -> Result<()> {
                 println!("{line}");
             }
             for st in &stale {
-                println!("Save it again: {} (`dg env resave --env {env}`)", st.why);
+                if st.fixed_by_saving {
+                    println!("Save it again: {} (`dg env resave --env {env}`)", st.why);
+                } else {
+                    println!("Note: {}", st.why);
+                }
             }
             if snap.vars.is_empty() {
                 println!("(no entries)");
@@ -787,7 +860,7 @@ async fn ls(ctx: &Ctx, repo: &str, env: Option<&str>) -> Result<()> {
         return ls_env(ctx, &s, &book, env).await;
     }
     let people = if is_maintainer(&book, &s) {
-        Some(People::read(&s, &book).await?)
+        Some(People::read(&s, &book, &[]).await?)
     } else {
         None
     };
@@ -866,14 +939,20 @@ async fn ls(ctx: &Ctx, repo: &str, env: Option<&str>) -> Result<()> {
                     println!("  {line}");
                 }
                 for st in stale.get(&e.env).into_iter().flatten() {
-                    println!("  Save it again: {}", st.why);
+                    let lead = if st.fixed_by_saving { "Save it again" } else { "Note" };
+                    println!("  {lead}: {}", st.why);
                 }
             }
             if hidden > 0 {
                 println!("+ {} you can't read", count(hidden, "environment"));
-                if people.is_none() {
-                    println!("  An environment in this repo hasn't been shared with you. If you should have access, ask a maintainer to save it again.");
-                }
+            }
+            let unreadable = book
+                .resolution
+                .environments
+                .iter()
+                .any(|e| e.state == forge_core::env::State::Unreadable);
+            if people.is_none() && (hidden > 0 || unreadable) {
+                println!("An environment in this repo hasn't been shared with you. If you should have access, ask a maintainer to save it again.");
             }
             if ignored > 0 {
                 println!(
@@ -1899,7 +1978,18 @@ async fn change_audience(ctx: &Ctx, repo: &str, env: &str, opts: &AudienceOpts) 
         .await?;
     let audience = audience_of(&s, opts).await?;
     let book = existing(&envs, &s, env).await?;
-    commit(ctx, &s, &envs, &book, env, audience, None, false, |_| Ok(())).await
+    commit(
+        ctx,
+        &s,
+        &envs,
+        &book,
+        env,
+        audience,
+        None,
+        false,
+        |_| Ok(()),
+    )
+    .await
 }
 
 /// The book, when `env` is an environment of it this reader can name (else the error).
@@ -1963,7 +2053,22 @@ async fn share(ctx: &Ctx, repo: &str, env: &str, people: &[String], add: bool) -
     })
     .await?;
     if !add {
+        let members = MemberReader::new(&s.client).list(&s.repo).await?;
+        let audience = envs
+            .read(&s.repo)
+            .await
+            .ok()
+            .and_then(|b| b.current(env).ok().map(|snap| snap.audience.clone()));
         for w in &who {
+            let still = audience
+                .as_ref()
+                .is_some_and(|a| resolve_people(a, s.repo.owner_id(), &members).contains(w));
+            if still {
+                eprintln!(
+                    "{w} can still read {env}: they're in its group. Change their role, or its audience, to take that away."
+                );
+                continue;
+            }
             for e in book.exposure(w, false).iter().filter(|e| e.env == env) {
                 eprintln!(
                     "{w} could read {}. Change them where they're used: {}",
@@ -1992,12 +2097,17 @@ async fn resave(ctx: &Ctx, repo: &str, env: Option<&str>, all: bool) -> Result<(
     }
     let book = envs.read(&s.repo).await?;
     debug_assert!(all);
-    let people = People::read(&s, &book).await?;
+    let people = People::read(&s, &book, &[]).await?;
     let mut todo = Vec::new();
     let mut skipped = Vec::new();
     for e in &book.resolution.environments {
         match book.current(&e.env) {
-            Ok(snap) if snap.version == 1 || !stale_of(&book, &e.env, &people).is_empty() => {
+            Ok(snap)
+                if snap.version == 1
+                    || stale_of(&book, &e.env, &people)
+                        .iter()
+                        .any(|st| st.fixed_by_saving) =>
+            {
                 todo.push(e.env.clone());
             }
             Ok(_) => {}
@@ -2023,9 +2133,12 @@ async fn resave(ctx: &Ctx, repo: &str, env: Option<&str>, all: bool) -> Result<(
         eprintln!("{line}");
     }
     if todo.is_empty() {
-        ctx.emit(json!({ "status": "unchanged", "saved": [], "notSaved": skipped }), || {
-            println!("Every environment you can read is up to date. Nothing to save.");
-        });
+        ctx.emit(
+            json!({ "status": "unchanged", "saved": [], "notSaved": skipped }),
+            || {
+                println!("Every environment you can read is up to date. Nothing to save.");
+            },
+        );
         return Ok(());
     }
     for env in &todo {
@@ -2069,7 +2182,11 @@ async fn mark_changed(ctx: &Ctx, repo: &str, env: &str, names: &[String]) -> Res
     // the values held in old-format versions, by name
     let state = book.state(env).expect("old_format_of found it");
     let mut held: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-    for id in state.snapshots.iter().filter(|id| book.old_format.contains(*id)) {
+    for id in state
+        .snapshots
+        .iter()
+        .filter(|id| book.old_format.contains(*id))
+    {
         if let Some(snap) = book.snapshot(id) {
             for (n, v) in &snap.vars {
                 held.entry(n).or_default().push(&v.value);
@@ -2091,11 +2208,15 @@ async fn mark_changed(ctx: &Ctx, repo: &str, env: &str, names: &[String]) -> Res
     }
     if picked.is_empty() {
         ctx.emit(json!({ "status": "unchanged", "env": env }), || {
-            println!("Every value of {env} saved in the old format is marked changed. Nothing to save.");
+            println!(
+                "Every value of {env} saved in the old format is marked changed. Nothing to save."
+            );
         });
         return Ok(());
     }
-    let current = book.current(env).map_err(|b| blocked_error(&s.repo, env, b, true))?;
+    let current = book
+        .current(env)
+        .map_err(|b| blocked_error(&s.repo, env, b, true))?;
     let still: Vec<&String> = picked
         .iter()
         .filter(|n| {
@@ -2228,6 +2349,8 @@ struct Pin {
     /// For a person: what this save keeps.
     what: String,
     size: u64,
+    /// The people this save takes access from (a membership change's).
+    gone: Vec<String>,
 }
 
 impl Pin {
@@ -2244,7 +2367,8 @@ impl Pin {
         what: String,
     ) -> Self {
         // the plaintext grows by about one id per added recipient, and the header by one slot
-        let n = people.len() + 1;
+        // the writer takes slot 0, and is usually one of `people` already
+        let n = people.len().max(1);
         let plain = snap.encode().map_or(512, |p| p.len());
         let plain = (plain + 48 * n.saturating_sub(snap.to.len())).div_ceil(512) * 512;
         let size = (plain + forge_core::private::named::artifact_header_len(n) + 16) as u64;
@@ -2258,6 +2382,7 @@ impl Pin {
             saved_for: None,
             what,
             size,
+            gone: Vec::new(),
         }
     }
 
@@ -2317,11 +2442,20 @@ pub fn members_after(before: &[Member], member: &str, role: Role, grant: bool) -
 }
 
 /// What a membership change does to the environments whose groups it changes (D34, DESIGN §4.5
-/// "Groups change"): each one this signer can read is saved again for the people its audience
-/// covers once the change lands, after showing the plan and the cost; the rest are named so
-/// someone who can read them saves them.
+/// "Groups change"): each one this signer can read whose people differ from what its audience
+/// covers once the change lands (or that names someone who leaves) is saved again for them,
+/// after showing the plan and the cost; the rest are named so someone who can read them saves
+/// them. The plan is compared with each environment's actual recipients, so running a change
+/// again after a failure (or after `--no-resave`) still finishes it; and it is worked out again,
+/// from a fresh read, when the saves are made after the change lands.
 #[derive(Default)]
 pub struct Regroup {
+    after: Vec<Member>,
+    /// Someone who leaves the repository: taken out of the people environments add.
+    removed: Option<String>,
+    /// Print what each person who loses access could read (a demotion; a removal prints its own
+    /// checklist).
+    list_gone: bool,
     pins: Vec<Pin>,
     /// "not updated" lines: environments that change and can't be saved from here.
     not_updated: Vec<String>,
@@ -2349,51 +2483,125 @@ impl Regroup {
             } else {
                 format!("{} are", count(self.pins.len(), "environment"))
             },
-            if self.pins.len() == 1 { "its audience" } else { "their audiences" },
+            if self.pins.len() == 1 {
+                "its audience"
+            } else {
+                "their audiences"
+            },
             cost_line(self.pins.iter().map(Pin::credits).sum(), price)
         )
     }
 
-    /// The environments planned, by name.
-    fn envs(&self) -> BTreeSet<String> {
-        self.pins.iter().map(|p| p.env.clone()).collect()
-    }
-
-    /// Save the planned snapshots (after the change landed).
-    pub async fn save(&self, s: &Session) -> (Value, String) {
-        let (saved, mut text) = save_pins(s, &self.pins, " for its audience now").await;
-        for l in &self.not_updated {
+    /// Plan again from a fresh read (once the snapshots `wait_for`, hex `packHash`es saved just
+    /// before, are visible) and save, after the change landed.
+    pub async fn save(&self, s: &Session, wait_for: &[String]) -> (Value, String) {
+        if self.pins.is_empty() && self.not_updated.is_empty() {
+            return (json!([]), String::new());
+        }
+        let envs = environments(s);
+        let mut fresh = None;
+        for attempt in 0..VISIBLE_ATTEMPTS {
+            match envs.read(&s.repo).await {
+                Ok(b)
+                    if wait_for
+                        .iter()
+                        .all(|h| b.manifests.iter().any(|m| hex::encode(m.pack_hash) == *h)) =>
+                {
+                    fresh = Some(b);
+                    break;
+                }
+                Ok(b) if attempt + 1 == VISIBLE_ATTEMPTS => fresh = Some(b),
+                _ => {}
+            }
+            tokio::time::sleep(VISIBLE_DELAY).await;
+        }
+        let Some(book) = fresh else {
+            return (
+                json!([]),
+                "\ncouldn't read the environments to save them again: run `dg env resave --all`"
+                    .into(),
+            );
+        };
+        let extra: Vec<String> = self.after.iter().map(|m| m.identity_id.clone()).collect();
+        let people = match People::read(s, &book, &extra).await {
+            Ok(p) => p,
+            Err(e) => {
+                return (
+                    json!([]),
+                    format!("\ncouldn't read the members to save the environments again ({e}): run `dg env resave --all`"),
+                )
+            }
+        };
+        let plan = plan_regroup(
+            &book,
+            &people,
+            &s.identity.id(),
+            &self.after,
+            self.removed.as_deref(),
+            &BTreeSet::new(),
+        );
+        let (saved, mut text, _) = save_pins(s, &plan.pins, " for its audience now").await;
+        for l in &plan.not_updated {
             let _ = write!(text, "\n{l}");
+        }
+        if self.list_gone {
+            for p in &plan.pins {
+                for gone in &p.gone {
+                    for e in book.exposure(gone, false).iter().filter(|e| e.env == p.env) {
+                        let _ = write!(
+                            text,
+                            "\n{gone} could read {}. Change them where they're used: {}",
+                            count(e.names.len(), &format!("{} value", e.env)),
+                            e.names.join(", ")
+                        );
+                    }
+                }
+            }
         }
         (saved, text)
     }
 }
 
-/// [`Regroup`] for a change of `s.repo`'s members from `before` to `after`; `removed`: a member
-/// who leaves (dropped from the people environments add, and named for environments this signer
-/// can't open); `skip`: environments another plan of this change already saves.
+/// How long a save after a membership change waits for the snapshots saved just before it to
+/// show in a read: attempts, and the pause between them.
+const VISIBLE_ATTEMPTS: usize = 12;
+const VISIBLE_DELAY: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// [`Regroup`] for `s.repo`'s members becoming `after`; `removed`: someone who leaves the
+/// repository (taken out of the people environments add, and named for environments this signer
+/// can't open); `list_gone`: print what people who lose access could read; `skip`: environments
+/// another plan of this change already saves (for the plan shown before the change only).
 pub async fn prepare_regroup(
     s: &Session,
-    before: &[Member],
     after: &[Member],
     removed: Option<&str>,
+    list_gone: bool,
     skip: &BTreeSet<String>,
 ) -> Result<Regroup> {
     let book = book(s).await?;
-    Ok(plan_regroup(&book, s.repo.owner_id(), before, after, removed, skip))
+    let extra: Vec<String> = after.iter().map(|m| m.identity_id.clone()).collect();
+    let people = People::read(s, &book, &extra).await?;
+    let mut plan = plan_regroup(&book, &people, &s.identity.id(), after, removed, skip);
+    plan.list_gone = list_gone;
+    Ok(plan)
 }
 
-/// [`prepare_regroup`] over a book already read.
+/// [`prepare_regroup`] over a book and the members' keys already read; `me` is the signer.
 fn plan_regroup(
     book: &Book,
-    owner: &str,
-    before: &[Member],
+    people: &People,
+    me: &str,
     after: &[Member],
     removed: Option<&str>,
     skip: &BTreeSet<String>,
 ) -> Regroup {
-    let mut out = Regroup::default();
+    let mut out = Regroup {
+        after: after.to_vec(),
+        removed: removed.map(str::to_owned),
+        ..Regroup::default()
+    };
     let mut planned = Vec::new();
+    let has_key = |p: &String| people.keys.get(p).copied().flatten().is_some();
     for e in &book.resolution.environments {
         if skip.contains(&e.env) {
             continue;
@@ -2408,7 +2616,11 @@ fn plan_regroup(
                 continue;
             }
             Err(_) => {
-                let author = book.heads(&e.env).pop().map(|h| h.author).unwrap_or_default();
+                let author = book
+                    .heads(&e.env)
+                    .pop()
+                    .map(|h| h.author)
+                    .unwrap_or_default();
                 out.not_updated.push(format!(
                     "{}: not updated: you can't read its latest change. Ask {author} to save it again.",
                     e.env
@@ -2417,13 +2629,48 @@ fn plan_regroup(
             }
         };
         let aud = audience_without(snap, removed);
-        let was = resolve_people(&snap.audience, owner, before);
-        let will = resolve_people(&aud, owner, after);
-        if was == will {
+        if aud.group.is_none() && aud.also.is_empty() {
+            out.not_updated.push(format!(
+                "{}: not updated: it is only for {}. Give it another audience: `dg env audience --env {} --set maintainers`.",
+                e.env,
+                removed.unwrap_or_default(),
+                e.env
+            ));
             continue;
         }
-        let added: Vec<&String> = will.difference(&was).collect();
-        let gone: Vec<&String> = was.difference(&will).collect();
+        let author = book
+            .heads(&e.env)
+            .pop()
+            .map(|h| h.author)
+            .unwrap_or_default();
+        let fixes = stale_against(snap, &aud, &author, people, after, &e.env)
+            .iter()
+            .any(|st| st.fixed_by_saving);
+        // an old-format environment is read with the members key, which the change hands over
+        // or rotates already; `dg env resave` converts it
+        if snap.members_key() || (aud == snap.audience && !fixes) {
+            continue;
+        }
+        let all = resolve_people(&aud, &people.owner, after);
+        let mut will: BTreeSet<String> = all.iter().filter(|p| has_key(p)).cloned().collect();
+        will.insert(me.to_owned());
+        if will.len() > forge_core::env::MAX_RECIPIENTS {
+            out.not_updated.push(format!(
+                "{}: not updated: {} is {} people. An environment can be shared with at most {}. Choose a smaller group or specific people.",
+                e.env,
+                aud.label(),
+                will.len(),
+                forge_core::env::MAX_RECIPIENTS
+            ));
+            continue;
+        }
+        let now: BTreeSet<String> = snap.to.iter().cloned().collect();
+        let added: Vec<String> = will.difference(&now).cloned().collect();
+        let gone: Vec<String> = now
+            .difference(&will)
+            .filter(|p| **p != author || !all.contains(*p))
+            .cloned()
+            .collect();
         let mut what = aud.label();
         for a in &added {
             let _ = write!(what, ", +{a}");
@@ -2431,26 +2678,41 @@ fn plan_regroup(
         for g in &gone {
             let _ = write!(what, ", -{g}");
         }
-        planned.push(json!({ "env": e.env, "added": added, "removed": gone }));
-        out.pins.push(Pin::new(
+        let mut pin = Pin::new(
             &e.env,
             snap,
             aud,
-            will,
+            all,
             e.heads.clone(),
             book.window(&e.env),
             what,
-        ));
+        );
+        if pin.size > forge_core::env::service::MAX_SEALED {
+            out.not_updated.push(format!(
+                "{}: not updated: its values for {} people don't fit one save. Split it, or share it with fewer people.",
+                e.env,
+                will.len()
+            ));
+            continue;
+        }
+        planned.push(json!({ "env": e.env, "added": added, "removed": gone }));
+        pin.gone = gone;
+        out.pins.push(pin);
     }
     if !book.resolution.hidden.is_empty() {
-        let n = count(book.resolution.hidden.len(), "environment");
+        let n = book.resolution.hidden.len();
         let authors = hidden_authors(book).join(", ");
         out.not_updated.push(match removed {
             Some(m) => format!(
-                "{m} may be named in {n} you can't open. Ask {authors} to save {} again without {m}.",
-                if book.resolution.hidden.len() == 1 { "it" } else { "them" }
+                "{m} may be able to read {} you can't open. Ask {authors} to save {} again without {m}.",
+                count(n, "environment"),
+                if n == 1 { "it" } else { "them" }
             ),
-            None => format!("{n} you can't open {} not updated. Ask {authors}.", if book.resolution.hidden.len() == 1 { "is" } else { "are" }),
+            None => format!(
+                "{} you can't open {} not updated. Ask {authors}.",
+                count(n, "environment"),
+                if n == 1 { "is" } else { "are" }
+            ),
         });
     }
     out.planned = json!({ "save": planned, "notUpdated": out.not_updated });
@@ -2614,13 +2876,32 @@ pub async fn prepare_removal(
             count(unreadable, "environment")
         );
     }
+    let leaves = !after.iter().any(|m| m.identity_id == member);
     let (pins, cannot) = if role == Role::Maintainer {
-        plan_removal(&book, member, &after, s.repo.owner_id())
+        plan_removal(&book, member, &after, s.repo.owner_id(), leaves)
     } else {
         (Vec::new(), Vec::new())
     };
     let skip: BTreeSet<String> = pins.iter().map(|p| p.env.clone()).collect();
-    let regroup = plan_regroup(&book, s.repo.owner_id(), before, &after, Some(member), &skip);
+    // someone who keeps another role stays in the people environments add
+    let extra: Vec<String> = after.iter().map(|m| m.identity_id.clone()).collect();
+    let regroup = match People::read(s, &book, &extra).await {
+        Ok(people) => plan_regroup(
+            &book,
+            &people,
+            &s.identity.id(),
+            &after,
+            leaves.then_some(member),
+            &skip,
+        ),
+        Err(e) => {
+            let _ = write!(
+                checklist,
+                "\ncouldn't plan which environments to save again ({e}): run `dg env resave --all` afterwards"
+            );
+            Regroup::default()
+        }
+    };
     Removal {
         exposed: serde_json::to_value(&exposed).unwrap_or(Value::Null),
         checklist,
@@ -2642,6 +2923,7 @@ fn plan_removal(
     member: &str,
     after: &[Member],
     owner: &str,
+    leaves: bool,
 ) -> (Vec<Pin>, Vec<String>) {
     let mut without = book.maintainers.clone();
     without.remove(member);
@@ -2649,7 +2931,7 @@ fn plan_removal(
     let diff_env = forge_core::env::chain::changed(&book.resolution, &resolved_after);
     let (mut pins, mut cannot) = (Vec::new(), Vec::new());
     let for_audience = |snap: &Snapshot| {
-        let aud = audience_without(snap, Some(member));
+        let aud = audience_without(snap, leaves.then_some(member));
         let people = resolve_people(&aud, owner, after);
         (aud, people)
     };
@@ -2762,20 +3044,21 @@ fn kept_ancestors(
 /// After the membership change: save each planned snapshot, as the signer, but only those whose
 /// environment still has exactly the predicted heads (checked against one read made before any is
 /// written).
-/// Returns the environments saved as JSON, and text to print (each line starting with a
-/// newline).
-async fn save_pins(s: &Session, pins: &[Pin], done: &str) -> (Value, String) {
+/// Returns the environments saved as JSON, text to print (each line starting with a newline),
+/// and the `packHash`es (hex) saved.
+async fn save_pins(s: &Session, pins: &[Pin], done: &str) -> (Value, String, Vec<String>) {
     let mut text = String::new();
     let mut saved_envs = Vec::new();
+    let mut hashes = Vec::new();
     if pins.is_empty() {
-        return (json!(saved_envs), text);
+        return (json!(saved_envs), text, hashes);
     }
     let envs = environments(s);
     let book = match envs.read(&s.repo).await {
         Ok(b) => b,
         Err(e) => {
             let _ = write!(text, "\ncouldn't read the environments to save them: {e}");
-            return (json!(saved_envs), text);
+            return (json!(saved_envs), text, hashes);
         }
     };
     for pin in pins {
@@ -2816,6 +3099,7 @@ async fn save_pins(s: &Session, pins: &[Pin], done: &str) -> (Value, String) {
                     count(saved.to.len(), "person")
                 );
                 saved_envs.push(pin.env.clone());
+                hashes.push(saved.pack_hash);
             }
             Err(e) => {
                 let _ = write!(
@@ -2826,15 +3110,15 @@ async fn save_pins(s: &Session, pins: &[Pin], done: &str) -> (Value, String) {
             }
         }
     }
-    (json!(saved_envs), text)
+    (json!(saved_envs), text, hashes)
 }
 
 /// After `member` is removed (and the key rotated): the planned saves (see [`plan_removal`] and
 /// [`Regroup`]), then the checklist.
 pub async fn finish_removal(s: &Session, removal: &Removal) -> (Value, String) {
-    let (saved, mut text) =
+    let (saved, mut text, hashes) =
         save_pins(s, &removal.pins, " again, as it was before the removal").await;
-    let (regrouped, regroup_text) = removal.regroup.save(s).await;
+    let (regrouped, regroup_text) = removal.regroup.save(s, &hashes).await;
     text.push_str(&regroup_text);
     text.push_str(&removal.checklist);
     let mut all: Vec<Value> = saved.as_array().cloned().unwrap_or_default();
@@ -2846,7 +3130,7 @@ pub async fn finish_removal(s: &Session, removal: &Removal) -> (Value, String) {
 /// while they were not one) would start counting and could change values or split a chain. A
 /// dry run of the resolution with them finds the environments that change; each is saved first
 /// with its current values, naming their dormant snapshots, so nothing changes when the role
-/// lands. Each is saved for its audience with them in it.
+/// lands. Each is saved for its audience as it is now; the regroup after the grant adds them.
 #[derive(Default)]
 pub struct Promotion {
     pins: Vec<Pin>,
@@ -2879,15 +3163,15 @@ impl Promotion {
         self.pins.iter().map(|p| p.env.clone()).collect()
     }
 
-    /// Save the planned snapshots, before the role is granted.
-    pub async fn save(&self, s: &Session) -> (Value, String) {
+    /// Save the planned snapshots, before the role is granted: the environments saved (JSON),
+    /// text to print, and the `packHash`es (hex) saved.
+    pub async fn save(&self, s: &Session) -> (Value, String, Vec<String>) {
         save_pins(s, &self.pins, ", so it stays as it is").await
     }
 }
 
-/// [`Promotion`] for `member` becoming a maintainer of `s.repo`; `after`: the members once they
-/// are one.
-pub async fn prepare_promotion(s: &Session, member: &str, after: &[Member]) -> Result<Promotion> {
+/// [`Promotion`] for `member` becoming a maintainer of `s.repo`; `before`: the members now.
+pub async fn prepare_promotion(s: &Session, member: &str, before: &[Member]) -> Result<Promotion> {
     let envs = environments(s);
     let now = envs.read(&s.repo).await?;
     if !now.manifests.iter().any(|m| m.owner_id == member) {
@@ -2912,7 +3196,9 @@ pub async fn prepare_promotion(s: &Session, member: &str, after: &[Member]) -> R
             .state(env)
             .map(|st| (st.snapshots.clone(), st.heads.clone()))
             .unwrap_or_default();
-        let people = resolve_people(&snap.audience, s.repo.owner_id(), after);
+        // for the group as it is now: the role isn't granted yet, and may still fail; the
+        // regroup after the grant adds the new maintainer
+        let people = resolve_people(&snap.audience, s.repo.owner_id(), before);
         pins.push(Pin::new(
             env,
             snap,
@@ -2998,7 +3284,7 @@ mod tests {
 
     /// The book after the removal of `member` and the planned saves (by alice, at `height`).
     fn after_saves(b: &Book, member: &str, height: u64) -> Book {
-        let (pins, cannot) = plan_removal(b, member, &[], ALICE);
+        let (pins, cannot) = plan_removal(b, member, &[], ALICE, true);
         assert!(cannot.is_empty());
         let mut manifests: Vec<_> = b.manifests.iter().rev().cloned().collect();
         for (i, p) in pins.iter().enumerate() {
@@ -3231,18 +3517,35 @@ mod tests {
         b
     }
 
+    /// Everyone named with an encryption key of id 1 (the id each slot of [`group_book`] used).
+    fn keyed(members: &[Member], others: &[&str]) -> People {
+        let mut keys: BTreeMap<String, Option<u32>> = members
+            .iter()
+            .map(|m| (m.identity_id.clone(), Some(1)))
+            .collect();
+        for o in others {
+            keys.insert((*o).to_owned(), Some(1));
+        }
+        People {
+            owner: ALICE.into(),
+            members: members.to_vec(),
+            keys,
+        }
+    }
+
     #[test]
     fn adding_a_reader_resaves_all_members_but_not_writers() {
         let before = vec![member(ALICE, Role::Maintainer), member(BOB, Role::Writer)];
         let after = members_after(&before, "rae", Role::Reader, true);
-        for (group, resaved) in [
-            (Group::Members, true),
-            (Group::Writers, false),
-            (Group::Maintainers, false),
+        let people = keyed(&before, &["rae"]);
+        for (group, to, resaved) in [
+            (Group::Members, &[ALICE, BOB][..], true),
+            (Group::Writers, &[ALICE, BOB][..], false),
+            (Group::Maintainers, &[ALICE][..], false),
         ] {
-            let b = group_book("dev", Audience::group(group), &[ALICE, BOB]);
-            let r = plan_regroup(&b, ALICE, &before, &after, None, &BTreeSet::new());
-            assert_eq!(r.envs().len(), usize::from(resaved), "{group:?}");
+            let b = group_book("dev", Audience::group(group), to);
+            let r = plan_regroup(&b, &people, ALICE, &after, None, &BTreeSet::new());
+            assert_eq!(r.pins.len(), usize::from(resaved), "{group:?}");
             if resaved {
                 assert!(r.pins[0].people.contains("rae"));
             }
@@ -3250,16 +3553,35 @@ mod tests {
     }
 
     #[test]
-    fn a_writer_promoted_or_demoted_resaves_the_groups_they_move_between() {
+    fn a_writer_demoted_leaves_writers_but_not_all_members() {
         let before = vec![member(ALICE, Role::Maintainer), member(BOB, Role::Writer)];
         let demoted = members_after(&before, BOB, Role::Reader, true);
+        let people = keyed(&before, &[]);
         let b = group_book("ci", Audience::group(Group::Writers), &[ALICE, BOB]);
-        let r = plan_regroup(&b, ALICE, &before, &demoted, None, &BTreeSet::new());
-        assert_eq!(r.envs(), ["ci".to_owned()].into());
+        let r = plan_regroup(&b, &people, ALICE, &demoted, None, &BTreeSet::new());
+        assert_eq!(r.pins.len(), 1);
         assert!(!r.pins[0].people.contains(BOB));
+        assert_eq!(r.pins[0].gone, vec![BOB.to_owned()]);
         let b = group_book("dev", Audience::group(Group::Members), &[ALICE, BOB]);
-        let r = plan_regroup(&b, ALICE, &before, &demoted, None, &BTreeSet::new());
-        assert!(r.envs().is_empty(), "still a member");
+        let r = plan_regroup(&b, &people, ALICE, &demoted, None, &BTreeSet::new());
+        assert!(r.pins.is_empty(), "still a member");
+    }
+
+    #[test]
+    fn a_rerun_finishes_what_a_failed_run_left() {
+        // bob was removed earlier but ci was never saved again: the plan sees him in `to`
+        let now = vec![member(ALICE, Role::Maintainer)];
+        let b = group_book("ci", Audience::group(Group::Writers), &[ALICE, BOB]);
+        let r = plan_regroup(
+            &b,
+            &keyed(&now, &[BOB]),
+            ALICE,
+            &now,
+            Some(BOB),
+            &BTreeSet::new(),
+        );
+        assert_eq!(r.pins.len(), 1);
+        assert_eq!(r.pins[0].gone, vec![BOB.to_owned()]);
     }
 
     #[test]
@@ -3271,9 +3593,48 @@ mod tests {
             Audience::new(None, [ALICE.to_owned(), BOB.to_owned()]),
             &[ALICE, BOB],
         );
-        let r = plan_regroup(&b, ALICE, &before, &after, Some(BOB), &BTreeSet::new());
+        let r = plan_regroup(
+            &b,
+            &keyed(&before, &[]),
+            ALICE,
+            &after,
+            Some(BOB),
+            &BTreeSet::new(),
+        );
         assert_eq!(r.pins[0].audience.also, vec![ALICE.to_owned()]);
         assert!(!r.pins[0].people.contains(BOB));
+        // an environment only for them is listed, never saved for nobody
+        let b = group_book("solo", Audience::new(None, [BOB.to_owned()]), &[BOB]);
+        let r = plan_regroup(
+            &b,
+            &keyed(&before, &[]),
+            ALICE,
+            &after,
+            Some(BOB),
+            &BTreeSet::new(),
+        );
+        assert!(r.pins.is_empty() && r.not_updated[0].contains("only for"));
+    }
+
+    #[test]
+    fn more_than_sixty_four_people_is_listed_not_saved() {
+        let mut before = vec![member(ALICE, Role::Maintainer)];
+        before.extend((0..64).map(|i| member(&format!("m{i:02}"), Role::Reader)));
+        let b = group_book("dev", Audience::group(Group::Members), &[ALICE]);
+        let r = plan_regroup(
+            &b,
+            &keyed(&before, &[]),
+            ALICE,
+            &before,
+            None,
+            &BTreeSet::new(),
+        );
+        assert!(r.pins.is_empty());
+        assert!(
+            r.not_updated[0].contains("at most 64"),
+            "{:?}",
+            r.not_updated
+        );
     }
 
     #[test]
@@ -3297,8 +3658,13 @@ mod tests {
         };
         let st = stale_of(&b, "ci", &people);
         let whys: Vec<&str> = st.iter().map(|s| s.why.as_str()).collect();
-        assert!(whys.contains(&"dana is a writer, but ci hasn't been saved since"), "{whys:?}");
-        assert!(whys.iter().any(|w| w.starts_with("noah has no encryption key")));
+        assert!(
+            whys.contains(&"dana is a writer, but ci hasn't been saved since"),
+            "{whys:?}"
+        );
+        assert!(whys
+            .iter()
+            .any(|w| w.starts_with("noah has no encryption key")));
         assert!(whys.contains(&"bob's encryption key changed since ci was saved"));
     }
 

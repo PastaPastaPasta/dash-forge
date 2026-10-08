@@ -87,7 +87,9 @@ fn snapshot_from(v: &Value, plain: bool) -> Snapshot {
         Audience::group(Group::parse(v["audience"].as_str().unwrap()).unwrap())
     } else {
         Audience {
-            group: v["audience"]["group"].as_str().map(|g| Group::parse(g).unwrap()),
+            group: v["audience"]["group"]
+                .as_str()
+                .map(|g| Group::parse(g).unwrap()),
             also: strings(Some(&v["audience"]["also"])),
         }
     };
@@ -95,9 +97,7 @@ fn snapshot_from(v: &Value, plain: bool) -> Snapshot {
         version,
         env: v.get("env").and_then(Value::as_str).unwrap_or("x").into(),
         audience,
-        id: v
-            .get("id")
-            .map(|i| bytes(i).try_into().unwrap()),
+        id: v.get("id").map(|i| bytes(i).try_into().unwrap()),
         generated_at: v.get("generatedAt").and_then(Value::as_u64).unwrap_or(0),
         saved_for: v.get("savedFor").map(|f| f.as_str().unwrap().to_owned()),
         to: strings(v.get("to")),

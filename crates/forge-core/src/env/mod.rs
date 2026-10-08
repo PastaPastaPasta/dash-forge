@@ -261,7 +261,11 @@ mod tests {
 
     #[test]
     fn copy_uses_the_glossary() {
-        for s in [OLD_FORMAT_SENTENCE, OLD_FORMAT_HISTORY_SENTENCE, ACCESS_SENTENCE] {
+        for s in [
+            OLD_FORMAT_SENTENCE,
+            OLD_FORMAT_HISTORY_SENTENCE,
+            ACCESS_SENTENCE,
+        ] {
             for banned in ["sealed", "lane", "named", "restricted", "reveal"] {
                 assert!(!s.to_lowercase().contains(banned), "{s}");
             }

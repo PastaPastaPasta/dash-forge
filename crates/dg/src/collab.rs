@@ -272,16 +272,20 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
     let before_members = MemberReader::new(client).list(handle).await?;
     let after_members = crate::env::members_after(&before_members, member, role, true);
     let promotion = if role == Role::Maintainer && !held {
-        Some(crate::env::prepare_promotion(&s, member, &after_members).await?)
+        Some(crate::env::prepare_promotion(&s, member, &before_members).await?)
     } else {
         None
     };
+    // a demotion (a role change) lists what they could read in the environments they leave
     let regroup = crate::env::prepare_regroup(
         &s,
-        &before_members,
         &after_members,
         None,
-        &promotion.as_ref().map(crate::env::Promotion::envs).unwrap_or_default(),
+        change_from.is_some(),
+        &promotion
+            .as_ref()
+            .map(crate::env::Promotion::envs)
+            .unwrap_or_default(),
     )
     .await?;
     let question = match &promotion {
@@ -293,9 +297,9 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
         return Err(crate::errors::cancelled());
     }
     let before = s.balance().await;
-    let (protected, protected_text) = match &promotion {
+    let (protected, protected_text, protected_hashes) = match &promotion {
         Some(p) => p.save(&s).await,
-        None => (serde_json::Value::Null, String::new()),
+        None => (serde_json::Value::Null, String::new(), Vec::new()),
     };
     if !protected_text.is_empty() {
         eprintln!("{}", protected_text.trim_start());
@@ -319,7 +323,7 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
         None
     };
     // after the role (and any rotation) landed: the environments whose group it changed
-    let (regrouped, regroup_text) = regroup.save(&s).await;
+    let (regrouped, regroup_text) = regroup.save(&s, &protected_hashes).await;
     if !regroup_text.is_empty() {
         eprintln!("{}", regroup_text.trim_start());
     }
@@ -409,8 +413,7 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, no_resave: b
     // key), and those whose counted head a removed maintainer wrote, pinned and saved again
     // after the rotation (their snapshots stop counting when they go).
     let before_members = MemberReader::new(client).list(handle).await?;
-    let mut removal =
-        crate::env::prepare_removal(&s, member, role, &before_members, keyed).await;
+    let mut removal = crate::env::prepare_removal(&s, member, role, &before_members, keyed).await;
     let explained = if no_resave {
         removal.explain_skipped(member)
     } else {
@@ -465,12 +468,9 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, no_resave: b
     } else {
         None
     };
-    // after the rotation: the pinned environments saved again, unless changed meanwhile
-    let (resaved, exposed_lines) = if removed {
-        crate::env::finish_removal(&s, &removal).await
-    } else {
-        (serde_json::Value::Null, String::new())
-    };
+    // after the rotation: the pinned environments saved again, unless changed meanwhile. Also
+    // when they were gone already: a run that stopped before its saves is finished this way.
+    let (resaved, exposed_lines) = crate::env::finish_removal(&s, &removal).await;
     ctx.emit(
         json!({
             "status": if removed { "removed" } else { "not_a_member" },
@@ -500,7 +500,7 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, no_resave: b
                 println!("Removed {member} ({shown}) from {}.{exposed_lines}", handle.display());
             } else {
                 println!(
-                    "{member} is not a {shown} of {}; nothing to remove.",
+                    "{member} is not a {shown} of {}; nothing to remove.{exposed_lines}",
                     handle.display()
                 );
             }

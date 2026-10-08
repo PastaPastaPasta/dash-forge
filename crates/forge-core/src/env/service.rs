@@ -10,10 +10,10 @@ use super::chain::{self, EnvHistory, EnvState, Exposure, Resolution, SnapshotRef
 use super::codec::{self, ManifestCheck, OpenError, OpenKeys};
 use super::format::{diff, Change, Snapshot, Var};
 use super::{Audience, MAX_RECIPIENTS};
-use crate::members::Member;
 use crate::error::{Error, Result};
 use crate::keyring::{recipient_key, PrivateSigner};
 use crate::keystore::BridgeIdentity;
+use crate::members::Member;
 use crate::members::MemberReader;
 use crate::platform::{self, LoadedIdentity, PlatformClient};
 use crate::private::named::{OwnerKey, Reader, Recipient};
@@ -754,9 +754,8 @@ pub fn not_shared_yet(repo: &RepoRef, env: Option<&str>) -> UserError {
         || "An environment in this repo hasn't been shared with you".to_owned(),
         |e| format!("{} has no environment {e} shared with you", repo.display()),
     );
-    UserError::new(codes::NOT_SHARED_YET, what).fix(
-        "if you should have access, ask a maintainer to save it again (`dg env resave`)",
-    )
+    UserError::new(codes::NOT_SHARED_YET, what)
+        .fix("if you should have access, ask a maintainer to save it again (`dg env resave`)")
 }
 
 /// Environments of repositories, read and written as one identity (or anonymously).
@@ -831,16 +830,23 @@ impl<'a> Environments<'a> {
         maintainers.extend(extra.map(str::to_owned));
         let authorized = authorized(&manifests, &maintainers);
         let fetched = self.opener(repo, &svc, &authorized).await?;
+        let opened: BTreeMap<String, Opened> = fetched.open_all(&authorized);
+        // old format: a DFPK 0x01 copy that passed the packHash and size checks (it opened, or
+        // failed only for want of a key), never a damaged copy
         let old_format: BTreeSet<String> = fetched
             .fetched
             .iter()
-            .filter(|(_, b)| {
+            .filter(|(id, b)| {
                 b.as_ref()
                     .is_ok_and(|b| b.get(4) == Some(&crate::private::pack::VERSION))
+                    && match opened.get(*id) {
+                        Some(Opened::Snapshot(s)) => s.members_key(),
+                        Some(Opened::Refused(OpenError::NoKey) | Opened::Late) => true,
+                        _ => false,
+                    }
             })
             .map(|(id, _)| id.clone())
             .collect();
-        let opened: BTreeMap<String, Opened> = fetched.open_all(&authorized);
         let refs: Vec<SnapshotRef> = manifests.iter().map(snapshot_ref).collect();
         let by_hash: BTreeMap<[u8; 32], String> = authorized
             .iter()
@@ -1108,7 +1114,12 @@ impl<'a> Environments<'a> {
             .note("nothing was written")
             .into());
         }
-        let mut snap = Snapshot::new(&draft.env, draft.id, draft.audience.clone(), draft.vars.clone());
+        let mut snap = Snapshot::new(
+            &draft.env,
+            draft.id,
+            draft.audience.clone(),
+            draft.vars.clone(),
+        );
         snap.generated_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(0));

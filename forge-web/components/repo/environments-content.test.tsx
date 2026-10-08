@@ -279,7 +279,7 @@ describe('RemovalLines', () => {
     render(<RemovalLines view={view} name="bob" staysMaintainer />)
     expect(byTestId('env-removal')).toHaveLength(0)
     expect(text()).not.toContain('Change them')
-    expect(byTestId('env-removal-kept')[0]?.textContent).toBe("bob stays a maintainer, so they can still read this repo's environments. Nothing needs changing.")
+    expect(byTestId('env-removal-kept')[0]?.textContent).toBe("bob stays a maintainer, so they can still read the environments shared with maintainers.")
   })
 
   it('says nothing when there is nothing to change', () => {

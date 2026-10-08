@@ -192,11 +192,13 @@ pub fn open(
     }
     let plain: Zeroizing<Vec<u8>> = match sealed[4] {
         pack::VERSION => Zeroizing::new(
-            pack::open(sealed, manifest.size_bytes, |e| (keys.epoch_keys)(e)).map_err(|e| match e {
-                PrivateError::NoKey(_) => OpenError::NoKey,
-                PrivateError::SizeMismatch => OpenError::SizeMismatch,
-                _ => OpenError::SealedPackCorrupt,
-            })?,
+            pack::open(sealed, manifest.size_bytes, |e| (keys.epoch_keys)(e)).map_err(
+                |e| match e {
+                    PrivateError::NoKey(_) => OpenError::NoKey,
+                    PrivateError::SizeMismatch => OpenError::SizeMismatch,
+                    _ => OpenError::SealedPackCorrupt,
+                },
+            )?,
         ),
         named::ARTIFACT_VERSION => {
             let empty = Reader {

@@ -148,7 +148,10 @@ pub const CATALOGUE: &[(&str, &str)] = &[
     (codes::ARCHIVED, "repository archived"),
     (codes::EDIT_CONFLICT, "edited by someone else meanwhile"),
     (codes::ENV_CONFLICT, "environment changed at the same time"),
-    (codes::AUDIENCE_REQUIRED, "choose who can read the environment"),
+    (
+        codes::AUDIENCE_REQUIRED,
+        "choose who can read the environment",
+    ),
     (codes::NOT_SHARED_YET, "environment not shared with you yet"),
     (codes::BANNED, "banned from this repository"),
     (codes::UNREACHABLE, "Dash Platform unreachable"),

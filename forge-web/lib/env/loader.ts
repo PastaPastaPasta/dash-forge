@@ -22,7 +22,7 @@ import {
 import { mapPooled } from '../view/pool'
 import { exposureOf, resolveSnapshots, type EnvState, type Exposure, type Resolution, type SnapshotRef } from './chain'
 import { openSnapshot, SnapshotOpenError, openErrorReason, type OpenErrorCode } from './codec'
-import { MAX_RECIPIENTS, MAX_SNAPSHOT, compareStrings as cmp, type Snapshot } from './format'
+import { MAX_RECIPIENTS, MAX_SNAPSHOT, compareStrings as cmp, membersKey, type Snapshot } from './format'
 
 /** One kind-8 `packManifest`, as the reader keeps it. */
 export interface EnvManifest extends SnapshotRef {
@@ -169,10 +169,6 @@ export async function readEnvironments(sources: EnvSources, keys: EnvKeys, open:
         return { kind: 'unfetched', message: e instanceof Error ? e.message : String(e) }
       }
     })
-    counted.forEach((m, i) => {
-      const b = fetched[i]
-      if (b instanceof Uint8Array && b[4] === PACK_VERSION) oldFormat.add(m.id)
-    })
     // a letter's sender key comes from its manifest owner's identity only
     const owners = [...new Set(counted.filter((_, i) => { const b = fetched[i]; return b instanceof Uint8Array && b[4] === LETTER_VERSION }).map((m) => m.ownerId))]
     const ownerKeys = new Map<string, readonly OwnerKey[]>(await Promise.all(owners.map(async (o) => [o, await sources.ownerKeys(o)] as const)))
@@ -197,6 +193,12 @@ export async function readEnvironments(sources: EnvSources, keys: EnvKeys, open:
         }
       }
     })
+  }
+  // old format: a DFPK 0x01 copy that passed the packHash and size checks (it opened, or failed
+  // only for want of a key), never a damaged copy
+  for (const m of counted) {
+    const o = opened.get(m.id)
+    if ((o?.kind === 'snapshot' && membersKey(o.snapshot)) || (o?.kind === 'refused' && o.code === 'noKey') || o?.kind === 'late') oldFormat.add(m.id)
   }
   const envByHash = new Map<string, string>()
   for (const m of counted) {
