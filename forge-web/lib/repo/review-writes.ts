@@ -221,6 +221,9 @@ export function commentData(input: CommentInput, signer: string): Record<string,
 
 /** Post one comment (a "single comment", review-parity R2). */
 export async function postComment(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, input: CommentInput): Promise<WriteResult> {
+  // A maintainer's ban (UPDATE-1): inline comments, thread replies and suggestions are comments,
+  // refused before signing as `dg` does (E610).
+  await refuseIfBanned(sdk, repo, auth.network, auth.identityId)
   // A chosen audience is checked against the comment's parents first (DESIGN §3.3): a public reply
   // in a members-only thread is refused, never written.
   const options =

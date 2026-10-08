@@ -561,7 +561,7 @@ pub enum RepoCommand {
         #[arg(value_name = "IDENTITY")]
         who: String,
     },
-    /// List the bans that count: those of the owner and current maintainers.
+    /// List every ban: who wrote it, whether it counts, and the one that decides.
     Bans {
         /// The repository (`owner/name`).
         repo: String,
