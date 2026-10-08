@@ -162,6 +162,25 @@ pub const CATALOGUE: &[(&str, &str)] = &[
     (codes::POLICY_NOT_MET, "branch policy not met"),
     (codes::SECRET_IN_PUSH, "possible secret in a public push"),
     (codes::BRANCH_IN_USE, "branch other pull requests use"),
+    (
+        codes::PUBLISHES_MEMBERS_ONLY,
+        "push would publish members-only commits",
+    ),
+    (
+        codes::CANNOT_CHECK_MEMBERS_ONLY,
+        "can't check for members-only commits",
+    ),
+    (codes::BRANCH_ALREADY_PUBLIC, "branch is already public"),
+    (
+        codes::MEMBERS_ONLY_TO_OTHER_REMOTE,
+        "members-only commits not pushed to another remote",
+    ),
+    (
+        codes::NEW_BRANCH_AUDIENCE,
+        "new branch: choose who can see it",
+    ),
+    (codes::MAKE_PUBLIC_BLOCKED, "can't make everything public"),
+    (codes::AGENT_NOT_ALLOWED, "bot can't be asked"),
 ];
 
 /// The stable codes. The first digit is the exit code.
@@ -295,6 +314,32 @@ pub mod codes {
     /// `dg pr merge --delete-branch` would delete a branch other open pull requests use as
     /// their head or base.
     pub const BRANCH_IN_USE: &str = "E808";
+    // E805, E806 and E810 below are reserved for the members-only branch guard (phase 3A),
+    // E809 and E811 for a new branch's audience (3A), E812 for a repository's going public
+    // (5A) and E813 for a bot's access (4B). Nothing reports them yet, so they are
+    // unused until those phases land. Never reuse a number for another meaning: E808 is
+    // `BRANCH_IN_USE`, not the new-branch refusal (that is E811).
+    /// A push to a public ref would publish commits from a members-only branch (reserved).
+    pub const PUBLISHES_MEMBERS_ONLY: &str = "E805";
+    /// A public push or a fetch cannot check for members-only commits: the encryption key is
+    /// not available (a locked key with a record of members-only branches, or no record at
+    /// all) (reserved).
+    pub const CANNOT_CHECK_MEMBERS_ONLY: &str = "E806";
+    /// A push asked for a branch to be members-only, but the branch is already public
+    /// (reserved).
+    pub const BRANCH_ALREADY_PUBLIC: &str = "E809";
+    /// The `pre-push` hook refused to push members-only commits to a remote that is not a
+    /// Dash Forge repository, or to a public ref (reserved).
+    pub const MEMBERS_ONLY_TO_OTHER_REMOTE: &str = "E810";
+    /// A new branch has no audience yet: no local intent, push option or per-clone default
+    /// chose Public or Members-only (reserved).
+    pub const NEW_BRANCH_AUDIENCE: &str = "E811";
+    /// Making a repository public with everything it holds is blocked: some content would
+    /// become public that the owner has not dealt with, such as an environment saved in the
+    /// old format (reserved).
+    pub const MAKE_PUBLIC_BLOCKED: &str = "E812";
+    /// A request to a bot is outside the access its maintainers gave it (reserved).
+    pub const AGENT_NOT_ALLOWED: &str = "E813";
 }
 
 /// An error a person can act on.
