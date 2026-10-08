@@ -44,7 +44,7 @@ pub async fn run(ctx: &Ctx, cmd: &RepoKeysCommand) -> Result<()> {
 /// Dispatch a `repo members` subcommand.
 pub async fn run_members(ctx: &Ctx, cmd: &RepoMembersCommand) -> Result<()> {
     match cmd {
-        RepoMembersCommand::Enable { repo } => enable(ctx, repo).await,
+        RepoMembersCommand::Enable { repo } => Box::pin(enable(ctx, repo)).await,
         RepoMembersCommand::Status { repo } => members_status(ctx, repo).await,
     }
 }

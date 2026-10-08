@@ -222,7 +222,8 @@ export function contentDocOf(kind: ContentKind, doc: PlainDocument): ContentDoc 
  * rule sees it.
  */
 export function wellFormed(repo: RepoRef, kind: ContentKind, doc: PlainDocument): boolean {
-  return contentWellFormed(contentDocOf(kind, doc), docVisibility(doc['vis'], repo.visibility))
+  const vis = docVisibility(doc['vis'], repo.visibility)
+  return vis !== null && contentWellFormed(contentDocOf(kind, doc), vis)
 }
 
 /**

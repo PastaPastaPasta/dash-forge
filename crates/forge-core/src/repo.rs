@@ -34,6 +34,7 @@ use crate::platform::{
     self, FetchedDocument, FieldValue, JournalStore, LoadedContract, LoadedIdentity,
     PlatformClient, PushJournal, QueryOrder, WriteEngine, WriteIntent,
 };
+pub use crate::private::convert::SkipReason;
 use crate::private::{DocHeader, DocKind, Fields, Private, PrivateError, RefNameHasher};
 use crate::rules::v2::{CopyKey, PackCopy, PackCopyRow, Role, V2Pack, Visibility};
 use crate::rules::{self, ConfigDoc, RefState};
@@ -726,8 +727,6 @@ pub struct Skipped {
     pub why: SkipReason,
 }
 
-pub use crate::private::convert::SkipReason;
-
 impl Skipped {
     /// The error a caller that needed the artifact reports (E307: no key for it).
     #[must_use]
@@ -764,6 +763,10 @@ pub struct RepoService<'a> {
     /// write-time reload ([`Self::private_writer`], §5.3), so a rotation a write picked up is
     /// also what later reads (the push's convergence re-read, a locator fold) open with.
     keyring: KeyringCache,
+    /// The epoch keys the owner of a repository made public published (§18.3), loaded with no
+    /// identity: the only keys a public repository's artifacts are opened with
+    /// ([`Self::public_keys`]). Never the signer's keys, which [`Self::keyring`] holds.
+    published: KeyringCache,
 }
 
 /// A private repository's keys as one or more [`RepoService`]s share them: every write-time
@@ -806,6 +809,7 @@ impl<'a> RepoService<'a> {
             client,
             signer: Some((identity, bridge)),
             keyring: KeyringCache::default(),
+            published: KeyringCache::default(),
         }
     }
 
@@ -816,6 +820,7 @@ impl<'a> RepoService<'a> {
             client,
             signer: None,
             keyring: KeyringCache::default(),
+            published: KeyringCache::default(),
         }
     }
 
@@ -848,6 +853,7 @@ impl<'a> RepoService<'a> {
             client,
             signer: Some((identity, bridge)),
             keyring: cache,
+            published: KeyringCache::default(),
         }
     }
 
@@ -936,8 +942,8 @@ impl<'a> RepoService<'a> {
     ///
     /// * a public repository's plaintext artifact as it is;
     /// * a sealed one (`DFPK`) in a public repository, which only a repository made public holds
-    ///   (or a stale client's fork of one, §18.2): opened with the epoch keys this reader holds
-    ///   (its own as a member, or those the owner published), else skipped;
+    ///   (or a stale client's fork of one, §18.2): opened with the epoch keys its owner published
+    ///   ([`Self::public_keys`]), else skipped;
     /// * a private repository's artifact opened under the late-content rule (§8.2), as before;
     /// * in either, a `DFPK` header of a version this client does not open: skipped, never
     ///   fatal (§3.2).
@@ -976,27 +982,23 @@ impl<'a> RepoService<'a> {
             .map(ArtifactRead::Bytes)
     }
 
-    /// The epoch keys this service holds for PUBLIC `repo`'s sealed artifacts, which only a
-    /// repository made public has (§18): the signer's (as a member, with the published ones),
-    /// else the published ones alone. `None` when they cannot be read.
+    /// The keys PUBLIC `repo`'s sealed artifacts are opened with, which only a repository made
+    /// public has (§18.2): the epoch keys its owner published, and never a member's own. A
+    /// public repository's artifacts feed public data (a clone, a mirror, a browse index a push
+    /// folds or a reindex writes), so what members alone may read must never enter them: a
+    /// member reads old content through its documents. `None` when they cannot be read.
     pub async fn public_keys(&self, repo: &RepoRef) -> Option<std::sync::Arc<Keyring>> {
         let client = self.client;
-        let loaded = match self.signer {
-            Some(_) => self.keyring(repo).await,
-            None => {
-                cached_keyring(&self.keyring, repo, || async move {
-                    Keyring::load_anonymous(client, repo).await
-                })
-                .await
-            }
-        };
-        loaded
-            .inspect_err(|e| tracing::warn!(error = %e, "the repository's keys could not be read; its sealed packs are skipped"))
-            .ok()
+        cached_keyring(&self.published, repo, || async move {
+            Keyring::load_anonymous(client, repo).await
+        })
+        .await
+        .inspect_err(|e| tracing::warn!(error = %e, "the keys this repository published could not be read; its packs stored while it was private are skipped"))
+        .ok()
     }
 
     /// Whether PUBLIC `repo` was made public, and its conversion facts (§18), from its config
-    /// timeline alone (the delta-cached git state). `None` for a repository that never was
+    /// documents alone (one query: a repository has few). `None` for a repository that never was
     /// private, and for a private one.
     pub async fn conversion(
         &self,
@@ -1006,16 +1008,18 @@ impl<'a> RepoService<'a> {
             return Ok(None);
         }
         let (scope, contract) = self.readable(repo).await?;
-        let state = crate::refs::read_git_state(
-            self.client,
-            &contract,
-            &scope,
-            crate::history::Freshness::Synced,
-        )
-        .await?;
+        let configs = self
+            .client
+            .query_all_documents(
+                &contract,
+                DOC_CONFIG,
+                &scope.filters([]),
+                &[QueryOrder::asc("$createdAt")],
+            )
+            .await?;
         Ok(crate::private::convert::Conversion::of(
             true,
-            &crate::keyring::config_stamps(&state.configs),
+            &crate::keyring::config_stamps(&configs),
             |_| true,
         ))
     }
@@ -1054,9 +1058,10 @@ impl<'a> RepoService<'a> {
     }
 
     /// The first [`crate::private::pack::HEADER_LEN`] bytes of a pack, from the first of its
-    /// `copies` that serves them: an external copy by a ranged read, else its Platform chunks'
-    /// first chunk. Unverified (see [`Self::skip_before_download`]).
-    async fn pack_head(
+    /// `copies` that serves them: its Platform chunks' first chunk (written by the manifest's
+    /// own uploader, so no storage host can change it), else an external copy by a ranged read.
+    /// Unverified (see [`Self::skip_before_download`]).
+    pub async fn pack_head(
         &self,
         repo: &RepoRef,
         contract: &LoadedContract,
@@ -1064,28 +1069,15 @@ impl<'a> RepoService<'a> {
         reader: &PackReader,
     ) -> Option<Vec<u8>> {
         let n = crate::private::pack::HEADER_LEN;
-        let range = crate::backends::ByteRange::new(0, n as u64).ok()?;
+        let scope = repo.scope().ok()?;
         for m in copies {
-            if reader.has_candidates(&m.uris) {
-                if let Ok(head) = reader.fetch_range(&m.uris, range).await {
-                    return Some(head);
-                }
-            }
-            let mut locators: Vec<crate::backends::PlatformLocator> = m
-                .uris
-                .iter()
-                .filter_map(|u| crate::backends::PlatformLocator::parse(&Uri(u.clone())).ok())
-                .filter(|l| l.pack_hash == m.pack_hash)
-                .collect();
-            if m.storage == 0 {
-                if let Ok(own) = crate::backends::PlatformLocator::parse(&Uri(repo
-                    .scope()
-                    .ok()?
-                    .locator(&m.owner_id, &hex::encode(m.pack_hash))))
-                {
-                    locators.push(own);
-                }
-            }
+            let own =
+                (m.storage == 0).then(|| scope.locator(&m.owner_id, &hex::encode(m.pack_hash)));
+            let locators = own
+                .into_iter()
+                .chain(m.uris.iter().cloned())
+                .filter_map(|u| crate::backends::PlatformLocator::parse(&Uri(u)).ok())
+                .filter(|l| l.pack_hash == m.pack_hash);
             for loc in locators {
                 if let Ok(head) =
                     crate::backends::platform::read_platform_head(self.client, contract, &loc, n)
@@ -1093,6 +1085,12 @@ impl<'a> RepoService<'a> {
                 {
                     return Some(head);
                 }
+            }
+        }
+        let range = crate::backends::ByteRange::new(0, n as u64).ok()?;
+        for m in copies.iter().filter(|m| reader.has_candidates(&m.uris)) {
+            if let Ok(head) = reader.fetch_range(&m.uris, range).await {
+                return Some(head);
             }
         }
         None
@@ -2290,10 +2288,22 @@ impl<'a> RepoService<'a> {
         // superseding it would hide objects its refs need. Re-read just before the write.
         let fresh = self.read_pack_manifests(repo).await?;
         refuse_raced_push(&git, &fresh)?;
+        // A public repository's packs this repack could not open are those stored while it was
+        // private (§18.2): the consolidation does not hold their objects, so they stay live.
+        let kept: Vec<PackManifestInfo> = fresh
+            .iter()
+            .filter(|m| {
+                repo.visibility != Visibility::Public
+                    || m.kind != u64::from(crate::pack::KIND_GIT_PACK)
+                    || m.pack_hash == new_pack_hash
+                    || blob_hashes.contains(&m.pack_hash)
+            })
+            .cloned()
+            .collect();
         let (supersedes, new_manifest_id) = self
             .write_consolidated_manifest(
                 repo,
-                &fresh,
+                &kept,
                 &ConsolidatedPack {
                     pack_hash: new_pack_hash,
                     size_bytes: new_bytes.len() as u64,

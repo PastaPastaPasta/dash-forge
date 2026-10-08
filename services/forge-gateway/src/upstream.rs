@@ -191,7 +191,6 @@ impl PlatformUpstream {
     }
 }
 
-/// Whether `e` says the thing does not exist (rather than that the read failed).
 /// The git packs of a repository made public that this anonymous reader skips without
 /// downloading ([`RepoService::skip_before_download`] with the published keys). Empty for any
 /// other repository, and when the facts cannot be read (every pack then counts, as before).
@@ -234,6 +233,7 @@ async fn sealed_packs(
     out
 }
 
+/// Whether `e` says the thing does not exist (rather than that the read failed).
 fn is_absent(e: &CoreError) -> bool {
     match e {
         CoreError::NotFound => true,

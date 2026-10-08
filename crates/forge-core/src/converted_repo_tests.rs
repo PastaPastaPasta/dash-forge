@@ -112,6 +112,8 @@ fn config(
     }
 }
 
+// one fixture, built in the order a repository goes through its conversion
+#[allow(clippy::too_many_lines)]
 fn build(everything: bool, src: &Path) -> Converted {
     let (k0, k1) = (key(0x30), key(0x31));
     let e0 = EpochKeys::derive(&REPO, 0, &k0);
@@ -238,11 +240,9 @@ struct Read {
     requested: Vec<usize>,
 }
 
-/// Read `repo` as `reader` would (the member holds a wrap of epoch 1; anyone else none), the way
-/// the helper does: conversion facts from the configs, the published keys, then every pack:
-/// judged by its first bytes when it may be sealed, downloaded, then opened or skipped, and
-/// indexed into the bare repository `dst`.
-fn read(repo: &Converted, reader: [u8; 32], dst: &Path) -> Read {
+/// The keys `reader` holds (the member a wrap of epoch 1; anyone else none), with the epoch keys
+/// the owner published.
+fn keys_of(repo: &Converted, reader: [u8; 32]) -> OpenContext {
     let wraps: Vec<WrapRow> = (reader == MEMBER)
         .then(|| WrapRow {
             id: [0xd1; 32],
@@ -272,8 +272,18 @@ fn read(repo: &Converted, reader: [u8; 32], dst: &Path) -> Read {
         "the seal-off epoch is never published"
     );
     resolution.add_published(&REPO, &repo.configs, published, alerts);
-    let ctx = resolution.open_context(&REPO);
-    let holds = |e: u32| ctx.keys.contains_key(&e);
+    resolution.open_context(&REPO)
+}
+
+/// Read `repo` as `reader` would, the way the helper, the gateway and every other public reader
+/// of artifacts do: documents with the reader's keys, packs with the published keys alone
+/// (`RepoService::public_keys`, §18.2): judged by their first bytes when they may be sealed,
+/// downloaded, then opened or skipped, and indexed into the bare repository `dst`.
+fn read(repo: &Converted, reader: [u8; 32], dst: &Path) -> Read {
+    let ctx = keys_of(repo, reader);
+    let published = keys_of(repo, [0; 32]);
+    let conversion = Conversion::of(true, &repo.stamps, |_| true).unwrap();
+    let holds = |e: u32| published.keys.contains_key(&e);
 
     git(dst, &["init", "-q", "--bare"]);
     let mut requested = Vec::new();
@@ -290,7 +300,7 @@ fn read(repo: &Converted, reader: [u8; 32], dst: &Path) -> Read {
         let bytes = match skip_reason(&p.bytes, holds) {
             Some(_) => continue,
             None if pack::sniff(&p.bytes) == pack::Head::Plain => p.bytes.clone(),
-            None => pack::open(&p.bytes, p.bytes.len() as u64, |e| ctx.keys.get(&e)).unwrap(),
+            None => pack::open(&p.bytes, p.bytes.len() as u64, |e| published.keys.get(&e)).unwrap(),
         };
         index_pack(dst, &bytes);
     }
@@ -349,23 +359,21 @@ fn code_only_a_non_member_clones_the_published_code_and_downloads_no_sealed_pack
 }
 
 #[test]
-fn code_only_a_member_opens_the_old_content_and_the_whole_history() {
+fn code_only_a_member_opens_the_old_content_and_no_public_reader_opens_its_packs() {
     let (src, dst) = (
         tempfile::TempDir::new().unwrap(),
         tempfile::TempDir::new().unwrap(),
     );
     let repo = build(false, src.path());
     let r = read(&repo, MEMBER, dst.path());
-    // epoch 1's wrap walks the chain to epoch 0: the sealed pack is downloaded and opened
+    // epoch 1's wrap walks the chain to epoch 0 for the member's documents, but a public
+    // repository's packs feed public data and open with the published keys only: none here
+    assert_eq!(r.ctx.keys.keys().copied().collect::<Vec<_>>(), vec![0, 1]);
     assert_eq!(
         r.requested,
-        vec![
-            pack::HEADER_LEN,
-            repo.packs[0].bytes.len(),
-            repo.packs[1].bytes.len()
-        ]
+        vec![pack::HEADER_LEN, repo.packs[1].bytes.len()]
     );
-    assert!(has(dst.path(), &repo.main) && has(dst.path(), &repo.deleted));
+    assert!(has(dst.path(), &repo.main) && !has(dst.path(), &repo.deleted));
     assert!(matches!(
         open(&r.ctx, &repo.old_issue, "private"),
         Opened::Readable(f) if f.title.as_deref() == Some("written while private")

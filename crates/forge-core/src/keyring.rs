@@ -136,7 +136,9 @@ pub const FIX_ADD_ENCRYPTION_KEY: &str = "dg auth keys add --encryption";
 
 /// The reader's own `ENCRYPTION` keys: the identity file's private keys whose public key is an
 /// `ENCRYPTION` key of the identity on chain (enabled or not: a wrap to a since-disabled key
-/// still opens history, §5.4 (1)), and which of them is usable to *send* with (enabled).
+/// still opens history, §5.4 (1)), and which of them is usable to *send* with (enabled). The
+/// default holds none (an anonymous reader's).
+#[derive(Default)]
 pub struct EncryptionKeys {
     /// key id → (private key, enabled on chain).
     keys: BTreeMap<u32, (PrivateKey, bool)>,
@@ -250,14 +252,6 @@ impl EncryptionKeys {
     /// Whether the file holds none.
     pub fn is_empty(&self) -> bool {
         self.keys.is_empty()
-    }
-
-    /// No keys at all: an anonymous reader's.
-    #[must_use]
-    pub fn none() -> Self {
-        Self {
-            keys: BTreeMap::new(),
-        }
     }
 }
 
@@ -494,7 +488,7 @@ impl Keyring {
             collab: &collab,
             scope: &scope,
         };
-        Self::load_as(&io, repo, None, &EncryptionKeys::none()).await
+        Self::load_as(&io, repo, None, &EncryptionKeys::default()).await
     }
 
     async fn load_as(
@@ -546,7 +540,7 @@ impl Keyring {
             anonymous,
         };
         keyring.resolve(io, enc).await?;
-        keyring.resolve_conversion(io, repo).await;
+        Box::pin(keyring.resolve_conversion(io, repo)).await;
         Ok(keyring)
     }
 
@@ -560,12 +554,9 @@ impl Keyring {
         self.conversion = Conversion::of(self.visibility == Visibility::Public, &stamps, |e| {
             anchors.contains_key(&e)
         });
-        let Some(conversion) = self.conversion else {
+        let Some(conversion) = self.conversion.filter(|c| c.seal_off_epoch.is_some()) else {
             return;
         };
-        if conversion.seal_off_epoch.is_none() {
-            return;
-        }
         let Ok(owner) = platform::decode_identifier(repo.owner_id()) else {
             return;
         };
@@ -590,12 +581,6 @@ impl Keyring {
             .add_published(&self.repo_id, &self.rows.configs, keys, alerts);
         self.ctx = self.resolution.open_context(&self.repo_id);
         self.config = self.decrypt_config();
-    }
-
-    /// The facts of a repository made public (§18), `None` for any other.
-    #[must_use]
-    pub fn conversion(&self) -> Option<&crate::private::convert::Conversion> {
-        self.conversion.as_ref()
     }
 
     async fn resolve(&mut self, io: &KeyringIo<'_>, enc: &EncryptionKeys) -> Result<()> {

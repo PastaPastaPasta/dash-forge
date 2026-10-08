@@ -58,7 +58,8 @@ export function conversionOf(isPublic: boolean, configs: readonly ConfigStamp[],
   for (const c of configs) {
     if (c.private) {
       if (c.epoch !== null && existing(c.epoch) && (sealOffEpoch === null || c.epoch > sealOffEpoch)) sealOffEpoch = c.epoch
-    } else if (markerHeight === null || c.height < markerHeight) {
+    } else if (c.height > 0 && (markerHeight === null || c.height < markerHeight)) {
+      // a config with no block height (0) cannot be placed, so it never marks the conversion
       markerHeight = c.height
     }
   }

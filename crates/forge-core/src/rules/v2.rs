@@ -983,21 +983,20 @@ pub const ENC_MEMBERS: u8 = 0x03;
 /// `enc[0]` of a specific-people document: a per-object key wrapped to each recipient
 /// (`private-repos.md` §17). Its writers come in a later phase; readers admit the form now.
 pub const ENC_SPECIFIC_PEOPLE: u8 = 0x04;
-/// The first `enc[0]` this client does not know (a bot's post is 0x05, a narrower branch's ref
-/// update 0x06): a later client's members-only (or narrower) content. Readers admit it as sealed
-/// discussion and show it as members-only, never as malformed (`private-repos.md` §4.1).
-pub const ENC_FIRST_UNKNOWN: u8 = 0x05;
 
 /// The visibility a document's content is judged under (`private-repos.md` §18.1): its own
 /// `vis` stamp, which consensus held equal to its repository's visibility when it was written,
 /// else (a type without one) the repository's. A repository made public keeps its earlier
 /// documents' `vis: "private"`, so they stay private documents whatever the repository is now.
+/// `None` for a `"public"` document in a private repository, which cannot exist (a repository
+/// never becomes private): malformed.
 #[must_use]
-pub fn doc_visibility(vis: Option<&str>, repository: Visibility) -> Visibility {
-    match vis {
-        Some("private") => Visibility::Private,
-        Some("public") => Visibility::Public,
-        _ => repository,
+pub fn doc_visibility(vis: Option<&str>, repository: Visibility) -> Option<Visibility> {
+    match (vis, repository) {
+        (Some("private"), _) => Some(Visibility::Private),
+        (Some("public"), Visibility::Public) => Some(Visibility::Public),
+        (Some("public"), Visibility::Private) => None,
+        _ => Some(repository),
     }
 }
 
@@ -1086,7 +1085,8 @@ impl Audience {
 ///   has one ([`ContentKind`]), and ref names that hash to their keys
 ///   ([`ref_name_hashes_agree`] with `sha256`)), or, for an issue, patch, comment or review
 ///   only, the members-only / specific-people form: `enc` version [`ENC_MEMBERS`],
-///   [`ENC_SPECIFIC_PEOPLE`] or a later one ([`ENC_FIRST_UNKNOWN`] on, shown as members-only)
+///   [`ENC_SPECIFIC_PEOPLE`] or a later one (`crate::private::doc::FIRST_UNKNOWN` on, shown as
+///   members-only)
 ///   with an `epoch`, and none of the kind's plaintext fields. A v0x01 or v0x02 `enc` stays
 ///   private-only, so it is malformed here, as is a sealed ref update, config or release;
 /// * **private**: a non-empty `enc` with an `epoch`, and none of the kind's plaintext fields.
@@ -1313,7 +1313,7 @@ mod mixed_tests {
     }
 
     #[test]
-    fn public_content_admits_only_the_members_and_specific_people_envelopes() {
+    fn public_content_admits_the_members_specific_people_and_later_envelopes() {
         for kind in KINDS {
             let discussion = matches!(
                 kind,
@@ -1323,7 +1323,9 @@ mod mixed_tests {
                     | ContentKind::Review
             );
             for version in 0..=u8::MAX {
-                let want = discussion && matches!(version, ENC_MEMBERS | ENC_SPECIFIC_PEOPLE);
+                // members (0x03), specific people (0x04) and a later client's (0x05 on, shown as
+                // members-only); never a private repository's 0x01 / 0x02
+                let want = discussion && version >= ENC_MEMBERS;
                 assert_eq!(
                     content_well_formed(&sealed(kind, version), Visibility::Public),
                     want,

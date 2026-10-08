@@ -197,9 +197,9 @@ pub fn plan_manifests<'m>(
 /// never record: those whose first bytes are a sealed header (`DFPK`), written while the parent
 /// was private. A fork has no key chain of its own, so nobody could open them from it, and a
 /// client older than the conversion reader would hand them to git as packs. Holding the
-/// parent's keys changes nothing: the fork's readers would still not. A pack whose first bytes
-/// cannot be read is recorded as before (its copies are hash-verified on every read). Empty for
-/// a parent that was never private.
+/// parent's keys changes nothing: the fork's readers would still not. A pack that may be sealed
+/// and whose first bytes no copy serves refuses the fork (try again): it cannot be told apart.
+/// Empty for a parent that was never private.
 pub async fn sealed_parent_packs(
     svc: &RepoService<'_>,
     parent: &RepoRef,
@@ -213,11 +213,20 @@ pub async fn sealed_parent_packs(
     let contract = svc.repo_contract(parent).await?;
     let reader = svc.repo_reader(parent, manifests, roles).await;
     for copies in plan_manifests(manifests, roles, &BTreeSet::new()) {
-        if svc
-            .skip_before_download(parent, &contract, &copies, &reader, &conversion, None)
-            .await
-            .is_some()
+        if !copies
+            .iter()
+            .any(|m| conversion.may_be_sealed(m.created_at_block_height))
         {
+            continue;
+        }
+        let Some(head) = svc.pack_head(parent, &contract, &copies, &reader).await else {
+            return Err(Error::Io(format!(
+                "pack {} of {} may hold content stored while it was private, and none of its copies answered; try again",
+                &hex::encode(copies[0].pack_hash)[..12],
+                parent.display()
+            )));
+        };
+        if crate::private::convert::skip_reason(&head, |_| false).is_some() {
             out.insert(copies[0].pack_hash);
         }
     }

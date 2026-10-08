@@ -176,8 +176,10 @@ pub fn approvals_over(reviews: &[Review], view: &PatchView, oracle: &RoleOracle)
 pub(super) enum DocKeys {
     /// Nothing that opens a sealed document, and why.
     None(Unopened),
-    /// A keyring holding at least one epoch key.
-    Held(Arc<Keyring>),
+    /// A keyring holding at least one epoch key, and why a document it does not open stays
+    /// unopened: `NotReadable` for a member's keys, the reader's own reason when they are only
+    /// the keys a repository made public published (`private-repos.md` §18.3).
+    Held(Arc<Keyring>, Unopened),
 }
 
 /// Whether a fetched document carries a non-empty `enc`.
@@ -328,16 +330,20 @@ fn open_with(
     }
     match keys {
         DocKeys::None(why) => Err(MembersOnly::of(&d, *why)),
-        DocKeys::Held(kr) => {
+        DocKeys::Held(kr, otherwise) => {
             let opened = kr.open(doc_kind(kind), &d);
             // A member tells a document made for another key (forged, relabelled or moved: it
-            // fails the commitment or the tag) apart from one under a key they do not hold.
+            // fails the commitment or the tag) apart from one under a key they do not hold, and
+            // from a later client's envelope.
             let why = match &opened {
                 crate::private::Opened::Malformed
                 | crate::private::Opened::Unreadable(
                     crate::private::Unreadable::BadTag | crate::private::Unreadable::CommitMismatch,
                 ) => Unopened::NotForThisRepo,
-                _ => Unopened::NotReadable,
+                crate::private::Opened::Unreadable(crate::private::Unreadable::UnknownVersion) => {
+                    Unopened::NewerVersion
+                }
+                _ => *otherwise,
             };
             let placeholder = MembersOnly::of(&d, why);
             private::open_doc(opened, d).ok_or(placeholder)
@@ -635,6 +641,9 @@ pub enum Unopened {
     /// The reader's own key could not be opened on this computer (a passphrase with no terminal
     /// to ask on, a locked keychain): a client sets this, core never does.
     Locked,
+    /// Written by a newer version of Forge, in an envelope this one does not open
+    /// (`private-repos.md` §4.1).
+    NewerVersion,
 }
 
 /// A members-only document this reader cannot open, as DESIGN D14 shows it: who wrote it, when
@@ -1506,10 +1515,8 @@ fn content_of(kind: ContentKind, d: &FetchedDocument) -> ContentDoc {
 /// the base's history by `baseRefNameHash`, and `dg pr merge` pushes to `baseRefName`, so a
 /// patch whose two disagree would be folded against one ref and merged into another.
 pub fn well_formed(kind: ContentKind, d: &FetchedDocument, visibility: Visibility) -> bool {
-    content_well_formed(
-        &content_of(kind, d),
-        crate::rules::v2::doc_visibility(d.field_str("vis").as_deref(), visibility),
-    )
+    crate::rules::v2::doc_visibility(d.field_str("vis").as_deref(), visibility)
+        .is_some_and(|vis| content_well_formed(&content_of(kind, d), vis))
 }
 
 /// Whether a fetched document is well-formed in its plaintext form ([`git_plane_well_formed`]):
@@ -2610,7 +2617,8 @@ fn members_only_error(repo: &RepoRef, kind: TargetKind, number: u32, m: &Members
         | Unopened::NotReadable
         | Unopened::NotForThisRepo
         | Unopened::KeysUnreadable
-        | Unopened::Locked => {
+        | Unopened::Locked
+        | Unopened::NewerVersion => {
             let mut e = UserError::new(codes::MEMBERS_ONLY, format!("{what} is members-only"))
                 .cause(format!(
                     "only members of {} can read it; it was opened by {}",
@@ -2627,6 +2635,7 @@ fn members_only_error(repo: &RepoRef, kind: TargetKind, number: u32, m: &Members
                 ),
                 Unopened::KeysUnreadable => e.fix("the repository's keys could not be read just now: try again in a moment"),
                 Unopened::Locked => e.fix("unlock your key (enter its passphrase in a terminal, or set DASH_FORGE_PASSPHRASE), then read it again"),
+                Unopened::NewerVersion => e.fix("it was written by a newer version of Forge: update dg to read it"),
                 _ => e.fix(format!(
                     "it was written for a key or for people you do not hold (after you were removed, late, or to specific people); `dg repo keys status {}` lists the keys you hold",
                     repo.display()
@@ -3198,7 +3207,7 @@ impl<'a> Collab<'a> {
     /// its members' keys ([`Self::lane_keys`]), never an error for an outsider.
     async fn doc_keys(&self, repo: &RepoRef) -> Result<DocKeys> {
         match self.private_keys(repo).await? {
-            Some(kr) => Ok(DocKeys::Held(kr)),
+            Some(kr) => Ok(DocKeys::Held(kr, Unopened::NotReadable)),
             None => self.lane_keys(repo).await,
         }
     }
@@ -3245,7 +3254,7 @@ impl<'a> Collab<'a> {
             };
             return Ok(DocKeys::None(why));
         }
-        Ok(DocKeys::Held(kr))
+        Ok(DocKeys::Held(kr, Unopened::NotReadable))
     }
 
     /// The keys anyone holds for a repository made public (`private-repos.md` §18.3): the epoch
@@ -3267,7 +3276,7 @@ impl<'a> Collab<'a> {
         })
         .await
         {
-            Ok(kr) if !kr.resolution().keys.is_empty() => DocKeys::Held(kr),
+            Ok(kr) if !kr.resolution().keys.is_empty() => DocKeys::Held(kr, why),
             Ok(_) => DocKeys::None(why),
             Err(e) => {
                 tracing::warn!(error = %e, "the published keys could not be read; content written before the repository was made public stays hidden");
@@ -3723,14 +3732,14 @@ impl<'a> Collab<'a> {
         // A public repository's events are plaintext unless their target is members-only, so
         // its keys are loaded only when a sealed value is met (an outsider's hide it).
         let keys = if repo.visibility == Visibility::Private {
-            DocKeys::Held(self.keyring(repo).await?)
+            DocKeys::Held(self.keyring(repo).await?, Unopened::NotReadable)
         } else if docs.iter().any(is_sealed) {
             self.lane_keys(repo).await?
         } else {
             return Ok((docs, 0, 0));
         };
         let open = |d: &FetchedDocument| match &keys {
-            DocKeys::Held(kr) => kr.open(DocKind::Event, d),
+            DocKeys::Held(kr, _) => kr.open(DocKind::Event, d),
             DocKeys::None(_) => {
                 crate::private::Opened::Unreadable(crate::private::Unreadable::NoKey)
             }

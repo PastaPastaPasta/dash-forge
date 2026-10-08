@@ -533,21 +533,18 @@ function contentFields(doc: ContentDoc): [Field | null, Field[]] {
 export const ENC_MEMBERS = 0x03
 /** `enc[0]` of a specific-people document (`private-repos.md` §17). */
 export const ENC_SPECIFIC_PEOPLE = 0x04
-/**
- * The first `enc[0]` this client does not know (a bot's post is 0x05, a narrower branch's ref
- * update 0x06): a later client's members-only (or narrower) content, admitted as sealed
- * discussion and shown as members-only, never malformed (`private-repos.md` §4.1).
- */
-export const ENC_FIRST_UNKNOWN = 0x05
 
 /**
  * The visibility a document's content is judged under (`private-repos.md` §18.1; forge-core
  * `doc_visibility`): its own `vis` stamp, which consensus held equal to its repository's
  * visibility when it was written, else (a type without one) the repository's. A repository made
- * public keeps its earlier documents' `vis: "private"`.
+ * public keeps its earlier documents' `vis: "private"`. `null` for a `"public"` document in a private
+ * repository, which cannot exist (a repository never becomes private): malformed.
  */
-export function docVisibility(vis: unknown, repository: Visibility): Visibility {
-  return vis === 'private' || vis === 'public' ? vis : repository
+export function docVisibility(vis: unknown, repository: Visibility): Visibility | null {
+  if (vis === 'private') return 'private'
+  if (vis === 'public') return repository === 'public' ? 'public' : null
+  return repository
 }
 
 /** The `enc` version byte of `doc` (`enc[0]`), when it carries a non-empty `enc`. */
@@ -606,7 +603,7 @@ export function narrower(a: Audience, b: Audience): Audience {
  * made public keeps its earlier documents private (§18.1).
  *
  * - public: the plaintext form ({@link gitPlaneWellFormed}), or, for an issue, patch, comment or
- *   review only, `enc` v0x03 / v0x04 or a later one ({@link ENC_FIRST_UNKNOWN} on, shown as
+ *   review only, `enc` v0x03 / v0x04 or a later one (`FIRST_UNKNOWN` of `lib/private/doc` on, shown as
  *   members-only) with an `epoch` and none of the kind's plaintext fields;
  * - private: a non-empty `enc` with an `epoch` and none of the kind's plaintext fields.
  */

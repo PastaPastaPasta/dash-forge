@@ -20,7 +20,7 @@ import { EpochKeys, MalformedError, TooLargeError, bytesToHex, refNameHash, seal
 import { binding, fitsUnder, narrower, type Audience } from '../rules/v2'
 import { queryAllDocuments, queryDocumentsWithProof, type PlainDocument, type WriteAuth } from '../sdk'
 import { retryWhileMissing } from '../view/retry'
-import { DOC, asIdentifierString, type RepoRef } from './contract'
+import { DOC, asIdentifierString, withoutSessions, type RepoRef } from './contract'
 import { docAudience } from './private-content'
 import { loadPrivateSessionUncached, sessionUnwrapper } from './private-session'
 import { PrivateWriteError, editFields, isSealedKind, sealContent, sealedTextUse, writeBlockReason } from './private-writes'
@@ -246,10 +246,7 @@ export async function membersWriter(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef)
   if (repo.visibility !== 'public') throw new Error('members-only content is written in public repos')
   const ops = await encryptionOps(sdk, auth.network, auth.identityId, repo.forge.collab)
   if (ops === null) throw refused('add your encryption key to this browser (Settings → Private repos) to write members-only content', 'E306')
-  const { session: _s, lane: _l, ...plain } = repo
-  void _s
-  void _l
-  const s = await loadPrivateSessionUncached(sdk, plain, auth.network, auth.identityId, sessionUnwrapper(ops))
+  const s = await loadPrivateSessionUncached(sdk, withoutSessions(repo), auth.network, auth.identityId, sessionUnwrapper(ops))
   try {
     if (!s.members.some((m) => m.identity === auth.identityId)) throw refused('only members of this repo can write what only members can read')
     if (s.configRows.length === 0) throw refused("members-only content isn't turned on in this repo; a maintainer can turn it on", 'E312')

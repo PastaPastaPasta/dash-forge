@@ -121,7 +121,7 @@ mod tests {
             kind,
             target: [0x11; 32],
             revision,
-            key: EpochKey::from_bytes([revision as u8; 32]),
+            key: EpochKey::from_bytes([u8::try_from(revision).unwrap(); 32]),
         }
     }
 

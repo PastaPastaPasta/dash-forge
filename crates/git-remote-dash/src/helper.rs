@@ -368,9 +368,9 @@ impl Helper {
         });
         let reader = &svc.repo_reader(repo, &git_packs, roles).await;
         // A repository made public (private-repos.md §18.2): its packs from the private era are
-        // sealed, and the keys that open them are a member's or the ones its owner published.
-        // Such a pack is checked by its first bytes and skipped without downloading it when
-        // this reader holds no key for it. Any other public repository reads as before.
+        // sealed, and only the keys its owner published open them. Such a pack is checked by
+        // its first bytes and skipped without downloading it when none does. Any other public
+        // repository reads as before.
         let converted = match svc.conversion(repo).await {
             Ok(Some(c)) => Some((c, svc.public_keys(repo).await)),
             Ok(None) => None,
@@ -3555,7 +3555,8 @@ mod tests {
     use super::{
         archived_refusal, blames_set_aside_packs, forget_sealed, head_outcome, hidden_packs_needed,
         is_head, list_lines, oid_to_bytes, packs_unreadable, protected_denied, resolve_network,
-        settle_ref_writes, write_denied, Planned, PushOutcome, PushSpec, Unreadable,
+        settle_ref_writes, skipped_packs_needed, write_denied, Planned, PushOutcome, PushSpec,
+        Unreadable,
     };
     use super::{default_branch_hint, history_tip_landed, role_denied, PushHistory};
 

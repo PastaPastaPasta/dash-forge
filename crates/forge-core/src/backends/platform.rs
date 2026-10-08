@@ -228,6 +228,19 @@ impl<'a> PlatformBackend<'a> {
     }
 }
 
+/// The scope a `platform://` locator's chunks are read from, which must be in `contract`.
+fn scope_in(loc: &PlatformLocator, contract: &LoadedContract) -> Result<DocScope> {
+    let scope = loc.scope()?;
+    if scope.contract_id != contract.id() {
+        return Err(Error::Config(format!(
+            "platform locator names contract {}, not {}",
+            scope.contract_id,
+            contract.id()
+        )));
+    }
+    Ok(scope)
+}
+
 /// Read the whole pack a `platform://` locator names from its `chunk` documents and join
 /// them: a READ, so it needs only a connection — no identity or signing key (a clone of a
 /// public repo must work anonymously). The locator's scope must be in `contract`. The caller
@@ -237,14 +250,7 @@ pub async fn read_platform_pack(
     contract: &LoadedContract,
     loc: &PlatformLocator,
 ) -> Result<Vec<u8>> {
-    let scope = loc.scope()?;
-    if scope.contract_id != contract.id() {
-        return Err(Error::Config(format!(
-            "platform locator names contract {}, not {}",
-            scope.contract_id,
-            contract.id()
-        )));
-    }
+    let scope = scope_in(loc, contract)?;
     let chunks = read_chunks_in(client, contract, &scope, loc).await?;
     if chunks.is_empty() {
         return Err(Error::NotFound);
@@ -261,14 +267,7 @@ pub async fn read_platform_head(
     loc: &PlatformLocator,
     n: usize,
 ) -> Result<Vec<u8>> {
-    let scope = loc.scope()?;
-    if scope.contract_id != contract.id() {
-        return Err(Error::Config(format!(
-            "platform locator names contract {}, not {}",
-            scope.contract_id,
-            contract.id()
-        )));
-    }
+    let scope = scope_in(loc, contract)?;
     let docs = client
         .query_documents(
             contract,

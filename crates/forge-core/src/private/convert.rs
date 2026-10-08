@@ -64,9 +64,10 @@ impl Conversion {
             .filter_map(|c| c.epoch)
             .filter(|&e| existing(e))
             .max();
+        // a config with no block height (0) cannot be placed, so it never marks the conversion
         let marker_height = configs
             .iter()
-            .filter(|c| !c.private)
+            .filter(|c| !c.private && c.height > 0)
             .map(|c| (c.height, c.id))
             .min()
             .map(|(h, _)| h);

@@ -470,7 +470,9 @@ export function laneGate(repo: RepoRef, ctx: OpenContext, options: LaneOptions =
       }
       const reason = hiddenReasonOf(opened.reason)
       // a later client's envelope is members-only to this reader, as to one without a key
-      const why: Unopened = reason === 'notEncrypted' ? 'notForThisRepo' : reason === 'unknownVersion' ? 'noKey' : 'notReadable'
+      let why: Unopened = 'notReadable'
+      if (reason === 'notEncrypted') why = 'notForThisRepo'
+      else if (reason === 'unknownVersion') why = 'noKey'
       return unopened(type, doc, why, reason)
     },
   }
