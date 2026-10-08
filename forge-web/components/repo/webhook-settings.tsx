@@ -190,8 +190,7 @@ export function WebhookSettings({ home, maintainer }: { home: RepoHome; maintain
         {isPublic && maintainer ? (
           sealer.data?.kind === 'no-key' ? (
             <p className="text-[12px] text-anvil-600 dark:text-anvil-300" data-testid="webhooks-no-key">
-              Adding a webhook here (or removing one another maintainer also wrote) needs your encryption key in this browser (the secret is
-              encrypted from it):{' '}
+              Adding a webhook here (or removing one another maintainer also wrote) needs your encryption key in this browser:{' '}
               <Link href="/settings/#enc-key-title" className="hit-area text-forge-700 underline dark:text-forge-400">
                 Settings → Members-only and private content
               </Link>
