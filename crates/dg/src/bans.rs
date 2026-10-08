@@ -7,6 +7,7 @@ use anyhow::Result;
 use serde_json::json;
 
 use forge_core::rules::bans::{ban_reason_code, ban_reason_label, BAN_REASONS};
+use forge_core::user_error::{codes, UserError};
 
 use crate::common::{resolve_identity, Reader, Session};
 use crate::context::Ctx;
@@ -79,24 +80,63 @@ pub async fn unban(ctx: &Ctx, repo: &str, who: &str) -> Result<()> {
         safe(who),
         s.repo.display()
     ))?;
-    match s.collab().unban(&s.repo, &id).await? {
-        Some(doc) => ctx.emit(
-            json!({"status": "lifted", "repo": s.repo.display(), "identityId": id, "documentId": doc}),
-            || println!("✓ lifted your ban of {} from {}", safe(who), s.repo.display()),
-        ),
-        None => ctx.emit(
-            json!({"status": "none", "repo": s.repo.display(), "identityId": id}),
-            || {
-                println!(
-                    "you have no ban of {} in {}: only the maintainer who wrote a ban can lift it (`dg repo bans {}` lists who did)",
-                    safe(who),
-                    s.repo.display(),
-                    s.repo.display()
-                );
-            },
-        ),
-    }
+    let collab = s.collab();
+    let Some(doc) = collab.unban(&s.repo, &id).await? else {
+        // Q5: an error, not a plain line: nothing was lifted. Whether another ban of them counts
+        // (its writer is still the owner or a maintainer) decides which; read on this path only.
+        let others = collab.bans(&s.repo, Some(&id)).await?;
+        let counting = if others.is_empty() {
+            0
+        } else {
+            let scope = collab.ban_scope(&s.repo).await?;
+            // As `dg repo bans` judges it: written by a moderator, of a non-moderator.
+            others
+                .iter()
+                .filter(|b| scope.moderates(&b.by) && !scope.moderates(&b.identity))
+                .count()
+        };
+        return Err(no_ban_of_yours(who, &s.repo.display(), counting, others.len()).into());
+    };
+    ctx.emit(
+        json!({"status": "lifted", "repo": s.repo.display(), "identityId": id, "documentId": doc}),
+        || {
+            println!(
+                "✓ lifted your ban of {} from {}",
+                safe(who),
+                s.repo.display()
+            );
+        },
+    );
     Ok(())
+}
+
+/// The refusal of `dg repo unban` when the caller wrote no ban of `who`: E601 when another ban
+/// of `who` counts (`counting`; only a ban's writer can lift it); E102 when none does, `all`
+/// counting the bans that no longer count too.
+fn no_ban_of_yours(who: &str, repo: &str, counting: usize, all: usize) -> UserError {
+    let who = safe(who);
+    let list = format!("`dg repo bans {repo}` lists who banned whom");
+    if counting == 0 {
+        let u = UserError::new(
+            codes::NOT_FOUND,
+            format!("nothing lifted: {who} is not banned from {repo}"),
+        );
+        let u = if all > 0 {
+            u.cause("a ban of them remains but no longer counts: its writer is no longer a maintainer, or they are one now")
+        } else {
+            u
+        };
+        return u.note(list);
+    }
+    UserError::new(
+        codes::NOT_A_WRITER,
+        format!("nothing lifted: you have no ban of {who} in {repo}; someone else banned them"),
+    )
+    .cause("only the maintainer who wrote a ban can lift it")
+    .fix(format!(
+        "ask the maintainer who wrote it to run `dg repo unban {repo} {who}`; {list}"
+    ))
+    .note("nothing was written or paid")
 }
 
 /// `dg repo bans <repo>`: every ban, with its writer, and whether it counts (its writer is the
@@ -168,6 +208,33 @@ pub async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
 mod tests {
     use super::*;
     use clap::CommandFactory;
+
+    /// Q5: lifting a ban you did not write is an error, with a code: E601 when someone else
+    /// banned them, E102 when nobody did.
+    #[test]
+    fn unbanning_without_a_ban_of_yours_is_an_error() {
+        let theirs = no_ban_of_yours("bob", "alice/project", 1, 1);
+        assert_eq!(theirs.code, codes::NOT_A_WRITER);
+        assert!(
+            theirs.message.contains("someone else banned them"),
+            "{theirs:?}"
+        );
+        assert!(theirs
+            .fix
+            .iter()
+            .any(|f| f.contains("dg repo bans alice/project")));
+        let none = no_ban_of_yours("bob", "alice/project", 0, 0);
+        assert_eq!(none.code, codes::NOT_FOUND);
+        assert_eq!(
+            none.message,
+            "nothing lifted: bob is not banned from alice/project"
+        );
+        assert_eq!(none.cause, None);
+        // A former maintainer's ban no longer counts: not banned, and it says why.
+        let stale = no_ban_of_yours("bob", "alice/project", 0, 1);
+        assert_eq!(stale.code, codes::NOT_FOUND);
+        assert!(stale.cause.unwrap().contains("no longer counts"));
+    }
 
     /// `dg repo bans` lists every ban, not only those that count (Q5-B11 help text).
     #[test]

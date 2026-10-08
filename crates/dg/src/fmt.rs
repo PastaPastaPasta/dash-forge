@@ -408,12 +408,14 @@ pub fn split_hidden<T>(
     (kept, omitted)
 }
 
-/// What a list page says when it left out rows maintainers hid (`omitted`, on this page only;
+/// What a list page says when it left out rows maintainers hid or a ban hides (`omitted`, on this page only;
 /// nothing when none): how many, and the flag that shows them.
 #[must_use]
 pub fn hidden_rows_note(omitted: usize) -> Option<String> {
     (omitted > 0).then(|| {
-        format!("({omitted} hidden by maintainers on this page; --include-hidden shows them)")
+        format!(
+            "({omitted} hidden by maintainers or a ban on this page; --include-hidden shows them)"
+        )
     })
 }
 
@@ -616,7 +618,7 @@ mod tests {
         assert_eq!(omitted, 2);
         assert_eq!(
             hidden_rows_note(omitted).as_deref(),
-            Some("(2 hidden by maintainers on this page; --include-hidden shows them)")
+            Some("(2 hidden by maintainers or a ban on this page; --include-hidden shows them)")
         );
         assert_eq!(hidden_rows_note(0), None);
     }

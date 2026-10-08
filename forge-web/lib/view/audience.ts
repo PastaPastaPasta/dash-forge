@@ -28,8 +28,8 @@ export interface MembersCount {
 }
 
 /** The identities of `members` who hold a repo's members key (each once). */
-export function keyHolders(members: readonly Membership[], visibility: 'public' | 'private'): Set<string> {
-  return new Set(members.filter((m) => holdsMembersKey(m.role, visibility)).map((m) => m.identity))
+export function keyHolders(members: readonly Membership[]): Set<string> {
+  return new Set(members.filter((m) => holdsMembersKey(m.role)).map((m) => m.identity))
 }
 
 /**
@@ -37,8 +37,8 @@ export function keyHolders(members: readonly Membership[], visibility: 'public' 
  * that is their only role, and `runners` (the repo's CI runner identities) counted when they are
  * members too. A runner is never a member by being a runner.
  */
-export function membersCount(members: readonly Membership[], visibility: 'public' | 'private', runners: Iterable<string> = []): MembersCount {
-  const holders = keyHolders(members, visibility)
+export function membersCount(members: readonly Membership[], runners: Iterable<string> = []): MembersCount {
+  const holders = keyHolders(members)
   const roles = new Map<string, Role[]>()
   for (const m of members) if (holders.has(m.identity)) roles.set(m.identity, [...(roles.get(m.identity) ?? []), m.role])
   const readers = [...roles.values()].filter((r) => r.every((x) => x === 'reader')).length
@@ -63,7 +63,7 @@ export const PUBLIC_SENTENCE = 'Anyone can read it, now and forever.'
  * and CI bots only when there are any.
  */
 export function membersSentence(c: MembersCount): string {
-  const extras = [c.readers > 0 ? plural(c.readers, 'reader') : null, c.bots > 0 ? plural(c.bots, 'CI bot') : null].filter((x): x is string => x !== null)
+  const extras = [c.readers > 0 ? `${c.readers} with Read access` : null, c.bots > 0 ? plural(c.bots, 'CI bot') : null].filter((x): x is string => x !== null)
   const counted = extras.length === 0 ? `${c.total}` : `${c.total}, including ${extras.join(' and ')}`
   return `Current and future members of this repo (${counted}). Members removed later keep what they could already read. Maintainers can make it public later.`
 }

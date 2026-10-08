@@ -646,7 +646,7 @@ pub fn scheduled_crons(
 
 /// The repository's default branch (`dg repo view`), short (`main`).
 pub fn default_branch_name(cfg: &Config, repo: &RepoConfig) -> Result<String> {
-    let v = dg_read(cfg, &["repo", "view", &repo.repo])?;
+    let v = dg_read(cfg, &["repo", "view", &repo.repo, "--skip-security-policy"])?;
     v["defaultBranch"]
         .as_str()
         .map(str::to_string)

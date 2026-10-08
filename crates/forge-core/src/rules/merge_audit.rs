@@ -195,25 +195,21 @@ fn newest_at<T>(items: &[T], at: u64, key: impl Fn(&T) -> (u64, &str)) -> Option
 }
 
 /// Whether a document in `items` written in the window before `at` changed what the one before
-/// it said (`same` compares two documents' rules); the first document ever counts as a change
-/// only from nothing to something that `applies`.
+/// it said (`same` compares two documents' rules). The first document ever changes nothing: a
+/// repository's first policy or config, written shortly before a merge, is no weakening, and
+/// flagging every merge in its first hour would bury the real warning (Q5).
 fn changed_before<T>(
     items: &[T],
     at: u64,
     key: impl Fn(&T) -> (u64, &str),
     same: impl Fn(&T, &T) -> bool,
-    applies: impl Fn(&T) -> bool,
 ) -> bool {
     let mut sorted: Vec<&T> = items.iter().filter(|x| key(x).0 <= at).collect();
     sorted.sort_by(|a, b| key(a).cmp(&key(b)));
     let from = at.saturating_sub(RULES_CHANGE_WINDOW_MS);
-    sorted.iter().enumerate().any(|(i, x)| {
-        key(x).0 > from
-            && match i.checked_sub(1).and_then(|p| sorted.get(p)) {
-                Some(prev) => !same(prev, x),
-                None => applies(x),
-            }
-    })
+    sorted
+        .windows(2)
+        .any(|w| key(w[1]).0 > from && !same(w[0], w[1]))
 }
 
 /// The approvals standing at the merge (reviews and dismissals written no later, the membership
@@ -338,14 +334,12 @@ pub fn audit_merge(input: &MergeAuditInput) -> MergeAudit {
         at,
         |p| (p.created_at, p.id.as_str()),
         |a, b| a.policy == b.policy,
-        |_| true,
     );
     let protection_changed = changed_before(
         &input.protection,
         at,
         |p| (p.created_at, p.id.as_str()),
         |a, b| a.protected == b.protected,
-        |p| p.protected,
     );
 
     let unmet = protection_unmet

@@ -123,6 +123,40 @@ describe('bulk actions', () => {
     expect(onWritten).toHaveBeenCalledTimes(1)
   })
 
+  it('disables Close when nothing selected can be closed, and says a merged PR is already merged (Q5)', async () => {
+    const prs: BulkRow[] = [
+      { id: 'm', number: 1, title: 'Merged', author: 'a', open: false, merged: true, labels: [] },
+      { id: 'c', number: 2, title: 'Closed', author: 'a', open: false, merged: false, labels: [] },
+      { id: 'o', number: 3, title: 'Open', author: 'a', open: true, merged: false, labels: [] },
+    ]
+    await act(async () => root.render(<List kind="pull" rows={prs} />))
+    const boxes = host.querySelectorAll<HTMLInputElement>('[data-testid="bulk-select-row"]')
+    await click(boxes[0]!)
+    await click(boxes[1]!)
+    const close = q('[data-testid="bulk-close"]') as HTMLButtonElement
+    expect(close.disabled).toBe(true)
+    expect(close.title).toBe('Nothing selected is open.')
+    // With an open one too: Close closes it, and the merged one is said to be merged.
+    await click(boxes[2]!)
+    expect((q('[data-testid="bulk-close"]') as HTMLButtonElement).disabled).toBe(false)
+    await click(q('[data-testid="bulk-close"]'))
+    expect(document.body.textContent).toContain('Close 1 pull request')
+    expect(q('[data-testid="bulk-unchanged"]').textContent).toBe('1 selected is already that way and is left as it is. 1 selected is already merged and is left as it is.')
+  })
+
+  it('says a write that reached no node could not reach Platform, not the raw transport text (Q5)', async () => {
+    await act(async () => root.render(<List />))
+    await click(q('[data-testid="bulk-select-all"]'))
+    await click(q('[data-testid="bulk-close"]'))
+    await click(button('Close as completed'))
+    setTargetState.mockImplementation(async () => {
+      throw new Error("transport error: grpc error: code: 'Internal error', message: \"Failed to fetch\"")
+    })
+    await click(q('[data-testid="bulk-confirm"]'))
+    expect(document.body.textContent).toContain("Couldn't reach Dash Platform")
+    expect(document.body.textContent).not.toContain('grpc error')
+  })
+
   it('keeps the dialog and the whole batch while each write re-reads the list', async () => {
     // A page: each close re-reads the list (its data is null while the read runs), and the
     // closed issues come back closed.

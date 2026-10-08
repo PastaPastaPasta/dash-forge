@@ -550,11 +550,20 @@ mod tests {
             merge_oid: "b".repeat(40),
             merge_head: "a".repeat(40),
             pr_author: "auth".into(),
-            protection: vec![ProtectionDoc {
-                id: "c1".into(),
-                created_at: 90,
-                protected: true,
-            }],
+            // Protected just before the merge, after a config that did not protect it: a change
+            // (a repository's first config alone is not one).
+            protection: vec![
+                ProtectionDoc {
+                    id: "c0".into(),
+                    created_at: 1,
+                    protected: false,
+                },
+                ProtectionDoc {
+                    id: "c1".into(),
+                    created_at: 90,
+                    protected: true,
+                },
+            ],
             memberships: vec![Membership {
                 identity: "writ".into(),
                 role: Role::Writer,

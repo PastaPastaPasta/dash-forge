@@ -16,7 +16,7 @@ use serde::Serialize;
 
 use forge_core::collab::v2::{Comment, Review};
 use forge_core::rules::v2::{
-    anchor_of, parse_suggestions, Anchor, Approvals, PrReviewState, RoleOracle,
+    anchor_of, parse_suggestions, Anchor, Approvals, PrReviewState, Role, RoleOracle,
 };
 use forge_core::rules::Verdict;
 
@@ -207,7 +207,7 @@ impl Standing {
             Standing::Stale => "stale — new commits since",
             Standing::Dismissed => "dismissed",
             Standing::NotMember => "doesn't count (not a maintainer or writer)",
-            Standing::NotApprover => "not counted (triage or reader)",
+            Standing::NotApprover => "doesn't count (Read or Triage access)",
             Standing::Author => "author, not counted",
         }
     }
@@ -233,6 +233,37 @@ pub struct ReviewerRow {
     pub reviewed_oid: Option<String>,
     /// Why their newest review was dismissed.
     pub dismiss_reason: Option<String>,
+    /// The role their standing names: the one they held when they wrote their newest review
+    /// when it gave no counted verdict then ([`member_without_verdict`]), else their current
+    /// role (`None`: not a member now).
+    pub role: Option<Role>,
+}
+
+/// The role of a member whose approve or request changes written at `at` does not count for
+/// their role (DESIGN D15: Read or Triage access): the role they held then when it was not an
+/// approver's, else their role now when it no longer is. `None` for a non-member (at `at` or
+/// now) and for an approver then and now.
+pub fn member_without_verdict(oracle: &RoleOracle, identity: &str, at: u64) -> Option<Role> {
+    let now = oracle.current_role(identity)?;
+    let then = oracle.role_at(identity, at)?;
+    if !then.is_approver() {
+        Some(then)
+    } else if !now.is_approver() {
+        Some(now)
+    } else {
+        None
+    }
+}
+
+impl ReviewerRow {
+    /// The row's wording: [`Standing::label`], naming the access of a member whose verdict does
+    /// not count ("doesn't count (Read access)").
+    pub fn label(&self) -> String {
+        match (self.state, self.role) {
+            (Standing::NotApprover, Some(r)) => format!("doesn't count ({} access)", r.label()),
+            (s, _) => s.label().to_string(),
+        }
+    }
 }
 
 /// The newest review per reviewer by `(createdAt, id)`.
@@ -342,6 +373,9 @@ pub fn reviewer_rows(
                 review_id: review.map(|r| r.document_id.clone()),
                 reviewed_oid: review.map(|r| r.commit_oid.clone()),
                 dismiss_reason: dismissal.map(str::to_string),
+                role: review
+                    .and_then(|r| member_without_verdict(oracle, id, r.created_at))
+                    .or_else(|| oracle.current_role(id)),
             }
         })
         .collect();
@@ -520,6 +554,33 @@ mod tests {
     }
 
     #[test]
+    fn a_verdict_that_does_not_count_names_the_role_it_was_written_under() {
+        let doc = |id: &str, role, at| Membership {
+            identity: id.into(),
+            role,
+            created_at: at,
+        };
+        let oracle = RoleOracle::new(vec![
+            doc("rdr", Role::Reader, 10),
+            doc("tri", Role::Triage, 10),
+            doc("w", Role::Writer, 10),
+            doc("late", Role::Writer, 100),
+        ]);
+        assert_eq!(
+            member_without_verdict(&oracle, "rdr", 50),
+            Some(Role::Reader)
+        );
+        assert_eq!(
+            member_without_verdict(&oracle, "tri", 50),
+            Some(Role::Triage)
+        );
+        assert_eq!(member_without_verdict(&oracle, "w", 50), None);
+        // not a member when they reviewed: not this rule's (shown as not a member)
+        assert_eq!(member_without_verdict(&oracle, "late", 50), None);
+        assert_eq!(member_without_verdict(&oracle, "stranger", 50), None);
+    }
+
+    #[test]
     fn reviewer_rows_cover_every_standing() {
         let oracle = RoleOracle::new(
             [
@@ -600,6 +661,9 @@ mod tests {
         assert_eq!(state["auth"].0, Standing::Author);
         assert_eq!(state["tri"].0, Standing::NotApprover);
         assert_eq!(state["rdr"].0, Standing::NotApprover);
+        let label = |id: &str| rows.iter().find(|r| r.identity == id).unwrap().label();
+        assert_eq!(label("rdr"), "doesn't count (Read access)");
+        assert_eq!(label("tri"), "doesn't count (Triage access)");
         assert_eq!(
             serde_json::to_value(Standing::NotApprover).unwrap(),
             "notApprover"
