@@ -63,6 +63,7 @@ describe('shortRepoPath → shim → canonical route', () => {
     [{ kind: 'stargazers' }, '/alice/project/stargazers', '/repo/stargazers/?owner=alice&name=project'],
     [{ kind: 'labels' }, '/alice/project/labels', '/repo/labels/?owner=alice&name=project'],
     [{ kind: 'milestones' }, '/alice/project/milestones', '/repo/milestones/?owner=alice&name=project'],
+    [{ kind: 'security' }, '/alice/project/security', '/repo/security/?owner=alice&name=project'],
     [
       { kind: 'commit', oid: '0123456789abcdef0123456789abcdef01234567' },
       '/alice/project/commit/0123456789abcdef0123456789abcdef01234567',
@@ -121,6 +122,7 @@ describe('GitHub URLs that map onto an existing page (L-27)', () => {
     ['/alice/project/stargazers', '/repo/stargazers/?owner=alice&name=project'],
     ['/alice/project/labels', '/repo/labels/?owner=alice&name=project'],
     ['/alice/project/milestones', '/repo/milestones/?owner=alice&name=project'],
+    ['/alice/project/security', '/repo/security/?owner=alice&name=project'],
     // A short commit id, in any case, opens the commit page (which resolves prefixes).
     ['/alice/project/commit/ABCDEF1', '/repo/commit/?owner=alice&name=project&oid=abcdef1'],
     // GitHub's release permalink.
@@ -377,6 +379,7 @@ describe('shortRouteFor: the address bar’s short URL (CJ-6)', () => {
     ['/repo/stargazers/', 'owner=alice&name=project', '/alice/project/stargazers'],
     ['/repo/labels/', 'owner=alice&name=project', '/alice/project/labels'],
     ['/repo/milestones/', 'owner=alice&name=project', '/alice/project/milestones'],
+    ['/repo/security/', 'owner=alice&name=project', '/alice/project/security'],
     ['/repo/commit/', 'owner=alice&name=project&oid=abcdef0', '/alice/project/commit/abcdef0'],
     ['/repo/compare/', 'owner=alice&name=project&base=main&head=feature%2Fx', '/alice/project/compare/main...feature%2Fx'],
     ['/repo/compare/', 'owner=alice&name=project&head=dev', '/alice/project/compare/dev'],

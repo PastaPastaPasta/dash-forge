@@ -94,6 +94,7 @@ import {
   type ListGrammar,
 } from '@/components/repo/list-controls'
 import { ContactLinks, TemplatePicker, useIssueChooser } from '@/components/repo/issue-templates'
+import { SecurityHint } from '@/components/repo/security-policy'
 import { IssueFormFields } from '@/components/repo/issue-form'
 import { useRepoTotals } from '@/components/repo/use-repo-totals'
 import { useMilestones } from '@/components/repo/use-milestones'
@@ -612,6 +613,7 @@ function ComposeIssueDialog({
     >
       <div className="space-y-3">
         {open ? <MirrorComposeHint home={home} /> : null}
+        <SecurityHint home={home} addr={addr} enabled={open} />
         {open && chooser !== null ? (
           <>
             <TemplatePicker templates={chooser.templates} selected={template} onPick={pick} blank={chooser.blankIssuesEnabled ? 'Blank issue' : null} label="Issue template" />

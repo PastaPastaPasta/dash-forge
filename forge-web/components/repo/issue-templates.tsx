@@ -18,7 +18,7 @@ import { cn } from '@/lib/utils'
 import { onRadioGroupKeyDown, radioTabIndex } from '@/components/ui/radio-group'
 
 /** The default branch's tip and a reader for it (null until both are known, or while not `enabled`: nothing is loaded then). */
-function useDefaultBranchReader(home: RepoHome, enabled: boolean): { readonly tip: string | null; readonly reader: BrowseReader | null } {
+export function useDefaultBranchReader(home: RepoHome, enabled: boolean): { readonly tip: string | null; readonly reader: BrowseReader | null } {
   const tip = tipOidOf(selectRef(home.branches, home.tags, home.defaultBranch, '').ref) || null
   const browse = useBrowse(enabled && tip ? home.repo : null)
   return { tip, reader: browse.data?.kind === 'ready' ? browse.data.context.reader : null }
