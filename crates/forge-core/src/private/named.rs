@@ -7,7 +7,7 @@
 //! slot = IV(16) ‖ AES-256-CBC-PKCS7(S, IV, 0x02 ‖ KCV_obj(14) ‖ K_obj(32))
 //! S    = SHA-256((y & 1 | 2) ‖ x) of senderEncPriv · recipientEncPub
 //! H    = enc[1 .. 38 + 64·n];   AD' = AD(enc[0] = 0x04, epoch = 0) ‖ SHA-256(H)
-//! TLV  = content ‖ tag 25 (recipient identity id) × n, in slot order ‖ padding
+//! TLV  = content ‖ tag 25 (recipient identity id) × n, in slot order ‖ [tag 29 group] ‖ padding
 //! ```
 //!
 //! `K_obj` is fresh CSPRNG output per seal (and per revision); `PRK_obj`, `K_doc,obj`,
@@ -31,7 +31,7 @@ use zeroize::Zeroizing;
 
 use super::doc::{self, DocHeader, NONCE_LEN, TAG_LEN, V4};
 use super::keys::{ct_eq, sha256, ObjKeys};
-use super::tlv::{self, Fields};
+use super::tlv::{self, Fields, LetterGroup};
 use super::PrivateError;
 use crate::envelope::{self, PrivateKey, SharedKey};
 
@@ -130,6 +130,8 @@ pub struct Letter {
     pub recipients: Vec<[u8; 32]>,
     /// The slot the reader opened.
     pub slot: usize,
+    /// The role group it was sent to (tag 29), "as listed by the sender" like the recipients.
+    pub group: Option<LetterGroup>,
 }
 
 /// The result of [`open`].
@@ -148,7 +150,8 @@ pub enum LetterOpened {
 /// `sender_key_id`) in the repository `repo_id`. `recipients` is the slot order; the first
 /// must be the sender itself (its identity is `header.owner_id`, its key `sender`'s public key),
 /// and no identity may appear twice. Draws a fresh `K_obj`, a random nonce and a random IV per
-/// slot. `header.epoch` must be 0 (D20).
+/// slot. `header.epoch` must be 0 (D20). `group` is the role group the recipients are when the
+/// writer chose a preset (tag 29).
 pub fn seal(
     repo_id: &[u8; 32],
     sender: &PrivateKey,
@@ -156,6 +159,7 @@ pub fn seal(
     header: &DocHeader,
     fields: &Fields,
     recipients: &[Recipient],
+    group: Option<LetterGroup>,
 ) -> Result<Vec<u8>, PrivateError> {
     let mut k_obj = Zeroizing::new([0u8; 32]);
     let mut nonce = [0u8; NONCE_LEN];
@@ -168,6 +172,7 @@ pub fn seal(
         header,
         fields,
         recipients,
+        group,
         &k_obj,
         nonce,
         |r, pt| envelope::encrypt(sender, &r.public_key, pt).map_err(|_| PrivateError::Malformed),
@@ -185,6 +190,7 @@ pub fn seal_with(
     header: &DocHeader,
     fields: &Fields,
     recipients: &[Recipient],
+    group: Option<LetterGroup>,
     k_obj: &[u8; 32],
     nonce: [u8; 12],
     ivs: &[[u8; 16]],
@@ -200,6 +206,7 @@ pub fn seal_with(
         header,
         fields,
         recipients,
+        group,
         k_obj,
         nonce,
         |r, pt| {
@@ -263,6 +270,7 @@ fn seal_inner(
     header: &DocHeader,
     fields: &Fields,
     recipients: &[Recipient],
+    group: Option<LetterGroup>,
     k_obj: &[u8; 32],
     nonce: [u8; NONCE_LEN],
     wrap: impl FnMut(&Recipient, &[u8]) -> Result<Vec<u8>, PrivateError>,
@@ -279,7 +287,7 @@ fn seal_inner(
     }
     let ids: Vec<[u8; 32]> = recipients.iter().map(|r| r.identity_id).collect();
     let mut body = Zeroizing::new(records.to_vec());
-    tlv::push_recipients(&mut body, &ids);
+    tlv::push_recipients(&mut body, &ids, group);
     let max = max_tlv(header.kind, n);
     if body.len() > max {
         return Err(PrivateError::TooLarge(header.kind.type_name(), max));
@@ -420,7 +428,12 @@ pub fn open(
         return LetterOpened::Unreadable(LetterUnreadable::BadTag);
     };
     let pt = Zeroizing::new(pt);
-    let Some((fields, recipients)) = tlv::parse_letter(&pt, header.kind) else {
+    let Some(tlv::LetterTlv {
+        fields,
+        recipients,
+        group,
+    }) = tlv::parse_letter(&pt, header.kind)
+    else {
         return LetterOpened::Malformed;
     };
     // the list as the writer rule makes it: n ids, the owner in slot 0, none twice, and the
@@ -441,6 +454,7 @@ pub fn open(
         fields,
         recipients,
         slot,
+        group,
     }))
 }
 
@@ -731,7 +745,7 @@ mod tests {
             })
             .collect();
         let h = header(ids[0]);
-        let enc = seal(&repo, &alice, 4, &h, &body("hello"), &recipients).unwrap();
+        let enc = seal(&repo, &alice, 4, &h, &body("hello"), &recipients, None).unwrap();
         assert_eq!((enc.len() - framing(3)) % 64, 0, "a padded TLV");
         let ok = owner_keys(&alice);
         for i in 0..3u8 {
@@ -820,19 +834,19 @@ mod tests {
         };
         let h = header([0xa1; 32]);
         let f = body("x");
-        assert!(seal(&repo, &alice, 4, &h, &f, &[b.clone(), a.clone()]).is_err());
-        assert!(seal(&repo, &alice, 4, &h, &f, &[a.clone(), a.clone()]).is_err());
-        assert!(seal(&repo, &alice, 4, &h, &f, &[]).is_err());
+        assert!(seal(&repo, &alice, 4, &h, &f, &[b.clone(), a.clone()], None).is_err());
+        assert!(seal(&repo, &alice, 4, &h, &f, &[a.clone(), a.clone()], None).is_err());
+        assert!(seal(&repo, &alice, 4, &h, &f, &[], None).is_err());
         let seventeen: Vec<Recipient> = std::iter::once(a.clone())
             .chain((1..17u8).map(|i| Recipient {
                 identity_id: [i; 32],
                 public_key: key(i + 1).public_key(),
             }))
             .collect();
-        assert!(seal(&repo, &alice, 4, &h, &f, &seventeen).is_err());
+        assert!(seal(&repo, &alice, 4, &h, &f, &seventeen, None).is_err());
         let mut h1 = h.clone();
         h1.epoch = 1;
-        assert!(seal(&repo, &alice, 4, &h1, &f, std::slice::from_ref(&a)).is_err());
-        assert!(seal(&repo, &alice, 4, &h, &f, &[a, b]).is_ok());
+        assert!(seal(&repo, &alice, 4, &h1, &f, std::slice::from_ref(&a), None).is_err());
+        assert!(seal(&repo, &alice, 4, &h, &f, &[a, b], None).is_ok());
     }
 }
