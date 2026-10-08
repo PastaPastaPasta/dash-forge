@@ -673,6 +673,7 @@ async fn topic(ctx: &Ctx, repo: &str, add: &[String], remove: &[String]) -> Resu
 }
 
 /// View a repo: resolved refs, default branch, pack manifests, members.
+#[allow(clippy::too_many_lines)] // one linear flow: reads, listing, security policy, report
 async fn view(ctx: &Ctx, repo: &str, skip_security_policy: bool) -> Result<()> {
     let r = Reader::open(ctx, repo).await?;
     let (client, handle) = (&r.client, &r.repo);
