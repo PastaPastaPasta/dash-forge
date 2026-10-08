@@ -68,7 +68,7 @@ import { setHidden } from '@/lib/repo/moderation'
 import { moderationBlocked } from '@/lib/repo/moderation-fold'
 import { isHiddenByHide } from '@/lib/view/issues-view'
 import type { HideReason } from '@/lib/rules/moderation'
-import { bypassValue, deleteBranchOffer, deleteBranchProblem, prLinkedIssues, requiredChecksLine, unrecordedMerge, unrecordedMergeCandidate } from '@/lib/view/pull-actions'
+import { bypassValue, codeOwnersLine, deleteBranchOffer, deleteBranchProblem, prLinkedIssues, requiredChecksLine, unrecordedMerge, unrecordedMergeCandidate } from '@/lib/view/pull-actions'
 import {
   baseRefReaders,
   openPullsOnBranch,
@@ -109,7 +109,7 @@ import { branchShown, headSync, readBranchState, readBranchTip, readBranchUpdate
 import type { Event, EventKind, Holdings, RefState } from '@/lib/rules'
 import { ROLE_NOUN, capabilitiesOf, memberMayWriteEvent } from '@/lib/rules/roles'
 import { RoleLimitNote } from '@/components/repo/role-limit-note'
-import { isApprover, linkedIssues, RoleOracle, type ChecksState, type Policy, type PolicyStatus } from '@/lib/rules/v2'
+import { isApprover, linkedIssues, RoleOracle, type ChecksState, type CodeOwnerStatus, type Policy, type PolicyStatus } from '@/lib/rules/v2'
 import { checksState } from '@/lib/rules/parity'
 import { pendingReruns, rerunCounts } from '@/lib/rules/ci-rerun'
 import { SupersededWriteError, UnconfirmedWriteError, previewCreate, previewCredits, previewDelete, previewReplace, sumPreviews, withAddressee, type CostPreview as Cost } from '@/lib/sdk'
@@ -580,7 +580,7 @@ function PullPage({
       : checks.data === null || !membersKnown
         ? ('unknown' as const)
         : checksState(checks.data.rows, pull.headOid, roleOracle, checks.data.runners, policyNow)
-  const codeOwners = useCodeOwnerStatus({
+  const codeOwnerJudge = useCodeOwnerStatus({
     repo,
     policy: open ? policyNow : null,
     reader: cmp?.sides.base ?? null,
@@ -592,6 +592,7 @@ function PullPage({
     members: thread.members,
     author: pull.author,
   })
+  const codeOwners = codeOwnerJudge.status
   const actions = pullActions({
     pull,
     viewer,
@@ -1284,6 +1285,8 @@ function PullPage({
         approvals: thread.approvals,
         requiredChecks,
         checkRuns: checks.data,
+        // Judged again with the members read at the click, as the approvals are.
+        codeOwners: codeOwnerJudge.withMembers,
       },
       bypass,
     )
@@ -1792,7 +1795,7 @@ function PullPage({
           {tab === 'conversation' ? (
             <>
               {!(open && pull.state.draft) && open && (actions.baseProtected || rules.status !== null) ? (
-                <BranchRules base={pull.mergeBaseRefName} baseProtected={actions.baseProtected} policy={rules.policy} status={rules.status} checks={requiredChecks} />
+                <BranchRules base={pull.mergeBaseRefName} baseProtected={actions.baseProtected} policy={rules.policy} status={rules.status} checks={requiredChecks} codeOwners={codeOwners} />
               ) : null}
 
               {/* Composer */}
@@ -2530,6 +2533,7 @@ function BranchRules({
   policy,
   status,
   checks,
+  codeOwners,
 }: {
   base: string
   baseProtected: boolean
@@ -2537,12 +2541,17 @@ function BranchRules({
   status: PolicyStatus | null | 'unknown'
   /** The head's required checks (`checksState`); null: none required; 'unknown': not read yet. */
   checks: ChecksState | null | 'unknown'
+  /** Where the PR stands against `requireCodeOwners`; null: not required; 'unknown': not read yet. */
+  codeOwners: CodeOwnerStatus | null | 'unknown'
 }): JSX.Element {
   const short = shortBranch(base)
   // The checks the policy requires: by name, or (none named) every reported one. Null: no policy read.
   const known = policy !== null && policy !== 'unknown' ? policy : null
   const named = known?.requiredChecks ?? []
   const line = requiredChecksLine(checks, named)
+  const owners = codeOwnersLine(codeOwners)
+  const checksRow = known !== null && (named.length > 0 || known.requireChecks === true)
+  const otherRules = owners !== null || checksRow || (status !== null && status !== 'unknown' && status.blockedBy.length > 0)
   return (
     <section aria-label="Branch rules" className="rounded-lg border border-anvil-200 px-4 py-3 text-dense dark:border-anvil-800">
       {baseProtected ? (
@@ -2561,13 +2570,16 @@ function BranchRules({
         </p>
       ) : policy !== null && status !== null ? (
         <>
-          <p className="mt-1 flex items-center gap-2" data-testid="policy-status">
-            {status.have >= status.need ? <Check className="h-4 w-4 text-verify" aria-hidden /> : <X className="h-4 w-4 text-danger" aria-hidden />}
-            <span>
-              {status.have} of {plural(status.need, 'required approval')}
-              {policy.approverRole === 1 ? ' (maintainers)' : ''}
-            </span>
-          </p>
+          {/* No approvals required beside other rules (checks, code owners): no "0 of 0" row. */}
+          {status.need > 0 || !otherRules ? (
+            <p className="mt-1 flex items-center gap-2" data-testid="policy-status">
+              {status.have >= status.need ? <Check className="h-4 w-4 text-verify" aria-hidden /> : <X className="h-4 w-4 text-danger" aria-hidden />}
+              <span>
+                {status.have} of {plural(status.need, 'required approval')}
+                {policy.approverRole === 1 ? ' (maintainers)' : ''}
+              </span>
+            </p>
+          ) : null}
           {status.blockedBy.length > 0 ? (
             <p className="mt-1 flex items-center gap-2" data-testid="policy-changes-requested">
               <X className="h-4 w-4 shrink-0 text-danger" aria-hidden />
@@ -2576,10 +2588,16 @@ function BranchRules({
           ) : null}
         </>
       ) : null}
-      {known !== null && (named.length > 0 || known.requireChecks === true) ? (
+      {checksRow ? (
         <p className="mt-1 flex items-center gap-2" data-testid="policy-checks">
           {line.ok ? <Check className="h-4 w-4 shrink-0 text-verify" aria-hidden /> : <X className="h-4 w-4 shrink-0 text-danger" aria-hidden />}
           <span className="min-w-0 [overflow-wrap:anywhere]">{line.text}</span>
+        </p>
+      ) : null}
+      {owners !== null ? (
+        <p className="mt-1 flex items-center gap-2" data-testid="policy-code-owners">
+          {owners.ok ? <Check className="h-4 w-4 shrink-0 text-verify" aria-hidden /> : <X className="h-4 w-4 shrink-0 text-danger" aria-hidden />}
+          <span className="min-w-0 [overflow-wrap:anywhere]">{owners.text}</span>
         </p>
       ) : null}
       {policy !== null && policy !== 'unknown' && (policy.mergeMethods ?? 0) !== 0 ? (
