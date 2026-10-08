@@ -1383,17 +1383,19 @@ fn packs_unreadable(
     .fix(format!("`dg storage status {repo}` shows which recorded copies answer"))
 }
 
-/// The pack mirrors the unreadable packs' reads tried and refused (`pack mirrors tried: host
-/// (why), …`), each clause once; `None` when no read got as far as the mirrors.
+/// What the unreadable packs' reads say of the pack mirrors (`pack mirrors tried: host (why), …`
+/// or `pack mirrors not checked: why`), each clause once; `None` when no read got as far as the
+/// mirrors. A clause holds no `; ` or ` — ` (`with_mirror_clause` removes them), so it ends at
+/// the next one.
 fn mirrors_tried(unreadable: &[Unreadable]) -> Option<String> {
-    let marker = format!("; {}", forge_core::storage::read::MIRRORS_TRIED);
+    use forge_core::storage::read::MIRRORS_CLAUSE;
+    let marker = format!("; {MIRRORS_CLAUSE}");
     let mut clauses: Vec<String> = Vec::new();
     for u in unreadable {
         let Some((_, rest)) = u.error.split_once(&marker) else {
             continue;
         };
-        let clause = format!("{}{rest}", forge_core::storage::read::MIRRORS_TRIED);
-        // Cut at the next `; ` or the reader's ` — ` hint, whichever ends the clause first.
+        let clause = format!("{MIRRORS_CLAUSE}{rest}");
         let end = [clause.find("; "), clause.find(" — ")]
             .into_iter()
             .flatten()
@@ -1423,7 +1425,7 @@ fn unfollowed_places(unreadable: &[Unreadable]) -> Option<Vec<String>> {
         for place in listed
             .split("; ")
             // The mirrors clause a read adds is not a place the manifest records.
-            .filter(|p| !p.is_empty() && !p.starts_with(forge_core::storage::read::MIRRORS_TRIED))
+            .filter(|p| !p.is_empty() && !p.starts_with(forge_core::storage::read::MIRRORS_CLAUSE))
         {
             if !places.iter().any(|p| p == place) {
                 places.push(place.to_string());
@@ -4104,6 +4106,33 @@ mod tests {
             .unwrap();
         assert!(
             cause.ends_with("they are recorded only at 127.0.0.1:9000 (this machine) (pack mirrors tried: dead.example (HTTP 404))"),
+            "{cause}"
+        );
+        // The mirrors could not be read at all: that is said, in both branches, and is no place.
+        let unchecked = format!(
+            "{}: its manifest records only 127.0.0.1:9000 (this machine); pack mirrors not checked: could not reach Dash Platform",
+            forge_core::storage::read::NO_FOLLOWED_COPY
+        );
+        let private = Unreadable {
+            hash: "d".repeat(64),
+            error: format!("io error: {unchecked}"),
+        };
+        let cause = packs_unreadable("OWNER/repo", true, &[private], 1, None)
+            .cause
+            .unwrap();
+        assert!(
+            cause.ends_with("they are recorded only at 127.0.0.1:9000 (this machine) (pack mirrors not checked: could not reach Dash Platform)"),
+            "{cause}"
+        );
+        let failed = Unreadable {
+            hash: "e".repeat(64),
+            error: "io error: no external copy verified (1 candidate(s)): primary.example (HTTP 404); pack mirrors not checked: could not reach Dash Platform".into(),
+        };
+        let cause = packs_unreadable("OWNER/repo", true, &[failed], 1, None)
+            .cause
+            .unwrap();
+        assert!(
+            cause.contains("pack mirrors not checked: could not reach Dash Platform"),
             "{cause}"
         );
     }

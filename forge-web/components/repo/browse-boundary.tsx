@@ -163,7 +163,7 @@ export function BrowseBoundary({
         <div>
           <p className="mb-3 text-dense text-anvil-500 dark:text-anvil-400">
             Viewing a copy loaded into your browser — this repo&apos;s browse index{' '}
-            {state.unreachable ? "can't be reached right now" : state.behind ? "doesn't cover everything stored yet" : "hasn't been published yet"}.
+            {state.unreachable ? 'could not be fetched or read right now' : state.behind ? "doesn't cover everything stored yet" : "hasn't been published yet"}.
           </p>
           {state.unavailable.length > 0 ? <UnavailablePacksNotice packs={state.unavailable} /> : null}
           {body}
@@ -174,10 +174,10 @@ export function BrowseBoundary({
       return (
         <EmptyState
           icon={PackageOpen}
-          title={state.unreachable ? "Browse index can't be reached" : state.behind ? 'Browse index is behind' : 'Not indexed for browsing yet'}
+          title={state.unreachable ? 'Browse index could not be loaded' : state.behind ? 'Browse index is behind' : 'Not indexed for browsing yet'}
           body={`${
             state.unreachable
-              ? "This repo's browse index could not be fetched, so it can't be browsed page by page right now."
+              ? "This repo's browse index could not be fetched or read, so it can't be browsed page by page right now."
               : state.behind
                 ? "This repo's browse index is missing recent pushes."
                 : "This repo can't be browsed page by page yet."

@@ -1752,7 +1752,7 @@ export type UnindexedReason =
   | 'no-index'
   /** Fragments exist but leave live packs unindexed, or disagree about the pack space. */
   | 'index-behind'
-  /** A fragment exists but could not be fetched or parsed: the index is there, it did not answer. */
+  /** A fragment exists but could not be fetched or read (it did not answer, or came back unreadable). */
   | 'index-unreachable'
 
 /**

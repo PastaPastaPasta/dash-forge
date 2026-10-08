@@ -40,10 +40,10 @@ const ready = (why: { behind: boolean; unreachable: boolean }): Record<string, u
 const render = (): void => act(() => root.render(<BrowseBoundary repo={REPO}>{() => <p>files</p>}</BrowseBoundary>))
 
 describe('BrowseBoundary: why the published index was not used', () => {
-  it('says an index that did not answer cannot be reached, not that it falls short', () => {
+  it('says an index that did not answer could not be fetched or read, not that it falls short', () => {
     state = ready({ behind: false, unreachable: true })
     render()
-    expect(el.textContent).toContain("this repo's browse index can't be reached right now.")
+    expect(el.textContent).toContain("this repo's browse index could not be fetched or read right now.")
     expect(el.textContent).not.toContain("doesn't cover")
   })
 
@@ -59,7 +59,7 @@ describe('BrowseBoundary: why the published index was not used', () => {
   it('offers the load with the same distinction', () => {
     state = { kind: 'offer', behind: false, unreachable: true, sizeBytes: 5_000_000, start: () => undefined }
     render()
-    expect(el.textContent).toContain("Browse index can't be reached")
-    expect(el.textContent).toContain('could not be fetched')
+    expect(el.textContent).toContain('Browse index could not be loaded')
+    expect(el.textContent).toContain('could not be fetched or read')
   })
 })

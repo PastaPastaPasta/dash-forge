@@ -24,6 +24,7 @@ import type { ForgeIds } from '../deployments'
 import type { Network } from '../constants'
 import { DOC, EVENT_KIND_BY_INT, asIdentifierString, type RepoRef } from '../repo/contract'
 import { readBanState } from '../repo/bans'
+import { readMembershipsCached } from '../repo/members'
 import { contractHasProperty } from '../repo/contract-shape'
 import { EVENT_AS_MAINTAINER } from '../repo/moderation-fold'
 import { hiddenItems } from '../rules/moderation'
@@ -487,15 +488,17 @@ async function withoutModerated(
 ): Promise<TargetRow[]> {
   if (rows.length === 0) return []
   const ref: RepoRef = { forge, repoId: repo.id, ownerId: repo.ownerId, name: repo.name, visibility: repo.private ? 'private' : 'public' }
-  const [state, proved] = await Promise.all([
-    readBanState(sdk, ref, network).catch(() => null),
-    contractHasProperty(sdk, forge.community, DOC.event, EVENT_AS_MAINTAINER).catch(() => false),
-  ])
   const hides = parseDocs(moderationEventDoc, events).flatMap((d) => {
     const kind = EVENT_KIND_BY_INT[d.kind]
     return kind === 'hide' || kind === 'unhide' ? [{ id: d.$id, targetId: d.targetId, kind, actor: d.$ownerId, refId: d.refId ?? null, value: d.value ?? null, createdAt: d.$createdAt }] : []
   })
-  const maintainers = (state?.members ?? []).filter((m) => m.role === 'maintainer').map((m) => m.identity)
+  const proved = hides.length > 0 ? await contractHasProperty(sdk, forge.community, DOC.event, EVENT_AS_MAINTAINER).catch(() => false) : false
+  // Without the contract's proof a maintainer's hide counts only if the hider is a current
+  // maintainer, so the members are read (once, kept a while) when there is a hide to judge. The
+  // ban read takes them along, and reads them itself only when the repo has bans.
+  const members = hides.length > 0 && !proved ? await readMembershipsCached(sdk, ref, network).catch(() => undefined) : undefined
+  const state = await readBanState(sdk, ref, network, members).catch(() => null)
+  const maintainers = (state?.members ?? members ?? []).filter((m) => m.role === 'maintainer').map((m) => m.identity)
   return rows.filter((r) => {
     if (state?.standing.has(r.author) === true) return false
     return hiddenItems(hides, { threadId: r.id, threadAuthor: r.author, owner: repo.ownerId, maintainers, proved }, [], []).thread === null

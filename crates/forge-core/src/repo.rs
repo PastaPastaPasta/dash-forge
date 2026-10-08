@@ -2147,7 +2147,7 @@ impl<'a> RepoService<'a> {
         roles: &RoleMap,
         reader: &PackReader,
     ) -> std::result::Result<crate::storage::read::Served, Option<String>> {
-        use crate::storage::read::{Missed, MIRRORS_TRIED};
+        use crate::storage::read::{Missed, MIRRORS_CLAUSE, MIRRORS_TRIED};
         if repo.visibility != Visibility::Public {
             return Err(None);
         }
@@ -2166,7 +2166,7 @@ impl<'a> RepoService<'a> {
             Err(e) => {
                 tracing::info!(pack = %hash, error = %e, "pack mirrors unreadable");
                 return Err(Some(format!(
-                    "pack mirrors not checked: {}",
+                    "{MIRRORS_CLAUSE}not checked: {}",
                     crate::user_error::one_line(&e.to_string())
                 )));
             }
@@ -4364,14 +4364,18 @@ fn restores_recorded(copies: &[&PackManifestInfo], uris: &[String]) -> bool {
         .any(|m| uris.iter().any(|u| m.uris.contains(u)))
 }
 
-/// `last`, the error of a read whose every recorded copy failed, with `clause` (the pack
-/// mirrors that were tried and refused) after it, so the cause names every place that was
-/// tried and not only the recorded copies. Only an I/O failure carries it: another error is
-/// not about copies. The reader's ` — hint` stays last: callers cut an error short there.
+/// `last`, the error of a read whose every recorded copy failed, with `clause` (what became of
+/// the pack mirrors) after it, so the cause names every place that was tried and not only the
+/// recorded copies. Only an I/O failure carries it: another error is not about copies.
+///
+/// Callers cut an error at `; ` (one place each) and at ` — ` (the reader's hint), so the clause
+/// holds neither (a refused mirror's reason may), and the hint, when there is one, stays last.
 fn with_mirror_clause(last: Error, clause: &str) -> Error {
+    use crate::storage::read::IPFS_GATEWAY_HINT;
+    let clause = clause.replace("; ", ", ").replace(" — ", " - ");
     match last {
-        Error::Io(why) => Error::Io(match why.split_once(" — ") {
-            Some((reasons, hint)) => format!("{reasons}; {clause} — {hint}"),
+        Error::Io(why) => Error::Io(match why.strip_suffix(IPFS_GATEWAY_HINT) {
+            Some(reasons) => format!("{reasons}; {clause}{IPFS_GATEWAY_HINT}"),
             None => format!("{why}; {clause}"),
         }),
         other => other,
@@ -5062,11 +5066,28 @@ mod tests {
             "{named}"
         );
         // The reader's hint stays last, where callers cut the error short.
-        let hinted =
-            Error::Io("no external copy verified (1 candidate(s)): a (404) — add a gateway".into());
+        let hinted = Error::Io(format!(
+            "no external copy verified (1 candidate(s)): a (404){}",
+            crate::storage::read::IPFS_GATEWAY_HINT
+        ));
         assert_eq!(
             super::with_mirror_clause(hinted, "pack mirrors tried: m (404)").to_string(),
-            Error::Io("no external copy verified (1 candidate(s)): a (404); pack mirrors tried: m (404) — add a gateway".into()).to_string()
+            Error::Io(format!(
+                "no external copy verified (1 candidate(s)): a (404); pack mirrors tried: m (404){}",
+                crate::storage::read::IPFS_GATEWAY_HINT
+            ))
+            .to_string()
+        );
+        // An S3 reason has a ` — ` of its own, and a reason may hold `; `: neither splits the clause.
+        let s3 = Error::Io(
+            "no external copy verified (1 candidate(s)): a (HTTP 403 — a credential hint)".into(),
+        );
+        let named =
+            super::with_mirror_clause(s3, "pack mirrors tried: m (denied — see the bucket; retry)")
+                .to_string();
+        assert!(
+            named.ends_with("; pack mirrors tried: m (denied - see the bucket, retry)"),
+            "{named}"
         );
         // Not an I/O failure: it is not about copies, and is left as it was.
         assert!(matches!(

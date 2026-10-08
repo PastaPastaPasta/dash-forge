@@ -58,10 +58,27 @@ export interface ListSearch<Q> {
   readonly clear: () => void
 }
 
+/** A query string's parameters, in any order, as one string: equal for the same parameters. */
+export function paramsKey(p: { toString(): string }): string {
+  return [...new URLSearchParams(p.toString())].map(([k, v]) => `${k}=${v}`).sort().join('&')
+}
+
 /** Whether two query strings hold the same parameters, in any order. */
-export function sameParams(a: URLSearchParams, b: { toString(): string }): boolean {
-  const norm = (p: { toString(): string }): string => [...new URLSearchParams(p.toString())].map(([k, v]) => `${k}=${v}`).sort().join('&')
-  return norm(a) === norm(b)
+export function sameParams(a: { toString(): string }, b: { toString(): string }): boolean {
+  return paramsKey(a) === paramsKey(b)
+}
+
+/**
+ * The note a submitted search left (the qualifiers not applied, the names not found), kept with
+ * the list it was computed for: `for` is that list's {@link paramsKey}, and `arrived` is set once
+ * the URL has shown it. Back or Forward to another list then drops the note, as it is about the
+ * list left (the URL's own `?q=` is read afresh).
+ */
+interface Note {
+  readonly for: string
+  readonly arrived: boolean
+  readonly dropped: readonly string[]
+  readonly notFound: readonly string[]
 }
 
 /** What the box and its note read of a {@link ListSearch}, whatever the list's query type. */
@@ -97,21 +114,30 @@ export function useListQuery<Q extends { readonly page: number }>({
   const query = useMemo(() => parse(params), [params, parse])
   // A tab, filter, sort, page or submitted search is a step the viewer took, so Back undoes it
   // (as GitHub's list does). Rewriting a link the viewer opened (a `?q=` name looked up) is not.
-  const setQuery = (next: Q, how: 'push' | 'replace' = 'push'): void => {
+  const here = paramsKey(params)
+  // Returns the {@link paramsKey} of the list it leads to.
+  const setQuery = (next: Q, how: 'push' | 'replace' = 'push'): string => {
     const q = new URLSearchParams({ owner: addr.owner, name: addr.name })
     if (addr.repoId) q.set('repo', addr.repoId)
     for (const [k, v] of toParams(next)) q.append(k, v)
     // The list this URL already shows: no new entry (the same click twice, the same search again).
-    if (sameParams(q, params)) return
-    router[how](`${pathname}?${q.toString()}`, { scroll: false })
+    if (paramsKey(q) !== here) router[how](`${pathname}?${q.toString()}`, { scroll: false })
+    return paramsKey(q)
   }
   // The linked `?q=`, capped as the query parsers cap it (a crafted link cannot force unbounded DPNS reads).
   const linkedQ = params.get('q')?.slice(0, Q_MAX) ?? null
 
   const [search, setSearch] = useState<string | null>(null)
-  const [dropped, setDropped] = useState<readonly string[]>(() => grammar.unresolved(linkedQ ?? ''))
-  const [notFound, setNotFound] = useState<readonly string[]>([])
+  const [note, setNote] = useState<Note | null>(null)
   const [notReady, setNotReady] = useState(false)
+  // The note follows the viewer's own steps through the lists (a tab, a filter), and goes when
+  // the URL moves to another list some other way (Back, Forward).
+  useEffect(() => {
+    setNote((n) => (n === null ? n : n.for === here ? (n.arrived ? n : { ...n, arrived: true }) : n.arrived ? null : n))
+  }, [here])
+  // With no note the qualifiers the URL's own `?q=` leaves unapplied are said.
+  const dropped = note?.dropped ?? grammar.unresolved(linkedQ ?? '')
+  const notFound = note?.notFound ?? []
   const [searching, setSearching] = useState(false)
   // Which lookup is current: an earlier one settling later is dropped; none touches state after unmount.
   const current = useRef(0)
@@ -133,9 +159,8 @@ export function useListQuery<Q extends { readonly page: number }>({
     try {
       const resolved = sdk ? await resolveSearchNames(text, (name) => resolveDpnsId(sdk, name, network)) : { text, notFound: [] }
       if (!stillWanted()) return
-      setDropped(grammar.unresolved(resolved.text))
-      setNotFound(resolved.notFound)
-      setQuery({ ...grammar.parse(resolved.text, base), page: base.page }, how)
+      const to = setQuery({ ...grammar.parse(resolved.text, base), page: base.page }, how)
+      setNote({ for: to, arrived: to === here, dropped: grammar.unresolved(resolved.text), notFound: resolved.notFound })
       // Back to the URL-driven text only if the box still holds what was submitted.
       setSearch((held) => (held === text ? null : held))
     } finally {
@@ -172,17 +197,17 @@ export function useListQuery<Q extends { readonly page: number }>({
       searching,
       dropped,
       notFound,
-      notReady,
+      notReady: notReady && note !== null,
       change: (c) => {
         overtake()
-        setQuery(withQuery(query, c))
+        const to = setQuery(withQuery(query, c))
+        setNote((n) => (n === null ? n : { ...n, for: to, arrived: to === here }))
       },
       clear: () => {
         overtake()
-        setDropped([])
-        setNotFound([])
         setNotReady(false)
-        setQuery(grammar.submitBase(query, ''))
+        const to = setQuery(grammar.submitBase(query, ''))
+        setNote({ for: to, arrived: to === here, dropped: [], notFound: [] })
       },
     },
   }

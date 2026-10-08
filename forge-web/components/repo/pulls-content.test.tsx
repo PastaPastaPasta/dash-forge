@@ -420,6 +420,26 @@ describe('PullsContent (L-44)', () => {
     expect(el.querySelector('[data-testid="pull-search-dropped"]')).toBeNull()
   })
 
+  it('drops the not-applied note when Back returns to another list, keeps it through the viewer’s own tab change (Q5)', async () => {
+    await render()
+    await submit('is:open author:bobby.dash fix')
+    const note = (): string | null => el.querySelector('[data-testid="pull-search-dropped"]')?.textContent ?? null
+    expect(note()).toContain('author:bobby.dash')
+    // The router shows the list the submit led to: the note stays.
+    search = 'owner=o&name=n&q=fix'
+    await render()
+    expect(note()).toContain('author:bobby.dash')
+    // A tab change of the viewer's own carries it along.
+    act(() => ([...el.querySelectorAll('[role="tab"]')].find((t) => t.textContent?.includes('Merged')) as HTMLElement).click())
+    search = 'owner=o&name=n&state=merged&q=fix'
+    await render()
+    expect(note()).toContain('author:bobby.dash')
+    // Back to a list the submit did not make: the note was about the list left.
+    search = 'owner=o&name=n'
+    await render()
+    expect(note()).toBeNull()
+  })
+
   it('matches a name DPNS does not know as a mirrored author login, and says so (QW-062)', async () => {
     await render()
     await submit('is:open author:thephez fix')

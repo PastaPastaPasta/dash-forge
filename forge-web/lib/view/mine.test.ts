@@ -18,6 +18,7 @@ let bans: Ban[] = []
 let proved = false
 const reads: string[] = []
 let banReads = 0
+let memberReads = 0
 
 vi.mock('../sdk', () => ({
   queryDocumentsWithProof: async (_sdk: unknown, q: { documentTypeName: string }) => {
@@ -25,11 +26,19 @@ vi.mock('../sdk', () => ({
     return { documents: docs[q.documentTypeName] ?? [] }
   },
 }))
+// As production: the members are read only when there are bans, else the caller's are used.
 vi.mock('../repo/bans', () => ({
-  readBanState: async () => {
+  readBanState: async (_sdk: unknown, _repo: unknown, _network: unknown, members?: unknown[]) => {
     banReads++
-    const standing = new Map(bans.map((b) => [b.identity, b]))
-    return { raw: bans, members: [{ identity: MAINT, role: 'maintainer' }], standing }
+    if (bans.length === 0) return { raw: bans, members: members ?? [], standing: new Map() }
+    const known = members ?? [{ identity: MAINT, role: 'maintainer' }]
+    return { raw: bans, members: known, standing: new Map(bans.map((b) => [b.identity, b])) }
+  },
+}))
+vi.mock('../repo/members', () => ({
+  readMembershipsCached: async () => {
+    memberReads++
+    return [{ identity: MAINT, role: 'maintainer' }]
   },
 }))
 vi.mock('../repo/contract-shape', () => ({ contractHasProperty: async () => proved }))
@@ -69,6 +78,7 @@ beforeEach(() => {
   proved = false
   reads.length = 0
   banReads = 0
+  memberReads = 0
 })
 
 describe('scanAssignedAndMentions: moderation (Q5)', () => {
@@ -93,6 +103,20 @@ describe('scanAssignedAndMentions: moderation (Q5)', () => {
     expect((await scan()).sort()).toEqual(['issue1', 'issue2'])
     proved = true
     expect((await scan()).sort()).toEqual(['issue2'])
+  })
+
+  it('counts a maintainer hide with no bans and no proof, reading the members only for it', async () => {
+    docs['event'] = [hide('issue3', MAINT)]
+    expect(bans).toEqual([])
+    expect((await scan()).sort()).toEqual(['issue1', 'issue2'])
+    expect(memberReads).toBe(1)
+    // A stranger's hide still does not count, and with no hide at all the members are not read.
+    docs['event'] = [hide('issue3', FRIEND)]
+    expect((await scan()).sort()).toEqual(['issue1', 'issue2', 'issue3'])
+    memberReads = 0
+    docs['event'] = []
+    await scan()
+    expect(memberReads).toBe(0)
   })
 
   it('does not take a hide of one comment as a hide of the thread', async () => {

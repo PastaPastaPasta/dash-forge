@@ -1507,8 +1507,9 @@ async fn status(ctx: &Ctx, repo: &str) -> Result<()> {
     Ok(())
 }
 
-/// How many of a pack's recorded mirrors `dg storage status` probes (members' first).
-const MIRRORS_PROBED: usize = 5;
+/// How many mirror addresses `dg storage status` probes for one pack, in the order a reader tries
+/// them (members' mirrors first).
+const MIRRORS_PROBED: usize = 8;
 
 /// Whether a pack whose own copies are down is still answered by a mirror someone recorded for
 /// it (`dg storage mirror add`): `{ "checked": true, "recorded": n, "serving": { uri, by } | null }`,
@@ -1529,7 +1530,7 @@ async fn mirror_status(
         forge_core::pack_mirror::mirrors_of(client, &core, repo, &hash, &members).await
     }
     .await;
-    let mut mirrors = match checked {
+    let mirrors = match checked {
         Ok(found) => found,
         Err(e) => {
             return json!({
@@ -1539,19 +1540,32 @@ async fn mirror_status(
         }
     };
     let recorded = mirrors.len();
-    // Members' records first, as a reader tries them.
-    mirrors.sort_by_key(|x| (!roles.contains_key(&x.owner_id), x.created_at));
-    for mirror in mirrors.iter().take(MIRRORS_PROBED) {
-        let uris: Vec<String> = mirror.uris.clone();
-        for row in probe_uris(&uris, reader).await {
+    // The addresses in the order a reader tries them (kind, caps and members' records first), so
+    // what is said here is what a clone would do; a winner is credited to the record that has it.
+    let hash = hex::encode(m.pack_hash);
+    let order = forge_core::pack_mirror::read_order(
+        repo,
+        &hash,
+        std::slice::from_ref(&hash),
+        &mirrors,
+        roles,
+    );
+    for uri in order.iter().take(MIRRORS_PROBED) {
+        for row in probe_uris(std::slice::from_ref(uri), reader).await {
             let size_ok = row["sizeBytes"]
                 .as_u64()
                 .is_none_or(|n| m.size_bytes == 0 || n == m.size_bytes);
             if row["ok"] == json!(true) && size_ok {
+                // Several records may hold one address: the one a reader ranks first is credited.
+                let by = mirrors
+                    .iter()
+                    .filter(|x| x.uris.contains(uri))
+                    .min_by_key(|x| (!roles.contains_key(&x.owner_id), x.created_at, x.id.clone()))
+                    .map_or("", |x| x.owner_id.as_str());
                 return json!({
                     "checked": true,
                     "recorded": recorded,
-                    "serving": { "uri": row["uri"], "by": mirror.owner_id },
+                    "serving": { "uri": row["uri"], "by": by },
                 });
             }
         }
