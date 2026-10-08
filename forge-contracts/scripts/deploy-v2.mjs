@@ -1,11 +1,26 @@
-// Register the forge-v2 contracts (forge-core, forge-collab, forge-community) in one PV14
-// contract group.
+// Register the forge-v2 contracts (forge-core, forge-collab, forge-community, and forge-meta when
+// the set has it) in one PV14 contract group.
 //
 //   (cd forge-contracts/sdk-v2 && npm ci)           # the @dashevo/evo-sdk sdk-v2/package.json pins
 //   node forge-contracts/scripts/deploy-v2.mjs --identity <deployer.identity.json> \
 //        --network devnet --devnet-name sakura [--addresses https://ip:1443,...] [--dry-run]
-//        [--only collab|community] [--force-new [--same-group]] [--update core|collab|community|all]
-//   node forge-contracts/scripts/deploy-v2.mjs --self-test    # offline: ids, schemas, sizes of the group fields
+//        [--only collab|community|meta] [--force-new [--same-group]] [--update core|collab|community|meta|all]
+//        [--contracts <dir> --record <scratch-record.json>]
+//   node forge-contracts/scripts/deploy-v2.mjs --self-test [--contracts <dir>]   # offline: ids, schemas, group fields
+//
+// --contracts <dir> registers the contract JSON in <dir> instead of forge-contracts/contracts: a
+// scratch set such as the four-contract mainnet build (`python3 forge-contracts/schema/build.py
+// --mainnet --out <dir>`), registered on a devnet with a scratch deployer before mainnet (DESIGN
+// rev 4.1 phase M-C). A scratch set needs --record <path>, the deployment record it writes instead
+// of deployments/<network>.json; the network's own record and the contract snapshots under
+// deployments/contracts/ are refused as a --record, so a scratch run never touches the live
+// deployment. Its DAPI addresses come from --addresses, else the scratch record, else (read only)
+// the network's record.
+//
+// forge-meta (DESIGN rev 4.1 D44): when <dir> holds forge-meta.json it is registered fourth, after
+// forge-community, like the others: its schema names forge-core's id (FORGE_CORE_CONTRACT_ID), and
+// its create transition enrols it in the group. `--only meta` registers it alone against the
+// recorded forge-core and group (an earlier run that registered the three).
 //
 // --only collab (or --only community) registers that contract alone, against the forge-core and
 // contract group already recorded (and found on chain); it never touches forge-core or the other
@@ -98,13 +113,34 @@ const MAX_STATE_TRANSITION_SIZE = 20480;
 /** `forge-core` -> `FORGE_CORE_CONTRACT_ID`: the placeholder a later schema names a contract by. */
 export const placeholderFor = (schemaName) => `${schemaName.toUpperCase().replace(/-/g, '_')}_CONTRACT_ID`;
 const PLACEHOLDER = placeholderFor('forge-core');
-const GROUP = { name: 'dash-forge', description: 'Dash Forge v2: forge-core, forge-collab and forge-community' };
+const GROUP = { name: 'dash-forge' };
+/**
+ * The group's description names every contract of the set: "Dash Forge v2: forge-core,
+ * forge-collab and forge-community" (what sakura registered), "…, forge-community and forge-meta"
+ * for the four-contract set. tools/contract-validate sizes the transition with the same string.
+ */
+export function groupDescription(schemaNames) {
+  const init = schemaNames.slice(0, -1);
+  const list = init.length ? `${init.join(', ')} and ${schemaNames.at(-1)}` : (schemaNames[0] ?? '');
+  return `Dash Forge v2: ${list}`;
+}
 // The contracts that name forge-core's id, registered after it in this order. `key` is the
 // record's name under `v2` (its superseded list is `${key}Superseded`), `only` the --only value.
 export const DEPENDENT_CONTRACTS = [
   { key: 'forgeCollab', schemaName: 'forge-collab', only: 'collab' },
   { key: 'forgeCommunity', schemaName: 'forge-community', only: 'community' },
 ];
+// The fourth contract (DESIGN rev 4.1 D44), registered last when the set has it
+export const META_CONTRACT = { key: 'forgeMeta', schemaName: 'forge-meta', only: 'meta' };
+export const DEFAULT_CONTRACTS_DIR = join(ROOT, 'contracts');
+/** The contracts registered after forge-core for the set in `dir`: forge-meta last, when it has one. */
+export function dependentsIn(dir = DEFAULT_CONTRACTS_DIR) {
+  return existsSync(join(dir, `${META_CONTRACT.schemaName}.json`)) ? [...DEPENDENT_CONTRACTS, META_CONTRACT] : DEPENDENT_CONTRACTS;
+}
+/** A schema file's text from the set in `dir`. */
+export function schemaText(name, dir = DEFAULT_CONTRACTS_DIR) {
+  return readFileSync(join(dir, `${name}.json`), 'utf8');
+}
 // Protocol 14 limits on the group's registration fields (rs-platform-version system_limits).
 const MAX_GROUP_NAME = 64;
 const MAX_GROUP_DESCRIPTION = 256;
@@ -156,8 +192,9 @@ export function contractGroupId(ownerB58, nonce) {
 }
 
 // Offline checks, run before every deploy and alone with --self-test: the id derivation against
-// rs-dpp's known answer, and every schema loading with the earlier contracts' ids substituted.
-function selfTest() {
+// rs-dpp's known answer, every schema of the set in `dir` loading with the earlier contracts' ids
+// substituted, the group fields, and the record a scratch set may write.
+function selfTest(dir = DEFAULT_CONTRACTS_DIR) {
   // Printed by tools/contract-validate for owner 0x07 * 32, nonce 1
   const owner = b58encode(Buffer.alloc(32, 7));
   const want = { contract: '4xQ1gLbVttHSnHSNAexse7ByXJd7BQCRLgLYuPevrcTW', group: 'EjmhECjYE4T5yC24xyU852tpWTmwwmAphwLLnJrShYkH' };
@@ -166,23 +203,44 @@ function selfTest() {
     throw new Error(`id derivation self-test failed: ${JSON.stringify(got)} != ${JSON.stringify(want)}`);
   }
   log('id derivation self-test: ok (matches rs-dpp)');
-  if (GROUP.name.length > MAX_GROUP_NAME || GROUP.description.length > MAX_GROUP_DESCRIPTION) {
+  const dependents = dependentsIn(dir);
+  const description = groupDescription(['forge-core', ...dependents.map((c) => c.schemaName)]);
+  if (groupDescription(['forge-core', 'forge-collab', 'forge-community']) !== 'Dash Forge v2: forge-core, forge-collab and forge-community') {
+    throw new Error('the three-contract group description is not the one sakura registered');
+  }
+  if (GROUP.name.length > MAX_GROUP_NAME || description.length > MAX_GROUP_DESCRIPTION) {
     throw new Error('contract group name or description over the protocol limit');
   }
-  const core = loadSchema('forge-core');
+  const core = loadSchema('forge-core', {}, schemaText('forge-core', dir));
   if (JSON.stringify(core).includes(PLACEHOLDER)) throw new Error('forge-core must not name its own id');
-  if (!readFileSync(join(ROOT, 'contracts', 'forge-community.json'), 'utf8').includes(placeholderFor('forge-collab'))) {
+  if (!schemaText('forge-community', dir).includes(placeholderFor('forge-collab'))) {
     throw new Error('forge-community names no FORGE_COLLAB_CONTRACT_ID: its events would not refer to this forge-collab');
   }
   const ids = { [PLACEHOLDER]: want.contract };
-  for (const { schemaName } of DEPENDENT_CONTRACTS) {
-    const raw = readFileSync(join(ROOT, 'contracts', `${schemaName}.json`), 'utf8');
+  for (const { schemaName } of dependents) {
+    const raw = schemaText(schemaName, dir);
     if (!raw.includes(PLACEHOLDER)) throw new Error(`${schemaName} names no ${PLACEHOLDER}: it would not refer to this forge-core`);
     // Only a contract registered before it may be named (loadSchema refuses an unresolved one)
     loadSchema(schemaName, ids, raw);
     ids[placeholderFor(schemaName)] = want.contract;
   }
-  log(`schemas self-test: ok (forge-core + ${DEPENDENT_CONTRACTS.map((c) => c.schemaName).join(', ')})`);
+  // Nothing registered before forge-meta may name it: a reference reaches only an earlier contract
+  for (const name of ['forge-core', ...DEPENDENT_CONTRACTS.map((c) => c.schemaName)]) {
+    if (schemaText(name, dir).includes(placeholderFor(META_CONTRACT.schemaName))) throw new Error(`${name} names forge-meta, which is registered after it`);
+  }
+  log(`schemas self-test: ok (forge-core + ${dependents.map((c) => c.schemaName).join(', ')}; group "${description}")`);
+  // A scratch set writes its own record, never the network's deployment file or a snapshot
+  const live = depPath('devnet', 'sakura');
+  const scratch = join(tmpdir(), 'scratch-sakura.json');
+  const refused = (opts) => { try { recordPath(opts); return false; } catch { return true; } };
+  if (recordPath({ network: 'devnet', devnetName: 'sakura' }) !== live) throw new Error('the default record moved');
+  if (recordPath({ network: 'devnet', devnetName: 'sakura', record: scratch, contractsDir: tmpdir() }) !== scratch) throw new Error('--record ignored');
+  if (!refused({ network: 'devnet', devnetName: 'sakura', contractsDir: tmpdir() })) throw new Error('a scratch set without --record was accepted');
+  if (!refused({ network: 'devnet', devnetName: 'sakura', record: live, contractsDir: tmpdir() })) throw new Error('--record naming the live record was accepted');
+  if (!refused({ network: 'devnet', devnetName: 'sakura', record: join(ROOT, 'deployments', 'contracts', 'devnet-sakura.json') })) {
+    throw new Error('--record naming a contract snapshot was accepted');
+  }
+  log('record self-test: ok (a scratch set writes only its --record)');
   // The record names the SDK the run used, read from the installed package (never a literal)
   const tmp = mkdtempSync(join(tmpdir(), 'deploy-v2-'));
   try {
@@ -199,6 +257,27 @@ function selfTest() {
 function depPath(network, devnetName) {
   return join(ROOT, 'deployments', `${network === 'devnet' ? `devnet-${devnetName}` : network}.json`);
 }
+/**
+ * The record a run writes: deployments/<network>.json for the committed set, else `record`. A
+ * scratch set (`contractsDir` other than forge-contracts/contracts) must name one, and no record may
+ * be the network's own file or a contract snapshot (deployments/contracts/), so a scratch run never
+ * touches the live deployment.
+ */
+export function recordPath({ network, devnetName, record, contractsDir = DEFAULT_CONTRACTS_DIR }) {
+  const live = depPath(network, devnetName);
+  if (record === undefined) {
+    if (resolve(contractsDir) !== resolve(DEFAULT_CONTRACTS_DIR)) {
+      throw new Error(`--contracts ${contractsDir} registers a scratch set: name its record with --record <path> (never ${live})`);
+    }
+    return live;
+  }
+  const path = resolve(String(record));
+  const snapshots = join(ROOT, 'deployments', 'contracts');
+  if (path === live || path.startsWith(`${snapshots}/`)) {
+    throw new Error(`--record ${record}: a scratch record may not be the network's deployment file or a contract snapshot`);
+  }
+  return path;
+}
 function readDep(file) {
   return existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {};
 }
@@ -209,7 +288,7 @@ export function writeDep(file, dep) {
   renameSync(tmp, file); // never leave a half-written record behind
 }
 
-export { b58decode, b58encode, selfTest };
+export { b58decode, b58encode, depPath, selfTest };
 
 /**
  * A deployment record's forge-community id: its own, or forge-collab's on a deployment that
@@ -258,8 +337,13 @@ function pickKey(rec, purpose, level) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  selfTest();
+  if (args.contracts === true || args.record === true) throw new Error('--contracts and --record each take a path');
+  const contractsDir = args.contracts === undefined ? DEFAULT_CONTRACTS_DIR : resolve(String(args.contracts));
+  selfTest(contractsDir);
   if (args['self-test']) return;
+  const DEPENDENTS = dependentsIn(contractsDir);
+  const load = (name, substitutions = {}) => loadSchema(name, substitutions, schemaText(name, contractsDir));
+  const GROUP_DESCRIPTION = groupDescription(['forge-core', ...DEPENDENTS.map((c) => c.schemaName)]);
 
   const network = args.network || 'devnet';
   const devnetName = network === 'devnet' ? (args['devnet-name'] || 'sakura') : undefined;
@@ -267,10 +351,11 @@ async function main() {
   if (!args.identity || args.identity === true) throw new Error('--identity <deployer.identity.json> required');
   const dryRun = Boolean(args['dry-run']);
   const only = args.only === undefined ? null : String(args.only);
-  const onlyValues = DEPENDENT_CONTRACTS.map((c) => c.only);
+  const onlyValues = DEPENDENTS.map((c) => c.only);
   if (only !== null && !onlyValues.includes(only)) throw new Error(`--only accepts ${onlyValues.map((v) => `"${v}"`).join(' or ')}, got ${only}`);
   const update = args.update === undefined ? null : String(args.update);
-  if (update !== null && !['core', 'collab', 'community', 'all'].includes(update)) throw new Error(`--update accepts "core", "collab", "community" or "all", got ${update}`);
+  const updateValues = ['core', ...onlyValues, 'all'];
+  if (update !== null && !updateValues.includes(update)) throw new Error(`--update accepts ${updateValues.map((v) => `"${v}"`).join(', ')}, got ${update}`);
   if (update !== null && (only !== null || args['force-new'])) throw new Error('--update runs alone: no --only, no --force-new');
   const forceNew = Boolean(args['force-new']);
   // A new contract registered into the EXISTING group adds a member that every key already bound
@@ -286,11 +371,14 @@ async function main() {
   }
   // A devnet's DAPI addresses: --addresses, else the deployment file's `dapiAddresses` (as
   // deploy-key-exchange.mjs and snapshot-contracts.mjs read them), else SDK discovery
-  const depFile = depPath(network, devnetName);
+  const depFile = recordPath({ network, devnetName, record: args.record, contractsDir });
   const dep = readDep(depFile);
+  // A scratch record without addresses borrows the network's (read only)
+  const live = depFile === depPath(network, devnetName) ? dep : readDep(depPath(network, devnetName));
   const addresses = typeof args.addresses === 'string'
     ? args.addresses.split(',').map((s) => s.trim()).filter(Boolean)
-    : (devnetName && (dep.dapiAddresses ?? dep.v2?.devnet?.addresses)) || undefined;
+    : (devnetName && (dep.dapiAddresses ?? dep.v2?.devnet?.addresses ?? live.dapiAddresses ?? live.v2?.devnet?.addresses)) || undefined;
+  if (depFile !== depPath(network, devnetName)) log(`scratch set ${contractsDir}: recording to ${depFile}`);
 
   const rec = JSON.parse(readFileSync(resolve(String(args.identity)), 'utf8'));
   const ownerId = rec.identityId;
@@ -357,7 +445,7 @@ async function main() {
     const onChain = await sdk.contracts.fetch(existing.contractId);
     if (onChain) {
       if (existing.schemaHash && existing.schemaHash !== currentHash) {
-        const dependent = DEPENDENT_CONTRACTS.find((c) => c.key === key);
+        const dependent = DEPENDENTS.find((c) => c.key === key);
         log(`${key}: WARNING ${existing.contractId} was registered from a different schema (${existing.schemaHash.slice(0, 12)}… != ${currentHash.slice(0, 12)}…); it is left as is${dependent ? ` (--only ${dependent.only} --force-new --same-group registers the current one)` : ''}`);
       }
       if (existing.status !== 'registered') {
@@ -414,7 +502,7 @@ async function main() {
   // and (for forge-core) the contract group id derived from THAT nonce are recorded together
   // BEFORE broadcasting, so a crash after broadcast resumes against the right ids.
   async function registerContract({ key, schemaName, substitutions, registerGroup, groupIdFor }) {
-    const json = loadSchema(schemaName, substitutions);
+    const json = load(schemaName, substitutions);
     const hash = schemaHash(json);
     const done = await reconcile(key, hash);
     if (done) return done;
@@ -431,7 +519,7 @@ async function main() {
     if (contract.id.toString() !== id) throw new Error(`${key}: contract id mismatch ${contract.id} != ${id}`);
 
     const transition = new DataContractCreateTransition(contract, nonce, PROTOCOL_VERSION);
-    if (registerGroup) transition.setContractGroup({ admins: [], name: GROUP.name, description: GROUP.description });
+    if (registerGroup) transition.setContractGroup({ admins: [], name: GROUP.name, description: GROUP_DESCRIPTION });
     transition.setContractGroupMemberships([{ contractGroupId: b58decode(groupId), member: 'contract' }]);
     const st = transition.toStateTransition();
     st.sign(privateKey, publicKey);
@@ -480,7 +568,7 @@ async function main() {
   async function updateContract({ key, schemaName, substitutions }) {
     const rec = v2[key];
     if (!rec?.contractId || rec.status !== 'registered') throw new Error(`--update: no registered ${schemaName} recorded for this network`);
-    const json = loadSchema(schemaName, substitutions);
+    const json = load(schemaName, substitutions);
     const hash = schemaHash(json);
     const onChain = await sdk.contracts.fetch(rec.contractId);
     if (!onChain) throw new Error(`--update: ${rec.contractId} is recorded but not on chain`);
@@ -544,8 +632,9 @@ async function main() {
   }
   if (update !== null) {
     // The recorded ids stand in for the placeholders (a dependent's schema names the earlier ones)
-    const ids = { [PLACEHOLDER]: v2.forgeCore?.contractId, [placeholderFor('forge-collab')]: v2.forgeCollab?.contractId };
-    const all = [{ key: 'forgeCore', schemaName: 'forge-core', only: 'core' }, ...DEPENDENT_CONTRACTS];
+    const ids = Object.fromEntries([{ key: 'forgeCore', schemaName: 'forge-core' }, ...DEPENDENTS]
+      .filter((c) => v2[c.key]?.contractId).map((c) => [placeholderFor(c.schemaName), v2[c.key].contractId]));
+    const all = [{ key: 'forgeCore', schemaName: 'forge-core', only: 'core' }, ...DEPENDENTS];
     for (const c of all.filter((x) => update === 'all' || x.only === update)) {
       report.steps.push(await updateContract({ key: c.key, schemaName: c.schemaName, substitutions: c.key === 'forgeCore' ? {} : ids }));
     }
@@ -567,13 +656,13 @@ async function main() {
   let coreSuperseded = false;
   if (forceNew && only === null && v2.forgeCore?.contractId) {
     const old = v2.forgeCore;
-    if (!supersedes(old, schemaHash(loadSchema('forge-core')))) {
+    if (!supersedes(old, schemaHash(load('forge-core')))) {
       if (old.status === 'registered') log(`forgeCore: ${old.contractId} was registered from the current schema; --force-new has nothing to supersede`);
     } else if (dryRun) {
       coreSuperseded = true;
       restoreAfterDryRun.forgeCore = old;
       delete v2.forgeCore;
-      log(`forgeCore: --force-new would supersede ${old.contractId} (and its group, forge-collab and forge-community) with new contracts`);
+      log(`forgeCore: --force-new would supersede ${old.contractId} (and its group and ${DEPENDENTS.map((c) => c.schemaName).join(', ')}) with new contracts`);
     } else {
       coreSuperseded = true;
       const at = new Date().toISOString();
@@ -590,7 +679,7 @@ async function main() {
   let coreId;
   if (only !== null) {
     // forge-core must already be registered and on chain; this mode never registers it
-    coreId = await reconcile('forgeCore', schemaHash(loadSchema('forge-core')));
+    coreId = await reconcile('forgeCore', schemaHash(load('forge-core')));
     if (!coreId) throw new Error(`--only ${only}: forge-core is not registered on this network; run without --only first`);
   } else {
     coreId = await registerContract({
@@ -615,20 +704,20 @@ async function main() {
   // Register the contracts that name forge-core's id, in order (all, or the one --only names).
   // Each registered id is substituted into the ones after it; one --only skips lends its
   // recorded id once it is confirmed on chain.
-  const dependents = DEPENDENT_CONTRACTS.filter((c) => only === null || c.only === only);
+  const dependents = DEPENDENTS.filter((c) => only === null || c.only === only);
   // (only the ones registered before the first this run registers can be named by it)
-  for (const c of DEPENDENT_CONTRACTS) {
+  for (const c of DEPENDENTS) {
     if (dependents.includes(c)) break;
     if (!v2[c.key]?.contractId) continue;
     // Only a contract found on chain may be named (reconcile also settles an interrupted record)
-    const found = await reconcile(c.key, schemaHash(loadSchema(c.schemaName, substitutions)));
+    const found = await reconcile(c.key, schemaHash(load(c.schemaName, substitutions)));
     if (!found) throw new Error(`--only ${only}: ${c.key} is recorded but not on chain; run --only ${c.only} first`);
     substitutions[placeholderFor(c.schemaName)] = found;
   }
   for (const { key, schemaName } of dependents) {
     if (forceNew && v2[key]?.contractId) {
       const old = v2[key];
-      if (!supersedes(old, schemaHash(loadSchema(schemaName, substitutions)))) {
+      if (!supersedes(old, schemaHash(load(schemaName, substitutions)))) {
         if (old.status === 'registered') log(`${key}: ${old.contractId} was registered from the current schema; --force-new has nothing to supersede`);
       } else {
         const refused = dependentSupersedeError({ key, schemaName, contractId: old.contractId, coreSuperseded, sameGroup: Boolean(args['same-group']) });
@@ -653,7 +742,7 @@ async function main() {
     });
     substitutions[placeholderFor(schemaName)] = id;
   }
-  if (only === 'collab' && v2.forgeCommunity?.contractId && schemaHash(loadSchema('forge-community', substitutions)) !== v2.forgeCommunity.schemaHash) {
+  if (only === 'collab' && v2.forgeCommunity?.contractId && schemaHash(load('forge-community', substitutions)) !== v2.forgeCommunity.schemaHash) {
     log(`forgeCommunity: WARNING ${v2.forgeCommunity.contractId} names another forge-collab than ${substitutions[placeholderFor('forge-collab')]}; --only community --force-new --same-group registers one that names it`);
   }
   Object.assign(v2, restoreAfterDryRun);
@@ -662,7 +751,7 @@ async function main() {
     const info = await sdk.contractGroups.info(groupIdFinal);
     if (!info || info.ownerId !== ownerId) throw new Error(`contract group ${groupIdFinal} not found or not owned by ${ownerId}`);
     // Every contract recorded for this deployment, not only the ones this run registered
-    for (const key of ['forgeCore', ...DEPENDENT_CONTRACTS.map((c) => c.key)]) {
+    for (const key of ['forgeCore', ...DEPENDENTS.map((c) => c.key)]) {
       if (!v2[key]?.contractId) {
         if (only !== null) continue; // --only on a deployment that predates the contract
         throw new Error(`${key} is not recorded after a full run`);
