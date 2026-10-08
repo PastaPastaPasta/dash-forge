@@ -843,7 +843,8 @@ pub enum IssueCommand {
         /// something was posted, by whom and when). Needs your encryption key, and members-only
         /// content turned on in the repository (`dg repo members enable`).
         #[arg(long, alias = "private")]
-        members: bool,        /// Send it to specific people only: `@alice,@bob` (DPNS names or identity ids), or a
+        members: bool,
+        /// Send it to specific people only: `@alice,@bob` (DPNS names or identity ids), or a
         /// role group, `maintainers` or `writers` (writers and maintainers), as it is now. You are
         /// always included; up to 16 people. Only they can read it (everyone still sees that
         /// something was posted, by whom, when, and to how many people). Each needs an encryption
@@ -886,7 +887,8 @@ pub enum IssueCommand {
         /// something was posted, by whom and when). Needs your encryption key, and members-only
         /// content turned on in the repository (`dg repo members enable`).
         #[arg(long, alias = "private")]
-        members: bool,        /// Send it to specific people only: `@alice,@bob` (DPNS names or identity ids), or a
+        members: bool,
+        /// Send it to specific people only: `@alice,@bob` (DPNS names or identity ids), or a
         /// role group, `maintainers` or `writers` (writers and maintainers), as it is now. You are
         /// always included; up to 16 people. Only they can read it (everyone still sees that
         /// something was posted, by whom, when, and to how many people). Each needs an encryption

@@ -9395,6 +9395,57 @@ mod mixed_read_tests {
         assert_eq!((m.why, m.recipients), (Unopened::NotARecipient, Some(2)));
     }
 
+    /// DESIGN §10 "Over 16": a preset bigger than a message can go to is refused with the
+    /// group's name and size, before anything is signed; people named one by one too.
+    #[test]
+    fn a_letter_over_16_is_refused_with_the_designs_words() {
+        use crate::rules::letters::{self, LetterGroup, LetterInput, LetterMember, LetterRequest};
+        let repo = RepoRef {
+            forge: crate::network::ForgeIds::test_forge(),
+            repo_id: "R".into(),
+            owner_id: "Owner".into(),
+            name: "proj".into(),
+            visibility: Visibility::Public,
+        };
+        let members: Vec<LetterMember> = (0..22)
+            .map(|i| LetterMember {
+                identity: format!("W{i:02}writer"),
+                role: if i < 3 { Role::Maintainer } else { Role::Writer },
+            })
+            .collect();
+        let request = LetterRequest {
+            group: Some(LetterGroup::Writers),
+            people: Vec::new(),
+        };
+        let input = LetterInput {
+            owner: "Owner".into(),
+            sender: "Owner".into(),
+            members,
+            keyless: Vec::new(),
+            request: Some(request.clone()),
+            exact: None,
+            parents: Vec::new(),
+            members_only_parent: false,
+        };
+        let refusal = letters::plan(&input).unwrap_err();
+        let e = letter_refused(&repo, Some(&request), refusal, &BTreeMap::new());
+        let text = e.to_string();
+        assert!(
+            text.contains("Writers and maintainers is 23 people. A message can go to at most 16."),
+            "{text}"
+        );
+        let named = LetterRequest {
+            group: None,
+            people: (0..17).map(|i| format!("P{i:02}")).collect(),
+        };
+        let input = LetterInput {
+            request: Some(named.clone()),
+            ..input
+        };
+        let e = letter_refused(&repo, Some(&named), letters::plan(&input).unwrap_err(), &BTreeMap::new());
+        assert!(e.to_string().contains("that's 18 people"), "{e}");
+    }
+
     /// DESIGN §4.1: reads are per document. A plaintext document of a public repository passes
     /// through whatever keys the reader holds, and a sealed one becomes a placeholder naming why
     /// it did not open; the repository's visibility decides neither.
