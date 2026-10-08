@@ -365,7 +365,7 @@ export function issueWriteShows(t: IssueThread, w: IssueWrite): boolean {
 
 /**
  * Whether a maintainer's hide (a hide event, or an inline comment's review's) covers `item` (null:
- * the thread). A writer's ban also collapses an item ({@link isHidden}) but is not a hide: the
+ * the thread). A writer's ban also collapses an item (the collapse readers see) but is not a hide: the
  * hide and unhide controls follow this, so an unhide is never offered, or waited for, on an item
  * only a ban collapses.
  */

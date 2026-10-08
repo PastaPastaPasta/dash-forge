@@ -13,7 +13,7 @@ import { createDocumentIdempotent, deleteDocumentIdempotent, queryAllDocuments, 
 import { banReasonLabel, standingBans, type Ban } from '../rules/bans'
 import type { Membership } from '../rules/v2'
 import { asIdentifierString, num, str, type RepoRef } from './contract'
-import { readMembershipsCached } from './members'
+import { readMembershipsCached, readMembershipsFresh } from './members'
 import { repoSource } from './source'
 
 /** forge-collab's ban type. */
@@ -104,14 +104,34 @@ export class BannedError extends Error {
 }
 
 /**
+ * `identity`'s own ban documents, read now (one small query filtered to the signer, as `dg`'s
+ * `bans(repo, Some(&me))`), or null when the read fails. It does not touch the shared
+ * {@link readBans} cache the pages use.
+ */
+async function readBansOfFresh(sdk: EvoSDK, repo: RepoRef, identity: string): Promise<Ban[] | null> {
+  try {
+    const docs = await queryAllDocuments(sdk, repoSource(repo).repoQuery(DOC_BAN, { where: [['identityId', '==', identity]], orderBy: [['identityId', 'asc']] }))
+    return docs.flatMap((d) => banOf(d) ?? [])
+  } catch {
+    return null
+  }
+}
+
+/**
  * Throw {@link BannedError} when `identity` is banned from `repo` (advisory: a failed read passes).
- * The bans are read fresh, not from the page's two-minute read: a tab must not post for minutes
- * after a ban, or be refused for minutes after a lift. This is the one extra read, made only
- * when something is about to be signed, never on a page load.
+ * Only the signer's bans are read fresh, not the page's two-minute read: a tab must not post for
+ * minutes after a ban, or be refused for minutes after a lift. This is one small extra read, made
+ * only when something is about to be signed, never on a page load. If that read fails, the
+ * page's cached bans are used. Judging them needs the repo's maintainers: they are read fresh too
+ * when the signer has a ban (a maintainer who left must not keep banning), else from the cache.
+ * When the maintainers cannot be read at all, no ban is applied, as everywhere.
  */
 export async function refuseIfBanned(sdk: EvoSDK, repo: RepoRef, network: Network, identity: string): Promise<void> {
-  invalidateBans(repo)
-  const ban = (await readStandingBans(sdk, repo, network)).get(identity)
+  const own = (await readBansOfFresh(sdk, repo, identity)) ?? (await readBans(sdk, repo)).filter((b) => b.identity === identity)
+  if (own.length === 0) return
+  const members = await readMembershipsFresh(sdk, repo, network).catch(() => readMembershipsCached(sdk, repo, network)).catch(() => null)
+  if (members === null) return
+  const ban = standingOf(repo, own, members).get(identity)
   if (ban !== undefined) throw new BannedError(ban)
 }
 

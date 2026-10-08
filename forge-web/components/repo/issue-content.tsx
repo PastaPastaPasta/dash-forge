@@ -618,6 +618,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                   moderate: ({ id }: { readonly kind: 'comment' | 'review'; readonly id: string }) => (
                     <HideMenu
                       hidden={isHiddenByHide(moderation, id)}
+                      byBan={moderation?.items[id]?.via === 'ban'}
                       blocked={moderationBlocked(data.moderationInput, identity, id, !isHiddenByHide(moderation, id))}
                       disabled={false}
                       onHide={(reason) => setPending({ kind: 'hide', item: id, what: 'comment', reason, hide: true })}
@@ -765,6 +766,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
               <div className="mt-2">
                 <HideThreadControl
                   hidden={isHiddenByHide(moderation, null)}
+                  byBan={moderation?.thread?.via === 'ban'}
                   blocked={moderationBlocked(data.moderationInput, identity, null, !isHiddenByHide(moderation, null))}
                   noun="issue"
                   offerClose={open}

@@ -313,7 +313,7 @@ fn require_revertable(view: &PatchView, repo: &str, number: u64) -> Result<Strin
 pub(crate) async fn run(ctx: &Ctx, repo: &str, number: u64, branch: Option<&str>) -> Result<()> {
     let s = Session::open_for_write(ctx, repo, "revert not attempted").await?;
     // A revert opens a pull request: refused (E610) for a banned writer before anything is pushed.
-    s.refuse_if_banned("pull request not created").await?;
+    s.refuse_if_banned("revert not attempted").await?;
     let (handle, collab) = (&s.repo, s.collab());
     let p = patch(&collab, handle, repo, number).await?;
     let view = collab.patch_view(handle, p).await?;
@@ -627,7 +627,10 @@ mod tests {
     #[test]
     fn revert_refuses_a_banned_writer_before_it_pushes_or_opens() {
         let src = include_str!("revert.rs");
-        let body = &src[src.find("pub(crate) async fn run(").expect("run")..];
+        // `run` only: from its signature to the test module, so these literals cannot match.
+        let start = src.find("pub(crate) async fn run(").expect("run");
+        let end = src.find("#[cfg(test)]").expect("test module");
+        let body = &src[start..end];
         let at = |needle: &str| {
             body.find(needle)
                 .unwrap_or_else(|| panic!("missing {needle}"))
@@ -639,7 +642,7 @@ mod tests {
             ban < at("collab.create_patch("),
             "the ban check precedes the PR create"
         );
-        assert!(ban < at("\"push\""), "the ban check precedes the push");
+        assert!(ban < at("push_to("), "the ban check precedes the push");
     }
 
     fn run(dir: &Path, args: &[&str]) -> String {

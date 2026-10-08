@@ -1551,6 +1551,7 @@ function PullPage({
                         moderate: ({ kind, id }: { readonly kind: 'comment' | 'review'; readonly id: string }) => (
                           <HideMenu
                             hidden={isHiddenByHide(moderation, id)}
+                            byBan={moderation?.items[id]?.via === 'ban'}
                             blocked={moderationBlocked(thread.moderationInput, identity, id, !isHiddenByHide(moderation, id))}
                             what={kind}
                             disabled={false}
@@ -2144,6 +2145,7 @@ function PullPage({
                   <div className="mt-2">
                     <HideThreadControl
                       hidden={isHiddenByHide(moderation, null)}
+                      byBan={moderation?.thread?.via === 'ban'}
                       blocked={moderationBlocked(thread.moderationInput, identity, null, !isHiddenByHide(moderation, null))}
                       noun="pull request"
                       offerClose={open}

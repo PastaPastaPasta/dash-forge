@@ -14,16 +14,28 @@ const PR = 'Ehyw8VygZh5LjjYHUbKqgyJamgetiVPLFnJewrfmgQUs'
 /** The ban documents the chain holds now; `banReads` counts the reads of them. */
 let banDocs: Record<string, unknown>[] = []
 let banReads = 0
+/** The `identityId` filters of the ban reads, in order (null: the whole repo's). */
+const banFilters: (string | null)[] = []
+/** Make the next ban reads fail (a count), and the members reads. */
+let failBanReads = 0
+let failMembers: 'none' | 'fresh' | 'all' = 'none'
+let membersFreshReads = 0
 const created: string[] = []
 
 vi.mock('../sdk', async (importOriginal) => {
   const real = await importOriginal<typeof import('../sdk')>()
   return {
     ...real,
-    queryAllDocuments: vi.fn(async (_sdk: unknown, q: { documentTypeName: string }) => {
+    queryAllDocuments: vi.fn(async (_sdk: unknown, q: { documentTypeName: string; where?: readonly (readonly unknown[])[] }) => {
       if (q.documentTypeName !== 'ban') return []
       banReads += 1
-      return banDocs
+      const of = q.where?.find((w) => w[0] === 'identityId')?.[2]
+      banFilters.push(typeof of === 'string' ? of : null)
+      if (failBanReads > 0) {
+        failBanReads -= 1
+        throw new Error('network dropped')
+      }
+      return typeof of === 'string' ? banDocs.filter((d) => d['identityId'] === of) : banDocs
     }),
     createDocumentIdempotent: vi.fn(async (_sdk: unknown, _auth: unknown, p: { documentType: string }) => {
       created.push(p.documentType)
@@ -31,7 +43,18 @@ vi.mock('../sdk', async (importOriginal) => {
     }),
   }
 })
-vi.mock('./members', async (orig) => ({ ...(await orig<typeof import('./members')>()), readMembershipsCached: async () => [] }))
+vi.mock('./members', async (orig) => ({
+  ...(await orig<typeof import('./members')>()),
+  readMembershipsCached: async () => {
+    if (failMembers === 'all') throw new Error('members unread')
+    return []
+  },
+  readMembershipsFresh: async () => {
+    membersFreshReads += 1
+    if (failMembers !== 'none') throw new Error('members unread')
+    return []
+  },
+}))
 vi.mock('./role-claim', async (orig) => ({ ...(await orig<typeof import('./role-claim')>()), roleClaim: async () => ({}) }))
 vi.mock('./members-writes', async (orig) => ({
   ...(await orig<typeof import('./members-writes')>()),
@@ -62,6 +85,10 @@ const BAN_OF_BOB = { $id: 'ban1', $ownerId: ALICE, $createdAt: 5, identityId: BO
 beforeEach(() => {
   banDocs = []
   banReads = 0
+  banFilters.length = 0
+  failBanReads = 0
+  failMembers = 'none'
+  membersFreshReads = 0
   created.length = 0
   resetBans()
   resetMemoryStores()
@@ -96,11 +123,46 @@ describe('bans are read fresh when something is about to be signed', () => {
     await expect(refuseIfBanned(sdk, REPO, 'devnet', BOB)).resolves.toBeUndefined()
   })
 
-  it('costs one read per write, and none on a page load', async () => {
+  it("reads only the signer's bans, once, and leaves the page's cached read alone", async () => {
     await readBans(sdk, REPO)
     await readBans(sdk, REPO)
     expect(banReads).toBe(1)
     await refuseIfBanned(sdk, REPO, 'devnet', BOB)
     expect(banReads).toBe(2)
+    expect(banFilters).toEqual([null, BOB])
+    // The page's read is still the one cached: no third read.
+    await readBans(sdk, REPO)
+    expect(banReads).toBe(2)
+  })
+
+  it('reads no members when the signer has no ban, and fresh ones when it has', async () => {
+    await refuseIfBanned(sdk, REPO, 'devnet', BOB)
+    expect(membersFreshReads).toBe(0)
+    banDocs = [BAN_OF_BOB]
+    await expect(refuseIfBanned(sdk, REPO, 'devnet', BOB)).rejects.toBeInstanceOf(BannedError)
+    expect(membersFreshReads).toBe(1)
+  })
+})
+
+describe('when a read at write time fails', () => {
+  it("falls back to the page's cached bans, so a ban the page knew still refuses", async () => {
+    banDocs = [BAN_OF_BOB]
+    await readBans(sdk, REPO)
+    failBanReads = 1
+    await expect(refuseIfBanned(sdk, REPO, 'devnet', BOB)).rejects.toBeInstanceOf(BannedError)
+    expect(created).toEqual([])
+  })
+
+  it('passes (advisory) when the fresh read fails and the page knew of no ban', async () => {
+    failBanReads = 2
+    await expect(refuseIfBanned(sdk, REPO, 'devnet', BOB)).resolves.toBeUndefined()
+  })
+
+  it('judges with the cached members when the fresh members read fails, and passes when no members can be read', async () => {
+    banDocs = [BAN_OF_BOB]
+    failMembers = 'fresh'
+    await expect(refuseIfBanned(sdk, REPO, 'devnet', BOB)).rejects.toBeInstanceOf(BannedError)
+    failMembers = 'all'
+    await expect(refuseIfBanned(sdk, REPO, 'devnet', BOB)).resolves.toBeUndefined()
   })
 })
