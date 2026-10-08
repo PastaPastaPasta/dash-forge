@@ -468,6 +468,15 @@ describe('Copy link writes the owner as the address bar does', () => {
   })
 })
 
+describe('shortRouteFor: the param a just-created page carries', () => {
+  it('leaves `created=1` out of the short URL, and keeps the other params', () => {
+    expect(shortRouteFor('/repo/', 'owner=alice&name=project&created=1')).toBe('/alice/project')
+    expect(shortRouteFor('/repo/issue/', 'owner=alice&name=project&number=7&created=1')).toBe('/alice/project/issues/7')
+    expect(shortRouteFor('/repo/pull/', 'owner=alice&name=project&number=2&created=1&repo=R1')).toBe('/alice/project/pull/2?repo=R1')
+    expect(shortRouteFor('/repo/issues/', 'owner=alice&name=project&q=is%3Aopen&created=1')).toBe('/alice/project/issues?q=is%3Aopen')
+  })
+})
+
 describe('sameRoute', () => {
   it('is the same page: a trailing slash and the order of params do not matter', () => {
     expect(sameRoute('/repo/issues/?owner=a&name=p&q=x', '/repo/issues?q=x&name=p&owner=a')).toBe(true)

@@ -171,7 +171,8 @@ test('p4. the locked OWNER of a private repo is offered Unlock, not "You\'re not
   }
   await page.getByRole('button', { name: /^create repository$/i }).click()
   await page.getByRole('button', { name: /sign & create/i }).click()
-  await page.waitForURL(/created=1/, { timeout: 300_000 })
+  // The page drops `created=1` from the bar once it has read it: match the route, not the param.
+  await page.waitForURL(/\/repo\/\?/, { timeout: 300_000 })
   await waitForRepoResolved(page, 120_000)
   await expect(page.getByTestId('private-chip')).toBeVisible({ timeout: 120_000 })
   const privateUrl = repoUrl('', '', { owner, name })

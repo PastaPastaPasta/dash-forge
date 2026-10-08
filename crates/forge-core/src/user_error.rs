@@ -39,6 +39,7 @@ use std::io::IsTerminal as _;
 use serde_json::{json, Value};
 
 use crate::error::Error as CoreError;
+use crate::rules::v2::Visibility;
 use crate::storage::ReplicationError;
 
 /// Where each code's page lives. Codes link to `<DOCS_URL>#<code lowercased>`.
@@ -61,6 +62,29 @@ pub fn web_page_url(page: &str, owner_id: &str, name: &str) -> String {
         uri_encode(owner_id, false),
         uri_encode(name, false)
     )
+}
+
+/// The short URL of a repo (`<origin>/<owner>/<name>`, the form the web app puts in its address
+/// bar and copies, `forge-web/lib/short-url.ts`), for a PUBLIC repo whose owner and name the
+/// web app's 404 shim expands back to the same page: an owner or name it refuses (`.hidden`) has
+/// none. Never for a private repo: its page address carries per-tab tokens, and a link made here
+/// would put the repo's name in an address that is read by whoever sees the terminal.
+pub fn short_repo_base(owner_id: &str, name: &str, visibility: Visibility) -> Option<String> {
+    let segment = |s: &str, extra: &[char]| {
+        let mut chars = s.chars();
+        chars.next().is_some_and(|c| c.is_ascii_alphanumeric())
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '-' || extra.contains(&c))
+    };
+    // The same patterns as `OWNER_SEGMENT` and `NAME_SEGMENT` in `forge-web/lib/short-url.ts`.
+    // An identity id is never one of the app's reserved first segments.
+    (visibility == Visibility::Public && segment(owner_id, &['.']) && segment(name, &['.', '_']))
+        .then(|| format!("{WEB_ORIGIN}/{owner_id}/{name}"))
+}
+
+/// A repo's page in the web app as a person should be shown it: the short URL of a public
+/// repo ([`short_repo_base`]), else the canonical [`web_url`].
+pub fn repo_link(owner_id: &str, name: &str, visibility: Visibility) -> String {
+    short_repo_base(owner_id, name, visibility).unwrap_or_else(|| web_url(owner_id, name))
 }
 
 /// Where to top up an identity's credits from any Dash wallet.
@@ -2230,6 +2254,36 @@ fn redact_token(t: &str) -> String {
 mod tests {
     use super::*;
     use crate::storage::{Replica, TargetFailure};
+
+    #[test]
+    fn a_public_repo_links_by_its_short_url_and_a_private_one_does_not() {
+        let owner = "HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr";
+        assert_eq!(
+            repo_link(owner, "my-project.v2_x", Visibility::Public),
+            format!("https://forge.dashhq.org/{owner}/my-project.v2_x")
+        );
+        // Private: the canonical link, with no more in it than before.
+        assert_eq!(
+            repo_link(owner, "secret", Visibility::Private),
+            format!("https://forge.dashhq.org/repo?owner={owner}&name=secret")
+        );
+        assert_eq!(short_repo_base(owner, "secret", Visibility::Private), None);
+        // A name or owner the web app's shim refuses has no short form (`NAME_SEGMENT`,
+        // `OWNER_SEGMENT` in forge-web/lib/short-url.ts).
+        for name in [".hidden", "-x", "_x", "a b", "a/b", "a%2Fb", ""] {
+            assert_eq!(
+                short_repo_base(owner, name, Visibility::Public),
+                None,
+                "{name:?}"
+            );
+        }
+        assert_eq!(short_repo_base("a_b", "x", Visibility::Public), None);
+        assert_eq!(short_repo_base("", "x", Visibility::Public), None);
+        assert_eq!(
+            repo_link(owner, ".hidden", Visibility::Public),
+            format!("https://forge.dashhq.org/repo?owner={owner}&name=.hidden")
+        );
+    }
 
     fn render(u: &UserError) -> String {
         u.render("", false)

@@ -405,12 +405,19 @@ pub async fn sync(ctx: &Ctx, repo: &str, branch: Option<&str>) -> Result<()> {
     );
     let fork_packs = fork_packs.context("reading the fork's packs")?;
     let fork_has_packs = !fork_packs.is_empty();
+    let parent_packs = parent_packs.context("reading the parent's packs")?;
+    let roles = roles.unwrap_or_default();
+    // a parent made public: its sealed packs are never recorded in the fork
+    let sealed = forge_core::fork::sealed_parent_packs(&svc, &parent, &parent_packs, &roles)
+        .await
+        .context("checking the parent's packs")?;
     let plan = plan_sync_manifests(
         &parent,
-        &parent_packs.context("reading the parent's packs")?,
-        &roles.unwrap_or_default(),
+        &parent_packs,
+        &roles,
         &fork_packs,
         &fork_roles.context("reading the fork's members")?,
+        &sealed,
     )?;
     if !plan.unreferenceable.is_empty() {
         return Err(UserError::new(

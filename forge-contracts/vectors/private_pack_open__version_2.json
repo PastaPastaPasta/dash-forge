@@ -1,6 +1,6 @@
 {
   "name": "version_2",
-  "description": "an unknown header version is refused.",
+  "description": "a DFPK header of another version (0x02: specific people) is not this opener's: UnknownVersion, which readers skip, never corrupt.",
   "case": "private_pack_open",
   "rules": "v2",
   "input": {
@@ -12,6 +12,6 @@
     "sizeBytes": 2584
   },
   "expected": {
-    "error": "sealedPackCorrupt"
+    "error": "unknownVersion"
   }
 }

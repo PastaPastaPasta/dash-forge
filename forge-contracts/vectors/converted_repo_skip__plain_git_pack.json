@@ -1,0 +1,13 @@
+{
+  "name": "plain_git_pack",
+  "description": "a git pack starts PACK: read as it is.",
+  "case": "converted_repo_skip",
+  "rules": "v2",
+  "input": {
+    "head": "5041434b0000000200000000000000000000000000000000000000000000000000000000",
+    "held": []
+  },
+  "expected": {
+    "skip": null
+  }
+}

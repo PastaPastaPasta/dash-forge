@@ -16,12 +16,17 @@ use crate::rules::v2::Visibility;
 pub const V1: u8 = 0x01;
 /// `enc` version of `config`, which carries `COMMIT_e` (§4.2).
 pub const V2: u8 = 0x02;
-/// `enc` version of members-only content in a public repository: a per-object key bound to the
-/// AD, with a key commitment (§4.1). Never in a private repository.
+/// `enc` version of members-only content: a per-object key bound to the AD, with a key commitment
+/// (§4.1). Written in public repositories; readers also admit it in private ones (DESIGN D38),
+/// where the registered contract's writers will use it.
 pub const V3: u8 = 0x03;
 /// `enc` version of a specific-people letter (§4.1, [`super::named`]), in either kind of
 /// repository, always under `epoch = 0`.
 pub const V4: u8 = 0x04;
+/// The first `enc` version this client does not know (a bot's post, v0x05; a narrower branch's
+/// ref update, v0x06; anything later): a content document carrying one is shown as members-only
+/// and never opened (`Unreadable(UnknownVersion)`), so later envelopes do not break this reader.
+pub const FIRST_UNKNOWN: u8 = 0x05;
 pub(crate) const NONCE_LEN: usize = 12;
 pub(crate) const TAG_LEN: usize = 16;
 /// Smallest v0x01 `enc`: version, nonce and tag.
@@ -49,11 +54,11 @@ pub struct DocHeader {
     /// The document type.
     #[serde(rename = "type")]
     pub kind: DocKind,
-    /// The document's `vis`, which consensus holds equal to its repository's visibility. It
-    /// decides which content envelopes a reader admits: v0x01 only in a private repository,
-    /// v0x03 only in a public one (v0x04 in either; config is v0x02 in both). Defaults to
-    /// `private`, so a caller that never sets it refuses members-only content rather than
-    /// misreading it.
+    /// The document's own `vis`, which consensus held equal to its repository's visibility when
+    /// it was written. It decides which content envelopes a reader admits, whatever the
+    /// repository is now (a repository made public keeps its earlier documents' `vis:
+    /// "private"`, §18): v0x01 and v0x03 when private, v0x03 when public (v0x04 in either;
+    /// config is v0x02 in both). Defaults to `private`.
     #[serde(default = "private_vis", skip_serializing_if = "is_private")]
     pub vis: Visibility,
     /// `$ownerId` (32 bytes, hex).
@@ -429,6 +434,9 @@ pub enum Unreadable {
     /// A well-framed specific-people letter (`enc` v0x04): the epoch keys cannot open it; the
     /// letter reader ([`super::named::open`]) can, for its recipients.
     Letter,
+    /// An `enc` version this client does not know ([`FIRST_UNKNOWN`] and later): written by a
+    /// newer client for members (or fewer people). Shown as members-only, never opened.
+    UnknownVersion,
 }
 
 /// The result of [`open_content`].
@@ -526,11 +534,21 @@ pub(crate) fn open_with(
     decrypt(keys, header, enc, is_anchor)
 }
 
-/// Step 1 of §8.1: the `enc` length and version byte for the document's kind and `vis`. A
-/// private repository's content is v0x01, a public repository's members-only content v0x03; a
-/// v0x01 `enc` in a public repository, or a v0x03 one in a private repository, is malformed
+/// Whether `enc` is a content envelope of a version this client does not know: a later client's
+/// members-only (or narrower) document, skipped and counted as members-only, never malformed and
+/// never fatal (§4.1). Configs and releases have their own versions and stay strict.
+#[must_use]
+pub fn is_unknown_version(kind: DocKind, enc: &[u8]) -> bool {
+    !matches!(kind, DocKind::Config | DocKind::Release)
+        && enc.first().is_some_and(|&v| v >= FIRST_UNKNOWN)
+}
+
+/// Step 1 of §8.1: the `enc` length and version byte for the document's kind and its own `vis`.
+/// A private document's content is v0x01 or v0x03 (DESIGN D38), a public one's members-only
+/// content v0x03; a v0x01 `enc` on a public document is malformed
 /// (`mixed_doc_open__v01_relabelled_refused`). A letter (v0x04) is framed by
-/// [`super::named::well_framed`].
+/// [`super::named::well_framed`]. A version from [`FIRST_UNKNOWN`] on is not framed here: see
+/// [`open_content`].
 fn well_framed(header: &DocHeader, enc: &[u8]) -> bool {
     let Some(&version) = enc.first() else {
         return false;
@@ -541,7 +559,7 @@ fn well_framed(header: &DocHeader, enc: &[u8]) -> bool {
         DocKind::Release => false,
         _ => match (version, header.vis) {
             (V1, Visibility::Private) => enc.len() >= MIN_V1,
-            (V3, Visibility::Public) => enc.len() >= MIN_V3,
+            (V3, _) => enc.len() >= MIN_V3,
             (V4, _) => super::named::well_framed(header, enc),
             _ => false,
         },
@@ -622,6 +640,9 @@ fn decrypt_members(keys: &EpochKeys, header: &DocHeader, enc: &[u8]) -> Opened {
 /// [`super::named::open`].
 #[must_use]
 pub fn open_content(ctx: &OpenContext, header: &DocHeader, enc: &[u8]) -> Opened {
+    if is_unknown_version(header.kind, enc) {
+        return Opened::Unreadable(Unreadable::UnknownVersion);
+    }
     if !well_framed(header, enc) {
         return Opened::Malformed;
     }
@@ -766,7 +787,7 @@ mod tests {
     }
 
     #[test]
-    fn members_content_round_trips_padded_and_only_in_a_public_repo() {
+    fn members_content_round_trips_padded_and_opens_in_either_kind_of_repo() {
         let keys = keys();
         let (mut header, fields) = issue();
         // a private repository's header never seals v0x03, nor a public one v0x01
@@ -784,10 +805,26 @@ mod tests {
             open_content(&ctx, &header, &enc),
             Opened::Readable(Box::new(fields.clone()))
         );
-        // the same bytes read as a private repository's document are malformed
+        // the same bytes on a private document open too (DESIGN D38: readers admit v0x03 in
+        // private repositories; the AD does not bind `vis`)
         let mut private = header.clone();
         private.vis = Visibility::Private;
-        assert_eq!(open_content(&ctx, &private, &enc), Opened::Malformed);
+        assert_eq!(
+            open_content(&ctx, &private, &enc),
+            Opened::Readable(Box::new(fields.clone()))
+        );
+        // a later client's envelope is members-only to this reader, in either kind of repository,
+        // and never malformed
+        for v in [FIRST_UNKNOWN, 0x06, 0xff] {
+            let mut later = enc.clone();
+            later[0] = v;
+            for h in [&header, &private] {
+                assert_eq!(
+                    open_content(&ctx, h, &later),
+                    Opened::Unreadable(Unreadable::UnknownVersion)
+                );
+            }
+        }
         // a flipped commitment is CommitMismatch before GCM; a flipped body is BadTag
         let mut bad = enc.clone();
         bad[20] ^= 1;

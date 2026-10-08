@@ -45,7 +45,8 @@ export async function membersAccessOf<Ops>(src: MembersAccessSource<Ops>): Promi
   if (ops === null) return src.isMember ? { access: 'no-key' } : null
   if (src.locked()) return src.isMember || (await src.holdsShare()) ? { access: 'locked' } : null
   const session = await src.session(ops)
-  const opens = session.resolution.keys.size > 0
+  // Their own keys: what a repository made public's owner published opens for everyone alike.
+  const opens = [...session.resolution.keys.keys()].some((e) => !session.publishedEpochs.has(e))
   if (!src.isMember) return opens ? { access: 'former', session } : null
   if (opens) return { access: 'member', session }
   // E311: a member nobody has shared the key with yet (added by an older client). No key, no

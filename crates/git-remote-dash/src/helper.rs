@@ -369,45 +369,39 @@ impl Helper {
             forge_core::repo::RoleMap::new()
         });
         let reader = &svc.repo_reader(repo, &git_packs, roles).await;
+        // A repository made public (private-repos.md §18.2): its packs from the private era are
+        // sealed, and only the keys its owner published open them. Such a pack is checked by
+        // its first bytes and skipped without downloading it when none does. Any other public
+        // repository reads as before.
+        let converted = match svc.conversion(repo).await {
+            Ok(Some(c)) => Some((c, svc.public_keys(repo).await)),
+            Ok(None) => None,
+            Err(e) => {
+                tracing::warn!(error = %e, "could not read the repository's settings history; every pack is downloaded and judged whole");
+                None
+            }
+        };
+        let converted = converted.as_ref();
         let packs = group_by_hash(&git_packs);
+        // QW4-014: a terminal sees the packs and bytes come in, as git's own progress does. One
+        // line over every pack; a pack the rounds below skip leaves its total, so it ends at 100%.
+        let meter = &fetch_meter(options, &packs);
         let pass = Pass {
             svc,
             repo,
             contract,
             roles,
             reader,
-            options,
+            converted,
+            meter,
         };
-        // Q5-B15: a pack a current member's repack superseded is downloaded only when no
-        // superseding pack arrived (or is held). Its objects are in that pack, so reading it
-        // too only costs bytes, and warnings about copies nobody needs. Rounds: each downloads
-        // the packs no pack still to download supersedes (the newest repack first), then drops
-        // what the arrivals cover. This is the incremental pass only: when the result misses
-        // objects (a hash does not prove a consolidation is complete), [`Self::fetch`] runs the
-        // full pass, which reads every pack.
         let claims = claims_for(incremental, &manifests, roles);
-        let mut fetched: Vec<([u8; 32], Got)> = Vec::new();
-        let mut pending: Vec<_> = packs.iter().collect();
-        loop {
-            let arrived: BTreeSet<[u8; 32]> = fetched
-                .iter()
-                .filter(|(_, g)| matches!(g, Got::Bytes(_)))
-                .map(|(h, _)| *h)
-                .collect();
-            let covered = covered_packs(&claims, |h| {
-                arrived.contains(h) || (skip_held && have.contains(h))
-            });
-            pending.retain(|(h, _)| !covered.contains(h));
-            if pending.is_empty() {
-                break;
-            }
-            let hashes: Vec<[u8; 32]> = pending.iter().map(|(h, _)| *h).collect();
-            let now = round_now(&hashes, &claims);
-            let (round, rest): (Vec<_>, Vec<_>) =
-                pending.into_iter().partition(|(h, _)| now.contains(h));
-            fetched.extend(pass.download(&round).await?);
-            pending = rest;
-        }
+        let rounds = pass
+            .download_rounds(&packs, &claims, |h| skip_held && have.contains(h))
+            .await;
+        // A failed download ends the line too, so the error starts on its own.
+        meter.finish(rounds.is_ok());
+        let fetched = rounds?;
         if fetched.len() < packs.len() {
             tracing::info!(
                 skipped = packs.len() - fetched.len(),
@@ -437,7 +431,7 @@ impl Helper {
             fetched.into_iter().map(|(_, g)| g).collect(),
             &want_oids,
             options,
-            &repo.display(),
+            repo,
             packs.len(),
             parent.as_deref(),
         )?;
@@ -704,8 +698,13 @@ impl Helper {
             Some(c) if c > 0 => Charge::Measured(c),
             _ => Charge::Estimated(est_credits),
         };
-        let (text, event) =
-            progress::done_line(charge, after, conn.repo.owner_id(), conn.repo.name());
+        let (text, event) = progress::done_line(
+            charge,
+            after,
+            conn.repo.owner_id(),
+            conn.repo.name(),
+            conn.repo.visibility,
+        );
         progress.emit(&text, &event);
         progress::report(&event);
     }
@@ -781,12 +780,59 @@ struct Pass<'a> {
     contract: &'a forge_core::platform::LoadedContract,
     roles: &'a forge_core::repo::RoleMap,
     reader: &'a forge_core::storage::read::PackReader,
-    options: &'a OptionState,
+    converted: Option<&'a Converted>,
+    /// The fetch's one progress line, over every round.
+    meter: &'a progress::FetchMeter,
 }
 
+/// A repository made public: its conversion and the published keys this reader holds
+/// ([`fetch_one`]).
+type Converted = (
+    forge_core::private::convert::Conversion,
+    Option<std::sync::Arc<forge_core::keyring::Keyring>>,
+);
+
 impl Pass<'_> {
-    /// Download `packs` ([`fetch_one`] each, a bounded window in flight, in order), drawing a
-    /// progress line over them. Nothing to download draws nothing.
+    /// Q5-B15: download `packs` in rounds. A pack a current member's repack superseded is
+    /// downloaded only when no superseding pack arrived or is `held`. Its objects are in that
+    /// pack, so reading it too only costs bytes, and warnings about copies nobody needs. Each
+    /// round downloads the packs no pack still to download supersedes (the newest repack
+    /// first), then drops what the arrivals cover, and takes them off the progress line. With
+    /// no `claims` (the full pass, [`claims_for`]) that is one round of every pack.
+    async fn download_rounds(
+        &self,
+        packs: &[([u8; 32], Vec<&forge_core::repo::PackManifestInfo>)],
+        claims: &BTreeMap<[u8; 32], BTreeSet<[u8; 32]>>,
+        held: impl Fn(&[u8; 32]) -> bool,
+    ) -> Result<Vec<([u8; 32], Got)>> {
+        let mut fetched: Vec<([u8; 32], Got)> = Vec::new();
+        let mut pending: Vec<_> = packs.iter().collect();
+        loop {
+            let arrived: BTreeSet<[u8; 32]> = fetched
+                .iter()
+                .filter(|(_, g)| matches!(g, Got::Bytes(_)))
+                .map(|(h, _)| *h)
+                .collect();
+            let covered = covered_packs(claims, |h| arrived.contains(h) || held(h));
+            let (skipped, left): (Vec<_>, Vec<_>) =
+                pending.into_iter().partition(|(h, _)| covered.contains(h));
+            for (_, copies) in skipped {
+                self.meter.skip(copies.first().map_or(0, |m| m.size_bytes));
+            }
+            if left.is_empty() {
+                return Ok(fetched);
+            }
+            let hashes: Vec<[u8; 32]> = left.iter().map(|(h, _)| *h).collect();
+            let now = round_now(&hashes, claims);
+            let (round, rest): (Vec<_>, Vec<_>) =
+                left.into_iter().partition(|(h, _)| now.contains(h));
+            fetched.extend(self.download(&round).await?);
+            pending = rest;
+        }
+    }
+
+    /// Download `packs` ([`fetch_one`] each, a bounded window in flight, in order), advancing
+    /// the fetch's progress line ([`Self::meter`]; the caller finishes it).
     async fn download(&self, packs: &PackGroups<'_>) -> Result<Vec<([u8; 32], Got)>> {
         if packs.is_empty() {
             return Ok(Vec::new());
@@ -797,12 +843,11 @@ impl Pass<'_> {
             contract,
             roles,
             reader,
-            options,
+            converted,
+            meter,
         } = *self;
-        // QW4-014: a terminal sees the packs and bytes come in, as git's own progress does.
-        let meter = &fetch_meter(options, packs);
         let fetched = stream::iter(packs.iter().map(|(h, copies)| async move {
-            let got = fetch_one(svc, repo, contract, copies, roles, reader, h).await;
+            let got = fetch_one(svc, repo, contract, copies, roles, reader, h, converted).await;
             // Only a pack that arrived adds bytes; one set aside counts as done.
             let arrived = matches!(&got, Ok((_, Got::Bytes(_))));
             meter.advance(if arrived {
@@ -814,10 +859,7 @@ impl Pass<'_> {
         }))
         .buffered(PACK_DOWNLOAD_WINDOW)
         .try_collect();
-        let fetched: Result<Vec<([u8; 32], Got)>> = with_ticks(meter, fetched).await;
-        // A failed download ends the line too, so the error starts on its own.
-        meter.finish(fetched.is_ok());
-        fetched
+        with_ticks(meter, fetched).await
     }
 }
 
@@ -907,7 +949,10 @@ fn covered_packs(
 }
 
 /// One pack of a fetch ([`Helper::fetch_packs`]): the bytes of the first of its `copies` that
-/// verifies (opened, for a private repository), or why it was set aside.
+/// verifies (opened, when sealed), or why it was set aside. `converted`: the facts of a
+/// repository made public and the keys this reader holds for it, which can skip a sealed pack
+/// before it is downloaded.
+#[allow(clippy::too_many_arguments)]
 async fn fetch_one(
     svc: &RepoService<'_>,
     repo: &RepoRef,
@@ -916,8 +961,18 @@ async fn fetch_one(
     roles: &forge_core::repo::RoleMap,
     reader: &forge_core::storage::read::PackReader,
     h: &[u8; 32],
+    converted: Option<&Converted>,
 ) -> Result<([u8; 32], Got)> {
     let hash = hex::encode(h);
+    if let Some((conversion, keys)) = converted {
+        if let Some(s) = svc
+            .skip_before_download(repo, contract, copies, reader, conversion, keys.as_deref())
+            .await
+        {
+            tracing::info!(pack = %hash, why = ?s.why, "a sealed pack this reader holds no key for; not downloaded");
+            return Ok((*h, Got::Skipped(s)));
+        }
+    }
     let got = match svc
         .fetch_best_copy_or_mirror(repo, contract, copies, roles, reader)
         .await
@@ -936,11 +991,14 @@ async fn fetch_one(
                     progress::abbrev(&got, 16)
                 );
             }
-            match svc
-                .open_artifact_of(repo, copies, m.size_bytes, sealed)
-                .await
-            {
-                Ok(b) => Ok((b, m)),
+            match svc.open_or_skip(repo, copies, m.size_bytes, sealed).await {
+                Ok(forge_core::repo::ArtifactRead::Bytes(b)) => Ok((b, m)),
+                // sealed under a key this reader does not hold (a repository made public), or a
+                // header this client does not open: set aside, never fatal by itself
+                Ok(forge_core::repo::ArtifactRead::Skipped(s)) => {
+                    tracing::info!(pack = %hash, why = ?s.why, "a sealed pack this reader cannot open; continuing without it");
+                    return Ok((*h, Got::Skipped(s)));
+                }
                 Err(forge_core::Error::User(u)) if u.code == codes::LATE_CONTENT => {
                     tracing::info!(pack = %hash, "{u}; continuing without it");
                     return Ok((*h, Got::Hidden(*u)));
@@ -1011,7 +1069,10 @@ async fn with_ticks<T>(
 
 /// The fetch's progress meter ([`progress::FetchMeter`]) over `packs`: drawn when git asked for
 /// progress (a terminal), not under `-q` or in JSON mode.
-fn fetch_meter(options: &OptionState, packs: &PackGroups<'_>) -> progress::FetchMeter {
+fn fetch_meter(
+    options: &OptionState,
+    packs: &[([u8; 32], Vec<&forge_core::repo::PackManifestInfo>)],
+) -> progress::FetchMeter {
     let shown = Progress::new(options.verbosity);
     progress::FetchMeter::new(
         options.progress && shown.enabled && !shown.json,
@@ -1068,6 +1129,10 @@ enum Got {
     /// Hidden by the late-content rule (E510), with the reason. Normally no ref needs it; if
     /// one does, the fetch fails with [`hidden_packs_needed`].
     Hidden(UserError),
+    /// Sealed under a key this reader does not hold, or in a format it does not open
+    /// (`private-repos.md` §3.2, §18.2). Normally no ref needs it; if one does, the fetch fails
+    /// with that pack's E307.
+    Skipped(forge_core::repo::Skipped),
 }
 
 /// A pack none of whose external copies could be read.
@@ -1086,24 +1151,32 @@ fn index_fetched(
     fetched: Vec<Got>,
     want_oids: &[String],
     options: &OptionState,
-    repo: &str,
+    repo_ref: &RepoRef,
     total: usize,
     parent: Option<&str>,
 ) -> Result<()> {
+    let display = repo_ref.display();
+    let repo = display.as_str();
     let mut downloaded = Vec::new();
     let mut unreadable = Vec::new();
     let mut hidden = Vec::new();
+    let mut skipped = Vec::new();
     for got in fetched {
         match got {
             Got::Bytes(b) => downloaded.push(b),
             Got::Unreadable(u) => unreadable.push(u),
             Got::Hidden(u) => hidden.push(u),
+            Got::Skipped(s) => skipped.push(s),
         }
     }
-    let set_aside = !unreadable.is_empty() || !hidden.is_empty();
+    let set_aside = !unreadable.is_empty() || !hidden.is_empty() || !skipped.is_empty();
     // A gap with unreadable packs is E503 (restoring a copy may fix it); with only hidden
-    // ones it is E510: the history needs content the late-content rule withholds.
+    // ones it is E510: the history needs content the late-content rule withholds; with only
+    // skipped ones, E307: it needs a key this reader does not hold.
     let incomplete = || -> anyhow::Error {
+        if unreadable.is_empty() && hidden.is_empty() {
+            return skipped_packs_needed(repo_ref, options.cloning, &skipped).into();
+        }
         if unreadable.is_empty() {
             return hidden_packs_needed(repo, options.cloning, &hidden).into();
         }
@@ -1200,6 +1273,31 @@ fn hidden_packs_needed(repo: &str, cloning: bool, hidden: &[UserError]) -> UserE
         "a maintainer can move the ref back to history every member can read; `dg repo keys status {repo}` shows the epochs"
     ))
     .note("the content is hidden from every reader, not deleted; no other copy would open it")
+}
+
+/// E307: the wanted history needs objects only `skipped` packs hold, sealed under keys this
+/// reader does not hold (a repository made public, `private-repos.md` §18.2) or in a format it
+/// does not open.
+fn skipped_packs_needed(
+    repo: &RepoRef,
+    cloning: bool,
+    skipped: &[forge_core::repo::Skipped],
+) -> UserError {
+    let what = if cloning { "clone" } else { "fetch" };
+    let Some(first) = skipped.first().map(|s| s.error(repo)) else {
+        return UserError::new(codes::NOT_A_KEY_HOLDER, format!("{what} incomplete"));
+    };
+    let n = skipped.len();
+    UserError::new(
+        codes::NOT_A_KEY_HOLDER,
+        format!("{what} incomplete: the history you asked for needs packs your keys don't open"),
+    )
+    .cause(first.to_string())
+    .fix(first.fix.first().cloned().unwrap_or_default())
+    .note(format!(
+        "{n} {} left out; every other pack was read",
+        if n == 1 { "pack was" } else { "packs were" }
+    ))
 }
 
 /// E503: the wanted history needs objects from `unreadable` packs (of `total`), which a clone
@@ -3646,7 +3744,8 @@ mod tests {
     use super::{
         archived_refusal, blames_set_aside_packs, forget_sealed, head_outcome, hidden_packs_needed,
         is_head, list_lines, oid_to_bytes, packs_unreadable, protected_denied, resolve_network,
-        settle_ref_writes, write_denied, Planned, PushOutcome, PushSpec, Unreadable,
+        settle_ref_writes, skipped_packs_needed, write_denied, Planned, PushOutcome, PushSpec,
+        Unreadable,
     };
     use super::{default_branch_hint, history_tip_landed, role_denied, PushHistory};
 
@@ -4002,6 +4101,52 @@ mod tests {
         assert!(!blames_set_aside_packs(true, &other));
         // Nothing set aside: never blamed on packs.
         assert!(!blames_set_aside_packs(false, &missing));
+    }
+
+    /// A repository made public (private-repos.md §18.2): a pack its keys do not open is left
+    /// out, and only a history that needs it fails, with E307 naming the pack.
+    #[test]
+    fn a_needed_pack_this_reader_cannot_open_is_e307() {
+        use forge_core::repo::{SkipReason, Skipped};
+        let repo = forge_core::scope::RepoRef {
+            forge: forge_core::network::ForgeIds::test_forge(),
+            repo_id: "R".into(),
+            owner_id: "owner".into(),
+            name: "repo".into(),
+            visibility: forge_core::rules::v2::Visibility::Public,
+        };
+        let skipped = [
+            Skipped {
+                pack: [0xab; 32],
+                why: SkipReason::NoKey { epoch: 0 },
+            },
+            Skipped {
+                pack: [0xcd; 32],
+                why: SkipReason::OtherFormat { version: 3 },
+            },
+        ];
+        let u = skipped_packs_needed(&repo, true, &skipped);
+        assert_eq!(u.code, "E307");
+        assert_eq!(
+            u.message,
+            "clone incomplete: the history you asked for needs packs your keys don't open"
+        );
+        let cause = u.cause.clone().unwrap();
+        assert!(
+            cause.contains("pack abababababab of owner/repo is members-only"),
+            "{cause}"
+        );
+        assert_eq!(
+            u.note.as_deref(),
+            Some("2 packs were left out; every other pack was read")
+        );
+        let later = skipped[1].error(&repo);
+        assert!(
+            later
+                .message
+                .contains("can't be opened by this version of Forge"),
+            "{later}"
+        );
     }
 
     #[test]

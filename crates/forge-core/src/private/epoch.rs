@@ -112,6 +112,16 @@ pub enum Alert {
         #[serde(with = "hex32")]
         author: [u8; 32],
     },
+    /// The owner of a repository made public published a key for this epoch that does not
+    /// commit to its anchor (§18.3): the entry is ignored.
+    #[serde(rename_all = "camelCase")]
+    PublishedKeyMismatch {
+        /// The epoch.
+        epoch: u32,
+        /// The bundle's author.
+        #[serde(with = "hex32")]
+        author: [u8; 32],
+    },
     /// The current epoch is wrapped to identities that are not members, or is burned: rotate
     /// (H2, §5.3). `members` is empty for a burned epoch with no wrapped non-member.
     #[serde(rename_all = "camelCase")]
@@ -131,6 +141,7 @@ impl Alert {
             Self::ChainBroken { epoch, author } => (*epoch, 1, *author),
             Self::EpochGap { epoch, author } => (*epoch, 2, *author),
             Self::RotationRequired { epoch, .. } => (*epoch, 3, [0; 32]),
+            Self::PublishedKeyMismatch { epoch, author } => (*epoch, 4, *author),
         }
     }
 }
@@ -286,6 +297,51 @@ impl EpochResolution {
             suspect,
             readable: member || (!suspect && !late),
         }
+    }
+}
+
+impl EpochResolution {
+    /// Add the epoch keys a converted repository's owner published (§18.3, already checked
+    /// against the anchors by [`super::convert::published_keys`]) to the keys the reader holds,
+    /// with every epoch their chains reach, and the alerts that check raised. `configs` are the
+    /// rows this resolution was made from. The write epoch never changes: a published key is
+    /// always below the seal-off epoch.
+    pub fn add_published(
+        &mut self,
+        repo_id: &[u8; 32],
+        configs: &[ConfigRow],
+        published: BTreeMap<u32, EpochKey>,
+        alerts: Vec<Alert>,
+    ) {
+        if published.is_empty() && alerts.is_empty() {
+            return;
+        }
+        let first: BTreeMap<u32, &ConfigRow> = self
+            .anchors
+            .iter()
+            .filter_map(|(&e, a)| Some((e, configs.iter().find(|c| c.id == a.id)?)))
+            .collect();
+        let anchors = &self.anchors;
+        let commits_to = |e: u32, key: &EpochKey| {
+            anchors
+                .get(&e)
+                .and_then(|a| a.commit)
+                .is_some_and(|c| EpochKeys::derive(repo_id, e, key).commits_to(&c))
+        };
+        let mut all: BTreeSet<Alert> = self.alerts.drain(..).chain(alerts).collect();
+        let mut keys = std::mem::take(&mut self.keys);
+        for (e, k) in published {
+            if keys.contains_key(&e) || !first.contains_key(&e) {
+                continue;
+            }
+            keys.insert(e, k);
+            walk_chain(repo_id, e, &first, &commits_to, &mut keys, &mut all);
+        }
+        self.burned = burned_epochs(repo_id, &first, &keys);
+        self.keys = keys;
+        let mut all: Vec<Alert> = all.into_iter().collect();
+        all.sort_by_key(Alert::sort_key);
+        self.alerts = all;
     }
 }
 

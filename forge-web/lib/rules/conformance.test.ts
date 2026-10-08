@@ -963,10 +963,11 @@ describe('FORGE_RULES conformance vectors', () => {
   const vectors = loadVectors()
   const base = vectors.filter((v) => v.rules === undefined)
   // `private_*` cases (private-repos.md §11) and the mixed-visibility envelope cases
-  // (`mixed_doc_*`, `named_envelope*`, `named_artifact*`) run in `lib/private/conformance.test.ts`;
+  // (`mixed_doc_*`, `named_envelope*`, `named_artifact*`) and a repository made public's readers
+  // (`converted_repo_*`) run in `lib/private/conformance.test.ts`;
   // the environment snapshots (`env_snapshot*`) in `lib/env/conformance.test.ts`.
   const isPrivate = (v: Vector) =>
-    ['private_', 'mixed_doc_', 'named_envelope', 'named_artifact', 'env_snapshot'].some((p) => v.case.startsWith(p))
+    ['private_', 'mixed_doc_', 'named_envelope', 'named_artifact', 'converted_repo_', 'env_snapshot'].some((p) => v.case.startsWith(p))
   const v2Vectors = vectors.filter((v) => v.rules === 'v2' && !isPrivate(v))
   const privateVectors = vectors.filter(isPrivate)
 
