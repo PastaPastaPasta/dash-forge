@@ -129,7 +129,20 @@ impl Role {
         matches!(self, Role::Maintainer | Role::Writer)
     }
 
-    /// The name shown to users (`maintainer`, `writer`, `triage`, `reader`).
+    /// The role's word in user copy, as on GitHub (DESIGN §10): Maintain, Write, Triage, Read.
+    /// The repository's owner is shown as "Owner" by the caller, which knows who owns it.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Role::Maintainer => "Maintain",
+            Role::Writer => "Write",
+            Role::Triage => "Triage",
+            Role::Reader => "Read",
+        }
+    }
+
+    /// The internal name (`maintainer`, `writer`, `triage`, `reader`): JSON output, `--role`
+    /// values and sentences that name a holder; [`Self::label`] is the role's word in copy.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {

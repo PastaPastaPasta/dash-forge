@@ -19,8 +19,8 @@
 //! owner deleting it and writing a new one (the member's consent must still exist). Every
 //! role-gated member write carries `r`, which the contract's writer leaf proves equal to the
 //! signer's `role` ([`claimed_role`]): triage (2) may close, reopen and lock, label, assign,
-//! set milestones, request reviews and resolve threads; a reader (3, private repositories
-//! only) may read, comment, review and open issues and PRs, nothing role-gated.
+//! set milestones, request reviews and resolve threads; a reader (3) may read, comment, review
+//! (never a counted verdict) and open issues and PRs, nothing role-gated.
 //!
 //! **Consent (RC1 `member_consent`).** Nobody is made a member without agreeing: the member
 //! first writes a `consent {repoId}` document of their own ([`ConsentService::accept`], `dg
@@ -184,31 +184,57 @@ pub fn role_limits(role: Role, repo: &RepoRef) -> Option<String> {
             you_are(role, repo)
         )),
         Role::Reader => Some(format!(
-            "{}: readers can read the private repository and comment, review and open issues \
-             and pull requests, but cannot change state (push, label, assign, close or reopen, \
-             set milestones, post check runs or re-run them)",
+            "{}: readers can read members-only content, comment, review with comments and open \
+             issues and pull requests, but cannot approve or change state (push, label, assign, \
+             close or reopen, set milestones, post check runs or re-run them)",
             you_are(role, repo)
         )),
     }
 }
 
-/// Whether readers (role 3) are in a repository's members key chain, so they receive key wraps
-/// and read members-only content (DESIGN §2.1, owner question 2). Runners are never in it: a
-/// `runner` document (forge-community) is not a membership, so it is never listed by
-/// [`MemberReader::list`] and never receives a wrap; a runner made a reader is a member like
-/// any other. Private repositories always wrap their readers; this constant decides public
-/// repositories with members-only content, and is kept in one place so the decision is cheap
-/// to change.
-pub const READERS_IN_MEMBERS_KEY: bool = true;
-
-/// Whether a member with `role` receives the members key of a repository of `visibility` (key
-/// wraps, rotations, repairs): every role of a private repository, and in a public one every
-/// role but a reader unless [`READERS_IN_MEMBERS_KEY`].
+/// Whether a member with `role` receives a repository's members key (key wraps, rotations,
+/// repairs), in private and public repositories alike: every human role does (owner,
+/// maintainers, writers, triage and readers; DESIGN §3.5). Runners are never in it: a `runner`
+/// document (forge-community) is not a membership, so it is never listed by
+/// [`MemberReader::list`] and never receives a wrap. The match is exhaustive so that a role
+/// that must not hold the key (the Bot role of phase 4) has to say so here.
 #[must_use]
-pub fn holds_members_key(role: Role, visibility: crate::rules::v2::Visibility) -> bool {
-    role != Role::Reader
-        || READERS_IN_MEMBERS_KEY
-        || visibility == crate::rules::v2::Visibility::Private
+pub fn holds_members_key(role: Role) -> bool {
+    match role {
+        Role::Maintainer | Role::Writer | Role::Triage | Role::Reader => true,
+    }
+}
+
+/// Refuse, before signing, an approve or request-changes `verdict` from a member whose `role`
+/// is not an approver (Read or Triage access; DESIGN §3.5, D15): only Write and Maintain approve
+/// or request changes, so the review is offered as a comment instead. `None` for an approver,
+/// a non-member (whose verdict is written as 4 or 5 and shown as not counting) and a comment.
+/// Callers add the fix that names their own way to post a comment.
+#[must_use]
+pub fn verdict_refusal(
+    role: Option<Role>,
+    verdict: crate::rules::Verdict,
+    repo: &RepoRef,
+) -> Option<UserError> {
+    use crate::rules::Verdict as V;
+    let role = role.filter(|r| !r.is_approver())?;
+    let what = match verdict {
+        V::Approve | V::ApproveNonMember => "approve",
+        V::RequestChanges | V::RequestChangesNonMember => "request changes",
+        V::Comment | V::Unknown(_) => return None,
+    };
+    Some(
+        UserError::new(
+            codes::NOT_A_WRITER,
+            format!("Only people with Write access or more can {what}."),
+        )
+        .cause(format!(
+            "you have {} access to {}",
+            role.label(),
+            repo.display()
+        ))
+        .note("checked before anything was signed; nothing was written or paid"),
+    )
 }
 
 /// Refuse a grant of `role` to `member` the clients do not make: the repo owner giving itself a
@@ -1005,15 +1031,9 @@ mod tests {
     }
 
     #[test]
-    fn readers_hold_the_members_key_and_the_choice_is_one_constant() {
-        use crate::rules::v2::Visibility;
+    fn every_human_role_holds_the_members_key() {
         for role in [Role::Maintainer, Role::Writer, Role::Triage, Role::Reader] {
-            assert!(holds_members_key(role, Visibility::Private), "{role:?}");
-            assert_eq!(
-                holds_members_key(role, Visibility::Public),
-                role != Role::Reader || READERS_IN_MEMBERS_KEY,
-                "{role:?}"
-            );
+            assert!(holds_members_key(role), "{role:?}");
         }
     }
 

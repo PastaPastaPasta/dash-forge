@@ -411,10 +411,10 @@ pub async fn member_can_receive(
 
 /// The members who would receive the members key: every member whose role holds it
 /// ([`forge_core::members::holds_members_key`]; runners are not members), each once.
-fn key_holders(members: &[forge_core::members::Member], repo: &RepoRef) -> usize {
+fn key_holders(members: &[forge_core::members::Member]) -> usize {
     members
         .iter()
-        .filter(|m| forge_core::members::holds_members_key(m.role, repo.visibility))
+        .filter(|m| forge_core::members::holds_members_key(m.role))
         .map(|m| m.identity_id.as_str())
         .collect::<std::collections::BTreeSet<_>>()
         .len()
@@ -493,7 +493,7 @@ async fn enable(ctx: &Ctx, repo: &str) -> Result<()> {
         );
         return Ok(());
     }
-    let holders = key_holders(kr.members(), &s.repo);
+    let holders = key_holders(kr.members());
     let price = ctx.usd_price();
     if !ctx.confirm(&enable_prompt(&s.repo, holders, price))? {
         return Err(crate::errors::cancelled());
