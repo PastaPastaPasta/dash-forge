@@ -221,10 +221,8 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
                   <div key={rowKey} className="border-b border-anvil-100 px-4 py-2.5 last:border-b-0 dark:border-anvil-850" data-testid="member-row">
                     <div className="flex flex-wrap items-center gap-3">
                       <Author identityId={m.identity} link={false} />
-                      <RoleBadge role={m.role} />
-                      {m.identity === repo.ownerId ? (
-                        <span className="text-[12px] text-anvil-500 dark:text-anvil-400">owner</span>
-                      ) : isOwner && repo.visibility !== 'private' ? (
+                      <RoleBadge role={m.role} owner={m.identity === repo.ownerId} />
+                      {m.identity === repo.ownerId ? null : isOwner && repo.visibility !== 'private' ? (
                         <div className="ml-auto flex gap-2">
                           <Button size="sm" variant="outline" disabled={guard.disabledReason !== null} aria-expanded={changing === rowKey} onClick={() => setChanging((c) => (c === rowKey ? null : rowKey))}>
                             Change role
@@ -371,7 +369,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
           {action?.kind === 'revoke' && action.role !== 'maintainer' ? <EnvironmentsRemoval
                   home={home}
                   member={action.member}
-                  heldMembersKey={keyed && holdsMembersKey(action.role, 'public')}
+                  heldMembersKey={keyed && holdsMembersKey(action.role)}
                   staysMaintainer={removalEffect(memberRows, action.member, action.role) === 'none'}
                 /> : null}
         </ConfirmDialog>

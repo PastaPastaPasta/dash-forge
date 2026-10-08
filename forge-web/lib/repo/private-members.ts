@@ -165,9 +165,8 @@ export function planRotation(
   }
   const selfId = decodeIdentifier(self)
   const excluded = new Set(exclude)
-  // Who holds the key (`holdsMembersKey`): every member of a private repo; a public repo's roles that hold its members key.
-  const visibility = session.gate.visibility
-  const remaining = [...new Set(session.members.filter((m) => holdsMembersKey(m.role, visibility)).map((m) => m.identity))].filter((id) => !excluded.has(id))
+  // Who holds the key (`holdsMembersKey`: every human role).
+  const remaining = [...new Set(session.members.filter((m) => holdsMembersKey(m.role)).map((m) => m.identity))].filter((id) => !excluded.has(id))
   if (!remaining.includes(self)) throw new PrivateMembersError('you cannot remove yourself this way')
 
   // Epochs are contiguous (§5.3): the new one is always n + 1. A rotation that stopped after its
@@ -983,7 +982,7 @@ export async function addPrivateMember(c: PrivateWriteContext, memberId: string,
   // refused. In a public one they can still do everything public; the members key is shared once
   // they add one (the repair check wraps them), as `dg collab add` does.
   if (!canReceive && c.repo.visibility === 'private') throw new PrivateMembersError(`${short(memberId)} has no encryption key yet`, 'E306')
-  const receives = canReceive && holdsMembersKey(role, c.repo.visibility)
+  const receives = canReceive && holdsMembersKey(role)
   // Nothing is written unless the wrap can follow, and a new maintainer's old configs must not
   // take over any epoch (§5.3: under contiguity an earlier config of theirs would come first).
   await withFreshSession(c, async (s) => {

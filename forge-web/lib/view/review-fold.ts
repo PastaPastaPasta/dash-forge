@@ -7,8 +7,9 @@
  *  - "stale — new commits since": a member's newest verdict was on an older head;
  *  - "doesn't count (not a maintainer or writer)": the reviewer was not a member when they
  *    reviewed, or is not one now;
- *  - "not counted (triage)" / "(reader)": a member who is not an approver (RC2 roles: consensus
- *    records their member verdict; only maintainers and role-1 writers count);
+ *  - "Read access; doesn't count" / "Triage access; …": a member who is not an approver (RC2
+ *    roles: consensus records their member verdict, which today's clients refuse before signing,
+ *    DESIGN D15; only maintainers and role-1 writers count);
  *  - the PR author's own verdict never counts (GitHub: authors can't approve their own PR) and
  *    is labelled "author, not counted".
  */
@@ -16,6 +17,7 @@
 import { countApprovals, isApprover, type Review, type Role, type RoleOracle } from '../rules/v2'
 
 import { compareKey } from '../rules'
+import { ROLE_LABEL } from '../rules/roles'
 import { importedVerdictOf, trustedOrigin, type ImportedVerdict, type Origin } from '../repo/provenance'
 import { plural } from './format'
 
@@ -116,7 +118,7 @@ export const STANDING_LABEL: Readonly<Record<Standing, string>> = {
   stale: 'Stale — new commits since',
   dismissed: 'Dismissed',
   notMember: "Doesn't count (not a maintainer or writer)",
-  notApprover: 'Not counted (triage or reader)',
+  notApprover: "Doesn't count (Read or Triage access)",
   author: 'Author, not counted',
 }
 
@@ -141,6 +143,14 @@ export interface ReviewerCardRow {
   readonly reviewedOid: string | null
   /** Why their newest review was dismissed. */
   readonly dismissReason: string | null
+  /** Their current role (null: not a member now). */
+  readonly role?: Role | null
+}
+
+/** A row's wording: {@link STANDING_LABEL}, naming the access of a member whose verdict does not count. Parity: `dg`'s `ReviewerRow::label`. */
+export function standingLabel(row: Pick<ReviewerCardRow, 'state' | 'role'>): string {
+  if (row.state === 'notApprover' && row.role) return `Doesn't count (${ROLE_LABEL[row.role]} access)`
+  return STANDING_LABEL[row.state]
 }
 
 /** The newest review per reviewer by `(createdAt, id)`. */
@@ -205,6 +215,7 @@ export function reviewerRows(
       dismissId: counted.has(id) ? counting.get(id)?.id ?? null : null,
       reviewedOid: review?.commitOid ?? null,
       dismissReason: dismissal ?? null,
+      role: oracle.currentRole(id),
     }
   })
   return rows.sort((a, b) => Number(b.requested) - Number(a.requested) || (a.identity < b.identity ? -1 : a.identity > b.identity ? 1 : 0))

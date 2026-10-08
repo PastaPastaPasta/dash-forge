@@ -60,6 +60,7 @@ import {
   eventRoute,
   lockedOut,
   refusePlaintextInPrivate,
+  refuseVerdictForRole,
   settledPost,
   reviewVerdictFields,
   writeRepoDoc,
@@ -548,6 +549,8 @@ export async function submitReviewDraft(
   reads?: SubmitReads,
 ): Promise<SubmittedReview> {
   if (draft.identity !== auth.identityId) throw new Error('this pending review belongs to another identity')
+  // Read and Triage give no verdict (DESIGN D15): refused before signing, unless already written.
+  if (draft.reviewId === undefined) refuseVerdictForRole(post, draft.verdict)
   // A maintainer's ban (UPDATE-1): refused before signing, as `dg` does (E610).
   await refuseIfBanned(sdk, repo, auth.network, auth.identityId)
   // A private repo: the reconcile reads the draft's landed comments decrypted, which needs the

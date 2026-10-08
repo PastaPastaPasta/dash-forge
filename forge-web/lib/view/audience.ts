@@ -28,8 +28,8 @@ export interface MembersCount {
 }
 
 /** The identities of `members` who hold a repo's members key (each once). */
-export function keyHolders(members: readonly Membership[], visibility: 'public' | 'private'): Set<string> {
-  return new Set(members.filter((m) => holdsMembersKey(m.role, visibility)).map((m) => m.identity))
+export function keyHolders(members: readonly Membership[]): Set<string> {
+  return new Set(members.filter((m) => holdsMembersKey(m.role)).map((m) => m.identity))
 }
 
 /**
@@ -37,8 +37,8 @@ export function keyHolders(members: readonly Membership[], visibility: 'public' 
  * that is their only role, and `runners` (the repo's CI runner identities) counted when they are
  * members too. A runner is never a member by being a runner.
  */
-export function membersCount(members: readonly Membership[], visibility: 'public' | 'private', runners: Iterable<string> = []): MembersCount {
-  const holders = keyHolders(members, visibility)
+export function membersCount(members: readonly Membership[], runners: Iterable<string> = []): MembersCount {
+  const holders = keyHolders(members)
   const roles = new Map<string, Role[]>()
   for (const m of members) if (holders.has(m.identity)) roles.set(m.identity, [...(roles.get(m.identity) ?? []), m.role])
   const readers = [...roles.values()].filter((r) => r.every((x) => x === 'reader')).length

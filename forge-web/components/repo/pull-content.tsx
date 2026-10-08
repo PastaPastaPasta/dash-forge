@@ -107,7 +107,7 @@ import {
 import { checksPhrase, expectedChecks, readCheckRuns, requiredSources, summarizeChecks, type ChecksSummary } from '@/lib/repo/checks'
 import { branchShown, headSync, readBranchState, readBranchTip, readBranchUpdates, type BranchWrite } from '@/lib/repo/source-branch'
 import type { Event, EventKind, Holdings, RefState } from '@/lib/rules'
-import { ROLE_NOUN, capabilitiesOf, memberMayWriteEvent } from '@/lib/rules/roles'
+import { POST_AS_COMMENT, ROLE_LABEL, capabilitiesOf, memberMayWriteEvent, verdictRefusal } from '@/lib/rules/roles'
 import { RoleLimitNote } from '@/components/repo/role-limit-note'
 import { isApprover, linkedIssues, RoleOracle, type ChecksState, type Policy, type PolicyStatus } from '@/lib/rules/v2'
 import { checksState } from '@/lib/rules/parity'
@@ -377,7 +377,10 @@ function PullPage({
   const isAuthor = viewer !== null && viewer === pull.author
   const archived = home.config?.archived === true
   // A locked PR takes comments and reviews from members only (RC1: consensus refuses the rest).
-  const postContext = { isMember, locked: thread.locked }
+  // Its role too: a Read or Triage member's approve or request changes is refused before signing.
+  const postContext = { isMember, locked: thread.locked, role: viewerRole }
+  // Why the viewer's approve or request changes was refused (DESIGN §10), with "Post as a comment".
+  const [verdictRefused, setVerdictRefused] = useState<string | null>(null)
   const composeBlock = archived ? ARCHIVED_REASON : lockedOut(postContext) ? LOCKED_REASON : privateComposeBlock(home, pull.audience ?? 'public')
   const writeBlocked = composeBlock !== null
   // Who the composer's lock banner speaks to (a member keeps the composer).
@@ -849,6 +852,17 @@ function PullPage({
   // A text over its field: stored whole by a maintainer or writer (forge-v2.md §6.3).
   const commentLong = useLongCompose(repo, 'comment', comment.trim())
   const commentTooLong = composeTooLong(repo, 'comment', { body: comment.trim() }, commentLong)
+  // A review from the conversation box: refused before signing when the viewer's role gives no
+  // verdict (Read or Triage, DESIGN §3.5), which says so and offers it as a comment.
+  const reviewAs = (v: VerdictInput): void => {
+    const refusal = verdictRefusal(viewerRole, v)
+    setVerdictRefused(refusal)
+    if (refusal !== null) return
+    if (commentTooLong || !guard.check(composeCost(repo, 'review', { body: comment.trim() }, reviewFirst, audience.audience), 'collab')) return
+    const review = { kind: 'review' as const, verdict: v, body: comment.trim(), audience: audience.audience }
+    // A public review's text is public: it asks first when it repeats members-only text.
+    quoteCheck(publicTextOf(review.body, review.audience, pull.audience), membersTexts, () => setPending(review))
+  }
   const editLong = useLongCompose(repo, 'patch', editing?.body ?? '', {
     title: editing?.title ?? '',
     baseRefName: pull.baseRefName,
@@ -1863,12 +1877,7 @@ function PullPage({
                         variant={v === 'approve' ? 'primary' : 'outline'}
                         // Until the viewer's membership is read, a verdict would be recorded as a non-member's.
                         disabled={guard.disabledReason !== null || (v !== 'comment' && !holdings.settled)}
-                        onClick={() => {
-                          if (commentTooLong || !guard.check(composeCost(repo, 'review', { body: comment.trim() }, reviewFirst, audience.audience), 'collab')) return
-                          const review = { kind: 'review' as const, verdict: v, body: comment.trim(), audience: audience.audience }
-                          // A public review's text is public: it asks first when it repeats members-only text.
-                          quoteCheck(publicTextOf(review.body, review.audience, pull.audience), membersTexts, () => setPending(review))
-                        }}
+                        onClick={() => reviewAs(v)}
                       >
                         {VERDICT_TEXT[v]}
                       </Button>
@@ -1877,10 +1886,17 @@ function PullPage({
                       <span className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="author-review-note">
                         You opened this PR: your own approval would never count, so only a comment-only review is offered.
                       </span>
+                    ) : verdictRefused !== null ? (
+                      <span role="alert" className="flex flex-wrap items-center gap-2 text-dense text-anvil-800 dark:text-anvil-100" data-testid="verdict-refused">
+                        {verdictRefused}
+                        <Button size="sm" variant="outline" data-testid="post-as-comment" disabled={guard.disabledReason !== null} onClick={() => reviewAs('comment')}>
+                          {POST_AS_COMMENT}
+                        </Button>
+                      </span>
                     ) : !isApprover(viewerRole) && holdings.settled ? (
                       <span className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="approval-not-counted-note">
                         {viewerRole === 'triage' || viewerRole === 'reader'
-                          ? `You're ${ROLE_NOUN[viewerRole]} here: your review is recorded, but only approvals from maintainers and writers count.`
+                          ? `You have ${ROLE_LABEL[viewerRole]} access here: only people with Write access or more can approve.`
                           : 'Only approvals from maintainers and writers count.'}
                       </span>
                     ) : null}
@@ -1964,6 +1980,7 @@ function PullPage({
                     update={reviewDraft.update}
                     ensure={reviewDraft.ensure}
                     isMember={isMember}
+                    role={viewerRole}
                     isAuthor={isAuthor}
                     locked={thread.locked}
                     lineExists={(path, side, line) => knownLines.current.get(path)?.has(lineKey(path, side, line)) ?? false}

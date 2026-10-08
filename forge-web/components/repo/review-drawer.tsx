@@ -26,7 +26,8 @@ import {
 } from '@/lib/repo'
 import { SupersededWriteError, newIntent, sumPreviews } from '@/lib/sdk'
 import type { RepoHome } from '@/lib/view'
-import type { Membership } from '@/lib/rules/v2'
+import type { Membership, Role } from '@/lib/rules/v2'
+import { POST_AS_COMMENT, verdictRefusal } from '@/lib/rules/roles'
 import { QUOTE_CONFIRM, publicLineQuestion, quotesMembersText, submitSummary, type MembersTexts } from '@/lib/view/audience'
 import { AudienceChip, AudienceWarnings, useAudienceWarnings, useComposerAudience, useQuoteGate, warningName } from '@/components/repo/audience'
 import { composeCost } from '@/components/repo/private-compose'
@@ -189,6 +190,7 @@ export function ReviewDrawer({
   update,
   ensure,
   isMember,
+  role = null,
   isAuthor = false,
   locked,
   lineExists,
@@ -218,6 +220,12 @@ export function ReviewDrawer({
   ensure: () => ReviewDraft | null
   isMember: boolean
   /**
+   * The viewer's role: Read and Triage give no verdict (DESIGN §3.5, D15), so their approve or
+   * request changes is refused before signing and offered as a comment (`dg pr review` refuses
+   * it the same way).
+   */
+  role?: Role | null
+  /**
    * The viewer opened this PR: their own approve / request changes never counts
    * (`countApprovals`, as on GitHub), so only a comment-only review is offered (`dg pr review`
    * refuses the others the same way).
@@ -246,6 +254,10 @@ export function ReviewDrawer({
   const [chosen, setVerdict] = useState<VerdictInput>(draft?.verdict ?? 'comment')
   // A draft saved with a verdict before the viewer's authorship was known still submits as a comment.
   const verdict: VerdictInput = isAuthor ? 'comment' : chosen
+  // A Read or Triage reviewer's approve or request changes: refused, with the comment it can be.
+  const refused = verdictRefusal(role, verdict)
+  // "Post as a comment": the verdict becomes a comment, then the review is submitted as one.
+  const [asComment, setAsComment] = useState(false)
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
@@ -304,6 +316,7 @@ export function ReviewDrawer({
 
   const submit = (): void => {
     if (!sdk || !signer || identity === null || planned === null) return
+    if (!frozen && refused !== null) return
     if (cost === null || !guard.check(cost, 'collab')) return
     if (!frozen && verdict === 'comment' && summary.trim() === '' && count === 0) {
       setError('Write a summary or add a comment first.')
@@ -337,7 +350,7 @@ export function ReviewDrawer({
       // The review and its inline comments are one action: one toast with their total (QW3-039).
       const line = question !== null ? publicLine.trim() : ''
       const { submitted: r, lineFailed } = await spendAction({ running: 'Submitting the review…', done: 'Review submitted', failed: 'Review submitted part-way' }, async (tag) => {
-        const submitted = await submitReviewDraft(sdk, tag(signer), repo, toSubmit, { isMember, locked }, (p) => setProgress(p))
+        const submitted = await submitReviewDraft(sdk, tag(signer), repo, toSubmit, { isMember, locked, role }, (p) => setProgress(p))
         // The one public line the author can read, after the members-only review. The review is
         // on Platform by now: a failed line is said apart, and never holds the submitted draft.
         const lineFailed =
@@ -364,6 +377,13 @@ export function ReviewDrawer({
       setError(`${partialSubmitMessage(saved, VERDICT_WORDS[saved.verdict])} (${guard.failed(e)})`)
     }
   }
+
+  // Submit once the converted verdict has rendered, so the submit sees it.
+  useEffect(() => {
+    if (!asComment || verdict !== 'comment') return
+    setAsComment(false)
+    submit()
+  }, [asComment, verdict]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const reanchor = (): void => {
     if (draft === null) return
@@ -443,6 +463,22 @@ export function ReviewDrawer({
                 <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="review-author-note">
                   You opened this PR: your own approval would never count, so your review is a comment.
                 </p>
+              ) : refused !== null ? (
+                <div role="alert" className="flex flex-wrap items-center gap-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense text-anvil-800 dark:text-anvil-100" data-testid="review-verdict-refused">
+                  <span className="min-w-0 flex-1">{refused}</span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    data-testid="review-post-as-comment"
+                    disabled={progress !== null}
+                    onClick={() => {
+                      setVerdict('comment')
+                      setAsComment(true)
+                    }}
+                  >
+                    {POST_AS_COMMENT}
+                  </Button>
+                </div>
               ) : !isMember && verdict !== 'comment' ? (
                 <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Only maintainers&apos; and writers&apos; verdicts count toward merging.</p>
               ) : null}
@@ -499,7 +535,7 @@ export function ReviewDrawer({
                   {frozen ? 'Discard the rest' : 'Discard'}
                 </Button>
               ) : null}
-              <Button size="sm" variant="primary" onClick={submit} loading={progress !== null} disabled={guard.disabledReason !== null || progress !== null || lineQuotes}>
+              <Button size="sm" variant="primary" onClick={submit} loading={progress !== null} disabled={guard.disabledReason !== null || progress !== null || lineQuotes || (!frozen && refused !== null)}>
                 {frozen || error ? 'Retry' : 'Submit review'}
               </Button>
             </div>

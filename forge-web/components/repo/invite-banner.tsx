@@ -38,7 +38,7 @@ export const INVITE_PARAM = 'invite'
 
 /**
  * The role an invite link names (`&invite=triage`) when the owner could grant it on a repo of
- * `visibility` (a reader only on a private repo), else null (`&invite=1`, anything else). Only a
+ * `visibility` (every role, on every repo), else null (`&invite=1`, anything else). Only a
  * hint: the owner picks the role when they add the member.
  */
 export function invitedRole(param: string | null, visibility: 'public' | 'private'): Role | null {
@@ -47,11 +47,11 @@ export function invitedRole(param: string | null, visibility: 'public' | 'privat
 }
 
 /**
- * " (the invite suggests the triage role)": how the banner names the role a link suggests (empty
+ * " (the invite suggests Triage access)": how the banner names the role a link suggests (empty
  * when it names none). A suggestion only: the owner picks the role when adding the member.
  */
 export function suggestedRoleWords(role: Role | null): string {
-  return role === null ? '' : ` (the invite suggests the ${role} role)`
+  return role === null ? '' : ` (the invite suggests ${ROLE_LABEL[role]} access)`
 }
 
 /** How soon the owner's Settings re-reads the pending invitations while the page is visible. */
@@ -281,7 +281,7 @@ export function Invitations({
       ) : null}
       {link !== '' ? (
         <div className="mt-3 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="invite-link">
-          <p className="mb-1">Invite link: the member opens it and accepts before you add them. It suggests the role picked above ({role}); you choose the role when you add them.</p>
+          <p className="mb-1">Invite link: the member opens it and accepts before you add them. It suggests the access picked above ({ROLE_LABEL[role]}); you choose the role when you add them.</p>
           <CopyRow text={link} label="Copy the invite link" />
         </div>
       ) : null}
@@ -343,7 +343,7 @@ function PendingInvite({
           ))}
         </select>
         <Button size="sm" variant="outline" disabled={disabled || role === null} onClick={() => role !== null && onPick(id, role)}>
-          {role === null ? 'Add' : `Add as ${ROLE_LABEL[role].toLowerCase()}`}
+          {role === null ? 'Add' : `Add with ${ROLE_LABEL[role]} access`}
         </Button>
       </div>
     </li>

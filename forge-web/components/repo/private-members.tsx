@@ -181,10 +181,8 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
         {session.members.map((m) => (
           <div key={`${m.role}:${m.identity}`} className="flex items-center gap-3 border-b border-anvil-100 px-4 py-2.5 last:border-b-0 dark:border-anvil-850">
             <Author identityId={m.identity} link={false} />
-            <RoleBadge role={m.role} />
-            {m.identity === repo.ownerId ? (
-              <span className="text-[12px] text-anvil-500 dark:text-anvil-400">owner</span>
-            ) : isOwner ? (
+            <RoleBadge role={m.role} owner={m.identity === repo.ownerId} />
+            {m.identity === repo.ownerId ? null : isOwner ? (
               <Button
                 size="sm"
                 variant="danger"
@@ -317,7 +315,7 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
         {removing !== null && removing.role !== 'maintainer' ? <EnvironmentsRemoval
             home={home}
             member={removing.member}
-            heldMembersKey={holdsMembersKey(removing.role, 'private')}
+            heldMembersKey={holdsMembersKey(removing.role)}
             staysMaintainer={removalEffect(session.members, removing.member, removing.role) === 'none'}
           /> : null}
       </ConfirmDialog>

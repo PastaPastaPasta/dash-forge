@@ -165,9 +165,11 @@ test.describe('forge-v2 read paths (devnet fixture)', () => {
     await waitForRepoResolved(page)
     // Settings → Members (the glossary's term for people with a role; #66 had called it Collaborators).
     const collaborators = page.getByRole('region', { name: 'Members' })
-    await expectLanded(page, collaborators.getByText('WRITER', { exact: true }))
-    await expect(collaborators.getByText('MAINTAINER', { exact: true })).toHaveCount(2)
-    await expect(collaborators.getByText('owner', { exact: true })).toBeVisible()
+    // Each member's chip names their access as GitHub does (DESIGN §10): the owner's is Owner.
+    const chips = collaborators.getByTestId('role-badge')
+    await expectLanded(page, chips.filter({ hasText: /^Write$/ }))
+    await expect(chips.filter({ hasText: /^Maintain$/ })).toHaveCount(1)
+    await expect(chips.filter({ hasText: /^Owner$/ })).toHaveCount(1)
     await shot(page, 'v2-07-settings')
   })
 

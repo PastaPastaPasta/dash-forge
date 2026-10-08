@@ -34,9 +34,9 @@ const MEMBERS = [m('alice', 'maintainer'), m('bob', 'writer'), m('bob', 'maintai
 
 describe('who the Members audience is', () => {
   it('counts each key holder once, readers by their only role, and CI bots only when a runner is a member', () => {
-    expect(keyHolders(MEMBERS, 'public')).toEqual(new Set(['alice', 'bob', 'carl', 'dora', 'bot']))
-    expect(membersCount(MEMBERS, 'public')).toEqual({ total: 5, readers: 2, bots: 0 })
-    expect(membersCount(MEMBERS, 'public', ['bot', 'runner-only'])).toEqual({ total: 5, readers: 2, bots: 1 })
+    expect(keyHolders(MEMBERS)).toEqual(new Set(['alice', 'bob', 'carl', 'dora', 'bot']))
+    expect(membersCount(MEMBERS)).toEqual({ total: 5, readers: 2, bots: 0 })
+    expect(membersCount(MEMBERS, ['bot', 'runner-only'])).toEqual({ total: 5, readers: 2, bots: 1 })
   })
 
   it('says the picker sentence with honest counts (product M3)', () => {

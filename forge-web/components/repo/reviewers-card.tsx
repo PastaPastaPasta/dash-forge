@@ -12,7 +12,7 @@ import { useState } from 'react'
 import { Check, Clock, Eye, MessageSquare, MinusCircle, RotateCcw, X, XCircle } from 'lucide-react'
 
 import type { Membership } from '@/lib/rules/v2'
-import { STANDING_LABEL, type ImportedReviewer, type ReviewerCardRow, type Standing } from '@/lib/view/review-fold'
+import { standingLabel, type ImportedReviewer, type ReviewerCardRow, type Standing } from '@/lib/view/review-fold'
 import type { ImportedVerdict } from '@/lib/repo/provenance'
 import { isIdentityId, shortId } from '@/lib/utils'
 import { Author } from '@/components/author'
@@ -148,7 +148,7 @@ export function ReviewersCard({
               ) : null}
             </div>
             <p className={cn('ml-5 text-[12px]', r.state === 'approved' ? 'text-verify-700 dark:text-verify-400' : r.state === 'changesRequested' ? 'text-danger-700 dark:text-danger-400' : 'text-anvil-500 dark:text-anvil-400')}>
-              {STANDING_LABEL[r.state]}
+              {standingLabel(r)}
               {r.reRequested ? ' (re-requested)' : ''}
               {r.state === 'stale' && r.reviewedOid ? (
                 <>
