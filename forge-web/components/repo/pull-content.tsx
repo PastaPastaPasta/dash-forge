@@ -1770,6 +1770,13 @@ function PullPage({
                   active: mergeSlot === 'shown',
                   unmetRules: actions.unmetRules,
                   canBypass: actions.canBypass,
+                  // The same conditions the record boxes above render on.
+                  recordAbove:
+                    recordOid !== null && unrecordedCheck.data !== null
+                      ? { kind: 'record', oid: recordOid }
+                      : unverifiedOid !== null && unrecordedCheck.data
+                        ? { kind: 'command', oid: unverifiedOid }
+                        : null,
                   allowedMethods: policyNow?.mergeMethods ?? 0,
                   squashAuthors: commits.error
                     ? { error: commits.error }

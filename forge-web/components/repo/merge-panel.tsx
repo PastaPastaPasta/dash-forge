@@ -127,6 +127,7 @@ export function MergePanel({
   unmetRules = [],
   canBypass = false,
   branchAhead = null,
+  recordAbove = null,
   checkSourceBranch,
   recheckMembers,
   onBranchDeleted,
@@ -167,6 +168,8 @@ export function MergePanel({
    * "Update PR head" (QW3-013), or it would merge the older head and leave the newer commits out.
    */
   branchAhead?: { readonly branch: string; readonly tip: string } | null
+  /** The record box shown above the merge box, if any (`MergeButtonInputs.recordAbove`). */
+  recordAbove?: { readonly kind: 'record' | 'command'; readonly oid: string } | null
   /**
    * Re-read the source branch just before merging: why not to merge (it moved past the head since
    * the page read it), or null. A failed read does not stop the merge.
@@ -340,6 +343,7 @@ export function MergePanel({
     baseProtected,
     narrow: !wide,
     headOnBase: pull.headOnBase,
+    recordAbove,
     check,
     checkout,
   })

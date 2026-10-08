@@ -141,17 +141,13 @@ function newestAt<T extends Keyed>(items: readonly T[], at: number): T | null {
 }
 
 /**
- * Whether a document written in the window before `at` changed what the one before it said; the
- * first document ever counts as a change when it `applies`.
+ * Whether a document written in the window before `at` changed what the one before it said. The
+ * first document ever changes nothing: a repository's first policy or config is no weakening (Q5).
  */
-function changedBefore<T extends Keyed>(items: readonly T[], at: number, same: (a: T, b: T) => boolean, applies: (x: T) => boolean): boolean {
+function changedBefore<T extends Keyed>(items: readonly T[], at: number, same: (a: T, b: T) => boolean): boolean {
   const sorted = items.filter((x) => x.createdAt <= at).sort(compareKey)
   const from = Math.max(0, at - RULES_CHANGE_WINDOW_MS)
-  return sorted.some((x, i) => {
-    if (x.createdAt <= from) return false
-    const prev = i > 0 ? (sorted[i - 1] as T) : null
-    return prev === null ? applies(x) : !same(prev, x)
-  })
+  return sorted.some((x, i) => i > 0 && x.createdAt > from && !same(sorted[i - 1] as T, x))
 }
 
 /** Field-by-field policy equality, absent and default alike (forge-core's derived `PartialEq`). */
@@ -226,8 +222,8 @@ export function auditMerge(input: MergeAuditInput): MergeAudit {
   const uncountedBypass = first === null ? null : { event: first, role: oracle.roleAt(first.actor, first.createdAt) }
 
   const rulesChanged =
-    changedBefore(policies, at, (a, b) => samePolicy(a.policy, b.policy), () => true) ||
-    changedBefore(protection, at, (a, b) => a.protected === b.protected, (p) => p.protected)
+    changedBefore(policies, at, (a, b) => samePolicy(a.policy, b.policy)) ||
+    changedBefore(protection, at, (a, b) => a.protected === b.protected)
 
   const unmet = protectionUnmet || (approvals !== null && !approvals.met) || (checks !== null && !checks.met)
   const verdict: AuditVerdict =
