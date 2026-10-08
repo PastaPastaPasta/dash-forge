@@ -2,7 +2,7 @@
 
 Everything a team does on Forge is a signed document on Dash Platform: who may push, issues, comments, pull requests, reviews, merges and releases. There is no server in the middle to ask. Consensus decides who may write, and every client computes the same state from the same documents.
 
-1. [Collaborators](#collaborators)
+1. [Members](#members)
 2. [Private repositories](#private-repositories)
 3. [Members-only content in a public repository](#members-only-content-in-a-public-repository)
 4. [Issues](#issues)
@@ -17,7 +17,7 @@ Reading a public repository needs no identity: `dg repo view`, `dg repo list --o
 
 ---
 
-## Collaborators
+## Members
 
 Members have one of four roles: **Read**, **Triage**, **Write** or **Maintain**. The **Owner** is the identity that created the repository. A **Bot** role for automated accounts is coming later. Consensus enforces what each role can write: a write the role does not allow is refused by Platform, and Forge's apps refuse it before you pay for it. Counting approvals is a rule Forge apps enforce: every app applies it alike ([Who enforces what](#who-enforces-what)).
 
@@ -35,10 +35,10 @@ Anyone, member or not, can open issues and PRs, comment and review. Approvals co
 
 On a public repository everyone can read the public content already, so the Read role is for its [members-only content](#members-only-content-in-a-public-repository): someone who should follow the members-only discussion and comment, without pushing or merging. Their approvals don't count. `dg collab add --role reader` works on public repositories too, and the web app offers Read there too. A member holds one `writer` document, so changing between Write, Triage and Read replaces it: `dg collab add` with the new `--role` deletes the old document and writes the new one (their acceptance stands, so they need not accept again), and the web app's Settings → Members has **Change role** on public repositories. On a private repository `dg collab add` changes the role the same way without rotating the key, since the member stays a member; in the web app, remove the member and add them again, which rotates it as every removal does.
 
-Adding a collaborator is two steps: the owner adds them, and the collaborator accepts. Consensus admits a `writer`/`maintainer` document only when it names the member's own `consent` document for the repo (`member_consent`), so nobody can be made a member, or spammed with an invitation, without agreeing first.
+Adding a member is two steps: the owner adds them, and they accept. Consensus admits a `writer`/`maintainer` document only when it names the member's own `consent` document for the repo (`member_consent`), so nobody can be made a member, or spammed with an invitation, without agreeing first.
 
 ```sh
-dg collab accept <owner>/<repo>              # the collaborator, first: records their consent
+dg collab accept <owner>/<repo>              # the new member, first: records their consent
 dg collab list   <owner>/<repo>
 dg collab add    <owner>/<repo> <identity id or DPNS name> --role writer   # or triage, reader, maintainer
 dg collab remove <owner>/<repo> <identity id or DPNS name> --role writer
@@ -50,7 +50,7 @@ If the owner runs `dg collab add` before the invitee has accepted, it is refused
 
 From the web app, the invitee opens the repository's **invite link** (Settings → Members, on public and private repos alike) and clicks **Accept invitation**; the owner's Settings → Members lists **Pending invitations** (accepted, not added yet) with a role picker (Write, Triage, Maintain and Read) and an **Add** button for each, and shows who is still waiting to accept after a refused add.
 
-Adding or removing a collaborator is a write by the repository owner, signed with the owner's HIGH key.
+Adding or removing a member is a write by the repository owner, signed with the owner's HIGH key.
 
 ### Repository settings
 
@@ -92,7 +92,7 @@ The description and topics live on the repository document, which only its owner
 
 ### How access works
 
-A collaborator is a `writer` or `maintainer` document in Forge's shared forge-core contract, keyed by (repository, member). A `writer` document carries the role (Write, Triage or Read), and every role-gated write claims a role that consensus checks against it. Only the repository owner can create one, and consensus enforces that. Every write-path document type (ref updates, packs, releases, config, events) names its gate, and consensus refuses a write whose author has no current membership document ([`E601`](../errors.md#e601), Platform code 40120).
+A member is a `writer` or `maintainer` document in Forge's shared forge-core contract, keyed by (repository, member). A `writer` document carries the role (Write, Triage or Read), and every role-gated write claims a role that consensus checks against it. Only the repository owner can create one, and consensus enforces that. Every write-path document type (ref updates, packs, releases, config, events) names its gate, and consensus refuses a write whose author has no current membership document ([`E601`](../errors.md#e601), Platform code 40120).
 
 - **Add** creates the membership document, naming the member's `consent`. **Remove** deletes it. The member's next write is refused.
 - **Consent stands on its own.** A `consent` document is not deleted when the owner removes the member, so adding them again later needs no new acceptance.
@@ -177,7 +177,7 @@ A public repository can keep some of its discussion **members-only**: issues, co
 **The words.** Forge uses the same words in `dg`, the web app and these guides:
 
 - **Audiences:** Public, All members (short: Members), Maintainers, Writers and maintainers, Specific people. "Members-only" describes anything that isn't public. Today a post can be Public or Members, and an environment Maintainers or All members. Writers and maintainers, and Specific people, are coming later.
-- **Roles:** Read, Triage, Write, Maintain, Owner, and Bot for an automated account (coming later). See [Collaborators](#collaborators).
+- **Roles:** Read, Triage, Write, Maintain, Owner, and Bot for an automated account (coming later). See [Members](#members).
 - **Verbs:** **Publish** (code), **Make public** (a post, such as a comment) and **Make this repo public** (a whole private repository). Each widens the audience for good and can't be undone. All three are coming later.
 - **Repository kinds:** **Public** and **Private**. "Private" means only a private repository, where everything is encrypted ([above](#private-repositories)).
 - **Access** is what a bot or a CI runner is given.
