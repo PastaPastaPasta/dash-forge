@@ -178,7 +178,7 @@ A public repository can keep some of its discussion **members-only**: issues, co
 
 - **Audiences:** Public, All members (short: Members), Maintainers, Writers and maintainers, Specific people. "Members-only" describes anything that isn't public. Today a post can be Public or Members, and an environment Maintainers or All members. Writers and maintainers, and Specific people, are coming later.
 - **Roles:** Read, Triage, Write, Maintain, Owner, and Bot for an automated account (coming later). See [Members](#members).
-- **Verbs:** **Publish** (code), **Make public** (a post, such as a comment) and **Make this repo public** (a whole private repository). Each widens the audience for good and can't be undone. All three are coming later.
+- **Verbs:** **Publish** (code), **Make public** (a post, such as a comment) and **Make this repo public** (a whole private repository). Each widens the audience for good and can't be undone. Today an author can make their own posts public; the rest are coming later.
 - **Repository kinds:** **Public** and **Private**. "Private" means only a private repository, where everything is encrypted ([above](#private-repositories)).
 - **Access** is what a bot or a CI runner is given.
 
