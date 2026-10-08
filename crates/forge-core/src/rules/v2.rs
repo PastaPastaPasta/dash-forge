@@ -983,6 +983,23 @@ pub const ENC_MEMBERS: u8 = 0x03;
 /// `enc[0]` of a specific-people document: a per-object key wrapped to each recipient
 /// (`private-repos.md` §17). Its writers come in a later phase; readers admit the form now.
 pub const ENC_SPECIFIC_PEOPLE: u8 = 0x04;
+/// The first `enc[0]` this client does not know (a bot's post is 0x05, a narrower branch's ref
+/// update 0x06): a later client's members-only (or narrower) content. Readers admit it as sealed
+/// discussion and show it as members-only, never as malformed (`private-repos.md` §4.1).
+pub const ENC_FIRST_UNKNOWN: u8 = 0x05;
+
+/// The visibility a document's content is judged under (`private-repos.md` §18.1): its own
+/// `vis` stamp, which consensus held equal to its repository's visibility when it was written,
+/// else (a type without one) the repository's. A repository made public keeps its earlier
+/// documents' `vis: "private"`, so they stay private documents whatever the repository is now.
+#[must_use]
+pub fn doc_visibility(vis: Option<&str>, repository: Visibility) -> Visibility {
+    match vis {
+        Some("private") => Visibility::Private,
+        Some("public") => Visibility::Public,
+        _ => repository,
+    }
+}
 
 /// The `enc` version byte of `doc` (`enc[0]`), when it carries a non-empty `enc`.
 fn enc_version(doc: &ContentDoc) -> Option<u8> {
@@ -1028,6 +1045,21 @@ impl Audience {
         }
     }
 
+    /// The audience a stored parent written for `self` holds its children to ([`Self::fits_under`]),
+    /// with the exception for a repository made public (DESIGN §4.10, L3; `private-repos.md`
+    /// §18.1): a parent written while the repository was private (`written_private`: its own
+    /// `vis` is `"private"` in a repository that is public now) takes public and members-only
+    /// replies alike, so it binds nothing. Its audience is still the default for a reply that
+    /// asks for none.
+    #[must_use]
+    pub fn binding(self, written_private: bool) -> Audience {
+        if written_private {
+            Audience::Public
+        } else {
+            self
+        }
+    }
+
     /// The narrower of two audiences a document sits under (a reply's target and its thread
     /// root): the one the other fits under.
     #[must_use]
@@ -1047,13 +1079,16 @@ impl Audience {
 ///
 /// Plaintext xor `enc`:
 ///
+/// `visibility` is the document's own ([`doc_visibility`]), not its repository's: a repository
+/// made public keeps its earlier documents private (§18.1).
+///
 /// * **public**: either the plaintext form (no `enc`, the kind's required plaintext field, if it
 ///   has one ([`ContentKind`]), and ref names that hash to their keys
 ///   ([`ref_name_hashes_agree`] with `sha256`)), or, for an issue, patch, comment or review
-///   only, the members-only / specific-people form: `enc` version [`ENC_MEMBERS`] or
-///   [`ENC_SPECIFIC_PEOPLE`] with an `epoch`, and none of the kind's plaintext fields. A v0x01 or
-///   v0x02 `enc` stays private-only, so it is malformed here, as is a sealed ref update, config
-///   or release;
+///   only, the members-only / specific-people form: `enc` version [`ENC_MEMBERS`],
+///   [`ENC_SPECIFIC_PEOPLE`] or a later one ([`ENC_FIRST_UNKNOWN`] on, shown as members-only)
+///   with an `epoch`, and none of the kind's plaintext fields. A v0x01 or v0x02 `enc` stays
+///   private-only, so it is malformed here, as is a sealed ref update, config or release;
 /// * **private**: a non-empty `enc` with an `epoch`, and none of the kind's plaintext fields.
 ///   The names are inside `enc`, so their binding is checked after decryption
 ///   ([`ref_name_hashes_agree`] with the epoch's `K_ref`).
@@ -1078,7 +1113,7 @@ pub fn content_well_formed(doc: &ContentDoc, visibility: Visibility) -> bool {
                     | ContentKind::Patch
                     | ContentKind::Comment
                     | ContentKind::Review
-            ) && matches!(enc_version(doc), Some(ENC_MEMBERS | ENC_SPECIFIC_PEOPLE))
+            ) && enc_version(doc).is_some_and(|v| v >= ENC_MEMBERS)
                 && doc.epoch.is_some()
                 && !plaintext.any
         }

@@ -83,6 +83,10 @@ fn alert_text(a: &Alert) -> String {
             "{} posted a config for epoch {epoch}, above a missing epoch number: it is not an epoch",
             encode_identifier(*author)
         ),
+        Alert::PublishedKeyMismatch { author, .. } => format!(
+            "{} published a key for this repo's history that doesn't match it: ignored",
+            encode_identifier(*author)
+        ),
         Alert::RotationRequired { epoch, members } if members.is_empty() => {
             format!("rotation required: epoch {epoch} is burned")
         }

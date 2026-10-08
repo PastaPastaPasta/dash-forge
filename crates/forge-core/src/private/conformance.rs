@@ -251,6 +251,65 @@ impl StoredDocIn {
     }
 }
 
+/// A `converted_repo_open` vector: a document opened by its own `vis` stamp (§18.1).
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ConvertedOpenIn {
+    repo_id: String,
+    stamp: Option<String>,
+    repo_visibility: crate::rules::v2::Visibility,
+    converted: bool,
+    context: OpenCtxIn,
+    doc: StoredDocIn,
+}
+
+/// One config of a `converted_repo_facts` vector.
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StampIn {
+    id: String,
+    epoch: Option<u32>,
+    vis: String,
+    height: u64,
+}
+
+/// A `converted_repo_facts` vector: the conversion facts of a config timeline (§18).
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ConvertedFactsIn {
+    repo_visibility: crate::rules::v2::Visibility,
+    configs: Vec<StampIn>,
+    existing: Vec<u32>,
+    heights: Vec<u64>,
+}
+
+/// One bundle of a `converted_repo_keys` vector.
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BundleIn {
+    owner: String,
+    bytes: String,
+}
+
+/// A `converted_repo_keys` vector: the epoch keys an owner published (§18.3).
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ConvertedKeysIn {
+    repo_id: String,
+    repo_owner: String,
+    seal_off_epoch: Option<u32>,
+    anchors: BTreeMap<String, String>,
+    bundles: Vec<BundleIn>,
+}
+
+/// A `converted_repo_skip` vector: an artifact's first bytes and the epochs held (§18.2).
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ConvertedSkipIn {
+    head: String,
+    held: Vec<u32>,
+}
+
 /// A `mixed_doc_seal` vector: a members-only (v0x03) seal under the lane's epoch key.
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -785,6 +844,7 @@ fn error_json(e: &PrivateError) -> Value {
         PrivateError::WrapUnreadable => "wrapUnreadable",
         PrivateError::KeyMismatch => "keyMismatch",
         PrivateError::Rng => "rng",
+        PrivateError::UnknownVersion(_) => "unknownVersion",
     };
     json!({ "error": code })
 }
@@ -1074,6 +1134,104 @@ fn run(v: &Vector) -> Value {
             let (header, enc) = i.doc.split();
             let ctx = open_context(&repo_id, &i.context);
             opened_json(&doc::open_content(&ctx, &header, &enc))
+        }
+        "converted_repo_open" => {
+            let i: ConvertedOpenIn = input(v);
+            let repo_id = h32(&i.repo_id);
+            let (mut header, enc) = i.doc.split();
+            let ctx = open_context(&repo_id, &i.context);
+            match super::convert::open_vis(
+                i.stamp.as_deref(),
+                i.repo_visibility,
+                i.converted,
+                enc.first().copied(),
+            ) {
+                Some(vis) => {
+                    header.vis = vis;
+                    opened_json(&doc::open_content(&ctx, &header, &enc))
+                }
+                None => opened_json(&super::Opened::Malformed),
+            }
+        }
+        "converted_repo_facts" => {
+            let i: ConvertedFactsIn = input(v);
+            let stamps: Vec<super::convert::ConfigStamp> = i
+                .configs
+                .iter()
+                .map(|c| super::convert::ConfigStamp {
+                    id: h32(&c.id),
+                    epoch: c.epoch,
+                    private: c.vis == "private",
+                    height: c.height,
+                })
+                .collect();
+            match super::convert::Conversion::of(
+                i.repo_visibility == crate::rules::v2::Visibility::Public,
+                &stamps,
+                |e| i.existing.contains(&e),
+            ) {
+                None => json!({ "converted": false }),
+                Some(c) => json!({
+                    "converted": true,
+                    "sealOffEpoch": c.seal_off_epoch,
+                    "markerHeight": c.marker_height,
+                    "maybeSealed": i.heights.iter().map(|&h| c.may_be_sealed(h)).collect::<Vec<_>>(),
+                }),
+            }
+        }
+        "converted_repo_keys" => {
+            let i: ConvertedKeysIn = input(v);
+            let repo_id = h32(&i.repo_id);
+            let anchors: BTreeMap<u32, super::epoch::Anchor> = i
+                .anchors
+                .iter()
+                .map(|(e, c)| {
+                    (
+                        e.parse().unwrap(),
+                        super::epoch::Anchor {
+                            id: [0; 32],
+                            owner: [0; 32],
+                            height: 0,
+                            commit: Some(h32(c)),
+                            stated_height: 0,
+                        },
+                    )
+                })
+                .collect();
+            let bundles: Vec<super::convert::PublishedBundle> = i
+                .bundles
+                .iter()
+                .map(|b| super::convert::PublishedBundle {
+                    owner: h32(&b.owner),
+                    bytes: hex::decode(&b.bytes).unwrap(),
+                })
+                .collect();
+            let conversion = super::convert::Conversion {
+                seal_off_epoch: i.seal_off_epoch,
+                marker_height: None,
+            };
+            let (keys, alerts) = super::convert::published_keys(
+                &repo_id,
+                &h32(&i.repo_owner),
+                &conversion,
+                &anchors,
+                &bundles,
+            );
+            json!({
+                "keys": keys.iter().map(|(e, k)| (e.to_string(), json!(hex::encode(k.expose())))).collect::<serde_json::Map<_, _>>(),
+                "alerts": alerts,
+            })
+        }
+        "converted_repo_skip" => {
+            let i: ConvertedSkipIn = input(v);
+            let skip = super::convert::skip_reason(&hex::decode(&i.head).unwrap(), |e| {
+                i.held.contains(&e)
+            });
+            json!({ "skip": match skip {
+                None => Value::Null,
+                Some(super::convert::SkipReason::NoKey { epoch }) => json!({ "reason": "noKey", "epoch": epoch }),
+                Some(super::convert::SkipReason::OtherFormat { version }) => json!({ "reason": "otherFormat", "version": version }),
+            } })
         }
         "private_pack_seal" => {
             let i: PackSealIn = input(v);
@@ -1419,8 +1577,13 @@ fn a_reseal_edit_is_the_create_transform() {
 /// The vector cases (and file-name prefixes) this harness runs: the private-repository cases and
 /// the mixed-visibility envelopes (members-only content, specific-people letters and artifacts).
 /// The rules harness skips them.
-pub(crate) const CRYPTO_CASE_PREFIXES: [&str; 4] =
-    ["private_", "mixed_doc_", "named_envelope", "named_artifact"];
+pub(crate) const CRYPTO_CASE_PREFIXES: [&str; 5] = [
+    "private_",
+    "mixed_doc_",
+    "named_envelope",
+    "named_artifact",
+    "converted_repo_",
+];
 
 /// Whether `file_name` is one of [`CRYPTO_CASE_PREFIXES`].
 fn is_crypto_vector(file_name: &str) -> bool {

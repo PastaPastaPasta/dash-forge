@@ -1,0 +1,38 @@
+{
+  "name": "old_comment_published_key",
+  "description": "with K_0 published by the owner (Everything), anyone's keys hold it: it opens.",
+  "case": "converted_repo_open",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "stamp": "private",
+    "repoVisibility": "public",
+    "converted": true,
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        }
+      },
+      "members": []
+    },
+    "doc": {
+      "type": "comment",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "targetId": "3333333333333333333333333333333333333333333333333333333333333333",
+      "enc": "01000102030405060708090a0b1c700785b15b980d3a1234c4a842916b996917a345806af736e5eb28f6efbcd1660143aba2334a616f353f0c817d80f2b95914a4101e95dbdb8972",
+      "createdAtBlockHeight": 50
+    }
+  },
+  "expected": {
+    "status": "readable",
+    "fields": {
+      "body": "written while the repository was private"
+    }
+  }
+}

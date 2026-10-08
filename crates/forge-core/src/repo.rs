@@ -708,6 +708,48 @@ pub struct RefWrite {
 /// copies first).
 pub type RoleMap = BTreeMap<String, Role>;
 
+/// What [`RepoService::open_or_skip`] does with one artifact.
+#[derive(Debug)]
+pub enum ArtifactRead {
+    /// The bytes to hand on (a plaintext artifact, or a sealed one opened).
+    Bytes(Vec<u8>),
+    /// Skipped: this reader cannot open it, and it is never fatal by itself.
+    Skipped(Skipped),
+}
+
+/// An artifact a reader skips (§3.2, §18.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Skipped {
+    /// Its `packHash`.
+    pub pack: [u8; 32],
+    /// Why.
+    pub why: SkipReason,
+}
+
+pub use crate::private::convert::SkipReason;
+
+impl Skipped {
+    /// The error a caller that needed the artifact reports (E307: no key for it).
+    #[must_use]
+    pub fn error(&self, repo: &RepoRef) -> UserError {
+        let pack = &hex::encode(self.pack)[..12];
+        match self.why {
+            SkipReason::NoKey { .. } => UserError::new(
+                codes::NOT_A_KEY_HOLDER,
+                format!("pack {pack} of {} is members-only", repo.display()),
+            )
+            .cause("it was stored encrypted while the repository was private, and you hold no key that opens it")
+            .fix("members read it with their own keys; everyone reads what the owner made public"),
+            SkipReason::OtherFormat { .. } => UserError::new(
+                codes::NOT_A_KEY_HOLDER,
+                format!("pack {pack} of {} can't be opened by this version of Forge", repo.display()),
+            )
+            .cause("it is encrypted in a format a newer version of Forge writes, for a narrower audience")
+            .fix("update Forge; if it still doesn't open, it wasn't shared with you"),
+        }
+    }
+}
+
 /// The git data-plane service, bound to one signing identity and its keys, or to none.
 ///
 /// Constructed per operation batch: it borrows a connected [`PlatformClient`] and, for
@@ -876,6 +918,7 @@ impl<'a> RepoService<'a> {
     /// [`Self::open_artifact`] for a pack whose manifests are `copies` (every copy names the
     /// same sealed bytes): the late-content rule reads the pack if ANY copy qualifies, since
     /// a current member attesting the bytes makes them readable whoever else uploaded them.
+    /// An artifact this reader skips ([`Self::open_or_skip`]) is an error here (E307).
     pub async fn open_artifact_of(
         &self,
         repo: &RepoRef,
@@ -883,13 +926,232 @@ impl<'a> RepoService<'a> {
         size_bytes: u64,
         sealed: Vec<u8>,
     ) -> Result<Vec<u8>> {
+        match self.open_or_skip(repo, copies, size_bytes, sealed).await? {
+            ArtifactRead::Bytes(b) => Ok(b),
+            ArtifactRead::Skipped(s) => Err(s.error(repo).into()),
+        }
+    }
+
+    /// The bytes a reader hands on for a fetched (hash-verified) artifact, or why it skips it:
+    ///
+    /// * a public repository's plaintext artifact as it is;
+    /// * a sealed one (`DFPK`) in a public repository, which only a repository made public holds
+    ///   (or a stale client's fork of one, §18.2): opened with the epoch keys this reader holds
+    ///   (its own as a member, or those the owner published), else skipped;
+    /// * a private repository's artifact opened under the late-content rule (§8.2), as before;
+    /// * in either, a `DFPK` header of a version this client does not open: skipped, never
+    ///   fatal (§3.2).
+    pub async fn open_or_skip(
+        &self,
+        repo: &RepoRef,
+        copies: &[&PackManifestInfo],
+        size_bytes: u64,
+        sealed: Vec<u8>,
+    ) -> Result<ArtifactRead> {
+        use crate::private::Head;
         let Some(manifest) = copies.first() else {
             return Err(Error::NotFound);
         };
-        if repo.visibility == Visibility::Public {
-            return Ok(sealed);
+        let skipped = |why| {
+            Ok(ArtifactRead::Skipped(Skipped {
+                pack: manifest.pack_hash,
+                why,
+            }))
+        };
+        let kr = match (repo.visibility, crate::private::sniff(&sealed)) {
+            (_, Head::OtherVersion(version)) => {
+                return skipped(SkipReason::OtherFormat { version })
+            }
+            (Visibility::Public, Head::Plain | Head::Short) => {
+                return Ok(ArtifactRead::Bytes(sealed))
+            }
+            (Visibility::Public, Head::Sealed { epoch }) => match self.public_keys(repo).await {
+                Some(kr) if kr.epoch_keys(epoch).is_some() => kr,
+                _ => return skipped(SkipReason::NoKey { epoch }),
+            },
+            (Visibility::Private, _) => self.keyring(repo).await?,
+        };
+        self.open_sealed(repo, &kr, copies, size_bytes, sealed)
+            .await
+            .map(ArtifactRead::Bytes)
+    }
+
+    /// The epoch keys this service holds for PUBLIC `repo`'s sealed artifacts, which only a
+    /// repository made public has (§18): the signer's (as a member, with the published ones),
+    /// else the published ones alone. `None` when they cannot be read.
+    pub async fn public_keys(&self, repo: &RepoRef) -> Option<std::sync::Arc<Keyring>> {
+        let client = self.client;
+        let loaded = match self.signer {
+            Some(_) => self.keyring(repo).await,
+            None => {
+                cached_keyring(&self.keyring, repo, || async move {
+                    Keyring::load_anonymous(client, repo).await
+                })
+                .await
+            }
+        };
+        loaded
+            .inspect_err(|e| tracing::warn!(error = %e, "the repository's keys could not be read; its sealed packs are skipped"))
+            .ok()
+    }
+
+    /// Whether PUBLIC `repo` was made public, and its conversion facts (§18), from its config
+    /// timeline alone (the delta-cached git state). `None` for a repository that never was
+    /// private, and for a private one.
+    pub async fn conversion(
+        &self,
+        repo: &RepoRef,
+    ) -> Result<Option<crate::private::convert::Conversion>> {
+        if repo.visibility != Visibility::Public {
+            return Ok(None);
         }
-        let kr = self.keyring(repo).await?;
+        let (scope, contract) = self.readable(repo).await?;
+        let state = crate::refs::read_git_state(
+            self.client,
+            &contract,
+            &scope,
+            crate::history::Freshness::Synced,
+        )
+        .await?;
+        Ok(crate::private::convert::Conversion::of(
+            true,
+            &crate::keyring::config_stamps(&state.configs),
+            |_| true,
+        ))
+    }
+
+    /// Whether a converted repository's pack (`copies`) can be skipped **without downloading
+    /// it** (§18.2): it was recorded while the repository may still have been private
+    /// ([`crate::private::convert::Conversion::may_be_sealed`]), and its first bytes (a 36-byte
+    /// read of one copy) are a sealed header under an epoch `keys` does not hold, or a header
+    /// version this client does not open. Anything else (a plaintext head, no copy answering)
+    /// is downloaded and judged whole, so a host that lies about the head costs a download,
+    /// never a wrong read.
+    pub async fn skip_before_download(
+        &self,
+        repo: &RepoRef,
+        contract: &LoadedContract,
+        copies: &[&PackManifestInfo],
+        reader: &PackReader,
+        conversion: &crate::private::convert::Conversion,
+        keys: Option<&Keyring>,
+    ) -> Option<Skipped> {
+        let first = copies.first()?;
+        if !copies
+            .iter()
+            .any(|m| conversion.may_be_sealed(m.created_at_block_height))
+        {
+            return None;
+        }
+        let head = self.pack_head(repo, contract, copies, reader).await?;
+        let why = crate::private::convert::skip_reason(&head, |e| {
+            keys.is_some_and(|k| k.epoch_keys(e).is_some())
+        })?;
+        Some(Skipped {
+            pack: first.pack_hash,
+            why,
+        })
+    }
+
+    /// The first [`crate::private::pack::HEADER_LEN`] bytes of a pack, from the first of its
+    /// `copies` that serves them: an external copy by a ranged read, else its Platform chunks'
+    /// first chunk. Unverified (see [`Self::skip_before_download`]).
+    async fn pack_head(
+        &self,
+        repo: &RepoRef,
+        contract: &LoadedContract,
+        copies: &[&PackManifestInfo],
+        reader: &PackReader,
+    ) -> Option<Vec<u8>> {
+        let n = crate::private::pack::HEADER_LEN;
+        let range = crate::backends::ByteRange::new(0, n as u64).ok()?;
+        for m in copies {
+            if reader.has_candidates(&m.uris) {
+                if let Ok(head) = reader.fetch_range(&m.uris, range).await {
+                    return Some(head);
+                }
+            }
+            let mut locators: Vec<crate::backends::PlatformLocator> = m
+                .uris
+                .iter()
+                .filter_map(|u| crate::backends::PlatformLocator::parse(&Uri(u.clone())).ok())
+                .filter(|l| l.pack_hash == m.pack_hash)
+                .collect();
+            if m.storage == 0 {
+                if let Ok(own) = crate::backends::PlatformLocator::parse(&Uri(repo
+                    .scope()
+                    .ok()?
+                    .locator(&m.owner_id, &hex::encode(m.pack_hash))))
+                {
+                    locators.push(own);
+                }
+            }
+            for loc in locators {
+                if let Ok(head) =
+                    crate::backends::platform::read_platform_head(self.client, contract, &loc, n)
+                        .await
+                {
+                    return Some(head);
+                }
+            }
+        }
+        None
+    }
+
+    /// Every make-public bundle (kind 7) the owner of `repo` recorded, hash-verified (§18.3):
+    /// what [`crate::private::convert::published_keys`] reads. Empty for a private repository,
+    /// whose bundles every reader ignores. A bundle no copy of which can be read is left out.
+    pub async fn make_public_bundles(
+        &self,
+        repo: &RepoRef,
+    ) -> Result<Vec<crate::private::convert::PublishedBundle>> {
+        if repo.visibility != Visibility::Public {
+            return Ok(Vec::new());
+        }
+        let owner = platform::decode_identifier(repo.owner_id())?;
+        let kind = u64::from(crate::pack::KIND_MAKE_PUBLIC);
+        let manifests: Vec<PackManifestInfo> = self
+            .read_pack_manifests(repo)
+            .await?
+            .into_iter()
+            .filter(|m| m.kind == kind && m.owner_id == repo.owner_id())
+            .collect();
+        if manifests.is_empty() {
+            return Ok(Vec::new());
+        }
+        let contract = self.repo_contract(repo).await?;
+        let roles: RoleMap = [(repo.owner_id().to_string(), Role::Maintainer)].into();
+        let reader = PackReader::from_user_config();
+        let mut out = Vec::new();
+        for (hash, copies) in group_by_hash(&manifests) {
+            match self
+                .fetch_best_copy_or_mirror(repo, &contract, &copies, &roles, &reader)
+                .await
+            {
+                Ok((bytes, _)) => {
+                    out.push(crate::private::convert::PublishedBundle { owner, bytes });
+                }
+                Err(e) => {
+                    tracing::warn!(bundle = %hex::encode(hash), error = %e, "a make-public bundle could not be read");
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// [`Self::open_or_skip`] of a sealed artifact under `kr`: the header, the late-content rule
+    /// (§8.2) over every copy, then the segments.
+    async fn open_sealed(
+        &self,
+        repo: &RepoRef,
+        kr: &std::sync::Arc<Keyring>,
+        copies: &[&PackManifestInfo],
+        size_bytes: u64,
+        sealed: Vec<u8>,
+    ) -> Result<Vec<u8>> {
+        let Some(manifest) = copies.first() else {
+            return Err(Error::NotFound);
+        };
         let header = crate::private::PackHeader::parse(
             sealed
                 .get(..crate::private::pack::HEADER_LEN)
@@ -924,7 +1186,10 @@ impl<'a> RepoService<'a> {
         match kr.open_pack(repo, &sealed, size_bytes) {
             // Sealed under an epoch newer than the keys this service holds (a rotation landed
             // while it ran): read the keys again once.
-            Err(_) if !kr.resolution().keys.contains_key(&header.epoch()) => {
+            Err(_)
+                if repo.visibility == Visibility::Private
+                    && !kr.resolution().keys.contains_key(&header.epoch()) =>
+            {
                 let fresh = std::sync::Arc::new(self.signer()?.keyring(repo).await?);
                 *self.cache() = Some(std::sync::Arc::clone(&fresh));
                 fresh.open_pack(repo, &sealed, size_bytes)
@@ -6517,3 +6782,7 @@ mod roundtrip_tests;
 #[cfg(test)]
 #[path = "survivability_tests.rs"]
 mod survivability_tests;
+
+#[cfg(test)]
+#[path = "converted_repo_tests.rs"]
+mod converted_repo_tests;

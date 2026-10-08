@@ -367,11 +367,24 @@ impl Helper {
             forge_core::repo::RoleMap::new()
         });
         let reader = &svc.repo_reader(repo, &git_packs, roles).await;
+        // A repository made public (private-repos.md §18.2): its packs from the private era are
+        // sealed, and the keys that open them are a member's or the ones its owner published.
+        // Such a pack is checked by its first bytes and skipped without downloading it when
+        // this reader holds no key for it. Any other public repository reads as before.
+        let converted = match svc.conversion(repo).await {
+            Ok(Some(c)) => Some((c, svc.public_keys(repo).await)),
+            Ok(None) => None,
+            Err(e) => {
+                tracing::warn!(error = %e, "could not read the repository's settings history; every pack is downloaded and judged whole");
+                None
+            }
+        };
+        let converted = converted.as_ref();
         let packs = group_by_hash(&git_packs);
         // QW4-014: a terminal sees the packs and bytes come in, as git's own progress does.
         let meter = &fetch_meter(options, &packs);
         let fetched = stream::iter(packs.iter().map(|(h, copies)| async move {
-            let got = fetch_one(svc, repo, contract, copies, roles, reader, h).await;
+            let got = fetch_one(svc, repo, contract, copies, roles, reader, h, converted).await;
             // Only a pack that arrived adds bytes; one set aside counts as done.
             let arrived = matches!(&got, Ok((_, Got::Bytes(_))));
             meter.advance(if arrived {
@@ -410,7 +423,7 @@ impl Helper {
             fetched.into_iter().map(|(_, g)| g).collect(),
             &want_oids,
             options,
-            &repo.display(),
+            repo,
             packs.len(),
             parent.as_deref(),
         )?;
@@ -745,7 +758,10 @@ fn moved_branches(
 }
 
 /// One pack of a fetch ([`Helper::fetch_packs`]): the bytes of the first of its `copies` that
-/// verifies (opened, for a private repository), or why it was set aside.
+/// verifies (opened, when sealed), or why it was set aside. `converted`: the facts of a
+/// repository made public and the keys this reader holds for it, which can skip a sealed pack
+/// before it is downloaded.
+#[allow(clippy::too_many_arguments)]
 async fn fetch_one(
     svc: &RepoService<'_>,
     repo: &RepoRef,
@@ -754,8 +770,21 @@ async fn fetch_one(
     roles: &forge_core::repo::RoleMap,
     reader: &forge_core::storage::read::PackReader,
     h: &[u8; 32],
+    converted: Option<&(
+        forge_core::private::convert::Conversion,
+        Option<std::sync::Arc<forge_core::keyring::Keyring>>,
+    )>,
 ) -> Result<([u8; 32], Got)> {
     let hash = hex::encode(h);
+    if let Some((conversion, keys)) = converted {
+        if let Some(s) = svc
+            .skip_before_download(repo, contract, copies, reader, conversion, keys.as_deref())
+            .await
+        {
+            tracing::info!(pack = %hash, why = ?s.why, "a sealed pack this reader holds no key for; not downloaded");
+            return Ok((*h, Got::Skipped(s)));
+        }
+    }
     let got = match svc
         .fetch_best_copy_or_mirror(repo, contract, copies, roles, reader)
         .await
@@ -774,11 +803,14 @@ async fn fetch_one(
                     progress::abbrev(&got, 16)
                 );
             }
-            match svc
-                .open_artifact_of(repo, copies, m.size_bytes, sealed)
-                .await
-            {
-                Ok(b) => Ok((b, m)),
+            match svc.open_or_skip(repo, copies, m.size_bytes, sealed).await {
+                Ok(forge_core::repo::ArtifactRead::Bytes(b)) => Ok((b, m)),
+                // sealed under a key this reader does not hold (a repository made public), or a
+                // header this client does not open: set aside, never fatal by itself
+                Ok(forge_core::repo::ArtifactRead::Skipped(s)) => {
+                    tracing::info!(pack = %hash, why = ?s.why, "a sealed pack this reader cannot open; continuing without it");
+                    return Ok((*h, Got::Skipped(s)));
+                }
                 Err(forge_core::Error::User(u)) if u.code == codes::LATE_CONTENT => {
                     tracing::info!(pack = %hash, "{u}; continuing without it");
                     return Ok((*h, Got::Hidden(*u)));
@@ -909,6 +941,10 @@ enum Got {
     /// Hidden by the late-content rule (E510), with the reason. Normally no ref needs it; if
     /// one does, the fetch fails with [`hidden_packs_needed`].
     Hidden(UserError),
+    /// Sealed under a key this reader does not hold, or in a format it does not open
+    /// (`private-repos.md` §3.2, §18.2). Normally no ref needs it; if one does, the fetch fails
+    /// with that pack's E307.
+    Skipped(forge_core::repo::Skipped),
 }
 
 /// A pack none of whose external copies could be read.
@@ -927,24 +963,32 @@ fn index_fetched(
     fetched: Vec<Got>,
     want_oids: &[String],
     options: &OptionState,
-    repo: &str,
+    repo_ref: &RepoRef,
     total: usize,
     parent: Option<&str>,
 ) -> Result<()> {
+    let display = repo_ref.display();
+    let repo = display.as_str();
     let mut downloaded = Vec::new();
     let mut unreadable = Vec::new();
     let mut hidden = Vec::new();
+    let mut skipped = Vec::new();
     for got in fetched {
         match got {
             Got::Bytes(b) => downloaded.push(b),
             Got::Unreadable(u) => unreadable.push(u),
             Got::Hidden(u) => hidden.push(u),
+            Got::Skipped(s) => skipped.push(s),
         }
     }
-    let set_aside = !unreadable.is_empty() || !hidden.is_empty();
+    let set_aside = !unreadable.is_empty() || !hidden.is_empty() || !skipped.is_empty();
     // A gap with unreadable packs is E503 (restoring a copy may fix it); with only hidden
-    // ones it is E510: the history needs content the late-content rule withholds.
+    // ones it is E510: the history needs content the late-content rule withholds; with only
+    // skipped ones, E307: it needs a key this reader does not hold.
     let incomplete = || -> anyhow::Error {
+        if unreadable.is_empty() && hidden.is_empty() {
+            return skipped_packs_needed(repo_ref, options.cloning, &skipped).into();
+        }
         if unreadable.is_empty() {
             return hidden_packs_needed(repo, options.cloning, &hidden).into();
         }
@@ -1041,6 +1085,31 @@ fn hidden_packs_needed(repo: &str, cloning: bool, hidden: &[UserError]) -> UserE
         "a maintainer can move the ref back to history every member can read; `dg repo keys status {repo}` shows the epochs"
     ))
     .note("the content is hidden from every reader, not deleted; no other copy would open it")
+}
+
+/// E307: the wanted history needs objects only `skipped` packs hold, sealed under keys this
+/// reader does not hold (a repository made public, `private-repos.md` §18.2) or in a format it
+/// does not open.
+fn skipped_packs_needed(
+    repo: &RepoRef,
+    cloning: bool,
+    skipped: &[forge_core::repo::Skipped],
+) -> UserError {
+    let what = if cloning { "clone" } else { "fetch" };
+    let Some(first) = skipped.first().map(|s| s.error(repo)) else {
+        return UserError::new(codes::NOT_A_KEY_HOLDER, format!("{what} incomplete"));
+    };
+    let n = skipped.len();
+    UserError::new(
+        codes::NOT_A_KEY_HOLDER,
+        format!("{what} incomplete: the history you asked for needs packs your keys don't open"),
+    )
+    .cause(first.to_string())
+    .fix(first.fix.first().cloned().unwrap_or_default())
+    .note(format!(
+        "{n} {} left out; every other pack was read",
+        if n == 1 { "pack was" } else { "packs were" }
+    ))
 }
 
 /// E503: the wanted history needs objects from `unreadable` packs (of `total`), which a clone
@@ -3842,6 +3911,52 @@ mod tests {
         assert!(!blames_set_aside_packs(true, &other));
         // Nothing set aside: never blamed on packs.
         assert!(!blames_set_aside_packs(false, &missing));
+    }
+
+    /// A repository made public (private-repos.md §18.2): a pack its keys do not open is left
+    /// out, and only a history that needs it fails, with E307 naming the pack.
+    #[test]
+    fn a_needed_pack_this_reader_cannot_open_is_e307() {
+        use forge_core::repo::{SkipReason, Skipped};
+        let repo = forge_core::scope::RepoRef {
+            forge: forge_core::network::ForgeIds::test_forge(),
+            repo_id: "R".into(),
+            owner_id: "owner".into(),
+            name: "repo".into(),
+            visibility: forge_core::rules::v2::Visibility::Public,
+        };
+        let skipped = [
+            Skipped {
+                pack: [0xab; 32],
+                why: SkipReason::NoKey { epoch: 0 },
+            },
+            Skipped {
+                pack: [0xcd; 32],
+                why: SkipReason::OtherFormat { version: 3 },
+            },
+        ];
+        let u = skipped_packs_needed(&repo, true, &skipped);
+        assert_eq!(u.code, "E307");
+        assert_eq!(
+            u.message,
+            "clone incomplete: the history you asked for needs packs your keys don't open"
+        );
+        let cause = u.cause.clone().unwrap();
+        assert!(
+            cause.contains("pack abababababab of owner/repo is members-only"),
+            "{cause}"
+        );
+        assert_eq!(
+            u.note.as_deref(),
+            Some("2 packs were left out; every other pack was read")
+        );
+        let later = skipped[1].error(&repo);
+        assert!(
+            later
+                .message
+                .contains("can't be opened by this version of Forge"),
+            "{later}"
+        );
     }
 
     #[test]

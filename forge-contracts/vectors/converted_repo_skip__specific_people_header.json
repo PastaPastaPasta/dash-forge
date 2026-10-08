@@ -1,0 +1,18 @@
+{
+  "name": "specific_people_header",
+  "description": "a DFPK version 0x02 header (specific people): another format, skipped.",
+  "case": "converted_repo_skip",
+  "rules": "v2",
+  "input": {
+    "head": "4446504b020e000000000000000000000000000000000000000000000000000000000000",
+    "held": [
+      0
+    ]
+  },
+  "expected": {
+    "skip": {
+      "reason": "otherFormat",
+      "version": 2
+    }
+  }
+}

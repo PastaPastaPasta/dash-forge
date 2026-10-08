@@ -1,0 +1,18 @@
+{
+  "name": "sealed_other_epoch_held",
+  "description": "a header under epoch 1 when only epoch 0 is held: skipped.",
+  "case": "converted_repo_skip",
+  "rules": "v2",
+  "input": {
+    "head": "4446504b010a0000000000010000000000000064f0e1d2c3b4a5968778695a4b3c2d1e0f",
+    "held": [
+      0
+    ]
+  },
+  "expected": {
+    "skip": {
+      "reason": "noKey",
+      "epoch": 1
+    }
+  }
+}
