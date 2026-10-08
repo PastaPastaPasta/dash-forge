@@ -18,7 +18,7 @@
  * {@link EnvironmentsRemoval} is the member-removal hook: what a removed member could read.
  */
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { flushSync } from 'react-dom'
 import Link from 'next/link'
 import { AlertTriangle, ChevronLeft, Eye, EyeOff, KeyRound, Lock, Pencil, Plus, Users } from 'lucide-react'
@@ -86,8 +86,10 @@ function Environments({ home, addr }: { home: RepoHome; addr: RepoAddress }): JS
   // Only a maintainer whose tab holds their encryption key changes environments here (the saver
   // checks the role again before sealing): anyone else is refused before anything is signed.
   const canWrite = maintainer && !locked && state.data?.encryption === 'open' && writer !== null
-  const ctx: EnvChangeContext | null =
-    canWrite && book !== null && viewer !== null && writer !== null ? { book, people, owner: home.repo.ownerId, viewer, saver: writer.saver, io: writer.io } : null
+  const ctx = useMemo<EnvChangeContext | null>(
+    () => (canWrite && book !== null && viewer !== null && writer !== null ? { book, people, owner: home.repo.ownerId, viewer, saver: writer.saver, io: writer.io } : null),
+    [canWrite, book, people, home.repo.ownerId, viewer, writer],
+  )
   const actions: EnvActions | null = ctx === null ? null : { start: setChange }
   return (
     <div className="max-w-3xl space-y-5" data-testid="environments">
@@ -109,7 +111,11 @@ function Environments({ home, addr }: { home: RepoHome; addr: RepoAddress }): JS
           </div>
         ) : (
           <p className="mt-1 text-dense text-anvil-600 dark:text-anvil-300" data-testid="env-edit-hint">
-            {maintainer ? 'Unlock this tab to change them here, or use dg: ' : 'Only maintainers can change environments, here or with dg: '}
+            {!maintainer
+              ? 'Only maintainers can change environments, here or with dg: '
+              : state.data?.encryption === 'none'
+                ? 'Add your encryption key to this browser (Settings → Members-only and private content) to change them here, or use dg: '
+                : 'Unlock this tab to change them here, or use dg: '}
             <code className="font-mono text-[12px]">dg env set NAME --env production</code>
           </p>
         )}
@@ -315,7 +321,7 @@ function OldFormatNote({ env, old, actions }: { env: string; old: NonNullable<En
         </p>
       ) : null}
       <p className="pl-6">
-        {actions !== null ? (
+        {actions !== null && !latest && old.unmarked.length === 0 ? null : actions !== null ? (
           <Button size="sm" variant="outline" onClick={() => actions.start(latest ? { kind: 'again', env } : { kind: 'mark', env })} data-testid={latest ? 'env-old-format-resave' : 'env-mark-changed'}>
             {latest ? 'Save it again' : 'Mark changed'}
           </Button>

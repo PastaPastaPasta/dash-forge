@@ -215,29 +215,64 @@ function errText(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
 }
 
-/**
- * Run `change` (the membership write, `doChange`) with its environment saves around it, as
- * `plan` showed them. `doChange` throwing stops everything after the first saves.
- */
-export async function runMemberChange(io: MemberEnvIO, saver: EnvSaver, plan: MemberEnvPlan, owner: string, doChange: () => Promise<void>): Promise<MemberChangeOutcome> {
-  const first = await savePins(io, saver, plan.first)
-  await doChange()
-  const removal = await savePins(io, saver, plan.removal)
-  const waitFor = [...first.hashes, ...removal.hashes]
-  const saves = [...first.outcomes, ...removal.outcomes]
-  // nothing planned and nothing saved just before: nothing to do
-  if (plan.regroup.length === 0 && plan.notUpdated.length === 0 && waitFor.length === 0) return { saves, notUpdated: [], gone: [] }
+/** The change itself failed after the first saves were made: `saves` says what they did. */
+export class MemberChangeFailed extends Error {
+  constructor(
+    readonly cause: unknown,
+    readonly saves: readonly SaveOutcome[],
+  ) {
+    super(errText(cause))
+    this.name = 'MemberChangeFailed'
+  }
+}
+
+/** Read until `ready` holds for a read (or the attempts run out): the last read, or null when none succeeded. */
+async function readUntil(io: MemberEnvIO, ready: (b: EnvBook) => boolean): Promise<EnvBook | null> {
   let book: EnvBook | null = null
   for (let attempt = 0; attempt < VISIBLE_ATTEMPTS; attempt++) {
     try {
       const b = await io.read()
       book = b
-      if (waitFor.every((h) => b.manifests.some((m) => m.packHash === h))) break
+      if (ready(b)) break
     } catch {
       // read again
     }
     await sleep(VISIBLE_DELAY_MS)
   }
+  return book
+}
+
+/**
+ * Run `change` (the membership write, `doChange`) with its environment saves around it, as
+ * `plan` showed them. `precheck` runs before anything is saved (what would refuse the change
+ * without signing). `doChange` throwing stops everything after the first saves
+ * ({@link MemberChangeFailed} carries what they did).
+ */
+export async function runMemberChange(
+  io: MemberEnvIO,
+  saver: EnvSaver,
+  plan: MemberEnvPlan,
+  owner: string,
+  doChange: () => Promise<void>,
+  precheck: () => Promise<void> = async () => undefined,
+): Promise<MemberChangeOutcome> {
+  await precheck()
+  const first = await savePins(io, saver, plan.first)
+  try {
+    await doChange()
+  } catch (e) {
+    if (first.outcomes.length === 0) throw e
+    throw new MemberChangeFailed(e, first.outcomes)
+  }
+  // A removed maintainer's snapshots stop counting only once a read no longer lists them: a
+  // node a block behind would still predict the old heads and every save would be skipped.
+  if (plan.removal.length > 0) await readUntil(io, (b) => !b.maintainers.has(plan.change.member))
+  const removal = await savePins(io, saver, plan.removal)
+  const waitFor = [...first.hashes, ...removal.hashes]
+  const saves = [...first.outcomes, ...removal.outcomes]
+  // nothing planned and nothing saved just before: nothing to do
+  if (plan.regroup.length === 0 && plan.notUpdated.length === 0 && waitFor.length === 0) return { saves, notUpdated: [], gone: [] }
+  const book = await readUntil(io, (b) => waitFor.every((h) => b.manifests.some((m) => m.packHash === h)))
   if (book === null) return { saves: [...saves, { kind: 'unread', reason: "couldn't read the environments to save them again" }], notUpdated: [], gone: [] }
   const fresh = book
   let people: PeopleKeys
@@ -250,7 +285,9 @@ export async function runMemberChange(io: MemberEnvIO, saver: EnvSaver, plan: Me
   const regroup = planRegroup(fresh, { ...people, members: [...plan.after] }, saver.me, plan.after, plan.leaves ? plan.change.member : null)
   const done = await savePins(io, saver, regroup.pins)
   const gone: { who: string; exposure: Exposure }[] = []
-  if (plan.change.kind === 'change') {
+  // what people who lose access but stay members could read (a demotion's, or one role of
+  // several removed); someone who leaves gets the removal's own checklist
+  if (plan.change.kind !== 'grant' && !plan.leaves) {
     for (const p of regroup.pins) {
       for (const who of p.gone) {
         for (const exposure of removalExposures(fresh, who, false).filter((e) => e.env === p.env)) gone.push({ who, exposure })

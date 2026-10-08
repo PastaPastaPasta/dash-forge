@@ -59,7 +59,7 @@ export function sdkEnvSaver(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, network
       withEncryptionKeys(network, me, async (keys) => {
         const want = slots[0] === undefined ? '' : bytesToHex(slots[0].publicKey)
         const sender = keys.find((k) => bytesToHex(secp.getPublicKey(k.secret, true)) === want)
-        if (sender === undefined) throw new VaultLockedError("this browser does not hold the encryption key the writer's slot names")
+        if (sender === undefined) throw new VaultLockedError('this browser no longer holds the encryption key it was about to save with; unlock it again, or add it under Settings → Members-only and private content')
         return sealLetterSnapshot(privateId(repo.repoId), sender.secret, sender.keyId, privateId(me), slots, snapshot)
       }),
     store: async (sealed, supersedes) => {

@@ -22,7 +22,7 @@ import { planMemberChange, runMemberChange, type MemberChange, type MemberEnvIO 
 import { notUpdatedLine, outcomeLine, pinLine, planHeadline } from './plan-view'
 import { membersAfter } from './regroup'
 import { resolvePeople } from './view'
-import { EnvSaveError, MAX_SEALED, baseOf, newEnvId, prepareSave, recipientsOf, storeSave, type EnvSaver, type PersonKey } from './write'
+import { EnvSaveError, MAX_SEALED, baseOf, draftSnapshot, newEnvId, prepareSave, recipientsOf, storeSave, type EnvSaver, type PersonKey } from './write'
 
 const repoIdBytes = new Uint8Array(32).fill(0x11)
 const secret = (b: number) => new Uint8Array(32).fill(b)
@@ -311,6 +311,21 @@ describe('.env text', () => {
       expect(String(e)).not.toContain('secret-value')
     }
     expect(() => parseDotenv('A="open\n')).toThrow('a double-quoted value is not closed')
+    expect(parseDotenv('\uFEFFA=1\n').get('A')).toBe('1')
+  })
+})
+
+describe('the web writes what dg writes', () => {
+  it('makes the env_snapshot__v2_* vectors\' plaintext from a draft', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { snapshotFromVector } = await import('./testing')
+    for (const name of ['v2_maintainers', 'v2_writers', 'v2_members', 'v2_group_also', 'v2_people']) {
+      const vec = JSON.parse(readFileSync(new URL(`../../../forge-contracts/vectors/env_snapshot__${name}.json`, import.meta.url), 'utf8'))
+      const want = snapshotFromVector(vec.input.snapshot)
+      const draft = { env: want.env, id: want.id as string, audience: want.audience, vars: want.vars, supersedes: [], markedChanged: want.markedChanged, people: new Set(want.to) }
+      const got = draftSnapshot(draft, { to: want.to, toKeys: want.toKeys, slots: [], skipped: [] }, want.generatedAt)
+      expect(Buffer.from(encodeSnapshot(got)).toString('hex'), name).toBe(Buffer.from(encodeSnapshot(want)).toString('hex'))
+    }
   })
 })
 

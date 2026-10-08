@@ -13,7 +13,7 @@ import { Fingerprint, HardDrive, ShieldPlus, UserCog } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import type { RepoRef } from '@/lib/repo'
 import type { PrivateSession } from '@/lib/repo/private-session'
-import { ConsentMissingError, changeMemberRole, grantMember, invalidateMembers, memberDocOf, readMembershipsCached, repoContractIds, revokeMember } from '@/lib/repo'
+import { ConsentMissingError, changeMemberRole, findConsent, grantMember, invalidateMembers, memberDocOf, readMembershipsCached, repoContractIds, revokeMember } from '@/lib/repo'
 import { addMemberCost, planRotation, removalCost, removalEffect, roleChangeCost } from '@/lib/repo/private-members'
 import { usePrivateWrite } from '@/hooks/use-private-write'
 import { ConsentCheck, Invitations, mayAdd, useInviteAccepted } from '@/components/repo/invite-banner'
@@ -164,6 +164,9 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
         } else {
           await revokeMember(sdk, signer, repo, action.member, action.role, intent, ops, planned)
         }
+      }, async () => {
+        // what would refuse an add before signing, checked before any environment is saved first
+        if (action.kind !== 'revoke' && action.member !== repo.ownerId && (await findConsent(sdk, repo, action.member)) === null) consentMissing(new ConsentMissingError(action.member))
       })
     } catch (e) {
       if (!awaitingConsent) throw e

@@ -199,7 +199,8 @@ const UNQUOTE: Readonly<Record<string, string>> = { n: '\n', r: '\r', t: '\t', '
 export function parseDotenv(text: string): Map<string, string> {
   const out = new Map<string, string>()
   // Rust `str::lines`: split on \n, drop one trailing \r per line, no final empty line
-  const lines = text.split('\n').map((l) => (l.endsWith('\r') ? l.slice(0, -1) : l))
+  // a leading byte-order mark is not part of the first name (forge-core strips it too)
+  const lines = (text.startsWith('\uFEFF') ? text.slice(1) : text).split('\n').map((l) => (l.endsWith('\r') ? l.slice(0, -1) : l))
   if (lines.length > 0 && lines[lines.length - 1] === '' && text.endsWith('\n')) lines.pop()
   let i = 0
   while (i < lines.length) {

@@ -16,7 +16,7 @@
  * it. Nothing typed or imported is stored outside this page's memory.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { Eye, EyeOff, FileUp, Plus, Trash2, X } from 'lucide-react'
 
 import { ACCESS_SENTENCE, MAX_RECIPIENTS, audienceLabel, validEnvName, validVarName, type Audience, type EnvVar, type Group, type VarType } from '@/lib/env'
@@ -27,6 +27,7 @@ import { EnvSaveError, prepareSave, storeSave, type Prepared } from '@/lib/env/w
 import type { MemberEnvIO } from '@/lib/env/member-change'
 import type { EnvSaver } from '@/lib/env/write'
 import { decodeIdentifier } from '@/lib/auth'
+import { base58Encode } from '@/lib/auth/base58'
 import { previewCredits } from '@/lib/sdk'
 import { onRadioGroupKeyDown, radioTabIndex } from '@/components/ui/radio-group'
 import { ConfirmDialog } from '@/components/confirm-dialog'
@@ -83,8 +84,8 @@ export function tooManyLine(a: Audience, n: number): string {
 function parseIdentity(text: string): { readonly id: string } | { readonly error: string } {
   const t = text.trim().replace(/^@/, '')
   try {
-    decodeIdentifier(t)
-    return { id: t }
+    // the canonical form: an audience lists ids exactly as the artifact writes them
+    return { id: base58Encode(decodeIdentifier(t)) }
   } catch {
     return { error: 'Not an identity id (base58, 32 bytes).' }
   }
@@ -311,10 +312,19 @@ function ValueField({ row, onChange, focused }: { row: Row; onChange: (value: st
   }
   return (
     <span className="flex min-w-0 flex-1 items-center gap-1">
+      {/* Not a password field: a password manager would offer to keep the value, or fill a saved
+          password in. Masked with CSS instead. */}
       <Input
         aria-label={`Value of ${row.name === '' ? 'the new entry' : row.name}`}
-        type={shown ? 'text' : 'password'}
+        type="text"
         autoComplete="off"
+        autoCorrect="off"
+        autoCapitalize="off"
+        data-1p-ignore=""
+        data-lpignore="true"
+        data-bwignore=""
+        data-form-type="other"
+        style={shown ? undefined : ({ WebkitTextSecurity: 'disc' } as CSSProperties)}
         spellCheck={false}
         placeholder={row.saved ? (focused ? 'Enter the new value' : 'Unchanged') : 'Value'}
         value={row.value ?? ''}
@@ -470,7 +480,9 @@ export function EnvChangeDialog({ mode, ctx, onClose, onSaved }: { mode: EnvChan
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
-  }, [mode, ctx.book])
+    // only a new change resets it: a re-read of the page must not throw away a form or a confirmation
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode])
   if (mode === null) return null
   const close = (): void => {
     setPlan(null)
@@ -509,7 +521,8 @@ function EnvForm({
     } catch {
       return null
     }
-  }, [mode, ctx.book])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode])
   const [name, setName] = useState(env0)
   const [choice, setChoice] = useState<AudienceChoice>(current === null ? NO_CHOICE : choiceOf(current.audience, ctx.viewer))
   const [rows, setRowsState] = useState<Row[]>(() => (current === null ? [] : rowsOf(current.vars, mode.kind === 'values' ? (mode.focus ?? []) : [])))
@@ -618,7 +631,9 @@ function SaveConfirm({ plan, ctx, onClose, onSaved }: { plan: SavePlan; ctx: Env
     return () => {
       live = false
     }
-  }, [plan, ctx])
+    // the plan and who saves it decide the seal; a re-read book or people list does not
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plan, ctx.saver, ctx.io, ctx.owner])
   const notes = prepared === null ? [] : saveNotes(ctx.book, plan, prepared.skipped)
   return (
     <ConfirmDialog

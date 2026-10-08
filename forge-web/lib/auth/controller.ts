@@ -121,7 +121,7 @@ function watched(k: WasmKey): WatchedKey {
 
 /** The notice when a renewal could not carry the encryption key over. */
 const ENCRYPTION_KEY_DROPPED =
-  'Your encryption key for private repos was sealed with the previous key, which was locked when you renewed it, so it was not carried over. Add it again in Settings → Members-only and private content.'
+  'Your encryption key for members-only and private content was encrypted with the previous key, which was locked when you renewed it, so it was not carried over. Add it again in Settings → Members-only and private content.'
 
 /** The public (key-free) session snapshot. */
 export interface AuthSession {
@@ -811,7 +811,7 @@ export class AuthController {
     const outcome = committed ?? (await this.commitKey(secret, protection))
     this.noteDropped(
       outcome,
-      'Your storage settings were sealed with the previous key, which was locked when you renewed it, so they could not be carried over. Add your storage again in Settings → Storage.',
+      'Your storage settings were encrypted with the previous key, which was locked when you renewed it, so they could not be carried over. Add your storage again in Settings → Storage.',
     )
     if (outcome.readBackFailed) {
       this.setState({ notice: "Signed in, but this browser may not keep the key after it closes (its storage did not read back). Keep your identity file or recovery phrase handy." })
@@ -1293,7 +1293,7 @@ export class AuthController {
       case 'adopted':
         this.noteDropped(
           r.outcome,
-          'Your storage settings were sealed with the key a renewal replaced, so they could not be carried over. Add your storage again in Settings → Storage.',
+          'Your storage settings were encrypted with the key a renewal replaced, so they could not be carried over. Add your storage again in Settings → Storage.',
         )
         return { secret: r.secret, status: r.status }
       case 'locked':

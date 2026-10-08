@@ -11,7 +11,7 @@
  * refused before anything is signed: the change would leave them saved for the wrong people.
  */
 
-import { useState, type ReactNode } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { AlertTriangle } from 'lucide-react'
 
 import type { RepoHome } from '@/lib/view'
@@ -21,7 +21,7 @@ import { useAsync } from '@/hooks/use-async'
 import { useAuth } from '@/contexts/auth-context'
 import { useDpnsName } from '@/hooks/use-dpns-name'
 import { useEnvWriter, useEnvironments, useRepoPeople } from '@/hooks/use-environments'
-import { planMemberChange, runMemberChange, type MemberChange, type MemberChangeOutcome, type MemberEnvPlan } from '@/lib/env/member-change'
+import { MemberChangeFailed, planMemberChange, removalExposures, runMemberChange, type MemberChange, type MemberChangeOutcome, type MemberEnvPlan } from '@/lib/env/member-change'
 import { notUpdatedLine, outcomeLine, pinLine, planHeadline } from '@/lib/env/plan-view'
 import { exposureLine, unreadableLine } from '@/lib/env/view'
 import type { Exposure } from '@/lib/env'
@@ -90,8 +90,8 @@ export interface MemberEnvFlow {
   readonly cost: (base: CostPreview) => CostPreview | 'pending'
   /** "Save and add" when environments are saved, else `fallback`. */
   readonly confirmLabel: (fallback: string, verb: 'add' | 'change' | 'remove') => string
-  /** Run `doChange` with the planned saves around it. */
-  readonly run: (doChange: () => Promise<void>) => Promise<void>
+  /** Run `doChange` with the planned saves around it; `precheck` first, before anything is saved. */
+  readonly run: (doChange: () => Promise<void>, precheck?: () => Promise<void>) => Promise<void>
   readonly outcome: MemberEnvOutcome | null
   readonly dismiss: () => void
 }
@@ -123,7 +123,13 @@ export function useMemberEnvFlow(home: RepoHome, change: MemberChange | null, he
       blocked = null
     } else if (hasEnvironments && !canOpen) {
       blocked = (
-        <BlockedNote text="This repo has environments, and they're saved again for the people they cover when members change. Unlock your encryption key in this tab to make this change." />
+        <BlockedNote
+          text={
+            envs.state.data?.encryption === 'none'
+              ? "This repo has environments, and they're saved again for the people they cover when members change. Add your encryption key to this browser (Settings → Members-only and private content) to make this change."
+              : "This repo has environments, and they're saved again for the people they cover when members change. Unlock your encryption key in this tab to make this change."
+          }
+        />
       )
     } else if (planned.error !== null) {
       blocked = <BlockedNote text={`Couldn't plan the environments to save again: ${planned.error}`} />
@@ -140,14 +146,22 @@ export function useMemberEnvFlow(home: RepoHome, change: MemberChange | null, he
       return previewCredits(base.credits + plan.credits)
     },
     confirmLabel: (fallback, verb) => (plan !== null && plan.first.length + plan.removal.length + plan.regroup.length > 0 ? `Save and ${verb}` : fallback),
-    run: async (doChange) => {
+    run: async (doChange, precheck) => {
       if (change === null || !hasEnvironments || plan === null || writer === null) {
         await doChange()
         return
       }
-      const done = await runMemberChange(writer.io, writer.saver, plan, home.repo.ownerId, doChange)
-      setOutcome({ ...done, member: change.member, exposures: plan.exposures, unreadable: plan.unreadable })
-      envs.state.reload()
+      try {
+        const done = await runMemberChange(writer.io, writer.saver, plan, home.repo.ownerId, doChange, precheck)
+        setOutcome({ ...done, member: change.member, exposures: plan.exposures, unreadable: plan.unreadable })
+      } catch (e) {
+        if (!(e instanceof MemberChangeFailed)) throw e
+        // the change failed after environments were saved first: say so, then the change's own error
+        setOutcome({ saves: e.saves, notUpdated: [], gone: [], member: change.member, exposures: [], unreadable: 0 })
+        throw e.cause
+      } finally {
+        envs.state.reload()
+      }
     },
     outcome,
     dismiss: () => setOutcome(null),
@@ -221,11 +235,16 @@ export function MemberEnvOutcomeView({ home, flow }: { home: RepoHome; flow: Mem
   const writer = useEnvWriter(home)
   const people = useRepoPeople(home, flow.outcome !== null)
   const [editing, setEditing] = useState<EnvChangeMode | null>(null)
-  const [changed, setChanged] = useState<ReadonlySet<string>>(new Set())
   const outcome = flow.outcome
-  if (outcome === null) return null
   const book = envs.state.data?.book ?? null
-  const ctx = book !== null && writer !== null && identity !== null ? { book, people, owner: home.repo.ownerId, viewer: identity, saver: writer.saver, io: writer.io } : null
+  const ctx = useMemo(
+    () => (book !== null && writer !== null && identity !== null ? { book, people, owner: home.repo.ownerId, viewer: identity, saver: writer.saver, io: writer.io } : null),
+    [book, writer, identity, people, home.repo.ownerId],
+  )
+  if (outcome === null) return null
+  // a checklist item is done once none of its values is still one they could read
+  const stillReadable = (who: string, e: Exposure): boolean =>
+    book === null || removalExposures(book, who, false).some((x) => x.env === e.env && x.names.some((n) => e.names.includes(n)))
   return (
     <WithNames
       ids={[outcome.member, ...idsOf(null, outcome)]}
@@ -253,7 +272,7 @@ export function MemberEnvOutcomeView({ home, flow }: { home: RepoHome; flow: Mem
               {[...outcome.exposures.map((e) => ({ who: outcome.member, exposure: e })), ...outcome.gone].map(({ who, exposure }) => (
                 <div key={`${who}:${exposure.env}`} className="flex flex-wrap items-center gap-2" data-testid="env-checklist-item">
                   <span className="min-w-0 flex-1 break-words">{exposureLine(name(who), exposure)}</span>
-                  {changed.has(exposure.env) ? (
+                  {!stillReadable(who, exposure) ? (
                     <span className="text-[12px] text-verify-700 dark:text-verify-400">Saved with new values</span>
                   ) : ctx !== null ? (
                     <Button size="sm" variant="outline" onClick={() => setEditing({ kind: 'values', env: exposure.env, focus: exposure.names })} data-testid="env-checklist-mark">
@@ -273,10 +292,7 @@ export function MemberEnvOutcomeView({ home, flow }: { home: RepoHome; flow: Mem
               mode={editing}
               ctx={ctx}
               onClose={() => setEditing(null)}
-              onSaved={() => {
-                if (editing !== null && editing.kind === 'values') setChanged((s) => new Set([...s, editing.env]))
-                envs.state.reload()
-              }}
+              onSaved={() => envs.state.reload()}
             />
           ) : null}
         </div>
