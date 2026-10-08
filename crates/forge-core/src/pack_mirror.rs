@@ -447,7 +447,10 @@ mod tests {
     #[test]
     fn a_mirror_carries_vis_where_the_contract_requires_it() {
         let uris = vec!["https://m.example.com/p.pack".to_string()];
-        for (args, vis) in [(&["--on", "mainnet_mirror_public"][..], true), (&[][..], false)] {
+        for (args, vis) in [
+            (&["--on", "mainnet_mirror_public"][..], true),
+            (&[][..], false),
+        ] {
             let c = built_core(args);
             let core = LoadedContract::for_tests(c.clone());
             let props = mirror_props(&core, &repo(), HASH, 1, &uris).expect("props");
