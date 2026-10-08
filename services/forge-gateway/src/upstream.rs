@@ -212,6 +212,21 @@ impl PlatformUpstream {
         })
     }
 
+    /// How many of `r`'s open issues are members-only (sealed for members; a specific-people
+    /// letter is not one): 0 for a repository without a members key, else read from its issues.
+    async fn members_only_open(&self, collab: &Collab<'_>, r: &RepoRef) -> Result<u64> {
+        if !forge_core::keyring::has_members_key(&self.client, r).await? {
+            return Ok(0);
+        }
+        let sealed = collab.issues_with_state_read(r).await?.members_only;
+        Ok(sealed
+            .iter()
+            .filter(|x| {
+                x.state.open && x.placeholder.audience == forge_core::rules::v2::Audience::Members
+            })
+            .count() as u64)
+    }
+
     /// Whether `e` proves the thing read absent. A missing forge contract counts only once a
     /// proved read of forge-core confirms it: one node's `contract not found` proves nothing.
     async fn proves_absent(&self, e: &CoreError) -> bool {
@@ -421,10 +436,16 @@ impl Upstream for PlatformUpstream {
         let collab = Collab::reader(&self.client);
         let open = collab.repo_state_counts(&r).await?.issues_open;
         // The members-only share is read from the issues themselves, and only for a repository
-        // that has members-only content turned on: any other repo's badge costs what it did.
-        let members_only = if open > 0 && forge_core::keyring::has_members_key(&self.client, &r).await? {
-            let sealed = collab.issues_with_state_read(&r).await?.members_only;
-            sealed.iter().filter(|x| x.state.open).count() as u64
+        // that has members-only content turned on: any other repo's badge costs what it did. A
+        // read that fails leaves the proved count unlabelled rather than the badge unavailable.
+        let members_only = if open > 0 {
+            match self.members_only_open(&collab, &r).await {
+                Ok(n) => n,
+                Err(e) => {
+                    tracing::warn!(error = %format!("{e:#}"), "members-only issues not counted");
+                    0
+                }
+            }
         } else {
             0
         };
