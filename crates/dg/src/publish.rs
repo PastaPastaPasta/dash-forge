@@ -14,7 +14,12 @@
 //! checked, the repo-local git config gets `dash.storage` + `dash.replicas`, and — when the
 //! helper would otherwise resolve another network — `dash.network` and friends, so a later
 //! plain `git push` goes where this one did. Then `git push` with the identity and network
-//! this `dg` resolved (`-u` unless the branch already tracks another remote). Everything is
+//! this `dg` resolved (`-u` unless the branch already tracks another remote).
+//!
+//! A public repository turns members-only content on right after its config (DESIGN §11 Q3),
+//! unless `--no-members-only`: the owner's key and the anchor, priced in the plan. Without an
+//! encryption key the plan says it stays off and how to add one. If turning it on fails, the
+//! repository stands without it and the run says how to turn it on. Everything is
 //! safe to re-run: the create is resumable and returns the existing repository, an equal
 //! remote is left alone, and a push of an up-to-date branch writes nothing.
 
@@ -29,11 +34,12 @@ use forge_core::repo::BACKEND_URIS_V2;
 use forge_core::resolve::repo_slug;
 use forge_core::storage::policy::git_config_scoped;
 use forge_core::storage::{human_bytes, ResolvedPolicy, StoragePolicy, StorageProfiles};
-use forge_core::user_error::{codes, dash, web_url, UserError};
+use forge_core::user_error::{codes, dash, repo_link, UserError};
 
 use crate::context::Ctx;
 use crate::fmt::{cost_json, cost_line, REPO_CREATE_ESTIMATE_CREDITS};
 use crate::git::{current_branch, dash_env_signing, git, git_ok, pin_network};
+use crate::keys::enable_estimate;
 use crate::storage_wizard::shell_word;
 use crate::{CreateOptions, InitArgs, RepoCreateArgs};
 
@@ -59,6 +65,7 @@ pub async fn create(ctx: &Ctx, args: &RepoCreateArgs) -> Result<()> {
             "--remote only applies with --push (or `dg init`), which add the remote",
         ));
     }
+    check_members_flag(&args.opts)?;
     let flow = if args.push {
         Flow::CreatePush
     } else {
@@ -69,7 +76,44 @@ pub async fn create(ctx: &Ctx, args: &RepoCreateArgs) -> Result<()> {
 
 /// `dg init`: `repo create --push` for the git repository in the current directory.
 pub async fn init(ctx: &Ctx, args: &InitArgs) -> Result<()> {
+    check_members_flag(&args.opts)?;
     publish(ctx, args.name.as_deref(), &args.opts, Flow::Init).await
+}
+
+/// `--no-members-only` with `--private`: everything in a private repository is members-only.
+fn check_members_flag(opts: &CreateOptions) -> Result<()> {
+    if opts.private && opts.no_members_only {
+        return Err(crate::errors::usage(
+            "--no-members-only applies to public repositories: everything in a private one is members-only",
+        ));
+    }
+    Ok(())
+}
+
+/// Whether the create turns members-only content on (public repositories only).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MembersPlan {
+    /// A private repository: everything in it is members-only already.
+    Private,
+    /// Turned on after the config (the default).
+    On,
+    /// `--no-members-only`.
+    Skipped,
+    /// The default, but the key `dg` signs with holds no usable encryption key to share it
+    /// with. `on_identity`: the identity has one on chain (this computer just doesn't hold it).
+    NoKey { on_identity: bool },
+}
+
+impl MembersPlan {
+    /// How to get an encryption key `dg` can use: store the identity's, or add one.
+    fn key_fix(self) -> &'static str {
+        match self {
+            MembersPlan::NoKey { on_identity: false } => {
+                "your identity has no encryption key: `dg auth keys add --encryption` adds one"
+            }
+            _ => "the key dg stored holds no encryption key: `dg auth status` says how to store yours",
+        }
+    }
 }
 
 /// Which command is running.
@@ -138,6 +182,9 @@ impl Flow {
         }
         if opts.no_protect {
             words.push("--no-protect".into());
+        }
+        if opts.no_members_only {
+            words.push("--no-members-only".into());
         }
         words.join(" ")
     }
@@ -510,6 +557,8 @@ struct Plan {
     /// The visibility of the repository already on chain (a re-run): the plan says so instead
     /// of quoting a create (QW2-083).
     existing: Option<forge_core::rules::v2::Visibility>,
+    /// Whether the create turns members-only content on.
+    members: MembersPlan,
 }
 
 /// The repo name: `--name`, else (pushing) the name in an existing `dash://` remote of this
@@ -627,6 +676,7 @@ async fn plan(ctx: &Ctx, name: Option<&str>, opts: &CreateOptions, flow: Flow) -
         crate::git::check_helper_key(ctx, &owner)?;
         ctx.helper_checked(|| true);
     }
+    let members = members_plan(ctx, &client, opts).await?;
     Ok(Plan {
         slug,
         owner,
@@ -635,7 +685,59 @@ async fn plan(ctx: &Ctx, name: Option<&str>, opts: &CreateOptions, flow: Flow) -
         size,
         default_branch,
         existing,
+        members,
     })
+}
+
+/// Whether this create turns members-only content on: by default for a public repository whose
+/// owner's identity file holds a usable encryption key (a free read of the identity's keys).
+async fn members_plan(
+    ctx: &Ctx,
+    client: &forge_core::platform::PlatformClient,
+    opts: &CreateOptions,
+) -> Result<MembersPlan> {
+    if opts.private {
+        return Ok(MembersPlan::Private);
+    }
+    if opts.no_members_only {
+        return Ok(MembersPlan::Skipped);
+    }
+    let (bridge, identity) = ctx.signer_on(client).await?;
+    let core = &ctx.target.require_v2()?.core;
+    let held = forge_core::keyring::EncryptionKeys::held(
+        &bridge,
+        &identity.public_keys(),
+        core,
+        client.network(),
+    );
+    Ok(if held.sender().is_some() {
+        MembersPlan::On
+    } else {
+        MembersPlan::NoKey {
+            on_identity: identity
+                .public_keys()
+                .iter()
+                .any(|k| k.purpose == "ENCRYPTION" && !k.disabled),
+        }
+    })
+}
+
+/// The plan's members-only line (public repositories): its cost, or why it stays off.
+fn members_line(members: MembersPlan, repo: &str, price: Option<f64>) -> Option<String> {
+    match members {
+        MembersPlan::Private => None,
+        MembersPlan::On => Some(format!(
+            "members-only content           {}   (your key; --no-members-only to skip)",
+            cost_line(enable_estimate(1), price)
+        )),
+        MembersPlan::Skipped => Some(format!(
+            "members-only content stays off: `dg repo members enable {repo}` turns it on later"
+        )),
+        MembersPlan::NoKey { .. } => Some(format!(
+            "members-only content stays off: {}; then `dg repo members enable {repo}`",
+            members.key_fix()
+        )),
+    }
 }
 
 /// Whether `url` names the repository `owner/slug` (`.git` and a trailing `/` ignored).
@@ -747,6 +849,8 @@ fn confirm_plan(
             // A re-run: say so, not "Creating … ~0.002 DASH" (QW2-083).
             let create_quote = if visibility == forge_core::rules::v2::Visibility::Private {
                 PRIVATE_CREATE_ESTIMATE_CREDITS
+            } else if plan.members == MembersPlan::On {
+                REPO_CREATE_ESTIMATE_CREDITS + enable_estimate(1)
             } else {
                 REPO_CREATE_ESTIMATE_CREDITS
             };
@@ -755,6 +859,11 @@ fn confirm_plan(
                 "  nothing to create (finishing a create an earlier run left undone is at most {})",
                 cost_line(create_quote, price)
             );
+            if visibility == forge_core::rules::v2::Visibility::Public
+                && plan.members == MembersPlan::On
+            {
+                println!("  if it was left undone, finishing it turns on members-only content");
+            }
         } else if opts.private {
             println!("Creating {who}");
             println!(
@@ -773,6 +882,13 @@ fn confirm_plan(
                 "  repo + maintainer + config     {}",
                 cost_line(REPO_CREATE_ESTIMATE_CREDITS, price)
             );
+            if let Some(line) = members_line(
+                plan.members,
+                &format!("{}/{}", plan.owner, plan.slug),
+                price,
+            ) {
+                println!("  {line}");
+            }
         }
         if plan.existing.is_none() {
             println!(
@@ -820,6 +936,7 @@ fn create_opts(plan: &Plan, opts: &CreateOptions) -> CreateRepoOpts {
             forge_core::rules::v2::Visibility::Public
         },
         protect: !opts.no_protect,
+        members_only: plan.members == MembersPlan::On,
         ..CreateRepoOpts::public(plan.slug.clone())
     }
 }
@@ -844,7 +961,7 @@ async fn publish(ctx: &Ctx, name: Option<&str>, opts: &CreateOptions, flow: Flow
     .await
     .context("creating the repository")?;
     let repo = &result.repo;
-    let url = web_url(repo.owner_id(), repo.name());
+    let url = repo_link(repo.owner_id(), repo.name(), repo.visibility);
     // The config is the last step. Only one this run signed is reported: a resumed one was
     // signed by an earlier run, whose flags this one may not share.
     let config_written = result
@@ -867,11 +984,13 @@ async fn publish(ctx: &Ctx, name: Option<&str>, opts: &CreateOptions, flow: Flow
         // (`dg repo protect list` shows what is in force).
         "protectedPatterns": if config_written { json!(create_opts.protected_patterns()) } else { Value::Null },
         "steps": steps,
+        "membersOnly": members_json(&result, plan.members),
         "cost": cost_json(result.cost_credits, price),
         "push": Value::Null,
     });
     if !ctx.json {
         print_created(&result, &url);
+        print_members(&result, plan.members);
     }
 
     let Some(local) = &plan.local else {
@@ -933,6 +1052,78 @@ pub(crate) fn steps_json(steps: &[(&str, StepOutcome)]) -> Value {
             .map(|(name, o)| ((*name).to_string(), json!(o)))
             .collect(),
     )
+}
+
+/// Whether members-only content is on after the create, for `--json`: `null` for a private
+/// repository and for a re-run that created nothing (it did not look), else `on`, `off` (with
+/// why) or `failed` (with the error; the repository stands without it).
+pub(crate) fn members_json(
+    result: &forge_core::create::CreateRepoResult,
+    members: MembersPlan,
+) -> Value {
+    use forge_core::create::MembersOnly;
+    match (&result.members_only, members) {
+        (Some(MembersOnly::On(_)), _) => json!({ "status": "on" }),
+        (Some(MembersOnly::Failed(e)), _) => json!({
+            "status": "failed",
+            "error": members_error(e, &result.repo.display()).to_json()["error"].clone(),
+        }),
+        (None, MembersPlan::Skipped) if !result.already_existed() => {
+            json!({ "status": "off", "reason": "skipped" })
+        }
+        (None, MembersPlan::NoKey { .. }) if !result.already_existed() => {
+            json!({ "status": "off", "reason": "noEncryptionKey" })
+        }
+        _ => Value::Null,
+    }
+}
+
+/// Why turning members-only content on failed, with the command that turns it on first.
+fn members_error(e: &std::sync::Arc<forge_core::Error>, repo: &str) -> UserError {
+    let mut user = forge_core::user_error::classify(
+        std::iter::successors(Some(&**e as &(dyn std::error::Error + 'static)), |e| {
+            e.source()
+        }),
+        &forge_core::user_error::ErrorContext {
+            goal: Some("your repo is created, but members-only content isn't set up yet"),
+            repo: Some(repo),
+            ..forge_core::user_error::ErrorContext::default()
+        },
+    );
+    // DESIGN rev 4.1 §4.1: finishing it is `dg repo members enable`, which completes a half
+    // setup (it reuses an owner key share that landed without its anchor).
+    user.fix.insert(0, format!("dg repo members enable {repo}"));
+    user
+}
+
+/// The warning a create prints when members-only content was not set up: the create itself
+/// succeeded (exit 0), so it is a `warning:`, not an `error:` block.
+fn members_warning(user: &UserError) -> String {
+    let block = user.render("", false);
+    block
+        .strip_prefix("error:")
+        .map_or_else(|| block.clone(), |rest| format!("warning:{rest}"))
+}
+
+/// The create's members-only line: on, or why not and how to turn it on.
+fn print_members(result: &forge_core::create::CreateRepoResult, members: MembersPlan) {
+    use forge_core::create::MembersOnly;
+    let repo = result.repo.display();
+    match &result.members_only {
+        Some(MembersOnly::On(_)) => {
+            println!("✓ members-only content on: members can post things only members can read");
+        }
+        Some(MembersOnly::Failed(e)) => {
+            eprint!("{}", members_warning(&members_error(e, &repo)));
+        }
+        None if matches!(members, MembersPlan::NoKey { .. }) && !result.already_existed() => {
+            println!(
+                "  members-only content is off: {}; then `dg repo members enable {repo}`",
+                members.key_fix()
+            );
+        }
+        None => {}
+    }
 }
 
 /// `✓ created  <web url>` (or `✓ exists`), and any step an earlier run left unfinished.
@@ -1306,6 +1497,7 @@ mod tests {
             private: false,
             allow_private_uri: false,
             no_protect: false,
+            no_members_only: false,
         };
         let missing = PathBuf::from("/nonexistent/dash-forge-test/identity.json");
         for flow in [Flow::Create, Flow::CreatePush, Flow::Init] {
@@ -1517,8 +1709,24 @@ mod tests {
             allow_private_uri: true,
             private: true,
             no_protect: true,
+            no_members_only: false,
         };
         for flow in [Flow::Create, Flow::CreatePush, Flow::Init] {
+            // a public create that skips members-only content repeats the flag
+            let public = CreateOptions {
+                private: false,
+                no_members_only: true,
+                ..opts.clone()
+            };
+            let line = flow.equivalent("proj", "platform", &public);
+            let cli = crate::Cli::try_parse_from(shlex_split(&line)).unwrap();
+            let got = match cli.command {
+                crate::Command::Repo(crate::RepoCommand::Create(a)) => a.opts,
+                crate::Command::Init(a) => a.opts,
+                other => panic!("{other:?}"),
+            };
+            assert!(got.no_members_only && !got.private, "{line}");
+            assert!(check_members_flag(&got).is_ok());
             let line = flow.equivalent("proj", "r2,platform", &opts);
             let words = shlex_split(&line);
             let cli = crate::Cli::try_parse_from(&words).unwrap();
@@ -1538,6 +1746,78 @@ mod tests {
             assert!(got.no_protect, "{line}");
             assert_eq!(pushes, flow.pushes(), "{line}");
         }
+    }
+
+    /// `--no-members-only` is for public repositories: with `--private` it is refused before any
+    /// work (a private repository is members-only throughout).
+    #[test]
+    fn no_members_only_with_private_is_a_usage_error() {
+        let opts = CreateOptions {
+            storage: None,
+            replicas: None,
+            description: String::new(),
+            display_name: String::new(),
+            default_branch: None,
+            remote: None,
+            allow_private_uri: false,
+            private: true,
+            no_protect: false,
+            no_members_only: true,
+        };
+        let err = check_members_flag(&opts).unwrap_err();
+        let u = forge_core::user_error::classify(
+            err.chain(),
+            &forge_core::user_error::ErrorContext::default(),
+        );
+        assert_eq!(u.code, "E201", "{err:#}");
+        assert!(check_members_flag(&CreateOptions {
+            no_members_only: false,
+            ..opts
+        })
+        .is_ok());
+    }
+
+    /// The plan's members-only line: its price when it is turned on, else why not and how.
+    #[test]
+    fn the_plan_says_whether_members_only_content_is_turned_on() {
+        assert_eq!(members_line(MembersPlan::Private, "o/r", None), None);
+        let on = members_line(MembersPlan::On, "o/r", None).unwrap();
+        assert!(
+            on.contains(&crate::fmt::cost_line(enable_estimate(1), None)),
+            "{on}"
+        );
+        assert!(on.contains("--no-members-only"), "{on}");
+        let skipped = members_line(MembersPlan::Skipped, "o/r", None).unwrap();
+        assert!(
+            skipped.contains("stays off") && skipped.contains("dg repo members enable o/r"),
+            "{skipped}"
+        );
+        let none = members_line(MembersPlan::NoKey { on_identity: false }, "o/r", None).unwrap();
+        assert!(
+            none.contains("dg auth keys add --encryption")
+                && none.contains("dg repo members enable o/r"),
+            "{none}"
+        );
+        // the identity has one and this computer doesn't hold it: never "add one"
+        let held = members_line(MembersPlan::NoKey { on_identity: true }, "o/r", None).unwrap();
+        assert!(
+            held.contains("dg auth status") && !held.contains("keys add"),
+            "{held}"
+        );
+    }
+
+    /// A failed members-only setup is a warning naming the repo's state and the one fix.
+    #[test]
+    fn a_failed_members_only_setup_warns_with_the_fix() {
+        let e = std::sync::Arc::new(forge_core::Error::Config("test fault".into()));
+        let text = members_warning(&members_error(&e, "o/r"));
+        assert!(
+            text.starts_with(
+                "warning: your repo is created, but members-only content isn't set up yet"
+            ),
+            "{text}"
+        );
+        assert!(text.contains("fix:   dg repo members enable o/r"), "{text}");
     }
 
     /// Split a command line the way a POSIX shell does for single-quoted words.

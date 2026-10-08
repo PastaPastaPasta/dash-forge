@@ -68,6 +68,8 @@ export type EpochAlert =
   | { readonly kind: 'chainBroken'; readonly epoch: number; readonly author: PrivateId }
   /** A candidate anchor above the first gap in the epoch numbers: not an anchor (§5.3 contiguity). */
   | { readonly kind: 'epochGap'; readonly epoch: number; readonly author: PrivateId }
+  /** The owner of a repository made public published a key for this epoch that does not commit to its anchor (§18.3): ignored. */
+  | { readonly kind: 'publishedKeyMismatch'; readonly epoch: number; readonly author: PrivateId }
   | { readonly kind: 'rotationRequired'; readonly epoch: number; readonly members: readonly PrivateId[] }
 
 /** The repair check's findings for the current epoch (§5.6); ids in byte order. */
@@ -183,7 +185,7 @@ function matchesAnchor(keys: EpochKeys, anchor: Anchor): boolean {
   return anchor.commit !== null && constantTimeEqual(keys.commit, anchor.commit)
 }
 
-const KIND_ORDER = { keyMismatch: 0, chainBroken: 1, epochGap: 2, rotationRequired: 3 } as const
+const KIND_ORDER = { keyMismatch: 0, chainBroken: 1, epochGap: 2, rotationRequired: 3, publishedKeyMismatch: 4 } as const
 const EMPTY = new Uint8Array(0)
 
 function alertKey(a: EpochAlert): string {
@@ -191,7 +193,8 @@ function alertKey(a: EpochAlert): string {
   return JSON.stringify([a.kind, a.epoch, ids.map((id) => [...id])])
 }
 
-function sortAlerts(alerts: readonly EpochAlert[]): EpochAlert[] {
+/** `alerts` deduplicated and in their stable order: (epoch, kind, author). */
+export function sortAlerts(alerts: readonly EpochAlert[]): EpochAlert[] {
   const unique = new Map<string, EpochAlert>()
   for (const a of alerts) unique.set(alertKey(a), a)
   const author = (a: EpochAlert) => ('author' in a ? a.author : EMPTY)
@@ -300,34 +303,8 @@ export async function resolveEpochs(input: {
     }
   }
 
-  // §5.3: the chain walk, each epoch walked once
-  const pending = [...keys.keys()]
-  const walked = new Set<number>()
-  for (let e = pending.pop(); e !== undefined; e = pending.pop()) {
-    if (walked.has(e) || e === 0) continue
-    walked.add(e)
-    const anchor = anchors.get(e) as Anchor
-    const step = await chainStep(repoId, anchor, keys.get(e) as EpochKeys, anchors)
-    if (step.broken) alerts.push({ kind: 'chainBroken', epoch: e, author: anchor.owner })
-    const fresh = step.next !== null && !keys.has(step.next)
-    for (const l of step.links) if (!keys.has(l.epoch)) keys.set(l.epoch, l.keys)
-    if (fresh && step.next !== null) pending.push(step.next)
-  }
-
-  // §5.3 burned epochs: the flag of each readable epoch's anchor (only the anchor's counts).
-  const burned = new Set<number>()
-  for (const [e, k] of keys) {
-    const a = anchors.get(e) as Anchor
-    const opened = await openWithKey(
-      { type: 'config', ownerId: a.owner, epoch: e, id: a.id, createdAtBlockHeight: a.height, enc: a.config.enc },
-      k,
-      true,
-    )
-    if (opened.status === 'readable') {
-      opened.fields.prevEpochKey?.fill(0)
-      if (opened.fields.burned === true) burned.add(e)
-    }
-  }
+  await walkChains(repoId, anchors, keys, [...keys.keys()], alerts)
+  const burned = await burnedEpochs(anchors, keys)
 
   const unanchored = [...new Set([...configs, ...wraps].map((r) => r.epoch))]
     .filter((e) => !anchors.has(e))
@@ -362,6 +339,73 @@ export async function resolveEpochs(input: {
     members,
     burned,
   }
+}
+
+/**
+ * §5.3: the chain walk from each of `start` (epochs `keys` holds), each epoch walked once, adding
+ * every epoch it reaches to `keys` and a `chainBroken` alert where it breaks.
+ */
+async function walkChains(
+  repoId: Uint8Array,
+  anchors: ReadonlyMap<number, Anchor>,
+  keys: Map<number, EpochKeys>,
+  start: number[],
+  alerts: EpochAlert[],
+): Promise<void> {
+  const pending = [...start]
+  const walked = new Set<number>()
+  for (let e = pending.pop(); e !== undefined; e = pending.pop()) {
+    if (walked.has(e) || e === 0) continue
+    walked.add(e)
+    const anchor = anchors.get(e) as Anchor
+    const step = await chainStep(repoId, anchor, keys.get(e) as EpochKeys, anchors)
+    if (step.broken) alerts.push({ kind: 'chainBroken', epoch: e, author: anchor.owner })
+    const fresh = step.next !== null && !keys.has(step.next)
+    for (const l of step.links) if (!keys.has(l.epoch)) keys.set(l.epoch, l.keys)
+    if (fresh && step.next !== null) pending.push(step.next)
+  }
+}
+
+/** §5.3 burned epochs: the flag of each readable epoch's anchor (only the anchor's counts). */
+async function burnedEpochs(anchors: ReadonlyMap<number, Anchor>, keys: ReadonlyMap<number, EpochKeys>): Promise<Set<number>> {
+  const burned = new Set<number>()
+  for (const [e, k] of keys) {
+    const a = anchors.get(e) as Anchor
+    const opened = await openWithKey(
+      { type: 'config', ownerId: a.owner, epoch: e, id: a.id, createdAtBlockHeight: a.height, enc: a.config.enc },
+      k,
+      true,
+    )
+    if (opened.status === 'readable') {
+      opened.fields.prevEpochKey?.fill(0)
+      if (opened.fields.burned === true) burned.add(e)
+    }
+  }
+  return burned
+}
+
+/**
+ * `r` with the epoch keys a converted repository's owner published (§18.3, already checked
+ * against the anchors by `./convert`'s `publishedKeys`) added to the keys the reader holds, with
+ * every epoch their chains reach, and the alerts that check raised (forge-core
+ * `EpochResolution::add_published`). The write epoch never changes: a published key is always
+ * below the seal-off epoch.
+ */
+export async function addPublished(
+  r: EpochResolution,
+  repoId: Uint8Array,
+  published: ReadonlyMap<number, Uint8Array>,
+  publishedAlerts: readonly EpochAlert[],
+): Promise<EpochResolution> {
+  if (published.size === 0 && publishedAlerts.length === 0) return r
+  const keys = new Map(r.keys)
+  const alerts = [...r.alerts, ...publishedAlerts]
+  for (const [e, raw] of [...published].sort(([a], [b]) => a - b)) {
+    if (keys.has(e) || !r.anchors.has(e)) continue
+    keys.set(e, await EpochKeys.import(repoId, e, raw))
+    await walkChains(repoId, r.anchors, keys, [e], alerts)
+  }
+  return { ...r, keys, alerts: sortAlerts(alerts), burned: await burnedEpochs(r.anchors, keys) }
 }
 
 /** The {@link OpenContext} of a resolution, for `openContent` and pack reads. */

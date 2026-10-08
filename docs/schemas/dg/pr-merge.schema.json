@@ -44,6 +44,13 @@
     "closedIssues": {},
     "linkedIssuesOmitted": {},
     "linkedIssuesImported": {},
+    "uncheckedFiles": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "With --event-only: files the base changed too, not checked for the pull request's change."
+    },
     "cost": {
       "$ref": "common.schema.json#/$defs/cost"
     },

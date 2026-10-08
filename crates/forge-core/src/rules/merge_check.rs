@@ -74,8 +74,10 @@ pub enum MergeVerdict {
 pub struct MergeContent {
     /// The label.
     pub verdict: MergeVerdict,
-    /// For a squash or a rebase: the paths whose merged content differs from the PR's because
-    /// the base changed them too (git combined both sides), sorted. Empty otherwise.
+    /// For a squash or a rebase: the paths the base changed too whose merged blob is not the
+    /// PR's, sorted. Empty otherwise. The rule only sees that both sides changed them, never that
+    /// the merged blob holds the PR's change (an unrelated push to the same file looks the same),
+    /// so readers present them as unchecked, and the web records no such merge (Q5-A01).
     pub combined: Vec<String>,
 }
 

@@ -1,0 +1,40 @@
+{
+  "name": "private_now",
+  "description": "a private repository is not converted.",
+  "case": "converted_repo_facts",
+  "rules": "v2",
+  "input": {
+    "repoVisibility": "private",
+    "configs": [
+      {
+        "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+        "epoch": 0,
+        "vis": "private",
+        "height": 10
+      },
+      {
+        "id": "723e4415b140d11aae49ab4d7cbf0e3f418bb90092a5ab040d47602af4ba5a86",
+        "epoch": 1,
+        "vis": "private",
+        "height": 20
+      },
+      {
+        "id": "aab674ed5245d21e30ac84a5de4ee1a84e165d8721041a55e160ab2fbe6bdfed",
+        "epoch": 2,
+        "vis": "private",
+        "height": 30
+      }
+    ],
+    "existing": [
+      0,
+      1,
+      2
+    ],
+    "heights": [
+      5
+    ]
+  },
+  "expected": {
+    "converted": false
+  }
+}

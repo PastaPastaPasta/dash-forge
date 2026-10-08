@@ -812,8 +812,11 @@ def pack_vectors():
     o("reserved_nonzero", "reserved = 0x0001 is refused.", s10[:6] + b"\x00\x01" + s10[8:], len(s10),
       dict(error="sealedPackCorrupt"))
     o("bad_magic", "a wrong magic is refused.", b"DFPX" + s10[4:], len(s10), dict(error="sealedPackCorrupt"))
-    o("version_2", "an unknown header version is refused.", s10[:4] + b"\x02" + s10[5:], len(s10),
-      dict(error="sealedPackCorrupt"))
+    o("version_2", "a DFPK header of another version (0x02: specific people) is not this opener's: "
+      "UnknownVersion, which readers skip, never corrupt.", s10[:4] + b"\x02" + s10[5:], len(s10),
+      dict(error="unknownVersion"))
+    o("version_3", "a later header version (0x03, a narrower audience): UnknownVersion, skipped.",
+      s10[:4] + b"\x03" + s10[5:], len(s10), dict(error="unknownVersion"))
     o("seg_log2_9", "L = 9 is refused.", s10[:5] + b"\x09" + s10[6:], len(s10), dict(error="sealedPackCorrupt"))
     o("seg_log2_21", "L = 21 is refused.", s10[:5] + bytes([21]) + s10[6:], len(s10), dict(error="sealedPackCorrupt"))
     o("header_epoch_changed", "the header's epoch changed to 1: the key and the AD change, every tag fails.",
@@ -1999,8 +2002,9 @@ def mixed_vectors():
     v("v01_byte_relabelled_as_v03", "the same v0x01 bytes with enc[0] rewritten to 0x03 read as a v0x03 envelope "
       "whose commitment is not the derived one: CommitMismatch.", MDOC, CTX0, unreadable("commitMismatch"),
       relabelled)
-    v("v03_in_private_refused", "a v0x03 enc on a private repository's document is malformed: members-only content "
-      "exists only in public repositories.", private_vis(MDOC), CTX0, MALFORMED, enc)
+    v("v03_in_private_member", "a v0x03 enc on a private repository's document opens for a member (DESIGN D38: "
+      "readers admit it before the registered contract's writers use it; the AD does not bind vis).",
+      private_vis(MDOC), CTX0, readable({"body": MBODY}), enc)
     v("v03_too_short", "a v0x03 enc under 61 bytes is malformed before any key is used.", MDOC, CTX0, MALFORMED,
       enc[:60])
     padded_issue = members_tlv("issue", ISSUE_TLV)
@@ -2412,7 +2416,7 @@ def open_named_artifact(sealed, size_bytes, owner_keys, reader_id, reader_privs)
         return dict(error="sealedPackCorrupt")
     n = sealed[8]
     hl = 69 + 64 * n
-    if not 1 <= n <= 16 or len(sealed) < hl:
+    if not 1 <= n <= 64 or len(sealed) < hl:
         return dict(error="sealedPackCorrupt")
     hdr, block = sealed[:hl], sealed[8:45 + 64 * n]
     plen, file_id, S = struct.unpack(">Q", hdr[hl - 24:hl - 16])[0], hdr[hl - 16:], 1 << sealed[5]
@@ -2503,6 +2507,224 @@ def named_artifact_vectors():
     assert res == [dict(error="sealedPackCorrupt")]
 
 
+# --- repositories made public (§18): the converted-repo readers -----------------------------------
+#
+# A repository made public keeps its earlier documents' `vis: "private"` and its sealed packs. The
+# readers pick a document's envelope by its own stamp (open), derive the conversion facts from the
+# config timeline (facts), take the epoch keys the owner published in a kind-7 bundle (keys), and
+# skip a sealed artifact they hold no key for by its first bytes (skip).
+
+FIRST_UNKNOWN = 0x05
+BUNDLE_MAGIC, BUNDLE_VERSION, ENTRY_EPOCH_KEY = b"DFRV", 0x01, 0x06
+
+
+def bundle_bytes(entries, note=b""):
+    """DFRV ‖ 0x01 ‖ count(u16) ‖ count × [type ‖ target(32) ‖ revision(u32) ‖ key(32)] ‖ note."""
+    out = BUNDLE_MAGIC + bytes([BUNDLE_VERSION]) + struct.pack(">H", len(entries))
+    for kind, target, revision, key in entries:
+        out += bytes([kind]) + target + u32(revision) + key
+    return out + note
+
+
+def parse_bundle(b):
+    if len(b) < 7 or b[:4] != BUNDLE_MAGIC or b[4] != BUNDLE_VERSION:
+        return None
+    n = struct.unpack(">H", b[5:7])[0]
+    end = 7 + 69 * n
+    if len(b) < end or len(b) - end > 1024:
+        return None
+    try:
+        b[end:].decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    return [(b[7 + 69 * i], b[8 + 69 * i:40 + 69 * i], struct.unpack(">I", b[40 + 69 * i:44 + 69 * i])[0],
+             b[44 + 69 * i:76 + 69 * i]) for i in range(n)]
+
+
+def published(repo_owner, seal_off, anchors, bundles):
+    """The reference reader of §18.3: (keys by epoch, alerts)."""
+    keys, alerts = {}, []
+    if seal_off is None:
+        return keys, alerts
+    for owner, b in bundles:
+        if owner != repo_owner:
+            continue
+        entries = parse_bundle(b)
+        if entries is None:
+            continue
+        for kind, target, e, key in entries:
+            if kind != ENTRY_EPOCH_KEY or target != repoId or e >= seal_off or e not in anchors:
+                continue
+            if commit(key, e) == anchors[e]:
+                keys.setdefault(e, key)
+            else:
+                alerts.append(dict(kind="publishedKeyMismatch", epoch=e, author=H(owner)))
+    uniq = []
+    for a in sorted(alerts, key=lambda a: (a["epoch"], a["author"])):
+        if a not in uniq:
+            uniq.append(a)
+    return {str(e): H(k) for e, k in sorted(keys.items())}, uniq
+
+
+def open_vis(stamp, repo_vis, converted, enc0):
+    if stamp is None:
+        return "private" if repo_vis == "public" and converted and enc0 == 0x01 else repo_vis
+    if stamp == "private":
+        return "private"
+    if stamp == "public" and repo_vis == "public":
+        return "public"
+    return None
+
+
+def skip_reason(head, held):
+    if head[:min(4, len(head))] != b"DFPK"[:min(4, len(head))]:
+        return None
+    if len(head) < 5:
+        return None
+    if head[4] != 0x01:
+        return dict(reason="otherFormat", version=head[4])
+    if len(head) < 12:
+        return None
+    e = struct.unpack(">I", head[8:12])[0]
+    return None if e in held else dict(reason="noKey", epoch=e)
+
+
+def converted_vectors():
+    CONVERTED_OWNER = bytes([0xa1]) * 32
+    MAINT = bytes([0xb0]) * 32
+
+    # --- open: a document's own vis picks its envelope ------------------------------------------
+    old_comment = dict(type="comment", ownerId=H(ownerId), epoch=0, targetId="33" * 32)
+    body = "written while the repository was private"
+    _, v1 = seal_doc(old_comment, K0, tlv((2, body.encode())))
+    _, _, _, _, v3 = seal_members(dict(old_comment, vis="public"), K0, tlv((2, body.encode())))
+    old_event = dict(type="event", ownerId=H(ownerId), epoch=0, targetId="33" * 32)
+    _, v1_event = seal_doc(old_event, K0, tlv((15, b"bug")))
+
+    def o(name, desc, doc, stamp, repo_vis, converted, context, expected, enc):
+        d = dict(doc, enc=H(enc))
+        d.setdefault("createdAtBlockHeight", 50)
+        vis = open_vis(stamp, repo_vis, converted, enc[0])
+        assert vis is not None or expected == MALFORMED, name
+        vector("converted_repo_open", name, desc,
+               dict(repoId=H(repoId), stamp=stamp, repoVisibility=repo_vis, converted=converted, context=context,
+                    doc=d), expected)
+
+    o("old_comment_member", "a comment written while the repository was private keeps vis private: after it is made "
+      "public, a member holding K_0 opens its v0x01 envelope as a private document.", old_comment, "private", "public",
+      True, CTX0, readable({"body": body}), v1)
+    o("old_comment_outsider", "the same comment for a reader with no key: Unreadable(NoKey), a members-only "
+      "placeholder.", old_comment, "private", "public", True, ctx({}, {0: ("c0", 10)}), unreadable("noKey"), v1)
+    o("old_comment_published_key", "with K_0 published by the owner (Everything), anyone's keys hold it: it opens.",
+      old_comment, "private", "public", True, CTX0, readable({"body": body}), v1)
+    o("old_v03_in_private_member", "a v0x03 comment written while private (D38: the registered contract's writers) "
+      "opens for a member.", old_comment, "private", "public", True, CTX0, readable({"body": body}), v3)
+    o("v01_on_public_doc_refused", "a v0x01 envelope on a document stamped public is malformed, converted or not.",
+      old_comment, "public", "public", True, CTX0, MALFORMED, v1)
+    o("old_event_without_stamp", "an event has no vis: in a repository made public its v0x01 value was written while "
+      "private, and opens as such.", old_event, None, "public", True, CTX0, readable({"eventValue": "bug"}), v1_event)
+    o("event_v01_never_converted", "the same v0x01 event in a public repository that was never private is malformed.",
+      old_event, None, "public", False, CTX0, MALFORMED, v1_event)
+    o("public_doc_in_private_repo", "a document stamped public in a private repository cannot exist (a repository "
+      "never becomes private): malformed.", old_comment, "public", "private", False, CTX0, MALFORMED, v3)
+    for version, label in [(0x05, "v05"), (0x06, "v06"), (0xff, "vff")]:
+        later = bytes([version]) + v3[1:]
+        o(f"unknown_{label}_public", f"an enc version {version:#04x} this client does not know: Unreadable("
+          "UnknownVersion), shown as members-only, never malformed.", old_comment, "public", "public", True, CTX0,
+          unreadable("unknownVersion"), later)
+        o(f"unknown_{label}_private", f"the same enc version {version:#04x} on a private repository's document: "
+          "Unreadable(UnknownVersion).", old_comment, None, "private", False, CTX0, unreadable("unknownVersion"), later)
+
+    # --- facts: the conversion from the config timeline -----------------------------------------
+    def stamp(label, epoch, vis, height):
+        return dict(id=H(cid(label)), epoch=epoch, vis=vis, height=height)
+
+    timeline = [stamp("c0", 0, "private", 10), stamp("c1", 1, "private", 20), stamp("c2", 2, "private", 30),
+                stamp("cfg", None, "public", 40), stamp("c3", 3, "public", 50), stamp("gap", 9, "private", 25)]
+
+    def f(name, desc, repo_vis, configs, existing, heights, expected):
+        vector("converted_repo_facts", name, desc,
+               dict(repoVisibility=repo_vis, configs=configs, existing=existing, heights=heights), expected)
+
+    f("made_public", "epochs 0-2 stated while private, then the plaintext config (the marker) at height 40 and a "
+      "public anchor for epoch 3. The seal-off epoch is 2 (a private config of an epoch that does not exist does not "
+      "count); a manifest at or below height 40 may be sealed.", "public", timeline, [0, 1, 2, 3], [0, 39, 40, 41],
+      dict(converted=True, sealOffEpoch=2, markerHeight=40, maybeSealed=[True, True, True, False]))
+    f("before_the_marker", "flipped, but no public config yet: every manifest may be sealed.", "public", timeline[:3],
+      [0, 1, 2], [10, 10_000], dict(converted=True, sealOffEpoch=2, markerHeight=None, maybeSealed=[True, True]))
+    f("never_private", "a public repository with a members key (sealed public anchors) was never private.", "public",
+      [stamp("p0", 0, "public", 10), stamp("p1", 1, "public", 20)], [0, 1], [5], dict(converted=False))
+    f("private_now", "a private repository is not converted.", "private", timeline[:3], [0, 1, 2], [5],
+      dict(converted=False))
+    f("no_existing_private_epoch", "private configs whose epochs do not exist: converted, but nothing may be "
+      "published.", "public", [stamp("x", 4, "private", 10), stamp("m", None, "public", 20)], [], [10],
+      dict(converted=True, sealOffEpoch=None, markerHeight=20, maybeSealed=[True]))
+
+    # --- keys: what the owner published ---------------------------------------------------------
+    anchors = {0: commit(K0, 0), 1: commit(K1, 1), 2: commit(K2, 2)}
+    anchors_json = {str(e): H(c) for e, c in anchors.items()}
+    everything = bundle_bytes([(ENTRY_EPOCH_KEY, repoId, 0, K0), (ENTRY_EPOCH_KEY, repoId, 1, K1)],
+                              b"Everything written before the repository was made public.")
+
+    def k(name, desc, owner, seal_off, bundles, expected=None):
+        got = published(owner, seal_off, anchors, bundles)
+        exp = dict(keys=got[0], alerts=got[1])
+        if expected is not None:
+            assert exp == expected, (name, exp)
+        vector("converted_repo_keys", name, desc,
+               dict(repoId=H(repoId), repoOwner=H(owner), sealOffEpoch=seal_off, anchors=anchors_json,
+                    bundles=[dict(owner=H(bo), bytes=H(bb)) for bo, bb in bundles]), exp)
+
+    k("owner_publishes_everything", "the owner's bundle publishes K_0 and K_1 (seal-off epoch 2): both commit to "
+      "their anchors and count.", CONVERTED_OWNER, 2, [(CONVERTED_OWNER, everything)],
+      dict(keys={"0": H(K0), "1": H(K1)}, alerts=[]))
+    k("maintainer_bundle_ignored", "the same bundle written by a maintainer who is not the owner publishes nothing.",
+      CONVERTED_OWNER, 2, [(MAINT, everything)], dict(keys={}, alerts=[]))
+    k("seal_off_epoch_never_published", "an entry for the seal-off epoch itself (or above) is ignored: what members "
+      "write from the conversion on stays theirs.", CONVERTED_OWNER, 2,
+      [(CONVERTED_OWNER, bundle_bytes([(ENTRY_EPOCH_KEY, repoId, 2, K2), (ENTRY_EPOCH_KEY, repoId, 0, K0)]))],
+      dict(keys={"0": H(K0)}, alerts=[]))
+    k("mismatched_key_alert", "a key that does not commit to its epoch's anchor raises an alert and is ignored; the "
+      "next entry still counts.", CONVERTED_OWNER, 2,
+      [(CONVERTED_OWNER, bundle_bytes([(ENTRY_EPOCH_KEY, repoId, 1, Kx), (ENTRY_EPOCH_KEY, repoId, 0, K0)]))],
+      dict(keys={"0": H(K0)}, alerts=[dict(kind="publishedKeyMismatch", epoch=1, author=H(CONVERTED_OWNER))]))
+    k("other_repository_ignored", "an entry naming another repository is ignored.", CONVERTED_OWNER, 2,
+      [(CONVERTED_OWNER, bundle_bytes([(ENTRY_EPOCH_KEY, bytes([0x12]) * 32, 0, K0)]))], dict(keys={}, alerts=[]))
+    k("other_entry_types_ignored", "entry types other than 0x06 (a document's key, a sealed artifact's) are not read "
+      "by this reader.", CONVERTED_OWNER, 2,
+      [(CONVERTED_OWNER, bundle_bytes([(0x01, bytes([0x33]) * 32, 1, K0), (0x40, bytes([0x44]) * 32, 0, K1)]))],
+      dict(keys={}, alerts=[]))
+    k("malformed_bundle_ignored", "a bundle whose count runs past its bytes is ignored whole.", CONVERTED_OWNER, 2,
+      [(CONVERTED_OWNER, everything[:5] + b"\x00\x09" + everything[7:])], dict(keys={}, alerts=[]))
+    k("note_not_utf8_ignored", "a note that is not UTF-8 makes the bundle malformed.", CONVERTED_OWNER, 2,
+      [(CONVERTED_OWNER, bundle_bytes([(ENTRY_EPOCH_KEY, repoId, 0, K0)], b"\xff"))], dict(keys={}, alerts=[]))
+    k("not_converted", "no seal-off epoch (the repository was never private, or no private epoch exists): nothing "
+      "counts.", CONVERTED_OWNER, None, [(CONVERTED_OWNER, everything)], dict(keys={}, alerts=[]))
+
+    # --- skip: an artifact's first bytes ---------------------------------------------------------
+    sealed, _, _ = seal_pack(K0, 0, mod251(100), L=10)
+    sealed1 = header(1, 100, FILE_ID, L=10) + sealed[36:]
+
+    def sk(name, desc, head, held, expected):
+        assert skip_reason(head, held) == expected, name
+        vector("converted_repo_skip", name, desc, dict(head=H(head), held=held), dict(skip=expected))
+
+    sk("plain_git_pack", "a git pack starts PACK: read as it is.", b"PACK\x00\x00\x00\x02" + bytes(28), [], None)
+    sk("sealed_no_key", "a DFPK header under epoch 0 with no key held: skipped without downloading the rest.",
+       sealed[:36], [], dict(reason="noKey", epoch=0))
+    sk("sealed_key_held", "the same header with K_0 held (a member, or published): downloaded and opened.",
+       sealed[:36], [0], None)
+    sk("sealed_other_epoch_held", "a header under epoch 1 when only epoch 0 is held: skipped.", sealed1[:36], [0],
+       dict(reason="noKey", epoch=1))
+    sk("specific_people_header", "a DFPK version 0x02 header (specific people): another format, skipped.",
+       b"DFPK\x02\x0e\x00\x00" + bytes(28), [0], dict(reason="otherFormat", version=2))
+    sk("later_header_version", "a DFPK version 0x03 header (a narrower audience, a later client): skipped, never "
+       "fatal.", b"DFPK\x03\x0e\x00\x00" + bytes(28), [0], dict(reason="otherFormat", version=3))
+    sk("short_plain", "three bytes that are not DFPK's start: plaintext.", b"PAC", [], None)
+    sk("short_magic", "four bytes of magic and nothing else: too short to tell, downloaded and judged whole.",
+       b"DFPK", [], None)
+
+
 # Vector files committed by hand (efbb9f1e, d0e66072) that this generator does not produce yet: kept
 # as they are rather than deleted on every run. Porting them here is a follow-up.
 HAND_WRITTEN = {
@@ -2531,7 +2753,9 @@ def write_vectors(out_dir):
     mixed_vectors()
     named_vectors()
     named_artifact_vectors()
-    for pattern in ("private_*.json", "mixed_doc_*.json", "named_envelope*.json", "named_artifact*.json"):
+    converted_vectors()
+    for pattern in ("private_*.json", "mixed_doc_*.json", "named_envelope*.json", "named_artifact*.json",
+                    "converted_repo_*.json"):
         for old in glob.glob(os.path.join(out_dir, pattern)):
             if os.path.basename(old) not in HAND_WRITTEN:
                 os.remove(old)

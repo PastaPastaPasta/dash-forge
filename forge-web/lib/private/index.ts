@@ -9,7 +9,8 @@
  * `./testing`, which this module deliberately does not re-export (ESLint bans importing it
  * outside tests); `__unsafe*` symbols of `./doc`, `./pack` and `./release` are likewise not
  * re-exported. `./named` is the specific-people letter (`enc` v0x04); `sealMembersDoc` the
- * members-only (`enc` v0x03) seal of a public repository's lane. `./release`'s `sealRelease` and `sealReleaseManifest` are, since the web writes
+ * members-only (`enc` v0x03) seal of a public repository's lane. `./bundle` and `./convert` are
+ * a repository made public's readers (§18): its conversion facts and the keys its owner published. `./release`'s `sealRelease` and `sealReleaseManifest` are, since the web writes
  * sealed releases (`private-repos.md` §16.8, `lib/repo/sealed-release.ts`): both draw hedged
  * randomness, and only their fixed-nonce twins stay test-only.
  */
@@ -54,9 +55,11 @@ export {
   V2,
   V3,
   V4,
+  FIRST_UNKNOWN,
   docAd,
   docAdWithoutKeys,
   isLate,
+  isUnknownVersion,
   letterFraming,
   letterFramed,
   maxLetterPlaintext,
@@ -80,6 +83,7 @@ export {
   ARTIFACT_VERSION,
   ArtifactError,
   KEY_TYPE_ECDSA_SECP256K1,
+  MAX_ARTIFACT_RECIPIENTS,
   PURPOSE_ENCRYPTION,
   SLOT_VERSION,
   artifactHeaderLength,
@@ -106,6 +110,8 @@ export {
   readPackRange,
   sealPack,
   sealedLength,
+  sniff,
+  type Head,
   type PackCopySource,
   type PackErrorCode,
   type PackHeader,
@@ -156,6 +162,7 @@ export {
   type WrapSealParams,
 } from './wrap'
 export {
+  addPublished,
   contentIsLate,
   manifestStanding,
   openContextOf,
@@ -171,3 +178,24 @@ export {
   type Role,
   type WrapRow,
 } from './epoch'
+export {
+  BUNDLE_VERSION,
+  ENTRY_EPOCH_KEY,
+  MAX_BUNDLE_NOTE,
+  encodeBundle,
+  parseBundle,
+  type Bundle,
+  type BundleEntry,
+} from './bundle'
+export {
+  CONVERTED_REPO_MIN_CLIENT_VERSION,
+  conversionOf,
+  maybeSealed,
+  openVis,
+  publishedKeys,
+  skipReason,
+  type ConfigStamp,
+  type Conversion,
+  type PublishedBundle,
+  type SkipReason,
+} from './convert'

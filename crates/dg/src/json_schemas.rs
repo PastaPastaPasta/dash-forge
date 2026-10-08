@@ -295,6 +295,67 @@ fn search_queries_match() {
     );
 }
 
+/// `dg repo create` / `dg init`: `membersOnly` in each outcome (on, off and why, failed with the
+/// error block, null for a re-run that created nothing).
+#[test]
+fn create_members_only_matches() {
+    use crate::publish::{members_json, MembersPlan};
+    use forge_core::create::{CreateRepoResult, MembersOnly, StepOutcome};
+    let result = |outcome: StepOutcome, members_only| CreateRepoResult {
+        repo: test_repo("r"),
+        steps: vec![("repo", outcome)],
+        members_only,
+        cost_credits: 1_000,
+    };
+    let failed = MembersOnly::Failed(std::sync::Arc::new(forge_core::Error::Config("no".into())));
+    let cases = [
+        (
+            result(
+                StepOutcome::Created,
+                Some(MembersOnly::On(forge_core::keyring::Enabled::default())),
+            ),
+            MembersPlan::On,
+            "on",
+        ),
+        (
+            result(StepOutcome::Created, Some(failed)),
+            MembersPlan::On,
+            "failed",
+        ),
+        (
+            result(StepOutcome::Created, None),
+            MembersPlan::Skipped,
+            "off",
+        ),
+        (
+            result(StepOutcome::Created, None),
+            MembersPlan::NoKey { on_identity: true },
+            "off",
+        ),
+        (result(StepOutcome::Existed, None), MembersPlan::On, ""),
+        (result(StepOutcome::Created, None), MembersPlan::Private, ""),
+    ];
+    for (r, plan, status) in cases {
+        let m = members_json(&r, plan);
+        assert_eq!(m["status"].as_str().unwrap_or(""), status, "{plan:?}: {m}");
+        if status == "failed" {
+            assert!(
+                m["error"]["fix"][0]
+                    .as_str()
+                    .unwrap()
+                    .contains("dg repo members enable"),
+                "{m}"
+            );
+        }
+        for command in ["repo create", "init"] {
+            assert_valid(
+                command,
+                &json!({ "status": "created", "repoId": "x", "ownerId": "o", "name": "r", "membersOnly": m }),
+            );
+        }
+    }
+}
+
 /// `dg repo create` / `dg init`: `steps` maps each document to what this run did. `dg repo
 /// fork`: `refsWritten` lists the refs; an incomplete fork is printed with its error.
 #[test]
@@ -313,6 +374,7 @@ fn create_steps_and_forks_match() {
         created: CreateRepoResult {
             repo: test_repo("fork"),
             steps: vec![("repo", StepOutcome::Created)],
+            members_only: None,
             cost_credits: 1_000,
         },
         manifests_written: 1,

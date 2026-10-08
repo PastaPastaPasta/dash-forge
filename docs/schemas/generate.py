@@ -202,7 +202,13 @@ PUBLISH = {
     'status': E('created', 'exists'), 'generation': ANY, 'repoId': S, 'ownerId': S, 'name': S, 'remoteUrl': S,
     'webUrl': nl(S), 'storage': ANY, 'network': S, 'visibility': E('public', 'private'),
     'protectedPatterns': D('What the config this run wrote protects; null when an earlier run wrote it.', nl(SA)),
-    'steps': R('createSteps'), 'cost': COST, 'totalCost': COST, 'remote': S, 'gitConfig': SA,
+    'steps': R('createSteps'),
+    'membersOnly': D('Whether members-only content is on after the create: null for a private repository and for a '
+                     're-run that created nothing; `off` with `reason` (`skipped`: --no-members-only; '
+                     '`noEncryptionKey`); `failed` with the `error` object (the repository stands without it).',
+                     nl(O({'status': E('on', 'off', 'failed'), 'reason': E('skipped', 'noEncryptionKey'), 'error': OBJ},
+                          ['status']))),
+    'cost': COST, 'totalCost': COST, 'remote': S, 'gitConfig': SA,
     'push': nl(O({'remote': S, 'branch': S, 'oid': S, 'tracking': B, 'cost': COST, 'indexSkipped': ANY})),
     'balanceCredits': nl(I),
 }
@@ -390,7 +396,7 @@ cmd('pr view', 'A pull request: its state, head, reviews, threads and comments.'
 }, ['number', 'id', 'author', 'state', 'labels', 'assignees', 'readable'])
 cmd('pr verify', 'Whether a merged pull request\'s recorded merge contains it.', {
     'pr': I, 'merged': B, 'mergeContent': nl(O({'oid': S, 'verdict': E('contains', 'squash', 'rebase', 'missing', 'unknown'),
-                                                'combined': SA}, ['oid', 'verdict'])),
+                                                'combined': D('For a squash or rebase: files changed on both sides, not checked for the pull request\'s change.', SA)}, ['oid', 'verdict'])),
     'rulesAtMerge': ANY,
 }, ['pr', 'merged', 'mergeContent'])
 cmd('pr checkout', 'The pull request\'s head checked out as a local branch.', {
@@ -438,8 +444,9 @@ cmd('pr commits', 'The pull request\'s commits.', {
 cmd('pr merge', 'A pull request merged (or a merge recorded).', {
     'status': E('merged', 'merge_recorded', 'already_merged'), 'pr': I, 'method': S, 'mergeOid': S, 'transitionId': S,
     'merged': B, 'mergeOnBase': ANY, 'branchDeleted': ANY, 'branchCheckNote': nl(S), 'bypassedRules': ANY,
-    'checksNotPassing': ANY, 'closedIssues': ANY, 'linkedIssuesOmitted': ANY, 'linkedIssuesImported': ANY, 'cost': COST,
-    'steps': STEPS,
+    'checksNotPassing': ANY, 'closedIssues': ANY, 'linkedIssuesOmitted': ANY, 'linkedIssuesImported': ANY,
+    'uncheckedFiles': D('With --event-only: files the base changed too, not checked for the pull request\'s change.', SA),
+    'cost': COST, 'steps': STEPS,
 }, ['status', 'pr', 'merged'])
 cmd('pr update-branch', 'The base merged into the pull request\'s branch.', {
     'status': E('updated', 'up_to_date'), 'pr': I, 'written': B, 'headOid': S, 'baseOid': S, 'eventId': nl(S), 'steps': STEPS,
@@ -521,7 +528,8 @@ cmd('verify-app', 'A deployed copy of the web app checked against a published bu
     'files': ANY, 'matched': ANY, 'differ': ANY, 'missing': ANY, 'ok': B,
 }, ['url', 'ok'])
 cmd('collab add', 'A member added, or their role changed.', {
-    'status': S, 'member': S, 'role': S, 'previousRole': nl(S), 'environmentsSavedFirst': ANY, 'documentId': S, 'id': S,
+    'status': S, 'member': S, 'role': S, 'previousRole': nl(S), 'environmentsSavedFirst': ANY,
+    'environmentsSavedAgain': ANY, 'environmentPlan': ANY, 'documentId': S, 'id': S,
     'repo': S, 'cost': COST, 'keyShared': B, 'keyPending': ANY, 'rotation': nl(R('rotation')),
 }, ['status', 'member', 'role'])
 cmd('collab accept', 'An invitation accepted (or withdrawn).', {
@@ -529,7 +537,7 @@ cmd('collab accept', 'An invitation accepted (or withdrawn).', {
 }, ['status', 'repo'])
 cmd('collab remove', 'A member removed.', {
     'status': E('removed', 'not_a_member'), 'member': S, 'role': S, 'repo': S, 'rotation': nl(R('rotation')),
-    'droppedEpochs': ANY, 'losingMembers': ANY, 'environments': ANY, 'resavedEnvironments': ANY,
+    'droppedEpochs': ANY, 'losingMembers': ANY, 'environments': ANY, 'resavedEnvironments': ANY, 'environmentPlan': ANY,
 }, ['status', 'member'])
 cmd('make-public', 'Your own members-only posts made public: each one edited to Public, or a review given a public comment that carries its text.', {
     'status': E('madePublic'), 'cost': COST,
@@ -675,15 +683,19 @@ cmd('import', 'What an import or re-sync mirrored (the Mirror Action reads this)
 # -- environments -----------------------------------------------------------------------------
 ENV_SAVE = {
     'status': E('saved', 'unchanged'), 'env': S, 'audience': ANY, 'to': ANY, 'skipped': ANY, 'changes': ANY, 'id': S,
-    'packHash': S, 'sizeBytes': I, 'quote': COST, 'spent': COST,
+    'packHash': S, 'sizeBytes': I, 'quote': COST, 'spent': COST, 'markedChanged': ANY, 'saved': ANY, 'notSaved': ANY,
 }
 cmd('env ls', 'The repository\'s environments, or one environment\'s variables (names and types, not values).', {
     'environments': A(OBJ), 'hidden': ANY, 'ignored': ANY, 'env': S, 'audience': ANY, 'to': ANY, 'updatedBy': S,
+    'oldFormat': ANY, 'needsSaving': ANY,
     'updatedAt': I, 'entries': A(O({'name': S, 'type': S, 'note': nl(S)})),
 })
 cmd('env get', 'One variable of an environment.', {'env': S, 'name': S, 'type': S, 'value': S}, ['env', 'name', 'value'])
 for c, d in [('set', 'A variable set.'), ('unset', 'A variable removed.'), ('edit', 'An environment edited.'),
-             ('import', 'Variables imported from a file.')]:
+             ('import', 'Variables imported from a file.'), ('audience', 'An environment saved for a new audience.'),
+             ('share', 'People given access to an environment.'), ('unshare', 'People\'s access to an environment taken away.'),
+             ('resave', 'Environments saved again for the people their audiences cover now.'),
+             ('mark-changed', 'Values saved in the old format recorded as changed where they\'re used.')]:
     cmd(f'env {c}', d, ENV_SAVE, ['status', 'env'])
 cmd('env export', 'An environment written to a file. Only with `--output`: without it, `dg env export` prints '
     'the variables as a .env file, not JSON, even with `--json`.', {

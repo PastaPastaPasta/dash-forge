@@ -1,0 +1,18 @@
+{
+  "name": "later_header_version",
+  "description": "a DFPK version 0x03 header (a narrower audience, a later client): skipped, never fatal.",
+  "case": "converted_repo_skip",
+  "rules": "v2",
+  "input": {
+    "head": "4446504b030e000000000000000000000000000000000000000000000000000000000000",
+    "held": [
+      0
+    ]
+  },
+  "expected": {
+    "skip": {
+      "reason": "otherFormat",
+      "version": 3
+    }
+  }
+}

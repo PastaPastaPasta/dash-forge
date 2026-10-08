@@ -90,7 +90,9 @@
       "untrusted": 0
     },
     "checksUnread": false,
+    "codeOwnersUnaudited": false,
     "bypass": null,
+    "uncountedBypass": null,
     "rulesChanged": false
   }
 }

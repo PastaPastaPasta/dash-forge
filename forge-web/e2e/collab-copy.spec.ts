@@ -142,6 +142,8 @@ test.describe('follow lists and cost hints (own identities)', () => {
     const repo = `g17-${Date.now().toString(36)}`
     const page = await followerPage(browser, '/new/')
     await page.getByLabel('Repository name').fill(repo)
+    // Not about members-only content: create without it (on by default where the browser holds a key).
+    await page.getByTestId('repo-members-only').uncheck()
     await page.getByRole('button', { name: 'Create repository' }).click()
     const create = page.getByRole('dialog')
     await expect(create.getByTestId('cost-preview')).toBeVisible()

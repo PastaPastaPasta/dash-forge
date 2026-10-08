@@ -6,7 +6,7 @@
 //! dash: alice/project ← main (8f3e2a1, 312 objects, 1.2 MiB)
 //! dash: r2-main      ████████████████ 1.2 MiB  verified   0.4 s
 //! dash: platform     manifest 1 · refUpdate 1     est 0.00031 DASH
-//! dash: done · Platform charged ≈0.00029 DASH · remaining 0.4809 DASH · https://forge.dashhq.org/repo?owner=…&name=project
+//! dash: done · Platform charged ≈0.00029 DASH · remaining 0.4809 DASH · https://forge.dashhq.org/alice/project
 //! ```
 //!
 //! Printed at git's default verbosity; `git push -q` silences everything except errors. A
@@ -20,8 +20,9 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
+use forge_core::rules::v2::Visibility;
 use forge_core::storage::{human_bytes, ResolvedPolicy, StoreOutcome, PLATFORM_PROFILE};
-use forge_core::user_error::{dash, one_line, redact, web_url};
+use forge_core::user_error::{dash, one_line, redact, repo_link};
 
 /// Width of the name column (the spec's `r2-main      ` / `platform     `).
 const NAME_COL: usize = 12;
@@ -468,8 +469,10 @@ pub fn done_line(
     remaining: Option<u64>,
     owner_id: &str,
     name: &str,
+    visibility: Visibility,
 ) -> (String, Value) {
-    let url = web_url(owner_id, name);
+    // A public repo's short URL; a private repo's canonical link, which names no one.
+    let url = repo_link(owner_id, name, visibility);
     let (charged, kind, text) = match charge {
         Charge::Measured(c) => (c, "measured", format!("Platform charged ≈{} DASH", dash(c))),
         Charge::Estimated(c) => (
@@ -601,10 +604,36 @@ mod tests {
             Some(48_090_000_000),
             "alice",
             "project",
+            Visibility::Public,
         );
+        // A public repo's link is its short URL.
         assert_eq!(
             d,
-            "dash: done · Platform charged ≈0.00029 DASH · remaining 0.4809 DASH · https://forge.dashhq.org/repo?owner=alice&name=project"
+            "dash: done · Platform charged ≈0.00029 DASH · remaining 0.4809 DASH · https://forge.dashhq.org/alice/project"
+        );
+        // A private repo's is the canonical link (the one the web app turns into its tokens).
+        let (d, _) = done_line(
+            Charge::Estimated(1),
+            None,
+            "alice",
+            "project",
+            Visibility::Private,
+        );
+        assert!(
+            d.ends_with(" · https://forge.dashhq.org/repo?owner=alice&name=project"),
+            "{d}"
+        );
+        // A name the short form refuses keeps the canonical link too.
+        let (d, _) = done_line(
+            Charge::Estimated(1),
+            None,
+            "alice",
+            ".hidden",
+            Visibility::Public,
+        );
+        assert!(
+            d.ends_with(" · https://forge.dashhq.org/repo?owner=alice&name=.hidden"),
+            "{d}"
         );
         assert_eq!(ev["chargedCredits"], 29_000_000);
     }
@@ -656,10 +685,16 @@ mod tests {
         });
         assert!(p.contains("chunk 3 · manifest 2 · refUpdate 2"), "{p}");
         assert_eq!(
-            web_url("o", "a b&c"),
+            forge_core::user_error::web_url("o", "a b&c"),
             "https://forge.dashhq.org/repo?owner=o&name=a%20b%26c"
         );
-        let (d, ev) = done_line(Charge::Estimated(31_000_000), None, "o", "r");
+        let (d, ev) = done_line(
+            Charge::Estimated(31_000_000),
+            None,
+            "o",
+            "r",
+            Visibility::Public,
+        );
         assert_eq!(ev["charge"], "estimated");
         // The e2e scenarios grep a failed push's stderr for "balance"; a summary line must
         // not look like a funding problem.

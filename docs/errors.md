@@ -203,6 +203,8 @@ Two cases have their own message:
 
 `git fetch`, `git pull`, `git ls-remote` (and any push or `dg` command that reads the refs) also stop with E307 when the repository's newest ref updates are encrypted with a newer key you don't hold, typically after you were removed and the key was rotated. The refs you can still read are from before the rotation, so they are not reported as current ("Already up to date" would be wrong). As on GitHub, a removed collaborator's clone stops getting updates; what it already has stays.
 
+A clone or fetch of a **public repository that was private before** stops with E307 (`clone incomplete: the history you asked for needs packs your keys don't open`) only when the history you asked for needs a pack stored encrypted while the repository was private, and the owner did not make that history public. Forge recognises such packs from their first bytes and leaves them out without downloading them; the branches the owner published never need them. A pack encrypted in a format a newer version of Forge writes is left out the same way: update Forge. An older version of Forge can't clone such a repository: [the first version that can](security/private-repos.md#184-the-minimum-client-version).
+
 *Protocol detail:* no `repoKey` wrap from a current maintainer opens the repository for your identity.
 
 ## E308
@@ -451,6 +453,18 @@ Two common ones:
 **What to do:** ask a maintainer of the repository to lift the ban. Only the maintainer who wrote a ban can lift it, and a ban stops counting once its writer is no longer a maintainer.
 
 *Protocol detail:* a ban is a forge-collab `ban` document that only a maintainer can write. Platform does not stop a banned identity from writing; Forge apps do.
+
+## E611
+
+**Choose who can read the environment.** An environment has no default audience: you choose it when you first save it. `dg env set`, `import` and `edit` on an environment that has no saved version yet refuse without `--audience`, before anything is signed.
+
+**What to do:** say who can read it, once: `--audience maintainers`, `--audience writers` (writers and maintainers), `--audience members` (every member, readers and triage included), or `--audience people --to @alice,@bob`. Add people to a group with `--also @ci-bot`. Later changes keep the audience; change it with `dg env audience --env <name> --set …`. See [Environments](guides/environments.md#who-can-read-an-environment).
+
+## E612
+
+**An environment hasn't been shared with you.** Each version of an environment is encrypted for the people its audience covered when it was saved. You are not one of them: either the environment isn't for you, or you joined its group (or got a new encryption key) after its last save. From outside the two look the same, so the message doesn't say which.
+
+**What to do:** if you should have access, ask a maintainer to save it again (`dg env resave --env <name>`, or `dg env resave --all`). Maintainers see exactly who is missing in `dg env ls`.
 
 ## E701
 
