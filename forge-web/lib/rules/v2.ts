@@ -533,6 +533,22 @@ function contentFields(doc: ContentDoc): [Field | null, Field[]] {
 export const ENC_MEMBERS = 0x03
 /** `enc[0]` of a specific-people document (`private-repos.md` §17). */
 export const ENC_SPECIFIC_PEOPLE = 0x04
+/**
+ * The first `enc[0]` this client does not know (a bot's post is 0x05, a narrower branch's ref
+ * update 0x06): a later client's members-only (or narrower) content, admitted as sealed
+ * discussion and shown as members-only, never malformed (`private-repos.md` §4.1).
+ */
+export const ENC_FIRST_UNKNOWN = 0x05
+
+/**
+ * The visibility a document's content is judged under (`private-repos.md` §18.1; forge-core
+ * `doc_visibility`): its own `vis` stamp, which consensus held equal to its repository's
+ * visibility when it was written, else (a type without one) the repository's. A repository made
+ * public keeps its earlier documents' `vis: "private"`.
+ */
+export function docVisibility(vis: unknown, repository: Visibility): Visibility {
+  return vis === 'private' || vis === 'public' ? vis : repository
+}
 
 /** The `enc` version byte of `doc` (`enc[0]`), when it carries a non-empty `enc`. */
 function encVersion(doc: Pick<ContentDoc, 'enc'>): number | null {
@@ -565,6 +581,17 @@ export function fitsUnder(child: Audience, parent: Audience): boolean {
   return child === parent
 }
 
+/**
+ * The audience a stored parent written for `audience` holds its children to ({@link fitsUnder};
+ * forge-core `Audience::binding`): a parent written while a repository made public was private
+ * (`writtenPrivate`: its own `vis` is `"private"` in a repository that is public now) takes
+ * public and members-only replies alike, so it binds nothing (DESIGN §4.10, L3). Its audience is
+ * still the default of a reply that asks for none.
+ */
+export function binding(audience: Audience, writtenPrivate: boolean): Audience {
+  return writtenPrivate ? 'public' : audience
+}
+
 /** The narrower of two audiences a document sits under: the one the other fits under. */
 export function narrower(a: Audience, b: Audience): Audience {
   return fitsUnder(a, b) ? a : b
@@ -575,8 +602,12 @@ export function narrower(a: Audience, b: Audience): Audience {
  * `private-repos.md` §8.1, §17; forge-core `content_well_formed`). Readers skip a malformed
  * document. The git plane (settings fold, ref fold) uses {@link gitPlaneWellFormed} instead.
  *
+ * `visibility` is the document's own ({@link docVisibility}), not its repository's: a repository
+ * made public keeps its earlier documents private (§18.1).
+ *
  * - public: the plaintext form ({@link gitPlaneWellFormed}), or, for an issue, patch, comment or
- *   review only, `enc` v0x03 / v0x04 with an `epoch` and none of the kind's plaintext fields;
+ *   review only, `enc` v0x03 / v0x04 or a later one ({@link ENC_FIRST_UNKNOWN} on, shown as
+ *   members-only) with an `epoch` and none of the kind's plaintext fields;
  * - private: a non-empty `enc` with an `epoch` and none of the kind's plaintext fields.
  */
 export function contentWellFormed(doc: ContentDoc, visibility: Visibility): boolean {
@@ -587,7 +618,8 @@ export function contentWellFormed(doc: ContentDoc, visibility: Visibility): bool
     const v = encVersion(doc)
     return (
       (doc.kind === 'issue' || doc.kind === 'patch' || doc.kind === 'comment' || doc.kind === 'review') &&
-      (v === ENC_MEMBERS || v === ENC_SPECIFIC_PEOPLE) &&
+      v !== null &&
+      v >= ENC_MEMBERS &&
       doc.epoch != null &&
       !plaintext.some(present)
     )

@@ -17,7 +17,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { base58Encode, decodeIdentifier } from '../auth/base58'
 import { encryptionOps } from '../auth/encryption-key'
 import { EpochKeys, MalformedError, TooLargeError, bytesToHex, refNameHash, sealMembersDoc, type PrivateDocType } from '../private'
-import { fitsUnder, narrower, type Audience } from '../rules/v2'
+import { binding, fitsUnder, narrower, type Audience } from '../rules/v2'
 import { queryAllDocuments, queryDocumentsWithProof, type PlainDocument, type WriteAuth } from '../sdk'
 import { retryWhileMissing } from '../view/retry'
 import { DOC, asIdentifierString, type RepoRef } from './contract'
@@ -135,39 +135,69 @@ export function noteAudience(repo: RepoRef, id: string, audience: Audience): voi
 /** How often a parent that is not visible yet is read again (a block behind) before the write is refused. */
 const PARENT_RETRIES = 3
 
+/**
+ * What a child's stored parents (in a public repo) say about its audience (forge-core
+ * `ParentAudience`): `default`, the narrowest of theirs, which a child that asks for none is
+ * written for; `bound`, the narrowest it may be, which leaves out every parent written while a
+ * repository made public was private (`binding`, `private-repos.md` §18.1).
+ */
+export interface ParentAudience {
+  readonly default: Audience
+  readonly bound: Audience
+}
+
+const sameParent = (a: Audience): ParentAudience => ({ default: a, bound: a })
+
+/** A stored parent's {@link ParentAudience}: its own `vis` `"private"` in a public repo binds nothing. */
+function parentOf(doc: PlainDocument): ParentAudience {
+  const a = docAudience(doc)
+  return { default: a, bound: binding(a, doc['vis'] === 'private') }
+}
+
+function narrowerParent(a: ParentAudience, b: ParentAudience): ParentAudience {
+  return { default: narrower(a.default, b.default), bound: narrower(a.bound, b.bound) }
+}
+
 /** The audience of `repo`'s issue or pull request `targetId`, read from the stored document. */
 export async function targetAudience(sdk: EvoSDK, repo: RepoRef, targetId: string): Promise<Audience> {
   if (repo.visibility === 'private') return 'members'
+  return (await targetParent(sdk, repo, targetId)).default
+}
+
+/** {@link targetAudience} of a public repo's target as a comment's or review's parent. */
+async function targetParent(sdk: EvoSDK, repo: RepoRef, targetId: string): Promise<ParentAudience> {
+  // A document this tab wrote is new: never one written while the repo was private.
   const known = knownAudiences.get(`${repo.repoId}/${targetId}`)
-  if (known !== undefined) return known
-  if (!(await repoHasMembersKey(sdk, repo))) return 'public'
+  if (known !== undefined) return sameParent(known)
+  if (!(await repoHasMembersKey(sdk, repo))) return sameParent('public')
   const found = await retryWhileMissing(async () => {
     for (const type of [DOC.issue, DOC.patch]) {
       const doc = await storedDoc(sdk, repo, type, targetId)
-      if (doc !== null) return docAudience(doc)
+      if (doc !== null) return parentOf(doc)
     }
     return null
   }, PARENT_RETRIES)
   if (found === null) throw parentNotFound('issue or pull request', targetId)
-  noteAudience(repo, targetId, found)
+  if (found.default === found.bound) noteAudience(repo, targetId, found.default)
   return found
 }
 
 /**
  * The audience a new document of `repo` is written for, under a parent written for `parent`
  * (null: none, as an issue): `requested`, else the parent's. A public child of a members-only
- * parent is refused; specific people are not written in this release. In a private repo
- * everything is members-only.
+ * parent is refused, unless that parent was written while a repository made public was private
+ * (its {@link ParentAudience} `bound`); specific people are not written in this release. In a
+ * private repo everything is members-only.
  */
-export function audienceFor(repo: RepoRef, requested: Audience | undefined, parent: Audience | null): Audience {
+export function audienceFor(repo: RepoRef, requested: Audience | undefined, parent: Audience | ParentAudience | null): Audience {
   if (repo.visibility === 'private') {
     if (requested === 'public') throw refused('this repo is private: everything in it is members-only')
     return 'members'
   }
-  const under = parent ?? 'public'
-  const audience = requested ?? under
+  const under = parent === null ? sameParent('public') : typeof parent === 'string' ? sameParent(parent) : parent
+  const audience = requested ?? under.default
   if (audience === 'specificPeople') throw refused('writing to specific people is not supported yet')
-  if (!fitsUnder(audience, under)) {
+  if (!fitsUnder(audience, under.bound)) {
     throw refused("this conversation is members-only, so a reply to it can't be public: everyone could read it, and it would answer text only members can read")
   }
   return audience
@@ -186,12 +216,12 @@ export async function childAudience(
   if (repo.visibility === 'private') return audienceFor(repo, input.requested, null)
   // No members key: nothing here is members-only, so no parent needs reading.
   if (!(await repoHasMembersKey(sdk, repo))) return audienceFor(repo, input.requested, 'public')
-  let parent = await targetAudience(sdk, repo, input.targetId)
+  let parent = await targetParent(sdk, repo, input.targetId)
   if (input.replyTo !== undefined && input.replyTo !== '') {
     const replied = await storedAudience(sdk, repo, DOC.comment, input.replyTo)
-    parent = narrower(parent, replied.audience)
+    parent = narrowerParent(parent, parentOf(replied.doc))
     const root = asIdentifierString(replied.doc['replyTo'])
-    if (root !== '') parent = narrower(parent, (await storedAudience(sdk, repo, DOC.comment, root)).audience)
+    if (root !== '') parent = narrowerParent(parent, parentOf((await storedAudience(sdk, repo, DOC.comment, root)).doc))
   }
   return audienceFor(repo, input.requested, parent)
 }

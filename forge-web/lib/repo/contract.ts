@@ -10,7 +10,7 @@
 import type { ForgeIds } from '../deployments'
 import type { PrivateSession } from './private-session'
 import type { Event, EventKind, RefUpdate } from '../rules'
-import { contentWellFormed, gitPlaneWellFormed, type ContentDoc, type ContentKind, type Visibility } from '../rules/v2'
+import { contentWellFormed, docVisibility, gitPlaneWellFormed, type ContentDoc, type ContentKind, type Visibility } from '../rules/v2'
 import type { RerunEvent } from '../rules/ci-rerun'
 import { base58Decode, base58Encode } from '../auth/base58'
 import { base64ToBytes, base64ToHex, type PlainDocument } from '../sdk'
@@ -109,6 +109,22 @@ export interface RepoRef {
    * private repo.
    */
   readonly lane?: PrivateSession
+  /**
+   * A repository made public (`private-repos.md` §18) whose owner published keys of its earlier
+   * history: the session holding only those keys, which every reader holds alike. Its browse plane
+   * opens the artifacts stored while the repo was private with them (a member's own keys never
+   * stand in: nothing this opens is anyone's secret). Never set on a private repo.
+   */
+  readonly published?: PrivateSession
+}
+
+/** `repo` as everyone reads it: without a reader's sessions or published keys. */
+export function withoutSessions(repo: RepoRef): RepoRef {
+  const { session: _s, lane: _l, published: _p, ...plain } = repo
+  void _s
+  void _l
+  void _p
+  return plain
 }
 
 /** The contracts a repo's reads touch, for the SDK's contract preload (none for `null`). */
@@ -118,11 +134,13 @@ export function repoContractIds(repo: RepoRef | null): string[] {
 
 /**
  * The stable identity of a repo within a network — its `repoId`, plus the decryption session
- * of a private repo read by a member. Session caches (browse context, content checks,
- * fallback clones) key by it, so decrypted state never outlives its session.
+ * of a private repo read by a member, or the published keys of a repository made public. Session
+ * caches (browse context, content checks, fallback clones) key by it, so decrypted state never
+ * outlives its session.
  */
 export function repoKey(repo: RepoRef): string {
-  return repo.session === undefined ? repo.repoId : `${repo.repoId}#${repo.session.id}`
+  const session = repo.session ?? repo.published
+  return session === undefined ? repo.repoId : `${repo.repoId}#${session.id}`
 }
 
 /**
@@ -198,11 +216,13 @@ export function contentDocOf(kind: ContentKind, doc: PlainDocument): ContentDoc 
 /**
  * Whether a raw **content** document (issue, patch, comment, review; a private repo's ref
  * updates) is well-formed for its repo (`contentWellFormed`, `forge-v2.md` §5: plaintext xor
- * `enc`; a public repo also admits members-only and specific-people `enc`). Every reader skips a
- * malformed document before any other rule sees it.
+ * `enc`; a public repo also admits members-only and specific-people `enc`). The document's own
+ * `vis` decides, when it carries one: a repository made public keeps its earlier documents
+ * private (`private-repos.md` §18.1). Every reader skips a malformed document before any other
+ * rule sees it.
  */
 export function wellFormed(repo: RepoRef, kind: ContentKind, doc: PlainDocument): boolean {
-  return contentWellFormed(contentDocOf(kind, doc), repo.visibility)
+  return contentWellFormed(contentDocOf(kind, doc), docVisibility(doc['vis'], repo.visibility))
 }
 
 /**

@@ -68,6 +68,12 @@ function AlertLine({ alert }: { alert: EpochAlert }): JSX.Element | null {
           a key epoch {alert.epoch} config by {who(alert.author)} skips an epoch number, so it is ignored.
         </p>
       )
+    case 'publishedKeyMismatch':
+      return (
+        <p>
+          {who(alert.author)} published a key for this repo&apos;s history that doesn&apos;t match it, so it is ignored.
+        </p>
+      )
     case 'rotationRequired':
       return null
   }

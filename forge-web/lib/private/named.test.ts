@@ -22,7 +22,7 @@ const party = (b: number): LetterRecipient => ({ identityId: id(b), publicKey: g
 describe('members-only content (enc v0x03)', () => {
   const doc: PrivateDoc = { type: 'comment', vis: 'public', ownerId: OWNER, epoch: 0, targetId: new Uint8Array(32).fill(0x33) }
 
-  it('seals with a fresh nonce, pads to 64 bytes and opens only as a public document', async () => {
+  it('seals with a fresh nonce, pads to 64 bytes and opens in either kind of repository', async () => {
     const keys = await EpochKeys.import(REPO_ID, 0, K0)
     const ctx: OpenContext = { keys: new Map([[0, keys]]), anchors: new Map([[0, { id: new Uint8Array(32), height: 1, statedHeight: 1 }]]), members: new IdSet([]) }
     const a = await sealMembersDoc(keys, doc, { body: 'members only' })
@@ -31,8 +31,17 @@ describe('members-only content (enc v0x03)', () => {
     expect(a.subarray(1, 13)).not.toEqual(b.subarray(1, 13))
     expect((a.length - MIN_MEMBERS_ENC) % 64).toBe(0)
     expect(await openContent({ ...doc, enc: a, createdAtBlockHeight: 5 }, ctx)).toEqual({ status: 'readable', fields: { body: 'members only' } })
-    // the same bytes as a private repository's document are malformed
-    expect(await openContent({ ...doc, vis: undefined, enc: a, createdAtBlockHeight: 5 }, ctx)).toEqual({ status: 'malformed' })
+    // the same bytes on a private document open too (DESIGN D38: readers admit v0x03 in private
+    // repositories; the AD does not bind `vis`)
+    expect(await openContent({ ...doc, vis: undefined, enc: a, createdAtBlockHeight: 5 }, ctx)).toEqual({ status: 'readable', fields: { body: 'members only' } })
+    // a later client's envelope is members-only to this reader in either kind of repository, never malformed
+    for (const v of [0x05, 0x06, 0xff]) {
+      const later = Uint8Array.from(a)
+      later[0] = v
+      for (const vis of ['public', undefined] as const) {
+        expect(await openContent({ ...doc, vis, enc: later, createdAtBlockHeight: 5 }, ctx)).toEqual({ status: 'unreadable', reason: 'unknownVersion' })
+      }
+    }
   })
 
   it('refuses a private header, a config and a v0x01 seal of a public document', async () => {

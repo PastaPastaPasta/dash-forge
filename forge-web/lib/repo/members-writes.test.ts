@@ -136,6 +136,20 @@ describe('who a new document is for', () => {
     await expect(targetAudience(sdk, REPO, b58(id(0x97)))).rejects.toThrow(/could not be read/)
   })
 
+  it('a repository made public: a thread written while it was private stays the default but binds nothing (§18.1)', async () => {
+    const OLD_ISSUE = b58(id(0x53))
+    const OLD_REPLY = b58(id(0x63))
+    const NEW_REPLY = b58(id(0x64))
+    stored[OLD_ISSUE] = { $id: OLD_ISSUE, repoId: REPO.repoId, enc: Uint8Array.from([0x01, ...new Uint8Array(40)]), epoch: 0, vis: 'private' }
+    stored[OLD_REPLY] = { $id: OLD_REPLY, repoId: REPO.repoId, enc: Uint8Array.from([0x01, ...new Uint8Array(40)]), epoch: 0, vis: 'private' }
+    stored[NEW_REPLY] = { $id: NEW_REPLY, repoId: REPO.repoId, enc: SEALED, epoch: 1, vis: 'public', replyTo: decodeIdentifier(OLD_REPLY) }
+    expect(await childAudience(sdk, REPO, { targetId: OLD_ISSUE })).toBe('members')
+    expect(await childAudience(sdk, REPO, { targetId: OLD_ISSUE, requested: 'public' })).toBe('public')
+    expect(await childAudience(sdk, REPO, { targetId: ISSUE_PUBLIC, replyTo: OLD_REPLY, requested: 'public' })).toBe('public')
+    // a members-only reply written since still binds
+    await expect(childAudience(sdk, REPO, { targetId: OLD_ISSUE, replyTo: NEW_REPLY, requested: 'public' })).rejects.toThrow(/can't be public/)
+  })
+
   it('a private repo is members-only whatever is asked', async () => {
     const priv: RepoRef = { ...REPO, visibility: 'private' }
     expect(await childAudience(sdk, priv, { targetId: ISSUE_PUBLIC })).toBe('members')

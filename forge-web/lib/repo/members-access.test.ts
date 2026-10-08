@@ -17,10 +17,14 @@ import type { PrivateSession } from './private-session'
 
 const ME = base58Encode(new Uint8Array(32).fill(7))
 
-/** A session whose reader holds keys for `epochs` (and a wrap to them when `mine`). */
-function sessionWith(epochs: number[], mine = false): PrivateSession {
+/**
+ * A session whose reader holds keys for `epochs` (and a wrap to them when `mine`); `published`:
+ * epochs only a repository made public's published keys open.
+ */
+function sessionWith(epochs: number[], mine = false, published: number[] = []): PrivateSession {
   return {
-    resolution: { keys: new Map(epochs.map((e) => [e, {}])) },
+    resolution: { keys: new Map([...epochs, ...published].map((e) => [e, {}])) },
+    publishedEpochs: new Set(published),
     wraps: mine ? [{ row: { memberId: new Uint8Array(32).fill(7) } }] : [],
   } as unknown as PrivateSession
 }
@@ -49,6 +53,10 @@ describe('a member removed since (DESIGN §12 item 6, as dg)', () => {
 
   it('is offered the unlock in a locked tab when a key share is addressed to them', async () => {
     expect(await membersAccessOf(source({ locked: () => true, holdsShare: async () => true }))).toEqual({ access: 'locked' })
+  })
+
+  it('holds only what the owner of a repository made public published: no lane (everyone holds those)', async () => {
+    expect(await membersAccessOf(source({ session: async () => sessionWith([], false, [0, 1]) }))).toBeNull()
   })
 
   it('an outsider in a locked tab, or with no key here, gets nothing (no unlock offer)', async () => {
@@ -92,6 +100,8 @@ describe('a current member (unchanged)', () => {
     expect(await membersAccessOf(member({ ops: async () => null }))).toEqual({ access: 'no-key' })
     expect(await membersAccessOf(member({ locked: () => true }))).toEqual({ access: 'locked' })
     expect(await membersAccessOf(member({ session: async () => sessionWith([]) }))).toEqual({ access: 'no-key-shared' })
+    // a repository made public's published keys are not theirs: still no key shared with them
+    expect(await membersAccessOf(member({ session: async () => sessionWith([], false, [0]) }))).toEqual({ access: 'no-key-shared' })
     // Shared with them, but this browser's key isn't the one it was shared to.
     expect(await membersAccessOf(member({ session: async () => sessionWith([], true) }))).toEqual({ access: 'no-key' })
   })

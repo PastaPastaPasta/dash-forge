@@ -13,6 +13,7 @@ import { queryAllDocuments, queryDocumentsWithProof, type PlainDocument } from '
 import { DOC, asIdentifierString, gitPlaneDocWellFormed, stringArray, wellFormed, type RepoRef } from './contract'
 import { repoSource } from './source'
 import { recordConfigTimeline } from './members-key-cache'
+import { recordConversion } from './converted'
 
 /** The current repo config surface most views need. */
 export interface RepoConfig {
@@ -95,7 +96,11 @@ export async function readConfigBundle(sdk: EvoSDK, repo: RepoRef): Promise<Conf
 /** A public repo's {@link ConfigBundle} from its complete config timeline, however it was read. */
 export function configBundleOf(repo: RepoRef, rows: readonly PlainDocument[]): ConfigBundle {
   // The whole timeline: whether it holds a members-key anchor is known now, for the content gate.
-  if (repo.visibility === 'public') recordConfigTimeline(repo.repoId, rows)
+  if (repo.visibility === 'public') {
+    recordConfigTimeline(repo.repoId, rows)
+    // and whether it was made public (its earlier documents and packs then open as private ones)
+    recordConversion(repo, rows)
+  }
   // The settings fold is the git plane: plaintext only. A sealed config of a public repo (its
   // members-key anchor) is never a settings row (DESIGN D1), whatever lane session is loaded.
   const documents = rows.filter((d) => configWellFormed(repo, d))
