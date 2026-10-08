@@ -1,0 +1,17 @@
+{
+  "name": "edit_replace_imported_refused",
+  "description": "Sealed import provenance cannot be published (imported is immutable), so the item is refused.",
+  "case": "make_public",
+  "rules": "v2",
+  "input": {
+    "op": "replace",
+    "kind": "comment",
+    "opened": {
+      "body": "lgtm",
+      "importedAuthor": "octocat"
+    }
+  },
+  "expected": {
+    "error": "imported"
+  }
+}

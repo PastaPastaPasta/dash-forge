@@ -62,6 +62,7 @@ import { foldThreadMetaV2, type ThreadMeta } from '../rules/parity'
 import type { HiddenItems } from '../rules/moderation'
 import { hidesProved } from '../repo/moderation'
 import { foldModeration, hasHides, moderationInput, type ModerationInput } from '../repo/moderation-fold'
+import { reviewTextCarriers } from '../rules/make-public'
 import { anchorOf, countApprovals, foldPrReviewV2, groupReviewComments, meetsPolicy, RoleOracle, type Anchor, type Approvals, type Policy, type PolicyStatus, type PrReviewState, type Review, type Role } from '../rules/v2'
 import { reviewerRows, sinceYourReview, summarizeReviews, type ReviewerCardRow, type ReviewSummary, type SinceYourReview } from './review-fold'
 
@@ -103,6 +104,11 @@ export interface CommentView {
    * (`trustedOrigin`), which the component decides.
    */
   readonly diffHunk?: string | null
+  /**
+   * The line and commit of a comment that names them with no file: an inline comment made public
+   * keeps no `path` on this network (DESIGN §4.6), so `anchor` is null. Absent otherwise.
+   */
+  readonly bareAnchor?: { readonly line: number | null; readonly commitOid: string | null }
 }
 
 /**
@@ -151,7 +157,60 @@ export function toCommentView(d: PlainDocument): CommentView {
     origin: originOf(d),
     proved: asIdentifierString(d['asMember']) !== '',
     diffHunk: hunkOf(d),
+    ...bareAnchorOf(d),
   }
+}
+
+/** `bareAnchor` of a comment with a line or commit and no file (a made-public inline comment). */
+function bareAnchorOf(d: PlainDocument): { bareAnchor?: { line: number | null; commitOid: string | null } } {
+  if (typeof d['path'] === 'string' && d['path'] !== '') return {}
+  const line = typeof d['line'] === 'number' ? d['line'] : null
+  const commitOid = byteFieldToHex(d, 'commitOid') || null
+  return line === null && commitOid === null ? {} : { bareAnchor: { line, commitOid } }
+}
+
+/**
+ * Each members-only review whose author made its text public, shown with that text (DESIGN §4.6):
+ * the public comment attached to it (`reviewTextCarriers`) replaces its text, or its placeholder
+ * for a reader who cannot open it, and is not shown again on its own. `shown`: the reviews this
+ * reader reads; `counted`: those plus the members-only ones it counts but cannot open.
+ */
+export function withReviewTexts(
+  shown: readonly ReviewView[],
+  counted: readonly ReviewView[],
+  comments: readonly CommentView[],
+): { readonly reviews: ReviewView[]; readonly comments: CommentView[]; readonly carried: ReadonlySet<string> } {
+  const all = new Map<string, ReviewView>()
+  for (const r of [...counted, ...shown]) all.set(r.id, r)
+  const carriers = reviewTextCarriers(
+    [...all.values()].map((r) => ({ id: r.id, reviewer: r.reviewer, sealed: r.audience === 'members' || r.membersOnly === true })),
+    comments.map((c) => ({
+      id: c.id,
+      owner: c.author,
+      reviewId: c.reviewId,
+      replyTo: c.replyTo,
+      path: c.anchor?.path ?? null,
+      line: c.anchor?.line ?? c.bareAnchor?.line ?? null,
+      commitOid: c.anchor?.commitOid || c.bareAnchor?.commitOid || null,
+      sealed: c.audience === 'members',
+      createdAt: c.createdAt,
+    })),
+  )
+  const carried = new Set(Object.keys(carriers))
+  if (carried.size === 0) return { reviews: [...shown], comments: [...comments], carried }
+  const byId = new Map(comments.map((c) => [c.id, c]))
+  const madePublic = (r: ReviewView): ReviewView => {
+    const c = byId.get(carriers[r.id] as string)
+    const { membersOnly: _m, audience: _a, long: _l, ...rest } = r
+    return { ...rest, body: c?.body ?? '', ...(c?.long ? { long: c.long } : {}), madePublic: true }
+  }
+  const reviews = [...all.values()]
+    .filter((r) => r.membersOnly !== true || carried.has(r.id))
+    .filter((r) => shown.some((x) => x.id === r.id) || carried.has(r.id))
+    .map((r) => (carried.has(r.id) ? madePublic(r) : r))
+    .sort((a, b) => compareKey({ id: a.id, createdAt: a.createdAt }, { id: b.id, createdAt: b.createdAt }))
+  const used = new Set(Object.values(carriers))
+  return { reviews, comments: comments.filter((c) => !used.has(c.id)), carried }
 }
 
 /** A comment's `diffHunk` when it may be shown: an imported comment on a file (QW2-010). */
@@ -326,6 +385,8 @@ export type IssueWrite =
   | { readonly kind: 'editComment'; readonly id: string; readonly body: string }
   | { readonly kind: 'deleteComment'; readonly id: string }
   | { readonly kind: 'hide'; readonly item: string | null; readonly hide: boolean }
+  /** The author made the issue (`id` null) or their comment `id` public (DESIGN §4.6). */
+  | { readonly kind: 'makePublic'; readonly id: string | null }
 
 /**
  * Whether a read of the thread already shows `w`: the page re-reads after a write until it does,
@@ -360,6 +421,8 @@ export function issueWriteShows(t: IssueThread, w: IssueWrite): boolean {
       return comment(w.id) === undefined
     case 'hide':
       return isHidden(t.moderation, w.item) === w.hide
+    case 'makePublic':
+      return w.id === null ? t.issue.audience !== 'members' : comment(w.id)?.audience !== 'members'
   }
 }
 
@@ -776,14 +839,16 @@ export async function loadPullOrMembersOnly(
   const [approvals, verdicts, hidesAreProved] = await Promise.all([readApprovals(members, policy, countedReviews, review, pull.author), verdictsRead, proved])
   // The repo's bans are not read here: the page applies them when they land (`withBans`), so
   // nothing on it, the diff included, waits on that read.
-  const modInput = moderationInput({ events: log.events, thread: { id, author: pull.author }, owner: repo.ownerId, members: members ?? [], proved: hidesAreProved, comments, reviews, membersUnread: members === null })
+  // A members-only review whose author made its text public shows that text, for everyone (§4.6).
+  const shown = withReviewTexts(reviews, readReviews.counted, comments)
+  const modInput = moderationInput({ events: log.events, thread: { id, author: pull.author }, owner: repo.ownerId, members: members ?? [], proved: hidesAreProved, comments: shown.comments, reviews: shown.reviews, membersUnread: members === null })
   return {
     moderation: foldModeration(modInput),
     moderationInput: modInput,
     pull,
-    timeline: mergeTimeline(comments, log.events, log.authorEvents, reviews, tally.total > 0, transitions),
-    comments,
-    reviews,
+    timeline: mergeTimeline(shown.comments, log.events, log.authorEvents, shown.reviews, tally.total > 0, transitions),
+    comments: shown.comments,
+    reviews: shown.reviews,
     review,
     approvals: approvals?.approvals ?? null,
     verdicts,
@@ -791,7 +856,7 @@ export async function loadPullOrMembersOnly(
     members: members ?? [],
     labels,
     hidden: tally.value,
-    membersOnly: membersOnlyEntries(tally, readReviews.counted),
+    membersOnly: membersOnlyEntries(tally, readReviews.counted).filter((e) => !shown.carried.has(e.item.id)),
     eventValues: eventValues(log),
     ciReruns: log.ciReruns ?? [],
     locked: isLocked(transitions),

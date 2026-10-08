@@ -1068,6 +1068,7 @@ fn reviews_json(
     head: &str,
     dismissed: &std::collections::BTreeMap<String, String>,
     incomplete: &std::collections::BTreeMap<String, String>,
+    made_public: &std::collections::BTreeMap<String, String>,
 ) -> Vec<serde_json::Value> {
     let flat: Vec<forge_core::rules::v2::ReviewComment> = comments
         .iter()
@@ -1105,6 +1106,8 @@ fn reviews_json(
                 "audience": crate::audience::json(r.audience),
                 // a members-only review this reader cannot open: its verdict counts (D15)
                 "readable": !r.members_only,
+                // the public comment its author attached to make its text public (DESIGN §4.6)
+                "textMadePublic": made_public.get(&r.document_id),
             })
         })
         .collect()
@@ -1172,6 +1175,9 @@ async fn view(
     let approvals = approvals_over(&reviews, &v, &oracle);
     let (mut comments, members_only, malformed_comments) =
         collab.comments_read(handle, &doc_id).await?;
+    // A members-only review whose author made its text public: that text, for everyone (DESIGN
+    // §4.6); the comment carrying it is not listed again.
+    let made_public = forge_core::collab::v2::apply_review_texts(&mut reviews, &mut comments);
     let (members_only, uncounted_reviews) = (
         s.placeholders(members_only),
         s.placeholders(uncounted_reviews),
@@ -1310,7 +1316,14 @@ async fn view(
             .map_or_else(|_| v.patch.source_repo_id.clone(), |r| r.display())
     };
 
-    let reviews_json = reviews_json(&reviews, &comments, &v.head, &dismissed, &incomplete);
+    let reviews_json = reviews_json(
+        &reviews,
+        &comments,
+        &v.head,
+        &dismissed,
+        &incomplete,
+        &made_public,
+    );
     let unread_comments: Vec<_> = members_only.iter().collect();
     let unread_reviews: Vec<_> = uncounted_reviews.iter().collect();
     let members_notes: Vec<String> =
@@ -1577,6 +1590,9 @@ async fn view(
                 if r.members_only {
                     // DESIGN §10: "Approved by @bob · review text visible to members"
                     println!("  review text visible to members (its verdict counts)");
+                }
+                if made_public.contains_key(&r.document_id) {
+                    println!("  Review text made public by {}", who(&r.reviewer));
                 }
                 if let Some(h) = moderation.item(&r.document_id) {
                     // Still counted: hiding is display only (dismiss to stop it counting).

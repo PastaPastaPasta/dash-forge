@@ -16,6 +16,7 @@
  *   diff no longer shows, collapse under "n comments on an older version".
  */
 
+import { MakePublicButton } from '@/components/repo/make-public'
 import { Byline } from '@/components/repo/byline'
 import { useMirrorTrust } from '@/hooks/use-mirror-trust'
 import { trustedOrigin } from '@/lib/repo/provenance'
@@ -80,6 +81,8 @@ export interface ThreadActions {
   readonly viewer: string | null
   readonly onEdit: (comment: CommentView, body: string) => void
   readonly onDelete: (comment: CommentView) => void
+  /** Make the author's own members-only comment public (DESIGN §4.6); absent: not offered. */
+  readonly onMakePublic?: (comment: CommentView) => void
   /** What maintainers hid (RC2 MOD): those comments show collapsed, with Show. */
   readonly hidden?: HiddenItems
 }
@@ -505,6 +508,7 @@ function CommentBlock({
         {c.audience === 'members' ? <VisibleToMembers /> : null}
         {own && editing === null ? (
           <span className="ml-auto flex items-center gap-2">
+            {c.audience === 'members' && actions.onMakePublic ? <MakePublicButton onClick={() => actions.onMakePublic?.(c)} /> : null}
             <button type="button" onClick={() => setEditing(c.body)} className="inline-flex items-center gap-1 hover:text-forge-700 dark:hover:text-forge-400" aria-label="Edit comment">
               <Pencil className="h-3 w-3" aria-hidden /> Edit
             </button>

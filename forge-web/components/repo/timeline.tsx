@@ -8,6 +8,7 @@
  * folds ignore still appears here as the audit trail it is.
  */
 
+import { MakePublicButton } from '@/components/repo/make-public'
 import { Byline, Time } from '@/components/repo/byline'
 import { importedVerdictOf, searchableBody, trustedOrigin, type Origin } from '@/lib/repo/provenance'
 import { Check, CheckCircle2, CircleDot, CircleSlash, Eye, EyeOff, GitBranch, GitCommit, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, Lock, LockOpen, Milestone, MessageSquare, Pencil, Pin, ShieldAlert, Tag, Trash2, UserPlus, X } from 'lucide-react'
@@ -21,7 +22,7 @@ import { anchorLabel } from '@/lib/view/inline-threads'
 import { VERDICT_LABEL, type VerdictName } from '@/lib/repo'
 import type { Event } from '@/lib/rules'
 import { ISSUE_CLOSE, ISSUE_LOCK, ISSUE_REOPEN, ISSUE_UNLOCK, PR_CLOSE, PR_DRAFT, PR_DRAFT_CLOSE, PR_DRAFT_REOPEN, PR_LOCK, PR_MERGE, PR_READY, PR_REOPEN, PR_UNLOCK, transitionPhrase } from '@/lib/rules/transition'
-import type { TransitionView } from '@/lib/repo'
+import type { ReviewView, TransitionView } from '@/lib/repo'
 import { Author } from '@/components/author'
 import Link from 'next/link'
 import { useState, type ReactNode } from 'react'
@@ -207,17 +208,21 @@ const EVENT_TEXT = 'min-w-0 flex-1 leading-6'
 export function CommentOwnActions({
   onEdit,
   onDelete,
+  onMakePublic,
   disabled,
   deleteDisabled = disabled,
 }: {
   onEdit: () => void
   onDelete: () => void
+  /** Its author's own members-only comment: make it public (DESIGN §4.6). */
+  onMakePublic?: () => void
   disabled: boolean
   deleteDisabled?: boolean
 }): JSX.Element {
   const button = 'inline-flex items-center gap-1 text-[12px] text-anvil-500 disabled:opacity-50 dark:text-anvil-400 coarse:min-h-11 coarse:px-1'
   return (
     <span className="ml-auto flex items-center gap-3">
+      {onMakePublic === undefined ? null : <MakePublicButton onClick={onMakePublic} disabled={disabled} />}
       <button type="button" onClick={onEdit} disabled={disabled} className={`${button} hover:text-forge-700 dark:hover:text-forge-400`} aria-label="Edit comment">
         <Pencil className="h-3 w-3" aria-hidden /> Edit
       </button>
@@ -464,6 +469,7 @@ export function Timeline({
   moderate,
   membersOnly = [],
   lane,
+  reviewActions,
 }: {
   items: readonly TimelineItem[]
   /** Where `#n` / `@name` in bodies link (omit: plain text). Keep it referentially stable. */
@@ -505,6 +511,8 @@ export function Timeline({
   membersOnly?: readonly MembersOnlyEntry[]
   /** The viewer's members access: a member who can't read yet sees one line for all of them. */
   lane?: MembersAccess
+  /** A review's author's own actions in its header (Make public on their members-only review). */
+  reviewActions?: (review: ReviewView) => ReactNode
 }): JSX.Element {
   // A hide or unhide the reader rule did not count (a writer's without the contract's proof, a
   // refId of another thread) is noise anyone could write, not the moderation record: left out.
@@ -710,6 +718,12 @@ export function Timeline({
                   <span className="flex items-center gap-1 text-anvil-500 dark:text-anvil-400">on <Oid value={review.commitOid} chars={9} /></span>
                 ) : null}
                 {review.audience === 'members' ? <VisibleToMembers what="review" /> : null}
+                {review.madePublic ? (
+                  <span className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="review-text-made-public">
+                    Review text made public by <Author identityId={review.reviewer} link={false} className="align-middle" />
+                  </span>
+                ) : null}
+                {reviewActions?.(review) ?? null}
                 {actions ? <span className="ml-auto">{actions}</span> : null}
               </div>
               {/* A mirrored review with no text of its own: its header already says who and when. */}

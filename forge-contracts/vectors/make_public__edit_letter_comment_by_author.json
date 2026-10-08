@@ -1,0 +1,22 @@
+{
+  "name": "edit_letter_comment_by_author",
+  "description": "A letter's author may make it public too (DESIGN D32).",
+  "case": "make_public",
+  "rules": "v2",
+  "input": {
+    "op": "edit",
+    "visibility": "public",
+    "stored": {
+      "kind": "comment",
+      "enc": "0400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "epoch": 0
+    },
+    "edited": {
+      "kind": "comment",
+      "body": "for everyone"
+    },
+    "author": "alice",
+    "signer": "alice"
+  },
+  "expected": "makesPublic"
+}

@@ -143,6 +143,8 @@ import { useAuth } from '@/contexts/auth-context'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { TargetNotFound } from '@/components/repo/number-content'
 import { CommentOwnActions, Timeline, type CommentSlots } from '@/components/repo/timeline'
+import { MakePublicButton, makePublicWords, useQuotedMembersPost } from '@/components/repo/make-public'
+import { makePostPublic, makeReviewTextPublic, provenanceOf } from '@/lib/repo/make-public-writes'
 import { ComparisonView, pullBase, pullSpec, usePullComparison } from '@/components/repo/pull-diff'
 import { CodeOwnersProvider, codeOwnerChangesIncomplete, useCodeOwnerStatus } from '@/components/repo/code-owners'
 import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, composeTooLong, privateComposeBlock } from '@/components/repo/private-compose'
@@ -243,6 +245,10 @@ type Pending =
   | { kind: 'retarget'; base: string }
   | { kind: 'edit-comment'; id: string; body: string }
   | { kind: 'delete-comment'; id: string }
+  /** The author makes their members-only comment public; `losesFile`: an inline one, whose file name can't be kept (DESIGN §4.6). */
+  | { kind: 'make-public'; id: string; quoted: string | null; losesFile: boolean }
+  /** The author makes their members-only review's text public, as a comment attached to it. */
+  | { kind: 'make-review-public'; id: string; text: string; quoted: string | null }
   | { kind: 'resolve'; root: string; resolve: boolean }
   | { kind: 'lock'; on: boolean }
   /** Ask the runners to re-run one check of the head, or with `check` null every check (event kind 26). */
@@ -655,6 +661,7 @@ function PullPage({
   // A public post (a comment, a review, an edit) that repeats members-only text asks first (product H8).
   const quoteGate = useQuoteGate()
   const quoteCheck = quoteGate.check
+  const quotedPost = useQuotedMembersPost(home.repo.repoId)
   const pullAudience = pull.audience
   // A members-only "Request changes" the PR's author can't read: one public line beside it (H8).
   const [publicLine, setPublicLine] = useState('')
@@ -840,9 +847,12 @@ function PullPage({
       // A public comment's edit is public text: it asks first when it repeats members-only text.
       onEdit: (c, body) => quoteCheck(publicTextOf(body, c.audience, pullAudience), membersTexts, () => setPending({ kind: 'edit-comment', id: c.id, body }), { before: c.body }),
       onDelete: (c) => setPending({ kind: 'delete-comment', id: c.id }),
+      ...(home.repo.visibility === 'public'
+        ? { onMakePublic: (c: CommentView) => setPending({ kind: 'make-public', id: c.id, quoted: quotedPost(c.body, c.author, 'comment'), losesFile: c.anchor !== null }) }
+        : {}),
       ...(moderation ? { hidden: moderation } : {}),
     }),
-    [canResolve, resolvedKey, identity, setPending, moderation, quoteCheck, membersTexts, pullAudience],
+    [canResolve, resolvedKey, identity, setPending, moderation, quoteCheck, membersTexts, pullAudience, quotedPost, home.repo.visibility],
   )
   const commentCost = composeCost(repo, 'comment', { body: comment.trim() }, commentFirst, audience.audience)
   const quoting = audience.audience === 'public' && quotesMembersText(comment, membersTexts)
@@ -1077,6 +1087,23 @@ function PullPage({
         // With "also close and lock", until the close and the lock show as well.
         refresh((t) => isHidden(t.moderation, p.item) === p.hide && (!p.closeAndLock || (!t.pull.state.open && t.locked)))
         return
+      case 'make-public': {
+        const c = thread.comments.find((x) => x.id === p.id)
+        await makePostPublic(sdk, signer, repo, {
+          type: 'comment',
+          id: p.id,
+          opened: { body: c?.body ?? '', ...(c?.anchor ? { path: c.anchor.path } : {}), ...provenanceOf(c?.importedRaw) },
+          ...(c?.revision !== undefined ? { expectedRevision: BigInt(c.revision) } : {}),
+          dropProof: holdings.data !== null && !isMember,
+          intent,
+        })
+        refresh((t) => t.comments.some((x) => x.id === p.id && x.audience !== 'members'))
+        return
+      }
+      case 'make-review-public':
+        await makeReviewTextPublic(sdk, signer, repo, { reviewId: p.id, patchId: pull.id, text: p.text, intent })
+        refresh((t) => t.reviews.some((r) => r.id === p.id && r.madePublic === true))
+        return
       case 'edit-comment': {
         const c = thread.comments.find((x) => x.id === p.id)
         await commentDraft.saving(() => updateComment(sdk, signer, repo, {
@@ -1144,6 +1171,10 @@ function PullPage({
         return previewReplace('comment', { body: pending.body })
       case 'delete-comment':
         return previewDelete('comment')
+      case 'make-public':
+        return previewReplace('comment', { body: thread.comments.find((x) => x.id === pending.id)?.body ?? '' })
+      case 'make-review-public':
+        return composeCost(repo, 'comment', { body: pending.text }, commentFirst)
       default:
         return eventCost
     }
@@ -1546,6 +1577,15 @@ function PullPage({
                   imported={origin === null ? null : { origin, signer: pull.author, createdAt: pull.createdAt }}
                   branchEvents={branchEvents}
                   {...(moderation ? { moderation } : {})}
+                  reviewActions={(r) =>
+                    // DESIGN §4.6: a review is immutable, so its author makes its text public as an attached comment.
+                    identity !== null && identity === r.reviewer && r.audience === 'members' && repo.visibility === 'public' && r.body.trim() !== '' ? (
+                      <MakePublicButton
+                        onClick={() => setPending({ kind: 'make-review-public', id: r.id, text: r.body, quoted: quotedPost(r.body, r.reviewer, 'review') })}
+                        disabled={writeBlocked || guard.disabledReason !== null || longEditBlock(r.long) !== null}
+                      />
+                    ) : null
+                  }
                   {...(canModerate
                     ? {
                         moderate: ({ kind, id }: { readonly kind: 'comment' | 'review'; readonly id: string }) => (
@@ -1575,6 +1615,10 @@ function PullPage({
                       // A public comment's edit is public text: it asks first when it repeats members-only text.
                       onSave: (id, body) => quoteCheck(publicTextOf(body, item.comment.audience, pull.audience), membersTexts, () => setPending({ kind: 'edit-comment', id, body }), { before: item.comment.body }),
                       onDelete: (id) => setPending({ kind: 'delete-comment', id }),
+                      // DESIGN §4.6: the author's own members-only comment, on a public repo.
+                      ...(item.comment.audience === 'members' && repo.visibility === 'public'
+                        ? { onMakePublic: (c: CommentView) => setPending({ kind: 'make-public', id: c.id, quoted: quotedPost(c.body, c.author, 'comment'), losesFile: c.anchor !== null }) }
+                        : {}),
                       links,
                       replies: repliesOf.get(item.comment.id) ?? [],
                       trust,
@@ -2371,6 +2415,10 @@ function confirmText(pending: Pending | null, number: number, isMember: boolean,
       return { title: 'Edit comment', description: 'You pay only for what changed. Earlier versions stay in its history.', label: 'Sign & save' }
     case 'delete-comment':
       return { title: 'Delete comment', description: 'Part of its storage fee is refunded, and replies stay. The original stays in Platform history, so rotate any secret it held.', label: 'Sign & delete' }
+    case 'make-public':
+      return makePublicWords('comment', pending.quoted, pending.losesFile)
+    case 'make-review-public':
+      return makePublicWords('review', pending.quoted)
     case 'resolve':
       return pending.resolve
         ? { title: 'Resolve conversation', description: `Appends ${via} naming the thread. It collapses for everyone; anyone who can resolve it can unresolve it.`, label: 'Sign & resolve' }
@@ -2402,6 +2450,7 @@ function commentSlots({
   onEdit,
   onSave,
   onDelete,
+  onMakePublic,
   links,
   replies,
   trust,
@@ -2423,6 +2472,8 @@ function commentSlots({
   onEdit: (e: { id: string; body: string } | null) => void
   onSave: (id: string, body: string) => void
   onDelete: (id: string) => void
+  /** Make the author's own members-only comment public (absent: not offered). */
+  onMakePublic?: (c: CommentView) => void
   links: MarkdownLinks
   replies: readonly CommentView[]
   /** Who may mirror: an imported reply of theirs shows its original author and date (FG-6). */
@@ -2446,7 +2497,13 @@ function commentSlots({
   const edit =
     viewer !== null && viewer === c.author && editing?.id !== c.id ? (
       // A long comment whose rest could not be read is not edited here: the edit would drop the rest.
-      <CommentOwnActions onEdit={() => onEdit({ id: c.id, body: c.body })} onDelete={() => onDelete(c.id)} disabled={disabled || longEditBlock(c.long) !== null} deleteDisabled={deleteDisabled} />
+      <CommentOwnActions
+        onEdit={() => onEdit({ id: c.id, body: c.body })}
+        onDelete={() => onDelete(c.id)}
+        onMakePublic={onMakePublic === undefined ? undefined : () => onMakePublic(c)}
+        disabled={disabled || longEditBlock(c.long) !== null}
+        deleteDisabled={deleteDisabled}
+      />
     ) : null
   const header = (
     <>

@@ -59,6 +59,7 @@
     "label delete": "label-delete.schema.json",
     "label list": "label-list.schema.json",
     "label retire": "label-retire.schema.json",
+    "make-public": "make-public.schema.json",
     "milestone close": "milestone-close.schema.json",
     "milestone create": "milestone-create.schema.json",
     "milestone list": "milestone-list.schema.json",

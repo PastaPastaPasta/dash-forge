@@ -11,10 +11,22 @@
  */
 
 import type { PlainDocument } from '../sdk'
+import { quotesMembersText } from '../view/quote-check'
 import { asIdentifierString, type RepoRef } from './contract'
 import { admittedAudience } from './private-content'
 
+/** What a members-only text was posted as. */
+export type MembersPostKind = 'issue' | 'pull request' | 'comment' | 'review'
+
+/** Who posted a members-only text, and as what (for "Your comment quotes @bob's members-only comment"). */
+export interface MembersPostMeta {
+  readonly author: string
+  readonly kind: MembersPostKind
+}
+
 const byRepo = new Map<string, Map<string, readonly string[]>>()
+/** Each opened document's author and kind, by repo then document id. */
+const metaByRepo = new Map<string, Map<string, MembersPostMeta>>()
 /** Each repo's texts as one list, rebuilt only after a change (a stable snapshot for React). */
 const lists = new Map<string, readonly string[]>()
 const listeners = new Set<() => void>()
@@ -35,9 +47,17 @@ function changed(repoId: string | null): void {
 }
 
 /** Remember the text fields of members-only document `docId` of `repoId`, opened in this tab. */
-export function noteMembersText(repoId: string, docId: string, fields: readonly unknown[]): void {
+export function noteMembersText(repoId: string, docId: string, fields: readonly unknown[], meta?: MembersPostMeta): void {
   const texts = fields.filter((t): t is string => typeof t === 'string' && t.trim() !== '')
   if (texts.length === 0 || repoId === '' || docId === '') return
+  if (meta !== undefined) {
+    let metas = metaByRepo.get(repoId)
+    if (metas === undefined) {
+      metas = new Map()
+      metaByRepo.set(repoId, metas)
+    }
+    metas.set(docId, meta)
+  }
   let docs = byRepo.get(repoId)
   if (docs === undefined) {
     docs = new Map()
@@ -55,7 +75,33 @@ export function noteMembersText(repoId: string, docId: string, fields: readonly 
  */
 export function noteOpenedDoc(repo: Pick<RepoRef, 'repoId' | 'visibility'>, doc: PlainDocument): void {
   if (repo.visibility !== 'public' || admittedAudience(doc) !== 'members') return
-  noteMembersText(repo.repoId, asIdentifierString(doc['$id']), [doc['title'], doc['body']])
+  const author = asIdentifierString(doc['$ownerId'])
+  const meta = author === '' ? undefined : { author, kind: postKindOf(doc) }
+  noteMembersText(repo.repoId, asIdentifierString(doc['$id']), [doc['title'], doc['body']], meta)
+}
+
+/** What kind of post an opened document is, from the fields only that type carries. */
+function postKindOf(doc: PlainDocument): MembersPostKind {
+  if (doc['verdict'] !== undefined) return 'review'
+  if (doc['targetId'] !== undefined) return 'comment'
+  return doc['baseRefNameHash'] !== undefined || doc['headOid'] !== undefined ? 'pull request' : 'issue'
+}
+
+/**
+ * The first members-only post of `repoId` this tab has opened, written by someone other than
+ * `author`, that `text` quotes (DESIGN §4.6, §12 item 15): what the make-public dialog warns about.
+ * The author's own members-only words are theirs to publish. Null when it quotes none.
+ */
+export function quotedMembersPost(repoId: string, text: string, author: string): MembersPostMeta | null {
+  const docs = byRepo.get(repoId)
+  const metas = metaByRepo.get(repoId)
+  if (docs === undefined || metas === undefined || text.trim() === '') return null
+  for (const [docId, texts] of docs) {
+    const meta = metas.get(docId)
+    if (meta === undefined || meta.author === author) continue
+    if (quotesMembersText(text, texts)) return meta
+  }
+  return null
 }
 
 /** Every members-only text of `repoId` this tab has opened (the same list until one is added). */
@@ -80,5 +126,6 @@ export function subscribeMembersTexts(listener: () => void): () => void {
 export function clearMembersTexts(): void {
   if (byRepo.size === 0) return
   byRepo.clear()
+  metaByRepo.clear()
   changed(null)
 }

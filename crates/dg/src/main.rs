@@ -31,6 +31,7 @@ mod keys;
 mod label;
 mod long_body;
 mod maint;
+mod make_public;
 mod meta;
 mod milestone;
 mod pack_mirror;
@@ -215,6 +216,17 @@ pub enum Command {
     /// Repository members (maintainers, writers, triage members and readers).
     #[command(subcommand)]
     Collab(CollabCommand),
+    /// Make your own members-only posts public: issues, pull requests, comments and reviews.
+    /// Everyone can read them from then on; earlier versions stay members-only. This can't be
+    /// undone.
+    MakePublic {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The posts: a document id (`id` in `dg issue view --json` / `dg pr view --comments
+        /// --json`, a review's too), or an issue's or pull request's number.
+        #[arg(required = true, num_args = 1.., value_name = "POST")]
+        posts: Vec<String>,
+    },
     /// Cost estimates and spend audits.
     #[command(subcommand)]
     Cost(CostCommand),
@@ -2410,6 +2422,7 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
         }
         Command::VerifyMirror { url, strict } => verify_mirror::run(ctx, url, *strict).await,
         Command::Collab(cmd) => collab::run(ctx, cmd).await,
+        Command::MakePublic { repo, posts } => make_public::run(ctx, repo, posts).await,
         Command::Cost(cmd) => cost::run(ctx, cmd).await,
         Command::Storage(cmd) => storage::run(ctx, cmd).await,
         Command::Webhook(cmd) => webhook::run(ctx, cmd).await,
