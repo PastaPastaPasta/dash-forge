@@ -527,3 +527,87 @@ A private key, AWS key or token only warns when its file is in a `test`, `tests`
 **What to do:** retarget the pull requests based on it (`dg pr edit <owner>/<repo> <n> --base <branch>`), or merge without `--delete-branch` and delete the branch once nothing needs it, or pass `--force-delete-branch` to delete it anyway.
 
 Only the repository's newest 100 pull requests are checked. When there are older ones, or some can't be read, the error (or, when none was found, the merge's output) says they were not checked.
+
+## E805
+
+**Would publish members-only commits.** *Reserved: this version doesn't report it yet. It arrives with members-only branches.* A push to a public branch would publish commits that belong to a members-only branch. Anything pushed to a public branch can't be taken back, so the push helper refuses the whole push before it signs or stores anything. The message names the first commits (`a1b2c3d Fix bounds check`) and how many there are, and git shows `! [remote rejected] main -> main (would publish members-only commits)`.
+
+```
+error: E805 pushing refs/heads/main would publish 3 commits from members-only branch sec/cve-77
+       a1b2c3d Fix bounds check
+       ...
+  fix: dg publish sec/cve-77 --onto main                 # one new public commit; the members-only history stays members-only
+       git push -o publish-private=<oid> origin main      # publish these 3 commits as they are
+```
+
+**What to do:** `dg publish <branch> --onto <public branch>` makes one new public commit, and the members-only history stays members-only. If you mean to publish the commits as they are, push with `-o publish-private=<oid>`. That is a publication and can't be undone.
+
+## E806
+
+**Can't check for members-only commits.** *Reserved: this version doesn't report it yet. It arrives with members-only branches.* Your encryption key isn't available, so Forge can't tell which commits in this clone are members-only. A public push can't be checked, and a fetch would quietly show only the public view. Forge refuses rather than guess.
+
+```
+error: E806 can't check for members-only commits: your encryption key isn't available
+       this clone has fetched members-only branches, so a public push can't be checked without it
+  fix: dg auth unlock, then push again
+```
+
+**What to do:** unlock your encryption key with `dg auth unlock`, then run the command again. A key protected by a passphrase needs a terminal, or `DASH_FORGE_PASSPHRASE`. A clone that never held members-only commits can start its record with `dg doctor --init-ledger`.
+
+## E809
+
+**Branch is already public.** *Reserved: this version doesn't report it yet. It arrives with members-only branches.* You asked for a members-only branch with a name that is already public. Nothing already pushed can be hidden, so Forge doesn't offer to hide it.
+
+```
+error: E809 fix-auth is already public; nothing already pushed can be hidden
+  fix: dg branch new --members fix-auth-2     # start a members-only branch from here
+```
+
+**What to do:** start a members-only branch from where you are with a new name (`dg branch new --members <new name>`), and carry on there.
+
+## E810
+
+**Members-only commits not pushed to another remote.** *Reserved: this version doesn't report it yet. It arrives with members-only branches.* Your `pre-push` hook found members-only commits from a Dash Forge repository in what you are pushing to a remote that is not a Dash Forge remote (GitHub, for example), or to a public branch of one, and stopped the push.
+
+```
+pre-push: E810 refs/heads/main contains members-only commits from dash://o/r; not pushing to github
+          git push --no-verify publishes them
+```
+
+**What to do:** push only branches that don't hold members-only commits, or publish them first with `dg publish`. `git push --no-verify` skips the hook and publishes the commits to that remote. That is a publication, and no check can stop it.
+
+## E811
+
+**New branch: choose who can see it.** *Reserved: this version doesn't report it yet. It arrives with members-only branches.* You pushed a branch Forge hasn't seen before, in a public repository that has members-only content on, and nothing says who should see it: no `dg branch new --members`, no push option, no `branch.<name>.dashAudience` setting, no commits built on a members-only branch, and no `dash.newBranches` setting for the clone. Forge asks once per clone and signs nothing.
+
+```
+error: E811 new branch fix-auth: choose who can see it
+  fix: git config dash.newBranches public     # or members; then push again
+       dg branch new --members fix-auth        # for one branch
+```
+
+**What to do:** set `git config dash.newBranches public` (or `members`) for this clone and push again, or make the one branch members-only with `dg branch new --members <branch>`. A branch that is public stays public: nothing already pushed can be hidden ([E809](#e809)).
+
+This is not [E808](#e808), which is the refusal to delete a branch other pull requests use.
+
+## E812
+
+**Can't make everything public.** *Reserved: this version doesn't report it yet. It arrives with making a whole repository public.* Making a repository public with everything in it would publish something that isn't safe to publish yet. The message names it. Today the only case is an environment with values saved in the old format: anyone who joined later could read those values, and they would become public.
+
+```
+error: E812 can't make everything public: environment production has values saved in the old format, which would become public
+  fix: dg env resave --env production, change every listed value where it's used, then dg env mark-changed --env production
+```
+
+**What to do:** do what the fix line says for each item listed, then run the command again. Or choose **Code only**, which publishes the code and leaves everything else members-only.
+
+## E813
+
+**Bot can't be asked.** *Reserved: this version doesn't report it yet. It arrives with bot access.* You asked a bot to work on something outside the access its maintainers gave it. For example, the bot can only be asked by people with Write access or more, and you have Triage access. Nothing was signed, and nothing was sent to the bot.
+
+```
+error: E813 @ci-bot can't be asked by people with Triage access in o/r
+  fix: ask a maintainer to change @ci-bot's access, or ask someone with Write access
+```
+
+**What to do:** ask someone with Write access to ask the bot, or ask a maintainer to change who can ask it (Settings → Bots and runners).

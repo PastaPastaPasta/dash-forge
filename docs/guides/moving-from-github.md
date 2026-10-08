@@ -201,7 +201,7 @@ dg collab list <your id>/project
 | Maintain / Admin | `maintainer` |
 | Triage, Read | none needed: anyone can open issues and PRs, comment and review |
 
-[Collaborating](collaborating.md#collaborators) says what each role can do. Only the repository's owner can add or remove members, and consensus enforces it.
+[Collaborating](collaborating.md#members) says what each role can do. Only the repository's owner can add or remove members, and consensus enforces it.
 
 A collaborator then clones and pushes with plain git. If your storage is a bucket, they need write access to it too: give them their own key for the same bucket, which they add with `dg storage add` and `dg storage use`. Or they can push to a bucket of their own. Readers find every pack through its on-chain manifest, wherever it is stored.
 
