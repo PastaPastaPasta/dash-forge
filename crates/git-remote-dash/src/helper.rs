@@ -19,6 +19,7 @@
 //!   lost-race late non-fast-forward. Refs are written ONLY after the storage policy is
 //!   met and the manifest has landed.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -33,6 +34,7 @@ use forge_core::repo::{
     group_by_hash, HistoryCost, PackManifestInput, PlatformChunkTarget, PreparedHistory,
     RepackTarget, RepoService, StoredArtifact,
 };
+use forge_core::rules::v2::Role;
 use forge_core::rules::RefState;
 use forge_core::scope::RepoRef;
 use forge_core::storage::{
@@ -339,7 +341,7 @@ impl Helper {
             .map(|d| crate::fetched::FetchedPacks::load(d, conn.repo.id()))
             .unwrap_or_default();
         let skip_held = incremental && options.filter.is_none();
-        let git_packs = packs_to_fetch(manifests, skip_held.then_some(&have));
+        let git_packs = packs_to_fetch(&manifests, skip_held.then_some(&have));
         if git_packs.is_empty() {
             return Ok(());
         }
@@ -368,25 +370,50 @@ impl Helper {
         });
         let reader = &svc.repo_reader(repo, &git_packs, roles).await;
         let packs = group_by_hash(&git_packs);
-        // QW4-014: a terminal sees the packs and bytes come in, as git's own progress does.
-        let meter = &fetch_meter(options, &packs);
-        let fetched = stream::iter(packs.iter().map(|(h, copies)| async move {
-            let got = fetch_one(svc, repo, contract, copies, roles, reader, h).await;
-            // Only a pack that arrived adds bytes; one set aside counts as done.
-            let arrived = matches!(&got, Ok((_, Got::Bytes(_))));
-            meter.advance(if arrived {
-                copies.first().map_or(0, |m| m.size_bytes)
-            } else {
-                0
+        let pass = Pass {
+            svc,
+            repo,
+            contract,
+            roles,
+            reader,
+            options,
+        };
+        // Q5-B15: a pack a current member's repack superseded is downloaded only when no
+        // superseding pack arrived (or is held). Its objects are in that pack, so reading it
+        // too only costs bytes, and warnings about copies nobody needs. Rounds: each downloads
+        // the packs no pack still to download supersedes (the newest repack first), then drops
+        // what the arrivals cover. This is the incremental pass only: when the result misses
+        // objects (a hash does not prove a consolidation is complete), [`Self::fetch`] runs the
+        // full pass, which reads every pack.
+        let claims = claims_for(incremental, &manifests, roles);
+        let mut fetched: Vec<([u8; 32], Got)> = Vec::new();
+        let mut pending: Vec<_> = packs.iter().collect();
+        loop {
+            let arrived: BTreeSet<[u8; 32]> = fetched
+                .iter()
+                .filter(|(_, g)| matches!(g, Got::Bytes(_)))
+                .map(|(h, _)| *h)
+                .collect();
+            let covered = covered_packs(&claims, |h| {
+                arrived.contains(h) || (skip_held && have.contains(h))
             });
-            got
-        }))
-        .buffered(PACK_DOWNLOAD_WINDOW)
-        .try_collect();
-        let fetched: Result<Vec<([u8; 32], Got)>> = with_ticks(meter, fetched).await;
-        // A failed download ends the line too, so the error starts on its own.
-        meter.finish(fetched.is_ok());
-        let fetched = fetched?;
+            pending.retain(|(h, _)| !covered.contains(h));
+            if pending.is_empty() {
+                break;
+            }
+            let hashes: Vec<[u8; 32]> = pending.iter().map(|(h, _)| *h).collect();
+            let now = round_now(&hashes, &claims);
+            let (round, rest): (Vec<_>, Vec<_>) =
+                pending.into_iter().partition(|(h, _)| now.contains(h));
+            fetched.extend(pass.download(&round).await?);
+            pending = rest;
+        }
+        if fetched.len() < packs.len() {
+            tracing::info!(
+                skipped = packs.len() - fetched.len(),
+                "not downloading packs a repack superseded: the superseding pack is here"
+            );
+        }
         // Packs a fallback copy served: say which recorded copy is down, and why, while the
         // others still hold the history (the survivability drill asserts these lines). A
         // warning, so `-q` does not hide it (git keeps warnings under -q too).
@@ -744,6 +771,141 @@ fn moved_branches(
         .collect()
 }
 
+/// The packs of one fetch, grouped by hash ([`group_by_hash`]).
+type PackGroups<'a> = [&'a ([u8; 32], Vec<&'a forge_core::repo::PackManifestInfo>)];
+
+/// What every download of one fetch shares ([`Helper::fetch_packs`]).
+struct Pass<'a> {
+    svc: &'a RepoService<'a>,
+    repo: &'a RepoRef,
+    contract: &'a forge_core::platform::LoadedContract,
+    roles: &'a forge_core::repo::RoleMap,
+    reader: &'a forge_core::storage::read::PackReader,
+    options: &'a OptionState,
+}
+
+impl Pass<'_> {
+    /// Download `packs` ([`fetch_one`] each, a bounded window in flight, in order), drawing a
+    /// progress line over them. Nothing to download draws nothing.
+    async fn download(&self, packs: &PackGroups<'_>) -> Result<Vec<([u8; 32], Got)>> {
+        if packs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let Self {
+            svc,
+            repo,
+            contract,
+            roles,
+            reader,
+            options,
+        } = *self;
+        // QW4-014: a terminal sees the packs and bytes come in, as git's own progress does.
+        let meter = &fetch_meter(options, packs);
+        let fetched = stream::iter(packs.iter().map(|(h, copies)| async move {
+            let got = fetch_one(svc, repo, contract, copies, roles, reader, h).await;
+            // Only a pack that arrived adds bytes; one set aside counts as done.
+            let arrived = matches!(&got, Ok((_, Got::Bytes(_))));
+            meter.advance(if arrived {
+                copies.first().map_or(0, |m| m.size_bytes)
+            } else {
+                0
+            });
+            got
+        }))
+        .buffered(PACK_DOWNLOAD_WINDOW)
+        .try_collect();
+        let fetched: Result<Vec<([u8; 32], Got)>> = with_ticks(meter, fetched).await;
+        // A failed download ends the line too, so the error starts on its own.
+        meter.finish(fetched.is_ok());
+        fetched
+    }
+}
+
+/// Each git pack a repack superseded, with the packs that supersede it: the `supersedes` of
+/// git-pack manifests recorded by a current maintainer or writer (`roles`). Anyone else's
+/// manifest naming every pack supersedes nothing (as in `storage::copies`), and no pack
+/// supersedes itself.
+fn superseded_by(
+    manifests: &[forge_core::repo::PackManifestInfo],
+    roles: &forge_core::repo::RoleMap,
+) -> BTreeMap<[u8; 32], BTreeSet<[u8; 32]>> {
+    let mut claims: BTreeMap<[u8; 32], BTreeSet<[u8; 32]>> = BTreeMap::new();
+    // Only those who may record a pack at all (as reseed requires): a maintainer or a writer.
+    for m in manifests.iter().filter(|m| {
+        m.kind == u64::from(KIND_GIT_PACK)
+            && matches!(
+                roles.get(&m.owner_id),
+                Some(Role::Maintainer | Role::Writer)
+            )
+    }) {
+        for old in m.supersedes.iter().filter(|old| **old != m.pack_hash) {
+            claims.entry(*old).or_default().insert(m.pack_hash);
+        }
+    }
+    claims
+}
+
+/// The supersede claims a fetch pass honours ([`superseded_by`]): none on the full pass, which
+/// reads every pack (the fallback when a consolidation turned out incomplete).
+fn claims_for(
+    incremental: bool,
+    manifests: &[forge_core::repo::PackManifestInfo],
+    roles: &forge_core::repo::RoleMap,
+) -> BTreeMap<[u8; 32], BTreeSet<[u8; 32]>> {
+    if incremental {
+        superseded_by(manifests, roles)
+    } else {
+        BTreeMap::new()
+    }
+}
+
+/// The packs of `pending` to download this round: those no other pending pack supersedes
+/// (`claims`, [`superseded_by`]), so a repack is read before the packs it replaces. When every
+/// pending pack waits on another (repacks naming each other), all of them.
+fn round_now(
+    pending: &[[u8; 32]],
+    claims: &BTreeMap<[u8; 32], BTreeSet<[u8; 32]>>,
+) -> BTreeSet<[u8; 32]> {
+    let waiting: BTreeSet<[u8; 32]> = pending.iter().copied().collect();
+    let now: BTreeSet<[u8; 32]> = pending
+        .iter()
+        .filter(|h| {
+            claims
+                .get(*h)
+                .is_none_or(|by| by.iter().all(|s| !waiting.contains(s)))
+        })
+        .copied()
+        .collect();
+    if now.is_empty() {
+        waiting
+    } else {
+        now
+    }
+}
+
+/// The superseded packs ([`superseded_by`]) a fetch need not download: those a pack it `has`
+/// (downloaded, or held from an earlier fetch) supersedes, directly or through a chain of
+/// repacks (a pack superseded by a covered pack is covered too).
+fn covered_packs(
+    claims: &BTreeMap<[u8; 32], BTreeSet<[u8; 32]>>,
+    has: impl Fn(&[u8; 32]) -> bool,
+) -> BTreeSet<[u8; 32]> {
+    let mut covered = BTreeSet::new();
+    loop {
+        let more: Vec<[u8; 32]> = claims
+            .iter()
+            .filter(|(old, by)| {
+                !covered.contains(*old) && by.iter().any(|s| has(s) || covered.contains(s))
+            })
+            .map(|(old, _)| *old)
+            .collect();
+        if more.is_empty() {
+            return covered;
+        }
+        covered.extend(more);
+    }
+}
+
 /// One pack of a fetch ([`Helper::fetch_packs`]): the bytes of the first of its `copies` that
 /// verifies (opened, for a private repository), or why it was set aside.
 async fn fetch_one(
@@ -849,10 +1011,7 @@ async fn with_ticks<T>(
 
 /// The fetch's progress meter ([`progress::FetchMeter`]) over `packs`: drawn when git asked for
 /// progress (a terminal), not under `-q` or in JSON mode.
-fn fetch_meter(
-    options: &OptionState,
-    packs: &[([u8; 32], Vec<&forge_core::repo::PackManifestInfo>)],
-) -> progress::FetchMeter {
+fn fetch_meter(options: &OptionState, packs: &PackGroups<'_>) -> progress::FetchMeter {
     let shown = Progress::new(options.verbosity);
     progress::FetchMeter::new(
         options.progress && shown.enabled && !shown.json,
@@ -887,7 +1046,7 @@ async fn parent_holding(
     let parent = forge_core::resolve::resolve_id(client, &parent_id)
         .await
         .ok()?;
-    let theirs: std::collections::BTreeSet<[u8; 32]> = svc
+    let theirs: BTreeSet<[u8; 32]> = svc
         .read_pack_manifests(&parent)
         .await
         .ok()?
@@ -1196,12 +1355,13 @@ fn wants_already_local(wants: &[Want], options: &OptionState) -> bool {
 /// a new pack, so this turns "download every pack" into "download the new ones". A partial
 /// clone (`--filter`) indexes a filtered subset, never a whole pack, so it passes no `held`.
 fn packs_to_fetch(
-    manifests: Vec<forge_core::repo::PackManifestInfo>,
+    manifests: &[forge_core::repo::PackManifestInfo],
     held: Option<&crate::fetched::FetchedPacks>,
 ) -> Vec<forge_core::repo::PackManifestInfo> {
     let git_packs: Vec<_> = manifests
-        .into_iter()
+        .iter()
         .filter(|m| m.kind == u64::from(KIND_GIT_PACK))
+        .cloned()
         .collect();
     if git_packs.is_empty() {
         // Nothing stored: an empty repo. git tolerates a fetch that delivers no objects as
@@ -4307,5 +4467,122 @@ mod tests {
         for b in [stored, indexed] {
             assert!(!b.contains("mirror("), "{b}");
         }
+    }
+
+    fn manifest(hash: u8, owner: &str, supersedes: &[u8]) -> forge_core::repo::PackManifestInfo {
+        forge_core::repo::PackManifestInfo {
+            document_id: format!("d{hash}{owner}"),
+            created_at: u64::from(hash),
+            owner_id: owner.into(),
+            pack_hash: [hash; 32],
+            kind: 0,
+            size_bytes: 10,
+            object_count: 1,
+            chunk_count: 0,
+            storage: 1,
+            uris: Vec::new(),
+            supersedes: supersedes.iter().map(|h| [*h; 32]).collect(),
+            tips: Vec::new(),
+            created_at_block_height: 0,
+        }
+    }
+
+    fn members() -> forge_core::repo::RoleMap {
+        [("m".to_string(), forge_core::rules::v2::Role::Writer)].into()
+    }
+
+    /// Q5-B15: only a member's git-pack manifest supersedes, and never its own pack.
+    #[test]
+    fn only_a_members_repack_supersedes_packs() {
+        let mut env = manifest(9, "m", &[1]);
+        env.kind = 3;
+        let claims = super::superseded_by(
+            &[
+                manifest(1, "m", &[]),
+                manifest(2, "m", &[]),
+                manifest(3, "m", &[1, 2, 3]),
+                manifest(4, "stranger", &[1, 2, 3, 5]),
+                env,
+            ],
+            &members(),
+        );
+        let want: std::collections::BTreeMap<[u8; 32], std::collections::BTreeSet<[u8; 32]>> =
+            [([1; 32], [[3; 32]].into()), ([2; 32], [[3; 32]].into())].into();
+        assert_eq!(claims, want);
+    }
+
+    /// Q5-B15: a superseded pack is skipped once a pack superseding it is here, through a
+    /// chain of repacks; while none is, it is downloaded.
+    #[test]
+    fn a_pack_is_skipped_only_when_its_superseding_pack_is_here() {
+        // 3 superseded 1 and 2; 5 later superseded 3 and 4.
+        let claims = super::superseded_by(
+            &[
+                manifest(3, "m", &[1, 2]),
+                manifest(5, "m", &[3, 4]),
+                manifest(6, "m", &[]),
+            ],
+            &members(),
+        );
+        let all: std::collections::BTreeSet<[u8; 32]> = [[1; 32], [2; 32], [3; 32], [4; 32]].into();
+        assert_eq!(super::covered_packs(&claims, |h| *h == [5; 32]), all);
+        let under_3: std::collections::BTreeSet<[u8; 32]> = [[1; 32], [2; 32]].into();
+        assert_eq!(super::covered_packs(&claims, |h| *h == [3; 32]), under_3);
+        assert!(super::covered_packs(&claims, |h| *h == [6; 32]).is_empty());
+        // Two repacks that name each other (a cycle) cover nothing unless one is here.
+        let cycle = super::superseded_by(
+            &[manifest(7, "m", &[8]), manifest(8, "m", &[7])],
+            &members(),
+        );
+        assert!(super::covered_packs(&cycle, |_| false).is_empty());
+    }
+
+    /// Q5-B15: a round reads the newest repack first; its packs wait for it, and a cycle of
+    /// repacks naming each other is read at once.
+    #[test]
+    fn a_round_reads_a_repack_before_the_packs_it_replaces() {
+        let claims = super::superseded_by(
+            &[
+                manifest(3, "m", &[1, 2]),
+                manifest(5, "m", &[3, 4]),
+                manifest(6, "m", &[]),
+            ],
+            &members(),
+        );
+        let all = [[1; 32], [2; 32], [3; 32], [4; 32], [5; 32], [6; 32]];
+        let first: std::collections::BTreeSet<[u8; 32]> = [[5; 32], [6; 32]].into();
+        assert_eq!(super::round_now(&all, &claims), first);
+        // 5 did not arrive: 3 and 4 come next, and 1 and 2 still wait for 3.
+        let next: std::collections::BTreeSet<[u8; 32]> = [[3; 32], [4; 32]].into();
+        assert_eq!(super::round_now(&all[..4], &claims), next);
+        let cycle = super::superseded_by(
+            &[manifest(7, "m", &[8]), manifest(8, "m", &[7])],
+            &members(),
+        );
+        assert_eq!(super::round_now(&[[7; 32], [8; 32]], &cycle).len(), 2);
+    }
+
+    /// Q5-B15: a triage member's or reader's manifest supersedes nothing (only a maintainer or
+    /// a writer records packs).
+    #[test]
+    fn only_a_pusher_supersedes() {
+        let roles: forge_core::repo::RoleMap = [
+            ("t".to_string(), forge_core::rules::v2::Role::Triage),
+            ("r".to_string(), forge_core::rules::v2::Role::Reader),
+        ]
+        .into();
+        assert!(
+            super::superseded_by(&[manifest(3, "t", &[1]), manifest(4, "r", &[2])], &roles)
+                .is_empty()
+        );
+    }
+
+    /// Q5-B15: the skipping is limited to the incremental pass; the full pass that runs when
+    /// the history has gaps reads every pack.
+    #[test]
+    fn only_the_incremental_pass_skips_superseded_packs() {
+        let repack = [manifest(3, "m", &[1, 2])];
+        assert_eq!(super::claims_for(true, &repack, &members()).len(), 2);
+        assert!(super::claims_for(false, &repack, &members()).is_empty());
     }
 }

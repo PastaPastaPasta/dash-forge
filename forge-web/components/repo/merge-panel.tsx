@@ -91,6 +91,21 @@ export interface CloseIssuesOption {
   readonly omitted?: number
 }
 
+/** "Merging is blocked: the branch rules are not met", with each unmet rule (and, for a maintainer, the bypass under them). */
+function UnmetRules({ rules, children, className = 'mt-3' }: { rules: readonly string[]; children?: React.ReactNode; className?: string }): JSX.Element {
+  return (
+    <div className={`${className} rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense`} data-testid="merge-rules-unmet">
+      <p className="font-medium text-anvil-900 dark:text-anvil-50">Merging is blocked: the branch rules are not met</p>
+      <ul className="mt-1 list-disc pl-5 text-[12px] text-anvil-700 dark:text-anvil-200">
+        {rules.map((r) => (
+          <li key={r}>{r}</li>
+        ))}
+      </ul>
+      {children}
+    </div>
+  )
+}
+
 export function MergePanel({
   repo,
   pull,
@@ -589,20 +604,23 @@ export function MergePanel({
             </>
           ) : button.kind === 'unavailable' ? (
             <span className="text-dense text-anvil-600 dark:text-anvil-400">{button.reason}</span>
-          ) : (
+          ) : button.kind === 'mobile' ? null : (
             <Button disabled>{button.label}</Button>
           )}
         </div>
       </div>
 
+      {/* Q5-B14: a phone cannot merge here, but the maintainer still learns what waits (code
+          owner approvals included), above the pointer to a desktop browser. */}
+      {button.kind === 'mobile' && !mergedHere ? (
+        <div className="mt-3 space-y-2">
+          {unmetRules.length > 0 ? <UnmetRules rules={unmetRules} className="" /> : null}
+          <Button disabled>{button.label}</Button>
+        </div>
+      ) : null}
+
       {mergeable && newTip === null && unmetRules.length > 0 ? (
-        <div className="mt-3 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense" data-testid="merge-rules-unmet">
-          <p className="font-medium text-anvil-900 dark:text-anvil-50">Merging is blocked: the branch rules are not met</p>
-          <ul className="mt-1 list-disc pl-5 text-[12px] text-anvil-700 dark:text-anvil-200">
-            {unmetRules.map((r) => (
-              <li key={r}>{r}</li>
-            ))}
-          </ul>
+        <UnmetRules rules={unmetRules}>
           {canBypass ? (
             <label className="mt-2 flex items-start gap-2 text-dense text-anvil-800 dark:text-anvil-100">
               <input
@@ -619,7 +637,7 @@ export function MergePanel({
               </span>
             </label>
           ) : null}
-        </div>
+        </UnmetRules>
       ) : null}
       {mergeable && newTip === null && gate.reason !== null && failure === null ? (
         <p id="merge-gate-reason" className="mt-2 text-[12px] text-anvil-600 dark:text-anvil-400" data-testid="merge-gate-reason">

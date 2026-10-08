@@ -1041,6 +1041,12 @@ fn from_platform_text(msg: &str, ctx: &ErrorContext<'_>) -> Option<UserError> {
     if let Some((document_type, rule)) = violated_rule(msg) {
         return Some(rule_refused(ctx, &document_type, &rule, &one_line(msg)));
     }
+    // Before the network rule: Drive's refusal of a read travels as a gRPC status ("transport
+    // error"), but it is an answer. Here the clauses are dg's own (`dg api query` words its own
+    // E201), so it is not the user's to fix.
+    if is_unindexed_query(&m) || is_invalid_argument(&m) {
+        return Some(read_refused(ctx, msg));
+    }
     if is_network_text(&m) {
         return Some(unreachable(ctx, msg));
     }
@@ -1642,6 +1648,64 @@ fn timed_out(ctx: &ErrorContext<'_>, retryable: bool) -> UserError {
     } else {
         u.fix("check whether it landed first (e.g. `dg issue list <repo>` / `dg repo view <repo>`), then run it again if it did not")
     }
+}
+
+/// Whether Drive refused a document query because its where-clauses fit none of the type's
+/// indexes: gRPC `InvalidArgument` carrying `QuerySyntaxError::WhereClauseOnNonIndexedProperty`
+/// ("where clause on non indexed property error: query must be for valid indexes, …"). An
+/// answer about the query, not a connection failure (Q5-D06).
+pub fn is_unindexed_query(text: &str) -> bool {
+    let m = text.to_ascii_lowercase();
+    m.contains("where clause on non indexed property")
+        || m.contains("query must be for valid indexes")
+}
+
+/// Whether a node refused a read as an invalid request (gRPC `InvalidArgument`, Drive's
+/// `QuerySyntaxError`s among them): an answer, not a connection failure. A refused write is
+/// not this (it is classified by its consensus text).
+pub fn is_invalid_argument(text: &str) -> bool {
+    let m = text.to_ascii_lowercase();
+    (m.contains("client specified an invalid argument") || m.contains("code: invalidargument"))
+        && !m.contains("broadcast")
+        && !m.contains("consensus")
+}
+
+/// Drive's refusal, stopped before its list of the type's indexes (a debug dump).
+fn refusal_cause(detail: &str) -> String {
+    let detail = one_line(detail);
+    match detail.find(", valid indexes are") {
+        Some(at) => detail[..at].to_string(),
+        None => detail,
+    }
+}
+
+/// E101 for a read Platform refused as invalid ([`is_unindexed_query`], [`is_invalid_argument`])
+/// outside `dg api query`: the request is this build's, so retrying or rewording cannot help.
+fn read_refused(ctx: &ErrorContext<'_>, detail: &str) -> UserError {
+    UserError::new(
+        codes::UNEXPECTED,
+        ctx.headline("Platform refused the request as invalid"),
+    )
+    .cause(refusal_cause(detail))
+    .fix("update dg and git-remote-dash: this build may ask for an index or property the network's contracts do not have")
+    .note("Platform answered; this is not a connection problem, and retrying will not help")
+}
+
+/// E201 for a query [`is_unindexed_query`] refused. `indexes` (`name (property, …)`, from
+/// [`crate::platform::LoadedContract::index_summaries`]) are listed when the caller has the
+/// contract; Drive's own list is a debug dump, so the cause stops before it.
+pub fn unindexed_query(goal: Option<&str>, detail: &str, indexes: &[String]) -> UserError {
+    let cause = refusal_cause(detail);
+    let u = UserError::new(
+        codes::USAGE,
+        lead(goal, "no index of this document type fits these where-clauses"),
+    )
+    .cause(cause)
+    .fix("use where-clauses that fit one of the type's indexes: the indexed properties, in index order, with at most one range clause on the last one used");
+    if indexes.is_empty() {
+        return u;
+    }
+    u.note(format!("its indexes: {}", indexes.join("; ")))
 }
 
 fn unreachable(ctx: &ErrorContext<'_>, detail: &str) -> UserError {
@@ -2822,6 +2886,59 @@ mod tests {
             "push rejected: a document it refers to at assignee does not exist"
         );
         assert!(u.cause.unwrap().starts_with("40120: "));
+    }
+
+    /// Q5-D06: Drive refusing a query's where-clauses (gRPC InvalidArgument, travelling as a
+    /// "transport error") is an answer, not E701 "could not reach Dash Platform".
+    #[test]
+    fn a_query_on_no_index_is_an_answer_not_unreachable() {
+        let text = r#"querying review documents: Dapi client error: transport error: grpc error: code: 'Client specified an invalid argument', message: "where clause on non indexed property error: query must be for valid indexes, valid indexes are: {\"patch\": Index { name: \"patch\" }}""#;
+        let query = ErrorContext {
+            goal: Some("query failed"),
+            ..Default::default()
+        };
+        // Outside `dg api query` the clauses are dg's own: E101, an answer, never E701.
+        let u = core_chain(CoreError::Platform(text.into()), &query);
+        assert_eq!(u.code, "E101");
+        assert_eq!(
+            u.message,
+            "query failed: Platform refused the request as invalid"
+        );
+        let cause = u.cause.unwrap();
+        assert!(
+            cause.ends_with("query must be for valid indexes"),
+            "{cause}"
+        );
+        // Any other InvalidArgument read refusal is an answer too.
+        let other = core_chain(
+            CoreError::Platform("querying issue documents: transport error: grpc error: code: 'Client specified an invalid argument', message: \"order by on non indexed property\"".into()),
+            &query,
+        );
+        assert_eq!(other.code, "E101");
+        // `dg api query`'s own wording: E201, the user's clauses.
+        let mine = super::unindexed_query(Some("query failed"), text, &[]);
+        assert_eq!((mine.code, mine.exit_code()), ("E201", 2));
+        assert_eq!(
+            mine.message,
+            "query failed: no index of this document type fits these where-clauses"
+        );
+        let listed = super::unindexed_query(
+            Some("query failed"),
+            text,
+            &["patch (patchId, $createdAt)".into()],
+        );
+        assert_eq!(
+            listed.note.as_deref(),
+            Some("its indexes: patch (patchId, $createdAt)")
+        );
+        // A real outage is still E701.
+        let down = core_chain(
+            CoreError::Platform(
+                "querying review documents: transport error: status: Unavailable".into(),
+            ),
+            &query,
+        );
+        assert_eq!(down.code, "E701");
     }
 
     /// The RC1 contracts' document schemas, by type.

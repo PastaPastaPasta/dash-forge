@@ -14,6 +14,7 @@ import { timeAgo } from '@/lib/view'
 import { MarkdownView, type MarkdownLinks, type SuggestionContext } from '@/components/markdown-view'
 import { Textarea } from '@/components/ui/input'
 import { cn, shortId } from '@/lib/utils'
+import { DISCARDED_COMMENT_EDIT } from '@/lib/view/draft-text'
 
 /** A label chip: the definition's colour when it has one, the theme's accent otherwise. */
 export function LabelChip({
@@ -102,6 +103,18 @@ export function submitShortcut(e: KeyboardEvent<HTMLTextAreaElement>, submit: ()
 }
 
 /** A markdown field with Write / Preview tabs (the preview renders exactly what will be shown). */
+/** A comment's header with the mark that its stored edit was discarded (Q5-A11, `discardedEdits`). */
+export function withDiscardedEdit(header: ReactNode): JSX.Element {
+  return (
+    <>
+      {header}
+      <span role="status" className="order-last basis-full text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="comment-edit-dropped">
+        {DISCARDED_COMMENT_EDIT}
+      </span>
+    </>
+  )
+}
+
 export function MarkdownEditor({
   id,
   label,

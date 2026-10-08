@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/repo-unban.schema.json",
   "title": "dg repo unban --json",
-  "description": "Your ban of an identity lifted; `none` when you have no ban of it.",
+  "description": "Your ban of an identity lifted. With no ban of yours to lift it is an error: E601 when another maintainer banned it, E102 when no ban of it counts.",
   "type": "object",
   "properties": {
     "schemaVersion": {
@@ -11,8 +11,7 @@
     "status": {
       "type": "string",
       "enum": [
-        "lifted",
-        "none"
+        "lifted"
       ]
     },
     "repo": {
@@ -29,7 +28,8 @@
     "schemaVersion",
     "status",
     "repo",
-    "identityId"
+    "identityId",
+    "documentId"
   ],
   "additionalProperties": true
 }

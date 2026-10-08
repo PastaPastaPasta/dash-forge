@@ -29,7 +29,7 @@ import { closedIn } from '@/lib/view/cross-refs'
 import { readDuplicatesOf } from '@/lib/view/issues-view'
 import type { LinkingPulls, RepoRef, TransitionView } from '@/lib/repo'
 import type { RepoHome, IssueThread, MembersOnlyTarget, TimelineItem } from '@/lib/view'
-import { commentDraftKey, commentEditDraftKey, editDraftKey, useDraftText, useEditDraft } from '@/lib/view/draft-text'
+import { commentDraftKey, commentEditDraftKey, discardedEdits, editDraftKey, useDraftText, useEditDraft } from '@/lib/view/draft-text'
 import { ACL_NAME, ARCHIVED_REASON, isMembersOnlyTarget, issueWriteShows, loadIssueOrMembersOnly } from '@/lib/view'
 import { publicTextOf, quotesMembersText } from '@/lib/view/audience'
 import { cn } from '@/lib/utils'
@@ -86,7 +86,7 @@ import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
-import { EditedMarker, MarkdownEditor } from '@/components/repo/issue-bits'
+import { EditedMarker, MarkdownEditor, withDiscardedEdit } from '@/components/repo/issue-bits'
 import { AssigneePicker, LabelPicker, MilestonePicker, SidebarSection, applySetChange, assigneesConfirm, labelsConfirm, setChangeShows, stateToggleLabel, type SetChange } from '@/components/repo/target-rail'
 import { readMilestones } from '@/lib/repo/milestones'
 import { EventValuesNote, HiddenNote } from '@/components/repo/hidden-note'
@@ -244,7 +244,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const editingComment = commentDraft.value
   const setEditingComment = (e: { id: string; body: string } | null): void =>
     commentDraft.set(e === null ? null : { id: e.id, body: e.body, rev: comments.find((c) => c.id === e.id)?.revision ?? null })
-  const editsDropped = editDraft.dropped || commentDraft.dropped
+  // Q5-A11: the note sits where the discarded edit was (its comment, or the description box).
+  const discarded = discardedEdits(editDraft.dropped, commentDraft.droppedValue, comments.map((c) => c.id))
   // A hidden issue's body and timeline show only after "Show it anyway" (RC2 MOD).
   const [threadRevealed, setThreadRevealed] = useState(false)
 
@@ -582,9 +583,9 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
             <EditedMarker createdAt={issue.createdAt} updatedAt={issue.updatedAt} />
           </div>
           <div className="px-4 py-3">
-            {editsDropped && editing === null && editingComment === null ? (
+            {discarded.boxNote !== null && editing === null && editingComment === null ? (
                     <p role="status" className="mb-2 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="edit-draft-dropped">
-                      Your unsaved edit was discarded: it changed on Platform since you started.
+                      {discarded.boxNote}
                     </p>
                   ) : null}
                   {editing ? (
@@ -647,7 +648,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                 onDelete: (id) => setPending({ kind: 'deleteComment', id }),
                 links,
               })
-              if (!whileLocked.has(item.comment.id)) return slots
+              const header = item.comment.id === discarded.atComment && editingComment === null ? withDiscardedEdit(slots.header) : slots.header
+              if (!whileLocked.has(item.comment.id)) return { ...slots, header }
               return {
                 ...slots,
                 header: (
@@ -655,7 +657,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                     <span className="rounded-full bg-anvil-100 px-2 py-0.5 text-[11px] text-anvil-600 dark:bg-anvil-800 dark:text-anvil-300" data-testid="posted-while-locked" title="Posted by a non-member while the conversation was locked.">
                       posted while locked
                     </span>
-                    {slots.header}
+                    {header}
                   </>
                 ),
               }
