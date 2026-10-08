@@ -400,10 +400,18 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, no_resave: b
         }
         .into());
     }
-    // Writer, triage and reader are one `writer` document: name the role it grants.
-    let shown = MemberReader::new(client)
-        .role_doc(handle, member, role)
-        .await?
+    // Writer, triage and reader are one `writer` document: name the role it grants. A member who
+    // holds only the other document type is refused before anything is written, naming their
+    // access and the `--role` that removes it (the default `--role writer` never removes a
+    // maintainer).
+    let held = MemberReader::new(client).roles_of(handle, member).await?;
+    let held_roles: Vec<Role> = held.iter().map(|m| m.role).collect();
+    if let Some(e) = wrong_role_refusal(&handle.display(), member, role, &held_roles) {
+        return Err(e.into());
+    }
+    let shown = held
+        .iter()
+        .find(|m| doc_type(m.role) == doc_type(role))
         .map_or(role, |m| m.role);
     let prompt = if keyed {
         let members = MemberReader::new(client).list(handle).await?;
@@ -544,6 +552,45 @@ fn add_plan(has_key: bool, role: Role, change_from: Option<Role>) -> KeyPlan {
 /// role that holds it, which the caller checks): the repository has one and the role held it.
 fn remove_rotates(has_key: bool, role: Role) -> bool {
     has_key && holds_members_key(role)
+}
+
+/// Refuse a removal whose `--role` names a document type `member` does not hold while they hold
+/// the other one (a maintainer removed with the default `--role writer`, say): `None` when they
+/// hold the requested type, or no role at all (nothing to remove, as before).
+fn wrong_role_refusal(
+    repo: &str,
+    member: &str,
+    requested: Role,
+    held: &[Role],
+) -> Option<UserError> {
+    if held.iter().any(|r| doc_type(*r) == doc_type(requested)) {
+        return None;
+    }
+    let other = *held.iter().min()?;
+    let asked = if requested == Role::Maintainer {
+        "Maintain access"
+    } else {
+        "Write, Triage or Read access"
+    };
+    Some(
+        UserError::new(
+            codes::USAGE,
+            format!(
+                "{member} has {} access to {repo}, not {asked}",
+                other.label()
+            ),
+        )
+        .cause(format!(
+            "`--role {}` removes {asked}, which they don't have",
+            requested.as_str()
+        ))
+        .fix(format!(
+            "remove their {} access: `dg collab remove {repo} {member} --role {}`",
+            other.label(),
+            other.as_str()
+        ))
+        .note("nothing was written"),
+    )
 }
 
 /// The word for `member`'s `role` in copy: "Owner" for the repository owner's own maintainer
@@ -835,6 +882,39 @@ mod tests {
                 assert!(!add_plan(true, to, Some(from)).rotate, "{from:?} -> {to:?}");
             }
         }
+    }
+
+    #[test]
+    fn removing_a_maintainer_with_the_writer_role_is_refused_naming_their_access() {
+        let e = wrong_role_refusal("o/r", "bob", Role::Writer, &[Role::Maintainer]).unwrap();
+        assert_eq!(e.code, codes::USAGE);
+        let text = e.to_string();
+        assert!(
+            text.contains("bob has Maintain access to o/r, not Write, Triage or Read access"),
+            "{text}"
+        );
+        assert!(
+            e.fix
+                .iter()
+                .any(|f| f.contains("dg collab remove o/r bob --role maintainer")),
+            "{e:?}"
+        );
+        // The other way round: a reader removed with `--role maintainer`.
+        let e = wrong_role_refusal("o/r", "rae", Role::Maintainer, &[Role::Reader]).unwrap();
+        assert!(e
+            .to_string()
+            .contains("rae has Read access to o/r, not Maintain access"));
+        assert!(e.fix.iter().any(|f| f.contains("--role reader")), "{e:?}");
+        // Holding the requested document type (any of its roles), or nothing at all, passes.
+        assert!(wrong_role_refusal("o/r", "t", Role::Writer, &[Role::Triage]).is_none());
+        assert!(wrong_role_refusal(
+            "o/r",
+            "m",
+            Role::Maintainer,
+            &[Role::Maintainer, Role::Writer]
+        )
+        .is_none());
+        assert!(wrong_role_refusal("o/r", "x", Role::Writer, &[]).is_none());
     }
 
     #[test]

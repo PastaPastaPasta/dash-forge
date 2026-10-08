@@ -44,7 +44,7 @@ dg collab add    <owner>/<repo> <identity id or DPNS name> --role writer   # or 
 dg collab remove <owner>/<repo> <identity id or DPNS name> --role writer
 ```
 
-`dg collab list` shows each member's access (Owner, Maintain, Write, Triage or Read). `dg collab remove --role writer` (or `triage`, `reader`) removes the member's `writer` document, whichever of the three roles (Write, Triage or Read) it grants.
+`dg collab list` shows each member's access (Owner, Maintain, Write, Triage or Read). `dg collab remove --role writer` (or `triage`, `reader`) removes the member's `writer` document, whichever of the three roles (Write, Triage or Read) it grants. A member with Maintain access is removed with `--role maintainer`: the default `--role writer` refuses, naming their access, and writes nothing.
 
 If the owner runs `dg collab add` before the invitee has accepted, it is refused before anything is signed: *"`<identity>` has not accepted membership of `<repo>` yet"*, with the fix to ask them to run `dg collab accept`, then add them again. `dg collab add <owner>/<repo> <identity id> --wait 300` instead waits (printing that it is waiting) up to that many seconds for the acceptance to land, then adds them; with no `--wait` it checks once. `dg collab accept --withdraw` withdraws an earlier acceptance (a membership already granted stands until the owner removes it).
 
