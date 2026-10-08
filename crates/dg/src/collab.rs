@@ -526,7 +526,11 @@ fn remove_rotates(has_key: bool, role: Role) -> bool {
 
 /// The word for `member`'s `role` in copy: "Owner" for the repository owner's own maintainer
 /// document, else [`Role::label`] (Maintain, Write, Triage, Read).
-fn role_word(handle: &forge_core::scope::RepoRef, member: &str, role: Role) -> &'static str {
+pub(crate) fn role_word(
+    handle: &forge_core::scope::RepoRef,
+    member: &str,
+    role: Role,
+) -> &'static str {
     if role == Role::Maintainer && member == handle.owner_id() {
         "Owner"
     } else {

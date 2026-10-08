@@ -1790,10 +1790,9 @@ pub enum LabelCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum CollabCommand {
-    /// Add a member, or change a member's access: Read, Triage, Write or Maintain (the repo
-    /// owner creates a writer/maintainer document; a writer document's role is writer, triage
-    /// or reader, and a role change replaces it). Every role holds the members key when the
-    /// repo has members-only content. The member must have run `dg collab accept <repo>` first.
+    /// Add a member, or change a member's access: Read, Triage, Write or Maintain. Every role
+    /// holds the members key when the repo has members-only content. The member must have run
+    /// `dg collab accept <repo>` first.
     Add {
         /// The repository (`owner/name`).
         repo: String,

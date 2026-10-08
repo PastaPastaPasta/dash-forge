@@ -205,7 +205,11 @@ fn print_status(handle: &RepoRef, arg: &str, kr: &Keyring) {
     }
     println!("  members:");
     for m in kr.members() {
-        println!("    {}  {}", m.identity_id, m.role);
+        println!(
+            "    {}  {}",
+            m.identity_id,
+            crate::collab::role_word(handle, &m.identity_id, m.role)
+        );
     }
 }
 
