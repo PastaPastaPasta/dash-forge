@@ -212,7 +212,7 @@ describe('the picker', () => {
     const radio = document.querySelector<HTMLInputElement>('[data-testid="audience-option-members"] input')!
     expect(radio.closest('label')).toBeNull()
     expect(document.querySelector(`label[for="${radio.id}"]`)?.textContent?.trim()).toBe('Members (3)')
-    expect(document.getElementById(radio.getAttribute('aria-describedby')!)?.textContent).toContain('Current and future members of this repo (3, including 1 reader).')
+    expect(document.getElementById(radio.getAttribute('aria-describedby')!)?.textContent).toContain('Current and future members of this repo (3, including 1 with Read access).')
   })
 })
 

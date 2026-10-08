@@ -28,7 +28,7 @@ import type { ForgeIds } from '../deployments'
 import { base58Encode, decodeIdentifier } from '../auth/base58'
 import { idbDelete, idbEntries, idbGet, idbPut } from '../idb'
 import { isGitRefName, type EventKind } from '../rules'
-import { denseNumber, isAuthorKind, namesDenseRule, normalizeRepoName as normalizeV2RepoName, type Audience, type ClosedAs, type Role, type StateAction, type Visibility } from '../rules/v2'
+import { RoleOracle, denseNumber, isAuthorKind, namesDenseRule, normalizeRepoName as normalizeV2RepoName, type Audience, type ClosedAs, type Role, type StateAction, type Visibility } from '../rules/v2'
 import { fetchIdentityKeys, heldKeysText, usableEncryptionKey, type EncryptionOps } from '../auth/encryption-key'
 import {
   ConsensusRefusal,
@@ -65,7 +65,7 @@ import { longBodyField } from './long-body'
 import { createSealedRelease, sealedReleaseEnv, type SealedReleaseOptions, type SealedReleaseWritten } from './sealed-release'
 import { noteTargetCreated } from './social'
 import { refreshRoleOnRefusal, roleClaim } from './role-claim'
-import { WRITER_ROLE_CODE, grantableRoles, holdsMembersKey } from '../rules/roles'
+import { VerdictRefusedError, WRITER_ROLE_CODE, grantableRoles, holdsMembersKey, verdictRefusal } from '../rules/roles'
 import { repoSource } from './source'
 import { MAX_PATTERN_CHARS } from './settings'
 import { starShape } from './star-shape'
@@ -131,6 +131,21 @@ export interface PostContext {
   readonly isMember: boolean
   /** The target's conversation is locked (its transition sum is 16 or more). */
   readonly locked?: boolean
+  /**
+   * The signer's role, as {@link settledPost} reads it for an approve or request changes (which
+   * {@link refuseVerdictForRole} refuses from Read or Triage before signing).
+   */
+  readonly role?: Role | null
+}
+
+/**
+ * Refuse, before signing, an approve or request changes from a Read or Triage member (DESIGN
+ * §3.5, D15): only Write and Maintain give verdicts. Parity: `dg pr review`.
+ * @throws VerdictRefusedError
+ */
+export function refuseVerdictForRole(post: PostContext, verdict: VerdictInput): void {
+  const refused = verdictRefusal(post.role, verdict)
+  if (refused !== null) throw new VerdictRefusedError(refused)
 }
 
 /** Why a non-member cannot comment on or review a locked thread. */
@@ -165,12 +180,16 @@ export function commentProof(signer: string, post: PostContext | undefined): Rec
  * `post` with its membership settled for a review of `verdict`: a non-member's approve or request
  * changes is recorded as 4/5, which never counts, and a non-member's post to a locked thread is
  * refused, so a "not a member" read (still loading, failed, or cached from before they were
- * added) is read again, uncached, before it decides either.
+ * added) is read again, uncached, before it decides either. An approve or request changes always
+ * reads the signer's role now (`role`), which {@link refuseVerdictForRole} judges: a page's role
+ * may be unread or stale.
  */
 export async function settledPost(sdk: EvoSDK, repo: RepoRef, signer: string, post: PostContext, verdict: VerdictInput): Promise<PostContext> {
-  if (post.isMember || (verdict === 'comment' && post.locked !== true)) return post
+  const verdictGiven = verdict !== 'comment'
+  if (!verdictGiven && (post.isMember || post.locked !== true)) return post
   const members = await readMemberships(sdk, repo)
-  return members.some((m) => m.identity === signer) ? { ...post, isMember: true } : post
+  const role = new RoleOracle(members).currentRole(signer)
+  return { ...post, isMember: post.isMember || role !== null, ...(verdictGiven ? { role } : {}) }
 }
 
 /** An issue or PR a write refers to: its document id and number. */
@@ -832,6 +851,7 @@ export async function createReview(
   await refuseIfBanned(sdk, repo, auth.network, auth.identityId)
   if (!isRc1OidHex(input.commitOid)) throw new Error('a review names a 20- or 32-byte commit')
   const post = await settledPost(sdk, repo, auth.identityId, input.post, input.verdict)
+  refuseVerdictForRole(post, input.verdict)
   if (lockedOut(post)) throw new Error(LOCKED_REASON)
   // Who its text is for (its verdict is always public, D15): the PR's, unless asked narrower.
   const audience = await childAudience(sdk, repo, { targetId: input.patchId, ...(input.audience ? { requested: input.audience } : {}) })
@@ -1494,7 +1514,7 @@ export async function changeMemberRole(
     const reason = e instanceof Error ? e.message : String(e)
     // A public repo with members-only content: they are no member now, yet hold its current key.
     // It is rotated away from them at once; never left with them silently.
-    if (keyed !== null && holdsMembersKey(from, repo.visibility)) {
+    if (keyed !== null && holdsMembersKey(from)) {
       const rotated = await keyed.flows
         .rotateRepoKey(keyed.c, [memberId], `${intent ?? `members:role:${memberId}`}:rotate-after-failed-add`)
         .then(() => 'the members-only key was changed so they cannot read what is posted next')
@@ -1505,11 +1525,12 @@ export async function changeMemberRole(
   }
   if (keyed !== null) {
     const base = intent ?? `members:role:${memberId}`
-    const held = holdsMembersKey(from, repo.visibility)
-    const holdsNow = holdsMembersKey(to, repo.visibility)
+    const held = holdsMembersKey(from)
+    const holdsNow = holdsMembersKey(to)
     // Between roles that hold the members key, they keep it; to one that does not, it rotates away
     // from them; to one that does from one that did not, it is shared with them (the repair
-    // check's wrap). Neither happens while readers are in the key (`READERS_IN_MEMBERS_KEY`).
+    // check's wrap). Neither happens while every role holds the key (DESIGN §3.5); a Bot role
+    // (phase 4) will.
     if (held && !holdsNow) await keyed.flows.rotateRepoKey(keyed.c, [memberId], `${base}:rotate`)
     if (!held && holdsNow) await keyed.flows.runRepair(keyed.c, `${base}:share`)
   }

@@ -6134,6 +6134,14 @@ impl<'a> Collab<'a> {
         comment_count: Option<u16>,
         imported: Option<&Imported>,
     ) -> Result<String> {
+        // Only Write and Maintain approve or request changes (DESIGN §3.5): a Read or Triage
+        // member's verdict is refused before signing.
+        if precheck_enabled() && !matches!(verdict, Verdict::Comment | Verdict::Unknown(_)) {
+            let role = self.cached_role(repo).await?;
+            if let Some(e) = crate::members::verdict_refusal(role, verdict, repo) {
+                return Err(e.fix("post it as a comment instead").into());
+            }
+        }
         let verdict = self.verdict_for(repo, verdict).await?;
         let p = review_props(patch_id, verdict, commit_oid, body, comment_count, imported)?;
         self.require_unlocked_or_member(repo, patch_id).await?;

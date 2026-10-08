@@ -130,9 +130,8 @@ export function useComposerAudience(
   const wants = repo !== null && members === null && choice !== null && choice.members !== null
   const read = useAsync(() => readMembershipsCached(sdk!, repo!, network), [ready, repo?.repoId ?? '', network], { enabled: ready && sdk !== null && wants })
   const list = members ?? read.data
-  const visibility = repo?.visibility ?? 'public'
-  const count = list === null || list === undefined ? null : membersCount(list, visibility)
-  const holders = list === null || list === undefined ? EMPTY : keyHolders(list, visibility)
+  const count = list === null || list === undefined ? null : membersCount(list)
+  const holders = list === null || list === undefined ? EMPTY : keyHolders(list)
   const initial = choice?.initial ?? 'members'
   // Inside a members-only thread nothing starts public, whatever a draft says.
   const preferred: ComposerAudience = start === 'members' || (start === 'public' && choice?.publicAllowed !== false) ? start : initial
@@ -547,7 +546,7 @@ export function TurnOnMembersSheet({ home, open, onClose }: { home: RepoHome; op
   const key = useAsync(() => encryptionKeyState(network, identity!), [network, identity ?? '', unlockScope ?? ''], { enabled: identity !== null && open })
   // Who gets a key: every member who holds the members key, and the maintainer turning it on
   // (listed or not). Unknown until the members are read: no cost is shown, and Turn on waits.
-  const holders = members.data === null ? null : new Set([...keyHolders(members.data, home.repo.visibility), ...(identity !== null ? [identity] : [])]).size
+  const holders = members.data === null ? null : new Set([...keyHolders(members.data), ...(identity !== null ? [identity] : [])]).size
   const [lead, costLine, older] = turnOnText(holders ?? 1)
   const retry = (what: string, onRetry: () => void, testId: string): JSX.Element => (
     <p className="text-dense text-danger-700 dark:text-danger-400" role="alert" data-testid={testId}>
