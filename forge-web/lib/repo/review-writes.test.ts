@@ -47,6 +47,10 @@ vi.mock('../sdk', async (importOriginal) => {
   }
 })
 
+/** The target's member events as `setLabelIfNeeded` reads them fresh. */
+let labelLog: { events: { kind: string; value?: string }[]; hiddenValues?: number } = { events: [] }
+vi.mock('./issues', async (orig) => ({ ...(await orig<typeof import('./issues')>()), readTargetLog: async () => labelLog }))
+
 const prechecks: string[] = []
 let precheckFails = false
 const replaces: { documentType: string; changes: Record<string, unknown>; expectedRevision?: bigint; expectRepoId?: string }[] = []
@@ -77,6 +81,7 @@ import {
   saveReviewDraft,
   setAssignee,
   setLabel,
+  setLabelIfNeeded,
   submitReviewDraft,
   targetEventData,
   updateComment,
@@ -203,6 +208,24 @@ describe('assignees and labels (F-1)', () => {
       [5, 'bug'],
     ])
     await expect(setLabel(sdk, auth(ALICE), REPO, { target, label: ' ', add: true })).rejects.toThrow(/label name/)
+  })
+
+  it('writes a label only where the target is not already as asked, reading its events fresh', async () => {
+    // Someone added `bug` and removed `docs` since the list was read.
+    labelLog = { events: [{ kind: 'labelAdd', value: 'docs' }, { kind: 'labelAdd', value: 'bug' }, { kind: 'labelRemove', value: 'docs' }] }
+    expect(await setLabelIfNeeded(sdk, auth(ALICE), REPO, { target, label: 'bug', add: true })).toBeNull()
+    expect(await setLabelIfNeeded(sdk, auth(ALICE), REPO, { target, label: 'docs', add: false })).toBeNull()
+    expect(writes).toHaveLength(0)
+    expect(await setLabelIfNeeded(sdk, auth(ALICE), REPO, { target, label: ' docs ', add: true })).not.toBeNull()
+    expect(await setLabelIfNeeded(sdk, auth(ALICE), REPO, { target, label: 'bug', add: false })).not.toBeNull()
+    expect(writes.map((w) => [w.data['kind'], w.data['value']])).toEqual([
+      [4, 'docs'],
+      [5, 'bug'],
+    ])
+    // Sealed values this reader cannot open: the label state is unknown, so it is written as asked.
+    labelLog = { events: [], hiddenValues: 1 }
+    expect(await setLabelIfNeeded(sdk, auth(ALICE), REPO, { target, label: 'bug', add: false })).not.toBeNull()
+    labelLog = { events: [] }
   })
 
   it('re-seals a private edit (sealEdit) and replaces only enc/epoch; without the context it refuses', async () => {
