@@ -299,9 +299,9 @@ cmd('repo unarchive', 'The repository writable again.', ARCHIVE, ['status', 'rep
 cmd('repo ban', 'An identity banned from the repository.', {
     'status': E('banned'), 'repo': S, 'identityId': S, 'reason': nl(S), 'documentId': S, 'cost': COST,
 }, ['status', 'repo', 'identityId', 'documentId'])
-cmd('repo unban', 'Your ban of an identity lifted; `none` when you have no ban of it.', {
-    'status': E('lifted', 'none'), 'repo': S, 'identityId': S, 'documentId': S,
-}, ['status', 'repo', 'identityId'])
+cmd('repo unban', 'Your ban of an identity lifted. With no ban of yours to lift it is an error: E601 when another maintainer banned it, E102 when no ban of it counts.', {
+    'status': E('lifted'), 'repo': S, 'identityId': S, 'documentId': S,
+}, ['status', 'repo', 'identityId', 'documentId'])
 cmd('repo bans', 'Every ban of the repository: who wrote it, whether it counts, and the one that decides.', {
     'repo': S,
     'bans': A(O({'identityId': S, 'by': S, 'reason': nl(S), 'createdAt': I, 'documentId': S, 'counts': B, 'decides': B},

@@ -39,10 +39,20 @@ describe('a row comment count', () => {
   it('says how many are members-only: "5 comments (5 members-only)"', () => {
     act(() => root.render(<CommentCount n={5} membersOnly={5} />))
     expect(q('comment-count')?.querySelector('.sr-only')?.textContent).toBe('5 comments (5 members-only)')
-    expect(q('comment-count-members-only')?.textContent).toBe('(5)')
+    expect(q('comment-count-members-only')?.textContent).toBe('(5 members-only)')
     act(() => root.render(<CommentCount n={5} />))
     expect(q('comment-count')?.querySelector('.sr-only')?.textContent).toBe('5 comments')
     expect(q('comment-count-members-only')).toBeNull()
+  })
+
+  it('labels the share on a public thread too: "3 comments (2 members-only)" (Q5-D03)', () => {
+    act(() => root.render(<CommentCount n={3} membersOnly={2} />))
+    expect(q('comment-count')?.querySelector('.sr-only')?.textContent).toBe('3 comments (2 members-only)')
+    expect(q('comment-count')?.getAttribute('title')).toBe('3 comments (2 members-only)')
+    expect(q('comment-count-members-only')?.textContent).toBe('(2 members-only)')
+    // never more members-only than comments
+    act(() => root.render(<CommentCount n={1} membersOnly={4} />))
+    expect(q('comment-count')?.querySelector('.sr-only')?.textContent).toBe('1 comment (1 members-only)')
   })
 })
 

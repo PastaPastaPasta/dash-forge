@@ -235,6 +235,22 @@ impl LoadedContract {
             .is_ok_and(|t| t.properties().contains_key(property))
     }
 
+    /// The indexes of `document_type`, each as `name (property, property, …)` in the order its
+    /// where-clauses must follow (Drive's rule). Empty for an unknown type.
+    pub fn index_summaries(&self, document_type: &str) -> Vec<String> {
+        use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
+        let Ok(t) = self.0.document_type_for_name(document_type) else {
+            return Vec::new();
+        };
+        t.indexes()
+            .values()
+            .map(|i| {
+                let props: Vec<&str> = i.properties.iter().map(|p| p.name.as_str()).collect();
+                format!("{} ({})", i.name, props.join(", "))
+            })
+            .collect()
+    }
+
     /// The document types the contract declares, by name.
     pub fn document_type_names(&self) -> Vec<String> {
         use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;

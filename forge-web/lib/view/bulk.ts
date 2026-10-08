@@ -34,6 +34,8 @@ export type BulkAction =
 export interface BulkPlan<R extends BulkRow = BulkRow> {
   readonly apply: readonly R[]
   readonly unchanged: number
+  /** Of {@link unchanged}, the merged pull requests a close or reopen leaves alone. */
+  readonly merged: number
 }
 
 /** Whether `action` changes `row`. */
@@ -50,7 +52,28 @@ export function changes(action: BulkAction, row: BulkRow): boolean {
 
 export function planBulk<R extends BulkRow>(action: BulkAction, rows: readonly R[]): BulkPlan<R> {
   const apply = rows.filter((r) => changes(action, r))
-  return { apply, unchanged: rows.length - apply.length }
+  const merged = action.kind === 'label' ? 0 : rows.filter((r) => r.merged && !changes(action, r)).length
+  return { apply, unchanged: rows.length - apply.length, merged }
+}
+
+/**
+ * What the dialog says of the selected items a batch leaves alone: "2 selected are already that
+ * way and are left as they are.", and a merged pull request as "already merged". Null: none.
+ */
+export function unchangedNote(plan: BulkPlan): string | null {
+  const one = (n: number, what: string): string => `${n} selected ${n === 1 ? 'is' : 'are'} ${what} and ${n === 1 ? 'is' : 'are'} left as ${n === 1 ? 'it is' : 'they are'}.`
+  const others = plan.unchanged - plan.merged
+  const parts = [others > 0 ? one(others, 'already that way') : '', plan.merged > 0 ? one(plan.merged, 'already merged') : ''].filter((x) => x !== '')
+  return parts.length === 0 ? null : parts.join(' ')
+}
+
+/**
+ * Why the bar's Close is disabled, or null when some selected item is open: a merged pull
+ * request is never closed, and a closed item is closed already.
+ */
+export function closeBlocked(rows: readonly BulkRow[]): string | null {
+  if (rows.some((r) => changes({ kind: 'close' }, r))) return null
+  return rows.every((r) => r.merged) ? "Merged pull requests can't be closed." : 'Nothing selected is open.'
 }
 
 /** Whether every selected row is closed (and none merged): the bar offers Reopen, not Close. */

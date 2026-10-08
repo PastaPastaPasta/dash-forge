@@ -2968,27 +2968,36 @@ fn code_owner_fixes(
         ));
     }
     let (can, cannot): (Vec<_>, Vec<_>) = check.status.pending.iter().partition(|p| p.approvable);
+    // The first few by name, as the web's branch rules card names them.
+    let named = |files: &[&forge_core::rules::codeowners::PendingFile]| {
+        let shown: Vec<String> = files
+            .iter()
+            .take(SHOWN)
+            .map(|p| crate::fmt::safe(&p.path).into_owned())
+            .collect();
+        if files.len() > SHOWN {
+            format!("{} and {} more", shown.join(", "), files.len() - SHOWN)
+        } else {
+            shown.join(", ")
+        }
+    };
+    // Every file, or (when some have no owner who can approve) only those that have one.
+    let which = if cannot.is_empty() {
+        "each file".to_string()
+    } else {
+        named(&can)
+    };
     let u = if can.is_empty() {
         u
     } else {
         u.fix(format!(
-            "ask an owner of each file (named in CODEOWNERS on the base branch) to approve (`dg pr review {repo} {number} --approve`)"
+            "ask an owner of {which} (named in CODEOWNERS on the base branch) to approve (`dg pr review {repo} {number} --approve`)"
         ))
     };
     if cannot.is_empty() {
         return u;
     }
-    // The first few by name, as the web's branch rules card names them.
-    let files: Vec<String> = cannot
-        .iter()
-        .take(SHOWN)
-        .map(|p| crate::fmt::safe(&p.path).into_owned())
-        .collect();
-    let files = if cannot.len() > SHOWN {
-        format!("{} and {} more", files.join(", "), cannot.len() - SHOWN)
-    } else {
-        files.join(", ")
-    };
+    let files = named(&cannot);
     u.fix(format!(
         "no owner of {files} can approve: an owner must be a registered name or identity id, not the PR's author, with a role that counts toward the policy. Fix CODEOWNERS on the base branch, or give an owner that role"
     ))
@@ -4585,9 +4594,11 @@ pub(crate) mod tests {
         let u = fixes(&owner_check(&[("src/a.rs", true), ("ops/x", false)], false));
         let f = u["fix"].to_string();
         assert!(
-            f.contains("ask an owner") && f.contains("no owner of ops/x"),
+            f.contains("ask an owner of src/a.rs (named") && f.contains("no owner of ops/x"),
             "{u}"
         );
+        // Not "each file": ops/x has no owner who can approve.
+        assert!(!f.contains("each file"), "{u}");
         assert!(f.contains("--override-policy"), "{u}");
     }
 
