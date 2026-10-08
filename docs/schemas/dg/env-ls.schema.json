@@ -24,6 +24,8 @@
     "updatedBy": {
       "type": "string"
     },
+    "oldFormat": {},
+    "needsSaving": {},
     "updatedAt": {
       "type": "integer"
     },

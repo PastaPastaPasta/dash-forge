@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/env-set.schema.json",
-  "title": "dg env set --json",
-  "description": "A variable set.",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/env-resave.schema.json",
+  "title": "dg env resave --json",
+  "description": "Environments saved again for the people their audiences cover now.",
   "type": "object",
   "properties": {
     "schemaVersion": {
