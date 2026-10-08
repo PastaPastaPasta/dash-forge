@@ -3,8 +3,8 @@
 #
 # Sourced by lib.sh. Everything here is data: no side effects beyond exports.
 #
-# The CLI suite runs against devnet SAKURA, where the RC2 contracts are registered (2026-10-07, after
-# sakura's Platform reset onto 5.0.0-beta.2; the forge-v2 contracts once on devnets moutai and bonsia are gone, and
+# The CLI suite runs against devnet SAKURA, where the RC2 contracts are registered (2026-10-08, after
+# sakura's second Platform reset, onto 5.0.0-beta.3; the forge-v2 contracts once on devnets moutai and bonsia are gone, and
 # this build cannot read them anyway). DASH_FORGE_DEVNET_NAME picks another devnet. A v2 repo costs ~0.001 DASH,
 # so the suite's repo is created on the first run (by `harness_ensure_repo`, resumably)
 # rather than hard-coded. Testnet runs resume once testnet runs protocol 14 and forge-v2 is
