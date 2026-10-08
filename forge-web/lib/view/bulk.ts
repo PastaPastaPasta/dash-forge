@@ -68,7 +68,8 @@ export function labelCoverage(rows: readonly BulkRow[], label: string): 'all' | 
  * One item's outcome:
  * - `waiting`: not reached yet; `running`: its write is being signed and sent;
  * - `done`: written and shown on Platform;
- * - `unchanged`: nothing was written (it was already in that state when its write was made);
+ * - `unchanged`: nothing was written (it was already in that state when its write was made; its
+ *   `message` says how, e.g. "Already merged.");
  * - `unconfirmed`: sent, not yet shown: it may still land (a retry finishes it, never repeats it);
  * - `failed`: refused or not sent, with why;
  * - `stopped`: not tried, because the batch stopped first (out of funds, or asked to stop).
@@ -77,7 +78,7 @@ export type BulkStatus = 'waiting' | 'running' | 'done' | 'unchanged' | 'unconfi
 
 export interface BulkOutcome {
   readonly status: BulkStatus
-  /** Why it failed or is unconfirmed. */
+  /** Why it failed or is unconfirmed, or what an unchanged item already was. */
   readonly message?: string
 }
 
@@ -103,15 +104,15 @@ export function itemIntent(batchIntent: string, itemId: string): string {
 /**
  * Write `items` in order, one at a time (each is its own transition, and one identity's writes
  * take nonces in order). `write` returns whether it wrote anything (false: the item was already
- * in that state). `onOutcome` hears each item as it starts and as it ends. A failure that `stop`s
- * marks every later item `stopped`; so does `shouldStop()` turning true between items.
- * Resolves with every item's final outcome.
+ * in that state; `note` says how, when the generic "already" line is not it). `onOutcome` hears
+ * each item as it starts and as it ends. A failure that `stop`s marks every later item `stopped`;
+ * so does `shouldStop()` turning true between items. Resolves with every item's final outcome.
  */
 export async function runBatch<R extends { readonly id: string }>(
   items: readonly R[],
   opts: {
     readonly intent: string
-    readonly write: (item: R, intent: string) => Promise<{ readonly changed: boolean }>
+    readonly write: (item: R, intent: string) => Promise<{ readonly changed: boolean; readonly note?: string }>
     readonly classify: (e: unknown) => BulkFailure
     readonly onOutcome?: (id: string, outcome: BulkOutcome) => void
     readonly shouldStop?: () => boolean
@@ -131,8 +132,8 @@ export async function runBatch<R extends { readonly id: string }>(
     }
     set(item.id, { status: 'running' })
     try {
-      const { changed } = await opts.write(item, itemIntent(opts.intent, item.id))
-      set(item.id, { status: changed ? 'done' : 'unchanged' })
+      const { changed, note } = await opts.write(item, itemIntent(opts.intent, item.id))
+      set(item.id, changed ? { status: 'done' } : note !== undefined ? { status: 'unchanged', message: note } : { status: 'unchanged' })
     } catch (e) {
       const f = opts.classify(e)
       set(item.id, { status: f.unconfirmed ? 'unconfirmed' : 'failed', message: f.message })
@@ -188,6 +189,46 @@ export function unchangedWord(action: BulkAction): string {
     case 'reopen':
       return 'Already open.'
     case 'label':
-      return action.add ? 'Already has the label.' : 'Already without the label.'
+      return action.add ? 'Already has the label.' : "Doesn't have the label."
   }
+}
+
+/** What a merged pull request says when a close or reopen finds it merged since the list was read. */
+export const ALREADY_MERGED = 'Already merged.'
+
+/** How many items a batch left as they were, for its summary line: "2 were already that way." */
+export function unchangedSummary(n: number): string {
+  return `${n} ${n === 1 ? 'was' : 'were'} already that way.`
+}
+
+/** Where a menu panel sits, in viewport pixels: `top` below its button, or `bottom` above it. */
+export interface MenuPlacement {
+  readonly left: number
+  readonly width: number
+  readonly maxHeight: number
+  readonly top?: number
+  readonly bottom?: number
+}
+
+const MENU_MARGIN = 8
+const MENU_GAP = 4
+
+/**
+ * Place a menu panel (`want` size at most) by its button `anchor` so it stays inside the viewport
+ * `view`: shifted left and narrowed on a phone, and above the button when there is more room
+ * there than below. Pure, so the list's clipping box never decides where a menu may be.
+ */
+export function menuPlacement(
+  anchor: { readonly left: number; readonly top: number; readonly bottom: number },
+  view: { readonly width: number; readonly height: number },
+  want: { readonly width: number; readonly height: number } = { width: 240, height: 288 },
+): MenuPlacement {
+  const width = Math.max(0, Math.min(want.width, view.width - 2 * MENU_MARGIN))
+  const left = Math.max(MENU_MARGIN, Math.min(anchor.left, view.width - width - MENU_MARGIN))
+  const below = view.height - anchor.bottom - MENU_GAP - MENU_MARGIN
+  const above = anchor.top - MENU_GAP - MENU_MARGIN
+  if (below >= Math.min(want.height, 160) || below >= above) {
+    return { left, width, top: anchor.bottom + MENU_GAP, maxHeight: Math.max(0, Math.min(want.height, below)) }
+  }
+  return { left, width, bottom: view.height - anchor.top + MENU_GAP, maxHeight: Math.max(0, Math.min(want.height, above)) }
 }

@@ -640,7 +640,8 @@ pub struct CodeOwnerStatus {
 }
 
 /// Judge a PR against its branch policy's `requireCodeOwners` (the module docs' merge rule).
-/// `paths` are the PR's changed paths (`git diff --name-only --no-renames` from the merge base);
+/// `paths` are the PR's changed paths from the merge base, submodules included (`git diff-tree -r
+/// --name-only --no-renames --ignore-submodules=none`, as the web's tree diff lists them);
 /// `approvals` the PR's counted approvals ([`super::v2::count_approvals`]); `resolved` maps each
 /// name token to the identity DPNS resolved it to (absent or `None`: unresolved).
 #[must_use]

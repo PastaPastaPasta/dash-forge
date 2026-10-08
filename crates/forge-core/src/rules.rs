@@ -166,6 +166,10 @@ pub struct ConfigDoc {
     /// git-fnmatch globs (§2.3); empty means nothing is protected as-of this config.
     #[serde(default)]
     pub protected_patterns: Vec<String>,
+    /// Document `$ownerId`, when the reader has it: who wrote the config. No rule reads it
+    /// (the activity page and `dg repo activity` name it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
 }
 
 /// One live tip of a diverged ref.

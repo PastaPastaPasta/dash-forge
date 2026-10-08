@@ -1,11 +1,11 @@
 //! Offline validation of the forge-v2 data contracts against Dash Platform protocol 14
-//! (rs-dpp v5.0.0-beta.1, the tag Cargo.toml pins).
+//! (rs-dpp v5.0.0-beta.3, the tag Cargo.toml pins).
 //!
 //!   cargo run --manifest-path tools/contract-validate/Cargo.toml -- \
 //!       --vectors forge-contracts/vectors/rc1 \
 //!       forge-contracts/contracts/forge-core.json \
 //!       forge-contracts/contracts/forge-collab.json [--previous <the forge-collab.json that is registered>] \
-//!       forge-contracts/contracts/forge-community.json
+//!       forge-contracts/contracts/forge-community.json [forge-meta.json]
 //!
 //! `--previous <file>` after a contract also reports whether a `DataContractUpdate` from that
 //! (registered) schema to this one passes rs-dpp's `validate_update` under protocol 14.
@@ -138,18 +138,16 @@ fn main() -> Result<()> {
         group_id
     );
 
+    // The group's description names every contract of the set, as deploy-v2.mjs writes it
+    let names: Vec<String> = entries.iter().map(|e| contract_name(&e.path)).collect();
+    let group_description = group_description(&names);
     let mut known: Vec<DataContract> = Vec::new();
     let mut placeholders: BTreeMap<String, String> = BTreeMap::new();
     let mut failures = 0usize;
 
     for (i, entry) in entries.iter().enumerate() {
         let nonce = (i + 1) as u64;
-        let name = entry
-            .path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("contract")
-            .to_string();
+        let name = names[i].clone();
         println!("== {name} ({})", entry.path.display());
         match validate_one(
             entry,
@@ -160,6 +158,7 @@ fn main() -> Result<()> {
             &known,
             &placeholders,
             vectors.as_deref(),
+            &group_description,
             pv,
             limit,
         ) {
@@ -186,6 +185,25 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+/// A contract's name: its file's stem (`forge-core`).
+fn contract_name(path: &std::path::Path) -> String {
+    path.file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("contract")
+        .to_string()
+}
+
+/// "Dash Forge v2: forge-core, forge-collab and forge-community" (and ", … and forge-meta" for
+/// the four-contract set): deploy-v2.mjs `groupDescription` builds the same string.
+fn group_description(names: &[String]) -> String {
+    let list = match names {
+        [] => String::new(),
+        [one] => one.clone(),
+        [init @ .., last] => format!("{} and {last}", init.join(", ")),
+    };
+    format!("Dash Forge v2: {list}")
+}
+
 /// `forge-core` -> `FORGE_CORE_CONTRACT_ID`.
 fn placeholder_for(name: &str) -> String {
     format!("{}_CONTRACT_ID", name.to_uppercase().replace('-', "_"))
@@ -201,6 +219,7 @@ fn validate_one(
     known: &[DataContract],
     placeholders: &BTreeMap<String, String>,
     vectors: Option<&std::path::Path>,
+    group_description: &str,
     pv: &PlatformVersion,
     limit: u64,
 ) -> Result<DataContract> {
@@ -269,9 +288,7 @@ fn validate_one(
     let registration = entry.registers_group.then(|| ContractGroupRegistration {
         admins: Default::default(),
         name: Some("dash-forge".to_string()),
-        description: Some(
-            "Dash Forge v2: forge-core, forge-collab and forge-community".to_string(),
-        ),
+        description: Some(group_description.to_string()),
     });
     let transition: DataContractCreateTransition = DataContractCreateTransitionV1 {
         data_contract: serialization,

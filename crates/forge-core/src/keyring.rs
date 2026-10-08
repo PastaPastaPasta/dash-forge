@@ -1030,6 +1030,7 @@ impl Keyring {
                 id: d.id.clone(),
                 created_at: d.created_at.unwrap_or(0),
                 protected_patterns: fields.protected_patterns.clone(),
+                author: Some(d.owner_id.clone()),
             });
             let key = |doc: &FetchedDocument| (doc.created_at.unwrap_or(0), doc.id.clone());
             if newest.as_ref().is_none_or(|(n, _)| key(d) > key(n)) {

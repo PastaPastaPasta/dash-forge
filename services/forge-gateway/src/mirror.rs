@@ -13,7 +13,9 @@
 //!    more than is served), and repacks with a bitmap index when packs pile up.
 //!
 //! A failed refresh changes nothing: the mirror keeps serving its last snapshot, whose manifest
-//! says how old it is.
+//! says how old it is. A refresh that finds the repository proved gone ([`Unavailable::Gone`]:
+//! its `repo` document or the forge contracts absent) removes the mirror instead, and tells the
+//! [`Mirrors::on_gone`] listeners, so the repository answers `404` like any unknown one.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
@@ -42,6 +44,17 @@ const RETRY_AFTER_FAILURE: Duration = Duration::from_secs(60);
 /// Repack once a mirror holds more packs than this.
 const REPACK_AFTER_PACKS: usize = 8;
 
+/// The file in a mirror recording when it was last served (Unix ms), so a restart knows which
+/// mirrors are warm. Not the manifest's `fetchedAtMs`: every poll moves that, so a mirror nobody
+/// asks for would count as warm forever.
+pub const SERVED_FILE: &str = "forge-gateway-served";
+
+/// How often a mirror being served rewrites [`SERVED_FILE`] (at most).
+const SERVED_SAVE_EVERY: Duration = Duration::from_secs(600);
+
+/// How long a mirror proved gone waits for the clones it is serving before its files go.
+const GONE_DRAIN: Duration = Duration::from_secs(3600);
+
 /// Why a mirror cannot be served.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Unavailable {
@@ -56,6 +69,9 @@ pub enum Unavailable {
     Pending,
     /// The first refresh failed (Platform or storage unreachable, say).
     Failed(String),
+    /// Platform proved the repository gone (deleted, a reset chain, or no longer the public
+    /// repository the mirror served): the mirror was removed.
+    Gone,
 }
 
 /// A repository's mirror and its state.
@@ -77,6 +93,8 @@ struct SlotState {
     last_err: Option<Unavailable>,
     last_attempt: Option<Instant>,
     last_access: SystemTime,
+    /// When [`SERVED_FILE`] was last written by this process.
+    served_saved: Option<Instant>,
     size: u64,
     serving: usize,
     pinned: bool,
@@ -95,6 +113,26 @@ impl Slot {
     /// Whether the mirror serves a snapshot.
     pub fn ready(&self) -> bool {
         self.state().manifest.is_some()
+    }
+
+    /// How long ago the snapshot served was read from Platform.
+    pub fn snapshot_age(&self) -> Option<Duration> {
+        let s = self.state();
+        let m = s.manifest.as_ref()?;
+        Some(Duration::from_millis(
+            now_ms().saturating_sub(m.fetched_at_ms),
+        ))
+    }
+
+    /// Whether Platform proved the repository gone (the mirror was removed).
+    pub fn gone(&self) -> bool {
+        self.state().last_err == Some(Unavailable::Gone)
+    }
+
+    /// Whether the last refresh failed (Platform unreachable, say): the snapshot served may
+    /// be behind Platform.
+    pub fn refresh_failing(&self) -> bool {
+        matches!(self.state().last_err, Some(Unavailable::Failed(_)))
     }
 }
 
@@ -127,7 +165,11 @@ pub struct Mirrors {
     slots: Mutex<HashMap<String, Arc<Slot>>>,
     refreshes: Semaphore,
     trash_seq: AtomicU64,
+    gone_listeners: Mutex<Vec<GoneListener>>,
 }
+
+/// Told the repository whose mirror was removed because Platform proved it gone.
+type GoneListener = Box<dyn Fn(&RepoInfo) + Send + Sync>;
 
 /// Milliseconds since the Unix epoch.
 pub fn now_ms() -> u64 {
@@ -164,7 +206,17 @@ impl Mirrors {
             home,
             slots: Mutex::default(),
             trash_seq: AtomicU64::new(0),
+            gone_listeners: Mutex::default(),
         })
+    }
+
+    /// Call `f` with each repository whose mirror is removed because Platform proved it gone
+    /// (the server drops its cached resolutions and renders of it).
+    pub fn on_gone(&self, f: impl Fn(&RepoInfo) + Send + Sync + 'static) {
+        self.gone_listeners
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(Box::new(f));
     }
 
     /// The upstream.
@@ -188,9 +240,12 @@ impl Mirrors {
 
     /// Pick up the mirrors a previous run left (each with its manifest), so a restart serves at
     /// once and refreshes in the background. A directory without a manifest is a mirror whose
-    /// first refresh never finished: it is removed.
+    /// first refresh never finished: it is removed. A mirror is as warm as its last serve
+    /// ([`SERVED_FILE`]); one never served by a build that records it starts cold (refreshed on
+    /// its next request, not polled).
     pub async fn load_existing(&self) -> Result<usize> {
         let mut loaded = 0;
+        let forge_core = self.upstream.forge_core();
         let mut rd = tokio::fs::read_dir(&self.root).await?;
         while let Some(e) = rd.next_entry().await? {
             let path = e.path();
@@ -212,6 +267,13 @@ impl Mirrors {
                 let _ = tokio::fs::remove_dir_all(&path).await;
                 continue;
             };
+            if m.forge_core != forge_core {
+                // A network re-registered with new forge contracts: none of its repositories
+                // are the ones mirrored.
+                tracing::info!(repo = id, "removing a mirror of other forge contracts");
+                let _ = tokio::fs::remove_dir_all(&path).await;
+                continue;
+            }
             let repo = RepoInfo {
                 repo_id: m.repo_id.clone(),
                 owner_id: m.owner_id.clone(),
@@ -219,10 +281,15 @@ impl Mirrors {
                 public: true,
             };
             let size = dir_size(path.clone()).await;
+            let served_ms = tokio::fs::read_to_string(path.join(SERVED_FILE))
+                .await
+                .ok()
+                .and_then(|t| t.trim().parse::<u64>().ok())
+                .unwrap_or(0);
             let slot = self.slot(&repo);
             {
                 let mut s = slot.state();
-                s.last_access = SystemTime::UNIX_EPOCH + Duration::from_millis(m.fetched_at_ms);
+                s.last_access = SystemTime::UNIX_EPOCH + Duration::from_millis(served_ms);
                 s.manifest = Some(Arc::new(m));
                 s.size = size;
             }
@@ -246,6 +313,7 @@ impl Mirrors {
                     last_err: None,
                     last_attempt: None,
                     last_access: SystemTime::now(),
+                    served_saved: None,
                     size: 0,
                     serving: 0,
                     pinned: false,
@@ -267,12 +335,14 @@ impl Mirrors {
         slot
     }
 
-    /// The slot named `<owner id>/<name>` (a relay wake's name), if any.
-    pub fn find(&self, owner_id: &str, name: &str) -> Option<Arc<Slot>> {
+    /// The slots named `<owner id>/<name>` (a relay wake's name): usually one, two while a
+    /// repository deleted and created again under the same name still has its old mirror.
+    pub fn find(&self, owner_id: &str, name: &str) -> Vec<Arc<Slot>> {
         self.slots()
             .values()
-            .find(|s| s.repo.owner_id == owner_id && s.repo.name == name)
+            .filter(|s| s.repo.owner_id == owner_id && s.repo.name == name)
             .cloned()
+            .collect()
     }
 
     /// Start serving `slot`'s mirror: the guard holds it against eviction. `None` when the
@@ -287,6 +357,18 @@ impl Mirrors {
         s.manifest.as_ref()?;
         s.serving += 1;
         s.last_access = SystemTime::now();
+        if s.served_saved
+            .is_none_or(|t| t.elapsed() >= SERVED_SAVE_EVERY)
+        {
+            if let Ok(rt) = tokio::runtime::Handle::try_current() {
+                s.served_saved = Some(Instant::now());
+                // Best effort: a failed write leaves the mirror cold after a restart, no more.
+                let path = slot.dir.join(SERVED_FILE);
+                rt.spawn(async move {
+                    let _ = tokio::fs::write(path, now_ms().to_string()).await;
+                });
+            }
+        }
         Some(ServeGuard {
             slot: Arc::clone(slot),
         })
@@ -309,6 +391,10 @@ impl Mirrors {
                 let _permit = this.refreshes.acquire().await;
                 this.refresh(&slot).await
             };
+            if outcome == Err(Unavailable::Gone) {
+                // Still marked refreshing: no eviction or other refresh of this slot meanwhile.
+                this.forget(&slot);
+            }
             {
                 let mut s = slot.state();
                 s.refreshing = false;
@@ -426,6 +512,88 @@ impl Mirrors {
         (slots.len() as u64, ready, bytes)
     }
 
+    /// Check every mirror a previous run left against Platform once (a proved read of its
+    /// `repo` document each, at most `--refresh-max` at a time) and remove the ones proved
+    /// gone. After a network reset nothing else would: a mirror nobody asks for is never
+    /// refreshed, and the repository created again under its name has a new owner and id.
+    pub async fn sweep_gone(&self) {
+        use futures::StreamExt as _;
+        let slots: Vec<Arc<Slot>> = self.slots().values().cloned().collect();
+        futures::stream::iter(slots)
+            .for_each_concurrent(self.cfg.refresh_max.max(1), |slot| async move {
+                let present = {
+                    let _permit = self.refreshes.acquire().await;
+                    // Not alongside a refresh of the same mirror.
+                    let _lock = slot.refresh.lock().await;
+                    self.upstream.exists(&slot.repo).await
+                };
+                match present {
+                    Ok(true) => {}
+                    Ok(false) => self.forget(&slot),
+                    Err(e) => {
+                        tracing::warn!(repo = %slot.repo.repo_id, error = %format!("{e:#}"), "checking a mirror at start failed; kept");
+                    }
+                }
+            })
+            .await;
+    }
+
+    /// Remove `slot`, whose repository Platform proved gone: no longer served or polled, its
+    /// files deleted once the clones it is serving end, and the [`Self::on_gone`] listeners
+    /// told. A slot that is no longer the current one for its repository (evicted meanwhile)
+    /// owns no directory: only the listeners are told.
+    fn forget(&self, slot: &Arc<Slot>) {
+        let removed = {
+            let mut slots = self.slots();
+            let current = slots
+                .get(&slot.repo.repo_id)
+                .is_some_and(|c| Arc::ptr_eq(c, slot));
+            let pinned = {
+                let mut s = slot.state();
+                s.manifest = None;
+                s.size = 0;
+                s.last_err = Some(Unavailable::Gone);
+                s.pinned
+            };
+            if pinned {
+                tracing::error!(repo = %slot.repo.repo_id, name = %slot.repo.name, "a repository in GATEWAY_REPOS is gone from Platform; it is no longer mirrored (restart the gateway once it exists again)");
+            }
+            if current {
+                slots.remove(&slot.repo.repo_id);
+            }
+            // Moved aside under the lock, as eviction does: a new mirror of the same id never
+            // finds these files. A clone being served keeps reading them (git works inside the
+            // directory it opened).
+            current.then(|| {
+                let n = self.trash_seq.fetch_add(1, Ordering::Relaxed);
+                let trash = self.root.join(format!(".trash-{}-{n}", slot.repo.repo_id));
+                std::fs::rename(&slot.dir, &trash).is_ok().then_some(trash)
+            })
+        };
+        if removed.is_some() {
+            Metrics::inc(&self.metrics.mirrors_gone);
+            tracing::info!(repo = %slot.repo.repo_id, "Platform proved the repository gone; mirror removed");
+        }
+        for f in self
+            .gone_listeners
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+        {
+            f(&slot.repo);
+        }
+        if let Some(trash) = removed.flatten() {
+            let slot = Arc::clone(slot);
+            tokio::spawn(async move {
+                let deadline = Instant::now() + GONE_DRAIN;
+                while slot.state().serving > 0 && Instant::now() < deadline {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+                let _ = tokio::fs::remove_dir_all(&trash).await;
+            });
+        }
+    }
+
     /// Refresh `slot` now (serialised per mirror).
     async fn refresh(&self, slot: &Slot) -> Result<(), Unavailable> {
         let _lock = slot.refresh.lock().await;
@@ -444,6 +612,7 @@ impl Mirrors {
                     "mirror refreshed"
                 );
             }
+            Err(Unavailable::Gone) => {}
             Err(e) => {
                 Metrics::inc(&self.metrics.refresh_failed);
                 tracing::warn!(repo = %slot.repo.repo_id, error = ?e, "mirror refresh failed; serving the last snapshot");
@@ -453,10 +622,25 @@ impl Mirrors {
     }
 
     async fn refresh_locked(&self, slot: &Slot) -> Result<bool, Unavailable> {
+        // A slot evicted or removed meanwhile owns no directory: a refresh would make one
+        // nothing tracks.
+        if !self
+            .slots()
+            .get(&slot.repo.repo_id)
+            .is_some_and(|c| std::ptr::eq(Arc::as_ptr(c), slot))
+        {
+            return Err(Unavailable::Failed(
+                "the mirror was dropped meanwhile".into(),
+            ));
+        }
         let snap = match self.upstream.snapshot(&slot.repo).await {
-            Ok(s) => {
+            Ok(Some(s)) => {
                 self.metrics.upstream(true);
                 s
+            }
+            Ok(None) => {
+                self.metrics.upstream(true);
+                return Err(Unavailable::Gone);
             }
             Err(e) => {
                 self.metrics.upstream(false);

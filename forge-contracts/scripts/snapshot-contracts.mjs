@@ -18,7 +18,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { DEPENDENT_CONTRACTS, loadEvoSdk, writeDep } from './deploy-v2.mjs';
+import { DEPENDENT_CONTRACTS, META_CONTRACT, loadEvoSdk, writeDep } from './deploy-v2.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, '..');
@@ -37,7 +37,8 @@ function parseArgs(argv) {
 
 /** The contract ids a web build of this deployment reads. */
 export function snapshotIds(dep) {
-  const ids = [DPNS_CONTRACT_ID, dep.v2?.forgeCore?.contractId, ...DEPENDENT_CONTRACTS.map((c) => dep.v2?.[c.key]?.contractId), dep.keyExchange?.contractId];
+  // (forge-meta only on a four-contract deployment, DESIGN rev 4.1 D44)
+  const ids = [DPNS_CONTRACT_ID, dep.v2?.forgeCore?.contractId, ...[...DEPENDENT_CONTRACTS, META_CONTRACT].map((c) => dep.v2?.[c.key]?.contractId), dep.keyExchange?.contractId];
   return [...new Set(ids.filter((id) => typeof id === 'string' && id.length > 0))];
 }
 

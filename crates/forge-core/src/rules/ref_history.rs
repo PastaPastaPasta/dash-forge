@@ -242,6 +242,7 @@ mod tests {
             id: id.into(),
             created_at: at,
             protected_patterns: patterns.iter().map(|p| (*p).to_string()).collect(),
+            author: None,
         }
     }
 

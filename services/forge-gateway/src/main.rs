@@ -73,6 +73,11 @@ async fn run() -> Result<()> {
         Arc::clone(&metrics),
     )?);
     let loaded = mirrors.load_existing().await?;
+    {
+        // Mirrors of repositories a network reset removed would otherwise stay on disk.
+        let mirrors = Arc::clone(&mirrors);
+        tokio::spawn(async move { mirrors.sweep_gone().await });
+    }
     let state = Arc::new(AppState::new(
         Arc::clone(&cfg),
         Arc::clone(&mirrors),

@@ -42,8 +42,12 @@ impl Stub {
     }
 
     fn add(&self, owner: &str, name: &str, public: bool, src: &Path) -> RepoInfo {
+        self.add_id(&format!("R{name}{owner}"), owner, name, public, src)
+    }
+
+    fn add_id(&self, id: &str, owner: &str, name: &str, public: bool, src: &Path) -> RepoInfo {
         let info = RepoInfo {
-            repo_id: format!("R{name}{owner}"),
+            repo_id: id.into(),
             owner_id: format!("O{owner}"),
             name: name.into(),
             public,
@@ -53,6 +57,13 @@ impl Stub {
             (info.clone(), src.to_path_buf()),
         );
         info
+    }
+
+    /// Delete `owner/name` from "Platform" (proved absent from now on).
+    fn remove(&self, owner: &str, name: &str) {
+        self.world()
+            .repos
+            .remove(&(owner.to_string(), name.to_string()));
     }
 
     fn src(&self, repo: &RepoInfo) -> Result<PathBuf> {
@@ -85,7 +96,14 @@ impl Upstream for Stub {
             .get(&(owner.to_string(), name.to_string()))
             .map(|(i, _)| i.clone()))
     }
-    async fn snapshot(&self, repo: &RepoInfo) -> Result<Snapshot> {
+    async fn snapshot(&self, repo: &RepoInfo) -> Result<Option<Snapshot>> {
+        {
+            let w = self.world();
+            // Proved gone: nothing has the id any more (a failed read is `down`, an error).
+            if !w.down && !w.repos.values().any(|(i, _)| i.repo_id == repo.repo_id) {
+                return Ok(None);
+            }
+        }
         let src = self.src(repo)?;
         let (time_ms, pack_bytes) = {
             let mut w = self.world();
@@ -110,7 +128,7 @@ impl Upstream for Stub {
                 changed_at: time_ms,
             })
             .collect();
-        Ok(Snapshot {
+        Ok(Some(Snapshot {
             records,
             default_branch: Some("main".into()),
             tip: ChainTip {
@@ -122,7 +140,14 @@ impl Upstream for Stub {
                 copies: 1,
                 size_bytes: pack_bytes,
             }],
-        })
+        }))
+    }
+    async fn exists(&self, repo: &RepoInfo) -> Result<bool> {
+        let w = self.world();
+        if w.down {
+            return Err(anyhow!("Platform is down"));
+        }
+        Ok(w.repos.values().any(|(i, _)| i.repo_id == repo.repo_id))
     }
     fn fetch_source(&self, repo: &RepoInfo) -> FetchSource {
         FetchSource {
@@ -177,6 +202,31 @@ impl Upstream for Stub {
     }
 }
 
+/// `GET <base><path>`: status, headers and body.
+async fn request(base: &str, path: &str) -> (u16, reqwest::header::HeaderMap, String) {
+    let r = reqwest::get(format!("{base}{path}")).await.unwrap();
+    let status = r.status().as_u16();
+    let headers = r.headers().clone();
+    (status, headers, r.text().await.unwrap_or_default())
+}
+
+/// The `X-Forge-Stale` age a response carries, if any.
+fn stale_secs(h: &reqwest::header::HeaderMap) -> Option<u64> {
+    h.get(forge_gateway::server::STALE_HEADER)
+        .map(|v| v.to_str().unwrap().parse().unwrap())
+}
+
+/// Wait (at most 10 s) until `done` holds.
+async fn eventually(what: &str, mut done: impl FnMut() -> bool) {
+    for _ in 0..200 {
+        if done() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("timed out waiting until {what}");
+}
+
 fn git(dir: &Path, args: &[&str]) -> std::process::Output {
     Command::new("git")
         .current_dir(dir)
@@ -227,11 +277,24 @@ struct Gateway {
 
 async fn start(tune: impl FnOnce(&mut Config)) -> Gateway {
     let tmp = tempfile::tempdir().unwrap();
-    let mut cfg = Config::for_tests(tmp.path().join("data"));
-    tune(&mut cfg);
-    let cfg = Arc::new(cfg);
     let stub = Stub::default();
     stub.world().time_ms = 1_000;
+    let (base, mirrors) = serve(tmp.path(), &stub, tune).await;
+    Gateway {
+        base,
+        stub,
+        mirrors,
+        tmp: tmp.path().to_path_buf(),
+        _tmp: tmp,
+    }
+}
+
+/// A gateway over `<dir>/data` and `stub`, the mirrors a previous one left there loaded (a
+/// restart): its base URL and mirrors.
+async fn serve(dir: &Path, stub: &Stub, tune: impl FnOnce(&mut Config)) -> (String, Arc<Mirrors>) {
+    let mut cfg = Config::for_tests(dir.join("data"));
+    tune(&mut cfg);
+    let cfg = Arc::new(cfg);
     let metrics = Arc::new(Metrics::default());
     let mirrors = Arc::new(
         Mirrors::new(
@@ -241,6 +304,7 @@ async fn start(tune: impl FnOnce(&mut Config)) -> Gateway {
         )
         .unwrap(),
     );
+    mirrors.load_existing().await.unwrap();
     let state = Arc::new(AppState::new(
         Arc::clone(&cfg),
         Arc::clone(&mirrors),
@@ -256,25 +320,17 @@ async fn start(tune: impl FnOnce(&mut Config)) -> Gateway {
         .await
         .unwrap();
     });
-    Gateway {
-        base: format!("http://{addr}"),
-        stub,
-        mirrors,
-        tmp: tmp.path().to_path_buf(),
-        _tmp: tmp,
-    }
+    (format!("http://{addr}"), mirrors)
 }
 
 impl Gateway {
     async fn get(&self, path: &str) -> (u16, String, String) {
-        let r = reqwest::get(format!("{}{path}", self.base)).await.unwrap();
-        let status = r.status().as_u16();
-        let ct = r
-            .headers()
+        let (status, headers, body) = request(&self.base, path).await;
+        let ct = headers
             .get("content-type")
             .map(|v| v.to_str().unwrap().to_string())
             .unwrap_or_default();
-        (status, ct, r.text().await.unwrap_or_default())
+        (status, ct, body)
     }
 
     /// `git` in a blocking thread (the server runs on this runtime).
@@ -364,6 +420,7 @@ async fn plain_git_clones_a_verifiable_read_only_mirror() {
         .stub
         .snapshot(&gw.stub.resolve("alice", "proj").await.unwrap().unwrap())
         .await
+        .unwrap()
         .unwrap()
         .records;
     let c = compare(&served, &records, Some(m.platform_time_ms));
@@ -472,6 +529,15 @@ async fn a_refresh_follows_platform_and_platform_down_keeps_serving() {
         body.contains("unavailable") && !body.contains("not found"),
         "{body}"
     );
+    // What is served from the old snapshot says how old it is.
+    for path in [
+        "/alice/proj.git/info/refs?service=git-upload-pack",
+        "/alice/proj.git/forge-manifest.json",
+    ] {
+        let (s, headers, _) = request(&gw.base, path).await;
+        assert_eq!(s, 200, "{path}");
+        assert!(stale_secs(&headers).is_some(), "{path}: {headers:?}");
+    }
     let (s, _, _) = gw.get("/readyz").await;
     assert_eq!(s, 503);
     let (s, _, metrics) = gw.get("/metrics").await;
@@ -480,6 +546,20 @@ async fn a_refresh_follows_platform_and_platform_down_keeps_serving() {
         metrics.contains("forge_gateway_refresh_failed_total 1"),
         "{metrics}"
     );
+    // A failed read is never taken for a deleted repository.
+    assert!(
+        metrics.contains("forge_gateway_mirrors_gone_total 0"),
+        "{metrics}"
+    );
+    assert!(gw
+        .tmp
+        .join("data/mirrors/devnet-stub/Rprojalice.git")
+        .exists());
+    // Platform back: fresh again, no header.
+    gw.stub.world().down = false;
+    assert_eq!(gw.refresh(&info).await, None);
+    let (_, headers, _) = request(&gw.base, "/alice/proj.git/forge-manifest.json").await;
+    assert_eq!(stale_secs(&headers), None);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -500,6 +580,19 @@ async fn private_unknown_and_oversized_repos_are_refused() {
     }
     let out = gw.clone("/alice/secret.git", "s").await;
     assert!(!out.status.success());
+    // `/metrics` is public: no counter tells a private repository from a missing one.
+    let (_, _, metrics) = gw.get("/metrics").await;
+    assert!(
+        metrics
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .all(|l| !l.contains("private")),
+        "{metrics}"
+    );
+    assert!(
+        metrics.contains("forge_gateway_repo_not_found_total "),
+        "{metrics}"
+    );
     assert!(!gw
         .tmp
         .join("data/mirrors/devnet-stub/Rsecretalice.git")
@@ -665,4 +758,159 @@ async fn badges_for_branches_a_repo_lacks_read_platform_once() {
     let (s, _, body) = gw.get("/badge/alice/proj/stars.svg?branch=nope").await;
     assert_eq!(s, 200, "{body}");
     assert_eq!(gw.stub.world().snapshots, 1, "one snapshot read per TTL");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_repo_platform_proves_gone_is_removed_and_answers_404() {
+    let gw = start(|_| {}).await;
+    let src = source(&gw.tmp);
+    let info = gw.stub.add("alice", "proj", true, &src);
+    assert!(gw.clone("/alice/proj.git", "c1").await.status.success());
+    for path in [
+        "/badge/alice/proj/stars.svg",
+        "/feed/alice/proj/commits.atom",
+        "/og/alice/proj",
+    ] {
+        let (s, _, body) = gw.get(path).await;
+        assert_eq!(s, 200, "{path}: {body}");
+    }
+    let dir = gw.tmp.join("data/mirrors/devnet-stub/Rprojalice.git");
+    assert!(dir.exists());
+
+    // Deleted on Platform (or the chain reset): the next refresh proves it gone.
+    gw.stub.remove("alice", "proj");
+    assert_eq!(gw.refresh(&info).await, Some(Unavailable::Gone));
+    assert!(!gw.mirrors.known(&info.repo_id));
+    eventually("the mirror's files are deleted", || !dir.exists()).await;
+
+    // Nothing cached keeps it alive: every route answers as for an unknown repository.
+    for path in [
+        "/alice/proj.git/info/refs?service=git-upload-pack",
+        "/alice/proj.git/forge-manifest.json",
+        "/feed/alice/proj/commits.atom",
+        "/feed/alice/proj/releases.atom",
+        "/og/alice/proj",
+    ] {
+        let (s, _, body) = gw.get(path).await;
+        assert_eq!(s, 404, "{path}: {body}");
+        assert!(body.contains("no public repository"), "{path}: {body}");
+    }
+    let (s, _, body) = gw.get("/badge/alice/proj/stars.svg").await;
+    assert_eq!(s, 404);
+    assert!(body.contains("repo not found"), "{body}");
+    assert!(!gw.clone("/alice/proj.git", "c2").await.status.success());
+    assert!(!dir.exists(), "no request made the mirror again");
+    let (_, _, metrics) = gw.get("/metrics").await;
+    assert!(
+        metrics.contains("forge_gateway_mirrors_gone_total 1"),
+        "{metrics}"
+    );
+    assert!(
+        metrics.contains("forge_gateway_refresh_failed_total 0"),
+        "{metrics}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stale_render_says_how_old_it_is() {
+    let gw = start(|c| c.render_ttl_secs = 0).await;
+    let src = source(&gw.tmp);
+    gw.stub.add("alice", "proj", true, &src);
+    let (s, headers, _) = request(&gw.base, "/badge/alice/proj/stars.svg").await;
+    assert_eq!((s, stale_secs(&headers)), (200, None));
+    gw.stub.world().down = true;
+    let (s, headers, body) = request(&gw.base, "/badge/alice/proj/stars.svg").await;
+    assert_eq!(s, 200);
+    assert!(body.contains(">42<"), "{body}");
+    assert!(stale_secs(&headers).is_some(), "{headers:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restart_keeps_warm_only_the_mirrors_people_were_served() {
+    let gw = start(|_| {}).await;
+    let src = source(&gw.tmp);
+    gw.stub.add("alice", "served", true, &src);
+    let polled = gw.stub.add("alice", "polled", true, &src);
+    assert!(gw.clone("/alice/served.git", "c").await.status.success());
+    // Refreshed (as the poller does) but never served: its manifest is new all the same.
+    assert_eq!(gw.refresh(&polled).await, None);
+    let marker = gw
+        .tmp
+        .join("data/mirrors/devnet-stub/Rservedalice.git")
+        .join(forge_gateway::mirror::SERVED_FILE);
+    eventually("the serve is recorded", || marker.exists()).await;
+
+    let (_, again) = serve(&gw.tmp, &gw.stub, |_| {}).await;
+    assert!(again.known(&polled.repo_id));
+    let warm: Vec<String> = again
+        .warm()
+        .iter()
+        .map(|s| s.repo.repo_id.clone())
+        .collect();
+    assert_eq!(warm, ["Rservedalice"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_repo_created_again_under_its_name_drops_the_old_mirror() {
+    let gw = start(|_| {}).await;
+    let src = source(&gw.tmp);
+    let old = gw.stub.add("alice", "proj", true, &src);
+    assert!(gw.clone("/alice/proj.git", "c1").await.status.success());
+    let old_dir = gw.tmp.join("data/mirrors/devnet-stub/Rprojalice.git");
+
+    // A reset chain: the repository is created again under its name, with a new id. A
+    // restarted gateway still finds the old mirror on disk.
+    gw.stub.remove("alice", "proj");
+    gw.stub.add_id("Rnew", "alice", "proj", true, &src);
+    let (base, mirrors) = serve(&gw.tmp, &gw.stub, |_| {}).await;
+    assert!(mirrors.known(&old.repo_id));
+
+    // The name resolves to the new repository, and the old mirror is proved gone and removed.
+    let (s, _, body) = request(&base, "/alice/proj.git/forge-manifest.json").await;
+    assert_eq!(s, 200, "{body}");
+    let m: Manifest = serde_json::from_str(&body).unwrap();
+    assert_eq!(m.repo_id, "Rnew");
+    eventually("the old mirror is removed", || {
+        !mirrors.known(&old.repo_id) && !old_dir.exists()
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restart_after_a_network_reset_removes_the_mirrors_platform_lost() {
+    let gw = start(|_| {}).await;
+    let src = source(&gw.tmp);
+    let old = gw.stub.add("alice", "proj", true, &src);
+    let kept = gw.stub.add("alice", "kept", true, &src);
+    assert_eq!(gw.refresh(&old).await, None);
+    assert_eq!(gw.refresh(&kept).await, None);
+
+    // The reset: `alice` now names a new identity, which creates `proj` again.
+    gw.stub.remove("alice", "proj");
+    gw.stub.add_id("Rnew", "alice", "proj", true, &src);
+    gw.stub
+        .world()
+        .repos
+        .get_mut(&("alice".to_string(), "proj".to_string()))
+        .unwrap()
+        .0
+        .owner_id = "Onew".into();
+
+    // A failed read keeps every mirror.
+    gw.stub.world().down = true;
+    let (_, down) = serve(&gw.tmp, &gw.stub, |_| {}).await;
+    down.sweep_gone().await;
+    assert!(down.known(&old.repo_id) && down.known(&kept.repo_id));
+
+    gw.stub.world().down = false;
+    let (_, mirrors) = serve(&gw.tmp, &gw.stub, |_| {}).await;
+    mirrors.sweep_gone().await;
+    assert!(!mirrors.known(&old.repo_id));
+    assert!(mirrors.known(&kept.repo_id));
+    let old_dir = gw.tmp.join("data/mirrors/devnet-stub/Rprojalice.git");
+    eventually("the lost mirror's files are deleted", || !old_dir.exists()).await;
+    assert!(gw
+        .tmp
+        .join("data/mirrors/devnet-stub/Rkeptalice.git")
+        .exists());
 }

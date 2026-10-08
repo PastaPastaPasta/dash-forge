@@ -27,17 +27,7 @@ You need two programs on your `PATH`:
 - `dg`: the command-line tool, shaped like GitHub's `gh`;
 - `git-remote-dash`: the git remote helper. Git runs it whenever a URL starts with `dash://`.
 
-### Prebuilt binaries (Linux and macOS)
-
-This one line installs the latest release's checksum-verified binaries into `~/.local/bin`:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/install.sh | sh
-```
-
-[INSTALL.md](../INSTALL.md) covers what the script checks (the SHA-256, and the build attestation when `gh` is installed), manual downloads (Windows included), `cargo binstall`, and pinning a version.
-
-### Or build from source
+### Build from source
 
 You need Rust (the repository pins the version; rustup installs it for you) and `protoc` 25 or newer. [BUILDING.md](../BUILDING.md) explains both.
 
@@ -48,6 +38,16 @@ cargo install --locked --path crates/git-remote-dash
 ```
 
 `cargo install` puts both binaries in `~/.cargo/bin`, which rustup already added to your `PATH`.
+
+### Prebuilt binaries (Linux and macOS), once a release is published
+
+No release is published yet, so this script stops with a message that points back to the build above. When one is, this one line installs the latest release's checksum-verified binaries into `~/.local/bin`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/install.sh | sh
+```
+
+[INSTALL.md](../INSTALL.md) covers what the script checks (the SHA-256, and the build attestation when `gh` is installed), manual downloads (Windows included), `cargo binstall`, and pinning a version.
 
 ### Check the install
 
