@@ -1,11 +1,11 @@
 {
-  "name": "bypass_by_writer_ignored",
-  "description": "A writer cannot bypass the rules: their bypass event does not count, and it is reported as an uncounted bypass by a writer, never hidden.",
+  "name": "bypass_by_removed_maintainer_unconfirmed",
+  "description": "The maintainer who merged with a bypass has since been removed (or had their role changed, which deletes and rewrites the membership document), so no current document covers the merge. Fail safe: the bypass does not count and the verdict is unmet, but the event is reported with an unconfirmed role (null), and the merger's role is null (no current record, not 'none at the time').",
   "case": "merge_audit",
   "rules": "v2",
   "input": {
     "mergedAt": 10000000,
-    "merger": "writ",
+    "merger": "gone",
     "mergeOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "mergeHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "prAuthor": "auth",
@@ -29,14 +29,9 @@
         "createdAt": 10
       },
       {
-        "identity": "maint2",
-        "role": "maintainer",
-        "createdAt": 10
-      },
-      {
-        "identity": "writ",
+        "identity": "gone",
         "role": "writer",
-        "createdAt": 10
+        "createdAt": 20000000
       }
     ],
     "reviews": [],
@@ -46,7 +41,7 @@
     "bypasses": [
       {
         "id": "e1",
-        "actor": "writ",
+        "actor": "gone",
         "createdAt": 10000100,
         "oid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "value": "required approvals: 0 of 1"
@@ -62,7 +57,7 @@
       "mergeMethods": 0
     },
     "protected": false,
-    "mergerRole": "writer",
+    "mergerRole": null,
     "protectionUnmet": false,
     "approvals": {
       "met": false,
@@ -77,12 +72,12 @@
     "uncountedBypass": {
       "event": {
         "id": "e1",
-        "actor": "writ",
+        "actor": "gone",
         "createdAt": 10000100,
         "oid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "value": "required approvals: 0 of 1"
       },
-      "role": "writer"
+      "role": null
     },
     "rulesChanged": false
   }

@@ -68,7 +68,7 @@ import { setHidden } from '@/lib/repo/moderation'
 import { moderationBlocked } from '@/lib/repo/moderation-fold'
 import { isHiddenByHide } from '@/lib/view/issues-view'
 import type { HideReason } from '@/lib/rules/moderation'
-import { bypassValue, codeOwnersLine, deleteBranchOffer, deleteBranchProblem, prLinkedIssues, requiredChecksLine, unrecordedMerge, unrecordedMergeCandidate } from '@/lib/view/pull-actions'
+import { bypassValue, codeOwnersLine, deleteBranchOffer, deleteBranchProblem, prLinkedIssues, requiredChecksLine, unrecordedMerge, unrecordedMergeCandidate, unverifiedMerge } from '@/lib/view/pull-actions'
 import {
   baseRefReaders,
   openPullsOnBranch,
@@ -619,7 +619,9 @@ function PullPage({
     [pull.baseTipOid, pull.baseTipPrev ?? '', pull.headOid, comparison.sidesKey],
     { enabled: cmp !== null && unrecordedMergeCandidate(recordInputs) },
   )
-  const recordOid = unrecordedMerge(recordInputs, unrecordedCheck.data?.verdict ?? null)
+  const recordOid = unrecordedMerge(recordInputs, unrecordedCheck.data ?? null)
+  // The same, except the base also changed files the PR changes: not recordable here (Q5-A01).
+  const unverifiedOid = unverifiedMerge(recordInputs, unrecordedCheck.data ?? null)
   // "Mark as merged (done elsewhere)" is offered on a ready PR whose head is on the base already.
   const showMarkMerged = actions.canMarkMerged && !pull.state.draft && recordOid === null
   const base = shortBranch(pull.mergeBaseRefName) || 'the base branch'
@@ -1662,6 +1664,8 @@ function PullPage({
                   disabledReason={archived ? ARCHIVED_REASON : guard.disabledReason}
                   onRecord={() => setPending({ kind: 'mark-merged', bypass: actions.unmetRules, oid: recordOid })}
                 />
+              ) : unverifiedOid !== null && unrecordedCheck.data && !mergeBusy ? (
+                <UnverifiedMergeNote oid={unverifiedOid} base={base} combined={unrecordedCheck.data.combined} command={`dg pr merge ${repo.ownerId}/${repo.name} ${pull.number} --event-only --merge-oid ${unverifiedOid}${actions.unmetRules.length > 0 ? ' --override-policy' : ''}`} />
               ) : null}
 
               {/* Merge box */}
@@ -2666,9 +2670,30 @@ function RecordMergeBox({
   )
 }
 
+/**
+ * The base tip makes this PR's changes except in files the base changed too. Whether the tip's
+ * version of those files holds the PR's change can't be checked here (an unrelated push to the
+ * same file looks the same), so no "Record merge" is offered: a recorded merge is final.
+ */
+function UnverifiedMergeNote({ oid, base, combined, command }: { oid: string; base: string; combined: readonly string[]; command: string }): JSX.Element {
+  const more = combined.length > 3 ? ` and ${combined.length - 3} more` : ''
+  const files = `${plural(combined.length, 'file')} (${combined.slice(0, 3).join(', ')}${more})`
+  return (
+    <section aria-label="Possible unrecorded merge" className="rounded-lg border border-anvil-300 px-4 py-3 text-dense dark:border-anvil-700" data-testid="unverified-merge-box">
+      <p className="font-medium">This pull request may already be on {base}</p>
+      <p className="text-anvil-600 dark:text-anvil-300">
+        {base} is at <Oid value={oid} chars={7} copyable={false} />. It makes this pull request&apos;s changes, except in {files} that {base} also changed after the pull request branched off.
+        Changes on both sides can&apos;t be checked automatically. If this commit is the merge, record it with:
+      </p>
+      <CopyRow text={command} label="Copy the command" className="mt-2" />
+    </section>
+  )
+}
+
 /** What a merged PR's recorded merge commit holds (`merge-content.ts`), next to its state. */
 function MergeContentNote({ content, mergeOid }: { content: MergeContent; mergeOid: string }) {
-  const combined = content.combined.length > 0 ? `, combined with base changes in ${plural(content.combined.length, 'file')}` : ''
+  // Files both sides changed: the check sees that, not whether the merge's version holds the PR's change.
+  const combined = content.combined.length > 0 ? `, except ${plural(content.combined.length, 'file')} changed on both sides and not checked for this PR's change` : ''
   const words: Record<MergeContent['verdict'], string> = {
     contains: 'contains this PR',
     squash: `squash of this PR${combined}`,
@@ -2677,14 +2702,22 @@ function MergeContentNote({ content, mergeOid }: { content: MergeContent; mergeO
     unknown: "couldn't check: its commits could not be read",
   }
   const missing = content.verdict === 'missing'
+  const partly = content.combined.length > 0
   return (
     <span
       className={`flex items-center gap-1 text-[12px] ${missing ? 'font-medium text-danger-700 dark:text-danger-400' : 'text-anvil-500 dark:text-anvil-400'}`}
       data-testid="pr-merge-content"
       data-verdict={content.verdict}
-      title={missing ? 'A maintainer or writer recorded this merge, but the commit it names neither contains the PR head nor makes its changes.' : undefined}
+      data-unverified={partly ? 'true' : undefined}
+      title={
+        missing
+          ? 'A maintainer or writer recorded this merge, but the commit it names neither contains the PR head nor makes its changes.'
+          : partly
+            ? `Changed on both sides: ${content.combined.join(', ')}`
+            : undefined
+      }
     >
-      {missing ? <X className="h-3.5 w-3.5" aria-hidden /> : content.verdict === 'unknown' ? null : <Check className="h-3.5 w-3.5 text-verify" aria-hidden />}
+      {missing ? <X className="h-3.5 w-3.5" aria-hidden /> : content.verdict === 'unknown' || partly ? null : <Check className="h-3.5 w-3.5 text-verify" aria-hidden />}
       merge <Oid value={mergeOid} chars={7} copyable={false} /> {words[content.verdict]}
     </span>
   )

@@ -1,0 +1,29 @@
+{
+  "name": "squash_clean_beside_a_base_change",
+  "description": "A squash of a PR that changes only CHANGELOG.md, on a base that changed another file meanwhile: the merge sets CHANGELOG.md to the PR's own blob, so nothing is combined and the web still offers 'Record merge'.",
+  "case": "merge_content",
+  "rules": "v2",
+  "input": {
+    "headOid": "1111111111111111111111111111111111111111",
+    "mergeOid": "2222222222222222222222222222222222222222",
+    "tipBefore": "3333333333333333333333333333333333333333",
+    "mergeParents": [
+      "3333333333333333333333333333333333333333"
+    ],
+    "headInMerge": false,
+    "tipBeforeInMerge": true,
+    "mergeChange": {
+      "CHANGELOG.md": "p1"
+    },
+    "prChange": {
+      "CHANGELOG.md": "p1"
+    },
+    "baseChange": {
+      "README.md": "r1"
+    }
+  },
+  "expected": {
+    "verdict": "squash",
+    "combined": []
+  }
+}

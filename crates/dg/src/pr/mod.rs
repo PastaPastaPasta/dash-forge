@@ -1899,8 +1899,14 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
     let MergeRights { policy, bypassed } =
         require_merge_rights(ctx, &s, handle, &view, method_bit, a.override_policy).await?;
     // A recorded merge is permanent: `--event-only` names a commit that must contain the PR.
-    if let Some(oid) = &merge_oid {
-        require_merge_contains_pr(ctx, handle, &view, oid)?;
+    // A squash or rebase whose files the base changed too is allowed, but the confirmation says
+    // those files were not checked (Q5-A01).
+    let unchecked = match &merge_oid {
+        Some(oid) => require_merge_contains_pr(ctx, handle, &view, oid)?,
+        None => Vec::new(),
+    };
+    if !ctx.json && !unchecked.is_empty() {
+        eprintln!("warning: {}", unchecked_clause(&unchecked));
     }
     // `--delete-branch` needs write access to the source repo, and must not pull the branch
     // from under another open PR: refuse before merging rather than after.
@@ -1996,7 +2002,7 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
         );
     }
     ctx.confirm_or_cancel(&format!(
-        "Merge PR #{number}{}? ({}{}{}{}; {}, plus Platform storage for any new objects)",
+        "Merge PR #{number}{}? ({}{}{}{}{}; {}, plus Platform storage for any new objects)",
         if not_passing.is_empty() {
             String::new()
         } else {
@@ -2006,6 +2012,11 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
             "records the merge only"
         } else {
             "pushes to the base branch, then records the merge"
+        },
+        if unchecked.is_empty() {
+            String::new()
+        } else {
+            format!(", although {}", unchecked_clause(&unchecked))
         },
         bypass_clause(&bypassed),
         if delete.is_some() {
@@ -2162,6 +2173,7 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
             "branchCheckNote": branch_check_note,
             "bypassedRules": bypassed,
             "checksNotPassing": not_passing,
+            "uncheckedFiles": unchecked,
             "closedIssues": closed_issues,
             "linkedIssuesOmitted": omitted,
             "linkedIssuesImported": imported,
@@ -2463,16 +2475,26 @@ fn event_only_oid(view: &PatchView, given: Option<&str>, number: u64) -> Result<
 /// its head is that commit or an ancestor of it, or the commit is a squash or a rebase of the PR
 /// on the base (the shared reader rule `merge_check`, which `dg pr verify` and the web apply to
 /// every recorded merge). Fetches the base and the head unless the commit is the head itself.
-fn require_merge_contains_pr(ctx: &Ctx, handle: &Repo, view: &PatchView, oid: &str) -> Result<()> {
+/// Returns the squash's or rebase's `combined` paths: files the base changed too, whose merged
+/// version the rule does not check for the PR's change (the web does not offer to record such a
+/// merge and points here; the confirmation names them).
+fn require_merge_contains_pr(
+    ctx: &Ctx,
+    handle: &Repo,
+    view: &PatchView,
+    oid: &str,
+) -> Result<Vec<String>> {
     use forge_core::rules::merge_check::{merge_content, MergeVerdict};
     if oid == view.head {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let number = view.patch.number;
     let scratch = verify::scratch_for_check(ctx, handle, view, &view.head)?;
     let facts = verify::merge_facts(scratch.path(), &view.head, oid, &view.tip_before(oid));
-    let (headline, cause) = match merge_content(&facts).verdict {
-        MergeVerdict::Contains | MergeVerdict::Squash | MergeVerdict::Rebase => return Ok(()),
+    let content = merge_content(&facts);
+    let (headline, cause) = match content.verdict {
+        MergeVerdict::Contains => return Ok(Vec::new()),
+        MergeVerdict::Squash | MergeVerdict::Rebase => return Ok(content.combined),
         MergeVerdict::Missing => (
             format!("{} does not contain PR #{number}", short(oid)),
             format!(
@@ -2986,6 +3008,17 @@ fn policy_met(unmet: &[String], owners_at_merge: bool) -> Option<bool> {
     } else {
         Some(true)
     }
+}
+
+/// The `--event-only` warning for a squash or rebase whose `combined` files the base changed too:
+/// the merge check sees both sides changed them, never that the commit's version holds the PR's
+/// change (an unrelated push to the same file looks the same, Q5-A01).
+fn unchecked_clause(combined: &[String]) -> String {
+    format!(
+        "{} {} not checked for this PR's change",
+        verify::both_sides(combined),
+        if combined.len() == 1 { "was" } else { "were" }
+    )
 }
 
 /// The confirmation's clause for a merge that bypasses the branch policy (QW4-048): the bypass
@@ -4909,6 +4942,22 @@ pub(crate) mod tests {
         assert_eq!(
             members_squash_message(4, &["Me <m>".into(), "Ann <a@x>".into()], "Me <m>"),
             "#4\n\nCo-authored-by: Ann <a@x>"
+        );
+    }
+
+    #[test]
+    fn files_changed_on_both_sides_are_named_as_unchecked() {
+        assert_eq!(
+            unchecked_clause(&["CHANGELOG.md".to_string()]),
+            "1 file changed on both sides (CHANGELOG.md) was not checked for this PR's change"
+        );
+        let many: Vec<String> = ["a", "b", "c", "d", "e"]
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        assert_eq!(
+            unchecked_clause(&many),
+            "5 files changed on both sides (a, b, c and 2 more) were not checked for this PR's change"
         );
     }
 

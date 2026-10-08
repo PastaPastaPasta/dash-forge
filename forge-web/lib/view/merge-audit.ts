@@ -8,8 +8,9 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { matchesProtected } from '../rules'
-import { auditMerge, type BypassEvent, type MergeAudit, type MergeAuditInput, type PolicyDoc, type ProtectionDoc } from '../rules/merge-audit'
+import { auditMerge, type BypassEvent, type MergeAudit, type MergeAuditInput, type PolicyDoc, type ProtectionDoc, type UncountedBypass } from '../rules/merge-audit'
 import { headAt } from '../rules/merge-content'
+import { ROLE_NOUN } from '../rules/roles'
 import { mergeTransition } from '../rules/transition'
 import type { ConfigDoc } from '../rules/types'
 import type { Review } from '../rules/v2'
@@ -116,7 +117,11 @@ export function auditRows(a: MergeAudit, baseRefName: string): AuditRow[] {
       ? {
           key: 'protected',
           label: 'Protected branch',
-          text: a.protectionUnmet ? `${base} was protected, and this merge was not recorded by a maintainer` : `${base} was protected; a maintainer merged it`,
+          text: !a.protectionUnmet
+            ? `${base} was protected; a maintainer merged it`
+            : a.mergerRole === null
+              ? `${base} was protected, and the merger's role at the time can't be confirmed`
+              : `${base} was protected, and no current membership record shows the merger as a maintainer then`,
           met: !a.protectionUnmet,
         }
       : { key: 'protected', label: 'Protected branch', text: `${base} was not protected`, met: null },
@@ -143,6 +148,8 @@ export function auditRows(a: MergeAudit, baseRefName: string): AuditRow[] {
     }
     for (const c of a.checks.required) rows.push({ key: `check:${c.name}`, label: `Check ${c.name}`, text: CHECK_WORDS[c.state], met: c.state === 'passed' })
   }
+  // Q5-B04: never judged here (it needs CODEOWNERS at the base and the changed paths).
+  if (a.codeOwnersUnaudited) rows.push({ key: 'codeOwners', label: 'Code owners', text: 'Approval required; not audited', met: null })
   return rows
 }
 
@@ -156,10 +163,30 @@ export function auditHeadline(a: MergeAudit): string {
     case 'bypassed':
       return 'A maintainer bypassed the branch rules to merge this, and recorded it.'
     case 'unmet':
-      return 'This merge did not meet the branch rules in force at the time, and no bypass was recorded.'
+      if (a.uncountedBypass === null) return 'This merge did not meet the branch rules in force at the time, and no bypass was recorded.'
+      return a.uncountedBypass.role === null
+        ? "This merge did not meet the branch rules in force at the time. A bypass was recorded, but its writer's role at the time can't be confirmed."
+        : 'This merge did not meet the branch rules in force at the time. A bypass was recorded, but no current membership record shows its writer as a maintainer then.'
     case 'unknown':
+      if (a.checksUnread && a.codeOwnersUnaudited) return "The required checks couldn't be read and code owner approval isn't audited here, so this merge couldn't be checked against every rule."
+      if (a.codeOwnersUnaudited) return "Code owner approval was required, and it isn't audited here, so this merge couldn't be checked against every rule."
       return "The required checks couldn't be read, so this merge couldn't be checked against every rule."
   }
+}
+
+/** The merger's role in the "Merged by" line: never "none at the time" from a missing current record. */
+export function mergerRoleWords(a: MergeAudit): string {
+  return a.mergerRole !== null ? `, ${ROLE_NOUN[a.mergerRole]} at the time` : ', no current membership record'
+}
+
+/**
+ * Why a bypass recorded for this merge does not count, after "<writer> recorded a bypass <when>":
+ * its writer's role then can't be confirmed, or the current record shows another role.
+ */
+export function uncountedBypassWhy(u: UncountedBypass): string {
+  return u.role === null
+    ? "They have no current membership record, so their role at the time can't be confirmed and the bypass doesn't count."
+    : `Their current membership record shows ${ROLE_NOUN[u.role]} at the time, and only a maintainer's bypass counts.`
 }
 
 /** Why an `unmet` verdict is not proof (reviews and check runs can be deleted). */

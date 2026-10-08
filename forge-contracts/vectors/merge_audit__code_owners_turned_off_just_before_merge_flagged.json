@@ -1,11 +1,11 @@
 {
-  "name": "bypass_by_writer_ignored",
-  "description": "A writer cannot bypass the rules: their bypass event does not count, and it is reported as an uncounted bypass by a writer, never hidden.",
+  "name": "code_owners_turned_off_just_before_merge_flagged",
+  "description": "A policy that only turns requireCodeOwners off within the hour before the merge is flagged as a change to the branch rules; with it off at the merge, nothing is left unaudited.",
   "case": "merge_audit",
   "rules": "v2",
   "input": {
     "mergedAt": 10000000,
-    "merger": "writ",
+    "merger": "maint",
     "mergeOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "mergeHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "prAuthor": "auth",
@@ -17,7 +17,19 @@
           "requiredApprovals": 1,
           "approverRole": 0,
           "requireChecks": false,
-          "mergeMethods": 0
+          "mergeMethods": 0,
+          "requireCodeOwners": true
+        }
+      },
+      {
+        "id": "p2",
+        "createdAt": 9940000,
+        "policy": {
+          "requiredApprovals": 1,
+          "approverRole": 0,
+          "requireChecks": false,
+          "mergeMethods": 0,
+          "requireCodeOwners": false
         }
       }
     ],
@@ -39,34 +51,35 @@
         "createdAt": 10
       }
     ],
-    "reviews": [],
+    "reviews": [
+      {
+        "id": "r1",
+        "reviewer": "maint2",
+        "verdict": 1,
+        "commitOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "createdAt": 5000000
+      }
+    ],
     "dismissals": [],
     "runs": [],
     "runners": [],
-    "bypasses": [
-      {
-        "id": "e1",
-        "actor": "writ",
-        "createdAt": 10000100,
-        "oid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        "value": "required approvals: 0 of 1"
-      }
-    ]
+    "bypasses": []
   },
   "expected": {
-    "verdict": "unmet",
+    "verdict": "met",
     "policy": {
       "requiredApprovals": 1,
       "approverRole": 0,
       "requireChecks": false,
-      "mergeMethods": 0
+      "mergeMethods": 0,
+      "requireCodeOwners": false
     },
     "protected": false,
-    "mergerRole": "writer",
+    "mergerRole": "maintainer",
     "protectionUnmet": false,
     "approvals": {
-      "met": false,
-      "have": 0,
+      "met": true,
+      "have": 1,
       "need": 1,
       "blockedBy": []
     },
@@ -74,16 +87,7 @@
     "checksUnread": false,
     "codeOwnersUnaudited": false,
     "bypass": null,
-    "uncountedBypass": {
-      "event": {
-        "id": "e1",
-        "actor": "writ",
-        "createdAt": 10000100,
-        "oid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        "value": "required approvals: 0 of 1"
-      },
-      "role": "writer"
-    },
-    "rulesChanged": false
+    "uncountedBypass": null,
+    "rulesChanged": true
   }
 }
