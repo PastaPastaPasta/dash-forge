@@ -32,14 +32,17 @@ import { stepClock, timed } from '../step-timing'
 import { DEPLOYMENTS, FORGE_CONTRACT_KINDS, contractKind, groupTrust, type ForgeIds, type GroupTrust } from '../deployments'
 import { assertGroupHolds, type GroupCheck } from './group-trust'
 import { SECURITY_LEVEL, WriteAuthError, assertWritesAllowed, balanceBeforeWrite, findSigningKey, measureActual, readIdentityBalance, serialized, type SpendEvent, type WriteAuth } from '../sdk/write'
-import { KEY_ADD_FLOOR_CREDITS, KEY_DISABLE_CREDITS, KEY_LIMITS_UPDATE_CREDITS, KEY_REGISTER_CREDITS, KEY_RENEW_CREDITS } from '../sdk/cost'
+import { KEY_ADD_FLOOR_CREDITS, KEY_DISABLE_CREDITS, KEY_LIMITS_UPDATE_CREDITS, KEY_REGISTER_CREDITS, KEY_RENEW_CREDITS, NAME_REGISTER_CREDITS, NAME_REGISTER_FLOOR_CREDITS } from '../sdk/cost'
 import { authSdk, type WasmIdentity, type WasmKey } from '../sdk/facade'
 import type { HeldBrowserKey } from './create-identity'
 import type { KeyLimits } from '../view/funds'
 import { controlsKey, normalizeToWif } from './wif'
 import { decodeIdentifier } from './base58'
 import { retryWhileMissing } from '../view/retry'
-import { identityFileMatchesNetwork, masterMaterialFromFile } from './identity-file'
+import { authKeysFromFile, identityFileMatchesNetwork, masterMaterialFromFile } from './identity-file'
+import { NoUsernameKeyError, registerUsername, usernameKeysFromPhrase } from './username-register'
+import { dpnsLabelHolder, noteRegisteredDpnsName } from '../view/dpns'
+import { checkUsername } from '../view/username'
 import { deriveMasterKey, invalidMnemonicMessage, isValidMnemonic } from './hd'
 import { identityOfMasterKey } from './identity-lookup'
 import { PLATFORM_READ_MS, withPlatformRead } from './connect'
@@ -210,7 +213,7 @@ type Listener = (state: AuthState) => void
  * the spend ledger records it, so reconciliation does not count it as "unexplained"). Platform
  * meters these (storage + processing, no flat fee); the cost is measured from the balance.
  */
-export type KeySpendKind = 'key:register' | 'key:renew' | 'key:topup' | 'key:revoke' | 'key:encryption' | 'key:runner' | 'identity:create'
+export type KeySpendKind = 'key:register' | 'key:renew' | 'key:topup' | 'key:revoke' | 'key:encryption' | 'key:runner' | 'identity:create' | 'identity:name'
 
 /** The pre-sign estimate per kind (credits); 0 where none was ever measured. */
 export const KEY_SPEND_ESTIMATES: Readonly<Record<KeySpendKind, number>> = {
@@ -221,6 +224,7 @@ export const KEY_SPEND_ESTIMATES: Readonly<Record<KeySpendKind, number>> = {
   'key:encryption': 0,
   'key:runner': KEY_REGISTER_CREDITS,
   'identity:create': 0,
+  'identity:name': NAME_REGISTER_CREDITS,
 }
 
 /**
@@ -230,6 +234,7 @@ export const KEY_SPEND_ESTIMATES: Readonly<Record<KeySpendKind, number>> = {
 export const KEY_SPEND_FLOORS: Readonly<Partial<Record<KeySpendKind, number>>> = {
   'key:register': KEY_ADD_FLOOR_CREDITS,
   'key:runner': KEY_ADD_FLOOR_CREDITS,
+  'identity:name': NAME_REGISTER_FLOOR_CREDITS,
 }
 
 /**
@@ -1543,6 +1548,55 @@ export class AuthController {
       this.noteOwnKey(identityId, key.keyId)
       return key
     })
+  }
+
+  /**
+   * Register the DPNS username `label` (`label.dash`) for the signed-in identity (#452). The
+   * identity file or recovery phrase supplies the identity's own CRITICAL (else HIGH) unbound
+   * authentication key, which signs the preorder and the domain and is not retained: this
+   * browser's key is bound to the Forge contracts and Platform refuses it on DPNS
+   * (`./username-register`). Paid from the identity balance; recorded in Settings → Spend.
+   * A contested name is refused before anything is read (the web does not enter contests).
+   *
+   * An error after the domain may have gone out (a timeout, a lost answer) is not taken at its
+   * word: one read of the name decides, and a name that is now this identity's is a success.
+   * Either way the tab then knows the name ({@link noteRegisteredDpnsName}): the header, bylines
+   * and short URLs show it at once.
+   */
+  async registerUsername(input: MasterInput, label: string): Promise<string> {
+    return this.run(async () => {
+      const identityId = this.state.session?.identityId
+      if (!identityId) throw new Error('sign in first')
+      const check = checkUsername(label)
+      if (check.kind !== 'ok' || check.label !== label) throw new Error(`${label} can't be registered here: ${check.kind === 'invalid' ? check.reason : check.kind === 'contested' ? 'it is a contested name' : 'no name given'}`)
+      const wifs = await this.usernameKeysFor(identityId, input)
+      const sdk = await this.getSdk()
+      try {
+        await this.charged(identityId, 'identity:name', () => null, () => registerUsername(sdk, { network: this.network, identityId, label, wifs }))
+      } catch (e) {
+        if (e instanceof NoUsernameKeyError) throw e
+        const holder = await dpnsLabelHolder(sdk, label, this.network).catch(() => null)
+        if (holder !== identityId) throw e
+      }
+      noteRegisteredDpnsName(this.network, identityId, label)
+      return `${label}.dash`
+    })
+  }
+
+  /**
+   * The keys that may sign a username for `identityId`, from an identity file (its CRITICAL and
+   * HIGH authentication keys, then what its mnemonic derives) or a recovery phrase (the canonical
+   * CRITICAL and HIGH keys). A file for another identity or network is refused.
+   */
+  private async usernameKeysFor(identityId: string, input: MasterInput): Promise<string[]> {
+    if ('fileText' in input) {
+      const m = authKeysFromFile(input.fileText)
+      if (m.identityId !== identityId) throw new WrongMasterKeyError(identityId, otherIdentityFileMessage(m.identityId, identityId))
+      this.checkFileNetwork(m.networkKey)
+      return [...m.wifs, ...(m.mnemonic ? await usernameKeysFromPhrase(m.mnemonic, this.network) : [])]
+    }
+    if (!(await isValidMnemonic(input.mnemonic))) throw new Error(await invalidMnemonicMessage(input.mnemonic))
+    return usernameKeysFromPhrase(input.mnemonic, this.network)
   }
 
   /**

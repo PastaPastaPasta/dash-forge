@@ -113,6 +113,9 @@ export async function lookupDpnsName(sdk: EvoSDK, identityId: string, network: N
   const name = docs[0] ? nameOf(docs[0]) : null
   cache.set(key, name)
   failedAt.delete(key)
+  // A name that appeared since this tab last looked (registered elsewhere, #452): every name shown
+  // for this identity updates, not only this page's.
+  if (name !== null) changed()
   return name
 }
 
@@ -158,6 +161,66 @@ export function clearDpnsCache(): void {
   cache.clear()
   failedAt.clear()
   idLookups.clear()
+  changed()
+}
+
+/**
+ * Who watches the cache for a name this tab learned without a read ({@link noteRegisteredDpnsName}):
+ * the hooks that show a name (header, bylines, short URLs) render again when it changes, so a
+ * username registered here shows everywhere at once, not on the next page load (#452).
+ */
+const listeners = new Set<() => void>()
+let version = 0
+function changed(): void {
+  version += 1
+  for (const l of listeners) l()
+}
+
+/** Subscribe to cache changes ({@link dpnsCacheVersion}); returns the unsubscribe. */
+export function subscribeDpnsCache(listener: () => void): () => void {
+  listeners.add(listener)
+  return () => {
+    listeners.delete(listener)
+  }
+}
+
+/** A number that changes whenever {@link subscribeDpnsCache} listeners are called. */
+export function dpnsCacheVersion(): number {
+  return version
+}
+
+/**
+ * Record a username this browser just registered for `identityId` (`label.dash`), both ways: the
+ * identity now reads as `label.dash`, and `label` resolves to it. A read right after a
+ * registration can still miss it on a lagging node, and a "no name" read before it is cached
+ * for the tab, so the write's own answer is what the tab believes from here on.
+ */
+export function noteRegisteredDpnsName(network: Network, identityId: string, label: string): void {
+  const key = keyOf(network, identityId)
+  cache.set(key, `${label}.dash`)
+  failedAt.delete(key)
+  idLookups.set(keyOf(network, `${homographSafe(label)}.dash`), Promise.resolve(identityId))
+  changed()
+}
+
+/**
+ * Who holds the username `label` (`label.dash`): the identity id, or null when no `domain` has its
+ * normalized label under `dash`. One read of the contract's unique `parentNameAndLabel` index
+ * (dpns-contract schema v1/v2 lines 9-30), not cached, and a failed read REJECTS: "is this name
+ * free?" must never read a failure as yes (#452). A name shape that cannot be a label is refused
+ * by the caller before this is asked.
+ */
+export async function dpnsLabelHolder(sdk: EvoSDK, label: string, network: Network): Promise<string | null> {
+  const docs = await queryDocuments(sdk, {
+    dataContractId: NETWORKS[network].dpnsContractId,
+    documentTypeName: 'domain',
+    where: [
+      ['normalizedParentDomainName', '==', 'dash'],
+      ['normalizedLabel', '==', homographSafe(label)],
+    ],
+    limit: 1,
+  })
+  return identityOf(docs[0])
 }
 
 /**
@@ -166,8 +229,11 @@ export function clearDpnsCache(): void {
  */
 const idLookups = new Map<string, Promise<string | null>>()
 
-/** Lowercase, then `o`->`0`, `l`/`i`->`1` — the contract's homograph-safe normalization. */
-function homographSafe(s: string): string {
+/**
+ * Lowercase, then `o`->`0`, `l`/`i`->`1` — the contract's homograph-safe normalization
+ * (platform v5.0.0-beta.3 `dash-platform-queries/src/dpns_usernames.rs` `convert_to_homograph_safe_chars`).
+ */
+export function homographSafe(s: string): string {
   return s.toLowerCase().replace(/[oli]/g, (m) => (m === 'o' ? '0' : '1'))
 }
 

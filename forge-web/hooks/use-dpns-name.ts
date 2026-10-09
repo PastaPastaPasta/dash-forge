@@ -1,9 +1,9 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useSyncExternalStore } from 'react'
 
 import { useSdk } from '@/hooks/use-sdk'
-import { cachedDpnsName, DPNS_FAILURE_TTL_MS, dpnsReadFailed, lookupDpnsName, resolveDpnsName } from '@/lib/view/dpns'
+import { cachedDpnsName, DPNS_FAILURE_TTL_MS, dpnsCacheVersion, dpnsReadFailed, lookupDpnsName, resolveDpnsName, subscribeDpnsCache } from '@/lib/view/dpns'
 import { isIdentityId } from '@/lib/utils'
 import { resolveOwner } from '@/lib/repo'
 
@@ -32,6 +32,8 @@ export function useDpnsName(identityId: string): string | undefined {
  */
 export function useSettledDpnsName(identityId: string): string | null | undefined {
   const { sdk, ready, network } = useSdk()
+  // A name this tab registers is written into the cache, not read: render again when it is (#452).
+  useDpnsCacheVersion()
   const cached = isIdentityId(identityId) ? cachedDpnsName(network, identityId) : null
   const [resolved, setResolved] = useState<{ id: string; name: string | null } | null>(null)
   // Tries so far for this id on this network: a mounted hook that is handed another owner starts over.
@@ -91,7 +93,10 @@ export function useOwnerDpnsName(owner: string): string | undefined {
  */
 export function useDpnsLookup(identityId: string): string | null | undefined {
   const { sdk, ready, network } = useSdk()
+  useDpnsCacheVersion()
   const [resolved, setResolved] = useState<{ id: string; name: string | null } | null>(null)
+  // A name registered in this tab since the read (#452): the page stops offering one at once.
+  const known = isIdentityId(identityId) ? cachedDpnsName(network, identityId) : undefined
   useEffect(() => {
     if (!ready || !sdk || !isIdentityId(identityId)) return
     let live = true
@@ -102,5 +107,11 @@ export function useDpnsLookup(identityId: string): string | null | undefined {
       live = false
     }
   }, [sdk, ready, identityId, network])
+  if (typeof known === 'string') return known
   return resolved?.id === identityId ? resolved.name : undefined
+}
+
+/** Render again whenever the DPNS name cache changes ({@link subscribeDpnsCache}). */
+function useDpnsCacheVersion(): number {
+  return useSyncExternalStore(subscribeDpnsCache, dpnsCacheVersion, dpnsCacheVersion)
 }

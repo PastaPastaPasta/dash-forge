@@ -648,6 +648,9 @@ function AccountMenu({
   const { open, setOpen, ref, trigger } = usePopover()
   const { funds } = useAuth()
   const openTopUp = useUiStore((s) => s.openTopUp)
+  // The account's DPNS name beside its id, once read (one cached lookup); a name registered in
+  // this tab shows at once (#452).
+  const name = useDpnsName(identity)
   const credits = balance ? Number(balance) : 0
   const dash = balanceToDash(balance ?? '0')
 
@@ -661,7 +664,7 @@ function AccountMenu({
         aria-label="Account menu"
         className="flex items-center justify-center gap-2 rounded-full py-0.5 pl-0.5 pr-1 hover:bg-anvil-100 coarse:min-h-11 coarse:min-w-11 dark:hover:bg-anvil-800"
       >
-        <IdentityPill identityId={identity} className="max-lg:bg-transparent max-lg:p-0 max-lg:dark:bg-transparent [&>*:not(:first-child)]:max-lg:hidden" />
+        <IdentityPill identityId={identity} name={name} className="max-w-56 max-lg:bg-transparent max-lg:p-0 max-lg:dark:bg-transparent [&>*:not(:first-child)]:max-lg:hidden" />
       </button>
       {open ? (
         <div id="account-panel" className="absolute right-0 z-50 mt-2 w-60 animate-fade-in rounded-lg border border-anvil-200 bg-white p-1 shadow-xl dark:border-anvil-750 dark:bg-anvil-900">
