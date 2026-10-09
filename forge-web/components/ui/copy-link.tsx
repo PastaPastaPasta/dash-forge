@@ -32,7 +32,8 @@ export function CopyLinkButton({
   className?: string
 }): JSX.Element {
   const ownerName = useOwnerDpnsName(repo.owner)
-  const card = GATEWAY !== null && visibility === 'public' ? cardRepoUrl(GATEWAY.url, repo, target, ownerName) : null
+  const gateway = visibility === 'public' ? GATEWAY : null
+  const card = gateway !== null ? cardRepoUrl(gateway.url, repo, target, ownerName) : null
   const href = card ?? shortRepoUrl(repo, target, ownerName)
   const [copied, copy] = useCopy(href)
   return (
@@ -41,7 +42,7 @@ export function CopyLinkButton({
       onClick={copy}
       data-testid="copy-link"
       data-href={href}
-      title={card !== null ? `Copies a link that shows a preview card when shared (via ${GATEWAY?.label ?? 'the gateway'}) and opens this page` : undefined}
+      title={card !== null && gateway !== null ? `Copies a link that shows a preview card when shared (via ${gateway.label}) and opens this page` : undefined}
       className={cn(
         'inline-flex h-7 items-center gap-1 rounded-md border coarse:h-11 coarse:px-3 border-anvil-300 px-2 text-[12px] text-anvil-700 hover:bg-anvil-100 dark:border-anvil-700 dark:text-anvil-200 dark:hover:bg-anvil-800',
         className,

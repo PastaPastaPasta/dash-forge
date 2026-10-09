@@ -1205,8 +1205,8 @@ async fn og_route(State(state): St, uri: axum::http::Uri) -> Response {
             return repo_png(&state, owner, name).await;
         }
     }
-    let share = og::parse_share(rest);
-    let (Some(share), true) = (share, segment_ok(owner, 64) && segment_ok(name, 100)) else {
+    let share = og::parse_share(rest).filter(|_| segment_ok(owner, 64) && segment_ok(name, 100));
+    let Some(share) = share else {
         return text(StatusCode::NOT_FOUND, "not a Dash Forge share link\n");
     };
     // `?repo=<id>`, the web app's pin to one exact repository, is carried on to it (the first
@@ -1351,11 +1351,12 @@ async fn share_page(
         let page = og::Page::repo(&label, desc, repo_image, url, target);
         (page, read.map(|(_, age)| age))
     };
-    match read {
-        Some(None) => page_response(&page, ttl, None),
-        Some(Some(age)) => page_response(&page, ttl.min(60), Some(age)),
-        None => page_response(&page, ttl.min(60), None),
-    }
+    let (max_age, data_age) = match read {
+        Some(None) => (ttl, None),
+        Some(age) => (ttl.min(60), age),
+        None => (ttl.min(60), None),
+    };
+    page_response(&page, max_age, data_age)
 }
 
 /// A share page, cacheable for `max_age` seconds, marked stale when built from data `stale` old.
@@ -1375,10 +1376,14 @@ fn page_response(page: &og::Page, max_age: u64, stale: Option<Duration>) -> Resp
 
 /// `GET /og/<owner>/<name>.png`: the repository's card.
 async fn repo_png(state: &Arc<AppState>, owner: &str, name: &str) -> Response {
-    let info = match resolve(state, owner, name).await {
-        Ok(t) => t.info,
-        Err(r) => return *r,
-    };
+    match resolve(state, owner, name).await {
+        Ok(t) => repo_png_of(state, t.info, owner, name).await,
+        Err(r) => *r,
+    }
+}
+
+/// [`repo_png`] of the resolved `info`.
+async fn repo_png_of(state: &Arc<AppState>, info: RepoInfo, owner: &str, name: &str) -> Response {
     let owner_label = og::short_owner(owner);
     let name = name.to_string();
     let key = format!("og:{}:{owner}:true", info.repo_id);
@@ -1426,7 +1431,7 @@ async fn item_png(
     };
     let item = match item_data(state, &info, kind, n).await {
         Some((Some(item), _)) => item,
-        Some((None, _)) => return repo_png(state, owner, name).await,
+        Some((None, _)) => return repo_png_of(state, info, owner, name).await,
         None => {
             return text(
                 StatusCode::SERVICE_UNAVAILABLE,
