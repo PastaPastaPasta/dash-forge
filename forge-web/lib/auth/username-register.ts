@@ -32,7 +32,7 @@ export const USERNAME_KEY_IDS: readonly number[] = ['CRITICAL', 'HIGH'].map((lev
 export class NoUsernameKeyError extends Error {
   constructor(readonly identityId: string) {
     super(
-      "The identity file or recovery phrase you gave holds no key that can sign a username for this identity: it needs the identity's own CRITICAL or HIGH authentication key, not bound to a contract and not disabled. This browser's key and a wallet login's key are bound to Dash Forge and can't. Use the file `dg auth new` or the bridge saved, or register the name with the dg command below.",
+      "That file or phrase has no key that can sign a username for this identity. It needs the identity's own unbound CRITICAL or HIGH authentication key. Try the file `dg auth new` saved, or the dg command below.",
     )
     this.name = 'NoUsernameKeyError'
   }

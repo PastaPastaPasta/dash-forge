@@ -227,10 +227,11 @@ function NameStatus({
           <span className="font-mono font-medium">{check.label}.dash</span> is a contested name.
         </p>
         <p className="text-[12px] text-anvil-700 dark:text-anvil-200">
-          Names of 3–19 characters made only of letters, 0, 1 and “-” are given out by a masternode vote. Entering costs{' '}
-          {creditsAsDash(NAME_CONTEST_FUND_CREDITS)} DASH on top of the fee, the vote runs two weeks on mainnet (90 minutes on
-          testnet and devnets), and someone else can win it. Dash Forge doesn&apos;t enter votes. Add a digit other than 0 or 1,
-          or make it 20 characters or longer:
+          Names of 3–19 characters made only of letters, 0, 1 and “-” go to a masternode vote: {creditsAsDash(NAME_CONTEST_FUND_CREDITS)} DASH
+          to enter, two weeks on mainnet (90 minutes on test networks), and someone else can win it.
+        </p>
+        <p className="text-[12px] text-anvil-700 dark:text-anvil-200">
+          Dash Forge doesn&apos;t enter votes. Add a digit other than 0 or 1, or use 20 or more characters:
         </p>
         <div className="flex flex-wrap gap-1.5">
           {variants.map((v) => (
