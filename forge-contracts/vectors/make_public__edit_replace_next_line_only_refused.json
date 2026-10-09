@@ -1,0 +1,16 @@
+{
+  "name": "edit_replace_next_line_only_refused",
+  "description": "Blank is Unicode White_Space only: U+0085 and U+2003 leave nothing to publish.",
+  "case": "make_public",
+  "rules": "v2",
+  "input": {
+    "op": "replace",
+    "kind": "comment",
+    "opened": {
+      "body": " "
+    }
+  },
+  "expected": {
+    "error": "empty"
+  }
+}

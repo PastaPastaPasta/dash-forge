@@ -1,0 +1,23 @@
+{
+  "name": "edit_replace_comment",
+  "description": "A members-only comment's replace: body set, enc and epoch removed.",
+  "case": "make_public",
+  "rules": "v2",
+  "input": {
+    "op": "replace",
+    "kind": "comment",
+    "opened": {
+      "body": "We rotated the key at 03:12."
+    }
+  },
+  "expected": {
+    "set": {
+      "body": "We rotated the key at 03:12."
+    },
+    "remove": [
+      "enc",
+      "epoch"
+    ],
+    "lost": []
+  }
+}

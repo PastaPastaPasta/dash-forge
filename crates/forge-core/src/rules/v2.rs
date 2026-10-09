@@ -41,6 +41,10 @@
 
 use std::collections::BTreeSet;
 
+pub use super::make_public::{
+    audience_edit, make_public_changes, review_text_carriers, AudienceEdit, CarrierComment,
+    CarrierReview, MadePublic, MakePublicRefusal,
+};
 pub use super::moderation::{
     hidden_items, hide_blocked, is_hide_reason, Hidden, HiddenItems, HiddenVia, HideBlock,
     HideScope, ThreadItem, HIDE_REASONS,

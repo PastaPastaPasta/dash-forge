@@ -1,0 +1,22 @@
+{
+  "name": "edit_private_repo_refused",
+  "description": "Nothing in a private repository is made public on its own (the whole repo goes public, §4.10).",
+  "case": "make_public",
+  "rules": "v2",
+  "input": {
+    "op": "edit",
+    "visibility": "private",
+    "stored": {
+      "kind": "comment",
+      "enc": "030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "epoch": 0
+    },
+    "edited": {
+      "kind": "comment",
+      "body": "now public"
+    },
+    "author": "alice",
+    "signer": "alice"
+  },
+  "expected": "fixed"
+}

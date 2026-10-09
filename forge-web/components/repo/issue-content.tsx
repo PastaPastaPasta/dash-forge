@@ -101,6 +101,8 @@ import { moderationBlocked } from '@/lib/repo/moderation-fold'
 import { isHiddenByHide } from '@/lib/view/issues-view'
 import type { HideReason } from '@/lib/rules/moderation'
 import { AuthorRolesProvider } from '@/components/repo/author-roles'
+import { MakePublicButton, makePublicWords, useQuotedMembersPost } from '@/components/repo/make-public'
+import { makePostPublic, provenanceOf } from '@/lib/repo/make-public-writes'
 
 /** The write the confirm dialog is about to sign. */
 type Pending =
@@ -118,6 +120,8 @@ type Pending =
   | { kind: 'editIssue'; title: string; body: string }
   | { kind: 'editComment'; id: string; body: string }
   | { kind: 'deleteComment'; id: string }
+  /** The author makes the issue (`id` null) or their comment `id` public; `quoted`: the quote check's warning (DESIGN §4.6). */
+  | { kind: 'makePublic'; id: string | null; quoted: string | null }
   /**
    * A maintainer hides (or unhides) a comment, or with `item` null the issue (RC2 MOD); hiding the
    * issue may also close and lock it, as separate writes after the hide.
@@ -207,6 +211,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const warnings = useAudienceWarnings(audience, comment, data === null ? null : { author: data.issue.author, kind: 'issue' })
   // A public post (a comment, an edit) that repeats members-only text asks first (product H8).
   const quoteGate = useQuoteGate()
+  const quotedPost = useQuotedMembersPost(home.repo.repoId)
   const draft = useIntent()
   const [posting, setPosting] = useState(false)
   const [commentError, setCommentError] = useState<string | null>(null)
@@ -449,6 +454,29 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         await deleteComment(sdk, signer, home.repo, pending.id)
         if (editingComment?.id === pending.id) setEditingComment(null)
         break
+      case 'makePublic': {
+        if (pending.id === null) {
+          await makePostPublic(sdk, signer, home.repo, {
+            type: 'issue',
+            id: issue.id,
+            opened: { title: issue.title, ...(issue.body === '' ? {} : { body: issue.body }), ...provenanceOf(issue.importedRaw) },
+            expectedRevision: BigInt(issue.revision),
+            dropProof: holdings.data !== null && !isMember,
+            intent,
+          })
+          break
+        }
+        const c = timelineComment(timeline, pending.id)
+        await makePostPublic(sdk, signer, home.repo, {
+          type: 'comment',
+          id: pending.id,
+          opened: { body: c?.body ?? '', ...provenanceOf(c?.importedRaw) },
+          ...(c?.revision !== undefined ? { expectedRevision: BigInt(c.revision) } : {}),
+          dropProof: holdings.data !== null && !isMember,
+          intent,
+        })
+        break
+      }
       case 'hide':
         await setHidden(sdk, signer, home.repo, { target, item: pending.item, reason: pending.reason, hide: pending.hide, intent })
         if (pending.closeAndLock) {
@@ -500,6 +528,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         return previewReplace('comment', { body: pending.body })
       case 'deleteComment':
         return previewDelete('comment')
+      case 'makePublic':
+        return pending.id === null ? previewReplace('issue', { title: issue.title, body: issue.body }) : previewReplace('comment', { body: timelineComment(timeline, pending.id)?.body ?? '' })
       case 'hide': {
         const hide = hideCost(home.repo, pending, eventFirst)
         const extra = pending.closeAndLock ? [...(open ? [stateCost] : []), ...(meta.locked ? [] : [stateCost])] : []
@@ -557,6 +587,13 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                 >
                   <Pencil className="h-3.5 w-3.5" aria-hidden /> Edit
                 </Button>
+              ) : null}
+              {isAuthor && issue.audience === 'members' && home.repo.visibility === 'public' ? (
+                <MakePublicButton
+                  onClick={() => setPending({ kind: 'makePublic', id: null, quoted: quotedPost(`${issue.title}\n${issue.body}`, issue.author, 'issue') })}
+                  disabled={guard.disabledReason !== null || archived || longEditBlock(issue.long) !== null}
+                  title={longEditBlock(issue.long) ?? undefined}
+                />
               ) : null}
             </div>
           )}
@@ -651,6 +688,11 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                 // A public comment's edit is public text: it asks first when it repeats members-only text.
                 onSave: (id, body) => quoteGate.check(publicTextOf(body, item.comment.audience, issue.audience), membersTexts, () => setPending({ kind: 'editComment', id, body }), { before: item.comment.body }),
                 onDelete: (id) => setPending({ kind: 'deleteComment', id }),
+                // DESIGN §4.6: the author's own members-only comment, on a public repo.
+                onMakePublic:
+                  item.comment.audience === 'members' && home.repo.visibility === 'public'
+                    ? (id) => setPending({ kind: 'makePublic', id, quoted: quotedPost(item.comment.body, item.comment.author, 'comment') })
+                    : undefined,
                 links,
               })
               const header = item.comment.id === discarded.atComment && editingComment === null ? withDiscardedEdit(slots.header) : slots.header
@@ -865,6 +907,8 @@ function confirmText(pending: Pending, number: number, open: boolean, isMember: 
       return { title: `Edit issue #${number}`, description: 'You pay only for what changed. Earlier versions stay in its history.', label: 'Sign & save' }
     case 'editComment':
       return { title: 'Edit comment', description: 'You pay only for what changed. Earlier versions stay in its history.', label: 'Sign & save' }
+    case 'makePublic':
+      return makePublicWords(pending.id === null ? 'issue' : 'comment', pending.quoted)
     case 'deleteComment':
       return {
         title: 'Delete comment',
@@ -924,6 +968,7 @@ function commentSlots({
   onEdit,
   onSave,
   onDelete,
+  onMakePublic,
   links,
 }: {
   item: Extract<TimelineItem, { kind: 'comment' }>
@@ -938,6 +983,8 @@ function commentSlots({
   onEdit: (e: { id: string; body: string } | null) => void
   onSave: (id: string, body: string) => void
   onDelete: (id: string) => void
+  /** Make the author's own members-only comment public (absent: not offered). */
+  onMakePublic?: (id: string) => void
   links?: MarkdownLinks
 }): CommentSlots {
   const c = item.comment
@@ -958,7 +1005,17 @@ function commentSlots({
   if (viewer === null || viewer !== c.author) return {}
   // A long comment whose rest could not be read is not edited here: the edit would drop the rest.
   const editBlock = longEditBlock(c.long)
-  return { header: <CommentOwnActions onEdit={() => onEdit({ id: c.id, body: c.body })} onDelete={() => onDelete(c.id)} disabled={disabled || editBlock !== null} deleteDisabled={deleteDisabled} /> }
+  return {
+    header: (
+      <CommentOwnActions
+        onEdit={() => onEdit({ id: c.id, body: c.body })}
+        onDelete={() => onDelete(c.id)}
+        onMakePublic={onMakePublic === undefined ? undefined : () => onMakePublic(c.id)}
+        disabled={disabled || editBlock !== null}
+        deleteDisabled={deleteDisabled}
+      />
+    ),
+  }
 }
 
 /**

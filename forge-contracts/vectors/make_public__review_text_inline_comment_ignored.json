@@ -1,0 +1,41 @@
+{
+  "name": "review_text_inline_comment_ignored",
+  "description": "A comment with a line, a path or a reply is a review comment, not the review's text.",
+  "case": "make_public",
+  "rules": "v2",
+  "input": {
+    "op": "reviewText",
+    "reviews": [
+      {
+        "id": "R1",
+        "reviewer": "bob",
+        "sealed": true
+      }
+    ],
+    "comments": [
+      {
+        "id": "C1",
+        "owner": "bob",
+        "reviewId": "R1",
+        "createdAt": 10,
+        "line": 4,
+        "commitOid": "abababababababababababababababababababab"
+      },
+      {
+        "id": "C2",
+        "owner": "bob",
+        "reviewId": "R1",
+        "createdAt": 10,
+        "path": "src/lib.rs"
+      },
+      {
+        "id": "C3",
+        "owner": "bob",
+        "reviewId": "R1",
+        "createdAt": 10,
+        "replyTo": "C0"
+      }
+    ]
+  },
+  "expected": {}
+}

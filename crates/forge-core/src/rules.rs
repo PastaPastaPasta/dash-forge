@@ -51,6 +51,7 @@ pub mod bans;
 pub mod ci_rerun;
 pub mod codeowners;
 pub mod long_body;
+pub mod make_public;
 pub mod merge_audit;
 pub mod merge_check;
 pub mod mirror;
@@ -1803,6 +1804,59 @@ mod tests {
         edited: v2::ContentDoc,
     }
 
+    /// `make_public` (mixed-visibility DESIGN §4.6): one rule per `op`.
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(tag = "op", rename_all = "camelCase", rename_all_fields = "camelCase")]
+    enum MakePublicInput {
+        Edit {
+            visibility: v2::Visibility,
+            stored: Box<v2::ContentDoc>,
+            edited: Box<v2::ContentDoc>,
+            author: String,
+            signer: String,
+        },
+        Replace {
+            kind: v2::ContentKind,
+            opened: Box<crate::private::Fields>,
+        },
+        ReviewText {
+            reviews: Vec<v2::CarrierReview>,
+            comments: Vec<v2::CarrierComment>,
+        },
+    }
+
+    fn run_make_public(v: &Vector) {
+        let ctx = &v.name;
+        match input::<MakePublicInput>(v) {
+            MakePublicInput::Edit {
+                visibility,
+                stored,
+                edited,
+                author,
+                signer,
+            } => {
+                let got = v2::audience_edit(visibility, &stored, &edited, &author, &signer);
+                assert_eq!(got, expected::<v2::AudienceEdit>(v), "vector `{ctx}`");
+            }
+            MakePublicInput::Replace { kind, opened } => {
+                let got = match v2::make_public_changes(kind, &opened) {
+                    Ok(m) => serde_json::to_value(m),
+                    Err(e) => serde_json::to_value(e).map(|e| serde_json::json!({ "error": e })),
+                }
+                .expect("serialize");
+                assert_eq!(got, v.expected, "vector `{ctx}`");
+            }
+            MakePublicInput::ReviewText { reviews, comments } => {
+                let got = v2::review_text_carriers(&reviews, &comments);
+                assert_eq!(
+                    got,
+                    expected::<std::collections::BTreeMap<String, String>>(v),
+                    "vector `{ctx}`"
+                );
+            }
+        }
+    }
+
     #[derive(Debug, Deserialize, Serialize)]
     #[serde(rename_all = "camelCase", deny_unknown_fields)]
     struct AnchorSettingsInput {
@@ -3003,6 +3057,7 @@ mod tests {
                 assert_eq!(got, expected::<bool>(v), "vector `{ctx}`");
             }
             "approval_count" | "mixed_edit" | "mixed_anchor" => run_mixed_case(v),
+            "make_public" => run_make_public(v),
             "git_plane_well_formed" => {
                 let inp: WellFormedInput = input(v);
                 assert_eq!(

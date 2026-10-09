@@ -41,7 +41,8 @@ import { applyBans, banReasonLabel, standingBans, type Ban } from './bans'
 import { auditMerge, type MergeAuditInput } from './merge-audit'
 import { refHistory } from './refHistory'
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
-import { encodeTlv } from '../private/tlv'
+import { encodeTlv, type DocFields } from '../private/tlv'
+import { audienceEdit, makePublicChanges, reviewTextCarriers, type CarrierComment, type CarrierReview } from './make-public'
 import { anchorContent } from '../repo/members-anchor'
 import { longBodyStoredText, needsLongBodyArtifact, openPublicLongBody, parseLongBody } from './long-body'
 import { rerunCounts, rerunFields, rerunRequest, type RerunEvent } from './ci-rerun'
@@ -571,6 +572,28 @@ function runCaseV2(v: Vector): void {
       onlyKeys(v, ['stored', 'edited'], { stored: NESTED_KEYS['doc'] as readonly string[], edited: NESTED_KEYS['doc'] as readonly string[] })
       const inp = v.input as { readonly stored: v2.ContentDoc; readonly edited: v2.ContentDoc }
       expect(v2.editKeepsAudience(inp.stored, inp.edited)).toEqual(v.expected)
+      break
+    }
+    case 'make_public': {
+      const op = (v.input as { readonly op: string }).op
+      const doc = NESTED_KEYS['doc'] as readonly string[]
+      if (op === 'edit') {
+        onlyKeys(v, ['op', 'visibility', 'stored', 'edited', 'author', 'signer'], { stored: doc, edited: doc })
+        const inp = v.input as { readonly visibility: v2.Visibility; readonly stored: v2.ContentDoc; readonly edited: v2.ContentDoc; readonly author: string; readonly signer: string }
+        expect(audienceEdit(inp.visibility, inp.stored, inp.edited, inp.author, inp.signer)).toEqual(v.expected)
+      } else if (op === 'replace') {
+        onlyKeys(v, ['op', 'kind', 'opened'], { opened: ['title', 'body', 'path', 'baseRefName', 'sourceRefName', 'importedAuthor', 'importedUrl'] })
+        const inp = v.input as { readonly kind: v2.ContentKind; readonly opened: DocFields }
+        expect(makePublicChanges(inp.kind, inp.opened)).toEqual(v.expected)
+      } else {
+        expect(op).toBe('reviewText')
+        onlyKeys(v, ['op', 'reviews', 'comments'], {
+          reviews: ['id', 'reviewer', 'sealed'],
+          comments: ['id', 'owner', 'reviewId', 'replyTo', 'path', 'line', 'commitOid', 'sealed', 'createdAt'],
+        })
+        const inp = v.input as { readonly reviews: readonly CarrierReview[]; readonly comments: readonly CarrierComment[] }
+        expect(reviewTextCarriers(inp.reviews, inp.comments)).toEqual(v.expected)
+      }
       break
     }
     case 'mixed_anchor': {

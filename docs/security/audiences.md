@@ -50,7 +50,7 @@ A **private** repository is different: everything in it is encrypted, code inclu
 
 A reply follows what it answers: a comment on a members-only issue, or a reply to a members-only comment, is members-only too. A members-only comment on a public issue or pull request is fine. A public reply inside a members-only conversation is refused before anything is signed.
 
-Who something is for is fixed when it is posted. Editing a members-only comment or issue keeps it members-only, and Forge refuses to edit a public one into a members-only one. Making members-only discussion public later is **coming later**. Until then, post a new public comment.
+Who something is for is fixed when it is posted. Editing a members-only comment or issue keeps it members-only, and Forge refuses to edit a public one into a members-only one. The one exception: the author of a members-only issue, comment or review can **make it public** (`dg make-public`, or **Make public** in the web app). Everyone can read it from then on, as it reads at that moment; earlier versions of an issue stay members-only, and it can't be undone. A review stays as it was written: its text is added as a public comment on it, which every reader shows in its place. Nobody can make someone else's post public yet, and nothing becomes members-only again. See [Collaborating](../guides/collaborating.md).
 
 ## Who can read members-only content
 
@@ -251,7 +251,7 @@ Forge uses the same words in `dg`, the web app and these pages.
 | Word | Means |
 |---|---|
 | **Publish** | Widen code to everyone (coming later). It can't be undone. |
-| **Make public** | Widen a post, such as a comment, to everyone (coming later). It can't be undone. |
+| **Make public** | Widen a post, such as a comment, to everyone. Today the author does it for their own posts. It can't be undone. |
 | **Make this repo public** | Widen a whole private repository. It can't be undone: it can never be private again (coming later). |
 
 **Repository kinds:** **Public** and **Private**. "Private" means only a private repository, where everything in it is encrypted. A public repository can hold members-only content, but it is never called private.

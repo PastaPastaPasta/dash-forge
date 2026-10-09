@@ -254,6 +254,7 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         Command::Collab(C::Remove { repo, .. }) => ("collaborator not removed", Some(repo)),
         Command::Collab(C::List { repo }) => ("could not list collaborators", Some(repo)),
         Command::Collab(C::Accept { repo, .. }) => ("membership not accepted", Some(repo)),
+        Command::MakePublic { repo, .. } => ("nothing made public", Some(repo)),
         Command::Cost(CostCommand::Estimate { .. }) => ("no estimate", None),
         Command::Cost(CostCommand::Audit { repo, .. }) => ("audit failed", repo.as_ref()),
         Command::Cost(CostCommand::Prices) => ("no price reference", None),

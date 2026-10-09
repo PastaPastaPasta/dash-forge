@@ -1,0 +1,16 @@
+{
+  "name": "edit_replace_review_refused",
+  "description": "A review is immutable: its text goes public by an attached comment, never by a replace.",
+  "case": "make_public",
+  "rules": "v2",
+  "input": {
+    "op": "replace",
+    "kind": "review",
+    "opened": {
+      "body": "Blocking."
+    }
+  },
+  "expected": {
+    "error": "notEditable"
+  }
+}

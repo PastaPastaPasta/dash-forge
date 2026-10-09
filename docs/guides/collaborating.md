@@ -178,7 +178,7 @@ A public repository can keep some of its discussion **members-only**: issues, co
 
 - **Audiences:** Public, All members (short: Members), Maintainers, Writers and maintainers, Specific people. "Members-only" describes anything that isn't public. Today a post can be Public or Members, and an environment Maintainers or All members. Writers and maintainers, and Specific people, are coming later.
 - **Roles:** Read, Triage, Write, Maintain, Owner, and Bot for an automated account (coming later). See [Members](#members).
-- **Verbs:** **Publish** (code), **Make public** (a post, such as a comment) and **Make this repo public** (a whole private repository). Each widens the audience for good and can't be undone. All three are coming later.
+- **Verbs:** **Publish** (code), **Make public** (a post, such as a comment) and **Make this repo public** (a whole private repository). Each widens the audience for good and can't be undone. Today an author can make their own posts public; the rest are coming later.
 - **Repository kinds:** **Public** and **Private**. "Private" means only a private repository, where everything is encrypted ([above](#private-repositories)).
 - **Access** is what a bot or a CI runner is given.
 
@@ -215,7 +215,9 @@ dg pr review     <owner>/<repo> 7 --approve --members --body "…"
 
 **Environments.** A repository's configuration and secrets can be kept outside git, encrypted for the people you choose (Maintainers, Writers and maintainers, All members, or specific people): see [Environments](environments.md).
 
-**Not yet.** Members-only pull requests, branches, code and releases, the Writers and maintainers and Specific people audiences for discussion (environments have them), and making members-only discussion public are coming later. Search doesn't look inside members-only issues you can't read.
+**Make your own posts public.** The author of a members-only issue, comment or review can make it public, at any role: `dg make-public <repo> <id or number>…`, or **Make public** beside your own members-only post in the web app. Everyone can read it as it reads now; earlier versions of an issue stay members-only. It can't be undone. A review's text is added as a public comment on your review, shown in its place as "Review text made public by @you". On the current network an inline comment's file name can't be made public, so it shows without it, and an imported post can't be made public. A post inside a members-only conversation can't be made public on its own, and other people's posts can't be made public yet. The web app warns when the text quotes someone else's members-only words.
+
+**Not yet.** Members-only pull requests, branches, code and releases, the Writers and maintainers and Specific people audiences for discussion (environments have them), and making other people's posts public are coming later. Search doesn't look inside members-only issues you can't read.
 
 ---
 

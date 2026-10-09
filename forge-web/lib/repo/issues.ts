@@ -321,6 +321,8 @@ export interface ReviewView {
   readonly membersOnly?: true
   /** A members-only review this reader opened: its text is for members (its verdict is public). Absent: public. */
   readonly audience?: 'members'
+  /** Its author made its text public with a comment attached to it: `body` is that text (DESIGN §4.6). */
+  readonly madePublic?: true
 }
 
 

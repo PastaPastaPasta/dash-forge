@@ -1,0 +1,25 @@
+{
+  "name": "review_text_public_review_untouched",
+  "description": "A public review keeps its own text.",
+  "case": "make_public",
+  "rules": "v2",
+  "input": {
+    "op": "reviewText",
+    "reviews": [
+      {
+        "id": "R1",
+        "reviewer": "bob",
+        "sealed": false
+      }
+    ],
+    "comments": [
+      {
+        "id": "C1",
+        "owner": "bob",
+        "reviewId": "R1",
+        "createdAt": 10
+      }
+    ]
+  },
+  "expected": {}
+}

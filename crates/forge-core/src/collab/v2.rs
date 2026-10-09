@@ -59,6 +59,9 @@ use crate::rules::{self, Event, EventKind, IssueState, PrState};
 use crate::scope::RepoRef;
 use crate::user_error::{codes, UserError};
 
+mod make_public;
+pub use make_public::{apply_review_texts, MakePublicPlan};
+
 /// forge-collab document types (issue through milestone); forge-community ones are marked.
 pub const DOC_ISSUE: &str = "issue";
 /// A pull request.

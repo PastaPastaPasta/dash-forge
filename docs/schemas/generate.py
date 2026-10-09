@@ -543,6 +543,11 @@ cmd('collab remove', 'A member removed.', {
     'status': E('removed', 'not_a_member'), 'member': S, 'role': S, 'repo': S, 'rotation': nl(R('rotation')),
     'droppedEpochs': ANY, 'losingMembers': ANY, 'environments': ANY, 'resavedEnvironments': ANY, 'environmentPlan': ANY,
 }, ['status', 'member'])
+cmd('make-public', 'Your own members-only posts made public: each one edited to Public, or a review given a public comment that carries its text.', {
+    'status': E('madePublic'), 'cost': COST,
+    'posts': A(O({'id': S, 'kind': E('issue', 'comment', 'review'), 'number': nl(I), 'written': S,
+                  'lost': SA}, ['id', 'kind', 'written'])),
+}, ['status', 'posts'])
 cmd('collab list', 'The repository\'s members and their roles.', {
     'count': I, 'members': A(OBJ), 'ownerId': S, 'roles': {'const': True},
 }, ['count', 'members', 'ownerId', 'roles'])

@@ -1,0 +1,26 @@
+{
+  "name": "edit_replace_inline_comment_loses_path",
+  "description": "An inline comment's path is sealed and comment.path is immutable: it is lost, for members too.",
+  "case": "make_public",
+  "rules": "v2",
+  "input": {
+    "op": "replace",
+    "kind": "comment",
+    "opened": {
+      "body": "nit: rename",
+      "path": "src/lib.rs"
+    }
+  },
+  "expected": {
+    "set": {
+      "body": "nit: rename"
+    },
+    "remove": [
+      "enc",
+      "epoch"
+    ],
+    "lost": [
+      "path"
+    ]
+  }
+}

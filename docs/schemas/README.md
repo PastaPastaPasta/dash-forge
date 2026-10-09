@@ -76,6 +76,7 @@ The exit code says which schema applies: 0, the command's own; anything else, th
 | `dg label delete` | [`label-delete.schema.json`](dg/label-delete.schema.json) |
 | `dg label list` | [`label-list.schema.json`](dg/label-list.schema.json) |
 | `dg label retire` | [`label-retire.schema.json`](dg/label-retire.schema.json) |
+| `dg make-public` | [`make-public.schema.json`](dg/make-public.schema.json) |
 | `dg milestone close` | [`milestone-close.schema.json`](dg/milestone-close.schema.json) |
 | `dg milestone create` | [`milestone-create.schema.json`](dg/milestone-create.schema.json) |
 | `dg milestone list` | [`milestone-list.schema.json`](dg/milestone-list.schema.json) |

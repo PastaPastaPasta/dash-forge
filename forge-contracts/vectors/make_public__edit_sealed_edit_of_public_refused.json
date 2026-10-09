@@ -1,0 +1,22 @@
+{
+  "name": "edit_sealed_edit_of_public_refused",
+  "description": "A public comment cannot be edited into a members-only one (DESIGN §2.4).",
+  "case": "make_public",
+  "rules": "v2",
+  "input": {
+    "op": "edit",
+    "visibility": "public",
+    "stored": {
+      "kind": "comment",
+      "body": "public"
+    },
+    "edited": {
+      "kind": "comment",
+      "enc": "030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "epoch": 0
+    },
+    "author": "alice",
+    "signer": "alice"
+  },
+  "expected": "fixed"
+}
