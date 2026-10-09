@@ -146,7 +146,7 @@ export function SecurityPolicyContent({ home, addr }: { home: RepoHome; addr: Re
         <h1 className="flex items-center gap-2 text-xl">
           <ShieldCheck className="h-5 w-5 text-anvil-500 dark:text-anvil-400" aria-hidden /> Security policy
         </h1>
-        <CopyLinkButton repo={addr} target={{ kind: 'security' }} className="ml-auto" />
+        <CopyLinkButton repo={addr} target={{ kind: 'security' }} visibility={home.repo.visibility} className="ml-auto" />
       </div>
       {home.repo.visibility !== 'public' ? (
         <NoPolicy isPrivate />

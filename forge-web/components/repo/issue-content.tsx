@@ -610,7 +610,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
             <span className="inline-flex flex-wrap items-center gap-1.5 text-anvil-500 dark:text-anvil-400">
               <Byline author={issue.author} createdAt={issue.createdAt} origin={origin} verb="opened this" link={false} />
             </span>
-            {addr ? <CopyLinkButton repo={addr} target={{ kind: 'issue', number: issue.number }} className="ml-auto" /> : null}
+            {addr ? <CopyLinkButton repo={addr} target={{ kind: 'issue', number: issue.number }} visibility={home.repo.visibility} className="ml-auto" /> : null}
           </div>
         </div>
 

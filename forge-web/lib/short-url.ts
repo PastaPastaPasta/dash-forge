@@ -206,11 +206,40 @@ export function shortRepoUrl(
   target?: ShortTarget,
   ownerName?: string | null,
 ): string {
-  const named = ownerNameForms(ownerName).find((owner) => hasShortPath({ owner, name: repo.name }))
-  if (named !== undefined) repo = { ...repo, owner: named }
-  const pin = repo.repoId ? `?repo=${encodeURIComponent(repo.repoId)}` : ''
-  const path = BASE_PATH + (hasShortPath(repo) ? `${shortRepoPath(repo, target)}${pin}` : canonicalPath(repo, target))
+  repo = byOwnerName(repo, ownerName)
+  const path = BASE_PATH + (hasShortPath(repo) ? `${shortRepoPath(repo, target)}${pinQuery(repo)}` : canonicalPath(repo, target))
   return typeof window === 'undefined' ? path : `${window.location.origin}${path}`
+}
+
+/**
+ * The share link with a preview card (#454), for a build with a gateway (`lib/gateway.ts`): the
+ * short path under `/og` on the gateway, `https://git-forge.dashhq.org/og/alice/project/issues/7`.
+ * A static host answers the short URL itself with its 404 page, so Slack, Discord and forums
+ * never make a card of it; the gateway answers HTTP 200 with the card's `og:`/`twitter:` tags
+ * (public data only: a private repo, or a members-only issue, gets a generic card) and sends
+ * people on to the same short URL on the web app it names (`GATEWAY_WEB_URL`,
+ * `docs/hosting/forge-gateway.md` "Share links"). `null` when the repo has no short form: the
+ * canonical query route has no card, so Copy link copies {@link shortRepoUrl}.
+ */
+export function cardRepoUrl(
+  gatewayUrl: string,
+  repo: { readonly owner: string; readonly name: string; readonly repoId?: string },
+  target?: ShortTarget,
+  ownerName?: string | null,
+): string | null {
+  repo = byOwnerName(repo, ownerName)
+  return hasShortPath(repo) ? `${gatewayUrl}/og${shortRepoPath(repo, target)}${pinQuery(repo)}` : null
+}
+
+/** `repo` with its owner written by DPNS name when it has a short form by one ({@link ownerNameForms}). */
+function byOwnerName<R extends { readonly owner: string; readonly name: string }>(repo: R, ownerName: string | null | undefined): R {
+  const named = ownerNameForms(ownerName).find((owner) => hasShortPath({ owner, name: repo.name }))
+  return named === undefined ? repo : { ...repo, owner: named }
+}
+
+/** A `?repo=` pin's query string (or nothing). */
+function pinQuery(repo: { readonly repoId?: string }): string {
+  return repo.repoId ? `?repo=${encodeURIComponent(repo.repoId)}` : ''
 }
 
 /** The canonical query route of a short target (what the shim would expand it to). */

@@ -18,7 +18,8 @@ use forge_core::repo::{RefRecord, RefTip};
 use forge_gateway::metrics::Metrics;
 use forge_gateway::mirror::{Mirrors, Unavailable};
 use forge_gateway::upstream::{
-    Check, FetchSource, IssueEntry, OpenIssues, ReleaseEntry, RepoInfo, Snapshot, Upstream,
+    Check, FetchSource, IssueEntry, Item, ItemKind, ItemState, OpenIssues, ReleaseEntry, RepoInfo,
+    Snapshot, Upstream,
 };
 use forge_gateway::{router, AppState, Config};
 
@@ -33,6 +34,11 @@ struct World {
     snapshots: usize,
     /// How many of the open issues are members-only.
     members_only_issues: u64,
+    /// Issues and pull requests by (`issues` | `pull`, number): `(item, public)`. A members-only
+    /// or hidden one (`public == false`) is read as `None`, as [`Upstream::item`] promises.
+    items: BTreeMap<(&'static str, u32), (Item, bool)>,
+    /// Item reads.
+    item_reads: usize,
 }
 
 #[derive(Clone, Default)]
@@ -205,6 +211,15 @@ impl Upstream for Stub {
             created_at: 1_700_000_000_000,
             document_id: "Iss1".into(),
         }])
+    }
+    async fn item(&self, repo: &RepoInfo, kind: ItemKind, number: u32) -> Result<Option<Item>> {
+        self.src(repo)?;
+        let mut w = self.world();
+        w.item_reads += 1;
+        Ok(w.items
+            .get(&(kind.segment(), number))
+            .filter(|(_, public)| *public)
+            .map(|(i, _)| i.clone()))
     }
 }
 
@@ -690,6 +705,278 @@ async fn badges_feeds_and_previews() {
     assert_eq!(&r.bytes().await.unwrap()[..4], b"\x89PNG");
 }
 
+/// The `content` of the `<meta>` tag `prop` names in `html`.
+fn meta<'a>(html: &'a str, prop: &str) -> &'a str {
+    let needle = format!("\"{prop}\" content=\"");
+    let at = html
+        .find(&needle)
+        .unwrap_or_else(|| panic!("no {prop} in {html}"));
+    let rest = &html[at + needle.len()..];
+    &rest[..rest.find('"').unwrap()]
+}
+
+/// A gateway at `https://gw.example` serving `alice/proj` (public, with public issue 7 and
+/// pull request 3, members-only issue 8 and pull request 4) and `alice/secret` (private).
+async fn share_gateway() -> Gateway {
+    let gw = start(|c| c.public_url = Some("https://gw.example".into())).await;
+    let src = source(&gw.tmp);
+    gw.stub.add("alice", "proj", true, &src);
+    gw.stub.add("alice", "secret", false, &src);
+    let item = |title: &str, state| Item {
+        title: title.into(),
+        body: "Steps:\n\n1. run it <!-- hint -->".into(),
+        state,
+    };
+    let mut w = gw.stub.world();
+    w.items
+        .insert(("issues", 7), (item("It <breaks>", ItemState::Open), true));
+    w.items.insert(
+        ("pull", 3),
+        (item("Faster parser", ItemState::Merged), true),
+    );
+    // Members-only (or hidden): Platform has it, the card must show none of it.
+    w.items.insert(
+        ("issues", 8),
+        (item("SECRET members-only title", ItemState::Open), false),
+    );
+    w.items.insert(
+        ("pull", 4),
+        (item("SECRET members-only pull", ItemState::Open), false),
+    );
+    drop(w);
+    gw
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn share_links_preview_public_issues_and_pull_requests() {
+    let gw = share_gateway().await;
+    // An issue: its title and body, its own card image, people sent to the web app's short URL.
+    let (s, ct, body) = gw.get("/og/alice/proj/issues/7").await;
+    assert_eq!(
+        (s, ct.as_str()),
+        (200, "text/html; charset=utf-8"),
+        "{body}"
+    );
+    assert_eq!(
+        meta(&body, "og:title"),
+        "It &lt;breaks&gt; · Issue #7 · alice/proj"
+    );
+    assert_eq!(meta(&body, "og:description"), "Steps: 1. run it");
+    assert_eq!(
+        meta(&body, "og:image"),
+        "https://gw.example/og/alice/proj/issues/7.png"
+    );
+    assert_eq!(
+        meta(&body, "og:url"),
+        "https://gw.example/og/alice/proj/issues/7"
+    );
+    assert!(body.contains(
+        "<link rel=\"canonical\" href=\"https://forge.dashhq.org/alice/proj/issues/7\">"
+    ));
+    assert!(body.contains("href=\"https://forge.dashhq.org/alice/proj/issues/7\">Open"));
+    let r = reqwest::get(format!("{}/og/alice/proj/issues/7.png", gw.base))
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            r.status().as_u16(),
+            r.headers()["content-type"].to_str().unwrap()
+        ),
+        (200, "image/png")
+    );
+    assert_eq!(&r.bytes().await.unwrap()[..4], b"\x89PNG");
+
+    // A pull request, on any of its tabs: one item read per TTL, whatever the tab.
+    let reads = gw.stub.world().item_reads;
+    for path in [
+        "/og/alice/proj/pull/3",
+        "/og/alice/proj/pull/3/files",
+        "/og/alice/proj/pull/003/checks",
+    ] {
+        let (s, _, body) = gw.get(path).await;
+        assert_eq!(s, 200, "{path}: {body}");
+        assert_eq!(
+            meta(&body, "og:title"),
+            "Faster parser · Pull request #3 · alice/proj",
+            "{path}"
+        );
+        let short = path.strip_prefix("/og").unwrap();
+        assert_eq!(
+            meta(&body, "og:url"),
+            format!("https://gw.example/og{short}")
+        );
+        assert!(
+            body.contains(&format!(
+                "canonical\" href=\"https://forge.dashhq.org{short}\""
+            )),
+            "{body}"
+        );
+    }
+    assert_eq!(
+        gw.stub.world().item_reads,
+        reads + 1,
+        "cached per item, not per path"
+    );
+
+    // Platform down: what was read is still served; with nothing cached, the site's card,
+    // briefly cacheable.
+    gw.stub.world().down = true;
+    let (s, _, body) = gw.get("/og/alice/proj/issues/7").await;
+    assert_eq!(s, 200, "{body}");
+    assert_eq!(
+        meta(&body, "og:title"),
+        "It &lt;breaks&gt; · Issue #7 · alice/proj"
+    );
+    let r = reqwest::get(format!("{}/og/bob/other/issues/1", gw.base))
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 200);
+    assert_eq!(r.headers()["cache-control"], "public, max-age=60");
+    assert_eq!(meta(&r.text().await.unwrap(), "og:title"), "Dash Forge");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_share_link_read_before_platform_failed_is_served_stale() {
+    let gw = start(|c| {
+        c.public_url = Some("https://gw.example".into());
+        c.render_ttl_secs = 1;
+    })
+    .await;
+    let src = source(&gw.tmp);
+    gw.stub.add("alice", "proj", true, &src);
+    gw.stub.world().items.insert(
+        ("issues", 7),
+        (
+            Item {
+                title: "It breaks".into(),
+                body: String::new(),
+                state: ItemState::Closed,
+            },
+            true,
+        ),
+    );
+    let (s, _, _) = gw.get("/og/alice/proj/issues/7").await;
+    assert_eq!(s, 200);
+    gw.stub.world().down = true;
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    let r = reqwest::get(format!("{}/og/alice/proj/issues/7", gw.base))
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 200);
+    // Briefly cacheable: at most 60 s (here the 1 s TTL).
+    assert_eq!(r.headers()["cache-control"], "public, max-age=1");
+    assert!(stale_secs(r.headers()).is_some(), "marked stale");
+    let body = r.text().await.unwrap();
+    assert_eq!(meta(&body, "og:title"), "It breaks · Issue #7 · alice/proj");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn share_links_show_nothing_of_members_only_items_or_private_repos() {
+    let gw = share_gateway().await;
+    let repo_png = reqwest::get(format!("{}/og/alice/proj.png", gw.base))
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap();
+    // Members-only (or hidden, or absent): the link's own words and the repository's image.
+    for (path, noun) in [
+        ("/og/alice/proj/issues/8", "Issue #8"),
+        ("/og/alice/proj/pull/4/files", "Pull request #4"),
+        ("/og/alice/proj/issues/99", "Issue #99"),
+    ] {
+        let (s, _, body) = gw.get(path).await;
+        assert_eq!(s, 200, "{path}: {body}");
+        assert!(
+            !body.contains("SECRET") && !body.contains("Steps"),
+            "{path}: {body}"
+        );
+        assert_eq!(meta(&body, "og:title"), format!("{noun} · alice/proj"));
+        assert_eq!(
+            meta(&body, "og:image"),
+            "https://gw.example/og/alice/proj.png"
+        );
+    }
+    // Their image route draws the repository's card, never the item's.
+    for path in ["/og/alice/proj/issues/8.png", "/og/alice/proj/pull/4.png"] {
+        let r = reqwest::get(format!("{}{path}", gw.base)).await.unwrap();
+        assert_eq!(r.status().as_u16(), 200, "{path}");
+        assert_eq!(r.bytes().await.unwrap(), repo_png, "{path}");
+    }
+    // A private repository answers exactly as an absent one: the site's card.
+    for path in [
+        "/og/alice/secret",
+        "/og/alice/secret/issues/7",
+        "/og/alice/secret/pull/3",
+        "/og/alice/nothing/issues/7",
+    ] {
+        let (s, _, body) = gw.get(path).await;
+        assert_eq!(s, 200, "{path}: {body}");
+        assert_eq!(meta(&body, "og:title"), "Dash Forge", "{path}");
+        assert_eq!(
+            meta(&body, "og:image"),
+            "https://forge.dashhq.org/og.png",
+            "{path}"
+        );
+        assert!(
+            !body.contains("It &lt;breaks") && !body.contains("A &lt;test"),
+            "{path}: {body}"
+        );
+        let short = path.strip_prefix("/og").unwrap();
+        assert!(
+            body.contains(&format!(
+                "canonical\" href=\"https://forge.dashhq.org{short}\""
+            )),
+            "{body}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn share_links_carry_their_path_to_the_web_app_and_nothing_else() {
+    let gw = share_gateway().await;
+    // Any other view: the repository's card, the path carried through as written (a `%2F` ref
+    // stays one segment), and the `?repo=` pin with it; other query strings dropped.
+    let id = "G6D3ejKx123456789abcdefXYZ9abcdefghijk";
+    let (s, _, body) = gw
+        .get(&format!(
+            "/og/alice/proj/tree/feature%2Fx/src?repo={id}&utm=x"
+        ))
+        .await;
+    assert_eq!(s, 200, "{body}");
+    assert_eq!(meta(&body, "og:title"), "alice/proj");
+    assert_eq!(meta(&body, "og:description"), "A &lt;test&gt; repository");
+    assert!(
+        body.contains(&format!("canonical\" href=\"https://forge.dashhq.org/alice/proj/tree/feature%2Fx/src?repo={id}\"")),
+        "{body}"
+    );
+    assert!(!body.contains("utm"), "{body}");
+    // A duplicate or malformed query is ignored, never a 400: the first valid pin wins.
+    let (s, _, body) = gw
+        .get(&format!(
+            "/og/alice/proj/issues/7?repo=bad&repo={id}&repo=%zz&x"
+        ))
+        .await;
+    assert_eq!(s, 200, "{body}");
+    assert!(body.contains(&format!("issues/7?repo={id}\"")), "{body}");
+    let (_, _, body) = gw.get("/og/alice/proj/releases?repo=not-an-id").await;
+    assert!(
+        body.contains("canonical\" href=\"https://forge.dashhq.org/alice/proj/releases\""),
+        "{body}"
+    );
+    // Not a short URL: refused, never redirected. (Escaped dot segments, `%2e%2e`, are refused
+    // too: `og::tests`; an HTTP client normalizes them away before sending, as browsers do.)
+    for path in [
+        "/og/alice/proj/a%2",
+        "/og/alice/proj/x%zz/y",
+        "/og/alice",
+        "/og/al%20ice/proj",
+    ] {
+        let (s, _, body) = gw.get(path).await;
+        assert_eq!(s, 404, "{path}: {body}");
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn limits_and_eviction() {
     let gw = start(|c| {
@@ -818,12 +1105,17 @@ async fn a_repo_platform_proves_gone_is_removed_and_answers_404() {
         "/alice/proj.git/forge-manifest.json",
         "/feed/alice/proj/commits.atom",
         "/feed/alice/proj/releases.atom",
-        "/og/alice/proj",
+        "/og/alice/proj.png",
     ] {
         let (s, _, body) = gw.get(path).await;
         assert_eq!(s, 404, "{path}: {body}");
         assert!(body.contains("no public repository"), "{path}: {body}");
     }
+    // A share link still unfurls, as the site's own card: nothing of the repository is shown.
+    let (s, _, body) = gw.get("/og/alice/proj").await;
+    assert_eq!(s, 200, "{body}");
+    assert!(body.contains("og:title\" content=\"Dash Forge\""), "{body}");
+    assert!(!body.contains("A &lt;test&gt; repository"), "{body}");
     let (s, _, body) = gw.get("/badge/alice/proj/stars.svg").await;
     assert_eq!(s, 404);
     assert!(body.contains("repo not found"), "{body}");

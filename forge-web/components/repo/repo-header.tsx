@@ -154,7 +154,7 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
         </div>
         <div className="ml-auto flex flex-wrap items-center gap-2">
           <CodeSearchBox addr={addr} />
-          <CopyLinkButton repo={addr} />
+          <CopyLinkButton repo={addr} visibility={home.repo.visibility} />
           {home.repo.visibility === 'public' ? <ForkButton parent={home.repo} defaults={{ defaultBranch: home.defaultBranch, description: home.description }} /> : null}
           <WatchButton repo={home.repo} />
           <StarButton repo={home.repo} count={home.starCount} lookalikes={lookalikes} />
