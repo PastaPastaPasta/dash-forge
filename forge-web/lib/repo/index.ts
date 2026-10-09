@@ -235,6 +235,7 @@ export {
   starRelation,
   watchRelation,
   DraftMarkError,
+  createStepCount,
   type CreateRepoInput,
   type PrivateCreate,
   type CreateRepoStep,

@@ -62,10 +62,12 @@ import {
   type MembersCount,
 } from '@/lib/view/audience'
 import { useAuth } from '@/contexts/auth-context'
+import { useUiStore } from '@/hooks/use-ui-store'
 import { useAsync } from '@/hooks/use-async'
 import { useSdk } from '@/hooks/use-sdk'
 import { usePrivateWrite } from '@/hooks/use-private-write'
 import { takePublicViewFocus, usePublicView } from '@/hooks/use-public-view'
+import { useParam } from '@/hooks/use-query-param'
 import { Author } from '@/components/author'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { UnlockMore, UNLOCK_MEMBERS_ONLY } from '@/components/auth/unlock-more'
@@ -128,9 +130,8 @@ export function useComposerAudience(
   const wants = repo !== null && members === null && choice !== null && choice.members !== null
   const read = useAsync(() => readMembershipsCached(sdk!, repo!, network), [ready, repo?.repoId ?? '', network], { enabled: ready && sdk !== null && wants })
   const list = members ?? read.data
-  const visibility = repo?.visibility ?? 'public'
-  const count = list === null || list === undefined ? null : membersCount(list, visibility)
-  const holders = list === null || list === undefined ? EMPTY : keyHolders(list, visibility)
+  const count = list === null || list === undefined ? null : membersCount(list)
+  const holders = list === null || list === undefined ? EMPTY : keyHolders(list)
   const initial = choice?.initial ?? 'members'
   // Inside a members-only thread nothing starts public, whatever a draft says.
   const preferred: ComposerAudience = start === 'members' || (start === 'public' && choice?.publicAllowed !== false) ? start : initial
@@ -545,7 +546,7 @@ export function TurnOnMembersSheet({ home, open, onClose }: { home: RepoHome; op
   const key = useAsync(() => encryptionKeyState(network, identity!), [network, identity ?? '', unlockScope ?? ''], { enabled: identity !== null && open })
   // Who gets a key: every member who holds the members key, and the maintainer turning it on
   // (listed or not). Unknown until the members are read: no cost is shown, and Turn on waits.
-  const holders = members.data === null ? null : new Set([...keyHolders(members.data, home.repo.visibility), ...(identity !== null ? [identity] : [])]).size
+  const holders = members.data === null ? null : new Set([...keyHolders(members.data), ...(identity !== null ? [identity] : [])]).size
   const [lead, costLine, older] = turnOnText(holders ?? 1)
   const retry = (what: string, onRetry: () => void, testId: string): JSX.Element => (
     <p className="text-dense text-danger-700 dark:text-danger-400" role="alert" data-testid={testId}>
@@ -652,6 +653,8 @@ export function MembersOnlyRow({ entry }: { entry: MembersOnlyEntry }): JSX.Elem
  */
 export function MembersOnlySummary({ entries, lane }: { entries: readonly MembersOnlyEntry[]; lane: MembersAccess | undefined }): JSX.Element | null {
   const [unlocking, setUnlocking] = useState(false)
+  const { identity } = useAuth()
+  const openLogin = useUiStore((s) => s.openLogin)
   const why = memberCantRead(lane)
   if (why === null || entries.length === 0) return null
   return (
@@ -662,7 +665,7 @@ export function MembersOnlySummary({ entries, lane }: { entries: readonly Member
         {why === 'locked' ? (
           <>
             <span aria-hidden> · </span>
-            <button type="button" className="hit-area font-medium text-forge-700 hover:underline dark:text-forge-400" aria-expanded={unlocking} onClick={() => setUnlocking((u) => !u)} data-testid="members-only-unlock">
+            <button type="button" className="hit-area font-medium text-forge-700 hover:underline dark:text-forge-400" aria-expanded={identity === null ? undefined : unlocking} onClick={() => (identity === null ? openLogin() : setUnlocking((u) => !u))} data-testid="members-only-unlock">
               Unlock to read
             </button>
           </>
@@ -785,6 +788,29 @@ export function MembersContentSetting({ home, maintainer }: { home: RepoHome; ma
           {TURN_ON}
         </Button>
       ) : null}
+      {turnOn ? <TurnOnMembersSheet home={home} open={turnOn} onClose={() => setTurnOn(false)} /> : null}
+    </div>
+  )
+}
+
+/**
+ * After a create whose "Turn on members-only content now" did not finish (`/new` adds
+ * `membersOnly=failed`): the repo stands without it, so say so and offer the sheet, while it is
+ * still off. Only its owner sees it.
+ */
+export function MembersOnlyCreateNotice({ home }: { home: RepoHome }): JSX.Element | null {
+  const [turnOn, setTurnOn] = useState(false)
+  const { identity } = useAuth()
+  const failed = useParam('membersOnly') === 'failed'
+  // Only for the owner who just created it: a shared link shows nobody else this.
+  if (!failed || identity !== home.repo.ownerId || home.repo.visibility !== 'public' || home.lane?.access !== 'none') return null
+  return (
+    <div className="mb-4 flex flex-wrap items-center gap-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense" role="status" data-testid="members-only-create-notice">
+      <Lock className="h-3.5 w-3.5 shrink-0 text-anvil-500 dark:text-anvil-400" aria-hidden />
+      <span className="flex-1">Your repo is created. Members-only content isn&apos;t set up yet.</span>
+      <Button size="sm" variant="outline" onClick={() => setTurnOn(true)} data-testid="create-notice-turn-on">
+        Finish setting up
+      </Button>
       {turnOn ? <TurnOnMembersSheet home={home} open={turnOn} onClose={() => setTurnOn(false)} /> : null}
     </div>
   )

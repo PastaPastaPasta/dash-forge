@@ -1,8 +1,10 @@
 /**
  * The browser's environments reader (`loader.ts`) and what the page shows (`view.ts`), over real
- * seals: a maintainer reads production (Maintainers) and dev (Members), a writer reads dev only, an
- * outsider counts both and fetches nothing, a writer's change is ignored with the warning, two
- * maintainers' changes conflict, and the removal checklist names what a member could read.
+ * seals: a maintainer reads production (a letter to the maintainers) and dev (an old-format
+ * Members snapshot), a writer reads dev only, an outsider counts both and fetches nothing, a
+ * writer's change is ignored with the warning, two maintainers' changes conflict, the old-format
+ * banner and the precise list of who an environment misses, and the removal checklist names what a
+ * member could read.
  */
 
 import { describe, expect, it, vi } from 'vitest'
@@ -10,10 +12,11 @@ import { getPublicKey } from '@noble/secp256k1'
 
 import { base58Encode } from '../auth/base58'
 import { EpochKeys, type EpochResolution, type LetterReader, type OwnerKey } from '../private'
-import { sealMaintainersSnapshot, sealMembersSnapshot } from './codec'
-import type { EnvVar, Snapshot } from './format'
-import { MAX_SEALED, currentOf, readEnvironments, type EnvKeys, type EnvManifest, type EnvSources } from './loader'
-import { conflictHeadline, environmentsView, exposureLine, hiddenLine, ignoredWarning, removalView, unreadableLine, utc } from './view'
+import { sealLetterSnapshot, sealOldMembersSnapshotForVectors } from './codec'
+import type { Audience, EnvVar, Snapshot } from './format'
+import { MAX_SEALED, currentOf, oldFormatOf, readEnvironments, type EnvKeys, type EnvManifest, type EnvSources } from './loader'
+import { OLD_FORMAT_HISTORY_SENTENCE, OLD_FORMAT_SENTENCE } from './format'
+import { NOT_SHARED_TEXT, conflictHeadline, environmentsView, exposureLine, hiddenLine, ignoredWarning, removalView, staleLine, unreadableLine, utc } from './view'
 
 const repoId = new Uint8Array(32).fill(0x11)
 const secret = (b: number) => new Uint8Array(32).fill(b)
@@ -28,8 +31,18 @@ const B = id(bob)
 const C = id(carol)
 
 const v = (value: string): EnvVar => ({ value, type: 'secret', note: '' })
-function snap(env: string, vars: Record<string, string>, over: Partial<Snapshot> = {}): Snapshot {
-  return { env, audience: 'members', generatedAt: 1, to: [], vars: new Map(Object.entries(vars).map(([k, x]) => [k, v(x)])), ...over }
+const varsOf = (vars: Record<string, string>) => new Map(Object.entries(vars).map(([k, x]) => [k, v(x)]))
+const ENV_ID = '0123456789abcdef0123456789abcdef'
+const MAINTAINERS: Audience = { group: 'maintainers', also: [] }
+
+/** An old-format Members snapshot (version 1, under the members key). */
+function oldMembers(env: string, vars: Record<string, string>): Snapshot {
+  return { version: 1, env, audience: { group: 'members', also: [] }, id: null, generatedAt: 1, to: [], toKeys: [], markedChanged: [], vars: varsOf(vars) }
+}
+
+/** A version-2 snapshot: a letter to `to` (the writer first) for `audience`. */
+function letter(env: string, vars: Record<string, string>, to: string[], over: Partial<Snapshot> = {}): Snapshot {
+  return { version: 2, env, audience: MAINTAINERS, id: ENV_ID, generatedAt: 1, to, toKeys: to.map((_, i) => i + 1), markedChanged: [], vars: varsOf(vars), ...over }
 }
 
 async function sha256Hex(b: Uint8Array): Promise<string> {
@@ -92,10 +105,10 @@ async function fixture(): Promise<{ prod1: Stored; dev1: Stored; all: Stored[] }
   const to = [A, C]
   const prod1 = await store(
     A,
-    await sealMaintainersSnapshot(repoId, secret(1), 4, alice.identityId, [alice, carol], snap('production', { DB_URL: 'QAMARK-prod-db', STRIPE_KEY: 'QAMARK-stripe' }, { audience: 'maintainers', to })),
+    await sealLetterSnapshot(repoId, secret(1), 4, alice.identityId, [alice, carol], letter('production', { DB_URL: 'QAMARK-prod-db', STRIPE_KEY: 'QAMARK-stripe' }, to)),
     10,
   )
-  const dev1 = await store(A, await sealMembersSnapshot(ek, snap('dev', { API_TOKEN: 'QAMARK-dev-token' })), 11)
+  const dev1 = await store(A, await sealOldMembersSnapshotForVectors(ek, oldMembers('dev', { API_TOKEN: 'QAMARK-dev-token' })), 11)
   return { prod1, dev1, all: [prod1, dev1] }
 }
 
@@ -106,9 +119,9 @@ describe('readEnvironments', () => {
     const book = await readEnvironments(sources(all), await viewer(alice, 1, true))
     const view = environmentsView(book)
     expect(view.hidden).toBe(0)
-    expect(view.cards.map((c) => [c.env, c.kind, c.audience])).toEqual([
-      ['dev', 'current', 'members'],
-      ['production', 'current', 'maintainers'],
+    expect(view.cards.map((c) => [c.env, c.kind, c.audienceLabel])).toEqual([
+      ['dev', 'current', 'All members (old format)'],
+      ['production', 'current', 'Maintainers'],
     ])
     const prod = view.cards[1]
     expect(prod?.readers).toEqual([A, C])
@@ -154,7 +167,7 @@ describe('readEnvironments', () => {
 
   it("ignores a writer's change and warns once, naming it", async () => {
     const { prod1, all } = await fixture()
-    const forged = await store(B, await sealMaintainersSnapshot(repoId, secret(2), 3, bob.identityId, [bob, alice], snap('production', { DB_URL: 'evil' }, { audience: 'maintainers', to: [B, A] })), 20, [prod1])
+    const forged = await store(B, await sealLetterSnapshot(repoId, secret(2), 3, bob.identityId, [bob, alice], letter('production', { DB_URL: 'evil' }, [B, A])), 20, [prod1])
     const src = sources([...all, forged])
     const book = await readEnvironments(src, await viewer(alice, 1, true))
     const prod = environmentsView(book).cards.find((c) => c.env === 'production')
@@ -172,7 +185,7 @@ describe('readEnvironments', () => {
   it('two maintainers changing production at once is a conflict naming both versions', async () => {
     const { prod1, all } = await fixture()
     const seal = (who: typeof alice, b: number, kid: number, val: string) =>
-      sealMaintainersSnapshot(repoId, secret(b), kid, who.identityId, who === alice ? [alice, carol] : [carol, alice], snap('production', { DB_URL: val }, { audience: 'maintainers', to: who === alice ? [A, C] : [C, A] }))
+      sealLetterSnapshot(repoId, secret(b), kid, who.identityId, who === alice ? [alice, carol] : [carol, alice], letter('production', { DB_URL: val }, who === alice ? [A, C] : [C, A]))
     const x = await store(A, await seal(alice, 1, 4, 'QAMARK-x'), 30, [prod1])
     const y = await store(C, await seal(carol, 3, 2, 'QAMARK-y'), 30, [prod1])
     const book = await readEnvironments(sources([...all, x, y]), await viewer(alice, 1, true))
@@ -190,7 +203,7 @@ describe('readEnvironments', () => {
   it('fails closed on an unreadable latest change', async () => {
     const { prod1, all } = await fixture()
     // carol saves production for herself only: alice can name production but not read its head
-    const only = await store(C, await sealMaintainersSnapshot(repoId, secret(3), 2, carol.identityId, [carol], snap('production', { DB_URL: 'z' }, { audience: 'maintainers', to: [C] })), 40, [prod1])
+    const only = await store(C, await sealLetterSnapshot(repoId, secret(3), 2, carol.identityId, [carol], letter('production', { DB_URL: 'z' }, [C])), 40, [prod1])
     const view = environmentsView(await readEnvironments(sources([...all, only]), await viewer(alice, 1, true)))
     const prod = view.cards.find((c) => c.env === 'production')
     expect(prod?.kind).toBe('unreadable')
@@ -198,9 +211,9 @@ describe('readEnvironments', () => {
     expect(prod?.entries).toEqual([])
   })
 
-  it('treats a Members snapshot with no block height as late', async () => {
+  it('treats an old-format Members snapshot with no block height as late', async () => {
     const ek = (await membersKeys()).get(0) as EpochKeys
-    const late = await store(A, await sealMembersSnapshot(ek, snap('dev', { A: '1' })), 0)
+    const late = await store(A, await sealOldMembersSnapshotForVectors(ek, oldMembers('dev', { A: '1' })), 0)
     const book = await readEnvironments(sources([late]), await viewer(alice, 1, true))
     expect(book.opened.get(late.manifest.id)).toEqual({ kind: 'late' })
     expect(environmentsView(book).hidden).toBe(1)
@@ -216,14 +229,151 @@ describe('readEnvironments', () => {
   })
 })
 
+/** A letter from `who` (key `kid`) to the people `to` (the writer first), as the manifest of height `height`. */
+async function save(who: typeof alice, b: number, kid: number, others: (typeof alice)[], snapshot: Snapshot, height: number, supersedes: readonly Stored[] = []): Promise<Stored> {
+  return store(id(who), await sealLetterSnapshot(repoId, secret(b), kid, who.identityId, [who, ...others], snapshot), height, supersedes)
+}
+
+describe('the old format', () => {
+  const OLD = (n: string) => `dg env ${n} --env dev`
+
+  it('flags an environment whose latest version is an old-format Members snapshot', async () => {
+    const { dev1, all } = await fixture()
+    const book = await readEnvironments(sources(all), await viewer(alice, 1, true))
+    expect(book.oldFormat).toEqual(new Set([dev1.manifest.id]))
+    expect(oldFormatOf(book, 'dev')).toEqual({ latest: true, unmarked: ['API_TOKEN'], unopened: 0 })
+    expect(oldFormatOf(book, 'production')).toBeNull()
+    const cards = environmentsView(book).cards
+    expect(cards.find((c) => c.env === 'dev')?.oldFormat).toEqual({ sentence: OLD_FORMAT_SENTENCE, unmarked: [], command: OLD('resave') })
+    expect(cards.find((c) => c.env === 'production')?.oldFormat).toBeNull()
+    expect(OLD_FORMAT_SENTENCE).toBe("Saved in the old format: anyone who joins later can read the values saved this way. Save it again, then change those values where they're used.")
+  })
+
+  it('records an old-format file whether or not it opens here', async () => {
+    const { dev1, all } = await fixture()
+    // a writer's tab with an encryption key but no members key: it fetches the file and cannot open it
+    const book = await readEnvironments(sources(all), await viewer(eve, 4, false))
+    expect(book.oldFormat).toEqual(new Set([dev1.manifest.id]))
+    expect(book.opened.get(dev1.manifest.id)).toEqual({ kind: 'refused', code: 'noKey' })
+  })
+
+  it('after a save in the new format, lists the old values not marked changed yet', async () => {
+    const { dev1 } = await fixture()
+    const dev2 = await save(alice, 1, 4, [carol], letter('dev', { API_TOKEN: 'QAMARK-new', LOG_LEVEL: 'debug' }, [A, C], { audience: { group: 'members', also: [] } }), 20, [dev1])
+    const book = await readEnvironments(sources([dev1, dev2]), await viewer(alice, 1, true))
+    expect(oldFormatOf(book, 'dev')).toEqual({ latest: false, unmarked: ['API_TOKEN'], unopened: 0 })
+    const banner = environmentsView(book).cards[0]?.oldFormat
+    expect(banner).toEqual({ sentence: OLD_FORMAT_HISTORY_SENTENCE, unmarked: ['API_TOKEN'], command: OLD('mark-changed') })
+    expect(environmentsView(book).cards[0]?.audienceLabel).toBe('All members')
+  })
+
+  it('shows nothing once every old name is marked changed', async () => {
+    const { dev1 } = await fixture()
+    const dev2 = await save(alice, 1, 4, [carol], letter('dev', { API_TOKEN: 'QAMARK-new' }, [A, C], { audience: { group: 'members', also: [] }, markedChanged: ['API_TOKEN'] }), 20, [dev1])
+    const book = await readEnvironments(sources([dev1, dev2]), await viewer(alice, 1, true))
+    expect(oldFormatOf(book, 'dev')).toEqual({ latest: false, unmarked: [], unopened: 0 })
+    expect(environmentsView(book).cards[0]?.oldFormat).toBeNull()
+  })
+
+  it("counts old versions this reader can't open, and still shows the note", async () => {
+    const { dev1 } = await fixture()
+    const dev2 = await save(alice, 1, 4, [carol], letter('dev', { API_TOKEN: 'QAMARK-new' }, [A, C], { audience: { group: 'members', also: [] } }), 20, [dev1])
+    // carol reads the letter with her encryption key but holds no members key
+    const book = await readEnvironments(sources([dev1, dev2]), await viewer(carol, 3, false))
+    expect(oldFormatOf(book, 'dev')).toEqual({ latest: false, unmarked: [], unopened: 1 })
+    expect(environmentsView(book).cards[0]?.oldFormat).toEqual({ sentence: OLD_FORMAT_HISTORY_SENTENCE, unmarked: [], command: OLD('mark-changed') })
+  })
+})
+
+describe("a maintainer's list of who an environment misses", () => {
+  const people = (members: [string, 'maintainer' | 'writer' | 'triage' | 'reader'][]) => ({ owner: A, members: members.map(([identity, role]) => ({ identity, role })) })
+  const ci = async (to: Parameters<typeof letter>[2], audience: Audience, others = [carol]): Promise<Stored[]> => [
+    await save(alice, 1, 4, others, letter('ci', { NPM_TOKEN: 'x' }, to, { audience }), 10),
+  ]
+
+  it('names a writer who joined the group after the last save', async () => {
+    const all = await ci([A, C], { group: 'writers', also: [] })
+    const book = await readEnvironments(sources(all), await viewer(alice, 1, false))
+    const view = environmentsView(book, { viewer: A, people: people([[A, 'maintainer'], [C, 'maintainer'], [B, 'writer']]) })
+    const card = view.cards[0]!
+    expect(card.audienceLabel).toBe('Writers and maintainers')
+    expect(card.stale).toEqual([{ who: B, kind: 'missing', role: 'a writer' }])
+    expect(staleLine('ci', card.stale[0]!, 'dana')).toBe("dana is a writer, but ci hasn't been saved since.")
+  })
+
+  it('leaves a reader out of the Writers group, and keeps everyone for a group that covers them', async () => {
+    const writers = environmentsView(await readEnvironments(sources(await ci([A, C], { group: 'writers', also: [] })), await viewer(alice, 1, false)), {
+      viewer: A,
+      people: people([[A, 'maintainer'], [C, 'maintainer'], [B, 'reader']]),
+    })
+    expect(writers.cards[0]?.stale).toEqual([])
+    const everyone = environmentsView(await readEnvironments(sources(await ci([A, C], { group: 'members', also: [] })), await viewer(alice, 1, false)), {
+      viewer: A,
+      people: people([[A, 'maintainer'], [C, 'maintainer'], [B, 'reader']]),
+    })
+    expect(everyone.cards[0]?.stale).toEqual([{ who: B, kind: 'missing', role: 'a reader' }])
+  })
+
+  it("names someone added to a Specific-people environment who isn't a member, by 'added to it'", async () => {
+    const all = await ci([A], { group: null, also: [B] }, [])
+    const view = environmentsView(await readEnvironments(sources(all), await viewer(alice, 1, false)), { viewer: A, people: people([[A, 'maintainer']]) })
+    expect(view.cards[0]?.audienceLabel).toBe('Specific people (1)')
+    expect(view.cards[0]?.stale).toEqual([{ who: B, kind: 'missing', role: 'added to it' }])
+  })
+
+  it('names someone who can still read it though the audience no longer covers them, never its writer', async () => {
+    // carol was demoted to writer: Maintainers no longer covers her; alice (the writer of the save) stays unlisted
+    const all = await ci([A, C], MAINTAINERS)
+    const view = environmentsView(await readEnvironments(sources(all), await viewer(alice, 1, false)), { viewer: A, people: people([[A, 'maintainer'], [C, 'writer']]) })
+    const stale = view.cards[0]!.stale
+    expect(stale).toEqual([{ who: C, kind: 'extra', role: '' }])
+    expect(staleLine('ci', stale[0]!, 'carol')).toBe("carol isn't in its audience any more, but can read ci until it's saved again.")
+    // the owner is in every group even without a membership document
+    const noOwnerDoc = environmentsView(await readEnvironments(sources(all), await viewer(alice, 1, false)), { viewer: A, people: people([[C, 'maintainer']]) })
+    expect(noOwnerDoc.cards[0]?.stale).toEqual([])
+  })
+
+  it('is empty for an old-format environment, and for a viewer who is not a maintainer', async () => {
+    const { all } = await fixture()
+    const ppl = people([[A, 'maintainer'], [C, 'maintainer'], [B, 'writer']])
+    const book = await readEnvironments(sources(all), await viewer(alice, 1, true))
+    expect(environmentsView(book, { viewer: A, people: ppl }).cards.find((c) => c.env === 'dev')?.stale).toEqual([])
+    const asWriter = environmentsView(await readEnvironments(sources(await ci([A, C], { group: 'writers', also: [] })), await viewer(bob, 2, false)), { viewer: B, people: ppl })
+    expect(asWriter.cards).toEqual([])
+    const asOutsiderOfMaintainers = environmentsView(book, { viewer: B, people: ppl })
+    expect(asOutsiderOfMaintainers.cards.every((c) => c.stale.length === 0)).toBe(true)
+  })
+})
+
+describe("a viewer who isn't a maintainer", () => {
+  it("is told an environment hasn't been shared with them when one is out of reach", async () => {
+    const { all } = await fixture()
+    const book = await readEnvironments(sources(all), await viewer(bob, 2, true))
+    const view = environmentsView(book, { viewer: B })
+    expect(view.hidden).toBe(1)
+    expect(view.notShared).toBe(true)
+    expect(NOT_SHARED_TEXT).toBe("An environment in this repo hasn't been shared with you. If you should have access, ask a maintainer to save it again.")
+  })
+
+  it("isn't told it for a maintainer, a viewer we can't speak for, or when nothing is out of reach", async () => {
+    const { all, dev1 } = await fixture()
+    const book = await readEnvironments(sources(all), await viewer(bob, 2, true))
+    expect(environmentsView(book, { viewer: A }).notShared).toBe(false)
+    expect(environmentsView(book, { viewer: null }).notShared).toBe(false)
+    expect(environmentsView(book).notShared).toBe(false)
+    const devOnly = await readEnvironments(sources([dev1]), await viewer(bob, 2, true))
+    expect(environmentsView(devOnly, { viewer: B }).notShared).toBe(false)
+  })
+})
+
 describe('the removal checklist', () => {
   it('a writer who held the members key could read dev, not production', async () => {
     const { all } = await fixture()
     const book = await readEnvironments(sources(all), await viewer(alice, 1, true))
     const r = removalView(book, B, true)
-    expect(r.exposures).toEqual([{ env: 'dev', audience: 'members', names: ['API_TOKEN'] }])
+    expect(r.exposures).toEqual([{ env: 'dev', names: ['API_TOKEN'], oldFormat: true }])
     expect(r.unreadable).toBe(0)
-    expect(exposureLine('bob', r.exposures[0]!)).toBe('bob could read 1 dev value (and every past value of it). Rotate it at its source: API_TOKEN')
+    expect(exposureLine('bob', r.exposures[0]!)).toBe("bob could read 1 dev value (and every past value saved in the old format). Change it where it's used: API_TOKEN")
     expect(removalView(book, B, false).exposures).toEqual([])
   })
 
@@ -231,8 +381,8 @@ describe('the removal checklist', () => {
     const { all } = await fixture()
     const book = await readEnvironments(sources(all), await viewer(alice, 1, true))
     const r = removalView(book, C, false)
-    expect(r.exposures).toEqual([{ env: 'production', audience: 'maintainers', names: ['DB_URL', 'STRIPE_KEY'] }])
-    expect(exposureLine('carol', r.exposures[0]!)).toBe('carol could read 2 production values. Rotate them at their source: DB_URL, STRIPE_KEY')
+    expect(r.exposures).toEqual([{ env: 'production', names: ['DB_URL', 'STRIPE_KEY'], oldFormat: false }])
+    expect(exposureLine('carol', r.exposures[0]!)).toBe("carol could read 2 production values. Change them where they're used: DB_URL, STRIPE_KEY")
   })
 
   it('names how many environments the remover cannot read', async () => {

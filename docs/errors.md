@@ -97,6 +97,8 @@ The message lists the conflicting files.
 
 `dg storage mirror add` reports E201, before anything is signed, for addresses a mirror can't hold (more than 4, a mix of https and IPFS, a user name or password in a URL, an `ipfs://` address with a path) and for an address other readers never fetch: one on this machine or a private network (`localhost`, `127.0.0.1`, `192.168.…`, `198.18.…`, and the IPv6 forms that embed them), one that is not a valid address, or a temporary tunnel name (`*.trycloudflare.com`, `*.ts.net`), which a push refuses too. Record a stable public https address or an `ipfs://` CID.
 
+A document query whose where-clauses fit none of the type's indexes is E201 too: Drive refuses it ("where clause on non indexed property"), and `dg api query` lists the type's indexes. Use the indexed properties, in index order.
+
 ## E202
 
 **Invalid repository name.** Repository names are 1–63 characters, lowercase letters, digits, `.`, `_` and `-`, starting with a letter or digit. The name is lowercased before it is checked.
@@ -391,7 +393,7 @@ The author and committer line checks (`badTimezone`, `missingSpaceBeforeDate`, `
 
 Already a member, but your role can't make this write (a writer hiding a comment, a triage member pinning, a reader labelling)? `dg` refuses before signing and says so: *"you are a writer of `<repo>`; this needs a maintainer"*. You have already accepted, so all you need is the role the write needs: ask the owner to run `dg collab add <owner>/<repo> <your identity id> --role maintainer` (or `writer`, `triage`).
 
-Outside a push (collaborator admin, releases, repo settings) the headline says your identity "is not authorized for this action", because those need a different role. Editing or deleting someone else's comment is E601 too: only its author can, maintainers included.
+Outside a push (collaborator admin, releases, repo settings) the headline says your identity "is not authorized for this action", because those need a different role. Editing or deleting someone else's comment is E601 too: only its author can, maintainers included. So is `dg repo unban` of an identity someone else banned: only the maintainer who wrote a ban can lift it (`dg repo bans` lists who did); when nobody banned it, the error is E102.
 
 *Protocol detail:* consensus error 40120 on `$ownerId` (the `ownerRefersTo` gate) or on the `asMember` / `asMaintainer` membership proofs: no current `writer` or `maintainer` document names your identity. 40127, or the schema maximum on `r`: the role the write claims doesn't match your `writer` document's role.
 
@@ -453,6 +455,18 @@ Two common ones:
 **What to do:** ask a maintainer of the repository to lift the ban. Only the maintainer who wrote a ban can lift it, and a ban stops counting once its writer is no longer a maintainer.
 
 *Protocol detail:* a ban is a forge-collab `ban` document that only a maintainer can write. Platform does not stop a banned identity from writing; Forge apps do.
+
+## E611
+
+**Choose who can read the environment.** An environment has no default audience: you choose it when you first save it. `dg env set`, `import` and `edit` on an environment that has no saved version yet refuse without `--audience`, before anything is signed.
+
+**What to do:** say who can read it, once: `--audience maintainers`, `--audience writers` (writers and maintainers), `--audience members` (every member, readers and triage included), or `--audience people --to @alice,@bob`. Add people to a group with `--also @ci-bot`. Later changes keep the audience; change it with `dg env audience --env <name> --set …`. See [Environments](guides/environments.md#who-can-read-an-environment).
+
+## E612
+
+**An environment hasn't been shared with you.** Each version of an environment is encrypted for the people its audience covered when it was saved. You are not one of them: either the environment isn't for you, or you joined its group (or got a new encryption key) after its last save. From outside the two look the same, so the message doesn't say which.
+
+**What to do:** if you should have access, ask a maintainer to save it again (`dg env resave --env <name>`, or `dg env resave --all`). Maintainers see exactly who is missing in `dg env ls`.
 
 ## E701
 

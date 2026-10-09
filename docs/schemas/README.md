@@ -39,15 +39,20 @@ The exit code says which schema applies: 0, the command's own; anything else, th
 | `dg cost estimate` | [`cost-estimate.schema.json`](dg/cost-estimate.schema.json) |
 | `dg cost prices` | [`cost-prices.schema.json`](dg/cost-prices.schema.json) |
 | `dg doctor` | [`doctor.schema.json`](dg/doctor.schema.json) |
+| `dg env audience` | [`env-audience.schema.json`](dg/env-audience.schema.json) |
 | `dg env edit` | [`env-edit.schema.json`](dg/env-edit.schema.json) |
 | `dg env export` | [`env-export.schema.json`](dg/env-export.schema.json) |
 | `dg env get` | [`env-get.schema.json`](dg/env-get.schema.json) |
 | `dg env history` | [`env-history.schema.json`](dg/env-history.schema.json) |
 | `dg env import` | [`env-import.schema.json`](dg/env-import.schema.json) |
 | `dg env ls` | [`env-ls.schema.json`](dg/env-ls.schema.json) |
+| `dg env mark-changed` | [`env-mark-changed.schema.json`](dg/env-mark-changed.schema.json) |
+| `dg env resave` | [`env-resave.schema.json`](dg/env-resave.schema.json) |
 | `dg env run` | none: runs a command with the environment; its output is the command's |
 | `dg env set` | [`env-set.schema.json`](dg/env-set.schema.json) |
+| `dg env share` | [`env-share.schema.json`](dg/env-share.schema.json) |
 | `dg env unset` | [`env-unset.schema.json`](dg/env-unset.schema.json) |
+| `dg env unshare` | [`env-unshare.schema.json`](dg/env-unshare.schema.json) |
 | `dg import` | [`import.schema.json`](dg/import.schema.json) |
 | `dg init` | [`init.schema.json`](dg/init.schema.json) |
 | `dg issue assign` | [`issue-assign.schema.json`](dg/issue-assign.schema.json) |

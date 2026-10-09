@@ -24,6 +24,8 @@
       ]
     },
     "environmentsSavedFirst": {},
+    "environmentsSavedAgain": {},
+    "environmentPlan": {},
     "documentId": {
       "type": "string"
     },

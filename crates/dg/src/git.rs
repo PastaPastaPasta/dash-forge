@@ -751,18 +751,22 @@ pub fn current_branch(cwd: &Path) -> Option<String> {
 /// `git check-ref-format` accepts and that holds no refspec or glob syntax. It is a document
 /// field anyone could have written, and it becomes a fetch refspec and a push destination.
 pub fn require_branch_ref(r: &str) -> Result<()> {
-    let plain = r.strip_prefix("refs/heads/").is_some_and(|b| !b.is_empty())
-        && !r
-            .bytes()
-            .any(|b| matches!(b, b':' | b'*' | b'?' | b'[' | b'\\' | b'^' | b'~' | b'+'))
-        && crate::git::git_ok(Path::new("."), &["check-ref-format", r]);
-    if plain {
+    if is_plain_branch_ref(r) {
         Ok(())
     } else {
         Err(crate::errors::usage(format!(
             "the pull request's base {r:?} is not a plain branch (refs/heads/<name>); refusing to use it"
         )))
     }
+}
+
+/// Whether `r` is `refs/heads/<name>` with nothing a refspec reads specially in it.
+pub fn is_plain_branch_ref(r: &str) -> bool {
+    r.strip_prefix("refs/heads/").is_some_and(|b| !b.is_empty())
+        && !r
+            .bytes()
+            .any(|b| matches!(b, b':' | b'*' | b'?' | b'[' | b'\\' | b'^' | b'~' | b'+'))
+        && git_ok(Path::new("."), &["check-ref-format", r])
 }
 
 /// `refs/heads/<b>` for a bare branch name; a full ref as given.

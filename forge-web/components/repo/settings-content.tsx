@@ -21,7 +21,7 @@ import { MembersContentSetting, RemovalReads, useMembersKeyBlock } from '@/compo
 import type { Membership, Role as MemberRole } from '@/lib/rules/v2'
 import { NetworkBadge } from '@/components/ui/network-badge'
 import { previewCreate, previewDelete } from '@/lib/sdk'
-import { ROLE_LABEL, ROLE_NOUN, grantableRoles, holdsMembersKey, membershipTitle } from '@/lib/rules/roles'
+import { ROLE_LABEL, grantableRoles, holdsMembersKey, membershipTitle } from '@/lib/rules/roles'
 import { namedAction } from '@/lib/spend-toast'
 import { RoleBadge, RolePicker, RoleSummary } from '@/components/repo/role-picker'
 import { decodeIdentifier } from '@/lib/auth'
@@ -221,10 +221,8 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
                   <div key={rowKey} className="border-b border-anvil-100 px-4 py-2.5 last:border-b-0 dark:border-anvil-850" data-testid="member-row">
                     <div className="flex flex-wrap items-center gap-3">
                       <Author identityId={m.identity} link={false} />
-                      <RoleBadge role={m.role} />
-                      {m.identity === repo.ownerId ? (
-                        <span className="text-[12px] text-anvil-500 dark:text-anvil-400">owner</span>
-                      ) : isOwner && repo.visibility !== 'private' ? (
+                      <RoleBadge role={m.role} owner={m.identity === repo.ownerId} />
+                      {m.identity !== repo.ownerId && isOwner && repo.visibility !== 'private' ? (
                         <div className="ml-auto flex gap-2">
                           <Button size="sm" variant="outline" disabled={guard.disabledReason !== null} aria-expanded={changing === rowKey} onClick={() => setChanging((c) => (c === rowKey ? null : rowKey))}>
                             Change role
@@ -327,20 +325,20 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
           onClose={() => setAction(null)}
           title={
             action?.kind === 'grant'
-              ? `Add ${ROLE_NOUN[action.role]}`
+              ? `Add with ${ROLE_LABEL[action.role]} access`
               : action?.kind === 'change'
-                ? `Change role to ${ROLE_LABEL[action.to]}`
+                ? `Change to ${ROLE_LABEL[action.to]} access`
                 : action?.kind === 'revoke'
-                  ? `Remove ${ROLE_NOUN[action.role]}`
+                  ? `Remove ${ROLE_LABEL[action.role]} access`
                   : 'Remove member'
           }
           // The toast says the role granted, not the document type (QW4-033: triage was "Writer added").
           toast={action === null ? undefined : namedAction(membershipTitle(action.kind, action.kind === 'change' ? action.to : action.role))}
           description={
             action?.kind === 'grant'
-              ? `Adds ${shortId(action.member)} as ${ROLE_NOUN[action.role]}.${keyed ? ' They get the key to members-only content too, so they can read it.' : ''}`
+              ? `Gives ${shortId(action.member)} ${ROLE_LABEL[action.role]} access.${keyed ? ' They get the key to members-only content too, so they can read it.' : ''}`
               : action?.kind === 'change'
-                ? `Makes ${shortId(action.member)} ${ROLE_NOUN[action.to]} instead of ${ROLE_NOUN[action.role]}. They don't need to accept again.`
+                ? `Changes ${shortId(action.member)}'s access from ${ROLE_LABEL[action.role]} to ${ROLE_LABEL[action.to]}. They don't need to accept again.`
                 : keyed
                   ? 'Removes them from this repo and changes the key to its members-only content.'
                   : 'Removes them from this repo. Their past pushes and comments stay. Anything new they try is refused.'
@@ -362,16 +360,17 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
           blocked={keyBlock}
           onConfirm={runAction}
         >
-          {/* What they could read: members-only discussion and the repo's environments, to rotate
-              at its source. Nothing is listed when they keep a role that holds the key. A
-              maintainer's removal is refused while the repo has environments (dg handles it). */}
+          {/* What they could read: members-only discussion and the repo's environments, to change
+              where they're used. Nothing is listed when they keep a role that holds the key. Every
+              member change (add, remove, promote, demote) is refused while the repo has
+              environments, before anything is signed: dg plans it and saves them again. */}
           {action?.kind === 'revoke' && keyed && removalEffect(memberRows, action.member, action.role) !== 'none'
             ? <RemovalReads lane={keyed} />
             : null}
           {action?.kind === 'revoke' && action.role !== 'maintainer' ? <EnvironmentsRemoval
                   home={home}
                   member={action.member}
-                  heldMembersKey={keyed && holdsMembersKey(action.role, 'public')}
+                  heldMembersKey={keyed && holdsMembersKey(action.role)}
                   staysMaintainer={removalEffect(memberRows, action.member, action.role) === 'none'}
                 /> : null}
         </ConfirmDialog>

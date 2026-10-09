@@ -658,13 +658,11 @@ impl Keyring {
                 key: w.key.clone(),
             })
             .collect();
-        // who the key is for: every member of a private repository; in a public one, the roles
-        // `holds_members_key` names (DESIGN §2.1)
-        let visibility = self.visibility;
+        // who the key is for: the roles `holds_members_key` names (every human role, DESIGN §3.5)
         let memberships: Vec<MemberRow> = self
             .members
             .iter()
-            .filter(|m| crate::members::holds_members_key(m.role, visibility))
+            .filter(|m| crate::members::holds_members_key(m.role))
             .filter_map(|m| {
                 Some(MemberRow {
                     identity: platform::decode_identifier(&m.identity_id).ok()?,
@@ -1929,6 +1927,8 @@ pub async fn enable_members_key(signer: &PrivateSigner<'_>, repo: &RepoRef) -> R
             Some(k) => k,
             None => self_wrap(signer, &w, 0, EpochKey::generate()?).await?.0,
         };
+        // The one half state (the owner's key share without its anchor): a re-run reuses the share.
+        test_fault("enable-after-share")?;
         let input = AnchorInput {
             epoch: 0,
             key: &key,
@@ -2852,7 +2852,7 @@ async fn member_list_is_stable(
     targets: &[String],
 ) -> Result<()> {
     let again = MemberReader::new(signer.client).list(repo).await?;
-    if targets_of(&again, repo.visibility, me, exclude) == targets {
+    if targets_of(&again, me, exclude) == targets {
         return Ok(());
     }
     Err(UserError::new(
@@ -2900,21 +2900,16 @@ fn stray_error(epoch: u32, stray: [u8; 32]) -> Error {
 
 /// Who a rotation wraps to: this signer first, then every current member not in `exclude`.
 fn rotation_targets(kr: &Keyring, me: &str, exclude: &[String]) -> Vec<String> {
-    targets_of(kr.members(), kr.visibility, me, exclude)
+    targets_of(kr.members(), me, exclude)
 }
 
 /// This signer first, then every member whose role holds the members key
 /// ([`crate::members::holds_members_key`]) and who is not in `exclude`. A runner is never a
 /// member, so never a target.
-fn targets_of(
-    members: &[Member],
-    visibility: Visibility,
-    me: &str,
-    exclude: &[String],
-) -> Vec<String> {
+fn targets_of(members: &[Member], me: &str, exclude: &[String]) -> Vec<String> {
     let mut targets: Vec<String> = vec![me.to_string()];
     for m in members {
-        if crate::members::holds_members_key(m.role, visibility)
+        if crate::members::holds_members_key(m.role)
             && !exclude.contains(&m.identity_id)
             && !targets.contains(&m.identity_id)
         {
@@ -3757,18 +3752,15 @@ mod tests {
         ];
         // a stale read still lists bob after his removal: excluded anyway
         assert_eq!(
-            targets_of(&members, Visibility::Private, "alice", &["bob".into()]),
+            targets_of(&members, "alice", &["bob".into()]),
             ["alice", "carol"]
         );
         assert_eq!(
-            targets_of(&members, Visibility::Private, "alice", &[]),
+            targets_of(&members, "alice", &[]),
             ["alice", "bob", "carol"]
         );
         // the rotator is wrapped first even when not listed yet (a lagging read)
-        assert_eq!(
-            targets_of(&[], Visibility::Private, "alice", &[]),
-            ["alice"]
-        );
+        assert_eq!(targets_of(&[], "alice", &[]), ["alice"]);
     }
 
     #[test]

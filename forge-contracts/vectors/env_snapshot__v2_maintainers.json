@@ -1,0 +1,196 @@
+{
+  "name": "v2_maintainers",
+  "description": "a version-2 snapshot for Maintainers is a DFPK 0x02 letter to the owner and maintainers when it was saved (`to`, the writer first; `toKeys` the encryption key each slot was sealed to); `audience` is {group, also}; `id` is fixed at the environment's first save. A writer and an outsider are not recipients.",
+  "case": "env_snapshot",
+  "rules": "v2",
+  "input": {
+    "op": "open",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "snapshot": {
+      "v": 2,
+      "env": "production",
+      "audience": {
+        "group": "maintainers",
+        "also": []
+      },
+      "generatedAt": 1767225600000,
+      "vars": {
+        "STRIPE_KEY": {
+          "type": "secret",
+          "value": "sk_test_fake_2",
+          "note": ""
+        },
+        "DB_URL": {
+          "type": "secret",
+          "value": "postgres://fake:fake@db.example/prod",
+          "note": ""
+        }
+      },
+      "id": "5af7aba87d74996e5b6cef1216ba37e0",
+      "to": [
+        "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+        "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3"
+      ],
+      "toKeys": [
+        4,
+        3
+      ],
+      "markedChanged": []
+    },
+    "seal": {
+      "senderKeyId": 4,
+      "sender": {
+        "identityId": "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+        "keys": [
+          "2ad1b589f470e72d6946b4924abacbed51bb782d293e76cc8541010dec32ddb3"
+        ]
+      },
+      "recipients": [
+        {
+          "identityId": "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+          "pub": "021d144ab1f60cb016060ab65044c6cc99287f65bcddb72ed65aca72fd61ff0082"
+        },
+        {
+          "identityId": "8fcef67268ac484a9ff85e6548ec6f5b3fb7a70feef773ea35daac8dc042e688",
+          "pub": "02bf17b1a250a78519af75826803dc13b2182a3ce97a7badb50135cb3194e2388a"
+        }
+      ],
+      "kObj": "948ace2a5d107dca30d7f72df38d306c4d35dad43f0ff1fb59cf6cc85ddc8db5",
+      "fileId": "86c8aa8a87c55b8cb095a71b136120bf",
+      "ivs": [
+        "9e2b43bcbd923e3e8f11f2a2cae62823",
+        "116ee6401ab3ae11397b521d7d4a493f"
+      ]
+    },
+    "manifest": {
+      "ownerId": "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+      "packHash": "a900dcf759fba794a4f45756c4f841d34f26c9cbe2115cf4960584802d4b1eb0",
+      "sizeBytes": 725
+    },
+    "sealed": "4446504b020e0000020000000442ff7675dc5b7d2b127b92aaa0e90dc1125b001e5b1ca3bcb9134355cdae947c9e2b43bcbd923e3e8f11f2a2cae628232869c9c83ba1c1241e3dd539bbc6c68dd9d23aa8c35e02fa7d5374c760bd487187ae624fc01e3386d52dbf32e01303ac116ee6401ab3ae11397b521d7d4a493f905978a11d63e3d48e111f639ca8cc0ab159279d428f6e27a836569cc55565c6f35d16bb0a15bb89e0dbccd8ff0df4a4000000000000020086c8aa8a87c55b8cb095a71b136120bf88ce055119ef7ed7c4c7c1650919070d19b5ce0cb904a51313efc94b68af6e91b185bf3ba6ad7776b705e7034a43990e6f467ffbd4ea46285346e0a2081a00d94a94d456240e71f2f22b1633146738cc419c63202604d3134900d1f132b2ea595360feef4f98cc9ebf01db86177d7a73f0e28817683c7c0ea9b800741ac6436d07dde6b5e3adc37f6b6e4f49d78790041ad97b31fc2575d935f19358d305749a1ad7e5c0d21afecc9aa80ae9c8c07678ee7de1ea651dfae82caa3a3313ca187996a8e9f66f7d6e492bdd2729a185c23a04244fa275354e31d0cef084a22c6ecf55fc5b826b4935282c372d10de4505086be1742a98fcbdf92c18a0f95e0e615b69691f41f87136bacc36494b4a760eea37ff1abba58638f7a992f4eedfb2faecece2feaabb6098c4184c5fa8932544bd290df9d6b88810f0ecabd6542ee9ef146fc228616b5d976c8a6b976edd6d0f6f0e6a9c9c15408221471ae4d7924224b3d12ed95dce974fae56701c13fd13ffd495fa34e997d95b9fe05b93821aee7780a4eb7bcce186ad9c3face54e84583b09034bf01597c3a85802e5b4a42ba6725fd442583f604211a5fe3abfe275c0e1218f192f18e4a02c33a7a6c42b19ac74eae0c19ee04c585b3e96903d160f40d30a3049ffd7aac1fcaaea2aebe82db52781f507b7dd05a021895cf4fe6b26ca924aacdd7038ce80dd5b9bb8ef5cb8457b3e0785230d3825ed8b77a4d8779eca15f6",
+    "ownerKeys": [
+      {
+        "id": 4,
+        "purpose": 1,
+        "keyType": 0,
+        "data": "021d144ab1f60cb016060ab65044c6cc99287f65bcddb72ed65aca72fd61ff0082"
+      }
+    ],
+    "readers": [
+      {
+        "reader": {
+          "identityId": "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+          "keys": [
+            "2ad1b589f470e72d6946b4924abacbed51bb782d293e76cc8541010dec32ddb3"
+          ]
+        },
+        "epochKeys": []
+      },
+      {
+        "reader": {
+          "identityId": "8fcef67268ac484a9ff85e6548ec6f5b3fb7a70feef773ea35daac8dc042e688",
+          "keys": [
+            "99905f5e10fe3d19ebf9e2a51a5c872d1a54f749f46bd565529d638c325ef955"
+          ]
+        },
+        "epochKeys": []
+      },
+      {
+        "reader": {
+          "identityId": "6983d325810def364424409135bb8c6cecca0ba0ea80f229c0f46a455a836275",
+          "keys": [
+            "0abadf5fa1f7846dfa8e073bd9b40da5c2d54e1b0b6b9a0139fc4077bd25f155"
+          ]
+        },
+        "epochKeys": []
+      },
+      {
+        "reader": {
+          "identityId": "57ac62e92e47a65079dd33aa33abbbe3434824ff864261f7c56531e92cb21bef",
+          "keys": [
+            "4960c41071d54b6daf47871e2349e514b5b66717abe00281a2ca8ae4efcbf91e"
+          ]
+        },
+        "epochKeys": []
+      }
+    ]
+  },
+  "expected": {
+    "plaintextHex": "7b2261756469656e6365223a7b22616c736f223a5b5d2c2267726f7570223a226d61696e7461696e657273227d2c22656e76223a2270726f64756374696f6e222c2267656e6572617465644174223a313736373232353630303030302c226964223a223561663761626138376437343939366535623663656631323136626133376530222c22746f223a5b22374c685666684b6a524d58766662557257367754457956704b353641563645614e346b576f31374b6b764466222c2241674e4c68573848476a544678564e4d72504344697952516d726b4e365a52594572784c5438485850386133225d2c22746f4b657973223a5b342c335d2c2276223a322c2276617273223a7b2244425f55524c223a7b2274797065223a22736563726574222c2276616c7565223a22706f7374677265733a2f2f66616b653a66616b654064622e6578616d706c652f70726f64227d2c225354524950455f4b4559223a7b2274797065223a22736563726574222c2276616c7565223a22736b5f746573745f66616b655f32227d7d7d20202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020",
+    "packHash": "a900dcf759fba794a4f45756c4f841d34f26c9cbe2115cf4960584802d4b1eb0",
+    "results": [
+      {
+        "snapshot": {
+          "v": 2,
+          "env": "production",
+          "audience": {
+            "group": "maintainers",
+            "also": []
+          },
+          "generatedAt": 1767225600000,
+          "vars": {
+            "DB_URL": {
+              "type": "secret",
+              "value": "postgres://fake:fake@db.example/prod",
+              "note": ""
+            },
+            "STRIPE_KEY": {
+              "type": "secret",
+              "value": "sk_test_fake_2",
+              "note": ""
+            }
+          },
+          "id": "5af7aba87d74996e5b6cef1216ba37e0",
+          "to": [
+            "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+            "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3"
+          ],
+          "toKeys": [
+            4,
+            3
+          ],
+          "markedChanged": []
+        }
+      },
+      {
+        "snapshot": {
+          "v": 2,
+          "env": "production",
+          "audience": {
+            "group": "maintainers",
+            "also": []
+          },
+          "generatedAt": 1767225600000,
+          "vars": {
+            "DB_URL": {
+              "type": "secret",
+              "value": "postgres://fake:fake@db.example/prod",
+              "note": ""
+            },
+            "STRIPE_KEY": {
+              "type": "secret",
+              "value": "sk_test_fake_2",
+              "note": ""
+            }
+          },
+          "id": "5af7aba87d74996e5b6cef1216ba37e0",
+          "to": [
+            "7LhVfhKjRMXvfbUrW6wTEyVpK56AV6EaN4kWo17KkvDf",
+            "AgNLhW8HGjTFxVNMrPCDiyRQmrkN6ZRYErxLT8HXP8a3"
+          ],
+          "toKeys": [
+            4,
+            3
+          ],
+          "markedChanged": []
+        }
+      },
+      {
+        "error": "notARecipient"
+      },
+      {
+        "error": "notARecipient"
+      }
+    ]
+  }
+}

@@ -202,7 +202,13 @@ PUBLISH = {
     'status': E('created', 'exists'), 'generation': ANY, 'repoId': S, 'ownerId': S, 'name': S, 'remoteUrl': S,
     'webUrl': nl(S), 'storage': ANY, 'network': S, 'visibility': E('public', 'private'),
     'protectedPatterns': D('What the config this run wrote protects; null when an earlier run wrote it.', nl(SA)),
-    'steps': R('createSteps'), 'cost': COST, 'totalCost': COST, 'remote': S, 'gitConfig': SA,
+    'steps': R('createSteps'),
+    'membersOnly': D('Whether members-only content is on after the create: null for a private repository and for a '
+                     're-run that created nothing; `off` with `reason` (`skipped`: --no-members-only; '
+                     '`noEncryptionKey`); `failed` with the `error` object (the repository stands without it).',
+                     nl(O({'status': E('on', 'off', 'failed'), 'reason': E('skipped', 'noEncryptionKey'), 'error': OBJ},
+                          ['status']))),
+    'cost': COST, 'totalCost': COST, 'remote': S, 'gitConfig': SA,
     'push': nl(O({'remote': S, 'branch': S, 'oid': S, 'tracking': B, 'cost': COST, 'indexSkipped': ANY})),
     'balanceCredits': nl(I),
 }
@@ -238,6 +244,8 @@ cmd('repo view', 'A repository: its refs, packs and members.', {
     'repoId': S, 'ownerId': S, 'name': S, 'description': nl(S), 'visibility': E('public', 'private'),
     'archived': D('Whether the repository is archived; null when its config could not be read.', nl(B)),
     'defaultBranch': nl(S), 'refs': A(O({'name': S, 'state': ANY}, ['name'])), 'packCount': I, 'packBytes': I, 'members': ANY, 'remoteUrl': S,
+    'securityPolicy': D('Where the default branch keeps its security policy (`.github/SECURITY.md`, `SECURITY.md` or `docs/SECURITY.md`, in that order); null when it has none or was not looked at (see securityPolicyChecked).', nl(S)),
+    'securityPolicyChecked': D('Whether the default branch\'s files were looked at. False for a private repo, a repo too large to download for this and a failed look; then a null securityPolicy means unknown.', B),
 }, ['repoId', 'ownerId', 'name', 'visibility'])
 cmd('repo list', 'An identity\'s repositories.', {
     'ownerId': S, 'count': I, 'repos': A(O({'name': S, 'repoId': S, 'description': nl(S)}, ['name', 'repoId'])),
@@ -293,9 +301,9 @@ cmd('repo unarchive', 'The repository writable again.', ARCHIVE, ['status', 'rep
 cmd('repo ban', 'An identity banned from the repository.', {
     'status': E('banned'), 'repo': S, 'identityId': S, 'reason': nl(S), 'documentId': S, 'cost': COST,
 }, ['status', 'repo', 'identityId', 'documentId'])
-cmd('repo unban', 'Your ban of an identity lifted; `none` when you have no ban of it.', {
-    'status': E('lifted', 'none'), 'repo': S, 'identityId': S, 'documentId': S,
-}, ['status', 'repo', 'identityId'])
+cmd('repo unban', 'Your ban of an identity lifted. With no ban of yours to lift it is an error: E601 when another maintainer banned it, E102 when no ban of it counts.', {
+    'status': E('lifted'), 'repo': S, 'identityId': S, 'documentId': S,
+}, ['status', 'repo', 'identityId', 'documentId'])
 cmd('repo bans', 'Every ban of the repository: who wrote it, whether it counts, and the one that decides.', {
     'repo': S,
     'bans': A(O({'identityId': S, 'by': S, 'reason': nl(S), 'createdAt': I, 'documentId': S, 'counts': B, 'decides': B},
@@ -522,7 +530,8 @@ cmd('verify-app', 'A deployed copy of the web app checked against a published bu
     'files': ANY, 'matched': ANY, 'differ': ANY, 'missing': ANY, 'ok': B,
 }, ['url', 'ok'])
 cmd('collab add', 'A member added, or their role changed.', {
-    'status': S, 'member': S, 'role': S, 'previousRole': nl(S), 'environmentsSavedFirst': ANY, 'documentId': S, 'id': S,
+    'status': S, 'member': S, 'role': S, 'previousRole': nl(S), 'environmentsSavedFirst': ANY,
+    'environmentsSavedAgain': ANY, 'environmentPlan': ANY, 'documentId': S, 'id': S,
     'repo': S, 'cost': COST, 'keyShared': B, 'keyPending': ANY, 'rotation': nl(R('rotation')),
 }, ['status', 'member', 'role'])
 cmd('collab accept', 'An invitation accepted (or withdrawn).', {
@@ -530,7 +539,7 @@ cmd('collab accept', 'An invitation accepted (or withdrawn).', {
 }, ['status', 'repo'])
 cmd('collab remove', 'A member removed.', {
     'status': E('removed', 'not_a_member'), 'member': S, 'role': S, 'repo': S, 'rotation': nl(R('rotation')),
-    'droppedEpochs': ANY, 'losingMembers': ANY, 'environments': ANY, 'resavedEnvironments': ANY,
+    'droppedEpochs': ANY, 'losingMembers': ANY, 'environments': ANY, 'resavedEnvironments': ANY, 'environmentPlan': ANY,
 }, ['status', 'member'])
 cmd('collab list', 'The repository\'s members and their roles.', {
     'count': I, 'members': A(OBJ), 'ownerId': S, 'roles': {'const': True},
@@ -671,15 +680,19 @@ cmd('import', 'What an import or re-sync mirrored (the Mirror Action reads this)
 # -- environments -----------------------------------------------------------------------------
 ENV_SAVE = {
     'status': E('saved', 'unchanged'), 'env': S, 'audience': ANY, 'to': ANY, 'skipped': ANY, 'changes': ANY, 'id': S,
-    'packHash': S, 'sizeBytes': I, 'quote': COST, 'spent': COST,
+    'packHash': S, 'sizeBytes': I, 'quote': COST, 'spent': COST, 'markedChanged': ANY, 'saved': ANY, 'notSaved': ANY,
 }
 cmd('env ls', 'The repository\'s environments, or one environment\'s variables (names and types, not values).', {
     'environments': A(OBJ), 'hidden': ANY, 'ignored': ANY, 'env': S, 'audience': ANY, 'to': ANY, 'updatedBy': S,
+    'oldFormat': ANY, 'needsSaving': ANY,
     'updatedAt': I, 'entries': A(O({'name': S, 'type': S, 'note': nl(S)})),
 })
 cmd('env get', 'One variable of an environment.', {'env': S, 'name': S, 'type': S, 'value': S}, ['env', 'name', 'value'])
 for c, d in [('set', 'A variable set.'), ('unset', 'A variable removed.'), ('edit', 'An environment edited.'),
-             ('import', 'Variables imported from a file.')]:
+             ('import', 'Variables imported from a file.'), ('audience', 'An environment saved for a new audience.'),
+             ('share', 'People given access to an environment.'), ('unshare', 'People\'s access to an environment taken away.'),
+             ('resave', 'Environments saved again for the people their audiences cover now.'),
+             ('mark-changed', 'Values saved in the old format recorded as changed where they\'re used.')]:
     cmd(f'env {c}', d, ENV_SAVE, ['status', 'env'])
 cmd('env export', 'An environment written to a file. Only with `--output`: without it, `dg env export` prints '
     'the variables as a .env file, not JSON, even with `--json`.', {

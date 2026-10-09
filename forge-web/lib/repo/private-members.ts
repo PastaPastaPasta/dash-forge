@@ -72,7 +72,7 @@ import {
   assertNoPlaintext,
   findConsent,
   grantMembershipDoc,
-  refuseMaintainerChangeWithEnvironments,
+  refuseMemberChangeWithEnvironments,
   revokeMembershipDoc,
 } from './writes'
 import { retryWhileMissing } from '../view/retry'
@@ -165,9 +165,8 @@ export function planRotation(
   }
   const selfId = decodeIdentifier(self)
   const excluded = new Set(exclude)
-  // Who holds the key (`holdsMembersKey`): every member of a private repo; a public repo's roles that hold its members key.
-  const visibility = session.gate.visibility
-  const remaining = [...new Set(session.members.filter((m) => holdsMembersKey(m.role, visibility)).map((m) => m.identity))].filter((id) => !excluded.has(id))
+  // Who holds the key (`holdsMembersKey`: every human role).
+  const remaining = [...new Set(session.members.filter((m) => holdsMembersKey(m.role)).map((m) => m.identity))].filter((id) => !excluded.has(id))
   if (!remaining.includes(self)) throw new PrivateMembersError('you cannot remove yourself this way')
 
   // Epochs are contiguous (§5.3): the new one is always n + 1. A rotation that stopped after its
@@ -974,8 +973,8 @@ async function postAnchor(
  * transitions.
  */
 export async function addPrivateMember(c: PrivateWriteContext, memberId: string, role: Role, intent: string): Promise<AddOutcome> {
-  // D24: a new maintainer's snapshots would start to count; `dg` saves the environments again first.
-  if (role === 'maintainer') await refuseMaintainerChangeWithEnvironments(c.sdk, c.repo, 'promote')
+  // Environments are letters to the people their audience covered: `dg` plans a member change and saves them again first.
+  await refuseMemberChangeWithEnvironments(c.sdk, c.repo)
   if ((await retryWhileMissing(() => findConsent(c.sdk, c.repo, memberId), CONSENT_LAG_RETRIES)) === null) throw new ConsentMissingError(memberId)
   const keys = await fetchIdentityKeys(c.sdk, memberId)
   const canReceive = usableEncryptionKey(keys ?? [], c.repo.forge.core) !== null
@@ -983,7 +982,7 @@ export async function addPrivateMember(c: PrivateWriteContext, memberId: string,
   // refused. In a public one they can still do everything public; the members key is shared once
   // they add one (the repair check wraps them), as `dg collab add` does.
   if (!canReceive && c.repo.visibility === 'private') throw new PrivateMembersError(`${short(memberId)} has no encryption key yet`, 'E306')
-  const receives = canReceive && holdsMembersKey(role, c.repo.visibility)
+  const receives = canReceive && holdsMembersKey(role)
   // Nothing is written unless the wrap can follow, and a new maintainer's old configs must not
   // take over any epoch (§5.3: under contiguity an earlier config of theirs would come first).
   await withFreshSession(c, async (s) => {
@@ -997,7 +996,7 @@ export async function addPrivateMember(c: PrivateWriteContext, memberId: string,
     const changed = [...new Set([...(await anchorChanges(s, new IdSet([...maintainersOf(s), id]))), ...above])].sort((a, b) => a - b)
     if (changed.length > 0) {
       throw new PrivateMembersError(
-        `${short(memberId)} can't be made a maintainer of this repo again, because an earlier key of theirs would take over. Add them as a writer, or make another identity of theirs the maintainer.`,
+        `${short(memberId)} can't be given Maintain access to this repo again, because an earlier key of theirs would take over. Give them Write access, or give another identity of theirs Maintain access.`,
         'E310',
         undefined,
         changed,
@@ -1096,8 +1095,8 @@ export async function removePrivateMember(
   intent: string,
   onStep?: (s: RotationStep) => void,
 ): Promise<number | null> {
-  // D24: the maintainer's snapshots would stop counting; refused before any re-anchor is paid for.
-  if (role === 'maintainer') await refuseMaintainerChangeWithEnvironments(c.sdk, c.repo, 'remove')
+  // Environments are letters to the people their audience covered (and a maintainer's snapshots stop counting, D24): refused before any re-anchor is paid for.
+  await refuseMemberChangeWithEnvironments(c.sdk, c.repo)
   // §5.3: a maintainer's anchors stop counting when their role goes. Re-anchor each of their
   // epochs that stays ({@link epochsToReanchor}) first, so no kept epoch falls back.
   // The rotation after the delete chains from the epoch that stays current: refuse now, before

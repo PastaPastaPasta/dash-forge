@@ -122,7 +122,7 @@ doc nonce  = HMAC-SHA256(K_hedge,e, 0x02 ‖ rnd(32) ‖ AD ‖ SHA-256(plaintex
 
 ### 3.7 Artifacts sealed to specific people (header version 0x02)
 
-An artifact for a list of people rather than the repository's members (a Maintainers environment, a branch grant) is keyed by a fresh per-artifact `K_obj` wrapped to each recipient, exactly as a specific-people letter is (§4.1, version 0x04). Its header carries the letter's slot block where version 0x01 carries its epoch; every other field keeps its meaning:
+An artifact for a list of people rather than the repository's members (an environment snapshot, a branch grant) is keyed by a fresh per-artifact `K_obj` wrapped to each recipient, exactly as a specific-people letter is (§4.1, version 0x04). Its header carries the letter's slot block where version 0x01 carries its epoch; every other field keeps its meaning:
 
 ```
 offset      size      field
@@ -130,7 +130,7 @@ offset      size      field
 4           1         version       0x02
 5           1         segLog2       L, as §3.2 (writers 14, readers 10..20)
 6           2         reserved      0x0000
-8           1         n             1..16 recipients, the sender first
+8           1         n             1..64 recipients, the sender first
 9           4         senderKeyId   u32, the manifest owner's ENCRYPTION key
 13          32        COMMIT_obj
 45          64·n      slots         IV ‖ AES-256-CBC-PKCS7(S, IV, 0x02 ‖ KCV_obj ‖ K_obj), as §4.1
@@ -140,7 +140,9 @@ offset      size      field
 K_pack,obj,fileId = HKDF-Expand(PRK_obj, "dash-forge/v2/obj-pack" ‖ 0x00 ‖ 0x02 ‖ fileId, 32)
 ```
 
-The sealed length is `69 + 64·n + plaintextLen + 16·nSeg`. The artifact names no owner of its own: a reader opens only bytes that hash to the `packHash` of the owner-signed `packManifest` it fetched them for (the pack reader rule), and takes the sender's keys from that manifest's `$ownerId`. It then checks the manifest's `sizeBytes`, then the header (magic, version 0x02, `L`, reserved, `1 ≤ n ≤ 16`, the length), then applies the letter reader rule of §4.1 with the `packManifest`'s `$ownerId` as the sender (`malformed` when its key `senderKeyId` is not an `ECDSA_SECP256K1` `ENCRYPTION` key, `notARecipient` when no slot opens to `COMMIT_obj`), then every segment tag (`SealedPackCorrupt`). The header is every segment's AD, so a changed slot fails every reader. An artifact has no TLV, so it carries no recipient list: a format that wants one (an environment snapshot) puts it in its own plaintext. The whole artifact is opened at once; there is no ranged read of a version-0x02 artifact.
+An artifact holds at most **64** recipients (a document letter, §4.1, at most 16: its slots share one 5,120 B field). `n` is a u8; 64 slots make a 4,165-byte header. Writers keep a sealed environment snapshot within one Platform chunk, so a large environment for many people may be refused before signing.
+
+The sealed length is `69 + 64·n + plaintextLen + 16·nSeg`. The artifact names no owner of its own: a reader opens only bytes that hash to the `packHash` of the owner-signed `packManifest` it fetched them for (the pack reader rule), and takes the sender's keys from that manifest's `$ownerId`. It then checks the manifest's `sizeBytes`, then the header (magic, version 0x02, `L`, reserved, `1 ≤ n ≤ 64`, the length), then applies the letter reader rule of §4.1 with the `packManifest`'s `$ownerId` as the sender (`malformed` when its key `senderKeyId` is not an `ECDSA_SECP256K1` `ENCRYPTION` key, `notARecipient` when no slot opens to `COMMIT_obj`), then every segment tag (`SealedPackCorrupt`). The header is every segment's AD, so a changed slot fails every reader. An artifact has no TLV, so it carries no recipient list: a format that wants one (an environment snapshot) puts it in its own plaintext. The whole artifact is opened at once; there is no ranged read of a version-0x02 artifact.
 
 ## 4. Encrypted document fields
 
@@ -900,7 +902,7 @@ A public repository's members key **is** a private repository's epoch chain (§2
 - it carries **no settings**: no `defaultBranch` or `protectedPatterns` in its TLV, and no plaintext `backend` or `archived`. Its TLV is empty at epoch 0 and holds only the chain link above it (tags 8, 9, 11, 12);
 - rotations and re-anchors carry **nothing forward**: the repository's settings live in its plaintext configs only.
 
-Vectors `mixed_anchor__*`. Every membership change keys on **"this repository has a members key"** (any sealed `config`), never on visibility alone: an add wraps the key to the new member, a removal (writer, triage, reader; a maintainer with the re-anchor of §5.3) rotates it, a role change to a role that does not hold the key rotates it. Readers (role 3) are members on a public repository too and **hold the key** (`READERS_IN_MEMBERS_KEY`, one constant); a `runner` document is not a membership and never receives a wrap.
+Vectors `mixed_anchor__*`. Every membership change keys on **"this repository has a members key"** (any sealed `config`), never on visibility alone: an add wraps the key to the new member, a removal (writer, triage, reader; a maintainer with the re-anchor of §5.3) rotates it, a role change to a role that does not hold the key would rotate it, but every human role holds it (owner, maintainers, writers, triage and readers; `members::holds_members_key`), so a role change never does. Readers (role 3) are members on a public repository too and hold the key; a `runner` document is not a membership and never receives a wrap.
 
 ### 17.2 Two predicates
 
@@ -929,7 +931,7 @@ A members-only review's plaintext `verdict` counts for **every reader** when it 
 | Kind | What | Status |
 |---|---|---|
 | 7 | **make-public bundle**: plaintext keys that make sealed content readable to everyone (§18.3 has the layout) | readers honour only the epoch keys (entry 0x06) the owner of a repository made public published; maintainer bundles come in phase 2 |
-| 8 | **environment snapshot**: one environment's canonical JSON, padded to 512-byte buckets, sealed as DFPK `0x01` under the members key at the write epoch (audience Members) or DFPK `0x02` to the current maintainers' encryption keys, the writer first (audience Maintainers). `supersedes` names earlier counted snapshots of the same environment. Readers check the bytes against the owner-signed `packHash` before decrypting, and count a snapshot only when its `$ownerId` is a current maintainer (DESIGN D24); vectors `env_snapshot__*` | used |
+| 8 | **environment snapshot**: one environment's canonical JSON, padded to 512-byte buckets, sealed as DFPK `0x02` to the people its audience covers when it is saved, the writer first, at most 64 (§3.7): a group (Maintainers, Writers and maintainers, All members; resolved from the member documents at write time, never bots), a group plus people, or specific people. Never under the members key: phase-1 snapshots in DFPK `0x01` under the members key (audience Members, the "old format") are read only. `supersedes` names earlier counted snapshots of the same environment. Readers check the bytes against the owner-signed `packHash` before decrypting, and count a snapshot only when its `$ownerId` is a current maintainer (DESIGN D24); vectors `env_snapshot__*` (`env_snapshot__v2_*` for the current artifact) | used |
 | 9 | environment registry | reserved (phase 4) |
 | 10 | branch grant (the keys of one members-only branch, sealed to one recipient) | reserved (phase 3) |
 | 64 + k | the members-only (sealed) form of plain kind k in a public repository: 64 git pack, 65 object locator, 66 flat index, 67 history index, 68 release assets, 69 history version lists | reserved (phase 3) |

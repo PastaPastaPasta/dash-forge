@@ -38,6 +38,9 @@
       "maintainer": "resumed",
       "config": "existed"
     },
+    "membersOnly": {
+      "status": "on"
+    },
     "cost": {
       "credits": 45300000,
       "dash": 0.000453,

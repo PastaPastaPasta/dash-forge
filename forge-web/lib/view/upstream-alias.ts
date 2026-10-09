@@ -51,7 +51,7 @@ export function matchUpstream(owner: string, name: string, named: { readonly rep
 }
 
 /** The GitHub sub-pages the short-URL shim maps onto a repo page; anything else opens the repo's home. */
-const MAPPED = new Set(['tree', 'blob', 'blame', 'commits', 'commit', 'issues', 'pull', 'pulls', 'releases', 'branches', 'tags', 'compare', 'labels', 'milestones', 'stargazers'])
+const MAPPED = new Set(['tree', 'blob', 'blame', 'commits', 'commit', 'issues', 'pull', 'pulls', 'releases', 'branches', 'tags', 'compare', 'labels', 'milestones', 'stargazers', 'security'])
 
 /** Whether the rest of a GitHub path (`issues/12`) names a page Forge has. */
 export function mapsToRepoPage(rest: string): boolean {

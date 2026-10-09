@@ -16,7 +16,8 @@ import type { HiddenCounts } from '@/lib/repo/private-content'
 
 vi.mock('next/link', () => ({ default: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) => <a href={href} {...rest}>{children}</a> }))
 vi.mock('@/hooks/use-sdk', () => ({ useSdk: () => ({ sdk: {}, ready: true, network: 'devnet' }) }))
-vi.mock('@/contexts/auth-context', () => ({ useAuth: () => ({ identity: 'me', unlockScope: 'full' }) }))
+const auth = vi.hoisted(() => ({ identity: 'me' as string | null, locked: false }))
+vi.mock('@/contexts/auth-context', () => ({ useAuth: () => ({ identity: auth.identity, locked: auth.locked, unlockScope: 'full' }) }))
 vi.mock('@/components/author', () => ({ Author: ({ identityId }: { identityId: string }) => <span>@{identityId}</span> }))
 vi.mock('@/components/auth/unlock-more', () => ({
   UNLOCK_MEMBERS_ONLY: 'Unlock to read members-only content',
@@ -35,6 +36,8 @@ vi.mock('@/components/confirm-dialog', () => ({
 vi.mock('@/hooks/use-private-write', () => ({ usePrivateWrite: () => ({ context: null, done: () => undefined }) }))
 vi.mock('@/lib/auth/encryption-key', () => ({ encryptionKeyState: async () => 'open' }))
 vi.mock('@/lib/repo/checks', () => ({ readRunners: async () => ['bot'] }))
+let params: Record<string, string> = {}
+vi.mock('@/hooks/use-query-param', () => ({ useParam: (name: string) => params[name] ?? '' }))
 let members: Membership[] = []
 vi.mock('@/lib/repo', async (orig) => ({
   ...(await orig<typeof import('@/lib/repo')>()),
@@ -42,8 +45,9 @@ vi.mock('@/lib/repo', async (orig) => ({
   readMembershipsCached: async () => members,
 }))
 
-import { AudienceChip, MembersOnlyRow, MembersOnlySummary, MembersOnlyTargetPage, useComposerAudience } from './audience'
+import { AudienceChip, MembersOnlyCreateNotice, MembersOnlyRow, MembersOnlySummary, MembersOnlyTargetPage, useComposerAudience } from './audience'
 import { HiddenNote } from './hidden-note'
+import { useUiStore } from '@/hooks/use-ui-store'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -58,6 +62,10 @@ beforeEach(() => {
   document.body.appendChild(host)
   root = createRoot(host)
   members = [m('alice', 'maintainer'), m('bob', 'writer'), m('bot', 'reader')]
+  auth.identity = 'me'
+  auth.locked = false
+  useUiStore.getState().closeLogin()
+  params = {}
 })
 afterEach(() => {
   act(() => root.unmount())
@@ -97,7 +105,7 @@ describe('the audience chip', () => {
     expect(picker.textContent).toContain('Who can read this?')
     expect(picker.textContent).toContain('Members (3)')
     // the reader is counted; the runner that is a member reads as a CI bot (D23)
-    expect(picker.textContent).toContain('Current and future members of this repo (3, including 1 reader and 1 CI bot).')
+    expect(picker.textContent).toContain('Current and future members of this repo (3, including 1 with Read access and 1 CI bot).')
     const members = host.querySelector<HTMLInputElement>('[data-testid="audience-option-members"] input')!
     expect(members.disabled).toBe(false)
     act(() => members.click())
@@ -163,6 +171,17 @@ describe('what a reader who cannot open it sees', () => {
     expect(q('members-only-unlock-panel')?.textContent).toBe('Unlock to read members-only content')
   })
 
+  it('a member whose whole session is locked: "3 members-only comments · Unlock to read" opens the header\'s Unlock (R8)', () => {
+    auth.identity = null
+    auth.locked = true
+    act(() => root.render(<MembersOnlySummary entries={[entry('comment', 'alice'), entry('comment', 'bob'), entry('comment', 'bob')]} lane={{ access: 'locked' } as MembersAccess} />))
+    expect(q('members-only-locked')?.textContent).toBe('3 members-only comments · Unlock to read')
+    expect(useUiStore.getState().loginOpen).toBe(false)
+    act(() => q('members-only-unlock')!.click())
+    expect(useUiStore.getState().loginOpen).toBe(true)
+    expect(useUiStore.getState().loginView).toBeNull()
+  })
+
   it('the "#N · members-only" page, never "not found"', () => {
     const target: MembersOnlyTarget = { placeholder: { ...entry('comment', 'alice').item, type: 'issue', number: 3 }, number: 3, open: true, merged: false, comments: 4 }
     act(() => root.render(<MembersOnlyTargetPage home={homeWith()} target={target} />))
@@ -193,5 +212,27 @@ describe('the hidden-items note of a public repo', () => {
   it('names other unreadable items plainly', () => {
     act(() => root.render(<HiddenNote hidden={1} what="issue" home={homeWith()} by={by({ notEncrypted: 1 })} />))
     expect(q('hidden-note')?.textContent).toBe("1 issue isn't shown: not readable in this repo.")
+  })
+})
+
+describe('after a create whose members-only step failed', () => {
+  it('says so and offers Turn on while it is still off, to its owner only; nothing otherwise', async () => {
+    params = { membersOnly: 'failed' }
+    // someone else's repo (a shared link): no notice
+    act(() => root.render(<MembersOnlyCreateNotice home={homeWith({ access: 'none' })} />))
+    expect(q('members-only-create-notice')).toBeNull()
+    const mine = (lane: MembersAccess): RepoHome => ({ repo: { ...repo, ownerId: 'me' }, lane }) as unknown as RepoHome
+    act(() => root.render(<MembersOnlyCreateNotice home={mine({ access: 'none' })} />))
+    expect(q('members-only-create-notice')?.textContent).toBe("Your repo is created. Members-only content isn't set up yet.Finish setting up")
+    act(() => q('create-notice-turn-on')!.click())
+    await flush()
+    expect(q('confirm')?.textContent).toContain('Turn on members-only content?')
+    // on by now (another tab turned it on): no notice
+    act(() => root.render(<MembersOnlyCreateNotice home={mine({ access: 'no-key' })} />))
+    expect(q('members-only-create-notice')).toBeNull()
+    // no failure reported: no notice
+    params = {}
+    act(() => root.render(<MembersOnlyCreateNotice home={mine({ access: 'none' })} />))
+    expect(q('members-only-create-notice')).toBeNull()
   })
 })

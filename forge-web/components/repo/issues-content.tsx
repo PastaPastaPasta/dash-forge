@@ -56,6 +56,7 @@ import { useSdk } from '@/hooks/use-sdk'
 import { useDpnsName } from '@/hooks/use-dpns-name'
 import { ownerLabel } from '@/lib/page-title'
 import { useAsync } from '@/hooks/use-async'
+import { useMembersOnlyComments } from '@/hooks/use-members-only-comments'
 import { useAuth } from '@/contexts/auth-context'
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
@@ -94,6 +95,7 @@ import {
   type ListGrammar,
 } from '@/components/repo/list-controls'
 import { ContactLinks, TemplatePicker, useIssueChooser } from '@/components/repo/issue-templates'
+import { SecurityHint } from '@/components/repo/security-policy'
 import { IssueFormFields } from '@/components/repo/issue-form'
 import { useRepoTotals } from '@/components/repo/use-repo-totals'
 import { useMilestones } from '@/components/repo/use-milestones'
@@ -197,6 +199,8 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
   // RC2 MOD: issues a maintainer hid are left out of the list behind a toggle (counts stay as proved).
   const [showHidden, setShowHidden] = useState(false)
   const hiddenIds = useHiddenThreads(sdk, ready, home.repo, network, data?.rows)
+  // A public thread's count includes its members-only comments, so the row says how many (DESIGN §4.1).
+  const membersOnlyComments = useMembersOnlyComments(sdk, ready, home.repo, data?.rows)
   const rows = (data?.rows ?? []).filter((r) => showHidden || !hiddenIds.has(r.id))
   const hiddenOnPage = (data?.rows ?? []).filter((r) => hiddenIds.has(r.id)).length
   // Bulk close and label (members who may close and label; nothing read until they act).
@@ -381,7 +385,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
                 </div>
                 <div className="flex shrink-0 items-center gap-3 pt-0.5">
                   <AssigneeAvatars ids={issue.state.assignees} />
-                  <CommentCount n={issue.comments} membersOnly={issue.membersOnly || issue.audience === 'members' ? issue.comments ?? 0 : 0} />
+                  <CommentCount n={issue.comments} membersOnly={issue.membersOnly || issue.audience === 'members' ? issue.comments ?? 0 : membersOnlyComments.get(issue.id) ?? 0} />
                 </div>
               </li>
             ))}
@@ -612,6 +616,7 @@ function ComposeIssueDialog({
     >
       <div className="space-y-3">
         {open ? <MirrorComposeHint home={home} /> : null}
+        <SecurityHint home={home} addr={addr} enabled={open} />
         {open && chooser !== null ? (
           <>
             <TemplatePicker templates={chooser.templates} selected={template} onPick={pick} blank={chooser.blankIssuesEnabled ? 'Blank issue' : null} label="Issue template" />

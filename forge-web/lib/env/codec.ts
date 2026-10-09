@@ -1,7 +1,8 @@
 /**
- * Sealing and opening one snapshot: Members under the repository's members key (DFPK 0x01),
- * Maintainers to specific people (DFPK 0x02), and the reader's checks of D24 in order. The Rust
- * twin is `crates/forge-core/src/env/codec.rs`.
+ * Opening one snapshot, and (for the conformance vectors) sealing one. Every snapshot is written
+ * as a letter to specific people (DFPK 0x02); the phase-1 Members form under the repository's
+ * members key (DFPK 0x01) is only read. The reader's checks of D24, in order. The Rust twin is
+ * `crates/forge-core/src/env/codec.rs`. The web never writes a snapshot.
  */
 
 import { base58Encode } from '../auth/base58'
@@ -21,7 +22,7 @@ import {
   type LetterRecipient,
   type OwnerKey,
 } from '../private'
-import { decodeSnapshot, encodeSnapshot, type Snapshot } from './format'
+import { decodeSnapshot, encodeSnapshot, membersKey, type Snapshot } from './format'
 
 const PACK_VERSION = 0x01
 const MAGIC = [0x44, 0x46, 0x50, 0x4b] // "DFPK"
@@ -92,16 +93,13 @@ export async function openSnapshot(manifest: ManifestCheck, sealed: Uint8Array, 
   if (sealed.length !== manifest.sizeBytes) throw new SnapshotOpenError('sizeMismatch')
   if (sealed.length < 9 || MAGIC.some((b, i) => sealed[i] !== b)) throw new SnapshotOpenError('sealedPackCorrupt')
   let plain: Uint8Array
-  let audience: Snapshot['audience']
   const version = sealed[4]
   try {
     if (version === PACK_VERSION) {
       plain = await openPack(sealed, manifest.sizeBytes, keys.epochKeys)
-      audience = 'members'
     } else if (version === ARTIFACT_VERSION) {
       const reader = keys.reader ?? { identityId: new Uint8Array(32), secrets: [] }
       plain = await openLetterArtifact(keys.repoId, sealed, manifest.sizeBytes, keys.ownerKeys, reader)
-      audience = 'maintainers'
     } else {
       throw new SnapshotOpenError('sealedPackCorrupt')
     }
@@ -115,19 +113,24 @@ export async function openSnapshot(manifest: ManifestCheck, sealed: Uint8Array, 
   }
   try {
     const s = decodeSnapshot(plain)
-    if (s === null || s.audience !== audience) throw new SnapshotOpenError('malformed')
-    if (audience === 'maintainers' && (s.to.length !== sealed[8] || s.to[0] !== manifest.ownerId)) {
-      throw new SnapshotOpenError('malformed')
-    }
+    if (s === null) throw new SnapshotOpenError('malformed')
+    // A DFPK 0x01 file holds only an old-format Members snapshot; a 0x02 letter anything else, its
+    // `to` one entry per slot with the manifest owner first.
+    const letter = version === ARTIFACT_VERSION
+    if (membersKey(s) === letter) throw new SnapshotOpenError('malformed')
+    if (letter && (s.to.length !== sealed[8] || s.to[0] !== manifest.ownerId)) throw new SnapshotOpenError('malformed')
     return s
   } finally {
     plain.fill(0)
   }
 }
 
-/** Seal a Members snapshot under `keys` (the members key at the write epoch) as a DFPK 0x01 file. */
-export async function sealMembersSnapshot(keys: EpochKeys, snap: Snapshot): Promise<Bytes> {
-  if (snap.audience !== 'members') throw new RangeError('not a Members snapshot')
+/**
+ * Seal an old-format Members snapshot under `keys` (the members key at an epoch) as a DFPK 0x01
+ * file. Test and conformance-vector use only: nothing writes this form any more (revision 4, D9).
+ */
+export async function sealOldMembersSnapshotForVectors(keys: EpochKeys, snap: Snapshot): Promise<Bytes> {
+  if (!membersKey(snap)) throw new RangeError('not an old-format Members snapshot')
   const pt = encodeSnapshot(snap)
   try {
     return await sealPack(keys, pt)
@@ -140,7 +143,7 @@ export async function sealMembersSnapshot(keys: EpochKeys, snap: Snapshot): Prom
 export function recipientsMatch(snap: Snapshot, ownerId: Uint8Array, recipients: readonly LetterRecipient[]): boolean {
   const first = recipients[0]
   return (
-    snap.audience === 'maintainers' &&
+    !membersKey(snap) &&
     first !== undefined &&
     base58Encode(first.identityId) === base58Encode(ownerId) &&
     recipients.length === snap.to.length &&
@@ -149,10 +152,12 @@ export function recipientsMatch(snap: Snapshot, ownerId: Uint8Array, recipients:
 }
 
 /**
- * Seal a Maintainers snapshot from the writer's ENCRYPTION secret (key `senderKeyId`; the
- * writer is `ownerId`) to `recipients` in slot order, the writer first, as a DFPK 0x02 file.
+ * Seal `snap` from the writer's ENCRYPTION secret (key `senderKeyId`; the writer is `ownerId`)
+ * to `recipients` in slot order, the writer first, as a DFPK 0x02 file. The web never writes a
+ * snapshot, so this is for tests and the conformance vectors; like Rust `seal_letter_with` it
+ * does not insist on version 2 (the vectors also seal version-1 Maintainers letters).
  */
-export async function sealMaintainersSnapshot(
+export async function sealLetterSnapshot(
   repoId: Uint8Array,
   senderSecret: Uint8Array,
   senderKeyId: number,

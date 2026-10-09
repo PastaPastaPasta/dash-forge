@@ -201,13 +201,14 @@ Open it: https://forge.dashhq.org/8hJm…/my-project
 
 (The charges are the ones measured on devnet sakura on 2026-10-01 for a first push to your own bucket; the size and paths are illustrative. On a testnet or devnet, DASH is test money and `dg` prints no dollar figures; only on mainnet does it add `≈ $…`. See [Costs](costs.md).)
 
-A repository is three small documents in Forge's shared contracts: the `repo` itself, your `maintainer` membership, and the first `config`. The quote before you confirm is an upper bound; the measured cost, about **0.0016 DASH** on sakura, is printed afterwards. See [Costs](costs.md).
+A repository is three small documents in Forge's shared contracts: the `repo` itself, your `maintainer` membership, and the first `config`. The quote before you confirm is an upper bound; the measured cost, about **0.0016 DASH** on sakura, is printed afterwards. Turning on members-only content (below) adds about 0.0011 DASH, shown on its own line before you confirm. See [Costs](costs.md).
 
 What it does, in order:
 
 - **Picks the storage before spending anything**: `--storage <profiles>` (comma-separated; `platform` is built in), else `dash.storage` from git config (this repository's, then your global one), else your only storage profile. With none, a terminal offers a picker; otherwise it stops with [E508](../errors.md#e508), prices what Platform storage would cost for this repository, and tells you to run `dg storage add` first or pass `--storage platform` to accept that price. Nothing is written.
 - **Checks everything else that could refuse**: the identity loads, this is a git repository ([E206](../errors.md#e206) otherwise), the remote name is free, HEAD is on a branch, and every storage secret resolves. Nothing is created when any of these fails.
 - **Creates the repository**, named after the directory unless you pass `--name` (`dg repo create <name>`). Its first config records where the packs live, so readers and the web app know where to look. It also protects the default branch and every tag: only maintainers can push to the default branch or create and move tags, and writers propose changes with pull requests. Pass `--no-protect` to leave both open, or change it later with `dg repo protect`.
+- **Turns on members-only content**, so members can post comments, reviews and issues only members can read, while everyone can still see that something was posted, by whom and when. It sets up your key for the repository (about 0.0011 DASH). Pass `--no-members-only` to skip it; a maintainer can turn it on later with `dg repo members enable` ([Members-only content](../security/audiences.md#turn-on-members-only-content)). If your identity file has no encryption key, the plan says it stays off and how to add one. If setting it up fails, the repository is still created, and `dg` warns and prints the fix: `dg repo members enable <owner>/<repo>`. Imports, mirrors and forks don't turn it on.
 - **Adds the remote** `origin` (`--remote <name>` for another). If `origin` already points somewhere else it stops ([E206](../errors.md#e206)) rather than changing it.
 - **Writes this repository's git config**: `dash.storage` (and `dash.replicas` with `--replicas`), plus `dash.network` / `dash.devnetName` when `git push` would otherwise pick a different network than `dg`. From now on a plain `git push` goes to the same place.
 - **Pushes the current branch** with `-u`, unless the branch already tracks another remote: an existing GitHub `origin` stays the upstream when the Forge remote is `--remote forge`. A repository with no commits yet is created and configured, and the push is skipped.
@@ -218,7 +219,7 @@ It is safe to run again: an existing repository is reused (nothing written), a m
 
 Names are 1–63 characters: lowercase letters, digits, `.`, `_` and `-`, starting with a letter or digit. A directory name is folded to that form (`My Project` → `my-project`).
 
-You can also create a repository in the web app (**New → Repository**, about 0.0016 DASH, with a cost preview). The empty repository page then shows the commands to push to it.
+You can also create a repository in the web app (**New → Repository**, about 0.0016 DASH, with a cost preview). Under **Public**, **Turn on members-only content now** is ticked, which adds about 0.0011 DASH; untick it to skip. It needs your encryption key in the browser. The empty repository page then shows the commands to push to it.
 
 ---
 

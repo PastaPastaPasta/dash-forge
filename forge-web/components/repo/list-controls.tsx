@@ -809,7 +809,7 @@ export function CommentCount({ n, membersOnly = 0 }: { n: number | null; members
       {membersOnly > 0 ? (
         <span aria-hidden className="inline-flex items-center gap-0.5" data-testid="comment-count-members-only">
           (<Lock className="h-3 w-3" />
-          {Math.min(membersOnly, n)})
+          {Math.min(membersOnly, n)} members-only)
         </span>
       ) : null}
       <span className="sr-only">{label}</span>

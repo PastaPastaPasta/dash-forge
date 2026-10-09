@@ -4,7 +4,7 @@
  * `env_snapshot__*` vectors hold the two equal.
  */
 
-import { compareStrings as cmp, type Audience, type Snapshot } from './format'
+import { compareStrings as cmp, membersKey, type Snapshot } from './format'
 
 /** One kind-8 `packManifest`, as the chain reads it. */
 export interface SnapshotRef {
@@ -199,32 +199,38 @@ export interface EnvHistory {
 
 export interface Exposure {
   readonly env: string
-  readonly audience: Audience
+  /** The names of current values they could read, sorted. */
   readonly names: readonly string[]
+  /**
+   * They held the members key and the environment has an old-format Members snapshot, which
+   * handed over every past value too.
+   */
+  readonly oldFormat: boolean
 }
 
 /**
  * The removal checklist: for `removed` (base58), who held the members key when
  * `heldMembersKey`, the current value names they could read in each environment: a name of a
- * readable head whose current value appears in a snapshot they could open (any Members snapshot
- * when they held the members key; a Maintainers snapshot that lists them).
+ * readable head whose current value appears in a snapshot they could open (a snapshot whose `to`
+ * lists them, or an old-format Members snapshot when they held the members key).
  */
 export function exposureOf(envs: readonly EnvHistory[], removed: string, heldMembersKey: boolean): Exposure[] {
   const out: Exposure[] = []
+  const could = (s: Snapshot) => (membersKey(s) && heldMembersKey) || s.to.includes(removed)
   for (const e of envs) {
     const names = new Set<string>()
     for (const head of e.heads) {
       for (const [name, v] of head.vars) {
-        const seen = e.snapshots.some(
-          (s) =>
-            s.vars.get(name)?.value === v.value &&
-            (s.audience === 'members' ? heldMembersKey : s.to.includes(removed)),
-        )
-        if (seen) names.add(name)
+        if (e.snapshots.some((s) => s.vars.get(name)?.value === v.value && could(s))) names.add(name)
       }
     }
-    const last = e.heads[e.heads.length - 1]
-    if (names.size > 0 && last !== undefined) out.push({ env: e.env, audience: last.audience, names: [...names].sort(cmp) })
+    if (names.size > 0) {
+      out.push({
+        env: e.env,
+        names: [...names].sort(cmp),
+        oldFormat: heldMembersKey && e.snapshots.some(membersKey),
+      })
+    }
   }
   return out.sort((a, b) => cmp(a.env, b.env))
 }

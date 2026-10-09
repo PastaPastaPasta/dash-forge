@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { countApprovals, RoleOracle, type Review } from '../rules/v2'
-import { importedReviewers, reviewerRows, sinceYourReview } from './review-fold'
+import { importedReviewers, memberWithoutVerdict, reviewerRows, sinceYourReview, standingLabel } from './review-fold'
 
 const H1 = '1'.repeat(40)
 const H2 = '2'.repeat(40)
@@ -131,5 +131,23 @@ describe('importedReviewers (a mirrored PR, QW-017)', () => {
   it('keeps the row of a signer who also reviewed natively', () => {
     const own = { reviewer: MIRROR, body: 'LGTM', createdAt: 5, origin: null }
     expect(importedReviewers([imported('x', 'approved', 1), own], trusted).mirrorOnly.size).toBe(0)
+  })
+})
+
+describe('memberWithoutVerdict: the role a verdict that does not count was written under (DESIGN D15)', () => {
+  it('names Read or Triage then, never an approver, a non-member or someone who joined later', () => {
+    const oracle = new RoleOracle([
+      { identity: 'rdr', role: 'reader', createdAt: 10 },
+      { identity: 'tri', role: 'triage', createdAt: 10 },
+      { identity: 'w', role: 'writer', createdAt: 10 },
+      { identity: 'late', role: 'writer', createdAt: 100 },
+    ])
+    expect(memberWithoutVerdict(oracle, 'rdr', 50)).toBe('reader')
+    expect(memberWithoutVerdict(oracle, 'tri', 50)).toBe('triage')
+    expect(memberWithoutVerdict(oracle, 'w', 50)).toBeNull()
+    expect(memberWithoutVerdict(oracle, 'late', 50)).toBeNull()
+    expect(memberWithoutVerdict(oracle, 'stranger', 50)).toBeNull()
+    expect(standingLabel({ state: 'notApprover', role: 'reader' })).toBe("Doesn't count (Read access)")
+    expect(standingLabel({ state: 'notApprover', role: null })).toBe("Doesn't count (Read or Triage access)")
   })
 })

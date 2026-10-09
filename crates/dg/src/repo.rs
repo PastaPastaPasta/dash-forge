@@ -7,7 +7,7 @@
 //! parent's packs recorded by reference and its refs copied (`forge_core::fork`).
 //! Repositories cannot be deleted.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::process::Stdio;
 
@@ -23,6 +23,7 @@ use forge_core::user_error::{codes, UserError};
 use crate::common::{resolve, Reader, RepoRef, Session};
 use crate::context::Ctx;
 use crate::fmt::{cost_json, cost_line, REPO_CREATE_ESTIMATE_CREDITS};
+use crate::git;
 use crate::publish::Report;
 
 pub use crate::publish::init;
@@ -57,7 +58,10 @@ pub async fn run(ctx: &Ctx, cmd: &RepoCommand) -> Result<()> {
         RepoCommand::Watch { repo } => watch(ctx, repo, true).await,
         RepoCommand::Unwatch { repo } => watch(ctx, repo, false).await,
         RepoCommand::Topic { repo, add, remove } => topic(ctx, repo, add, remove).await,
-        RepoCommand::View { repo } => Box::pin(view(ctx, repo)).await,
+        RepoCommand::View {
+            repo,
+            skip_security_policy,
+        } => Box::pin(view(ctx, repo, *skip_security_policy)).await,
         RepoCommand::Activity {
             repo,
             ref_name,
@@ -674,7 +678,8 @@ async fn topic(ctx: &Ctx, repo: &str, add: &[String], remove: &[String]) -> Resu
 }
 
 /// View a repo: resolved refs, default branch, pack manifests, members.
-async fn view(ctx: &Ctx, repo: &str) -> Result<()> {
+#[allow(clippy::too_many_lines)] // one linear flow: reads, listing, security policy, report
+async fn view(ctx: &Ctx, repo: &str, skip_security_policy: bool) -> Result<()> {
     let r = Reader::open(ctx, repo).await?;
     let (client, handle) = (&r.client, &r.repo);
     let svc = r.service();
@@ -723,6 +728,14 @@ async fn view(ctx: &Ctx, repo: &str) -> Result<()> {
         .filter(|m| m.kind == u64::from(forge_core::pack::KIND_GIT_PACK))
         .collect();
     let total_bytes: u64 = manifests.iter().map(|m| m.size_bytes).sum();
+    let policy = security_policy(
+        ctx,
+        handle,
+        default_branch.as_deref(),
+        &refs,
+        total_bytes,
+        skip_security_policy,
+    );
 
     ctx.emit(
         json!({
@@ -737,6 +750,8 @@ async fn view(ctx: &Ctx, repo: &str) -> Result<()> {
             "packCount": manifests.len(),
             "packBytes": total_bytes,
             "members": members,
+            "securityPolicy": policy.path,
+            "securityPolicyChecked": policy.checked,
             "remoteUrl": handle.remote_url(),
         }),
         || {
@@ -765,10 +780,139 @@ async fn view(ctx: &Ctx, repo: &str) -> Result<()> {
                 manifests.len()
             );
             println!("  members:        {members}");
+            if let Some(path) = &policy.path {
+                println!("  Security policy: {path}");
+            } else if let Some(note) = &policy.note {
+                println!("  Security policy: {note}");
+            }
             println!("  remote:         {}", handle.remote_url());
         },
     );
     Ok(())
+}
+
+/// The largest repo `repo view` downloads to look for the security policy when it is not run
+/// in a clone that has the default branch (the helper fetches a repo's whole packs, and the
+/// policy is one line of a summary).
+const SECURITY_POLICY_FETCH_MAX_BYTES: u64 = 25 * 1024 * 1024;
+
+/// What `repo view` knows about the repo's security policy (D37).
+struct PolicyLookup {
+    /// The first of `SECURITY_POLICY_PATHS` that is a file on the default branch.
+    path: Option<String>,
+    /// Whether the default branch's files were looked at. False for a private repo (its files
+    /// are not read here) and for a repo too large to download for this line.
+    checked: bool,
+    /// What the human output says in place of the path when `checked` is false and the viewer
+    /// can do something about it.
+    note: Option<String>,
+}
+
+/// The security policy on the default branch: from the clone `dg` runs in when it has the
+/// branch's tip, else from a scratch fetch of that branch for a repo under
+/// [`SECURITY_POLICY_FETCH_MAX_BYTES`]. A failed look is a note, never a failed `repo view`.
+/// Only a public repo is read: members-only content is not involved.
+fn security_policy(
+    ctx: &Ctx,
+    handle: &forge_core::scope::RepoRef,
+    default_branch: Option<&str>,
+    refs: &[(String, forge_core::rules::RefState)],
+    pack_bytes: u64,
+    skip: bool,
+) -> PolicyLookup {
+    let unchecked = |note: Option<String>| PolicyLookup {
+        path: None,
+        checked: false,
+        note,
+    };
+    if skip || handle.visibility == Visibility::Private {
+        return unchecked(None);
+    }
+    // An empty repo (no default branch, or no tip yet) has no policy to find.
+    let default_ref = default_branch.map(crate::git::full_ref);
+    let tip = default_ref.as_ref().and_then(|d| {
+        refs.iter()
+            .find(|(name, _)| name == d)
+            .and_then(|(_, state)| forge_core::rules::tip_of(state))
+    });
+    let (Some(default_ref), Some(tip)) = (default_ref, tip) else {
+        return PolicyLookup {
+            path: None,
+            checked: true,
+            note: None,
+        };
+    };
+    // Read from Platform, but handed to git as an argument: only an object id goes through.
+    if !git::is_oid(&tip) {
+        return unchecked(None);
+    }
+    let found = std::env::current_dir()
+        .ok()
+        .filter(|cwd| git::has_object(cwd, &tip))
+        .map(|cwd| security_policy_in(&cwd, &tip));
+    let found = match found {
+        Some(found) => found,
+        None if pack_bytes > SECURITY_POLICY_FETCH_MAX_BYTES => {
+            return unchecked(Some(format!(
+                "not checked (this repo is {} MiB; run this in a clone of it to see it)",
+                pack_bytes.div_ceil(1024 * 1024)
+            )));
+        }
+        None => security_policy_fetched(ctx, handle, &default_ref, &tip),
+    };
+    match found {
+        Ok(path) => PolicyLookup {
+            path: path.map(str::to_string),
+            checked: true,
+            note: None,
+        },
+        Err(e) => {
+            eprintln!("note: the security policy was not looked up: {e:#}");
+            unchecked(None)
+        }
+    }
+}
+
+/// [`security_policy_in`] over a scratch fetch of `default_ref`.
+fn security_policy_fetched(
+    ctx: &Ctx,
+    handle: &forge_core::scope::RepoRef,
+    default_ref: &str,
+    tip: &str,
+) -> Result<Option<&'static str>> {
+    // The default branch is a repo setting anyone may have written: only a plain branch is
+    // handed to git as a refspec.
+    if !git::is_plain_branch_ref(default_ref) {
+        anyhow::bail!("the default branch {default_ref:?} is not a plain branch");
+    }
+    if !ctx.json {
+        eprintln!("Fetching the default branch to look for a security policy…");
+    }
+    let scratch = crate::pr::scratch_repo()?;
+    // A public repo's fetch needs no key.
+    crate::pr::fetch_base(scratch.path(), handle, default_ref, &git::dash_env(ctx))?;
+    security_policy_in(scratch.path(), tip)
+}
+
+/// The first of `SECURITY_POLICY_PATHS` that is a regular file at `commit` in `dir`.
+fn security_policy_in(dir: &Path, commit: &str) -> Result<Option<&'static str>> {
+    use forge_core::rules::security_policy::{security_policy_path, SECURITY_POLICY_PATHS};
+    let mut args = vec!["ls-tree", "--full-tree", "-z", commit, "--"];
+    args.extend(SECURITY_POLICY_PATHS);
+    let listing = git::git_bytes(dir, &args)?;
+    let listing = String::from_utf8_lossy(&listing);
+    // `<mode> <type> <oid>\t<path>` per entry; a regular file only (git's `S_IFREG`), so a
+    // symlink, a directory or a submodule named SECURITY.md is no policy.
+    let files: BTreeSet<&str> = listing
+        .split('\0')
+        .filter_map(|entry| {
+            let (meta, path) = entry.split_once('\t')?;
+            let mut fields = meta.split(' ');
+            let (mode, kind) = (fields.next()?, fields.next()?);
+            (mode.starts_with("100") && kind == "blob").then_some(path)
+        })
+        .collect();
+    Ok(security_policy_path(|p| files.contains(p)))
 }
 
 /// How many branches and tags `repo view` lists by name before it counts the rest.
@@ -983,6 +1127,72 @@ async fn backend_set(ctx: &Ctx, repo: &str, mode: u8, label: &str) -> Result<()>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A repo with `files` committed (a path ending in `->target` is a symlink to `target`).
+    fn repo_with(files: &[(&str, &str)]) -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        let g = |args: &[&str]| git::git(p, args, &[]).unwrap();
+        g(&["init", "-q"]);
+        g(&["config", "user.email", "t@example.com"]);
+        g(&["config", "user.name", "t"]);
+        for (path, text) in files {
+            let full = p.join(path);
+            std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+            #[cfg(unix)]
+            if let Some(target) = text.strip_prefix("->") {
+                std::os::unix::fs::symlink(target, &full).unwrap();
+                continue;
+            }
+            std::fs::write(full, text).unwrap();
+        }
+        g(&["add", "."]);
+        g(&["commit", "-q", "-m", "c"]);
+        let tip = g(&["rev-parse", "HEAD"]);
+        (dir, tip)
+    }
+
+    /// D37 / GitHub's order: `.github/`, then the root, then `docs/`.
+    #[test]
+    fn the_security_policy_is_the_first_file_in_githubs_order() {
+        let (dir, tip) = repo_with(&[
+            ("docs/SECURITY.md", "d"),
+            ("SECURITY.md", "r"),
+            (".github/SECURITY.md", "g"),
+        ]);
+        assert_eq!(
+            security_policy_in(dir.path(), &tip).unwrap(),
+            Some(".github/SECURITY.md")
+        );
+        let (dir, tip) = repo_with(&[("docs/SECURITY.md", "d"), ("SECURITY.md", "r")]);
+        assert_eq!(
+            security_policy_in(dir.path(), &tip).unwrap(),
+            Some("SECURITY.md")
+        );
+        let (dir, tip) = repo_with(&[("docs/SECURITY.md", "d")]);
+        assert_eq!(
+            security_policy_in(dir.path(), &tip).unwrap(),
+            Some("docs/SECURITY.md")
+        );
+        let (dir, tip) = repo_with(&[("README.md", "hi"), ("docs/security.txt", "x")]);
+        assert_eq!(security_policy_in(dir.path(), &tip).unwrap(), None);
+    }
+
+    /// A directory or a symlink named SECURITY.md is no policy: the next place is tried.
+    #[cfg(unix)]
+    #[test]
+    fn a_directory_or_symlink_is_not_a_security_policy() {
+        let (dir, tip) = repo_with(&[
+            (".github/SECURITY.md/inner.txt", "a directory"),
+            ("SECURITY.md", "->README.md"),
+            ("README.md", "hi"),
+            ("docs/SECURITY.md", "d"),
+        ]);
+        assert_eq!(
+            security_policy_in(dir.path(), &tip).unwrap(),
+            Some("docs/SECURITY.md")
+        );
+    }
 
     /// QW2-013 / QW2-062: a fork takes the parent's default branch and description.
     #[test]

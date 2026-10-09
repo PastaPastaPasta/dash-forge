@@ -7,28 +7,50 @@ Keep configuration and secrets for each environment (`dev`, `staging`, `producti
 3. [In the web app](#in-the-web-app)
 4. [Changing an environment](#changing-an-environment)
 5. [When two people change it at once](#when-two-people-change-it-at-once)
-6. [Removing a member](#removing-a-member)
-7. [What is public](#what-is-public)
-8. [Limits](#limits)
+6. [Changing members](#changing-members)
+7. [Removing a member](#removing-a-member)
+8. [What is public](#what-is-public)
+9. [Limits](#limits)
 
 ---
 
 ## Who can read an environment
 
-Each environment has one of two audiences.
+Every environment has one audience, which you choose when you first save it. There is no default.
 
-| Audience | Who reads it | Default for |
+| Audience | `--audience` | Who reads it |
 |---|---|---|
-| **Maintainers** | The repository's maintainers when each change is saved. A maintainer added later reads the environment from the next change on. | `production`, names starting with `prod`, `staging`, and names starting with `release` |
-| **Members** | Every member who holds the repository's members key: maintainers, writers, triage members and readers, now and in the future. | every other name |
+| **Maintainers** | `maintainers` | The repository's owner and maintainers. |
+| **Writers and maintainers** | `writers` | Plus the members with Write access. |
+| **All members** | `members` | Every member: maintainers, writers, triage members and readers. Never bots. |
+| **Specific people** | `people --to @alice,@bob` | Only the people you list, members or not. You're always included. |
 
-Readers, CI runners made members, and future members can read every value stored in a Members environment, including past values. Keep production credentials in a Maintainers environment.
+Add people beside a group with `--also`, for example a CI bot: `--audience writers --also @ci-bot`. An environment can be shared with at most 64 people.
+
+Each change is encrypted for the people the audience covers **when it is saved**, each with their own encryption key. People who join a group later get the current values when the environment is saved again, never earlier ones. Forge saves the environments a role change affects for you (see [Changing members](#changing-members)). People removed keep what they could read; you get a list of values to change.
 
 Access is granted, not logged. Nobody can tell who read a value.
 
-A Members environment needs members-only content turned on for the repository (`dg repo members enable <owner>/<repo>`, by a maintainer). A private repository always has it. A Maintainers environment works in any repository, but each maintainer needs an encryption key on their identity ([Identity and keys](identity-and-keys.md)). A maintainer without one is left out, and the command says so before it saves.
+Every reader needs an encryption key on their identity ([Identity and keys](identity-and-keys.md)). Someone without one is left out, and the command says so before it saves.
 
-Choose the audience with `--audience maintainers` or `--audience members` when you first save an environment. A later change keeps it unless you pass `--audience` again.
+A first save without an audience is refused before anything is signed:
+
+```
+error: choose who can read environment production                      [E611]
+  fix:   dg env set … --env production --audience maintainers   # or writers, members, people --to @a,@b
+```
+
+Later changes keep the audience. Change it with `dg env audience --env production --set writers`, which saves the environment again for the new people. Earlier versions stay readable by whoever could read them.
+
+### Environments saved in the old format
+
+Before October 2026, Forge saved Members environments under the repository's members key. Anyone who joins later can read the values saved that way, past values included. Such an environment shows:
+
+```
+Saved in the old format: anyone who joins later can read the values saved this way. Save it again, then change those values where they're used.
+```
+
+`dg env resave --all` saves every such environment again for All members, in the new format. That doesn't take back what joiners could already read, so change those values where they're used (and in the environment), then record it with `dg env mark-changed --env <name>`. Until every old value is marked, the environment keeps a shorter note listing the names.
 
 ## Commands
 
@@ -47,6 +69,11 @@ dg env run     <owner>/<repo> --env dev -- npm test   # the values go to the com
 dg env export  <owner>/<repo> --env dev -o .env       # a file only you can read, ignored by git
 dg env export  <owner>/<repo> --env dev | ./deploy    # .env text on stdout, for piping
 dg env history <owner>/<repo> --env production        # who changed what, and when
+dg env audience <owner>/<repo> --env ci --set writers --also @ci-bot   # change who can read it
+dg env share   <owner>/<repo> --env ci @ci-bot        # give one more person access
+dg env unshare <owner>/<repo> --env ci @ci-bot        # take it away, and list what to change
+dg env resave  <owner>/<repo> --all                   # save again for everyone the audience covers now
+dg env mark-changed <owner>/<repo> --env dev          # old-format values were changed where they're used
 ```
 
 - `set` takes several names at once and saves them as one change. A value on the command line can be seen by other users of your computer, so give the name alone to be asked for the value, or pipe it in: `printf %s "$TOKEN" | dg env set API_TOKEN --env dev`.
@@ -60,9 +87,9 @@ dg env history <owner>/<repo> --env production        # who changed what, and wh
 
 The repository's **Settings → Environments** page shows the environments you can read, read-only. Change them with `dg env`.
 
-- Each environment shows its audience, who can read it, its entries and who saved the version in use, and when. Values are hidden. The eye button shows one value at a time (showing another hides it), on this page only: it isn't stored or logged, and it's hidden again when you leave the page or switch to another tab.
-- Environments you can't read are only counted: "2 environments", or "1 more environment you can't read" below the ones you can.
-- Members environments open with the repository's members key, which your tab holds once it's unlocked. Maintainers environments open with your encryption key. After a reload, unlock the tab to read them.
+- Each environment shows its audience, the people it was sent to, its entries and who saved the version in use, and when. An environment saved in the old format shows the note above. Values are hidden. The eye button shows one value at a time (showing another hides it), on this page only: it isn't stored or logged, and it's hidden again when you leave the page or switch to another tab.
+- Environments you can't read are only counted: "2 environments", or "1 more environment you can't read" below the ones you can, with "An environment in this repo hasn't been shared with you. If you should have access, ask a maintainer to save it again." Maintainers see exactly who is missing: "dana is a writer, but staging hasn't been saved since."
+- Environments open with your encryption key (old-format ones with the repository's members key), which your tab holds once it's unlocked. After a reload, unlock the tab to read them.
 - An ignored change and two versions saved at once show the same warning and versions as `dg`, with the commands to keep one. The page also says how many changes by people who aren't maintainers now were ignored.
 
 ## Changing an environment
@@ -73,7 +100,7 @@ Only maintainers change environments. Anyone else, writers included, is refused 
 error: change production: only maintainers can change environments      [E601]
 ```
 
-Each change saves the whole environment again, encrypted for its audience, and records which change it replaces. Before it saves, `dg` shows who will be able to read it and the cost, about 0.0025 DASH (one chunk and one record on Dash Platform, measured on devnet sakura), and asks you to confirm.
+Each change saves the whole environment again, encrypted for the people its audience covers then, and records which change it replaces. Before it saves, `dg` shows who will be able to read it and the cost, about 0.0025 DASH (one chunk and one record on Dash Platform, measured on devnet sakura), and asks you to confirm.
 
 Forge counts a change only when its author is a current maintainer. A change by anyone else is ignored by every reader, `dg env run` included, even though Platform lets a writer store it. That includes a former maintainer's changes, from the moment they stop being one. When such a change claims to replace an environment's latest version, `dg env ls`, `get`, `run` and `export` keep using the latest version by a maintainer and say so in one line, naming the ignored change:
 
@@ -95,22 +122,34 @@ error: 2 people changed production at the same time, so its values can't be used
 
 `dg env history --env production` shows what each version changed. Keep one with `--keep <id>` on `edit`, `set`, `unset` or `import`: the new change starts from that version and replaces every latest version. Versions that share no earlier version (two first versions saved at once, for example) are reported as separate histories, and are kept the same way.
 
+## Changing members
+
+A role change can change who an environment's group covers: adding a reader widens All members, adding a writer widens Writers and maintainers and All members, making someone a maintainer widens Maintainers, and removing someone narrows every group they were in. `dg collab add` and `dg collab remove` work out which environments change, show them with the people added or removed and the cost (about 0.002 DASH each), and save them again as you, in the same command, after the role change lands:
+
+```
+  staging: Writers and maintainers, +<dana>
+  ci: Writers and maintainers + 1 more, +<dana>
+Add <dana> as a writer of alice/shop? (one membership document, …) Then 2 environments are saved again for the people their audiences cover (…).
+```
+
+An environment you can't read is listed as "not updated: ask <who saved it>". A maintainer who can read it saves it with `dg env resave --env <name>`. `dg env ls` shows maintainers every environment that needs saving again, and why: someone joined its group, left it, or changed their encryption key since. `dg env resave --all` saves them all.
+
 ## Removing a member
 
-`dg collab remove` lists the environments the member could read and the names of the current values they could see, so you know what to rotate at its source (the database password at the database, the API key at its provider):
+`dg collab remove` saves the environments the member could read again without them (their group's, and any that names them in `--also` or Specific people), and lists the current values they could see, so you know what to change where it's used (the database password at the database, the API key at its provider):
 
 ```
-Removed <identity> (writer) from alice/shop.
-<identity> could read 2 dev values (and every past value of it). Rotate them at the source: API_TOKEN, API_URL
+Removed <identity>'s Write access to alice/shop.
+<identity> could read 2 dev values. Change them where they're used: API_TOKEN, API_URL
 ```
 
-Removing someone stops them reading changes saved afterwards. It cannot take back what they could already read.
+Removing someone stops them reading changes saved afterwards. It cannot take back what they could already read. Environments you can't open may name them too: the command says so and who to ask. `dg env unshare` does the same for one environment and one person.
 
 When you remove a maintainer, their changes stop counting. Before it asks you to confirm, `dg collab remove` works out what each environment would look like without them and lists every environment that would change: one whose latest version they saved would go back to the version before it, and one with versions saved at the same time would lose theirs. For each it shows what their change did (entry names only, values hidden) and the cost. After the removal it saves those environments again as you, one change each, so they stay as they were. `dg env history` shows such a change as `saved again for <identity>`.
 
-The saves have their own confirmation, so you can remove the maintainer and decline them. `--no-resave` skips them without asking. Either way the environments then hold the version before the removed maintainer's change, or a conflict, and the command names them.
+The saves have their own confirmation, so you can remove the member and decline them. `--no-resave` skips them without asking. The removed member can then still read those environments' current values until someone saves them again (`dg env resave --all`).
 
-A save is skipped when someone changed that environment in the meantime. If you can't read an environment that would change, the command says so: ask a maintainer who can to save it again. A maintainer removed some other way (an older Forge build, for example) leaves their environments at the version before their last change, and readers see the warning above.
+A save is skipped when someone changed that environment in the meantime. A maintainer removed some other way (an older Forge build, for example) leaves their environments at the version before their last change, and readers see the warning above.
 
 ### Making someone a maintainer
 
@@ -118,19 +157,17 @@ Changes saved by someone who wasn't a maintainer are ignored, but they stay on P
 
 ### On the web
 
-Removing, demoting or adding a maintainer of a repository that has environments, public or private, needs the steps above, which the web app doesn't take yet. It refuses before anything is signed or paid for, with "This repo has environments. Remove or demote maintainers with dg for now." (or "Make maintainers with dg for now."). Use `dg collab remove --role maintainer` (then `dg collab add` to give a demoted maintainer another role) or `dg collab add --role maintainer`.
-
-Removing a member who isn't a maintainer works on the web. Its confirmation lists the environments and value names they could read, as `dg collab remove` does, and notes how many environments you can't read yourself: the removed member may have been able to read values there. When they stay a maintainer (you remove only their other role), it says so instead: they can still read the environments, so there is nothing to rotate.
+Any member change in a repository that has environments needs the steps above, which the web app doesn't take yet. It refuses before anything is signed or paid for, with "This repo has environments. Add, remove or change members with dg for now." Use `dg collab add` and `dg collab remove`.
 
 ## What is public
 
-Anyone can see that a repository has environments, how many, and for each change its author, its time and its size (rounded up to 512 bytes). For a Maintainers environment they can also see how many people it was sent to.
+Anyone can see that a repository has environments, how many, and for each change its author, its time, its size (rounded up to 512 bytes) and how many people it was sent to.
 
-Nobody outside the audience can see an environment's name, its entries' names, types or notes, or any value.
+Nobody outside the audience can see an environment's name, who it is for, its entries' names, types or notes, or any value.
 
 ## Limits
 
-- An environment holds up to about 12 KB of names, values and notes.
-- A Maintainers environment goes to at most 16 maintainers. Use Members for a larger team.
+- An environment holds up to about 12 KB of names, values and notes. Shared with more than about 50 people, somewhat less: a save that doesn't fit is refused before anything is signed.
+- An environment can be shared with at most 64 people. "All members is 80 people" is refused: choose a smaller group or specific people.
 - Names: an environment is 1 to 64 letters, digits, `.`, `_` or `-`. An entry is letters, digits and `_`, not starting with a digit.
 - Using environments in CI workflows is **Coming soon**. Until then, `dg env run` on a machine whose identity can read the environment covers a deploy script.

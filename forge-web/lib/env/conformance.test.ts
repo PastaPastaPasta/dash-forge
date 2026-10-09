@@ -11,10 +11,8 @@ import { EpochKeys, bytesToHex, hexToBytes, type EpochKeyring, type OwnerKey } f
 import { sealLetterArtifactWith, sealPackWithFileId } from '../private/testing'
 import { exposureOf, resolveSnapshots, supersedesWindow, type SnapshotRef } from './chain'
 import { openSnapshot, recipientsMatch, SnapshotOpenError } from './codec'
-import { decodeSnapshot, defaultAudience, encodeSnapshot, type EnvVar, type Snapshot } from './format'
-
-type Json = null | boolean | number | string | Json[] | { [k: string]: Json }
-type Obj = { [k: string]: Json }
+import { decodeSnapshot, encodeSnapshot } from './format'
+import { snapshotFromVector, snapshotJson, type Json, type Obj } from './testing'
 
 interface Vector {
   readonly name: string
@@ -34,30 +32,7 @@ const arr = (j: Json | undefined): Json[] => j as Json[]
 const s = (j: Json | undefined): string => j as string
 const n = (j: Json | undefined): number => j as number
 
-function snapshotOf(v: Obj): Snapshot {
-  const vars = new Map<string, EnvVar>()
-  for (const [k, e] of Object.entries(o(v.vars))) {
-    const x = o(e)
-    vars.set(k, { type: s(x.type) as EnvVar['type'], value: s(x.value), note: s(x.note ?? '') })
-  }
-  return {
-    env: s(v.env),
-    audience: s(v.audience) as Snapshot['audience'],
-    generatedAt: n(v.generatedAt),
-    ...(v.savedFor === undefined ? {} : { savedFor: s(v.savedFor) }),
-    to: v.to === undefined ? [] : arr(v.to).map(s),
-    vars,
-  }
-}
-
-function snapshotJson(snap: Snapshot): Obj {
-  const vars: Obj = {}
-  for (const [k, v] of snap.vars) Object.defineProperty(vars, k, { value: { type: v.type, value: v.value, note: v.note }, enumerable: true })
-  const out: Obj = { env: snap.env, audience: snap.audience, generatedAt: snap.generatedAt, vars }
-  if (snap.audience === 'maintainers') out.to = [...snap.to]
-  if (snap.savedFor !== undefined) out.savedFor = snap.savedFor
-  return out
-}
+const snapshotOf = (v: Obj) => snapshotFromVector(v)
 
 const ownerKeys = (j: Json | undefined): OwnerKey[] =>
   arr(j).map((k) => ({ id: n(o(k).id), purpose: n(o(k).purpose), keyType: n(o(k).keyType), data: hexToBytes(s(o(k).data)) }))
@@ -153,11 +128,7 @@ function runResolve(inp: Obj): Json {
 }
 
 function runExposure(inp: Obj): Json {
-  const snap = (v: Json): Snapshot => {
-    const x = o(v)
-    const vars = new Map<string, EnvVar>(Object.entries(o(x.vars)).map(([k, val]) => [k, { value: s(val), type: 'secret', note: '' }]))
-    return { env: 'x', audience: s(x.audience) as Snapshot['audience'], generatedAt: 0, to: x.to === undefined ? [] : arr(x.to).map(s), vars }
-  }
+  const snap = (v: Json) => snapshotFromVector(o(v), true)
   const envs = arr(inp.environments).map((e) => ({
     env: s(o(e).env),
     heads: arr(o(e).heads).map(snap),
@@ -204,8 +175,6 @@ async function run(v: Vector): Promise<Json> {
           ),
         ),
       }
-    case 'defaultAudience':
-      return { results: arr(inp.names).map((x) => defaultAudience(s(x))) }
     default:
       throw new Error(`unknown env_snapshot op ${String(inp.op)}`)
   }

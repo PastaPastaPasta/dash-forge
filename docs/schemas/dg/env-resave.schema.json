@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/env-resave.schema.json",
+  "title": "dg env resave --json",
+  "description": "Environments saved again for the people their audiences cover now.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "saved",
+        "unchanged"
+      ]
+    },
+    "env": {
+      "type": "string"
+    },
+    "audience": {},
+    "to": {},
+    "skipped": {},
+    "changes": {},
+    "id": {
+      "type": "string"
+    },
+    "packHash": {
+      "type": "string"
+    },
+    "sizeBytes": {
+      "type": "integer"
+    },
+    "quote": {
+      "$ref": "common.schema.json#/$defs/cost"
+    },
+    "spent": {
+      "$ref": "common.schema.json#/$defs/cost"
+    },
+    "markedChanged": {},
+    "saved": {},
+    "notSaved": {}
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "env"
+  ],
+  "additionalProperties": true
+}

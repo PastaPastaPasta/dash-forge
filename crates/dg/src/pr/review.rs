@@ -678,6 +678,39 @@ async fn submit(
             d
         }
     };
+    // Only Write and Maintain approve or request changes (DESIGN §3.5, D15): a Read or Triage
+    // member's verdict is refused before anything is signed, with the comment it can be instead.
+    // A review already signed (a resumed submit's, landed or not) is not asked again: its saved
+    // transition is broadcast as it was, or adopted when it landed, and consensus judges it.
+    if draft.review_id.is_none()
+        && draft.review_intent.is_none()
+        && forge_core::collab::v2::precheck_enabled()
+    {
+        let role = collab.signer_role(&s.repo).await?;
+        let verdict = Verdict::from_code(draft.verdict.unwrap_or(3));
+        if let Some(mut e) = forge_core::members::verdict_refusal(role, verdict, &s.repo) {
+            // An interrupted submit keeps its verdict: it is dropped first, then sent again.
+            if resumed {
+                e = e.fix(format!(
+                    "drop the interrupted submit first (nothing of it was written): \
+                     `dg pr review {} {} --discard`",
+                    a.repo, a.number
+                ));
+            }
+            return Err(e
+                .fix(format!(
+                    "post it as a comment: the same command with `--comment` in its place \
+                     (`dg pr review {} {} --comment …`), or `dg pr comment {} {} --body …`",
+                    a.repo, a.number, a.repo, a.number
+                ))
+                .fix(format!(
+                    "or ask the owner for Write access: `dg collab add {} {} --role write`",
+                    a.repo,
+                    s.identity.id()
+                ))
+                .into());
+        }
+    }
     // A locked PR takes reviews from members only (`lockGate`): refused before the prompt.
     collab
         .require_unlocked_or_member(&s.repo, &view.patch.document_id)
@@ -835,7 +868,10 @@ async fn submit(
         }
         if !counts && v != Verdict::Comment {
             match role {
-                Some(r) => println!("  note: your role here is {r}: recorded, not counted"),
+                Some(r) => println!(
+                    "  note: you have {} access here: recorded, not counted",
+                    r.label()
+                ),
                 None => println!(
                     "  note: you are not a member of {}, so this review does not count toward approvals",
                     s.repo.display()

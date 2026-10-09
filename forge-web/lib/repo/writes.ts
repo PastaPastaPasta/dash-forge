@@ -28,7 +28,7 @@ import type { ForgeIds } from '../deployments'
 import { base58Encode, decodeIdentifier } from '../auth/base58'
 import { idbDelete, idbEntries, idbGet, idbPut } from '../idb'
 import { isGitRefName, type EventKind } from '../rules'
-import { denseNumber, isAuthorKind, namesDenseRule, normalizeRepoName as normalizeV2RepoName, type Audience, type ClosedAs, type Role, type StateAction, type Visibility } from '../rules/v2'
+import { RoleOracle, denseNumber, isAuthorKind, namesDenseRule, normalizeRepoName as normalizeV2RepoName, type Audience, type ClosedAs, type Role, type StateAction, type Visibility } from '../rules/v2'
 import { fetchIdentityKeys, heldKeysText, usableEncryptionKey, type EncryptionOps } from '../auth/encryption-key'
 import {
   ConsensusRefusal,
@@ -65,7 +65,7 @@ import { longBodyField } from './long-body'
 import { createSealedRelease, sealedReleaseEnv, type SealedReleaseOptions, type SealedReleaseWritten } from './sealed-release'
 import { noteTargetCreated } from './social'
 import { refreshRoleOnRefusal, roleClaim } from './role-claim'
-import { WRITER_ROLE_CODE, grantableRoles, holdsMembersKey } from '../rules/roles'
+import { VerdictRefusedError, WRITER_ROLE_CODE, grantableRoles, holdsMembersKey, verdictRefusal } from '../rules/roles'
 import { repoSource } from './source'
 import { MAX_PATTERN_CHARS } from './settings'
 import { starShape } from './star-shape'
@@ -74,6 +74,7 @@ import { LAG_RETRY_MS, retryAfterLag } from './lag-retry'
 import { sleep } from '../sdk/facade'
 import { retryWhileMissing } from '../view/retry'
 import { noteParticipation } from '../view/participation'
+import { errorMessage } from '../utils'
 
 /** The release rule that reads the tag's live total (RC1 O-04). */
 const ONE_LIVE_RULE: ReadonlySet<string> = new Set(['oneLive'])
@@ -130,6 +131,21 @@ export interface PostContext {
   readonly isMember: boolean
   /** The target's conversation is locked (its transition sum is 16 or more). */
   readonly locked?: boolean
+  /**
+   * The signer's role, as {@link settledPost} reads it for an approve or request changes (which
+   * {@link refuseVerdictForRole} refuses from Read or Triage before signing).
+   */
+  readonly role?: Role | null
+}
+
+/**
+ * Refuse, before signing, an approve or request changes from a Read or Triage member (DESIGN
+ * §3.5, D15): only Write and Maintain give verdicts. Parity: `dg pr review`.
+ * @throws VerdictRefusedError
+ */
+export function refuseVerdictForRole(post: PostContext, verdict: VerdictInput): void {
+  const refused = verdictRefusal(post.role, verdict)
+  if (refused !== null) throw new VerdictRefusedError(refused)
 }
 
 /** Why a non-member cannot comment on or review a locked thread. */
@@ -164,12 +180,16 @@ export function commentProof(signer: string, post: PostContext | undefined): Rec
  * `post` with its membership settled for a review of `verdict`: a non-member's approve or request
  * changes is recorded as 4/5, which never counts, and a non-member's post to a locked thread is
  * refused, so a "not a member" read (still loading, failed, or cached from before they were
- * added) is read again, uncached, before it decides either.
+ * added) is read again, uncached, before it decides either. An approve or request changes always
+ * reads the signer's role now (`role`), which {@link refuseVerdictForRole} judges: a page's role
+ * may be unread or stale.
  */
 export async function settledPost(sdk: EvoSDK, repo: RepoRef, signer: string, post: PostContext, verdict: VerdictInput): Promise<PostContext> {
-  if (post.isMember || (verdict === 'comment' && post.locked !== true)) return post
+  const verdictGiven = verdict !== 'comment'
+  if (!verdictGiven && (post.isMember || post.locked !== true)) return post
   const members = await readMemberships(sdk, repo)
-  return members.some((m) => m.identity === signer) ? { ...post, isMember: true } : post
+  const role = new RoleOracle(members).currentRole(signer)
+  return { ...post, isMember: post.isMember || role !== null, ...(verdictGiven ? { role } : {}) }
 }
 
 /** An issue or PR a write refers to: its document id and number. */
@@ -831,6 +851,7 @@ export async function createReview(
   await refuseIfBanned(sdk, repo, auth.network, auth.identityId)
   if (!isRc1OidHex(input.commitOid)) throw new Error('a review names a 20- or 32-byte commit')
   const post = await settledPost(sdk, repo, auth.identityId, input.post, input.verdict)
+  refuseVerdictForRole(post, input.verdict)
   if (lockedOut(post)) throw new Error(LOCKED_REASON)
   // Who its text is for (its verdict is always public, D15): the PR's, unless asked narrower.
   const audience = await childAudience(sdk, repo, { targetId: input.patchId, ...(input.audience ? { requested: input.audience } : {}) })
@@ -1224,28 +1245,28 @@ function keyedResult(keyShared = true): MembershipResult {
  * a maintainer runs the repair check.
  */
 /**
- * A repo with environment snapshots (kind 8): a maintainer's removal, demotion or promotion
- * changes whose snapshots count, which `dg` handles (it saves the affected environments again
- * first) and the web does not yet.
+ * A repo with environment snapshots (kind 8): every environment is a letter to the people its
+ * audience covered when it was saved, so any member change (adding, removing, promoting or
+ * demoting anyone) leaves some environment saved for the wrong people, and a maintainer change
+ * also changes whose snapshots count (D24). `dg` plans those changes and saves the affected
+ * environments again; the web does not yet, so it refuses every member change before anything is
+ * signed.
  */
 export class EnvironmentsMembershipError extends Error {
-  constructor(change: 'remove' | 'promote') {
-    super(
-      change === 'remove'
-        ? 'This repo has environments. Remove or demote maintainers with dg for now.'
-        : 'This repo has environments. Make maintainers with dg for now.',
-    )
+  constructor() {
+    super('This repo has environments. Add, remove or change members with dg for now.')
     this.name = 'EnvironmentsMembershipError'
   }
 }
 
 /**
- * Refuse a maintainer change in a repo that has environments ({@link EnvironmentsMembershipError}),
- * before anything is written. Public repos check it here; the key-aware flows in
- * `private-members.ts` (private repos, and public ones with a members key) check it again first.
+ * Refuse a member change (any grant, revoke or role change) in a repo that has environments
+ * ({@link EnvironmentsMembershipError}), before anything is written. Public repos check it here;
+ * the key-aware flows in `private-members.ts` (private repos, and public ones with a members key)
+ * check it again first. Accepting an invitation is not a member change and is never refused.
  */
-export async function refuseMaintainerChangeWithEnvironments(sdk: EvoSDK, repo: RepoRef, change: 'remove' | 'promote'): Promise<void> {
-  if ((await readNewestManifestOfKind(sdk, repo, PACK_KIND.ENV_SNAPSHOT)) !== null) throw new EnvironmentsMembershipError(change)
+export async function refuseMemberChangeWithEnvironments(sdk: EvoSDK, repo: RepoRef): Promise<void> {
+  if ((await readNewestManifestOfKind(sdk, repo, PACK_KIND.ENV_SNAPSHOT)) !== null) throw new EnvironmentsMembershipError()
 }
 
 export interface MembershipResult extends WriteResult {
@@ -1341,7 +1362,7 @@ export async function grantMember(
   ops?: EncryptionOps | null,
 ): Promise<MembershipResult> {
   if (repo.visibility === 'private') throw new PrivateMembershipError('add')
-  if (role === 'maintainer') await refuseMaintainerChangeWithEnvironments(sdk, repo, 'promote')
+  await refuseMemberChangeWithEnvironments(sdk, repo)
   const keyed = await membersKeyContext(sdk, auth, repo, ops)
   if (keyed === null) return grantMembershipDoc(sdk, auth, repo, memberId, role, intent)
   const added = await keyed.flows.addPrivateMember(keyed.c, memberId, role, intent ?? `members:add:${memberId}:${role}`)
@@ -1405,7 +1426,7 @@ export async function revokeMember(
   ops?: EncryptionOps | null,
 ): Promise<DeleteResult> {
   if (repo.visibility === 'private') throw new PrivateMembershipError('remove')
-  if (role === 'maintainer') await refuseMaintainerChangeWithEnvironments(sdk, repo, 'remove')
+  await refuseMemberChangeWithEnvironments(sdk, repo)
   const keyed = await membersKeyContext(sdk, auth, repo, ops)
   if (keyed === null) return revokeMembershipDoc(sdk, auth, repo, memberId, role)
   await keyed.flows.removePrivateMember(keyed.c, memberId, role, intent ?? `members:remove:${memberId}:${role}`)
@@ -1438,8 +1459,7 @@ export async function changeMemberRole(
   ops?: EncryptionOps | null,
 ): Promise<MembershipResult> {
   if (repo.visibility === 'private') throw new PrivateMembershipError('remove')
-  if (from === 'maintainer') await refuseMaintainerChangeWithEnvironments(sdk, repo, 'remove')
-  else if (to === 'maintainer') await refuseMaintainerChangeWithEnvironments(sdk, repo, 'promote')
+  await refuseMemberChangeWithEnvironments(sdk, repo)
   const keyed = await membersKeyContext(sdk, auth, repo, ops)
   if (auth.identityId !== repo.ownerId) throw new Error('only the repo owner can change roles')
   if (memberId === repo.ownerId) throw new Error("the owner's own role does not change")
@@ -1494,7 +1514,7 @@ export async function changeMemberRole(
     const reason = e instanceof Error ? e.message : String(e)
     // A public repo with members-only content: they are no member now, yet hold its current key.
     // It is rotated away from them at once; never left with them silently.
-    if (keyed !== null && holdsMembersKey(from, repo.visibility)) {
+    if (keyed !== null && holdsMembersKey(from)) {
       const rotated = await keyed.flows
         .rotateRepoKey(keyed.c, [memberId], `${intent ?? `members:role:${memberId}`}:rotate-after-failed-add`)
         .then(() => 'the members-only key was changed so they cannot read what is posted next')
@@ -1505,11 +1525,12 @@ export async function changeMemberRole(
   }
   if (keyed !== null) {
     const base = intent ?? `members:role:${memberId}`
-    const held = holdsMembersKey(from, repo.visibility)
-    const holdsNow = holdsMembersKey(to, repo.visibility)
+    const held = holdsMembersKey(from)
+    const holdsNow = holdsMembersKey(to)
     // Between roles that hold the members key, they keep it; to one that does not, it rotates away
     // from them; to one that does from one that did not, it is shared with them (the repair
-    // check's wrap). Neither happens while readers are in the key (`READERS_IN_MEMBERS_KEY`).
+    // check's wrap). Neither happens while every role holds the key (DESIGN §3.5); a Bot role
+    // (phase 4) will.
     if (held && !holdsNow) await keyed.flows.rotateRepoKey(keyed.c, [memberId], `${base}:rotate`)
     if (!held && holdsNow) await keyed.flows.runRepair(keyed.c, `${base}:share`)
   }
@@ -1562,6 +1583,11 @@ export interface CreateRepoInput {
    * ({@link defaultProtectedPatterns}): the New repository form's default. A fork leaves it off.
    */
   readonly protect?: boolean
+  /**
+   * Turn members-only content on right after the config (a public repo; DESIGN §11 Q3): the New
+   * repository form's default. Forks and mirrors leave it off, as they copy a public repo.
+   */
+  readonly membersOnly?: boolean
 }
 
 /** The protected patterns a create's first config carries: none, or the default set. */
@@ -1569,13 +1595,20 @@ export function createPatterns(input: CreateRepoInput): string[] {
   return input.protect === true ? defaultProtectedPatterns(input.defaultBranch ?? 'main') : []
 }
 
-/** The steps of a repo creation, in order. */
-export type CreateRepoStep = 'repo' | 'maintainer' | 'config'
+/** The steps of a repo creation, in order (`members` only when the input asks for it). */
+export type CreateRepoStep = 'repo' | 'maintainer' | 'config' | 'members'
+
+/** How many steps a creation of `input` has. */
+export function createStepCount(input: CreateRepoInput): number {
+  return input.visibility !== 'private' && input.membersOnly === true ? 4 : 3
+}
 
 /**
  * What a private create (`private-repos.md` §5.3) needs to write its epoch 0: the vault's
  * encryption operations, and the writer of the key and anchor (`private-members.ts`
- * `createEpochZero`, passed in so this module stays below the key-rotation code).
+ * `createEpochZero`, passed in so this module stays below the key-rotation code). A public
+ * create that turns members-only content on needs the same operations and `membersOnly`
+ * (`private-members.ts` `enableMembersContent`).
  */
 export interface PrivateCreate {
   readonly ops: EncryptionOps
@@ -1585,9 +1618,13 @@ export interface PrivateCreate {
     intent: string,
     protectedPatterns: readonly string[],
   ) => Promise<boolean>
+  readonly membersOnly?: (c: { sdk: EvoSDK; auth: WriteAuth; repo: RepoRef; network: Network; ops: EncryptionOps }, intent: string) => Promise<boolean>
 }
 
-/** A repo creation's journal entry (IndexedDB), kept until all three documents exist. */
+/**
+ * A repo creation's journal entry (IndexedDB), kept until all three documents exist and, when
+ * asked for, members-only content was turned on (or turning it on failed).
+ */
 export interface RepoCreationJournal {
   readonly network: Network
   readonly ownerId: string
@@ -1601,6 +1638,12 @@ export interface RepoCreationJournal {
 export interface CreateRepoResult {
   readonly repoId: string
   readonly name: string
+  /**
+   * Members-only content, when the input asked for it: `on`, or why it is not (the repo stands
+   * without it, and Turn on members-only content turns it on). Absent when not asked for, or
+   * when this run adopted a repo that already existed.
+   */
+  readonly membersOnly?: { readonly on: true } | { readonly on: false; readonly error: string }
 }
 
 /** The byte limits the `repo` schema sets (maxBytes counts UTF-8 bytes, not characters). */
@@ -1759,6 +1802,10 @@ export async function createRepo(
     return firstId(documents)
   }
   let repoId = await existingRepo()
+  // Members-only content is turned on only for a repo this creation makes or finishes (or an
+  // interrupted one made): typing the name of a repo that already stands writes nothing new. As
+  // `dg`: any document this run writes, or a journal it resumes, counts.
+  let wrote = previous !== undefined || repoId === null
   await step('repo', async () => {
     if (repoId !== null) return
     const data: Record<string, unknown> = { name, visibility }
@@ -1784,6 +1831,7 @@ export async function createRepo(
   // 2. the owner's maintainer document (unique per repo + member)
   await step('maintainer', async () => {
     if ((await findMembership(sdk, repo, 'maintainer', ownerId)) !== null) return
+    wrote = true
     try {
       await createDocumentIdempotent(sdk, auth, {
         contractId: forge.core,
@@ -1807,6 +1855,7 @@ export async function createRepo(
     }
     const { documents } = await queryDocumentsWithProof(sdk, repoSource(repo).repoQuery(DOC.config, { limit: 1 }))
     if (documents.length > 0) return
+    wrote = true
     await createDocumentIdempotent(sdk, auth, {
       contractId: forge.core,
       documentType: DOC.config,
@@ -1821,7 +1870,27 @@ export async function createRepo(
     })
   })
 
+  // 4. members-only content (DESIGN §11 Q3): the owner's epoch-0 key and the settings-free
+  // anchor. Its failure is not the create's: the repo stands without it and the page says how to
+  // turn it on. A closed tab keeps the journal, so "Finish creating" runs it again, reusing a
+  // self-wrap that landed.
+  let membersOnly: CreateRepoResult['membersOnly']
+  if (wrote && createStepCount(input) === 4) {
+    try {
+      await step('members', async () => {
+        const enable = privateCreate?.membersOnly
+        if (privateCreate === undefined || enable === undefined) throw new Error('your encryption key is not available in this browser')
+        // A node a block behind would read the owner as no maintainer yet.
+        await retryWhileMissing(() => findMembership(sdk, repo, 'maintainer', ownerId), 5)
+        await enable({ sdk, auth, repo, network: auth.network, ops: privateCreate.ops }, key)
+      })
+      membersOnly = { on: true }
+    } catch (e) {
+      membersOnly = { on: false, error: errorMessage(e, 'it could not be turned on') }
+    }
+  }
+
   await idbDelete('journal', key)
   invalidateMembers(repo, auth.network)
-  return { repoId, name }
+  return { repoId, name, ...(membersOnly !== undefined ? { membersOnly } : {}) }
 }

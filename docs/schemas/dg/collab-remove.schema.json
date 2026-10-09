@@ -37,7 +37,8 @@
     "droppedEpochs": {},
     "losingMembers": {},
     "environments": {},
-    "resavedEnvironments": {}
+    "resavedEnvironments": {},
+    "environmentPlan": {}
   },
   "required": [
     "schemaVersion",

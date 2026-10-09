@@ -8,6 +8,7 @@
     "cases": [
       {
         "snapshot": {
+          "v": 1,
           "env": "dev",
           "audience": "members",
           "generatedAt": 1767225600000,
@@ -16,6 +17,7 @@
       },
       {
         "snapshot": {
+          "v": 1,
           "env": "dev",
           "audience": "members",
           "generatedAt": 1767225600000,
@@ -30,6 +32,7 @@
       },
       {
         "snapshot": {
+          "v": 1,
           "env": "dev",
           "audience": "members",
           "generatedAt": 1767225600000,
@@ -44,6 +47,7 @@
       },
       {
         "snapshot": {
+          "v": 1,
           "env": "production",
           "audience": "maintainers",
           "generatedAt": 1767225600000,
@@ -72,6 +76,7 @@
       },
       {
         "snapshot": {
+          "v": 1,
           "env": "production",
           "audience": "members",
           "generatedAt": 1767225600000,
@@ -87,6 +92,7 @@
       },
       {
         "snapshot": {
+          "v": 1,
           "env": "dev",
           "audience": "members",
           "generatedAt": 1767225600000,
