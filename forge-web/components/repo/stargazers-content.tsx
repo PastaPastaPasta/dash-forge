@@ -69,7 +69,7 @@ export function StargazersContent({ home, addr }: { home: RepoHome; addr: RepoAd
             </span>
           ) : null}
         </h1>
-        <CopyLinkButton repo={addr} target={{ kind: 'stargazers' }} className="ml-auto" />
+        <CopyLinkButton repo={addr} target={{ kind: 'stargazers' }} visibility={home.repo.visibility} className="ml-auto" />
       </div>
       {body}
     </div>

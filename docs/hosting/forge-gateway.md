@@ -141,7 +141,7 @@ The fetch runs with `HOME` set to `<data>/home` and without `DASH_FORGE_KEY`: no
    - **Use a hostname one level under the zone.** Cloudflare's free certificate covers `dashhq.org` and `*.dashhq.org` only, so a deeper name such as `git.forge.dashhq.org` fails the TLS handshake (alert 40) unless the zone buys Advanced Certificate Manager. That is why dashhq's gateway is `git-forge.dashhq.org`.
    - When `cloudflared` runs as a container next to the gateway (dashhq does this: a `cloudflared` service in a `docker-compose.override.yml`, its token in a `0600` env file), point the hostname at `http://forge-gateway:8080` instead of `localhost`.
 2. Keep `GATEWAY_TRUST_PROXY=cloudflare`.
-3. Cache rules: let Cloudflare cache `/badge/*`, `/feed/*` and `/og/*` (they send `Cache-Control: public, max-age=300`). Do **not** cache `*/info/refs`, `*/git-upload-pack` or `*/forge-manifest.json` (they say `no-cache` or `max-age=30`; the default rules already respect that).
+3. Cache rules: let Cloudflare cache `/badge/*`, `/feed/*` and `/og/*` (they send `Cache-Control: public, max-age=300`; a share page is the same for every client, so caching it is safe). Do **not** cache `*/info/refs`, `*/git-upload-pack` or `*/forge-manifest.json` (they say `no-cache` or `max-age=30`; the default rules already respect that).
 4. Cloudflare's 100-second origin timeout applies to the first byte only: a clone streams, and a cold mirror answers `503 Retry-After` after `GATEWAY_COLD_WAIT_SECS`.
 
 **A plain VPS:** an `A` (and `AAAA`) record for the hostname pointing at the VPS, and a TLS proxy. With Caddy:
@@ -176,11 +176,40 @@ GATEWAY_WAKE_SECRET_FILE=/run/secrets/wake
 | `GET /<owner>/<name>` | Redirect to the web app's page for the repository. |
 | `GET /badge/<owner>/<name>/<kind>.svg` | Badges: `stars`, `ci` (the newest trusted check run per name on the default branch's tip, or `?branch=`), `release` (the latest release's tag), `issues` (open issues; when some are members-only it says so, "3 open (2 members-only)", as the web's Issues tab does). Each also as `.json`, shields.io's [endpoint](https://shields.io/badges/endpoint-badge) format. |
 | `GET /feed/<owner>/<name>/<kind>.atom` | Atom feeds: `releases`, `commits` (the default branch), `issues` (issues a maintainer hid are left out). |
-| `GET /og/<owner>/<name>` | A page with `og:` and `twitter:` tags that redirects people to the web app: share this link to get a preview card. |
-| `GET /og/<owner>/<name>.png` | The 1200×630 card. |
+| `GET /og/<owner>/<name>[/<short path>]` | A share link: a page with `og:` and `twitter:` tags that sends people on to the same short URL on the web app. See [Share links](#share-links-preview-cards). |
+| `GET /og/<owner>/<name>.png` | The repository's 1200×630 card. |
+| `GET /og/<owner>/<name>/issues/<n>.png`, `…/pull/<n>.png` | An issue's or pull request's card (the repository's when the item shows nothing). |
 | `GET /healthz`, `/readyz`, `/metrics` | Liveness, readiness, Prometheus metrics. |
 
 `<owner>` is an identity id or a DPNS name. A README badge: `[![checks](https://git-forge.dashhq.org/badge/alice/project/ci.svg)](https://forge.dashhq.org/alice/project)`.
+
+### Share links (preview cards)
+
+forge.dashhq.org is a static site: a short URL such as `https://forge.dashhq.org/alice/project/issues/7` is first answered with the host's `404.html`, whose script opens the page. People never notice, but Slack, Discord, forums and other link unfurlers read that 404 and show no card. A share link is the same short URL on the gateway under `/og`:
+
+| Share link | Opens |
+|---|---|
+| `https://git-forge.dashhq.org/og/alice/project` | `https://forge.dashhq.org/alice/project` |
+| `https://git-forge.dashhq.org/og/alice/project/issues/7` | `https://forge.dashhq.org/alice/project/issues/7` |
+| `https://git-forge.dashhq.org/og/alice/project/pull/7/files` | `https://forge.dashhq.org/alice/project/pull/7/files` |
+| `https://git-forge.dashhq.org/og/alice/project/tree/feature%2Fx/src?repo=<id>` | `https://forge.dashhq.org/alice/project/tree/feature%2Fx/src?repo=<id>` |
+
+This scheme is stable: everything after `/og` is the web app's short path (`forge-web/lib/short-url.ts`), owner by DPNS name or identity id, kept exactly as written (a `%2F` in a ref stays one segment). Only a `?repo=<id>` pin is carried along; any other query string is dropped. The page always opens `GATEWAY_WEB_URL` plus that path, never a host taken from the request, so a share link cannot send anyone elsewhere. A path that is not a short URL (a bad `%` escape, `..`, characters a short URL never has) answers `404`.
+
+Every share link answers `200` with the same page for every client, crawler or person (a cache in front never mixes two versions): the `og:`/`twitter:` tags, `og:url` naming the share link itself, `<link rel="canonical">` naming the web app's page, a visible link to it and a one-line script that opens it. There is no `<meta http-equiv="refresh">` and `og:url` is not the web app's URL on purpose: Facebook's crawler follows both, and would read the web app's 404 page instead of the card.
+
+What the card shows:
+
+| Link | Card |
+|---|---|
+| A public repository, or any view of it (`tree/…`, `releases`, …) | `owner/name`, its description, its stars and default branch on the image |
+| A public issue or pull request (`issues/<n>`, `pull/<n>`, `pull/<n>/files`, …) | Its title, the start of its body, open / closed / merged / draft, its own image |
+| A members-only, specific-people, hidden (by a maintainer, or its author banned), absent or malformed issue or pull request, or one written while a repository made public was still private | Only what the link says: "Issue #7 · owner/name", the repository's image. No title, author, body or count |
+| A private, absent or unlisted repository, or one Platform cannot resolve now | The site's own card ("Dash Forge", the web app's `og.png`) |
+
+A card's title and text come only from a document stored in plaintext (no `enc`) and stamped `vis: "public"`; the gateway reads Platform anonymously, so nothing members-only can reach it anyway. The web app's **Copy link** copies the share link for a public repository when the build names a gateway ([Show it in the web app](#show-it-in-the-web-app)); without one, or for a private repository, it copies the plain short URL as before.
+
+Each repository's description and each item's data is read at most once per `GATEWAY_RENDER_TTL_SECS` however many views or tabs are shared (an issue costs one read by number, its log of transitions and events, and a read of the repository's bans; a pull request also its base branch's history).
 
 Badges, feeds and previews are cached for `GATEWAY_RENDER_TTL_SECS`. When Platform cannot be read, the last render is served (marked by `Cache-Control: max-age=60` and `X-Forge-Stale: <seconds>`); a badge with nothing cached says `unavailable`.
 
@@ -241,6 +270,8 @@ NEXT_PUBLIC_GATEWAY_URL=https://git-forge.dashhq.org NEXT_PUBLIC_GATEWAY_LABEL="
 ```
 
 `dash://` stays first; the HTTPS line reads "HTTPS via dashhq gateway · plain git, read only, an optional mirror · verify". Without the variable there is no HTTPS line.
+
+The same variable turns **Copy link** on a public repository's pages into a [share link](#share-links-preview-cards) (`https://git-forge.dashhq.org/og/alice/project/issues/7`), which unfurls with a preview card and opens the page. The gateway sends people to its own `GATEWAY_WEB_URL`, so point a build at a gateway whose `GATEWAY_WEB_URL` is that build's site.
 
 For forge.dashhq.org, the Pages workflow (`.github/workflows/pages.yml`) reads the URL and the label from repository variables, so turning the gateway on or off needs no code change:
 

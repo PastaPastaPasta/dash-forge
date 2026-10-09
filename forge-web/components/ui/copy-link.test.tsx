@@ -2,6 +2,7 @@
 /**
  * Copy link writes the owner as the address bar does: by the DPNS name of the identity the owner
  * names, whether the repo was opened by its id, by `name.dash` or by the name in another case.
+ * With a gateway, a public repo's link is the gateway's share link with a preview card (#454).
  */
 
 import { act } from 'react'
@@ -11,6 +12,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const names = vi.hoisted(() => ({ read: (owner: string): string | undefined => (owner === 'alice' ? 'alice.dash' : undefined) }))
 vi.mock('@/hooks/use-dpns-name', () => ({ useOwnerDpnsName: (owner: string) => names.read(owner) }))
 vi.mock('@/hooks/use-copy', () => ({ useCopy: () => [false, () => undefined] }))
+const gateway = vi.hoisted(() => ({ value: null as { url: string; label: string } | null }))
+vi.mock('@/lib/gateway', () => ({
+  get GATEWAY() {
+    return gateway.value
+  },
+}))
 
 import { CopyLinkButton } from './copy-link'
 
@@ -25,9 +32,13 @@ beforeEach(() => {
 })
 afterEach(() => act(() => root.unmount()))
 
-function href(owner: string): string | null {
-  act(() => root.render(<CopyLinkButton repo={{ owner, name: 'project' }} target={{ kind: 'issues' }} />))
-  return el.querySelector('[data-testid="copy-link"]')!.getAttribute('data-href')
+function button(owner: string, visibility: 'public' | 'private' = 'public'): HTMLElement {
+  act(() => root.render(<CopyLinkButton repo={{ owner, name: 'project' }} target={{ kind: 'issues' }} visibility={visibility} />))
+  return el.querySelector('[data-testid="copy-link"]')!
+}
+
+function href(owner: string, visibility: 'public' | 'private' = 'public'): string | null {
+  return button(owner, visibility).getAttribute('data-href')
 }
 
 describe('CopyLinkButton', () => {
@@ -41,5 +52,22 @@ describe('CopyLinkButton', () => {
   it('writes the owner as the route did while no name is known', () => {
     names.read = () => undefined
     expect(href(ID)).toContain(`/${ID}/project/issues`)
+  })
+
+  it('copies the gateway’s share link for a public repo when the build has a gateway', () => {
+    names.read = () => 'alice.dash'
+    gateway.value = { url: 'https://git-forge.dashhq.org', label: 'dashhq gateway' }
+    try {
+      const b = button(ID)
+      expect(b.getAttribute('data-href')).toBe('https://git-forge.dashhq.org/og/alice/project/issues')
+      expect(b.getAttribute('title')).toContain('preview card')
+      // A private repo keeps the plain link: its path goes to no third party.
+      expect(href(ID, 'private')).toBe(`${window.location.origin}/alice/project/issues`)
+      expect(button(ID, 'private').getAttribute('title')).toBeNull()
+    } finally {
+      gateway.value = null
+    }
+    // No gateway: the plain link, exactly as before.
+    expect(href(ID)).toBe(`${window.location.origin}/alice/project/issues`)
   })
 })

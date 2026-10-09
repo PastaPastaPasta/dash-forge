@@ -126,6 +126,50 @@ pub struct IssueEntry {
     pub document_id: String,
 }
 
+/// What a share link names inside a repository: an issue or a pull request, by number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ItemKind {
+    /// `/<owner>/<name>/issues/<n>`.
+    Issue,
+    /// `/<owner>/<name>/pull/<n>`.
+    Pull,
+}
+
+impl ItemKind {
+    /// The short-URL segment (`issues`, `pull`).
+    pub fn segment(self) -> &'static str {
+        match self {
+            ItemKind::Issue => "issues",
+            ItemKind::Pull => "pull",
+        }
+    }
+}
+
+/// Where an issue or pull request stands, as its preview card says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ItemState {
+    /// Open.
+    Open,
+    /// A pull request marked draft (open).
+    Draft,
+    /// Closed (an issue, or a pull request closed without a merge).
+    Closed,
+    /// A pull request whose merge counted.
+    Merged,
+}
+
+/// An issue or pull request everyone may read, as a link preview shows it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Item {
+    /// Its title.
+    pub title: String,
+    /// Its body as stored (a long body's prefix, without the trailer naming the rest).
+    pub body: String,
+    /// Open, closed, merged or draft.
+    pub state: ItemState,
+}
+
 /// The source of truth a gateway mirrors.
 #[async_trait]
 pub trait Upstream: Send + Sync + 'static {
@@ -157,6 +201,11 @@ pub trait Upstream: Send + Sync + 'static {
     async fn releases(&self, repo: &RepoInfo) -> Result<Vec<ReleaseEntry>>;
     /// The newest issues no maintainer hid, newest first.
     async fn issues(&self, repo: &RepoInfo, limit: usize) -> Result<Vec<IssueEntry>>;
+    /// Issue or pull request `number`, when everyone may read it: `None` when there is none,
+    /// it is malformed, it is members-only (this reader is anonymous, so it cannot open it),
+    /// or a maintainer hid it (or its author is banned). A preview card shows nothing of a
+    /// `None` item beyond what its link already says.
+    async fn item(&self, repo: &RepoInfo, kind: ItemKind, number: u32) -> Result<Option<Item>>;
 }
 
 /// How long after a `repo` document read absent it is read again before the repository counts
@@ -388,6 +437,22 @@ fn still_same(doc: &FetchedDocument, repo: &RepoInfo) -> bool {
         && visibility_of(doc) == Visibility::Public
 }
 
+/// Whether a preview card may show `doc`'s own words (its title and body): only when it is
+/// plaintext (no `enc`) and stamped `vis: "public"`. A document this anonymous reader opened is
+/// not enough: a specific-people letter (`enc` v0x04) is never a public card, and a repository
+/// made public keeps what was written while it was private as `vis: "private"` even where the
+/// owner published the keys that open it (`private-repos.md` §18.1). A post its author made
+/// public is plaintext and `vis: "public"` again. `issue` and `patch` require `vis`
+/// (`forge-contracts/contracts/forge-collab.json`, `layout::VIS_TYPES`), so one without it is
+/// not shown either.
+fn titled(doc: &FetchedDocument) -> bool {
+    doc.field_str(forge_core::layout::VIS).as_deref() == Some(Visibility::Public.as_str())
+        && doc
+            .fields
+            .get("enc")
+            .is_none_or(|e| e.as_bytes().is_some_and(|b| b.is_empty()))
+}
+
 fn info_of(r: &RepoRef) -> RepoInfo {
     RepoInfo {
         repo_id: r.repo_id.clone(),
@@ -563,6 +628,72 @@ impl Upstream for PlatformUpstream {
             })
             .collect())
     }
+
+    async fn item(&self, repo: &RepoInfo, kind: ItemKind, number: u32) -> Result<Option<Item>> {
+        use forge_core::collab::v2::{issue_from_doc, patch_from_doc, TargetKind, TargetRead};
+        use forge_core::rules::long_body::{self, LongBody};
+        let r = self.repo_ref(repo)?;
+        let collab = Collab::reader(&self.client);
+        let target_kind = match kind {
+            ItemKind::Issue => TargetKind::Issue,
+            ItemKind::Pull => TargetKind::Patch,
+        };
+        // By number, as this anonymous reader reads it: a members-only issue or PR is its
+        // placeholder (DESIGN D14), never opened here, so nothing of it reaches a card.
+        let doc = match collab.target_read(&r, target_kind, number).await {
+            Ok(Some(TargetRead::Readable(d))) if titled(&d) => d,
+            Ok(Some(_) | None) => return Ok(None),
+            Err(e) if self.proves_absent(&e).await => return Ok(None),
+            Err(e) => {
+                return Err(anyhow!(e).context(format!("reading {} #{number}", kind.segment())))
+            }
+        };
+        let (target, title, body, log, state) = match kind {
+            ItemKind::Issue => {
+                let issue = issue_from_doc(&doc);
+                let log = collab.target_log(&r, &issue.document_id).await?;
+                let open =
+                    forge_core::rules::v2::issue_state_v2(log.state_code(), &log.events).open;
+                let state = if open {
+                    ItemState::Open
+                } else {
+                    ItemState::Closed
+                };
+                (issue.target(), issue.title, issue.body, log, state)
+            }
+            ItemKind::Pull => {
+                let patch = patch_from_doc(&doc);
+                let target = patch.target();
+                let (title, body) = (patch.title.clone(), patch.body.clone());
+                let view = collab.patch_view(&r, patch).await?;
+                let state = match (view.state.merged, view.state.open, view.state.draft) {
+                    (true, _, _) => ItemState::Merged,
+                    (false, false, _) => ItemState::Closed,
+                    (false, true, true) => ItemState::Draft,
+                    (false, true, false) => ItemState::Open,
+                };
+                (target, title, body, view.log, state)
+            }
+        };
+        // A thread a maintainer hid, or whose author is banned, collapses on the web: its card
+        // shows no more of it than of a members-only one.
+        let id = target.id.clone();
+        if collab
+            .hidden_threads(&r, &[(target, log.events.as_slice())])
+            .await
+            .contains_key(&id)
+        {
+            return Ok(None);
+        }
+        // A long body's field is its prefix and a trailer naming the rest (forge-v2.md §6.3).
+        let body = match long_body::parse(&body) {
+            LongBody::Plain => body,
+            LongBody::Continued { prefix, .. } | LongBody::Unsupported { prefix } => {
+                prefix.to_string()
+            }
+        };
+        Ok(Some(Item { title, body, state }))
+    }
 }
 
 #[cfg(test)]
@@ -594,6 +725,55 @@ mod tests {
         ] {
             assert_eq!(failure(&read), Failure::Read, "{read:?}");
         }
+    }
+
+    #[test]
+    fn only_plaintext_public_documents_are_titled() {
+        let doc = |fields: Vec<(&str, FieldValue)>| FetchedDocument {
+            id: "I1".into(),
+            owner_id: "O1".into(),
+            created_at: None,
+            created_at_block_height: None,
+            updated_at_block_height: None,
+            updated_at: None,
+            fields: fields
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .chain([("title".to_string(), FieldValue::text("secret title"))])
+                .collect(),
+            revision: None,
+        };
+        let public = ("vis", FieldValue::text("public"));
+        let private = ("vis", FieldValue::text("private"));
+        // A plain public issue, and one its author made public (enc dropped, vis public).
+        assert!(titled(&doc(vec![public.clone()])));
+        assert!(titled(&doc(vec![
+            public.clone(),
+            ("enc", FieldValue::Bytes(vec![]))
+        ])));
+        // Members-only (enc v0x03) in a public repository, even when this reader opened it.
+        assert!(!titled(&doc(vec![
+            public.clone(),
+            ("enc", FieldValue::Bytes(vec![0x03, 1, 2]))
+        ])));
+        // A specific-people letter (enc v0x04).
+        assert!(!titled(&doc(vec![
+            public.clone(),
+            ("enc", FieldValue::Bytes(vec![0x04, 1, 2]))
+        ])));
+        // Written before its repository was made public: still private, sealed or not.
+        assert!(!titled(&doc(vec![private.clone()])));
+        assert!(!titled(&doc(vec![
+            private,
+            ("enc", FieldValue::Bytes(vec![0x01, 1]))
+        ])));
+        // No stamp at all: not shown.
+        assert!(!titled(&doc(vec![])));
+        // An `enc` of any other shape counts as sealed.
+        assert!(!titled(&doc(vec![
+            public,
+            ("enc", FieldValue::text("03ab"))
+        ])));
     }
 
     #[test]

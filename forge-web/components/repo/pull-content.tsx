@@ -1457,7 +1457,7 @@ function PullPage({
             </span>
           ) : null}
           {refreshing ? <span className="text-[12px] text-anvil-500 dark:text-anvil-400">Refreshing…</span> : null}
-          <CopyLinkButton repo={addr} target={{ kind: 'pull', number: pull.number }} className="ml-auto" />
+          <CopyLinkButton repo={addr} target={{ kind: 'pull', number: pull.number }} visibility={home.repo.visibility} className="ml-auto" />
         </div>
       </div>
 
