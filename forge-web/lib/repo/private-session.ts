@@ -317,9 +317,9 @@ export async function loadPrivateSession(input: {
   const drop = input.drop ?? []
   const members = read.filter((m) => !drop.some((d) => d.identity === m.identity && (d.role === undefined || d.role === m.role)))
   const maintainers = new IdSet(members.filter((m) => m.role === 'maintainer').map((m) => decodeIdentifier(m.identity)))
-  // Who the key is for: every member of a private repo; in a public one, the roles that hold its
-  // members key (`holdsMembersKey`, DESIGN §2.1; runners are never members).
-  const keyHolders = members.filter((m) => holdsMembersKey(m.role, repo.visibility))
+  // Who the key is for: the roles that hold the members key (`holdsMembersKey`: every human role,
+  // DESIGN §3.5; runners are never members).
+  const keyHolders = members.filter((m) => holdsMembersKey(m.role))
 
   const memberIds = [...new Set(members.map((m) => m.identity))]
   const memberKeys = new Map<string, readonly EncKeyLike[] | null>(

@@ -67,6 +67,17 @@
     "members": {},
     "remoteUrl": {
       "type": "string"
+    },
+    "securityPolicy": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Where the default branch keeps its security policy (`.github/SECURITY.md`, `SECURITY.md` or `docs/SECURITY.md`, in that order); null when it has none or was not looked at (see securityPolicyChecked)."
+    },
+    "securityPolicyChecked": {
+      "type": "boolean",
+      "description": "Whether the default branch's files were looked at. False for a private repo, a repo too large to download for this and a failed look; then a null securityPolicy means unknown."
     }
   },
   "required": [

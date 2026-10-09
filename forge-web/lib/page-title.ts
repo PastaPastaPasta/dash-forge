@@ -50,6 +50,7 @@ const REPO_TITLES: Readonly<Record<string, (q: Query, repo: string) => string>> 
   // Never the ref's name: a private repo's would be sealed.
   '/repo/activity': (_q, repo) => `Activity · ${repo}`,
   '/repo/stargazers': (_q, repo) => `Stargazers · ${repo}`,
+  '/repo/security': (_q, repo) => `Security policy · ${repo}`,
   '/repo/labels': (_q, repo) => `Labels · ${repo}`,
   '/repo/milestones': (_q, repo) => `Milestones · ${repo}`,
   '/repo/settings': (_q, repo) => `Settings · ${repo}`,

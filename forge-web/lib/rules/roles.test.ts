@@ -6,7 +6,9 @@ import {
   claimedRole,
   grantableRoles,
   holdsMembersKey,
-  READERS_IN_MEMBERS_KEY,
+  ROLE_LABEL,
+  ROLE_SUMMARY,
+  verdictRefusal,
   isRoleGated,
   memberMayWriteEvent,
   membershipTitle,
@@ -124,19 +126,34 @@ describe('memberMayWriteEvent', () => {
 })
 
 describe('holdsMembersKey', () => {
-  it('readers hold the members key of public repos while READERS_IN_MEMBERS_KEY is set; every role of a private one', () => {
-    for (const role of ['maintainer', 'writer', 'triage', 'reader'] as const) {
-      expect(holdsMembersKey(role, 'private')).toBe(true)
-      expect(holdsMembersKey(role, 'public')).toBe(role !== 'reader' || READERS_IN_MEMBERS_KEY)
-    }
-    expect(READERS_IN_MEMBERS_KEY).toBe(true)
+  it('every human role holds the members key, readers included (DESIGN §3.5)', () => {
+    for (const role of ['maintainer', 'writer', 'triage', 'reader'] as const) expect(holdsMembersKey(role)).toBe(true)
+  })
+})
+
+describe('role words (DESIGN §10)', () => {
+  it('names the roles as GitHub does, with the picker help lines', () => {
+    expect(grantableRoles('public').map((r) => ROLE_LABEL[r])).toEqual(['Read', 'Triage', 'Write', 'Maintain'])
+    expect(ROLE_SUMMARY.reader).toBe("Can read members-only content and comment. Can't push or approve.")
+    expect(ROLE_SUMMARY.triage).toBe('Can also close, label and assign.')
+  })
+})
+
+describe('verdictRefusal: only Write and Maintain approve or request changes', () => {
+  it('refuses Read and Triage, never a comment, an approver or a non-member', () => {
+    expect(verdictRefusal('reader', 'approve')).toBe('Only people with Write access or more can approve.')
+    expect(verdictRefusal('triage', 'requestChanges')).toBe('Only people with Write access or more can request changes.')
+    expect(verdictRefusal('reader', 'comment')).toBeNull()
+    expect(verdictRefusal('writer', 'approve')).toBeNull()
+    expect(verdictRefusal('maintainer', 'requestChanges')).toBeNull()
+    expect(verdictRefusal(null, 'approve')).toBeNull()
   })
 })
 
 describe('grantableRoles and roleLimit', () => {
-  it('offers a reader on public and private repos (a public one has members-only content to read)', () => {
-    expect(grantableRoles('public')).toEqual(['writer', 'triage', 'reader', 'maintainer'])
-    expect(grantableRoles('private')).toEqual(['writer', 'triage', 'reader', 'maintainer'])
+  it('offers every role, a reader included, on public and private repos', () => {
+    expect(grantableRoles('public')).toEqual(['reader', 'triage', 'writer', 'maintainer'])
+    expect(grantableRoles('private')).toEqual(['reader', 'triage', 'writer', 'maintainer'])
   })
 
   it('explains a limit to triage and readers only', () => {
@@ -163,10 +180,10 @@ describe('whoCan: copy names every role the table lets act (QW4-032)', () => {
 
 describe('membershipTitle: a membership toast names the role (QW4-033)', () => {
   it('says the role granted, removed or changed to, not the document type', () => {
-    expect(membershipTitle('grant', 'triage')).toBe('Triage member added')
-    expect(membershipTitle('grant', 'writer')).toBe('Writer added')
-    expect(membershipTitle('grant', 'maintainer')).toBe('Maintainer added')
-    expect(membershipTitle('revoke', 'reader')).toBe('Reader removed')
-    expect(membershipTitle('change', 'triage')).toBe('Role changed to Triage')
+    expect(membershipTitle('grant', 'triage')).toBe('Added with Triage access')
+    expect(membershipTitle('grant', 'writer')).toBe('Added with Write access')
+    expect(membershipTitle('grant', 'maintainer')).toBe('Added with Maintain access')
+    expect(membershipTitle('revoke', 'reader')).toBe('Read access removed')
+    expect(membershipTitle('change', 'triage')).toBe('Changed to Triage access')
   })
 })

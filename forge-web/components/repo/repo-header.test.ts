@@ -27,5 +27,7 @@ describe('activeRepoTab', () => {
     expect(activeRepoTab('/repo/labels/')).toBe('issues')
     expect(activeRepoTab('/repo/milestones')).toBe('issues')
     expect(activeRepoTab('/repo/stargazers/')).toBeNull()
+    // The security policy page, like Stargazers, sits under no tab.
+    expect(activeRepoTab('/repo/security/')).toBeNull()
   })
 })

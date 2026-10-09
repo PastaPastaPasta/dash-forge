@@ -325,14 +325,14 @@ describe('a pending invitation picks its own role (QW4-034)', () => {
     const select = row.querySelector<HTMLSelectElement>('select')!
     const add = row.querySelector<HTMLButtonElement>('button')!
     expect(select.value).toBe('')
-    expect([...select.options].map((o) => o.value)).toEqual(['', 'writer', 'triage', 'reader', 'maintainer'])
+    expect([...select.options].map((o) => o.value)).toEqual(['', 'reader', 'triage', 'writer', 'maintainer'])
     expect(add.textContent).toBe('Add')
     expect(add.disabled).toBe(true)
     await act(async () => {
       select.value = 'triage'
       select.dispatchEvent(new Event('change', { bubbles: true }))
     })
-    expect(add.textContent).toBe('Add as triage')
+    expect(add.textContent).toBe('Add with Triage access')
     await act(async () => add.click())
     expect(picks).toEqual([[INVITEE, 'triage']])
   })

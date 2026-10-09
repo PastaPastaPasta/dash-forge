@@ -63,6 +63,7 @@ pub mod ref_collision;
 pub mod ref_history;
 pub mod review;
 pub mod search;
+pub mod security_policy;
 pub mod signature;
 pub mod transition;
 pub mod v2;

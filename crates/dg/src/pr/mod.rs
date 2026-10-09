@@ -1559,7 +1559,7 @@ async fn view(
                         }
                         _ => String::new(),
                     };
-                    println!("  {}  {}{extra}", who(&r.identity), r.state.label());
+                    println!("  {}  {}{extra}", who(&r.identity), r.label());
                 }
             }
             if !v.patch.body.is_empty() {
@@ -1570,11 +1570,14 @@ async fn view(
             }
             for r in &reviews {
                 let tag = if dismissed.contains_key(&r.document_id) {
-                    " (dismissed)"
+                    " (dismissed)".to_string()
+                } else if let Some(role) = uncounted_role(&oracle, r) {
+                    // A Read or Triage member's verdict (a stale client's): shown, never counted.
+                    format!(" ({} access; doesn't count)", role.label())
                 } else if r.commit_oid == v.head {
-                    ""
+                    String::new()
                 } else {
-                    " (stale — new commits since)"
+                    " (stale — new commits since)".to_string()
                 };
                 println!(
                     "\n{} — {} on {}{tag}  [{}]{}",
@@ -1590,7 +1593,11 @@ async fn view(
                 );
                 if r.members_only {
                     // DESIGN §10: "Approved by @bob · review text visible to members"
-                    println!("  review text visible to members (its verdict counts)");
+                    if uncounted_role(&oracle, r).is_some() {
+                        println!("  review text visible to members");
+                    } else {
+                        println!("  review text visible to members (its verdict counts)");
+                    }
                 }
                 if let Some(h) = moderation.item(&r.document_id) {
                     // Still counted: hiding is display only (dismiss to stop it counting).
@@ -4030,6 +4037,20 @@ async fn diff(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
         || println!("{text}"),
     );
     Ok(())
+}
+
+/// The role of `r`'s reviewer when `r` is a member's approve or request changes that does not
+/// count for their role (Read or Triage access, D15), judged for this review: what a stale client
+/// wrote, shown with "(Read access; doesn't count)".
+fn uncounted_role(
+    oracle: &forge_core::rules::v2::RoleOracle,
+    r: &forge_core::collab::v2::Review,
+) -> Option<Role> {
+    use forge_core::rules::Verdict;
+    if !matches!(r.verdict, Verdict::Approve | Verdict::RequestChanges) {
+        return None;
+    }
+    threads::member_without_verdict(oracle, &r.reviewer, r.created_at)
 }
 
 #[cfg(test)]

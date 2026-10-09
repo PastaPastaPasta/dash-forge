@@ -902,7 +902,7 @@ A public repository's members key **is** a private repository's epoch chain (§2
 - it carries **no settings**: no `defaultBranch` or `protectedPatterns` in its TLV, and no plaintext `backend` or `archived`. Its TLV is empty at epoch 0 and holds only the chain link above it (tags 8, 9, 11, 12);
 - rotations and re-anchors carry **nothing forward**: the repository's settings live in its plaintext configs only.
 
-Vectors `mixed_anchor__*`. Every membership change keys on **"this repository has a members key"** (any sealed `config`), never on visibility alone: an add wraps the key to the new member, a removal (writer, triage, reader; a maintainer with the re-anchor of §5.3) rotates it, a role change to a role that does not hold the key rotates it. Readers (role 3) are members on a public repository too and **hold the key** (`READERS_IN_MEMBERS_KEY`, one constant); a `runner` document is not a membership and never receives a wrap.
+Vectors `mixed_anchor__*`. Every membership change keys on **"this repository has a members key"** (any sealed `config`), never on visibility alone: an add wraps the key to the new member, a removal (writer, triage, reader; a maintainer with the re-anchor of §5.3) rotates it, a role change to a role that does not hold the key would rotate it, but every human role holds it (owner, maintainers, writers, triage and readers; `members::holds_members_key`), so a role change never does. Readers (role 3) are members on a public repository too and hold the key; a `runner` document is not a membership and never receives a wrap.
 
 ### 17.2 Two predicates
 
