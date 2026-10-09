@@ -185,6 +185,7 @@ export function ReviewDrawer({
   repo,
   pullId,
   headOid,
+  newer = null,
   draft,
   loaded,
   update,
@@ -214,6 +215,12 @@ export function ReviewDrawer({
   repo: RepoRef
   pullId: string
   headOid: string
+  /**
+   * The branch has newer commits than the head this review is for (#453): a push the page noticed
+   * (`onRefresh` re-reads the page), or a branch the PR head does not follow yet. Submitting stays
+   * allowed: a verdict is pinned to the head it names.
+   */
+  newer?: { readonly tip: string; readonly branch: string | null; readonly onRefresh?: () => void } | null
   draft: ReviewDraft | null
   /** The stored draft has loaded: until then nothing is saved over it. */
   loaded: boolean
@@ -431,6 +438,26 @@ export function ReviewDrawer({
           <p className="text-[12px] text-anvil-600 dark:text-anvil-400" data-testid="draft-whereabouts">
             {draftWhereabouts(repo.visibility === 'private', membersOnly || (planned !== null && (planned.audience === 'members' || planned.comments.some((c) => c.audience === 'members'))))} Nothing is on Platform until you submit.
           </p>
+          {newer !== null && !frozen ? (
+            <div className="rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense" data-testid="review-stale-head">
+              You&apos;re reviewing <Oid value={headOid} chars={7} copyable={false} />, but {newer.branch !== null ? <span className="font-mono">{newer.branch}</span> : 'the branch'} is now at{' '}
+              <Oid value={newer.tip} chars={7} copyable={false} /> (newer commits were pushed).{' '}
+              {newer.onRefresh !== undefined ? (
+                <>
+                  Refresh to review them, or submit this review for <Oid value={headOid} chars={7} copyable={false} />.
+                  <div className="mt-2 flex gap-2">
+                    <Button size="sm" variant="outline" onClick={newer.onRefresh}>
+                      Refresh
+                    </Button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  They aren&apos;t in this pull request yet: this review is for <Oid value={headOid} chars={7} copyable={false} />.
+                </>
+              )}
+            </div>
+          ) : null}
           {headMoved && draft ? (
             <div className="rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense" data-testid="draft-head-moved">
               The PR moved to <Oid value={headOid} chars={7} copyable={false} /> since you started. Your comments are anchored to{' '}

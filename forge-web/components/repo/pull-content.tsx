@@ -106,6 +106,7 @@ import {
 } from '@/lib/repo'
 import { checksPhrase, expectedChecks, readCheckRuns, requiredSources, summarizeChecks, type ChecksSummary } from '@/lib/repo/checks'
 import { branchShown, headSync, readBranchState, readBranchTip, readBranchUpdates, type BranchWrite } from '@/lib/repo/source-branch'
+import { probeBranch, refStateKey } from '@/lib/repo/head-probe'
 import type { Event, EventKind, Holdings, RefState } from '@/lib/rules'
 import { POST_AS_COMMENT, ROLE_LABEL, capabilitiesOf, memberMayWriteEvent, verdictRefusal } from '@/lib/rules/roles'
 import { RoleLimitNote } from '@/components/repo/role-limit-note'
@@ -134,6 +135,7 @@ import { readUntil, retryWhileMissing } from '@/lib/view/retry'
 import { forgetShownOwnReviews, ownReviewScope, rememberOwnReview, unshownOwnReviews, type OwnReview } from '@/lib/view/own-reviews'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
+import { useHeadProbe } from '@/hooks/use-head-probe'
 import { useIntent } from '@/hooks/use-intent'
 import { useFirstWrite } from '@/hooks/use-first-write'
 import { useParam, repoHref, type RepoAddress } from '@/hooks/use-query-param'
@@ -527,6 +529,41 @@ function PullPage({
   // Once a read shows the write, the read alone speaks again (later changes by others included).
   if (branchWrite !== null && readSync !== null && readSync.kind === (branchWrite.to === 'deleted' ? 'deleted' : 'in-sync')) setBranchWrite(null)
   const sync = branchShown(readSync, branchWrite, pull.sourceRefName, pull.headOid)
+  // ---- new pushes (#453) ------------------------------------------------------------------------
+  // An open PR notices a push while it is shown: one light probe a minute while the tab is
+  // visible, and on focus (`useHeadProbe`). It asks only for what is newer than this read: the
+  // PR's events past `eventMark`, and the source branch's newest update when it is readable from
+  // here and its state was read. It never swaps the diff: the reader refreshes.
+  const probeSource = sourceState.settled && !sourceState.error ? sourceRefOf() : null
+  const probeKnown = probeSource === null ? null : sourceState.data
+  const probeBase = useMemo(
+    () =>
+      thread.eventMark === undefined && probeSource === null
+        ? null
+        : {
+            repo,
+            pullId: pull.id,
+            author: pull.author,
+            headOid: pull.headOid,
+            events: thread.eventMark ?? null,
+            branch: probeBranch(probeSource, pull.sourceRefName, probeKnown),
+          },
+    [repo, pull.id, pull.author, pull.headOid, thread.eventMark, probeSource, pull.sourceRefName, probeKnown],
+  )
+  const probeKey = [pull.id, pull.headOid, thread.eventMark?.at ?? '', thread.eventMark?.ids.join(',') ?? '', probeSource?.repoId ?? '', refStateKey(probeKnown)].join(':')
+  const newPush = useHeadProbe(sdk, ready && open && pull.headOid !== '', probeBase, probeKey)
+  // Refresh after a push: the thread (until it shows the moved head), the repo home's branches
+  // (a same-repo source), and a fork source's branch. The review draft is the browser's: kept.
+  const refreshForPush = (): void => {
+    const found = newPush.found
+    newPush.dismiss()
+    const head = pull.headOid.toLowerCase()
+    refresh(found?.headMoved === true ? (t) => t.pull.headOid.toLowerCase() !== head : undefined)
+    reloadHome?.()
+    if (crossRepo) sourceState.reload()
+  }
+  // What the review composer warns about: the head it reviews is older than the branch's.
+  const newerThanHead = newPush.found !== null ? { tip: newPush.found.tip, onRefresh: refreshForPush } : open && sync?.kind === 'ahead' ? { tip: sync.tip } : null
   // The source branch's ref updates (one read, both update types), on the Conversation tab only:
   // who pushed each head (QW3-048), and, once the PR is closed, when its branch was deleted or
   // restored (QW4-025). Read once the branch's state is read, and again when a read of it shows
@@ -1462,6 +1499,24 @@ function PullPage({
       </div>
 
       {/* Banners */}
+      {open && newPush.found !== null ? (
+        // #453: a push while the page is open. The diff stays as read until the reader refreshes.
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-forge-500/40 bg-forge-500/5 px-4 py-3 text-dense" role="status" aria-live="polite" data-testid="pr-new-push-banner">
+          <RefreshCw className="h-4 w-4 shrink-0 text-forge-700 dark:text-forge-400" aria-hidden />
+          <span className="min-w-[min(16rem,calc(100%-1.75rem))] flex-1">
+            <span className="font-medium">New commits were pushed</span>
+            {pull.sourceRefName !== null ? (
+              <>
+                {' '}to <span className="font-mono">{shortBranch(pull.sourceRefName)}</span>
+              </>
+            ) : null}{' '}
+            (now at <Oid value={newPush.found.tip} chars={7} copyable={false} />). This page shows <Oid value={pull.headOid} chars={7} copyable={false} />.
+          </span>
+          <Button variant="outline" size="sm" onClick={refreshForPush} disabled={refreshing}>
+            Refresh
+          </Button>
+        </div>
+      ) : null}
       {open && sync?.kind === 'ahead' ? (
         // Every reader is told the PR shows an older head than its branch (QW2-007: an
         // interrupted browser commit, or a push with auto-sync off); who can move it gets the button.
@@ -2051,6 +2106,7 @@ function PullPage({
                     repo={repo}
                     pullId={pull.id}
                     headOid={pull.headOid}
+                    newer={newerThanHead === null ? null : { ...newerThanHead, branch: pull.sourceRefName === null ? null : shortBranch(pull.sourceRefName) }}
                     draft={reviewDraft.draft}
                     loaded={reviewDraft.loaded}
                     update={reviewDraft.update}
