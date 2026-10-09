@@ -1185,12 +1185,6 @@ fn site(cfg: &Config) -> String {
         .to_string()
 }
 
-/// `?repo=<id>` on a share link: the web app's pin to one exact repository, carried on to it.
-#[derive(Debug, Deserialize)]
-struct ShareQuery {
-    repo: Option<String>,
-}
-
 /// A repo id the web app's `?repo=` pin can hold (base58, the length of a 32-byte id).
 fn pin_ok(s: &str) -> bool {
     (32..=50).contains(&s.len())
@@ -1201,7 +1195,7 @@ fn pin_ok(s: &str) -> bool {
 /// `GET /og/<owner>/<name>[/<rest>][.png]`: a share link's page or card image. The path after
 /// the repository mirrors the web app's short URLs (`issues/7`, `pull/7/files`, `tree/main/src`)
 /// and is read raw, still percent-encoded, so `tree/feature%2Fx` reaches the web app as written.
-async fn og_route(State(state): St, uri: axum::http::Uri, Query(q): Query<ShareQuery>) -> Response {
+async fn og_route(State(state): St, uri: axum::http::Uri) -> Response {
     Metrics::inc(&state.metrics.requests_og);
     let path = uri.path().strip_prefix("/og/").unwrap_or_default();
     let (owner, rest) = path.split_once('/').unwrap_or((path, ""));
@@ -1215,7 +1209,16 @@ async fn og_route(State(state): St, uri: axum::http::Uri, Query(q): Query<ShareQ
     let (Some(share), true) = (share, segment_ok(owner, 64) && segment_ok(name, 100)) else {
         return text(StatusCode::NOT_FOUND, "not a Dash Forge share link\n");
     };
-    let pin = q.repo.filter(|p| pin_ok(p));
+    // `?repo=<id>`, the web app's pin to one exact repository, is carried on to it (the first
+    // one that is an id; base58 needs no decoding). Any other query is dropped, never refused:
+    // an unfurler must get its card whatever a link picked up on the way.
+    let pin = uri
+        .query()
+        .unwrap_or_default()
+        .split('&')
+        .filter_map(|kv| kv.strip_prefix("repo="))
+        .find(|p| pin_ok(p))
+        .map(str::to_string);
     match share {
         og::Share::ItemImage(kind, n) => item_png(&state, owner, name, kind, n).await,
         og::Share::Item(kind, n) => {
@@ -1310,9 +1313,15 @@ async fn share_page(
     }
     let url = format!("{public}/og/{owner}/{name}{suffix}");
     let target = format!("{web}/{owner}/{name}{suffix}");
-    let ttl = state.renders.ttl().as_secs();
+    let mut ttl = state.renders.ttl().as_secs();
     let info = match resolve(state, owner, name).await {
-        Ok(t) => t.info,
+        Ok(t) => {
+            if t.stale {
+                // Resolved from before Platform stopped answering: cacheable briefly only.
+                ttl = ttl.min(60);
+            }
+            t.info
+        }
         Err(r) => {
             let max_age = if r.status() == StatusCode::NOT_FOUND {
                 ttl
@@ -1344,8 +1353,8 @@ async fn share_page(
     };
     match read {
         Some(None) => page_response(&page, ttl, None),
-        Some(Some(age)) => page_response(&page, 60, Some(age)),
-        None => page_response(&page, 60, None),
+        Some(Some(age)) => page_response(&page, ttl.min(60), Some(age)),
+        None => page_response(&page, ttl.min(60), None),
     }
 }
 

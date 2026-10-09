@@ -356,9 +356,12 @@ const MAX_REST_BYTES: usize = 1024;
 const MAX_REST_SEGMENTS: usize = 32;
 
 /// One raw (still percent-encoded) path segment a web short URL can hold: RFC 3986 `pchar`s
-/// with every `%` starting a valid escape, never `.` or `..`.
+/// with every `%` starting a valid escape, never `.` or `..`, written plainly or escaped
+/// (`%2e%2E`): a browser resolves either as a dot segment, so a share link's card for one
+/// repository could open another page of the web app.
 fn rest_segment_ok(s: &str) -> bool {
-    if s.is_empty() || s == "." || s == ".." {
+    let dots = s.to_ascii_lowercase().replace("%2e", ".");
+    if s.is_empty() || dots == "." || dots == ".." {
         return false;
     }
     let b = s.as_bytes();
@@ -614,7 +617,20 @@ mod tests {
         }
         // Not a path a short URL can have.
         for rest in [
-            "issues/", "a//b", "../x", "tree/./x", "a%2", "a%zz", "a b", "a\"b", "a<b", "%",
+            "issues/",
+            "a//b",
+            "../x",
+            "tree/./x",
+            "a%2",
+            "x/%2e%2e/y",
+            "x/%2E/y",
+            ".%2e/y",
+            "x/%2e.",
+            "a%zz",
+            "a b",
+            "a\"b",
+            "a<b",
+            "%",
         ] {
             assert_eq!(parse_share(rest), None, "{rest}");
         }

@@ -41,7 +41,7 @@ export function CopyLinkButton({
       onClick={copy}
       data-testid="copy-link"
       data-href={href}
-      title={card !== null && GATEWAY !== null ? `Copies a link that shows a preview card when shared (via ${GATEWAY.label}) and opens this page` : undefined}
+      title={card !== null ? `Copies a link that shows a preview card when shared (via ${GATEWAY?.label ?? 'the gateway'}) and opens this page` : undefined}
       className={cn(
         'inline-flex h-7 items-center gap-1 rounded-md border coarse:h-11 coarse:px-3 border-anvil-300 px-2 text-[12px] text-anvil-700 hover:bg-anvil-100 dark:border-anvil-700 dark:text-anvil-200 dark:hover:bg-anvil-800',
         className,

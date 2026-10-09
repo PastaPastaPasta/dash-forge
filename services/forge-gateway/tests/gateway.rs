@@ -836,6 +836,41 @@ async fn share_links_preview_public_issues_and_pull_requests() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_share_link_read_before_platform_failed_is_served_stale() {
+    let gw = start(|c| {
+        c.public_url = Some("https://gw.example".into());
+        c.render_ttl_secs = 1;
+    })
+    .await;
+    let src = source(&gw.tmp);
+    gw.stub.add("alice", "proj", true, &src);
+    gw.stub.world().items.insert(
+        ("issues", 7),
+        (
+            Item {
+                title: "It breaks".into(),
+                body: String::new(),
+                state: ItemState::Closed,
+            },
+            true,
+        ),
+    );
+    let (s, _, _) = gw.get("/og/alice/proj/issues/7").await;
+    assert_eq!(s, 200);
+    gw.stub.world().down = true;
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    let r = reqwest::get(format!("{}/og/alice/proj/issues/7", gw.base))
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 200);
+    // Briefly cacheable: at most 60 s (here the 1 s TTL).
+    assert_eq!(r.headers()["cache-control"], "public, max-age=1");
+    assert!(stale_secs(r.headers()).is_some(), "marked stale");
+    let body = r.text().await.unwrap();
+    assert_eq!(meta(&body, "og:title"), "It breaks · Issue #7 · alice/proj");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn share_links_show_nothing_of_members_only_items_or_private_repos() {
     let gw = share_gateway().await;
     let repo_png = reqwest::get(format!("{}/og/alice/proj.png", gw.base))
@@ -916,12 +951,21 @@ async fn share_links_carry_their_path_to_the_web_app_and_nothing_else() {
         "{body}"
     );
     assert!(!body.contains("utm"), "{body}");
+    // A duplicate or malformed query is ignored, never a 400: the first valid pin wins.
+    let (s, _, body) = gw
+        .get(&format!(
+            "/og/alice/proj/issues/7?repo=bad&repo={id}&repo=%zz&x"
+        ))
+        .await;
+    assert_eq!(s, 200, "{body}");
+    assert!(body.contains(&format!("issues/7?repo={id}\"")), "{body}");
     let (_, _, body) = gw.get("/og/alice/proj/releases?repo=not-an-id").await;
     assert!(
         body.contains("canonical\" href=\"https://forge.dashhq.org/alice/proj/releases\""),
         "{body}"
     );
-    // Not a short URL: refused, never redirected.
+    // Not a short URL: refused, never redirected. (Escaped dot segments, `%2e%2e`, are refused
+    // too: `og::tests`; an HTTP client normalizes them away before sending, as browsers do.)
     for path in [
         "/og/alice/proj/a%2",
         "/og/alice/proj/x%zz/y",
