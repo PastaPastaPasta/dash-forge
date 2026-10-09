@@ -59,13 +59,13 @@ export function RecentPushBanner({ home, addr, className }: { home: RepoHome; ad
   useEffect(() => setDismissed(readDismissed()), [])
 
   const repoId = home.repo.repoId
-  const pushes = useMemo(
-    () => (dismissed === null ? [] : recentPushes(home, identity, now).filter((p) => !dismissed.includes(recentPushKey(repoId, p)))),
-    [home, identity, now, dismissed, repoId],
-  )
-  const asked = pushes.map((p) => `${p.refName}@${p.tip}`).join(',')
+  const candidates = useMemo(() => recentPushes(home, identity, now), [home, identity, now])
+  const pushes = dismissed === null ? [] : candidates.filter((p) => !dismissed.includes(recentPushKey(repoId, p)))
+  // Every candidate is asked about, the dismissed ones too: a dismissal then changes nothing the
+  // read depends on (no second read), and once every one is dismissed nothing is read at all.
+  const asked = candidates.map((p) => `${p.refName}@${p.tip}`).join(',')
   const open = useAsync(
-    () => sessionCached(`recentPushPulls:${network}:${repoId}:${asked}:${generation}`, ANSWER_TTL_MS, () => branchesWithOpenPulls(sdk!, home.repo, pushes.map((p) => p.refName))),
+    () => sessionCached(`recentPushPulls:${network}:${repoId}:${asked}:${generation}`, ANSWER_TTL_MS, () => branchesWithOpenPulls(sdk!, home.repo, candidates.map((p) => p.refName))),
     [ready, network, repoId, asked, generation],
     { enabled: ready && sdk !== null && pushes.length > 0 },
   )

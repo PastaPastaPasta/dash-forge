@@ -141,4 +141,15 @@ describe('RecentPushBanner', () => {
     expect(s.asked).toHaveLength(1)
     expect(window.localStorage.getItem('forge.recent-push.dismissed')).toContain(`${h.repo.repoId}:refs/heads/feature/x@${'b'.repeat(40)}`)
   })
+
+  it('dismissing one of two banners leaves the other without another read', async () => {
+    const h = home()
+    const branches = [...h.branches, { refName: 'refs/heads/second', refNameHash: 's', state: { state: 'resolved', oid: 'c'.repeat(40), author: ME, createdAt: Date.now() - 60_000 } }]
+    await render({ ...h, branches } as RepoHome)
+    expect(host.querySelectorAll('[data-testid="recent-push"]')).toHaveLength(2)
+    await act(async () => q('recent-push-dismiss')?.click())
+    await settle()
+    expect([...host.querySelectorAll('[data-testid="recent-push-branch"]')].map((e) => e.textContent)).toEqual(['feature/x'])
+    expect(s.asked).toEqual([['refs/heads/second', 'refs/heads/feature/x']])
+  })
 })
