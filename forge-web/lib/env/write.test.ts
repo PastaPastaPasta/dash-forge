@@ -18,7 +18,7 @@ import { decodeSnapshot, encodeSnapshot, type Audience, type EnvVar, type Snapsh
 import { openSnapshot, sealLetterSnapshot } from './codec'
 import { applySet, changeSummary, draftOf, markChangedNames, parseDotenv, planSave, saveNotes, saveNoteText } from './edit'
 import { currentOf, readEnvironments, type EnvBook, type EnvKeys, type EnvManifest, type EnvSources } from './loader'
-import { planMemberChange, runMemberChange, type MemberChange, type MemberEnvIO } from './member-change'
+import { MemberChangeFailed, planMemberChange, runMemberChange, type MemberChange, type MemberEnvIO } from './member-change'
 import { notUpdatedLine, outcomeLine, pinLine, planHeadline } from './plan-view'
 import { membersAfter } from './regroup'
 import { resolvePeople } from './view'
@@ -284,6 +284,28 @@ describe('member changes save environments again', () => {
     // mara's values stay, now saved by the owner for the maintainers as they are
     expect(await valuesFor(chain, owner, 'production')).toEqual({ DB: 'p2' })
     expect(await valuesFor(chain, mara, 'production')).toBeNull()
+  })
+
+  it('a change that fails after its membership landed still saves the environments for the members as they are', async () => {
+    const chain = new Chain()
+    await save(chain, owner, 'staging', G('writers'), { DB: 's' })
+    const plan = await planMemberChange(ioFor(chain, owner), { kind: 'grant', member: dana.id, role: 'writer' }, owner.id, owner.id, false)
+    const run = runMemberChange(ioFor(chain, owner), saverFor(chain, owner), plan, owner.id, async () => {
+      chain.members = membersAfter(chain.members, dana.id, 'writer', true)
+      throw new Error('the key share was refused')
+    })
+    await expect(run).rejects.toBeInstanceOf(MemberChangeFailed)
+    await run.catch((e: MemberChangeFailed) => expect(e.saves.map((o) => o.kind)).toEqual(['saved']))
+    expect(await valuesFor(chain, dana, 'staging')).toEqual({ DB: 's' })
+  })
+
+  it('a change that fails before anything landed saves nothing and fails as it did', async () => {
+    const chain = new Chain()
+    await save(chain, owner, 'staging', G('writers'), { DB: 's' })
+    const plan = await planMemberChange(ioFor(chain, owner), { kind: 'grant', member: dana.id, role: 'writer' }, owner.id, owner.id, false)
+    const writes = chain.writes
+    await expect(runMemberChange(ioFor(chain, owner), saverFor(chain, owner), plan, owner.id, async () => { throw new Error('consent missing') })).rejects.toThrow('consent missing')
+    expect(chain.writes).toBe(writes)
   })
 
   it('a change after a failed save finishes it: plans compare actual recipients', async () => {

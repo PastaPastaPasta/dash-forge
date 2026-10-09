@@ -213,6 +213,25 @@ export class MemberChangeFailed extends Error {
   }
 }
 
+/**
+ * After a change that failed part way: the environments `plan` would save again, planned against
+ * the members a fresh read shows (whatever of the change landed), and saved. Best effort: a read
+ * that fails saves nothing (Settings → Environments lists what still needs saving).
+ */
+async function regroupAsTheyAre(io: MemberEnvIO, saver: EnvSaver, plan: MemberEnvPlan, owner: string): Promise<SaveOutcome[]> {
+  if (plan.regroup.length === 0) return []
+  try {
+    const [book, members] = await Promise.all([io.read(), io.members()])
+    const left = !members.some((m) => m.identity === plan.change.member)
+    const people = await peopleKeys(io, book, owner, saver.me, members, members)
+    const envs = new Set(plan.regroup.map((p) => p.env))
+    const regroup = planRegroup(book, people, saver.me, members, left ? plan.change.member : null)
+    return (await savePins(io, saver, regroup.pins.filter((p) => envs.has(p.env)))).outcomes
+  } catch {
+    return []
+  }
+}
+
 /** Read until `ready` holds for a read (or the attempts run out): the last read, or null when none succeeded. */
 async function readUntil(io: MemberEnvIO, ready: (b: EnvBook) => boolean): Promise<EnvBook | null> {
   let book: EnvBook | null = null
@@ -248,8 +267,12 @@ export async function runMemberChange(
   try {
     await doChange()
   } catch (e) {
-    if (first.outcomes.length === 0) throw e
-    throw new MemberChangeFailed(e, first.outcomes)
+    // Part of a change may have landed before it failed (a membership document written, its key
+    // share refused): the planned environments are saved for the members as they actually are now.
+    const recovered = await regroupAsTheyAre(io, saver, plan, owner)
+    const saves = [...first.outcomes, ...recovered]
+    if (saves.length === 0) throw e
+    throw new MemberChangeFailed(e, saves)
   }
   // A removed maintainer's snapshots stop counting only once a read no longer lists them: a
   // node a block behind would still predict the old heads and every save would be skipped.
