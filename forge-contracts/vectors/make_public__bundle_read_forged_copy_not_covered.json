@@ -1,0 +1,45 @@
+{
+  "name": "bundle_read_forged_copy_not_covered",
+  "description": "Mallory's comment minted under the published key has its own $id: no entry names it, so it stays members-only (and members refuse it).",
+  "case": "make_public",
+  "rules": "v2",
+  "input": {
+    "op": "bundleRead",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "visibility": "public",
+    "maintainers": [
+      "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"
+    ],
+    "bundles": [
+      {
+        "owner": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+        "bytes": "4446525601000101ed207edd7c7766627b8cd4fdf8a189c1369d179b25833a353b101a0ab98d39ab000000014faf51f6930dfb44ded0de72f22d0bd0233a50c420b375ece2ce3edc56fb6958"
+      }
+    ],
+    "docs": [
+      {
+        "doc": {
+          "type": "comment",
+          "vis": "public",
+          "ownerId": "9999999999999999999999999999999999999999999999999999999999999999",
+          "epoch": 0,
+          "targetId": "3333333333333333333333333333333333333333333333333333333333333333",
+          "id": "c416612c56ee28fe01411e07a19a921e924e82ca2254189c31fee13256a16136"
+        },
+        "enc": "03000102030405060708090a0bf9a7fa2b8dc201ec7c98681cdcfcfdd62d0c8514308e08b3254c75e528853e9f68c2eb64b2adcf90cb848b4ae9208fb537ee0cb4d2338b7bf295a319cd513e2d2144d0891f4588182635957834ce89db33640789703539675c630fe4e0e9e4405f190f19da2cc1b47df43b5eb3dedfcf",
+        "revision": 1
+      }
+    ]
+  },
+  "expected": {
+    "reads": [
+      {
+        "id": "c416612c56ee28fe01411e07a19a921e924e82ca2254189c31fee13256a16136",
+        "revision": 1,
+        "state": "none"
+      }
+    ],
+    "alerts": []
+  }
+}

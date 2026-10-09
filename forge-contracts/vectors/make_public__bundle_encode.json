@@ -1,0 +1,26 @@
+{
+  "name": "bundle_encode",
+  "description": "A maintainer's bundle: DFRV, version 1, two document entries (type, $id, $revision, K_obj), no note.",
+  "case": "make_public",
+  "rules": "v2",
+  "input": {
+    "op": "bundleEncode",
+    "entries": [
+      {
+        "kind": 2,
+        "target": "9a68370102a0b7296ccdc73da668530e8daff36d2ef53e8ccc54e83a6c0ea821",
+        "revision": 1,
+        "key": "7cd697eab0a0d58579c755ff10e3b24e64755c46df6f3c9fd33e8335fd7f1ce1"
+      },
+      {
+        "kind": 1,
+        "target": "ed207edd7c7766627b8cd4fdf8a189c1369d179b25833a353b101a0ab98d39ab",
+        "revision": 1,
+        "key": "4faf51f6930dfb44ded0de72f22d0bd0233a50c420b375ece2ce3edc56fb6958"
+      }
+    ]
+  },
+  "expected": {
+    "bytes": "44465256010002029a68370102a0b7296ccdc73da668530e8daff36d2ef53e8ccc54e83a6c0ea821000000017cd697eab0a0d58579c755ff10e3b24e64755c46df6f3c9fd33e8335fd7f1ce101ed207edd7c7766627b8cd4fdf8a189c1369d179b25833a353b101a0ab98d39ab000000014faf51f6930dfb44ded0de72f22d0bd0233a50c420b375ece2ce3edc56fb6958"
+  }
+}

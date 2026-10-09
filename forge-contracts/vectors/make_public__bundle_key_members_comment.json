@@ -1,0 +1,24 @@
+{
+  "name": "bundle_key_members_comment",
+  "description": "A member derives the comment's K_obj under the epoch key (PRK_e, the nonce and SHA-256(AD)) and checks it against the commitment: the key a bundle entry publishes.",
+  "case": "make_public",
+  "rules": "v2",
+  "input": {
+    "op": "bundleKey",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "doc": {
+      "type": "comment",
+      "vis": "public",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "targetId": "3333333333333333333333333333333333333333333333333333333333333333",
+      "id": "ed207edd7c7766627b8cd4fdf8a189c1369d179b25833a353b101a0ab98d39ab"
+    },
+    "enc": "03000102030405060708090a0bf9a7fa2b8dc201ec7c98681cdcfcfdd62d0c8514308e08b3254c75e528853e9f68c2c84f9892eab0fdb7a611874cf68f179a64d1f255e203d2fcd039a43f1e5e4427ffea6920a5296635807834ce89db33640789703539675c630fe4e0e9e440fa0941eba61eeb6f2957e4f93ebbccfe",
+    "epochKey": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "epoch": 0
+  },
+  "expected": {
+    "kObj": "4faf51f6930dfb44ded0de72f22d0bd0233a50c420b375ece2ce3edc56fb6958"
+  }
+}

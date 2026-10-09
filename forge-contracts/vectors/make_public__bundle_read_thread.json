@@ -1,0 +1,92 @@
+{
+  "name": "bundle_read_thread",
+  "description": "A whole thread in one bundle: the issue, a comment and a review.",
+  "case": "make_public",
+  "rules": "v2",
+  "input": {
+    "op": "bundleRead",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "visibility": "public",
+    "maintainers": [
+      "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"
+    ],
+    "bundles": [
+      {
+        "owner": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+        "bytes": "44465256010003029a68370102a0b7296ccdc73da668530e8daff36d2ef53e8ccc54e83a6c0ea821000000017cd697eab0a0d58579c755ff10e3b24e64755c46df6f3c9fd33e8335fd7f1ce101ed207edd7c7766627b8cd4fdf8a189c1369d179b25833a353b101a0ab98d39ab000000014faf51f6930dfb44ded0de72f22d0bd0233a50c420b375ece2ce3edc56fb695803cabdad88b6ee0675460bc62bbadf9c9636737724a7010f1159ff714e860b0888000000016d31a85d5024f7902e765ed5c5fdbec7fcbe519af60f2b0a79807d0123173a5a"
+      }
+    ],
+    "docs": [
+      {
+        "doc": {
+          "type": "issue",
+          "vis": "public",
+          "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+          "epoch": 0,
+          "number": 7,
+          "id": "9a68370102a0b7296ccdc73da668530e8daff36d2ef53e8ccc54e83a6c0ea821"
+        },
+        "enc": "03000102030405060708090a0b0509e03d972f69352a14741ce54b415865c97d7c75531b8f21f8be7fccbe453bfaa76807fe1bc9f4e63cfdd3bb2fd9bd690c6fe2bcd6c34bbae141c0cc2cb19833cd4078740863c5e92a7056a588eb236d2ff4e49b1362edb7e579e4a15e7c01201e53161876d3bc0444d0468b6b625e",
+        "revision": 1
+      },
+      {
+        "doc": {
+          "type": "comment",
+          "vis": "public",
+          "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+          "epoch": 0,
+          "targetId": "3333333333333333333333333333333333333333333333333333333333333333",
+          "id": "ed207edd7c7766627b8cd4fdf8a189c1369d179b25833a353b101a0ab98d39ab"
+        },
+        "enc": "03000102030405060708090a0bf9a7fa2b8dc201ec7c98681cdcfcfdd62d0c8514308e08b3254c75e528853e9f68c2c84f9892eab0fdb7a611874cf68f179a64d1f255e203d2fcd039a43f1e5e4427ffea6920a5296635807834ce89db33640789703539675c630fe4e0e9e440fa0941eba61eeb6f2957e4f93ebbccfe",
+        "revision": 1
+      },
+      {
+        "doc": {
+          "type": "review",
+          "vis": "public",
+          "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+          "epoch": 0,
+          "patchId": "4444444444444444444444444444444444444444444444444444444444444444",
+          "id": "cabdad88b6ee0675460bc62bbadf9c9636737724a7010f1159ff714e860b0888"
+        },
+        "enc": "03000102030405060708090a0b09cd070e622d12ef50c0b0e0eb2eb9321db57973797d09f90d2e03025be661dcc54833dfe82100f0012aa20a6eb56d3a898cfe6b009f13769f3116873457dc5b95eba251a75423034628377a368c757bdc1c2cd173b7cc702391cdcfbdadc9ff5a931c611d430911f0d0b78984d4370f",
+        "revision": 1
+      }
+    ]
+  },
+  "expected": {
+    "reads": [
+      {
+        "id": "9a68370102a0b7296ccdc73da668530e8daff36d2ef53e8ccc54e83a6c0ea821",
+        "revision": 1,
+        "state": "public",
+        "by": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+        "fields": {
+          "title": "Rotate the signing key",
+          "body": "See the runbook."
+        }
+      },
+      {
+        "id": "ed207edd7c7766627b8cd4fdf8a189c1369d179b25833a353b101a0ab98d39ab",
+        "revision": 1,
+        "state": "public",
+        "by": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+        "fields": {
+          "body": "members-only: the fix is in sec/cve-1"
+        }
+      },
+      {
+        "id": "cabdad88b6ee0675460bc62bbadf9c9636737724a7010f1159ff714e860b0888",
+        "revision": 1,
+        "state": "public",
+        "by": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+        "fields": {
+          "body": "Blocking: the token is logged."
+        }
+      }
+    ],
+    "alerts": []
+  }
+}
