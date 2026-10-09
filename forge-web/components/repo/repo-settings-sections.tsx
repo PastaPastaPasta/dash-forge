@@ -838,7 +838,7 @@ function RequiredChecksEditor({
         Required checks by name
       </p>
       <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-        Each must be reported on the PR head and pass. Once any are named, only these are required, ticked above or not. Up to {MAX_REQUIRED_CHECKS}.
+        Each must be reported on the PR head and pass. Once any are listed, only these are required, ticked above or not. Up to {MAX_REQUIRED_CHECKS}.
       </p>
       <label className="mt-2 flex items-start gap-2 coarse:min-h-11">
         <input type="checkbox" className="mt-0.5 h-4 w-4 accent-forge-700" checked={draft.pinned} onChange={(e) => onChange({ ...draft, pinned: e.target.checked })} data-testid="pin-sources" />

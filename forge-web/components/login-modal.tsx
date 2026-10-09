@@ -661,7 +661,7 @@ function ImportView({ onDone, onStored, renew = false }: { onDone: () => void; o
     setEnablePrivate(dropsEncryption || wantsPrivate)
   }, [dropsEncryption, wantsPrivate])
   // The renewal of a tab that holds the encryption key carries it to the new key by itself: no
-  // choice to offer (QW3-031: "Enable private repos" showed unticked although key 4 was kept).
+  // choice to offer (QW3-031: the encryption-key box showed unticked although key 4 was kept).
   const carriesEncryption = previous?.encryptionKey === true && !dropsEncryption && who === identity
 
   const onFile = async (file: File): Promise<void> => {
@@ -825,7 +825,7 @@ function ImportView({ onDone, onStored, renew = false }: { onDone: () => void; o
       <KeyLifetimeSelect id="import-days" value={days} onChange={setDays} />
       {carriesEncryption ? (
         <p className="rounded-md border border-anvil-200 p-3 text-dense dark:border-anvil-800" data-testid="import-carries-encryption">
-          <span className="font-medium">Private repos stay enabled.</span>{' '}
+          <span className="font-medium">Members-only and private content stays readable.</span>{' '}
           <span className="text-anvil-600 dark:text-anvil-300">The encryption key this browser holds moves to the new key.</span>
         </p>
       ) : (

@@ -85,7 +85,13 @@ dg env mark-changed <owner>/<repo> --env dev          # old-format values were c
 
 ## In the web app
 
-The repository's **Settings → Environments** page shows the environments you can read, read-only. Change them with `dg env`.
+The repository's **Settings → Environments** page shows the environments you can read. A maintainer whose tab holds their encryption key also changes them there, as `dg env` does; anyone else reads only.
+
+- **New environment** asks for a name, who can read it and its values. Nothing is selected and **Save** stays disabled until you choose one: Maintainers, Writers and maintainers, All members (each with how many people it is now), or Specific people… (you are always included). **Also give access to…** adds people beside a group, such as a CI bot. A group over 64 people is refused: "All members is 80 people. An environment can be shared with at most 64. Choose a smaller group or specific people."
+- **Edit values** adds, changes and removes entries. A saved value never appears in a field: leave it empty to keep it, type to replace it. **Import a .env file** reads the file in your browser only (the same format `dg env import` reads) and fills in the entries; nothing is saved until you save.
+- **Change who can read this** saves it again for the people you choose. Earlier versions stay readable by whoever could read them.
+- **Save it again** appears where an environment misses someone or is in the old format, and **Mark changed** where values from old-format versions are still to be changed. On a conflict, **Keep this version** keeps one.
+- Every change shows what it saves, for whom ("Save production for Maintainers, sent to 3 people (~ DB_URL)?") and its cost before anything is signed.
 
 - Each environment shows its audience, the people it was sent to, its entries and who saved the version in use, and when. An environment saved in the old format shows the note above. Values are hidden. The eye button shows one value at a time (showing another hides it), on this page only: it isn't stored or logged, and it's hidden again when you leave the page or switch to another tab.
 - Environments you can't read are only counted: "2 environments", or "1 more environment you can't read" below the ones you can, with "An environment in this repo hasn't been shared with you. If you should have access, ask a maintainer to save it again." Maintainers see exactly who is missing: "dana is a writer, but staging hasn't been saved since."
@@ -157,7 +163,9 @@ Changes saved by someone who wasn't a maintainer are ignored, but they stay on P
 
 ### On the web
 
-Any member change in a repository that has environments needs the steps above, which the web app doesn't take yet. It refuses before anything is signed or paid for, with "This repo has environments. Add, remove or change members with dg for now." Use `dg collab add` and `dg collab remove`.
+**Settings → Members** takes the same steps. Adding, removing, promoting or demoting someone shows, in the confirmation and before anything is signed, which environments are saved again, for whom, and the cost: "Adding dana as a writer gives them access to 2 environments: staging, ci. Saving them again costs about 0.004 DASH." The button then reads **Save and add** (or change, or remove). Environments you can't open are listed with who to ask. A removal lists the values the member could read; afterwards each environment has **Mark changed**, which opens it with those values to replace, and drops off the list once they're changed.
+
+The web needs your encryption key, unlocked in the tab, to make a member change in a repository with environments; without it the change is refused before anything is signed. If a change fails part way (the membership saved, the key share refused), the environments it planned are saved for the members as they are, and Settings → Environments lists anything still to save.
 
 ## What is public
 

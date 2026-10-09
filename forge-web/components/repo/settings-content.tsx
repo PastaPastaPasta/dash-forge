@@ -13,7 +13,7 @@ import { Fingerprint, HardDrive, ShieldPlus, UserCog } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import type { RepoRef } from '@/lib/repo'
 import type { PrivateSession } from '@/lib/repo/private-session'
-import { ConsentMissingError, changeMemberRole, grantMember, invalidateMembers, memberDocOf, readMembershipsCached, repoContractIds, revokeMember } from '@/lib/repo'
+import { ConsentMissingError, changeMemberRole, findConsent, grantMember, invalidateMembers, memberDocOf, readMembershipsCached, repoContractIds, revokeMember } from '@/lib/repo'
 import { addMemberCost, planRotation, removalCost, removalEffect, roleChangeCost } from '@/lib/repo/private-members'
 import { usePrivateWrite } from '@/hooks/use-private-write'
 import { ConsentCheck, Invitations, mayAdd, useInviteAccepted } from '@/components/repo/invite-banner'
@@ -40,7 +40,8 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 import { ErrorState, LoadingBlock } from '@/components/ui/states'
 import { RepoStoragePolicy } from '@/components/storage/repo-storage-policy'
 import { PrivateMembers } from '@/components/repo/private-members'
-import { EnvironmentsRemoval } from '@/components/repo/environments-content'
+import { MemberEnvOutcomeView, MemberEnvPlanView, useMemberEnvFlow } from '@/components/repo/member-env-plan'
+import type { MemberChange } from '@/lib/env/member-change'
 import { SettingsReadOnly } from '@/components/repo/settings-read-only'
 import { PrivateRepoState } from '@/components/repo/private-repo-state'
 import { WebhookSettings } from '@/components/repo/webhook-settings'
@@ -138,36 +139,48 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
   const consent = useInviteAccepted(repo, isOwner && repo.visibility !== 'private' ? typed : null)
   // A key-aware change needs this tab's encryption key: offer the unlock instead of failing on it.
   const keyBlock = useMembersKeyBlock(keyed && action !== null, network)
+  // Environments (DESIGN §4.5, D34): every member change saves the ones whose people it changes
+  // again, planned and priced here before signing, made around the change.
+  const envChange: MemberChange | null =
+    action === null ? null : action.kind === 'change' ? { kind: 'change', member: action.member, role: action.role, to: action.to } : { kind: action.kind, member: action.member, role: action.role }
+  const envFlow = useMemberEnvFlow(home, envChange, action?.kind === 'revoke' && keyed && holdsMembersKey(action.role))
   const runAction = async (intent: string): Promise<void> => {
     if (!sdk || !signer || !action) throw new Error('sign in to continue')
+    const planned = envFlow.plan !== null
+    // their consent is gone or not given yet: nothing about the membership was signed
+    let awaitingConsent = false
+    const consentMissing = (e: unknown): never => {
+      if (e instanceof ConsentMissingError) awaitingConsent = true
+      throw e
+    }
+    try {
+      await envFlow.run(async () => {
+        if (action.kind === 'change') {
+          const changed = await changeMemberRole(sdk, signer, repo, action.member, action.role, action.to, intent, ops, planned).catch(consentMissing)
+          setNoKeyYet(changed.keyShared === false ? action.member : null)
+        } else if (action.kind === 'grant') {
+          const granted = await grantMember(sdk, signer, repo, action.member, action.role, intent, ops, planned).catch(consentMissing)
+          setNoKeyYet(granted.keyShared === false ? action.member : null)
+        } else {
+          await revokeMember(sdk, signer, repo, action.member, action.role, intent, ops, planned)
+        }
+      }, async () => {
+        // what would refuse an add before signing, checked before any environment is saved first
+        if (action.kind !== 'revoke' && action.member !== repo.ownerId && (await findConsent(sdk, repo, action.member)) === null) consentMissing(new ConsentMissingError(action.member))
+      })
+    } catch (e) {
+      if (!awaitingConsent) throw e
+      // The invitation is pending on them instead of an error.
+      setAwaiting(action.member)
+      setAction(null)
+      if (action.kind === 'grant') consent.recheck()
+      return
+    }
     if (action.kind === 'change') {
-      try {
-        const changed = await changeMemberRole(sdk, signer, repo, action.member, action.role, action.to, intent, ops)
-        setNoKeyYet(changed.keyShared === false ? action.member : null)
-      } catch (e) {
-        if (!(e instanceof ConsentMissingError)) throw e
-        // Nothing was signed: their consent is gone, so the change waits on them accepting again.
-        setAwaiting(action.member)
-        setAction(null)
-        return
-      }
       setChanging(null)
     } else if (action.kind === 'grant') {
-      try {
-        const granted = await grantMember(sdk, signer, repo, action.member, action.role, intent, ops)
-        setNoKeyYet(granted.keyShared === false ? action.member : null)
-      } catch (e) {
-        if (!(e instanceof ConsentMissingError)) throw e
-        // Nothing was signed: show the invitation as pending on them instead of an error.
-        setAwaiting(action.member)
-        setAction(null)
-        consent.recheck()
-        return
-      }
       setAwaiting(null)
       setMemberId('')
-    } else {
-      await revokeMember(sdk, signer, repo, action.member, action.role, intent, ops)
     }
     // The members key changed hands: re-read the repo's key state (the page stays up meanwhile).
     if (keyed) write.done()
@@ -267,7 +280,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
         ) : isOwner && repo.visibility === 'private' ? (
           <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
             Adding or removing a member of a private repo hands out or rotates its key: add your encryption key to this browser
-            (Settings → Private repos) to manage members.
+            (Settings → Members-only and private content) to manage members.
           </p>
         ) : isOwner ? (
           <div className="mt-4 rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
@@ -343,7 +356,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
                   ? 'Removes them from this repo and changes the key to its members-only content.'
                   : 'Removes them from this repo. Their past pushes and comments stay. Anything new they try is refused.'
           }
-          cost={
+          cost={envFlow.cost(
             action === null
               ? previewCreate('writer')
               : action.kind === 'revoke'
@@ -354,26 +367,23 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
                   ? roleChangeCost(action.role, action.to)
                   : keyed
                     ? addMemberCost(action.role)
-                    : previewCreate(memberDocOf(action.role))
+                    : previewCreate(memberDocOf(action.role)),
+          )}
+          confirmLabel={
+            action?.kind === 'grant' ? envFlow.confirmLabel('Sign & add', 'add') : action?.kind === 'change' ? envFlow.confirmLabel('Sign & change', 'change') : envFlow.confirmLabel('Sign & remove', 'remove')
           }
-          confirmLabel={action?.kind === 'grant' ? 'Sign & add' : action?.kind === 'change' ? 'Sign & change' : 'Sign & remove'}
-          blocked={keyBlock}
+          blocked={envFlow.blocked ?? keyBlock}
           onConfirm={runAction}
         >
-          {/* What they could read: members-only discussion and the repo's environments, to change
-              where they're used. Nothing is listed when they keep a role that holds the key. Every
-              member change (add, remove, promote, demote) is refused while the repo has
-              environments, before anything is signed: dg plans it and saves them again. */}
+          {/* What they could read: members-only discussion. Nothing is listed when they keep a
+              role that holds the key. */}
           {action?.kind === 'revoke' && keyed && removalEffect(memberRows, action.member, action.role) !== 'none'
             ? <RemovalReads lane={keyed} />
             : null}
-          {action?.kind === 'revoke' && action.role !== 'maintainer' ? <EnvironmentsRemoval
-                  home={home}
-                  member={action.member}
-                  heldMembersKey={keyed && holdsMembersKey(action.role)}
-                  staysMaintainer={removalEffect(memberRows, action.member, action.role) === 'none'}
-                /> : null}
+          {/* The environments the change saves again, for whom, what it can't, and a removal's checklist. */}
+          <MemberEnvPlanView flow={envFlow} />
         </ConfirmDialog>
+        <MemberEnvOutcomeView home={home} flow={envFlow} />
         </>
         )}
       </Section>

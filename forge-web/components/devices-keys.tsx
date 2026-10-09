@@ -261,7 +261,7 @@ function LostDevice(): JSX.Element {
             browser can&apos;t do this yet.
           </p>
         </li>
-        <li>On your other devices, sign in again or add the new encryption key from your recovery phrase (Settings → Private repos).</li>
+        <li>On your other devices, sign in again or add the new encryption key from your recovery phrase (Settings → Members-only and private content).</li>
       </ol>
       <a
         href={`${DOCS.identity}#replacing-it-after-a-lost-device`}

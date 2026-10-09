@@ -150,7 +150,7 @@ dg repo keys status <you>/secret                # key changes, who holds a key, 
 
 Leave the description empty if the project's purpose is itself sensitive.
 
-**Every member needs an encryption key.** Private repositories wrap the key to each member's identity `ENCRYPTION` key. `dg collab add` checks the member has one and stops before writing anything if not ([`E306`](../errors.md#e306)); they add one with `dg auth keys add --encryption`, or **Settings → Private repos → Enable private repos** in the web app.
+**Every member needs an encryption key.** Private repositories wrap the key to each member's identity `ENCRYPTION` key. `dg collab add` checks the member has one and stops before writing anything if not ([`E306`](../errors.md#e306)); they add one with `dg auth keys add --encryption`, or **Settings → Members-only and private content** in the web app.
 
 **Read access.** Someone with the Read role (`--role reader`) holds the key like any member and can read everything, and can write only what anyone can (issues, PRs, comments and comment-only reviews, all encrypted); they cannot approve or request changes. Like any member, they could copy what they read.
 
