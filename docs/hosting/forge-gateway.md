@@ -110,7 +110,7 @@ Every setting is a flag (`forge-gateway --help`) and an environment variable. Em
 | `GATEWAY_ALL_PUBLIC` | `false` (compose: `true`) | Serve any public repository on demand. |
 | `GATEWAY_REPOS` | none | `owner/name` list: mirrored at start, kept warm, never evicted (and the only ones served without `GATEWAY_ALL_PUBLIC`). |
 | `GATEWAY_CACHE_MAX` | `20G` | Disk cap for all mirrors; the least recently served are evicted above it. |
-| `GATEWAY_REPO_MAX` | `2G` | The largest repository mirrored (its recorded packs). Larger ones answer `403` and point at `dash://`. |
+| `GATEWAY_REPO_MAX` | `2G` | The largest repository mirrored (its recorded git packs). Larger ones answer `403` and point at `dash://`. |
 | `GATEWAY_POLL_SECS` | `120` | How often a warm mirror is checked against Platform. A check whose refs did not move costs a few proved reads and no fetch. |
 | `GATEWAY_WARM_HOURS` | `24` | A mirror served within this window is polled; older ones refresh on their next request. The time of the last serve survives a restart (a `forge-gateway-served` file in the mirror); a refresh alone never makes a mirror warm. |
 | `GATEWAY_WAKE_URL` | none | A forge-relay whose `[wake]` stream announces pushes. |
