@@ -89,14 +89,21 @@ describe('headProbeQuery: one composite, every component newest first', () => {
       ['CORE', 'refUpdate', 1],
       ['CORE', 'protectedRefUpdate', 1],
     ])
-    // A composite merges only components that walk one way (rs-drive composite "Direction").
-    for (const s of q.subQueries) expect(s.orderBy).toEqual([['$createdAt', 'desc']])
-    expect(q.subQueries[1]!.where).toEqual([['repoId', '==', REPO], ['refNameHash', '==', HASH]])
+    // A composite merges only components that walk one way (rs-drive composite "Direction"), and
+    // Drive walks an all-`==` query ascending whatever its order says: every component descends
+    // on a `$createdAt` range.
+    for (const s of q.subQueries) {
+      expect(s.orderBy).toEqual([['$createdAt', 'desc']])
+      expect(s.where?.some(([f, op]) => f === '$createdAt' && (op === '>' || op === '>='))).toBe(true)
+    }
+    // The branch's updates past the one the page's state came from.
+    expect(q.subQueries[1]!.where).toEqual([['repoId', '==', REPO], ['refNameHash', '==', HASH], ['$createdAt', '>', 90]])
+    expect(headProbeQuery(base({ branch: { repo, refName: REF, known: null } }))!.subQueries[1]!.where?.at(-1)).toEqual(['$createdAt', '>', 0])
   })
 
   it('reads the fork for a fork PR, and leaves out what cannot be read', () => {
     const fork: RepoRef = { ...repo, repoId: FORK }
-    expect(headProbeQuery(base({ branch: { repo: fork, refName: REF, known: null } }))!.subQueries[1]!.where).toEqual([['repoId', '==', FORK], ['refNameHash', '==', HASH]])
+    expect(headProbeQuery(base({ branch: { repo: fork, refName: REF, known: null } }))!.subQueries[1]!.where).toEqual([['repoId', '==', FORK], ['refNameHash', '==', HASH], ['$createdAt', '>', 0]])
     // No branch: the events alone (a page and one sibling).
     expect(headProbeQuery(base({ branch: null }))!.subQueries).toHaveLength(1)
     // No mark: the branch alone.
@@ -141,6 +148,13 @@ describe('probeHead: what counts as a new push', () => {
     // An authorEvent by someone other than the PR's author never applies (foldPrReviewV2).
     const stranger = await probe(base({ branch: null }), store([], [event('h1', 130, 16, 'someone', TIP)]))
     expect(stranger.out.found).toBeNull()
+  })
+
+  it('takes the fold’s newest head update: a move away and back again is no move', async () => {
+    const { out } = await probe(base({ branch: null }), store([event('h1', 130, 16, MAINTAINER, TIP)], [event('h2', 140, 16, AUTHOR, HEAD)]))
+    expect(out.found).toBeNull()
+    const moved = await probe(base({ branch: null }), store([event('h1', 140, 16, MAINTAINER, TIP)], [event('h2', 130, 16, AUTHOR, HEAD)]))
+    expect(moved.out.found?.tip).toBe(TIP)
   })
 
   it('ignores the events the page read, other kinds, and a head update naming the head shown', async () => {

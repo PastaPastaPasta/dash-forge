@@ -130,12 +130,27 @@ describe('useHeadProbe', () => {
     expect((probe.probeHead.mock.calls[1]![1] as ProbeBase).announced?.has('r1')).toBe(true)
   })
 
-  it('dismiss clears the finding', async () => {
+  it('dismiss (Refresh) clears the finding and probes again, even when the re-read changes nothing', async () => {
     probe.probeHead.mockResolvedValueOnce({ found: PUSH, events: null })
     await render()
     await advance(PROBE_MS)
     await act(async () => state.dismiss())
     expect(state.found).toBeNull()
+    await advance(PROBE_MS)
+    expect(probe.probeHead).toHaveBeenCalledTimes(2)
+  })
+
+  it('a refused composite drops the branch from the probe; a second refusal stops it', async () => {
+    probe.probeHead.mockImplementation(async (_sdk: unknown, _b: ProbeBase, opts: { onFallback?: () => void }) => {
+      opts.onFallback?.()
+      return nothing
+    })
+    await render()
+    await advance(PROBE_MS)
+    await advance(PROBE_MS)
+    expect((probe.probeHead.mock.calls[1]![1] as ProbeBase).branch).toBeNull()
+    await advance(PROBE_MS * 5)
+    expect(probe.probeHead).toHaveBeenCalledTimes(2)
   })
 
   it('passes the advanced event mark to the next probe', async () => {

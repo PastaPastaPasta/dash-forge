@@ -23,7 +23,8 @@
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
-import { isPlainBranchRef, type RefState } from '../rules'
+import { isPlainBranchRef, type Event, type RefState } from '../rules'
+import { mergedLog } from '../rules/review'
 import { bytesToBase64, type DocumentQuery, type OrderByClause, type PlainDocument, type WhereClause } from '../sdk'
 import { compositeOf, docsAt, queryComposite, type CompositeQuery, type CompositeResult, type CompositeSub } from '../sdk/composite'
 import { DOC, byteFieldToHex, num, str, toEvent, type RepoRef } from './contract'
@@ -122,7 +123,11 @@ export function headProbeQuery(base: ProbeBase): CompositeQuery | null {
   }
   if (base.branch !== null) {
     const source = repoSource(base.branch.repo)
-    const where: WhereClause[] = [['refNameHash', '==', bytesToBase64(refNameHash(base.branch.refName))]]
+    // The range is what makes the walk descend: Drive walks a query whose clauses are all `==`
+    // ascending, whatever its order asks (`pageWalk` in lib/view/discovery.ts), and a sibling
+    // that walks the other way than the page is refused ("a sibling sub-query's ordering must
+    // match the page's direction"). It also leaves out the updates the page's state came from.
+    const where: WhereClause[] = [['refNameHash', '==', bytesToBase64(refNameHash(base.branch.refName))], ['$createdAt', '>', knownAt(base.branch.known)]]
     // One row of each type: the branch's newest update (the page holds the rest).
     parts.push({ q: source.repoQuery(DOC.refUpdate, { where, orderBy: NEWEST }), limit: 1 }, { q: source.repoQuery(DOC.protectedRefUpdate, { where, orderBy: NEWEST }), limit: 1 })
   }
@@ -136,6 +141,12 @@ export function headProbeQuery(base: ProbeBase): CompositeQuery | null {
     limit,
   }))
   return compositeOf(page.q, page.limit, subs)
+}
+
+/** When the newest update the page's branch state came from was created (0: none known). */
+function knownAt(known: RefState | null): number {
+  if (known?.state === 'resolved') return known.createdAt
+  return known?.state === 'diverged' ? Math.max(0, ...known.heads.map((h) => h.createdAt)) : 0
 }
 
 const isZero = (oid: string): boolean => /^0*$/.test(oid)
@@ -161,16 +172,15 @@ export function interpretProbe(base: ProbeBase, res: CompositeResult): ProbeOutc
   if (base.events !== null) {
     const known = new Set(base.events.ids)
     const [plain = [], author = []] = parts
-    const fresh = [...plain.map((d) => ({ d, member: true })), ...author.map((d) => ({ d, member: false }))].filter(({ d }) => !known.has(str(d, '$id')))
-    for (const { d, member } of fresh) {
-      const e = toEvent(d)
-      if (e === null || e.kind !== HEAD_UPDATE || (!member && e.actor !== base.author)) continue
-      const oid = (e.oid ?? '').toLowerCase()
-      if (!/^[0-9a-f]{40}$|^[0-9a-f]{64}$/.test(oid) || same(oid, base.headOid)) continue
-      if (e.createdAt >= at) {
-        at = e.createdAt
-        headTip = oid
-      }
+    const fresh = (docs: PlainDocument[]): Event[] => docs.filter((d) => !known.has(str(d, '$id'))).flatMap((d) => toEvent(d) ?? [])
+    // The fold's newest applied head update, in its order (`mergedLog`: `(createdAt, id)`, an
+    // `event` before an `authorEvent` at equal keys): news only when it names another head than
+    // the page's (a move away and back again is no move).
+    const updates = mergedLog(fresh(plain), fresh(author), base.author).filter((e) => e.kind === HEAD_UPDATE && /^[0-9a-f]{40}$|^[0-9a-f]{64}$/.test((e.oid ?? '').toLowerCase()))
+    const newest = updates.at(-1)
+    if (newest !== undefined && !same(newest.oid ?? '', base.headOid)) {
+      at = newest.createdAt
+      headTip = (newest.oid ?? '').toLowerCase()
     }
     if (headTip === null && plain.length < PROBE_EVENTS && author.length < PROBE_EVENTS) {
       const read = [...plain, ...author]

@@ -11,7 +11,9 @@
  * until the page re-reads (a new `key`): the reader's Refresh, never the timer, re-reads the PR.
  *
  * Request budget: one composite per probe (`lib/repo/head-probe.ts`), so an idle visible tab
- * makes one request a minute and a hidden tab none.
+ * makes one request a minute and a hidden tab none. A node that refuses the composite answers
+ * through plain queries (one request per component, after the refused one): the page then
+ * probes the PR's events alone, and after a second refusal stops probing.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -32,10 +34,15 @@ export const FOCUS_THROTTLE_MS = 15_000
  */
 export function useHeadProbe(sdk: EvoSDK | null, enabled: boolean, base: ProbeBase | null, key: string): { found: NewPush | null; dismiss: () => void } {
   const [found, setFound] = useState<{ key: string; push: NewPush } | null>(null)
+  // Bumped by `dismiss` (the reader's Refresh): probing starts over even when the re-read shows
+  // nothing new to key on (a branch update the resolver ignores leaves the page as it was).
+  const [round, setRound] = useState(0)
   const baseRef = useRef(base)
   baseRef.current = base
   // Ref updates announced on this page: an update the resolver ignores is not announced after every Refresh.
   const announced = useRef(new Set<string>())
+  // Composites the node refused on this page (see the module doc).
+  const refused = useRef(0)
 
   useEffect(() => {
     if (!enabled || sdk === null || baseRef.current === null) return
@@ -57,10 +64,11 @@ export function useHeadProbe(sdk: EvoSDK | null, enabled: boolean, base: ProbeBa
         timer = null
         return
       }
+      if (refused.current >= 2) return
       inFlight = true
       last = Date.now()
       try {
-        const out = await probeHead(sdk, { ...b, events, announced: announced.current })
+        const out = await probeHead(sdk, { ...b, events, announced: announced.current, ...(refused.current > 0 ? { branch: null } : {}) }, { onFallback: () => (refused.current += 1) })
         if (cancelled) return
         if (out.found !== null) {
           if (out.found.refUpdateId !== null) announced.current.add(out.found.refUpdateId)
@@ -94,9 +102,12 @@ export function useHeadProbe(sdk: EvoSDK | null, enabled: boolean, base: ProbeBa
       document.removeEventListener('visibilitychange', onShown)
       window.removeEventListener('focus', onShown)
     }
-  }, [sdk, enabled, key])
+  }, [sdk, enabled, key, round])
 
-  const dismiss = useCallback(() => setFound(null), [])
+  const dismiss = useCallback(() => {
+    setFound(null)
+    setRound((n) => n + 1)
+  }, [])
   // A finding about an older read of the page is not news about this one.
   return { found: found !== null && found.key === key ? found.push : null, dismiss }
 }
