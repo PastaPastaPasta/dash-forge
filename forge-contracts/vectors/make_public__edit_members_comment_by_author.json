@@ -1,0 +1,22 @@
+{
+  "name": "edit_members_comment_by_author",
+  "description": "The author's edit of their own members-only comment to Public: enc and epoch dropped, the body set (DESIGN §4.6).",
+  "case": "make_public",
+  "rules": "v2",
+  "input": {
+    "op": "edit",
+    "visibility": "public",
+    "stored": {
+      "kind": "comment",
+      "enc": "030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "epoch": 0
+    },
+    "edited": {
+      "kind": "comment",
+      "body": "now public"
+    },
+    "author": "alice",
+    "signer": "alice"
+  },
+  "expected": "makesPublic"
+}

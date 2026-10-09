@@ -229,10 +229,28 @@ async fn query(ctx: &Ctx, a: &crate::ApiQueryArgs) -> Result<()> {
         &a.doc_type,
         a.where_json.as_deref().unwrap_or("[]"),
     )?;
+    // Q5-D06: Drive refusing the user's clauses is a usage error (E201), not "could not reach
+    // Dash Platform"; say which indexes would fit.
+    let unindexed = |e: forge_core::Error| -> anyhow::Error {
+        use forge_core::user_error::{is_invalid_argument, is_unindexed_query, unindexed_query};
+        let text = e.to_string();
+        if is_unindexed_query(&text) {
+            let indexes = contract.index_summaries(&a.doc_type);
+            return unindexed_query(Some("query failed"), &text, &indexes).into();
+        }
+        if is_invalid_argument(&text) {
+            return UserError::new(codes::USAGE, "query failed: Platform refused the query")
+                .cause(forge_core::user_error::one_line(&text))
+                .fix("check the clauses against the type's indexes and properties: the where-clauses must fit an index, and --order must follow it")
+                .into();
+        }
+        e.into()
+    };
     if a.count {
         let n = client
             .count_documents(&contract, &a.doc_type, &filters)
-            .await?;
+            .await
+            .map_err(unindexed)?;
         crate::errors::print_raw_json(&json!({ "count": n }));
         return Ok(());
     }
@@ -240,7 +258,8 @@ async fn query(ctx: &Ctx, a: &crate::ApiQueryArgs) -> Result<()> {
     let docs = if a.all {
         let mut all = client
             .query_documents_up_to(&contract, &a.doc_type, &filters, &order, ALL_MAX)
-            .await?;
+            .await
+            .map_err(unindexed)?;
         if all.len() > ALL_MAX {
             eprintln!(
                 "note: more than {ALL_MAX} rows match; the first {ALL_MAX} are printed (narrow the clauses, or page with --start-after)"
@@ -258,7 +277,8 @@ async fn query(ctx: &Ctx, a: &crate::ApiQueryArgs) -> Result<()> {
                 a.limit,
                 a.start_after.as_deref(),
             )
-            .await?
+            .await
+            .map_err(unindexed)?
     };
     let rows: Vec<Value> = docs
         .iter()

@@ -1,0 +1,27 @@
+{
+  "name": "review_text_attached_comment",
+  "description": "The review's author's public comment attached to the review, with no anchor, carries its text.",
+  "case": "make_public",
+  "rules": "v2",
+  "input": {
+    "op": "reviewText",
+    "reviews": [
+      {
+        "id": "R1",
+        "reviewer": "bob",
+        "sealed": true
+      }
+    ],
+    "comments": [
+      {
+        "id": "C1",
+        "owner": "bob",
+        "reviewId": "R1",
+        "createdAt": 10
+      }
+    ]
+  },
+  "expected": {
+    "R1": "C1"
+  }
+}

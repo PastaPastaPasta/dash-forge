@@ -242,13 +242,17 @@ cmd('repo activity', 'One branch\'s or tag\'s activity, newest first.', {
     'events': A(O({
         'kind': E('created', 'pushed', 'forcePushed', 'updated', 'moved', 'deleted', 'diverged',
                   'protectionAdded', 'protectionLifted', 'protectionRestored'),
-        'id': S, 'at': I, 'by': nl(S), 'from': nl(S), 'to': nl(S),
+        'id': S, 'at': I,
+        'by': D('Who pushed, or for a protection change who wrote the config; null when unknown.', nl(S)),
+        'from': nl(S), 'to': nl(S),
     }, ['kind', 'id', 'at'])),
 }, ['repo', 'ref', 'events'])
 cmd('repo view', 'A repository: its refs, packs and members.', {
     'repoId': S, 'ownerId': S, 'name': S, 'description': nl(S), 'visibility': E('public', 'private'),
     'archived': D('Whether the repository is archived; null when its config could not be read.', nl(B)),
     'defaultBranch': nl(S), 'refs': A(O({'name': S, 'state': ANY}, ['name'])), 'packCount': I, 'packBytes': I, 'members': ANY, 'remoteUrl': S,
+    'securityPolicy': D('Where the default branch keeps its security policy (`.github/SECURITY.md`, `SECURITY.md` or `docs/SECURITY.md`, in that order); null when it has none or was not looked at (see securityPolicyChecked).', nl(S)),
+    'securityPolicyChecked': D('Whether the default branch\'s files were looked at. False for a private repo, a repo too large to download for this and a failed look; then a null securityPolicy means unknown.', B),
 }, ['repoId', 'ownerId', 'name', 'visibility'])
 cmd('repo list', 'An identity\'s repositories.', {
     'ownerId': S, 'count': I, 'repos': A(O({'name': S, 'repoId': S, 'description': nl(S)}, ['name', 'repoId'])),
@@ -304,9 +308,9 @@ cmd('repo unarchive', 'The repository writable again.', ARCHIVE, ['status', 'rep
 cmd('repo ban', 'An identity banned from the repository.', {
     'status': E('banned'), 'repo': S, 'identityId': S, 'reason': nl(S), 'documentId': S, 'cost': COST,
 }, ['status', 'repo', 'identityId', 'documentId'])
-cmd('repo unban', 'Your ban of an identity lifted; `none` when you have no ban of it.', {
-    'status': E('lifted', 'none'), 'repo': S, 'identityId': S, 'documentId': S,
-}, ['status', 'repo', 'identityId'])
+cmd('repo unban', 'Your ban of an identity lifted. With no ban of yours to lift it is an error: E601 when another maintainer banned it, E102 when no ban of it counts.', {
+    'status': E('lifted'), 'repo': S, 'identityId': S, 'documentId': S,
+}, ['status', 'repo', 'identityId', 'documentId'])
 cmd('repo bans', 'Every ban of the repository: who wrote it, whether it counts, and the one that decides.', {
     'repo': S,
     'bans': A(O({'identityId': S, 'by': S, 'reason': nl(S), 'createdAt': I, 'documentId': S, 'counts': B, 'decides': B},
@@ -547,6 +551,11 @@ cmd('collab remove', 'A member removed.', {
     'status': E('removed', 'not_a_member'), 'member': S, 'role': S, 'repo': S, 'rotation': nl(R('rotation')),
     'droppedEpochs': ANY, 'losingMembers': ANY, 'environments': ANY, 'resavedEnvironments': ANY, 'environmentPlan': ANY,
 }, ['status', 'member'])
+cmd('make-public', 'Your own members-only posts made public: each one edited to Public, or a review given a public comment that carries its text.', {
+    'status': E('madePublic'), 'cost': COST,
+    'posts': A(O({'id': S, 'kind': E('issue', 'comment', 'review'), 'number': nl(I), 'written': S,
+                  'lost': SA}, ['id', 'kind', 'written'])),
+}, ['status', 'posts'])
 cmd('collab list', 'The repository\'s members and their roles.', {
     'count': I, 'members': A(OBJ), 'ownerId': S, 'roles': {'const': True},
 }, ['count', 'members', 'ownerId', 'roles'])
@@ -574,6 +583,9 @@ cmd('repack', 'The repository\'s packs combined into one.', {
 cmd('reseed', 'Packs stored again where the storage policy wants them.', {
     'status': E('reseeded', 'partial'), 'repoId': S, 'target': ANY, 'targets': ANY, 'packs': ANY, 'unreadable': SA,
     'restored': ANY, 'healthy': I, 'missingLocally': ANY,
+    'superseded': D('With --from-local: packs a readable repack replaces, skipped.', SA),
+    'unreachable': D('With --from-local: packs whose recorded hosts do not answer, not uploaded.',
+                     A(O({'packHash': S, 'hosts': SA}, ['packHash', 'hosts']))),
 }, ['status', 'repoId'])
 cmd('storage status', 'Where the repository\'s packs are stored.', {
     'repoId': S, 'packCount': I, 'ipfsGateways': SA, 'packs': A(OBJ),

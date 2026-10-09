@@ -4,7 +4,7 @@
 
 use serde_json::json;
 
-use crate::upstream::Check;
+use crate::upstream::{Check, OpenIssues};
 
 /// The badges a repository has.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,6 +57,17 @@ impl Badge {
     pub fn unavailable(label: &str) -> Self {
         Self::new(label, "unavailable", "lightgrey")
     }
+}
+
+/// The issues badge: "3 open", or "3 open (2 members-only)" when some of the open issues are
+/// members-only (the count stays public; the label says what it includes).
+pub fn issues(open: &OpenIssues) -> Badge {
+    let message = if open.members_only > 0 {
+        format!("{} open ({} members-only)", open.open, open.members_only)
+    } else {
+        format!("{} open", open.open)
+    };
+    Badge::new("issues", message, "blue")
 }
 
 /// The CI badge of a commit's checks: the newest **trusted** run per name decides (a run by a
@@ -176,6 +187,15 @@ mod tests {
             conclusion: conclusion.into(),
             trusted,
         }
+    }
+
+    #[test]
+    fn the_issues_badge_labels_the_members_only_share() {
+        let badge = |open, members_only| issues(&OpenIssues { open, members_only });
+        assert_eq!(badge(3, 0).message, "3 open");
+        assert_eq!(badge(3, 2).message, "3 open (2 members-only)");
+        assert_eq!(badge(2, 2).message, "2 open (2 members-only)");
+        assert_eq!(badge(3, 2).label, "issues");
     }
 
     #[test]

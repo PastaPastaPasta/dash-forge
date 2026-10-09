@@ -10,7 +10,7 @@
  * Pure: no SDK, no network.
  */
 
-import { ROLE_HOLDER, ROLE_LABEL } from '../rules/roles'
+import { ROLE_LABEL } from '../rules/roles'
 import { RoleOracle, type Membership, type Role } from '../rules/v2'
 
 /** What an author is to the repository: its owner, or a member's role. */
@@ -22,10 +22,10 @@ export const AUTHOR_ROLE_LABEL: Readonly<Record<AuthorRole, string>> = { owner: 
 /** The badge's tooltip. */
 export const AUTHOR_ROLE_TITLE: Readonly<Record<AuthorRole, string>> = {
   owner: 'Owner of this repository',
-  maintainer: `${ROLE_HOLDER.maintainer} of this repository`,
-  writer: `${ROLE_HOLDER.writer} of this repository`,
-  triage: `${ROLE_HOLDER.triage} of this repository`,
-  reader: `${ROLE_HOLDER.reader} of this repository`,
+  maintainer: `${ROLE_LABEL.maintainer} access to this repository`,
+  writer: `${ROLE_LABEL.writer} access to this repository`,
+  triage: `${ROLE_LABEL.triage} access to this repository`,
+  reader: `${ROLE_LABEL.reader} access to this repository`,
 }
 
 /** Each member's role and the owner's, keyed by identity id. */

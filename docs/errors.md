@@ -97,6 +97,8 @@ The message lists the conflicting files.
 
 `dg storage mirror add` reports E201, before anything is signed, for addresses a mirror can't hold (more than 4, a mix of https and IPFS, a user name or password in a URL, an `ipfs://` address with a path) and for an address other readers never fetch: one on this machine or a private network (`localhost`, `127.0.0.1`, `192.168.…`, `198.18.…`, and the IPv6 forms that embed them), one that is not a valid address, or a temporary tunnel name (`*.trycloudflare.com`, `*.ts.net`), which a push refuses too. Record a stable public https address or an `ipfs://` CID.
 
+A document query whose where-clauses fit none of the type's indexes is E201 too: Drive refuses it ("where clause on non indexed property"), and `dg api query` lists the type's indexes. Use the indexed properties, in index order.
+
 ## E202
 
 **Invalid repository name.** Repository names are 1–63 characters, lowercase letters, digits, `.`, `_` and `-`, starting with a letter or digit. The name is lowercased before it is checked.
@@ -296,6 +298,8 @@ When every copy a pack's manifest records is one no reader follows (the pusher's
 
 A fork records its parent's packs where the parent's pusher stored them. When those are copies no reader follows, `dg repo fork` warns before it writes anything, and the fork's E503 says the packs are its parent's. A fork keeps the copies its parent had when it was made: the parent's maintainers record the packs at a public https address (`dg repack <parent> --profile <profile>`), and then the parent can be cloned, or forked again. Running `dg repo fork <parent> --name <fork name>` again on the same fork records the repack's new pack in it.
 
+`dg reseed --from-local` exits with E503 after restoring what it could when a pack is **still unreadable**: this clone has no copy of it, or every public address its manifests record is on a host that is gone (its name doesn't resolve or it refuses connections). The cause names each case. What to do: run it in a clone that has those packs (for a private repository, the clone that pushed them), and, if the recorded host doesn't come back, have a maintainer or writer run `dg repack <owner>/<repo> --profile <new profile>`. Packs a readable repack replaced are skipped, not reported.
+
 `dg storage mirror add` stops with E503, before anything is written or paid, when **none of the addresses answers with the pack**: not found, refused, timed out, or an `ipfs://` address with no read gateway configured. What to do: check that the file is uploaded and public, or pass `--no-verify` to record the addresses anyway.
 
 `dg release download` stops with E503 before downloading anything when none of the asset's recorded copies is one this computer reads from. A copy recorded on chain is followed only if it is a public https URL, an IPFS CID with a gateway to ask, or a bucket or host named in one of your own storage profiles. Plain http, loopback and private-network addresses are never followed just because a publisher recorded them. If the host is your own storage, add a profile whose `public_url` is it, and retry.
@@ -391,7 +395,7 @@ The author and committer line checks (`badTimezone`, `missingSpaceBeforeDate`, `
 
 Already a member, but your role can't make this write (a writer hiding a comment, a triage member pinning, a reader labelling)? `dg` refuses before signing and says so: *"you are a writer of `<repo>`; this needs a maintainer"*. You have already accepted, so all you need is the role the write needs: ask the owner to run `dg collab add <owner>/<repo> <your identity id> --role maintainer` (or `writer`, `triage`).
 
-Outside a push (collaborator admin, releases, repo settings) the headline says your identity "is not authorized for this action", because those need a different role. Editing or deleting someone else's comment is E601 too: only its author can, maintainers included.
+Outside a push (collaborator admin, releases, repo settings) the headline says your identity "is not authorized for this action", because those need a different role. Editing or deleting someone else's comment is E601 too: only its author can, maintainers included. So is `dg repo unban` of an identity someone else banned: only the maintainer who wrote a ban can lift it (`dg repo bans` lists who did); when nobody banned it, the error is E102.
 
 *Protocol detail:* consensus error 40120 on `$ownerId` (the `ownerRefersTo` gate) or on the `asMember` / `asMaintainer` membership proofs: no current `writer` or `maintainer` document names your identity. 40127, or the schema maximum on `r`: the role the write claims doesn't match your `writer` document's role.
 

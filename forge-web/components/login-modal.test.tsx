@@ -241,7 +241,7 @@ describe('QW-011: an import error is shown where the user is looking', () => {
 })
 
 describe('QW-052: replacing a key that has an encryption key beside it', () => {
-  it('ticks "Enable private repos" and says what unticking drops', async () => {
+  it('ticks the encryption-key box and says what unticking drops', async () => {
     auth.vaults = [{ ...auth.vaults[0]!, encryptionKey: true }]
     act(() => useUiStore.getState().openLogin('import'))
     await flush()
@@ -330,14 +330,18 @@ describe('QA wave 2 (bonsia): sign-in intent and polish', () => {
     expect(tile?.textContent).toMatch(/yZWGfAbCdE/)
   })
 
-  it('QW2-016: signing in to read a private repo says so and ticks "Enable private repos"', async () => {
+  it('QW2-016: signing in to read a private repo says so and ticks the encryption-key box', async () => {
     auth.vaults = []
     act(() => useUiStore.getState().openLogin(undefined, undefined, { action: 'read this private repo', privateRepo: true }))
     await flush()
     expect(host.ownerDocument.body.textContent).toMatch(/Sign in to read this private repo/)
-    expect(q('[data-testid="signin-intent"]')!.textContent).toMatch(/Enable private repos/)
+    expect(q('[data-testid="signin-intent"]')!.textContent).toMatch(/Read and write members-only and private content/)
     await click(q('[data-testid="tile-import"]'))
     expect(q<HTMLInputElement>('[data-testid="enable-private-repos"]')!.checked).toBe(true)
+    // D25: the box also opens members-only content in public repos, so it does not say "private" alone.
+    const label = q('[data-testid="enable-private-repos"]')!.closest('label')!.textContent!
+    expect(label).toMatch(/^Read and write members-only and private content/)
+    expect(label).toMatch(/members-only content in public repos/)
   })
 
   it('QW2-031: an identity file for another network is refused when it is picked', async () => {
@@ -412,5 +416,22 @@ describe('QW4-022: creating an identity is titled as sign-up', () => {
     await click(byText('All options'))
     await click(q('[data-testid="tile-import"]'))
     expect(q('[role="dialog"] h2')?.textContent).toBe('Sign in to Dash Forge')
+  })
+})
+
+describe('Q5-C04: the key lifetime is worded for each path', () => {
+  it('the tile list says an import can pick up to a year, and a new key is renewed later', async () => {
+    auth.vaults = []
+    act(() => useUiStore.getState().openLogin())
+    await flush()
+    const text = host.ownerDocument.body.textContent ?? ''
+    expect(text).toContain('for 90 days by default. An import can pick up to a year; a new identity\'s key can be renewed for up to a year later.')
+    expect(text).not.toContain('you can renew it for up to a year later')
+    // Create fixes the lifetime; Import offers the picker.
+    await click(q('[data-testid="tile-create"]'))
+    expect(host.ownerDocument.body.textContent).toContain('for 90 days; you can renew it for up to a year later')
+    await click(byText('All options'))
+    await click(q('[data-testid="tile-import"]'))
+    expect(host.ownerDocument.body.textContent).toContain('for 90 days by default (up to a year)')
   })
 })

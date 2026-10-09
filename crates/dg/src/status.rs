@@ -200,7 +200,7 @@ pub async fn pr_status(ctx: &Ctx, repo: &str) -> Result<()> {
 fn hidden_note(omitted: usize) {
     if omitted > 0 {
         println!();
-        println!("({omitted} hidden by maintainers left out; `dg issue list --include-hidden` / `dg pr list --include-hidden` show them)");
+        println!("({omitted} hidden by maintainers or a ban left out; `dg issue list --include-hidden` / `dg pr list --include-hidden` show them)");
     }
 }
 

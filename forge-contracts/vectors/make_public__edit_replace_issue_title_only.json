@@ -1,0 +1,23 @@
+{
+  "name": "edit_replace_issue_title_only",
+  "description": "An issue with no body: its title only.",
+  "case": "make_public",
+  "rules": "v2",
+  "input": {
+    "op": "replace",
+    "kind": "issue",
+    "opened": {
+      "title": "Rotate the key"
+    }
+  },
+  "expected": {
+    "set": {
+      "title": "Rotate the key"
+    },
+    "remove": [
+      "enc",
+      "epoch"
+    ],
+    "lost": []
+  }
+}

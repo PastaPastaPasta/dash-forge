@@ -1,0 +1,36 @@
+{
+  "source": "emitter: crates/dg/src/repo.rs view() (security_policy(): the default branch has .github/SECURITY.md)",
+  "command": "repo view",
+  "args": [
+    "--json",
+    "repo",
+    "view",
+    "o/r"
+  ],
+  "exit": 0,
+  "expect": "valid",
+  "stdout": {
+    "repoId": "Bq9mN3x7Lq2kXv8sTcY4pR6wZ1hJ5fD2gA7eK9uW3nM",
+    "ownerId": "4X5xgudNAwLhWEL3jgsisYszZXPnf33VbyaAqjbUB9Yi",
+    "name": "r",
+    "description": null,
+    "visibility": "public",
+    "archived": false,
+    "defaultBranch": "refs/heads/main",
+    "refs": [
+      {
+        "name": "refs/heads/main",
+        "state": {
+          "oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      }
+    ],
+    "packCount": 1,
+    "packBytes": 2048,
+    "members": 2,
+    "remoteUrl": "dash://4X5xgudNAwLhWEL3jgsisYszZXPnf33VbyaAqjbUB9Yi/r",
+    "securityPolicy": ".github/SECURITY.md",
+    "securityPolicyChecked": true,
+    "schemaVersion": 1
+  }
+}

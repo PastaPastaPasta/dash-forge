@@ -161,6 +161,19 @@ async fn require_serves(uris: &[String], pack: &str, size: Option<u64>) -> Resul
     }
 }
 
+/// E102: `repo` lists no pack `pack`. The hash is shortened to 12 digits, as elsewhere: in
+/// full, 64 hex digits look like a raw private key, which every rendered error redacts (Q5).
+fn unlisted_pack(display: &str, repo: &str, pack: &str) -> UserError {
+    UserError::new(
+        codes::NOT_FOUND,
+        format!(
+            "mirror not recorded: {display} lists no pack {}…",
+            pack.get(..12).unwrap_or(pack)
+        ),
+    )
+    .fix(format!("`dg storage status {repo}` lists its packs"))
+}
+
 async fn add(ctx: &Ctx, repo: &str, pack: &str, uris: &[String], no_verify: bool) -> Result<()> {
     refuse_unusable(uris)?;
     let pack = pack.to_ascii_lowercase();
@@ -181,14 +194,7 @@ async fn add(ctx: &Ctx, repo: &str, pack: &str, uris: &[String], no_verify: bool
     let svc = forge_core::repo::RepoService::new(&s.client, &s.identity, &s.bridge);
     let manifests = svc.read_pack_manifests(&s.repo).await?;
     let Some(manifest) = manifests.iter().find(|m| hex::encode(m.pack_hash) == pack) else {
-        bail!(UserError::new(
-            codes::NOT_FOUND,
-            format!(
-                "mirror not recorded: {} lists no pack {pack}",
-                s.repo.display()
-            )
-        )
-        .fix(format!("`dg storage status {repo}` lists its packs")));
+        bail!(unlisted_pack(&s.repo.display(), repo, &pack));
     };
     let core = s.client.fetch_contract(&s.repo.forge().core).await?;
     // Before the download and the cost prompt: a network without the type cannot record one.
@@ -377,11 +383,26 @@ async fn remove(ctx: &Ctx, id: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{refuse_unusable, unusable_addresses, Unusable};
+    use super::{refuse_unusable, unlisted_pack, unusable_addresses, Unusable};
     use forge_core::user_error::{codes, UserError};
 
     fn uris(list: &[&str]) -> Vec<String> {
         list.iter().map(ToString::to_string).collect()
+    }
+
+    /// An unlisted pack is named by its 12-digit prefix, not shown as `[redacted]` (the
+    /// renderer redacts 64 hex digits as a possible private key).
+    #[test]
+    fn an_unlisted_pack_is_named_not_redacted() {
+        let pack = "f11e7416234702f2797b7e4d2f8959343e197b98633095e47f7b1910d5134f5d";
+        let out = unlisted_pack("alice/project", "alice/project", pack).render("", false);
+        assert!(out.contains("lists no pack f11e74162347…"), "{out}");
+        assert!(!out.contains("[redacted]"), "{out}");
+        // The redactor still hides a full 64-hex token.
+        assert_eq!(
+            forge_core::user_error::redact(&format!("key {pack}")),
+            "key [redacted]"
+        );
     }
 
     #[test]

@@ -35,39 +35,42 @@ export function writerRoleOf(code: unknown): WriterRole | null {
 }
 
 /**
- * Whether readers (role 3) are in a public repo's members key, so they receive its key and read
- * members-only content (DESIGN §2.1, owner question 2). Runners are never in it: a `runner`
- * document is not a membership. Private repos always share their key with readers. Kept in one
- * place so the decision is cheap to change (forge-core `members::READERS_IN_MEMBERS_KEY`).
+ * Whether a member with `role` receives a repo's members key (wraps, rotations, repairs), in
+ * public and private repos alike: every human role does (DESIGN §3.5). Runners are never in it: a
+ * `runner` document is not a membership. The switch is exhaustive so that a role that must not
+ * hold the key (the Bot role of phase 4) has to say so here. Parity: forge-core
+ * `members::holds_members_key`.
  */
-export const READERS_IN_MEMBERS_KEY = true
-
-/**
- * Whether a member with `role` receives the members key of a repo of `visibility` (wraps,
- * rotations, repairs): every role of a private repo; in a public one every role but a reader
- * unless {@link READERS_IN_MEMBERS_KEY} (forge-core `members::holds_members_key`).
- */
-export function holdsMembersKey(role: Role, visibility: 'public' | 'private'): boolean {
-  return role !== 'reader' || READERS_IN_MEMBERS_KEY || visibility === 'private'
+export function holdsMembersKey(role: Role): boolean {
+  switch (role) {
+    case 'maintainer':
+    case 'writer':
+    case 'triage':
+    case 'reader':
+      return true
+  }
 }
 
 /**
- * The roles the owner may grant on a repo of `visibility`, in picker order. A reader is grantable
- * on a public repo too: there it reads the members-only content (DESIGN §4.1); a reader of a
- * public repo with no members-only content reads what everyone reads.
+ * The roles the owner may grant on a repo of `visibility`, in picker order (GitHub's: Read,
+ * Triage, Write, Maintain). Every role is offered on every repo: a reader of a public repo reads
+ * its members-only content (DESIGN §3.5), or what everyone reads when it has none.
  */
 export function grantableRoles(visibility: 'public' | 'private'): readonly Role[] {
   void visibility
-  return ['writer', 'triage', 'reader', 'maintainer']
+  return ['reader', 'triage', 'writer', 'maintainer']
 }
 
-/** How a role is named to users. */
+/** How a role is named to users, as on GitHub (DESIGN §10); the repo's owner is {@link OWNER_LABEL}. */
 export const ROLE_LABEL: Readonly<Record<Role, string>> = {
-  maintainer: 'Maintainer',
-  writer: 'Writer',
+  maintainer: 'Maintain',
+  writer: 'Write',
   triage: 'Triage',
-  reader: 'Reader',
+  reader: 'Read',
 }
+
+/** The repo owner's word in copy (their own maintainer document shows as this). */
+export const OWNER_LABEL = 'Owner'
 
 /** How a sentence names a holder of a role ("a triage member can't …"). */
 export const ROLE_NOUN: Readonly<Record<Role, string>> = {
@@ -90,16 +93,41 @@ export const ROLE_HOLDER: Readonly<Record<Role, string>> = {
  * `writer` document's own title, "Writer added", is wrong for the triage and reader roles).
  */
 export function membershipTitle(kind: 'grant' | 'revoke' | 'change', role: Role): string {
-  if (kind === 'change') return `Role changed to ${ROLE_LABEL[role]}`
-  return `${ROLE_HOLDER[role]} ${kind === 'grant' ? 'added' : 'removed'}`
+  if (kind === 'change') return `Changed to ${ROLE_LABEL[role]} access`
+  return kind === 'grant' ? `Added with ${ROLE_LABEL[role]} access` : `${ROLE_LABEL[role]} access removed`
 }
 
-/** One line on what a role may do (the Collaborators picker and badges). */
+/**
+ * One line on what a role may do (the role picker's help and the badges' tooltips), DESIGN §10.
+ * Each line adds to the one before (Read, Triage, Write, Maintain).
+ */
 export const ROLE_SUMMARY: Readonly<Record<Role, string>> = {
-  maintainer: 'Everything a writer can, plus protected branches, settings, releases and moderation.',
-  writer: 'Push, merge, review with a counted approval, and manage issues and pull requests.',
-  triage: 'Close, reopen and lock, label, assign, set milestones, request reviews and resolve threads. Cannot push or merge; approvals are not counted.',
-  reader: "Reads members-only content and can comment, review and open issues. Can't push, merge or triage, and their approvals don't count.",
+  reader: "Can read members-only content and comment. Can't push or approve.",
+  triage: 'Can also close, label and assign.',
+  writer: 'Can also push, approve and merge.',
+  maintainer: 'Can also change settings, protected branches, releases and environments.',
+}
+
+/**
+ * Why `role` may not give `verdict` (DESIGN §3.5, §10): only Write and Maintain approve or request
+ * changes, so a Read or Triage member's is refused before signing and offered as a comment. Null
+ * when it may (a comment, an approver, or a non-member, whose verdict is written as not counting).
+ * Parity: forge-core `members::verdict_refusal`.
+ */
+export function verdictRefusal(role: Role | null | undefined, verdict: 'comment' | 'approve' | 'requestChanges'): string | null {
+  if (verdict === 'comment' || (role !== 'reader' && role !== 'triage')) return null
+  return `Only people with Write access or more can ${verdict === 'approve' ? 'approve' : 'request changes'}.`
+}
+
+/** The action that turns a refused verdict into a comment (DESIGN §10). */
+export const POST_AS_COMMENT = 'Post as a comment'
+
+/** An approve or request changes from a Read or Triage member ({@link verdictRefusal}): refused before signing. */
+export class VerdictRefusedError extends Error {
+  constructor(message: string) {
+    super(`${message} Post it as a comment instead.`)
+    this.name = 'VerdictRefusedError'
+  }
 }
 
 /** What a role may do as a member (an author keeps its author abilities whatever its role). */

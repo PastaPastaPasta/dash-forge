@@ -1,0 +1,25 @@
+{
+  "name": "review_text_other_owner_ignored",
+  "description": "Only the review's author's comment counts (consensus admits no other; readers check again).",
+  "case": "make_public",
+  "rules": "v2",
+  "input": {
+    "op": "reviewText",
+    "reviews": [
+      {
+        "id": "R1",
+        "reviewer": "bob",
+        "sealed": true
+      }
+    ],
+    "comments": [
+      {
+        "id": "C1",
+        "owner": "alice",
+        "reviewId": "R1",
+        "createdAt": 10
+      }
+    ]
+  },
+  "expected": {}
+}

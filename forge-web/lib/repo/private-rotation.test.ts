@@ -559,7 +559,7 @@ describe('burn and contiguity review', () => {
     // CAROL (a maintainer back then) pre-posted a config for epoch 2; she is a writer now.
     const evil = new Uint8Array(32).fill(0x67)
     await anchor(CAROL, await EpochKeys.import(REPO, 2, evil), { defaultBranch: 'main', prevEpoch: 1, prevEpochKey: new Uint8Array(32).fill(1) })
-    await expect(addPrivateMember(ctx, b58(CAROL), 'maintainer', 'regrant-2')).rejects.toMatchObject({ epochs: [2], message: /can't be made a maintainer of this repo again/ })
+    await expect(addPrivateMember(ctx, b58(CAROL), 'maintainer', 'regrant-2')).rejects.toMatchObject({ epochs: [2], message: /can't be given Maintain access to this repo again/ })
     expect(isMaintainerNow(CAROL)).toBe(false)
   })
 
@@ -721,7 +721,7 @@ describe('correctness review of the burn fixes', () => {
   it('M1 a refused re-grant says to grant writer or use a new identity', async () => {
     await anchor(CAROL, await EpochKeys.import(REPO, 1, new Uint8Array(32).fill(0x62)), { defaultBranch: 'main', prevEpoch: 0, prevEpochKey: new Uint8Array(K0) })
     await expect(rotateRepoKey(ctx, [], 'r-m1')).resolves.toBe(1)
-    await expect(addPrivateMember(ctx, b58(CAROL), 'maintainer', 'regrant-m1')).rejects.toThrow(/as a writer, or make another identity of theirs the maintainer/)
+    await expect(addPrivateMember(ctx, b58(CAROL), 'maintainer', 'regrant-m1')).rejects.toThrow(/Give them Write access, or give another identity of theirs Maintain access/)
   })
 
   it('M3 re-running a removal while the current epoch is burned rotates past it', async () => {

@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { actionTitle, allReopenable, labelCoverage, menuPlacement, planBulk, retryable, runBatch, tally, unchangedSummary, unchangedWord, type BulkOutcome, type BulkRow } from './bulk'
+import { actionTitle, allReopenable, closeBlocked, labelCoverage, menuPlacement, planBulk, retryable, runBatch, tally, unchangedNote, unchangedSummary, unchangedWord, type BulkOutcome, type BulkRow } from './bulk'
 
 const row = (n: number, over: Partial<BulkRow> = {}): BulkRow => ({ id: `id${n}`, number: n, title: `T${n}`, author: 'a', open: true, merged: false, labels: [], ...over })
 
@@ -176,5 +176,24 @@ describe('menuPlacement', () => {
     const short = menuPlacement({ left: 20, top: 150, bottom: 180 }, { width: 800, height: 260 })
     expect(short.top).toBeUndefined()
     expect(short.maxHeight).toBe(138)
+  })
+})
+
+describe('a batch over merged pull requests (Q5)', () => {
+  const merged = row(1, { open: false, merged: true })
+  const closed = row(2, { open: false })
+  it('offers no Close when nothing selected is open', () => {
+    expect(closeBlocked([merged, closed])).toBe('Nothing selected is open.')
+    expect(closeBlocked([merged])).toBe("Merged pull requests can't be closed.")
+    expect(closeBlocked([merged, row(3)])).toBeNull()
+  })
+  it('says a merged pull request is already merged, not "already that way"', () => {
+    const plan = planBulk({ kind: 'close' }, [merged, closed, row(3)])
+    expect(plan).toMatchObject({ unchanged: 2, merged: 1 })
+    expect(unchangedNote(plan)).toBe('1 selected is already that way and is left as it is. 1 selected is already merged and is left as it is.')
+    expect(unchangedNote(planBulk({ kind: 'close' }, [merged, row(3)]))).toBe('1 selected is already merged and is left as it is.')
+    expect(unchangedNote(planBulk({ kind: 'close' }, [row(3)]))).toBeNull()
+    // A label leaves a merged pull request as any other.
+    expect(planBulk({ kind: 'label', label: 'bug', add: false }, [merged]).merged).toBe(0)
   })
 })

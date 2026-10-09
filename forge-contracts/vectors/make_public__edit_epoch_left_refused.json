@@ -1,0 +1,23 @@
+{
+  "name": "edit_epoch_left_refused",
+  "description": "A public document carries no epoch: the replace removes it with enc.",
+  "case": "make_public",
+  "rules": "v2",
+  "input": {
+    "op": "edit",
+    "visibility": "public",
+    "stored": {
+      "kind": "comment",
+      "enc": "030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "epoch": 0
+    },
+    "edited": {
+      "kind": "comment",
+      "body": "now public",
+      "epoch": 0
+    },
+    "author": "alice",
+    "signer": "alice"
+  },
+  "expected": "malformed"
+}

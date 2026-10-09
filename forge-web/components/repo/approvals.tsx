@@ -5,7 +5,8 @@
  * ux-dx-spec §5.7). The headline says what counts on the current head ("Approved by 2
  * maintainers on 8f3e2a1", "Changes requested by bob"); every reviewer is listed with their
  * standing, including the ones that do not count and why: a verdict on an older head is
- * "stale — new commits since", a reviewer who is not a maintainer or writer "doesn't count",
+ * "stale — new commits since", a reviewer who is not a maintainer or writer "doesn't count" (a
+ * Read or Triage member's "Read access; doesn't count", DESIGN §10),
  * and the PR author's own verdict is "author, not counted" (GitHub: authors can't approve their
  * own PR).
  *
@@ -18,6 +19,7 @@ import { Check, CircleDot, Clock, MinusCircle, ShieldCheck, X, type LucideIcon }
 import { verdictSummary, type PullApprovals, type VerdictSummary } from '@/lib/view'
 import type { ProvedVerdicts } from '@/lib/repo/verdicts'
 import { approverPhrase, type ReviewerRow } from '@/lib/view/review-fold'
+import { ROLE_LABEL } from '@/lib/rules/roles'
 import { Author } from '@/components/author'
 import { EnforcedBy } from '@/components/ui/enforced-by'
 import { Oid } from '@/components/ui/oid'
@@ -127,7 +129,7 @@ function Row({ row }: { row: ReviewerRow }): JSX.Element {
       <Author identityId={row.reviewer} link={false} />
       <span>
         {verdict}
-        {counted ? ` · ${s.role}` : ''}
+        {counted ? ` · ${ROLE_LABEL[s.role]} access` : ''}
       </span>
       {s.kind === 'author' ? <Tag>author, not counted</Tag> : null}
       {s.kind === 'stale' ? (
@@ -136,7 +138,7 @@ function Row({ row }: { row: ReviewerRow }): JSX.Element {
         </Tag>
       ) : null}
       {s.kind === 'not-member' ? <Tag>doesn&apos;t count (not a maintainer or writer)</Tag> : null}
-      {s.kind === 'not-approver' ? <Tag>{s.role}, not counted</Tag> : null}
+      {s.kind === 'not-approver' ? <Tag>{ROLE_LABEL[s.role]} access; doesn&apos;t count</Tag> : null}
     </li>
   )
 }

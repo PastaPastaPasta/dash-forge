@@ -912,11 +912,7 @@ async fn badge_route(
             let up = s.mirrors.upstream();
             let b = match kind {
                 Kind::Stars => Badge::new("stars", up.stars(&info).await?.to_string(), "blue"),
-                Kind::Issues => Badge::new(
-                    "issues",
-                    format!("{} open", up.open_issues(&info).await?),
-                    "blue",
-                ),
+                Kind::Issues => badge::issues(&up.open_issues(&info).await?),
                 Kind::Release => match up.releases(&info).await?.into_iter().find(|r| !r.yanked) {
                     Some(r) => Badge::new("release", r.tag, "blue"),
                     None => Badge::new("release", "none", "lightgrey"),

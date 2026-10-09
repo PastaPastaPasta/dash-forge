@@ -94,6 +94,21 @@ fn newest_first(mut events: Vec<RefEvent>) -> Vec<RefEvent> {
     events
 }
 
+/// Each event with who did it: a config change carries no pusher, so a protection change is the
+/// author of the config that made it (the text list and `--json` alike).
+fn with_config_authors(
+    mut events: Vec<RefEvent>,
+    configs: &[forge_core::rules::ConfigDoc],
+) -> Vec<RefEvent> {
+    for e in events.iter_mut().filter(|e| e.by.is_none()) {
+        e.by = configs
+            .iter()
+            .find(|c| c.id == e.id)
+            .and_then(|c| c.author.clone());
+    }
+    events
+}
+
 /// `dg repo activity`.
 pub async fn activity(ctx: &Ctx, repo: &str, name: &str, tag: bool) -> Result<()> {
     let s = Reader::open(ctx, repo).await?;
@@ -122,21 +137,15 @@ pub async fn activity(ctx: &Ctx, repo: &str, name: &str, tag: bool) -> Result<()
             .find(|((o, n), _)| o == old && n == new)
             .and_then(|(_, a)| *a)
     };
-    let events = newest_first(ref_history(&ref_name, &hash, &updates, &configs, contains));
-    // Config changes carry no pusher: the config's own author wrote them.
-    let authors: std::collections::BTreeMap<&str, &str> = configs
-        .iter()
-        .filter_map(|c| Some((c.id.as_str(), c.author.as_deref()?)))
-        .collect();
-    let who_of = |e: &RefEvent| -> Option<String> {
-        e.by.clone()
-            .or_else(|| authors.get(e.id.as_str()).map(|a| (*a).to_string()))
-    };
+    let events = with_config_authors(
+        newest_first(ref_history(&ref_name, &hash, &updates, &configs, contains)),
+        &configs,
+    );
     // DPNS names for the human list only: no read in `--json`; a failed read shows the bare id.
     let names = if ctx.json {
         std::collections::BTreeMap::new()
     } else {
-        let ids: Vec<String> = events.iter().filter_map(who_of).collect();
+        let ids: Vec<String> = events.iter().filter_map(|e| e.by.clone()).collect();
         s.client
             .dpns_first_names(ids.iter().map(String::as_str))
             .await
@@ -153,7 +162,7 @@ pub async fn activity(ctx: &Ctx, repo: &str, name: &str, tag: bool) -> Result<()
             println!("{} of {}, newest first", safe(&ref_name), safe(&display));
             for e in &events {
                 let when = crate::cost::format_utc(e.at);
-                let who = who_of(e).map_or_else(
+                let who = e.by.clone().map_or_else(
                     || "a maintainer (config)".to_string(),
                     |id| with_name(&id, &names),
                 );
@@ -204,6 +213,37 @@ mod tests {
         assert_eq!(
             got.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
             ["u1", "c1"]
+        );
+    }
+
+    /// A protection change names the config's author in `--json` too, as the text list does.
+    #[test]
+    fn a_protection_change_is_by_the_configs_author() {
+        let protection = RefEvent {
+            kind: RefEventKind::ProtectionAdded,
+            id: "c1".into(),
+            at: 1,
+            by: None,
+            from: None,
+            to: None,
+        };
+        let config = forge_core::rules::ConfigDoc {
+            id: "c1".into(),
+            created_at: 1,
+            protected_patterns: vec!["main".into()],
+            author: Some("maint".into()),
+        };
+        let got = with_config_authors(vec![protection.clone()], std::slice::from_ref(&config));
+        assert_eq!(got[0].by.as_deref(), Some("maint"));
+        assert_eq!(serde_json::to_value(&got[0]).unwrap()["by"], "maint");
+        // A config whose author was not read leaves it null.
+        let unknown = forge_core::rules::ConfigDoc {
+            author: None,
+            ..config
+        };
+        assert_eq!(
+            with_config_authors(vec![protection], &[unknown])[0].by,
+            None
         );
     }
 

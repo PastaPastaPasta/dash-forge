@@ -398,7 +398,7 @@ export function HiddenRowMark({ hidden }: { hidden: Hidden | undefined }): JSX.E
   )
 }
 
-/** "2 hidden by maintainers · Show": the list's toggle for hidden issues or PRs. */
+/** "2 issues on this page hidden by maintainers or a ban · Show": the list's toggle for hidden issues or PRs. */
 export function HiddenThreadsToggle({ count, shown, onToggle, noun }: { count: number; shown: boolean; onToggle: () => void; noun: string }): JSX.Element | null {
   if (count === 0) return null
   return (
@@ -406,7 +406,7 @@ export function HiddenThreadsToggle({ count, shown, onToggle, noun }: { count: n
       <EyeOff className="h-3.5 w-3.5" aria-hidden />
       <span>
         {count} {noun}
-        {count === 1 ? '' : 's'} on this page hidden by maintainers
+        {count === 1 ? '' : 's'} on this page hidden by maintainers or a ban
       </span>
       <button type="button" onClick={onToggle} className="hit-area font-medium text-forge-700 hover:underline dark:text-forge-400">
         {shown ? 'Hide them' : 'Show'}

@@ -1,0 +1,57 @@
+{
+  "name": "first_protection_within_the_hour_not_flagged",
+  "description": "The base was first protected ten minutes before the merge (no earlier config): not flagged.",
+  "case": "merge_audit",
+  "rules": "v2",
+  "input": {
+    "mergedAt": 10000000,
+    "merger": "maint",
+    "mergeOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "mergeHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "prAuthor": "auth",
+    "policies": [],
+    "protection": [
+      {
+        "id": "c1",
+        "createdAt": 9400000,
+        "protected": true
+      }
+    ],
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "maint2",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "writ",
+        "role": "writer",
+        "createdAt": 10
+      }
+    ],
+    "reviews": [],
+    "dismissals": [],
+    "runs": [],
+    "runners": [],
+    "bypasses": []
+  },
+  "expected": {
+    "verdict": "met",
+    "policy": null,
+    "protected": true,
+    "mergerRole": "maintainer",
+    "protectionUnmet": false,
+    "approvals": null,
+    "checks": null,
+    "checksUnread": false,
+    "codeOwnersUnaudited": false,
+    "bypass": null,
+    "uncountedBypass": null,
+    "rulesChanged": false
+  }
+}

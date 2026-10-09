@@ -1,9 +1,9 @@
 /**
- * The member role picker and badge (Settings → Collaborators, RC2 member roles): Writer, Triage,
- * Reader (private repos only) and Maintainer, each with what it may do.
+ * The member role picker and badge (Settings → Members, RC2 member roles): Read, Triage, Write
+ * and Maintain on every repo, each with what it may do (DESIGN §10); the owner's chip is "Owner".
  */
 
-import { ROLE_LABEL, ROLE_SUMMARY, grantableRoles } from '@/lib/rules/roles'
+import { OWNER_LABEL, ROLE_LABEL, ROLE_SUMMARY, grantableRoles } from '@/lib/rules/roles'
 import type { Role } from '@/lib/rules/v2'
 import { onRadioGroupKeyDown, radioTabIndex } from '@/components/ui/radio-group'
 
@@ -71,14 +71,16 @@ export function RoleSummary({ role }: { role: Role }): JSX.Element {
   )
 }
 
-export function RoleBadge({ role }: { role: Role }): JSX.Element {
+/** A member's chip: their role's word, or "Owner" for the repo owner's own maintainer row (`owner`). */
+export function RoleBadge({ role, owner = false }: { role: Role; owner?: boolean }): JSX.Element {
+  const isOwner = owner && role === 'maintainer'
   return (
     <span
-      title={ROLE_SUMMARY[role]}
+      title={isOwner ? 'Owner of this repository' : ROLE_SUMMARY[role]}
       data-testid="role-badge"
       className="rounded bg-forge-500/15 px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-forge-800 dark:text-forge-400"
     >
-      {role.toUpperCase()}
+      {isOwner ? OWNER_LABEL : ROLE_LABEL[role]}
     </span>
   )
 }

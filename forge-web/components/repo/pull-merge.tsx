@@ -84,6 +84,8 @@ export interface MergeExtras {
   readonly checkSourceBranch?: () => Promise<string | null>
   /** "Delete the branch after merging" deleted it. */
   readonly onBranchDeleted?: () => void
+  /** The record box shown above the merge box (Q5-A09): the up-to-date hint points to it. */
+  readonly recordAbove?: { readonly kind: 'record' | 'command'; readonly oid: string } | null
 }
 
 function MergeReaders({
@@ -135,6 +137,7 @@ function MergeReaders({
       {...(extras.branchAhead !== undefined ? { branchAhead: extras.branchAhead } : {})}
       {...(extras.checkSourceBranch !== undefined ? { checkSourceBranch: extras.checkSourceBranch } : {})}
       {...(extras.onBranchDeleted !== undefined ? { onBranchDeleted: extras.onBranchDeleted } : {})}
+      {...(extras.recordAbove !== undefined ? { recordAbove: extras.recordAbove } : {})}
     />
   )
 }

@@ -36,7 +36,7 @@ export function UnlockMore({
   /** Offer the recovery route; off where it is already on screen (the sign-in sheet, a dialog). */
   forgot?: boolean
 }): JSX.Element {
-  const { identity, vaults, controller, isLoading } = useAuth()
+  const { identity, vaults, controller, isLoading, locked } = useAuth()
   const openLogin = useUiStore((s) => s.openLogin)
   // The passphrase lives only in the input's value property (an uncontrolled input): React
   // mirrors a controlled input's value into the `value` attribute, which puts it in the DOM.
@@ -61,6 +61,19 @@ export function UnlockMore({
     } catch (e) {
       setError(errorMessage(e))
     }
+  }
+  // The whole session is locked (no signing key in this tab either): the header's Unlock, here.
+  if (identity === null && locked) {
+    return (
+      <div data-testid={testId} className="space-y-2 rounded-md border border-anvil-200 p-3 dark:border-anvil-750">
+        <p className="flex items-center gap-2 text-dense font-medium">
+          <Lock className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden /> {title}
+        </p>
+        <Button variant="primary" size="sm" onClick={() => openLogin()} data-testid={`${testId}-open`}>
+          Unlock
+        </Button>
+      </div>
+    )
   }
   return (
     <div data-testid={testId} className="space-y-2 rounded-md border border-anvil-200 p-3 dark:border-anvil-750">

@@ -1,0 +1,23 @@
+{
+  "name": "edit_members_issue_by_author",
+  "description": "The author's members-only issue made public: its title and body set.",
+  "case": "make_public",
+  "rules": "v2",
+  "input": {
+    "op": "edit",
+    "visibility": "public",
+    "stored": {
+      "kind": "issue",
+      "enc": "030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "epoch": 0
+    },
+    "edited": {
+      "kind": "issue",
+      "title": "Rotate the key",
+      "body": "Done."
+    },
+    "author": "alice",
+    "signer": "alice"
+  },
+  "expected": "makesPublic"
+}

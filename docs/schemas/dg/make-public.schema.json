@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/make-public.schema.json",
+  "title": "dg make-public --json",
+  "description": "Your own members-only posts made public: each one edited to Public, or a review given a public comment that carries its text.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "madePublic"
+      ]
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    },
+    "posts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "issue",
+              "comment",
+              "review"
+            ]
+          },
+          "number": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "written": {
+            "type": "string"
+          },
+          "lost": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "written"
+        ]
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "posts"
+  ],
+  "additionalProperties": true
+}

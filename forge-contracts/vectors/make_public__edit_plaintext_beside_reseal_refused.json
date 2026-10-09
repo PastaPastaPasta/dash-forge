@@ -1,0 +1,24 @@
+{
+  "name": "edit_plaintext_beside_reseal_refused",
+  "description": "A sealed replace carries no plaintext beside enc.",
+  "case": "make_public",
+  "rules": "v2",
+  "input": {
+    "op": "edit",
+    "visibility": "public",
+    "stored": {
+      "kind": "comment",
+      "enc": "030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "epoch": 0
+    },
+    "edited": {
+      "kind": "comment",
+      "enc": "030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "epoch": 0,
+      "body": "leak"
+    },
+    "author": "alice",
+    "signer": "alice"
+  },
+  "expected": "malformed"
+}

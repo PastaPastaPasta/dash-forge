@@ -62,6 +62,14 @@ async function storedDoc(sdk: EvoSDK, repo: RepoRef, documentType: string, id: s
   return found
 }
 
+/**
+ * Forget the stored copy of `repo`'s `documentType` document `id` this tab read: its author made
+ * it public (DESIGN §4.6), so a lookup must read it again rather than take it as members-only.
+ */
+export function forgetStoredDoc(repo: RepoRef, documentType: string, id: string): void {
+  parents.delete(`${repo.repoId}/${documentType}/${id}`)
+}
+
 async function readStoredDoc(sdk: EvoSDK, repo: RepoRef, documentType: string, id: string): Promise<PlainDocument | null> {
   const { documents } = await queryDocumentsWithProof(sdk, {
     dataContractId: contractOf(repo.forge, documentType),

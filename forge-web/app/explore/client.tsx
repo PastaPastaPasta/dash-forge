@@ -111,7 +111,7 @@ export function ExploreClient(): JSX.Element {
   const memberOf = [...owned, ...(mine.data?.member ?? [])]
   const watched = memberOf.slice(0, SCAN_REPOS_MAX)
   const scan = useAsync(
-    async () => scanAssignedAndMentions(sdk!, forge!, me, await resolveDpnsName(sdk!, me, network), watched.map(repoLite)),
+    async () => scanAssignedAndMentions(sdk!, forge!, network, me, await resolveDpnsName(sdk!, me, network), watched.map(repoLite)),
     [me, watched.map((r) => r.key).join(',')],
     { enabled: signedIn && mine.data !== null },
   )

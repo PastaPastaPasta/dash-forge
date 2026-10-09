@@ -117,3 +117,35 @@ describe('code owners at merge', () => {
     expect(auditRows(audit, 'refs/heads/main')).toContainEqual({ key: 'codeOwners', label: 'Code owners', text: 'Approval required; not audited', met: null })
   })
 })
+
+// Q5-A03 follow-up: what can't be confirmed (a merger or a bypass's recorder with no current
+// membership record) is worded as unconfirmed, never as a rule not met. The verdict stays unmet.
+describe('unconfirmed roles at merge', () => {
+  const base = { mergedAt: 100, merger: 'gone', mergeOid: MERGE, mergeHead: HEAD, prAuthor: 'auth' }
+  const protectedBase = [{ id: 'c1', createdAt: 1, protected: true }]
+
+  it('shows a merger with no record as unconfirmed, and says the merge can\'t be confirmed', () => {
+    const audit = auditMerge({ ...base, protection: protectedBase })
+    expect(audit.verdict).toBe('unmet')
+    expect(auditHeadline(audit)).toBe("This merge can't be confirmed against the branch rules (the merger has no current membership record), and no bypass was recorded.")
+    expect(auditRows(audit, 'refs/heads/main')[0]).toEqual({
+      key: 'protected',
+      label: 'Protected branch',
+      text: 'Unconfirmed: main was protected, and the merger has no current membership record',
+      met: 'unconfirmed',
+    })
+  })
+
+  it('says a bypass whose recorder has no record can\'t be confirmed, and what was unmet without it', () => {
+    const bypass = { id: 'e1', actor: 'gone', createdAt: 101, oid: MERGE, value: 'required approvals: 0 of 1' }
+    const policies = [{ id: 'p1', createdAt: 10, policy: { requiredApprovals: 1 } }]
+    const audit = auditMerge({ ...base, protection: protectedBase, policies, bypasses: [bypass] })
+    expect(audit.verdict).toBe('unmet')
+    const headline = auditHeadline(audit)
+    expect(headline).toBe("A bypass was recorded for this merge, but it can't be confirmed. Without it, the merge did not meet the branch rules in force at the time.")
+    expect(headline).not.toContain('writer')
+    // Nothing else unmet: the bypass alone can't be confirmed.
+    const only = auditMerge({ ...base, protection: protectedBase, bypasses: [bypass] })
+    expect(auditHeadline(only)).toBe("A bypass was recorded for this merge, but it can't be confirmed.")
+  })
+})

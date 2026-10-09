@@ -31,6 +31,7 @@ mod keys;
 mod label;
 mod long_body;
 mod maint;
+mod make_public;
 mod meta;
 mod milestone;
 mod pack_mirror;
@@ -212,9 +213,20 @@ pub enum Command {
         #[arg(long)]
         strict: bool,
     },
-    /// Repository members (maintainers, writers, triage members and readers).
+    /// Repository members and their access (Read, Triage, Write, Maintain).
     #[command(subcommand)]
     Collab(CollabCommand),
+    /// Make your own members-only posts public: issues, comments and reviews.
+    /// Everyone can read them from then on; earlier versions stay members-only. This can't be
+    /// undone.
+    MakePublic {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The posts: a document id (`id` in `dg issue view --json` / `dg pr view --comments
+        /// --json`, a review's too), or an issue's or pull request's number.
+        #[arg(required = true, num_args = 1.., value_name = "POST")]
+        posts: Vec<String>,
+    },
     /// Cost estimates and spend audits.
     #[command(subcommand)]
     Cost(CostCommand),
@@ -470,6 +482,10 @@ pub enum RepoCommand {
     View {
         /// The repository (`owner/name`).
         repo: String,
+        /// Don't look for the repo's security policy. Outside a clone of it, `dg` downloads the
+        /// default branch to look; this skips that.
+        #[arg(long)]
+        skip_security_policy: bool,
     },
     /// A branch's or tag's activity: every push, force-push, move and deletion, and every
     /// change to its protection, newest first. Inside a clone, a push is checked against local
@@ -1854,15 +1870,16 @@ pub enum LabelCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum CollabCommand {
-    /// Add a member, or change a member's role (the repo owner creates a writer/maintainer
-    /// document; a writer document's role is writer, triage or reader, and a role change
-    /// replaces it). The member must have run `dg collab accept <repo>` first.
+    /// Add a member, or change a member's access: Read, Triage, Write or Maintain. Every role
+    /// holds the members key when the repo has members-only content. The member must have run
+    /// `dg collab accept <repo>` first.
     Add {
         /// The repository (`owner/name`).
         repo: String,
         /// The collaborator (identity id or DPNS name, e.g. `alice` or `alice.dash`).
         member: String,
-        /// The role to grant: writer, triage, reader (private repositories only) or maintainer.
+        /// The role to grant: reader (Read), triage (Triage), writer (Write) or maintainer
+        /// (Maintain); `read`, `write` and `maintain` work too.
         #[arg(long, value_enum, default_value = "writer")]
         role: RoleArg,
         /// Wait up to this many seconds for the member to accept (`dg collab accept`) before
@@ -1885,8 +1902,8 @@ pub enum CollabCommand {
         repo: String,
         /// The collaborator (identity id or DPNS name, e.g. `alice` or `alice.dash`).
         member: String,
-        /// The role to revoke: maintainer, or the writer document (writer, triage and reader
-        /// are one document: any of them removes it).
+        /// The role to revoke: maintainer (Maintain), or the writer document (writer, triage
+        /// and reader, i.e. Write, Triage and Read, are one document: any of them removes it).
         #[arg(long, value_enum, default_value = "writer")]
         role: RoleArg,
         /// Don't save again the environments whose latest change this maintainer made (they
@@ -2285,21 +2302,22 @@ impl VerdictArg {
     }
 }
 
-/// A member role.
+/// A member role. The values keep the internal names; the aliases are the role words copy
+/// uses (Read, Triage, Write, Maintain; DESIGN §10).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum RoleArg {
-    /// Push, merge, label, close, post check runs (a `writer` document, role 1).
+    /// Write: can also push, approve and merge (a `writer` document, role 1).
     #[value(alias = "write")]
     Writer,
-    /// Close, reopen and lock, label, assign, set milestones, request reviews and resolve
-    /// threads; no push, merge, draft or ready, retarget, review dismiss, head update, pin or
-    /// check runs (a `writer` document, role 2).
+    /// Triage: can also close, label and assign; no push, approve or merge (a `writer`
+    /// document, role 2).
     Triage,
-    /// Private repositories only: read, comment, review and open issues and PRs; no state
-    /// changes (a `writer` document, role 3).
+    /// Read: can read members-only content and comment; can't push or approve (a `writer`
+    /// document, role 3).
     #[value(alias = "read")]
     Reader,
-    /// Also protected refs, config, releases (a `maintainer` document).
+    /// Maintain: can also change settings, protected branches, releases and environments (a
+    /// `maintainer` document).
     #[value(alias = "maintain")]
     Maintainer,
 }
@@ -2474,6 +2492,7 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
         }
         Command::VerifyMirror { url, strict } => verify_mirror::run(ctx, url, *strict).await,
         Command::Collab(cmd) => collab::run(ctx, cmd).await,
+        Command::MakePublic { repo, posts } => make_public::run(ctx, repo, posts).await,
         Command::Cost(cmd) => cost::run(ctx, cmd).await,
         Command::Storage(cmd) => storage::run(ctx, cmd).await,
         Command::Webhook(cmd) => webhook::run(ctx, cmd).await,
@@ -2931,6 +2950,10 @@ mod tests {
         assert_eq!(role_of(&["--role", "triage"]), RoleArg::Triage);
         assert_eq!(role_of(&["--role", "reader"]), RoleArg::Reader);
         assert_eq!(role_of(&["--role", "read"]), RoleArg::Reader);
+        assert_eq!(role_of(&["--role", "write"]), RoleArg::Writer);
+        assert_eq!(role_of(&["--role", "writer"]), RoleArg::Writer);
+        assert_eq!(role_of(&["--role", "maintainer"]), RoleArg::Maintainer);
+        assert_eq!(role_of(&["--role", "maintain"]), RoleArg::Maintainer);
         assert_eq!(
             RoleArg::Triage.to_core(),
             forge_core::rules::v2::Role::Triage

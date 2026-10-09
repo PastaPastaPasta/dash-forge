@@ -21,7 +21,7 @@ import type { RepoHome } from '@/lib/view'
 import { plural, timeAgo } from '@/lib/view'
 import { ConsentMissingError, repoContractIds } from '@/lib/repo'
 import { ConsentCheck, Invitations, mayAdd, useInviteAccepted } from '@/components/repo/invite-banner'
-import { ROLE_NOUN, holdsMembersKey, membershipTitle } from '@/lib/rules/roles'
+import { ROLE_LABEL, holdsMembersKey, membershipTitle } from '@/lib/rules/roles'
 import { namedAction } from '@/lib/spend-toast'
 import { decodeIdentifier } from '@/lib/auth'
 import { noEncryptionKeyMessage } from '@/lib/auth/encryption-key'
@@ -181,10 +181,8 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
         {session.members.map((m) => (
           <div key={`${m.role}:${m.identity}`} className="flex items-center gap-3 border-b border-anvil-100 px-4 py-2.5 last:border-b-0 dark:border-anvil-850">
             <Author identityId={m.identity} link={false} />
-            <RoleBadge role={m.role} />
-            {m.identity === repo.ownerId ? (
-              <span className="text-[12px] text-anvil-500 dark:text-anvil-400">owner</span>
-            ) : isOwner ? (
+            <RoleBadge role={m.role} owner={m.identity === repo.ownerId} />
+            {m.identity !== repo.ownerId && isOwner ? (
               <Button
                 size="sm"
                 variant="danger"
@@ -258,9 +256,9 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
       <ConfirmDialog
         open={adding}
         onClose={() => setAdding(false)}
-        title={`Add ${ROLE_NOUN[role]}`}
+        title={`Add with ${ROLE_LABEL[role]} access`}
         toast={namedAction(membershipTitle('grant', role))}
-        description={`Adds ${shortId(trimmed)} as ${ROLE_NOUN[role]} and shares the repo's key with them.${role === 'reader' ? ' Readers can read the repo and its history but change nothing.' : ''}`}
+        description={`Gives ${shortId(trimmed)} ${ROLE_LABEL[role]} access and shares the repo's key with them.${role === 'reader' ? ' With Read access they can read the repo and its history, open issues and pull requests, and comment, but not push or approve.' : ''}`}
         cost={addMemberCost(role)}
         confirmLabel="Sign & add"
         onConfirm={async (intent) => {
@@ -283,7 +281,7 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
       <ConfirmDialog
         open={removing !== null}
         onClose={() => setRemoving(null)}
-        title={removing === null ? 'Remove member' : `Remove ${ROLE_NOUN[removing.role]}`}
+        title={removing === null ? 'Remove member' : `Remove ${ROLE_LABEL[removing.role]} access`}
         toast={removing === null ? undefined : namedAction(membershipTitle('revoke', removing.role))}
         description={
           removing === null
@@ -317,7 +315,7 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
         {removing !== null && removing.role !== 'maintainer' ? <EnvironmentsRemoval
             home={home}
             member={removing.member}
-            heldMembersKey={holdsMembersKey(removing.role, 'private')}
+            heldMembersKey={holdsMembersKey(removing.role)}
             staysMaintainer={removalEffect(session.members, removing.member, removing.role) === 'none'}
           /> : null}
       </ConfirmDialog>

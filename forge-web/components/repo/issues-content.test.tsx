@@ -17,8 +17,16 @@ vi.mock('next/link', async () => {
 })
 let params = ''
 const replaced: string[] = []
+/** The navigations that added a history entry (a push), as opposed to rewriting the current one. */
+const pushed: string[] = []
 vi.mock('next/navigation', () => ({
-  useRouter: () => ({ replace: (href: string) => replaced.push(href), push: () => undefined }),
+  useRouter: () => ({
+    replace: (href: string) => replaced.push(href),
+    push: (href: string) => {
+      replaced.push(href)
+      pushed.push(href)
+    },
+  }),
   usePathname: () => '/repo/issues/',
   useSearchParams: () => new URLSearchParams(params),
 }))
@@ -80,6 +88,7 @@ beforeEach(() => {
   asked.length = 0
   params = ''
   replaced.length = 0
+  pushed.length = 0
   answer = {
     rows: [issue(5612), issue(5600)],
     pinned: [],
@@ -144,6 +153,8 @@ describe('IssuesContent search with no match in its tab (QW3-051)', () => {
     act(() => el.querySelector<HTMLButtonElement>('[data-testid="issues-search-all"]')?.click())
     await settle()
     expect(replaced.at(-1)).toBe('/repo/issues/?owner=o&name=n&state=all&label=bug')
+    // A tab or filter change is a history entry: Back undoes it.
+    expect(pushed).toEqual(['/repo/issues/?owner=o&name=n&state=all&label=bug'])
   })
 })
 

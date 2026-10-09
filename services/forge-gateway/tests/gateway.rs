@@ -18,7 +18,7 @@ use forge_core::repo::{RefRecord, RefTip};
 use forge_gateway::metrics::Metrics;
 use forge_gateway::mirror::{Mirrors, Unavailable};
 use forge_gateway::upstream::{
-    Check, FetchSource, IssueEntry, ReleaseEntry, RepoInfo, Snapshot, Upstream,
+    Check, FetchSource, IssueEntry, OpenIssues, ReleaseEntry, RepoInfo, Snapshot, Upstream,
 };
 use forge_gateway::{router, AppState, Config};
 
@@ -31,6 +31,8 @@ struct World {
     time_ms: u64,
     /// Snapshots read.
     snapshots: usize,
+    /// How many of the open issues are members-only.
+    members_only_issues: u64,
 }
 
 #[derive(Clone, Default)]
@@ -166,9 +168,13 @@ impl Upstream for Stub {
         self.src(repo)?;
         Ok(42)
     }
-    async fn open_issues(&self, repo: &RepoInfo) -> Result<u64> {
+    async fn open_issues(&self, repo: &RepoInfo) -> Result<OpenIssues> {
         self.src(repo)?;
-        Ok(3)
+        let members_only = self.world().members_only_issues;
+        Ok(OpenIssues {
+            open: 3,
+            members_only,
+        })
     }
     async fn checks(&self, repo: &RepoInfo, _oid: &str) -> Result<Vec<Check>> {
         self.src(repo)?;
@@ -611,6 +617,29 @@ async fn private_unknown_and_oversized_repos_are_refused() {
         err.contains("larger than this gateway mirrors") || err.contains("403"),
         "{err}"
     );
+}
+
+/// Q5-D04: the issues badge counts every open issue and labels the members-only share, as the
+/// web's tab does ("Issues 3 (2 members-only)").
+#[tokio::test(flavor = "multi_thread")]
+async fn the_issues_badge_labels_members_only_issues() {
+    let gw = start(|_| {}).await;
+    let src = source(&gw.tmp);
+    gw.stub.add("alice", "proj", true, &src);
+
+    let (s, _, body) = gw.get("/badge/alice/proj/issues.json").await;
+    assert_eq!(s, 200);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["message"], "3 open");
+
+    // A new render (a fresh repo, so nothing cached) with two of the three members-only.
+    gw.stub.world().members_only_issues = 2;
+    gw.stub.add("alice", "mixed", true, &src);
+    let (_, _, body) = gw.get("/badge/alice/mixed/issues.json").await;
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["message"], "3 open (2 members-only)");
+    let (_, _, body) = gw.get("/badge/alice/mixed/issues.svg").await;
+    assert!(body.contains("3 open (2 members-only)"), "{body}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

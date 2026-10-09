@@ -29,7 +29,7 @@ import { closedIn } from '@/lib/view/cross-refs'
 import { readDuplicatesOf } from '@/lib/view/issues-view'
 import type { LinkingPulls, RepoRef, TransitionView } from '@/lib/repo'
 import type { RepoHome, IssueThread, MembersOnlyTarget, TimelineItem } from '@/lib/view'
-import { commentDraftKey, commentEditDraftKey, editDraftKey, useDraftText, useEditDraft } from '@/lib/view/draft-text'
+import { commentDraftKey, commentEditDraftKey, discardedEdits, editDraftKey, useDraftText, useEditDraft } from '@/lib/view/draft-text'
 import { ACL_NAME, ARCHIVED_REASON, isMembersOnlyTarget, issueWriteShows, loadIssueOrMembersOnly } from '@/lib/view'
 import { NO_LETTER_ASK, forwardText, notPublic, publicTextOf, quotesMembersText } from '@/lib/view/audience'
 import { cn } from '@/lib/utils'
@@ -88,7 +88,7 @@ import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
-import { EditedMarker, MarkdownEditor } from '@/components/repo/issue-bits'
+import { EditedMarker, MarkdownEditor, withDiscardedEdit } from '@/components/repo/issue-bits'
 import { AssigneePicker, LabelPicker, MilestonePicker, SidebarSection, applySetChange, assigneesConfirm, labelsConfirm, setChangeShows, stateToggleLabel, type SetChange } from '@/components/repo/target-rail'
 import { readMilestones } from '@/lib/repo/milestones'
 import { EventValuesNote, HiddenNote } from '@/components/repo/hidden-note'
@@ -103,6 +103,8 @@ import { moderationBlocked } from '@/lib/repo/moderation-fold'
 import { isHiddenByHide } from '@/lib/view/issues-view'
 import type { HideReason } from '@/lib/rules/moderation'
 import { AuthorRolesProvider } from '@/components/repo/author-roles'
+import { MakePublicButton, makePublicWords, useQuotedMembersPost } from '@/components/repo/make-public'
+import { makePostPublic, provenanceOf } from '@/lib/repo/make-public-writes'
 
 /** The write the confirm dialog is about to sign. */
 type Pending =
@@ -120,6 +122,8 @@ type Pending =
   | { kind: 'editIssue'; title: string; body: string }
   | { kind: 'editComment'; id: string; body: string }
   | { kind: 'deleteComment'; id: string }
+  /** The author makes the issue (`id` null) or their comment `id` public; `quoted`: the quote check's warning (DESIGN §4.6). */
+  | { kind: 'makePublic'; id: string | null; quoted: string | null }
   /**
    * A maintainer hides (or unhides) a comment, or with `item` null the issue (RC2 MOD); hiding the
    * issue may also close and lock it, as separate writes after the hide.
@@ -223,6 +227,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   }, [comment])
   // A public post (a comment, an edit) that repeats members-only text asks first (product H8).
   const quoteGate = useQuoteGate()
+  const quotedPost = useQuotedMembersPost(home.repo.repoId)
   const draft = useIntent()
   const [posting, setPosting] = useState(false)
   const [commentError, setCommentError] = useState<string | null>(null)
@@ -260,7 +265,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const editingComment = commentDraft.value
   const setEditingComment = (e: { id: string; body: string } | null): void =>
     commentDraft.set(e === null ? null : { id: e.id, body: e.body, rev: comments.find((c) => c.id === e.id)?.revision ?? null })
-  const editsDropped = editDraft.dropped || commentDraft.dropped
+  // Q5-A11: the note sits where the discarded edit was (its comment, or the description box).
+  const discarded = discardedEdits(editDraft.dropped, commentDraft.droppedValue, comments.map((c) => c.id))
   // A hidden issue's body and timeline show only after "Show it anyway" (RC2 MOD).
   const [threadRevealed, setThreadRevealed] = useState(false)
 
@@ -357,6 +363,11 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const labelDefs = new Map(labels.map((l) => [l.name, l]))
 
   const postComment = async (confirmed = false): Promise<void> => {
+    // A locked session's "Unlock to comment" opens the unlock before there is any text to post.
+    if (!identity && locked) {
+      guard.check(commentCost, 'collab', 'comment')
+      return
+    }
     if (posting || comment.trim() === '' || commentTooLong || !guard.check(commentCost, 'collab', 'comment')) return
     if (!sdk || !signer) return
     if (quoting && !confirmed) {
@@ -475,6 +486,29 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         await deleteComment(sdk, signer, home.repo, pending.id)
         if (editingComment?.id === pending.id) setEditingComment(null)
         break
+      case 'makePublic': {
+        if (pending.id === null) {
+          await makePostPublic(sdk, signer, home.repo, {
+            type: 'issue',
+            id: issue.id,
+            opened: { title: issue.title, ...(issue.body === '' ? {} : { body: issue.body }), ...provenanceOf(issue.importedRaw) },
+            expectedRevision: BigInt(issue.revision),
+            dropProof: holdings.data !== null && !isMember,
+            intent,
+          })
+          break
+        }
+        const c = timelineComment(timeline, pending.id)
+        await makePostPublic(sdk, signer, home.repo, {
+          type: 'comment',
+          id: pending.id,
+          opened: { body: c?.body ?? '', ...provenanceOf(c?.importedRaw) },
+          ...(c?.revision !== undefined ? { expectedRevision: BigInt(c.revision) } : {}),
+          dropProof: holdings.data !== null && !isMember,
+          intent,
+        })
+        break
+      }
       case 'hide':
         await setHidden(sdk, signer, home.repo, { target, item: pending.item, reason: pending.reason, hide: pending.hide, intent })
         if (pending.closeAndLock) {
@@ -526,6 +560,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         return previewReplace('comment', { body: pending.body })
       case 'deleteComment':
         return previewDelete('comment')
+      case 'makePublic':
+        return pending.id === null ? previewReplace('issue', { title: issue.title, body: issue.body }) : previewReplace('comment', { body: timelineComment(timeline, pending.id)?.body ?? '' })
       case 'hide': {
         const hide = hideCost(home.repo, pending, eventFirst)
         const extra = pending.closeAndLock ? [...(open ? [stateCost] : []), ...(meta.locked ? [] : [stateCost])] : []
@@ -584,6 +620,13 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                   <Pencil className="h-3.5 w-3.5" aria-hidden /> Edit
                 </Button>
               ) : null}
+              {isAuthor && (issue.audience === 'members' || issue.audience === 'specificPeople') && home.repo.visibility === 'public' ? (
+                <MakePublicButton
+                  onClick={() => setPending({ kind: 'makePublic', id: null, quoted: quotedPost(`${issue.title}\n${issue.body}`, issue.author, 'issue') })}
+                  disabled={guard.disabledReason !== null || archived || longEditBlock(issue.long) !== null}
+                  title={longEditBlock(issue.long) ?? undefined}
+                />
+              ) : null}
             </div>
           )}
           <div className="mt-2 flex flex-wrap items-center gap-2 text-dense">
@@ -617,9 +660,9 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
             ) : null}
           </div>
           <div className="px-4 py-3">
-            {editsDropped && editing === null && editingComment === null ? (
+            {discarded.boxNote !== null && editing === null && editingComment === null ? (
                     <p role="status" className="mb-2 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="edit-draft-dropped">
-                      Your unsaved edit was discarded: it changed on Platform since you started.
+                      {discarded.boxNote}
                     </p>
                   ) : null}
                   {editing ? (
@@ -681,12 +724,18 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                 // A public comment's edit is public text: it asks first when it repeats members-only text.
                 onSave: (id, body) => quoteGate.check(publicTextOf(body, item.comment.audience, issue.audience), membersTexts, () => setPending({ kind: 'editComment', id, body }), { before: item.comment.body }),
                 onDelete: (id) => setPending({ kind: 'deleteComment', id }),
+                // DESIGN §4.6: the author's own members-only comment, or one to specific people, on a public repo.
+                onMakePublic:
+                  (item.comment.audience === 'members' || item.comment.audience === 'specificPeople') && home.repo.visibility === 'public'
+                    ? (id) => setPending({ kind: 'makePublic', id, quoted: quotedPost(item.comment.body, item.comment.author, 'comment') })
+                    : undefined,
                 links,
               })
               const slots = !forwardable
                 ? base
                 : { ...base, header: <>{base.header}<ForwardButton onForward={() => forward(item.comment.author, item.comment.body, item.comment.letter)} /></> }
-              if (!whileLocked.has(item.comment.id)) return slots
+              const header = item.comment.id === discarded.atComment && editingComment === null ? withDiscardedEdit(slots.header) : slots.header
+              if (!whileLocked.has(item.comment.id)) return { ...slots, header }
               return {
                 ...slots,
                 header: (
@@ -694,7 +743,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                     <span className="rounded-full bg-anvil-100 px-2 py-0.5 text-[11px] text-anvil-600 dark:bg-anvil-800 dark:text-anvil-300" data-testid="posted-while-locked" title="Posted by a non-member while the conversation was locked.">
                       posted while locked
                     </span>
-                    {slots.header}
+                    {header}
                   </>
                 ),
               }
@@ -747,7 +796,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                   variant="primary"
                   onClick={() => void postComment()}
                   loading={posting}
-                  disabled={composeBlock !== null || comment.trim() === '' || commentTooLong || guard.disabledReason !== null || audience.blocked !== null}
+                  disabled={composeBlock !== null || (!identity && locked ? false : comment.trim() === '' || commentTooLong || guard.disabledReason !== null || audience.blocked !== null)}
                   title={guard.disabledReason ?? audience.blocked ?? undefined}
                 >
                   {identity ? 'Comment' : locked ? 'Unlock to comment' : 'Sign in to comment'}
@@ -900,6 +949,8 @@ function confirmText(pending: Pending, number: number, open: boolean, isMember: 
       return { title: `Edit issue #${number}`, description: 'You pay only for what changed. Earlier versions stay in its history.', label: 'Sign & save' }
     case 'editComment':
       return { title: 'Edit comment', description: 'You pay only for what changed. Earlier versions stay in its history.', label: 'Sign & save' }
+    case 'makePublic':
+      return makePublicWords(pending.id === null ? 'issue' : 'comment', pending.quoted)
     case 'deleteComment':
       return {
         title: 'Delete comment',
@@ -959,6 +1010,7 @@ function commentSlots({
   onEdit,
   onSave,
   onDelete,
+  onMakePublic,
   links,
 }: {
   item: Extract<TimelineItem, { kind: 'comment' }>
@@ -973,6 +1025,8 @@ function commentSlots({
   onEdit: (e: { id: string; body: string } | null) => void
   onSave: (id: string, body: string) => void
   onDelete: (id: string) => void
+  /** Make the author's own members-only comment public (absent: not offered). */
+  onMakePublic?: (id: string) => void
   links?: MarkdownLinks
 }): CommentSlots {
   const c = item.comment
@@ -993,7 +1047,17 @@ function commentSlots({
   if (viewer === null || viewer !== c.author) return {}
   // A long comment whose rest could not be read is not edited here: the edit would drop the rest.
   const editBlock = longEditBlock(c.long)
-  return { header: <CommentOwnActions onEdit={() => onEdit({ id: c.id, body: c.body })} onDelete={() => onDelete(c.id)} disabled={disabled || editBlock !== null} deleteDisabled={deleteDisabled} /> }
+  return {
+    header: (
+      <CommentOwnActions
+        onEdit={() => onEdit({ id: c.id, body: c.body })}
+        onDelete={() => onDelete(c.id)}
+        onMakePublic={onMakePublic === undefined ? undefined : () => onMakePublic(c.id)}
+        disabled={disabled || editBlock !== null}
+        deleteDisabled={deleteDisabled}
+      />
+    ),
+  }
 }
 
 /**

@@ -19,6 +19,7 @@
 //!   lost-race late non-fast-forward. Refs are written ONLY after the storage policy is
 //!   met and the manifest has landed.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -35,6 +36,7 @@ use forge_core::repo::{
 };
 use forge_core::rules::RefState;
 use forge_core::scope::RepoRef;
+use forge_core::storage::supersede::{covered_packs, round_now, superseded_by};
 use forge_core::storage::{
     human_bytes, replicate, ExternalTarget, Observed, PackReader, Replica, Replication,
     StorageTarget, StoreOutcome,
@@ -339,7 +341,7 @@ impl Helper {
             .map(|d| crate::fetched::FetchedPacks::load(d, conn.repo.id()))
             .unwrap_or_default();
         let skip_held = incremental && options.filter.is_none();
-        let git_packs = packs_to_fetch(manifests, skip_held.then_some(&have));
+        let git_packs = packs_to_fetch(&manifests, skip_held.then_some(&have));
         if git_packs.is_empty() {
             return Ok(());
         }
@@ -381,25 +383,31 @@ impl Helper {
         };
         let converted = converted.as_ref();
         let packs = group_by_hash(&git_packs);
-        // QW4-014: a terminal sees the packs and bytes come in, as git's own progress does.
+        // QW4-014: a terminal sees the packs and bytes come in, as git's own progress does. One
+        // line over every pack; a pack the rounds below skip leaves its total, so it ends at 100%.
         let meter = &fetch_meter(options, &packs);
-        let fetched = stream::iter(packs.iter().map(|(h, copies)| async move {
-            let got = fetch_one(svc, repo, contract, copies, roles, reader, h, converted).await;
-            // Only a pack that arrived adds bytes; one set aside counts as done.
-            let arrived = matches!(&got, Ok((_, Got::Bytes(_))));
-            meter.advance(if arrived {
-                copies.first().map_or(0, |m| m.size_bytes)
-            } else {
-                0
-            });
-            got
-        }))
-        .buffered(PACK_DOWNLOAD_WINDOW)
-        .try_collect();
-        let fetched: Result<Vec<([u8; 32], Got)>> = with_ticks(meter, fetched).await;
+        let pass = Pass {
+            svc,
+            repo,
+            contract,
+            roles,
+            reader,
+            converted,
+            meter,
+        };
+        let claims = claims_for(incremental, &manifests, roles);
+        let rounds = pass
+            .download_rounds(&packs, &claims, |h| skip_held && have.contains(h))
+            .await;
         // A failed download ends the line too, so the error starts on its own.
-        meter.finish(fetched.is_ok());
-        let fetched = fetched?;
+        meter.finish(rounds.is_ok());
+        let fetched = rounds?;
+        if fetched.len() < packs.len() {
+            tracing::info!(
+                skipped = packs.len() - fetched.len(),
+                "not downloading packs a repack superseded: the superseding pack is here"
+            );
+        }
         // Packs a fallback copy served: say which recorded copy is down, and why, while the
         // others still hold the history (the survivability drill asserts these lines). A
         // warning, so `-q` does not hide it (git keeps warnings under -q too).
@@ -762,6 +770,114 @@ fn moved_branches(
         .collect()
 }
 
+/// The packs of one fetch, grouped by hash ([`group_by_hash`]).
+type PackGroups<'a> = [&'a ([u8; 32], Vec<&'a forge_core::repo::PackManifestInfo>)];
+
+/// What every download of one fetch shares ([`Helper::fetch_packs`]).
+struct Pass<'a> {
+    svc: &'a RepoService<'a>,
+    repo: &'a RepoRef,
+    contract: &'a forge_core::platform::LoadedContract,
+    roles: &'a forge_core::repo::RoleMap,
+    reader: &'a forge_core::storage::read::PackReader,
+    converted: Option<&'a Converted>,
+    /// The fetch's one progress line, over every round.
+    meter: &'a progress::FetchMeter,
+}
+
+/// A repository made public: its conversion and the published keys this reader holds
+/// ([`fetch_one`]).
+type Converted = (
+    forge_core::private::convert::Conversion,
+    Option<std::sync::Arc<forge_core::keyring::Keyring>>,
+);
+
+impl Pass<'_> {
+    /// Q5-B15: download `packs` in rounds. A pack a current member's repack superseded is
+    /// downloaded only when no superseding pack arrived or is `held`. Its objects are in that
+    /// pack, so reading it too only costs bytes, and warnings about copies nobody needs. Each
+    /// round downloads the packs no pack still to download supersedes (the newest repack
+    /// first), then drops what the arrivals cover, and takes them off the progress line. With
+    /// no `claims` (the full pass, [`claims_for`]) that is one round of every pack.
+    async fn download_rounds(
+        &self,
+        packs: &[([u8; 32], Vec<&forge_core::repo::PackManifestInfo>)],
+        claims: &BTreeMap<[u8; 32], BTreeSet<[u8; 32]>>,
+        held: impl Fn(&[u8; 32]) -> bool,
+    ) -> Result<Vec<([u8; 32], Got)>> {
+        let mut fetched: Vec<([u8; 32], Got)> = Vec::new();
+        let mut pending: Vec<_> = packs.iter().collect();
+        loop {
+            let arrived: BTreeSet<[u8; 32]> = fetched
+                .iter()
+                .filter(|(_, g)| matches!(g, Got::Bytes(_)))
+                .map(|(h, _)| *h)
+                .collect();
+            let covered = covered_packs(claims, |h| arrived.contains(h) || held(h));
+            let (skipped, left): (Vec<_>, Vec<_>) =
+                pending.into_iter().partition(|(h, _)| covered.contains(h));
+            for (_, copies) in skipped {
+                self.meter.skip(copies.first().map_or(0, |m| m.size_bytes));
+            }
+            if left.is_empty() {
+                return Ok(fetched);
+            }
+            let hashes: Vec<[u8; 32]> = left.iter().map(|(h, _)| *h).collect();
+            let now = round_now(&hashes, claims);
+            let (round, rest): (Vec<_>, Vec<_>) =
+                left.into_iter().partition(|(h, _)| now.contains(h));
+            fetched.extend(self.download(&round).await?);
+            pending = rest;
+        }
+    }
+
+    /// Download `packs` ([`fetch_one`] each, a bounded window in flight, in order), advancing
+    /// the fetch's progress line ([`Self::meter`]; the caller finishes it).
+    async fn download(&self, packs: &PackGroups<'_>) -> Result<Vec<([u8; 32], Got)>> {
+        if packs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let Self {
+            svc,
+            repo,
+            contract,
+            roles,
+            reader,
+            converted,
+            meter,
+        } = *self;
+        let fetched = stream::iter(packs.iter().map(|(h, copies)| async move {
+            let got = fetch_one(svc, repo, contract, copies, roles, reader, h, converted).await;
+            // Only a pack that arrived adds bytes; one set aside counts as done.
+            let arrived = matches!(&got, Ok((_, Got::Bytes(_))));
+            meter.advance(if arrived {
+                copies.first().map_or(0, |m| m.size_bytes)
+            } else {
+                0
+            });
+            got
+        }))
+        .buffered(PACK_DOWNLOAD_WINDOW)
+        .try_collect();
+        with_ticks(meter, fetched).await
+    }
+}
+
+/// The supersede claims a fetch pass honours ([`superseded_by`]; the rounds use
+/// [`covered_packs`] and [`round_now`]): none on the full pass, which reads every pack (the
+/// fallback when a consolidation turned out incomplete).
+fn claims_for(
+    incremental: bool,
+    manifests: &[forge_core::repo::PackManifestInfo],
+    roles: &forge_core::repo::RoleMap,
+) -> BTreeMap<[u8; 32], BTreeSet<[u8; 32]>> {
+    if incremental {
+        superseded_by(manifests, roles)
+    } else {
+        BTreeMap::new()
+    }
+}
+
 /// One pack of a fetch ([`Helper::fetch_packs`]): the bytes of the first of its `copies` that
 /// verifies (opened, when sealed), or why it was set aside. `converted`: the facts of a
 /// repository made public and the keys this reader holds for it, which can skip a sealed pack
@@ -775,10 +891,7 @@ async fn fetch_one(
     roles: &forge_core::repo::RoleMap,
     reader: &forge_core::storage::read::PackReader,
     h: &[u8; 32],
-    converted: Option<&(
-        forge_core::private::convert::Conversion,
-        Option<std::sync::Arc<forge_core::keyring::Keyring>>,
-    )>,
+    converted: Option<&Converted>,
 ) -> Result<([u8; 32], Got)> {
     let hash = hex::encode(h);
     if let Some((conversion, keys)) = converted {
@@ -924,7 +1037,7 @@ async fn parent_holding(
     let parent = forge_core::resolve::resolve_id(client, &parent_id)
         .await
         .ok()?;
-    let theirs: std::collections::BTreeSet<[u8; 32]> = svc
+    let theirs: BTreeSet<[u8; 32]> = svc
         .read_pack_manifests(&parent)
         .await
         .ok()?
@@ -1160,11 +1273,14 @@ fn packs_unreadable(
     // private network, a bucket without a profile here): no gateway or retry helps, the copy
     // has to be put somewhere readable (QW2-078). The places are said once for all the packs.
     if let Some(places) = unfollowed_places(unreadable) {
-        let recorded = if places.is_empty() {
+        let mut recorded = if places.is_empty() {
             "their manifests record no address".to_string()
         } else {
             format!("they are recorded only at {}", places.join("; "))
         };
+        if let Some(mirrors) = mirrors_tried(unreadable) {
+            recorded = format!("{recorded} ({mirrors})");
+        }
         // `dg reseed --from-local` re-uploads only to addresses already recorded, so it cannot
         // help here: a repack records a new copy (docs/errors.md#e503).
         let fix = match parent {
@@ -1197,6 +1313,32 @@ fn packs_unreadable(
     .fix(format!("`dg storage status {repo}` shows which recorded copies answer"))
 }
 
+/// What the unreadable packs' reads say of the pack mirrors (`pack mirrors tried: host (why), …`
+/// or `pack mirrors not checked: why`), each clause once; `None` when no read got as far as the
+/// mirrors. A clause holds no `; ` or ` — ` (`with_mirror_clause` removes them), so it ends at
+/// the next one.
+fn mirrors_tried(unreadable: &[Unreadable]) -> Option<String> {
+    use forge_core::storage::read::MIRRORS_CLAUSE;
+    let marker = format!("; {MIRRORS_CLAUSE}");
+    let mut clauses: Vec<String> = Vec::new();
+    for u in unreadable {
+        let Some((_, rest)) = u.error.split_once(&marker) else {
+            continue;
+        };
+        let clause = format!("{MIRRORS_CLAUSE}{rest}");
+        let end = [clause.find("; "), clause.find(" — ")]
+            .into_iter()
+            .flatten()
+            .min()
+            .unwrap_or(clause.len());
+        let clause = clause[..end].to_string();
+        if !clauses.contains(&clause) {
+            clauses.push(clause);
+        }
+    }
+    (!clauses.is_empty()).then(|| clauses.join("; "))
+}
+
 /// When no pack had a copy this computer follows, the places their manifests record (each
 /// once, in order); `None` when any pack failed some other way.
 fn unfollowed_places(unreadable: &[Unreadable]) -> Option<Vec<String>> {
@@ -1210,7 +1352,11 @@ fn unfollowed_places(unreadable: &[Unreadable]) -> Option<Vec<String>> {
             return None;
         }
         let listed = u.error.split_once(ONLY).map_or("", |(_, rest)| rest);
-        for place in listed.split("; ").filter(|p| !p.is_empty()) {
+        for place in listed
+            .split("; ")
+            // The mirrors clause a read adds is not a place the manifest records.
+            .filter(|p| !p.is_empty() && !p.starts_with(forge_core::storage::read::MIRRORS_CLAUSE))
+        {
             if !places.iter().any(|p| p == place) {
                 places.push(place.to_string());
             }
@@ -1224,7 +1370,19 @@ fn unfollowed_places(unreadable: &[Unreadable]) -> Option<Vec<String>> {
 /// generic `io error:` / `GET request failed:` layers or the gateway hint (a fix line says
 /// it).
 fn brief(error: &str) -> String {
-    let text = error.split(" — ").next().unwrap_or(error);
+    // The mirrors clause a read appends (`; pack mirrors …`) is kept whole: only the reasons
+    // before it, and its own tail, are cut at a ` — ` hint, so a reason that holds one (an S3
+    // credential hint) does not take the clause with it.
+    let marker = format!("; {}", forge_core::storage::read::MIRRORS_CLAUSE);
+    let (head, clause) = match error.split_once(&marker) {
+        Some((head, rest)) => (head, Some(rest)),
+        None => (error, None),
+    };
+    let cut = |t: &str| t.split(" — ").next().unwrap_or(t).to_string();
+    let mut text = cut(head);
+    if let Some(rest) = clause {
+        text = format!("{text}{marker}{}", cut(rest));
+    }
     let text = text
         .replace("io error: ", "")
         .replace("GET request failed: ", "");
@@ -1270,12 +1428,13 @@ fn wants_already_local(wants: &[Want], options: &OptionState) -> bool {
 /// a new pack, so this turns "download every pack" into "download the new ones". A partial
 /// clone (`--filter`) indexes a filtered subset, never a whole pack, so it passes no `held`.
 fn packs_to_fetch(
-    manifests: Vec<forge_core::repo::PackManifestInfo>,
+    manifests: &[forge_core::repo::PackManifestInfo],
     held: Option<&crate::fetched::FetchedPacks>,
 ) -> Vec<forge_core::repo::PackManifestInfo> {
     let git_packs: Vec<_> = manifests
-        .into_iter()
+        .iter()
         .filter(|m| m.kind == u64::from(KIND_GIT_PACK))
+        .cloned()
         .collect();
     if git_packs.is_empty() {
         // Nothing stored: an empty repo. git tolerates a fetch that delivers no objects as
@@ -3857,6 +4016,84 @@ mod tests {
     }
 
     #[test]
+    fn an_e503_cause_names_the_pack_mirrors_that_were_tried_and_refused() {
+        // Q5: only the recorded copy was named; the mirrors that failed too were not.
+        let dead = |h: &str| {
+            Unreadable {
+            hash: h.repeat(64),
+            error: "io error: no external copy verified (1 candidate(s)): GET https://primary.example/p.pack failed with status 404; pack mirrors tried: dead.example (HTTP 404), junk.example (hash mismatch) — add a gateway".into(),
+        }
+        };
+        let u = packs_unreadable("OWNER/repo", true, &[dead("a")], 1, None);
+        let cause = u.cause.unwrap();
+        assert!(cause.contains("primary.example"), "{cause}");
+        assert!(
+            cause.contains(
+                "pack mirrors tried: dead.example (HTTP 404), junk.example (hash mismatch)"
+            ),
+            "{cause}"
+        );
+        assert!(!cause.contains("add a gateway"), "{cause}");
+        // A recorded copy's reason with a ` — ` of its own (an S3 credential hint) is cut there,
+        // and the mirrors clause after it stays.
+        let s3 = Unreadable {
+            hash: "f".repeat(64),
+            error: "io error: no external copy verified (1 candidate(s)): S3 profile b (HTTP 403 — check the credentials); pack mirrors tried: m.example (HTTP 404)".into(),
+        };
+        let cause = packs_unreadable("OWNER/repo", true, &[s3], 1, None)
+            .cause
+            .unwrap();
+        assert!(!cause.contains("check the credentials"), "{cause}");
+        assert!(
+            cause.contains("pack mirrors tried: m.example (HTTP 404)"),
+            "{cause}"
+        );
+        // Recorded only where no reader follows, and mirrors refused: both are said, and the
+        // clause is not read as one more recorded place.
+        let private = Unreadable {
+            hash: "c".repeat(64),
+            error: format!(
+                "io error: {}: its manifest records only 127.0.0.1:9000 (this machine); pack mirrors tried: dead.example (HTTP 404)",
+                forge_core::storage::read::NO_FOLLOWED_COPY
+            ),
+        };
+        let cause = packs_unreadable("OWNER/repo", true, &[private], 1, None)
+            .cause
+            .unwrap();
+        assert!(
+            cause.ends_with("they are recorded only at 127.0.0.1:9000 (this machine) (pack mirrors tried: dead.example (HTTP 404))"),
+            "{cause}"
+        );
+        // The mirrors could not be read at all: that is said, in both branches, and is no place.
+        let unchecked = format!(
+            "{}: its manifest records only 127.0.0.1:9000 (this machine); pack mirrors not checked: could not reach Dash Platform",
+            forge_core::storage::read::NO_FOLLOWED_COPY
+        );
+        let private = Unreadable {
+            hash: "d".repeat(64),
+            error: format!("io error: {unchecked}"),
+        };
+        let cause = packs_unreadable("OWNER/repo", true, &[private], 1, None)
+            .cause
+            .unwrap();
+        assert!(
+            cause.ends_with("they are recorded only at 127.0.0.1:9000 (this machine) (pack mirrors not checked: could not reach Dash Platform)"),
+            "{cause}"
+        );
+        let failed = Unreadable {
+            hash: "e".repeat(64),
+            error: "io error: no external copy verified (1 candidate(s)): primary.example (HTTP 404); pack mirrors not checked: could not reach Dash Platform".into(),
+        };
+        let cause = packs_unreadable("OWNER/repo", true, &[failed], 1, None)
+            .cause
+            .unwrap();
+        assert!(
+            cause.contains("pack mirrors not checked: could not reach Dash Platform"),
+            "{cause}"
+        );
+    }
+
+    #[test]
     fn unreadable_packs_the_history_needs_are_e503_with_the_reseed_fix() {
         // D-403: git's "remote did not send all necessary objects" was all a user saw.
         let gone = |h: &str| Unreadable {
@@ -4428,5 +4665,36 @@ mod tests {
         for b in [stored, indexed] {
             assert!(!b.contains("mirror("), "{b}");
         }
+    }
+
+    fn manifest(hash: u8, owner: &str, supersedes: &[u8]) -> forge_core::repo::PackManifestInfo {
+        forge_core::repo::PackManifestInfo {
+            document_id: format!("d{hash}{owner}"),
+            created_at: u64::from(hash),
+            owner_id: owner.into(),
+            pack_hash: [hash; 32],
+            kind: 0,
+            size_bytes: 10,
+            object_count: 1,
+            chunk_count: 0,
+            storage: 1,
+            uris: Vec::new(),
+            supersedes: supersedes.iter().map(|h| [*h; 32]).collect(),
+            tips: Vec::new(),
+            created_at_block_height: 0,
+        }
+    }
+
+    fn members() -> forge_core::repo::RoleMap {
+        [("m".to_string(), forge_core::rules::v2::Role::Writer)].into()
+    }
+
+    /// Q5-B15: the skipping is limited to the incremental pass; the full pass that runs when
+    /// the history has gaps reads every pack.
+    #[test]
+    fn only_the_incremental_pass_skips_superseded_packs() {
+        let repack = [manifest(3, "m", &[1, 2])];
+        assert_eq!(super::claims_for(true, &repack, &members()).len(), 2);
+        assert!(super::claims_for(false, &repack, &members()).is_empty());
     }
 }

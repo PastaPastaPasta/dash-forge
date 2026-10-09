@@ -9,7 +9,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { BusyWriteError, ConsensusRefusal, KeyUnusableError, SupersededWriteError, UnconfirmedWriteError, asConsensusRefusal } from '../sdk/write'
-import { writeFailure } from './write-errors'
+import { UNREACHABLE_WRITE, writeFailure } from './write-errors'
 
 /**
  * The SDK's two refusal shapes (wasm-sdk 4.2.0-beta.6 on, platform#5112): a refusal at the
@@ -149,6 +149,18 @@ describe('writeFailure routes each refusal to its fix, never "sent" (D-007)', ()
     const f = writeFailure(new BusyWriteError('X'))
     expect(f.message).toMatch(/may not have been sent/)
     expect(f.message).not.toMatch(/^Sent/)
+  })
+  it('a write nothing answered says Platform could not be reached, not the raw transport text', () => {
+    const raw = "transport error: grpc error: code: 'Internal error', message: \"Failed to fetch\""
+    const f = writeFailure(new Error(raw))
+    expect(f.message).toBe(UNREACHABLE_WRITE)
+    expect(f.message).not.toMatch(/grpc|transport/)
+    expect(f.sheet).toBeNull()
+    expect(writeFailure(new TypeError('Failed to fetch')).message).toBe(UNREACHABLE_WRITE)
+    // A node's answer that travels as a transport error is no network failure.
+    expect(writeFailure(new Error("transport error: grpc error: code: 'Client specified an invalid argument', message: \"bad\"")).message).not.toBe(UNREACHABLE_WRITE)
+    // Platform's answers keep their own sentences.
+    expect(writeFailure(new UnconfirmedWriteError('X')).message).not.toBe(UNREACHABLE_WRITE)
   })
   it('only an unconfirmed write says "Sent, not yet visible"', () => {
     expect(writeFailure(new UnconfirmedWriteError('X')).message).toMatch(/^Sent, not yet visible/)

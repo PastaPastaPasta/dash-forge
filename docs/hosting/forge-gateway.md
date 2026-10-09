@@ -174,7 +174,7 @@ GATEWAY_WAKE_SECRET_FILE=/run/secrets/wake
 | `GET /<owner>/<name>.git/info/refs?service=git-upload-pack`, `POST …/git-upload-pack` | git smart HTTP (protocol v0 and v2), read only. `CORS: *` on `info/refs` so the web app can verify. |
 | `GET /<owner>/<name>.git/forge-manifest.json` | The snapshot's claim (`forge-gateway-manifest/v1`). `CORS: *`. |
 | `GET /<owner>/<name>` | Redirect to the web app's page for the repository. |
-| `GET /badge/<owner>/<name>/<kind>.svg` | Badges: `stars`, `ci` (the newest trusted check run per name on the default branch's tip, or `?branch=`), `release` (the latest release's tag), `issues` (open issues). Each also as `.json`, shields.io's [endpoint](https://shields.io/badges/endpoint-badge) format. |
+| `GET /badge/<owner>/<name>/<kind>.svg` | Badges: `stars`, `ci` (the newest trusted check run per name on the default branch's tip, or `?branch=`), `release` (the latest release's tag), `issues` (open issues; when some are members-only it says so, "3 open (2 members-only)", as the web's Issues tab does). Each also as `.json`, shields.io's [endpoint](https://shields.io/badges/endpoint-badge) format. |
 | `GET /feed/<owner>/<name>/<kind>.atom` | Atom feeds: `releases`, `commits` (the default branch), `issues` (issues a maintainer hid are left out). |
 | `GET /og/<owner>/<name>` | A page with `og:` and `twitter:` tags that redirects people to the web app: share this link to get a preview card. |
 | `GET /og/<owner>/<name>.png` | The 1200×630 card. |

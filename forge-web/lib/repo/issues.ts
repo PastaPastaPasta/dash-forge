@@ -348,6 +348,8 @@ export interface ReviewView {
   readonly letter?: LetterFacts
   /** A specific-people review this reader cannot open: its recipient count. */
   readonly recipientCount?: number
+  /** Its author made its text public with a comment attached to it: `body` is that text (DESIGN §4.6). */
+  readonly madePublic?: true
 }
 
 

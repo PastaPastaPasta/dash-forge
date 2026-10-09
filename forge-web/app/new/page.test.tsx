@@ -179,4 +179,26 @@ describe('/new: members-only content at creation', () => {
     expect(q('members-key-error')?.textContent).toContain('forge-collab could not be read')
     expect(createButton().disabled).toBe(false)
   })
+
+  it('shows, as the name is typed, what it will be created as and why a name is refused (Q5-C)', async () => {
+    await render()
+    const type = async (text: string): Promise<void> => {
+      const name = host.querySelector('#repo-name') as HTMLInputElement
+      act(() => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(name, text)
+        name.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      await flush()
+    }
+    await type('My Repo')
+    expect(q('repo-name-converted')?.textContent).toBe('Your new repository will be created as my-repo.')
+    await type('.hidden')
+    expect(q('repo-name-converted')?.textContent).toContain('hidden.')
+    await type('my-repo')
+    expect(q('repo-name-converted')).toBeNull()
+    await type('!!!')
+    expect(q('repo-name-converted')).toBeNull()
+    expect(host.textContent).toContain('A repository name uses a–z')
+    expect(createButton().disabled).toBe(true)
+  })
 })

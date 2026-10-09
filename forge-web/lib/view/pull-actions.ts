@@ -302,6 +302,12 @@ export interface MergeButtonInputs {
   readonly narrow: boolean
   /** The head has been a tip of the base (`PullView.headOnBase`): "Mark as merged (done elsewhere)" records it. */
   readonly headOnBase?: boolean
+  /**
+   * The page shows a box above for the base tip that may be this PR's merge (Q5-A09): `record`,
+   * its "Record merge of <oid>" button (and no "Mark as merged" below); `command`, the copyable
+   * `dg pr merge … --event-only` of a merge changed on both sides. Null: neither is shown.
+   */
+  readonly recordAbove?: { readonly kind: 'record' | 'command'; readonly oid: string } | null
   /** The worker's verdict, or null while it runs; an error string when it could not decide. */
   readonly check: 'fast-forward' | 'merge' | 'conflict' | 'malformed' | 'too-large' | 'up-to-date' | 'unrelated' | { readonly error: string } | null
   /** `dg pr checkout <repo> <n>` for the conflicts row. */
@@ -335,6 +341,17 @@ export function mergeButton(i: MergeButtonInputs): MergeButton {
     case 'too-large':
       return { kind: 'unavailable', reason: 'This merge is too large to build in the browser; merge it with `dg pr merge`.' }
     case 'up-to-date':
+      // A box above already offers the record: point there, never to a control that is hidden.
+      if (i.recordAbove) {
+        const short = i.recordAbove.oid.slice(0, 7)
+        return {
+          kind: 'unavailable',
+          reason:
+            i.recordAbove.kind === 'record'
+              ? `The base branch already contains this head. Record the merge with "Record merge of ${short}" above.`
+              : `The base branch may already contain this head. If ${short} is the merge, record it with the command above.`,
+        }
+      }
       return i.headOnBase === true
         ? { kind: 'unavailable', reason: 'The base branch already contains this head: it was merged elsewhere. Record that with "Mark as merged (done elsewhere)" below.' }
         : {

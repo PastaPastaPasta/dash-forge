@@ -1,0 +1,23 @@
+{
+  "name": "edit_replace_byte_order_mark_kept",
+  "description": "U+FEFF is not White_Space (the contract's \\S matches it): the body is kept.",
+  "case": "make_public",
+  "rules": "v2",
+  "input": {
+    "op": "replace",
+    "kind": "comment",
+    "opened": {
+      "body": "﻿"
+    }
+  },
+  "expected": {
+    "set": {
+      "body": "﻿"
+    },
+    "remove": [
+      "enc",
+      "epoch"
+    ],
+    "lost": []
+  }
+}

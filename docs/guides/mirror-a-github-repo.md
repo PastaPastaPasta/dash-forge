@@ -309,7 +309,7 @@ The fetch copies GitHub's branches into a private `refs/mirror/heads/` namespace
 
 ```sh
 git ls-remote dash://<owner>/<repo>           # every branch and tag, as recorded on-chain
-dg repo view <owner>/<repo>                   # refs, members, pack count and size
+dg repo view <owner>/<repo>                   # refs, members, pack count and size, security policy
 dg storage status <owner>/<repo>              # does every recorded copy of every pack answer?
 ```
 

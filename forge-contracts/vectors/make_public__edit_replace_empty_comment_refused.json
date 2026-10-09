@@ -1,0 +1,16 @@
+{
+  "name": "edit_replace_empty_comment_refused",
+  "description": "A comment whose opened body is blank has nothing to publish.",
+  "case": "make_public",
+  "rules": "v2",
+  "input": {
+    "op": "replace",
+    "kind": "comment",
+    "opened": {
+      "body": "   "
+    }
+  },
+  "expected": {
+    "error": "empty"
+  }
+}

@@ -277,6 +277,22 @@ describe('mergeButton — a head the base already holds (QW-002)', () => {
     expect(viaMergeCommit).toEqual({ kind: 'unavailable', reason: expect.stringContaining('--event-only --merge-oid') })
     expect(JSON.stringify(viaMergeCommit)).not.toContain('Mark as merged')
   })
+
+  it('points to the box above when it offers the record, never to a hidden control (Q5-A09)', () => {
+    const oid = 'c4746b0'.padEnd(40, '0')
+    for (const headOnBase of [true, false]) {
+      const record = mergeButton({ ...base, headOnBase, recordAbove: { kind: 'record', oid } })
+      expect(record).toEqual({ kind: 'unavailable', reason: 'The base branch already contains this head. Record the merge with "Record merge of c4746b0" above.' })
+      const command = mergeButton({ ...base, headOnBase, recordAbove: { kind: 'command', oid } })
+      expect(command).toEqual({ kind: 'unavailable', reason: 'The base branch may already contain this head. If c4746b0 is the merge, record it with the command above.' })
+      for (const b of [record, command]) {
+        expect(JSON.stringify(b)).not.toContain('Mark as merged')
+        expect(JSON.stringify(b)).not.toContain('--event-only')
+      }
+    }
+    // No box above: the hints stand as they were.
+    expect(mergeButton({ ...base, headOnBase: true, recordAbove: null })).toEqual({ kind: 'unavailable', reason: expect.stringContaining('"Mark as merged (done elsewhere)" below') })
+  })
 })
 
 describe('unmetRules and bypassValue — the rules named, as dg names them', () => {

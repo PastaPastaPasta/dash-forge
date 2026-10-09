@@ -1,0 +1,26 @@
+{
+  "name": "review_text_sealed_comment_ignored",
+  "description": "A members-only comment does not make anything public.",
+  "case": "make_public",
+  "rules": "v2",
+  "input": {
+    "op": "reviewText",
+    "reviews": [
+      {
+        "id": "R1",
+        "reviewer": "bob",
+        "sealed": true
+      }
+    ],
+    "comments": [
+      {
+        "id": "C1",
+        "owner": "bob",
+        "reviewId": "R1",
+        "createdAt": 10,
+        "sealed": true
+      }
+    ]
+  },
+  "expected": {}
+}

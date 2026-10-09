@@ -9,7 +9,7 @@
 //!   location as the caller's own copy of the pack.
 //! - `import` remains a thin, not-yet-wired wrapper over `forge-import` (PRD 06).
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use serde_json::json;
 
 use forge_core::backends::ipfs::IpfsConfig;
@@ -17,6 +17,7 @@ use forge_core::backends::{IpfsBackend, PackBackend, S3Backend, S3Config};
 use forge_core::repo::{PlatformChunkTarget, RepackTarget, RepoService};
 use forge_core::storage::policy::git_config_scoped;
 use forge_core::storage::{ExternalTarget, StorageProfiles, StorageTarget};
+use forge_core::user_error::{codes, UserError};
 
 use crate::common::{resolve, RepoRef};
 use crate::context::Ctx;
@@ -860,14 +861,93 @@ pub async fn reseed_from_local(
         .await
         .context("reseed from local failed")?;
 
-    emit_local_reseed(ctx, &handle, &git_dir, &label, &report);
-    if !report.missing.is_empty() {
-        bail!(
-            "{} could not be restored from this clone",
-            crate::fmt::plural(report.missing.len(), "pack")
-        );
+    let body = local_reseed_json(&handle, &label, &report);
+    if !ctx.json {
+        print_local_reseed(&handle, &git_dir, &label, &report);
+    }
+    // In human mode the list is out already, and `reported` prints only the error.
+    if let Some(e) = local_reseed_error(&handle, &report) {
+        return Err(crate::errors::reported(e, body));
+    }
+    if ctx.json {
+        crate::errors::print_json(&body);
     }
     Ok(())
+}
+
+/// The first 12 hex digits of a pack hash: a full 64-digit one in an error looks like a raw
+/// private key, and rendered errors redact those.
+fn short_pack(h: &[u8; 32]) -> String {
+    let mut s = hex::encode(h);
+    s.truncate(12);
+    s.push('…');
+    s
+}
+
+/// The next step for packs whose recorded hosts are gone (Q5-B16).
+fn repack_fix(repo: &str) -> String {
+    format!(
+        "if the host comes back, run this again; if it is gone for good, a maintainer or writer records the repository at storage that works with `dg repack {repo} --profile <new profile>`"
+    )
+}
+
+/// E503 when a pack is left unreadable: no copy of it in this clone, or its recorded hosts do
+/// not answer (Q5-B17: a user-facing refusal with the next step, not an internal error).
+/// `None` when every pack is readable again, healthy or superseded.
+pub(crate) fn local_reseed_error(
+    handle: &forge_core::scope::RepoRef,
+    report: &forge_core::repo::LocalReseedReport,
+) -> Option<UserError> {
+    let (missing, gone) = (&report.missing, &report.unreachable);
+    if missing.is_empty() && gone.is_empty() {
+        return None;
+    }
+    let repo = handle.display();
+    let mut causes = Vec::new();
+    if !missing.is_empty() {
+        let packs: Vec<String> = missing.iter().map(short_pack).collect();
+        causes.push(format!(
+            "{} with no copy in this clone ({})",
+            crate::fmt::plural(missing.len(), "pack"),
+            packs.join(", ")
+        ));
+    }
+    if !gone.is_empty() {
+        let mut hosts: Vec<&str> = gone
+            .iter()
+            .flat_map(|u| u.hosts.iter().map(String::as_str))
+            .collect();
+        hosts.sort_unstable();
+        hosts.dedup();
+        causes.push(format!(
+            "{} whose public addresses are on a host that is gone ({}: not found or refusing connections)",
+            crate::fmt::plural(gone.len(), "pack"),
+            hosts.join(", ")
+        ));
+    }
+    let mut u = UserError::new(
+        codes::PACKS_UNREADABLE,
+        format!(
+            "reseed incomplete: {} of {repo} still unreadable",
+            crate::fmt::plural(missing.len() + gone.len(), "pack")
+        ),
+    )
+    .cause(causes.join("; "));
+    if !missing.is_empty() {
+        u = u.fix(
+            if handle.visibility == forge_core::rules::v2::Visibility::Private {
+                "run it again in the clone that pushed those packs: only it keeps their sealed bytes"
+                    .to_string()
+            } else {
+                "run it again in a clone that has those packs, such as the one that pushed them"
+                    .to_string()
+            },
+        );
+    }
+    if !gone.is_empty() {
+        u = u.fix(repack_fix(&repo));
+    }
+    Some(u.note("the other packs are restored or still readable; nothing was written to Platform"))
 }
 
 /// `dg reseed --from-local` targets: the named profile, or this repo's storage policy's
@@ -906,15 +986,13 @@ fn reseed_targets(profile: Option<&str>) -> Result<(Vec<ExternalTarget>, usize, 
     Ok((targets, required, label))
 }
 
-/// Print (or `--json`-emit) a finished `dg reseed --from-local`.
-fn emit_local_reseed(
-    ctx: &Ctx,
+/// `dg reseed --from-local --json`.
+pub(crate) fn local_reseed_json(
     handle: &forge_core::scope::RepoRef,
-    git_dir: &std::path::Path,
     label: &str,
     report: &forge_core::repo::LocalReseedReport,
-) {
-    let restored_json: Vec<_> = report
+) -> serde_json::Value {
+    let restored: Vec<_> = report
         .restored
         .iter()
         .map(|r| {
@@ -925,45 +1003,76 @@ fn emit_local_reseed(
             })
         })
         .collect();
-    let missing: Vec<String> = report.missing.iter().map(hex::encode).collect();
-    ctx.emit(
-        json!({
-            "status": if missing.is_empty() { "reseeded" } else { "partial" },
-            "repoId": handle.id(),
-            "targets": label,
-            "restored": restored_json,
-            "healthy": report.healthy.len(),
-            "missingLocally": missing,
-        }),
-        || {
-            println!(
-                "Restored {} of {} from {} to {label} ({} still healthy).",
-                crate::fmt::plural(report.restored.len(), "pack"),
-                handle.display(),
-                git_dir.display(),
-                report.healthy.len()
-            );
-            for r in &report.restored {
-                let state = if r.restored_recorded_uri {
-                    "its recorded copy is readable again"
-                } else {
-                    "stored at NEW locations only — run `dg reseed --profile <p>` to record them"
-                };
-                println!("  {} — {state}", hex::encode(r.pack_hash));
-                for u in &r.uris {
-                    println!("      {u}");
-                }
-            }
-            let hint = if handle.visibility == forge_core::rules::v2::Visibility::Private {
-                "a private repo's stored packs are sealed: only the clone that pushed it keeps them; re-push from a clone with the objects instead"
-            } else {
-                "try a clone that fetched it"
-            };
-            for h in &missing {
-                println!("  {h} — no local copy in this clone ({hint})");
-            }
-        },
+    let unreachable: Vec<_> = report
+        .unreachable
+        .iter()
+        .map(|u| json!({ "packHash": hex::encode(u.pack_hash), "hosts": u.hosts }))
+        .collect();
+    let complete = report.missing.is_empty() && report.unreachable.is_empty();
+    json!({
+        "status": if complete { "reseeded" } else { "partial" },
+        "repoId": handle.id(),
+        "targets": label,
+        "restored": restored,
+        "healthy": report.healthy.len(),
+        "superseded": report.superseded.iter().map(hex::encode).collect::<Vec<_>>(),
+        "missingLocally": report.missing.iter().map(hex::encode).collect::<Vec<_>>(),
+        "unreachable": unreachable,
+    })
+}
+
+/// `dg reseed --from-local`'s list: what was restored, and why each other pack was not.
+fn print_local_reseed(
+    handle: &forge_core::scope::RepoRef,
+    git_dir: &std::path::Path,
+    label: &str,
+    report: &forge_core::repo::LocalReseedReport,
+) {
+    let superseded = if report.superseded.is_empty() {
+        String::new()
+    } else {
+        format!(
+            ", {} a readable repack replaces",
+            crate::fmt::plural(report.superseded.len(), "older pack")
+        )
+    };
+    println!(
+        "Restored {} of {} from {} to {label} ({} still healthy{superseded}).",
+        crate::fmt::plural(report.restored.len(), "pack"),
+        handle.display(),
+        git_dir.display(),
+        report.healthy.len()
     );
+    for r in &report.restored {
+        let state = if r.restored_recorded_uri {
+            "its recorded copy is readable again"
+        } else {
+            "stored at NEW locations only — run `dg reseed --profile <p>` to record them"
+        };
+        println!("  {} — {state}", hex::encode(r.pack_hash));
+        for u in &r.uris {
+            println!("      {u}");
+        }
+    }
+    for u in &report.unreachable {
+        println!(
+            "  {} — its recorded host {} is gone (not found or refusing connections), so uploading it there again would not help; {}",
+            hex::encode(u.pack_hash),
+            u.hosts.join(", "),
+            repack_fix(&handle.display())
+        );
+    }
+    let hint = if handle.visibility == forge_core::rules::v2::Visibility::Private {
+        "a private repo's stored packs are sealed: only the clone that pushed it keeps them; re-push from a clone with the objects instead"
+    } else {
+        "try a clone that fetched it"
+    };
+    for h in &report.missing {
+        println!(
+            "  {} — no local copy in this clone ({hint})",
+            hex::encode(h)
+        );
+    }
 }
 
 /// Load the named EXTERNAL profile from storage.toml.
@@ -1111,6 +1220,59 @@ fn build_external_backend(backend: Option<Backend>) -> Result<Option<Box<dyn Pac
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Q5-B16/B17: a pack left unreadable is a user-facing E503 with the next step (never E101,
+    /// which asks for a bug report), and a superseded pack alone is no failure.
+    #[test]
+    fn an_incomplete_local_reseed_says_what_to_do_next() {
+        let mut repo = forge_core::scope::RepoRef {
+            forge: forge_core::network::ForgeIds::test_forge(),
+            repo_id: "r-id".into(),
+            owner_id: "o".into(),
+            name: "r".into(),
+            visibility: forge_core::rules::v2::Visibility::Public,
+        };
+        let mut report = forge_core::repo::LocalReseedReport {
+            healthy: vec![[3; 32]],
+            superseded: vec![[1; 32]],
+            ..Default::default()
+        };
+        assert!(local_reseed_error(&repo, &report).is_none());
+        assert_eq!(local_reseed_json(&repo, "p", &report)["status"], "reseeded");
+        report.unreachable.push(forge_core::repo::UnreachablePack {
+            pack_hash: [4; 32],
+            hosts: vec!["gone.example".into()],
+        });
+        let u = local_reseed_error(&repo, &report).expect("an error");
+        assert_eq!(u.code, codes::PACKS_UNREADABLE);
+        assert_eq!(
+            u.cause.as_deref(),
+            Some("1 pack whose public addresses are on a host that is gone (gone.example: not found or refusing connections)")
+        );
+        assert_eq!(u.fix, [repack_fix("o/r")]);
+        assert!(u.fix[0].contains("`dg repack o/r --profile <new profile>`"));
+        report.missing.push([2; 32]);
+        let u = local_reseed_error(&repo, &report).expect("an error");
+        assert!(
+            u.message.contains("2 packs of o/r still unreadable"),
+            "{}",
+            u.message
+        );
+        assert!(
+            u.cause
+                .as_deref()
+                .is_some_and(|c| c.starts_with("1 pack with no copy in this clone (020202020202…)")),
+            "{u:?}"
+        );
+        assert!(u.fix[0].contains("a clone that has those packs"), "{u:?}");
+        repo.visibility = forge_core::rules::v2::Visibility::Private;
+        let u = local_reseed_error(&repo, &report).expect("an error");
+        assert!(
+            u.fix[0].contains("the clone that pushed those packs"),
+            "{u:?}"
+        );
+        assert_eq!(local_reseed_json(&repo, "p", &report)["status"], "partial");
+    }
 
     /// Review finding: a reindex onto the owner's storage pays no Platform chunks, only the
     /// manifest and its URIs; onto Platform it pays the index chunks (about 3.6 DASH for

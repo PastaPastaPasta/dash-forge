@@ -1,0 +1,82 @@
+{
+  "name": "policy_changed_within_the_hour_flagged",
+  "description": "The first policy (2 approvals) was written twenty minutes before the merge and weakened to 0 ten minutes before it: a change from an earlier policy, flagged even though both are within the hour.",
+  "case": "merge_audit",
+  "rules": "v2",
+  "input": {
+    "mergedAt": 10000000,
+    "merger": "maint",
+    "mergeOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "mergeHead": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "prAuthor": "auth",
+    "policies": [
+      {
+        "id": "p1",
+        "createdAt": 9300000,
+        "policy": {
+          "requiredApprovals": 2,
+          "approverRole": 0,
+          "requireChecks": false,
+          "mergeMethods": 0
+        }
+      },
+      {
+        "id": "p2",
+        "createdAt": 9400000,
+        "policy": {
+          "requiredApprovals": 0,
+          "approverRole": 0,
+          "requireChecks": false,
+          "mergeMethods": 0
+        }
+      }
+    ],
+    "protection": [],
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "maint2",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "writ",
+        "role": "writer",
+        "createdAt": 10
+      }
+    ],
+    "reviews": [],
+    "dismissals": [],
+    "runs": [],
+    "runners": [],
+    "bypasses": []
+  },
+  "expected": {
+    "verdict": "met",
+    "policy": {
+      "requiredApprovals": 0,
+      "approverRole": 0,
+      "requireChecks": false,
+      "mergeMethods": 0
+    },
+    "protected": false,
+    "mergerRole": "maintainer",
+    "protectionUnmet": false,
+    "approvals": {
+      "met": true,
+      "have": 0,
+      "need": 0,
+      "blockedBy": []
+    },
+    "checks": null,
+    "checksUnread": false,
+    "codeOwnersUnaudited": false,
+    "bypass": null,
+    "uncountedBypass": null,
+    "rulesChanged": true
+  }
+}

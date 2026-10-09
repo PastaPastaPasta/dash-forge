@@ -100,9 +100,14 @@ describe('RulesAtMerge', () => {
     const text = body?.textContent ?? ''
     expect(text).not.toContain('no bypass was recorded')
     expect(text).not.toContain('no membership at the time')
-    expect(text).toContain("A bypass was recorded, but its writer's role at the time can't be confirmed.")
+    expect(text).toContain("A bypass was recorded for this merge, but it can't be confirmed. Without it, the merge did not meet the branch rules in force at the time.")
+    expect(text).not.toContain("writer's role")
     expect(text).toContain('maint, no current membership record')
-    expect(text).toContain("main was protected, and the merger's role at the time can't be confirmed")
+    expect(text).toContain('Unconfirmed: main was protected, and the merger has no current membership record')
+    // The unconfirmed rule is not shown as failed (no red "Not met").
+    const rows = [...host.querySelectorAll('[data-met]')].map((r) => r.getAttribute('data-met'))
+    expect(rows).toEqual(['unconfirmed', 'false'])
+    expect(text).not.toContain('Not met: Unconfirmed')
     const line = host.querySelector('[data-testid="rules-at-merge-uncounted-bypass"]')?.textContent ?? ''
     expect(line).toContain('maint recorded a bypass')
     expect(line).toContain('required approvals: 0 of 1.')

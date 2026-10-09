@@ -12,9 +12,11 @@ const ID = '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD'
 const FAKE_PASSPHRASE = 'fake-passphrase-not-real-123'
 const unlockMore = vi.fn(async (_method: unknown) => undefined)
 
+const session = vi.hoisted(() => ({ whole: false }))
 vi.mock('@/contexts/auth-context', () => ({
   useAuth: () => ({
-    identity: ID,
+    identity: session.whole ? null : ID,
+    locked: session.whole,
     vaults: [{ identityId: ID, keyId: 6, createdAt: 0, methods: ['passphrase'] }],
     controller: { unlockMore },
     isLoading: false,
@@ -22,6 +24,7 @@ vi.mock('@/contexts/auth-context', () => ({
 }))
 
 const { UnlockMore } = await import('./unlock-more')
+const { useUiStore } = await import('@/hooks/use-ui-store')
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -35,6 +38,8 @@ function type(el: HTMLInputElement, value: string): void {
 
 beforeEach(() => {
   unlockMore.mockClear()
+  session.whole = false
+  useUiStore.getState().closeLogin()
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
@@ -57,5 +62,14 @@ describe('UnlockMore', () => {
     await act(async () => submit.click())
     expect(unlockMore).toHaveBeenCalledWith({ passphrase: FAKE_PASSPHRASE })
     expect(input.value).toBe('')
+  })
+
+  it('over a fully locked session offers the header\'s Unlock, not a passphrase field (R8)', () => {
+    session.whole = true
+    act(() => root.render(<UnlockMore title="Unlock to read members-only content" />))
+    expect(host.querySelector('input')).toBeNull()
+    expect(useUiStore.getState().loginOpen).toBe(false)
+    act(() => host.querySelector<HTMLButtonElement>('[data-testid="unlock-more-open"]')!.click())
+    expect(useUiStore.getState().loginOpen).toBe(true)
   })
 })

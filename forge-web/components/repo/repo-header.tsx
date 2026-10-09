@@ -29,6 +29,7 @@ import { CodeSearchBox } from '@/components/repo/code-search-box'
 import { MembersChip } from '@/components/repo/audience'
 import { membersOnlyOf, onMembersOnlyCounts } from '@/lib/repo/members-only-counts'
 import { MovedBanner } from '@/components/repo/moved-banner'
+import { SecurityPolicyLink } from '@/components/repo/security-policy'
 
 /**
  * How many of the repo's open issues and PRs are members-only (and, apart, sent to specific
@@ -96,7 +97,7 @@ export function activeRepoTab(pathname: string): 'code' | 'issues' | 'pulls' | '
 }
 
 /** Routes whose view renders its own h1 (an issue's title, a commit's subject): the repo name is not the page's heading there. */
-const VIEWS_WITH_OWN_H1 = ['/repo/issue', '/repo/pull', '/repo/pulls/new', '/repo/commit', '/repo/compare', '/repo/releases', '/repo/stargazers']
+const VIEWS_WITH_OWN_H1 = ['/repo/issue', '/repo/pull', '/repo/pulls/new', '/repo/commit', '/repo/compare', '/repo/releases', '/repo/stargazers', '/repo/security']
 
 
 export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
@@ -154,6 +155,7 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
           {home.repo.visibility === 'private' ? <PrivateChip home={home} /> : null}
           <MembersChip home={home} />
           <BackendBadge backend={home.backend} />
+          <SecurityPolicyLink home={home} addr={addr} load={current === 'code'} />
         </div>
         <div className="ml-auto flex flex-wrap items-center gap-2">
           <CodeSearchBox addr={addr} />

@@ -1,0 +1,22 @@
+{
+  "name": "edit_someone_elses_refused",
+  "description": "A writer cannot make someone else's comment public: only its author replaces it.",
+  "case": "make_public",
+  "rules": "v2",
+  "input": {
+    "op": "edit",
+    "visibility": "public",
+    "stored": {
+      "kind": "comment",
+      "enc": "030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "epoch": 0
+    },
+    "edited": {
+      "kind": "comment",
+      "body": "now public"
+    },
+    "author": "alice",
+    "signer": "bob"
+  },
+  "expected": "notAuthor"
+}

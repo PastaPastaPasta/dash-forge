@@ -239,10 +239,10 @@ export function useDraftState<T>(
   key: string | null,
   valid: (value: T) => boolean,
   persist: DraftValuePersist<T> = true,
-): [T | null, (value: T | null) => void, (held: boolean, value: T | null) => void, boolean] {
+): [T | null, (value: T | null) => void, (held: boolean, value: T | null) => void, T | null] {
   const [text, setText, holdText] = useDraftText(key, typeof persist === 'function' ? (t) => persistJson(t, persist) : persist)
-  // A stored value dropped as stale in this mount (the page says so).
-  const [dropped, setDropped] = useState(false)
+  // The stored value dropped as stale in this mount, if any (the page says so, where it was).
+  const [dropped, setDropped] = useState<T | null>(null)
   const validRef = useRef(valid)
   validRef.current = valid
   let value: T | null = null
@@ -254,10 +254,12 @@ export function useDraftState<T>(
     }
   }
   const stale = value !== null && !valid(value)
+  const staleValue = useRef<T | null>(null)
+  staleValue.current = stale ? value : null
   useEffect(() => {
     if (stale) {
+      setDropped(staleValue.current)
       setText('')
-      setDropped(true)
     }
   }, [stale, setText])
   const set = useCallback((v: T | null) => setText(v === null ? '' : JSON.stringify(v)), [setText])
@@ -290,6 +292,8 @@ export function useEditDraft<T>(
   readonly value: T | null
   readonly set: (value: T | null) => void
   readonly dropped: boolean
+  /** The edit that was discarded, while {@link dropped} (to say where it was), else null. */
+  readonly droppedValue: T | null
   /**
    * Run the edit's save: the stored copy is held away while it runs (a reload must neither save
    * it twice nor call the user's own landed save "discarded"), cleared once it lands, and kept
@@ -323,5 +327,28 @@ export function useEditDraft<T>(
       throw e
     }
   }
-  return { value, set, dropped: droppedStored && !seen, saving }
+  const droppedValue = seen ? null : droppedStored
+  return { value, set, dropped: droppedValue !== null, droppedValue, saving }
 }
+
+/**
+ * Where a page says a stored edit was discarded (Q5-A11). The description box names what was
+ * discarded (the description's edit, a comment's, or both), so it never reads as the
+ * description's when it was a comment's; `atComment` also marks the comment itself, while it is
+ * in the thread (a hidden or folded comment may not show it, so the box always says it too).
+ */
+export function discardedEdits(description: boolean, comment: { readonly id: string } | null, commentIds: readonly string[]): { readonly atComment: string | null; readonly boxNote: string | null } {
+  const atComment = comment !== null && commentIds.includes(comment.id) ? comment.id : null
+  const boxNote =
+    description && comment !== null
+      ? 'Your unsaved edits of the description and of a comment were discarded: they changed on Platform since you started.'
+      : description
+        ? 'Your unsaved edit of the description was discarded: it changed on Platform since you started.'
+        : comment !== null
+          ? 'Your unsaved edit of a comment was discarded: the comment changed on Platform since you started.'
+          : null
+  return { atComment, boxNote }
+}
+
+/** The mark at a comment whose stored edit was discarded ({@link discardedEdits}). */
+export const DISCARDED_COMMENT_EDIT = 'Your unsaved edit of this comment was discarded.'

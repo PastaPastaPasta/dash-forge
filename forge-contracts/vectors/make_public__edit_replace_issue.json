@@ -1,0 +1,25 @@
+{
+  "name": "edit_replace_issue",
+  "description": "An issue's title and body set.",
+  "case": "make_public",
+  "rules": "v2",
+  "input": {
+    "op": "replace",
+    "kind": "issue",
+    "opened": {
+      "title": "Rotate the key",
+      "body": "Done."
+    }
+  },
+  "expected": {
+    "set": {
+      "body": "Done.",
+      "title": "Rotate the key"
+    },
+    "remove": [
+      "enc",
+      "epoch"
+    ],
+    "lost": []
+  }
+}

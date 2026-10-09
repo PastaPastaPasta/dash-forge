@@ -34,7 +34,7 @@ These guides describe what is on `master` today. Features that are specified but
 
 - editing files in the browser, and browser merges for private repositories (the CLI has them);
 - in the web app: choosing Members for a new issue or comment, turning members-only content on, the members-only rows non-members see, **View as public**, and Settings → Environments (`dg` has the rest);
-- members-only pull requests, branches and releases, Specific people, and making members-only discussion public.
+- members-only pull requests, branches and releases, Specific people, and making other people's posts public.
 
 Dash Wallet sign-in is built. With today's wallets it works only in the iOS app pointed at Forge's key-exchange contract on sakura (not yet tried on a real device), and on testnet once Forge is deployed there: see [Identity and keys](identity-and-keys.md#signing-in-with-the-dash-wallet-app-what-works-today).
 

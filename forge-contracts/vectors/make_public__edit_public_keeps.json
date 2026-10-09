@@ -1,0 +1,21 @@
+{
+  "name": "edit_public_keeps",
+  "description": "A plaintext edit of a public comment keeps it public.",
+  "case": "make_public",
+  "rules": "v2",
+  "input": {
+    "op": "edit",
+    "visibility": "public",
+    "stored": {
+      "kind": "comment",
+      "body": "a"
+    },
+    "edited": {
+      "kind": "comment",
+      "body": "b"
+    },
+    "author": "alice",
+    "signer": "alice"
+  },
+  "expected": "keeps"
+}

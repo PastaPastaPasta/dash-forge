@@ -17,6 +17,7 @@ import { banIdentity, countingBansOf, DOC_BAN, invalidateBans, liftBan, readBanS
 import { contractHasType } from '@/lib/repo/contract-shape'
 import { shortId } from '@/lib/utils'
 import { BAN_REASONS, banReasonLabel, type Ban } from '@/lib/rules/bans'
+import type { Role } from '@/lib/rules/v2'
 import { previewCreate, previewDelete } from '@/lib/sdk'
 import { retryWhileMissing } from '@/lib/view/retry'
 import { useAuth } from '@/contexts/auth-context'
@@ -30,6 +31,16 @@ import { Field, Input } from '@/components/ui/input'
 import { ErrorState, LoadingBlock } from '@/components/ui/states'
 import { Section } from '@/components/repo/repo-settings-sections'
 
+/**
+ * What the ban dialog adds for a member (Q5): a ban hides and refuses their posts in Forge apps,
+ * but their role stays, so a writer can still push. Null for a non-member.
+ */
+export function banKeepsRole(role: Role | null): string | null {
+  if (role === null || role === 'maintainer') return null
+  const keeps = role === 'writer' ? "A ban doesn't remove that role: they can still push." : "A ban doesn't remove that role."
+  return `They have the ${role} role here. ${keeps} To remove it, use Settings → Members.`
+}
+
 export function BanSettings({ home, maintainer }: { home: RepoHome; maintainer: boolean }): JSX.Element {
   const repo = home.repo
   const { sdk, ready, network } = useSdk(repoContractIds(repo))
@@ -40,7 +51,7 @@ export function BanSettings({ home, maintainer }: { home: RepoHome; maintainer: 
   const supported = useAsync(() => contractHasType(sdk!, repo.forge.collab, DOC_BAN), [ready, repo.forge.collab], { enabled: ready && sdk !== null })
   const [who, setWho] = useState('')
   const [reason, setReason] = useState<number>(0)
-  const [banning, setBanning] = useState<{ readonly id: string; readonly label: string } | null>(null)
+  const [banning, setBanning] = useState<{ readonly id: string; readonly label: string; readonly role: Role | null } | null>(null)
   const [lifting, setLifting] = useState<{ readonly ban: Ban; readonly others: number } | null>(null)
   const [problem, setProblem] = useState<string | null>(null)
   const [looking, setLooking] = useState(false)
@@ -69,7 +80,7 @@ export function BanSettings({ home, maintainer }: { home: RepoHome; maintainer: 
       if (members === null) return setProblem("Couldn't read the repository's members to check who this is. Try again.")
       if (members.some((m) => m.identity === id && m.role === 'maintainer')) return setProblem("A maintainer can't be banned. Remove them as a maintainer first.")
       if (mine(bans.data?.raw ?? [], id) !== undefined) return setProblem('You have already banned this identity.')
-      setBanning({ id, label: who.trim() })
+      setBanning({ id, label: who.trim(), role: members.find((m) => m.identity === id)?.role ?? null })
     } finally {
       setLooking(false)
     }
@@ -94,6 +105,7 @@ export function BanSettings({ home, maintainer }: { home: RepoHome; maintainer: 
   }
 
   const state = bans.data
+  const keepsRole = banning === null ? null : banKeepsRole(banning.role)
   const rows = [...(state?.standing.values() ?? [])].sort((a, b) => b.createdAt - a.createdAt)
   return (
     <Section id="bans" title="Bans" icon={<BanIcon className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
@@ -207,7 +219,16 @@ export function BanSettings({ home, maintainer }: { home: RepoHome; maintainer: 
         cost={previewCreate('ban')}
         confirmLabel="Sign & ban"
         onConfirm={ban}
-      />
+      >
+        {keepsRole !== null ? (
+          <p className="text-dense text-anvil-700 dark:text-anvil-200" data-testid="ban-keeps-role">
+            {keepsRole}{' '}
+            <a href="#collaborators" onClick={() => setBanning(null)} className="underline hover:text-forge-800 dark:hover:text-forge-400">
+              Go to Members
+            </a>
+          </p>
+        ) : null}
+      </ConfirmDialog>
       <ConfirmDialog
         open={lifting !== null}
         onClose={() => setLifting(null)}

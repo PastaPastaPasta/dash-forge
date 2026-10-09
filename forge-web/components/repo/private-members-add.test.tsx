@@ -76,7 +76,7 @@ describe('private repo: Add as … on an accepted invitation', () => {
   it('opens the confirm once their encryption key checks out', async () => {
     keyOk.value = true
     await pick()
-    expect(host.querySelector('[data-testid="confirm"]')?.textContent).toBe('Add a writer')
+    expect(host.querySelector('[data-testid="confirm"]')?.textContent).toBe('Add with Write access')
     expect(host.querySelector<HTMLInputElement>('#member-id')!.value).toBe(INVITEE)
   })
 

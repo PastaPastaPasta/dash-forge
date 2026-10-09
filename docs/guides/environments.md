@@ -139,7 +139,7 @@ An environment you can't read is listed as "not updated: ask <who saved it>". A 
 `dg collab remove` saves the environments the member could read again without them (their group's, and any that names them in `--also` or Specific people), and lists the current values they could see, so you know what to change where it's used (the database password at the database, the API key at its provider):
 
 ```
-Removed <identity> (writer) from alice/shop.
+Removed <identity>'s Write access to alice/shop.
 <identity> could read 2 dev values. Change them where they're used: API_TOKEN, API_URL
 ```
 

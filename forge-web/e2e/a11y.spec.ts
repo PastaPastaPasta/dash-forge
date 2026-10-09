@@ -55,7 +55,7 @@ const PAGES: [label: string, href: Href, ready: (page: Page) => Locator][] = [
   ['pull', () => repoUrl('pull', `&number=${loadSeedPulls().approved}`), (page) => page.getByRole('region', { name: 'Approvals' })],
   ['stargazers', repoUrl('stargazers'), (page) => page.getByRole('main').locator('a[href*="/u"]').first()],
   ['releases', repoUrl('releases'), (page) => page.getByText(/No releases|Latest/).first()],
-  ['settings-repo', repoUrl('settings'), (page) => page.getByRole('region', { name: 'Members' }).getByText('WRITER', { exact: true })],
+  ['settings-repo', repoUrl('settings'), (page) => page.getByRole('region', { name: 'Members' }).getByTestId('role-badge').filter({ hasText: /^Write$/ })],
   ['empty-repo', repoUrl('', '', EMPTY), (page) => page.getByText(/empty|nothing pushed|push/i).first()],
 ]
 
