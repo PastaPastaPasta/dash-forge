@@ -221,14 +221,14 @@ export function ProfileContent({ identityId: address, byId = false }: { identity
                     {fields.displayName}
                   </span>
                 ) : null}
-                <IdentityPill identityId={identityId} name={data.name ?? undefined} className="text-prose" />
+                <IdentityPill identityId={identityId} name={data.name ?? (isSelf ? ownName : null) ?? undefined} className="text-prose" />
               </span>
             </h1>
           </div>
         </div>
         {isSelf ? null : <LookalikeNote subjects={[named]} />}
         {/* Your own profile, with no username: how to get one (QW3-035). */}
-        {isSelf && data.name === null && ownName === null ? <UsernameHint className="border-t border-anvil-100 pt-3 dark:border-anvil-850" /> : null}
+        {isSelf ? <UsernameHint show={data.name === null && ownName === null} className="border-t border-anvil-100 pt-3 dark:border-anvil-850" /> : null}
         {fields.bio ? (
           <p className="whitespace-pre-line text-prose text-anvil-800 [overflow-wrap:anywhere] dark:text-anvil-100" data-testid="profile-bio">
             {fields.bio}

@@ -37,6 +37,7 @@ interface Key {
   purposeNumber: number
   securityLevelNumber: number
   disabledAt?: bigint
+  expiresAt?: bigint
   contractBounds?: { toJSON(): { $type: string; id: string } }
   validatePrivateKey(bytes: Uint8Array): boolean
 }
@@ -114,5 +115,12 @@ describe('authKeysFromFile', () => {
   it('refuses a file with neither such a key nor a phrase', () => {
     expect(() => authKeysFromFile(file([k('MASTER', 1)]))).toThrow(/no CRITICAL or HIGH/)
     expect(authKeysFromFile(file([k('MASTER', 1)], { mnemonic: 'abandon '.repeat(11) + 'about' })).wifs).toEqual([])
+  })
+})
+
+describe('an expired key', () => {
+  it('is not picked', () => {
+    keys = [keyFor(2, 3, 1, { expiresAt: BigInt(Date.now() - 1000) })]
+    expect(pickUsernameKey(keys as never, [wifOf(3)], NET)).toBeNull()
   })
 })

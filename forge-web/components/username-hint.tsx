@@ -5,6 +5,10 @@
  * optional, but Settings and the own profile showed only "DhRR5hs…" with no way to a readable
  * name. "Choose a username" opens the flow that checks a name and registers it here, or hands
  * over the `dg auth name register` command (#452: `./username-dialog`).
+ *
+ * The caller renders this whatever the name, with `show` while the identity has none: the
+ * dialog outlives the hint, which goes as soon as the registered name is known, so the dialog's
+ * "is your username" step is still seen.
  */
 
 import { useState } from 'react'
@@ -14,8 +18,10 @@ import { Button } from '@/components/ui/button'
 import { UsernameDialog } from '@/components/username-dialog'
 import { DOCS } from '@/lib/docs-links'
 
-export function UsernameHint({ className }: { className?: string }): JSX.Element {
+export function UsernameHint({ show, className }: { show: boolean; className?: string }): JSX.Element | null {
   const [open, setOpen] = useState(false)
+  const dialog = open ? <UsernameDialog onClose={() => setOpen(false)} /> : null
+  if (!show) return dialog
   return (
     <div className={className} data-testid="username-hint">
       <p className="text-dense text-anvil-700 dark:text-anvil-200">
@@ -30,7 +36,7 @@ export function UsernameHint({ className }: { className?: string }): JSX.Element
           How usernames work →
         </a>
       </p>
-      {open ? <UsernameDialog onClose={() => setOpen(false)} /> : null}
+      {dialog}
     </div>
   )
 }

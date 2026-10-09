@@ -1559,7 +1559,7 @@ export class AuthController {
    * A contested name is refused before anything is read (the web does not enter contests).
    *
    * An error after the domain may have gone out (a timeout, a lost answer) is not taken at its
-   * word: one read of the name decides, and a name that is now this identity's is a success.
+   * word: a read of the name (a few, while a lagging node shows none) decides, and a name that is now this identity's is a success.
    * Either way the tab then knows the name ({@link noteRegisteredDpnsName}): the header, bylines
    * and short URLs show it at once.
    */
@@ -1575,7 +1575,8 @@ export class AuthController {
         await this.charged(identityId, 'identity:name', () => null, () => registerUsername(sdk, { network: this.network, identityId, label, wifs }))
       } catch (e) {
         if (e instanceof NoUsernameKeyError) throw e
-        const holder = await dpnsLabelHolder(sdk, label, this.network).catch(() => null)
+        // A few reads, a node behind the write may not show it yet; another holder ends them.
+        const holder = await retryWhileMissing(() => dpnsLabelHolder(sdk, label, this.network).catch(() => null), 3, 2000)
         if (holder !== identityId) throw e
       }
       noteRegisteredDpnsName(this.network, identityId, label)

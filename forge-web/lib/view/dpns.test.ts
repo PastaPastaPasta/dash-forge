@@ -1,7 +1,7 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { cachedDpnsName, clearDpnsCache, displayDpnsName, DPNS_FAILURE_TTL_MS, dpnsCacheVersion, dpnsLabelHolder, dpnsReadFailed, lookupDpnsName, looksLikeDpnsName, noteRegisteredDpnsName, resolveDpnsId, resolveDpnsName, seedFromDomains, subscribeDpnsCache } from './dpns'
+import { cachedDpnsName, clearDpnsCache, displayDpnsName, DPNS_FAILURE_TTL_MS, dpnsCacheVersion, dpnsLabelHolder, dpnsReadFailed, lookupDpnsName, looksLikeDpnsName, noteRegisteredDpnsName, resolveDpnsId, resolveDpnsName, seedFromDomains, subscribeDpnsCache, UNKNOWN_HOLDER } from './dpns'
 
 const A = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
 const B = 'Ehyw8VygZh5LjjYHUbKqgyJamgetiVPLFnJewrfmgQUs'
@@ -208,5 +208,12 @@ describe('dpnsLabelHolder: is this name free? (#452)', () => {
   it('answers null for a free name, and REJECTS a failed read (never "free")', async () => {
     expect(await dpnsLabelHolder(fakeSdk(async () => new Map()), 'nobody-here7', 'devnet')).toBeNull()
     await expect(dpnsLabelHolder(fakeSdk(async () => Promise.reject(new Error('quorum not found'))), 'nobody-here7', 'devnet')).rejects.toThrow()
+  })
+})
+
+describe('dpnsLabelHolder: a domain whose record does not read', () => {
+  it('is taken, not free', async () => {
+    const odd = { toJSON: () => ({ label: 'x7x', normalizedParentDomainName: 'dash', records: {} }) }
+    expect(await dpnsLabelHolder(fakeSdk(async () => new Map([['d', odd]])), 'x7x', 'devnet')).toBe(UNKNOWN_HOLDER)
   })
 })

@@ -37,6 +37,7 @@ import { NAME_CONTEST_FUND_CREDITS, NAME_REGISTER_CREDITS, NAME_REGISTER_FLOOR_C
 import { dpnsLabelHolder, lookupDpnsName } from '@/lib/view/dpns'
 import { checkUsername, nameRegisterCommand, uncontestedVariants } from '@/lib/view/username'
 import { identityHref } from '@/lib/view/profile-links'
+import { seedOwner } from '@/lib/repo'
 import { creditsAsDash } from '@/lib/view/format'
 import { errorMessage } from '@/lib/utils'
 
@@ -62,7 +63,7 @@ export function UsernameDialog({ onClose }: { onClose: () => void }): JSX.Elemen
   const [availability, setAvailability] = useState<Availability | null>(null)
   // Bumped by "Check again" after a failed read: the same name is read once more.
   const [attempt, setAttempt] = useState(0)
-  const master = useMasterKeyInput(identity, { id: 'username', fileLabel: 'Identity file for the username' })
+  const master = useMasterKeyInput(identity, { id: 'username', fileLabel: 'Identity file for the username', legend: 'Identity file or phrase, used once' })
   const [submitError, setSubmitError] = useState<string | null>(null)
   // The name now this identity's, and whether this dialog signed for it (else it was found by a re-read).
   const [done, setDone] = useState<{ readonly name: string; readonly signed: boolean } | null>(null)
@@ -91,11 +92,17 @@ export function UsernameDialog({ onClose }: { onClose: () => void }): JSX.Elemen
   const canSign = label !== null && shown?.state === 'free' && master.ready && !lowBalance && !isLoading
   const error = master.error ?? submitError
 
+  // The name is this identity's now: links written with it resolve without waiting out a miss.
+  const finish = (name: string, signed: boolean): void => {
+    if (identity !== null) seedOwner(name, identity)
+    setDone({ name, signed })
+  }
+
   const submit = async (): Promise<void> => {
     if (!canSign || label === null) return
     setSubmitError(null)
     try {
-      setDone({ name: await registerUsername(master.take(), label), signed: true })
+      finish(await registerUsername(master.take(), label), true)
     } catch (e) {
       setSubmitError(errorMessage(e))
     }
@@ -108,7 +115,7 @@ export function UsernameDialog({ onClose }: { onClose: () => void }): JSX.Elemen
     setRecheckNote(null)
     try {
       const name = await lookupDpnsName(sdk, identity, network)
-      if (name !== null) setDone({ name, signed: false })
+      if (name !== null) finish(name, false)
       else setRecheckNote('No username for this identity yet. A registration can take a few seconds to show; try again in a moment.')
     } catch (e) {
       setRecheckNote(`Couldn't read your username (${errorMessage(e)}). Try again in a moment.`)
@@ -177,9 +184,10 @@ export function UsernameDialog({ onClose }: { onClose: () => void }): JSX.Elemen
             <NameStatus check={check} shown={shown} onPick={setTyped} onRetry={() => setAttempt((n) => n + 1)} />
           </div>
 
+          {/* Mounted throughout, shown only for a free name: a phrase typed into it survives a change of name. */}
+          <div hidden={!(label !== null && shown?.state === 'free')}>{master.element}</div>
           {label !== null && shown?.state === 'free' ? (
             <>
-              {master.element}
               <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
                 Your identity&apos;s own key signs this once (from its file or recovery phrase) and is not stored. This browser&apos;s
                 key can&apos;t: Platform keeps it to Dash Forge&apos;s contracts. The fee comes from your identity balance.

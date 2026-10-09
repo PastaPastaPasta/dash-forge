@@ -45,6 +45,7 @@ export {
   resolveAnyRepoWith,
   isIdentifier,
   resolveOwner,
+  seedOwner,
   toRepoDoc,
   repoRefOf,
   type RepoAddressParams,

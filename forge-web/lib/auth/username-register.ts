@@ -47,7 +47,7 @@ export async function usernameKeysFromPhrase(mnemonic: string, network: Network)
 
 /**
  * The first of `wifs` that controls a key of `keys` able to sign a DPNS document: AUTHENTICATION,
- * CRITICAL or HIGH, not disabled, bound to no contract. Null when none does.
+ * CRITICAL or HIGH, not disabled or expired, bound to no contract. Null when none does.
  */
 export function pickUsernameKey(keys: readonly WasmKey[], wifs: readonly string[], network: Network): { readonly key: WasmKey; readonly wif: string } | null {
   for (const wif of wifs) {
@@ -57,6 +57,7 @@ export function pickUsernameKey(keys: readonly WasmKey[], wifs: readonly string[
         (k.securityLevelNumber === 1 || k.securityLevelNumber === 2) &&
         k.disabledAt === undefined &&
         k.contractBounds === undefined &&
+        (k.expiresAt === undefined || Number(k.expiresAt) > Date.now()) &&
         controlsKey(k, wif, network),
     )
     if (key) return { key, wif }

@@ -137,6 +137,20 @@ describe('UsernameDialog', () => {
     expect(q('username-done')?.textContent).toMatch(/not stored/)
   })
 
+  it('keeps a typed phrase when the name changes (the field stays mounted)', async () => {
+    await typeName('fresh-name-7')
+    act(() => button(/Recovery phrase/).click())
+    act(() => type(host.querySelector<HTMLTextAreaElement>('#username-mnemonic')!, WORDS))
+    await typeName('qa-taken-7')
+    expect(q('username-register')).toBeNull()
+    await typeName('fresh-name-8')
+    expect(host.querySelector<HTMLTextAreaElement>('#username-mnemonic')!.value).toBe(WORDS)
+    await act(async () => {
+      ;(q('username-register') as HTMLButtonElement).click()
+    })
+    expect(h.register).toHaveBeenCalledWith({ mnemonic: WORDS }, 'fresh-name-8')
+  })
+
   it('does not offer to sign below the registration’s cost', async () => {
     h.balance = '1000000'
     await typeName('fresh-name-7')

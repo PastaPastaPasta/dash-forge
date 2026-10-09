@@ -208,7 +208,8 @@ export function noteRegisteredDpnsName(network: Network, identityId: string, lab
  * normalized label under `dash`. One read of the contract's unique `parentNameAndLabel` index
  * (dpns-contract schema v1/v2 lines 9-30), not cached, and a failed read REJECTS: "is this name
  * free?" must never read a failure as yes (#452). A name shape that cannot be a label is refused
- * by the caller before this is asked.
+ * by the caller before this is asked. A domain without a readable `records.identity` answers
+ * {@link UNKNOWN_HOLDER}: taken, never free.
  */
 export async function dpnsLabelHolder(sdk: EvoSDK, label: string, network: Network): Promise<string | null> {
   const docs = await queryDocuments(sdk, {
@@ -220,8 +221,12 @@ export async function dpnsLabelHolder(sdk: EvoSDK, label: string, network: Netwo
     ],
     limit: 1,
   })
-  return identityOf(docs[0])
+  // A domain that is there is taken, even one whose record this build cannot read.
+  return docs[0] === undefined ? null : identityOf(docs[0]) ?? UNKNOWN_HOLDER
 }
+
+/** {@link dpnsLabelHolder}'s answer for a name that is taken by an identity it could not read. */
+export const UNKNOWN_HOLDER = '?'
 
 /**
  * Forward lookups by normalized name, per network. A lookup never rejects, so its promise is
