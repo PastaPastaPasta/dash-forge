@@ -29,6 +29,8 @@ export type BrowseReaderState =
       /** Served from an in-browser clone because the published index is missing or behind. */
       readonly local: boolean
       readonly behind: boolean
+      /** The index exists but its fragments could not be fetched or read (not that it falls short). */
+      readonly unreachable: boolean
       /** Live external packs the in-browser clone could not fetch (empty: nothing skipped). */
       readonly unavailable: readonly UnavailablePack[]
     }
@@ -42,7 +44,7 @@ export type BrowseReaderState =
     }
   | { readonly kind: 'no-packs' }
   /** Too large to clone without asking: `start()` downloads `sizeBytes` of packs. */
-  | { readonly kind: 'offer'; readonly behind: boolean; readonly sizeBytes: number; readonly start: () => void }
+  | { readonly kind: 'offer'; readonly behind: boolean; readonly unreachable: boolean; readonly sizeBytes: number; readonly start: () => void }
 
 function progressLabel(p: FallbackProgress | null): string {
   if (p === null) return 'Preparing in-browser clone'
@@ -78,11 +80,12 @@ export function useBrowseReader(repo: RepoRef | null): BrowseReaderState {
   if (data === null || data.kind === 'no-packs') return { kind: 'no-packs' }
   if (data.kind === 'ready') {
     const reader = data.context.reader
-    return { kind: 'ready', reader, version: readerVersion(reader), local: false, behind: false, unavailable: [] }
+    return { kind: 'ready', reader, version: readerVersion(reader), local: false, behind: false, unreachable: false, unavailable: [] }
   }
 
   // No usable published index — the in-browser fallback clone takes over.
   const behind = data.reason === 'index-behind'
+  const unreachable = data.reason === 'index-unreachable'
   if (fallback.status === 'ready' && fallback.context !== null) {
     const reader = fallback.context.reader
     return {
@@ -91,6 +94,7 @@ export function useBrowseReader(repo: RepoRef | null): BrowseReaderState {
       version: readerVersion(reader),
       local: true,
       behind,
+      unreachable,
       unavailable: fallback.context.unavailable ?? [],
     }
   }
@@ -106,5 +110,5 @@ export function useBrowseReader(repo: RepoRef | null): BrowseReaderState {
   if (fallback.status === 'working' || (data.totalSizeBytes <= AUTO_LOAD_MAX_BYTES && !fallback.needsAsk)) {
     return { kind: 'loading', label: progressLabel(fallback.progress) }
   }
-  return { kind: 'offer', behind, sizeBytes: data.totalSizeBytes, start: fallback.start }
+  return { kind: 'offer', behind, unreachable, sizeBytes: data.totalSizeBytes, start: fallback.start }
 }

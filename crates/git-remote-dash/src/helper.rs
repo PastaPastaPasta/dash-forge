@@ -1273,11 +1273,14 @@ fn packs_unreadable(
     // private network, a bucket without a profile here): no gateway or retry helps, the copy
     // has to be put somewhere readable (QW2-078). The places are said once for all the packs.
     if let Some(places) = unfollowed_places(unreadable) {
-        let recorded = if places.is_empty() {
+        let mut recorded = if places.is_empty() {
             "their manifests record no address".to_string()
         } else {
             format!("they are recorded only at {}", places.join("; "))
         };
+        if let Some(mirrors) = mirrors_tried(unreadable) {
+            recorded = format!("{recorded} ({mirrors})");
+        }
         // `dg reseed --from-local` re-uploads only to addresses already recorded, so it cannot
         // help here: a repack records a new copy (docs/errors.md#e503).
         let fix = match parent {
@@ -1310,6 +1313,32 @@ fn packs_unreadable(
     .fix(format!("`dg storage status {repo}` shows which recorded copies answer"))
 }
 
+/// What the unreadable packs' reads say of the pack mirrors (`pack mirrors tried: host (why), …`
+/// or `pack mirrors not checked: why`), each clause once; `None` when no read got as far as the
+/// mirrors. A clause holds no `; ` or ` — ` (`with_mirror_clause` removes them), so it ends at
+/// the next one.
+fn mirrors_tried(unreadable: &[Unreadable]) -> Option<String> {
+    use forge_core::storage::read::MIRRORS_CLAUSE;
+    let marker = format!("; {MIRRORS_CLAUSE}");
+    let mut clauses: Vec<String> = Vec::new();
+    for u in unreadable {
+        let Some((_, rest)) = u.error.split_once(&marker) else {
+            continue;
+        };
+        let clause = format!("{MIRRORS_CLAUSE}{rest}");
+        let end = [clause.find("; "), clause.find(" — ")]
+            .into_iter()
+            .flatten()
+            .min()
+            .unwrap_or(clause.len());
+        let clause = clause[..end].to_string();
+        if !clauses.contains(&clause) {
+            clauses.push(clause);
+        }
+    }
+    (!clauses.is_empty()).then(|| clauses.join("; "))
+}
+
 /// When no pack had a copy this computer follows, the places their manifests record (each
 /// once, in order); `None` when any pack failed some other way.
 fn unfollowed_places(unreadable: &[Unreadable]) -> Option<Vec<String>> {
@@ -1323,7 +1352,11 @@ fn unfollowed_places(unreadable: &[Unreadable]) -> Option<Vec<String>> {
             return None;
         }
         let listed = u.error.split_once(ONLY).map_or("", |(_, rest)| rest);
-        for place in listed.split("; ").filter(|p| !p.is_empty()) {
+        for place in listed
+            .split("; ")
+            // The mirrors clause a read adds is not a place the manifest records.
+            .filter(|p| !p.is_empty() && !p.starts_with(forge_core::storage::read::MIRRORS_CLAUSE))
+        {
             if !places.iter().any(|p| p == place) {
                 places.push(place.to_string());
             }
@@ -1337,7 +1370,19 @@ fn unfollowed_places(unreadable: &[Unreadable]) -> Option<Vec<String>> {
 /// generic `io error:` / `GET request failed:` layers or the gateway hint (a fix line says
 /// it).
 fn brief(error: &str) -> String {
-    let text = error.split(" — ").next().unwrap_or(error);
+    // The mirrors clause a read appends (`; pack mirrors …`) is kept whole: only the reasons
+    // before it, and its own tail, are cut at a ` — ` hint, so a reason that holds one (an S3
+    // credential hint) does not take the clause with it.
+    let marker = format!("; {}", forge_core::storage::read::MIRRORS_CLAUSE);
+    let (head, clause) = match error.split_once(&marker) {
+        Some((head, rest)) => (head, Some(rest)),
+        None => (error, None),
+    };
+    let cut = |t: &str| t.split(" — ").next().unwrap_or(t).to_string();
+    let mut text = cut(head);
+    if let Some(rest) = clause {
+        text = format!("{text}{marker}{}", cut(rest));
+    }
     let text = text
         .replace("io error: ", "")
         .replace("GET request failed: ", "");
@@ -3968,6 +4013,84 @@ mod tests {
             u.fix
         );
         assert!(!u.fix[0].contains("FORKER/repo --"), "{:?}", u.fix);
+    }
+
+    #[test]
+    fn an_e503_cause_names_the_pack_mirrors_that_were_tried_and_refused() {
+        // Q5: only the recorded copy was named; the mirrors that failed too were not.
+        let dead = |h: &str| {
+            Unreadable {
+            hash: h.repeat(64),
+            error: "io error: no external copy verified (1 candidate(s)): GET https://primary.example/p.pack failed with status 404; pack mirrors tried: dead.example (HTTP 404), junk.example (hash mismatch) — add a gateway".into(),
+        }
+        };
+        let u = packs_unreadable("OWNER/repo", true, &[dead("a")], 1, None);
+        let cause = u.cause.unwrap();
+        assert!(cause.contains("primary.example"), "{cause}");
+        assert!(
+            cause.contains(
+                "pack mirrors tried: dead.example (HTTP 404), junk.example (hash mismatch)"
+            ),
+            "{cause}"
+        );
+        assert!(!cause.contains("add a gateway"), "{cause}");
+        // A recorded copy's reason with a ` — ` of its own (an S3 credential hint) is cut there,
+        // and the mirrors clause after it stays.
+        let s3 = Unreadable {
+            hash: "f".repeat(64),
+            error: "io error: no external copy verified (1 candidate(s)): S3 profile b (HTTP 403 — check the credentials); pack mirrors tried: m.example (HTTP 404)".into(),
+        };
+        let cause = packs_unreadable("OWNER/repo", true, &[s3], 1, None)
+            .cause
+            .unwrap();
+        assert!(!cause.contains("check the credentials"), "{cause}");
+        assert!(
+            cause.contains("pack mirrors tried: m.example (HTTP 404)"),
+            "{cause}"
+        );
+        // Recorded only where no reader follows, and mirrors refused: both are said, and the
+        // clause is not read as one more recorded place.
+        let private = Unreadable {
+            hash: "c".repeat(64),
+            error: format!(
+                "io error: {}: its manifest records only 127.0.0.1:9000 (this machine); pack mirrors tried: dead.example (HTTP 404)",
+                forge_core::storage::read::NO_FOLLOWED_COPY
+            ),
+        };
+        let cause = packs_unreadable("OWNER/repo", true, &[private], 1, None)
+            .cause
+            .unwrap();
+        assert!(
+            cause.ends_with("they are recorded only at 127.0.0.1:9000 (this machine) (pack mirrors tried: dead.example (HTTP 404))"),
+            "{cause}"
+        );
+        // The mirrors could not be read at all: that is said, in both branches, and is no place.
+        let unchecked = format!(
+            "{}: its manifest records only 127.0.0.1:9000 (this machine); pack mirrors not checked: could not reach Dash Platform",
+            forge_core::storage::read::NO_FOLLOWED_COPY
+        );
+        let private = Unreadable {
+            hash: "d".repeat(64),
+            error: format!("io error: {unchecked}"),
+        };
+        let cause = packs_unreadable("OWNER/repo", true, &[private], 1, None)
+            .cause
+            .unwrap();
+        assert!(
+            cause.ends_with("they are recorded only at 127.0.0.1:9000 (this machine) (pack mirrors not checked: could not reach Dash Platform)"),
+            "{cause}"
+        );
+        let failed = Unreadable {
+            hash: "e".repeat(64),
+            error: "io error: no external copy verified (1 candidate(s)): primary.example (HTTP 404); pack mirrors not checked: could not reach Dash Platform".into(),
+        };
+        let cause = packs_unreadable("OWNER/repo", true, &[failed], 1, None)
+            .cause
+            .unwrap();
+        assert!(
+            cause.contains("pack mirrors not checked: could not reach Dash Platform"),
+            "{cause}"
+        );
     }
 
     #[test]

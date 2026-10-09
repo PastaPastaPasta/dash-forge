@@ -381,6 +381,14 @@ function deriveSource(input: TrustInputs, content: TrustLink): TrustLink {
   const { sources, unreachable, fellBackFrom, mirroredPacks } = input.checks
   const gatewayHosts = new Set((input.gateways ?? readGateways()).map(urlHost))
   const tried = new Set(sources.map((s) => (gatewayHosts.has(s) ? 'ipfs' : s)))
+  // A place that was tried and did not answer is listed once, as such: not again as "not tried".
+  // The card writes each as `host (why)`, or `ipfs gateway host (why)` for a gateway: a gateway
+  // marks `ipfs` and its own host (a recorded `https://` address on it) as tried.
+  for (const place of [...unreachable, ...fellBackFrom]) {
+    const words = place.split(' ')
+    if (words[0] === 'ipfs' && words[1] === 'gateway' && words[2] !== undefined) tried.add(words[2])
+    tried.add(words[0] ?? place)
+  }
   const notTried = [...new Set((input.configuredUris ?? []).map(urlHost))].filter((h) => h !== '' && !tried.has(h))
   // A recorded copy that failed while another served: named, but nothing is missing, so the
   // row's state is the content check's.

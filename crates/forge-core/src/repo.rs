@@ -2142,11 +2142,14 @@ impl<'a> RepoService<'a> {
                 let Some(first) = copies.first() else {
                     return Err(last);
                 };
-                let Some(served) = self
+                let served = match self
                     .fetch_from_mirrors(repo, contract, first, roles, reader)
                     .await
-                else {
-                    return Err(last);
+                {
+                    Ok(served) => served,
+                    // Name the mirrors that were tried and refused beside the recorded copies.
+                    Err(Some(clause)) => return Err(with_mirror_clause(last, &clause)),
+                    Err(None) => return Err(last),
                 };
                 failed.extend(served.failed);
                 reader.note_fallback(crate::storage::read::Fallback {
@@ -2225,7 +2228,8 @@ impl<'a> RepoService<'a> {
     /// `manifest`'s pack from its recorded mirrors ([`crate::pack_mirror`]), when every copy
     /// failed: a public repository's only, members' records first, read in the shared order
     /// and verified against the pack hash, within [`crate::storage::read::external_budget`] so
-    /// slow strangers cannot stall the read. `None` when there is none, or none serves.
+    /// slow strangers cannot stall the read. `Err(None)` when there is no mirror to try;
+    /// `Err(Some(clause))` says, for the read's error, which mirrors were tried and refused.
     async fn fetch_from_mirrors(
         &self,
         repo: &RepoRef,
@@ -2233,9 +2237,10 @@ impl<'a> RepoService<'a> {
         manifest: &PackManifestInfo,
         roles: &RoleMap,
         reader: &PackReader,
-    ) -> Option<crate::storage::read::Served> {
+    ) -> std::result::Result<crate::storage::read::Served, Option<String>> {
+        use crate::storage::read::{Missed, MIRRORS_CLAUSE, MIRRORS_TRIED};
         if repo.visibility != Visibility::Public {
-            return None;
+            return Err(None);
         }
         let hash = hex::encode(manifest.pack_hash);
         let members: Vec<String> = roles.keys().cloned().collect();
@@ -2251,7 +2256,10 @@ impl<'a> RepoService<'a> {
             Ok(m) => m,
             Err(e) => {
                 tracing::info!(pack = %hash, error = %e, "pack mirrors unreadable");
-                return None;
+                return Err(Some(format!(
+                    "{MIRRORS_CLAUSE}not checked: {}",
+                    crate::user_error::one_line(&e.to_string())
+                )));
             }
         };
         let uris = crate::pack_mirror::read_order(
@@ -2262,18 +2270,24 @@ impl<'a> RepoService<'a> {
             roles,
         );
         if uris.is_empty() {
-            return None;
+            return Err(None);
         }
         let size = (manifest.size_bytes > 0).then_some(manifest.size_bytes);
         let budget = crate::storage::read::external_budget(size);
         match reader.race(&uris, &hash, size, Some(budget)).await {
             Ok(served) => {
                 tracing::info!(pack = %hash, by = %served.by, "pack served by a recorded mirror");
-                Some(served)
+                Ok(served)
             }
-            Err(e) => {
-                tracing::info!(pack = %hash, error = %Error::from(e), "no recorded mirror served the pack");
-                None
+            Err(missed) => {
+                let none_followed = matches!(missed, Missed::NoCandidate);
+                let (error, places) = missed.into_parts();
+                tracing::info!(pack = %hash, error = %error, "no recorded mirror served the pack");
+                Err(Some(if places.is_empty() || none_followed {
+                    format!("{MIRRORS_TRIED}: none at an address this computer reads")
+                } else {
+                    format!("{MIRRORS_TRIED}: {}", places.join(", "))
+                }))
             }
         }
     }
@@ -4480,6 +4494,27 @@ fn restores_recorded(copies: &[&PackManifestInfo], uris: &[String]) -> bool {
         .any(|m| uris.iter().any(|u| m.uris.contains(u)))
 }
 
+/// `last`, the error of a read whose every recorded copy failed, with `clause` (what became of
+/// the pack mirrors) after it, so the cause names every place that was tried and not only the
+/// recorded copies. An I/O failure or a failed integrity check (a copy that served bytes which
+/// do not hash to the pack) carries it, the latter as its message plus the clause; another error
+/// is not about copies.
+///
+/// Callers cut an error at `; ` (one place each) and at ` — ` (the reader's hint), so the clause
+/// holds neither (a refused mirror's reason may), and the hint, when there is one, stays last.
+fn with_mirror_clause(last: Error, clause: &str) -> Error {
+    use crate::storage::read::IPFS_GATEWAY_HINT;
+    let clause = clause.replace("; ", ", ").replace(" — ", " - ");
+    match last {
+        Error::Io(why) => Error::Io(match why.strip_suffix(IPFS_GATEWAY_HINT) {
+            Some(reasons) => format!("{reasons}; {clause}{IPFS_GATEWAY_HINT}"),
+            None => format!("{why}; {clause}"),
+        }),
+        Error::Integrity => Error::Io(format!("{}; {clause}", Error::Integrity)),
+        other => other,
+    }
+}
+
 /// `copies` of one pack in the order the forge-v2 reader rule tries them
 /// ([`crate::rules::v2::order_pack_copies`]): uploaders who are currently maintainers,
 /// then writers, then anyone else, each by `($createdAt, $id)`.
@@ -5145,6 +5180,63 @@ mod tests {
             ))
             .to_string()
         );
+    }
+
+    #[test]
+    fn a_read_that_tried_mirrors_names_them_in_its_error() {
+        let last =
+            Error::Io("no external copy verified (1 candidate(s)): a.example (HTTP 404)".into());
+        let named = super::with_mirror_clause(
+            last,
+            "pack mirrors tried: dead.example (HTTP 404), junk.example (hash mismatch)",
+        )
+        .to_string();
+        assert!(named.contains("a.example (HTTP 404)"), "{named}");
+        assert!(
+            named.ends_with(
+                "; pack mirrors tried: dead.example (HTTP 404), junk.example (hash mismatch)"
+            ),
+            "{named}"
+        );
+        // The reader's hint stays last, where callers cut the error short.
+        let hinted = Error::Io(format!(
+            "no external copy verified (1 candidate(s)): a (404){}",
+            crate::storage::read::IPFS_GATEWAY_HINT
+        ));
+        assert_eq!(
+            super::with_mirror_clause(hinted, "pack mirrors tried: m (404)").to_string(),
+            Error::Io(format!(
+                "no external copy verified (1 candidate(s)): a (404); pack mirrors tried: m (404){}",
+                crate::storage::read::IPFS_GATEWAY_HINT
+            ))
+            .to_string()
+        );
+        // An S3 reason has a ` — ` of its own, and a reason may hold `; `: neither splits the clause.
+        let s3 = Error::Io(
+            "no external copy verified (1 candidate(s)): a (HTTP 403 — a credential hint)".into(),
+        );
+        let named =
+            super::with_mirror_clause(s3, "pack mirrors tried: m (denied — see the bucket; retry)")
+                .to_string();
+        assert!(
+            named.ends_with("; pack mirrors tried: m (denied - see the bucket, retry)"),
+            "{named}"
+        );
+        // A copy whose bytes did not hash to the pack: its message stays, the clause follows.
+        let integrity =
+            super::with_mirror_clause(Error::Integrity, "pack mirrors tried: m (404)").to_string();
+        assert_eq!(
+            integrity,
+            format!(
+                "io error: {}; pack mirrors tried: m (404)",
+                Error::Integrity
+            )
+        );
+        // Not an I/O failure: it is not about copies, and is left as it was.
+        assert!(matches!(
+            super::with_mirror_clause(Error::NotFound, "pack mirrors tried: x"),
+            Error::NotFound
+        ));
     }
 
     /// `dg reseed` records the new copy as the caller's own `packManifest`, which consensus

@@ -721,9 +721,10 @@ describe('loadBrowseContext', () => {
     const partial = new Map(artifacts)
     partial.delete(digest(F1))
     const sdk = browseSdk([pack0, pack1, frag0, frag1].map(manifestDoc), partial)
+    // The index is there and did not answer: said so, not as an index that falls short.
     expect(await loadBrowseContext(sdk, REPO)).toMatchObject({
       kind: 'unindexed',
-      reason: 'index-behind',
+      reason: 'index-unreachable',
     })
   })
 
@@ -736,7 +737,7 @@ describe('loadBrowseContext', () => {
     const sdk = browseSdk([pack0, pack1, frag0, badFrag1].map(manifestDoc), corrupt)
     expect(await loadBrowseContext(sdk, REPO)).toMatchObject({
       kind: 'unindexed',
-      reason: 'index-behind',
+      reason: 'index-unreachable',
     })
   })
 

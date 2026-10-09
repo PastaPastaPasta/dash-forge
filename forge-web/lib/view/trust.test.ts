@@ -202,6 +202,29 @@ describe('where the bytes came from row', () => {
     )
   })
 
+  it('lists a recorded place that did not answer once, not again as not tried (Q5)', () => {
+    const r = deriveTrust(
+      inputs({
+        checks: checks({ objectsVerified: 1, sources: ['mirror.example'], unreachable: ['pub-9a1.r2.dev (HTTP 530)', 'ipfs gateway ipfs.io (down: HTTP 429)'] }),
+        configuredUris: ['https://pub-9a1.r2.dev/forge', 'ipfs://bafy', 'https://other.example/p'],
+      }),
+    )
+    expect(r.source.detail).toBe("mirror.example. Also recorded: other.example (not tried). Didn't answer: pub-9a1.r2.dev (HTTP 530), ipfs gateway ipfs.io (down: HTTP 429).")
+    // A gateway that failed is its host's own try: a recorded https address on it is not "not tried".
+    const gw = deriveTrust(
+      inputs({
+        checks: checks({ objectsVerified: 1, sources: ['platform'], unreachable: ['ipfs gateway ipfs.io (down: HTTP 429)'] }),
+        configuredUris: ['https://ipfs.io/ipfs/bafy', 'ipfs://bafy'],
+      }),
+    )
+    expect(gw.source.detail).not.toContain('not tried')
+    // A copy that failed while another served is named once too.
+    const fell = deriveTrust(
+      inputs({ checks: checks({ objectsVerified: 1, sources: ['platform'], fellBackFrom: ['pub-9a1.r2.dev (HTTP 404)'] }), configuredUris: ['https://pub-9a1.r2.dev/forge'] }),
+    )
+    expect(fell.source.detail).toBe('Dash Platform (permanent). Unavailable, another copy served instead: pub-9a1.r2.dev (HTTP 404).')
+  })
+
   it('counts bytes from an IPFS gateway as ipfs tried', () => {
     const gw = new URL(IPFS_GATEWAYS[0] as string).host
     const r = deriveTrust(inputs({ checks: checks({ objectsVerified: 1, sources: [gw] }), configuredUris: ['ipfs://bafy'] }))
