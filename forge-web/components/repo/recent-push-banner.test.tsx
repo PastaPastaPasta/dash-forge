@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /**
  * #451: "Compare & pull request" for a branch the viewer pushed in the last hour. It reads nothing
- * without such a branch, shows only once the open-PR check answers, links to the New pull request
+ * without such a branch, shows only once the covering-PR check answers, links to the New pull request
  * form with the branch as the head (a fork's to its parent's), and a dismissal holds per tip.
  */
 
@@ -28,8 +28,8 @@ vi.mock('@/hooks/use-repo-chrome', () => ({ useRepoWriteGeneration: () => 0 }))
 vi.mock('@/components/repo/fork-contribute', async (orig) => ({ ...(await orig<typeof import('@/components/repo/fork-contribute')>()), useForkParent: () => s.parent }))
 vi.mock('@/lib/repo', async (orig) => ({
   ...(await orig<typeof import('@/lib/repo')>()),
-  branchesWithOpenPulls: async (_sdk: unknown, _repo: unknown, refNames: string[]) => {
-    s.asked.push(refNames)
+  coveredPushes: async (_sdk: unknown, _repo: unknown, pushes: { refName: string }[]) => {
+    s.asked.push(pushes.map((p) => p.refName))
     if (s.answer) await s.answer
     return s.open
   },
@@ -94,7 +94,7 @@ describe('RecentPushBanner', () => {
     expect([params.get('owner'), params.get('name'), params.get('head')]).toEqual(['alice', 'proj', 'feature/x'])
   })
 
-  it('shows nothing until the open-PR check answers, and nothing when the branch has an open PR', async () => {
+  it('shows nothing until the covering-PR check answers, and nothing when the branch has an open PR', async () => {
     let release!: () => void
     s.answer = new Promise((r) => (release = r))
     s.open = new Set(['refs/heads/feature/x'])

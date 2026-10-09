@@ -4,15 +4,20 @@
  *
  * Everything here comes from the repo home the page already holds: every branch's resolved tip
  * carries the update that set it, its pusher (`$ownerId`) and its consensus time (`$createdAt`;
- * `lib/rules/resolveRef.ts`). So finding the candidates costs no request. Whether one already has
- * an open PR is the one read the banner makes, and only when there is a candidate
- * (`lib/repo/branch-pulls.ts`).
+ * `lib/rules/resolveRef.ts`). So finding the candidates costs no request. Whether a PR already
+ * covers one (open, or opened since the push) is the one read the banner makes, and only when there
+ * is a candidate (`lib/repo/branch-pulls.ts`).
  *
  * Not offered: the default branch, tags, deleted or diverged branches, a branch whose tip is the
  * default branch's (nothing to compare), a branch someone else moved last, an archived repo (it
  * takes no new PR), a private repo (its PRs' branch hashes are keyed, so the open-PR check cannot
  * read them), and a home that holds the default branch alone (`refsPartial`: a PR list whose
  * repo's ref updates are past one page; reading them all would cost the list requests).
+ *
+ * Known gap: a members-only PR on a public repo files its branch hash keyed under the members key
+ * (`lib/repo/private-writes.ts`), so the check does not see it, and a member who opened one from
+ * the branch is still offered the banner (dismissible). Asking for the members-key hash too is a
+ * follow-up for the mixed-visibility code.
  */
 
 import { isNullOid } from '../rules'
