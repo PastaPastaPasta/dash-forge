@@ -320,7 +320,7 @@ cmd('issue status', 'Issues assigned to you, mentioning you, and opened by you.'
     'repo': S, 'assigned': A(OBJ), 'mentioned': A(OBJ), 'authored': A(OBJ), 'hidden': I, 'membersOnly': I, 'hiddenOmitted': I,
 }, ['repo', 'assigned', 'mentioned', 'authored'])
 cmd('issue list', 'A page of issues.', {
-    'count': I, 'total': I, 'membersOnly': I, 'page': I, 'pages': I, 'issues': A(R('issueRow')), 'hidden': I,
+    'count': I, 'total': I, 'membersOnly': I, 'toSpecificPeople': I, 'page': I, 'pages': I, 'issues': A(R('issueRow')), 'hidden': I,
     'hiddenOmitted': I, 'truncated': B,
 }, ['count', 'total', 'page', 'pages', 'issues', 'truncated'])
 cmd('issue view', 'An issue, its comments, events and state.', {
@@ -328,7 +328,7 @@ cmd('issue view', 'An issue, its comments, events and state.', {
     'audience': AUD, 'letter': LETTER, 'recipients': nl(I), 'readable': B, 'why': S, 'createdAt': I,
     'state': E('open', 'closed'), 'open': B, 'labels': SA, 'assignees': SA, 'stateReason': nl(S), 'duplicateOf': nl(I), 'milestone': nl(S), 'pinned': B, 'locked': B,
     'comments': A(O({'id': S, 'author': S, 'body': nl(S), 'bodyIncomplete': ANY, 'audience': AUD, 'letter': LETTER,
-                     'createdAt': I}, ['id', 'author'])),
+                     'replyTo': nl(S), 'createdAt': I}, ['id', 'author'])),
     'membersOnlyComments': A(OBJ), 'membersOnlyHidden': I, 'events': A(EVENT), 'transitions': A(TRANSITION),
     'hiddenComments': ANY, 'moderation': ANY, 'hiddenEventValues': ANY, 'plaintextEventValues': ANY,
 }, ['number', 'author', 'id', 'readable', 'state', 'open', 'labels', 'assignees'])
@@ -345,7 +345,8 @@ cmd('issue edit', 'An issue\'s title, body or metadata edited.', {
     'eventIds': SA, 'unchanged': ANY, 'cost': COST,
 }, ['status', 'issue'])
 cmd('issue comment', 'A comment posted.', {
-    'status': E('commented'), 'issue': I, 'commentId': S, 'audience': AUD, 'letter': LETTER, 'cost': COST,
+    'status': E('commented'), 'issue': I, 'commentId': S, 'replyTo': nl(S), 'audience': AUD, 'letter': LETTER,
+    'cost': COST,
 }, ['status', 'issue', 'commentId'])
 cmd('issue edit-comment', 'A comment edited.', {'status': E('edited', 'unchanged'), 'comment': S, 'cost': COST}, ['status', 'comment'])
 cmd('issue delete-comment', 'A comment deleted.', {'status': E('deleted', 'absent'), 'comment': S, 'cost': COST}, ['status', 'comment'])
@@ -383,7 +384,7 @@ cmd('pr create', 'A new pull request.', {
     'sourceRepoId': S, 'sourceRepo': S, 'draft': B, 'draftTransitionId': nl(S), 'resumed': B, 'codeOwners': ANY, 'cost': COST,
 }, ['status', 'number', 'documentId', 'baseRef', 'headRef'])
 cmd('pr list', 'A page of pull requests.', {
-    'count': I, 'membersOnly': I, 'prs': A(R('pullRow')), 'hidden': I, 'hiddenOmitted': I, 'truncated': B, 'otherStates': ANY,
+    'count': I, 'membersOnly': I, 'toSpecificPeople': I, 'prs': A(R('pullRow')), 'hidden': I, 'hiddenOmitted': I, 'truncated': B, 'otherStates': ANY,
 }, ['count', 'prs', 'truncated'])
 cmd('pr view', 'A pull request: its state, head, reviews, threads and comments.', {
     'number': I, 'id': S, 'repoId': S, 'title': nl(S), 'body': nl(S), 'bodyIncomplete': ANY, 'author': S, 'createdAt': I,

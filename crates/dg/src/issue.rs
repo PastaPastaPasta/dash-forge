@@ -76,6 +76,7 @@ pub async fn run(ctx: &Ctx, cmd: &IssueCommand) -> Result<()> {
             repo,
             number,
             body,
+            reply_to,
             members,
             to,
         } => {
@@ -83,7 +84,7 @@ pub async fn run(ctx: &Ctx, cmd: &IssueCommand) -> Result<()> {
                 members: *members,
                 to,
             };
-            comment(ctx, repo, *number, body, ask).await
+            comment(ctx, repo, *number, body, reply_to.as_deref(), ask).await
         }
         IssueCommand::EditComment {
             repo,
@@ -415,10 +416,16 @@ async fn list(ctx: &Ctx, args: &IssueListArgs) -> Result<()> {
     // Pinned issues first (a member's pin, kinds 19/20), each group newest first as read.
     matching.sort_by_key(|r| !r.1);
     let total = matching.len();
-    let total_sealed = matching
-        .iter()
-        .filter(|(r, _)| matches!(r, ListRow::Sealed(_)))
-        .count();
+    // members-only rows and letters this reader cannot read, counted apart
+    let sealed_of = |letter: bool| {
+        matching
+            .iter()
+            .filter(|(r, _)| {
+                matches!(r, ListRow::Sealed(x) if (x.placeholder.audience == forge_core::rules::v2::Audience::SpecificPeople) == letter)
+            })
+            .count()
+    };
+    let (total_sealed, total_letters) = (sealed_of(false), sealed_of(true));
     let per = args.limit as usize;
     let pages = total.div_ceil(per).max(1);
     let start = (args.page as usize - 1) * per;
@@ -454,6 +461,7 @@ async fn list(ctx: &Ctx, args: &IssueListArgs) -> Result<()> {
             "count": rows.len(),
             "total": total,
             "membersOnly": total_sealed,
+            "toSpecificPeople": total_letters,
             "page": args.page,
             "pages": pages,
             "issues": json_rows,
@@ -481,11 +489,13 @@ async fn list(ctx: &Ctx, args: &IssueListArgs) -> Result<()> {
             if let Some(note) = crate::fmt::hidden_rows_note(omitted) {
                 println!("{note}");
             }
-            if total_sealed > 0 {
-                println!(
-                    "Issues {total} ({total_sealed} members-only; only members of {} can read them)",
-                    s.repo.display()
-                );
+            if let Some(line) = crate::audience::sealed_rows_line(
+                "Issues",
+                total,
+                (total_sealed, total_letters),
+                &s.repo,
+            ) {
+                println!("{line}");
             }
             if pages > 1 {
                 println!(
@@ -803,7 +813,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<(
             "milestone": meta.milestone,
             "pinned": meta.pinned,
             "locked": locked,
-            "comments": comments.iter().map(|c| json!({"id": c.document_id, "author": c.author, "body": c.body, "bodyIncomplete": incomplete.get(&c.document_id), "audience": crate::audience::json(c.audience), "letter": c.letter.as_ref().map(crate::audience::letter_json), "createdAt": c.created_at})).collect::<Vec<_>>(),
+            "comments": comments.iter().map(|c| json!({"id": c.document_id, "author": c.author, "body": c.body, "bodyIncomplete": incomplete.get(&c.document_id), "audience": crate::audience::json(c.audience), "letter": c.letter.as_ref().map(crate::audience::letter_json), "replyTo": c.reply_to, "createdAt": c.created_at})).collect::<Vec<_>>(),
             // members-only comments this reader cannot open: the ones D14 shows, and how many
             "membersOnlyComments": placeholders.iter().map(|m| crate::audience::placeholder_json(m)).collect::<Vec<_>>(),
             "membersOnlyHidden": members_only.len(),
@@ -864,13 +874,16 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<(
                         let author = who(&c.author);
                         // "— alice (id) · members-only:" for a members-only comment, "— alice
                         // (id) · to bob and you:" for a letter
-                        let mark = if let Some(l) = &c.letter {
+                        let mut mark = if let Some(l) = &c.letter {
                             format!(" · to {}", to(l))
                         } else if crate::audience::marked(&s.repo, c.audience) {
                             " · members-only".to_string()
                         } else {
                             String::new()
                         };
+                        if let Some(r) = &c.reply_to {
+                            mark.push_str(&format!(" · reply to {r}"));
+                        }
                         match moderation.item(&c.document_id) {
                             Some(h) if !show_hidden => println!(
                                 "\n— {author} ({}){mark}: {}",
@@ -1354,8 +1367,12 @@ async fn comment(
     repo: &str,
     number: u64,
     body: &str,
+    reply_to: Option<&str>,
     ask: crate::audience::Ask<'_>,
 ) -> Result<()> {
+    if let Some(r) = reply_to {
+        crate::common::document_id_arg(r, "comment id", "`dg issue view --json`")?;
+    }
     let s = Session::open_for_write(ctx, repo, "comment not posted").await?;
     s.refuse_if_banned("comment not posted").await?;
     let target = target(&s, repo, number).await?;
@@ -1364,8 +1381,12 @@ async fn comment(
     // One `Collab` for the command: the audience it asks for applies to the comment it writes.
     let collab = s.collab();
     let audience =
-        crate::audience::requested(&s.client, &collab, &s.repo, ask, Some(&target.id), None)
+        crate::audience::requested(&s.client, &collab, &s.repo, ask, Some(&target.id), reply_to)
             .await?;
+    let anchor = reply_to.map(|r| forge_core::collab::CommentAnchor {
+        reply_to: Some(r.to_string()),
+        ..Default::default()
+    });
     let planned = crate::long_body::Planned::new(
         &s.repo,
         forge_core::collab::long_body::BodyField::Comment { path: None },
@@ -1387,14 +1408,14 @@ async fn comment(
             let body = planned.field_text(&collab, &s.repo, None).await?;
             Ok::<_, anyhow::Error>(
                 collab
-                    .comment(&s.repo, &target.id, &body, None, None)
+                    .comment(&s.repo, &target.id, &body, anchor.as_ref(), None)
                     .await?,
             )
         })
         .await?;
     let (letter, sent) = crate::audience::posted(ctx, &s.client, &collab).await;
     ctx.emit(
-        json!({ "status": "commented", "issue": number, "commentId": id, "audience": audience, "letter": letter, "cost": cost_json(spent, price) }),
+        json!({ "status": "commented", "issue": number, "commentId": id, "replyTo": reply_to, "audience": audience, "letter": letter, "cost": cost_json(spent, price) }),
         || {
             println!(
                 "✓ commented on issue #{number}{} · {}",

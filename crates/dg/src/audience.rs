@@ -91,6 +91,30 @@ pub async fn requested(
     }
 }
 
+/// The line under a list with rows this reader cannot read: "Issues 3 (1 members-only; only
+/// members of o/r can read them)", "Issues 2 (1 to specific people; only the people they were
+/// sent to can read them)", or both counts with "you can't read them". `None` for none.
+pub fn sealed_rows_line(
+    what: &str,
+    total: usize,
+    (members, letters): (usize, usize),
+    repo: &RepoRef,
+) -> Option<String> {
+    Some(match (members, letters) {
+        (0, 0) => return None,
+        (m, 0) => format!(
+            "{what} {total} ({m} members-only; only members of {} can read them)",
+            repo.display()
+        ),
+        (0, l) => format!(
+            "{what} {total} ({l} to specific people; only the people they were sent to can read them)"
+        ),
+        (m, l) => format!(
+            "{what} {total} ({m} members-only, {l} to specific people; you can't read them)"
+        ),
+    })
+}
+
 /// A name for `id`: `@name` when `names` has its DPNS name, "you" for `me`, else the id.
 fn person(id: &str, me: Option<&str>, names: &std::collections::BTreeMap<String, String>) -> String {
     if Some(id) == me {

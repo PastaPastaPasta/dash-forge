@@ -124,6 +124,12 @@
           "letter": {
             "$ref": "common.schema.json#/$defs/letter"
           },
+          "replyTo": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "createdAt": {
             "type": "integer"
           }

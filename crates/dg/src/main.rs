@@ -883,6 +883,11 @@ pub enum IssueCommand {
         /// Comment body.
         #[arg(long)]
         body: String,
+        /// Reply to this comment (its thread; `id` in `dg issue view --json`). A reply in a
+        /// members-only conversation is members-only, and one in a conversation for specific
+        /// people goes to its people.
+        #[arg(long = "reply-to", value_name = "COMMENT_ID")]
+        reply_to: Option<String>,
         /// Members-only: only the repository's members can read it (everyone still sees that
         /// something was posted, by whom and when). Needs your encryption key, and members-only
         /// content turned on in the repository (`dg repo members enable`).

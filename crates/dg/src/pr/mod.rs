@@ -861,10 +861,14 @@ async fn list(
         rows.iter().map(|r| (r.target(), r.events())).collect();
     let hides = collab.hidden_threads(handle, &threads).await;
     let (rows, omitted) = crate::fmt::split_hidden(rows, &hides, PrRow::id, include_hidden);
-    let total_sealed = rows
-        .iter()
-        .filter(|(r, _)| matches!(r, PrRow::Sealed(_)))
-        .count();
+    let sealed_of = |letter: bool| {
+        rows.iter()
+            .filter(|(r, _)| {
+                matches!(r, PrRow::Sealed(x) if (x.placeholder.audience == forge_core::rules::v2::Audience::SpecificPeople) == letter)
+            })
+            .count()
+    };
+    let (total_sealed, total_letters) = (sealed_of(false), sealed_of(true));
     let names = if ctx.json {
         std::collections::BTreeMap::new()
     } else {
@@ -919,6 +923,7 @@ async fn list(
         json!({
             "count": rows.len(),
             "membersOnly": total_sealed,
+            "toSpecificPeople": total_letters,
             "prs": json_rows,
             "hidden": hidden,
             "hiddenOmitted": omitted,
@@ -963,12 +968,13 @@ async fn list(
                     ),
                 }
             }
-            if total_sealed > 0 {
-                println!(
-                    "Pull requests {} ({total_sealed} members-only; only members of {} can read them)",
-                    rows.len(),
-                    handle.display()
-                );
+            if let Some(line) = crate::audience::sealed_rows_line(
+                "Pull requests",
+                rows.len(),
+                (total_sealed, total_letters),
+                handle,
+            ) {
+                println!("{line}");
             }
             if let Some(note) = crate::fmt::hidden_rows_note(omitted) {
                 println!("{note}");

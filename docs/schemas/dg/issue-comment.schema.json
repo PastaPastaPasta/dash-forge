@@ -20,6 +20,12 @@
     "commentId": {
       "type": "string"
     },
+    "replyTo": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "audience": {
       "$ref": "common.schema.json#/$defs/audience"
     },
