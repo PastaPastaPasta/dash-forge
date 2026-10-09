@@ -89,7 +89,8 @@ export function UsernameDialog({ onClose }: { onClose: () => void }): JSX.Elemen
   // Only the answer for the name in the field counts (a late answer for an earlier one does not).
   const shown = availability !== null && availability.label === label ? availability : null
   const lowBalance = balance !== null && BigInt(balance) < BigInt(NAME_REGISTER_CREDITS)
-  const canSign = label !== null && shown?.state === 'free' && master.ready && !lowBalance && !isLoading
+  const free = label !== null && shown?.state === 'free'
+  const canSign = free && master.ready && !lowBalance && !isLoading
   const error = master.error ?? submitError
 
   // The name is this identity's now: links written with it resolve without waiting out a miss.
@@ -99,7 +100,7 @@ export function UsernameDialog({ onClose }: { onClose: () => void }): JSX.Elemen
   }
 
   const submit = async (): Promise<void> => {
-    if (!canSign || label === null) return
+    if (!canSign) return
     setSubmitError(null)
     try {
       finish(await registerUsername(master.take(), label), true)
@@ -185,8 +186,8 @@ export function UsernameDialog({ onClose }: { onClose: () => void }): JSX.Elemen
           </div>
 
           {/* Mounted throughout, shown only for a free name: a phrase typed into it survives a change of name. */}
-          <div hidden={!(label !== null && shown?.state === 'free')}>{master.element}</div>
-          {label !== null && shown?.state === 'free' ? (
+          <div hidden={!free}>{master.element}</div>
+          {free ? (
             <>
               <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
                 Your identity&apos;s own key signs this once (from its file or recovery phrase) and is not stored. This browser&apos;s
