@@ -188,6 +188,7 @@ export {
   type IssueSelection,
   type RowFilters,
 } from './issue-index'
+export { coveredPushes, type BranchPush } from './branch-pulls'
 export {
   openPullsOnBranch,
   pullMilestoneItems,

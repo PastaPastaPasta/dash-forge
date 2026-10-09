@@ -88,6 +88,7 @@ import { Button } from '@/components/ui/button'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { cn } from '@/lib/utils'
 import { contributeHref, forkHeadBranch, useForkParent } from '@/components/repo/fork-contribute'
+import { RecentPushBanner } from '@/components/repo/recent-push-banner'
 
 /** The PR list's search grammar (`lib/view/pull-query`): a submit keeps the state tab. */
 const PULL_GRAMMAR: ListGrammar<PullListQuery> = {
@@ -175,6 +176,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
 
   return (
     <div>
+      <RecentPushBanner home={home} addr={addr} className="mb-3" />
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <SearchBox id="pull-search" label="Search pull requests" search={search} placeholder="is:open label:bug author:@me" />
         <TriageNav addr={addr} />
