@@ -28,7 +28,7 @@ import type { DiscoveredRepo } from './discovery'
 import { mapPooled } from './pool'
 import { compareStrings } from '../rules'
 import { membersOnlyTitle } from './audience'
-import { LETTER_TITLE, docAudience } from '../repo/private-content'
+import { LETTER_TITLE, bytesField, docAudience } from '../repo/private-content'
 
 /** A base58 identifier field (identifiers come back base58 or base64; both normalize). */
 export const ident = z.unknown().transform(asIdentifierString).pipe(z.string().min(1))
@@ -39,8 +39,16 @@ const text = z.string().optional().catch(undefined)
 /** The fields of a forge document every reader here needs. */
 export const baseDoc = z.object({ $id: z.string().min(1), $ownerId: z.string().min(1), $createdAt: z.number() })
 
-/** An `issue` or `patch` row. */
-export const targetDoc = baseDoc.extend({ repoId: ident, number: int, title: text, body: text, enc: z.unknown().optional(), vis: text })
+/** An `issue` or `patch` row (`asMember`: a member's proof, which a message to specific people needs to notify). */
+export const targetDoc = baseDoc.extend({
+  repoId: ident,
+  number: int,
+  title: text,
+  body: text,
+  enc: z.unknown().optional(),
+  vis: text,
+  asMember: ident.optional().catch(undefined),
+})
 export type TargetDoc = z.infer<typeof targetDoc>
 
 /** A `repo` row. */
@@ -121,8 +129,11 @@ export interface TargetRow {
 export function titleOf(d: TargetDoc, kind: 'issue' | 'pull' = 'issue'): string {
   if (d.title) return d.title
   if (d.enc == null) return '(untitled)'
-  // A specific-people document (v0x04) is not members-only: named neutrally.
-  if (docAudience(d as unknown as PlainDocument) === 'specificPeople') return LETTER_TITLE
+  // A specific-people document (v0x04) is not members-only: named by its public recipient count.
+  if (docAudience(d as unknown as PlainDocument) === 'specificPeople') {
+    const n = bytesField(d as unknown as PlainDocument, 'enc')?.[1]
+    return n === undefined || n < 1 ? LETTER_TITLE : membersOnlyTitle(kind === 'pull' ? 'patch' : 'issue', 'specificPeople', n)
+  }
   return d.vis === 'public' ? membersOnlyTitle(kind === 'pull' ? 'patch' : 'issue') : 'Encrypted (not readable here)'
 }
 

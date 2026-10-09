@@ -391,7 +391,7 @@ async function recordChunk<Row extends RowExtras>(
  * How many of an index's rows are members-only, by state, when it holds every row of the repo
  * (recorded for the repo header's tab too); null while some are not read.
  */
-export function membersOnlyOfIndex<Row extends RowExtras & { readonly audience?: 'members'; readonly state: { readonly open: boolean } }>(
+export function membersOnlyOfIndex<Row extends RowExtras & { readonly audience?: 'members' | 'specificPeople'; readonly state: { readonly open: boolean } }>(
   index: ListIndex<Row>,
   type: 'issue' | 'patch',
 ): MembersOnlyCount | null {
@@ -528,7 +528,7 @@ export function indexCache<Row extends RowExtras>(
     for (const key of [...indexes.keys()]) if (key.endsWith(at) || key.includes(`${at}#`)) indexes.delete(key)
   })
   onPrivateSessionEnded((id) => {
-    for (const key of [...indexes.keys()]) if (key.endsWith(`#${id}`)) indexes.delete(key)
+    for (const key of [...indexes.keys()]) if (key.endsWith(`#${id}`) || key.includes(`#${id}#`)) indexes.delete(key)
   })
   // `withCounts`: a list page's load reads the proved counts beside its first chunk; a side read
   // (an issue page's backlinks) does not, and a later list page reads them then (`repoCountsOf`).

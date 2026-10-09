@@ -228,7 +228,7 @@ export function MergePanel({
   const sourceLabel = mergeSourceLabel(pull.sourceRefName, pull.headOid)
   const [mergeText, setMergeText] = useState<string | null>(null)
   // A members-only PR's title is for members: the public merge commit names only its number.
-  const publicTitle = pull.audience === 'members' ? '' : pull.title
+  const publicTitle = pull.audience === 'members' || pull.audience === 'specificPeople' ? '' : pull.title
   const mergeMsg = mergeText ?? mergeMessage(pull.number, sourceLabel, publicTitle).replace(/\n$/, '')
   // A merge commit is written (the plan's, or --no-ff; a fast-forward writes none): its message
   // box shows, and its edited message is passed.
@@ -665,7 +665,7 @@ export function MergePanel({
             Commit message
           </label>
           <Textarea id="merge-message" value={mergeMsg} onChange={(e) => setMergeText(e.target.value)} className="min-h-[72px] font-mono text-[12px]" disabled={busy} data-testid="merge-message" />
-          {pull.audience === 'members' ? (
+          {pull.audience === 'members' || pull.audience === 'specificPeople' ? (
             <p className="mt-1 text-[12px] text-caution-700 dark:text-caution-400" data-testid="merge-members-warning">
               {MEMBERS_MESSAGE_WARNING}
             </p>

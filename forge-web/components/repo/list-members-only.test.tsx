@@ -47,16 +47,19 @@ describe('a row comment count', () => {
 })
 
 describe('a specific-people issue or PR (enc v0x04)', () => {
-  it('is named "Encrypted for specific people", never members-only, in rows and lists', () => {
-    const letter = { $id: 'x', title: '', enc: b64([0x04, 1, 2, 3]), vis: 'public' }
+  it('is named by its public recipient count, never members-only, in rows and lists', () => {
+    const letter = { $id: 'x', title: '', enc: b64([0x04, 3, 2, 3]), vis: 'public' }
+    const one = { ...letter, enc: b64([0x04, 1, 2, 3]) }
     const members = { ...letter, enc: b64([0x03, 1, 2, 3]) }
-    expect(rowTitleOf(letter as never)).toBe('Encrypted for specific people')
+    expect(rowTitleOf(letter as never)).toBe('Issue to 3 people')
+    expect(rowTitleOf(letter as never, 'patch')).toBe('Pull request to 3 people')
+    expect(rowTitleOf(one as never)).toBe('Issue to 1 person')
     expect(rowTitleOf(members as never, 'patch')).toBe('Members-only pull request')
-    expect(mineTitleOf(letter as never, 'pull')).toBe('Encrypted for specific people')
+    expect(mineTitleOf(letter as never, 'pull')).toBe('Pull request to 3 people')
     expect(mineTitleOf(members as never, 'issue')).toBe('Members-only issue')
-    // The row shows its title (the neutral name), not a members-only one.
-    act(() => root.render(<RowLink href="/x" title="Encrypted for specific people" membersOnly />))
-    expect(q('members-only-title')?.textContent?.trim()).toBe('Encrypted for specific people')
+    // The row shows its title (who it went to, by count), not a members-only one.
+    act(() => root.render(<RowLink href="/x" title="Issue to 3 people" membersOnly />))
+    expect(q('members-only-title')?.textContent?.trim()).toBe('Issue to 3 people')
   })
 })
 

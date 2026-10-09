@@ -22,6 +22,8 @@ vi.mock('./members-writes', async (orig) => ({
   targetAudience: async () => 'public',
   childAudience: async () => 'public',
   storedAudience: async () => ({ audience: 'public', doc: {} }),
+  // an edit's one read of the stored document (a message to specific people is re-sealed to its people)
+  storedOnce: async () => null,
   repoHasMembersKey: async () => false,
 }))
 vi.mock('../sdk', async (importOriginal) => {

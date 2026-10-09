@@ -279,6 +279,26 @@ export function closePrivateSessions(): void {
 // The vault locking or the encryption key changing ends every session.
 onEncryptionKeyChange(closePrivateSessions)
 
+/**
+ * Track a reader session that is not a private session (the letter reader, `letter-session.ts`):
+ * closed with every other session, and its end announced the same way, so caches keyed by its
+ * `id` drop what it opened. Returns its close.
+ */
+export function trackReaderSession(id: string, onClose: () => void): () => void {
+  let closed = false
+  const handle = {
+    close() {
+      if (closed) return
+      closed = true
+      liveSessions.delete(handle)
+      onClose()
+      for (const l of endListeners) l(id)
+    },
+  }
+  liveSessions.add(handle)
+  return () => handle.close()
+}
+
 function randomId(): string {
   return bytesToHex(randomBytes(12))
 }

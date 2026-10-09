@@ -15,14 +15,14 @@ import { SEALED_TEXT_LIMIT, sealedTextUse, writeBlockReason, type SealedKind } f
 import { previewCreate, previewCredits, sumPreviews, type CostPreview, type FirstWrite } from '@/lib/sdk'
 import { fieldEstimate, isLongBody, longBodyCredits } from '@/lib/repo/long-body'
 import { utf8Bytes } from '@/lib/rules/long-body'
-import { PAD_BUCKET, pads } from '@/lib/private'
+import { PAD_BUCKET, letterFraming, pads } from '@/lib/private'
 import { admissionFor, estimateBytesCredits } from '@/lib/sdk/cost'
 import { BODY_LIMIT, TITLE_LIMIT, textUse, type TextLimit } from '@/lib/view/text-limits'
 import { TextCounter } from '@/components/ui/text-counter'
 import { LongComposeNote, type LongCompose } from '@/components/repo/long-body'
 
 /** For a public repo: always null. For a private one: null when sealed writes can go ahead, else why not. */
-export function privateComposeBlock(home: RepoHome, thread: 'public' | 'members' = 'public'): string | null {
+export function privateComposeBlock(home: RepoHome, thread: 'public' | 'members' | 'specificPeople' = 'public'): string | null {
   // A member removed since reads a members-only thread they held the key for, but can't reply:
   // a public reply is refused there, and they can no longer write members-only content.
   if (thread === 'members' && home.lane?.access === 'former') return FORMER_MEMBER_TEXT
@@ -57,8 +57,10 @@ export function composeCost(
   kind: SealedKind | 'event',
   input: Readonly<Record<string, unknown>>,
   first: FirstWrite = {},
-  /** A public repo's members-only text is stored encrypted too (DESIGN §4.1): priced so. */
-  audience: 'public' | 'members' = 'public',
+  /** A public repo's members-only text is stored encrypted too (DESIGN §4.1): priced so; a message to specific people as its envelope. */
+  audience: 'public' | 'members' | 'specificPeople' = 'public',
+  /** A message to specific people: how many it goes to (the writer included), when known. */
+  recipients?: number,
 ): CostPreview {
   // A body over its field is priced as the field it is written as, plus its artifact
   // (forge-v2.md §6.3: `longBodyField`).
@@ -66,6 +68,8 @@ export function composeCost(
   const long = kind !== 'event' && typeof body === 'string' && isLongBody(repo, kind, body, input)
   const data = long ? { ...input, body: fieldEstimate(repo, kind, body, input) } : input
   const extra = long ? previewCredits(longBodyCredits(repo, utf8Bytes(body))) : null
+  // A message to specific people has no long-body form: priced as it is written.
+  if (audience === 'specificPeople') return composeDocCost(repo, kind, input, first, audience, recipients)
   const doc = composeDocCost(repo, kind, data, first, audience)
   return extra === null ? doc : sumPreviews([doc, extra])
 }
@@ -89,18 +93,41 @@ export function membersEncBytes(kind: SealedKind | 'event', used: number, fields
   return tlv + MEMBERS_FRAME
 }
 
+/** A recipient's id record in a message to specific people (tag 25: header and 32 bytes). */
+const RECIPIENT_RECORD = RECORD_HEADER + 32
+
+/**
+ * The `enc` bytes of a message to `n` specific people (`enc` v0x04) whose sealed fields hold
+ * `used` bytes in `fields` records: the records, one id record per recipient and the group's,
+ * padded as a members-only one, and the framing with its slots.
+ */
+export function letterEncBytes(kind: SealedKind | 'event', used: number, fields: number, n: number): number {
+  const records = used + RECORD_HEADER * fields + RECIPIENT_RECORD * n + RECORD_HEADER + 1
+  const tlv = pads(kind) ? Math.ceil((records + RECORD_HEADER) / PAD_BUCKET) * PAD_BUCKET : records
+  return tlv + letterFraming(n)
+}
+
+/** How many people a message's price assumes before its recipients are known. */
+const PRICED_RECIPIENTS = 3
+
 function composeDocCost(
   repo: RepoRef,
   kind: SealedKind | 'event',
   data: Readonly<Record<string, unknown>>,
   first: FirstWrite,
-  audience: 'public' | 'members',
+  audience: 'public' | 'members' | 'specificPeople',
+  recipients?: number,
 ): CostPreview {
   const { used, fields, props } = sealedTextUse(kind, data)
   const members = repo.visibility === 'public' && audience === 'members'
-  if ((repo.visibility !== 'private' && !members) || (fields === 0 && kind === 'event')) return previewCreate(kind, data, first)
+  const letter = audience === 'specificPeople' && kind !== 'event'
+  if ((repo.visibility !== 'private' && !members && !letter) || (fields === 0 && kind === 'event')) return previewCreate(kind, data, first)
   const bind = Object.fromEntries(Object.entries(data).filter(([k]) => !props.includes(k)))
-  const sealedBytes = members ? membersEncBytes(kind, used, fields) : used + 3 * fields + 29
+  const sealedBytes = letter
+    ? letterEncBytes(kind, used, fields, recipients ?? PRICED_RECIPIENTS)
+    : members
+      ? membersEncBytes(kind, used, fields)
+      : used + 3 * fields + 29
   const credits = estimateBytesCredits(kind, sealedBytes, bind, first)
   return previewCredits(credits, admissionFor(kind, sealedBytes, credits))
 }

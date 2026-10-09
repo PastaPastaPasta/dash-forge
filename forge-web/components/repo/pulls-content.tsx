@@ -210,7 +210,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
           {bulkAllowed ? <BulkBar kind="pull" home={home} rows={bulkRows} selection={bulk} labels={(data?.labels ?? []).filter((l) => !l.retired)} onWritten={reload} onBusy={bulkHold.setBusy} /> : null}
           <StateTabs label="Pull request state">
             <StateTab active={query.state === 'open'} onClick={() => change({ state: 'open' })}>
-              <GitPullRequest className="h-3.5 w-3.5" aria-hidden /> {tabCount(counts?.open)}Open<MembersOnlyShare n={data?.membersOnly?.open} />
+              <GitPullRequest className="h-3.5 w-3.5" aria-hidden /> {tabCount(counts?.open)}Open<MembersOnlyShare n={data?.membersOnly?.open} letters={data?.membersOnly?.lettersOpen} />
             </StateTab>
             <StateTab active={query.state === 'merged'} onClick={() => change({ state: 'merged' })}>
               <GitMerge className="h-3.5 w-3.5" aria-hidden /> {tabCount(counts?.merged)}Merged

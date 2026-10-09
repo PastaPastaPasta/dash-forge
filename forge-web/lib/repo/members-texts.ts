@@ -50,11 +50,12 @@ export function noteMembersText(repoId: string, docId: string, fields: readonly 
 }
 
 /**
- * Remember `doc` if it is a members-only document of public repo `repo` a session just opened
- * (its title and body): what the session gate calls for every document it admits.
+ * Remember `doc` if it is a members-only or specific-people document of public repo `repo` a
+ * session just opened (its title and body): what the session gate and the letter reader call for
+ * every document they admit.
  */
 export function noteOpenedDoc(repo: Pick<RepoRef, 'repoId' | 'visibility'>, doc: PlainDocument): void {
-  if (repo.visibility !== 'public' || admittedAudience(doc) !== 'members') return
+  if (repo.visibility !== 'public' || admittedAudience(doc) === 'public') return
   noteMembersText(repo.repoId, asIdentifierString(doc['$id']), [doc['title'], doc['body']])
 }
 

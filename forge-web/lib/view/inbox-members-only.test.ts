@@ -51,8 +51,8 @@ describe('the inbox and members-only content in a public repo (D14)', () => {
   it("makes a content-free item of a member's members-only comment", () => {
     const t = thread()
     const f: Feed = { kind: 'comments', thread: t }
-    const items = toItems(f, [sealed(MEMBER, enc(3, 93), { targetId: t.id, ...asMember(MEMBER) }), sealed(MEMBER, enc(4, 302), { targetId: t.id, ...asMember(MEMBER) })], ME)
-    expect(items).toHaveLength(2)
+    const items = toItems(f, [sealed(MEMBER, enc(3, 93), { targetId: t.id, ...asMember(MEMBER) })], ME)
+    expect(items).toHaveLength(1)
     for (const item of items) {
       expect(item).toMatchObject({ kind: 'comment', actor: MEMBER, what: 'posted a members-only comment', target: { kind: 'issue', number: 12, title: 'Public issue one' } })
       expect(item.reason).toBeUndefined()

@@ -30,11 +30,16 @@ import { MembersChip } from '@/components/repo/audience'
 import { membersOnlyOf, onMembersOnlyCounts } from '@/lib/repo/members-only-counts'
 import { MovedBanner } from '@/components/repo/moved-banner'
 
-/** How many of the repo's open issues and PRs are members-only, once a list has read them all. */
-function useMembersOnlyOpen(repo: RepoHome['repo']): { issues: number | null; pulls: number | null } {
+/**
+ * How many of the repo's open issues and PRs are members-only (and, apart, sent to specific
+ * people), once a list has read them all.
+ */
+function useMembersOnlyOpen(repo: RepoHome['repo']): { issues: number | null; pulls: number | null; issueLetters: number; pullLetters: number } {
   const issues = useSyncExternalStore(onMembersOnlyCounts, () => membersOnlyOf(repo, 'issue')?.open ?? null, () => null)
   const pulls = useSyncExternalStore(onMembersOnlyCounts, () => membersOnlyOf(repo, 'patch')?.open ?? null, () => null)
-  return { issues, pulls }
+  const issueLetters = useSyncExternalStore(onMembersOnlyCounts, () => membersOnlyOf(repo, 'issue')?.lettersOpen ?? 0, () => 0)
+  const pullLetters = useSyncExternalStore(onMembersOnlyCounts, () => membersOnlyOf(repo, 'patch')?.lettersOpen ?? 0, () => 0)
+  return { issues, pulls, issueLetters, pullLetters }
 }
 
 /**
@@ -115,8 +120,8 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
   ]
   const tabs = [
     { key: 'code', label: 'Code', path: '/repo', icon: Code2, refAware: true, count: null },
-    { key: 'issues', label: 'Issues', path: '/repo/issues', icon: MessageSquare, refAware: false, count: counts.issues, membersOnly: membersOnly.issues },
-    { key: 'pulls', label: 'Pull requests', path: '/repo/pulls', icon: GitPullRequest, refAware: false, count: counts.pulls, membersOnly: membersOnly.pulls },
+    { key: 'issues', label: 'Issues', path: '/repo/issues', icon: MessageSquare, refAware: false, count: counts.issues, membersOnly: membersOnly.issues, letters: membersOnly.issueLetters },
+    { key: 'pulls', label: 'Pull requests', path: '/repo/pulls', icon: GitPullRequest, refAware: false, count: counts.pulls, membersOnly: membersOnly.pulls, letters: membersOnly.pullLetters },
     { key: 'releases', label: 'Releases', path: '/repo/releases', icon: Tag, refAware: false, count: null },
     ...(role === 'maintainer'
       ? [{ key: 'settings', label: 'Settings', path: '/repo/settings', icon: Settings, refAware: false, count: null }]
@@ -199,9 +204,9 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
                   {tab.count}
                 </span>
               ) : null}
-              {tab.count !== null && 'membersOnly' in tab && tab.membersOnly !== null && tab.membersOnly > 0 ? (
+              {tab.count !== null && 'membersOnly' in tab && ((tab.membersOnly !== null && tab.membersOnly > 0) || tab.letters > 0) ? (
                 <span className="text-[11px] text-anvil-500 dark:text-anvil-400" data-testid="members-only-share">
-                  ({tab.membersOnly} members-only)
+                  ({[tab.membersOnly !== null && tab.membersOnly > 0 ? `${tab.membersOnly} members-only` : null, tab.letters > 0 ? `${tab.letters} to specific people` : null].filter((x) => x !== null).join(', ')})
                 </span>
               ) : null}
             </Link>
