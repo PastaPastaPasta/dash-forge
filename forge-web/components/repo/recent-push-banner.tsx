@@ -1,0 +1,126 @@
+'use client'
+
+/**
+ * RecentPushBanner — "<branch> had recent pushes 12m ago · Compare & pull request" (#451), on a
+ * repository's home and its pull request list, as GitHub shows it after a push: for each branch
+ * the signed-in identity pushed in the last hour that has no open PR (`lib/view/recent-push.ts`).
+ * The button opens the New pull request form with the branch as the head; on a fork, the
+ * parent's form, as the fork's "New pull request" does (QW3-012).
+ *
+ * Requests: none unless the viewer has such a branch (the candidates come from the home the page
+ * already holds); then ONE composite answers whether each already has an open PR
+ * (`branchesWithOpenPulls`), and nothing shows until it does. A dismissal holds for that branch at
+ * that tip (localStorage, as GitHub's): a new push offers it again.
+ */
+
+import { useEffect, useMemo, useState } from 'react'
+import Link from 'next/link'
+import { GitBranch, GitPullRequest, X } from 'lucide-react'
+
+import { useAuth } from '@/contexts/auth-context'
+import { useAsync } from '@/hooks/use-async'
+import { useRepoWriteGeneration } from '@/hooks/use-repo-chrome'
+import { useSdk } from '@/hooks/use-sdk'
+import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
+import { branchesWithOpenPulls, repoContractIds } from '@/lib/repo'
+import type { RepoHome } from '@/lib/view'
+import { timeAgo } from '@/lib/view/format'
+import { recentPushKey, recentPushes, withDismissed, type RecentPush } from '@/lib/view/recent-push'
+import { sessionCached } from '@/lib/view/session-cache'
+import { Button } from '@/components/ui/button'
+import { contributeHref, useForkParent } from '@/components/repo/fork-contribute'
+import { cn } from '@/lib/utils'
+
+const STORAGE_KEY = 'forge.recent-push.dismissed'
+
+/** How long one answer serves the repo's pages (home ⇄ PR list) before it is read again. */
+const ANSWER_TTL_MS = 30_000
+
+function readDismissed(): readonly string[] {
+  try {
+    const v: unknown = JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? '[]')
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
+  } catch {
+    return []
+  }
+}
+
+export function RecentPushBanner({ home, addr, className }: { home: RepoHome; addr: RepoAddress; className?: string }): JSX.Element | null {
+  const { identity } = useAuth()
+  const { sdk, ready, network } = useSdk(repoContractIds(home.repo))
+  const forkParent = useForkParent(home)
+  // A PR opened from this tab moves its repo's write generation (the parent's, for a fork's
+  // branch): the answer is read again then, so the banner goes once the PR exists.
+  const generation = useRepoWriteGeneration(forkParent ?? home.repo)
+  // "Now" is the page's load: the banner does not count down while it is open.
+  const [now] = useState(() => Date.now())
+  // Read after mount (localStorage is browser-only); until then nothing shows, so no flash.
+  const [dismissed, setDismissed] = useState<readonly string[] | null>(null)
+  useEffect(() => setDismissed(readDismissed()), [])
+
+  const repoId = home.repo.repoId
+  const pushes = useMemo(
+    () => (dismissed === null ? [] : recentPushes(home, identity, now).filter((p) => !dismissed.includes(recentPushKey(repoId, p)))),
+    [home, identity, now, dismissed, repoId],
+  )
+  const asked = pushes.map((p) => `${p.refName}@${p.tip}`).join(',')
+  const open = useAsync(
+    () => sessionCached(`recentPushPulls:${network}:${repoId}:${asked}:${generation}`, ANSWER_TTL_MS, () => branchesWithOpenPulls(sdk!, home.repo, pushes.map((p) => p.refName))),
+    [ready, network, repoId, asked, generation],
+    { enabled: ready && sdk !== null && pushes.length > 0 },
+  )
+
+  // Unknown (not read yet, failed, or incomplete): nothing is offered.
+  const withPull = open.data
+  if (withPull == null) return null
+  const offered = pushes.filter((p) => !withPull.has(p.refName))
+  if (offered.length === 0) return null
+
+  const dismiss = (p: RecentPush): void => {
+    const next = withDismissed(dismissed ?? [], recentPushKey(repoId, p))
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
+    } catch {
+      /* storage disabled: dismissed for this page only */
+    }
+    setDismissed(next)
+  }
+  // A fork proposes to its parent, as its "New pull request" does; the form there lists this fork's branches.
+  const hrefOf = (p: RecentPush): string =>
+    forkParent !== null ? contributeHref(forkParent, home.repo, p.branch) : repoHref('/repo/pulls/new', addr, { head: p.branch })
+
+  return (
+    <div className={cn('space-y-2', className)} data-testid="recent-pushes">
+      {offered.map((p) => (
+        <section
+          key={p.refName}
+          aria-label={`Recent push to ${p.branch}`}
+          className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-caution/40 bg-caution/10 px-3 py-2 text-dense"
+          data-testid="recent-push"
+        >
+          <p className="flex min-w-0 flex-1 basis-56 items-center gap-1.5 text-anvil-800 dark:text-anvil-100">
+            <GitBranch className="h-3.5 w-3.5 shrink-0 text-anvil-500 dark:text-anvil-400" aria-hidden />
+            <span className="min-w-0">
+              <span className="break-all font-mono font-semibold" data-testid="recent-push-branch">{p.branch}</span> had recent pushes{' '}
+              <time dateTime={new Date(p.pushedAt).toISOString()} title={new Date(p.pushedAt).toLocaleString()} className="whitespace-nowrap">
+                {timeAgo(p.pushedAt, now)}
+              </time>
+            </span>
+          </p>
+          <div className="flex shrink-0 items-center gap-1">
+            <Link
+              href={hrefOf(p)}
+              className="inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-md bg-forge-700 px-2.5 text-dense font-medium text-white hover:bg-forge-800 coarse:h-11"
+              data-testid="recent-push-compare"
+            >
+              <GitPullRequest className="h-3.5 w-3.5" aria-hidden /> Compare &amp; pull request
+            </Link>
+            <Button size="icon" variant="ghost" onClick={() => dismiss(p)} aria-label={`Dismiss the recent push to ${p.branch}`} data-testid="recent-push-dismiss">
+              <X className="h-4 w-4" aria-hidden />
+            </Button>
+          </div>
+        </section>
+      ))}
+    </div>
+  )
+}
