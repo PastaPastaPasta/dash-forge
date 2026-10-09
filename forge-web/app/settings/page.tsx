@@ -34,7 +34,7 @@ import { NOTIFY_URL } from '@/lib/notify/config'
 export default function SettingsPage(): JSX.Element {
   const { identity, balance, locked } = useAuth()
   const openTopUp = useUiStore((s) => s.openTopUp)
-  // Known to have no DPNS name: say how to get one (QW3-035).
+  // Known to have no DPNS name: say how to get one (QW3-035). A name shows in the pill (#452).
   const username = useDpnsLookup(identity ?? '')
 
   const gateways = (
@@ -97,7 +97,7 @@ export default function SettingsPage(): JSX.Element {
         <section className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
           <h2 className="mb-3 text-dense font-medium text-anvil-500 dark:text-anvil-400">Identity</h2>
           <div className="flex items-center justify-between">
-            <IdentityPill identityId={identity} />
+            <IdentityPill identityId={identity} name={username ?? undefined} />
             <NetworkBadge always />
           </div>
           <div className="mt-3 flex items-center justify-between gap-3 border-t border-anvil-100 pt-3 dark:border-anvil-850">
