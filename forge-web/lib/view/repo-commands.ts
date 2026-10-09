@@ -27,7 +27,7 @@ function gitNetworkConfig(config: NetworkConfig): [string, string][] {
 }
 
 /** The `dg` flags that select `config`'s network. */
-function dgNetworkFlags(config: NetworkConfig): string {
+export function dgNetworkFlags(config: NetworkConfig): string {
   return config.devnetName !== null ? `--network devnet --devnet-name ${config.devnetName}` : `--network ${config.network}`
 }
 

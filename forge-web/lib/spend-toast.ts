@@ -63,6 +63,7 @@ const SPEND_TITLES: Readonly<Record<string, string>> = {
   'key:encryption': 'Encryption key registered',
   'key:runner': 'Runner key registered',
   'identity:create': 'Identity created',
+  'identity:name': 'Username registered',
 }
 
 /** A kind never named above still says what it did, by its verb. */

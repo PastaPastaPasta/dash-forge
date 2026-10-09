@@ -135,6 +135,8 @@ interface AuthContextValue {
   topUpKey: (input: MasterInput, request: TopUpRequest) => Promise<KeyLimits>
   /** Register a CI runner key (not stored here; shown once). The master key signs once. */
   createRunnerKey: (input: MasterInput, request: LimitedKeyRequest) => Promise<LimitedKey>
+  /** Register the DPNS username `label` (#452): the identity's own key (file or phrase) signs once. Resolves `label.dash`. */
+  registerUsername: (input: MasterInput, label: string) => Promise<string>
   reloadVaults: () => void
   /** The headless controller (identity creation stores its key before registering it). */
   readonly controller: AuthController
@@ -233,6 +235,7 @@ export function AuthProvider({
       revokeStored: withReload(controller.revokeStored.bind(controller)),
       topUpKey: (input: MasterInput, request: TopUpRequest) => controller.topUpKey(input, request),
       createRunnerKey: (input: MasterInput, request: LimitedKeyRequest) => controller.createRunnerKey(input, request),
+      registerUsername: (input: MasterInput, label: string) => controller.registerUsername(input, label),
     }),
     [controller, withReload],
   )

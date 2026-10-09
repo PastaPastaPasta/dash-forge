@@ -79,7 +79,7 @@ Forge is not a GitHub clone, and it does not need you to leave GitHub.
 
 ## Can I use a username instead of the long identity id?
 
-Yes: register a DPNS username with `dg auth name register <label>` (or in the Dash bridge). Then `forge.dashhq.org/alice/project`, `@alice` in the web header's jump box, `git clone dash://alice/project` and `dg … alice/project` all resolve it, with a proof-verified DPNS read. `dg repo list --owner` and granting access (`dg collab add`) still take the identity id.
+Yes: register a DPNS username in the web app (Settings → Choose a username), with `dg auth name register <label>`, or in the Dash bridge. Then `forge.dashhq.org/alice/project`, `@alice` in the web header's jump box, `git clone dash://alice/project` and `dg … alice/project` all resolve it, with a proof-verified DPNS read. `dg repo list --owner` and granting access (`dg collab add`) still take the identity id.
 
 ## I lost my laptop. Is my code gone?
 

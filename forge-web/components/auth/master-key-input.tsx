@@ -33,9 +33,13 @@ export interface MasterKeyInput {
 
 /**
  * `identityId`: a file for another identity is refused as it is chosen. `id` keeps element ids
- * unique; `fileLabel` names the file input for assistive tech.
+ * unique; `fileLabel` names the file input for assistive tech; `legend` names what the file or
+ * phrase is for (a username signs with the identity's CRITICAL key, not its master key: #452).
  */
-export function useMasterKeyInput(identityId: string | null, { id, fileLabel }: { readonly id: string; readonly fileLabel: string }): MasterKeyInput {
+export function useMasterKeyInput(
+  identityId: string | null,
+  { id, fileLabel, legend = 'Master key, used once' }: { readonly id: string; readonly fileLabel: string; readonly legend?: string },
+): MasterKeyInput {
   const [mode, setMode] = useState<'file' | 'mnemonic'>('file')
   const fileRef = useRef<string | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
@@ -75,7 +79,7 @@ export function useMasterKeyInput(identityId: string | null, { id, fileLabel }: 
   const element = (
     <fieldset className="space-y-2 rounded-md border border-anvil-200 p-3 dark:border-anvil-750">
       <legend className="px-1 text-[12px] font-medium text-anvil-600 dark:text-anvil-300">
-        <KeyRound className="mr-1 inline h-3.5 w-3.5" aria-hidden /> Master key, used once
+        <KeyRound className="mr-1 inline h-3.5 w-3.5" aria-hidden /> {legend}
       </legend>
       <div role="group" aria-label="Master key source" className="inline-flex rounded-md border border-anvil-200 p-0.5 dark:border-anvil-750">
         {(['file', 'mnemonic'] as const).map((m) => (

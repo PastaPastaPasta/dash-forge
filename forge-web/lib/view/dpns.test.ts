@@ -1,7 +1,7 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { cachedDpnsName, clearDpnsCache, displayDpnsName, DPNS_FAILURE_TTL_MS, dpnsReadFailed, looksLikeDpnsName, resolveDpnsId, resolveDpnsName, seedFromDomains } from './dpns'
+import { cachedDpnsName, clearDpnsCache, displayDpnsName, DPNS_FAILURE_TTL_MS, dpnsCacheVersion, dpnsLabelHolder, dpnsReadFailed, lookupDpnsName, looksLikeDpnsName, noteRegisteredDpnsName, resolveDpnsId, resolveDpnsName, seedFromDomains, subscribeDpnsCache, UNKNOWN_HOLDER } from './dpns'
 
 const A = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
 const B = 'Ehyw8VygZh5LjjYHUbKqgyJamgetiVPLFnJewrfmgQUs'
@@ -163,5 +163,57 @@ describe('a failed reverse read is not a name that does not exist', () => {
     expect(dpnsReadFailed('devnet', A)).toBe(false)
     expect(await resolveDpnsName(sdk, A, 'devnet')).toBeNull()
     expect(query).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('a username registered in this tab (#452)', () => {
+  it('reads as the identity’s name both ways and tells subscribers', async () => {
+    const seen = vi.fn()
+    const off = subscribeDpnsCache(seen)
+    // A "no name" read before the registration is what the tab believed until now.
+    seedFromDomains('devnet', [A], [])
+    expect(cachedDpnsName('devnet', A)).toBeNull()
+    const before = dpnsCacheVersion()
+    noteRegisteredDpnsName('devnet', A, 'Alice-Forge2')
+    expect(cachedDpnsName('devnet', A)).toBe('Alice-Forge2.dash')
+    expect(dpnsCacheVersion()).toBeGreaterThan(before)
+    expect(seen).toHaveBeenCalled()
+    // The forward lookup is answered without a read (homograph-safe, any case).
+    const query = vi.fn(async (_q: unknown) => new Map())
+    expect(await resolveDpnsId(fakeSdk(query), 'alice-f0rge2', 'devnet')).toBe(A)
+    expect(query).not.toHaveBeenCalled()
+    off()
+  })
+
+  it('a name found by a fresh lookup (registered elsewhere) tells subscribers too', async () => {
+    const seen = vi.fn()
+    const off = subscribeDpnsCache(seen)
+    const query = vi.fn(async (_q: unknown) => new Map([['d', domainDoc(A, 'alice2')]]))
+    expect(await lookupDpnsName(fakeSdk(query), A, 'devnet')).toBe('alice2.dash')
+    expect(seen).toHaveBeenCalledTimes(1)
+    off()
+  })
+})
+
+describe('dpnsLabelHolder: is this name free? (#452)', () => {
+  it('reads the unique parent+label index once, homograph-safe', async () => {
+    const query = vi.fn(async (_q: unknown) => new Map([['d', domainDoc(B, 'b0b')]]))
+    expect(await dpnsLabelHolder(fakeSdk(query), 'Bob', 'devnet')).toBe(B)
+    expect((query.mock.calls[0]?.[0] as { where: unknown[][] }).where).toEqual([
+      ['normalizedParentDomainName', '==', 'dash'],
+      ['normalizedLabel', '==', 'b0b'],
+    ])
+  })
+
+  it('answers null for a free name, and REJECTS a failed read (never "free")', async () => {
+    expect(await dpnsLabelHolder(fakeSdk(async () => new Map()), 'nobody-here7', 'devnet')).toBeNull()
+    await expect(dpnsLabelHolder(fakeSdk(async () => Promise.reject(new Error('quorum not found'))), 'nobody-here7', 'devnet')).rejects.toThrow()
+  })
+})
+
+describe('dpnsLabelHolder: a domain whose record does not read', () => {
+  it('is taken, not free', async () => {
+    const odd = { toJSON: () => ({ label: 'x7x', normalizedParentDomainName: 'dash', records: {} }) }
+    expect(await dpnsLabelHolder(fakeSdk(async () => new Map([['d', odd]])), 'x7x', 'devnet')).toBe(UNKNOWN_HOLDER)
   })
 })
