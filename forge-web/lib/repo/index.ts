@@ -60,6 +60,7 @@ export {
   readMemberRepoIds,
   readMemberships,
   readMembershipsCached,
+  readMembershipsFresh,
   memberDocOf,
   readProvenanceTrust,
   readRoleOracle,

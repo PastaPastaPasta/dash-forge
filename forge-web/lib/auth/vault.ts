@@ -551,7 +551,7 @@ export interface StoreOutcome {
   /**
    * An encryption key was stored but could not be carried across (the vault was locked when the
    * key was renewed, or this tab holds a tab-only key that cannot open the stored ones). It is
-   * deleted; the user imports it again in Settings → Private repos.
+   * deleted; the user imports it again in Settings → Members-only and private content.
    */
   readonly encryptionKeyDropped: boolean
   /** The key ids of the dropped encryption keys (the ones that did carry across are kept). */

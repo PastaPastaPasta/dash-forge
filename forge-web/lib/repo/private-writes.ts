@@ -84,7 +84,7 @@ export function sealedIntent(intent: string | undefined, keys: EpochKeys): strin
 /** A fresh session of the signer for `repo` (never the page's). The caller closes it. */
 async function freshSession(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef): Promise<PrivateSession> {
   const ops = await encryptionOps(sdk, auth.network, auth.identityId, repo.forge.collab)
-  if (ops === null) throw new PrivateWriteError('add your encryption key to this browser (Settings → Private repos) to write to a private repo', 'E306')
+  if (ops === null) throw new PrivateWriteError('add your encryption key to this browser (Settings → Members-only and private content) to write to a private repo', 'E306')
   const { session: _page, lane: _lane, ...plain } = repo
   void _page
   void _lane

@@ -235,7 +235,7 @@ describe('wallet login and the encryption key (D27)', () => {
     const c = make()
     await login(c)
     expect(c.getState().notice).toBe(ENCRYPTION_KEY_ELSEWHERE)
-    expect(ENCRYPTION_KEY_ELSEWHERE).toBe('Your encryption key is held elsewhere. Import it under Settings → Private repos.')
+    expect(ENCRYPTION_KEY_ELSEWHERE).toBe('Your encryption key is held elsewhere. Import it under Settings → Members-only and private content.')
     expect(await storedEncryptionKeyId(NET, ID)).toBeNull()
     expect((await idbEntries('vault')).some(([k]) => String(k).includes('enc'))).toBe(false)
     // The sign-in itself went through.

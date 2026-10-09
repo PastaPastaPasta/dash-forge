@@ -106,6 +106,7 @@ import {
 } from '@/lib/repo'
 import { checksPhrase, expectedChecks, readCheckRuns, requiredSources, summarizeChecks, type ChecksSummary } from '@/lib/repo/checks'
 import { branchShown, headSync, readBranchState, readBranchTip, readBranchUpdates, type BranchWrite } from '@/lib/repo/source-branch'
+import { probeBranch, refStateKey } from '@/lib/repo/head-probe'
 import type { Event, EventKind, Holdings, RefState } from '@/lib/rules'
 import { POST_AS_COMMENT, ROLE_LABEL, capabilitiesOf, memberMayWriteEvent, verdictRefusal } from '@/lib/rules/roles'
 import { RoleLimitNote } from '@/components/repo/role-limit-note'
@@ -134,6 +135,7 @@ import { readUntil, retryWhileMissing } from '@/lib/view/retry'
 import { forgetShownOwnReviews, ownReviewScope, rememberOwnReview, unshownOwnReviews, type OwnReview } from '@/lib/view/own-reviews'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
+import { useHeadProbe } from '@/hooks/use-head-probe'
 import { useIntent } from '@/hooks/use-intent'
 import { useFirstWrite } from '@/hooks/use-first-write'
 import { useParam, repoHref, type RepoAddress } from '@/hooks/use-query-param'
@@ -167,7 +169,7 @@ import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { InlineCommentsProvider, SuggestedBody, type SuggestionActions, type ThreadActions } from '@/components/repo/inline-comments'
 import { LockToggle, LockedBanner, lockConfirm, lockStateText, lockViewerOf } from '@/components/repo/locked-banner'
-import { ReviewDrawer, useReviewDraft } from '@/components/repo/review-drawer'
+import { ReviewDrawer, StaleHeadNote, useReviewDraft, type NewerThanHead } from '@/components/repo/review-drawer'
 import { BranchCommitCost, BranchRunContext, CommitIdentityPrompt, buildUpdateBranch, useSourceWrite, useSuggestions } from '@/components/repo/branch-commit-panel'
 import { PullMerge, useMergeSlot } from '@/components/repo/pull-merge'
 import type { CloseIssuesOption } from '@/components/repo/merge-panel'
@@ -527,6 +529,49 @@ function PullPage({
   // Once a read shows the write, the read alone speaks again (later changes by others included).
   if (branchWrite !== null && readSync !== null && readSync.kind === (branchWrite.to === 'deleted' ? 'deleted' : 'in-sync')) setBranchWrite(null)
   const sync = branchShown(readSync, branchWrite, pull.sourceRefName, pull.headOid)
+  // ---- new pushes (#453) ------------------------------------------------------------------------
+  // An open PR notices a push while it is shown: one light probe a minute while the tab is
+  // visible, and on focus (`useHeadProbe`). It asks only for what is newer than this read: the
+  // PR's events past `eventMark`, and the source branch's newest update when it is readable from
+  // here and its state was read. It never swaps the diff: the reader refreshes.
+  const probeSource = sourceState.settled && !sourceState.error ? sourceRefOf() : null
+  const probeKnown = probeSource === null ? null : sourceState.data
+  const probeBase = useMemo(
+    () =>
+      thread.eventMark === undefined && probeSource === null
+        ? null
+        : {
+            repo,
+            pullId: pull.id,
+            author: pull.author,
+            headOid: pull.headOid,
+            events: thread.eventMark ?? null,
+            branch: probeBranch(probeSource, pull.sourceRefName, probeKnown),
+          },
+    [repo, pull.id, pull.author, pull.headOid, thread.eventMark, probeSource, pull.sourceRefName, probeKnown],
+  )
+  const probeKey = [pull.id, pull.headOid, thread.eventMark?.at ?? '', thread.eventMark?.ids.join(',') ?? '', probeSource?.repoId ?? '', refStateKey(probeKnown)].join(':')
+  const newPush = useHeadProbe(sdk, ready && open && pull.headOid !== '', probeBase, probeKey)
+  // Refresh after a push: the thread (until it shows the moved head), the repo home's branches
+  // (a same-repo source), and a fork source's branch. The review draft is the browser's: kept.
+  const titleRef = useRef<HTMLHeadingElement>(null)
+  const refreshForPush = (): void => {
+    const found = newPush.found
+    newPush.dismiss()
+    const head = pull.headOid.toLowerCase()
+    refresh(found?.headMoved === true ? (t) => t.pull.headOid.toLowerCase() !== head : undefined)
+    reloadHome?.()
+    if (crossRepo) sourceState.reload()
+    // The Refresh button just left the page with its banner: keyboard focus goes to the PR's
+    // title, not to the top of the document.
+    requestAnimationFrame(() => {
+      if (document.activeElement === null || document.activeElement === document.body) titleRef.current?.focus()
+    })
+  }
+  // What the review controls warn about: the head they review is older than the branch's.
+  const newerBranch = pull.sourceRefName === null ? null : shortBranch(pull.sourceRefName)
+  const newerThanHead: NewerThanHead | null =
+    newPush.found !== null ? { tip: newPush.found.tip, branch: newerBranch, onRefresh: refreshForPush } : open && sync?.kind === 'ahead' ? { tip: sync.tip, branch: newerBranch } : null
   // The source branch's ref updates (one read, both update types), on the Conversation tab only:
   // who pushed each head (QW3-048), and, once the PR is closed, when its branch was deleted or
   // restored (QW4-025). Read once the branch's state is read, and again when a read of it shows
@@ -1388,7 +1433,7 @@ function PullPage({
           </div>
         ) : (
           <div className="flex items-start gap-3">
-            <h1 className="min-w-0 flex-1 break-words text-2xl">
+            <h1 ref={titleRef} tabIndex={-1} className="min-w-0 flex-1 break-words text-2xl outline-none">
               {pull.title || '(untitled)'} <span className="font-mono font-normal text-anvil-500 dark:text-anvil-400" data-testid="pull-number">{numberLabel(pull.number, shownUpstreamNumber(pull, repo, thread.members))}</span>
             </h1>
             {isAuthor ? (
@@ -1457,11 +1502,33 @@ function PullPage({
             </span>
           ) : null}
           {refreshing ? <span className="text-[12px] text-anvil-500 dark:text-anvil-400">Refreshing…</span> : null}
+          {/* Always mounted, so a screen reader announces a push the probe finds (#453). */}
+          <span className="sr-only" role="status" aria-live="polite" data-testid="pr-new-push-status">
+            {open && newPush.found !== null ? 'New commits were pushed. Refresh to see them.' : ''}
+          </span>
           <CopyLinkButton repo={addr} target={{ kind: 'pull', number: pull.number }} visibility={home.repo.visibility} className="ml-auto" />
         </div>
       </div>
 
       {/* Banners */}
+      {open && newPush.found !== null ? (
+        // #453: a push while the page is open. The diff stays as read until the reader refreshes.
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-forge-500/40 bg-forge-500/5 px-4 py-3 text-dense" data-testid="pr-new-push-banner">
+          <RefreshCw className="h-4 w-4 shrink-0 text-forge-700 dark:text-forge-400" aria-hidden />
+          <span className="min-w-[min(16rem,calc(100%-1.75rem))] flex-1">
+            <span className="font-medium">New commits were pushed</span>
+            {newerBranch !== null ? (
+              <>
+                {' '}to <span className="font-mono">{newerBranch}</span>
+              </>
+            ) : null}{' '}
+            (now at <Oid value={newPush.found.tip} chars={7} copyable={false} />). This page shows <Oid value={pull.headOid} chars={7} copyable={false} />.
+          </span>
+          <Button variant="outline" size="sm" onClick={refreshForPush} disabled={refreshing}>
+            Refresh
+          </Button>
+        </div>
+      ) : null}
       {open && sync?.kind === 'ahead' ? (
         // Every reader is told the PR shows an older head than its branch (QW2-007: an
         // interrupted browser commit, or a push with auto-sync off); who can move it gets the button.
@@ -1943,6 +2010,7 @@ function PullPage({
                 </div>
                 {open && viewer !== null && pull.headOid && !writeBlocked ? (
                   <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-anvil-100 pt-3 dark:border-anvil-850">
+                    {newerThanHead !== null ? <StaleHeadNote headOid={pull.headOid} newer={newerThanHead} testId="quick-review-stale-head" className="w-full" /> : null}
                     <span className="text-dense text-anvil-500 dark:text-anvil-400">
                       Review head <span className="font-mono">{pull.headOid.slice(0, 9)}</span>:
                     </span>
@@ -2051,6 +2119,7 @@ function PullPage({
                     repo={repo}
                     pullId={pull.id}
                     headOid={pull.headOid}
+                    newer={newerThanHead}
                     draft={reviewDraft.draft}
                     loaded={reviewDraft.loaded}
                     update={reviewDraft.update}

@@ -172,8 +172,8 @@ export function AuthProvider({
     if (!notice) return
     const title = /carried over/i.test(notice)
       ? 'Not carried over to the new key'
-      : /private repos/i.test(notice)
-        ? 'Private repos not enabled'
+      : /private repos|members-only and private content/i.test(notice)
+        ? 'Members-only and private content not enabled'
         : 'Sign-in notice'
     toast({ title, tone: 'warn', detail: notice })
     controller.clearNotice()
