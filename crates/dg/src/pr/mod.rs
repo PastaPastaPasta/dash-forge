@@ -2948,12 +2948,22 @@ fn with_code_owners(
     number: u64,
 ) -> UserError {
     let Some(check) = check.filter(|c| !c.status.met) else {
-        return u;
+        return override_last(u);
     };
     let mut rules = others.to_vec();
     rules.extend(owners::code_owner_rules(&check.status));
     let u = u.cause(rules.join("; "));
-    code_owner_fixes(u, check, repo, number)
+    override_last(code_owner_fixes(u, check, repo, number))
+}
+
+/// `u` with its `--override-policy` fix last: the ways to meet every rule (approvals, checks,
+/// code owners) come before the maintainer's bypass of them all.
+fn override_last(mut u: UserError) -> UserError {
+    let (bypass, meet): (Vec<String>, Vec<String>) = std::mem::take(&mut u.fix)
+        .into_iter()
+        .partition(|f| f.contains("--override-policy"));
+    u.fix = meet.into_iter().chain(bypass).collect();
+    u
 }
 
 /// The fixes for unmet code owner approvals, by case: the files could not be read (retry, and
@@ -4544,6 +4554,17 @@ pub(crate) mod tests {
             u["fix"].to_string().contains("ask an owner of each file"),
             "{u}"
         );
+        // Every way to meet the rules comes first; the maintainer's bypass last.
+        let fixes: Vec<&str> = u["fix"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|f| f.as_str())
+            .collect();
+        assert_eq!(fixes.len(), 3, "{u}");
+        assert!(fixes[0].starts_with("get the missing approvals"), "{u}");
+        assert!(fixes[1].starts_with("ask an owner of each file"), "{u}");
+        assert!(fixes[2].contains("--override-policy"), "{u}");
         // Approvals met: the code owner refusal alone.
         let met = || Ok(Some((policy(1, false, 0), Ok((status(1, 1), None)))));
         let e = judge_policy(met(), Some(&owed), false, None, "o/r", 7)

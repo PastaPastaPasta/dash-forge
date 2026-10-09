@@ -34,9 +34,9 @@ use forge_core::repo::{
     group_by_hash, HistoryCost, PackManifestInput, PlatformChunkTarget, PreparedHistory,
     RepackTarget, RepoService, StoredArtifact,
 };
-use forge_core::rules::v2::Role;
 use forge_core::rules::RefState;
 use forge_core::scope::RepoRef;
+use forge_core::storage::supersede::{covered_packs, round_now, superseded_by};
 use forge_core::storage::{
     human_bytes, replicate, ExternalTarget, Observed, PackReader, Replica, Replication,
     StorageTarget, StoreOutcome,
@@ -863,32 +863,9 @@ impl Pass<'_> {
     }
 }
 
-/// Each git pack a repack superseded, with the packs that supersede it: the `supersedes` of
-/// git-pack manifests recorded by a current maintainer or writer (`roles`). Anyone else's
-/// manifest naming every pack supersedes nothing (as in `storage::copies`), and no pack
-/// supersedes itself.
-fn superseded_by(
-    manifests: &[forge_core::repo::PackManifestInfo],
-    roles: &forge_core::repo::RoleMap,
-) -> BTreeMap<[u8; 32], BTreeSet<[u8; 32]>> {
-    let mut claims: BTreeMap<[u8; 32], BTreeSet<[u8; 32]>> = BTreeMap::new();
-    // Only those who may record a pack at all (as reseed requires): a maintainer or a writer.
-    for m in manifests.iter().filter(|m| {
-        m.kind == u64::from(KIND_GIT_PACK)
-            && matches!(
-                roles.get(&m.owner_id),
-                Some(Role::Maintainer | Role::Writer)
-            )
-    }) {
-        for old in m.supersedes.iter().filter(|old| **old != m.pack_hash) {
-            claims.entry(*old).or_default().insert(m.pack_hash);
-        }
-    }
-    claims
-}
-
-/// The supersede claims a fetch pass honours ([`superseded_by`]): none on the full pass, which
-/// reads every pack (the fallback when a consolidation turned out incomplete).
+/// The supersede claims a fetch pass honours ([`superseded_by`]; the rounds use
+/// [`covered_packs`] and [`round_now`]): none on the full pass, which reads every pack (the
+/// fallback when a consolidation turned out incomplete).
 fn claims_for(
     incremental: bool,
     manifests: &[forge_core::repo::PackManifestInfo],
@@ -898,53 +875,6 @@ fn claims_for(
         superseded_by(manifests, roles)
     } else {
         BTreeMap::new()
-    }
-}
-
-/// The packs of `pending` to download this round: those no other pending pack supersedes
-/// (`claims`, [`superseded_by`]), so a repack is read before the packs it replaces. When every
-/// pending pack waits on another (repacks naming each other), all of them.
-fn round_now(
-    pending: &[[u8; 32]],
-    claims: &BTreeMap<[u8; 32], BTreeSet<[u8; 32]>>,
-) -> BTreeSet<[u8; 32]> {
-    let waiting: BTreeSet<[u8; 32]> = pending.iter().copied().collect();
-    let now: BTreeSet<[u8; 32]> = pending
-        .iter()
-        .filter(|h| {
-            claims
-                .get(*h)
-                .is_none_or(|by| by.iter().all(|s| !waiting.contains(s)))
-        })
-        .copied()
-        .collect();
-    if now.is_empty() {
-        waiting
-    } else {
-        now
-    }
-}
-
-/// The superseded packs ([`superseded_by`]) a fetch need not download: those a pack it `has`
-/// (downloaded, or held from an earlier fetch) supersedes, directly or through a chain of
-/// repacks (a pack superseded by a covered pack is covered too).
-fn covered_packs(
-    claims: &BTreeMap<[u8; 32], BTreeSet<[u8; 32]>>,
-    has: impl Fn(&[u8; 32]) -> bool,
-) -> BTreeSet<[u8; 32]> {
-    let mut covered = BTreeSet::new();
-    loop {
-        let more: Vec<[u8; 32]> = claims
-            .iter()
-            .filter(|(old, by)| {
-                !covered.contains(*old) && by.iter().any(|s| has(s) || covered.contains(s))
-            })
-            .map(|(old, _)| *old)
-            .collect();
-        if more.is_empty() {
-            return covered;
-        }
-        covered.extend(more);
     }
 }
 
@@ -4634,92 +4564,6 @@ mod tests {
 
     fn members() -> forge_core::repo::RoleMap {
         [("m".to_string(), forge_core::rules::v2::Role::Writer)].into()
-    }
-
-    /// Q5-B15: only a member's git-pack manifest supersedes, and never its own pack.
-    #[test]
-    fn only_a_members_repack_supersedes_packs() {
-        let mut env = manifest(9, "m", &[1]);
-        env.kind = 3;
-        let claims = super::superseded_by(
-            &[
-                manifest(1, "m", &[]),
-                manifest(2, "m", &[]),
-                manifest(3, "m", &[1, 2, 3]),
-                manifest(4, "stranger", &[1, 2, 3, 5]),
-                env,
-            ],
-            &members(),
-        );
-        let want: std::collections::BTreeMap<[u8; 32], std::collections::BTreeSet<[u8; 32]>> =
-            [([1; 32], [[3; 32]].into()), ([2; 32], [[3; 32]].into())].into();
-        assert_eq!(claims, want);
-    }
-
-    /// Q5-B15: a superseded pack is skipped once a pack superseding it is here, through a
-    /// chain of repacks; while none is, it is downloaded.
-    #[test]
-    fn a_pack_is_skipped_only_when_its_superseding_pack_is_here() {
-        // 3 superseded 1 and 2; 5 later superseded 3 and 4.
-        let claims = super::superseded_by(
-            &[
-                manifest(3, "m", &[1, 2]),
-                manifest(5, "m", &[3, 4]),
-                manifest(6, "m", &[]),
-            ],
-            &members(),
-        );
-        let all: std::collections::BTreeSet<[u8; 32]> = [[1; 32], [2; 32], [3; 32], [4; 32]].into();
-        assert_eq!(super::covered_packs(&claims, |h| *h == [5; 32]), all);
-        let under_3: std::collections::BTreeSet<[u8; 32]> = [[1; 32], [2; 32]].into();
-        assert_eq!(super::covered_packs(&claims, |h| *h == [3; 32]), under_3);
-        assert!(super::covered_packs(&claims, |h| *h == [6; 32]).is_empty());
-        // Two repacks that name each other (a cycle) cover nothing unless one is here.
-        let cycle = super::superseded_by(
-            &[manifest(7, "m", &[8]), manifest(8, "m", &[7])],
-            &members(),
-        );
-        assert!(super::covered_packs(&cycle, |_| false).is_empty());
-    }
-
-    /// Q5-B15: a round reads the newest repack first; its packs wait for it, and a cycle of
-    /// repacks naming each other is read at once.
-    #[test]
-    fn a_round_reads_a_repack_before_the_packs_it_replaces() {
-        let claims = super::superseded_by(
-            &[
-                manifest(3, "m", &[1, 2]),
-                manifest(5, "m", &[3, 4]),
-                manifest(6, "m", &[]),
-            ],
-            &members(),
-        );
-        let all = [[1; 32], [2; 32], [3; 32], [4; 32], [5; 32], [6; 32]];
-        let first: std::collections::BTreeSet<[u8; 32]> = [[5; 32], [6; 32]].into();
-        assert_eq!(super::round_now(&all, &claims), first);
-        // 5 did not arrive: 3 and 4 come next, and 1 and 2 still wait for 3.
-        let next: std::collections::BTreeSet<[u8; 32]> = [[3; 32], [4; 32]].into();
-        assert_eq!(super::round_now(&all[..4], &claims), next);
-        let cycle = super::superseded_by(
-            &[manifest(7, "m", &[8]), manifest(8, "m", &[7])],
-            &members(),
-        );
-        assert_eq!(super::round_now(&[[7; 32], [8; 32]], &cycle).len(), 2);
-    }
-
-    /// Q5-B15: a triage member's or reader's manifest supersedes nothing (only a maintainer or
-    /// a writer records packs).
-    #[test]
-    fn only_a_pusher_supersedes() {
-        let roles: forge_core::repo::RoleMap = [
-            ("t".to_string(), forge_core::rules::v2::Role::Triage),
-            ("r".to_string(), forge_core::rules::v2::Role::Reader),
-        ]
-        .into();
-        assert!(
-            super::superseded_by(&[manifest(3, "t", &[1]), manifest(4, "r", &[2])], &roles)
-                .is_empty()
-        );
     }
 
     /// Q5-B15: the skipping is limited to the incremental pass; the full pass that runs when

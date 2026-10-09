@@ -29,6 +29,7 @@ pub mod policy;
 pub mod profiles;
 pub mod publish;
 pub mod read;
+pub mod supersede;
 pub mod targets;
 
 pub use policy::{ResolvedPolicy, StoragePolicy};

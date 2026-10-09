@@ -237,7 +237,9 @@ cmd('repo activity', 'One branch\'s or tag\'s activity, newest first.', {
     'events': A(O({
         'kind': E('created', 'pushed', 'forcePushed', 'updated', 'moved', 'deleted', 'diverged',
                   'protectionAdded', 'protectionLifted', 'protectionRestored'),
-        'id': S, 'at': I, 'by': nl(S), 'from': nl(S), 'to': nl(S),
+        'id': S, 'at': I,
+        'by': D('Who pushed, or for a protection change who wrote the config; null when unknown.', nl(S)),
+        'from': nl(S), 'to': nl(S),
     }, ['kind', 'id', 'at'])),
 }, ['repo', 'ref', 'events'])
 cmd('repo view', 'A repository: its refs, packs and members.', {
@@ -568,6 +570,9 @@ cmd('repack', 'The repository\'s packs combined into one.', {
 cmd('reseed', 'Packs stored again where the storage policy wants them.', {
     'status': E('reseeded', 'partial'), 'repoId': S, 'target': ANY, 'targets': ANY, 'packs': ANY, 'unreadable': SA,
     'restored': ANY, 'healthy': I, 'missingLocally': ANY,
+    'superseded': D('With --from-local: packs a readable repack replaces, skipped.', SA),
+    'unreachable': D('With --from-local: packs whose recorded hosts do not answer, not uploaded.',
+                     A(O({'packHash': S, 'hosts': SA}, ['packHash', 'hosts']))),
 }, ['status', 'repoId'])
 cmd('storage status', 'Where the repository\'s packs are stored.', {
     'repoId': S, 'packCount': I, 'ipfsGateways': SA, 'packs': A(OBJ),

@@ -7,7 +7,7 @@
  */
 
 import { useState } from 'react'
-import { AlertTriangle, Check, ChevronRight, Info, ShieldAlert, X } from 'lucide-react'
+import { AlertTriangle, Check, ChevronRight, CircleHelp, Info, ShieldAlert, X } from 'lucide-react'
 
 import { Author } from '@/components/author'
 import { Time } from '@/components/repo/byline'
@@ -19,7 +19,7 @@ import type { ConfigDoc } from '@/lib/rules/types'
 import type { RepoRef } from '@/lib/repo'
 import type { HeadChecks } from '@/lib/repo/checks'
 import type { PullThread } from '@/lib/view'
-import { UNMET_CAVEAT, auditHeadline, auditRows, auditedMerge, mergerRoleWords, readMergeAudit, uncountedBypassWhy } from '@/lib/view/merge-audit'
+import { UNMET_CAVEAT, auditHeadline, auditRows, auditedMerge, confirmedUnmet, mergerRoleWords, readMergeAudit, uncountedBypassWhy, type AuditRow } from '@/lib/view/merge-audit'
 import { cn } from '@/lib/utils'
 
 export function RulesAtMerge({
@@ -73,14 +73,17 @@ export function RulesAtMerge({
 
 function AuditBody({ audit, thread }: { audit: MergeAudit; thread: PullThread }): JSX.Element {
   const rows = auditRows(audit, thread.pull.mergeBaseRefName)
-  const tone = audit.verdict === 'unmet' ? 'bad' : audit.verdict === 'met' ? 'good' : 'neutral'
+  // An unmet verdict whose only gaps can't be confirmed reads as a warning, not a failure.
+  const tone = audit.verdict === 'unmet' ? (confirmedUnmet(audit) ? 'bad' : 'warn') : audit.verdict === 'met' ? 'good' : 'neutral'
   return (
     <div className="space-y-3" data-testid="rules-at-merge-body" data-verdict={audit.verdict}>
-      <p className={cn('flex items-start gap-2 font-medium', tone === 'bad' && 'text-danger-700 dark:text-danger-400')}>
+      <p className={cn('flex items-start gap-2 font-medium', tone === 'bad' && 'text-danger-700 dark:text-danger-400', tone === 'warn' && 'text-forge-800 dark:text-forge-300')}>
         {tone === 'good' ? (
           <Check className="mt-0.5 h-4 w-4 shrink-0 text-verify" aria-hidden />
         ) : tone === 'bad' ? (
           <X className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+        ) : tone === 'warn' ? (
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
         ) : audit.verdict === 'bypassed' ? (
           <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-forge-700 dark:text-forge-400" aria-hidden />
         ) : (
@@ -136,13 +139,22 @@ function MergerLine({ thread, audit }: { thread: PullThread; audit: MergeAudit }
   )
 }
 
-function Row({ label, text, met }: { label: string; text: string; met: boolean | null }): JSX.Element {
+function Row({ label, text, met }: Pick<AuditRow, 'label' | 'text' | 'met'>): JSX.Element {
   return (
     <>
       <dt className="text-anvil-500 dark:text-anvil-400">{label}</dt>
-      <dd className={cn('flex min-w-0 items-start gap-1.5 break-words', met === false && 'text-danger-700 dark:text-danger-400')}>
-        {met === true ? <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-verify" aria-hidden /> : met === false ? <X className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden /> : null}
-        {met === null ? null : <span className="sr-only">{met ? 'Met: ' : 'Not met: '}</span>}
+      <dd
+        className={cn('flex min-w-0 items-start gap-1.5 break-words', met === false && 'text-danger-700 dark:text-danger-400', met === 'unconfirmed' && 'text-forge-800 dark:text-forge-300')}
+        data-met={met === null ? undefined : String(met)}
+      >
+        {met === true ? (
+          <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-verify" aria-hidden />
+        ) : met === false ? (
+          <X className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+        ) : met === 'unconfirmed' ? (
+          <CircleHelp className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+        ) : null}
+        {met === true || met === false ? <span className="sr-only">{met ? 'Met: ' : 'Not met: '}</span> : null}
         <span>{text}</span>
       </dd>
     </>

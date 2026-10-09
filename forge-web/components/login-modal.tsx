@@ -207,8 +207,9 @@ function describeView(view: View, limitedKeys: boolean): string {
   if (view === 'import') return `Forge signs with a limited key: ${limits}.`
   if (view === 'create') return `Forge signs with a limited key: ${fixedLimits}.`
   if (view === 'unlock') return 'Unlock the key this browser already holds.'
-  // The tile list: a wallet's key comes with no limits (docs/design/wallet-login.md).
-  return `A new or imported identity gives this browser a limited key: ${fixedLimits}.`
+  // The tile list: a wallet's key comes with no limits (docs/design/wallet-login.md). Creating
+  // fixes the lifetime (renewable later); importing lets you pick up to a year at once (Q5-C04).
+  return `A new or imported identity gives this browser a limited key: ${base}, for ${BROWSER_KEY_DEFAULTS.days} days by default. An import can pick up to a year; a new identity's key can be renewed for up to a year later.`
 }
 
 function Tile({

@@ -672,6 +672,106 @@ impl PackReader {
         !self.candidates(uris).is_empty()
     }
 
+    /// A copy of this reader without its signed `s3://` reads: only the addresses anyone can
+    /// read (public URLs, IPFS through the gateways), so a copy reads as healthy only when a
+    /// reader without this user's storage keys gets it too (Q5-B16: `dg reseed --from-local`).
+    /// Origins the user configured stay followed (their own NAS, a LAN gateway).
+    #[must_use]
+    pub fn without_signed_reads(&self) -> Self {
+        Self {
+            client: self.client.clone(),
+            gateways: self.gateways.clone(),
+            s3_profiles: Vec::new(),
+            candidate_timeout: self.candidate_timeout,
+            first_byte_budget: self.first_byte_budget,
+            unsized_cap: self.unsized_cap,
+            probe_timeout: self.probe_timeout,
+            trusted: self.trusted.clone(),
+            race_width: self.race_width,
+            fallbacks: std::sync::Mutex::default(),
+        }
+    }
+
+    /// The hosts of `uris` when re-uploading the bytes cannot make any of them readable again:
+    /// every copy a reader follows is an https address (no IPFS CID, which a re-pin restores)
+    /// on a host that is gone, as opposed to one that answers without the object. Gone means
+    /// its name does not resolve or it refuses the connection, while a read gateway still
+    /// answers (so this computer is online). `None` when some followed copy is IPFS, on a host
+    /// that answers or that can't be judged (a timeout, a refused redirect, a TLS error), or
+    /// when no copy is followed. Each request gets [`GATEWAY_PROBE_TIMEOUT`].
+    pub async fn unreachable_hosts(&self, uris: &[String]) -> Option<Vec<String>> {
+        let mut public = Vec::new();
+        for raw in uris {
+            match Uri(raw.clone()).scheme() {
+                Some("ipfs") => return None,
+                Some("https" | "http") if may_fetch(raw, &self.trusted) => {
+                    if gateway_cid(raw).is_some() {
+                        return None;
+                    }
+                    public.push(reqwest::Url::parse(raw).ok()?);
+                }
+                // `s3://` is a signed locator, not a public address; anything else no reader
+                // follows.
+                _ => {}
+            }
+        }
+        if public.is_empty() {
+            return None;
+        }
+        let gone = futures::future::join_all(public.iter().map(|u| self.host_gone(u))).await;
+        if !gone.into_iter().all(|g| g) || !self.online().await {
+            return None;
+        }
+        let mut hosts: Vec<String> = public
+            .iter()
+            .filter_map(|u| {
+                let host = u.host()?.to_string();
+                Some(match u.port() {
+                    Some(p) => format!("{host}:{p}"),
+                    None => host,
+                })
+            })
+            .collect();
+        hosts.sort_unstable();
+        hosts.dedup();
+        Some(hosts)
+    }
+
+    /// Whether `url`'s host is gone: its name does not resolve, or it refuses the connection.
+    async fn host_gone(&self, url: &reqwest::Url) -> bool {
+        let Some(host) = url.host_str() else {
+            return false;
+        };
+        let port = url.port_or_known_default().unwrap_or(443);
+        let host = host.trim_start_matches('[').trim_end_matches(']');
+        match tokio::time::timeout(self.probe_timeout, tokio::net::lookup_host((host, port))).await
+        {
+            Ok(Err(_)) => return true,
+            Ok(Ok(_)) => {}
+            Err(_) => return false,
+        }
+        match tokio::time::timeout(self.probe_timeout, self.client.head(url.clone()).send()).await {
+            Ok(Err(e)) => refused(&e),
+            _ => false,
+        }
+    }
+
+    /// Whether this computer reaches the network: one of the read gateways answers (any
+    /// status). With no gateway configured there is nothing to ask, and it is taken as online.
+    async fn online(&self) -> bool {
+        if self.gateways.is_empty() {
+            return true;
+        }
+        let answers = futures::future::join_all(self.gateways.iter().map(|g| async move {
+            matches!(
+                tokio::time::timeout(self.probe_timeout, self.client.head(g.as_str()).send()).await,
+                Ok(Ok(_))
+            )
+        }))
+        .await;
+        answers.into_iter().any(|a| a)
+    }
+
     /// HEAD `url` through this reader's client, held to the same rule as its reads: `None`,
     /// with nothing sent, for an address a manifest may not steer this computer to (plain
     /// http, this machine, a private network, unless the user configured that origin; DNS
@@ -1089,6 +1189,20 @@ pub fn repo_gateways<'a>(uris: impl IntoIterator<Item = &'a String>) -> Vec<Stri
 /// At most this many of a repo's own gateways go ahead of the shared list: each is raced
 /// before any default, so a long list (even of honest gateways) would delay every read.
 pub const MAX_REPO_GATEWAYS: usize = 3;
+
+/// Whether `e` is a refused connection (nothing listens there), found in its source chain.
+fn refused(e: &reqwest::Error) -> bool {
+    let mut cause: Option<&(dyn std::error::Error + 'static)> = std::error::Error::source(e);
+    while let Some(c) = cause {
+        if c.downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::ConnectionRefused)
+        {
+            return true;
+        }
+        cause = c.source();
+    }
+    false
+}
 
 /// The CID in a path-style gateway URL (`https://gw/ipfs/<cid>[/…]`), if any.
 fn gateway_cid(url: &str) -> Option<String> {
@@ -1604,6 +1718,69 @@ mod tests {
         let up = serve(vec![("/p", b"x".to_vec())]);
         let r = PackReader::new(vec![up.clone()], &StorageProfiles::default());
         assert!(r.probe(&format!("{up}/p")).await.is_some_and(|h| h.ok));
+    }
+
+    /// Q5-B16: a host that is gone (nothing listens) is told apart from one that answers
+    /// without the object, which a re-upload through the same storage restores.
+    #[tokio::test]
+    async fn unreachable_hosts_are_told_apart_from_missing_objects() {
+        let gone = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            format!("http://{}", l.local_addr().unwrap())
+        };
+        let up = serve(vec![("/p", b"x".to_vec())]);
+        let r = PackReader::new(vec![gone.clone(), up.clone()], &StorageProfiles::default());
+        let s3 = "s3://bucket/packs/p.pack".to_string();
+        let host = gone.trim_start_matches("http://").to_string();
+        assert_eq!(
+            r.unreachable_hosts(&[format!("{gone}/p"), s3.clone()])
+                .await,
+            Some(vec![host])
+        );
+        // The host answers (404): the object is missing, and a re-upload restores it.
+        assert_eq!(
+            r.unreachable_hosts(&[format!("{up}/missing"), s3.clone()])
+                .await,
+            None
+        );
+        // One host answers: not every copy is lost for good.
+        assert_eq!(
+            r.unreachable_hosts(&[format!("{gone}/p"), format!("{up}/p")])
+                .await,
+            None
+        );
+        // An IPFS copy is restored by pinning the bytes again.
+        assert_eq!(
+            r.unreachable_hosts(&[format!("{gone}/p"), "ipfs://bafyq".into()])
+                .await,
+            None
+        );
+        // No public address at all: nothing to judge.
+        assert_eq!(r.unreachable_hosts(&[s3]).await, None);
+        // Offline (no read gateway answers): nothing is judged gone.
+        let offline = PackReader::new(vec![gone.clone()], &StorageProfiles::default());
+        assert_eq!(
+            offline.unreachable_hosts(&[format!("{gone}/p")]).await,
+            None
+        );
+        // A host that holds the request open is slow, not gone.
+        let silent = silent_gateway();
+        let r = PackReader::new(vec![silent.clone(), up], &StorageProfiles::default())
+            .with_probe_timeout(Duration::from_millis(300));
+        assert_eq!(r.unreachable_hosts(&[format!("{silent}/p")]).await, None);
+    }
+
+    /// Q5-B16: without signed reads, an `s3://` copy is no candidate even when this user holds
+    /// a profile for its bucket.
+    #[test]
+    fn a_reader_without_signed_reads_has_no_s3_candidates() {
+        let uris = ["s3://priv/packs/x.pack".to_string()];
+        assert!(reader().has_candidates(&uris));
+        assert!(!reader().without_signed_reads().has_candidates(&uris));
+        assert_eq!(
+            reader().without_signed_reads().gateways(),
+            reader().gateways()
+        );
     }
 
     #[tokio::test]
