@@ -1,9 +1,9 @@
 //! Making members-only discussion public by its author (mixed-visibility DESIGN §4.6, D5;
 //! the rules are [`crate::rules::make_public`]). An issue, PR or comment goes public by a replace
 //! that drops `enc` and `epoch` and sets its text in plaintext; a review, which cannot be
-//! replaced, by a public comment attached to it. Someone else's post is refused before anything
-//! is read with a key or signed: other people's words go public only through a maintainer, and
-//! that is not built yet.
+//! replaced, by a public comment attached to it. Someone else's post is refused here before
+//! anything is read with a key or signed: other people's words go public only through a
+//! maintainer's bundle ([`super::bundles`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -333,20 +333,29 @@ impl Collab<'_> {
         Ok(!carriers.is_empty())
     }
 
-    /// The refusal of making someone else's post public, in the words for the signer's role
-    /// (DESIGN §10): a maintainer will make other people's posts public by a bundle, which is
-    /// not built yet.
+    /// The refusal of editing someone else's post to Public, in the words for the signer's role
+    /// (DESIGN §10): a maintainer makes it public without editing it, by a bundle
+    /// ([`Self::bundle_plan`], which `dg make-public` picks for them).
     async fn not_your_post(&self, repo: &RepoRef) -> Error {
-        let maintainer = matches!(self.signer_role(repo).await, Ok(Some(Role::Maintainer)));
-        let what = if maintainer {
-            "Only its author can make this post public."
-        } else {
-            "Only maintainers can make other people's posts public."
-        };
-        UserError::new(codes::NOT_A_WRITER, what)
-            .cause("you are not its author")
+        let maintainer = repo.owner_id() == self.signer_id().unwrap_or_default()
+            || matches!(self.signer_role(repo).await, Ok(Some(Role::Maintainer)));
+        if maintainer {
+            return UserError::new(
+                codes::USAGE,
+                "it's someone else's post: as a maintainer you make it public without editing it",
+            )
+            .fix(format!("dg make-public {} <post>", repo.display()))
             .note("checked before anything was signed; nothing was written or paid")
-            .into()
+            .into();
+        }
+        UserError::new(
+            codes::NOT_A_WRITER,
+            "Only maintainers can make other people's posts public.",
+        )
+        .cause("you are not its author")
+        .fix("ask a maintainer")
+        .note("checked before anything was signed; nothing was written or paid")
+        .into()
     }
 
     /// The signer's own sealed post opened with the keys they hold (a former member's included).

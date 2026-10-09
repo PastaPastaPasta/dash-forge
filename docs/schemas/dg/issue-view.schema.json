@@ -114,6 +114,35 @@
           },
           "createdAt": {
             "type": "integer"
+          },
+          "madePublic": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "by": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string",
+                    "enum": [
+                      "public",
+                      "editedAfter"
+                    ]
+                  },
+                  "publishedRevision": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "by",
+                  "state"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -182,7 +211,99 @@
     "hiddenComments": {},
     "moderation": {},
     "hiddenEventValues": {},
-    "plaintextEventValues": {}
+    "plaintextEventValues": {},
+    "madePublic": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "by": {
+              "type": "string"
+            },
+            "state": {
+              "type": "string",
+              "enum": [
+                "public",
+                "editedAfter"
+              ]
+            },
+            "publishedRevision": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "by",
+            "state"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Who made this members-only issue public with a make-public bundle, and whether its author edited it since; null when no maintainer did."
+    },
+    "earlierVersions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "body": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updatedAt": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "madePublicBy": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "madePublicBy"
+        ]
+      },
+      "description": "With --history: the earlier versions of the issue a maintainer made public, oldest first."
+    },
+    "bundleAlerts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "documentId": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer"
+          },
+          "by": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "documentId",
+          "revision",
+          "by"
+        ]
+      },
+      "description": "Make-public entries whose key does not match the post they name: ignored."
+    }
   },
   "required": [
     "schemaVersion",

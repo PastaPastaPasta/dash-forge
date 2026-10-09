@@ -53,13 +53,18 @@ use crate::rules::v2::{
     RoleOracle, StateAction, Transition, TransitionMove, TransitionTarget, Visibility,
     TRANSITION_KINDS,
 };
-use crate::rules::v2::{edit_keeps_audience, Audience};
+use crate::rules::v2::{audience_edit, edit_keeps_audience, Audience, AudienceEdit};
 use crate::rules::v2::{CloseReason, ClosedAs};
 use crate::rules::{self, Event, EventKind, IssueState, PrState};
 use crate::scope::RepoRef;
 use crate::user_error::{codes, UserError};
 
+mod bundles;
 mod make_public;
+pub use bundles::{
+    noun as bundle_noun, BundleAlert, BundlePlan, BundledPost, LeftOut, LeftOutWhy, Publication,
+    PublicationState,
+};
 pub use make_public::{apply_review_texts, MakePublicPlan};
 
 /// forge-collab document types (issue through milestone); forge-community ones are marked.
@@ -2889,6 +2894,9 @@ pub struct Collab<'a> {
     /// The audience this command asked for on the content it writes
     /// ([`Self::request_audience`]); `None`: the context's.
     requested: std::sync::Mutex<Option<Audience>>,
+    /// Maintainers' make-public bundles of a repository, read once per `Collab`, and what they
+    /// did to the documents read ([`bundles`]).
+    bundles: bundles::BundleState,
 }
 
 impl<'a> Collab<'a> {
@@ -2905,6 +2913,7 @@ impl<'a> Collab<'a> {
             private_updates: std::sync::Mutex::default(),
             member: std::sync::Mutex::default(),
             requested: std::sync::Mutex::default(),
+            bundles: bundles::BundleState::default(),
         }
     }
 
@@ -2927,6 +2936,7 @@ impl<'a> Collab<'a> {
             private_updates: std::sync::Mutex::default(),
             member: std::sync::Mutex::default(),
             requested: std::sync::Mutex::default(),
+            bundles: bundles::BundleState::default(),
         }
     }
 
@@ -3319,10 +3329,20 @@ impl<'a> Collab<'a> {
                 return Ok(Some(TargetRead::Readable(d)));
             }
             let keys = self.lane_keys(repo).await?;
-            return Ok(Some(match open_with(&keys, kind.content_kind(), d) {
-                Ok(d) => TargetRead::Readable(d),
-                Err(m) => TargetRead::MembersOnly(m),
-            }));
+            let entries = self.doc_entries(repo).await;
+            let repo_id = repo.scope()?.repo_id;
+            let stored = d.clone();
+            return Ok(Some(
+                match self.open_read(&repo_id, &entries, &keys, kind.content_kind(), d) {
+                    Ok(d) => TargetRead::Readable(d),
+                    // an issue sealed again after a maintainer made it public reads, for those
+                    // who cannot open it, as the bundle published it (DESIGN §4.6)
+                    Err(m) => match self.published_issue(repo, &stored).await {
+                        Some(d) if kind == TargetKind::Issue => TargetRead::Readable(d),
+                        _ => TargetRead::MembersOnly(m),
+                    },
+                },
+            ));
         }
         let Some(kr) = self.private_keys(repo).await? else {
             return Ok(Some(TargetRead::Readable(d)));
@@ -3401,8 +3421,15 @@ impl<'a> Collab<'a> {
         } else {
             DocKeys::None(Unopened::NotAMember)
         };
+        // a public repository's maintainers' bundles, read only when a sealed row is met
+        let entries = if repo.visibility == Visibility::Public && docs.iter().any(is_sealed) {
+            self.doc_entries(repo).await
+        } else {
+            Arc::default()
+        };
+        let repo_id = repo.scope()?.repo_id;
         for d in docs {
-            match open_with(&keys, kind, d) {
+            match self.open_read(&repo_id, &entries, &keys, kind, d) {
                 Ok(d) => out.rows.push(d),
                 Err(m) => out.members_only.push(m),
             }
@@ -5804,6 +5831,41 @@ impl<'a> Collab<'a> {
             .is_some_and(|want| want != audience && repo.visibility == Visibility::Public)
         {
             return Err(audience_fixed(doc_type, audience));
+        }
+        // after a maintainer made it public, its author's edit is public too (DESIGN §4.6)
+        if let Some(by) = self.bundle_covers(repo, kind, &stored).await {
+            if self.requested_audience().is_some_and(|want| want != Audience::Public) {
+                return Err(audience_fixed(doc_type, Audience::Public));
+            }
+            let mut changes = self
+                .bundled_edit(repo, kind, &stored, &changes, &by)
+                .await?;
+            let ck = content_kind_of(kind).ok_or(Error::NotFound)?;
+            let mut edited = stored.clone();
+            for (k, v) in &changes {
+                match v {
+                    Some(v) => edited.fields.insert(k.clone(), v.clone()),
+                    None => edited.fields.remove(k),
+                };
+            }
+            let me = self.signer_id()?;
+            if audience_edit(
+                repo.visibility,
+                &content_of(ck, &stored),
+                &content_of(ck, &edited),
+                &stored.owner_id,
+                &me,
+            ) != AudienceEdit::MakesPublic
+            {
+                return Err(audience_fixed(doc_type, Audience::Public));
+            }
+            for field in self.dead_references(repo, collab, &stored).await? {
+                changes.insert(field.to_string(), None);
+            }
+            return self
+                .engine()?
+                .replace_document_guarded(collab, doc_type, id, &changes, Some(revision))
+                .await;
         }
         let mut changes = if repo.visibility == Visibility::Private || is_sealed(&stored) {
             self.private_edit(repo, kind, &stored, &changes).await?

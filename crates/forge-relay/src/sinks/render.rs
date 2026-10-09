@@ -193,6 +193,10 @@ pub fn named_ids(event: &WebhookEvent) -> Vec<String> {
         str_at(p, &["repository", "owner", "login"]),
         str_at(p, &["assignee", "login"]),
         str_at(p, &["requested_reviewer", "login"]),
+        // whose post a maintainer made public
+        str_at(p, &["comment", "user", "login"]),
+        str_at(p, &["review", "user", "login"]),
+        str_at(p, &["issue", "user", "login"]),
     ]
     .into_iter()
     .filter(|s| !s.is_empty())
@@ -215,7 +219,39 @@ pub fn render(event: &WebhookEvent, names: &BTreeMap<String, String>) -> Option<
     );
     let mut thread = None;
     let mut excerpt = String::new();
+    let made_public = p.get(crate::ingest::MADE_PUBLIC_KEY).is_some();
     let (title, url) = match event.event {
+        // a maintainer made someone's members-only post public (DESIGN §4.6)
+        "issues" | "issue_comment" | "pull_request_review" if made_public => {
+            let (obj, what, post) = match event.event {
+                "issues" => ("issue", "issue", "issue"),
+                "issue_comment" if p["issue"].get("pull_request").is_some() => {
+                    ("issue", "pull request", "comment")
+                }
+                "issue_comment" => ("issue", "issue", "comment"),
+                _ => ("pull_request", "pull request", "review"),
+            };
+            let number = u64_at(p, &[obj, "number"]);
+            thread = Some((what == "pull request", number));
+            let (author_path, body_path): (&[&str], &[&str]) = match post {
+                "issue" => (&["issue", "user", "login"], &["issue", "body"]),
+                "comment" => (&["comment", "user", "login"], &["comment", "body"]),
+                _ => (&["review", "user", "login"], &["review", "body"]),
+            };
+            excerpt = clean_text(str_at(p, body_path), MAX_EXCERPT_CHARS);
+            let author = name(str_at(p, author_path));
+            let line = if post == "issue" {
+                format!("{actor} made {author}'s issue #{number} public")
+            } else {
+                format!("{actor} made {author}'s {post} on {what} #{number} public")
+            };
+            let url_path: &[&str] = match post {
+                "issue" => &["issue", "html_url"],
+                "comment" => &["comment", "html_url"],
+                _ => &["review", "html_url"],
+            };
+            (line, str_at(p, url_path).to_string())
+        }
         "push" => push_title(p, &actor),
         "issues" | "pull_request" => {
             let is_pr = event.event == "pull_request";
@@ -472,6 +508,30 @@ mod tests {
             .unwrap()
             .title
             .starts_with("alice merged pull request"));
+    }
+
+    /// A maintainer made someone's members-only comment public (DESIGN §4.6): the notice names
+    /// both, quotes the now-public text, and links the comment.
+    #[test]
+    fn a_post_made_public_names_its_maintainer_and_author() {
+        let issue = IssueObj {
+            number: 3,
+            document_id: "I3".into(),
+            author: "OWNER1234567".into(),
+            title: "Crash".into(),
+            body: String::new(),
+            open: true,
+            is_pr: false,
+        };
+        let mut e = issue_comment_event(&meta(), "M:C1", &issue, "C1", "BOBID12345", "the fix is in");
+        e.action = Some("edited");
+        e.payload["sender"] = meta().user_json("ALICEID");
+        e.payload[crate::ingest::MADE_PUBLIC_KEY] = serde_json::json!({ "by": "ALICEID" });
+        assert!(named_ids(&e).contains(&"BOBID12345".to_string()));
+        let n = render(&e, &names()).unwrap();
+        assert_eq!(n.title, "alice made BOBID12345's comment on issue #3 public");
+        assert_eq!(n.excerpt, "the fix is in");
+        assert_eq!(n.thread, Some((false, 3)));
     }
 
     /// Members-only content (DESIGN D14): the notice says what happened, never quotes the empty

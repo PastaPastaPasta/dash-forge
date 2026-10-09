@@ -8,7 +8,9 @@
 //!   merges ([`is_activity`]); releases to everyone following with "releases" on;
 //! * **participants**: whoever opened the thread, or commented on or reviewed it, as seen here;
 //! * **mentions**: `@label` (a DPNS name, word-bounded, case-insensitive) or the raw identity id
-//!   in a description, comment or review, the same rule as forge-web's `mentions()`.
+//!   in a description, comment or review, the same rule as forge-web's `mentions()`;
+//! * **authors made public**: a post's author when a maintainer made it public (an `edited`
+//!   event marked `dash_made_public`, mixed-visibility DESIGN §4.6), as "participating".
 //!
 //! Assignments and review requests come from the addressed poller ([`crate::index`]), which
 //! reads them in every repository. Nobody is told about their own action.
@@ -166,6 +168,16 @@ fn body_of(event: &WebhookEvent) -> &str {
     }
 }
 
+/// Who wrote the post an event is about: the comment's, the review's, else the issue's author.
+fn post_author(event: &WebhookEvent) -> &str {
+    let p = &event.payload;
+    match event.event {
+        "issue_comment" => str_at(p, &["comment", "user", "login"]),
+        "pull_request_review" => str_at(p, &["review", "user", "login"]),
+        _ => str_at(p, &["issue", "user", "login"]),
+    }
+}
+
 /// Who opened the thread an event is about.
 fn thread_author(event: &WebhookEvent) -> &str {
     let p = &event.payload;
@@ -260,7 +272,19 @@ impl Router {
                 }
             }
         }
-        let body = body_of(event);
+        // A maintainer made a members-only post public (DESIGN §4.6): its author is told, and
+        // nobody else (the post was written before; its mentions were not news to anyone).
+        let made_public = event
+            .payload
+            .get(forge_relay::ingest::MADE_PUBLIC_KEY)
+            .is_some();
+        if made_public {
+            let author = post_author(event);
+            if !author.is_empty() {
+                add(author.to_string(), Reason::Participating, None);
+            }
+        }
+        let body = if made_public { "" } else { body_of(event) };
         if !body.is_empty() {
             let mentioned = self
                 .mentions

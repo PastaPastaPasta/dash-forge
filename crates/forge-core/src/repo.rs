@@ -1194,34 +1194,115 @@ impl<'a> RepoService<'a> {
         &self,
         repo: &RepoRef,
     ) -> Result<Vec<crate::private::convert::PublishedBundle>> {
+        let roles: RoleMap = [(repo.owner_id().to_string(), Role::Maintainer)].into();
+        self.bundles_by(repo, &roles).await
+    }
+
+    /// The document entries of `repo`'s make-public bundles that readers honour (DESIGN §4.6,
+    /// [`crate::private::bundle::DocEntries`]): the kind-7 bundles of its owner and its current
+    /// maintainers, hash-verified. Empty for a private repository, and for a public one with no
+    /// bundle (one manifest read, which the history cache keeps).
+    pub async fn doc_bundle_entries(
+        &self,
+        repo: &RepoRef,
+    ) -> Result<crate::private::bundle::DocEntries> {
+        use crate::private::bundle::DocEntries;
+        if repo.visibility != Visibility::Public {
+            return Ok(DocEntries::default());
+        }
+        let kind = u64::from(crate::pack::KIND_MAKE_PUBLIC);
+        if !self
+            .read_pack_manifests(repo)
+            .await?
+            .iter()
+            .any(|m| m.kind == kind)
+        {
+            return Ok(DocEntries::default());
+        }
+        let mut roles: RoleMap = self
+            .copy_roles(repo)
+            .await?
+            .into_iter()
+            .filter(|(_, r)| *r == Role::Maintainer)
+            .collect();
+        roles.insert(repo.owner_id().to_string(), Role::Maintainer);
+        let maintainers = roles
+            .keys()
+            .filter_map(|m| platform::decode_identifier(m).ok())
+            .collect();
+        let bundles = self.bundles_by(repo, &roles).await?;
+        Ok(DocEntries::of(true, &maintainers, &bundles))
+    }
+
+    /// The bytes of the make-public bundle recorded by the kind-7 manifest document `manifest`
+    /// of public `repo` (checked against its `packHash`), with its uploader. `None` for another
+    /// kind, a private repository, or a bundle no copy of which can be read.
+    pub async fn bundle_of_manifest(
+        &self,
+        repo: &RepoRef,
+        manifest: &FetchedDocument,
+    ) -> Result<Option<crate::private::convert::PublishedBundle>> {
+        let info = manifest_info(manifest)?;
+        if repo.visibility != Visibility::Public
+            || info.kind != u64::from(crate::pack::KIND_MAKE_PUBLIC)
+        {
+            return Ok(None);
+        }
+        let owner = platform::decode_identifier(&info.owner_id)?;
+        let contract = self.repo_contract(repo).await?;
+        let reader = PackReader::from_user_config();
+        Ok(self
+            .fetch_artifact_from(repo, &contract, &info, &reader)
+            .await
+            .ok()
+            .filter(|b| crate::backends::sha256(b) == info.pack_hash)
+            .map(|bytes| crate::private::convert::PublishedBundle { owner, bytes }))
+    }
+
+    /// The kind-7 bundles of public `repo` written by the uploaders `roles` names, each read from
+    /// a copy whose bytes hash to its `packHash` and paired with its uploader. Empty for a
+    /// private repository.
+    async fn bundles_by(
+        &self,
+        repo: &RepoRef,
+        roles: &RoleMap,
+    ) -> Result<Vec<crate::private::convert::PublishedBundle>> {
         if repo.visibility != Visibility::Public {
             return Ok(Vec::new());
         }
-        let owner = platform::decode_identifier(repo.owner_id())?;
         let kind = u64::from(crate::pack::KIND_MAKE_PUBLIC);
         let manifests: Vec<PackManifestInfo> = self
             .read_pack_manifests(repo)
             .await?
             .into_iter()
-            .filter(|m| m.kind == kind && m.owner_id == repo.owner_id())
+            .filter(|m| m.kind == kind && roles.contains_key(&m.owner_id))
             .collect();
         if manifests.is_empty() {
             return Ok(Vec::new());
         }
         let contract = self.repo_contract(repo).await?;
-        let roles: RoleMap = [(repo.owner_id().to_string(), Role::Maintainer)].into();
         let reader = PackReader::from_user_config();
         let mut out = Vec::new();
-        for (hash, copies) in group_by_hash(&manifests) {
-            match self
-                .fetch_best_copy_or_mirror(repo, &contract, &copies, &roles, &reader)
-                .await
-            {
-                Ok((bytes, _)) => {
-                    out.push(crate::private::convert::PublishedBundle { owner, bytes });
-                }
-                Err(e) => {
-                    tracing::warn!(bundle = %hex::encode(hash), error = %e, "a make-public bundle could not be read");
+        // one bundle per uploader and hash: the same bytes from two maintainers are two bundles
+        let mut by_owner: BTreeMap<&str, Vec<PackManifestInfo>> = BTreeMap::new();
+        for m in &manifests {
+            by_owner.entry(m.owner_id.as_str()).or_default().push(m.clone());
+        }
+        for (owner_id, mine) in by_owner {
+            let Ok(owner) = platform::decode_identifier(owner_id) else {
+                continue;
+            };
+            for (hash, copies) in group_by_hash(&mine) {
+                match self
+                    .fetch_best_copy_or_mirror(repo, &contract, &copies, roles, &reader)
+                    .await
+                {
+                    Ok((bytes, _)) => {
+                        out.push(crate::private::convert::PublishedBundle { owner, bytes });
+                    }
+                    Err(e) => {
+                        tracing::warn!(bundle = %hex::encode(hash), error = %e, "a make-public bundle could not be read");
+                    }
                 }
             }
         }
@@ -3307,6 +3388,49 @@ impl<'a> RepoService<'a> {
                     storage: stored.storage,
                     uris: stored.uris,
                     supersedes,
+                    tips: Vec::new(),
+                },
+            )
+            .await?;
+        Ok((id, pack_hash))
+    }
+
+    /// Store `bytes`, a maintainer's make-public bundle ([`crate::private::bundle`], DESIGN §4.6),
+    /// as Platform `chunk` documents and record its kind-7 `packManifest` (`objectCount` 0, no
+    /// `tips`, no `supersedes`). Platform only, as an environment snapshot is stored: every
+    /// reader (anonymous ones and the gateway included) must find it. Returns the manifest's
+    /// document id and the bundle's `packHash`.
+    pub async fn store_make_public_bundle(
+        &self,
+        repo: &RepoRef,
+        bytes: &[u8],
+    ) -> Result<(String, [u8; 32])> {
+        let chain = PlatformChunkTarget::new(self, repo, crate::storage::PLATFORM_PROFILE);
+        let targets: Vec<&dyn StorageTarget> = vec![&chain];
+        let meta = PackMeta::for_bytes(bytes);
+        let pack_hash = meta.pack_hash_bytes()?;
+        let rep = crate::storage::replicate(&targets, bytes, &meta, 1)
+            .await
+            .map_err(|e| {
+                Error::from(UserError::storage_policy_not_met(
+                    &e,
+                    "store what is made public",
+                    false,
+                ))
+            })?;
+        let stored = StoredArtifact::from_replication(&rep, bytes)?;
+        let id = self
+            .write_pack_manifest(
+                repo,
+                &PackManifestInput {
+                    pack_hash,
+                    kind: u64::from(crate::pack::KIND_MAKE_PUBLIC),
+                    size_bytes: bytes.len() as u64,
+                    object_count: 0,
+                    chunk_count: stored.chunk_count,
+                    storage: stored.storage,
+                    uris: stored.uris,
+                    supersedes: Vec::new(),
                     tips: Vec::new(),
                 },
             )

@@ -315,6 +315,7 @@ octokit) reads them:
   | Anything that happens on a members-only issue or pull request (close, merge, lock, a public comment) | The usual event. The embedded issue or pull request has an empty `title`, `body`, `head.sha` and `base.ref`; a public comment keeps its text. |
   | A members-only release | Nothing. The public release list ignores it, and a `release` event with no tag would mislead a receiver that deploys on releases. |
   | A members-only branch update | Nothing (as before). |
+  | A post a maintainer made public (a make-public bundle, `packManifest` kind 7) | One `issues` / `issue_comment` / `pull_request_review` event per post, action `edited`, with the post's text as everyone now reads it, `sender` the maintainer and the post's `user` its author, marked `"dash_made_public": {"by": <maintainer>}`. A bundle by anyone but a current maintainer (or the owner) is ignored, as every reader ignores it. |
 
   `"dash_members_only": true` marks them, in two places, and no other event has the key:
 
