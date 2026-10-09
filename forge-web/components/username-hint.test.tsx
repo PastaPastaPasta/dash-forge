@@ -8,7 +8,19 @@ import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { describe, expect, it, vi } from 'vitest'
 
-vi.mock('@/components/username-dialog', () => ({ UsernameDialog: () => <div data-testid="username-dialog" /> }))
+// Counts mounts: a dialog that is unmounted and mounted again has lost its state (its done step).
+const mounts = vi.hoisted(() => ({ n: 0 }))
+vi.mock('@/components/username-dialog', async () => {
+  const { useEffect } = await import('react')
+  return {
+    UsernameDialog: () => {
+      useEffect(() => {
+        mounts.n += 1
+      }, [])
+      return <div data-testid="username-dialog" />
+    },
+  }
+})
 
 const { UsernameHint } = await import('./username-hint')
 
@@ -33,9 +45,12 @@ describe('UsernameHint', () => {
     const root = createRoot(host)
     act(() => root.render(<UsernameHint show />))
     act(() => host.querySelector<HTMLButtonElement>('[data-testid="username-choose"]')!.click())
+    const before = mounts.n
     act(() => root.render(<UsernameHint show={false} />))
     expect(host.querySelector('[data-testid="username-hint"]')).toBeNull()
     expect(host.querySelector('[data-testid="username-dialog"]')).not.toBeNull()
+    // The same dialog, not a new one.
+    expect(mounts.n).toBe(before)
     act(() => root.unmount())
   })
 

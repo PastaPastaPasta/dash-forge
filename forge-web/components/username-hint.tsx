@@ -18,25 +18,29 @@ import { Button } from '@/components/ui/button'
 import { UsernameDialog } from '@/components/username-dialog'
 import { DOCS } from '@/lib/docs-links'
 
-export function UsernameHint({ show, className }: { show: boolean; className?: string }): JSX.Element | null {
+export function UsernameHint({ show, className }: { show: boolean; className?: string }): JSX.Element {
   const [open, setOpen] = useState(false)
-  const dialog = open ? <UsernameDialog onClose={() => setOpen(false)} /> : null
-  if (!show) return dialog
+  // The dialog keeps its place in the tree whether the hint shows or not: moved, React would
+  // mount a fresh one and the "is your username" step would be lost.
   return (
-    <div className={className} data-testid="username-hint">
-      <p className="text-dense text-anvil-700 dark:text-anvil-200">
-        No username yet. A DPNS username makes your addresses readable (<span className="font-mono">forge.dashhq.org/alice/project</span>,{' '}
-        <span className="font-mono">@alice</span>).
-      </p>
-      <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
-        <Button type="button" variant="outline" size="sm" onClick={() => setOpen(true)} data-testid="username-choose">
-          <AtSign className="h-3.5 w-3.5" aria-hidden /> Choose a username
-        </Button>
-        <a href={`${DOCS.identity}#what-an-identity-is`} target="_blank" rel="noreferrer noopener" className="hit-area text-[12px] text-forge-700 underline dark:text-forge-400">
-          How usernames work →
-        </a>
-      </p>
-      {dialog}
-    </div>
+    <>
+      {show ? (
+        <div className={className} data-testid="username-hint">
+          <p className="text-dense text-anvil-700 dark:text-anvil-200">
+            No username yet. A DPNS username makes your addresses readable (<span className="font-mono">forge.dashhq.org/alice/project</span>,{' '}
+            <span className="font-mono">@alice</span>).
+          </p>
+          <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+            <Button type="button" variant="outline" size="sm" onClick={() => setOpen(true)} data-testid="username-choose">
+              <AtSign className="h-3.5 w-3.5" aria-hidden /> Choose a username
+            </Button>
+            <a href={`${DOCS.identity}#what-an-identity-is`} target="_blank" rel="noreferrer noopener" className="hit-area text-[12px] text-forge-700 underline dark:text-forge-400">
+              How usernames work →
+            </a>
+          </p>
+        </div>
+      ) : null}
+      {open ? <UsernameDialog onClose={() => setOpen(false)} /> : null}
+    </>
   )
 }
