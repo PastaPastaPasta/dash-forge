@@ -248,6 +248,30 @@ impl LetterKeys {
     }
 }
 
+impl LetterKeys {
+    /// The content fields of `d`, a letter, when it opens for this reader (its author making it
+    /// public, R5); `None` otherwise.
+    pub(super) fn open_fields(
+        &self,
+        kind: ContentKind,
+        d: &FetchedDocument,
+    ) -> Option<crate::private::Fields> {
+        use crate::private::named::{self, LetterOpened};
+        let (reader_id, keys) = self.reader.as_ref().ok()?;
+        let header = crate::keyring::header_of(doc_kind(kind), d)?;
+        let enc = d.field_bytes("enc")?;
+        let owner = self.owners.get(&d.owner_id).map_or(&[][..], Vec::as_slice);
+        let reader = named::Reader {
+            identity_id: *reader_id,
+            keys,
+        };
+        match named::open(&self.repo_id, &header, &enc, owner, &reader) {
+            LetterOpened::Readable(l) => Some(l.fields),
+            _ => None,
+        }
+    }
+}
+
 /// An opened letter's recipients and group, as [`LetterKeys::open`] put them on the document.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LetterInfo {
