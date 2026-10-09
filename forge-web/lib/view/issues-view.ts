@@ -48,6 +48,7 @@ import {
 } from '../repo'
 import { sortTransitions, transitionOf } from '../repo/transitions'
 import { readProvedVerdicts, type ProvedVerdicts } from '../repo/verdicts'
+import { eventMarkOf, type EventMark } from '../repo/head-probe'
 import { closeReasonOf, currentCloseReason, isLocked, stateCode, statusOfCode, type ClosedAs } from '../rules/transition'
 import { DEFAULT_NETWORK, type Network } from '../constants'
 import { compositeOf, docsAt, queryComposite, siblingOf } from '../sdk/composite'
@@ -714,6 +715,11 @@ export interface PullThread {
   readonly moderation?: HiddenItems
   /** What the reader rule read, for a maintainer's Hide / Unhide (`moderationBlocked`). */
   readonly moderationInput?: ModerationInput
+  /**
+   * The newest of the PR's `event` and `authorEvent` documents this read holds (#453): the open
+   * page's head probe asks only for newer ones (`lib/repo/head-probe.ts`). Absent: not probed.
+   */
+  readonly eventMark?: EventMark
 }
 
 /**
@@ -869,6 +875,8 @@ export async function loadPullOrMembersOnly(
     eventValues: eventValues(log),
     ciReruns: log.ciReruns ?? [],
     locked: isLocked(transitions),
+    // Every document read, the ones this reader cannot open too: the probe skips what it has seen.
+    eventMark: eventMarkOf([...eventDocs, ...authorEventDocs]),
   }
 }
 
