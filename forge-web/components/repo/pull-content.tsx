@@ -1517,9 +1517,9 @@ function PullPage({
           <RefreshCw className="h-4 w-4 shrink-0 text-forge-700 dark:text-forge-400" aria-hidden />
           <span className="min-w-[min(16rem,calc(100%-1.75rem))] flex-1">
             <span className="font-medium">New commits were pushed</span>
-            {pull.sourceRefName !== null ? (
+            {newerBranch !== null ? (
               <>
-                {' '}to <span className="font-mono">{shortBranch(pull.sourceRefName)}</span>
+                {' '}to <span className="font-mono">{newerBranch}</span>
               </>
             ) : null}{' '}
             (now at <Oid value={newPush.found.tip} chars={7} copyable={false} />). This page shows <Oid value={pull.headOid} chars={7} copyable={false} />.

@@ -143,10 +143,15 @@ export function headProbeQuery(base: ProbeBase): CompositeQuery | null {
   return compositeOf(page.q, page.limit, subs)
 }
 
+/** The tips (and when their updates were created) the page's branch state came from: none for an unread or unborn branch. */
+function knownTips(known: RefState | null): readonly { readonly oid: string; readonly createdAt: number }[] {
+  if (known?.state === 'resolved') return [known]
+  return known?.state === 'diverged' ? known.heads : []
+}
+
 /** When the newest update the page's branch state came from was created (0: none known). */
 function knownAt(known: RefState | null): number {
-  if (known?.state === 'resolved') return known.createdAt
-  return known?.state === 'diverged' ? Math.max(0, ...known.heads.map((h) => h.createdAt)) : 0
+  return Math.max(0, ...knownTips(known).map((t) => t.createdAt))
 }
 
 const isZero = (oid: string): boolean => /^0*$/.test(oid)
@@ -202,9 +207,7 @@ function newBranchTip(base: ProbeBase, rows: readonly PlainDocument[]): { tip: s
   const tip = byteFieldToHex(latest, 'newOid').toLowerCase()
   const at = num(latest, '$createdAt')
   if (base.announced?.has(id) === true || isZero(tip) || same(tip, base.headOid)) return null
-  const known = base.branch?.known ?? null
-  if (known?.state === 'resolved' && (same(known.oid, tip) || at <= known.createdAt)) return null
-  if (known?.state === 'diverged' && known.heads.some((h) => same(h.oid, tip) || at <= h.createdAt)) return null
+  if (knownTips(base.branch?.known ?? null).some((t) => same(t.oid, tip) || at <= t.createdAt)) return null
   return { tip, at, id }
 }
 
