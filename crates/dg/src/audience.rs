@@ -116,7 +116,11 @@ pub fn sealed_rows_line(
 }
 
 /// A name for `id`: `@name` when `names` has its DPNS name, "you" for `me`, else the id.
-fn person(id: &str, me: Option<&str>, names: &std::collections::BTreeMap<String, String>) -> String {
+fn person(
+    id: &str,
+    me: Option<&str>,
+    names: &std::collections::BTreeMap<String, String>,
+) -> String {
     if Some(id) == me {
         return "you".to_string();
     }
@@ -144,7 +148,12 @@ pub fn letter_to(
     let mut others: Vec<&String> = recipients.iter().skip(1).collect();
     // "you" last, as the web says it
     others.sort_by_key(|id| Some(id.as_str()) == me);
-    let listed = and_list(&others.iter().map(|id| person(id, me, names)).collect::<Vec<_>>());
+    let listed = and_list(
+        &others
+            .iter()
+            .map(|id| person(id, me, names))
+            .collect::<Vec<_>>(),
+    );
     let listed = if listed.is_empty() {
         "nobody else".to_string()
     } else {
@@ -182,7 +191,11 @@ pub async fn sent_lines(client: &PlatformClient, sent: &SentLetter) -> Vec<Strin
         );
         out.push(format!(
             "  note: {who} {} no encryption key and didn't receive it",
-            if sent.skipped.len() == 1 { "has" } else { "have" }
+            if sent.skipped.len() == 1 {
+                "has"
+            } else {
+                "have"
+            }
         ));
     }
     out
@@ -367,10 +380,7 @@ pub fn hidden_line(
         return None;
     }
     let what = if letter {
-        format!(
-            "{} to specific people",
-            crate::fmt::plural(n, noun)
-        )
+        format!("{} to specific people", crate::fmt::plural(n, noun))
     } else {
         crate::fmt::plural(n, &format!("members-only {noun}"))
     };
@@ -414,10 +424,7 @@ pub fn sealed_noun(m: &MembersOnly, noun: &str) -> String {
 /// One line for a members-only issue or PR this reader cannot open (DESIGN §10, D14: its
 /// number is public anyway): "#3 · members-only issue by @alice · open".
 pub fn target_line(number: u32, noun: &str, m: &MembersOnly, who: &str, state: &str) -> String {
-    format!(
-        "#{number} · {} by {who} · {state}",
-        sealed_noun(m, noun)
-    )
+    format!("#{number} · {} by {who} · {state}", sealed_noun(m, noun))
 }
 
 /// The state word of a target from its transitions (public even when its text is not).

@@ -2404,7 +2404,11 @@ fn letter_refused(
     use crate::rules::letters::{LetterRefusal, MAX_RECIPIENTS};
     let who = |ids: &[String]| {
         ids.iter()
-            .map(|id| names.get(id).map_or_else(|| id.clone(), |n| format!("@{n}")))
+            .map(|id| {
+                names
+                    .get(id)
+                    .map_or_else(|| id.clone(), |n| format!("@{n}"))
+            })
             .collect::<Vec<_>>()
             .join(", ")
     };
@@ -3318,7 +3322,9 @@ impl<'a> Collab<'a> {
     /// [`Self::target_audience`] of a public repository's target as a comment's or review's
     /// parent ([`ParentAudience`]).
     async fn target_parent(&self, repo: &RepoRef, target_id: &str) -> Result<ParentAudience> {
-        Ok(ParentAudience::of(&self.target_doc_by_id(repo, target_id).await?.1))
+        Ok(ParentAudience::of(
+            &self.target_doc_by_id(repo, target_id).await?.1,
+        ))
     }
 
     /// `repo`'s issue or patch `target_id`, as stored, with its kind, failing closed
@@ -3421,7 +3427,9 @@ impl<'a> Collab<'a> {
     ) -> Result<BTreeMap<String, FieldValue>> {
         if audience == Audience::SpecificPeople {
             let letter = letter.ok_or_else(|| {
-                Error::Config("a message to specific people was written without its recipients".into())
+                Error::Config(
+                    "a message to specific people was written without its recipients".into(),
+                )
             })?;
             let owner = platform::decode_identifier(&self.signer_id()?)?;
             let sealed = private::seal_letter_props(
@@ -3671,7 +3679,6 @@ impl<'a> Collab<'a> {
             parents: ctx.parents.clone(),
             members_only_parent: ctx.members_only_parent,
         };
-        let core = repo.forge().core.clone();
         let mut keys: BTreeMap<String, [u8; 33]> = BTreeMap::new();
         let refused = |r| async move {
             let ids: Vec<String> = match &r {
@@ -3680,7 +3687,10 @@ impl<'a> Collab<'a> {
                 | letters::LetterRefusal::NotMembers { people } => people.clone(),
                 _ => Vec::new(),
             };
-            let names = self.client.dpns_first_names(ids.iter().map(String::as_str)).await;
+            let names = self
+                .client
+                .dpns_first_names(ids.iter().map(String::as_str))
+                .await;
             letter_refused(repo, request.as_ref(), r, &names)
         };
         let candidates = match letters::candidates(&input) {
@@ -3688,14 +3698,7 @@ impl<'a> Collab<'a> {
             Err(r) => return Err(refused(r).await),
         };
         for c in candidates.iter().filter(|c| **c != me) {
-            let found = match self.client.fetch_identity(c).await {
-                Ok(identity) => identity.public_keys(),
-                Err(Error::NotFound) => Vec::new(),
-                Err(e) => return Err(e),
-            };
-            match crate::keyring::recipient_key(&found, &core)
-                .and_then(|k| <[u8; 33]>::try_from(k.public_key.as_slice()).ok())
-            {
+            match self.recipient_key_of(repo, c).await? {
                 Some(pk) => {
                     keys.insert(c.clone(), pk);
                 }
@@ -3860,7 +3863,12 @@ impl<'a> Collab<'a> {
             if is_letter(&d) {
                 let letters = self.letter_keys(repo, &[&d]).await?;
                 return Ok(Some(
-                    match open_with(&DocKeys::None(Unopened::NotARecipient), letters.as_ref(), kind.content_kind(), d) {
+                    match open_with(
+                        &DocKeys::None(Unopened::NotARecipient),
+                        letters.as_ref(),
+                        kind.content_kind(),
+                        d,
+                    ) {
                         Ok(d) => TargetRead::Readable(d),
                         Err(m) => TargetRead::MembersOnly(m),
                     },
@@ -3875,7 +3883,12 @@ impl<'a> Collab<'a> {
         if is_letter(&d) {
             let letters = self.letter_keys(repo, &[&d]).await?;
             return Ok(Some(
-                match open_with(&DocKeys::None(Unopened::NotARecipient), letters.as_ref(), kind.content_kind(), d) {
+                match open_with(
+                    &DocKeys::None(Unopened::NotARecipient),
+                    letters.as_ref(),
+                    kind.content_kind(),
+                    d,
+                ) {
                     Ok(d) => TargetRead::Readable(d),
                     Err(m) => TargetRead::MembersOnly(m),
                 },
@@ -4173,7 +4186,8 @@ impl<'a> Collab<'a> {
             } else {
                 audience
             };
-            self.seal_for(repo, DocKind::Event, props, audience, None).await?
+            self.seal_for(repo, DocKind::Event, props, audience, None)
+                .await?
         } else {
             props
         };
@@ -6562,7 +6576,9 @@ impl<'a> Collab<'a> {
             .ok_or_else(|| {
                 Error::from(UserError::new(
                     codes::NOT_A_KEY_HOLDER,
-                    format!("this {doc_type} cannot be read with your keys, so it cannot be edited"),
+                    format!(
+                        "this {doc_type} cannot be read with your keys, so it cannot be edited"
+                    ),
                 ))
             })?;
         let info = LetterInfo::of(&opened).expect("an opened letter");
@@ -6597,20 +6613,12 @@ impl<'a> Collab<'a> {
                 "edit this {doc_type}"
             )));
         };
-        let core = repo.forge().core.clone();
         let mut recipients = vec![crate::private::named::Recipient {
             identity_id: platform::decode_identifier(&identity.id())?,
             public_key: sender.public_key(),
         }];
         for r in info.recipients.iter().skip(1) {
-            let found = match self.client.fetch_identity(r).await {
-                Ok(i) => i.public_keys(),
-                Err(Error::NotFound) => Vec::new(),
-                Err(e) => return Err(e),
-            };
-            let Some(public_key) = crate::keyring::recipient_key(&found, &core)
-                .and_then(|k| <[u8; 33]>::try_from(k.public_key.as_slice()).ok())
-            else {
+            let Some(public_key) = self.recipient_key_of(repo, r).await? else {
                 return Err(UserError::new(
                     codes::NO_ENCRYPTION_KEY,
                     format!("{r} can't receive it any more, so this {doc_type} can't be edited"),
@@ -6650,6 +6658,18 @@ impl<'a> Collab<'a> {
             .map(|k| (k.to_string(), sealed.get(k).cloned()))
             .collect();
         Ok(clear_plaintext(kind, stored, changes))
+    }
+
+    /// `identity`'s highest-id usable ENCRYPTION key (§4.1 writer rule), `None` when it has
+    /// none (or does not exist).
+    async fn recipient_key_of(&self, repo: &RepoRef, identity: &str) -> Result<Option<[u8; 33]>> {
+        let found = match self.client.fetch_identity(identity).await {
+            Ok(i) => i.public_keys(),
+            Err(Error::NotFound) => Vec::new(),
+            Err(e) => return Err(e),
+        };
+        Ok(crate::keyring::recipient_key(&found, &repo.forge().core)
+            .and_then(|k| <[u8; 33]>::try_from(k.public_key.as_slice()).ok()))
     }
 
     /// Refuse, before anything is signed, an edit of a document the signer does not own.
@@ -9355,12 +9375,20 @@ mod mixed_read_tests {
             reader: Ok((id, vec![key(k)])),
             owners: owners.clone(),
         };
-        let opened = keys_as(bob, 2).open(ContentKind::Comment, d.clone()).unwrap();
-        assert_eq!(opened.field_str("body").as_deref(), Some("for the maintainers"));
+        let opened = keys_as(bob, 2)
+            .open(ContentKind::Comment, d.clone())
+            .unwrap();
+        assert_eq!(
+            opened.field_str("body").as_deref(),
+            Some("for the maintainers")
+        );
         let info = LetterInfo::of(&opened).unwrap();
         assert_eq!(
             info.recipients,
-            vec![platform::encode_identifier(alice), platform::encode_identifier(bob)]
+            vec![
+                platform::encode_identifier(alice),
+                platform::encode_identifier(bob)
+            ]
         );
         assert_eq!(
             info.group,
@@ -9370,7 +9398,9 @@ mod mixed_read_tests {
         assert_eq!(c.audience, Audience::SpecificPeople);
         assert_eq!(c.letter, Some(info));
         // not one of its people: the count, never the text
-        let m = keys_as(carol, 3).open(ContentKind::Comment, d.clone()).unwrap_err();
+        let m = keys_as(carol, 3)
+            .open(ContentKind::Comment, d.clone())
+            .unwrap_err();
         assert_eq!(
             (m.why, m.audience, m.recipients),
             (Unopened::NotARecipient, Audience::SpecificPeople, Some(2))
@@ -9410,7 +9440,11 @@ mod mixed_read_tests {
         let members: Vec<LetterMember> = (0..22)
             .map(|i| LetterMember {
                 identity: format!("W{i:02}writer"),
-                role: if i < 3 { Role::Maintainer } else { Role::Writer },
+                role: if i < 3 {
+                    Role::Maintainer
+                } else {
+                    Role::Writer
+                },
             })
             .collect();
         let request = LetterRequest {
@@ -9442,7 +9476,12 @@ mod mixed_read_tests {
             request: Some(named.clone()),
             ..input
         };
-        let e = letter_refused(&repo, Some(&named), letters::plan(&input).unwrap_err(), &BTreeMap::new());
+        let e = letter_refused(
+            &repo,
+            Some(&named),
+            letters::plan(&input).unwrap_err(),
+            &BTreeMap::new(),
+        );
         assert!(e.to_string().contains("that's 18 people"), "{e}");
     }
 

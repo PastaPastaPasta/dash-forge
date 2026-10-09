@@ -1041,9 +1041,8 @@ impl Audience {
     #[must_use]
     pub fn fits_under(self, parent: Audience) -> bool {
         match (self, parent) {
-            (_, Audience::Public) => true,
+            (_, Audience::Public) | (Audience::SpecificPeople, Audience::Members) => true,
             (Audience::Public, _) => false,
-            (Audience::SpecificPeople, Audience::Members) => true,
             (child, parent) => child == parent,
         }
     }

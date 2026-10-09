@@ -1995,10 +1995,7 @@ mod tests {
         assert_eq!(ev.payload[RECIPIENTS_KEY], 3);
         assert_eq!(ev.payload["issue"][RECIPIENTS_KEY], 3);
         assert_content_free(&ev, &letter);
-        let issues = targets(
-            [1; 32],
-            TargetInfo::from_issue(&issue, Baseline::Beginning),
-        );
+        let issues = targets([1; 32], TargetInfo::from_issue(&issue, Baseline::Beginning));
         let c = with_as_member(sealed(
             "c-letter",
             MEMBER,

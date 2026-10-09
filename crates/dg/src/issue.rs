@@ -482,7 +482,12 @@ async fn list(ctx: &Ctx, args: &IssueListArgs) -> Result<()> {
                     }
                     ListRow::Sealed(x) => println!(
                         "{}",
-                        sealed_line(x, *pinned, &crate::audience::at_name(&x.placeholder.author, &names), &hid.unwrap_or_default())
+                        sealed_line(
+                            x,
+                            *pinned,
+                            &crate::audience::at_name(&x.placeholder.author, &names),
+                            &hid.unwrap_or_default()
+                        )
                     ),
                 }
             }
@@ -882,7 +887,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<(
                             String::new()
                         };
                         if let Some(r) = &c.reply_to {
-                            mark.push_str(&format!(" · reply to {r}"));
+                            mark = format!("{mark} · reply to {r}");
                         }
                         match moderation.item(&c.document_id) {
                             Some(h) if !show_hidden => println!(
@@ -1146,8 +1151,7 @@ async fn create(
     s.refuse_if_banned("issue not created").await?;
     // One `Collab` for the command: the audience it asks for applies to every write it makes.
     let collab = s.collab();
-    let audience =
-        crate::audience::requested(&s.client, &collab, &s.repo, ask, None, None).await?;
+    let audience = crate::audience::requested(&s.client, &collab, &s.repo, ask, None, None).await?;
     let planned = crate::long_body::Planned::new(
         &s.repo,
         forge_core::collab::long_body::BodyField::Issue { title },
@@ -1181,7 +1185,7 @@ async fn create(
     };
     let spent = s.spent_since(before).await;
     let price = ctx.usd_price();
-    let (letter, sent) = crate::audience::posted(ctx, &s.client, &collab).await;
+    let (letter, sent_to) = crate::audience::posted(ctx, &s.client, &collab).await;
 
     ctx.emit(
         json!({
@@ -1208,7 +1212,7 @@ async fn create(
                 s.repo.display(),
                 cost_line(spent, price)
             );
-            for line in &sent {
+            for line in &sent_to {
                 println!("{line}");
             }
         },
@@ -1413,7 +1417,7 @@ async fn comment(
             )
         })
         .await?;
-    let (letter, sent) = crate::audience::posted(ctx, &s.client, &collab).await;
+    let (letter, sent_to) = crate::audience::posted(ctx, &s.client, &collab).await;
     ctx.emit(
         json!({ "status": "commented", "issue": number, "commentId": id, "replyTo": reply_to, "audience": audience, "letter": letter, "cost": cost_json(spent, price) }),
         || {
@@ -1422,7 +1426,7 @@ async fn comment(
                 crate::audience::suffix(&s.repo, audience),
                 cost_line(spent, price)
             );
-            for line in &sent {
+            for line in &sent_to {
                 println!("{line}");
             }
         },

@@ -354,6 +354,7 @@ enum Mode {
 }
 
 /// `dg pr review`.
+#[allow(clippy::too_many_lines)] // one flow: the mode, the draft, the audience, then the write
 pub async fn review(ctx: &Ctx, a: &PrReviewArgs) -> Result<()> {
     let mode = if a.pending {
         Mode::Pending
@@ -430,28 +431,7 @@ pub async fn review(ctx: &Ctx, a: &PrReviewArgs) -> Result<()> {
     // members key (wider than its people) or in the clear (DESIGN §4.2, letters never at rest)
     let letter = audience == Audience::SpecificPeople;
     if letter {
-        if matches!(mode, Mode::Pending) {
-            return Err(UserError::new(
-                codes::USAGE,
-                "a review for specific people can't be kept as a pending review",
-            )
-            .cause("a pending review is kept on this computer, and a message to specific people is never stored")
-            .fix("submit it in one command: --approve, --request-changes or --comment, with its inline comments")
-            .note("nothing was written")
-            .into());
-        }
-        if existing.is_some() {
-            return Err(UserError::new(
-                codes::USAGE,
-                format!("you have a pending review on PR #{}", a.number),
-            )
-            .fix(format!(
-                "submit it first (`dg pr review {} {} --comment`) or discard it (`--discard`), then send this one",
-                a.repo, a.number
-            ))
-            .note("nothing was written")
-            .into());
-        }
+        refuse_kept_letter(a, matches!(mode, Mode::Pending), existing.is_some())?;
     }
     let sealed = audience != Audience::Public;
     if let Some(d) = existing
@@ -486,6 +466,34 @@ pub async fn review(ctx: &Ctx, a: &PrReviewArgs) -> Result<()> {
         Mode::Pending => pending(ctx, a, &view, &file, existing, shown),
         Mode::Submit(v) => submit(ctx, a, (&s, &collab), &view, &file, existing, v, shown).await,
     }
+}
+
+/// A review for specific people is never kept on disk: refused as a pending review (`pending`),
+/// and while another review is pending (`existing`), which it would be mixed with.
+fn refuse_kept_letter(a: &PrReviewArgs, pending: bool, existing: bool) -> Result<()> {
+    if pending {
+        return Err(UserError::new(
+            codes::USAGE,
+            "a review for specific people can't be kept as a pending review",
+        )
+        .cause("a pending review is kept on this computer, and a message to specific people is never stored")
+        .fix("submit it in one command: --approve, --request-changes or --comment, with its inline comments")
+        .note("nothing was written")
+        .into());
+    }
+    if existing {
+        return Err(UserError::new(
+            codes::USAGE,
+            format!("you have a pending review on PR #{}", a.number),
+        )
+        .fix(format!(
+            "submit it first (`dg pr review {} {} --comment`) or discard it (`--discard`), then send this one",
+            a.repo, a.number
+        ))
+        .note("nothing was written")
+        .into());
+    }
+    Ok(())
 }
 
 /// Who a review is for, and the repository it is in: what its output names.
@@ -873,7 +881,7 @@ async fn submit(
     let counts = role.is_some_and(forge_core::rules::v2::Role::is_approver);
     let mut body = body;
     body["counts"] = json!(counts);
-    let (letter, sent) = crate::audience::posted(ctx, &s.client, collab).await;
+    let (letter, sent_to) = crate::audience::posted(ctx, &s.client, collab).await;
     body["letter"] = letter;
     ctx.emit(body, || {
         println!(
@@ -885,8 +893,8 @@ async fn submit(
             crate::fmt::plural(n, "inline comment"),
             cost_line(spent, price)
         );
-        if !sent.is_empty() {
-            for line in &sent {
+        if !sent_to.is_empty() {
+            for line in &sent_to {
                 println!("{line}");
             }
             println!("  the verdict counts for everyone");
@@ -1114,7 +1122,7 @@ pub async fn comment(ctx: &Ctx, a: &PrCommentArgs) -> Result<()> {
         )
         .await?;
     let location = spec.as_ref().map(InlineSpec::location);
-    let (letter, sent) = crate::audience::posted(ctx, &s.client, &collab).await;
+    let (letter, sent_to) = crate::audience::posted(ctx, &s.client, &collab).await;
     ctx.emit(
         json!({
             "status": "commented",
@@ -1138,7 +1146,7 @@ pub async fn comment(ctx: &Ctx, a: &PrCommentArgs) -> Result<()> {
                 short(&id),
                 crate::audience::suffix(&s.repo, audience)
             );
-            for line in &sent {
+            for line in &sent_to {
                 println!("{line}");
             }
         },

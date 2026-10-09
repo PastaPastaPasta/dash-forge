@@ -113,7 +113,9 @@ pub fn seal_letter_props(
         crate::private::named::seal(repo_id, sender, sender_key_id, h, f, recipients, group)
     })
     .map_err(|e| match e {
-        Error::User(u) if u.message.contains(TOO_LARGE_MARK) => letter_too_large(kind, recipients.len()),
+        Error::User(u) if u.message.contains(TOO_LARGE_MARK) => {
+            letter_too_large(kind, recipients.len())
+        }
         other => other,
     })
 }
@@ -145,9 +147,14 @@ pub fn seal_members_props(
     owner: [u8; 32],
     props: BTreeMap<String, FieldValue>,
 ) -> Result<BTreeMap<String, FieldValue>> {
-    seal_props_inner(epoch_hashing(lane.write_keys()), kind, owner, props, true, |h, f| {
-        lane.seal_doc(h, f)
-    })
+    seal_props_inner(
+        epoch_hashing(lane.write_keys()),
+        kind,
+        owner,
+        props,
+        true,
+        |h, f| lane.seal_doc(h, f),
+    )
 }
 
 /// [`reseal_edit`] for a members-only issue or comment of a public repository: the whole
@@ -392,7 +399,10 @@ pub fn open_doc(opened: Opened, d: FetchedDocument) -> Option<FetchedDocument> {
 /// put back in place, and its recipients and group in the `$letterTo` / `$letterGroup` fields
 /// ([`super::v2::LETTER_TO_FIELD`]) the views read.
 #[must_use]
-pub fn open_letter_doc(letter: crate::private::named::Letter, d: FetchedDocument) -> FetchedDocument {
+pub fn open_letter_doc(
+    letter: crate::private::named::Letter,
+    d: FetchedDocument,
+) -> FetchedDocument {
     let crate::private::named::Letter {
         fields,
         recipients,

@@ -850,7 +850,12 @@ pub enum IssueCommand {
         /// something was posted, by whom, when, and to how many people). Each needs an encryption
         /// key. In a conversation for specific people, replies go to its people anyway and `--to`
         /// adds people (they read from that reply on).
-        #[arg(long, value_name = "WHO", value_delimiter = ',', conflicts_with = "members")]
+        #[arg(
+            long,
+            value_name = "WHO",
+            value_delimiter = ',',
+            conflicts_with = "members"
+        )]
         to: Vec<String>,
     },
     /// Edit an issue: its title and body (its author only), labels, assignees and milestone
@@ -899,7 +904,12 @@ pub enum IssueCommand {
         /// something was posted, by whom, when, and to how many people). Each needs an encryption
         /// key. In a conversation for specific people, replies go to its people anyway and `--to`
         /// adds people (they read from that reply on).
-        #[arg(long, value_name = "WHO", value_delimiter = ',', conflicts_with = "members")]
+        #[arg(
+            long,
+            value_name = "WHO",
+            value_delimiter = ',',
+            conflicts_with = "members"
+        )]
         to: Vec<String>,
     },
     /// Edit one of your comments (on an issue or a PR): its body only. In a private repo the
@@ -1561,7 +1571,12 @@ pub struct PrReviewArgs {
     /// something was posted, by whom, when, and to how many people). Each needs an encryption
     /// key. In a conversation for specific people, replies go to its people anyway and `--to`
     /// adds people (they read from that reply on).
-    #[arg(long, value_name = "WHO", value_delimiter = ',', conflicts_with = "members")]
+    #[arg(
+        long,
+        value_name = "WHO",
+        value_delimiter = ',',
+        conflicts_with = "members"
+    )]
     pub to: Vec<String>,
     /// The summary and the inline comments, in order.
     #[command(flatten)]
@@ -1611,7 +1626,12 @@ pub struct PrCommentArgs {
     /// something was posted, by whom, when, and to how many people). Each needs an encryption
     /// key. In a conversation for specific people, replies go to its people anyway and `--to`
     /// adds people (they read from that reply on).
-    #[arg(long, value_name = "WHO", value_delimiter = ',', conflicts_with = "members")]
+    #[arg(
+        long,
+        value_name = "WHO",
+        value_delimiter = ',',
+        conflicts_with = "members"
+    )]
     pub to: Vec<String>,
 }
 

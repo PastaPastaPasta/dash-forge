@@ -1237,16 +1237,15 @@ async fn view(
         .filter(|c| c.letter.is_none() && crate::audience::marked(handle, c.audience))
         .map(|c| c.document_id.as_str())
         .collect();
-    let letters: std::collections::BTreeMap<&str, &forge_core::collab::v2::LetterInfo> =
-        comments
-            .iter()
-            .filter_map(|c| c.letter.as_ref().map(|l| (c.document_id.as_str(), l)))
-            .chain(
-                reviews
-                    .iter()
-                    .filter_map(|r| r.letter.as_ref().map(|l| (r.document_id.as_str(), l))),
-            )
-            .collect();
+    let letters: std::collections::BTreeMap<&str, &forge_core::collab::v2::LetterInfo> = comments
+        .iter()
+        .filter_map(|c| c.letter.as_ref().map(|l| (c.document_id.as_str(), l)))
+        .chain(
+            reviews
+                .iter()
+                .filter_map(|r| r.letter.as_ref().map(|l| (r.document_id.as_str(), l))),
+        )
+        .collect();
     let printed_conv = if (show_hidden || moderation.items.is_empty()) && incomplete.is_empty() {
         None
     } else {
