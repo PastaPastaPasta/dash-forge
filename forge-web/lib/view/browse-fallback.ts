@@ -358,6 +358,9 @@ async function runFallback(
     ).values(),
   ]
   for (const u of unavailable) {
+    // A repository made public's pack skipped on purpose is no storage failure (R9): the trust
+    // panel's content row does not count it as missing.
+    if (u.skipped !== undefined) continue
     noteContentCheck(repoKey(repo), {
       unavailablePack: u.packHash,
       corruptMirror: u.corrupt,

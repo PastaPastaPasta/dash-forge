@@ -112,9 +112,10 @@ describe('New-issue security hint', () => {
     expect(host.querySelector('[data-testid="security-hint-link"]')).toBeNull()
   })
 
-  it('always shows, for a private repo too, without reading it', async () => {
+  it('shows nothing on a private repo, where issues are not public, and reads nothing', async () => {
     await render(<SecurityHint home={home('private', 'hint-private')} addr={addr} enabled />)
-    expect(text()).toBe('Issues are public and permanent. Reporting a vulnerability? Contact a maintainer privately.')
+    expect(text()).toBe('')
+    expect(host.querySelector('[data-testid="security-hint"]')).toBeNull()
     expect(find).not.toHaveBeenCalled()
   })
 })

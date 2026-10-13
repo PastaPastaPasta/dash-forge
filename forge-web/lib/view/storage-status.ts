@@ -10,7 +10,7 @@ import { z } from 'zod'
 import { IPFS_GATEWAYS } from '../constants'
 import { isPublicHttpsUrl } from '../net'
 import type { UnavailablePack } from './browse-source'
-import { urlHost } from './format'
+import { plural, urlHost } from './format'
 
 // ---------------------------------------------------------------------------
 // User gateways (localStorage; a list of public URLs, nothing secret)
@@ -263,13 +263,27 @@ function reasonsByHost(pack: UnavailablePack): Map<string, string> {
 
 
 /**
+ * The packs of a repository made public that a reader skips on purpose, in words (R9): `membersOnly`
+ * stored while the repo was private under a key that wasn't made public, `otherFormat` in a format a
+ * newer version of Forge writes. Null when there are none. Never a caution: a repo made public
+ * always keeps some history members-only.
+ */
+export function skippedPacksText(membersOnly: number, otherFormat: number): string | null {
+  const parts = [
+    membersOnly > 0 ? `${plural(membersOnly, 'members-only pack')} from before this repo was public` : '',
+    otherFormat > 0 ? `${plural(otherFormat, 'pack')} stored in a format a newer version of Forge writes` : '',
+  ].filter((p) => p !== '')
+  return parts.length === 0 ? null : parts.join(' and ')
+}
+
+/**
  * Where one pack was looked for and why each place failed. Order: Platform chunks, then
  * mirrors, then each IPFS gateway by name (`ipfs gateway ipfs.io (down: HTTP 429)`), so a
  * reader can tell a retired gateway from content no gateway can find.
  */
 export function describePack(pack: UnavailablePack, gateways: readonly string[]): string[] {
   // Skipped, never fetched (a repository made public's pack this reader cannot open): why.
-  if (pack.skipped === true) return [pack.reason]
+  if (pack.skipped !== undefined) return [pack.reason]
   const gatewayHosts = new Set(gateways.map(urlHost))
   const places: string[] = []
   const ipfs: string[] = []

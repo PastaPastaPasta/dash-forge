@@ -550,9 +550,21 @@ export function loadPublishedSessionCached(sdk: EvoSDK, repo: RepoRef, network: 
   )
 }
 
+/** A cached session still within its TTL and not closed. */
+const fresh = (hit: { at: number; session?: PrivateSession }): boolean => Date.now() - hit.at < SESSION_TTL_MS && hit.session?.closed !== true
+
+/**
+ * The session {@link loadPublishedSessionCached} would hand out at once: one already read, still
+ * fresh and open; undefined when it would read. A page mounted again paints with it (R9).
+ */
+export function peekPublishedSession(repo: RepoRef, network: Network): PrivateSession | undefined {
+  const hit = sessionCache.get(cacheKey(network, withoutSessions(repo), `${NOBODY}:published`))
+  return hit !== undefined && fresh(hit) ? hit.session : undefined
+}
+
 function cachedSession(key: string, load: () => Promise<PrivateSession>): Promise<PrivateSession> {
   const hit = sessionCache.get(key)
-  if (hit !== undefined && Date.now() - hit.at < SESSION_TTL_MS && hit.session?.closed !== true) return hit.promise
+  if (hit !== undefined && fresh(hit)) return hit.promise
   const promise = load()
   const entry: { at: number; promise: Promise<PrivateSession>; session?: PrivateSession } = { at: Date.now(), promise }
   sessionCache.set(key, entry)
