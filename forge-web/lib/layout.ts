@@ -14,7 +14,7 @@
  * {@link contractKindOfType}; without them it answers the three-contract home.
  */
 
-import type { ForgeContractKind, ForgeIds } from './deployments'
+import { contractKind, type ForgeContractKind, type ForgeIds } from './deployments'
 
 /** Each forge-v2 document type's contract. */
 const CONTRACT_OF_TYPE: Readonly<Record<string, ForgeContractKind>> = {
@@ -131,7 +131,7 @@ export function withVis(visibility: 'public' | 'private', documentType: string, 
  * carry a valid `vis`.
  */
 export function rc1WriteProblem(forge: ForgeIds | null, contractId: string, documentType: string, data: Readonly<Record<string, unknown>>): string | null {
-  if (forge === null || ![forge.core, forge.collab, forge.community, forge.meta].includes(contractId)) return null
+  if (forge === null || contractKind(forge, contractId) === null) return null
   const kind = contractKindOfType(documentType, forge)
   // copy-lint-ignore: a developer error naming a schema type, caught by tests before release
   if (kind === null) return `no Forge contract holds the document type ${JSON.stringify(documentType)}`

@@ -28,7 +28,7 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import type { Network } from '../constants'
-import { contractKind, type ForgeContractKind, type ForgeIds } from '../deployments'
+import { contractKind, forgeContractIds, type ForgeContractKind, type ForgeIds } from '../deployments'
 import { authSdk, type WasmKey } from '../sdk/facade'
 import type { KeyLimits } from '../view/funds'
 import { hash160 } from './asset-lock'
@@ -66,9 +66,9 @@ export function keyScope(k: Pick<WasmKey, 'contractBounds'>, forge: ForgeIds): K
   if (bounds === undefined || bounds === null) return { core: true, collab: true, community: true, meta: true, unbounded: true }
   if (bounds.$type === 'contractGroup') return bounds.id === forge.group ? { core: true, collab: true, community: true, meta: true, unbounded: false } : null
   if (bounds.$type === 'singleContract') {
-    const one = { core: bounds.id === forge.core, collab: bounds.id === forge.collab, community: bounds.id === forge.community, meta: bounds.id === forge.meta }
-    if (!(one.core || one.collab || one.community || one.meta)) return null
-    return { ...one, meta: one.meta || forge.meta === undefined, unbounded: false }
+    if (!forgeContractIds(forge).includes(bounds.id)) return null
+    // forge-meta is covered on a three-contract set: its types sit in the other three.
+    return { core: bounds.id === forge.core, collab: bounds.id === forge.collab, community: bounds.id === forge.community, meta: bounds.id === forge.meta || forge.meta === undefined, unbounded: false }
   }
   return null
 }

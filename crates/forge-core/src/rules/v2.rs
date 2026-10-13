@@ -442,7 +442,7 @@ pub struct PackCopy {
 
 /// Maintainers' copies, then other current members' (any human `writer` document), then
 /// bots' (review-rev41 M-4: after members'), then everyone else's.
-fn role_rank(role: Option<Role>) -> u8 {
+pub(super) fn role_rank(role: Option<Role>) -> u8 {
     match role {
         Some(Role::Maintainer) => 0,
         Some(Role::Writer | Role::Triage | Role::Reader) => 1,

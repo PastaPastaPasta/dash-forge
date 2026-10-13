@@ -154,7 +154,7 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
     if (!keyCheck.settled) return
     setPickedAdd(null)
     if (keyCheck.data === true && guard.check(addMemberCost(role), addContracts(repo, role))) setAdding(true)
-  }, [pickedAdd, trimmed, keyCheck.settled, keyCheck.data, guard, role])
+  }, [pickedAdd, trimmed, keyCheck.settled, keyCheck.data, guard, role, repo])
 
   const removalPlan = useMemo((): { plan: RotationPlan | null; error: string | null } => {
     if (removing === null || identity === null || write.context === null) return { plan: null, error: null }

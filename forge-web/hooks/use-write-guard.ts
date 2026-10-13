@@ -72,7 +72,8 @@ export function useWriteGuard(): WriteGuard {
         openLogin(undefined, undefined, action ? { action, ...(credits > 0 ? { credits } : {}) } : undefined)
         return false
       }
-      const ungranted = grants ? ([contract].flat() as ForgeContractKind[]).find((k) => !grants[k]) : undefined
+      const kinds = typeof contract === 'string' ? [contract] : contract
+      const ungranted = grants ? kinds.find((k) => !grants[k]) : undefined
       if (ungranted !== undefined) {
         // A reloaded tab holds the main key only: this browser may already hold that grant,
         // sealed with the vault. Unlock first (a new wallet grant would register a key this tab

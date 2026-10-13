@@ -807,6 +807,16 @@ pub fn trusted_member(roles: &RoleMap, id: &str) -> bool {
     roles.get(id).is_some_and(|r| *r != Role::Bot)
 }
 
+/// The ids of the current members that are not bots ([`trusted_member`]).
+#[must_use]
+pub fn trusted_members(roles: &RoleMap) -> Vec<String> {
+    roles
+        .keys()
+        .filter(|id| trusted_member(roles, id))
+        .cloned()
+        .collect()
+}
+
 /// What [`RepoService::open_or_skip`] does with one artifact.
 #[derive(Debug)]
 pub enum ArtifactRead {
@@ -2246,11 +2256,7 @@ impl<'a> RepoService<'a> {
             return Err(None);
         }
         let hash = hex::encode(manifest.pack_hash);
-        let members: Vec<String> = roles
-            .keys()
-            .filter(|id| trusted_member(roles, id))
-            .cloned()
-            .collect();
+        let members = trusted_members(roles);
         // forge-core's records, or forge-meta's on a four-contract set (D44)
         let listed = async {
             let contract = self

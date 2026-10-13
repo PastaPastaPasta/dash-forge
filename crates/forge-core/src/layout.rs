@@ -119,6 +119,16 @@ impl ForgeContract {
         }
     }
 
+    /// [`Self::of`] on a network with (`has_meta`) or without forge-meta: [`META_TYPES`] are
+    /// forge-meta's on a four-contract set (D44).
+    pub fn in_layout(doc_type: &str, has_meta: bool) -> Option<Self> {
+        if has_meta && META_TYPES.contains(&doc_type) {
+            Some(Self::Meta)
+        } else {
+            Self::of(doc_type)
+        }
+    }
+
     /// The contract's name in the deployment file (`forge-core`, …).
     pub fn name(self) -> &'static str {
         match self {
@@ -146,10 +156,7 @@ impl ForgeIds {
     /// the deployment has it (D44), else the three-contract home ([`ForgeContract::of`]).
     /// `None` for a type no forge-v2 contract defines.
     pub fn contract_of(&self, doc_type: &str) -> Option<ForgeContract> {
-        if self.meta.is_some() && META_TYPES.contains(&doc_type) {
-            return Some(ForgeContract::Meta);
-        }
-        ForgeContract::of(doc_type)
+        ForgeContract::in_layout(doc_type, self.meta.is_some())
     }
 
     /// The base58 id of the contract that holds `doc_type`, or `None` for an unknown type.

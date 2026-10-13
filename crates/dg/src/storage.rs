@@ -1527,11 +1527,7 @@ async fn mirror_status(
         let contract = client
             .fetch_contract(repo.forge().home(forge_core::pack_mirror::DOC_PACK_MIRROR))
             .await?;
-        let members: Vec<String> = roles
-            .keys()
-            .filter(|id| forge_core::repo::trusted_member(roles, id))
-            .cloned()
-            .collect();
+        let members = forge_core::repo::trusted_members(roles);
         let hash = hex::encode(m.pack_hash);
         forge_core::pack_mirror::mirrors_of(client, &contract, repo, &hash, &members).await
     }

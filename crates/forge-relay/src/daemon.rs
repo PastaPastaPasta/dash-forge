@@ -126,17 +126,13 @@ impl Contracts {
     /// `event` and `authorEvent` moved to forge-community, and the seven forge-meta types to
     /// forge-meta when the network has it.
     fn of(&self, doc_type: &str) -> &LoadedContract {
-        let contract = ForgeContract::of(doc_type);
+        let contract = ForgeContract::in_layout(doc_type, self.meta.is_some());
         debug_assert!(contract.is_some(), "{doc_type} is no RC1 type");
-        if let Some(meta) = &self.meta {
-            if forge_core::layout::META_TYPES.contains(&doc_type) {
-                return meta;
-            }
-        }
         match contract {
             Some(ForgeContract::Collab) => &self.collab,
             Some(ForgeContract::Community) => &self.community,
-            Some(ForgeContract::Core | ForgeContract::Meta) | None => &self.core,
+            Some(ForgeContract::Meta) => self.meta.as_ref().unwrap_or(&self.core),
+            Some(ForgeContract::Core) | None => &self.core,
         }
     }
 }

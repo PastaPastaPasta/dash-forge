@@ -110,10 +110,7 @@ export function contractKind(forge: ForgeIds, contractId: string | undefined): F
 
 /** Forge's contract ids on `forge`: three, or four with forge-meta (parity with forge-core `ForgeIds::all`). */
 export function forgeContractIds(forge: ForgeIds): string[] {
-  return FORGE_CONTRACT_KINDS.flatMap((k) => {
-    const id = forge[k]
-    return id === undefined ? [] : [id]
-  })
+  return FORGE_CONTRACT_KINDS.map((k) => forge[k]).filter((id): id is string => id !== undefined)
 }
 
 function registeredId(record: ContractRecord | undefined): string | null {

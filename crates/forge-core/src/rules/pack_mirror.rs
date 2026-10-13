@@ -22,7 +22,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::v2::{Role, Visibility};
+use super::v2::{role_rank, Role, Visibility};
 
 /// `kind` 1: an `https://` URL (a web host, or an S3 bucket's public URL).
 pub const KIND_HTTPS: u64 = 1;
@@ -188,16 +188,6 @@ pub struct MirrorReadInput {
     pub mirrors: Vec<MirrorRecord>,
 }
 
-/// Maintainers first, then other members, then bots, then everyone else (the pack-copy rank).
-fn rank(role: Option<Role>) -> u8 {
-    match role {
-        Some(Role::Maintainer) => 0,
-        Some(Role::Bot) => 2,
-        Some(_) => 1,
-        None => 3,
-    }
-}
-
 /// A record whose addresses are capped like a stranger's: anyone who is not a member now, and
 /// a bot (no reader takes a preference from a bot's records, review-rev41 M-4).
 fn capped(role: Option<Role>) -> bool {
@@ -220,8 +210,8 @@ pub fn mirror_read_order(input: &MirrorReadInput) -> Vec<String> {
         .filter(|m| m.kind == KIND_HTTPS || m.kind == KIND_IPFS)
         .collect();
     records.sort_by(|a, b| {
-        rank(a.owner_role)
-            .cmp(&rank(b.owner_role))
+        role_rank(a.owner_role)
+            .cmp(&role_rank(b.owner_role))
             .then_with(|| a.created_at.cmp(&b.created_at))
             .then_with(|| a.id.cmp(&b.id))
     });

@@ -325,11 +325,7 @@ async fn list(ctx: &Ctx, repo: Option<&str>, mine: bool) -> Result<()> {
         let hashes: std::collections::BTreeSet<String> =
             manifests.iter().map(|m| hex::encode(m.pack_hash)).collect();
         let roles = svc.copy_roles(&r.repo).await?;
-        let members: Vec<String> = roles
-            .keys()
-            .filter(|id| forge_core::repo::trusted_member(&roles, id))
-            .cloned()
-            .collect();
+        let members = forge_core::repo::trusted_members(&roles);
         let mut out = Vec::new();
         for h in hashes {
             out.extend(mirrors_of(&r.client, &contract, &r.repo, &h, &members).await?);
