@@ -110,6 +110,16 @@ export function resolveOwner(sdk: EvoSDK, owner: string): Promise<string | null>
   return promise
 }
 
+/**
+ * Record that `name` (`alice` or `alice.dash`) is `identityId`'s: a username this tab just
+ * registered or found (#452). A miss read before it would otherwise be believed for
+ * {@link OWNER_MISS_TTL_MS}, and `/alice/repo` would not resolve meanwhile.
+ */
+export function seedOwner(name: string, identityId: string): void {
+  const lower = name.toLowerCase().replace(/^@/, '')
+  ownerCache.set(lower.includes('.') ? lower : `${lower}.dash`, { at: Date.now(), promise: Promise.resolve(identityId) })
+}
+
 /** The one forge-v2 `repo` document `where` selects, or null. */
 async function readRepoDoc(
   sdk: EvoSDK,

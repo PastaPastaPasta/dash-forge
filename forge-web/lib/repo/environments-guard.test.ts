@@ -1,8 +1,9 @@
 /**
  * A repo with environment snapshots (kind 8): every environment is a letter to the people its
  * audience covered when it was saved, so any member change (add, remove, promote, demote) leaves
- * one saved for the wrong people. `dg` plans those changes and saves the affected environments
- * again; the web does not yet, so it refuses every member change before anything is written.
+ * one saved for the wrong people. The web plans those saves and makes them around the change
+ * (`lib/env/member-change.ts`); a change made without that plan is refused before anything is
+ * written, and one made with it does not look again.
  */
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -65,7 +66,7 @@ beforeEach(() => {
   created.length = 0
 })
 
-const MESSAGE = 'This repo has environments. Add, remove or change members with dg for now.'
+const MESSAGE = 'This repo has environments: a member change saves them again for the people they cover, so it has to be planned with them first. Nothing was changed.'
 
 describe('member changes in a repo with environments', () => {
   it('refuses every grant, revoke and role change before anything is written', async () => {
@@ -88,6 +89,18 @@ describe('member changes in a repo with environments', () => {
     }
     expect(kindsAsked).toEqual(Array(attempts.length).fill(8))
     expect(created).toEqual([])
+  })
+
+  it('lets a planned change through without looking again', async () => {
+    envSnapshots = [snapshot]
+    for (const attempt of [
+      revokeMember(sdk, auth, REPO, BOB, 'writer', undefined, undefined, true),
+      grantMember(sdk, auth, REPO, BOB, 'reader', undefined, undefined, true),
+      changeMemberRole(sdk, auth, REPO, BOB, 'writer', 'reader', undefined, undefined, true),
+    ]) {
+      await attempt.catch((e: unknown) => expect(e).not.toBeInstanceOf(EnvironmentsMembershipError))
+    }
+    expect(kindsAsked.filter((k) => k === 8)).toHaveLength(0)
   })
 
   it('lets a change through when the repo has no environments', async () => {
@@ -126,6 +139,14 @@ describe('member changes in a private repo with environments', () => {
     await expect(removePrivateMember(c, CAROL, 'maintainer', 'members:remove')).rejects.toBeInstanceOf(EnvironmentsMembershipError)
     expect(kindsAsked).toEqual([8])
     expect(created).toEqual([])
+  })
+
+  it('lets a planned add or removal through without looking again', async () => {
+    envSnapshots = [by(ALICE, 1)]
+    const planned: PrivateWriteContext = { ...c, environmentsPlanned: true }
+    await addPrivateMember(planned, BOB, 'writer', 'members:add').catch((e: unknown) => expect(e).not.toBeInstanceOf(EnvironmentsMembershipError))
+    await removePrivateMember(planned, BOB, 'writer', 'members:remove').catch((e: unknown) => expect(e).not.toBeInstanceOf(EnvironmentsMembershipError))
+    expect(kindsAsked.filter((k) => k === 8)).toHaveLength(0)
   })
 
   it('refuses adding or removing any other role too', async () => {

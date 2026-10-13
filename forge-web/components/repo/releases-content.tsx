@@ -91,7 +91,7 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
       <div className="flex flex-wrap items-center gap-2">
         <h1 className="text-xl">Releases</h1>
         <div className="ml-auto flex items-center gap-2">
-          <CopyLinkButton repo={addr} target={{ kind: 'releases' }} />
+          <CopyLinkButton repo={addr} target={{ kind: 'releases' }} visibility={home.repo.visibility} />
           <NewReleaseButton home={home} releases={data} onPublished={refreshAfterPublish} />
         </div>
       </div>
@@ -456,7 +456,7 @@ function ReleaseCard({
         {actions || full ? (
           <span className="ml-auto flex items-center gap-1.5">
             {actions}
-            {full ? <CopyLinkButton repo={addr} target={{ kind: 'release', tag: r.tagName }} /> : null}
+            {full ? <CopyLinkButton repo={addr} target={{ kind: 'release', tag: r.tagName }} visibility={repo.visibility} /> : null}
           </span>
         ) : null}
       </header>

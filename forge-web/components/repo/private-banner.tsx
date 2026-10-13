@@ -102,7 +102,7 @@ export function PrivateBanner({ home }: { home: RepoHome }): JSX.Element | null 
         <p className="mt-1">
           Add your identity&apos;s encryption key in{' '}
           <Link href={PRIVATE_REPOS_SETTINGS} className="text-forge-700 underline dark:text-forge-400">
-            Settings → Private repos
+            Settings → Members-only and private content
           </Link>
           . If your identity has none yet, that page registers one (one master-key signature), or run{' '}
           <code className="font-mono">dg auth keys add --encryption</code>.

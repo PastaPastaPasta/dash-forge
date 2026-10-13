@@ -202,7 +202,7 @@ export function planRotation(
 /** This browser holds encryption keys `held`, but not the identity's newest usable key `current`. */
 function staleHeldKey(held: readonly number[], current: number): PrivateMembersError {
   return new PrivateMembersError(
-    `this browser holds ${heldKeysText(held)}, but your identity's current key is ${current}: the new repo key would go to key ${current}, which you couldn't read here. Import key ${current} (Settings → Private repos), or rotate from the CLI with it.`,
+    `this browser holds ${heldKeysText(held)}, but your identity's current key is ${current}: the new repo key would go to key ${current}, which you couldn't read here. Import key ${current} (Settings → Members-only and private content), or rotate from the CLI with it.`,
     'E306',
   )
 }
@@ -311,6 +311,11 @@ export interface PrivateWriteContext {
   readonly repo: RepoRef
   readonly network: Network
   readonly ops: EncryptionOps
+  /**
+   * The caller planned the environment saves this member change needs and makes them around it
+   * (`lib/env/member-change.ts`). Without it a repo with environments refuses the change.
+   */
+  readonly environmentsPlanned?: boolean
 }
 
 export type RotationStep =
@@ -842,7 +847,7 @@ export async function createEpochZero(c: PrivateWriteContext, defaultBranch: str
     const pending = pendingSelfWrap(session, c.auth.identityId, 0)
     if (pending !== null && !c.ops.keyIds.includes(pending.row.recipientKeyId)) throw notHeldKey(0, pending.row.recipientKeyId)
     if (pending === null && !c.ops.keyIds.includes(selfKey.keyId)) {
-      throw new PrivateMembersError(`your identity's current encryption key is key ${selfKey.keyId}, but this browser holds ${heldKeysText(c.ops.keyIds)}; add key ${selfKey.keyId} here (Settings → Private repos)`, 'E306')
+      throw new PrivateMembersError(`your identity's current encryption key is key ${selfKey.keyId}, but this browser holds ${heldKeysText(c.ops.keyIds)}; add key ${selfKey.keyId} here (Settings → Members-only and private content)`, 'E306')
     }
     const k0 = await ownEpochKey(c, session, { identity: c.auth.identityId, keyId: pending?.row.recipientKeyId ?? selfKey.keyId }, 0, intent)
     try {
@@ -973,8 +978,8 @@ async function postAnchor(
  * transitions.
  */
 export async function addPrivateMember(c: PrivateWriteContext, memberId: string, role: Role, intent: string): Promise<AddOutcome> {
-  // Environments are letters to the people their audience covered: `dg` plans a member change and saves them again first.
-  await refuseMemberChangeWithEnvironments(c.sdk, c.repo)
+  // Environments are letters to the people their audience covered: the change is planned with their saves, or refused.
+  await refuseMemberChangeWithEnvironments(c.sdk, c.repo, c.environmentsPlanned === true)
   if ((await retryWhileMissing(() => findConsent(c.sdk, c.repo, memberId), CONSENT_LAG_RETRIES)) === null) throw new ConsentMissingError(memberId)
   const keys = await fetchIdentityKeys(c.sdk, memberId)
   const canReceive = usableEncryptionKey(keys ?? [], c.repo.forge.core) !== null
@@ -1095,8 +1100,9 @@ export async function removePrivateMember(
   intent: string,
   onStep?: (s: RotationStep) => void,
 ): Promise<number | null> {
-  // Environments are letters to the people their audience covered (and a maintainer's snapshots stop counting, D24): refused before any re-anchor is paid for.
-  await refuseMemberChangeWithEnvironments(c.sdk, c.repo)
+  // Environments are letters to the people their audience covered (and a maintainer's snapshots
+  // stop counting, D24): unless their saves are planned, refused before any re-anchor is paid for.
+  await refuseMemberChangeWithEnvironments(c.sdk, c.repo, c.environmentsPlanned === true)
   // §5.3: a maintainer's anchors stop counting when their role goes. Re-anchor each of their
   // epochs that stays ({@link epochsToReanchor}) first, so no kept epoch falls back.
   // The rotation after the delete chains from the epoch that stays current: refuse now, before

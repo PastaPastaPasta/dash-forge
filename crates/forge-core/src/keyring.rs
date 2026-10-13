@@ -126,7 +126,7 @@ pub fn no_encryption_key_set_up(action: &str) -> Error {
     )
     .cause("members-only content is encrypted to each member's encryption key, and your identity has none yet")
     .fix(format!("set up your encryption key: `{FIX_ADD_ENCRYPTION_KEY}` (from your recovery words)"))
-    .fix("or in the web app: Settings → Private repos")
+    .fix("or in the web app: Settings → Members-only and private content")
     .note("nothing was written")
     .into()
 }
@@ -263,7 +263,7 @@ pub fn no_encryption_key(member: &str, action: &str) -> Error {
         format!("{action}: {member} has no encryption key"),
     )
     .cause("private repositories encrypt their content to each member's identity ENCRYPTION key, and this identity has no enabled one")
-    .fix(format!("they add one themselves: `{FIX_ADD_ENCRYPTION_KEY}`, or Settings → Private repos → Enable private repos in the web app"))
+    .fix(format!("they add one themselves: `{FIX_ADD_ENCRYPTION_KEY}`, or Settings → Members-only and private content in the web app"))
     .into()
 }
 

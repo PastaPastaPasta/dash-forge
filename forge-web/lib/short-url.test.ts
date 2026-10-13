@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   canonicalOfShort,
+  cardRepoUrl,
   expandShortPath,
   hasShortUrl,
   RESERVED_SEGMENTS,
@@ -336,7 +337,7 @@ describe('expandShortPath: the shim in TypeScript (CJ-6)', () => {
     '/github.com/dashpay', '/dash-forge/alice/project/pull/7', '/dash-forge/', '/dash-forge/github.com/a/b', '/alice/project/blob/HEAD',
   ]
   // A seeded walk over segments that exercise every branch of the shim.
-  const pieces = ['alice', 'project', 'project.git', 'issues', 'pull', 'pulls', 'tree', 'blob', 'blame', 'commits', 'commit', 'compare', 'releases', 'tag', 'new', 'HEAD', '7', '0', 'files', 'x%2Fy', 'a...b', '..', 'abc123', '%E2%9C%93', '%ZZ', '']
+  const pieces = ['alice', 'project', 'project.git', 'issues', 'pull', 'pulls', 'tree', 'blob', 'blame', 'commits', 'commit', 'compare', 'releases', 'settings', 'tag', 'new', 'HEAD', '7', '0', 'files', 'x%2Fy', 'a...b', '..', 'abc123', '%E2%9C%93', '%ZZ', '']
   let seed = 7
   const next = (n: number): number => (seed = (seed * 1103515245 + 12345) % 2147483648) % n
   for (let i = 0; i < 2000; i++) paths.push(`/${Array.from({ length: 1 + next(6) }, () => pieces[next(pieces.length)]).join('/')}`)
@@ -346,6 +347,19 @@ describe('expandShortPath: the shim in TypeScript (CJ-6)', () => {
       expect(expandShortPath(path, ''), path).toBe(expand(path))
       expect(expandShortPath(path, '/dash-forge'), path).toBe(expand(path, '/dash-forge'))
     }
+  })
+
+  it('opens GitHub’s /<owner>/<repo>/settings on the repo’s Settings, as the shim does (Q5)', () => {
+    for (const base of ['', '/dash-forge']) {
+      expect(expandShortPath(`${base}/alice/project/settings`, base)).toBe(`${base}/repo/settings/?owner=alice&name=project`)
+      expect(expand(`${base}/alice/project/settings`, base)).toBe(`${base}/repo/settings/?owner=alice&name=project`)
+      // A longer path under it is not Settings.
+      expect(expandShortPath(`${base}/alice/project/settings/x`, base)).toBeNull()
+      expect(expand(`${base}/alice/project/settings/x`, base)).toBeNull()
+    }
+    expect(canonicalOfShort('/alice/project/settings', 'repo=R1')).toBe('/repo/settings/?owner=alice&name=project&repo=R1')
+    // `settings` as an owner is the app's own route, not a repo.
+    expect(expandShortPath('/settings/project/settings', '')).toBeNull()
   })
 
   it('opens a short path and its query as the shim does, and nothing outside a repo', () => {
@@ -470,6 +484,34 @@ describe('Copy link writes the owner as the address bar does', () => {
     expect(shortRouteFor('/repo/issue/', `owner=${id}&name=project&number=7`, 'alice.dash')).toBe(
       shortRepoUrl({ owner: id, name: 'project' }, { kind: 'issue', number: 7 }, 'alice.dash'),
     )
+  })
+})
+
+describe('cardRepoUrl: the share link with a preview card (#454)', () => {
+  const id = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
+  const GW = 'https://git-forge.dashhq.org'
+
+  it('is the short path under the gateway’s /og, owner by DPNS name, the pin kept', () => {
+    expect(cardRepoUrl(GW, { owner: id, name: 'project' }, undefined, 'alice.dash')).toBe(`${GW}/og/alice/project`)
+    expect(cardRepoUrl(GW, { owner: id, name: 'project' }, { kind: 'issue', number: 7 }, 'alice.dash')).toBe(`${GW}/og/alice/project/issues/7`)
+    expect(cardRepoUrl(GW, REPO, { kind: 'pull', number: 3, tab: 'files' })).toBe(`${GW}/og/alice/project/pull/3/files`)
+    expect(cardRepoUrl(GW, { ...REPO, repoId: 'R1' }, { kind: 'tree', ref: 'feature/x', path: 'src' })).toBe(
+      `${GW}/og/alice/project/tree/feature%2Fx/src?repo=R1`,
+    )
+    expect(cardRepoUrl(GW, { owner: id, name: 'project' }, { kind: 'release', tag: 'v1.0.0' }, null)).toBe(`${GW}/og/${id}/project/releases/v1.0.0`)
+  })
+
+  it('is null when the repo has no short form (the canonical route has no card)', () => {
+    expect(cardRepoUrl(GW, { owner: 'repo', name: 'x' })).toBeNull()
+    expect(cardRepoUrl(GW, { owner: id, name: '.hidden' }, undefined, 'alice.dash')).toBeNull()
+  })
+
+  it('opens the very page Copy link’s plain short URL opens (the gateway sends people to the same path)', () => {
+    const targets: ShortTarget[] = [{ kind: 'home' }, { kind: 'issue', number: 7 }, { kind: 'pull', number: 3, tab: 'checks' }, { kind: 'compare', base: 'main', head: 'feat/x' }]
+    for (const target of targets) {
+      const card = cardRepoUrl(GW, REPO, target, 'alice.dash')!
+      expect(card.slice(`${GW}/og`.length)).toBe(shortRepoUrl(REPO, target, 'alice.dash'))
+    }
   })
 })
 

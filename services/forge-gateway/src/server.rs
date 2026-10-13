@@ -8,7 +8,8 @@
 //! | `GET /<owner>/<name>` | redirect to the web app |
 //! | `GET /badge/<owner>/<name>/<stars\|ci\|release\|issues>.<svg\|json>` | README badges |
 //! | `GET /feed/<owner>/<name>/<releases\|commits\|issues>.atom` | Atom feeds |
-//! | `GET /og/<owner>/<name>[.png]` | link preview page / image |
+//! | `GET /og/<owner>/<name>[/<short path>]` | share link: preview tags, then the web app |
+//! | `GET /og/<owner>/<name>.png`, `/og/<owner>/<name>/<issues\|pull>/<n>.png` | card images |
 //! | `GET /healthz`, `/readyz`, `/metrics` | liveness, readiness, Prometheus |
 //!
 //! `<owner>` is an identity id or a DPNS name, so `badge`, `feed`, `og`, `healthz`, `readyz`
@@ -42,7 +43,7 @@ use crate::limits::{ClientConcurrency, RateLimiter};
 use crate::metrics::{Gauges, Metrics};
 use crate::mirror::{Mirrors, Slot, Unavailable};
 use crate::og;
-use crate::upstream::RepoInfo;
+use crate::upstream::{Item, ItemKind, RepoInfo};
 
 /// The largest `git-upload-pack` request body (wants and haves; git gzips it).
 pub const MAX_UPLOAD_PACK_REQUEST: usize = 16 * 1024 * 1024;
@@ -224,7 +225,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/metrics", get(metrics))
         .route("/badge/{owner}/{name}/{file}", get(badge_route))
         .route("/feed/{owner}/{name}/{file}", get(feed_route))
-        .route("/og/{owner}/{file}", get(og_route))
+        .route("/og/{*path}", get(og_route))
         .route("/{owner}/{repo}/info/refs", get(info_refs))
         .route("/{owner}/{repo}/git-upload-pack", post(upload_pack))
         .route("/{owner}/{repo}/git-receive-pack", post(read_only))
@@ -1175,38 +1176,224 @@ async fn feed_entries(
     })
 }
 
-async fn og_route(State(state): St, Path((owner, file)): Path<(String, String)>) -> Response {
+/// The site the cards name (`forge.dashhq.org`): the web app's host.
+fn site(cfg: &Config) -> String {
+    cfg.web_base()
+        .split("://")
+        .nth(1)
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// A repo id the web app's `?repo=` pin can hold (base58, the length of a 32-byte id).
+fn pin_ok(s: &str) -> bool {
+    (32..=50).contains(&s.len())
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() && !b"0OIl".contains(&b))
+}
+
+/// `GET /og/<owner>/<name>[/<rest>][.png]`: a share link's page or card image. The path after
+/// the repository mirrors the web app's short URLs (`issues/7`, `pull/7/files`, `tree/main/src`)
+/// and is read raw, still percent-encoded, so `tree/feature%2Fx` reaches the web app as written.
+async fn og_route(State(state): St, uri: axum::http::Uri) -> Response {
     Metrics::inc(&state.metrics.requests_og);
-    let (name, png) = match file.strip_suffix(".png") {
-        Some(n) => (n.to_string(), true),
-        None => (file.clone(), false),
+    let path = uri.path().strip_prefix("/og/").unwrap_or_default();
+    let (owner, rest) = path.split_once('/').unwrap_or((path, ""));
+    let (name, rest) = rest.split_once('/').unwrap_or((rest, ""));
+    if rest.is_empty() {
+        if let Some(name) = name.strip_suffix(".png") {
+            return repo_png(&state, owner, name).await;
+        }
+    }
+    let share = og::parse_share(rest).filter(|_| segment_ok(owner, 64) && segment_ok(name, 100));
+    let Some(share) = share else {
+        return text(StatusCode::NOT_FOUND, "not a Dash Forge share link\n");
     };
-    let info = match resolve(&state, &owner, &name).await {
-        Ok(t) => t.info,
-        Err(r) => return *r,
+    // `?repo=<id>`, the web app's pin to one exact repository, is carried on to it (the first
+    // one that is an id; base58 needs no decoding). Any other query is dropped, never refused:
+    // an unfurler must get its card whatever a link picked up on the way.
+    let pin = uri
+        .query()
+        .unwrap_or_default()
+        .split('&')
+        .filter_map(|kv| kv.strip_prefix("repo="))
+        .find(|p| pin_ok(p))
+        .map(str::to_string);
+    match share {
+        og::Share::ItemImage(kind, n) => item_png(&state, owner, name, kind, n).await,
+        og::Share::Item(kind, n) => {
+            share_page(&state, owner, name, rest, Some((kind, n)), pin.as_deref()).await
+        }
+        og::Share::Repo => share_page(&state, owner, name, rest, None, pin.as_deref()).await,
+    }
+}
+
+/// `value`, cached in the render cache as JSON under `key`: fresh, else read now, else (the read
+/// failing) the expired copy with its age. `None` when nothing could be read. A preview's data is
+/// cached rather than its page, so a page for any view of a repository (whose path the page
+/// repeats) costs no Platform read beyond the one per TTL its data takes.
+async fn cached_data<T, F, Fut>(
+    state: &AppState,
+    key: String,
+    read: F,
+) -> Option<(T, Option<Duration>)>
+where
+    T: serde::Serialize + serde::de::DeserializeOwned,
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<T>>,
+{
+    let parse = |r: &Rendered| serde_json::from_slice::<T>(&r.body).ok();
+    let expired = match state.renders.get(&key) {
+        Lookup::Fresh(r) => match parse(&r) {
+            Some(v) => return Some((v, None)),
+            None => None,
+        },
+        Lookup::Stale(r, age) => parse(&r).map(|v| (v, age)),
+        Lookup::Miss => None,
     };
-    let owner_label = og::short_owner(&owner);
-    let web = format!("{}/{owner}/{name}", state.cfg.web_base());
-    let key = format!("og:{}:{owner}:{png}", info.repo_id);
-    let s = Arc::clone(&state);
+    match read().await {
+        Ok(v) => {
+            state.metrics.upstream(true);
+            if let Ok(body) = serde_json::to_vec(&v) {
+                state.renders.put(
+                    key,
+                    Rendered {
+                        content_type: "application/json",
+                        body: Bytes::from(body),
+                    },
+                );
+            }
+            Some((v, None))
+        }
+        Err(e) => {
+            state.metrics.upstream(false);
+            tracing::warn!(error = %format!("{e:#}"), "preview read failed");
+            let (v, age) = expired?;
+            Metrics::inc(&state.metrics.stale_renders);
+            Some((v, Some(age)))
+        }
+    }
+}
+
+/// Issue or pull request `n` of `info` as a card shows it (`None`: nothing of it is shown).
+async fn item_data(
+    state: &Arc<AppState>,
+    info: &RepoInfo,
+    kind: ItemKind,
+    n: u32,
+) -> Option<(Option<Item>, Option<Duration>)> {
+    let key = format!("og:{}:item:{}:{n}", info.repo_id, kind.segment());
+    let up = state.mirrors.upstream();
+    cached_data(state, key, || async move { up.item(info, kind, n).await }).await
+}
+
+/// The share page of `owner/name` and the view `rest` names: HTTP 200 with the card's tags for
+/// every client (an unfurler must never get a redirect), whatever the repository or item is. A
+/// private, absent or unlisted repository, and one Platform cannot resolve now, gets the site's
+/// own card, as alike as their 404s elsewhere; a members-only, hidden or absent item gets a card
+/// naming only its repository, kind and number. The page sends people to the same path on the
+/// web app (`GATEWAY_WEB_URL`, never the request's host).
+async fn share_page(
+    state: &Arc<AppState>,
+    owner: &str,
+    name: &str,
+    rest: &str,
+    item: Option<(ItemKind, u32)>,
+    pin: Option<&str>,
+) -> Response {
+    let public = state.cfg.public_base();
+    let web = state.cfg.web_base();
+    let mut suffix = if rest.is_empty() {
+        String::new()
+    } else {
+        format!("/{rest}")
+    };
+    if let Some(p) = pin {
+        let _ = write!(suffix, "?repo={p}");
+    }
+    let url = format!("{public}/og/{owner}/{name}{suffix}");
+    let target = format!("{web}/{owner}/{name}{suffix}");
+    let mut ttl = state.renders.ttl().as_secs();
+    let info = match resolve(state, owner, name).await {
+        Ok(t) => {
+            if t.stale {
+                // Resolved from before Platform stopped answering: cacheable briefly only.
+                ttl = ttl.min(60);
+            }
+            t.info
+        }
+        Err(r) => {
+            let max_age = if r.status() == StatusCode::NOT_FOUND {
+                ttl
+            } else {
+                60
+            };
+            return page_response(&og::Page::site(&web, url, target), max_age, None);
+        }
+    };
+    let label = format!("{}/{name}", og::short_owner(owner));
+    let repo_image = format!("{public}/og/{owner}/{name}.png");
+    let (page, read) = if let Some((kind, n)) = item {
+        let read = item_data(state, &info, kind, n).await;
+        let item = read.as_ref().and_then(|(i, _)| i.as_ref());
+        let image = if item.is_some() {
+            format!("{public}/og/{owner}/{name}/{}/{n}.png", kind.segment())
+        } else {
+            repo_image
+        };
+        let page = og::Page::item(&label, kind, n, item, image, url, target);
+        (page, read.map(|(_, age)| age))
+    } else {
+        let up = state.mirrors.upstream();
+        let key = format!("og:{}:about", info.repo_id);
+        let read = cached_data(state, key, || async { up.description(&info).await }).await;
+        let desc = read.as_ref().map_or("", |(d, _)| d.as_str());
+        let page = og::Page::repo(&label, desc, repo_image, url, target);
+        (page, read.map(|(_, age)| age))
+    };
+    let (max_age, data_age) = match read {
+        Some(None) => (ttl, None),
+        Some(age) => (ttl.min(60), age),
+        None => (ttl.min(60), None),
+    };
+    page_response(&page, max_age, data_age)
+}
+
+/// A share page, cacheable for `max_age` seconds, marked stale when built from data `stale` old.
+fn page_response(page: &og::Page, max_age: u64, stale: Option<Duration>) -> Response {
+    let r = respond(
+        Rendered {
+            content_type: "text/html; charset=utf-8",
+            body: Bytes::from(og::page_html(page)),
+        },
+        max_age,
+    );
+    match stale {
+        Some(age) => mark_stale(r, age),
+        None => r,
+    }
+}
+
+/// `GET /og/<owner>/<name>.png`: the repository's card.
+async fn repo_png(state: &Arc<AppState>, owner: &str, name: &str) -> Response {
+    match resolve(state, owner, name).await {
+        Ok(t) => repo_png_of(state, t.info, owner, name).await,
+        Err(r) => *r,
+    }
+}
+
+/// [`repo_png`] of the resolved `info`.
+async fn repo_png_of(state: &Arc<AppState>, info: RepoInfo, owner: &str, name: &str) -> Response {
+    let owner_label = og::short_owner(owner);
+    let name = name.to_string();
+    let key = format!("og:{}:{owner}:true", info.repo_id);
+    let s = Arc::clone(state);
     cached(
-        &state,
+        state,
         key,
         || async move {
             let up = s.mirrors.upstream();
             let description = up.description(&info).await?;
-            if !png {
-                let html = og::page_html(&og::Page {
-                    title: format!("{owner_label}/{name}"),
-                    description,
-                    image: format!("{}/og/{owner}/{name}.png", s.cfg.public_base()),
-                    target: web,
-                });
-                return Ok(Rendered {
-                    content_type: "text/html; charset=utf-8",
-                    body: Bytes::from(html),
-                });
-            }
             let stars = up.stars(&info).await.ok();
             let default_branch = s
                 .mirrors
@@ -1214,33 +1401,70 @@ async fn og_route(State(state): St, Path((owner, file)): Path<(String, String)>)
                 .then(|| s.mirrors.slot(&info).manifest())
                 .flatten()
                 .and_then(|m| m.default_branch.clone());
-            let site = s
-                .cfg
-                .web_base()
-                .split("://")
-                .nth(1)
-                .unwrap_or_default()
-                .to_string();
             let card = og::Card {
                 owner: owner_label,
                 name,
                 description,
                 stars,
                 default_branch,
-                site,
+                site: site(&s.cfg),
             };
-            let fonts = Arc::clone(&s.fonts);
-            let png =
-                tokio::task::spawn_blocking(move || og::render_png(&og::card_svg(&card), fonts))
-                    .await??;
-            Ok(Rendered {
-                content_type: "image/png",
-                body: Bytes::from(png),
-            })
+            png(&s, og::card_svg(&card)).await
         },
         || None,
     )
     .await
+}
+
+/// `GET /og/<owner>/<name>/<issues|pull>/<n>.png`: an issue's or pull request's card, or the
+/// repository's when nothing of the item is shown (members-only, hidden, absent).
+async fn item_png(
+    state: &Arc<AppState>,
+    owner: &str,
+    name: &str,
+    kind: ItemKind,
+    n: u32,
+) -> Response {
+    let info = match resolve(state, owner, name).await {
+        Ok(t) => t.info,
+        Err(r) => return *r,
+    };
+    let item = match item_data(state, &info, kind, n).await {
+        Some((Some(item), _)) => item,
+        Some((None, _)) => return repo_png_of(state, info, owner, name).await,
+        None => {
+            return text(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Dash Platform cannot be read right now; try again shortly\n",
+            )
+        }
+    };
+    let card = og::ItemCard {
+        repo: format!("{} / {name}", og::short_owner(owner)),
+        kind,
+        number: n,
+        item,
+        site: site(&state.cfg),
+    };
+    let key = format!("og:{}:{owner}:{}:{n}.png", info.repo_id, kind.segment());
+    let s = Arc::clone(state);
+    cached(
+        state,
+        key,
+        || async move { png(&s, og::item_svg(&card)).await },
+        || None,
+    )
+    .await
+}
+
+/// `svg` drawn as a PNG, off the async threads.
+async fn png(s: &AppState, svg: String) -> anyhow::Result<Rendered> {
+    let fonts = Arc::clone(&s.fonts);
+    let png = tokio::task::spawn_blocking(move || og::render_png(&svg, fonts)).await??;
+    Ok(Rendered {
+        content_type: "image/png",
+        body: Bytes::from(png),
+    })
 }
 
 async fn index(State(state): St) -> Response {
@@ -1255,7 +1479,7 @@ async fn index(State(state): St) -> Response {
 <p>A read-only git mirror of public <a href="{web}">Dash Forge</a> repositories on <code>{net}</code>, for tools that only speak plain git.</p>
 <pre>git clone {base}/&lt;owner&gt;/&lt;name&gt;.git</pre>
 <p>It is optional and never an authority: every repository's <code>forge-manifest.json</code> names the Platform documents behind each ref, and <code>dg verify-mirror {base}/&lt;owner&gt;/&lt;name&gt;.git</code> checks the mirror against Dash Platform with proofs. <code>git clone dash://&lt;owner&gt;/&lt;name&gt;</code> never needs this gateway.</p>
-<p>Badges: <code>/badge/&lt;owner&gt;/&lt;name&gt;/{{stars,ci,release,issues}}.svg</code>. Feeds: <code>/feed/&lt;owner&gt;/&lt;name&gt;/{{releases,commits,issues}}.atom</code>. Previews: <code>/og/&lt;owner&gt;/&lt;name&gt;</code>.</p>
+<p>Badges: <code>/badge/&lt;owner&gt;/&lt;name&gt;/{{stars,ci,release,issues}}.svg</code>. Feeds: <code>/feed/&lt;owner&gt;/&lt;name&gt;/{{releases,commits,issues}}.atom</code>. Share links with a preview card: <code>/og/&lt;owner&gt;/&lt;name&gt;</code>, or any short path after it (<code>/og/&lt;owner&gt;/&lt;name&gt;/issues/7</code>, <code>/pull/7</code>), which opens the same page on the web app.</p>
 <p>Privacy: client addresses are held in memory for rate limiting only and are never logged. Private repositories are never served.</p>
 </body></html>"#
     );

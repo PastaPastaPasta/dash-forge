@@ -21,7 +21,13 @@ import { mentions } from '../repo/issue-index'
 import { z } from 'zod'
 
 import type { ForgeIds } from '../deployments'
-import { DOC, asIdentifierString } from '../repo/contract'
+import type { Network } from '../constants'
+import { DOC, EVENT_KIND_BY_INT, asIdentifierString, type RepoRef } from '../repo/contract'
+import { readBanState } from '../repo/bans'
+import { readMembershipsCached } from '../repo/members'
+import { contractHasProperty } from '../repo/contract-shape'
+import { EVENT_AS_MAINTAINER } from '../repo/moderation-fold'
+import { hiddenItems } from '../rules/moderation'
 import { contractOf } from '../repo/source'
 import { queryDocumentsWithProof, type DocumentQuery, type PlainDocument } from '../sdk'
 import type { DiscoveredRepo } from './discovery'
@@ -373,6 +379,8 @@ export { mentions }
 
 /** An `event` / `authorEvent` row (`value` only on label / assign kinds). */
 export const eventDoc = baseDoc.extend({ targetId: ident, kind: int, value: z.string().optional().catch(undefined) })
+/** An `event` row with the item it is about (`refId`: a hide of one comment, not the thread). */
+const moderationEventDoc = eventDoc.extend({ refId: ident.optional().catch(undefined) })
 
 /** Assign (6) and unassign (7): `event.kind` codes (data-contracts §2.3). */
 const ASSIGN = 6
@@ -463,6 +471,40 @@ export async function listAddressedTargets(sdk: EvoSDK, forge: ForgeIds, me: str
   return { targets, partial: events.status === 'rejected' || authorEvents.status === 'rejected' }
 }
 
+/**
+ * `rows` of one repo without what a maintainer hid and what a banned identity wrote, as the
+ * inbox and the repo's own lists leave it out (`withoutBanned`, `visibleItems`). Hides are folded
+ * from `events`, the repo's newest events the caller already read, so a hide older than those is
+ * not seen; bans cost one read per repo, kept a while and shared with the inbox. A failed ban read
+ * filters nothing: the filter is a courtesy of the reader, and the thread page still collapses it.
+ */
+async function withoutModerated(
+  sdk: EvoSDK,
+  forge: ForgeIds,
+  network: Network,
+  repo: RepoLite,
+  rows: readonly TargetRow[],
+  events: readonly PlainDocument[],
+): Promise<TargetRow[]> {
+  if (rows.length === 0) return []
+  const ref: RepoRef = { forge, repoId: repo.id, ownerId: repo.ownerId, name: repo.name, visibility: repo.private ? 'private' : 'public' }
+  const hides = parseDocs(moderationEventDoc, events).flatMap((d) => {
+    const kind = EVENT_KIND_BY_INT[d.kind]
+    return kind === 'hide' || kind === 'unhide' ? [{ id: d.$id, targetId: d.targetId, kind, actor: d.$ownerId, refId: d.refId ?? null, value: d.value ?? null, createdAt: d.$createdAt }] : []
+  })
+  const proved = hides.length > 0 ? await contractHasProperty(sdk, forge.community, DOC.event, EVENT_AS_MAINTAINER).catch(() => false) : false
+  // Without the contract's proof a maintainer's hide counts only if the hider is a current
+  // maintainer, so the members are read (once, kept a while) when there is a hide to judge. The
+  // ban read takes them along, and reads them itself only when the repo has bans.
+  const members = hides.length > 0 && !proved ? await readMembershipsCached(sdk, ref, network).catch(() => undefined) : undefined
+  const state = await readBanState(sdk, ref, network, members).catch(() => null)
+  const maintainers = (state?.members ?? members ?? []).filter((m) => m.role === 'maintainer').map((m) => m.identity)
+  return rows.filter((r) => {
+    if (state?.standing.has(r.author) === true) return false
+    return hiddenItems(hides, { threadId: r.id, threadAuthor: r.author, owner: repo.ownerId, maintainers, proved }, [], []).thread === null
+  })
+}
+
 /** What {@link scanAssignedAndMentions} found, and over how much it looked. */
 export interface AssignedScan {
   readonly assigned: TargetRow[]
@@ -476,11 +518,13 @@ export interface AssignedScan {
  * Issues and PRs assigned to me or mentioning me, **within the newest activity of `repos`**
  * only: per repo, the newest 100 member `event`s and the newest 30 issues and 30 PRs. Mentions
  * are looked for in issue and PR descriptions only, not in comments. Neither question has an
- * index, so this is a bounded scan the caller must present as one.
+ * index, so this is a bounded scan the caller must present as one. A mention in a thread a
+ * maintainer hid, or one a banned identity wrote, is left out ({@link withoutModerated}).
  */
 export async function scanAssignedAndMentions(
   sdk: EvoSDK,
   forge: ForgeIds,
+  network: Network,
   me: string,
   name: string | null,
   repos: readonly RepoLite[],
@@ -501,7 +545,8 @@ export async function scanAssignedAndMentions(
         .map((d) => ({ id: d.$id, kind, repoId: repo.id, number: d.number, title: titleOf(d, kind), author: d.$ownerId, createdAt: d.$createdAt, repo }))
     return {
       assignedIds: [...assignedTargets(parseDocs(eventDoc, events), me, repo.private)],
-      mentioned: [...mentioned(issues, 'issue'), ...mentioned(patches, 'pull')],
+      // The ban and hide reads happen only for a repo with a mention to show.
+      mentioned: await withoutModerated(sdk, forge, network, repo, [...mentioned(issues, 'issue'), ...mentioned(patches, 'pull')], events),
       repo,
     }
   })

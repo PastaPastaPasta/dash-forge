@@ -217,7 +217,7 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
                 handle.display()
             ))
             .fix(format!(
-                "send them this: `dg auth keys add --encryption`, or Settings → Private repos → Enable private repos in the web app (one master-key signature); then run `dg collab add {repo} {member}` again"
+                "send them this: `dg auth keys add --encryption`, or Settings → Members-only and private content in the web app (one master-key signature); then run `dg collab add {repo} {member}` again"
             ))
             .note("nothing was written")
             .into());

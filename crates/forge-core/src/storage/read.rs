@@ -37,6 +37,21 @@ pub const MIN_TRANSFER_DEADLINE: Duration = Duration::from_secs(120);
 /// failed by this text, and gives the fix that applies (QW2-078).
 pub const NO_FOLLOWED_COPY: &str = "no recorded copy is one this computer reads from";
 
+/// What a read's error says of the pack mirrors after every recorded copy failed, as a clause of
+/// its own (`; pack mirrors tried: host (why), host (why)`, or `; pack mirrors not checked: why`):
+/// the words every such clause starts with.
+pub const MIRRORS_CLAUSE: &str = "pack mirrors ";
+
+/// The words that start the clause naming the mirrors that were tried and refused.
+pub const MIRRORS_TRIED: &str = "pack mirrors tried";
+
+/// What the reader appends to a failed read of IPFS gateways alone (the last words of the error:
+/// a clause about mirrors goes before it).
+pub const IPFS_GATEWAY_HINT: &str =
+    " — every candidate was an IPFS gateway: if the node holding this content is \
+     reachable through a gateway you know, add it to `[read] ipfs_gateways` in \
+     storage.toml (`dg storage status <repo>` shows which gateways answer)";
+
 /// The slowest sustained rate a candidate may deliver at before its deadline cuts it off
 /// (1 MiB/s): a 2 GiB pack gets ~34 minutes. A host that stalls outright is cut off much
 /// sooner by the HTTP client's idle `read_timeout` (see [`super::http_client`]).
@@ -287,9 +302,7 @@ impl Missed {
             .iter()
             .all(|c| matches!(c, Candidate::Http(u) if gateway_cid(u).is_some()))
         {
-            " — every candidate was an IPFS gateway: if the node holding this content is \
-             reachable through a gateway you know, add it to `[read] ipfs_gateways` in \
-             storage.toml (`dg storage status <repo>` shows which gateways answer)"
+            IPFS_GATEWAY_HINT
         } else {
             ""
         };
