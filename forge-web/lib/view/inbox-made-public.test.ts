@@ -51,6 +51,8 @@ const vector = JSON.parse(readFileSync(join(__dirname, '..', '..', '..', 'forge-
 const hex = (h: string): Uint8Array => Uint8Array.from(h.match(/../g) ?? [], (b) => parseInt(b, 16))
 const b58 = (h: string): string => base58Encode(hex(h))
 
+/** The thread issue's title, as the bundle publishes it. */
+const TITLE = (JSON.parse(readFileSync(join(__dirname, '..', '..', '..', 'forge-contracts', 'vectors', 'make_public__bundle_read_thread.json'), 'utf8')) as { expected: { reads: { fields: { title: string } }[] } }).expected.reads[0]!.fields.title
 const ME = b58(vector.input.docs[0]!.doc.ownerId)
 const OWNER = b58(vector.input.maintainers[0]!)
 const MAINT = b58(vector.input.bundles[0]!.owner)
@@ -103,6 +105,8 @@ describe('the inbox item when a maintainer makes my posts public', () => {
   it('a whole thread in one bundle: one item', async () => {
     const items = await madePublicItems(sdk, FORGE, REPO, [manifest(2, MAINT, THREAD)], ME)
     expect(items.map((i) => i.what)).toEqual(['made 3 of your posts public'])
+    // the members-only issue reads by the title the bundle published, not its placeholder
+    expect(items[0]?.target?.title).toBe(TITLE)
   })
 
   it('a lying entry, a writer’s bundle, my own bundle, and someone else’s posts make none', async () => {

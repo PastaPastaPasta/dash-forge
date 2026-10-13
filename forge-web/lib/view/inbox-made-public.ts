@@ -48,25 +48,29 @@ interface NamedPost {
   readonly author: string
   /** The issue or PR it is on (itself for an issue). */
   readonly thread: string
+  /** An issue's title as the bundle published it. */
+  readonly title?: string
 }
 
 /**
- * Post `e.target` of `repo` when it is `me`'s and `e`'s key opens its current revision (the
- * bundle's author `by`), or null. A read that fails throws.
+ * Post `e.target` of `repo` when `e`'s key opens its current revision (the bundle's author
+ * `by`) and its author is one of `authors` (any author: null), or null. A read that fails throws.
  */
-async function myPost(sdk: EvoSDK, forge: ForgeIds, repo: RepoLite, e: BundleEntry, by: Uint8Array, me: string): Promise<NamedPost | null> {
+async function openedPost(sdk: EvoSDK, forge: ForgeIds, repo: RepoLite, e: BundleEntry, by: Uint8Array, authors: string | null): Promise<NamedPost | null> {
   const n = NOUN[e.kind]
   if (n === undefined) return null
   const id = base58Encode(e.target)
   const { documents } = await queryDocumentsWithProof(sdk, { dataContractId: contractOf(forge, n.type), documentTypeName: n.type, where: [['$id', '==', id]], limit: 1 })
   const d: PlainDocument | undefined = documents[0]
-  if (d === undefined || asIdentifierString(d['repoId']) !== repo.id || asIdentifierString(d['$ownerId']) !== me) return null
+  const author = d === undefined ? '' : asIdentifierString(d['$ownerId'])
+  if (d === undefined || asIdentifierString(d['repoId']) !== repo.id || (authors !== null && author !== authors)) return null
   const stored = storedPrivateDoc(n.type, d, 'public')
   if (stored === null) return null
   const { read } = await readRevision(decodeIdentifier(repo.id), stored, revisionOf(d), stored.enc, [{ by, revision: e.revision, key: e.key }])
   if (read.state !== 'public') return null
   const thread = n.type === DOC.issue ? id : asIdentifierString(d[n.type === DOC.review ? 'patchId' : 'targetId'])
-  return { noun: n.noun, author: me, thread }
+  const title = n.type === DOC.issue ? read.fields.title : undefined
+  return { noun: n.noun, author, thread, ...(title !== undefined ? { title } : {}) }
 }
 
 /**
@@ -98,12 +102,15 @@ export async function madePublicItems(sdk: EvoSDK, forge: ForgeIds, repo: RepoLi
     const by = decodeIdentifier(m.uploader)
     const mine: NamedPost[] = []
     for (const e of named.values()) {
-      const post = await myPost(sdk, forge, repo, e, by, me)
+      const post = await openedPost(sdk, forge, repo, e, by, me)
       if (post !== null) mine.push(post)
     }
     const first = mine[0]
     if (first === undefined) continue
     const target = [...(await readTargetsByIds(sdk, forge, [first.thread])).values()][0]
+    // A members-only issue this bundle made public too reads by the title it published.
+    const threadEntry = named.get(first.thread)
+    const threadTitle = mine.find((p) => p.thread === first.thread && p.title !== undefined)?.title ?? (threadEntry?.kind === ENTRY_ISSUE ? (await openedPost(sdk, forge, repo, threadEntry, by, null))?.title : undefined)
     out.push({
       id: m.documentId,
       kind: 'madePublic',
@@ -112,7 +119,7 @@ export async function madePublicItems(sdk: EvoSDK, forge: ForgeIds, repo: RepoLi
       actor: m.uploader,
       at: m.createdAt,
       read: false,
-      ...(target !== undefined ? { target: { kind: target.kind, number: target.number, title: target.title } } : {}),
+      ...(target !== undefined ? { target: { kind: target.kind, number: target.number, title: threadTitle ?? target.title } } : {}),
     })
   }
   return out

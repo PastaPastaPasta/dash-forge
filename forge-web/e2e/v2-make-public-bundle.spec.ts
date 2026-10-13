@@ -17,6 +17,8 @@
  * members-only comments E2E_MPB_MARKER (made public here), E2E_MPB_KEEP_MARKER (never), and the
  * writer- and lying-bundle targets; a members-only issue E2E_MPB_THREAD by the writer edited twice
  * (titles E2E_MPB_THREAD_V1, _V2, _V3), with members-only replies by the reader and the maintainer.
+ * With E2E_MPB_LETTER_MARKER / E2E_MPB_LETTER_KEPT_MARKER, the anonymous checks also read a message
+ * to specific people the maintainer made public, and not one it wasn't sent.
  * Identities (E2E_IDENTITY_DIR): E2E_MPB_MAINTAINER (default `maint`), E2E_MPB_READER (`bob`, the
  * reader whose comment is made public) and E2E_MPB_WRITER (`alice`, the thread's author), each file
  * with its encryption key.
@@ -42,6 +44,9 @@ const MARKER = env('E2E_MPB_MARKER')
 const KEEP = env('E2E_MPB_KEEP_MARKER')
 const WRITER_MARKER = env('E2E_MPB_WRITER_MARKER')
 const LYING_MARKER = env('E2E_MPB_LYING_MARKER')
+/** Optional: a message to specific people the maintainer was sent and made public, and one they weren't sent (stays hidden). */
+const LETTER_MARKER = env('E2E_MPB_LETTER_MARKER')
+const LETTER_KEPT_MARKER = env('E2E_MPB_LETTER_KEPT_MARKER')
 const [V1, V2, V3] = [env('E2E_MPB_THREAD_V1'), env('E2E_MPB_THREAD_V2'), env('E2E_MPB_THREAD_V3')]
 const MAINTAINER = env('E2E_MPB_MAINTAINER', 'maint')
 const READER = env('E2E_MPB_READER', 'bob')
@@ -149,17 +154,20 @@ test("maintainer: makes a reader's members-only comment public", async ({ browse
 test('maintainer: makes a whole members-only thread public, with its earlier edits', async ({ browser }) => {
   const page = await signedInAs(browser, MAINTAINER)
   await openThread(page, url(THREAD), V3)
-  const sent = broadcasts(page)
-  await page.getByTestId('make-thread-public').click()
-  // the issue, the reader's reply and the maintainer's own, in one bundle
-  const dialog = page.getByRole('dialog', { name: 'Make 3 posts public?' })
-  await expect(dialog).toContainText(/Words by .+ become public\. They'll be notified\./, { timeout: 120_000 })
-  const earlier = dialog.getByTestId('publish-earlier-edits')
-  await expect(earlier).toContainText('Also publish earlier edits (2)')
-  await earlier.getByRole('checkbox').check()
-  await shot(page, 'maintainer-thread-dialog')
-  expect(sent).toEqual([])
-  await confirm(dialog)
+  // A rerun against the same repo finds the thread public already (a bundle can't be undone).
+  if ((await page.getByTestId('made-public-by').count()) === 0) {
+    const sent = broadcasts(page)
+    await page.getByTestId('make-thread-public').click()
+    // the issue, the reader's reply and the maintainer's own, in one bundle
+    const dialog = page.getByRole('dialog', { name: 'Make 3 posts public?' })
+    await expect(dialog).toContainText(/Words by .+ become public\. They'll be notified\./, { timeout: 120_000 })
+    const earlier = dialog.getByTestId('publish-earlier-edits')
+    await expect(earlier).toContainText('Also publish earlier edits (2)')
+    await earlier.getByRole('checkbox').check()
+    await shot(page, 'maintainer-thread-dialog')
+    expect(sent).toEqual([])
+    await confirm(dialog)
+  }
   await expect(page.getByTestId('made-public-by').first()).toBeVisible({ timeout: 240_000 })
   await shot(page, 'maintainer-thread-after', true)
   await page.context().close()
@@ -176,7 +184,12 @@ async function anonReads(page: Page, label: string): Promise<void> {
   // the lying entry is said once; neither bundle that should not count opened its post
   await expect(page.getByTestId('bundle-alerts')).toContainText("make-public entry for a post by", { timeout: 120_000 })
   const html = await page.content()
-  for (const hidden of [KEEP, WRITER_MARKER, LYING_MARKER]) expect(html).not.toContain(hidden)
+  for (const hidden of [KEEP, WRITER_MARKER, LYING_MARKER, LETTER_KEPT_MARKER].filter((m) => m !== '')) expect(html).not.toContain(hidden)
+  if (LETTER_MARKER !== '') {
+    const letter = page.getByTestId('timeline-comment').filter({ hasText: LETTER_MARKER })
+    await expect(letter).toHaveAttribute('data-audience', 'public')
+    await expect(letter.getByTestId('made-public-by')).toBeVisible()
+  }
   await shot(page, `anon-${label}-issue`, true)
   if (label === 'desktop') expect(await runAxe(page, 'issue with a comment a maintainer made public (anon)')).toEqual([])
 
