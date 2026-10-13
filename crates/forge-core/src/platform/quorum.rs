@@ -143,6 +143,9 @@ fn is_quorum_miss_given(e: &dash_sdk::Error, bans_present: &dyn Fn() -> bool) ->
         dash_sdk::Error::Proof(drive_proof_verifier::Error::ContextProviderError(c)) => {
             is_quorum_context_error(c)
         }
+        // Platform 5.0.0-beta.6 (#5313): a proof whose quorum key the provider could not supply
+        // is `QuorumKeyUnavailable` (the SDK has already fetched the key and verified again).
+        dash_sdk::Error::Proof(drive_proof_verifier::Error::QuorumKeyUnavailable { .. }) => true,
         dash_sdk::Error::NoAvailableAddressesToRetry(inner) => {
             is_quorum_miss_given(inner, bans_present) || bans_present()
         }
@@ -158,7 +161,11 @@ fn is_quorum_miss_given(e: &dash_sdk::Error, bans_present: &dyn Fn() -> bool) ->
 /// Not a missing contract or token configuration, which no wait fixes.
 fn is_quorum_context_error(c: &ContextProviderError) -> bool {
     match c {
-        ContextProviderError::InvalidQuorum(_) => true,
+        // Beta.6 (#5313) adds `QuorumSourceUnavailable`: the trusted quorum source gave no answer
+        // (unreachable, partial, asked too recently, or an unusable key); the SDK reports it
+        // without blaming the node.
+        ContextProviderError::InvalidQuorum(_)
+        | ContextProviderError::QuorumSourceUnavailable(_) => true,
         ContextProviderError::Generic(text) => text.to_ascii_lowercase().contains("quorum"),
         _ => false,
     }
@@ -310,6 +317,18 @@ mod tests {
         )));
         assert!(is_quorum_miss(&dash_sdk::Error::ContextProviderError(
             ContextProviderError::InvalidQuorum("x".into())
+        )));
+        // Platform 5.0.0-beta.6 (#5313): the key was unavailable, or its source gave no answer.
+        assert!(is_quorum_miss(&dash_sdk::Error::Proof(
+            drive_proof_verifier::Error::QuorumKeyUnavailable {
+                quorum_type: 107,
+                quorum_hash: [7; 32],
+                core_chain_locked_height: 100,
+                error: ContextProviderError::Generic("Quorum not found".into()),
+            }
+        )));
+        assert!(is_quorum_miss(&dash_sdk::Error::ContextProviderError(
+            ContextProviderError::QuorumSourceUnavailable("quorum service unreachable".into())
         )));
         // The SDK banned every node on it and gave up.
         assert!(is_quorum_miss(

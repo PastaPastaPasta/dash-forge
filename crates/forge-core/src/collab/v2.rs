@@ -9666,7 +9666,7 @@ mod tests {
         let codes = sums_by_target(BTreeMap::from([(a.to_vec(), 1), (b.to_vec(), 8)])).unwrap();
         assert_eq!(codes.get(&platform::encode_identifier(a)), Some(&1));
         assert_eq!(codes.get(&platform::encode_identifier(b)), Some(&8));
-        let key = |k: u8| vec![k ^ 0x80];
+        let key = |k: u8| vec![k];
         // A key of another width is an error, never a silent 0 or "open".
         assert!(counts_by_kind(BTreeMap::from([(vec![1, 2], 1)])).is_err());
         assert!(sums_by_target(BTreeMap::from([(vec![1; 31], 1)])).is_err());

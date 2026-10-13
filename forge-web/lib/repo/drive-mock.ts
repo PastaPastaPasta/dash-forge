@@ -19,11 +19,11 @@ export type Store = Record<string, Record<string, Doc[]>>
 const BYTE_ARRAY_FIELDS = new Set(['headOid'])
 
 /**
- * The wasm SDK's group key: an identifier's 32 bytes, a byteArray's bytes, an unsigned integer with
- * the top bit flipped; hex.
+ * The wasm SDK's group key: an identifier's 32 bytes, a byteArray's bytes, an unsigned integer as
+ * its plain byte (protocol 14); hex.
  */
 function groupKey(v: unknown, field = ''): string {
-  if (typeof v === 'number') return (v ^ 0x80).toString(16).padStart(2, '0')
+  if (typeof v === 'number') return v.toString(16).padStart(2, '0')
   const bytes = BYTE_ARRAY_FIELDS.has(field) ? base64ToBytes(String(v)) : base58Decode(String(v))
   return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('')
 }
