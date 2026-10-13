@@ -177,14 +177,14 @@ complete readers (`query_all_documents` / `queryAllDocuments`):
 
 Every binary and the web app target one of **testnet**, **mainnet**, or a **named devnet**
 such as `sakura`. The CLI tools default to testnet, but Forge targets devnet sakura (Platform
-protocol 14, v5.0.0-beta.1), where its RC2 registration is in progress. Testnet and mainnet run protocol 13; forge-v2 is
+protocol 14, v5.0.0-beta.6), where its RC2 contracts are registered. Testnet and mainnet run protocol 13; forge-v2 is
 registered on testnet once protocol 14 reaches it, and on mainnet after protocol 14
 activates there ([mainnet-runbook.md](mainnet-runbook.md)). Until then, pass
 `--network devnet --devnet-name sakura` (or just `--devnet-name sakura`), or record it once
 with `dg auth login --network devnet --devnet-name sakura`, which saves the network in
 `~/.config/dash-forge/config.toml`.
 
-**Devnet sakura** (Platform 5.0.0-beta.3 since its second Platform reset on 2026-10-08, chain id `dash-devnet-sakura`) replaced bonsia on
+**Devnet sakura** (Platform 5.0.0-beta.6 since its third Platform reset on 2026-10-13, chain id `dash-devnet-sakura`) replaced bonsia on
 2026-10-01, and the defaults (Makefile `DEVNET`, `E2E_DEVNET`, the Pages and e2e workflows,
 `ipfs-release.sh`) target it. `devnet-sakura.json` records its chain id, 13 DAPI addresses and
 quorum service (`https://quorums.sakura.networks.dash.org`), so `--devnet-name sakura` works

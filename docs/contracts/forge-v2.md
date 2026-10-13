@@ -4,7 +4,7 @@ Three shared data contracts, **forge-core**, **forge-collab** and **forge-commun
 
 - Schemas: `forge-contracts/contracts/forge-core.json`, `forge-contracts/contracts/forge-collab.json`, `forge-contracts/contracts/forge-community.json`
 - Generator: `forge-contracts/schema/build.py` (the base schemas in `forge-contracts/schema/base/` plus one flag per RC1 and RC2 item); document vectors `forge-contracts/vectors/rc1/`
-- Offline validation: `tools/contract-validate` (rs-dpp `v5.0.0-beta.3`, `PlatformVersion` 14), `forge-contracts/schema/wherecheck.py`, `forge-contracts/schema/variants.py`, `.github/workflows/contracts.yml`
+- Offline validation: `tools/contract-validate` (rs-dpp `v5.0.0-beta.6`, `PlatformVersion` 14), `forge-contracts/schema/wherecheck.py`, `forge-contracts/schema/variants.py`, `.github/workflows/contracts.yml`
 - Registration: `forge-contracts/scripts/deploy-v2.mjs` (the evo-sdk `forge-contracts/sdk-v2` pins; the deployment record's `v2.sdk` names the installed one)
 - Decision record: roadmap D-A (owner decision of 2026-09-24, reviewed by a protocol architect). RC1 scope: dash-forge-qa `design/SCOPE-DECISION.md` and `WIPE-DECISIONS.md` D-10..D-16. Item ids (R-xx, O-xx, INV-11, CL-7, CL-8, COMM-9) are those of dash-forge-qa `beta6/RULES-PROPOSAL.md` and `beta6/OPPORTUNITIES.md`.
 

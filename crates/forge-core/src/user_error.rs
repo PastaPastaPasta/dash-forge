@@ -3263,6 +3263,7 @@ mod tests {
                 contract_id: Some([5; 32].into()),
                 document_type_name: t.into(),
                 property_agreement: std::collections::BTreeMap::new(),
+                where_conditions: std::collections::BTreeMap::new(),
             },
             None => DocumentPropertyReferenceTarget::Identity,
         };

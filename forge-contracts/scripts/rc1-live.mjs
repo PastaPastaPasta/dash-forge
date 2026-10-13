@@ -413,10 +413,10 @@ if (want('state') && I1 && I2 && PR3) {
   // Grouped proved reads (WIPE-PLAN §3.1 1-2): record how the node keys them
   try {
     // I1: close(author), reopen, lock, close, reopen, unlock; PR3: draft, ready, lock, unlock, merge;
-    // PR4: draft, close-while-draft, reopen-while-draft, ready, close. Keys: 0x80 | kind, hex.
+    // PR4: draft, close-while-draft, reopen-while-draft, ready, close. Keys: the kind's plain byte, hex (protocol 14 keys an unsigned integer big-endian, platform#5350; protocol 13 flipped the top bit: 0x80 | kind).
     // With the QW-069 rider, I1 also gets two closes with a reason and two reopens.
     const closes = CLOSE_REASON ? 4 : 2;
-    const want = { '81': closes, '82': closes, '83': 1, '84': 1, '8b': 1, '8d': 1, '8e': 2, '8f': 2, '90': 1, '91': 1, '92': 1, '93': 1 };
+    const want = { '01': closes, '02': closes, '03': 1, '04': 1, '0b': 1, '0d': 1, '0e': 2, '0f': 2, '10': 1, '11': 1, '12': 1, '13': 1 };
     const same = (a, b) => JSON.stringify(Object.entries(a).sort()) === JSON.stringify(Object.entries(b).sort());
     const c = await eventually(async () => {
       const counts = await sdk.documents.countWithProof({ dataContractId: COLLAB, documentTypeName: 'transition', where: [['repoId', '==', docId(repo)], ['kind', 'in', [1, 2, 3, 4, 11, 12, 13, 14, 15, 16, 17, 18, 19]]], groupBy: ['kind'] });
@@ -599,7 +599,7 @@ if (want('ci')) {
   await ok('R-08', 'policy pinning the runner and a maintainer', O, COMM, 'policy', { repoId: R, requiredApprovals: 1, requiredChecks: ['build', 'lint'], requiredCheckSources: [id(RN.id), id(O.id)], mergeMethods: 15 }, 'policy');
   await no('R-08', 'policy pinning a stranger', O, COMM, 'policy', { repoId: R, requiredApprovals: 0, requiredChecks: ['build'], requiredCheckSources: [id(S.id)] }, [40120]);
   try {
-    const want = { '80': 1, '81': 1 }; // one pending (0), one passed (1); no failed (2) entry at all
+    const want = { '00': 1, '01': 1 }; // plain bytes (protocol 14): one pending (0), one passed (1); no failed (2) entry at all
     const c = await eventually(async () => {
       const q = await sdk.documents.countWithProof({ dataContractId: COMM, documentTypeName: 'checkRun', where: [['repoId', '==', docId(repo)], ['headOid', '==', bytes(20, 2).toString('base64')], ['outcome', 'in', [0, 1, 2]]], groupBy: ['outcome'] });
       return Object.fromEntries([...(q.data ?? q).entries()].map(([k, v]) => [k, Number(v)]));
