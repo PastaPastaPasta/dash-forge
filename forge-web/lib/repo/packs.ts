@@ -86,7 +86,8 @@ function parsePackedHashes(doc: PlainDocument, field: string, entryLen: number):
   return []
 }
 
-function toManifest(doc: PlainDocument): PackManifest {
+/** A `packManifest` document as the readers take it. */
+export function toManifest(doc: PlainDocument): PackManifest {
   const height = blockHeightOf(doc)
   const num = (f: string): number => (typeof doc[f] === 'number' ? (doc[f] as number) : 0)
   return {

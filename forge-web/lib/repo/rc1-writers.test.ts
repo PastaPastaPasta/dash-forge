@@ -87,7 +87,7 @@ import { postTargetEvent, setAssignee, setLabel, setMilestone, setPolicy, setThr
 import { syncTopicDocs, updateConfig } from './settings'
 import { contractOf } from './source'
 import { resetStarShapes } from './star-shape'
-import { repoKeyData } from './private-members'
+import { repoKeyData, wrapRoleCode } from './private-members'
 import { decodeIdentifier } from '../auth/base58'
 import { EpochKeys } from '../private/keys'
 import { sealWrap } from '../private/wrap'
@@ -598,5 +598,17 @@ describe('private writers are RC1-valid', () => {
       expect(r.sealed?.resolved.fields).toMatchObject({ notesContinue: true })
       expect(r.sealed?.resolved.assets).toEqual([])
     })
+  })
+})
+
+describe('repoKey.mr (mainnet L4)', () => {
+  it("a wrap names its recipient's role code: 1 for a maintainer or an unlisted member (parity: forge-core wrap_role_code)", () => {
+    const members = [
+      { identity: 'A', role: 'maintainer' as const, createdAt: 1 },
+      { identity: 'A', role: 'writer' as const, createdAt: 1 },
+      { identity: 'B', role: 'triage' as const, createdAt: 1 },
+      { identity: 'C', role: 'reader' as const, createdAt: 1 },
+    ]
+    expect(['A', 'B', 'C', 'Z'].map((id) => wrapRoleCode(members, id))).toEqual([1, 2, 3, 1])
   })
 })

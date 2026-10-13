@@ -19,14 +19,15 @@ import {
 import type { Role } from './v2'
 
 describe('writerRoleOf (read tolerant)', () => {
-  it('absent or 1 is a writer, 2 triage, 3 reader; anything else grants nothing', () => {
+  it('absent or 1 is a writer, 2 triage, 3 reader, 4 a bot (mainnet); anything else grants nothing', () => {
     expect(writerRoleOf(undefined)).toBe('writer')
     expect(writerRoleOf(null)).toBe('writer')
     expect(writerRoleOf(1)).toBe('writer')
     expect(writerRoleOf(2n)).toBe('triage')
     expect(writerRoleOf(3)).toBe('reader')
     expect(writerRoleOf(0)).toBeNull()
-    expect(writerRoleOf(4)).toBeNull()
+    expect(writerRoleOf(4)).toBe('bot')
+    expect(writerRoleOf(5)).toBeNull()
     expect(writerRoleOf('writer')).toBeNull()
   })
 })
@@ -73,6 +74,15 @@ describe('claimedRole: the r a gated write carries', () => {
     expect(() => claimedRole('refUpdate', {}, 'triage')).toThrow('your role on this repo is triage: a triage member cannot push')
     expect(() => claimedRole('transition', { kind: 13, asAuthor: 0 }, 'triage')).toThrow(/cannot merge a pull request/)
     expect(() => claimedRole('event', { kind: 4 }, 'reader')).toThrow(/^your role on this repo is reader: a reader cannot/)
+  })
+
+  it('refuses a bot (role 4) every role-gated write as a member, as forge-core require_role does', () => {
+    expect(() => claimedRole('refUpdate', {}, 'bot')).toThrow(/a bot cannot push/)
+    expect(() => claimedRole('label', { name: 'x' }, 'bot')).toThrow(/a bot cannot/)
+    expect(() => claimedRole('event', { kind: 4 }, 'bot')).toThrow(/a bot cannot/)
+    // Its own issue's transition goes through the author operand.
+    expect(claimedRole('transition', { kind: 2, asAuthor: 1 }, 'bot')).toBe(1)
+    expect(roleLimit('bot', 'canLabel', 'add labels')).toMatch(/Your role here is bot/)
   })
 })
 

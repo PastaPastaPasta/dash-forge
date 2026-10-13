@@ -51,6 +51,9 @@ import { usePrivateWrite } from '@/hooks/use-private-write'
 import { ResolvedPerson } from '@/components/repo/resolved-person'
 import { useSdk } from '@/hooks/use-sdk'
 import { useWriteGuard } from '@/hooks/use-write-guard'
+import type { ForgeContractKind } from '@/lib/deployments'
+import { writeContractKind } from '@/lib/layout'
+import { DOC } from '@/lib/repo'
 import { previewDelete } from '@/lib/sdk'
 import { Author } from '@/components/author'
 import { Button } from '@/components/ui/button'
@@ -62,6 +65,11 @@ import { shortId } from '@/lib/utils'
 
 /** The spec's removal warning, verbatim, with the member's name. */
 /** What the remove dialog says, for what the removal will do. */
+/** The contracts adding `role` writes to: the member row (forge-core) and, for a key holder, its key share (a repoKey). */
+function addContracts(repo: RepoHome['repo'], role: Role): ForgeContractKind[] {
+  return holdsMembersKey(role) ? ['core', writeContractKind(repo.forge, DOC.repoKey)] : ['core']
+}
+
 function removalText(effect: RemovalEffect, name: string, role: Role, kept: Role | null): string {
   if (effect === 'none') return `Removes ${name}'s ${role} role. They stay a maintainer, so the repo key does not change.`
   if (effect === 'rotate-keep') {
@@ -142,8 +150,8 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
     }
     if (!keyCheck.settled) return
     setPickedAdd(null)
-    if (keyCheck.data === true && guard.check(addMemberCost(role))) setAdding(true)
-  }, [pickedAdd, trimmed, keyCheck.settled, keyCheck.data, guard, role])
+    if (keyCheck.data === true && guard.check(addMemberCost(role), addContracts(repo, role))) setAdding(true)
+  }, [pickedAdd, trimmed, keyCheck.settled, keyCheck.data, guard, role, repo])
 
   const removalPlan = useMemo((): { plan: RotationPlan | null; error: string | null } => {
     if (removing === null || identity === null || write.context === null) return { plan: null, error: null }
@@ -221,7 +229,7 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
               variant="primary"
               disabled={trimmed === '' || idError !== null || keyCheck.data !== true || !mayAdd(consent) || guard.disabledReason !== null || locked || cannotRead}
               onClick={() => {
-                if (guard.check(addMemberCost(role))) setAdding(true)
+                if (guard.check(addMemberCost(role), addContracts(repo, role))) setAdding(true)
               }}
             >
               Add

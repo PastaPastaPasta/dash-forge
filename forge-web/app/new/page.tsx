@@ -37,9 +37,12 @@ import { NotDeployedState, isForgeDeployed } from '@/components/ui/network-badge
 import { ACTIVE_NETWORK, DEFAULT_NETWORK, networkName } from '@/lib/constants'
 import { useAuth } from '@/contexts/auth-context'
 import { useSdk } from '@/hooks/use-sdk'
+import { writeContractKind } from '@/lib/layout'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import {
+  DOC,
   checkRepoInput,
+  contractOf,
   createRepo,
   discardRepoCreation,
   REPO_NAME_RULE,
@@ -132,7 +135,7 @@ export default function NewRepoPage(): JSX.Element {
   // A private create wraps its key from the encryption key in this browser's vault, and so does
   // a public one that turns members-only content on: read it for both.
   const ops = useAsync(
-    () => encryptionOps(sdk!, DEFAULT_NETWORK, identity!, forge!.collab),
+    () => encryptionOps(sdk!, DEFAULT_NETWORK, identity!, contractOf(forge!, DOC.repoKey)),
     [ready, identity ?? '', forge?.core ?? '', unlockScope ?? ''],
     { enabled: sdk !== null && identity !== null && forge !== null },
   )
@@ -240,7 +243,7 @@ export default function NewRepoPage(): JSX.Element {
       // Turning members-only content on without one ends with the repo and a note instead.
       let privateCreate: PrivateCreate | undefined
       if (i.visibility === 'private' || i.membersOnly === true) {
-        const o = await encryptionOps(sdk, DEFAULT_NETWORK, signer.identityId, forge.collab)
+        const o = await encryptionOps(sdk, DEFAULT_NETWORK, signer.identityId, contractOf(forge, DOC.repoKey))
         if (o !== null) privateCreate = { ops: o, epochZero: createEpochZero, membersOnly: enableMembersContent }
       }
       result = await createRepo(
@@ -517,7 +520,8 @@ export default function NewRepoPage(): JSX.Element {
             disabled={name.trim() === '' || nameError !== null || branchError !== null || guard.disabledReason !== null || privateBlocked !== null}
             title={guard.disabledReason ?? privateBlocked ?? undefined}
             onClick={() => {
-              if (guard.check(cost, 'core', 'create a repository')) setConfirm(input())
+              // The members key's first share is a repoKey: forge-meta's on a four-contract set.
+              if (guard.check(cost, usesKey && forge ? ['core', writeContractKind(forge, DOC.repoKey)] : 'core', 'create a repository')) setConfirm(input())
             }}
           >
             Create repository

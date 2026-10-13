@@ -12,7 +12,8 @@ import { useState } from 'react'
 import { Ban as BanIcon } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { timeAgo } from '@/lib/view'
-import { readMembershipsCached, repoContractIds, repoKey, resolveOwner } from '@/lib/repo'
+import { contractOf, readMembershipsCached, repoContractIds, repoKey, resolveOwner } from '@/lib/repo'
+import { writeContractKind } from '@/lib/layout'
 import { banIdentity, countingBansOf, DOC_BAN, invalidateBans, liftBan, readBanState } from '@/lib/repo/bans'
 import { contractHasType } from '@/lib/repo/contract-shape'
 import { shortId } from '@/lib/utils'
@@ -48,7 +49,8 @@ export function BanSettings({ home, maintainer }: { home: RepoHome; maintainer: 
   const guard = useWriteGuard()
   const bans = useAsync(() => readBanState(sdk!, repo, network), [ready, repoKey(repo), network], { enabled: ready && sdk !== null })
   // A contract registered before bans has no type for them: the form would only fail.
-  const supported = useAsync(() => contractHasType(sdk!, repo.forge.collab, DOC_BAN), [ready, repo.forge.collab], { enabled: ready && sdk !== null })
+  const bansContract = contractOf(repo.forge, DOC_BAN)
+  const supported = useAsync(() => contractHasType(sdk!, bansContract, DOC_BAN), [ready, bansContract], { enabled: ready && sdk !== null })
   const [who, setWho] = useState('')
   const [reason, setReason] = useState<number>(0)
   const [banning, setBanning] = useState<{ readonly id: string; readonly label: string; readonly role: Role | null } | null>(null)
@@ -177,7 +179,7 @@ export function BanSettings({ home, maintainer }: { home: RepoHome; maintainer: 
             className="flex flex-wrap items-end gap-2"
             onSubmit={(e) => {
               e.preventDefault()
-              if (guard.check(previewCreate('ban'), 'collab')) void start()
+              if (guard.check(previewCreate('ban'), writeContractKind(repo.forge, DOC_BAN))) void start()
             }}
           >
             <div className="min-w-[14rem] flex-1">

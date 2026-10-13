@@ -1,0 +1,24 @@
+{
+  "name": "bundle_open_other_revision_mismatch",
+  "description": "The key of revision 1 against revision 2 (re-sealed with a new nonce by an edit): CommitMismatch. A key opens one revision of one document.",
+  "case": "make_public",
+  "rules": "v2",
+  "input": {
+    "op": "bundleOpen",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "doc": {
+      "type": "comment",
+      "vis": "public",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "targetId": "3333333333333333333333333333333333333333333333333333333333333333",
+      "id": "ed207edd7c7766627b8cd4fdf8a189c1369d179b25833a353b101a0ab98d39ab"
+    },
+    "enc": "030b0a090807060504030201003d9c1be5ee48776afd298642ac43c4dcaaf3e0a2c3c4b47a63d6be2aa467dee21380d24f0015e3789b991ed876201db193187f11c1b87ebb2a29a3bb19fbec865853688f17f0e3a7bd7db1a8b1bec7469555aeb7430b1c8f4e42e9b79767f5c3c7ee205c42d4ab0323ea021758ad6904",
+    "key": "4faf51f6930dfb44ded0de72f22d0bd0233a50c420b375ece2ce3edc56fb6958"
+  },
+  "expected": {
+    "status": "unreadable",
+    "reason": "commitMismatch"
+  }
+}

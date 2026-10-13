@@ -146,14 +146,15 @@ impl Group {
         }
     }
 
-    /// Whether a member with `role` is in this group.
+    /// Whether a member with `role` is in this group. Groups never include bots (DESIGN
+    /// §3.5): one reads an environment only as one of its specific people.
     #[must_use]
     pub fn includes(self, role: crate::rules::v2::Role) -> bool {
         use crate::rules::v2::Role;
         match self {
             Self::Maintainers => role == Role::Maintainer,
             Self::Writers => matches!(role, Role::Maintainer | Role::Writer),
-            Self::Members => true,
+            Self::Members => crate::members::holds_members_key(role),
         }
     }
 }

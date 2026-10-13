@@ -72,6 +72,7 @@ COST = R('cost')
 NCOST = nl(R('cost'))
 STEPS = R('steps')
 AUD = R('audience')
+MADE_PUBLIC = nl(O({'by': S, 'state': E('public', 'editedAfter'), 'publishedRevision': I}, ['by', 'state']))
 LETTER = R('letter')
 OID = R('oid')
 
@@ -332,9 +333,12 @@ cmd('issue view', 'An issue, its comments, events and state.', {
     'audience': AUD, 'letter': LETTER, 'recipients': nl(I), 'readable': B, 'why': S, 'createdAt': I,
     'state': E('open', 'closed'), 'open': B, 'labels': SA, 'assignees': SA, 'stateReason': nl(S), 'duplicateOf': nl(I), 'milestone': nl(S), 'pinned': B, 'locked': B,
     'comments': A(O({'id': S, 'author': S, 'body': nl(S), 'bodyIncomplete': ANY, 'audience': AUD, 'letter': LETTER,
-                     'replyTo': nl(S), 'createdAt': I}, ['id', 'author'])),
+                     'replyTo': nl(S), 'createdAt': I, 'madePublic': MADE_PUBLIC}, ['id', 'author'])),
     'membersOnlyComments': A(OBJ), 'membersOnlyHidden': I, 'events': A(EVENT), 'transitions': A(TRANSITION),
     'hiddenComments': ANY, 'moderation': ANY, 'hiddenEventValues': ANY, 'plaintextEventValues': ANY,
+    'madePublic': D('Who made this members-only issue public with a make-public bundle, and whether its author edited it since; null when no maintainer did.', MADE_PUBLIC),
+    'earlierVersions': D('With --history: the earlier versions of the issue a maintainer made public, oldest first.', A(O({'revision': nl(I), 'title': nl(S), 'body': nl(S), 'updatedAt': nl(I), 'madePublicBy': S}, ['madePublicBy']))),
+    'bundleAlerts': D('Make-public entries whose key does not match the post they name: ignored.', A(O({'documentId': S, 'revision': I, 'by': S}, ['documentId', 'revision', 'by']))),
 }, ['number', 'author', 'id', 'readable', 'state', 'open', 'labels', 'assignees'])
 cmd('issue create', 'A new issue.', {
     'status': E('created'), 'number': I, 'documentId': S, 'id': S, 'title': S, 'audience': AUD, 'letter': LETTER,
@@ -400,6 +404,8 @@ cmd('pr view', 'A pull request: its state, head, reviews, threads and comments.'
     'generalComments': A(OBJ), 'comments': A(OBJ), 'hiddenComments': ANY, 'hiddenReviews': ANY, 'moderation': ANY,
     'hiddenEventValues': ANY, 'plaintextEventValues': ANY, 'audience': AUD, 'recipients': nl(I), 'readable': B,
     'why': S, 'membersOnlyComments': A(OBJ), 'membersOnlyHidden': I, 'membersOnlyReviewsHidden': I, 'mergeContent': ANY,
+    'madePublic': D('The comments and reviews maintainers made public with a make-public bundle, by id.', {'type': 'object', 'additionalProperties': MADE_PUBLIC}),
+    'bundleAlerts': D('Make-public entries whose key does not match the post they name: ignored.', A(OBJ)),
     'policyMet': D('Whether the open PR meets the branch policy; null with no policy, on a PR that is not open, or when only code owner approvals are left (`dg pr merge` checks them).', nl(B)),
     'unmetRules': D('The branch rules left unmet, one line each, as `dg pr merge` names them (code owner approvals are not checked here).', SA),
     'codeOwners': D('The policy requires code owner approvals, which `dg pr merge` checks (`checked` is always false here); null when it does not, or the PR is not open.', nl(O({'required': B, 'checked': B}, ['required', 'checked']))),
@@ -551,10 +557,12 @@ cmd('collab remove', 'A member removed.', {
     'status': E('removed', 'not_a_member'), 'member': S, 'role': S, 'repo': S, 'rotation': nl(R('rotation')),
     'droppedEpochs': ANY, 'losingMembers': ANY, 'environments': ANY, 'resavedEnvironments': ANY, 'environmentPlan': ANY,
 }, ['status', 'member'])
-cmd('make-public', 'Your own members-only posts made public: each one edited to Public, or a review given a public comment that carries its text.', {
-    'status': E('madePublic'), 'cost': COST,
+cmd('make-public', 'Members-only posts made public: your own each edited to Public (a review given a public comment that carries its text), or anyone\'s by a maintainer\'s make-public bundle (`carrier` "bundle").', {
+    'status': E('madePublic'), 'cost': COST, 'carrier': E('bundle'),
+    'manifest': D('The bundle\'s packManifest document id.', S), 'authors': SA,
     'posts': A(O({'id': S, 'kind': E('issue', 'comment', 'review'), 'number': nl(I), 'written': S,
-                  'lost': SA}, ['id', 'kind', 'written'])),
+                  'lost': SA, 'author': S, 'revisions': A(I)}, ['id', 'kind'])),
+    'leftOut': D('Posts named that the bundle leaves out, and why.', A(O({'id': S, 'kind': S, 'author': S, 'why': E('alreadyPublic', 'unreadable', 'notSent', 'longBody', 'pullRequest')}, ['id', 'why']))),
 }, ['status', 'posts'])
 cmd('collab list', 'The repository\'s members and their roles.', {
     'count': I, 'members': A(OBJ), 'ownerId': S, 'roles': {'const': True},

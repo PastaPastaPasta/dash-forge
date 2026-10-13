@@ -1824,6 +1824,205 @@ mod tests {
             reviews: Vec<v2::CarrierReview>,
             comments: Vec<v2::CarrierComment>,
         },
+        BundleKey {
+            repo_id: String,
+            doc: Box<crate::private::DocHeader>,
+            enc: String,
+            #[serde(default)]
+            epoch_key: Option<String>,
+            #[serde(default)]
+            epoch: Option<u32>,
+            #[serde(default)]
+            owner_keys: Vec<serde_json::Value>,
+            #[serde(default)]
+            reader: Option<serde_json::Value>,
+        },
+        BundleOpen {
+            repo_id: String,
+            doc: Box<crate::private::DocHeader>,
+            enc: String,
+            key: String,
+        },
+        BundleRead {
+            repo_id: String,
+            visibility: v2::Visibility,
+            maintainers: Vec<String>,
+            bundles: Vec<BundleIn>,
+            docs: Vec<BundledDocIn>,
+        },
+        BundleEncode {
+            entries: Vec<BundleEntryIn>,
+        },
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct BundleIn {
+        owner: String,
+        bytes: String,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct BundledDocIn {
+        doc: crate::private::DocHeader,
+        enc: String,
+        revision: u32,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct BundleEntryIn {
+        kind: u8,
+        target: String,
+        revision: u32,
+        key: String,
+    }
+
+    fn hex32(s: &str) -> [u8; 32] {
+        <[u8; 32]>::try_from(hex::decode(s).expect("hex")).expect("32 bytes")
+    }
+
+    /// The `make_public__bundle_*` ops (DESIGN §4.6, a maintainer's bundle).
+    #[allow(clippy::too_many_lines)] // one arm per vector op
+    fn run_make_public_bundle(v: &Vector, inp: MakePublicInput) {
+        use crate::private::bundle::{self, BundleRead, DocEntries};
+        use crate::private::convert::PublishedBundle;
+        use crate::private::{doc, named, EpochKey, EpochKeys, Opened};
+        use serde_json::json;
+        let ctx = &v.name;
+        let opened_json = |o: &Opened| match o {
+            Opened::Readable(f) => json!({ "status": "readable", "fields": f }),
+            Opened::Unreadable(r) => json!({ "status": "unreadable", "reason": r }),
+            Opened::Malformed => json!({ "status": "malformed" }),
+        };
+        match inp {
+            MakePublicInput::BundleKey {
+                repo_id,
+                doc: header,
+                enc,
+                epoch_key,
+                epoch,
+                owner_keys,
+                reader,
+            } => {
+                let repo_id = hex32(&repo_id);
+                let enc = hex::decode(enc).expect("hex");
+                let got = if let (Some(k), Some(e)) = (epoch_key, epoch) {
+                    let keys = EpochKeys::derive(&repo_id, e, &EpochKey::from_bytes(hex32(&k)));
+                    doc::members_obj_key(&keys, &header, &enc).map(|k| hex::encode(*k))
+                } else {
+                    let owner: Vec<named::OwnerKey> = owner_keys
+                        .iter()
+                        .map(|k| named::OwnerKey {
+                            id: u32::try_from(k["id"].as_u64().unwrap()).unwrap(),
+                            purpose: u8::try_from(k["purpose"].as_u64().unwrap()).unwrap(),
+                            key_type: u8::try_from(k["keyType"].as_u64().unwrap()).unwrap(),
+                            data: hex::decode(k["data"].as_str().unwrap()).unwrap(),
+                        })
+                        .collect();
+                    let r = reader.expect("a letter vector names its reader");
+                    let keys: Vec<crate::envelope::PrivateKey> = r["keys"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|k| {
+                            crate::envelope::PrivateKey::from_hex(k.as_str().unwrap()).unwrap()
+                        })
+                        .collect();
+                    let reader = named::Reader {
+                        identity_id: hex32(r["identityId"].as_str().unwrap()),
+                        keys: &keys,
+                    };
+                    named::letter_obj_key(&repo_id, &header, &enc, &owner, &reader)
+                        .map(|k| hex::encode(*k))
+                };
+                assert_eq!(json!({ "kObj": got }), v.expected, "vector `{ctx}`");
+            }
+            MakePublicInput::BundleOpen {
+                repo_id,
+                doc: header,
+                enc,
+                key,
+            } => {
+                let (repo_id, enc, key) = (hex32(&repo_id), hex::decode(enc).unwrap(), hex32(&key));
+                let got = match enc.first() {
+                    Some(&doc::V4) => named::open_with_key(&repo_id, &header, &enc, &key),
+                    _ => doc::open_members_with_key(&repo_id, &header, &enc, &key),
+                };
+                assert_eq!(opened_json(&got), v.expected, "vector `{ctx}`");
+            }
+            MakePublicInput::BundleRead {
+                repo_id,
+                visibility,
+                maintainers,
+                bundles,
+                docs,
+            } => {
+                let repo_id = hex32(&repo_id);
+                let maintainers = maintainers.iter().map(|m| hex32(m)).collect();
+                let bundles: Vec<PublishedBundle> = bundles
+                    .iter()
+                    .map(|b| PublishedBundle {
+                        owner: hex32(&b.owner),
+                        bytes: hex::decode(&b.bytes).unwrap(),
+                    })
+                    .collect();
+                let entries =
+                    DocEntries::of(visibility == v2::Visibility::Public, &maintainers, &bundles);
+                let mut reads = Vec::new();
+                let mut alerts = Vec::new();
+                for d in docs {
+                    let id = d.doc.id.expect("a bundled doc names its $id");
+                    let enc = hex::decode(&d.enc).unwrap();
+                    let (read, mismatches) = bundle::read_revision(
+                        &repo_id,
+                        &d.doc,
+                        d.revision,
+                        &enc,
+                        entries.of_doc(d.doc.kind, &id),
+                    );
+                    let (id, revision) = (hex::encode(id), d.revision);
+                    alerts.extend(mismatches.iter().map(
+                        |m| json!({ "id": id, "revision": m.revision, "by": hex::encode(m.by) }),
+                    ));
+                    reads.push(match read {
+                        BundleRead::Public { by, fields } => json!({
+                            "id": id, "revision": revision, "state": "public",
+                            "by": hex::encode(by), "fields": fields,
+                        }),
+                        BundleRead::EditedAfter { by, revision: r } => json!({
+                            "id": id, "revision": revision, "state": "editedAfter",
+                            "by": hex::encode(by), "publishedRevision": r,
+                        }),
+                        BundleRead::None => {
+                            json!({ "id": id, "revision": revision, "state": "none" })
+                        }
+                    });
+                }
+                assert_eq!(
+                    json!({ "reads": reads, "alerts": alerts }),
+                    v.expected,
+                    "vector `{ctx}`"
+                );
+            }
+            MakePublicInput::BundleEncode { entries } => {
+                let entries: Vec<(u8, [u8; 32], u32, EpochKey)> = entries
+                    .iter()
+                    .map(|e| {
+                        (
+                            e.kind,
+                            hex32(&e.target),
+                            e.revision,
+                            EpochKey::from_bytes(hex32(&e.key)),
+                        )
+                    })
+                    .collect();
+                let got = hex::encode(bundle::encode_doc_bundle(&entries).unwrap());
+                assert_eq!(json!({ "bytes": got }), v.expected, "vector `{ctx}`");
+            }
+            _ => unreachable!("not a bundle op"),
+        }
     }
 
     fn run_make_public(v: &Vector) {
@@ -1855,6 +2054,7 @@ mod tests {
                     "vector `{ctx}`"
                 );
             }
+            bundle_op => run_make_public_bundle(v, bundle_op),
         }
     }
 

@@ -203,6 +203,17 @@ export function docAdWithoutKeys(doc: PrivateDoc, repoId: Uint8Array, version: n
   return adOf(doc, repoId, u32(0), version, bind(doc, undefined))
 }
 
+/**
+ * The §4.4 associated data for `enc` version `version` with no epoch keys, at the document's own
+ * epoch: what anyone holding a published `K_obj` rebuilds from public fields (DESIGN §4.6, a
+ * maintainer's make-public bundle; forge-core `DocHeader::ad_in`). Throws {@link MalformedError}
+ * for a config or a missing bind field.
+ */
+export function docAdIn(doc: PrivateDoc, repoId: Uint8Array, version: number): Bytes {
+  if (repoId.length !== 32) throw new RangeError('repoId must be 32 bytes')
+  return adOf(doc, repoId, u32Field(doc.epoch, 'epoch'), version, bind(doc, undefined))
+}
+
 function adOf(doc: PrivateDoc, repoId: Uint8Array, epoch: Uint8Array, version: number, b: Uint8Array): Bytes {
   return concat(
     utf8('dash-forge/v2/doc'),
@@ -573,6 +584,83 @@ async function openMembers(doc: StoredPrivateDoc, keys: EpochKeys): Promise<Open
   }
   if (!(await refHashesMatch(doc, fields, keys, V3))) return MALFORMED
   return { status: 'readable', fields }
+}
+
+/**
+ * The kinds a maintainer's make-public bundle publishes by their per-object key: issues, comments
+ * and reviews (a PR's sealed branch names are keyed by its epoch, which a bundle does not publish:
+ * members-only PRs and their bundles come with phase 3). forge-core `doc::bundles_kind`.
+ */
+export function bundlesKind(type: PrivateDocType): boolean {
+  return type === 'issue' || type === 'comment' || type === 'review'
+}
+
+/**
+ * `K_obj` of the members-only (`enc` v0x03) document `doc`, derived under `keys` (its epoch) and
+ * checked against the commitment `enc` carries: what a member publishes in a make-public bundle
+ * (DESIGN §4.6; forge-core `doc::members_obj_key`). Raw, through `deriveBits` (`./keys`); the
+ * caller wipes it once the bundle is written. Null when it is not a well-framed v0x03 document of
+ * a kind bundles publish, its epoch is not `keys`'s, or the key does not commit (it was not made
+ * under it).
+ */
+export async function membersObjKey(keys: EpochKeys, doc: PrivateDoc, enc: Uint8Array): Promise<Bytes | null> {
+  if (enc[0] !== V3 || !bundlesKind(doc.type) || !encShapeOk(doc, enc) || keys.epoch !== doc.epoch) return null
+  let ad: Bytes
+  try {
+    ad = docAd(doc, keys, V3)
+  } catch (e) {
+    if (e instanceof MalformedError) return null
+    throw e
+  }
+  const kObj = await keys.objKey(bytes(enc.slice(1, 1 + NONCE_LEN)), ad)
+  let commits = false
+  try {
+    commits = constantTimeEqual((await objKeys(keys.repoId, kObj)).commit, enc.subarray(1 + NONCE_LEN, 1 + NONCE_LEN + 32))
+    return commits ? kObj : null
+  } finally {
+    if (!commits) kObj.fill(0)
+  }
+}
+
+/**
+ * Open the members-only (`enc` v0x03) document `doc` of repository `repoId` with a published
+ * per-object key `kObj` (DESIGN §4.6, a maintainer's bundle), holding no epoch key (forge-core
+ * `doc::open_members_with_key`): the AD is rebuilt from the document's public fields
+ * ({@link docAdIn}), the commitment `kObj` derives is compared with the one `enc` carries
+ * **before** GCM runs (a mismatch is `commitMismatch`: a lying entry, never shown), then GCM under
+ * `K_doc,obj` and the TLV. Binding the AD into `K_obj` is what keeps a published key from opening,
+ * or minting, any other document (§4.1). A kind a bundle does not publish, or a malformed
+ * envelope, is malformed.
+ */
+export async function openMembersWithKey(repoId: Uint8Array, doc: PrivateDoc, enc: Uint8Array, kObj: Uint8Array): Promise<OpenResult> {
+  if (enc[0] !== V3 || !bundlesKind(doc.type) || !encShapeOk(doc, enc)) return MALFORMED
+  let ad: Bytes
+  try {
+    ad = docAdIn(doc, repoId, V3)
+  } catch (e) {
+    if (e instanceof MalformedError) return MALFORMED
+    throw e
+  }
+  const nonce = bytes(enc.slice(1, 1 + NONCE_LEN))
+  const commit = enc.subarray(1 + NONCE_LEN, 1 + NONCE_LEN + 32)
+  const obj = await objKeys(repoId, kObj)
+  if (!constantTimeEqual(obj.commit, commit)) return unreadable('commitMismatch')
+  let pt: Bytes
+  try {
+    pt = new Uint8Array(
+      await crypto.subtle.decrypt({ name: 'AES-GCM', iv: nonce, additionalData: concat(ad, commit) }, obj.docKey, bytes(enc.slice(1 + NONCE_LEN + 32))),
+    )
+  } catch {
+    return unreadable('badTag')
+  }
+  try {
+    return { status: 'readable', fields: parseTlv(pt, { type: doc.type, epoch: doc.epoch }) }
+  } catch (e) {
+    if (e instanceof MalformedError) return MALFORMED
+    throw e
+  } finally {
+    pt.fill(0)
+  }
 }
 
 /** The smallest existing epoch above `epoch`, with its anchor. */

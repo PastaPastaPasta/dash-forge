@@ -621,10 +621,13 @@ async fn repos(ctx: &Ctx, a: &crate::SearchReposArgs) -> Result<()> {
             .collect()
     };
     let mut found: Vec<Found> = if let Some(t) = &topic {
+        let doc_topic = forge_core::collab::parity::DOC_TOPIC;
+        // forge-core's, or forge-meta's on a four-contract set (D44)
+        let topics = client.fetch_contract(forge.home(doc_topic)).await?;
         let ids: Vec<FieldValue> = client
             .query_documents(
-                &core,
-                forge_core::collab::parity::DOC_TOPIC,
+                &topics,
+                doc_topic,
                 &[QueryFilter::eq("name", FieldValue::text(t.as_str()))],
                 &[QueryOrder::desc("$createdAt")],
                 topic_reads,

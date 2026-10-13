@@ -163,6 +163,15 @@ pub fn dash_exact(credits: u64) -> String {
     format!("{whole}.{}", frac.trim_end_matches('0'))
 }
 
+/// "alice", "alice and bob", "alice, bob and carol" (DESIGN §10's lists of names).
+pub fn join_and(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.clone(),
+        [init @ .., last] => format!("{} and {last}", init.join(", ")),
+    }
+}
+
 /// "1 asset" / "3 assets": a count and its noun, never "asset(s)". Nouns whose plural is not
 /// a bare `s` go through [`plural_with`].
 pub fn plural<N: Copy + std::fmt::Display + PartialEq + From<u8>>(n: N, one: &str) -> String {

@@ -8,7 +8,7 @@
 
 import Link from 'next/link'
 import { useMemo, useState } from 'react'
-import { Bell, CheckCheck, CircleDot, GitCommit, GitPullRequest, Info, MessageSquare, RefreshCw, ShieldCheck, Tag } from 'lucide-react'
+import { Bell, CheckCheck, CircleDot, GitCommit, GitPullRequest, Globe, Info, MessageSquare, RefreshCw, ShieldCheck, Tag } from 'lucide-react'
 import { AppShell } from '@/components/app-shell'
 import { SignInButton } from '@/components/sign-in-button'
 import { Author } from '@/components/author'
@@ -57,6 +57,7 @@ const ICON: Readonly<Record<InboxItem['kind'], typeof Bell>> = {
   state: Tag,
   review: ShieldCheck,
   push: GitCommit,
+  madePublic: Globe,
 }
 
 function hrefOf(item: InboxItem): string {

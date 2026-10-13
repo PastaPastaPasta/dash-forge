@@ -1,0 +1,26 @@
+{
+  "name": "bundle_key_patch_none",
+  "description": "A members-only PR is not bundled (its branch names are keyed by its epoch, which a bundle does not publish): no key.",
+  "case": "make_public",
+  "rules": "v2",
+  "input": {
+    "op": "bundleKey",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "doc": {
+      "type": "patch",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "number": 3,
+      "baseRefNameHash": "e729d18b929db396450159dfc6256e24302b94c9c3c9eb40643f5ae0be3fe579",
+      "sourceRefNameHash": "d84cb3ab7e73838aa281dc31df409a61ec404c3c5ba7c19eea8ba0f40d3261be",
+      "vis": "public",
+      "id": "0d7f9cef405d77636d7785158cb41b612fb17f7a6ae717db9b30d44cc99cd4fe"
+    },
+    "enc": "03000102030405060708090a0b6abba9e1aecca8a82cc1badfe24e234d9566cf2eac84f1a3c97c61fad8822335fafb189f9f310df7504d94ec8c5d2664e2ed53a8279b1c3ad2999579c3e31b7176a6c27a5d1caa839fbfa7f988017e81e9dfa3011c3d2795d3984895fff94a799a3c4324fb0f24c7bf21439b079545ebf8962d268c084a83b8f9df3a0514caf7e1cee7cf49c486902d1ba589b4b7e10a6f05b4d6f650c9ef1ada95d64488611e3e472df866ee6ad9f58d1abacf610789",
+    "epochKey": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "epoch": 0
+  },
+  "expected": {
+    "kObj": null
+  }
+}

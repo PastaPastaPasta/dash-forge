@@ -944,10 +944,11 @@ async fn fetch_one(
     // A pack is required when a CURRENT MEMBER recorded it on Platform: on forge-v2
     // anyone who was a writer can post a manifest, so a stranger's chunkless
     // `storage = 0` copy must not turn an unreadable pack into a failed clone (it is
-    // set aside below, and fails the fetch with E503 only if the history needs it).
+    // set aside below, and fails the fetch with E503 only if the history needs it). A
+    // bot's copy counts as a stranger's (review-rev41 M-4).
     let on_chain = copies
         .iter()
-        .any(|m| m.storage == 0 && roles.contains_key(&m.owner_id));
+        .any(|m| m.storage == 0 && forge_core::repo::trusted_member(roles, &m.owner_id));
     let bytes = match got {
         Ok((bytes, _)) => bytes,
         Err(e) if on_chain => {

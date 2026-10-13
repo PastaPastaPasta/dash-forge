@@ -38,7 +38,8 @@ import { compareKey } from '../rules/oid'
 import { DOC, asIdentifierString, contentKey, num, str, type RepoRef } from './contract'
 import { EMPTY_LOG, feedQuery, groupFeed, onRepoInvalidated, readRepoFeedFrom, repoEpoch, sharedRepoCounts, sharedRepoFeed, toLog, type TargetLog } from './issues'
 import { newestLabels, type LabelDef } from './labels'
-import { HiddenTally, gateFor, membersOnlyRow, placeholderShown, type ContentGate } from './private-content'
+import { contentGate } from './made-public'
+import { HiddenTally, membersOnlyRow, placeholderShown, type ContentGate } from './private-content'
 import { onPrivateSessionEnded } from './private-session'
 import { repoSource } from './source'
 import { newScan, readScanPage, scanCodes, scanFloor, settledCode, type StateScan } from './state-scan'
@@ -505,7 +506,7 @@ async function loadListIndex<Row extends RowExtras>(
     byAuthor: new Map(),
     byKinds: new Map(),
     byKind: new Map(),
-    gate: gateFor(repo),
+    gate: contentGate(sdk, repo),
     view,
   }
   await recordChunk(sdk, index, res, res.page, index.walks.desc, codes)

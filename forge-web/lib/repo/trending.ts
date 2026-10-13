@@ -22,6 +22,7 @@ import type { ForgeIds } from '../deployments'
 import { STAR_BEAT_GRID, trendingWindow, type Window } from '../rules/parity'
 import { rankedDocuments, type RankedEntry, type RankedPage } from '../sdk'
 import { DOC, asIdentifierString } from './contract'
+import { contractOf } from './source'
 import { starShape, type StarShape } from './star-shape'
 import { hasStar } from './writes'
 
@@ -268,5 +269,5 @@ export async function readMostForked(sdk: EvoSDK, forge: ForgeIds, limit = 25): 
 
 /** The most followed identities: `follow.byTarget`, proved. */
 export function readMostFollowed(sdk: EvoSDK, forge: ForgeIds, limit = 25): Promise<RankedPage> {
-  return rankedDocuments(sdk, { dataContractId: forge.community, documentTypeName: DOC.follow, groupBy: 'identityId', limit })
+  return rankedDocuments(sdk, { dataContractId: contractOf(forge, DOC.follow), documentTypeName: DOC.follow, groupBy: 'identityId', limit })
 }

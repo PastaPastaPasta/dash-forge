@@ -14,6 +14,8 @@ import { useMemo, useState } from 'react'
 import { Globe, Shuffle } from 'lucide-react'
 
 import { NETWORKS } from '@/lib/constants'
+import { writeContractKind } from '@/lib/layout'
+import { DOC } from '@/lib/repo/contract'
 import { deleteProfile, normalizeProfile, profileCost, profileDeleteRefund, readProfile, saveProfile, sameProfile, type Profile } from '@/lib/repo/profile'
 import { avatarSpec, MAX_LINKS, PROFILE_LIMITS, profileProblems, type ProfileField, type ProfileFields, type ProfileInput } from '@/lib/rules/profile'
 import { identityHref } from '@/lib/view/profile-links'
@@ -223,7 +225,7 @@ function ProfileForm({
           className="min-w-0 space-y-4"
           onSubmit={(e) => {
             e.preventDefault()
-            if (changed && cost !== null && guard.check(cost, 'community', 'save your profile')) setConfirm('save')
+            if (changed && cost !== null && guard.check(cost, writeContractKind(forge, DOC.profile), 'save your profile')) setConfirm('save')
           }}
         >
           <Field label="Name" htmlFor="profile-name" hint="Shown above your username. Your DPNS username stays your address.">
@@ -342,7 +344,7 @@ function ProfileForm({
           <p className="mt-1 text-[12px] text-anvil-600 dark:text-anvil-300">
             Deletes your name, bio, avatar, links and signing keys, and refunds part of their storage fee. Your identity, username and repos stay.
           </p>
-          <Button className="mt-3" size="sm" variant="danger" disabled={!ready} onClick={() => guard.check(0, 'community', 'delete your profile') && setConfirm('delete')}>
+          <Button className="mt-3" size="sm" variant="danger" disabled={!ready} onClick={() => guard.check(0, writeContractKind(forge, DOC.profile), 'delete your profile') && setConfirm('delete')}>
             Delete profile
           </Button>
         </section>

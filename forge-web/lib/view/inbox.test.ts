@@ -82,7 +82,15 @@ describe('planFeeds', () => {
       `state:transition:${REPO.id}`,
       `new:issue:${REPO.id}`,
       `new:patch:${REPO.id}`,
+      `madePublic:${REPO.id}`,
     ])
+  })
+  it('reads the make-public bundles of the public repos I belong to only (DESIGN §4.6)', () => {
+    const priv = { repo: { ...REPO, id: 'P', private: true }, reason: 'writer' as const }
+    const starred = { repo: { ...REPO, id: 'S' }, reason: 'starred' as const }
+    const watched = { repo: { ...REPO, id: 'W' }, reason: 'watched' as const }
+    const keys = planFeeds(subs({ repos: [{ repo: REPO, reason: 'reader' }, priv, starred, watched], threads: [] }), { stars: true, pushes: false }).map(feedKey)
+    expect(keys.filter((k) => k.startsWith('madePublic:'))).toEqual([`madePublic:${REPO.id}`])
   })
   it('reads reviews only on PRs I opened, stars and pushes only when opted in', () => {
     const starred = { repo: { ...REPO, id: 'S' }, reason: 'starred' as const }

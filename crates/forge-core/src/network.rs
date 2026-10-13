@@ -268,6 +268,11 @@ struct V2Record {
     /// live in forge-collab).
     #[serde(default)]
     forge_community: Option<ContractRecord>,
+    /// forge-meta (DESIGN rev 4.1 D44): present on a four-contract set, where `repoKey`, `ban`,
+    /// `label`, `topic`, `packMirror`, `profile` and `follow` live; absent on a three-contract
+    /// set, which keeps them in their old homes.
+    #[serde(default)]
+    forge_meta: Option<ContractRecord>,
     #[serde(default)]
     contract_group_id: Option<String>,
     #[serde(default)]
@@ -276,6 +281,8 @@ struct V2Record {
     forge_collab_superseded: Vec<SupersededRecord>,
     #[serde(default)]
     forge_community_superseded: Vec<SupersededRecord>,
+    #[serde(default)]
+    forge_meta_superseded: Vec<SupersededRecord>,
     /// The group `deploy-v2.mjs` verified on chain: its id and owner (the deployer).
     #[serde(default)]
     contract_group: Option<GroupRecord>,
@@ -347,6 +354,7 @@ impl V2Record {
             .iter()
             .chain(&self.forge_collab_superseded)
             .chain(&self.forge_community_superseded)
+            .chain(&self.forge_meta_superseded)
             .filter(|r| r.contract_group_id.as_deref() == Some(group.as_str()))
             .filter_map(|r| r.contract_id.clone())
             .collect();
@@ -365,10 +373,15 @@ impl V2Record {
             Some(record) => record.registered_id()?,
             None => collab.clone(),
         };
+        let meta = match &self.forge_meta {
+            Some(record) => Some(record.registered_id()?),
+            None => None,
+        };
         Some(ForgeIds {
             core: self.forge_core.as_ref()?.registered_id()?,
             collab,
             community,
+            meta,
             group,
             superseded_in_group,
             group_owner,
@@ -387,9 +400,13 @@ pub struct ForgeIds {
     /// The forge-community contract (profiles, stars, watches, follows, check runs, policies,
     /// webhooks). forge-collab's id on a deployment that predates the three-contract split.
     pub community: String,
+    /// forge-meta (DESIGN rev 4.1 D44): repo keys, bans, labels, topics, pack mirrors, profiles
+    /// and follows. `None` on a three-contract set, where those types keep their old homes
+    /// ([`crate::layout::META_TYPES`]; [`ForgeIds::contract_of`] picks the home).
+    pub meta: Option<String>,
     /// The contract group every contract belongs to.
     pub group: String,
-    /// Earlier forge-core / forge-collab / forge-community contracts `deploy-v2.mjs` superseded but left in the
+    /// Earlier forge-core / forge-collab / forge-community / forge-meta contracts `deploy-v2.mjs` superseded but left in the
     /// same group (a group cannot drop a member). A group-bound key can sign for them too;
     /// they are Forge's own, so the group check accepts them.
     pub superseded_in_group: Vec<String>,
@@ -401,14 +418,19 @@ pub struct ForgeIds {
 }
 
 impl ForgeIds {
-    /// forge-core, forge-collab and forge-community, labelled (forge-community repeats
-    /// forge-collab's id on a deployment that predates the split).
-    pub fn all(&self) -> [(&'static str, &str); 3] {
-        [
-            ("forge-core", &self.core),
-            ("forge-collab", &self.collab),
-            ("forge-community", &self.community),
-        ]
+    /// forge-core, forge-collab, forge-community and, on a four-contract set, forge-meta,
+    /// labelled (forge-community repeats forge-collab's id on a deployment that predates the
+    /// split).
+    pub fn all(&self) -> Vec<(&'static str, &str)> {
+        let mut all = vec![
+            ("forge-core", self.core.as_str()),
+            ("forge-collab", self.collab.as_str()),
+            ("forge-community", self.community.as_str()),
+        ];
+        if let Some(meta) = &self.meta {
+            all.push(("forge-meta", meta.as_str()));
+        }
+        all
     }
 
     /// Whether `contract_id` is one of the current Forge contracts.
@@ -430,16 +452,27 @@ impl ForgeIds {
         }
     }
 
-    /// Placeholder ids for tests: `CORE`, `COLLAB`, `COMMUNITY`, group `G`.
+    /// Placeholder ids for tests: `CORE`, `COLLAB`, `COMMUNITY`, group `G` (a three-contract
+    /// set).
     #[doc(hidden)]
     pub fn test_forge() -> Self {
         Self {
             core: "CORE".into(),
             collab: "COLLAB".into(),
             community: "COMMUNITY".into(),
+            meta: None,
             group: "G".into(),
             superseded_in_group: vec![],
             group_owner: None,
+        }
+    }
+
+    /// [`Self::test_forge`] with forge-meta `META`: a four-contract set (D44).
+    #[doc(hidden)]
+    pub fn test_forge_meta() -> Self {
+        Self {
+            meta: Some("META".into()),
+            ..Self::test_forge()
         }
     }
 }
@@ -922,11 +955,16 @@ mod tests {
             core: on_disk("/v2/forgeCore/contractId"),
             collab,
             community,
+            meta: v
+                .pointer("/v2/forgeMeta/contractId")
+                .and_then(|c| c.as_str())
+                .map(str::to_string),
             group: on_disk("/v2/contractGroupId"),
             superseded_in_group: superseded("forgeCoreSuperseded")
                 .into_iter()
                 .chain(superseded("forgeCollabSuperseded"))
                 .chain(superseded("forgeCommunitySuperseded"))
+                .chain(superseded("forgeMetaSuperseded"))
                 .filter(|r| r["contractGroupId"] == v["v2"]["contractGroupId"])
                 .filter_map(|r| r["contractId"].as_str().map(str::to_string))
                 .collect(),
@@ -1029,6 +1067,7 @@ mod tests {
                 core: "C".into(),
                 collab: "L".into(),
                 community: "L".into(),
+                meta: None,
                 group: "G".into(),
                 superseded_in_group: vec![],
                 group_owner: None,
@@ -1046,10 +1085,31 @@ mod tests {
                 core: "C".into(),
                 collab: "L".into(),
                 community: "M".into(),
+                meta: None,
                 group: "G".into(),
                 superseded_in_group: vec!["OLDM".into()],
                 group_owner: None,
             })
+        );
+        // Four contracts (D44): forge-meta's id, and its superseded ones in the group
+        let four = three.replace(
+            r#""contractGroupId":"G"}}"#,
+            r#""forgeMeta":{"contractId":"X","status":"registered"},
+            "forgeMetaSuperseded":[{"contractId":"OLDX","contractGroupId":"G"}],
+            "contractGroupId":"G"}}"#,
+        );
+        let ids = parse(&four).unwrap();
+        assert_eq!(ids.meta.as_deref(), Some("X"));
+        assert_eq!(ids.superseded_in_group, ["OLDM", "OLDX"]);
+        assert!(ids.contains("X"));
+        assert_eq!(ids.all().len(), 4);
+        // A forge-meta still in flight is a half-finished deploy, not a three-contract one
+        assert_eq!(
+            parse(&four.replace(
+                r#""X","status":"registered""#,
+                r#""X","status":"broadcasting""#
+            )),
+            None
         );
         // A forge-community still in flight is a half-finished deploy, not a two-contract one
         assert_eq!(

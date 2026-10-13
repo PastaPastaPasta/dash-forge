@@ -803,6 +803,88 @@ pub fn translate_review(
     ))
 }
 
+/// The key a "made public" event carries (mixed-visibility DESIGN §4.6): `"dash_made_public":
+/// {"by": <maintainer>}`, on an `issues`, `issue_comment` or `pull_request_review` event with
+/// action `edited` whose post a maintainer's bundle made public. Its `sender` is the
+/// maintainer; the post's own `user` is its author, whom forge-notify tells.
+pub const MADE_PUBLIC_KEY: &str = "dash_made_public";
+
+/// A post a maintainer's bundle (manifest `manifest_id`, by `by`) made public → its event,
+/// `edited`, carrying the post as everyone now reads it (`d`, opened by the bundle's key) and
+/// [`MADE_PUBLIC_KEY`]. `kind` is `issue`, `comment` or `review`; a comment or review needs its
+/// issue or PR in `targets` (an unknown one is skipped).
+pub fn translate_made_public(
+    repo: &RepositoryMeta,
+    manifest_id: &str,
+    kind: &str,
+    d: &FetchedDocument,
+    by: &str,
+    targets: &BTreeMap<String, TargetInfo>,
+    closed: &BTreeSet<String>,
+) -> Option<WebhookEvent> {
+    let source = format!("{manifest_id}:{}", d.id);
+    let (mut e, thread) = match kind {
+        "issue" => {
+            let issue = IssueObj {
+                number: d.field_u64("number")?,
+                document_id: d.id.clone(),
+                author: d.owner_id.clone(),
+                title: plain_str(d, "title"),
+                body: plain_str(d, "body"),
+                open: !closed.contains(&d.id),
+                is_pr: false,
+            };
+            (
+                issues_event(repo, &source, "edited", &issue),
+                Sealing::Plain,
+            )
+        }
+        "comment" => {
+            let target_id = id_field(d, "targetId")?;
+            let t = targets.get(&target_id)?;
+            let issue = t.issue_obj(&target_id, !closed.contains(&target_id));
+            (
+                issue_comment_event(
+                    repo,
+                    &source,
+                    &issue,
+                    &d.id,
+                    &d.owner_id,
+                    &plain_str(d, "body"),
+                ),
+                t.sealing(),
+            )
+        }
+        "review" => {
+            let patch_id = id_field(d, "patchId")?;
+            let t = targets.get(&patch_id).filter(|t| t.is_pr)?;
+            let commit = if t.members_only {
+                String::new()
+            } else {
+                d.field_hex("commitOid").unwrap_or_default()
+            };
+            (
+                pull_request_review_event(
+                    repo,
+                    &source,
+                    &t.pr_obj(&patch_id, !closed.contains(&patch_id), t.merged),
+                    &d.owner_id,
+                    d.field_u64("verdict")?,
+                    &commit,
+                    &plain_str(d, "body"),
+                ),
+                t.sealing(),
+            )
+        }
+        _ => return None,
+    };
+    e.action = Some("edited");
+    e.payload["action"] = serde_json::json!("edited");
+    e.payload["sender"] = repo.user_json(by);
+    e.payload[MADE_PUBLIC_KEY] = serde_json::json!({ "by": by });
+    Some(mark(e, Sealing::Plain, thread))
+}
+
 /// A `release` → `release` published, or `unpublished` when it newly marks the tag yanked.
 /// `was_yanked` is whether the tag's previous revision was already yanked (the caller's own
 /// per-tag cache, so this stays a pure function of its arguments): a further delta-0 revision on
@@ -1222,6 +1304,56 @@ mod tests {
         // Unknown target: a stub, still delivered.
         let e = translate_comment(&meta(), &c, &BTreeMap::new()).unwrap();
         assert_eq!(e.payload["issue"]["number"], 0);
+    }
+
+    /// A post a maintainer's bundle made public (DESIGN §4.6): `edited`, the maintainer as
+    /// sender, the post's author as its user, its text as everyone now reads it, and the mark.
+    #[test]
+    fn a_post_made_public_is_an_edited_event_marked_by_its_maintainer() {
+        let empty = BTreeSet::new();
+        let c = doc(
+            "c1",
+            "BOB",
+            vec![
+                ("targetId", FieldValue::identifier([7; 32])),
+                ("body", FieldValue::text("now public")),
+            ],
+        );
+        let t = targets([7; 32], target(false, 42));
+        let e = translate_made_public(&meta(), "M1", "comment", &c, "MAINT", &t, &empty).unwrap();
+        assert_eq!((e.event, e.action), ("issue_comment", Some("edited")));
+        assert_eq!(e.payload["sender"]["login"], "MAINT");
+        assert_eq!(e.payload["comment"]["user"]["login"], "BOB");
+        assert_eq!(e.payload["comment"]["body"], "now public");
+        assert_eq!(e.payload[MADE_PUBLIC_KEY]["by"], "MAINT");
+        assert_eq!(e.source_doc_id, "M1:c1");
+        // a comment on an unknown thread, a review of an issue and an unknown kind: none
+        assert!(translate_made_public(
+            &meta(),
+            "M1",
+            "comment",
+            &c,
+            "MAINT",
+            &BTreeMap::new(),
+            &empty
+        )
+        .is_none());
+        let r = doc(
+            "rv1",
+            "ALICE",
+            vec![
+                ("patchId", FieldValue::identifier([7; 32])),
+                ("verdict", FieldValue::integer(3)),
+                ("body", FieldValue::text("looks right")),
+            ],
+        );
+        assert!(translate_made_public(&meta(), "M1", "review", &r, "MAINT", &t, &empty).is_none());
+        assert!(translate_made_public(&meta(), "M1", "patch", &c, "MAINT", &t, &empty).is_none());
+        let pr = targets([7; 32], target(true, 8));
+        let e = translate_made_public(&meta(), "M1", "review", &r, "MAINT", &pr, &empty).unwrap();
+        assert_eq!(e.event, "pull_request_review");
+        assert_eq!(e.payload["review"]["user"]["login"], "ALICE");
+        assert_eq!(e.payload["review"]["body"], "looks right");
     }
 
     #[test]
@@ -2055,6 +2187,84 @@ mod tests {
         let ev = translate_comment(&meta(), &d, &targets([9; 32], target(true, 2))).unwrap();
         assert_eq!(ev.payload["comment"]["body"], "");
         assert_content_free(&ev, &e);
+    }
+
+    #[test]
+    fn a_post_a_maintainer_made_public_is_an_edit_marked_for_its_author() {
+        let issues = targets([1; 32], target(false, 1));
+        let c = doc(
+            "c1",
+            "ALICE",
+            vec![
+                ("targetId", FieldValue::identifier([1; 32])),
+                ("body", FieldValue::text("now everyone can read this")),
+            ],
+        );
+        let e = translate_made_public(
+            &meta(),
+            "M1",
+            "comment",
+            &c,
+            "MAINT",
+            &issues,
+            &BTreeSet::new(),
+        )
+        .unwrap();
+        assert_eq!(e.event, "issue_comment");
+        assert_eq!(e.payload["action"], "edited");
+        assert_eq!(e.payload["sender"]["login"], "MAINT");
+        assert_eq!(e.payload["comment"]["user"]["login"], "ALICE");
+        assert_eq!(e.payload["comment"]["body"], "now everyone can read this");
+        assert_eq!(e.payload[MADE_PUBLIC_KEY]["by"], "MAINT");
+        assert_eq!(e.source_doc_id, "M1:c1");
+        assert!(e.payload.get(MEMBERS_ONLY_KEY).is_none());
+        let i = doc(
+            "i1",
+            "BOB",
+            vec![
+                ("number", FieldValue::integer(4)),
+                ("title", FieldValue::text("Rotate the key")),
+            ],
+        );
+        let e = translate_made_public(
+            &meta(),
+            "M1",
+            "issue",
+            &i,
+            "MAINT",
+            &issues,
+            &BTreeSet::new(),
+        )
+        .unwrap();
+        assert_eq!((e.event, e.action), ("issues", Some("edited")));
+        assert_eq!(e.payload["issue"]["user"]["login"], "BOB");
+        assert_eq!(e.payload["issue"]["title"], "Rotate the key");
+        // a comment on a thread the relay does not know is skipped, as is another kind
+        let orphan = doc(
+            "c2",
+            "ALICE",
+            vec![("targetId", FieldValue::identifier([7; 32]))],
+        );
+        assert!(translate_made_public(
+            &meta(),
+            "M1",
+            "comment",
+            &orphan,
+            "MAINT",
+            &issues,
+            &BTreeSet::new()
+        )
+        .is_none());
+        assert!(translate_made_public(
+            &meta(),
+            "M1",
+            "patch",
+            &i,
+            "MAINT",
+            &issues,
+            &BTreeSet::new()
+        )
+        .is_none());
     }
 
     #[test]

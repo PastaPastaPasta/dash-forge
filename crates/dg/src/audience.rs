@@ -632,6 +632,91 @@ pub fn hidden_notes(
         .collect()
 }
 
+/// What maintainers made public among the posts a view read (DESIGN §4.6): by whom, and
+/// whether the author sealed a post again since.
+pub struct Published(std::collections::BTreeMap<String, forge_core::collab::v2::Publication>);
+
+impl Published {
+    /// The publications `collab`'s reads noted for `ids`.
+    pub fn of<'a>(collab: &Collab<'_>, ids: impl IntoIterator<Item = &'a str>) -> Self {
+        Self(
+            ids.into_iter()
+                .filter_map(|id| collab.publication(id).map(|p| (id.to_string(), p)))
+                .collect(),
+        )
+    }
+
+    /// The maintainers named, for the names lookup.
+    pub fn people(&self) -> impl Iterator<Item = &str> {
+        self.0.values().map(|p| p.by.as_str())
+    }
+
+    /// `--json`: `null`, or `{"by", "state": "public" | "editedAfter", "publishedRevision"}`.
+    pub fn json(&self, id: &str) -> serde_json::Value {
+        use forge_core::collab::v2::PublicationState;
+        match self.0.get(id) {
+            None => serde_json::Value::Null,
+            Some(p) => match p.state {
+                PublicationState::Public => serde_json::json!({ "by": p.by, "state": "public" }),
+                PublicationState::EditedAfter { published_revision } => serde_json::json!({
+                    "by": p.by,
+                    "state": "editedAfter",
+                    "publishedRevision": published_revision,
+                }),
+            },
+        }
+    }
+
+    /// The line a post read as `audience` gets: "made public by @m", or what an edit since
+    /// changed.
+    pub fn line(
+        &self,
+        id: &str,
+        audience: Audience,
+        who: &dyn Fn(&str) -> String,
+    ) -> Option<String> {
+        use forge_core::collab::v2::PublicationState;
+        let p = self.0.get(id)?;
+        let by = who(&p.by);
+        Some(match (&p.state, audience) {
+            (PublicationState::Public, _) => format!("made public by {by}"),
+            (PublicationState::EditedAfter { .. }, Audience::Public) => {
+                format!("the version {by} made public; edited since, for members only")
+            }
+            (PublicationState::EditedAfter { .. }, _) => {
+                format!("edited after {by} made it public: this version is members-only")
+            }
+        })
+    }
+}
+
+/// `--json`: the make-public entries that did not match the post they named.
+pub fn alerts_json(alerts: &[forge_core::collab::v2::BundleAlert]) -> serde_json::Value {
+    serde_json::Value::Array(
+        alerts
+            .iter()
+            .map(|a| serde_json::json!({ "documentId": a.document_id, "revision": a.revision, "by": a.by }))
+            .collect(),
+    )
+}
+
+/// The warning for each make-public entry that does not match the post it names: ignored.
+pub fn alert_lines(
+    alerts: &[forge_core::collab::v2::BundleAlert],
+    who: &dyn Fn(&str) -> String,
+) -> Vec<String> {
+    alerts
+        .iter()
+        .map(|a| {
+            format!(
+                "warning: {}'s make-public entry for post {} doesn't match it, so it was ignored",
+                who(&a.by),
+                a.document_id
+            )
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

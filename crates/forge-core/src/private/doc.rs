@@ -172,6 +172,15 @@ impl DocHeader {
         Some(self.ad_with(repo_id, 0, version, &bind))
     }
 
+    /// The associated data of §4.4 for `enc` version `version` with no epoch keys, at the
+    /// document's own epoch: what anyone holding a published `K_obj` rebuilds from public fields
+    /// (DESIGN §4.6, a maintainer's bundle). `None` for a config or a missing bind field.
+    #[must_use]
+    pub fn ad_in(&self, repo_id: &[u8; 32], version: u8) -> Option<Vec<u8>> {
+        let bind = self.bind(None)?;
+        Some(self.ad_with(repo_id, self.epoch, version, &bind))
+    }
+
     fn ad_with(&self, repo_id: &[u8; 32], epoch: u32, version: u8, bind: &[u8]) -> Vec<u8> {
         let t = self.kind.type_name().as_bytes();
         let mut ad = Vec::with_capacity(AD_DOMAIN.len() + 1 + 64 + 4 + t.len() + 1 + bind.len());
@@ -637,6 +646,78 @@ fn decrypt_members(keys: &EpochKeys, header: &DocHeader, enc: &[u8]) -> Opened {
         return Opened::Malformed;
     }
     Opened::Readable(Box::new(fields))
+}
+
+/// The kinds a maintainer's bundle publishes by their per-object key: issues, comments and
+/// reviews (a PR's sealed branch names are keyed by its epoch, which a bundle does not publish:
+/// members-only PRs and their bundles come with phase 3).
+#[must_use]
+pub fn bundles_kind(kind: DocKind) -> bool {
+    matches!(kind, DocKind::Issue | DocKind::Comment | DocKind::Review)
+}
+
+/// `K_obj` of the members-only (`enc` v0x03) document `header`, derived under `keys` (its epoch)
+/// and checked against the commitment it carries: what a member publishes in a make-public
+/// bundle (DESIGN §4.6). `None` when it is not a well-framed v0x03 document of a kind bundles
+/// publish, its epoch is not `keys`'s, or the key does not commit (it was not made under it).
+#[must_use]
+pub fn members_obj_key(
+    keys: &EpochKeys,
+    header: &DocHeader,
+    enc: &[u8],
+) -> Option<zeroize::Zeroizing<[u8; 32]>> {
+    if enc.first() != Some(&V3)
+        || !bundles_kind(header.kind)
+        || !well_framed(header, enc)
+        || keys.epoch() != header.epoch
+    {
+        return None;
+    }
+    let ad = header.ad(keys, V3)?;
+    let nonce: [u8; NONCE_LEN] = enc[1..=NONCE_LEN].try_into().ok()?;
+    let k_obj = keys.obj_key(&nonce, &ad);
+    let commit = &enc[1 + NONCE_LEN..1 + NONCE_LEN + 32];
+    ct_eq(ObjKeys::derive(keys.repo_id(), &k_obj).commit(), commit).then_some(k_obj)
+}
+
+/// Open the members-only (`enc` v0x03) document `header` of repository `repo_id` with a
+/// published per-object key `k_obj` (DESIGN §4.6, a maintainer's bundle), holding no epoch key:
+/// the AD is rebuilt from the document's public fields, the commitment `k_obj` derives is
+/// compared with the one `enc` carries **before** GCM runs (a mismatch is `CommitMismatch`: a
+/// lying entry, never shown), then GCM under `K_doc,obj` and the TLV. Binding the AD into `K_obj`
+/// is what keeps a published key from opening, or minting, any other document (§4.1). A kind a
+/// bundle does not publish, or a malformed envelope, is `Malformed`.
+#[must_use]
+pub fn open_members_with_key(
+    repo_id: &[u8; 32],
+    header: &DocHeader,
+    enc: &[u8],
+    k_obj: &[u8; 32],
+) -> Opened {
+    if enc.first() != Some(&V3) || !bundles_kind(header.kind) || !well_framed(header, enc) {
+        return Opened::Malformed;
+    }
+    let Some(ad) = header.ad_in(repo_id, V3) else {
+        return Opened::Malformed;
+    };
+    let (nonce, rest) = enc[1..].split_at(NONCE_LEN);
+    let (commit, ct) = rest.split_at(32);
+    let obj = ObjKeys::derive(repo_id, k_obj);
+    if !ct_eq(obj.commit(), commit) {
+        return Opened::Unreadable(Unreadable::CommitMismatch);
+    }
+    let mut ad2 = ad;
+    ad2.extend_from_slice(commit);
+    let Ok(pt) = Aes256Gcm::new(obj.doc_key().into())
+        .decrypt(Nonce::from_slice(nonce), Payload { msg: ct, aad: &ad2 })
+    else {
+        return Opened::Unreadable(Unreadable::BadTag);
+    };
+    let pt = zeroize::Zeroizing::new(pt);
+    match tlv::parse(&pt, header.kind, false) {
+        Some(fields) => Opened::Readable(Box::new(fields)),
+        None => Opened::Malformed,
+    }
 }
 
 /// `open_content(doc, keys, epochs)` of §8.1, in the normative order: framing, epoch existence,

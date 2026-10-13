@@ -206,6 +206,46 @@
       "type": "integer"
     },
     "mergeContent": {},
+    "madePublic": {
+      "type": "object",
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "by": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "public",
+                  "editedAfter"
+                ]
+              },
+              "publishedRevision": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "by",
+              "state"
+            ]
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "description": "The comments and reviews maintainers made public with a make-public bundle, by id."
+    },
+    "bundleAlerts": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      },
+      "description": "Make-public entries whose key does not match the post they name: ignored."
+    },
     "policyMet": {
       "type": [
         "boolean",

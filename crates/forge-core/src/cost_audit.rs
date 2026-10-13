@@ -549,7 +549,7 @@ impl Totals {
     }
 }
 
-/// The three forge-v2 contracts and the identity being audited, bundled so the per-pass
+/// The forge-v2 contracts and the identity being audited, bundled so the per-pass
 /// methods below don't each thread client/core/collab/community/target through as separate
 /// arguments (and so stay under clippy's `too_many_arguments`).
 struct Auditor<'a> {
@@ -557,6 +557,9 @@ struct Auditor<'a> {
     core: platform::LoadedContract,
     collab: platform::LoadedContract,
     community: platform::LoadedContract,
+    /// forge-meta on a four-contract set (D44), where [`crate::layout::META_TYPES`] live; the
+    /// tables name each type's three-contract home.
+    meta: Option<platform::LoadedContract>,
     target: [u8; 32],
     identity_id: String,
     /// Whether forge-community is RC2's fused star (no `starBeat`; the star carries the week).
@@ -564,16 +567,20 @@ struct Auditor<'a> {
 }
 
 impl Auditor<'_> {
-    /// Whether `doc_type` on the `sel` contract is left out ([`skipped`]).
+    /// Whether `doc_type`, at home on `sel`, is left out ([`skipped`]).
     fn skips(&self, sel: ForgeContract, doc_type: &str) -> bool {
-        skipped(self.contract(sel), doc_type)
+        skipped(self.contract(sel, doc_type), doc_type)
     }
 
-    fn contract(&self, sel: ForgeContract) -> &platform::LoadedContract {
-        match sel {
-            ForgeContract::Core => &self.core,
-            ForgeContract::Collab => &self.collab,
-            ForgeContract::Community => &self.community,
+    /// The contract that holds `doc_type`, whose three-contract home is `sel`: forge-meta for
+    /// the types it takes when the network has it (D44).
+    fn contract(&self, sel: ForgeContract, doc_type: &str) -> &platform::LoadedContract {
+        match (&self.meta, sel) {
+            (Some(meta), _) if crate::layout::META_TYPES.contains(&doc_type) => meta,
+            (_, ForgeContract::Core) => &self.core,
+            (_, ForgeContract::Collab) => &self.collab,
+            (_, ForgeContract::Community) => &self.community,
+            (meta, ForgeContract::Meta) => meta.as_ref().expect("the tables name old homes"),
         }
     }
 
@@ -599,7 +606,7 @@ impl Auditor<'_> {
             let docs = self
                 .client
                 .query_all_documents(
-                    self.contract(g.contract),
+                    self.contract(g.contract, g.doc_type),
                     g.doc_type,
                     &[self.target_is("$ownerId")],
                     &order_of(g.order),
@@ -625,7 +632,7 @@ impl Auditor<'_> {
         let profile_docs = self
             .client
             .query_documents(
-                &self.community,
+                self.contract(ForgeContract::Community, "profile"),
                 "profile",
                 &[self.target_is("$ownerId")],
                 &[],
@@ -656,7 +663,7 @@ impl Auditor<'_> {
             let docs = self
                 .client
                 .query_all_documents(
-                    self.contract(contract),
+                    self.contract(contract, doc_type),
                     doc_type,
                     &[self.target_is("memberId")],
                     &[QueryOrder::asc("memberId")],
@@ -706,7 +713,7 @@ impl Auditor<'_> {
             let docs = self
                 .client
                 .query_all_documents(
-                    self.contract(t.contract),
+                    self.contract(t.contract, t.doc_type),
                     t.doc_type,
                     &[in_repo()],
                     &order_of(t.order),
@@ -731,10 +738,15 @@ pub async fn audit(
     let target = platform::decode_identifier(identity)?;
     let forge = client.target().require_v2()?;
     let community = client.fetch_contract(&forge.community).await?;
+    let meta = match &forge.meta {
+        Some(id) => Some(client.fetch_contract(id).await?),
+        None => None,
+    };
     let auditor = Auditor {
         client,
         core: client.fetch_contract(&forge.core).await?,
         collab: client.fetch_contract(&forge.collab).await?,
+        meta,
         fused_star: crate::collab::v2::fused_star(&community),
         community,
         target,
@@ -1037,6 +1049,7 @@ mod tests {
                 ForgeContract::Community => {
                     include_str!("../../../forge-contracts/contracts/forge-community.json")
                 }
+                ForgeContract::Meta => unreachable!("the tables name three-contract homes"),
             };
             serde_json::from_str::<serde_json::Value>(json).unwrap()["documentSchemas"].clone()
         }

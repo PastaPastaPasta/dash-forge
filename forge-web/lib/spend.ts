@@ -8,6 +8,7 @@
  */
 
 import { NETWORKS, type Network } from './constants'
+import { forgeContractIds } from './deployments'
 import { idbBatch, idbEntries, idbGet, idbPut } from './idb'
 import type { SpendEvent } from './sdk/write'
 
@@ -101,7 +102,7 @@ async function storeSpend(event: SpendEvent): Promise<void> {
 export async function readLedger(network: Network, identityId: string): Promise<SpendRow[]> {
   const rows = await idbEntries<SpendRow>('spend', prefix(network, identityId))
   const v2 = NETWORKS[network].v2
-  const contracts = new Set(v2 === null ? [] : [v2.core, v2.collab, v2.community])
+  const contracts = new Set(v2 === null ? [] : forgeContractIds(v2))
   return rows.map(([, v]) => repairRepo(v, contracts)).sort((a, b) => a.at - b.at)
 }
 

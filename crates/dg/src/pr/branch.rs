@@ -77,7 +77,7 @@ pub async fn writable_source(
             Some(Role::Maintainer) => true,
             Some(Role::Writer) => !protected,
             // RC2 member roles: triage and readers cannot push (`r` 1 only).
-            Some(Role::Triage | Role::Reader) | None => false,
+            Some(Role::Triage | Role::Reader | Role::Bot) | None => false,
         };
         if !ok {
             return Err(UserError::new(

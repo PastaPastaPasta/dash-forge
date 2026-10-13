@@ -6,6 +6,7 @@
  * masks them.
  */
 
+import { holdsMembersKey } from '../rules/roles'
 import type { Role } from '../rules/v2'
 import type { Exposure } from './chain'
 import { OLD_FORMAT_HISTORY_SENTENCE, OLD_FORMAT_SENTENCE, audienceLabel, compareStrings as cmp, membersKey, type Audience, type Group, type Snapshot, type VarType } from './format'
@@ -155,14 +156,14 @@ export function conflictHeadline(env: string, heads: readonly Head[], split: boo
 /** The E612 line for a viewer who is not a maintainer (DESIGN §10; `dg env ls` says it too). */
 export const NOT_SHARED_TEXT = "An environment in this repo hasn't been shared with you. If you should have access, ask a maintainer to save it again."
 
-const ROLE_WORD: Readonly<Record<Role, string>> = { maintainer: 'a maintainer', writer: 'a writer', triage: 'a triage member', reader: 'a reader' }
+const ROLE_WORD: Readonly<Record<Role, string>> = { maintainer: 'a maintainer', writer: 'a writer', triage: 'a triage member', reader: 'a reader', bot: 'a bot' }
 const ROLE_ORDER: readonly Role[] = ['maintainer', 'writer', 'triage', 'reader']
 
-/** Whether a member with `role` is in `group` (forge-core `Group::includes`). */
+/** Whether a member with `role` is in `group` (forge-core `Group::includes`): groups never include bots. */
 function groupIncludes(group: Group, role: Role): boolean {
   if (group === 'maintainers') return role === 'maintainer'
   if (group === 'writers') return role === 'maintainer' || role === 'writer'
-  return true
+  return holdsMembersKey(role)
 }
 
 /**

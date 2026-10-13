@@ -3,8 +3,8 @@
 //! [`super::v2::Collab`], so each stays next to its reads and folds.
 //!
 //! * `watch` (forge-community, indexOnly): the signer's watched repos, on every device.
-//! * `topic` (forge-core, owner-granted, public repos only, at most 20): a repo's tags,
-//!   countable per name.
+//! * `topic` (forge-core, or forge-meta on a four-contract set; owner-granted, public repos
+//!   only, at most 20): a repo's tags, countable per name.
 //! * `milestone` (forge-community, maintainer- or writer-gated): newest definition per title;
 //!   an issue or PR joins one by a member event (kind 17, the title as its value).
 //! * pin / unpin: member events, kinds 19–20 ([`crate::rules::v2::fold_thread_meta_v2`]).
@@ -21,7 +21,7 @@ use crate::rules::v2::{Role, StateAction};
 use crate::rules::EventKind;
 use crate::scope::RepoRef;
 
-/// forge-core: a repo's topic (owner-granted).
+/// forge-core (forge-meta on a four-contract set, D44): a repo's topic (owner-granted).
 pub const DOC_TOPIC: &str = "topic";
 
 /// A milestone of a repo with its progress (the fold's [`crate::rules::v2::Milestone`]).
@@ -137,11 +137,11 @@ impl Collab<'_> {
                 "topic {bad:?}: use 1-30 of a-z and 0-9, words joined by single '-'"
             )));
         }
-        let core = self.core_contract(repo).await?;
+        let topics = self.contract_for(repo, DOC_TOPIC).await?;
         let held: BTreeMap<String, String> = self
             .client()
             .query_all_documents(
-                &core,
+                &topics,
                 DOC_TOPIC,
                 &[Self::repo_filter(repo)?],
                 &[QueryOrder::asc("repoId"), QueryOrder::asc("name")],
@@ -154,14 +154,14 @@ impl Collab<'_> {
         let engine = self.engine()?;
         for (name, id) in &held {
             if !names.contains(name) {
-                engine.delete_document(&core, DOC_TOPIC, id).await?;
+                engine.delete_document(&topics, DOC_TOPIC, id).await?;
                 changed = true;
             }
         }
         for name in names.iter().filter(|n| !held.contains_key(*n)) {
             // `vis: "public"` is stamped by the write
             let props = BTreeMap::from([("name".to_string(), FieldValue::text(name))]);
-            match self.write(repo, &core, DOC_TOPIC, props).await {
+            match self.write(repo, &topics, DOC_TOPIC, props).await {
                 Ok(_) => changed = true,
                 // Tagged in between (another device): the (repoId, name) index is unique.
                 Err(Error::DuplicateUniqueIndex(_)) => {}
