@@ -213,6 +213,9 @@ pub(super) struct LetterKeys {
     reader: std::result::Result<([u8; 32], Vec<crate::envelope::PrivateKey>), Unopened>,
     /// Each writer's keys, by base58 `$ownerId`.
     owners: BTreeMap<String, Vec<crate::private::named::OwnerKey>>,
+    /// Writers whose keys could not be read just now: their letters are placeholders, never
+    /// "not encrypted for this repo", and never the whole page's error.
+    unreadable: BTreeSet<String>,
 }
 
 impl LetterKeys {
@@ -226,32 +229,25 @@ impl LetterKeys {
         d: FetchedDocument,
     ) -> std::result::Result<FetchedDocument, MembersOnly> {
         use crate::private::named::{self, LetterOpened};
-        let (reader_id, keys) = match &self.reader {
+        let reader = match &self.reader {
             Ok(r) => r,
             Err(why) => return Err(MembersOnly::of(&d, *why)),
         };
-        let header = crate::keyring::header_of(doc_kind(kind), &d);
-        let (Some(header), Some(enc)) = (header, d.field_bytes("enc")) else {
-            return Err(MembersOnly::of(&d, Unopened::NotForThisRepo));
-        };
-        let owner = self.owners.get(&d.owner_id).map_or(&[][..], Vec::as_slice);
-        let reader = named::Reader {
-            identity_id: *reader_id,
-            keys,
-        };
-        match named::open(&self.repo_id, &header, &enc, owner, &reader) {
-            LetterOpened::Readable(l) => Ok(private::open_letter_doc(*l, d)),
-            LetterOpened::Unreadable(named::LetterUnreadable::NotARecipient) => {
+        if self.unreadable.contains(&d.owner_id) {
+            return Err(MembersOnly::of(&d, Unopened::KeysUnreadable));
+        }
+        match self.open_enc(reader, kind, &d) {
+            Some(LetterOpened::Readable(l)) => Ok(private::open_letter_doc(*l, d)),
+            Some(LetterOpened::Unreadable(named::LetterUnreadable::NotARecipient)) => {
                 Err(MembersOnly::of(&d, Unopened::NotARecipient))
             }
-            LetterOpened::Unreadable(named::LetterUnreadable::BadTag) | LetterOpened::Malformed => {
-                Err(MembersOnly::of(&d, Unopened::NotForThisRepo))
-            }
+            Some(
+                LetterOpened::Unreadable(named::LetterUnreadable::BadTag) | LetterOpened::Malformed,
+            )
+            | None => Err(MembersOnly::of(&d, Unopened::NotForThisRepo)),
         }
     }
-}
 
-impl LetterKeys {
     /// The content fields of `d`, a letter, when it opens for this reader (its author making it
     /// public, R5); `None` otherwise.
     pub(super) fn open_fields(
@@ -259,19 +255,30 @@ impl LetterKeys {
         kind: ContentKind,
         d: &FetchedDocument,
     ) -> Option<crate::private::Fields> {
-        use crate::private::named::{self, LetterOpened};
-        let (reader_id, keys) = self.reader.as_ref().ok()?;
+        use crate::private::named::LetterOpened;
+        let reader = self.reader.as_ref().ok()?;
+        match self.open_enc(reader, kind, d)? {
+            LetterOpened::Readable(l) => Some(l.fields),
+            _ => None,
+        }
+    }
+
+    /// `d`'s `enc` under the letter reader rule, `None` when `d` has no header or `enc` to open.
+    fn open_enc(
+        &self,
+        (identity_id, keys): &([u8; 32], Vec<crate::envelope::PrivateKey>),
+        kind: ContentKind,
+        d: &FetchedDocument,
+    ) -> Option<crate::private::named::LetterOpened> {
+        use crate::private::named;
         let header = crate::keyring::header_of(doc_kind(kind), d)?;
         let enc = d.field_bytes("enc")?;
         let owner = self.owners.get(&d.owner_id).map_or(&[][..], Vec::as_slice);
         let reader = named::Reader {
-            identity_id: *reader_id,
+            identity_id: *identity_id,
             keys,
         };
-        match named::open(&self.repo_id, &header, &enc, owner, &reader) {
-            LetterOpened::Readable(l) => Some(l.fields),
-            _ => None,
-        }
+        Some(named::open(&self.repo_id, &header, &enc, owner, &reader))
     }
 }
 
@@ -812,8 +819,13 @@ impl MembersOnly {
     fn of(d: &FetchedDocument, why: Unopened) -> Self {
         let enc_v4 = is_letter(d);
         Self {
+            // a count only a well-framed letter can carry (1..=16): never an impossible one
             recipients: if enc_v4 {
-                d.field_bytes("enc").and_then(|e| e.get(1).copied())
+                d.field_bytes("enc")
+                    .and_then(|e| e.get(1).copied())
+                    .filter(|n| {
+                        (1..=crate::private::named::MAX_RECIPIENTS).contains(&usize::from(*n))
+                    })
             } else {
                 None
             },
@@ -2406,8 +2418,6 @@ fn proof_required(props: &BTreeMap<String, FieldValue>) -> bool {
             .is_some_and(|v| Verdict::from_code(v).needs_member_proof())
 }
 
-/// The refusal of an edit that would change a document's audience (DESIGN §2.4: fixed at
-/// creation). Nothing is written.
 /// A members-only or public reply in a conversation for specific people (DESIGN §3.3, D26).
 fn letter_thread_reply() -> Error {
     UserError::new(
@@ -2493,6 +2503,8 @@ fn letter_refused(
         .into()
 }
 
+/// The refusal of an edit that would change a document's audience (DESIGN §2.4: fixed at
+/// creation). Nothing is written.
 fn audience_fixed(doc_type: &str, audience: Audience) -> Error {
     let is = match audience {
         Audience::Public => "public",
@@ -3605,15 +3617,25 @@ impl<'a> Collab<'a> {
             }
         };
         let mut owners = BTreeMap::new();
+        let mut unreadable = BTreeSet::new();
         if reader.is_ok() {
             for w in writers {
-                owners.insert(w.to_owned(), self.owner_keys_of(w).await?);
+                match self.owner_keys_of(w).await {
+                    Ok(keys) => {
+                        owners.insert(w.to_owned(), keys);
+                    }
+                    // a read that failed now (not cached): that writer's letters wait, the page reads
+                    Err(_) => {
+                        unreadable.insert(w.to_owned());
+                    }
+                }
             }
         }
         Ok(Some(LetterKeys {
             repo_id: repo.scope()?.repo_id,
             reader,
             owners,
+            unreadable,
         }))
     }
 
@@ -3648,15 +3670,23 @@ impl<'a> Collab<'a> {
             return Ok(ctx);
         };
         for (kind, d) in docs.into_iter().filter(|(_, d)| is_letter(d)) {
-            let opened = keys.open(kind, d.clone()).map_err(|_| {
-                Error::from(
+            let opened = keys.open(kind, d.clone()).map_err(|m| {
+                Error::from(if m.why == Unopened::KeysUnreadable {
+                    // who it went to depends on it: never guessed
+                    UserError::new(
+                        codes::IDENTITY_UNREADABLE,
+                        "the keys of a message in this conversation could not be read just now",
+                    )
+                    .fix("try again in a moment")
+                    .note("nothing was written")
+                } else {
                     UserError::new(
                         codes::NOT_A_KEY_HOLDER,
                         "only the people this conversation was sent to can reply to it",
                     )
                     .cause("it is a message to specific people, and you can't read it")
-                    .note("nothing was written"),
-                )
+                    .note("nothing was written")
+                })
             })?;
             let info = LetterInfo::of(&opened).expect("an opened letter");
             ctx.parents.push(info.parent());
@@ -3868,6 +3898,27 @@ impl<'a> Collab<'a> {
         }
     }
 
+    /// The issue or patch `d`, a letter, as this reader opens it, or its placeholder.
+    async fn read_letter_target(
+        &self,
+        repo: &RepoRef,
+        kind: TargetKind,
+        d: FetchedDocument,
+    ) -> Result<TargetRead> {
+        let letters = self.letter_keys(repo, &[&d]).await?;
+        Ok(
+            match open_with(
+                &DocKeys::None(Unopened::NotARecipient),
+                letters.as_ref(),
+                kind.content_kind(),
+                d,
+            ) {
+                Ok(d) => TargetRead::Readable(d),
+                Err(m) => TargetRead::MembersOnly(m),
+            },
+        )
+    }
+
     /// An issue or patch by number as the public codecs read it (decrypted when sealed), or the
     /// placeholder of a members-only one this reader cannot open. In a private repository one
     /// that exists but does not open for this reader is an error saying so, not "not found".
@@ -3888,18 +3939,7 @@ impl<'a> Collab<'a> {
                 return Ok(Some(TargetRead::Readable(d)));
             }
             if is_letter(&d) {
-                let letters = self.letter_keys(repo, &[&d]).await?;
-                return Ok(Some(
-                    match open_with(
-                        &DocKeys::None(Unopened::NotARecipient),
-                        letters.as_ref(),
-                        kind.content_kind(),
-                        d,
-                    ) {
-                        Ok(d) => TargetRead::Readable(d),
-                        Err(m) => TargetRead::MembersOnly(m),
-                    },
-                ));
+                return self.read_letter_target(repo, kind, d).await.map(Some);
             }
             let keys = self.lane_keys(repo).await?;
             return Ok(Some(match open_with(&keys, None, kind.content_kind(), d) {
@@ -3908,18 +3948,7 @@ impl<'a> Collab<'a> {
             }));
         }
         if is_letter(&d) {
-            let letters = self.letter_keys(repo, &[&d]).await?;
-            return Ok(Some(
-                match open_with(
-                    &DocKeys::None(Unopened::NotARecipient),
-                    letters.as_ref(),
-                    kind.content_kind(),
-                    d,
-                ) {
-                    Ok(d) => TargetRead::Readable(d),
-                    Err(m) => TargetRead::MembersOnly(m),
-                },
-            ));
+            return self.read_letter_target(repo, kind, d).await.map(Some);
         }
         let Some(kr) = self.private_keys(repo).await? else {
             return Ok(Some(TargetRead::Readable(d)));
@@ -6619,14 +6648,17 @@ impl<'a> Collab<'a> {
                 (k.clone(), v.map(str::to_owned))
             })
             .collect();
+        let enc_epoch = |from: &BTreeMap<String, FieldValue>| -> BTreeMap<_, _> {
+            ["enc", "epoch"]
+                .into_iter()
+                .map(|k| (k.to_string(), from.get(k).cloned()))
+                .collect()
+        };
         if text
             .iter()
             .all(|(k, v)| opened.field_str(k).filter(|s| !s.is_empty()) == *v)
         {
-            return Ok(["enc", "epoch"]
-                .into_iter()
-                .map(|k| (k.to_string(), stored.fields.get(k).cloned()))
-                .collect());
+            return Ok(enc_epoch(&stored.fields));
         }
         let (identity, bridge) = self.signer()?;
         let signer = crate::keyring::PrivateSigner {
@@ -6680,11 +6712,7 @@ impl<'a> Collab<'a> {
             owner,
             props,
         )?;
-        let changes: BTreeMap<String, Option<FieldValue>> = ["enc", "epoch"]
-            .into_iter()
-            .map(|k| (k.to_string(), sealed.get(k).cloned()))
-            .collect();
-        Ok(clear_plaintext(kind, stored, changes))
+        Ok(clear_plaintext(kind, stored, enc_epoch(&sealed)))
     }
 
     /// `identity`'s highest-id usable ENCRYPTION key (§4.1 writer rule), `None` when it has
@@ -9355,6 +9383,7 @@ mod mixed_read_tests {
     /// on the opened document; anyone else (or a reader with no key) gets a placeholder with
     /// the recipient count, never the text; and a members key opens nothing of it.
     #[test]
+    #[allow(clippy::too_many_lines)] // one letter, read by each kind of reader
     fn a_letter_opens_for_its_people_and_is_counted_for_everyone_else() {
         use crate::envelope::PrivateKey;
         use crate::private::named::{self, Recipient};
@@ -9394,6 +9423,7 @@ mod mixed_read_tests {
             ("epoch", FieldValue::integer(0)),
             ("vis", FieldValue::text("public")),
             ("targetId", FieldValue::identifier([0x33; 32])),
+            (crate::layout::AS_MEMBER, FieldValue::identifier(alice)),
         ]);
         d.owner_id = platform::encode_identifier(alice);
         let owners = BTreeMap::from([(
@@ -9409,6 +9439,7 @@ mod mixed_read_tests {
             repo_id,
             reader: Ok((id, vec![key(k)])),
             owners: owners.clone(),
+            unreadable: BTreeSet::new(),
         };
         let opened = keys_as(bob, 2)
             .open(ContentKind::Comment, d.clone())
@@ -9432,6 +9463,13 @@ mod mixed_read_tests {
         let c = comment_from_doc(&opened);
         assert_eq!(c.audience, Audience::SpecificPeople);
         assert_eq!(c.letter, Some(info));
+        // a stranger's (no asMember): anyone may set the group, so it reads as the people listed
+        let mut stranger = d.clone();
+        stranger.fields.remove(crate::layout::AS_MEMBER);
+        let opened = keys_as(bob, 2)
+            .open(ContentKind::Comment, stranger)
+            .unwrap();
+        assert_eq!(LetterInfo::of(&opened).unwrap().group, None);
         // not one of its people: the count, never the text
         let m = keys_as(carol, 3)
             .open(ContentKind::Comment, d.clone())
@@ -9445,11 +9483,21 @@ mod mixed_read_tests {
             repo_id,
             reader: Err(Unopened::NotARecipient),
             owners: BTreeMap::new(),
+            unreadable: BTreeSet::new(),
         };
         assert_eq!(
             anon.open(ContentKind::Comment, d.clone()).unwrap_err().why,
             Unopened::NotARecipient
         );
+        // the writer's keys could not be read just now: a placeholder that says so, with its count
+        let waiting = LetterKeys {
+            repo_id,
+            reader: Ok((bob, vec![key(2)])),
+            owners: BTreeMap::new(),
+            unreadable: BTreeSet::from([d.owner_id.clone()]),
+        };
+        let m = waiting.open(ContentKind::Comment, d.clone()).unwrap_err();
+        assert_eq!((m.why, m.recipients), (Unopened::KeysUnreadable, Some(2)));
         let m = open_with(
             &DocKeys::None(Unopened::NotAMember),
             None,

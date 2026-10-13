@@ -417,15 +417,11 @@ async fn list(ctx: &Ctx, args: &IssueListArgs) -> Result<()> {
     matching.sort_by_key(|r| !r.1);
     let total = matching.len();
     // members-only rows and letters this reader cannot read, counted apart
-    let sealed_of = |letter: bool| {
-        matching
-            .iter()
-            .filter(|(r, _)| {
-                matches!(r, ListRow::Sealed(x) if (x.placeholder.audience == forge_core::rules::v2::Audience::SpecificPeople) == letter)
-            })
-            .count()
-    };
-    let (total_sealed, total_letters) = (sealed_of(false), sealed_of(true));
+    let (total_sealed, total_letters) =
+        crate::audience::count_sealed(matching.iter().filter_map(|(r, _)| match r {
+            ListRow::Sealed(x) => Some(&x.placeholder),
+            ListRow::Issue(_) => None,
+        }));
     let per = args.limit as usize;
     let pages = total.div_ceil(per).max(1);
     let start = (args.page as usize - 1) * per;
@@ -762,7 +758,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<(
     let locked = view.log.locked();
     let state = view.state;
     let i = view.issue;
-    let issue_letter = i.letter.clone();
+    let issue_letter = i.letter;
     let (id, title, author) = (i.document_id, i.title, i.author);
     // DPNS names for the human view only, read together; a failed read shows the bare id.
     let names = if ctx.json {
@@ -1151,7 +1147,8 @@ async fn create(
     s.refuse_if_banned("issue not created").await?;
     // One `Collab` for the command: the audience it asks for applies to every write it makes.
     let collab = s.collab();
-    let audience = crate::audience::requested(&s.client, &collab, &s.repo, ask, None, None).await?;
+    let crate::audience::Requested { audience, to } =
+        crate::audience::requested(&s.client, &collab, &s.repo, ask, None, None).await?;
     let planned = crate::long_body::Planned::new(
         &s.repo,
         forge_core::collab::long_body::BodyField::Issue { title },
@@ -1160,7 +1157,7 @@ async fn create(
         audience,
     )?;
     ctx.confirm_or_cancel(&format!(
-        "Open {}issue {title:?} in {}? (one document, {}{})",
+        "Open {}issue {title:?} in {}{to}? (one document, {}{})",
         crate::audience::prefix(&s.repo, audience),
         s.repo.display(),
         cost_line(
@@ -1384,7 +1381,7 @@ async fn comment(
     let price = ctx.usd_price();
     // One `Collab` for the command: the audience it asks for applies to the comment it writes.
     let collab = s.collab();
-    let audience =
+    let crate::audience::Requested { audience, to } =
         crate::audience::requested(&s.client, &collab, &s.repo, ask, Some(&target.id), reply_to)
             .await?;
     let anchor = reply_to.map(|r| forge_core::collab::CommentAnchor {
@@ -1399,7 +1396,7 @@ async fn comment(
         audience,
     )?;
     ctx.confirm_or_cancel(&format!(
-        "Post a {}comment on issue #{number}? (one comment, {}{})",
+        "Post a {}comment on issue #{number}{to}? (one comment, {}{})",
         crate::audience::prefix(&s.repo, audience),
         cost_line(
             crate::quote::comment(planned.field_bytes()) + planned.extra_credits(&s.repo),

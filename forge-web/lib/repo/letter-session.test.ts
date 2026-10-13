@@ -88,6 +88,16 @@ describe('a recipient reads a message to specific people', () => {
     expect(contentKey(repo)).toBe(`${b58(REPO)}#${session.id}`)
   })
 
+  it("drops a stranger's group: without asMember it reads as the people listed, so a reply does not re-list the group", async () => {
+    const { asMember: _, ...stranger } = await letterComment(ALICE, S.alice, [party(BOB, S.bob)], 'from a stranger', 'public', 'writers')
+    const { session } = readerFor(BOB, S.bob)
+    const { docs } = await admitAll(gateFor({ ...PUBLIC, letters: session }), 'comment', [stranger])
+    const opened = docs[0] as Record<string, unknown>
+    expect(opened['body']).toBe('from a stranger')
+    expect(opened[LETTER_GROUP]).toBeNull()
+    expect(admittedLetter(opened)).toEqual({ recipients: [b58(ALICE), b58(BOB)], group: null })
+  })
+
   it('opens one in a private repo through the same reader', async () => {
     const letter = await letterComment(ALICE, S.alice, [party(BOB, S.bob)], 'private letter', 'private')
     const { session } = readerFor(BOB, S.bob)

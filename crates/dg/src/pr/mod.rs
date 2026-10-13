@@ -861,14 +861,11 @@ async fn list(
         rows.iter().map(|r| (r.target(), r.events())).collect();
     let hides = collab.hidden_threads(handle, &threads).await;
     let (rows, omitted) = crate::fmt::split_hidden(rows, &hides, PrRow::id, include_hidden);
-    let sealed_of = |letter: bool| {
-        rows.iter()
-            .filter(|(r, _)| {
-                matches!(r, PrRow::Sealed(x) if (x.placeholder.audience == forge_core::rules::v2::Audience::SpecificPeople) == letter)
-            })
-            .count()
-    };
-    let (total_sealed, total_letters) = (sealed_of(false), sealed_of(true));
+    let (total_sealed, total_letters) =
+        crate::audience::count_sealed(rows.iter().filter_map(|(r, _)| match r {
+            PrRow::Sealed(x) => Some(&x.placeholder),
+            PrRow::Pr(_) => None,
+        }));
     let names = if ctx.json {
         std::collections::BTreeMap::new()
     } else {
@@ -1243,7 +1240,7 @@ async fn view(
     // members-only comments, marked beside their author when printed
     let members_ids: std::collections::BTreeSet<&str> = comments
         .iter()
-        .filter(|c| c.letter.is_none() && crate::audience::marked(handle, c.audience))
+        .filter(|c| crate::audience::marked(handle, c.audience))
         .map(|c| c.document_id.as_str())
         .collect();
     let letters: std::collections::BTreeMap<&str, &forge_core::collab::v2::LetterInfo> = comments

@@ -125,9 +125,9 @@ fn letter_too_large(kind: DocKind, n: usize) -> Error {
     crate::user_error::UserError::new(
         crate::user_error::codes::USAGE,
         format!(
-            "this {} is too long to send to {n} {} {TOO_LARGE_MARK}",
+            "this {} is too long to send to {} {TOO_LARGE_MARK}",
             kind.type_name(),
-            if n == 1 { "person" } else { "people" }
+            crate::rules::letters::people(n)
         ),
     )
     .cause("each person a message goes to takes room from its text (about 100 bytes each)")
@@ -398,6 +398,10 @@ pub fn open_doc(opened: Opened, d: FetchedDocument) -> Option<FetchedDocument> {
 /// The fetched letter `d` as the public codecs read it, given the opened `letter`: its fields
 /// put back in place, and its recipients and group in the `$letterTo` / `$letterGroup` fields
 /// ([`super::v2::LETTER_TO_FIELD`]) the views read.
+///
+/// The group is kept only on a letter that carries `asMember`: anyone may set tag 29, and a
+/// stranger's claim that it went to "the maintainers" would otherwise label it so and make a
+/// reply re-list the group (DESIGN §4.2: strangers' letters are a display rule, never a group's).
 #[must_use]
 pub fn open_letter_doc(
     letter: crate::private::named::Letter,
@@ -409,6 +413,7 @@ pub fn open_letter_doc(
         group,
         ..
     } = letter;
+    let group = group.filter(|_| d.fields.contains_key(crate::layout::AS_MEMBER));
     let mut d = restore(fields, d);
     d.fields.insert(
         super::v2::LETTER_TO_FIELD.into(),

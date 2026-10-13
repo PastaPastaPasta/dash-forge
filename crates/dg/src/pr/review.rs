@@ -418,7 +418,7 @@ pub async fn review(ctx: &Ctx, a: &PrReviewArgs) -> Result<()> {
         members: asked && a.to.is_empty(),
         to: &a.to,
     };
-    let audience = crate::audience::requested(
+    let crate::audience::Requested { audience, to } = crate::audience::requested(
         &s.client,
         &collab,
         &s.repo,
@@ -460,6 +460,7 @@ pub async fn review(ctx: &Ctx, a: &PrReviewArgs) -> Result<()> {
     let shown = Shown {
         repo: &s.repo,
         audience,
+        to: &to,
     };
     match mode {
         Mode::Discard => unreachable!("handled above"),
@@ -501,6 +502,8 @@ fn refuse_kept_letter(a: &PrReviewArgs, pending: bool, existing: bool) -> Result
 struct Shown<'r> {
     repo: &'r forge_core::scope::RepoRef,
     audience: Audience,
+    /// Who a letter goes to (" to @bob and @carol"), for the question before submitting.
+    to: &'r str,
 }
 
 impl Shown<'_> {
@@ -823,13 +826,14 @@ async fn submit(
         }
     }
     ctx.confirm_or_cancel(&format!(
-        "{}{}, {}. Submit?",
+        "{}{}{}, {}. Submit?",
         if resumed {
             "Finish the interrupted submit: "
         } else {
             ""
         },
         crate::fmt::plural(todo, "write"),
+        shown.to,
         cost_line(est, price)
     ))?;
 
@@ -1116,7 +1120,7 @@ pub async fn comment(ctx: &Ctx, a: &PrCommentArgs) -> Result<()> {
     // Who it is for: the PR's, the comment replied to and its thread root's, as the write reads
     // them (DESIGN §3.3); `--reply-to` names any comment of the thread.
     // `--members` asks for members-only; refused here, before the price, when it cannot be.
-    let audience = crate::audience::requested(
+    let crate::audience::Requested { audience, to } = crate::audience::requested(
         &s.client,
         &collab,
         &s.repo,
@@ -1141,7 +1145,7 @@ pub async fn comment(ctx: &Ctx, a: &PrCommentArgs) -> Result<()> {
     let field_bytes = usize::try_from(planned.field_bytes()).unwrap_or(usize::MAX);
     let est = estimate(Est::Comment, field_bytes + path_len) + planned.extra_credits(&s.repo);
     ctx.confirm_or_cancel(&format!(
-        "Post a {}{kind} comment on PR #{}? (one document, {}{})",
+        "Post a {}{kind} comment on PR #{}{to}? (one document, {}{})",
         crate::audience::prefix(&s.repo, audience),
         a.number,
         cost_line(est, price),

@@ -530,10 +530,10 @@ pub const RECIPIENTS_KEY: &str = "dash_recipients";
 
 /// A letter's recipient count (`enc[1]` of `enc` v0x04), `None` for anything else.
 pub fn letter_recipients(d: &FetchedDocument) -> Option<u64> {
-    let enc = d.field_bytes("enc")?;
-    (enc.first() == Some(&0x04))
-        .then(|| enc.get(1).copied().map(u64::from))
-        .flatten()
+    match d.field_bytes("enc")?.as_slice() {
+        [0x04, n, ..] => Some(u64::from(*n)),
+        _ => None,
+    }
 }
 
 /// How a document is sealed, as a payload marks it.
@@ -720,10 +720,11 @@ pub fn translate_patch(repo: &RepositoryMeta, d: &FetchedDocument) -> Option<Web
         merged: false,
         draft: false,
     };
+    let marked = Sealing::of(d);
     Some(mark(
         pull_request_event(repo, &d.id, "opened", &pr),
-        Sealing::of(d),
-        Sealing::of(d),
+        marked,
+        marked,
     ))
 }
 

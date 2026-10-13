@@ -23,7 +23,7 @@
 
 import { decodeIdentifier } from '../auth/base58'
 import { openContent, openVis, propOf, type DocFields, type OpenContext, type PrivateDocType, type StoredPrivateDoc, type UnreadableReason } from '../private'
-import type { LetterGroup } from '../rules/letters'
+import { MAX_LETTER_RECIPIENTS, type LetterGroup } from '../rules/letters'
 import { ENC_SPECIFIC_PEOPLE, type Audience, type ContentKind, type Visibility } from '../rules/v2'
 import { base64ToBytes, type PlainDocument } from '../sdk'
 import { asIdentifierString, num, wellFormed, type RepoRef } from './contract'
@@ -184,7 +184,8 @@ export function membersOnlyItem(type: PrivateDocType, doc: PlainDocument, why: U
     replyTo: replyTo === '' ? null : replyTo,
     audience: audience === 'specificPeople' ? 'specificPeople' : 'members',
     why: audience === 'specificPeople' ? 'letter' : why,
-    ...(count !== undefined && count > 0 ? { recipientCount: count } : {}),
+    // a count only a well-framed letter can carry (1..=16): never an impossible one
+    ...(count !== undefined && count > 0 && count <= MAX_LETTER_RECIPIENTS ? { recipientCount: count } : {}),
     ...(locked && audience === 'specificPeople' ? { locked: true as const } : {}),
   }
 }

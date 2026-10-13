@@ -72,7 +72,7 @@ pub async fn requested(
     ask: Ask<'_>,
     target: Option<&str>,
     reply_to: Option<&str>,
-) -> Result<Audience> {
+) -> Result<Requested> {
     if ask.to.is_empty() {
         collab.request_audience(ask.members.then_some(Audience::Members));
     } else {
@@ -80,15 +80,98 @@ pub async fn requested(
     }
     let audience = collab.new_audience(repo, target, reply_to).await?;
     if audience == Audience::SpecificPeople {
-        // resolved now, so a refusal comes before the price; the write resolves it again
-        collab.plan_letter(repo, target, reply_to).await?;
-        return Ok(audience);
+        // resolved now, so a refusal comes before the price and the question names who it goes
+        // to (a reply re-lists its thread's people unasked); the write resolves it again
+        let sent = collab.plan_letter(repo, target, reply_to).await?;
+        let to = to_clause(client, &sent).await;
+        return Ok(Requested { audience, to });
     }
     match collab.require_members_writer(repo, audience).await {
         // not asked for: the conversation is members-only, and a public reply is not possible
         Err(e) if !ask.members && refused_non_member(&e) => Err(members_only_thread(repo)),
-        other => other.map(|()| audience).map_err(Into::into),
+        other => other
+            .map(|()| Requested {
+                audience,
+                to: String::new(),
+            })
+            .map_err(Into::into),
     }
+}
+
+/// What [`requested`] found: the audience, and for a letter who it goes to, for the question
+/// asked before signing.
+#[derive(Debug, Clone)]
+pub struct Requested {
+    /// The audience the write is made for.
+    pub audience: Audience,
+    /// " to @bob and @carol", " to the maintainers now (@bob and @carol)", with who is left out
+    /// for having no encryption key; "" when it is not a letter.
+    pub to: String,
+}
+
+/// The DPNS names of everyone `sent` names, recipients and skipped.
+async fn names_of(
+    client: &PlatformClient,
+    sent: &SentLetter,
+) -> std::collections::BTreeMap<String, String> {
+    let ids: Vec<&str> = sent
+        .recipients
+        .iter()
+        .chain(&sent.skipped)
+        .map(String::as_str)
+        .collect();
+    client.dpns_first_names(ids).await
+}
+
+/// "@bob has no encryption key" / "@bob and @carol have no encryption key": who a letter left
+/// out. Only for a non-empty `sent.skipped`.
+fn left_out(sent: &SentLetter, names: &std::collections::BTreeMap<String, String>) -> String {
+    let who = and_list(
+        &sent
+            .skipped
+            .iter()
+            .map(|id| at_name(id, names))
+            .collect::<Vec<_>>(),
+    );
+    let has = if sent.skipped.len() == 1 {
+        "has"
+    } else {
+        "have"
+    };
+    format!("{who} {has} no encryption key")
+}
+
+/// Who a planned letter goes to, after its writer, as the question before signing says it.
+async fn to_clause(client: &PlatformClient, sent: &SentLetter) -> String {
+    to_clause_named(sent, &names_of(client, sent).await)
+}
+
+/// [`to_clause`] with the names known.
+fn to_clause_named(
+    sent: &SentLetter,
+    names: &std::collections::BTreeMap<String, String>,
+) -> String {
+    use std::fmt::Write as _;
+    let others: Vec<String> = sent
+        .recipients
+        .iter()
+        .skip(1)
+        .map(|id| at_name(id, names))
+        .collect();
+    let listed = if others.is_empty() {
+        "nobody but you".to_string()
+    } else {
+        and_list(&others)
+    };
+    let mut out = match sent.group {
+        Some(LetterGroup::Maintainers) => format!(" to the maintainers now ({listed})"),
+        Some(LetterGroup::Writers) => format!(" to the writers and maintainers now ({listed})"),
+        None => format!(" to {listed}"),
+    };
+    if !sent.skipped.is_empty() {
+        let _ = write!(out, "; {} and won't receive it", left_out(sent, names));
+    }
+    out
 }
 
 /// The line under a list with rows this reader cannot read: "Issues 3 (1 members-only; only
@@ -115,6 +198,20 @@ pub fn sealed_rows_line(
     })
 }
 
+/// How many of the placeholders a reader cannot open are members-only, and how many are
+/// messages to specific people (what [`sealed_rows_line`] counts).
+pub fn count_sealed<'a>(placeholders: impl IntoIterator<Item = &'a MembersOnly>) -> (usize, usize) {
+    placeholders
+        .into_iter()
+        .fold((0, 0), |(members, letters), m| {
+            if m.audience == Audience::SpecificPeople {
+                (members, letters + 1)
+            } else {
+                (members + 1, letters)
+            }
+        })
+}
+
 /// A name for `id`: `@name` when `names` has its DPNS name, "you" for `me`, else the id.
 fn person(
     id: &str,
@@ -137,7 +234,7 @@ fn and_list(items: &[String]) -> String {
 }
 
 /// Who a letter went to, after its writer: "@bob, @carol and you", or for a group
-/// "the maintainers when sent: @bob and you" (DESIGN §10: the names, "as listed by the
+/// "@bob and you (maintainers when sent)" (DESIGN §10: the names, "as listed by the
 /// sender"). `me` is the reader.
 pub fn letter_to(
     recipients: &[String],
@@ -160,7 +257,7 @@ pub fn letter_to(
         listed
     };
     match group {
-        Some(g) => format!("the {}: {listed}", g.when_sent()),
+        Some(g) => format!("{listed} ({})", g.when_sent()),
         None => listed,
     }
 }
@@ -168,34 +265,20 @@ pub fn letter_to(
 /// The lines `dg` prints after posting a letter: who it went to, and who was left out for
 /// having no encryption key.
 pub async fn sent_lines(client: &PlatformClient, sent: &SentLetter) -> Vec<String> {
-    let ids: Vec<&str> = sent
-        .recipients
-        .iter()
-        .chain(&sent.skipped)
-        .map(String::as_str)
-        .collect();
-    let names = client.dpns_first_names(ids).await;
+    let names = names_of(client, sent).await;
     let me = sent.recipients.first().map(String::as_str);
     let mut out = vec![format!(
-        "  sent to {} ({} people, you included; only they can read it)",
-        letter_to(&sent.recipients, sent.group, me, &names),
+        "  sent to {} ({}{} people, you included; only they can read it)",
+        letter_to(&sent.recipients, None, me, &names),
+        sent.group
+            .map(|g| format!("{}; ", g.when_sent()))
+            .unwrap_or_default(),
         sent.recipients.len()
     )];
     if !sent.skipped.is_empty() {
-        let who = and_list(
-            &sent
-                .skipped
-                .iter()
-                .map(|id| at_name(id, &names))
-                .collect::<Vec<_>>(),
-        );
         out.push(format!(
-            "  note: {who} {} no encryption key and didn't receive it",
-            if sent.skipped.len() == 1 {
-                "has"
-            } else {
-                "have"
-            }
+            "  note: {} and didn't receive it",
+            left_out(sent, &names)
         ));
     }
     out
@@ -362,9 +445,6 @@ pub fn why_word(why: Unopened) -> &'static str {
     }
 }
 
-/// "3 members-only comments hidden (you're not a member of o/r)", with the reason for a
-/// member who cannot read them, or `None` for none. `noun` is singular ("comment"); `shown` of
-/// the `n` are placeholders above ("…hidden, 1 shown as a placeholder (…)").
 /// "3 members-only comments hidden (you're not a member of o/r)", or for letters (`letter`) "2
 /// comments to specific people hidden: only the people they were sent to can read them", with
 /// the reason for a reader who cannot read them, or `None` for none. `noun` is singular
@@ -576,6 +656,31 @@ mod tests {
         assert_eq!(prefix(&private, Audience::Members), "");
         assert_eq!(json(Audience::Members), serde_json::json!("members"));
         assert_eq!(json(Audience::Public), serde_json::json!("public"));
+    }
+
+    #[test]
+    fn the_question_before_signing_names_who_a_letter_goes_to() {
+        let names = std::collections::BTreeMap::from([("B".to_string(), "bob".to_string())]);
+        let sent = |group, recipients: &[&str], skipped: &[&str]| SentLetter {
+            recipients: recipients.iter().map(ToString::to_string).collect(),
+            skipped: skipped.iter().map(ToString::to_string).collect(),
+            group,
+        };
+        assert_eq!(
+            to_clause_named(&sent(None, &["Me", "B", "C"], &[]), &names),
+            " to @bob and C"
+        );
+        assert_eq!(
+            to_clause_named(
+                &sent(Some(LetterGroup::Maintainers), &["Me", "B"], &["K"]),
+                &names
+            ),
+            " to the maintainers now (@bob); K has no encryption key and won't receive it"
+        );
+        assert_eq!(
+            to_clause_named(&sent(Some(LetterGroup::Writers), &["Me"], &[]), &names),
+            " to the writers and maintainers now (nobody but you)"
+        );
     }
 
     #[test]

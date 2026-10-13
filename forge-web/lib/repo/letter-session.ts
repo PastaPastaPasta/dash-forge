@@ -23,7 +23,7 @@ import { VaultLockedError } from '../auth/vault'
 import type { Network } from '../constants'
 import { bytesToHex, openLetter, randomBytes, type LetterOpenResult, type LetterReader, type OwnerKey, type PrivateDocType, type StoredPrivateDoc } from '../private'
 import type { PlainDocument } from '../sdk'
-import type { RepoRef } from './contract'
+import { asIdentifierString, type RepoRef } from './contract'
 import { noteMembersKey } from './members-key-cache'
 import { noteOpenedDoc } from './members-texts'
 import {
@@ -149,7 +149,9 @@ export function lettersGate(repo: RepoRef, inner: ContentGate, session: Pick<Let
       const out: PlainDocument = asPlaintext(doc, opened.fields)
       out[AUDIENCE_FIELD] = 'specificPeople'
       out[LETTER_TO] = opened.recipients.map((r) => base58Encode(r))
-      out[LETTER_GROUP] = opened.group
+      // Anyone may set the group; only a member's letter (with `asMember`) is labelled by it and
+      // re-lists it in a reply: a stranger's "to the maintainers" stays a plain list.
+      out[LETTER_GROUP] = asIdentifierString(doc['asMember']) !== '' ? opened.group : null
       noteOpenedDoc(repo, out)
       return { ok: true, doc: out }
     },

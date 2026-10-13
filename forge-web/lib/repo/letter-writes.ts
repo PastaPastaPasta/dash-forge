@@ -95,7 +95,8 @@ async function openParent(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, type: Pri
   if (stored === null || keys === null) throw new LetterRefusedError(ONLY_RECIPIENTS_REPLY)
   const opened = await openLetterAs(auth.network, auth.identityId, { repoId: decodeIdentifier(repo.repoId), doc: stored, ownerKeys: ownerKeysOf(keys) })
   if (opened.status !== 'readable') throw new LetterRefusedError(ONLY_RECIPIENTS_REPLY)
-  return { recipients: opened.recipients.map((r) => base58Encode(r)), group: opened.group }
+  // a stranger's group (no `asMember`) is not re-listed: anyone may set it (as the reader drops it)
+  return { recipients: opened.recipients.map((r) => base58Encode(r)), group: asIdentifierString(doc['asMember']) !== '' ? opened.group : null }
 }
 
 /**
@@ -130,8 +131,9 @@ export async function letterThread(
     docs.push({ type: 'comment', doc: replied })
     const root = asIdentifierString(replied['replyTo'])
     if (root !== '') {
-      const r = await read(DOC.comment, root)
-      if (r !== null) docs.push({ type: 'comment', doc: r })
+      const r = await retryWhileMissing(() => read(DOC.comment, root), PARENT_RETRIES)
+      if (r === null) throw new LetterRefusedError(`the comment ${root} could not be read, and who can read this depends on it; nothing was written`)
+      docs.push({ type: 'comment', doc: r })
     }
   }
   const parents: ParentLetter[] = []
@@ -265,7 +267,9 @@ export async function letterContentKey(writer: LetterWriter, said: string, inten
 export async function letterWriter(auth: WriteAuth, repo: RepoRef, ask: LetterAsk | null, thread: LetterThread, reads: LetterReads, nameOf: NameOf = letterNames(auth.network)): Promise<LetterWriter> {
   const viewer = auth.identityId
   const members = await reads.memberships()
-  const refused = (r: LetterRefusal): LetterRefusedError => new LetterRefusedError(letterRefusalText(r, nameOf, ask?.group ?? null), r)
+  // a group's size names the group only when nothing else was asked (as dg says it)
+  const onlyGroup = ask !== null && ask.people.length === 0 && ask.exact === null ? ask.group : null
+  const refused = (r: LetterRefusal): LetterRefusedError => new LetterRefusedError(letterRefusalText(r, nameOf, onlyGroup), r)
   const input: LetterInput = {
     owner: repo.ownerId,
     sender: viewer,

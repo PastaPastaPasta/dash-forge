@@ -152,16 +152,16 @@ dg pr review     <owner>/<repo> 7 --comment --to @carol --body "Details of the b
 - Labels, milestones and assignees can't be set on an issue sent to specific people yet. Closing and reopening it works as usual.
 - Pull requests for specific people are **coming later**.
 
-What you see after posting, and in `dg issue view` / `dg pr view --comments`: who it went to, "as listed by" its writer.
+Before anything is signed, `dg` names who it goes to, including the people a reply re-lists without being asked: "Post a comment on issue #12 to the maintainers now (@alice and @bob)?". What you see after posting, and in `dg issue view` / `dg pr view --comments`: who it went to, "as listed by" its writer.
 
 ```text
 $ dg issue comment alice/shop 12 --to maintainers --body "…"
 ✓ commented on issue #12 (to specific people) · …
-  sent to the maintainers when sent: @alice and @bob (3 people, you included; only they can read it)
+  sent to @alice and @bob (maintainers when sent; 3 people, you included; only they can read it)
 
 $ dg issue view alice/shop 12
 ...
-— carol (7XyQ…Pd2) · to the maintainers when sent: @alice and you:
+— carol (7XyQ…Pd2) · to @alice and you (maintainers when sent):
 ```
 
 Everyone else sees that a message was posted, by whom, when, and **to how many people**, never who they are or what it says: "#14 · issue to 3 people by @carol · open", or a placeholder "comment to 3 people". A message from someone who is not a member is shown to its people and only counted for everyone else. With `--json`, a message carries `"audience": "specificPeople"` and, for its people, `"letter": {"to": [...], "group": ...}`; a placeholder carries `"recipients"`.

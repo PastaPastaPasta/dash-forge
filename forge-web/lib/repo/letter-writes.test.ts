@@ -164,6 +164,10 @@ describe('writing a message to specific people', () => {
     await expect(letterWriter(auth, REPO, { group: 'writers', people: [], exact: null }, NO_THREAD, reads(many, keys))).rejects.toThrow(
       'Writers and maintainers is 22 people. A message can go to at most 16. Choose All members or pick people.',
     )
+    // a group and people besides: the count is everyone's, so it is not the group's size
+    await expect(letterWriter(auth, REPO, { group: 'writers', people: [DANA], exact: null }, NO_THREAD, reads(many, { ...keys, [DANA]: [encKey(new Uint8Array(32).fill(0x7f))] }))).rejects.toThrow(
+      "That's 23 people. A message can go to at most 16. Choose All members or fewer people.",
+    )
     // no usable key of the writer's own in this browser
     await expect(letterWriter(auth, REPO, { group: null, people: [ALICE], exact: null }, NO_THREAD, { ...reads(), heldKeyIds: async () => [9] })).rejects.toThrow(/encryption key/)
     // a thread's people can't be left out
