@@ -9,14 +9,15 @@ This page explains what each audience means, what a public repository can keep *
 3. [Who can read members-only content](#who-can-read-members-only-content)
 4. [Turn on members-only content](#turn-on-members-only-content)
 5. [Post and read members-only content](#post-and-read-members-only-content)
-6. [What it costs](#what-it-costs)
-7. [What everyone can still see](#what-everyone-can-still-see)
-8. [Who can learn what](#who-can-learn-what)
-9. [What can still leak](#what-can-still-leak)
-10. [What this does not protect against](#what-this-does-not-protect-against)
-11. [Older Forge builds](#older-forge-builds)
-12. [Errors](#errors)
-13. [Words used on this page](#words-used-on-this-page)
+6. [Send a message to specific people](#send-a-message-to-specific-people)
+7. [What it costs](#what-it-costs)
+8. [What everyone can still see](#what-everyone-can-still-see)
+9. [Who can learn what](#who-can-learn-what)
+10. [What can still leak](#what-can-still-leak)
+11. [What this does not protect against](#what-this-does-not-protect-against)
+12. [Older Forge builds](#older-forge-builds)
+13. [Errors](#errors)
+14. [Words used on this page](#words-used-on-this-page)
 
 ---
 
@@ -26,9 +27,9 @@ This page explains what each audience means, what a public repository can keep *
 |---|---|---|---|
 | **Public** | Everyone. | n/a | today |
 | **All members** (short: **Members**) | Everyone with a role in the repository, including people with Read access, now and in future. Bots aren't included. People added later read it too, including what was posted before they joined. People removed later keep what they could already read. | yes | today, for issues, comments, reviews and environments |
-| **Maintainers** | The owner and maintainers when it was saved. Someone made a maintainer later reads an environment once it is saved again (Forge does that in the same step), never what was saved before. | no | today, for environments |
-| **Writers and maintainers** | The people with Write access or more when it was saved. | no | today, for environments; **coming later** for issues and comments |
-| **Specific people** | A list the writer picks, up to 16 people (64 for an environment), members or not. The writer is always on it. Replying with someone added lets them read from that reply on, not earlier ones. | no | today, for environments; **coming later** for issues and comments |
+| **Maintainers** | The owner and maintainers when it was posted or saved. Someone made a maintainer later reads an environment once it is saved again (Forge does that in the same step), never what was saved before; a message, only from a later reply that includes them. | no | today, for issues, comments, reviews and environments |
+| **Writers and maintainers** | The people with Write access or more when it was posted or saved. | no | today, for issues, comments, reviews and environments |
+| **Specific people** | A list the writer picks, up to 16 people (64 for an environment), members or not. The writer is always on it. Replying with someone added lets them read from that reply on, not earlier ones. | no | today, for issues, comments, reviews and environments |
 
 "Members-only" is the adjective for anything that isn't public. It can be any of the four audiences below Public.
 
@@ -40,9 +41,9 @@ A **private** repository is different: everything in it is encrypted, code inclu
 
 | Content | Members-only today? |
 |---|---|
-| Issues | yes |
-| Comments on issues and pull requests | yes |
-| Reviews of a pull request (the review's text; its verdict stays public, [below](#what-everyone-can-still-see)) | yes |
+| Issues | yes, for All members or as a [message to specific people](#send-a-message-to-specific-people) |
+| Comments on issues and pull requests | yes, the same |
+| Reviews of a pull request (the review's text; its verdict stays public, [below](#what-everyone-can-still-see)) | yes, the same |
 | [Environments](../guides/environments.md): configuration and secrets kept outside git | yes: always for a chosen audience, **Maintainers**, **Writers and maintainers**, **All members** or **Specific people**, encrypted for those people when it is saved |
 | Pull requests themselves, branches, commits and code | **coming later**. Everything you push to a public repository is public. |
 | Releases | **coming later** |
@@ -127,6 +128,46 @@ $ dg pr view alice/shop 7
 
 **Notifications.** The web app's notifications and the webhooks `forge-relay` delivers say that something happened, never what was said. Encrypted comments and reviews from people who are not members are not shown and notify nobody. An issue anyone opens as members-only still gets its numbered row and a notice, since its number is public. Whoever runs a notification service gets the same rules ([members-only notifications](../hosting/members-only-notifications.md)).
 
+## Send a message to specific people
+
+An issue, a comment or a review can go to **Maintainers**, to **Writers and maintainers**, or to **specific people** instead of all members. Only the people it goes to can read it. It needs no members-only content turned on, and the people need not be members: anyone with an encryption key can receive one, and anyone with an encryption key can send one.
+
+From `dg`, add `--to`:
+
+```sh
+dg issue create  <owner>/<repo> --to maintainers --title "Security report triage" --body "…"
+dg issue comment <owner>/<repo> 12 --to @alice,@bob --body "Can you two check the logs?"
+dg pr comment    <owner>/<repo> 7 --to writers --body "Who can take the migration?"
+dg pr review     <owner>/<repo> 7 --comment --to @carol --body "Details of the bug, for you only."
+```
+
+- `--to maintainers` goes to the owner and the maintainers **as they are now**; `--to writers` adds everyone with Write access. Triage members and people with Read access are not in either group. You are always included, in the group or not.
+- `--to @alice,@bob` goes to the people you name (DPNS names or identity ids), members or not. You can add people to a group: `--to maintainers,@frank`.
+- At most **16 people**, you included. A group that is bigger is refused before anything is signed: "Writers and maintainers is 23 people. A message can go to at most 16." Post it to all members (`--members`) or name people instead.
+- Each person needs an **encryption key**. Someone you name without one is refused ("can't receive members-only messages yet"); someone in a group without one is left out, and `dg` says so after posting.
+- Who it goes to is fixed when it is posted. Someone made a maintainer later does not read a message sent to Maintainers before.
+- **Replies.** A reply in such a conversation (`dg issue comment … --reply-to <comment id>`, `dg pr comment … --reply-to <comment id>`, or any comment on an issue sent to specific people) goes to the same people without asking: a list is repeated, and a group is listed again **as it is now**, so a maintainer added since reads from that reply on, not earlier ones. `--to` on a reply adds people (they read from that reply on); a reply can never leave someone out, except people who have since left a group the conversation was sent to. A public or all-members reply inside such a conversation is refused.
+- Inside a members-only conversation, a message to specific people can go to members only.
+- Its text lives only in the message itself: a text too long for it is refused ("shorten it, or send it to fewer people"); each person takes about 100 bytes. A review for specific people is submitted in one command: it is never kept as a pending review on your computer.
+- Labels, milestones and assignees can't be set on an issue sent to specific people yet. Closing and reopening it works as usual.
+- Pull requests for specific people are **coming later**.
+
+Before anything is signed, `dg` names who it goes to, including the people a reply re-lists without being asked: "Post a comment on issue #12 to the maintainers now (@alice and @bob)?". What you see after posting, and in `dg issue view` / `dg pr view --comments`: who it went to, "as listed by" its writer.
+
+```text
+$ dg issue comment alice/shop 12 --to maintainers --body "…"
+✓ commented on issue #12 (to specific people) · …
+  sent to @alice and @bob (maintainers when sent; 3 people, you included; only they can read it)
+
+$ dg issue view alice/shop 12
+...
+— carol (7XyQ…Pd2) · to @alice and you (maintainers when sent):
+```
+
+Everyone else sees that a message was posted, by whom, when, and **to how many people**, never who they are or what it says: "#14 · issue to 3 people by @carol · open", or a placeholder "comment to 3 people". A message from someone who is not a member is shown to its people and only counted for everyone else. With `--json`, a message carries `"audience": "specificPeople"` and, for its people, `"letter": {"to": [...], "group": ...}`; a placeholder carries `"recipients"`.
+
+**In the web app**, the audience chip beside every composer offers Public, All members, Maintainers, Writers and maintainers and Specific people… ("Who can read this?"). The people picker greys out anyone who can't receive one yet. After posting, the message says "Visible to alice, bob and you" or "Visible to alice, bob, carol (maintainers when sent)". **Forward to…** on a message you can read starts a reply that quotes it, with the same people and anyone you add. A message's text is never kept as a draft.
+
 ## What it costs
 
 Measured on devnet sakura:
@@ -137,6 +178,7 @@ Measured on devnet sakura:
 | Add a member to a repository with members-only content | the usual membership write, plus about 0.0007 DASH to share the key |
 | Remove a member | the usual delete, plus a key change: about 0.0007 DASH per remaining member and about 0.0006 DASH more |
 | Post a members-only issue, comment or review | 0 to 8 % more than the same thing in public |
+| Post one to specific people | about 8 % more than a members-only one for 2 people, and a little more for each extra person |
 | Save an environment change | about 0.0025 DASH |
 
 Reading costs nothing.
@@ -156,6 +198,7 @@ And per kind of item:
 |---|---|---|
 | A members-only comment or review on a public issue or pull request | which issue or pull request it is on, and which comment it replies to; an inline comment's line numbers and commit; **a review's verdict** (approved, changes requested, commented), which counts toward the branch policy for everyone | the text, an inline comment's file path, the review's text |
 | A members-only issue | its number ("#12 · members-only"); when it was opened, closed, reopened or locked, and by whom; that a label or milestone was set or someone assigned, and **who** was assigned; the counts that include it | the title, the body, the names of its labels and milestone |
+| A message to specific people (an issue, comment or review) | as a members-only one, and **how many people** it went to | who they are, the group it was sent to, and the text |
 | An environment | that the repository has environments and how many; for each change, who made it, when, and its size rounded up to 512 bytes; how many people it was sent to | its name, who it is for, the names, types and notes of its entries, and every value |
 | The repository | that members-only content is on; when the members key changed; who shared the key with whom; the member list and roles (public on every repository) | the key |
 
@@ -167,7 +210,7 @@ A review's verdict is public on purpose: everyone agrees on whether a pull reque
 |---|---|---|
 | The public, any Dash Platform node, explorers and indexers | no | everything in [What everyone can still see](#what-everyone-can-still-see) |
 | Your storage provider (for long members-only text and environments) | no | file sizes, and when files are read |
-| A notification service or relay that is not a member, including the hosted one | no | that something happened, by whom, when, and on which issue or pull request |
+| A notification service or relay that is not a member, including the hosted one | no | that something happened, by whom, when, and on which issue or pull request; for a message to specific people, how many people it went to, never who |
 | A hosted read-only mirror of the code | no | the public repository only |
 | A current member | yes | |
 | A removed member | everything posted before the removal, forever | sizes and timing afterwards |
@@ -198,6 +241,7 @@ People using older Forge builds see fewer things until they update. Nothing leak
 - members-only items are left out without saying why, and counts that include them are not labelled;
 - a members-only issue opened by its number reads as "not found" (an older `dg` says E102);
 - an older web app may describe members-only items as "encrypted by someone who is not a member". That is wrong. Update;
+- a message to specific people is a placeholder in builds older than this one, even for the people it was sent to;
 - an older build does not count a members-only review's approval, so it may refuse a merge an up-to-date build allows ([E804](../errors.md#e804)). Never the reverse. **Update to see and count members-only reviews.**
 
 Change members only with an up-to-date Forge (`dg` or the web app), so the key follows every change:
@@ -225,6 +269,8 @@ Forge says: "You're a member, but no key has been shared with you yet. Ask a mai
 
 **Members-only.** That issue or pull request is members-only, and you can't read it. Everyone can see that it exists, its number, who opened it and when. `dg issue view` and `dg pr view` show that as a row and exit normally. E313 comes from commands that need the content, such as commenting on it or checking it out.
 
+For an issue sent to specific people the message says so ("issue #14 of alice/shop is for 3 people"): only they can read it, and being a member does not help.
+
 **What to do:** ask the repository's owner to make you a member (run `dg collab accept <owner>/<repo>` first: that is your consent). If you are a member already, see [E311](#e311). If your key is locked (a key protected by a passphrase, with no terminal to ask for it), set `DASH_FORGE_PASSPHRASE` or run the command in a terminal.
 
 A members-only write by someone who is not a member stops with [E601](../errors.md#e601) before anything is signed. A member whose identity has no encryption key gets [E306](../errors.md#e306): set up your encryption key first. Every code is also in [Error codes](../errors.md).
@@ -239,9 +285,9 @@ Forge uses the same words in `dg`, the web app and these pages.
 |---|---|
 | **Public** | Everyone can read it. |
 | **All members** (short: **Members**) | Everyone with a role in the repository, now and in future. Bots aren't included. |
-| **Maintainers** | The maintainers when it was saved. |
-| **Writers and maintainers** | The people with Write access or more (environments today; coming later for discussion). |
-| **Specific people** | A list the writer picks (coming later). |
+| **Maintainers** | The owner and the maintainers when it was posted or saved. |
+| **Writers and maintainers** | The people with Write access or more when it was posted or saved. |
+| **Specific people** | A list the writer picks, up to 16 people for a message. |
 | **members-only** | Anything that isn't public. "A members-only comment." |
 
 **Roles:** **Read**, **Triage**, **Write**, **Maintain**, **Owner** and **Bot** (an automated account; coming later). What each can do is [above](#who-can-read-members-only-content).

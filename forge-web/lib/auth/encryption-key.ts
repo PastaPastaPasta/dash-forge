@@ -24,8 +24,11 @@ import type { DataContract, Document, EvoSDK, IdentityPublicKey, PrivateKey as W
 
 import type { Network } from '../constants'
 import {
+  KEY_TYPE_ECDSA_SECP256K1 as LETTER_KEY_TYPE,
+  PURPOSE_ENCRYPTION as LETTER_PURPOSE,
   WrapError,
   bytesToHex,
+  hexToBytes,
   openLetter,
   privateId,
   sealLetter,
@@ -48,6 +51,7 @@ import { deriveAt, deriveMasterKey, identityKeyPath, isValidMnemonic, invalidMne
 import { parsePrivateKey } from './wif'
 import { WrongMasterKeyError, assertMasterKeyOf, sendIdentityUpdate } from './limited-key'
 import { shortId } from '../utils'
+import type { LetterGroup } from '../rules/letters'
 import {
   EncryptionKeyNotHeldError,
   VaultLockedError,
@@ -91,6 +95,19 @@ export function usableEncryptionKey<K extends EncKeyLike>(keys: readonly K[], co
   let best: K | null = null
   for (const k of keys) if (isUsableEncryptionKey(k, coreId) && (best === null || k.keyId > best.keyId)) best = k
   return best
+}
+
+/**
+ * An identity's keys as the letter reader rule takes them (forge-core `env::codec::owner_keys`):
+ * the sender key of a letter is looked up among its document owner's keys only.
+ */
+export function ownerKeysOf(keys: readonly EncKeyLike[]): OwnerKey[] {
+  return keys.map((k) => ({
+    id: k.keyId,
+    purpose: k.purposeNumber === LETTER_PURPOSE ? LETTER_PURPOSE : 0xff,
+    keyType: k.keyTypeNumber === LETTER_KEY_TYPE ? LETTER_KEY_TYPE : 0xff,
+    data: hexToBytes(k.data),
+  }))
 }
 
 /** The verbatim add-member message for an identity with no encryption key (`ux-dx-spec.md` §9). */
@@ -571,18 +588,25 @@ export async function encryptionOps(sdk: EvoSDK, network: Network, identityId: s
  * encryption key for (network, identity): the sender's slot is `recipients[0]`, which must be
  * this identity, and the held key whose public key it names sends it (this browser may hold
  * several, DESIGN D27). The keys are opened from the vault for the call and wiped after; a locked
- * vault makes the call throw, and so does a sender key this browser does not hold.
+ * vault makes the call throw, and so does a sender key this browser does not hold. `group`: the
+ * role group the recipients are, when the writer chose a preset (tag 29).
  */
 export function sealLetterAs(
   network: Network,
   identityId: string,
-  p: { readonly repoId: Uint8Array; readonly doc: PrivateDoc; readonly fields: DocFields; readonly recipients: readonly LetterRecipient[] },
+  p: {
+    readonly repoId: Uint8Array
+    readonly doc: PrivateDoc
+    readonly fields: DocFields
+    readonly recipients: readonly LetterRecipient[]
+    readonly group?: LetterGroup | null
+  },
 ): Promise<Uint8Array> {
   const senderPub = p.recipients[0] === undefined ? '' : bytesToHex(p.recipients[0].publicKey)
   return withEncryptionKeys(network, identityId, async (keys) => {
     const sender = keys.find((k) => bytesToHex(secp.getPublicKey(k.secret, true)) === senderPub)
     if (sender === undefined) throw new VaultLockedError("this browser does not hold the encryption key the letter's sender slot names")
-    return sealLetter(p.repoId, sender.secret, sender.keyId, p.doc, p.fields, p.recipients)
+    return sealLetter(p.repoId, sender.secret, sender.keyId, p.doc, p.fields, p.recipients, p.group ?? null)
   })
 }
 

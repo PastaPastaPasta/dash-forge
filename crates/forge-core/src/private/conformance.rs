@@ -357,6 +357,8 @@ struct NamedSealIn {
     k_obj: String,
     nonce: String,
     ivs: Vec<String>,
+    #[serde(default)]
+    group: Option<super::tlv::LetterGroup>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -434,12 +436,18 @@ fn owner_keys(keys: &[OwnerKeyIn]) -> Vec<named::OwnerKey> {
 
 fn letter_json(o: &LetterOpened) -> Value {
     match o {
-        LetterOpened::Readable(l) => json!({
-            "status": "readable",
-            "fields": l.fields,
-            "recipients": l.recipients.iter().map(hex::encode).collect::<Vec<_>>(),
-            "slot": l.slot,
-        }),
+        LetterOpened::Readable(l) => {
+            let mut out = json!({
+                "status": "readable",
+                "fields": l.fields,
+                "recipients": l.recipients.iter().map(hex::encode).collect::<Vec<_>>(),
+                "slot": l.slot,
+            });
+            if let Some(g) = l.group {
+                out["group"] = json!(g);
+            }
+            out
+        }
         LetterOpened::Unreadable(r) => json!({ "status": "unreadable", "reason": r }),
         LetterOpened::Malformed => json!({ "status": "malformed" }),
     }
@@ -970,6 +978,7 @@ fn run(v: &Vector) -> Value {
                 &i.doc,
                 &i.fields,
                 &recipients,
+                i.group,
                 &k_obj,
                 nonce12(&i.nonce),
                 &ivs,
@@ -986,6 +995,7 @@ fn run(v: &Vector) -> Value {
             super::tlv::push_recipients(
                 &mut body,
                 &recipients.iter().map(|r| r.identity_id).collect::<Vec<_>>(),
+                i.group,
             );
             let tlv = doc::padded(i.doc.kind, &body, named::max_tlv(i.doc.kind, n));
             let sender_secret = secret(&i.sender.private);

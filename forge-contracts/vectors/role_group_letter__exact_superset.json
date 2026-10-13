@@ -1,0 +1,61 @@
+{
+  "name": "exact_superset",
+  "description": "the picker's list holds every parent recipient and one more: allowed, no group tag.",
+  "case": "role_group_letter",
+  "rules": "v2",
+  "input": {
+    "owner": "6owner1111111111111111111111111111111111111",
+    "sender": "8writer111111111111111111111111111111111111",
+    "members": [
+      {
+        "identity": "7maint1111111111111111111111111111111111111",
+        "role": "maintainer"
+      },
+      {
+        "identity": "8writer111111111111111111111111111111111111",
+        "role": "writer"
+      },
+      {
+        "identity": "8writer222222222222222222222222222222222222",
+        "role": "writer"
+      },
+      {
+        "identity": "9triage11111111111111111111111111111111111",
+        "role": "triage"
+      },
+      {
+        "identity": "Areader11111111111111111111111111111111111",
+        "role": "reader"
+      }
+    ],
+    "keyless": [],
+    "request": null,
+    "exact": [
+      "8writer111111111111111111111111111111111111",
+      "Bfrank111111111111111111111111111111111111",
+      "Cstranger11111111111111111111111111111111",
+      "7maint1111111111111111111111111111111111111"
+    ],
+    "parents": [
+      {
+        "recipients": [
+          "8writer111111111111111111111111111111111111",
+          "Bfrank111111111111111111111111111111111111",
+          "Cstranger11111111111111111111111111111111"
+        ],
+        "group": null
+      }
+    ],
+    "membersOnlyParent": false
+  },
+  "expected": {
+    "recipients": [
+      "8writer111111111111111111111111111111111111",
+      "7maint1111111111111111111111111111111111111",
+      "Bfrank111111111111111111111111111111111111",
+      "Cstranger11111111111111111111111111111111"
+    ],
+    "skipped": [],
+    "group": null
+  }
+}

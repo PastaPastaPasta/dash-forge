@@ -190,6 +190,138 @@ fn is_sealed(d: &FetchedDocument) -> bool {
     d.field_bytes("enc").is_some_and(|e| !e.is_empty())
 }
 
+/// Whether a fetched document is a letter: `enc` v0x04, sealed to the people its writer listed
+/// (DESIGN §4.2), in either kind of repository.
+fn is_letter(d: &FetchedDocument) -> bool {
+    d.field_bytes("enc").and_then(|e| e.first().copied())
+        == Some(crate::rules::v2::ENC_SPECIFIC_PEOPLE)
+}
+
+/// The field an opened letter's recipients are put in (base58, slot order): a `$` name, which
+/// no contract property can have, so it never comes from Platform.
+pub const LETTER_TO_FIELD: &str = "$letterTo";
+/// The field an opened letter's group (tag 29) is put in (`1` Maintainers, `2` Writers and
+/// maintainers).
+pub const LETTER_GROUP_FIELD: &str = "$letterGroup";
+
+/// What a reader holds for the letters of a page (`enc` v0x04, DESIGN §4.2): its identity and
+/// every ENCRYPTION key it holds, and the identity keys of each letter's writer, fetched for
+/// that writer (the reader rule takes the sender key from nowhere else).
+pub(super) struct LetterKeys {
+    repo_id: [u8; 32],
+    /// The reader, or why there is none (signed nothing, or holds no encryption key).
+    reader: std::result::Result<([u8; 32], Vec<crate::envelope::PrivateKey>), Unopened>,
+    /// Each writer's keys, by base58 `$ownerId`.
+    owners: BTreeMap<String, Vec<crate::private::named::OwnerKey>>,
+    /// Writers whose keys could not be read just now: their letters are placeholders, never
+    /// "not encrypted for this repo", and never the whole page's error.
+    unreadable: BTreeSet<String>,
+}
+
+impl LetterKeys {
+    /// `d`, a letter, opened for this reader under the letter reader rule, or its placeholder:
+    /// not a recipient (or nobody to read it as), or not well-formed ("not encrypted for this
+    /// repo"). The opened document carries its recipients and group ([`LETTER_TO_FIELD`],
+    /// [`LETTER_GROUP_FIELD`]).
+    fn open(
+        &self,
+        kind: ContentKind,
+        d: FetchedDocument,
+    ) -> std::result::Result<FetchedDocument, MembersOnly> {
+        use crate::private::named::{self, LetterOpened};
+        let reader = match &self.reader {
+            Ok(r) => r,
+            Err(why) => return Err(MembersOnly::of(&d, *why)),
+        };
+        if self.unreadable.contains(&d.owner_id) {
+            return Err(MembersOnly::of(&d, Unopened::KeysUnreadable));
+        }
+        match self.open_enc(reader, kind, &d) {
+            Some(LetterOpened::Readable(l)) => Ok(private::open_letter_doc(*l, d)),
+            Some(LetterOpened::Unreadable(named::LetterUnreadable::NotARecipient)) => {
+                Err(MembersOnly::of(&d, Unopened::NotARecipient))
+            }
+            Some(
+                LetterOpened::Unreadable(named::LetterUnreadable::BadTag) | LetterOpened::Malformed,
+            )
+            | None => Err(MembersOnly::of(&d, Unopened::NotForThisRepo)),
+        }
+    }
+
+    /// The content fields of `d`, a letter, when it opens for this reader (its author making it
+    /// public, R5); `None` otherwise.
+    pub(super) fn open_fields(
+        &self,
+        kind: ContentKind,
+        d: &FetchedDocument,
+    ) -> Option<crate::private::Fields> {
+        use crate::private::named::LetterOpened;
+        let reader = self.reader.as_ref().ok()?;
+        match self.open_enc(reader, kind, d)? {
+            LetterOpened::Readable(l) => Some(l.fields),
+            _ => None,
+        }
+    }
+
+    /// `d`'s `enc` under the letter reader rule, `None` when `d` has no header or `enc` to open.
+    fn open_enc(
+        &self,
+        (identity_id, keys): &([u8; 32], Vec<crate::envelope::PrivateKey>),
+        kind: ContentKind,
+        d: &FetchedDocument,
+    ) -> Option<crate::private::named::LetterOpened> {
+        use crate::private::named;
+        let header = crate::keyring::header_of(doc_kind(kind), d)?;
+        let enc = d.field_bytes("enc")?;
+        let owner = self.owners.get(&d.owner_id).map_or(&[][..], Vec::as_slice);
+        let reader = named::Reader {
+            identity_id: *identity_id,
+            keys,
+        };
+        Some(named::open(&self.repo_id, &header, &enc, owner, &reader))
+    }
+}
+
+/// An opened letter's recipients and group, as [`LetterKeys::open`] put them on the document.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LetterInfo {
+    /// The recipients in slot order (base58; slot 0 is the writer), "as listed by the sender".
+    pub recipients: Vec<String>,
+    /// The role group it was sent to, if any.
+    pub group: Option<crate::rules::letters::LetterGroup>,
+}
+
+impl LetterInfo {
+    /// The letter facts of an opened document, `None` for anything else.
+    #[must_use]
+    pub fn of(d: &FetchedDocument) -> Option<Self> {
+        let Some(FieldValue::List(ids)) = d.fields.get(LETTER_TO_FIELD) else {
+            return None;
+        };
+        let recipients = ids
+            .iter()
+            .filter_map(|v| match v {
+                FieldValue::Identifier(b) => Some(platform::encode_identifier(*b)),
+                _ => None,
+            })
+            .collect();
+        let group = d
+            .field_u64(LETTER_GROUP_FIELD)
+            .and_then(|g| u8::try_from(g).ok())
+            .and_then(crate::rules::letters::LetterGroup::from_code);
+        Some(Self { recipients, group })
+    }
+
+    /// As a parent the letter rule re-lists ([`crate::rules::letters::ParentLetter`]).
+    #[must_use]
+    pub fn parent(&self) -> crate::rules::letters::ParentLetter {
+        crate::rules::letters::ParentLetter {
+            recipients: self.recipients.clone(),
+            group: self.group,
+        }
+    }
+}
+
 /// A comment's thread as [`Collab::thread_docs`] read it.
 struct ThreadDocs {
     /// The comment named (replied to).
@@ -221,14 +353,6 @@ fn parent_not_found(what: &str, id: &str) -> Error {
     .fix("check the id, or try again in a moment (a node may not show it yet)")
     .note("nothing was written")
     .into()
-}
-
-/// The audience of a parent read by id (`found`), failing closed: one that is not there is an
-/// error ([`parent_not_found`]), never "public".
-fn audience_of_found(found: Option<&FetchedDocument>, what: &str, id: &str) -> Result<Audience> {
-    found
-        .map(stored_audience)
-        .ok_or_else(|| parent_not_found(what, id))
 }
 
 /// The audience a child is under: the narrowest of its target's (`target`) and every comment of
@@ -325,11 +449,18 @@ fn content_kind_of(kind: DocKind) -> Option<ContentKind> {
 /// public repository holds plaintext and members-only documents side by side.
 fn open_with(
     keys: &DocKeys,
+    letters: Option<&LetterKeys>,
     kind: ContentKind,
     d: FetchedDocument,
 ) -> std::result::Result<FetchedDocument, MembersOnly> {
     if !is_sealed(&d) {
         return Ok(d);
+    }
+    if is_letter(&d) {
+        return match letters {
+            Some(l) => l.open(kind, d),
+            None => Err(MembersOnly::of(&d, Unopened::NotARecipient)),
+        };
     }
     match keys {
         DocKeys::None(why) => Err(MembersOnly::of(&d, *why)),
@@ -424,6 +555,8 @@ pub struct Issue {
     pub upstream_number: Option<u32>,
     /// Who it is for, read from the stored document: what an edit keeps (DESIGN §2.4).
     pub audience: Audience,
+    /// An opened letter's people and group (`None` for anything else).
+    pub letter: Option<LetterInfo>,
 }
 
 impl Issue {
@@ -471,6 +604,8 @@ pub struct Patch {
     pub upstream_number: Option<u32>,
     /// Who it is for, read from the stored document: what an edit keeps (DESIGN §2.4).
     pub audience: Audience,
+    /// An opened letter's people and group (`None` for anything else).
+    pub letter: Option<LetterInfo>,
 }
 
 /// The base a PR's merge is folded against: `baseRefName` as of the patch's `$createdAt`
@@ -550,6 +685,8 @@ pub struct Comment {
     pub diff_hunk: Option<String>,
     /// Who it is for, read from the stored document: what an edit keeps (DESIGN §2.4).
     pub audience: Audience,
+    /// An opened letter's people and group (`None` for anything else).
+    pub letter: Option<LetterInfo>,
 }
 
 impl Comment {
@@ -587,6 +724,8 @@ pub struct Review {
     pub members_only: bool,
     /// Who it is for, read from the stored document (public, or members-only).
     pub audience: Audience,
+    /// An opened letter's people and group (`None` for anything else).
+    pub letter: Option<LetterInfo>,
 }
 
 /// A target's history: its state changes (`transition`) and its events, by the gate that
@@ -647,6 +786,9 @@ pub enum Unopened {
     /// Written by a newer version of Forge, in an envelope this one does not open
     /// (`private-repos.md` §4.1).
     NewerVersion,
+    /// A letter (`enc` v0x04) that does not list this reader, or a reader who signed nothing:
+    /// only the people it was sent to can read it.
+    NotARecipient,
 }
 
 /// A members-only document this reader cannot open, as DESIGN D14 shows it: who wrote it, when
@@ -666,6 +808,8 @@ pub struct MembersOnly {
     pub number: Option<u32>,
     /// Members, or specific people (`enc` v0x04).
     pub audience: crate::rules::v2::Audience,
+    /// A letter's recipient count (`enc[1]`, public: D3), `None` for members-only content.
+    pub recipients: Option<u8>,
     /// Why this reader cannot open it.
     pub why: Unopened,
 }
@@ -673,9 +817,18 @@ pub struct MembersOnly {
 impl MembersOnly {
     /// The placeholder of `d`, a sealed document this reader could not open for `why`.
     fn of(d: &FetchedDocument, why: Unopened) -> Self {
-        let enc_v4 = d.field_bytes("enc").and_then(|e| e.first().copied())
-            == Some(crate::rules::v2::ENC_SPECIFIC_PEOPLE);
+        let enc_v4 = is_letter(d);
         Self {
+            // a count only a well-framed letter can carry (1..=16): never an impossible one
+            recipients: if enc_v4 {
+                d.field_bytes("enc")
+                    .and_then(|e| e.get(1).copied())
+                    .filter(|n| {
+                        (1..=crate::private::named::MAX_RECIPIENTS).contains(&usize::from(*n))
+                    })
+            } else {
+                None
+            },
             document_id: d.id.clone(),
             author: d.owner_id.clone(),
             created_at: d.created_at.unwrap_or_default(),
@@ -1207,6 +1360,7 @@ pub fn issue_from_doc(d: &FetchedDocument) -> Issue {
         imported: imported_of(d),
         upstream_number: upstream_number_of(d),
         audience: stored_audience(d),
+        letter: LetterInfo::of(d),
     }
 }
 
@@ -1231,6 +1385,7 @@ pub fn patch_from_doc(d: &FetchedDocument) -> Patch {
         imported: imported_of(d),
         upstream_number: upstream_number_of(d),
         audience: stored_audience(d),
+        letter: LetterInfo::of(d),
     }
 }
 
@@ -1287,6 +1442,7 @@ fn comment_from_doc(d: &FetchedDocument) -> Comment {
         imported: imported_of(d),
         diff_hunk: d.field_str(COMMENT_DIFF_HUNK),
         audience: stored_audience(d),
+        letter: LetterInfo::of(d),
     }
 }
 
@@ -1304,6 +1460,7 @@ fn review_from_doc(d: &FetchedDocument) -> Review {
         imported: imported_of(d),
         members_only: false,
         audience: stored_audience(d),
+        letter: LetterInfo::of(d),
     }
 }
 
@@ -2261,6 +2418,91 @@ fn proof_required(props: &BTreeMap<String, FieldValue>) -> bool {
             .is_some_and(|v| Verdict::from_code(v).needs_member_proof())
 }
 
+/// A members-only or public reply in a conversation for specific people (DESIGN §3.3, D26).
+fn letter_thread_reply() -> Error {
+    UserError::new(
+        codes::USAGE,
+        "this conversation is for specific people: a reply to it goes to them",
+    )
+    .cause("anyone else could read a reply that is not a message to its people")
+    .fix("reply without --members (it goes to the same people), or add people with --to @name")
+    .note("nothing was written")
+    .into()
+}
+
+/// A letter refused by the letter rule ([`crate::rules::letters::plan`]), as the writer reads
+/// it (DESIGN §10). `names` gives `@name` for the ids it has.
+fn letter_refused(
+    repo: &RepoRef,
+    request: Option<&crate::rules::letters::LetterRequest>,
+    refusal: crate::rules::letters::LetterRefusal,
+    names: &BTreeMap<String, String>,
+) -> Error {
+    use crate::rules::letters::{LetterRefusal, MAX_RECIPIENTS};
+    let who = |ids: &[String]| {
+        ids.iter()
+            .map(|id| {
+                names
+                    .get(id)
+                    .map_or_else(|| id.clone(), |n| format!("@{n}"))
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let e = match refusal {
+        LetterRefusal::NoRecipients => UserError::new(codes::USAGE, "choose who to send it to")
+            .fix("--to @name,@name, or --to maintainers / --to writers"),
+        LetterRefusal::Narrower { people } => UserError::new(
+            codes::USAGE,
+            format!(
+                "replies can't leave out people who could read earlier messages: {}",
+                who(&people)
+            ),
+        ),
+        LetterRefusal::NoEncryptionKey { people } => UserError::new(
+            codes::NO_ENCRYPTION_KEY,
+            format!(
+                "{} can't receive members-only messages yet",
+                who(&people)
+            ),
+        )
+        .cause("a message to specific people is encrypted to each person's encryption key, and they have none")
+        .fix(format!(
+            "they add one themselves: `{}`, or Settings → Private repos in the web app",
+            crate::keyring::FIX_ADD_ENCRYPTION_KEY
+        )),
+        LetterRefusal::NotMembers { people } => UserError::new(
+            codes::USAGE,
+            format!(
+                "{} {} not a member of {}, so this members-only conversation can't be sent to them",
+                who(&people),
+                if people.len() == 1 { "is" } else { "are" },
+                repo.display()
+            ),
+        ),
+        LetterRefusal::TooMany { count } => {
+            let group = request
+                .filter(|r| r.people.is_empty())
+                .and_then(|r| r.group);
+            UserError::new(
+                codes::USAGE,
+                match group {
+                    Some(g) => format!(
+                        "{} is {count} people. A message can go to at most {MAX_RECIPIENTS}.",
+                        g.label()
+                    ),
+                    None => format!(
+                        "that's {count} people. A message can go to at most {MAX_RECIPIENTS}."
+                    ),
+                },
+            )
+            .fix("post it to all members (--members), or name at most 16 people with --to")
+        }
+    };
+    e.note("checked before anything was signed; nothing was written or paid")
+        .into()
+}
+
 /// The refusal of an edit that would change a document's audience (DESIGN §2.4: fixed at
 /// creation). Nothing is written.
 fn audience_fixed(doc_type: &str, audience: Audience) -> Error {
@@ -2622,6 +2864,22 @@ fn is_state_rule_refusal(e: &Error) -> bool {
 /// author and time are public.
 fn members_only_error(repo: &RepoRef, kind: TargetKind, number: u32, m: &MembersOnly) -> Error {
     let what = format!("{} #{number} of {}", kind.noun(), repo.display());
+    if let Some(n) = m.recipients {
+        return UserError::new(
+            codes::MEMBERS_ONLY,
+            format!("{what} is for {}", crate::rules::letters::people(usize::from(n))),
+        )
+        .cause(format!(
+            "only the people {} sent it to can read it",
+            m.author
+        ))
+        .fix(match m.why {
+            Unopened::Locked => "unlock your key (enter its passphrase in a terminal, or set DASH_FORGE_PASSPHRASE), then read it again",
+            Unopened::NoEncryptionKey => "if it was sent to you, use a key source that holds your encryption key (`dg auth status`)",
+            _ => "if it should be for you, ask its author to forward it to you",
+        })
+        .into();
+    }
     match m.why {
         Unopened::NoKeyShared => crate::keyring::no_key_shared(repo),
         Unopened::NoEncryptionKey => {
@@ -2632,7 +2890,8 @@ fn members_only_error(repo: &RepoRef, kind: TargetKind, number: u32, m: &Members
         | Unopened::NotForThisRepo
         | Unopened::KeysUnreadable
         | Unopened::Locked
-        | Unopened::NewerVersion => {
+        | Unopened::NewerVersion
+        | Unopened::NotARecipient => {
             let mut e = UserError::new(codes::MEMBERS_ONLY, format!("{what} is members-only"))
                 .cause(format!(
                     "only members of {} can read it; it was opened by {}",
@@ -2889,6 +3148,40 @@ pub struct Collab<'a> {
     /// The audience this command asked for on the content it writes
     /// ([`Self::request_audience`]); `None`: the context's.
     requested: std::sync::Mutex<Option<Audience>>,
+    /// Who the letters this command writes go to ([`Self::request_letter`]); `None`: re-list
+    /// the letters they reply under.
+    letter_request: std::sync::Mutex<Option<crate::rules::letters::LetterRequest>>,
+    /// The identity keys of letter writers, by base58 id, fetched once per `Collab`.
+    owner_keys: std::sync::Mutex<BTreeMap<String, Vec<crate::private::named::OwnerKey>>>,
+    /// Who the last letter this `Collab` sealed went to ([`Self::last_letter`]).
+    last_letter: std::sync::Mutex<Option<SentLetter>>,
+}
+
+/// Who a letter went to, as its writer resolved it when it was posted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SentLetter {
+    /// The recipients in slot order (base58; the writer first).
+    pub recipients: Vec<String>,
+    /// People of the group or thread left out for having no usable encryption key.
+    pub skipped: Vec<String>,
+    /// The role group it names (tag 29), if any.
+    pub group: Option<crate::rules::letters::LetterGroup>,
+}
+
+/// A letter's recipients, resolved for sealing.
+struct ResolvedLetter {
+    sent: SentLetter,
+    recipients: Vec<crate::private::named::Recipient>,
+    sender: crate::envelope::PrivateKey,
+    sender_key_id: u32,
+}
+
+/// What a new letter replies under: the letters of its thread, as their writers listed them,
+/// and whether a members-only document is among its parents (then it goes to members only).
+#[derive(Debug, Clone, Default)]
+struct LetterContext {
+    parents: Vec<crate::rules::letters::ParentLetter>,
+    members_only_parent: bool,
 }
 
 impl<'a> Collab<'a> {
@@ -2905,6 +3198,9 @@ impl<'a> Collab<'a> {
             private_updates: std::sync::Mutex::default(),
             member: std::sync::Mutex::default(),
             requested: std::sync::Mutex::default(),
+            letter_request: std::sync::Mutex::default(),
+            owner_keys: std::sync::Mutex::default(),
+            last_letter: std::sync::Mutex::default(),
         }
     }
 
@@ -2927,6 +3223,9 @@ impl<'a> Collab<'a> {
             private_updates: std::sync::Mutex::default(),
             member: std::sync::Mutex::default(),
             requested: std::sync::Mutex::default(),
+            letter_request: std::sync::Mutex::default(),
+            owner_keys: std::sync::Mutex::default(),
+            last_letter: std::sync::Mutex::default(),
         }
     }
 
@@ -2995,6 +3294,19 @@ impl<'a> Collab<'a> {
         *crate::history::lock(&self.requested)
     }
 
+    /// Send every issue, comment and review this `Collab` writes from now on to `to` (`dg …
+    /// --to`): a preset, people (base58 ids), or both; resolved when each is posted (DESIGN
+    /// §4.2). Also asks for the specific-people audience.
+    pub fn request_letter(&self, to: crate::rules::letters::LetterRequest) {
+        *crate::history::lock(&self.letter_request) = Some(to);
+        self.request_audience(Some(Audience::SpecificPeople));
+    }
+
+    /// Who the last letter this `Collab` wrote went to, as resolved when it was posted.
+    pub fn last_letter(&self) -> Option<SentLetter> {
+        crate::history::lock(&self.last_letter).clone()
+    }
+
     /// The audience a new document of `repo` is written for, under a parent written for
     /// `parent` (`None`: no parent, as an issue): what this command asked for, else the
     /// parent's (DESIGN §3.3: a child's audience is a subset of its parent's). A public reply
@@ -3002,29 +3314,31 @@ impl<'a> Collab<'a> {
     /// here, before anything is signed. In a private repository everything is members-only.
     fn audience_for(&self, repo: &RepoRef, parent: Option<ParentAudience>) -> Result<Audience> {
         let requested = self.requested_audience();
+        let in_letter = parent.is_some_and(|p| p.default == Audience::SpecificPeople);
         if repo.visibility == Visibility::Private {
-            if requested == Some(Audience::Public) {
-                return Err(UserError::new(
+            // a private repository's documents bind nothing by `vis` (§18.1 is for converted
+            // ones): only a letter thread narrows it
+            return match requested {
+                Some(Audience::Public) => Err(UserError::new(
                     codes::USAGE,
                     format!(
                         "{} is private: everything in it is members-only",
                         repo.display()
                     ),
                 )
-                .into());
-            }
-            return Ok(Audience::Members);
+                .into()),
+                Some(Audience::Members) if in_letter => Err(letter_thread_reply()),
+                Some(Audience::SpecificPeople) => Ok(Audience::SpecificPeople),
+                None if in_letter => Ok(Audience::SpecificPeople),
+                _ => Ok(Audience::Members),
+            };
         }
         let parent = parent.unwrap_or(ParentAudience::same(Audience::Public));
         let audience = requested.unwrap_or(parent.default);
-        if audience == Audience::SpecificPeople {
-            return Err(UserError::new(
-                codes::USAGE,
-                "writing to specific people is not supported yet",
-            )
-            .into());
-        }
         if !audience.fits_under(parent.bound) {
+            if parent.bound == Audience::SpecificPeople {
+                return Err(letter_thread_reply());
+            }
             return Err(UserError::new(
                 codes::USAGE,
                 "this conversation is members-only: a reply to it can't be public",
@@ -3041,28 +3355,38 @@ impl<'a> Collab<'a> {
     /// parent): read from the stored document, never from the repository alone (DESIGN §3.3).
     /// It fails closed: a target that cannot be read is an error, never "public".
     async fn target_audience(&self, repo: &RepoRef, target_id: &str) -> Result<Audience> {
-        if repo.visibility == Visibility::Private {
-            return Ok(Audience::Members);
-        }
         Ok(self.target_parent(repo, target_id).await?.default)
     }
 
     /// [`Self::target_audience`] of a public repository's target as a comment's or review's
     /// parent ([`ParentAudience`]).
     async fn target_parent(&self, repo: &RepoRef, target_id: &str) -> Result<ParentAudience> {
+        Ok(ParentAudience::of(
+            &self.target_doc_by_id(repo, target_id).await?.1,
+        ))
+    }
+
+    /// `repo`'s issue or patch `target_id`, as stored, with its kind, failing closed
+    /// ([`parent_not_found`]).
+    async fn target_doc_by_id(
+        &self,
+        repo: &RepoRef,
+        target_id: &str,
+    ) -> Result<(ContentKind, FetchedDocument)> {
         let collab = self.collab_contract(repo).await?;
-        let mut found = None;
-        for doc_type in [DOC_ISSUE, DOC_PATCH] {
-            found = self
+        for (doc_type, kind) in [
+            (DOC_ISSUE, ContentKind::Issue),
+            (DOC_PATCH, ContentKind::Patch),
+        ] {
+            if let Some(d) = self
                 .client
                 .fetch_document(&collab, doc_type, target_id)
-                .await?;
-            if found.is_some() {
-                break;
+                .await?
+            {
+                return Ok((kind, d));
             }
         }
-        audience_of_found(found.as_ref(), "issue or pull request", target_id)?;
-        Ok(ParentAudience::of(found.as_ref().expect("found")))
+        Err(parent_not_found("issue or pull request", target_id))
     }
 
     /// The audience a new comment or review on `target_id` is written for, replying (for a
@@ -3076,9 +3400,6 @@ impl<'a> Collab<'a> {
         target_id: &str,
         thread: &[&FetchedDocument],
     ) -> Result<Audience> {
-        if repo.visibility == Visibility::Private {
-            return self.audience_for(repo, None);
-        }
         let target = self.target_parent(repo, target_id).await?;
         self.audience_for(repo, Some(thread_parents(target, thread)))
     }
@@ -3108,6 +3429,29 @@ impl<'a> Collab<'a> {
             .await
     }
 
+    /// Who a new letter of `repo` would go to if written now by this `Collab` (its request, or
+    /// the letters of the thread re-listed): on an issue (`target` `None`) or on `target`'s
+    /// thread (`reply_to`, any comment of it). Refused as the write would be; what `dg` shows
+    /// and checks before the price.
+    pub async fn plan_letter(
+        &self,
+        repo: &RepoRef,
+        target: Option<&str>,
+        reply_to: Option<&str>,
+    ) -> Result<SentLetter> {
+        let thread = match (target, reply_to) {
+            (Some(t), Some(r)) => {
+                let collab = self.collab_contract(repo).await?;
+                self.thread_docs(repo, &collab, t, r).await?.docs()
+            }
+            _ => Vec::new(),
+        };
+        let ctx = self
+            .letter_context(repo, target, &thread.iter().collect::<Vec<_>>())
+            .await?;
+        Ok(self.resolve_letter(repo, &ctx).await?.sent)
+    }
+
     /// `props` of a new `kind` document of `repo`, for `audience`: unchanged when public;
     /// sealed under the write epoch of keys resolved just now (§5.3) otherwise, with the
     /// private-repository envelope (v0x01) in a private repository and the members-only one
@@ -3118,7 +3462,28 @@ impl<'a> Collab<'a> {
         kind: DocKind,
         props: BTreeMap<String, FieldValue>,
         audience: Audience,
+        letter: Option<&ResolvedLetter>,
     ) -> Result<BTreeMap<String, FieldValue>> {
+        if audience == Audience::SpecificPeople {
+            let letter = letter.ok_or_else(|| {
+                Error::Config(
+                    "a message to specific people was written without its recipients".into(),
+                )
+            })?;
+            let owner = platform::decode_identifier(&self.signer_id()?)?;
+            let sealed = private::seal_letter_props(
+                &repo.scope()?.repo_id,
+                &letter.sender,
+                letter.sender_key_id,
+                &letter.recipients,
+                letter.sent.group,
+                kind,
+                owner,
+                props,
+            )?;
+            *crate::history::lock(&self.last_letter) = Some(letter.sent.clone());
+            return Ok(sealed);
+        }
         if repo.visibility == Visibility::Private {
             let kr = self.fresh_keyring(repo).await?;
             let w = kr.writer(repo)?;
@@ -3133,11 +3498,7 @@ impl<'a> Collab<'a> {
                 let owner = platform::decode_identifier(&self.signer_id()?)?;
                 private::seal_members_props(&lane, kind, owner, props)
             }
-            Audience::SpecificPeople => Err(UserError::new(
-                codes::USAGE,
-                "writing to specific people is not supported yet",
-            )
-            .into()),
+            Audience::SpecificPeople => unreachable!("sealed above"),
         }
     }
 
@@ -3199,10 +3560,248 @@ impl<'a> Collab<'a> {
     /// or no key shared yet (E311). Nothing to check in a private repository (its keys are
     /// checked by every write) or for a public write.
     pub async fn require_members_writer(&self, repo: &RepoRef, audience: Audience) -> Result<()> {
-        if repo.visibility == Visibility::Private || audience == Audience::Public {
+        // a letter needs no members key: anyone with an encryption key may send one (D14)
+        if repo.visibility == Visibility::Private
+            || matches!(audience, Audience::Public | Audience::SpecificPeople)
+        {
             return Ok(());
         }
         self.members_writer(repo).await.map(|_| ())
+    }
+
+    /// The identity keys of `owner` as the letter reader rule takes them, fetched once per
+    /// `Collab`. An identity that does not exist has none (its letters are malformed).
+    async fn owner_keys_of(&self, owner: &str) -> Result<Vec<crate::private::named::OwnerKey>> {
+        if let Some(k) = crate::history::lock(&self.owner_keys).get(owner) {
+            return Ok(k.clone());
+        }
+        let keys = match self.client.fetch_identity(owner).await {
+            Ok(identity) => crate::env::owner_keys(&identity.public_keys()),
+            Err(Error::NotFound) => Vec::new(),
+            Err(e) => return Err(e),
+        };
+        crate::history::lock(&self.owner_keys).insert(owner.to_owned(), keys.clone());
+        Ok(keys)
+    }
+
+    /// What this reader opens the letters among `docs` with (DESIGN §4.2): `None` when there
+    /// are none. The reader is the signer with every ENCRYPTION key its key source holds; each
+    /// letter's writer's keys are fetched for that writer.
+    pub(super) async fn letter_keys(
+        &self,
+        repo: &RepoRef,
+        docs: &[&FetchedDocument],
+    ) -> Result<Option<LetterKeys>> {
+        let writers: BTreeSet<&str> = docs
+            .iter()
+            .filter(|d| is_letter(d))
+            .map(|d| d.owner_id.as_str())
+            .collect();
+        if writers.is_empty() {
+            return Ok(None);
+        }
+        let reader = match self.signer {
+            None => Err(Unopened::NotARecipient),
+            Some((identity, bridge)) => {
+                let signer = crate::keyring::PrivateSigner {
+                    client: self.client,
+                    identity,
+                    bridge,
+                };
+                let keys = signer.encryption_keys(repo).private_keys();
+                if keys.is_empty() {
+                    Err(Unopened::NoEncryptionKey)
+                } else {
+                    Ok((platform::decode_identifier(&identity.id())?, keys))
+                }
+            }
+        };
+        let mut owners = BTreeMap::new();
+        let mut unreadable = BTreeSet::new();
+        if reader.is_ok() {
+            for w in writers {
+                match self.owner_keys_of(w).await {
+                    Ok(keys) => {
+                        owners.insert(w.to_owned(), keys);
+                    }
+                    // a read that failed now (not cached): that writer's letters wait, the page reads
+                    Err(_) => {
+                        unreadable.insert(w.to_owned());
+                    }
+                }
+            }
+        }
+        Ok(Some(LetterKeys {
+            repo_id: repo.scope()?.repo_id,
+            reader,
+            owners,
+            unreadable,
+        }))
+    }
+
+    /// What a new letter of `repo` replies under: the letters among `target_id`'s document and
+    /// `thread` (the comment replied to and its root), opened, and whether one of them is
+    /// members-only. A letter this writer cannot open cannot be replied to (only its people
+    /// reply in its conversation).
+    async fn letter_context(
+        &self,
+        repo: &RepoRef,
+        target_id: Option<&str>,
+        thread: &[&FetchedDocument],
+    ) -> Result<LetterContext> {
+        let target = match target_id {
+            Some(t) => Some(self.target_doc_by_id(repo, t).await?),
+            None => None,
+        };
+        let docs: Vec<(ContentKind, &FetchedDocument)> = target
+            .iter()
+            .map(|(k, d)| (*k, d))
+            .chain(thread.iter().map(|d| (ContentKind::Comment, *d)))
+            .collect();
+        let mut ctx = LetterContext {
+            parents: Vec::new(),
+            members_only_parent: repo.visibility == Visibility::Private
+                || docs
+                    .iter()
+                    .any(|(_, d)| ParentAudience::of(d).bound == Audience::Members),
+        };
+        let all: Vec<&FetchedDocument> = docs.iter().map(|(_, d)| *d).collect();
+        let Some(keys) = self.letter_keys(repo, &all).await? else {
+            return Ok(ctx);
+        };
+        for (kind, d) in docs.into_iter().filter(|(_, d)| is_letter(d)) {
+            let opened = keys.open(kind, d.clone()).map_err(|m| {
+                Error::from(if m.why == Unopened::KeysUnreadable {
+                    // who it went to depends on it: never guessed
+                    UserError::new(
+                        codes::IDENTITY_UNREADABLE,
+                        "the keys of a message in this conversation could not be read just now",
+                    )
+                    .fix("try again in a moment")
+                    .note("nothing was written")
+                } else {
+                    UserError::new(
+                        codes::NOT_A_KEY_HOLDER,
+                        "only the people this conversation was sent to can reply to it",
+                    )
+                    .cause("it is a message to specific people, and you can't read it")
+                    .note("nothing was written")
+                })
+            })?;
+            let info = LetterInfo::of(&opened).expect("an opened letter");
+            ctx.parents.push(info.parent());
+        }
+        Ok(ctx)
+    }
+
+    /// Who a new letter of `repo` under `ctx` goes to, resolved now (DESIGN §4.2): the request
+    /// ([`Self::request_letter`]) or the parents re-listed, the group's people from the member
+    /// documents as they are now, each recipient's highest usable ENCRYPTION key, the writer
+    /// first. Refused before anything is signed when the letter rule refuses it, or when the
+    /// signer's key source holds no encryption key.
+    async fn resolve_letter(&self, repo: &RepoRef, ctx: &LetterContext) -> Result<ResolvedLetter> {
+        use crate::rules::letters::{self, LetterInput, LetterMember};
+        let (identity, bridge) = self.signer()?;
+        let signer = crate::keyring::PrivateSigner {
+            client: self.client,
+            identity,
+            bridge,
+        };
+        let enc = signer.encryption_keys(repo);
+        let Some((sender_key_id, sender)) = enc.sender() else {
+            return Err(crate::keyring::no_encryption_key_held(
+                "send a message to specific people",
+            ));
+        };
+        let sender = crate::envelope::PrivateKey::from_slice(&*sender.secret_bytes())
+            .map_err(|_| Error::Config("the encryption key held is not a valid key".into()))?;
+        let me = identity.id();
+        let members: Vec<LetterMember> = crate::members::MemberReader::new(self.client)
+            .list(repo)
+            .await?
+            .into_iter()
+            .map(|m| LetterMember {
+                identity: m.identity_id,
+                role: m.role,
+            })
+            .collect();
+        let request = crate::history::lock(&self.letter_request).clone();
+        let mut input = LetterInput {
+            owner: repo.owner_id().to_owned(),
+            sender: me.clone(),
+            members,
+            keyless: Vec::new(),
+            request: request.clone(),
+            exact: None,
+            parents: ctx.parents.clone(),
+            members_only_parent: ctx.members_only_parent,
+        };
+        let mut keys: BTreeMap<String, [u8; 33]> = BTreeMap::new();
+        let refused = |r| async move {
+            let ids: Vec<String> = match &r {
+                letters::LetterRefusal::Narrower { people }
+                | letters::LetterRefusal::NoEncryptionKey { people }
+                | letters::LetterRefusal::NotMembers { people } => people.clone(),
+                _ => Vec::new(),
+            };
+            let names = self
+                .client
+                .dpns_first_names(ids.iter().map(String::as_str))
+                .await;
+            letter_refused(repo, request.as_ref(), r, &names)
+        };
+        let candidates = match letters::candidates(&input) {
+            Ok(c) => c,
+            Err(r) => return Err(refused(r).await),
+        };
+        for c in candidates.iter().filter(|c| **c != me) {
+            match self.recipient_key_of(repo, c).await? {
+                Some(pk) => {
+                    keys.insert(c.clone(), pk);
+                }
+                None => input.keyless.push(c.clone()),
+            }
+        }
+        let plan = match letters::plan(&input) {
+            Ok(p) => p,
+            Err(r) => return Err(refused(r).await),
+        };
+        let mut recipients = vec![crate::private::named::Recipient {
+            identity_id: platform::decode_identifier(&me)?,
+            public_key: sender.public_key(),
+        }];
+        for r in plan.recipients.iter().skip(1) {
+            recipients.push(crate::private::named::Recipient {
+                identity_id: platform::decode_identifier(r)?,
+                public_key: keys[r],
+            });
+        }
+        Ok(ResolvedLetter {
+            sent: SentLetter {
+                recipients: plan.recipients,
+                skipped: plan.skipped,
+                group: plan.group,
+            },
+            recipients,
+            sender,
+            sender_key_id,
+        })
+    }
+
+    /// The resolved letter of a new document written for `audience` under `target_id` and
+    /// `thread`, or `None` when it is not a letter.
+    async fn letter_for(
+        &self,
+        repo: &RepoRef,
+        audience: Audience,
+        target_id: Option<&str>,
+        thread: &[&FetchedDocument],
+    ) -> Result<Option<ResolvedLetter>> {
+        if audience != Audience::SpecificPeople {
+            return Ok(None);
+        }
+        let ctx = self.letter_context(repo, target_id, thread).await?;
+        self.resolve_letter(repo, &ctx).await.map(Some)
     }
 
     /// The reader's keys when `repo` is private (`None` for a public one). A reader with no key
@@ -3299,6 +3898,27 @@ impl<'a> Collab<'a> {
         }
     }
 
+    /// The issue or patch `d`, a letter, as this reader opens it, or its placeholder.
+    async fn read_letter_target(
+        &self,
+        repo: &RepoRef,
+        kind: TargetKind,
+        d: FetchedDocument,
+    ) -> Result<TargetRead> {
+        let letters = self.letter_keys(repo, &[&d]).await?;
+        Ok(
+            match open_with(
+                &DocKeys::None(Unopened::NotARecipient),
+                letters.as_ref(),
+                kind.content_kind(),
+                d,
+            ) {
+                Ok(d) => TargetRead::Readable(d),
+                Err(m) => TargetRead::MembersOnly(m),
+            },
+        )
+    }
+
     /// An issue or patch by number as the public codecs read it (decrypted when sealed), or the
     /// placeholder of a members-only one this reader cannot open. In a private repository one
     /// that exists but does not open for this reader is an error saying so, not "not found".
@@ -3318,11 +3938,17 @@ impl<'a> Collab<'a> {
             if !is_sealed(&d) {
                 return Ok(Some(TargetRead::Readable(d)));
             }
+            if is_letter(&d) {
+                return self.read_letter_target(repo, kind, d).await.map(Some);
+            }
             let keys = self.lane_keys(repo).await?;
-            return Ok(Some(match open_with(&keys, kind.content_kind(), d) {
+            return Ok(Some(match open_with(&keys, None, kind.content_kind(), d) {
                 Ok(d) => TargetRead::Readable(d),
                 Err(m) => TargetRead::MembersOnly(m),
             }));
+        }
+        if is_letter(&d) {
+            return self.read_letter_target(repo, kind, d).await.map(Some);
         }
         let Some(kr) = self.private_keys(repo).await? else {
             return Ok(Some(TargetRead::Readable(d)));
@@ -3396,13 +4022,19 @@ impl<'a> Collab<'a> {
             malformed: total - docs.len(),
             ..Readable::default()
         };
-        let keys = if repo.visibility == Visibility::Private || docs.iter().any(is_sealed) {
+        // a page of letters only needs no members key (an outsider may be a recipient)
+        let keys = if repo.visibility == Visibility::Private
+            || docs.iter().any(|d| is_sealed(d) && !is_letter(d))
+        {
             self.doc_keys(repo).await?
         } else {
             DocKeys::None(Unopened::NotAMember)
         };
+        let letters = self
+            .letter_keys(repo, &docs.iter().collect::<Vec<_>>())
+            .await?;
         for d in docs {
-            match open_with(&keys, kind, d) {
+            match open_with(&keys, letters.as_ref(), kind, d) {
                 Ok(d) => out.rows.push(d),
                 Err(m) => out.members_only.push(m),
             }
@@ -3606,6 +4238,16 @@ impl<'a> Collab<'a> {
             // fails closed: an event naming no readable target is refused, never public
             let target = event_target_id(&props)?;
             let audience = self.target_audience(repo, &target).await?;
+            // a letter's event value would need its people, which an event does not carry:
+            // refused (phase 2A), never sealed under the members key nor left in plaintext
+            if audience == Audience::SpecificPeople {
+                return Err(UserError::new(
+                    codes::USAGE,
+                    "labels, milestones and assignees can't be set on a message to specific people yet",
+                )
+                .note("nothing was written")
+                .into());
+            }
             // the target's audience, never the command's request: an event has no audience of
             // its own
             let audience = if repo.visibility == Visibility::Private {
@@ -3613,7 +4255,8 @@ impl<'a> Collab<'a> {
             } else {
                 audience
             };
-            self.seal_for(repo, DocKind::Event, props, audience).await?
+            self.seal_for(repo, DocKind::Event, props, audience, None)
+                .await?
         } else {
             props
         };
@@ -5448,16 +6091,21 @@ impl<'a> Collab<'a> {
         // an issue or PR has no parent: the command's request, else public
         let audience = self.audience_for(repo, None)?;
         if kind == TargetKind::Patch
-            && repo.visibility == Visibility::Public
-            && audience != Audience::Public
+            && (audience == Audience::SpecificPeople
+                || (repo.visibility == Visibility::Public && audience != Audience::Public))
         {
-            return Err(UserError::new(
-                codes::USAGE,
-                "members-only pull requests are not supported yet",
-            )
-            .note("nothing was written")
-            .into());
+            let what = if audience == Audience::SpecificPeople {
+                "pull requests for specific people are not supported yet"
+            } else {
+                "members-only pull requests are not supported yet"
+            };
+            return Err(UserError::new(codes::USAGE, what)
+                .note("nothing was written")
+                .into());
         }
+        // a letter's people are resolved once, when it is posted; a renumbered retry re-seals
+        // to the same people
+        let letter = self.letter_for(repo, audience, None, &[]).await?;
         let path = self.journal_path(repo, kind, &me, journal, audience)?;
         if let Some(done) = self
             .resume_create(&engine, &collab, kind, path.as_deref())
@@ -5488,7 +6136,13 @@ impl<'a> Collab<'a> {
             let plain = props(number)?;
             // sealed per number: the AD binds it (§4.4), so a renumbered retry re-seals
             let sealed = self
-                .seal_for(repo, doc_kind(kind.content_kind()), plain.clone(), audience)
+                .seal_for(
+                    repo,
+                    doc_kind(kind.content_kind()),
+                    plain.clone(),
+                    audience,
+                    letter.as_ref(),
+                )
                 .await?;
             let mut all = Self::with_repo(repo, sealed)?;
             self.stamp(repo, kind.doc_type(), &mut all).await?;
@@ -5905,6 +6559,9 @@ impl<'a> Collab<'a> {
         changes: &BTreeMap<String, Option<FieldValue>>,
     ) -> Result<BTreeMap<String, Option<FieldValue>>> {
         let doc_type = kind.type_name();
+        if is_letter(stored) {
+            return self.letter_edit(repo, kind, stored, changes).await;
+        }
         let members = repo.visibility == Visibility::Public;
         let kr = if members {
             self.members_writer(repo).await?
@@ -5965,6 +6622,122 @@ impl<'a> Collab<'a> {
         };
         let sealed = private::reseal_edit(keys, kind, owner, &opened, &text)?;
         Ok(clear_plaintext(kind, stored, sealed))
+    }
+
+    /// The `enc` / `epoch` a replace of the signer's letter sets: the letter opened, `changes`
+    /// applied, and the whole content sealed again (a fresh `K_obj`) to the same people in the
+    /// same order with their current keys, naming the same group (DESIGN §2.4: an edit keeps
+    /// who can read it). Refused when one of them no longer has a usable encryption key.
+    async fn letter_edit(
+        &self,
+        repo: &RepoRef,
+        kind: DocKind,
+        stored: &FetchedDocument,
+        changes: &BTreeMap<String, Option<FieldValue>>,
+    ) -> Result<BTreeMap<String, Option<FieldValue>>> {
+        let doc_type = kind.type_name();
+        let content = content_kind_of(kind)
+            .ok_or_else(|| Error::Config(format!("a {doc_type} is not a letter kind")))?;
+        let keys = self.letter_keys(repo, &[stored]).await?;
+        let opened = keys
+            .as_ref()
+            .and_then(|k| k.open(content, stored.clone()).ok())
+            .ok_or_else(|| {
+                Error::from(UserError::new(
+                    codes::NOT_A_KEY_HOLDER,
+                    format!(
+                        "this {doc_type} cannot be read with your keys, so it cannot be edited"
+                    ),
+                ))
+            })?;
+        let info = LetterInfo::of(&opened).expect("an opened letter");
+        let text: BTreeMap<String, Option<String>> = changes
+            .iter()
+            .map(|(k, v)| {
+                let v = v
+                    .as_ref()
+                    .and_then(FieldValue::as_str)
+                    .filter(|s| !s.is_empty());
+                (k.clone(), v.map(str::to_owned))
+            })
+            .collect();
+        let enc_epoch = |from: &BTreeMap<String, FieldValue>| -> BTreeMap<_, _> {
+            ["enc", "epoch"]
+                .into_iter()
+                .map(|k| (k.to_string(), from.get(k).cloned()))
+                .collect()
+        };
+        if text
+            .iter()
+            .all(|(k, v)| opened.field_str(k).filter(|s| !s.is_empty()) == *v)
+        {
+            return Ok(enc_epoch(&stored.fields));
+        }
+        let (identity, bridge) = self.signer()?;
+        let signer = crate::keyring::PrivateSigner {
+            client: self.client,
+            identity,
+            bridge,
+        };
+        let enc = signer.encryption_keys(repo);
+        let Some((sender_key_id, sender)) = enc.sender() else {
+            return Err(crate::keyring::no_encryption_key_held(&format!(
+                "edit this {doc_type}"
+            )));
+        };
+        let mut recipients = vec![crate::private::named::Recipient {
+            identity_id: platform::decode_identifier(&identity.id())?,
+            public_key: sender.public_key(),
+        }];
+        for r in info.recipients.iter().skip(1) {
+            let Some(public_key) = self.recipient_key_of(repo, r).await? else {
+                return Err(UserError::new(
+                    codes::NO_ENCRYPTION_KEY,
+                    format!("{r} can't receive it any more, so this {doc_type} can't be edited"),
+                )
+                .cause("one of the people it was sent to no longer has a usable encryption key")
+                .note("nothing was written")
+                .into());
+            };
+            recipients.push(crate::private::named::Recipient {
+                identity_id: platform::decode_identifier(r)?,
+                public_key,
+            });
+        }
+        let owner = platform::decode_identifier(&identity.id())?;
+        let mut props = opened.fields.clone();
+        for k in ["enc", "epoch", LETTER_TO_FIELD, LETTER_GROUP_FIELD] {
+            props.remove(k);
+        }
+        for (k, v) in &text {
+            match v {
+                Some(v) => props.insert(k.clone(), FieldValue::text(v)),
+                None => props.remove(k),
+            };
+        }
+        let sealed = private::seal_letter_props(
+            &repo.scope()?.repo_id,
+            sender,
+            sender_key_id,
+            &recipients,
+            info.group,
+            kind,
+            owner,
+            props,
+        )?;
+        Ok(clear_plaintext(kind, stored, enc_epoch(&sealed)))
+    }
+
+    /// `identity`'s highest-id usable ENCRYPTION key (§4.1 writer rule), `None` when it has
+    /// none (or does not exist).
+    async fn recipient_key_of(&self, repo: &RepoRef, identity: &str) -> Result<Option<[u8; 33]>> {
+        let found = match self.client.fetch_identity(identity).await {
+            Ok(i) => i.public_keys(),
+            Err(Error::NotFound) => Vec::new(),
+            Err(e) => return Err(e),
+        };
+        Ok(crate::keyring::recipient_key(&found, &repo.forge().core)
+            .and_then(|k| <[u8; 33]>::try_from(k.public_key.as_slice()).ok()))
     }
 
     /// Refuse, before anything is signed, an edit of a document the signer does not own.
@@ -6032,7 +6805,8 @@ impl<'a> Collab<'a> {
                     let t = self.thread_docs(repo, &collab, target_id, &parent).await?;
                     a.reply_to = Some(t.root_id());
                     thread = t.docs();
-                } else if repo.visibility == Visibility::Public {
+                } else {
+                    // read in a private repository too: a letter root narrows its replies
                     thread.push(self.root_doc(&collab, &parent).await?);
                 }
             }
@@ -6053,7 +6827,13 @@ impl<'a> Collab<'a> {
         }
         let p = comment_props(target_id, body, anchor.as_ref(), imported)?;
         self.require_unlocked_or_member(repo, target_id).await?;
-        let p = self.seal_for(repo, DocKind::Comment, p, audience).await?;
+        let thread_refs: Vec<&FetchedDocument> = thread.iter().collect();
+        let letter = self
+            .letter_for(repo, audience, Some(target_id), &thread_refs)
+            .await?;
+        let p = self
+            .seal_for(repo, DocKind::Comment, p, audience, letter.as_ref())
+            .await?;
         self.write(repo, &collab, DOC_COMMENT, p).await
     }
 
@@ -6163,7 +6943,10 @@ impl<'a> Collab<'a> {
         self.require_unlocked_or_member(repo, patch_id).await?;
         // a review's audience is a subset of its PR's; its verdict stays public (D15)
         let audience = self.child_audience(repo, patch_id, &[]).await?;
-        let p = self.seal_for(repo, DocKind::Review, p, audience).await?;
+        let letter = self.letter_for(repo, audience, Some(patch_id), &[]).await?;
+        let p = self
+            .seal_for(repo, DocKind::Review, p, audience, letter.as_ref())
+            .await?;
         let collab = self.collab_contract(repo).await?;
         self.write(repo, &collab, DOC_REVIEW, p).await
     }
@@ -6224,10 +7007,18 @@ impl<'a> Collab<'a> {
             "targetId"
         })
         .ok_or_else(|| Error::Config("create_once: the document names no target".into()))?;
-        let audience = self
-            .new_audience(repo, Some(&target), id_of("replyTo").as_deref())
+        let thread = match id_of("replyTo") {
+            Some(r) => self.thread_docs(repo, &collab, &target, &r).await?.docs(),
+            None => Vec::new(),
+        };
+        let thread: Vec<&FetchedDocument> = thread.iter().collect();
+        let audience = self.child_audience(repo, &target, &thread).await?;
+        let letter = self
+            .letter_for(repo, audience, Some(&target), &thread)
             .await?;
-        let props = self.seal_for(repo, doc_kind(kind), props, audience).await?;
+        let props = self
+            .seal_for(repo, doc_kind(kind), props, audience, letter.as_ref())
+            .await?;
         let prepared = self
             .create_stamped(repo, doc_type, Self::with_repo(repo, props)?, async |all| {
                 engine
@@ -8601,6 +9392,195 @@ mod mixed_read_tests {
         ("enc", FieldValue::bytes(e))
     }
 
+    /// DESIGN §4.2: a letter opens for each of its people, with who it went to and its group
+    /// on the opened document; anyone else (or a reader with no key) gets a placeholder with
+    /// the recipient count, never the text; and a members key opens nothing of it.
+    #[test]
+    #[allow(clippy::too_many_lines)] // one letter, read by each kind of reader
+    fn a_letter_opens_for_its_people_and_is_counted_for_everyone_else() {
+        use crate::envelope::PrivateKey;
+        use crate::private::named::{self, Recipient};
+        use crate::private::{doc::DocHeader, DocKind, Fields};
+        let repo_id = [0x11; 32];
+        let key = |b: u8| PrivateKey::from_slice(&[b; 32]).unwrap();
+        let (alice, bob, carol) = ([0xa1; 32], [0xb2; 32], [0xc3; 32]);
+        let mut header = DocHeader::new(DocKind::Comment, alice, 0);
+        header.target_id = Some([0x33; 32]);
+        header.vis = Visibility::Public;
+        let recipients = [
+            Recipient {
+                identity_id: alice,
+                public_key: key(1).public_key(),
+            },
+            Recipient {
+                identity_id: bob,
+                public_key: key(2).public_key(),
+            },
+        ];
+        let fields = Fields {
+            body: Some("for the maintainers".into()),
+            ..Fields::default()
+        };
+        let enc = named::seal(
+            &repo_id,
+            &key(1),
+            4,
+            &header,
+            &fields,
+            &recipients,
+            Some(crate::rules::letters::LetterGroup::Maintainers),
+        )
+        .unwrap();
+        let mut d = doc(vec![
+            ("enc", FieldValue::bytes(enc)),
+            ("epoch", FieldValue::integer(0)),
+            ("vis", FieldValue::text("public")),
+            ("targetId", FieldValue::identifier([0x33; 32])),
+            (crate::layout::AS_MEMBER, FieldValue::identifier(alice)),
+        ]);
+        d.owner_id = platform::encode_identifier(alice);
+        let owners = BTreeMap::from([(
+            d.owner_id.clone(),
+            vec![named::OwnerKey {
+                id: 4,
+                purpose: named::PURPOSE_ENCRYPTION,
+                key_type: named::KEY_TYPE_ECDSA_SECP256K1,
+                data: key(1).public_key().to_vec(),
+            }],
+        )]);
+        let keys_as = |id: [u8; 32], k: u8| LetterKeys {
+            repo_id,
+            reader: Ok((id, vec![key(k)])),
+            owners: owners.clone(),
+            unreadable: BTreeSet::new(),
+        };
+        let opened = keys_as(bob, 2)
+            .open(ContentKind::Comment, d.clone())
+            .unwrap();
+        assert_eq!(
+            opened.field_str("body").as_deref(),
+            Some("for the maintainers")
+        );
+        let info = LetterInfo::of(&opened).unwrap();
+        assert_eq!(
+            info.recipients,
+            vec![
+                platform::encode_identifier(alice),
+                platform::encode_identifier(bob)
+            ]
+        );
+        assert_eq!(
+            info.group,
+            Some(crate::rules::letters::LetterGroup::Maintainers)
+        );
+        let c = comment_from_doc(&opened);
+        assert_eq!(c.audience, Audience::SpecificPeople);
+        assert_eq!(c.letter, Some(info));
+        // a stranger's (no asMember): anyone may set the group, so it reads as the people listed
+        let mut stranger = d.clone();
+        stranger.fields.remove(crate::layout::AS_MEMBER);
+        let opened = keys_as(bob, 2)
+            .open(ContentKind::Comment, stranger)
+            .unwrap();
+        assert_eq!(LetterInfo::of(&opened).unwrap().group, None);
+        // not one of its people: the count, never the text
+        let m = keys_as(carol, 3)
+            .open(ContentKind::Comment, d.clone())
+            .unwrap_err();
+        assert_eq!(
+            (m.why, m.audience, m.recipients),
+            (Unopened::NotARecipient, Audience::SpecificPeople, Some(2))
+        );
+        // nobody to read it as (signed out), and a page with no letter keys at all
+        let anon = LetterKeys {
+            repo_id,
+            reader: Err(Unopened::NotARecipient),
+            owners: BTreeMap::new(),
+            unreadable: BTreeSet::new(),
+        };
+        assert_eq!(
+            anon.open(ContentKind::Comment, d.clone()).unwrap_err().why,
+            Unopened::NotARecipient
+        );
+        // the writer's keys could not be read just now: a placeholder that says so, with its count
+        let waiting = LetterKeys {
+            repo_id,
+            reader: Ok((bob, vec![key(2)])),
+            owners: BTreeMap::new(),
+            unreadable: BTreeSet::from([d.owner_id.clone()]),
+        };
+        let m = waiting.open(ContentKind::Comment, d.clone()).unwrap_err();
+        assert_eq!((m.why, m.recipients), (Unopened::KeysUnreadable, Some(2)));
+        let m = open_with(
+            &DocKeys::None(Unopened::NotAMember),
+            None,
+            ContentKind::Comment,
+            d,
+        )
+        .unwrap_err();
+        assert_eq!((m.why, m.recipients), (Unopened::NotARecipient, Some(2)));
+    }
+
+    /// DESIGN §10 "Over 16": a preset bigger than a message can go to is refused with the
+    /// group's name and size, before anything is signed; people named one by one too.
+    #[test]
+    fn a_letter_over_16_is_refused_with_the_designs_words() {
+        use crate::rules::letters::{self, LetterGroup, LetterInput, LetterMember, LetterRequest};
+        let repo = RepoRef {
+            forge: crate::network::ForgeIds::test_forge(),
+            repo_id: "R".into(),
+            owner_id: "Owner".into(),
+            name: "proj".into(),
+            visibility: Visibility::Public,
+        };
+        let members: Vec<LetterMember> = (0..22)
+            .map(|i| LetterMember {
+                identity: format!("W{i:02}writer"),
+                role: if i < 3 {
+                    Role::Maintainer
+                } else {
+                    Role::Writer
+                },
+            })
+            .collect();
+        let request = LetterRequest {
+            group: Some(LetterGroup::Writers),
+            people: Vec::new(),
+        };
+        let input = LetterInput {
+            owner: "Owner".into(),
+            sender: "Owner".into(),
+            members,
+            keyless: Vec::new(),
+            request: Some(request.clone()),
+            exact: None,
+            parents: Vec::new(),
+            members_only_parent: false,
+        };
+        let refusal = letters::plan(&input).unwrap_err();
+        let e = letter_refused(&repo, Some(&request), refusal, &BTreeMap::new());
+        let text = e.to_string();
+        assert!(
+            text.contains("Writers and maintainers is 23 people. A message can go to at most 16."),
+            "{text}"
+        );
+        let named = LetterRequest {
+            group: None,
+            people: (0..17).map(|i| format!("P{i:02}")).collect(),
+        };
+        let input = LetterInput {
+            request: Some(named.clone()),
+            ..input
+        };
+        let e = letter_refused(
+            &repo,
+            Some(&named),
+            letters::plan(&input).unwrap_err(),
+            &BTreeMap::new(),
+        );
+        assert!(e.to_string().contains("that's 18 people"), "{e}");
+    }
+
     /// DESIGN §4.1: reads are per document. A plaintext document of a public repository passes
     /// through whatever keys the reader holds, and a sealed one becomes a placeholder naming why
     /// it did not open; the repository's visibility decides neither.
@@ -8613,7 +9593,7 @@ mod mixed_read_tests {
             Unopened::NoKeyShared,
         ] {
             let keys = DocKeys::None(why);
-            let got = open_with(&keys, ContentKind::Comment, plain.clone()).unwrap();
+            let got = open_with(&keys, None, ContentKind::Comment, plain.clone()).unwrap();
             assert_eq!(got.field_str("body").as_deref(), Some("hi"));
             let sealed = doc(vec![
                 members_enc(),
@@ -8621,7 +9601,7 @@ mod mixed_read_tests {
                 (crate::layout::AS_MEMBER, FieldValue::bytes(vec![2; 32])),
                 ("number", FieldValue::integer(3)),
             ]);
-            let m = open_with(&keys, ContentKind::Issue, sealed).unwrap_err();
+            let m = open_with(&keys, None, ContentKind::Issue, sealed).unwrap_err();
             assert_eq!(m.why, why);
             assert!(m.as_member, "asMember is what shows a placeholder (D14)");
             assert_eq!(m.number, Some(3));
@@ -8631,6 +9611,7 @@ mod mixed_read_tests {
         let stranger = doc(vec![members_enc(), ("epoch", FieldValue::integer(0))]);
         let m = open_with(
             &DocKeys::None(Unopened::NotAMember),
+            None,
             ContentKind::Comment,
             stranger,
         )
@@ -8707,16 +9688,11 @@ mod mixed_read_tests {
         assert_eq!(q, ParentAudience::same(Audience::Members));
     }
 
-    /// Review item 2: every audience lookup fails closed: a parent that is not there, and an
-    /// event naming no target, are errors, never "public".
+    /// Review item 2: every audience lookup fails closed: an event naming no target is an
+    /// error, never "public" (a target that is not there is `parent_not_found` in
+    /// `target_doc_by_id`).
     #[test]
     fn audience_lookups_fail_closed() {
-        assert!(audience_of_found(None, "issue or pull request", "x").is_err());
-        let sealed = doc(vec![members_enc()]);
-        assert_eq!(
-            audience_of_found(Some(&sealed), "comment", "x").unwrap(),
-            Audience::Members
-        );
         assert!(event_target_id(&BTreeMap::new()).is_err());
         let props = BTreeMap::from([("targetId".to_string(), FieldValue::identifier([5; 32]))]);
         assert_eq!(

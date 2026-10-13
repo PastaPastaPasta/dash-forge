@@ -1077,11 +1077,14 @@ impl Audience {
     /// Whether content for `self` may sit under a parent for `parent` (DESIGN §3.3: a child's
     /// audience is a subset of its parent's). A members-only comment on a public thread is
     /// allowed; a public reply to a members-only comment is not. Specific people are compared
-    /// by their lists, which this cannot see: only "the same kind" is admitted here.
+    /// by their lists, which this cannot see (the letter rule, [`super::letters::plan`], does:
+    /// a letter reply lists a superset of its parent letters' people, and a letter under a
+    /// members-only parent goes to members only); here a letter fits under a letter or a
+    /// members-only parent, and nothing but a letter fits under a letter.
     #[must_use]
     pub fn fits_under(self, parent: Audience) -> bool {
         match (self, parent) {
-            (_, Audience::Public) => true,
+            (_, Audience::Public) | (Audience::SpecificPeople, Audience::Members) => true,
             (Audience::Public, _) => false,
             (child, parent) => child == parent,
         }
@@ -1395,7 +1398,8 @@ mod mixed_tests {
             "a public reply to a members comment"
         );
         assert!(Members.fits_under(Members) && Public.fits_under(Public));
-        assert!(!SpecificPeople.fits_under(Members) && !Members.fits_under(SpecificPeople));
+        // a letter under a members-only parent goes to members only (the letter rule checks it)
+        assert!(SpecificPeople.fits_under(Members) && !Members.fits_under(SpecificPeople));
         assert_eq!(Public.narrower(Members), Members);
         assert_eq!(Members.narrower(Public), Members);
         assert_eq!(Audience::of(&sealed(ContentKind::Comment, 3)), Members);

@@ -47,7 +47,7 @@ import {
 import { repoChromeTimelines, type ChromeTimelines } from './chrome'
 import { configBundleOf, readConfigHistory } from './config'
 import { publicRefKey, readRefUpdates, refUpdatesFromRows } from './refs'
-import { HiddenTally, LETTER_TITLE, MEMBERS_ONLY_ROW, SEALED_EPOCH, admittedAudience, gateFor, isSealedDoc, readableEvents, type ContentGate } from './private-content'
+import { HiddenTally, LETTER_TITLE, MEMBERS_ONLY_ROW, SEALED_EPOCH, bytesField, docAudience, gateFor, isSealedDoc, readableEvents, viewAudience, type ContentGate, type LetterFacts } from './private-content'
 import { onPrivateSessionEnded } from './private-session'
 import { repoSource } from './source'
 import { base64ToHex, hexToBase64 } from '../sdk'
@@ -64,8 +64,11 @@ export function titleOf(doc: PlainDocument, type: 'issue' | 'patch' = 'issue'): 
   if (title !== '') return title
   const enc = byteFieldToHex(doc, 'enc')
   if (enc === '') return ''
-  // A specific-people document (v0x04) is not members-only: named neutrally.
-  if (enc.startsWith('04')) return LETTER_TITLE
+  // A specific-people document (v0x04) is not members-only: named by its public recipient count.
+  if (enc.startsWith('04')) {
+    const n = Number.parseInt(enc.slice(2, 4), 16)
+    return n > 0 ? `${type === 'patch' ? 'Pull request' : 'Issue'} to ${n} ${n === 1 ? 'person' : 'people'}` : LETTER_TITLE
+  }
   if (str(doc, 'vis') === 'public') return type === 'patch' ? 'Members-only pull request' : 'Members-only issue'
   return 'Encrypted (not readable here)'
 }
@@ -73,13 +76,20 @@ export function titleOf(doc: PlainDocument, type: 'issue' | 'patch' = 'issue'): 
 /** An issue with its folded state. */
 export interface IssueView {
   readonly id: string
-  /** Who it was written for (a public repo's members-only issue reads as `members`). Absent: public. */
-  readonly audience?: 'members'
   /**
-   * A members-only issue this reader cannot open (a list's placeholder row, DESIGN D14): its
-   * title and body are empty, and everything else is what is public about it.
+   * Who it was written for (a public repo's members-only issue reads as `members`; one written to
+   * specific people, in any repo, as `specificPeople`). Absent: public.
+   */
+  readonly audience?: 'members' | 'specificPeople'
+  /** Who an opened specific-people issue went to, as its writer listed them. */
+  readonly letter?: LetterFacts
+  /**
+   * A members-only (or specific-people) issue this reader cannot open (a list's placeholder row,
+   * DESIGN D14): its title and body are empty, and everything else is what is public about it.
    */
   readonly membersOnly?: true
+  /** A specific-people placeholder row's recipient count (public: `enc[1]`). */
+  readonly recipientCount?: number
   readonly number: number
   readonly title: string
   /** The text to show: a long body's full text once a page read it (`long`, `forge-v2.md` §6.3). */
@@ -135,11 +145,17 @@ export function revisionOf(doc: PlainDocument): number {
 
 /**
  * The audience marks of an issue or PR view: `members` for a members-only one this reader opened,
- * and `membersOnly` too for one it cannot open (a list's placeholder row, {@link MEMBERS_ONLY_ROW}).
+ * `specificPeople` and who it went to for an opened letter, and `membersOnly` too for one it
+ * cannot open (a list's placeholder row, {@link MEMBERS_ONLY_ROW}; a letter's with its recipient
+ * count).
  */
-function audienceOf(doc: PlainDocument): { audience?: 'members'; membersOnly?: true } {
-  if (doc[MEMBERS_ONLY_ROW] === true) return { audience: 'members', membersOnly: true }
-  return admittedAudience(doc) === 'members' ? { audience: 'members' } : {}
+function audienceOf(doc: PlainDocument): { audience?: 'members' | 'specificPeople'; letter?: LetterFacts; membersOnly?: true; recipientCount?: number } {
+  if (doc[MEMBERS_ONLY_ROW] === true) {
+    if (docAudience(doc) !== 'specificPeople') return { audience: 'members', membersOnly: true }
+    const n = bytesField(doc, 'enc')?.[1]
+    return { audience: 'specificPeople', membersOnly: true, ...(n !== undefined && n > 0 ? { recipientCount: n } : {}) }
+  }
+  return viewAudience(doc)
 }
 
 /** An issue document, its state code and its target log (no reads). */
@@ -164,10 +180,14 @@ export function issueViewOf(issueDoc: PlainDocument, log: TargetLog, code: numbe
 /** A PR (patch) with its folded state. */
 export interface PullView {
   readonly id: string
-  /** Who it was written for (a public repo's members-only PR reads as `members`). Absent: public. */
-  readonly audience?: 'members'
+  /** Who it was written for: see {@link IssueView.audience}. Absent: public. */
+  readonly audience?: 'members' | 'specificPeople'
+  /** Who an opened specific-people PR went to: see {@link IssueView.letter}. */
+  readonly letter?: LetterFacts
   /** A members-only PR this reader cannot open (a list's placeholder row): see {@link IssueView.membersOnly}. */
   readonly membersOnly?: true
+  /** See {@link IssueView.recipientCount}. */
+  readonly recipientCount?: number
   readonly number: number
   readonly title: string
   /** The text to show: a long body's full text once a page read it (`long`, `forge-v2.md` §6.3). */
@@ -319,8 +339,15 @@ export interface ReviewView {
    * D15), with no body. Never part of a thread's readable reviews.
    */
   readonly membersOnly?: true
-  /** A members-only review this reader opened: its text is for members (its verdict is public). Absent: public. */
-  readonly audience?: 'members'
+  /**
+   * A members-only review this reader opened: its text is for members (its verdict is public);
+   * `specificPeople` for one written to specific people. Absent: public.
+   */
+  readonly audience?: 'members' | 'specificPeople'
+  /** Who an opened specific-people review went to, as its writer listed them. */
+  readonly letter?: LetterFacts
+  /** A specific-people review this reader cannot open: its recipient count. */
+  readonly recipientCount?: number
   /** Its author made its text public with a comment attached to it: `body` is that text (DESIGN §4.6). */
   readonly madePublic?: true
 }
@@ -703,7 +730,8 @@ export async function readableReviews(
     if (!a.ok) tally.add(a.reason, a.placeholder)
     // Only a well-formed sealed review has a placeholder: a malformed one never counts.
     if (!a.ok && a.placeholder === undefined) continue
-    const view = a.ok ? reviewViewOf(a.doc) : { ...reviewViewOf(d), body: '', membersOnly: true as const }
+    const count = a.ok ? undefined : a.placeholder?.recipientCount
+    const view = a.ok ? reviewViewOf(a.doc) : { ...reviewViewOf(d), body: '', membersOnly: true as const, ...(count !== undefined ? { recipientCount: count } : {}) }
     if (a.ok) shown.push(view)
     views.set(view.id, view)
     rows.push({
@@ -726,7 +754,7 @@ export function reviewViewOf(d: PlainDocument): ReviewView {
   const { verdict, code } = verdictFromCode(num(d, 'verdict'))
   return {
     id: str(d, '$id'),
-    ...(admittedAudience(d) === 'members' ? { audience: 'members' as const } : {}),
+    ...viewAudience(d),
     reviewer: str(d, '$ownerId'),
     verdict,
     verdictCode: code,

@@ -8,8 +8,7 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { PACK_KIND } from '../constants'
-import { fetchIdentityKeys, type EncKeyLike } from '../auth/encryption-key'
-import { KEY_TYPE_ECDSA_SECP256K1, PURPOSE_ENCRYPTION, hexToBytes, type OwnerKey } from '../private'
+import { fetchIdentityKeys, ownerKeysOf } from '../auth/encryption-key'
 import type { RepoRef } from '../repo/contract'
 import { readMaintainers } from '../repo/members'
 import { readManifestsOfKind, type PackManifest } from '../repo/packs'
@@ -17,14 +16,7 @@ import { loadStoredArtifactBytes } from '../view/browse-source'
 import type { EnvManifest, EnvSources } from './loader'
 
 /** An identity's keys as the letter reader rule takes them (forge-core `env::codec::owner_keys`). */
-export function ownerKeysOf(keys: readonly EncKeyLike[]): OwnerKey[] {
-  return keys.map((k) => ({
-    id: k.keyId,
-    purpose: k.purposeNumber === PURPOSE_ENCRYPTION ? PURPOSE_ENCRYPTION : 0xff,
-    keyType: k.keyTypeNumber === KEY_TYPE_ECDSA_SECP256K1 ? KEY_TYPE_ECDSA_SECP256K1 : 0xff,
-    data: hexToBytes(k.data),
-  }))
-}
+export { ownerKeysOf } from '../auth/encryption-key'
 
 export function envManifestOf(m: PackManifest): EnvManifest {
   return {

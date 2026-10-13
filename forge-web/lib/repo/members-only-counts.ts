@@ -8,10 +8,15 @@
 import { onRepoInvalidated } from './issues'
 import type { RepoRef } from './contract'
 
-/** Members-only rows of one type by state. */
+/**
+ * Members-only rows of one type by state; rows written to specific people are counted apart
+ * (they are not members-only: "Issues 3 (1 members-only, 1 to specific people)"), when any.
+ */
 export interface MembersOnlyCount {
   readonly open: number
   readonly closed: number
+  readonly lettersOpen?: number
+  readonly lettersClosed?: number
 }
 
 const counts = new Map<string, MembersOnlyCount>()
@@ -26,22 +31,29 @@ onRepoInvalidated((repo) => {
 })
 
 /** The rows' members-only counts by state (the rows are every row of the type). */
-export function countMembersOnly(rows: Iterable<{ readonly audience?: 'members'; readonly state: { readonly open: boolean } }>): MembersOnlyCount {
+export function countMembersOnly(rows: Iterable<{ readonly audience?: 'members' | 'specificPeople'; readonly state: { readonly open: boolean } }>): MembersOnlyCount {
   let open = 0
   let closed = 0
+  let lettersOpen = 0
+  let lettersClosed = 0
   for (const r of rows) {
+    if (r.audience === 'specificPeople') {
+      if (r.state.open) lettersOpen++
+      else lettersClosed++
+      continue
+    }
     if (r.audience !== 'members') continue
     if (r.state.open) open++
     else closed++
   }
-  return { open, closed }
+  return { open, closed, ...(lettersOpen > 0 ? { lettersOpen } : {}), ...(lettersClosed > 0 ? { lettersClosed } : {}) }
 }
 
 /** Record `count` for `repo`'s `type` (a list read every row). */
 export function noteMembersOnly(repo: Pick<RepoRef, 'repoId'>, type: 'issue' | 'patch', count: MembersOnlyCount): void {
   const key = keyOf(repo, type)
   const was = counts.get(key)
-  if (was?.open === count.open && was.closed === count.closed) return
+  if (was?.open === count.open && was.closed === count.closed && was.lettersOpen === count.lettersOpen && was.lettersClosed === count.lettersClosed) return
   counts.set(key, count)
   for (const l of listeners) l()
 }

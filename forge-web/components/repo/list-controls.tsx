@@ -266,11 +266,13 @@ export function tabCount(n: number | null | undefined): string {
 }
 
 /** A tab count's members-only share ("3 Open (1 members-only)", DESIGN §4.1), when there are any. */
-export function MembersOnlyShare({ n }: { n: number | null | undefined }): JSX.Element | null {
-  if (n == null || n <= 0) return null
+export function MembersOnlyShare({ n, letters }: { n: number | null | undefined; letters?: number | null | undefined }): JSX.Element | null {
+  // Messages to specific people are counted apart: they are not members-only.
+  const parts = [n != null && n > 0 ? `${grouped(n)} members-only` : null, letters != null && letters > 0 ? `${grouped(letters)} to specific people` : null].filter((x): x is string => x !== null)
+  if (parts.length === 0) return null
   return (
     <span className="text-[11px] font-normal text-anvil-500 dark:text-anvil-400" data-testid="members-only-share">
-      {` (${grouped(n)} members-only)`}
+      {` (${parts.join(', ')})`}
     </span>
   )
 }
@@ -808,7 +810,7 @@ export function RowLink({
 }: {
   href: string
   title: string
-  audience?: 'members'
+  audience?: 'members' | 'specificPeople'
   membersOnly?: true
   type?: 'issue' | 'patch'
 }): JSX.Element {
@@ -827,6 +829,10 @@ export function RowLink({
       {audience === 'members' && !membersOnly ? (
         <span className="inline-flex items-center gap-1 rounded-full bg-anvil-100 px-1.5 py-0.5 text-[11px] font-medium text-anvil-700 dark:bg-anvil-800 dark:text-anvil-200" data-testid="members-only-mark">
           <Lock className="h-3 w-3" aria-hidden /> Members only
+        </span>
+      ) : audience === 'specificPeople' && !membersOnly ? (
+        <span className="inline-flex items-center gap-1 rounded-full bg-anvil-100 px-1.5 py-0.5 text-[11px] font-medium text-anvil-700 dark:bg-anvil-800 dark:text-anvil-200" data-testid="specific-people-mark">
+          <Lock className="h-3 w-3" aria-hidden /> Specific people
         </span>
       ) : null}
     </>

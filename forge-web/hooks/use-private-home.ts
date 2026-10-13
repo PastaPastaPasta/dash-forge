@@ -17,6 +17,9 @@
  *   holds no encryption key → `no-key`; a member with one → the home re-read through their
  *   decryption session (`member`), whose `repo.session` every read of the page then decrypts
  *   through.
+ * - Either kind, for a signed-in viewer whose browser holds an encryption key: their letter
+ *   reader on `repo.letters` (`letter-session.ts`), which opens what was written to them by name
+ *   or by role group, member or not.
  *
  * The decrypted home lives in memory only (a per-tab map for warm navigations, dropped when
  * the vault locks or the encryption key changes).
@@ -45,8 +48,9 @@ import { membersAccessOf } from '@/lib/repo/members-access'
 import { knownConversion } from '@/lib/repo/converted'
 import { DOC } from '@/lib/repo/contract'
 import { contractOf, repoSource } from '@/lib/repo/source'
+import { letterSessionFor } from '@/lib/repo/letter-session'
 import { queryDocuments } from '@/lib/sdk'
-import { loadPrivateHome, withMembersSession, type RepoHome } from '@/lib/view'
+import { loadPrivateHome, withLetterReader, withMembersSession, type RepoHome } from '@/lib/view'
 import { forgetPrivateNav, sealRepoUrls } from '@/lib/view/private-nav'
 import type { RepoAddress } from '@/hooks/use-query-param'
 
@@ -194,11 +198,22 @@ export function usePrivateHome(home: RepoHome | null, addr: RepoAddress): Privat
     warm.set(key, out)
     return out
   }
+  /** `h` with this viewer's letter reader, when their browser holds an encryption key. */
+  const withLetters = async (h: RepoHome, generation: number): Promise<RepoHome> => {
+    if (identity === null) return h
+    const letters = await letterSessionFor(sdk!, network, identity).catch(() => null)
+    if (letters === null || generation !== privateSessionGeneration()) return h
+    return withLetterReader(h, letters)
+  }
   const state = useAsync<RepoHome>(
     async () => {
       const base = home as RepoHome
       const generation = privateSessionGeneration()
-      if (!isPrivate) return membersHome(generation)
+      if (!isPrivate) {
+        const out = await withLetters(await membersHome(generation), generation)
+        if (out.lane?.access === 'member' || out.lane?.access === 'former') warm.set(key, out)
+        return out
+      }
       if (identity === null) return { ...base, private: { access: 'signed-out' } }
       const members = await readMembershipsCached(sdk!, base.repo, network)
       if (!members.some((m) => m.identity === identity)) return { ...base, private: { access: 'outsider' } }
@@ -208,7 +223,7 @@ export function usePrivateHome(home: RepoHome | null, addr: RepoAddress): Privat
       // an interactive unlock in this tab first.
       if (controller.unlockScope() === 'signing') return { ...base, private: { access: 'locked' } }
       const session = await loadPrivateSessionCached(sdk!, base.repo, network, identity, sessionUnwrapper(ops))
-      const decrypted = await loadPrivateHome(sdk!, base, session)
+      const decrypted = await withLetters(await loadPrivateHome(sdk!, base, session), generation)
       // A lock while this ran ended the session: nothing decrypted may be kept or shown.
       if (generation !== privateSessionGeneration()) throw new Error('the vault locked; unlock to read this private repo')
       // From here on, this repo's links carry tokens instead of decrypted names.

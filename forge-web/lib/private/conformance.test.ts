@@ -56,7 +56,7 @@ import {
 } from './release'
 import { conversionOf, maybeSealed, openVis, publishedKeys, skipReason, type PublishedBundle } from './convert'
 import { ArtifactError, openLetter, openLetterArtifact, letterSharedKey, type LetterOpenResult, type OwnerKey } from './named'
-import { buildTlv, encodeRecipients, MalformedError, type DocFields, type PrivateDocType } from './tlv'
+import { buildTlv, encodeRecipients, MalformedError, type DocFields, type LetterGroup, type PrivateDocType } from './tlv'
 import { WrapError, buildWrapPlaintext, openWrap, sealWrap, type WrapFacade } from './wrap'
 import {
   hedgedFileId,
@@ -159,7 +159,7 @@ const SHAPES: Readonly<Record<string, Shape>> = {
     doc: leaves(...DOC_KEYS, 'vis', 'id', 'createdAtBlockHeight', 'updatedAtBlockHeight', 'enc'),
   }),
   named_envelope: object({
-    ...leafFields('repoId', 'kObj', 'nonce', 'ivs'),
+    ...leafFields('repoId', 'kObj', 'nonce', 'ivs', 'group'),
     doc: MIXED_DOC,
     fields: FIELDS,
     sender: PARTY,
@@ -412,7 +412,9 @@ function openJson(r: OpenResult): Json {
 
 function letterJson(r: LetterOpenResult): Json {
   if (r.status === 'readable') {
-    return { status: 'readable', fields: fieldsJson(r.fields), recipients: r.recipients.map(bytesToHex), slot: r.slot }
+    const out: Record<string, Json> = { status: 'readable', fields: fieldsJson(r.fields), recipients: r.recipients.map(bytesToHex), slot: r.slot }
+    if (r.group !== null) out['group'] = r.group
+    return out
   }
   return r.status === 'unreadable' ? { status: 'unreadable', reason: r.reason } : { status: 'malformed' }
 }
@@ -437,6 +439,7 @@ async function namedEnvelope(inp: Obj): Promise<Json> {
   const ivs = inp['ivs']
   if (!Array.isArray(ivs)) throw new TypeError('ivs: expected an array')
   const kObj = hex(inp, 'kObj')
+  const group = inp['group'] === undefined ? null : (str(inp, 'group') as LetterGroup)
   let sealed: Awaited<ReturnType<typeof sealLetterWith>>
   try {
     sealed = await sealLetterWith(
@@ -449,6 +452,7 @@ async function namedEnvelope(inp: Obj): Promise<Json> {
       kObj,
       hex(inp, 'nonce'),
       ivs.map((x) => hexToBytes(String(x))),
+      group,
     )
   } catch (e) {
     if (e instanceof MalformedError) return { error: 'malformed' }
@@ -457,7 +461,7 @@ async function namedEnvelope(inp: Obj): Promise<Json> {
   }
   // The intermediates, recomputed from their definitions rather than read back from the seal
   const n = recipients.length
-  const body = concat(buildTlv(fields, { type: doc.type, epoch: 0 }), encodeRecipients(recipients.map((r) => hex(r, 'identityId'))))
+  const body = concat(buildTlv(fields, { type: doc.type, epoch: 0 }), encodeRecipients(recipients.map((r) => hex(r, 'identityId')), group))
   expect(bytesToHex(sealed.tlv)).toBe(bytesToHex(padded(doc.type, body, maxLetterPlaintext(doc.type, n))))
   expect(bytesToHex(sealed.head)).toBe(bytesToHex(sealed.enc.subarray(1, 38 + 64 * n)))
   expect(bytesToHex(sealed.ad)).toBe(bytesToHex(concat(docAdWithoutKeys(doc, repoId, V4), await sha256(sealed.head))))

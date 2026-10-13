@@ -2195,6 +2195,7 @@ mod tests {
                         draft: false,
                         merged: false,
                         members_only: false,
+                        recipients: None,
                     },
                 )
             })
@@ -2277,6 +2278,7 @@ mod tests {
             draft: false,
             merged: false,
             members_only: false,
+            recipients: None,
         };
         st.tips
             .entry(hash.clone())
@@ -2329,6 +2331,7 @@ mod tests {
             draft: false,
             merged: false,
             members_only: false,
+            recipients: None,
         };
         st.targets.insert(target.clone(), pr);
         st.tips

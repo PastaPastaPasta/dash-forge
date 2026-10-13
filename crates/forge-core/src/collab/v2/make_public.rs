@@ -359,6 +359,15 @@ impl Collab<'_> {
         if !is_sealed(stored) {
             return Err(Error::NotFound);
         }
+        // a letter (DESIGN §4.2) opens with the author's encryption keys, not the members key
+        if super::is_letter(stored) {
+            let letters = self.letter_keys(repo, &[stored]).await?;
+            if let Some(fields) =
+                letters.and_then(|k| k.open_fields(super::content_kind_of(kind)?, stored))
+            {
+                return Ok(fields);
+            }
+        }
         let opened = match self.lane_keys(repo).await? {
             DocKeys::Held(kr, _) => kr.open(kind, stored),
             DocKeys::None(_) => Opened::Malformed,
@@ -484,6 +493,7 @@ mod tests {
             imported: None,
             members_only,
             audience,
+            letter: None,
         }
     }
 
@@ -499,6 +509,7 @@ mod tests {
             imported: None,
             diff_hunk: None,
             audience: Audience::Public,
+            letter: None,
         }
     }
 

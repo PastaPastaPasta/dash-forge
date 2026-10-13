@@ -139,6 +139,7 @@ export { ACL_NAME, ARCHIVED_REASON, policyOf, pullActions, verdictSummary, type 
 export {
   backendInfo,
   loadPrivateHome,
+  withLetterReader,
   withMembersSession,
   loadRepoHome,
   type BackendInfo,
