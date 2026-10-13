@@ -17,7 +17,8 @@ use crate::rules::v2::Role;
 use crate::scope::RepoRef;
 use crate::user_error::{codes, UserError};
 
-/// forge-collab: a maintainer's per-repo ban (UPDATE-1 `repo_ban`).
+/// forge-collab (forge-meta on a four-contract set, D44): a maintainer's per-repo ban
+/// (UPDATE-1 `repo_ban`).
 pub const DOC_BAN: &str = "ban";
 
 /// A `ban` document as a [`Ban`]; `None` when it names no identity.
@@ -38,8 +39,8 @@ impl Collab<'_> {
     /// Every `ban` document of `repo` (`identity`: only those naming it), as stored: nothing
     /// judged yet. Empty on a contract without the type.
     pub async fn bans(&self, repo: &RepoRef, identity: Option<&str>) -> Result<Vec<Ban>> {
-        let collab = self.collab_contract(repo).await?;
-        if !collab.has_document_type(DOC_BAN) {
+        let contract = self.contract_for(repo, DOC_BAN).await?;
+        if !contract.has_document_type(DOC_BAN) {
             return Ok(Vec::new());
         }
         let mut filters = vec![Self::repo_filter(repo)?];
@@ -51,7 +52,7 @@ impl Collab<'_> {
         }
         let docs = self
             .client()
-            .query_all_documents(&collab, DOC_BAN, &filters, &[QueryOrder::asc("identityId")])
+            .query_all_documents(&contract, DOC_BAN, &filters, &[QueryOrder::asc("identityId")])
             .await?;
         Ok(docs.iter().filter_map(ban_from_doc).collect())
     }
@@ -111,8 +112,8 @@ impl Collab<'_> {
     /// one this signer already holds, and on a contract without bans. Returns the ban's id.
     pub async fn ban(&self, repo: &RepoRef, identity: &str, reason: Option<u8>) -> Result<String> {
         platform::decode_identifier(identity)?;
-        let collab = self.collab_contract(repo).await?;
-        if !collab.has_document_type(DOC_BAN) {
+        let contract = self.contract_for(repo, DOC_BAN).await?;
+        if !contract.has_document_type(DOC_BAN) {
             return Err(Error::Config(
                 "this network's Forge doesn't support bans yet".into(),
             ));
@@ -146,7 +147,7 @@ impl Collab<'_> {
         if let Some(r) = reason.filter(|r| *r != 0) {
             props.insert("reason".to_string(), FieldValue::integer(u64::from(r)));
         }
-        self.write(repo, &collab, DOC_BAN, props).await
+        self.write(repo, &contract, DOC_BAN, props).await
     }
 
     /// Lift this signer's ban of `identity` from `repo`: delete its `ban`. `Ok(None)` when the
@@ -162,9 +163,9 @@ impl Collab<'_> {
         else {
             return Ok(None);
         };
-        let collab = self.collab_contract(repo).await?;
+        let contract = self.contract_for(repo, DOC_BAN).await?;
         self.engine()?
-            .delete_document(&collab, DOC_BAN, &mine.id)
+            .delete_document(&contract, DOC_BAN, &mine.id)
             .await?;
         Ok(Some(mine.id))
     }

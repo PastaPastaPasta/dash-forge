@@ -122,12 +122,12 @@ pub fn policy_copies(policy: &super::ResolvedPolicy) -> usize {
 
 /// Count the copies of every live git pack in `manifests` against `required` (see
 /// [`policy_copies`] for a policy's number). `roles` are the repository's current members:
-/// only their manifests supersede.
+/// only their manifests supersede, never a bot's.
 pub fn count_copies(manifests: &[PackManifestInfo], roles: &RoleMap, required: usize) -> CopyCount {
     let git = u64::from(crate::pack::KIND_GIT_PACK);
     let superseded: BTreeSet<[u8; 32]> = manifests
         .iter()
-        .filter(|m| roles.contains_key(&m.owner_id))
+        .filter(|m| crate::repo::trusted_member(roles, &m.owner_id))
         .flat_map(|m| m.supersedes.iter().copied())
         .collect();
     let mut packs: BTreeMap<[u8; 32], Vec<&PackManifestInfo>> = BTreeMap::new();

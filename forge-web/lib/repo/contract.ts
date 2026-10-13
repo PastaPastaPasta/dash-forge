@@ -7,7 +7,7 @@
  * so conversions normalize base64 → hex here.
  */
 
-import type { ForgeIds } from '../deployments'
+import { forgeContractIds, type ForgeIds } from '../deployments'
 import type { PrivateSession } from './private-session'
 import type { Event, EventKind, RefUpdate } from '../rules'
 import { contentWellFormed, docVisibility, gitPlaneWellFormed, type ContentDoc, type ContentKind, type Visibility } from '../rules/v2'
@@ -129,7 +129,7 @@ export function withoutSessions(repo: RepoRef): RepoRef {
 
 /** The contracts a repo's reads touch, for the SDK's contract preload (none for `null`). */
 export function repoContractIds(repo: RepoRef | null): string[] {
-  return repo === null ? [] : [...new Set([repo.forge.core, repo.forge.collab, repo.forge.community])]
+  return repo === null ? [] : [...new Set(forgeContractIds(repo.forge))]
 }
 
 /**

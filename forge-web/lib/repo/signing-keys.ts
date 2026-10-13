@@ -12,6 +12,7 @@ import { createDocumentIdempotent, previewCreate, previewReplace, replaceDocumen
 import { readPubkeyEntry } from '../rules/signature'
 import { DOC } from './contract'
 import type { Profile } from './profile'
+import { contractOf } from './source'
 
 /** At most this many keys on a profile (`pubkeys.maxItems`). */
 export const MAX_KEYS = 4
@@ -104,11 +105,11 @@ export function pubkeysCost(stored: Profile | null, pubkeys: readonly string[]):
 export async function savePubkeys(sdk: EvoSDK, auth: WriteAuth, forge: ForgeIds, stored: Profile | null, pubkeys: readonly string[], intent?: string): Promise<void> {
   if (stored === null) {
     if (pubkeys.length === 0) return
-    await createDocumentIdempotent(sdk, auth, { contractId: forge.community, documentType: DOC.profile, data: { pubkeys: [...pubkeys] }, ...(intent ? { intent } : {}) })
+    await createDocumentIdempotent(sdk, auth, { contractId: contractOf(forge, DOC.profile), documentType: DOC.profile, data: { pubkeys: [...pubkeys] }, ...(intent ? { intent } : {}) })
     return
   }
   await replaceDocumentIdempotent(sdk, auth, {
-    contractId: forge.community,
+    contractId: contractOf(forge, DOC.profile),
     documentType: DOC.profile,
     documentId: stored.id,
     changes: { pubkeys: pubkeys.length === 0 ? undefined : [...pubkeys] },

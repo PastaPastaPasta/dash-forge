@@ -20,12 +20,16 @@ import { DOC, type RepoRef } from './contract'
 import { contractKindOfType } from '../layout'
 import { packHashOperand } from './pack-hash'
 
-/** The contract of `forge` that holds `type` (`forge-v2.md` §2, the RC1 layout). Throws on a type no contract holds. */
+/**
+ * The contract of `forge` that holds `type` (`forge-v2.md` §2: the RC1 layout, or forge-meta's
+ * types there on a four-contract set, D44). Throws on a type no contract holds.
+ */
 export function contractOf(forge: ForgeIds, type: string): string {
-  const kind = contractKindOfType(type)
+  const kind = contractKindOfType(type, forge)
+  const id = kind === null ? undefined : forge[kind]
   // copy-lint-ignore: a developer error naming a schema type, caught by tests before release
-  if (kind === null) throw new Error(`no Forge contract holds the document type ${JSON.stringify(type)}`)
-  return forge[kind]
+  if (id === undefined) throw new Error(`no Forge contract holds the document type ${JSON.stringify(type)}`)
+  return id
 }
 
 /** The clauses a caller adds to a scoped query. */

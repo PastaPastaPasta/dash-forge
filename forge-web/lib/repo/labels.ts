@@ -14,7 +14,7 @@ import { createDocumentIdempotent, deleteDocumentIdempotent, queryAllDocuments, 
 import { compareStrings } from '../rules/oid'
 import { DOC, num, str, type RepoRef } from './contract'
 import { refreshRoleOnRefusal, roleClaim } from './role-claim'
-import { repoSource } from './source'
+import { contractOf, repoSource } from './source'
 import { utf8Length } from '../view/issue-query'
 import { luminance } from '../design/avatar'
 
@@ -99,7 +99,7 @@ export async function defineLabel(
   Object.assign(data, await roleClaim(sdk, auth, repo, DOC.label, data))
   return refreshRoleOnRefusal(repo, auth, DOC.label, () =>
     createDocumentIdempotent(sdk, auth, {
-      contractId: repo.forge.core,
+      contractId: contractOf(repo.forge, DOC.label),
       documentType: DOC.label,
       data,
       ...(input.intent ? { intent: input.intent } : {}),
@@ -160,7 +160,7 @@ export async function deleteLabel(
   const kept = retired ? (await defineLabel(sdk, auth, repo, { name, retired: true, ...(intent ? { intent: `${intent}:retire` } : {}) })).documentId : null
   const doomed = mine.filter((d) => d.id !== kept)
   for (const d of doomed) {
-    await deleteDocumentIdempotent(sdk, auth, { contractId: repo.forge.core, documentType: DOC.label, documentId: d.id, repo: repo.repoId })
+    await deleteDocumentIdempotent(sdk, auth, { contractId: contractOf(repo.forge, DOC.label), documentType: DOC.label, documentId: d.id, repo: repo.repoId })
   }
   return { retired, deleted: doomed.length }
 }

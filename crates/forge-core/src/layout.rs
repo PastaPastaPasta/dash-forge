@@ -5,6 +5,13 @@
 //! `forge-contracts/contracts/*.json`). Every Rust reader and writer resolves a type's contract
 //! here instead of hard-coding one, so the map lives in exactly one place.
 //!
+//! DESIGN rev 4.1 D44 adds a fourth contract, forge-meta, registered last: `repoKey`, `ban`,
+//! `label`, `topic`, `packMirror`, `profile` and `follow` ([`META_TYPES`]) move there. The
+//! deployment record says which layout a network has (`v2.forgeMeta` present,
+//! [`ForgeIds::meta`]), so one build serves sakura's three-contract set and four-contract sets:
+//! [`ForgeIds::contract_of`] is the layout-aware map, [`ForgeContract::of`] the three-contract
+//! home.
+//!
 //! The `vis` stamp (`"public"` / `"private"`) is required on maintainer, writer, refUpdate,
 //! protectedRefUpdate, config, release, issue, patch, comment, review, checkRun and webhook;
 //! `topic.vis` and `starBeat.vis` may only be `"public"`. Consensus proves the stamp against the
@@ -16,7 +23,7 @@ use crate::network::ForgeIds;
 use crate::platform::FieldValue;
 use crate::rules::v2::Visibility;
 
-/// One of the three forge-v2 contracts.
+/// One of the forge-v2 contracts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ForgeContract {
     /// forge-core: repos, members, consent, refs, config, packs, releases, labels, topics.
@@ -26,6 +33,8 @@ pub enum ForgeContract {
     /// forge-community: events, milestones, runners, check runs, policies, webhooks and the
     /// social types.
     Community,
+    /// forge-meta (D44), on a four-contract set only: [`META_TYPES`].
+    Meta,
 }
 
 /// forge-core's document types (RC1; `packMirror` added by UPDATE-1).
@@ -73,6 +82,20 @@ pub const COMMUNITY_TYPES: [&str; 12] = [
     "starBeat",
 ];
 
+/// The types forge-meta holds on a four-contract set (D44). On a three-contract set they stay
+/// in [`CORE_TYPES`] (`label`, `topic`, `packMirror`), [`COLLAB_TYPES`] (`repoKey`, `ban`) and
+/// [`COMMUNITY_TYPES`] (`profile`, `follow`). None of them is read by a rule, total or derived
+/// index of its old contract, so the move changes no consensus rule.
+pub const META_TYPES: [&str; 7] = [
+    "repoKey",
+    "ban",
+    "label",
+    "topic",
+    "packMirror",
+    "profile",
+    "follow",
+];
+
 /// The listed types a contract build may leave out: RC2's fused star (C1, a `build.py` flag)
 /// drops `starBeat`, whose count the star's own `byWeek` index takes over. Clients read the
 /// shape from the loaded contract (`Collab::fused_star`), so both builds work. `packMirror` and
@@ -81,8 +104,9 @@ pub const COMMUNITY_TYPES: [&str; 12] = [
 pub const OPTIONAL_TYPES: [&str; 3] = ["starBeat", "packMirror", "ban"];
 
 impl ForgeContract {
-    /// The contract that holds `doc_type`, or `None` for a type RC1 does not define (such as
-    /// the removed `manifestPart`).
+    /// The contract that holds `doc_type` on a three-contract set, or `None` for a type RC1
+    /// does not define (such as the removed `manifestPart`). Readers and writers resolve through
+    /// [`ForgeIds::contract_of`], which knows whether the network has forge-meta.
     pub fn of(doc_type: &str) -> Option<Self> {
         if CORE_TYPES.contains(&doc_type) {
             Some(Self::Core)
@@ -101,23 +125,44 @@ impl ForgeContract {
             Self::Core => "forge-core",
             Self::Collab => "forge-collab",
             Self::Community => "forge-community",
+            Self::Meta => "forge-meta",
         }
     }
 
-    /// This contract's base58 id on the network `forge` describes.
-    pub fn id(self, forge: &ForgeIds) -> &str {
+    /// This contract's base58 id on the network `forge` describes; `None` for forge-meta on a
+    /// three-contract set.
+    pub fn id(self, forge: &ForgeIds) -> Option<&str> {
         match self {
-            Self::Core => &forge.core,
-            Self::Collab => &forge.collab,
-            Self::Community => &forge.community,
+            Self::Core => Some(&forge.core),
+            Self::Collab => Some(&forge.collab),
+            Self::Community => Some(&forge.community),
+            Self::Meta => forge.meta.as_deref(),
         }
     }
 }
 
 impl ForgeIds {
+    /// The contract that holds `doc_type` on this network: forge-meta for [`META_TYPES`] when
+    /// the deployment has it (D44), else the three-contract home ([`ForgeContract::of`]).
+    /// `None` for a type no forge-v2 contract defines.
+    pub fn contract_of(&self, doc_type: &str) -> Option<ForgeContract> {
+        if self.meta.is_some() && META_TYPES.contains(&doc_type) {
+            return Some(ForgeContract::Meta);
+        }
+        ForgeContract::of(doc_type)
+    }
+
     /// The base58 id of the contract that holds `doc_type`, or `None` for an unknown type.
     pub fn contract_id_of(&self, doc_type: &str) -> Option<&str> {
-        ForgeContract::of(doc_type).map(|c| c.id(self))
+        self.contract_of(doc_type).and_then(|c| c.id(self))
+    }
+
+    /// The base58 id of the contract that holds `doc_type`, a type the caller names by its
+    /// constant (`DOC_LABEL`, …). Panics on a type no forge-v2 contract defines: that is a
+    /// programming error, which the layout tests catch.
+    pub fn home(&self, doc_type: &str) -> &str {
+        self.contract_id_of(doc_type)
+            .unwrap_or_else(|| panic!("no forge-v2 contract holds {doc_type}"))
     }
 }
 
@@ -218,6 +263,7 @@ mod tests {
                 ForgeContract::Core => CORE_TYPES.to_vec(),
                 ForgeContract::Collab => COLLAB_TYPES.to_vec(),
                 ForgeContract::Community => COMMUNITY_TYPES.to_vec(),
+                ForgeContract::Meta => unreachable!("the committed set has three contracts"),
             };
             listed.sort_unstable();
             // A type a build flag left out is listed all the same (both shapes are read).
@@ -281,6 +327,71 @@ mod tests {
             want.sort();
             assert_eq!(*got, want);
         }
+    }
+
+    /// The four-contract map (D44) agrees with `build.py --mainnet`, type for type: forge-meta
+    /// holds [`META_TYPES`] and the other three keep the rest.
+    #[test]
+    fn the_four_contract_map_matches_the_mainnet_build() {
+        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../forge-contracts");
+        let dir = tempfile::tempdir().expect("temp dir");
+        let out = std::process::Command::new("python3")
+            .arg(format!("{root}/schema/build.py"))
+            .args(["--mainnet", "--out"])
+            .arg(dir.path())
+            .output()
+            .expect("python3 runs build.py");
+        assert!(
+            out.status.success(),
+            "build.py --mainnet: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let forge = ForgeIds::test_forge_meta();
+        let mut seen = 0;
+        for (file, want) in [
+            ("forge-core.json", ForgeContract::Core),
+            ("forge-collab.json", ForgeContract::Collab),
+            ("forge-community.json", ForgeContract::Community),
+            ("forge-meta.json", ForgeContract::Meta),
+        ] {
+            let text = std::fs::read_to_string(dir.path().join(file)).expect(file);
+            let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+            for t in json["documentSchemas"].as_object().unwrap().keys() {
+                assert_eq!(forge.contract_of(t), Some(want), "{file}: {t}");
+                seen += 1;
+            }
+        }
+        assert_eq!(forge.all().last(), Some(&("forge-meta", "META")));
+        assert!(seen > META_TYPES.len());
+    }
+
+    #[test]
+    fn the_layout_follows_the_deployment_record() {
+        let three = ForgeIds::test_forge();
+        let four = ForgeIds::test_forge_meta();
+        for t in META_TYPES {
+            assert_eq!(four.contract_id_of(t), Some("META"), "{t}");
+            assert_eq!(four.home(t), "META", "{t}");
+            assert_ne!(three.contract_id_of(t), Some("META"), "{t}");
+            assert!(three.contract_id_of(t).is_some(), "{t}");
+        }
+        for (t, old) in [
+            ("repoKey", "COLLAB"),
+            ("ban", "COLLAB"),
+            ("label", "CORE"),
+            ("topic", "CORE"),
+            ("packMirror", "CORE"),
+            ("profile", "COMMUNITY"),
+            ("follow", "COMMUNITY"),
+        ] {
+            assert_eq!(three.home(t), old, "{t}");
+        }
+        // The other types do not move.
+        for t in ["repo", "issue", "comment", "star", "watch", "event", "runner"] {
+            assert_eq!(three.contract_id_of(t), four.contract_id_of(t), "{t}");
+        }
+        assert_eq!(ForgeContract::Meta.id(&three), None);
+        assert_eq!(four.contract_id_of("manifestPart"), None);
     }
 
     #[test]

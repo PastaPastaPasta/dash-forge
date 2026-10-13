@@ -42,7 +42,7 @@ import {
 import { readConfigBundle, type RepoConfig } from './config'
 import { repoContentWritten } from './push'
 import { DOC, asIdentifierString, num, str, stringArray, withVis, type RepoRef } from './contract'
-import { repoSource } from './source'
+import { contractOf, repoSource } from './source'
 
 // ---------------------------------------------------------------------------------------------
 // Pure rules (unit-tested; forge-core `repo.rs` holds the same limits)
@@ -477,12 +477,12 @@ export async function syncTopicDocs(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef,
   const held = await readTopicDocs(sdk, repo)
   const { added, removed } = topicChanges([...held.keys()], topics)
   for (const name of removed) {
-    await deleteDocumentIdempotent(sdk, auth, { contractId: repo.forge.core, documentType: DOC.topic, documentId: held.get(name) as string, repo: repo.repoId })
+    await deleteDocumentIdempotent(sdk, auth, { contractId: contractOf(repo.forge, DOC.topic), documentType: DOC.topic, documentId: held.get(name) as string, repo: repo.repoId })
   }
   for (const name of added) {
     try {
       await createDocumentIdempotent(sdk, auth, {
-        contractId: repo.forge.core,
+        contractId: contractOf(repo.forge, DOC.topic),
         documentType: DOC.topic,
         // `repoId` as the identifier's 32 bytes, like every other write.
         data: withVis(repo.visibility, DOC.topic, { repoId: decodeIdentifier(repo.repoId), name }),

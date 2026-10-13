@@ -40,7 +40,7 @@ import { repoHasMembersKey } from '@/lib/repo/members-writes'
 import { membersAccessOf } from '@/lib/repo/members-access'
 import { knownConversion } from '@/lib/repo/converted'
 import { DOC } from '@/lib/repo/contract'
-import { repoSource } from '@/lib/repo/source'
+import { contractOf, repoSource } from '@/lib/repo/source'
 import { queryDocuments } from '@/lib/sdk'
 import { loadPrivateHome, withMembersSession, type RepoHome } from '@/lib/view'
 import { forgetPrivateNav, sealRepoUrls } from '@/lib/view/private-nav'
@@ -135,7 +135,7 @@ export function usePrivateHome(home: RepoHome | null, addr: RepoAddress): Privat
       isMember,
       // A non-member's answer comes from the page's own config read (no read of its own).
       hasMembersKey: () => (isMember ? hasMembersKey(sdk!, base.repo) : repoHasMembersKey(sdk!, base.repo)),
-      ops: () => encryptionOps(sdk!, network, viewer, base.repo.forge.collab),
+      ops: () => encryptionOps(sdk!, network, viewer, contractOf(base.repo.forge, DOC.repoKey)),
       // No session at all (the vault locked), or one resumed with the signing key only.
       locked: () => identity === null || controller.unlockScope() === 'signing',
       holdsShare: async () =>
@@ -160,7 +160,7 @@ export function usePrivateHome(home: RepoHome | null, addr: RepoAddress): Privat
       if (identity === null) return { ...base, private: { access: 'signed-out' } }
       const members = await readMembershipsCached(sdk!, base.repo, network)
       if (!members.some((m) => m.identity === identity)) return { ...base, private: { access: 'outsider' } }
-      const ops = await encryptionOps(sdk!, network, identity, base.repo.forge.collab)
+      const ops = await encryptionOps(sdk!, network, identity, contractOf(base.repo.forge, DOC.repoKey))
       if (ops === null) return { ...base, private: { access: 'no-key' } }
       // A session picked up after a reload holds the signing key only: the encryption key needs
       // an interactive unlock in this tab first.

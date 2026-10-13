@@ -1780,11 +1780,11 @@ export async function loadBrowseContext(
   // repo chrome store: the home's own read of a moment ago (zero requests), else its delta.
   const manifests = await readBrowseManifests(sdk, repo, { after, network: ACTIVE_NETWORK.network })
   // The gateways this repo's CURRENT members' pushes recorded reach its IPFS node: try them
-  // first. A past writer's or a stranger's manifest cannot steer every read.
+  // first. A past writer's, a bot's or a stranger's manifest cannot steer every read.
   noteRepoGateways(
     repoKey(repo),
     'manifests',
-    manifests.filter((m) => m.ownerRole !== null && m.ownerRole !== undefined).flatMap((m) => m.uris),
+    manifests.filter((m) => m.ownerRole != null && m.ownerRole !== 'bot').flatMap((m) => m.uris),
   )
   const livePacks = locatorPackSpace(manifests)
   if (livePacks.length === 0) return { kind: 'no-packs' }

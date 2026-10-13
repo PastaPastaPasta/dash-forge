@@ -26,6 +26,7 @@ export const AUTHOR_ROLE_TITLE: Readonly<Record<AuthorRole, string>> = {
   writer: `${ROLE_LABEL.writer} access to this repository`,
   triage: `${ROLE_LABEL.triage} access to this repository`,
   reader: `${ROLE_LABEL.reader} access to this repository`,
+  bot: 'A bot with access to this repository',
 }
 
 /** Each member's role and the owner's, keyed by identity id. */

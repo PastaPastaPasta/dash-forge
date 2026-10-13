@@ -151,7 +151,7 @@ describe('wallet login and the encryption key (D27)', () => {
     version: () => 10,
     encryptedFor: {},
   } as unknown as EvoSDK
-  const walletKey: WalletKey = { keyId: 5, wif: AUTH_WIF, scope: { core: true, collab: false, community: false, unbounded: false }, limits: null }
+  const walletKey: WalletKey = { keyId: 5, wif: AUTH_WIF, scope: { core: true, collab: false, community: false, meta: true, unbounded: false }, limits: null }
   const detach: (() => void)[] = []
   const make = (): AuthController => {
     const c = new AuthController(async () => sdk, NET)
@@ -311,7 +311,7 @@ describe('wallet login and the encryption key (D27)', () => {
   /** The wallet's first approval for forge-collab: another auth key (7), and another encryption key (8). */
   const COLLAB_WIF = encodeWif(new Uint8Array(32).fill(7), NET)
   const COLLAB_ENC = encryptionKeyFromLogin(new Uint8Array(32).fill(0x22), ID)
-  const collabGrant: WalletKey = { keyId: 7, wif: COLLAB_WIF, scope: { core: false, collab: true, community: false, unbounded: false }, limits: null }
+  const collabGrant: WalletKey = { keyId: 7, wif: COLLAB_WIF, scope: { core: false, collab: true, community: false, meta: true, unbounded: false }, limits: null }
   async function twoApprovals(): Promise<AuthController> {
     const c = make()
     await login(c, true)

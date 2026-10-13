@@ -45,6 +45,11 @@ export interface KeyScope {
   readonly collab: boolean
   /** forge-community (stars, watches, follows, check runs, policies, webhooks). */
   readonly community: boolean
+  /**
+   * forge-meta (D44: repo keys, bans, labels, topics, pack mirrors, profiles, follows). True on a
+   * three-contract set, which has no forge-meta to grant: those types are in the other three.
+   */
+  readonly meta: boolean
   /** No contract bounds: consensus lets it sign on any contract (the Android wallet's keys). */
   readonly unbounded: boolean
 }
@@ -52,17 +57,18 @@ export interface KeyScope {
 /**
  * The scope of an AUTHENTICATION key over Forge's contracts, or null when Forge must not use
  * it: bound to another contract or group (it is another app's key, or a key left on a
- * superseded group), or to a single document type. A key bound to the group covers all three.
+ * superseded group), or to a single document type. A key bound to the group covers all of them.
  * On a deployment that predates the split forge-community is forge-collab, so a forge-collab key
  * covers it too.
  */
 export function keyScope(k: Pick<WasmKey, 'contractBounds'>, forge: ForgeIds): KeyScope | null {
   const bounds = k.contractBounds?.toJSON()
-  if (bounds === undefined || bounds === null) return { core: true, collab: true, community: true, unbounded: true }
-  if (bounds.$type === 'contractGroup') return bounds.id === forge.group ? { core: true, collab: true, community: true, unbounded: false } : null
+  if (bounds === undefined || bounds === null) return { core: true, collab: true, community: true, meta: true, unbounded: true }
+  if (bounds.$type === 'contractGroup') return bounds.id === forge.group ? { core: true, collab: true, community: true, meta: true, unbounded: false } : null
   if (bounds.$type === 'singleContract') {
-    const one = { core: bounds.id === forge.core, collab: bounds.id === forge.collab, community: bounds.id === forge.community, unbounded: false }
-    return one.core || one.collab || one.community ? one : null
+    const one = { core: bounds.id === forge.core, collab: bounds.id === forge.collab, community: bounds.id === forge.community, meta: bounds.id === forge.meta }
+    if (!(one.core || one.collab || one.community || one.meta)) return null
+    return { ...one, meta: one.meta || forge.meta === undefined, unbounded: false }
   }
   return null
 }
@@ -78,13 +84,15 @@ export function scopeCovers(scope: KeyScope, forge: ForgeIds, contractId: string
 
 /**
  * The Forge contract a session still needs a wallet grant for (a shipped wallet grants one
- * contract per approval): forge-collab first, then forge-community; null when both are covered.
- * The keys panel's fallback; a refused write names its own contract.
+ * contract per approval): forge-collab first, then forge-community, then forge-meta on a
+ * four-contract set; null when all are covered. The keys panel's fallback; a refused write names
+ * its own contract.
  */
-export function nextGrant(grants: { readonly collab: boolean; readonly community: boolean } | null | undefined): ForgeContractKind | null {
+export function nextGrant(grants: { readonly collab: boolean; readonly community: boolean; readonly meta?: boolean } | null | undefined): ForgeContractKind | null {
   if (!grants) return null
   if (!grants.collab) return 'collab'
-  return grants.community ? null : 'community'
+  if (!grants.community) return 'community'
+  return grants.meta === false ? 'meta' : null
 }
 
 /** What a wallet grant for each contract lets this browser sign (the grant sheet's copy). */
@@ -92,6 +100,7 @@ export const GRANT_COPY: Readonly<Record<ForgeContractKind, { readonly title: st
   core: { title: 'Approve repositories and pushes', what: 'Repositories and pushes' },
   collab: { title: 'Approve issues and pull requests', what: 'Issues, pull requests and reviews' },
   community: { title: 'Approve stars, watches and follows', what: 'Stars, watches, follows and branch policies' },
+  meta: { title: 'Approve labels, topics and profiles', what: 'Labels, topics, bans, profiles and follows' },
 }
 
 /** Whether `contractId` is one of Forge's contracts. */

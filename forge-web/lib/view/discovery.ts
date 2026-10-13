@@ -31,7 +31,7 @@ import type { ForgeIds } from '../deployments'
 import type { Role } from '../rules/v2'
 import { queryDocumentsWithProof, RANGE_OPERATORS, type PlainDocument, type WhereClause } from '../sdk'
 import { countsAt, docsAt, queryComposite, type CompositeSub, type CompositeResult } from '../sdk/composite'
-import { DOC, asIdentifierString, readMemberRepoIds, toRepoDoc, type RepoDoc } from '../repo'
+import { DOC, asIdentifierString, contractOf, readMemberRepoIds, toRepoDoc, type RepoDoc } from '../repo'
 import { starShape } from '../repo/star-shape'
 import {
   FUSED_READ_AHEAD,
@@ -524,7 +524,7 @@ export async function reposWithTopic(sdk: EvoSDK, topic: string, opts: { network
   const forge = forgeOf(network)
   if (forge === null || !TOPIC_PATTERN.test(topic) || topic.length > MAX_TOPIC_CHARS) return { repos: [], more: false, missing: 0 }
   const { documents } = await queryDocumentsWithProof(sdk, {
-    dataContractId: forge.core,
+    dataContractId: contractOf(forge, DOC.topic),
     documentTypeName: DOC.topic,
     where: [['name', '==', topic]],
     orderBy: [['$createdAt', 'desc']],

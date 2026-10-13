@@ -37,6 +37,7 @@ export function settingsReadOnlyText(viewer: SettingsViewer): string | null {
           return "You're a writer here: only maintainers can change the repo's settings. Where your own browser stores what you push (Storage) is yours to set."
         case 'triage':
         case 'reader':
+        case 'bot':
           return `You're ${ROLE_NOUN[viewer.role]} here: only maintainers can change the repo's settings.`
         case null:
           return "You're viewing this repo's settings read-only: only its maintainers can change them."

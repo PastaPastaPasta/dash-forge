@@ -49,6 +49,11 @@ export interface DeploymentFile {
     readonly forgeCollab?: ContractRecord
     /** Absent on a deployment that predates the three-contract split. */
     readonly forgeCommunity?: ContractRecord
+    /**
+     * forge-meta (DESIGN rev 4.1 D44): present on a four-contract set, where `repoKey`, `ban`,
+     * `label`, `topic`, `packMirror`, `profile` and `follow` live; absent on a three-contract set.
+     */
+    readonly forgeMeta?: ContractRecord
     readonly contractGroupId?: string
     /** The group `deploy-v2.mjs` verified on chain: its id and owner (the deployer). */
     readonly contractGroup?: { readonly id?: string; readonly owner?: string }
@@ -56,6 +61,7 @@ export interface DeploymentFile {
     readonly forgeCoreSuperseded?: readonly SupersededRecord[]
     readonly forgeCollabSuperseded?: readonly SupersededRecord[]
     readonly forgeCommunitySuperseded?: readonly SupersededRecord[]
+    readonly forgeMetaSuperseded?: readonly SupersededRecord[]
     /** The devnet `deploy-v2.mjs` registered on, with the DAPI addresses it used. */
     readonly devnet?: { readonly addresses?: readonly string[] }
   }
@@ -80,20 +86,34 @@ export interface ForgeIds {
    * forge-collab's id on a deployment that predates the three-contract split.
    */
   readonly community: string
+  /**
+   * forge-meta (D44: repo keys, bans, labels, topics, pack mirrors, profiles, follows); absent on
+   * a three-contract set, where those types keep their old homes (`lib/layout.ts`).
+   */
+  readonly meta?: string
   /** The contract group they all belong to. */
   readonly group: string
 }
 
 /** One of Forge's contracts, by role. */
-export type ForgeContractKind = 'core' | 'collab' | 'community'
-export const FORGE_CONTRACT_KINDS: readonly ForgeContractKind[] = ['core', 'collab', 'community']
+export type ForgeContractKind = 'core' | 'collab' | 'community' | 'meta'
+export const FORGE_CONTRACT_KINDS: readonly ForgeContractKind[] = ['core', 'collab', 'community', 'meta']
 
 /**
  * Which of Forge's contracts `contractId` is, or null for any other. On a deployment that
  * predates the split forge-community is forge-collab, and the id reads as `collab`.
  */
 export function contractKind(forge: ForgeIds, contractId: string | undefined): ForgeContractKind | null {
+  if (contractId === undefined) return null
   return FORGE_CONTRACT_KINDS.find((k) => forge[k] === contractId) ?? null
+}
+
+/** Forge's contract ids on `forge`: three, or four with forge-meta (parity with forge-core `ForgeIds::all`). */
+export function forgeContractIds(forge: ForgeIds): string[] {
+  return FORGE_CONTRACT_KINDS.flatMap((k) => {
+    const id = forge[k]
+    return id === undefined ? [] : [id]
+  })
 }
 
 function registeredId(record: ContractRecord | undefined): string | null {
@@ -105,15 +125,19 @@ function registeredId(record: ContractRecord | undefined): string | null {
  * A file's forge-v2 ids, or null unless every contract is registered and the group is
  * recorded — a half-finished deploy is not a usable deployment (parity with forge-core
  * `network::V2Record::ids`). A file with no forge-community record predates the split: its
- * community types are in forge-collab.
+ * community types are in forge-collab. A forge-meta record makes it a four-contract set, and one
+ * not yet registered is a half-finished deploy.
  */
 export function forgeV2Ids(file: DeploymentFile | undefined): ForgeIds | null {
   const core = registeredId(file?.v2?.forgeCore)
   const collab = registeredId(file?.v2?.forgeCollab)
   const recorded = file?.v2?.forgeCommunity
   const community = recorded == null ? collab : registeredId(recorded)
+  const metaRecord = file?.v2?.forgeMeta
+  const meta = metaRecord == null ? undefined : registeredId(metaRecord)
   const group = file?.v2?.contractGroupId || null
-  return core && collab && community && group ? { core, collab, community, group } : null
+  if (!(core && collab && community && group) || meta === null) return null
+  return meta === undefined ? { core, collab, community, group } : { core, collab, community, meta, group }
 }
 
 /**
@@ -125,6 +149,8 @@ export interface GroupTrust {
   readonly core: string
   readonly collab: string
   readonly community: string
+  /** forge-meta, on a four-contract set. */
+  readonly meta?: string
   /** The group's owner, the Forge deployer: null when the file records none. The group must also have no admins. */
   readonly owner: string | null
   /** Forge's own earlier contracts left in the same group. */
@@ -142,7 +168,12 @@ export function groupTrust(file: DeploymentFile | undefined): GroupTrust | null 
   if (!ids || !v2) return null
   const recorded = v2.contractGroup?.id === ids.group ? v2.contractGroup : undefined
   const owner = recorded?.owner || v2.forgeCore?.ownerId || null
-  const superseded = [...(v2.forgeCoreSuperseded ?? []), ...(v2.forgeCollabSuperseded ?? []), ...(v2.forgeCommunitySuperseded ?? [])]
+  const superseded = [
+    ...(v2.forgeCoreSuperseded ?? []),
+    ...(v2.forgeCollabSuperseded ?? []),
+    ...(v2.forgeCommunitySuperseded ?? []),
+    ...(v2.forgeMetaSuperseded ?? []),
+  ]
     .filter((r) => r.contractGroupId === ids.group && r.contractId)
     .map((r) => r.contractId as string)
   return { ...ids, owner, superseded }

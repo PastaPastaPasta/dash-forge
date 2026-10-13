@@ -96,7 +96,7 @@ describe.skipIf(!LIVE)('live wallet sign-in (scripted Dash Wallet, legacy key-ex
         // 1. First login on forge-core: QR #2 registers the key, bound to forge-core, no limits.
         const first = await signIn(forge.core)
         expect(first.registered).toBe(true)
-        expect(first.key.scope).toEqual({ core: true, collab: false, community: false, unbounded: false })
+        expect(first.key.scope).toEqual({ core: true, collab: false, community: false, meta: true, unbounded: false })
         expect(first.key.limits).toBeNull()
 
         resetMemoryStores()
@@ -136,7 +136,7 @@ describe.skipIf(!LIVE)('live wallet sign-in (scripted Dash Wallet, legacy key-ex
 
         // 3. The one-tap grant for forge-community (a star is a forge-community write), then the star lands.
         const grant = await signIn(forge.community, first.identityId)
-        expect(grant.key.scope).toEqual({ core: false, collab: false, community: true, unbounded: false })
+        expect(grant.key.scope).toEqual({ core: false, collab: false, community: true, meta: true, unbounded: false })
         const heldBefore = await storedEncryptionKeyIds(network, first.identityId)
         const after = await returning.addWalletGrant(first.identityId, grant.key, forge.community, { encryptionKeys: grant.encryptionKeys, justRegistered: grant.registered })
         grant.wipe()
@@ -174,7 +174,7 @@ describe.skipIf(!LIVE)('live wallet sign-in (scripted Dash Wallet, legacy key-ex
         await wallet.register({ uri, identityFile: FILE, chainKeyHex: chainKey, contractId: forge.core, devnet: DEVNET, android: true })
         const key = await awaitRegisteredKey(sdk, { identityId: answer.identityId, wif: answer.wif, network, forge, until: Date.now() + 5 * 60_000 })
         // Android drops the bound: the key covers both contracts (and any other), no limits.
-        expect(key.scope).toEqual({ core: true, collab: true, community: true, unbounded: true })
+        expect(key.scope).toEqual({ core: true, collab: true, community: true, meta: true, unbounded: true })
         expect(key.limits).toBeNull()
 
         resetMemoryStores()

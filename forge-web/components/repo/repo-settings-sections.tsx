@@ -24,6 +24,7 @@ import { isLive, plural } from '@/lib/view'
 import {
   CONFIG_LAG_MS,
   DEFAULT_CONFIG,
+  DOC,
   MAX_PATTERN_CHARS,
   MAX_PROTECTED_PATTERNS,
   MERGE_METHODS,
@@ -54,6 +55,7 @@ import {
   type RepoDocEdit,
 } from '@/lib/repo'
 import { MAX_TOPICS } from '@/lib/repo/settings'
+import { writeContractKind } from '@/lib/layout'
 import { missingDefaultProtection } from '@/lib/rules'
 import { mirrorSourceOfRepo } from '@/lib/view/mirror-source'
 import { readRunnersCached } from '@/lib/repo/checks'
@@ -398,7 +400,8 @@ function RepoDocForm({ home, owner, onSaved }: { home: RepoHome; owner: boolean;
             size="sm"
             disabled={!changed || problem !== null || guard.disabledReason !== null}
             onClick={() => {
-              if (guard.check(cost)) setPending(edit)
+              // The repo document is forge-core's; its topic documents forge-meta's on a four-contract set
+              if (guard.check(cost) && (edit.topics === undefined || guard.check(0, writeContractKind(home.repo.forge, DOC.topic)))) setPending(edit)
             }}
           >
             Save

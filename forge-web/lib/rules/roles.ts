@@ -14,23 +14,28 @@
  * writes none of these as a member. forge-core's writers claim `r` by the same rule.
  */
 
-import type { Role } from './v2'
+import { isApprover, type Role } from './v2'
 
-/** The `writer` document's `role` integer per role (a maintainer has a document type of its own). */
-export const WRITER_ROLE_CODE = { writer: 1, triage: 2, reader: 3 } as const
+/**
+ * The `writer` document's `role` integer per role (a maintainer has a document type of its own).
+ * 4, bot, exists only on the mainnet registration (sakura's `writer.role` stops at 3).
+ */
+export const WRITER_ROLE_CODE = { writer: 1, triage: 2, reader: 3, bot: 4 } as const
 
 /** A role a `writer` document grants. */
 export type WriterRole = keyof typeof WRITER_ROLE_CODE
 
 /**
  * The role a `writer` document's `role` grants. Read tolerant: an absent `role` (a pre-RC2
- * document) is a writer; an out-of-range code (consensus admits none) grants nothing (null).
+ * document) is a writer; 4 is a bot (mainnet); an out-of-range code (consensus admits none above
+ * 4) grants nothing (null). Parity: forge-core `Role::from_writer_role_code`.
  */
 export function writerRoleOf(code: unknown): WriterRole | null {
   const n = typeof code === 'bigint' ? Number(code) : code
   if (n === undefined || n === null || n === 1) return 'writer'
   if (n === 2) return 'triage'
   if (n === 3) return 'reader'
+  if (n === 4) return 'bot'
   return null
 }
 
@@ -38,8 +43,8 @@ export function writerRoleOf(code: unknown): WriterRole | null {
  * Whether a member with `role` receives a repo's members key (wraps, rotations, repairs), in
  * public and private repos alike: every human role does (DESIGN §3.5). Runners are never in it: a
  * `runner` document is not a membership. The switch is exhaustive so that a role that must not
- * hold the key (the Bot role of phase 4) has to say so here. Parity: forge-core
- * `members::holds_members_key`.
+ * hold the key has to say so here: a bot never does (DESIGN §3.5), so adding or removing one
+ * rotates nothing. Parity: forge-core `members::holds_members_key`.
  */
 export function holdsMembersKey(role: Role): boolean {
   switch (role) {
@@ -48,13 +53,16 @@ export function holdsMembersKey(role: Role): boolean {
     case 'triage':
     case 'reader':
       return true
+    case 'bot':
+      return false
   }
 }
 
 /**
  * The roles the owner may grant on a repo of `visibility`, in picker order (GitHub's: Read,
- * Triage, Write, Maintain). Every role is offered on every repo: a reader of a public repo reads
- * its members-only content (DESIGN §3.5), or what everyone reads when it has none.
+ * Triage, Write, Maintain). Every human role is offered on every repo: a reader of a public repo
+ * reads its members-only content (DESIGN §3.5), or what everyone reads when it has none. Bot is
+ * not offered yet (it needs the mainnet registration).
  */
 export function grantableRoles(visibility: 'public' | 'private'): readonly Role[] {
   void visibility
@@ -67,6 +75,7 @@ export const ROLE_LABEL: Readonly<Record<Role, string>> = {
   writer: 'Write',
   triage: 'Triage',
   reader: 'Read',
+  bot: 'Bot',
 }
 
 /** The repo owner's word in copy (their own maintainer document shows as this). */
@@ -78,6 +87,7 @@ export const ROLE_NOUN: Readonly<Record<Role, string>> = {
   writer: 'a writer',
   triage: 'a triage member',
   reader: 'a reader',
+  bot: 'a bot',
 }
 
 /** How a title names a holder of a role ("Triage member added"). */
@@ -86,6 +96,7 @@ export const ROLE_HOLDER: Readonly<Record<Role, string>> = {
   writer: 'Writer',
   triage: 'Triage member',
   reader: 'Reader',
+  bot: 'Bot',
 }
 
 /**
@@ -106,6 +117,7 @@ export const ROLE_SUMMARY: Readonly<Record<Role, string>> = {
   triage: 'Can also close, label and assign.',
   writer: 'Can also push, approve and merge.',
   maintainer: 'Can also change settings, protected branches, releases and environments.',
+  bot: "Can comment and open issues and pull requests. Can't read members-only content or approve.",
 }
 
 /**
@@ -115,7 +127,7 @@ export const ROLE_SUMMARY: Readonly<Record<Role, string>> = {
  * Parity: forge-core `members::verdict_refusal`.
  */
 export function verdictRefusal(role: Role | null | undefined, verdict: 'comment' | 'approve' | 'requestChanges'): string | null {
-  if (verdict === 'comment' || (role !== 'reader' && role !== 'triage')) return null
+  if (verdict === 'comment' || role == null || isApprover(role)) return null
   return `Only people with Write access or more can ${verdict === 'approve' ? 'approve' : 'request changes'}.`
 }
 
@@ -227,6 +239,7 @@ const ROLE_PLURAL: Readonly<Record<Role, string>> = {
   writer: 'writers',
   triage: 'triage members',
   reader: 'readers',
+  bot: 'bots',
 }
 
 /** "a, b and c" / "a, b or c". */

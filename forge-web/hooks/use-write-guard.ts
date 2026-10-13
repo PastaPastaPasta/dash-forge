@@ -19,6 +19,7 @@ import { useCallback } from 'react'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
 import { toast } from '@/hooks/use-toasts'
+import type { ForgeContractKind } from '@/lib/deployments'
 import { writesPausedReason } from '@/lib/devnet-notice'
 import { affordability, type WriteNeed } from '@/lib/view/funds'
 import { writeFailure } from '@/lib/view/write-errors'
@@ -27,11 +28,12 @@ export interface WriteGuard {
   /**
    * Run before signing: true when the write may go ahead (else a sheet opened). `need`: the
    * write's cost preview (or a bare estimate). `contract`: which Forge contract the write goes
-   * to, `'collab'` for issues, comments and reviews, `'community'` for stars, watches, follows
-   * and branch policies (default `'core'`).
+   * to, `'collab'` for issues, comments and reviews, `'community'` for stars, watches and branch
+   * policies (default `'core'`); for a type forge-meta takes on a four-contract set, pass
+   * `writeContractKind(forge, type)` (`lib/layout.ts`).
    * `action`: what the click does, for the sign-in sheet when signed out (`star this repo`).
    */
-  readonly check: (need: WriteNeed, contract?: 'core' | 'collab' | 'community', action?: string) => boolean
+  readonly check: (need: WriteNeed, contract?: ForgeContractKind, action?: string) => boolean
   /** Run when a write throws: opens the fix it calls for and returns the message to show. */
   readonly failed: (e: unknown) => string
   /** Why every write button is disabled (empty state), or null. */
@@ -50,7 +52,7 @@ export function useWriteGuard(): WriteGuard {
   const openTopUp = useUiStore((s) => s.openTopUp)
 
   const check = useCallback(
-    (need: WriteNeed, contract: 'core' | 'collab' | 'community' = 'core', action?: string): boolean => {
+    (need: WriteNeed, contract: ForgeContractKind = 'core', action?: string): boolean => {
       // The devnet is moving: nothing written now would survive it, whoever is signed in.
       const paused = writesPausedReason()
       if (paused !== null) {

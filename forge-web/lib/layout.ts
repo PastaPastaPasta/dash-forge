@@ -6,6 +6,12 @@
  * it ({@link rc1WriteProblem}), below the repo layer that builds the documents, so no writer can
  * route a type to the wrong contract or forget its stamp. Parity: forge-core `layout`
  * (`stamp_vis_for`, the contract check in `Collab::write`).
+ *
+ * DESIGN rev 4.1 D44 adds a fourth contract, forge-meta: `repoKey`, `ban`, `label`, `topic`,
+ * `packMirror`, `profile` and `follow` ({@link META_TYPES}) move there. The deployment record
+ * says which layout a network has (`v2.forgeMeta`, `ForgeIds.meta`), so one build serves
+ * sakura's three-contract set and four-contract sets: pass the network's ids to
+ * {@link contractKindOfType}; without them it answers the three-contract home.
  */
 
 import type { ForgeContractKind, ForgeIds } from './deployments'
@@ -54,13 +60,35 @@ const CONTRACT_OF_TYPE: Readonly<Record<string, ForgeContractKind>> = {
 const typesOf = (kind: ForgeContractKind): ReadonlySet<string> =>
   new Set(Object.entries(CONTRACT_OF_TYPE).flatMap(([t, k]) => (k === kind ? [t] : [])))
 
+/** The three-contract homes (sakura's layout); a four-contract set moves {@link META_TYPES} out of them. */
 export const CORE_TYPES: ReadonlySet<string> = typesOf('core')
 export const COLLAB_TYPES: ReadonlySet<string> = typesOf('collab')
 export const COMMUNITY_TYPES: ReadonlySet<string> = typesOf('community')
 
-/** The contract that holds `type`, or null for a type no forge-v2 contract has (e.g. the retired `manifestPart`). */
-export function contractKindOfType(type: string): ForgeContractKind | null {
+/**
+ * The types forge-meta holds on a four-contract set (D44). None is read by a rule, total or
+ * derived index of its old contract, so the move changes no consensus rule. Parity: forge-core
+ * `layout::META_TYPES`.
+ */
+export const META_TYPES: ReadonlySet<string> = new Set(['repoKey', 'ban', 'label', 'topic', 'packMirror', 'profile', 'follow'])
+
+/**
+ * The contract that holds `type` on the network `forge` describes: forge-meta for
+ * {@link META_TYPES} when it has one, else the three-contract home (also the answer without
+ * `forge`). Null for a type no forge-v2 contract has (e.g. the retired `manifestPart`). Parity:
+ * forge-core `ForgeIds::contract_of`.
+ */
+export function contractKindOfType(type: string, forge?: Pick<ForgeIds, 'meta'> | null): ForgeContractKind | null {
+  if (forge?.meta !== undefined && META_TYPES.has(type)) return 'meta'
   return CONTRACT_OF_TYPE[type] ?? null
+}
+
+/**
+ * The contract kind a write of `type` goes to on `forge` (the write guard's grant check). A type
+ * no contract holds is a developer error, caught by tests; it falls back to forge-core.
+ */
+export function writeContractKind(forge: Pick<ForgeIds, 'meta'> | null | undefined, type: string): ForgeContractKind {
+  return contractKindOfType(type, forge) ?? 'core'
 }
 
 /**
@@ -103,8 +131,8 @@ export function withVis(visibility: 'public' | 'private', documentType: string, 
  * carry a valid `vis`.
  */
 export function rc1WriteProblem(forge: ForgeIds | null, contractId: string, documentType: string, data: Readonly<Record<string, unknown>>): string | null {
-  if (forge === null || (contractId !== forge.core && contractId !== forge.collab && contractId !== forge.community)) return null
-  const kind = contractKindOfType(documentType)
+  if (forge === null || ![forge.core, forge.collab, forge.community, forge.meta].includes(contractId)) return null
+  const kind = contractKindOfType(documentType, forge)
   // copy-lint-ignore: a developer error naming a schema type, caught by tests before release
   if (kind === null) return `no Forge contract holds the document type ${JSON.stringify(documentType)}`
   if (forge[kind] !== contractId) return `a ${documentType} belongs in forge-${kind}, not the contract it was sent to`

@@ -83,8 +83,8 @@ pub const FORGE_RULES_V2: &str = "FORGE_RULES_V2";
 // ===========================================================================
 
 /// A membership role: a `maintainer` document, or a `writer` document's `role` (RC2 member
-/// roles: 1 writer, 2 triage, 3 reader). Ordered best first: maintainer, writer, triage,
-/// reader.
+/// roles: 1 writer, 2 triage, 3 reader; the mainnet registration's 4, bot: DESIGN rev 4.1 C2).
+/// Ordered best first: maintainer, writer, triage, reader, bot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Role {
@@ -99,6 +99,11 @@ pub enum Role {
     /// A `writer` document with `role` 3: reads a private repository (it receives key wraps)
     /// but writes no role-gated document as a member.
     Reader,
+    /// A `writer` document with `role` 4 (mainnet only: sakura's `writer.role` stops at 3): a
+    /// bot. It posts as a member, but never holds the members key, approves, labels or acts on
+    /// others' items, and pushes only under a maintainer's grant. Readers rank its pack copies
+    /// after members', ignore its `supersedes` and take no gateway from its manifests.
+    Bot,
 }
 
 impl Role {
@@ -111,18 +116,20 @@ impl Role {
             Role::Writer => Some(1),
             Role::Triage => Some(2),
             Role::Reader => Some(3),
+            Role::Bot => Some(4),
         }
     }
 
     /// The role a `writer` document's `role` integer grants. Read tolerant: an absent `role`
-    /// (a pre-RC2 document) is a writer; an out-of-range code (consensus admits none) is
-    /// `None`.
+    /// (a pre-RC2 document) is a writer; an out-of-range code (consensus admits none above 4,
+    /// and none above 3 on sakura) is `None`.
     #[must_use]
     pub fn from_writer_role_code(code: Option<u64>) -> Option<Role> {
         match code {
             None | Some(1) => Some(Role::Writer),
             Some(2) => Some(Role::Triage),
             Some(3) => Some(Role::Reader),
+            Some(4) => Some(Role::Bot),
             Some(_) => None,
         }
     }
@@ -142,11 +149,13 @@ impl Role {
             Role::Writer => "Write",
             Role::Triage => "Triage",
             Role::Reader => "Read",
+            Role::Bot => "Bot",
         }
     }
 
-    /// The internal name (`maintainer`, `writer`, `triage`, `reader`): JSON output, `--role`
-    /// values and sentences that name a holder; [`Self::label`] is the role's word in copy.
+    /// The internal name (`maintainer`, `writer`, `triage`, `reader`, `bot`): JSON output,
+    /// `--role` values and sentences that name a holder; [`Self::label`] is the role's word in
+    /// copy.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -154,6 +163,7 @@ impl Role {
             Role::Writer => "writer",
             Role::Triage => "triage",
             Role::Reader => "reader",
+            Role::Bot => "bot",
         }
     }
 
@@ -165,10 +175,12 @@ impl Role {
             Role::Writer => "a writer",
             Role::Triage => "a triage member",
             Role::Reader => "a reader",
+            Role::Bot => "a bot",
         }
     }
 
-    /// The role named by [`Self::as_str`], or `None` for any other text.
+    /// The role named by [`Self::as_str`], or `None` for any other text. Bot is not offered
+    /// yet (no client adds one before the mainnet registration), so `bot` is `None`.
     #[must_use]
     pub fn parse(name: &str) -> Option<Role> {
         [Role::Maintainer, Role::Writer, Role::Triage, Role::Reader]
@@ -428,13 +440,25 @@ pub struct PackCopy {
     pub supersedes: Vec<String>,
 }
 
-/// Maintainers' copies, then other current members' (any `writer` document), then everyone
-/// else's.
+/// Maintainers' copies, then other current members' (any human `writer` document), then
+/// bots' (review-rev41 M-4: after members'), then everyone else's.
 fn role_rank(role: Option<Role>) -> u8 {
     match role {
         Some(Role::Maintainer) => 0,
         Some(Role::Writer | Role::Triage | Role::Reader) => 1,
-        None => 2,
+        Some(Role::Bot) => 2,
+        None => 3,
+    }
+}
+
+/// The `supersedes` a copy's claims count from: none from a bot's manifest (the mainnet
+/// contract refuses one, `mainnet_bot_push`; a reader ignores it on any contract), so a bot
+/// never retires others' packs.
+fn claimed_supersedes(role: Option<Role>, supersedes: &[String]) -> &[String] {
+    if role == Some(Role::Bot) {
+        &[]
+    } else {
+        supersedes
     }
 }
 
@@ -447,8 +471,8 @@ fn sort_copies(copies: &mut [&PackCopy]) {
     });
 }
 
-/// The order a reader tries a pack's copies in: owner role (maintainer, writer, other), then
-/// `created_at` ascending, then `id` ascending.
+/// The order a reader tries a pack's copies in: owner role (maintainer, other member, bot,
+/// anyone else), then `created_at` ascending, then `id` ascending.
 #[must_use]
 pub fn order_pack_copies(copies: &[PackCopy]) -> Vec<&PackCopy> {
     let mut ordered: Vec<&PackCopy> = copies.iter().collect();
@@ -481,7 +505,8 @@ pub struct PackPick {
 /// number of packs), so every `supersedes` claim here is within that kind. Per pack hash the copy is
 /// [`select_pack_copy`]'s; a pack with no verified copy is left out. A pack is *superseded*
 /// when the selected copy of another readable pack lists it in `supersedes`: a `supersedes`
-/// claim is honoured only if the pack making it verifies, and only from the copy actually read.
+/// claim is honoured only if the pack making it verifies, only from the copy actually read, and
+/// never from a bot's copy.
 ///
 /// Superseded packs are ordered after the rest, not dropped. A consolidated pack is tried
 /// first, and the older packs remain a fallback for any object it lacks: hash verification
@@ -503,7 +528,7 @@ pub fn pack_read_order(copies: &[PackCopy]) -> Vec<PackPick> {
     let superseded: BTreeSet<&str> = selected
         .iter()
         .flat_map(|c| {
-            c.supersedes
+            claimed_supersedes(c.owner_role, &c.supersedes)
                 .iter()
                 .filter(move |s| **s != c.pack_hash)
                 .map(String::as_str)
@@ -619,10 +644,11 @@ fn supersedes_claim_counts(
 /// 1. `as_of` (inclusive) drops copies after it — an older locator indexes only the packs
 ///    that existed when it was built.
 /// 2. Copies are grouped by `pack_hash`. Each group is ranked like [`order_pack_copies`]
-///    (maintainer, writer, anyone else; then `($createdAt, $id)`), copies that failed
+///    (maintainer, other member, bot, anyone else; then `($createdAt, $id)`), copies that failed
 ///    verification are dropped, and the first remaining copy is the **representative**; a
 ///    hash with no remaining copy is left out. The representative's `kind` and metadata are
-///    the pack's, and copies claiming a different kind are dropped from `copies`.
+///    the pack's (a bot representative's `supersedes` is empty), and copies claiming a
+///    different kind are dropped from `copies`.
 /// 3. `first` is the earliest `($createdAt, $id)` among all the hash's copies (failed and
 ///    other-kind ones included), so a copy uploaded later — or one ranked higher — never
 ///    moves a pack. `pack_ref` is the pack's index among the packs of its kind, by `first`.
@@ -675,7 +701,7 @@ pub fn v2_pack_list(copies: &[PackCopyRow], as_of: Option<&CopyKey>) -> Vec<V2Pa
                 size_bytes: rep.size_bytes,
                 object_count: rep.object_count,
                 chunk_count: rep.chunk_count,
-                supersedes: rep.supersedes.clone(),
+                supersedes: claimed_supersedes(rep.owner_role, &rep.supersedes).to_vec(),
                 first,
                 copies: usable
                     .iter()
