@@ -132,6 +132,11 @@ ORDERINGS = ('greaterThan', 'greaterThanOrEqual', 'lessThan', 'lessThanOrEqual')
 B58 = set('123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz')
 
 
+def is_int_kind(k):
+    """A sized integer kind (`int_kind`'s u8 ... i64), as `kind` returns it."""
+    return k is not None and k[0] in 'ui' and k[1:].isdigit()
+
+
 def literal_problem(dk, schema, v):
     """Why the literal `v` cannot be a value of the referenced property (kind `dk`, `schema`), if it cannot."""
     if dk in ('object', 'typedArray', 'number', None):
@@ -192,6 +197,7 @@ def check(contracts):
                 problems.append(f'unported {name}: `{feature}` is not mirrored here; extend wherecheck.py before relying on it')
         for t in c['documentSchemas']:
             props = flattened(c, t)
+            required = set(c['documentSchemas'][t].get('required', []))
             for path, ref_prop, decl in declarations(c, t):
                 for leaf in leaves(decl):
                     if leaf.get('type') not in ('permanentDocument', 'deletableDocument'):
@@ -242,7 +248,6 @@ def check(contracts):
                                 problems.append(f'40137 {at}: findBy {k} ({dk}) from {src} ({sk})')
                             if td.get('documentsMutable', True) and k not in fixed:
                                 problems.append(f'40137 {at}: findBy names {rt}.{k}, which a replace can change')
-                    required = set(c['documentSchemas'][t].get('required', []))
                     for referenced, referring in leaf.get('where', {}).items():
                         bad = lambda why: problems.append(f'40126 {at}: where {referenced} = {referring}: {why}')
                         if isinstance(referring, dict):
@@ -259,13 +264,13 @@ def check(contracts):
                             else:
                                 bad(f'{rt} does not define the referenced property')
                                 continue
-                            ints = dk is not None and dk[0] in 'ui' and dk[1:].isdigit()
                             if op == 'const':
                                 why = literal_problem(dk, ds, arg)
                             elif op == 'in':
-                                why = ('an in lists 2 to 30 distinct literals' if not isinstance(arg, list) or not 2 <= len(arg) <= 30
-                                       or len({json.dumps(x) for x in arg}) != len(arg)
-                                       else next(filter(None, (literal_problem(dk, ds, x) for x in arg)), None))
+                                if not isinstance(arg, list) or not 2 <= len(arg) <= 30 or len({json.dumps(x) for x in arg}) != len(arg):
+                                    why = 'an in lists 2 to 30 distinct literals'
+                                else:
+                                    why = next(filter(None, (literal_problem(dk, ds, x) for x in arg)), None)
                             elif op == 'notEqual':
                                 if isinstance(arg, dict) and set(arg) == {'const'}:
                                     why = literal_problem(dk, ds, arg['const'])
@@ -275,7 +280,7 @@ def check(contracts):
                                     sk = source_kind(arg) if isinstance(arg, str) and (arg == '$ownerId' or not arg.startswith('$')) else None
                                     why = None if sk is not None and sk == dk else f'a notEqual compares one kind: {dk} vs {arg} ({sk})'
                             elif op in ORDERINGS:
-                                if not ints:
+                                if not is_int_kind(dk):
                                     why = f'an ordering compares an integer, not {dk}'
                                 elif isinstance(arg, dict) and set(arg) == {'const'}:
                                     why = None if isinstance(arg['const'], int) and not isinstance(arg['const'], bool) else 'an ordering literal is an integer'
@@ -284,7 +289,7 @@ def check(contracts):
                                            else f'{arg} is not a time or height the declaring type lists in required')
                                 elif isinstance(arg, str) and arg in props:
                                     sk = kind(c, props[arg])
-                                    why = None if sk[0] in 'ui' and sk[1:].isdigit() else f'an ordering bound is an integer, not {sk}'
+                                    why = None if is_int_kind(sk) else f'an ordering bound is an integer, not {sk}'
                                 else:
                                     why = f'the declaring type does not define {arg}'
                             else:
@@ -385,16 +390,19 @@ def self_test(d):
             ('40126', "an event's tAud compared with its kind's string value",
              lambda cs: cs['forge-community']['documentSchemas']['event']['properties']['targetId']['refersTo']['anyOf'][0]['where'].update({"aud": "value"})),
         ]
+    def pp_where(cs):
+        return cs['forge-core']['documentSchemas']['refUpdate']['properties']['pp']['refersTo']['where']
+
     def grant_until(cond):
-        return lambda cs: cs['forge-core']['documentSchemas']['refUpdate']['properties']['pp']['refersTo']['where'].update({"until": cond})
-    if META in base and isinstance(base['forge-core']['documentSchemas']['refUpdate']['properties']['pp']['refersTo']['where'].get('until'), dict):
+        return lambda cs: pp_where(cs).update({"until": cond})
+    if META in base and isinstance(pp_where(base).get('until'), dict):
         # M-A2 (R-06, R-11, R-12): `where` conditions
         cases += [
             ('40126', 'an ordering bounded by a time the declaring type does not require',
              grant_until({"greaterThanOrEqual": "$updatedAt"})),
             ('40126', 'an ordering bounded by a string property', grant_until({"greaterThanOrEqual": "refName"})),
             ('40126', 'an ordering on a string property',
-             lambda cs: cs['forge-core']['documentSchemas']['refUpdate']['properties']['pp']['refersTo']['where'].update({"prefix": {"lessThan": "$createdAt"}})),
+             lambda cs: pp_where(cs).update({"prefix": {"lessThan": "$createdAt"}})),
             ('40126', 'a const outside the enum (visibility "internal")',
              lambda cs: cs['forge-community']['documentSchemas']['star']['properties']['repoId']['refersTo'].update({"where": {"visibility": {"const": "internal"}}})),
             ('40126', 'a const of the wrong kind (role "4")',

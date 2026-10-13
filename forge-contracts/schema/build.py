@@ -1191,7 +1191,7 @@ def build(flags):
         # public repo, so Trending's public-only filter (O-08) is consensus again. `where` is allowed
         # on an index-only type's reference; an unstar (indexOnly delete) checks no reference.
         for t in ('star', 'watch'):
-            md[t]['properties']['repoId']['refersTo']['where'] = {"visibility": {"const": "public"}}
+            md[t]['properties']['repoId']['refersTo'].setdefault('where', {})['visibility'] = {"const": "public"}
 
     core['description'] = "Dash Forge v2 core: repositories, refs, packs, members, releases, labels, topics"
     collab['description'] = "Dash Forge v2 collaboration: issues, pull requests, transitions, comments, reviews, repo keys"

@@ -213,8 +213,14 @@ def index(item, label, t, name, present, /, properties=None, **has):
 
 
 SEALED = dict(enc=b(5, 61), epoch=0)
+
+
+def framed(v):
+    return dict(enc=b(v, 61), epoch=0)
+
+
 # R-04: a sealed config is an epoch anchor, framed 0x02
-CSEALED = dict(enc=b(2, 61), epoch=0) if F['mainnet_enc_framing'] else SEALED
+CSEALED = framed(2) if F['mainnet_enc_framing'] else SEALED
 
 # ---------------- base shapes ----------------
 for t in BASE:
@@ -816,9 +822,8 @@ else:
 CONTRACT_OF.update(packMirror='forge-core', ban='forge-collab')
 if F['pack_mirror']:
     BASE['packMirror'] = {"repoId": i(1), "packHash": i(4), "kind": 1, "uris": ["https://mirror.example.com/p/abc.pack"]}
-    if F['mainnet_mirror_public']:
-        if not PUBLIC_CONST:
-            BASE['packMirror']['vis'] = 'public'
+    if F['mainnet_mirror_public'] and not PUBLIC_CONST:
+        BASE['packMirror']['vis'] = 'public'
     ok('base', 'packMirror ok', 'packMirror')
     ok('U1', 'a stranger records an ipfs copy', 'packMirror', signer=9, kind=2, uris=['ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi'])
     ok('U1', 'four uris', 'packMirror', uris=[f'https://m{n}.example.com/p' for n in range(4)])
@@ -1057,8 +1062,6 @@ if F['mainnet_bot_push']:
 # R-03 reads the patch (on chain); R-05 reads totals (on chain); R-08, R-09 judge deletes, R-11 and
 # R-12 are `where` literals (on chain, mv-live.mjs).
 if F['mainnet_enc_framing']:
-    def framed(v):
-        return dict(enc=b(v, 61), epoch=0)
     for t, plain in PLAIN.items():
         for v in (3, 5, 6, 255):   # members-only, and versions defined later (a deny form)
             ok('R-04', f'members-only {t} framed 0x{v:02x}', t, **plain, **framed(v), aud=1, **MEMBER)

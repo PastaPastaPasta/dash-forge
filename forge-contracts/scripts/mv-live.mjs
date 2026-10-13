@@ -597,7 +597,8 @@ try {
     await no(I, "a stranger's approve (verdict 1, no asMember)", S, 'review', rv(S, 1), [10422], 'memberVerdict');
     await no(I, "a writer's approve with no mRole (its row says role 1)", W, 'review', rv(W, 1, { asMember: id(W.id) }), [40127]);
     await ok(I, "a writer's approve (mRole 1)", W, 'review', rv(W, 1, member(W, 1)));
-    await ok(I, "a maintainer's approve with no mRole", O, 'review', rv(O, 1, { asMember: id(O.id) }));
+    // (the PR is the owner's: its own approve is R-03's refusal, so the second maintainer approves)
+    await ok(I, "a maintainer's approve with no mRole", M2, 'review', rv(M2, 1, { asMember: id(M2.id) }));
     await ok(I, "the second maintainer's request-changes with no mRole", M2, 'review', rv(M2, 2, { asMember: id(M2.id) }));
     await ok(I, "a reader's comment-verdict (3) as a member", RD, 'review', rv(RD, 3, { body: 'looks fine', ...member(RD, 3) }));
     await ok(I, "a stranger's verdict 4 (outside approval)", S, 'review', rv(S, 4, { body: 'lgtm' }));
@@ -646,7 +647,8 @@ try {
       await ok(I, "a stranger's public reply on an old members-only thread", S, 'comment', { repoId: C, targetId: docRef(oldIssue), vis: 'public', body: 'hello' });
       await ok(I, "a member's members-only reply on the old thread (aud 1, vis public)", W, 'comment', { repoId: C, targetId: docRef(oldIssue), vis: 'public', aud: 1, enc: sealed(), epoch: 0, ...member(W, 1) });
       await ok(I, "a stranger's public review on an old PR", S, 'review', { repoId: C, patchId: docRef(oldPr), verdict: 4, commitOid: bytes(20, 2), vis: 'public', body: 'lgtm' });
-      await ok(I, "a writer's public approval on an old PR (mRole 1)", W, 'review', { repoId: C, patchId: docRef(oldPr), verdict: 1, commitOid: bytes(20, 2), vis: 'public', ...member(W, 1) });
+      // (the writer wrote the old PR, so a maintainer approves it: R-03)
+      await ok(I, "a maintainer's public approval on an old PR (row stamped private)", M2, 'review', { repoId: C, patchId: docRef(oldPr), verdict: 1, commitOid: bytes(20, 2), vis: 'public', asMember: id(M2.id) });
       await no(I, 'a comment stamped private on the now-public repo', W, 'comment', { repoId: C, targetId: docRef(oldIssue), vis: 'private', aud: 1, enc: sealed(), epoch: 0, ...member(W, 1) }, [40127]);
       await replaceNo(I, "an author's edit to Public of an old private-era comment (vis private keeps aud required)", W, oldComment, { body: 'old words' }, ['aud', 'enc', 'epoch'], [10422], 'p_sealedIfPrivate');
       await numbered(cv, I, 'a new public issue on the converted repo', S, 'issue', { vis: 'public', title: 'new era' });
@@ -849,6 +851,7 @@ try {
     await no(I, 'a public update through the exact grant', B, 'refUpdate', exact({ refName: 'refs/heads/secret' }), [10422], 'botGrant');
     await no(I, 'an exact grant used for another ref', B, 'refUpdate', exact({ refNameHash: bytes(32), enc: sealed(1), epoch: 0 }), [40127]);
     await no(I, 'pp naming the exact grant (it has no prefix: grantPrefix)', B, 'refUpdate', botRef(`${PREFIX}e`, xGrant), [10422], 'grantPrefix');
+    await no(I, 'a sealed bot push through a prefix grant (no refName: grantPrefix)', B, 'refUpdate', { repoId: R, refNameHash: bytes(32), newOid: bytes(20, 1), vis: 'public', r: 4, pp: docRef(pGrant), grantor: id(O.id), enc: sealed(1), epoch: 0 }, [10422], 'grantPrefix');
     await no(I, 'pg naming the prefix grant', B, 'refUpdate', { repoId: R, refNameHash: refHash(`${PREFIX}x`), newOid: bytes(20, 1), vis: 'public', r: 4, pg: docRef(pGrant), grantor: id(O.id), enc: sealed(1), epoch: 0 }, [40127]);
     // a renewal: a new grant, then a push under it
     const renewed = await ok(I, 'the owner renews the prefix grant (a new grant, later until)', O, 'pushGrant', grant(B, { prefix: PREFIX, until: Date.now() + 60 * DAY }));
@@ -900,6 +903,17 @@ try {
       if (wait > 0) await sleep(wait);
       // R-06: the grant's `where {until: {greaterThanOrEqual: $createdAt}}` no longer holds
       await no(I, 'the bot pushes after until (the where ordering)', B, 'refUpdate', botRef(`${PREFIX}s`, short), [40127]);
+    }
+    // the same ordering on an exact grant (pg)
+    const xScope = bytes(32);
+    const shortX = await ok(I, 'the owner grants the bot one exact ref for 2 minutes', O, 'pushGrant', grant(B, { scope: xScope, until: Date.now() + 120000 }));
+    if (shortX) {
+      const xPush = () => ({ repoId: R, refNameHash: xScope, newOid: bytes(20, 7), vis: 'public', r: 4, pg: docRef(shortX), grantor: id(O.id), enc: sealed(1), epoch: 0 });
+      await ok(I, 'the bot pushes the exact ref before its grant ends', B, 'refUpdate', xPush());
+      const wait = Number(shortX.toObject().until) + 45000 - Date.now();
+      log(`waiting ${Math.round(wait / 1000)} s for the exact grant to end`);
+      if (wait > 0) await sleep(wait);
+      await no(I, 'the bot pushes the exact ref after until (the where ordering on pg)', B, 'refUpdate', xPush(), [40127]);
     }
   }
 
@@ -1006,7 +1020,7 @@ async function platformBeta6() {
   I = 'R-09';
   await deleteNo(I, 'the writer deletes its approval', W, approval, [40147], 'keepVerdicts');
   await deleteNo(I, 'the second maintainer deletes its change request', M2, changes, [40147], 'keepVerdicts');
-  await deleteOk(I, "the author deletes its comment verdict (3)", W, selfNote);
+  await deleteOk(I, 'the author deletes its comment verdict (3)', W, selfNote);
   await deleteOk(I, "the stranger deletes its outside verdict (4)", S, outside);
 
   // R-04 (row 26, X5): enc's framing version fits vis and aud (a deny form)
@@ -1047,7 +1061,7 @@ async function platformBeta6() {
   const before = await ok(I, "a stranger's comment before the lock", S, 'comment', { repoId: A, targetId: docRef(lockIss), vis: 'public', body: 'before' });
   await ok(I, 'triage locks the issue (kind 3, delta 16, r 2)', T, 'transition', { repoId: A, targetId: docRef(lockIss), targetNumber: ln, targetKind: 0, kind: 3, delta: 16, asAuthor: 0, r: 2 });
   await no(I, "a stranger's new comment on the locked thread", S, 'comment', { repoId: A, targetId: docRef(lockIss), vis: 'public', body: 'after' }, [10422], 'lockGate');
-  await replaceOk(I, "the stranger edits its comment from before the lock ($revision 2)", S, before, { body: 'edited after the lock' });
+  await replaceOk(I, 'the stranger edits its comment from before the lock ($revision 2)', S, before, { body: 'edited after the lock' });
   await ok(I, "a member's comment on the locked thread", W, 'comment', { repoId: A, targetId: docRef(lockIss), vis: 'public', body: 'member', ...member(W, 1) });
   const older = need(await numbered(m, I, 'an issue, then a newer one', W, 'issue', { title: 'older', vis: 'public' }), 'the older issue');
   await numbered(m, I, 'the newer issue', W, 'issue', { title: 'newer', vis: 'public' });
@@ -1103,6 +1117,9 @@ async function sameBlockEdit(I, r) {
   if (c.status === 'fulfilled') r.n += 1;
   const label = 'an issue created and edited right after, without waiting ($revision 2 is no create)';
   if (c.status !== 'fulfilled') return failed(I, `${label}: the create`, c.reason);
+  // the edit named the id the create was expected to commit under: if it did not, the edit tested nothing
+  const expectedId = typeof docIdentifier?.toBase58 === 'function' ? docIdentifier.toBase58() : String(docIdentifier);
+  if (docId(c.value) !== expectedId) return record({ item: I, label, expect: `the create committed as ${expectedId}`, got: `committed as ${docId(c.value)}: the edit named another id`, pass: false });
   let stored = null;
   for (let i = 0; i < 6 && !stored; i++) {
     if (i) await sleep(2000);
@@ -1132,6 +1149,7 @@ async function feeProbes2() {
   const BL = { [CORE]: bl.forgeCore?.contractId, [COLLAB]: bl.forgeCollab?.contractId, [COMM]: bl.forgeCommunity?.contractId, [META]: bl.forgeMeta?.contractId };
   if (Object.values(BL).some((v) => !v) || BL[CORE] === CORE || BL[CORE] === LIVE.core) throw new Error(`${baselineFile} is no other four-contract scratch set`);
   const onBase = (type) => ({ contract: BL[CONTRACT[type]] });
+  const PREFIX = 'refs/heads/bot/ci-bot/';
   const setUp = async (where, opts) => {
     const repo = need(await ok(I, `${where}: fee repo`, O, 'repo', { name: `mvg-${tag}`, visibility: 'public', defaultBranch: 'main' }, opts('repo')), `${where} fee repo`);
     const Rf = docRef(repo);
@@ -1143,12 +1161,11 @@ async function feeProbes2() {
     await sleep(A_BLOCK);
     const iss = need(await ok(I, `${where}: issue #1`, O, 'issue', { repoId: Rf, number: 1, tk: 0, title: 'fees', vis: 'public' }, opts('issue')), `${where} issue`);
     const pr = need(await ok(I, `${where}: PR #2`, O, 'patch', { repoId: Rf, number: 2, tk: 1, title: 'fees', vis: 'public', baseRefNameHash: refHash('refs/heads/main'), sourceRepoId: Rf, headOid: bytes(20, 2) }, opts('patch')), `${where} PR`);
-    const g = need(await ok(I, `${where}: a prefix grant`, O, 'pushGrant', { repoId: Rf, botId: id(B.id), prefix: 'refs/heads/bot/ci-bot/', until: Date.now() + 30 * DAY, ...(where === 'baseline' ? { br: 4 } : {}) }, opts('pushGrant')), `${where} grant`);
+    const g = need(await ok(I, `${where}: a prefix grant`, O, 'pushGrant', { repoId: Rf, botId: id(B.id), prefix: PREFIX, until: Date.now() + 30 * DAY, ...(where === 'baseline' ? { br: 4 } : {}) }, opts('pushGrant')), `${where} grant`);
     return { Rf, iss, pr, g };
   };
   const mine = await setUp('m-a2', () => ({}));
   const base = await setUp('baseline', onBase);
-  const PREFIX = 'refs/heads/bot/ci-bot/';
   const docs = {
     // R-03 (and R-04's encFraming, judged on every review)
     approval: (s) => ({ type: 'review', who: W, data: { repoId: s.Rf, patchId: docRef(s.pr), verdict: 1, commitOid: bytes(20, 2), vis: 'public', ...member(W, 1) } }),
