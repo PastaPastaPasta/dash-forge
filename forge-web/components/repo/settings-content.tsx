@@ -424,6 +424,11 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
           <DetailRow label="forge-community">
             <Oid value={repo.forge.community} label="forge-community contract id" />
           </DetailRow>
+          {repo.forge.meta !== undefined && (
+            <DetailRow label="forge-meta">
+              <Oid value={repo.forge.meta} label="forge-meta contract id" />
+            </DetailRow>
+          )}
           <DetailRow label="Network">
             <NetworkBadge always />
           </DetailRow>

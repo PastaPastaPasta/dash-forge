@@ -354,7 +354,7 @@ function RepoDocForm({ home, owner, onSaved }: { home: RepoHome; owner: boolean;
   }
   const changed = Object.keys(edit).length > 0
   const problem = descriptionProblem(description) ?? topicsProblem(topics)
-  const cost = previewRepoEdit(edit, held.data, home.repo.visibility)
+  const cost = previewRepoEdit(edit, held.data, home.repo.visibility, home.repo.forge)
   const run = async (): Promise<void> => {
     if (!sdk || !signer || pending === null) throw new Error('sign in to continue')
     await editRepoDoc(sdk, signer, home.repo, pending)
@@ -420,7 +420,7 @@ function RepoDocForm({ home, owner, onSaved }: { home: RepoHome; owner: boolean;
             ? "Replaces the description and topics. The repo's name and visibility can't change."
             : "Replaces the description and topics. Each topic added or removed costs a little extra so Explore can count it. The repo's name and visibility can't change."
         }
-        cost={pending ? previewRepoEdit(pending, held.data, home.repo.visibility) : null}
+        cost={pending ? previewRepoEdit(pending, held.data, home.repo.visibility, home.repo.forge) : null}
         confirmLabel="Sign & save"
         toast={{ running: 'Saving the repo details…', done: 'Repository details saved' }}
         onConfirm={run}

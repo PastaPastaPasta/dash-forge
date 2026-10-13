@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 
 import { OfflineChain } from './offline-chain.mjs';
-import { CONTRACTS, FUSED_STAR, MEMBER_ROLES, TRANSITION, VIS, b58encode, documentReader, documentWriter, idBytes, membership, transition } from './seed-io.mjs';
+import { CONTRACTS, CONTRACT_OF, FUSED_STAR, META_TYPES, MEMBER_ROLES, TRANSITION, VIS, b58encode, contractOn, documentReader, documentWriter, idBytes, membership, transition } from './seed-io.mjs';
 
 const person = (name) => ({ name, id: b58encode(createHash('sha256').update(name).digest()) });
 const OWNER = person('owner');
@@ -176,6 +176,17 @@ test('a document goes to the contract that holds its type', async () => {
   const sdk = new evo.EvoSDK();
   const wrong = documentWriter({ sdk }, evo, { ids: { ...chain.ids, community: chain.ids.collab } }, noReconnect);
   await assert.rejects(wrong(OWNER, 'star', { repoId: Buffer.alloc(32, 1) }), /star is in forge-community, not forge-collab/);
+});
+
+test('the deployment record picks the layout: forge-meta holds the moved types only on a four-contract set (D44)', () => {
+  const three = { core: 'C', collab: 'L', community: 'M' };
+  const four = { ...three, meta: 'X' };
+  for (const t of META_TYPES) {
+    assert.ok(CONTRACT_OF[t], `${t} has a three-contract home`);
+    assert.equal(contractOn(three, t), CONTRACT_OF[t], t);
+    assert.equal(contractOn(four, t), 'meta', t);
+  }
+  for (const t of ['repo', 'issue', 'star', 'event']) assert.equal(contractOn(four, t), CONTRACT_OF[t], t);
 });
 
 test('member roles: the writer gate proves the claimed r against writer.role', { skip: !MEMBER_ROLES }, async () => {

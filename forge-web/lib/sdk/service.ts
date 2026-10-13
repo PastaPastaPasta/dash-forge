@@ -41,6 +41,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { noteClockOk, noteClockSkew } from './clock-skew'
 
 import { NETWORKS, type Network } from '../constants'
+import { forgeContractIds } from '../deployments'
 import { userQuorumUrl } from '../quorum-url'
 import { dapiBudget, installDapiFetchGate } from './budget'
 import { isContractMissingError } from './contract-missing'
@@ -371,7 +372,7 @@ export class EvoSdkService {
   private noteMissing(contract: string | undefined, e: unknown): void {
     if (this.missing !== null || this.confirming || contract === undefined || this.network === null) return
     const forge = NETWORKS[this.network].v2
-    if (forge === null || (contract !== forge.core && contract !== forge.collab && contract !== forge.community) || !isContractMissingError(e)) return
+    if (forge === null || !forgeContractIds(forge).includes(contract) || !isContractMissingError(e)) return
     const connection = this.current
     if (connection === null || this.clock.now() - this.presentAt < RECOVER_GAP_MS) return
     const epoch = this.epoch

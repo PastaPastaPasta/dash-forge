@@ -23,7 +23,7 @@
 //      the seeded order: MEMBER and THIRD beat the first repo, MEMBER the second.
 // Writes only to repos it creates (`c1-verify-<run>`), about 0.02 DASH per identity.
 import {
-  FUSED_STAR, VIS, checkOutcome, expectRefused, idBytes, loadIdentity, log, membership, openSession, parseArgs, refusalOf, runIfMain, until,
+  FUSED_STAR, VIS, checkOutcome, contractOn, expectRefused, idBytes, loadIdentity, log, membership, openSession, parseArgs, refusalOf, runIfMain, until,
 } from './lib/seed-io.mjs';
 
 const MOVED = {
@@ -111,7 +111,7 @@ export async function main(argv, injected) {
   const topicName = `c1v${run}`.slice(0, 30);
   await create(OWNER, 'topic', { repoId: R, name: topicName, vis: VIS });
   const counted = await until(async () => {
-    const c = await retry((sdk) => sdk.documents.count({ dataContractId: ids.core, documentTypeName: 'topic', where: [['name', '==', topicName]] }));
+    const c = await retry((sdk) => sdk.documents.count({ dataContractId: ids[contractOn(ids, 'topic')], documentTypeName: 'topic', where: [['name', '==', topicName]] }));
     return [...c.values()].reduce((x, y) => x + y, 0n) === 1n;
   });
   check('count on topic.byName counts the tagged repo', counted);

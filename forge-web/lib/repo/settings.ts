@@ -17,6 +17,8 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { decodeIdentifier } from '../auth/base58'
+import type { ForgeIds } from '../deployments'
+import { contractKindOfType } from '../layout'
 import { compareKey, isRc1BranchName, isRc1RefName, matchesProtected } from '../rules'
 import type { Policy } from '../rules/v2'
 import { branchName } from '../view/format'
@@ -432,16 +434,25 @@ export function previewRepoEdit(
   edit: RepoDocEdit,
   held: readonly string[] | null = [],
   visibility: RepoRef['visibility'] = 'public',
+  forge?: Pick<ForgeIds, 'meta'>,
 ): CostPreview {
   const changes = repoEditChanges(edit)
   if (Object.keys(changes).length === 0) return previewCredits(0)
   if (edit.topics === undefined || visibility === 'private') return previewReplace(DOC.repo, changes)
   const { added, removed } = held === null ? { added: [...edit.topics], removed: [] } : topicChanges(held, edit.topics)
-  // Only the owner edits, and they wrote the repo document to forge-core; only the repo's first
-  // topic builds its subtree (QW3-037).
+  // Only the owner edits, and they wrote the repo document to forge-core: no contract nonce where
+  // topics live there. On a four-contract set they are in forge-meta (D44), which the owner may
+  // never have written to, so the first topic is priced with it. Only the repo's first topic
+  // builds its subtree (QW3-037).
+  const inCore = contractKindOfType(DOC.topic, forge) === 'core'
   return sumPreviews([
     previewReplace(DOC.repo, changes),
-    ...added.map((name, i) => previewCreate(DOC.topic, withVis('public', DOC.topic, { name }), { contract: false, ...(held !== null && (held.length > 0 || i > 0) ? { repo: false } : {}) })),
+    ...added.map((name, i) =>
+      previewCreate(DOC.topic, withVis('public', DOC.topic, { name }), {
+        ...(inCore || i > 0 ? { contract: false } : {}),
+        ...(held !== null && (held.length > 0 || i > 0) ? { repo: false } : {}),
+      }),
+    ),
     ...removed.map(() => previewDelete(DOC.topic)),
   ])
 }
