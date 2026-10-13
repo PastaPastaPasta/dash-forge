@@ -22,8 +22,8 @@ export function ProfileBot({ identityId, profile }: { identityId: string; profil
   const { data } = useAsync(
     () => {
       // This profile is read already: only the others it names are.
-      noteBotClaim(forge!.community, identityId, claim ?? null)
-      return readBotOperators(sdk!, forge!.community, ids)
+      noteBotClaim(forge!, identityId, claim ?? null)
+      return readBotOperators(sdk!, forge!, ids)
     },
     [ready, network, identityId, ids.join(',')],
     {

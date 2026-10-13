@@ -23,7 +23,7 @@
 //      the seeded order: MEMBER and THIRD beat the first repo, MEMBER the second.
 // Writes only to repos it creates (`c1-verify-<run>`), about 0.02 DASH per identity.
 import {
-  FUSED_STAR, VIS, checkOutcome, expectRefused, idBytes, loadIdentity, log, membership, openSession, parseArgs, refusalOf, runIfMain, until,
+  FUSED_STAR, VIS, checkOutcome, contractOn, expectRefused, idBytes, loadIdentity, log, membership, openSession, parseArgs, refusalOf, runIfMain, until,
 } from './lib/seed-io.mjs';
 
 const MOVED = {
@@ -50,10 +50,14 @@ export async function main(argv, injected) {
   const run = Date.now().toString(36);
   // 1. the moved types are where the RC1 layout puts them
   const missing = [];
-  for (const [contract, types] of Object.entries(MOVED)) {
-    const fetched = await retry((sdk) => sdk.contracts.fetch(ids[contract]));
-    const known = fetched.getDocumentTypes ? Object.keys(fetched.getDocumentTypes()) : Object.keys(fetched.toJSON().documentSchemas);
-    missing.push(...types.filter((t) => !known.includes(t)).map((t) => `${contract}.${t}`));
+  for (const [home, types] of Object.entries(MOVED)) {
+    for (const t of types) {
+      // forge-meta holds topic and repoKey on a four-contract set (D44)
+      const contract = contractOn(ids, t) === 'meta' ? 'meta' : home;
+      const fetched = await retry((sdk) => sdk.contracts.fetch(ids[contract]));
+      const known = fetched.getDocumentTypes ? Object.keys(fetched.getDocumentTypes()) : Object.keys(fetched.toJSON().documentSchemas);
+      if (!known.includes(t)) missing.push(`${contract}.${t}`);
+    }
   }
   check('the contracts hold the RC1 layout', missing.length === 0, missing.join(', '));
 
@@ -111,7 +115,7 @@ export async function main(argv, injected) {
   const topicName = `c1v${run}`.slice(0, 30);
   await create(OWNER, 'topic', { repoId: R, name: topicName, vis: VIS });
   const counted = await until(async () => {
-    const c = await retry((sdk) => sdk.documents.count({ dataContractId: ids.core, documentTypeName: 'topic', where: [['name', '==', topicName]] }));
+    const c = await retry((sdk) => sdk.documents.count({ dataContractId: ids[contractOn(ids, 'topic')], documentTypeName: 'topic', where: [['name', '==', topicName]] }));
     return [...c.values()].reduce((x, y) => x + y, 0n) === 1n;
   });
   check('count on topic.byName counts the tagged repo', counted);

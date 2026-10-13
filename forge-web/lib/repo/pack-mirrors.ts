@@ -60,11 +60,12 @@ export function mirrorUrisOf(sdk: EvoSDK, repo: RepoRef, manifest: PackManifest,
 /**
  * Every member's record of the pack (by writer: no number of strangers' records can push a
  * member's out), then one page of everyone's, in the shared read order (forge-core
- * `pack_mirror::mirrors_of`).
+ * `pack_mirror::mirrors_of`). A bot's records are read like a stranger's (review-rev41 M-4;
+ * forge-core `repo::trusted_member`).
  */
 async function readMirrorUris(sdk: EvoSDK, repo: RepoRef, packHash: string, network: Network): Promise<string[]> {
   const oracle = await readRoleOracle(sdk, repo, network)
-  const members = [...new Set(oracle.memberships.map((m) => m.identity))].sort()
+  const members = [...new Set(oracle.memberships.map((m) => m.identity))].filter((id) => oracle.currentRole(id) !== 'bot').sort()
   const source = repoSource(repo)
   const byHash: WhereClause = ['packHash', '==', packHashOperand(packHash)]
   const query = (where: readonly WhereClause[]) =>

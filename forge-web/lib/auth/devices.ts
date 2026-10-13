@@ -39,7 +39,7 @@ export function keyRole(k: Pick<WasmKey, 'purposeNumber' | 'securityLevelNumber'
   const scope = keyScope(k, forge)
   if (scope === null) return 'other'
   if (scope.unbounded) return 'signing'
-  return scope.core && scope.collab && scope.community ? 'forge' : 'forge-contract'
+  return scope.core && scope.collab && scope.community && scope.meta ? 'forge' : 'forge-contract'
 }
 
 /** Roles Devices & keys may disable: keys bound to Forge, which nothing else signs with. */

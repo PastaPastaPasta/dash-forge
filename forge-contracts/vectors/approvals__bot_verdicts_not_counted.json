@@ -1,0 +1,55 @@
+{
+  "name": "bot_verdicts_not_counted",
+  "description": "Role 4 (a bot, mainnet only): a bot's approval and request for changes are neither counted nor blocking.",
+  "case": "approvals",
+  "rules": "v2",
+  "input": {
+    "reviews": [
+      {
+        "id": "r1",
+        "reviewer": "bot",
+        "verdict": 1,
+        "commitOid": "head0000",
+        "createdAt": 100
+      },
+      {
+        "id": "r2",
+        "reviewer": "bot2",
+        "verdict": 2,
+        "commitOid": "head0000",
+        "createdAt": 110
+      },
+      {
+        "id": "r3",
+        "reviewer": "wr",
+        "verdict": 1,
+        "commitOid": "head0000",
+        "createdAt": 120
+      }
+    ],
+    "memberships": [
+      {
+        "identity": "bot",
+        "role": "bot",
+        "createdAt": 50
+      },
+      {
+        "identity": "bot2",
+        "role": "bot",
+        "createdAt": 50
+      },
+      {
+        "identity": "wr",
+        "role": "writer",
+        "createdAt": 10
+      }
+    ],
+    "headOid": "head0000"
+  },
+  "expected": {
+    "approvers": [
+      "wr"
+    ],
+    "changesRequested": []
+  }
+}

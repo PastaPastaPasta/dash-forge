@@ -10,7 +10,7 @@ import type { ForgeIds } from '../deployments'
 import type { RepoRef } from './contract'
 import { noteTargetCreated, readFollowPage, readTargetCounts } from './social'
 
-const FORGE = { core: 'CORE', collab: 'COLLAB', group: 'G' } as unknown as ForgeIds
+const FORGE = { core: 'CORE', collab: 'COLLAB', community: 'COLLAB', group: 'G' } as unknown as ForgeIds
 
 interface Q {
   documentTypeName: string

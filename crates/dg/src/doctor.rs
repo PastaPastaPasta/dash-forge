@@ -875,7 +875,7 @@ async fn check_forge_v2(client: &PlatformClient, target: &NetworkTarget) -> Opti
     let ids = target.v2.as_ref()?;
     let mut problems = Vec::new();
     // forge-community is forge-collab on a deployment that predates the split: checked once
-    let mut contracts = ids.all().to_vec();
+    let mut contracts = ids.all();
     contracts.dedup_by(|a, b| a.1 == b.1);
     for (label, id) in contracts {
         if let Err(e) = client.fetch_contract(id).await {

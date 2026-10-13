@@ -14,7 +14,7 @@ import { banReasonLabel, standingBans, type Ban } from '../rules/bans'
 import type { Membership } from '../rules/v2'
 import { asIdentifierString, num, str, type RepoRef } from './contract'
 import { readMembershipsCached, readMembershipsFresh } from './members'
-import { repoSource } from './source'
+import { contractOf, repoSource } from './source'
 
 /** forge-collab's ban type. */
 export const DOC_BAN = 'ban'
@@ -139,7 +139,7 @@ export async function refuseIfBanned(sdk: EvoSDK, repo: RepoRef, network: Networ
 export async function banIdentity(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, identity: string, reason: number | null, intent?: string): Promise<WriteResult> {
   try {
     return await createDocumentIdempotent(sdk, auth, {
-      contractId: repo.forge.collab,
+      contractId: contractOf(repo.forge, DOC_BAN),
       documentType: DOC_BAN,
       data: {
         repoId: decodeIdentifier(repo.repoId),
@@ -156,7 +156,7 @@ export async function banIdentity(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, i
 /** Lift the signer's ban `banId` (only its writer can delete it). */
 export async function liftBan(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, banId: string): Promise<void> {
   try {
-    await deleteDocumentIdempotent(sdk, auth, { contractId: repo.forge.collab, documentType: DOC_BAN, documentId: banId })
+    await deleteDocumentIdempotent(sdk, auth, { contractId: contractOf(repo.forge, DOC_BAN), documentType: DOC_BAN, documentId: banId })
   } finally {
     invalidateBans(repo)
   }

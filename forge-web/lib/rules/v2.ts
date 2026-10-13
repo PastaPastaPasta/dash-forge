@@ -43,9 +43,10 @@ export const FORGE_RULES_V2 = 'FORGE_RULES_V2' as const
 
 /**
  * A membership role: a `maintainer` document, or a `writer` document's `role` (RC2 member roles:
- * 1 writer, 2 triage, 3 reader). Ranked best first: maintainer, writer, triage, reader.
+ * 1 writer, 2 triage, 3 reader; the mainnet registration's 4, bot: DESIGN rev 4.1 C2). Ranked
+ * best first: maintainer, writer, triage, reader, bot.
  */
-export type Role = 'maintainer' | 'writer' | 'triage' | 'reader'
+export type Role = 'maintainer' | 'writer' | 'triage' | 'reader' | 'bot'
 
 /** One current `maintainer` or `writer` document of a repository, flattened. */
 export interface Membership {
@@ -56,7 +57,7 @@ export interface Membership {
   readonly createdAt: number
 }
 
-const ROLE_RANK: Readonly<Record<Role, number>> = { maintainer: 0, writer: 1, triage: 2, reader: 3 }
+const ROLE_RANK: Readonly<Record<Role, number>> = { maintainer: 0, writer: 1, triage: 2, reader: 3, bot: 4 }
 
 function betterRole(a: Role | null, b: Role): Role {
   return a !== null && ROLE_RANK[a] <= ROLE_RANK[b] ? a : b
@@ -220,16 +221,27 @@ export interface PackCopy {
   readonly supersedes?: readonly string[]
 }
 
-/** Maintainers' copies, then other current members' (any `writer` document), then everyone else's. */
+/**
+ * Maintainers' copies, then other current members' (any human `writer` document), then bots'
+ * (review-rev41 M-4: after members'), then everyone else's. Parity: forge-core `role_rank`.
+ */
 function roleRank(role: Role | null | undefined): number {
-  return role === 'maintainer' ? 0 : role == null ? 2 : 1
+  return role === 'maintainer' ? 0 : role === 'bot' ? 2 : role == null ? 3 : 1
+}
+
+/**
+ * The `supersedes` a copy's claims count from: none from a bot's manifest (the mainnet contract
+ * refuses one; a reader ignores it on any contract), so a bot never retires others' packs.
+ */
+function claimedSupersedes(role: Role | null | undefined, supersedes: readonly string[] | undefined): readonly string[] {
+  return role === 'bot' ? [] : (supersedes ?? [])
 }
 
 function compareCopies(a: PackCopy, b: PackCopy): number {
   return roleRank(a.ownerRole) - roleRank(b.ownerRole) || compareKey(a, b)
 }
 
-/** The order a reader tries a pack's copies in: role, then `createdAt`, then `id`. */
+/** The order a reader tries a pack's copies in: role (maintainer, other member, bot, anyone else), then `createdAt`, then `id`. */
 export function orderPackCopies(copies: readonly PackCopy[]): PackCopy[] {
   return [...copies].sort(compareCopies)
 }
@@ -249,7 +261,7 @@ export interface PackPick {
 /**
  * Every readable pack of a repo, in fetch order, from its manifests of one kind (a reader passes
  * its git packs): per pack hash the selected copy (packs with no verified copy left out); packs a selected copy of another pack supersedes go last, not
- * dropped; then `createdAt`, then `packHash`.
+ * dropped (a bot's copy supersedes nothing); then `createdAt`, then `packHash`.
  */
 export function packReadOrder(copies: readonly PackCopy[]): PackPick[] {
   const hashes = [...new Set(copies.map((c) => c.packHash))].sort(compareStrings)
@@ -260,7 +272,7 @@ export function packReadOrder(copies: readonly PackCopy[]): PackPick[] {
   }
   const superseded = new Set<string>()
   for (const c of selected) {
-    for (const s of c.supersedes ?? []) if (s !== c.packHash) superseded.add(s)
+    for (const s of claimedSupersedes(c.ownerRole, c.supersedes)) if (s !== c.packHash) superseded.add(s)
   }
   const isSuperseded = (c: PackCopy) => superseded.has(c.packHash)
   selected.sort(
@@ -331,7 +343,8 @@ function claimCounts(claimantHash: string, claimantKind: number, claimedHash: st
  *
  * `asOf` (inclusive) drops later copies. Per hash, copies are ranked like
  * {@link orderPackCopies}; failed copies are dropped and the first remaining one is the
- * representative (a hash with none is left out), whose kind and metadata are the pack's;
+ * representative (a hash with none is left out), whose kind and metadata are the pack's (a bot
+ * representative's `supersedes` is empty);
  * copies of another kind leave `copies`. `first` is the earliest key among ALL the hash's
  * copies; `packRef` is the index by `first` among packs of the same kind. A pack is
  * superseded only by a listed pack of the same kind whose representative verified (`true`).
@@ -362,7 +375,7 @@ export function v2PackList(copies: readonly PackCopyRow[], asOf?: CopyKey | null
         sizeBytes: rep.sizeBytes ?? 0,
         objectCount: rep.objectCount ?? 0,
         chunkCount: rep.chunkCount ?? 0,
-        supersedes: [...(rep.supersedes ?? [])],
+        supersedes: [...claimedSupersedes(rep.ownerRole, rep.supersedes)],
         first: { createdAt: firstCopy.createdAt, id: firstCopy.id },
         copies: usable.filter((c) => c.kind === rep.kind).map((c) => c.id),
       },

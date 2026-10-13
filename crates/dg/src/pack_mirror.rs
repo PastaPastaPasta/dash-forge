@@ -196,11 +196,16 @@ async fn add(ctx: &Ctx, repo: &str, pack: &str, uris: &[String], no_verify: bool
     let Some(manifest) = manifests.iter().find(|m| hex::encode(m.pack_hash) == pack) else {
         bail!(unlisted_pack(&s.repo.display(), repo, &pack));
     };
-    let core = s.client.fetch_contract(&s.repo.forge().core).await?;
+    let mirrors = s
+        .client
+        .fetch_contract(s.repo.forge().home(DOC_PACK_MIRROR))
+        .await?;
     // Before the download and the cost prompt: a network without the type cannot record one.
-    require_support(&core)?;
+    require_support(&mirrors)?;
     // One record per pack each: a second would be refused at consensus, after paying for it.
-    if let Some(mine) = mirror_of_owner(&s.client, &core, &s.repo, &pack, &s.identity.id()).await? {
+    if let Some(mine) =
+        mirror_of_owner(&s.client, &mirrors, &s.repo, &pack, &s.identity.id()).await?
+    {
         bail!(UserError::new(
             codes::ALREADY_EXISTS,
             format!(
@@ -232,7 +237,7 @@ async fn add(ctx: &Ctx, repo: &str, pack: &str, uris: &[String], no_verify: bool
     ))?;
     let engine = forge_core::profile::engine(&s.client, &s.identity, &s.bridge)?;
     let before = s.balance().await;
-    let id = record_mirror(&engine, &core, &s.repo, &pack, uris).await?;
+    let id = record_mirror(&engine, &mirrors, &s.repo, &pack, uris).await?;
     let spent = s.spent_since(before).await;
     ctx.emit(
         json!({
@@ -297,8 +302,8 @@ async fn list(ctx: &Ctx, repo: Option<&str>, mine: bool) -> Result<()> {
             None => ctx.load_bridge()?.identity_id,
         };
         let forge = ctx.target.require_v2()?;
-        let core = client.fetch_contract(&forge.core).await?;
-        let mut mirrors = mirrors_by(&client, &core, &me).await?;
+        let contract = client.fetch_contract(forge.home(DOC_PACK_MIRROR)).await?;
+        let mut mirrors = mirrors_by(&client, &contract, &me).await?;
         // `list REPO --mine`: only the mirrors you recorded for that repository.
         if let Some(repo) = repo {
             let want = resolve_for(&client, Some(&me), &RepoRef::parse(repo)?)
@@ -310,16 +315,20 @@ async fn list(ctx: &Ctx, repo: Option<&str>, mine: bool) -> Result<()> {
         (mirrors, names)
     } else {
         let r = Reader::open_unsealed(ctx, repo.unwrap_or_default()).await?;
-        let core = r.client.fetch_contract(&r.repo.forge().core).await?;
+        let contract = r
+            .client
+            .fetch_contract(r.repo.forge().home(DOC_PACK_MIRROR))
+            .await?;
         let svc = r.service();
         let manifests = svc.read_pack_manifests(&r.repo).await?;
         // Each pack once (a pack has a manifest per copy).
         let hashes: std::collections::BTreeSet<String> =
             manifests.iter().map(|m| hex::encode(m.pack_hash)).collect();
-        let members: Vec<String> = svc.copy_roles(&r.repo).await?.into_keys().collect();
+        let roles = svc.copy_roles(&r.repo).await?;
+        let members = forge_core::repo::trusted_members(&roles);
         let mut out = Vec::new();
         for h in hashes {
-            out.extend(mirrors_of(&r.client, &core, &r.repo, &h, &members).await?);
+            out.extend(mirrors_of(&r.client, &contract, &r.repo, &h, &members).await?);
         }
         let names = std::collections::BTreeMap::from([(r.repo.repo_id.clone(), r.repo.display())]);
         (out, names)
@@ -360,8 +369,8 @@ async fn list(ctx: &Ctx, repo: Option<&str>, mine: bool) -> Result<()> {
 async fn remove(ctx: &Ctx, id: &str) -> Result<()> {
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
     let forge = ctx.target.require_v2()?;
-    let core = client.fetch_contract(&forge.core).await?;
-    let mine = mirrors_by(&client, &core, &identity.id()).await?;
+    let contract = client.fetch_contract(forge.home(DOC_PACK_MIRROR)).await?;
+    let mine = mirrors_by(&client, &contract, &identity.id()).await?;
     if !mine.iter().any(|m| m.id == id) {
         bail!(UserError::new(
             codes::NOT_FOUND,
@@ -373,7 +382,7 @@ async fn remove(ctx: &Ctx, id: &str) -> Result<()> {
         "Delete your mirror record {id}? (part of its storage fee is refunded)"
     ))?;
     let engine = forge_core::profile::engine(&client, &identity, &bridge)?;
-    delete_mirror(&engine, &core, id).await?;
+    delete_mirror(&engine, &contract, id).await?;
     ctx.emit(
         json!({ "status": "removed", "documentId": id, "type": DOC_PACK_MIRROR }),
         || println!("✓ removed mirror record {id}"),

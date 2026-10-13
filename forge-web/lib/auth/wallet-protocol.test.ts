@@ -176,10 +176,10 @@ describe('which keys Forge signs with', () => {
 
   it('scopes keys by their bounds', () => {
     // FORGE is moutai's pre-split deployment: forge-community is forge-collab there
-    expect(keyScope(bound({ $type: 'contractGroup', id: FORGE.group }), FORGE)).toEqual({ core: true, collab: true, community: true, unbounded: false })
-    expect(keyScope(bound({ $type: 'singleContract', id: FORGE.core }), FORGE)).toEqual({ core: true, collab: false, community: false, unbounded: false })
-    expect(keyScope(bound({ $type: 'singleContract', id: FORGE.collab }), FORGE)).toEqual({ core: false, collab: true, community: true, unbounded: false })
-    expect(keyScope(bound(null), FORGE)).toEqual({ core: true, collab: true, community: true, unbounded: true })
+    expect(keyScope(bound({ $type: 'contractGroup', id: FORGE.group }), FORGE)).toEqual({ core: true, collab: true, community: true, meta: true, unbounded: false })
+    expect(keyScope(bound({ $type: 'singleContract', id: FORGE.core }), FORGE)).toEqual({ core: true, collab: false, community: false, meta: true, unbounded: false })
+    expect(keyScope(bound({ $type: 'singleContract', id: FORGE.collab }), FORGE)).toEqual({ core: false, collab: true, community: true, meta: true, unbounded: false })
+    expect(keyScope(bound(null), FORGE)).toEqual({ core: true, collab: true, community: true, meta: true, unbounded: true })
     // Another app's key, a superseded group, or a document-type bound: not Forge's to use.
     expect(keyScope(bound({ $type: 'singleContract', id: APP_CONNECT_CONTRACT_ID }), FORGE)).toBeNull()
     expect(keyScope(bound({ $type: 'contractGroup', id: '23iVLZABbVQ5a4heSa6GLVbVqSWr74JTSESSMTEYNd6o' }), FORGE)).toBeNull()
@@ -194,9 +194,9 @@ describe('which keys Forge signs with', () => {
 
   it('scopes keys over three contracts: a forge-community key covers forge-community only', () => {
     const three = { ...FORGE, community: 'CommunityContractId1111111111111111111111111' }
-    expect(keyScope(bound({ $type: 'singleContract', id: three.community }), three)).toEqual({ core: false, collab: false, community: true, unbounded: false })
-    expect(keyScope(bound({ $type: 'singleContract', id: three.collab }), three)).toEqual({ core: false, collab: true, community: false, unbounded: false })
-    expect(keyScope(bound({ $type: 'contractGroup', id: three.group }), three)).toEqual({ core: true, collab: true, community: true, unbounded: false })
+    expect(keyScope(bound({ $type: 'singleContract', id: three.community }), three)).toEqual({ core: false, collab: false, community: true, meta: true, unbounded: false })
+    expect(keyScope(bound({ $type: 'singleContract', id: three.collab }), three)).toEqual({ core: false, collab: true, community: false, meta: true, unbounded: false })
+    expect(keyScope(bound({ $type: 'contractGroup', id: three.group }), three)).toEqual({ core: true, collab: true, community: true, meta: true, unbounded: false })
     const collabOnly = keyScope(bound({ $type: 'singleContract', id: three.collab }), three)!
     expect(scopeCovers(collabOnly, three, three.community)).toBe(false)
     expect(nextGrant({ collab: true, community: false })).toBe('community')
@@ -207,6 +207,18 @@ describe('which keys Forge signs with', () => {
     // Pre-split: the shared id reads as collab
     expect(contractKind(FORGE, FORGE.community)).toBe('collab')
     expect(contractKind(three, 'SomeOtherContract')).toBeNull()
+  })
+
+  it('scopes keys over four contracts (D44): forge-meta is a grant of its own', () => {
+    const four = { ...FORGE, community: 'CommunityContractId1111111111111111111111111', meta: 'MetaContractId11111111111111111111111111111' }
+    expect(keyScope(bound({ $type: 'singleContract', id: four.meta }), four)).toEqual({ core: false, collab: false, community: false, meta: true, unbounded: false })
+    expect(keyScope(bound({ $type: 'singleContract', id: four.core }), four)).toEqual({ core: true, collab: false, community: false, meta: false, unbounded: false })
+    expect(keyScope(bound({ $type: 'contractGroup', id: four.group }), four)).toEqual({ core: true, collab: true, community: true, meta: true, unbounded: false })
+    const core = keyScope(bound({ $type: 'singleContract', id: four.core }), four)!
+    expect(scopeCovers(core, four, four.meta)).toBe(false)
+    expect(contractKind(four, four.meta)).toBe('meta')
+    expect(nextGrant({ collab: true, community: true, meta: false })).toBe('meta')
+    expect(nextGrant({ collab: true, community: true, meta: true })).toBeNull()
   })
 
   it('flags a key without a budget or an expiry as unlimited', () => {
@@ -344,7 +356,7 @@ describe('login poll against a simulated wallet', () => {
     expect(a.encryptionKeys.map(bytesToHex)).toEqual([bytesToHex(encryptionKeyFromLogin(login, ALICE))])
     expect(a.identityId).toBe(ALICE)
     expect(a.source).toBe('legacy')
-    expect(a.keys[0]!.scope).toEqual({ core: true, collab: false, community: false, unbounded: false })
+    expect(a.keys[0]!.scope).toEqual({ core: true, collab: false, community: false, meta: true, unbounded: false })
     expect(isUnlimited(a.keys[0]!)).toBe(true)
     expect(bytesToHex(decodeWif(a.keys[0]!.wif).privateKey)).toBe(bytesToHex(authPriv))
     expect(req.appEphemeralPriv.every((b) => b === 0)).toBe(true)
@@ -374,7 +386,7 @@ describe('login poll against a simulated wallet', () => {
     const a = await awaitWalletAnswer(chain.sdk, req, fast)
     if (a.kind !== 'keys') throw new Error('expected keys')
     expect(a.source).toBe('app-connect')
-    expect(a.keys[0]!.scope).toEqual({ core: true, collab: true, community: true, unbounded: false })
+    expect(a.keys[0]!.scope).toEqual({ core: true, collab: true, community: true, meta: true, unbounded: false })
     expect(isUnlimited(a.keys[0]!)).toBe(false)
   })
 

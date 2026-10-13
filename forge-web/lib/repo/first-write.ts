@@ -166,15 +166,17 @@ export async function starBeatFirsts(sdk: EvoSDK, repo: RepoRef, viewer: string)
 
 /**
  * A new follow by `viewer` of `target`: the author subtree of the `byOwner` index, and the target's
- * of `byTarget` (its first follower). `followers`: the target's count the page already read.
+ * of `byTarget` (its first follower). `contractId`: the contract that holds `follow` on this network
+ * (forge-community, or forge-meta on a four-contract set). `followers`: the target's count the
+ * page already read.
  */
-export async function followFirsts(sdk: EvoSDK, community: string, viewer: string, target: string, followers?: number | null): Promise<FirstWrite> {
+export async function followFirsts(sdk: EvoSDK, contractId: string, viewer: string, target: string, followers?: number | null): Promise<FirstWrite> {
   const [author, targetFirst, contract] = await Promise.all([
-    none(sdk, { dataContractId: community, documentTypeName: DOC.follow, where: [['$ownerId', '==', viewer]] }),
+    none(sdk, { dataContractId: contractId, documentTypeName: DOC.follow, where: [['$ownerId', '==', viewer]] }),
     typeof followers === 'number'
       ? Promise.resolve(followers === 0)
-      : none(sdk, { dataContractId: community, documentTypeName: DOC.follow, where: [['identityId', '==', target]] }),
-    contractFirst(sdk, viewer, community),
+      : none(sdk, { dataContractId: contractId, documentTypeName: DOC.follow, where: [['identityId', '==', target]] }),
+    contractFirst(sdk, viewer, contractId),
   ])
   return known({ author, target: targetFirst, contract })
 }

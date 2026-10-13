@@ -43,12 +43,12 @@ use crate::user_error::{codes, UserError};
 /// that identity; unique per repository and owner).
 pub const DOC_CONSENT: &str = "consent";
 
-/// The document type that grants `role` (writer, triage and reader are all `writer`
+/// The document type that grants `role` (writer, triage, reader and bot are all `writer`
 /// documents, told apart by their `role`).
 pub fn doc_type(role: Role) -> &'static str {
     match role {
         Role::Maintainer => "maintainer",
-        Role::Writer | Role::Triage | Role::Reader => "writer",
+        Role::Writer | Role::Triage | Role::Reader | Role::Bot => "writer",
     }
 }
 
@@ -166,9 +166,15 @@ pub fn you_are(role: Role, repo: &RepoRef) -> String {
 /// Whether a refusal `reason` names the signer's own role ([`you_are`]): they are a member.
 #[must_use]
 pub fn refused_member(reason: &str) -> bool {
-    [Role::Maintainer, Role::Writer, Role::Triage, Role::Reader]
-        .iter()
-        .any(|r| reason.starts_with(&format!("you are {} of ", r.noun())))
+    [
+        Role::Maintainer,
+        Role::Writer,
+        Role::Triage,
+        Role::Reader,
+        Role::Bot,
+    ]
+    .iter()
+    .any(|r| reason.starts_with(&format!("you are {} of ", r.noun())))
 }
 
 /// What a triage member or reader of `repo` may and may not do: the reason shown when a
@@ -189,6 +195,12 @@ pub fn role_limits(role: Role, repo: &RepoRef) -> Option<String> {
              reopen, set milestones, post check runs or re-run them) or approve",
             you_are(role, repo)
         )),
+        Role::Bot => Some(format!(
+            "{}: bots can comment and open issues and pull requests, but cannot label, assign, \
+             set milestones, close or reopen other people's items, post check runs, approve or \
+             read members-only content",
+            you_are(role, repo)
+        )),
     }
 }
 
@@ -197,11 +209,13 @@ pub fn role_limits(role: Role, repo: &RepoRef) -> Option<String> {
 /// maintainers, writers, triage and readers; DESIGN §3.5). Runners are never in it: a `runner`
 /// document (forge-community) is not a membership, so it is never listed by
 /// [`MemberReader::list`] and never receives a wrap. The match is exhaustive so that a role
-/// that must not hold the key (the Bot role of phase 4) has to say so here.
+/// that must not hold the key has to say so here: a bot never does (DESIGN §3.5; on mainnet
+/// consensus refuses a wrap to a role-4 row, L4), so adding or removing one rotates nothing.
 #[must_use]
 pub fn holds_members_key(role: Role) -> bool {
     match role {
         Role::Maintainer | Role::Writer | Role::Triage | Role::Reader => true,
+        Role::Bot => false,
     }
 }
 
@@ -242,7 +256,7 @@ pub fn verdict_refusal(
 /// ownership and its maintainer document; forge-web refuses it too). A reader is allowed on a
 /// public repository too: there it reads the members-only content (DESIGN §4.1).
 pub fn check_grant(repo: &RepoRef, member: &str, role: Role) -> Result<()> {
-    if member == repo.owner_id() && matches!(role, Role::Triage | Role::Reader) {
+    if member == repo.owner_id() && matches!(role, Role::Triage | Role::Reader | Role::Bot) {
         return Err(UserError::new(
             codes::REJECTED,
             format!(
@@ -907,7 +921,9 @@ mod tests {
         assert_eq!(of(Some(1)), Some(Role::Writer));
         assert_eq!(of(Some(2)), Some(Role::Triage));
         assert_eq!(of(Some(3)), Some(Role::Reader));
-        assert_eq!(of(Some(4)), None, "no role consensus admits");
+        // A bot row (mainnet C2) is recognised; anything above 4 is no role consensus admits.
+        assert_eq!(of(Some(4)), Some(Role::Bot));
+        assert_eq!(of(Some(5)), None, "no role consensus admits");
         assert_eq!(of(Some(0)), None);
         // Present but not an integer: skipped, never read as a writer.
         let mut text = writer_doc(None);
@@ -1036,6 +1052,11 @@ mod tests {
         for role in [Role::Maintainer, Role::Writer, Role::Triage, Role::Reader] {
             assert!(holds_members_key(role), "{role:?}");
         }
+        assert!(!holds_members_key(Role::Bot), "a bot never holds it");
+        assert!(!Role::Bot.is_approver());
+        assert_eq!(Role::parse("bot"), None, "not offered yet");
+        assert_eq!(Role::Bot.writer_role_code(), Some(4));
+        assert!(refused_member(&you_are(Role::Bot, &repo())));
     }
 
     #[test]

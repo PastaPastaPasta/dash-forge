@@ -11,8 +11,8 @@
  * 1. the group's owner, read with proofs, is the Forge deployer the bundled deployment file
  *    records, and the group has no admins. Consensus then guarantees every member was
  *    created by that owner;
- * 2. forge-core and forge-collab are whole-contract members (checked before anything else is
- *    read);
+ * 2. forge-core, forge-collab, forge-community and, on a four-contract set (D44), forge-meta are
+ *    whole-contract members (checked before anything else is read);
  * 3. cross-check: each member contract this build does not know is read with proofs, and an
  *    `$ownerId` other than the pinned owner is refused. A contract that cannot be read (a
  *    format newer than this build) is accepted and named, since rule 1 already bounds it;
@@ -22,7 +22,7 @@
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
-import type { GroupTrust } from '../deployments'
+import { FORGE_CONTRACT_KINDS, forgeContractIds, type GroupTrust } from '../deployments'
 
 /** What the chain says owns the group. */
 export interface GroupOwnership {
@@ -58,7 +58,7 @@ function refuse(cause: string): Error {
 }
 
 function isKnown(trust: GroupTrust, contractId: string): boolean {
-  return contractId === trust.core || contractId === trust.collab || contractId === trust.community || trust.superseded.includes(contractId)
+  return forgeContractIds(trust).includes(contractId) || trust.superseded.includes(contractId)
 }
 
 /** Every member contract (whole, or through a document type or token) Forge does not know. */
@@ -91,15 +91,15 @@ export function checkOwnership(trust: GroupTrust, group: string, info: GroupOwne
 }
 
 /**
- * Rule 2: forge-core, forge-collab and forge-community are whole-contract members (forge-community
- * is forge-collab on a deployment that predates the split). Throws otherwise.
+ * Rule 2: forge-core, forge-collab, forge-community and, on a four-contract set, forge-meta are
+ * whole-contract members (forge-community is forge-collab on a deployment that predates the
+ * split). Throws otherwise.
  */
 export function checkPair(trust: GroupTrust, members: GroupMemberSet): void {
-  if (![trust.core, trust.collab, trust.community].every((c) => members.contracts.includes(c))) {
-    throw refuse(
-      `group ${trust.group} does not hold forge-core ${trust.core}, forge-collab ${trust.collab} and forge-community ${trust.community} as whole contracts`,
-    )
-  }
+  if (forgeContractIds(trust).every((c) => members.contracts.includes(c))) return
+  const named = FORGE_CONTRACT_KINDS.flatMap((k) => (trust[k] === undefined ? [] : [`forge-${k} ${trust[k]}`]))
+  const last = named.pop()
+  throw refuse(`group ${trust.group} does not hold ${named.join(', ')} and ${last} as whole contracts`)
 }
 
 /**

@@ -50,7 +50,8 @@ export interface HistorySource {
 
 /** The live history indexes of `kind` (the column index by default) among `manifests`. */
 export function liveHistoryIndexes(manifests: readonly PackManifest[], kind: number = PACK_KIND.HISTORY_INDEX): HistoryEntry[] {
-  const member = (m: PackManifest): boolean => m.ownerRole !== null && m.ownerRole !== undefined
+  // A current member's index, never a bot's (forge-core `trusted_member`)
+  const member = (m: PackManifest): boolean => m.ownerRole != null && m.ownerRole !== 'bot'
   const superseded = plannedSuperseded(manifests, kind)
   return packsOfKind(manifests, kind)
     .filter((p) => member(p) && !superseded.has(p.packHash.toLowerCase()))

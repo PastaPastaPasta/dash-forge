@@ -252,14 +252,14 @@ pub async fn write_pubkeys(
     existing: Option<&Profile>,
     pubkeys: &[String],
 ) -> Result<ProfileWrite> {
-    let community = client.fetch_contract(&forge.community).await?;
+    let profiles = client.fetch_contract(forge.home(DOC_PROFILE)).await?;
     let value = (!pubkeys.is_empty()).then(|| FieldValue::text_list(pubkeys.to_vec()));
     match (existing, value) {
         (None, None) => Err(Error::Config("there are no keys to publish".into())),
         (None, Some(value)) => Ok(ProfileWrite::Created(
             engine
                 .create_document(
-                    &community,
+                    &profiles,
                     DOC_PROFILE,
                     BTreeMap::from([("pubkeys".to_string(), value)]),
                 )
@@ -268,7 +268,7 @@ pub async fn write_pubkeys(
         (Some(p), value) => {
             let changes = BTreeMap::from([("pubkeys".to_string(), value)]);
             let replaced = engine
-                .replace_document_guarded(&community, DOC_PROFILE, &p.id, &changes, p.revision)
+                .replace_document_guarded(&profiles, DOC_PROFILE, &p.id, &changes, p.revision)
                 .await?;
             Ok(if replaced {
                 ProfileWrite::Replaced(p.id.clone())
@@ -286,7 +286,7 @@ pub async fn read_signing_keys(
     forge: &ForgeIds,
     identities: &[String],
 ) -> Result<Vec<Signer>> {
-    let community = client.fetch_contract(&forge.community).await?;
+    let profiles = client.fetch_contract(forge.home(DOC_PROFILE)).await?;
     let mut ids: Vec<&String> = identities.iter().collect();
     ids.sort();
     ids.dedup();
@@ -298,7 +298,7 @@ pub async fn read_signing_keys(
             .collect::<Result<Vec<_>>>()?;
         let docs = client
             .query_documents(
-                &community,
+                &profiles,
                 DOC_PROFILE,
                 &[QueryFilter::in_list("$ownerId", values)],
                 &[QueryOrder::asc("$ownerId")],

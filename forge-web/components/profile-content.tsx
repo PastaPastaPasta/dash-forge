@@ -22,7 +22,8 @@ import Link from 'next/link'
 import { Building2, GitBranch, Link2, MapPin, Pencil, UserPlus, Users } from 'lucide-react'
 import type { DiscoveredRepo } from '@/lib/view'
 import { listReposByOwner, resolveDpnsName } from '@/lib/view'
-import { followFirsts, followRelation, isIdentifier, readFollowCounts, resolveOwner } from '@/lib/repo'
+import { DOC, contractOf, followFirsts, followRelation, isIdentifier, readFollowCounts, resolveOwner } from '@/lib/repo'
+import { writeContractKind } from '@/lib/layout'
 import { readProfile, type Profile } from '@/lib/repo/profile'
 import type { ProfileFields } from '@/lib/rules/profile'
 import { firstWriteRead, previewCreate, previewDelete } from '@/lib/sdk'
@@ -171,7 +172,7 @@ export function ProfileContent({ identityId: address, byId = false }: { identity
   const named = data?.name ? { kind: 'owner' as const, name: data.name, identity: identityId } : null
   useRememberAcquaintance([named], 'followed', isSelf ? null : follow.on)
   const first = useFirstWrite(
-    () => followFirsts(sdk!, forge!.community, identity!, identityId, data?.followers),
+    () => followFirsts(sdk!, contractOf(forge!, DOC.follow), identity!, identityId, data?.followers),
     [identity ?? '', network, identityId],
     interested && canFollow && ready && sdk !== null && identity !== null && !following && data !== undefined && data !== null,
   )
@@ -179,7 +180,7 @@ export function ProfileContent({ identityId: address, byId = false }: { identity
   const unfollowRefund = previewDelete('follow')
   const toggleFollow = (): void => {
     // Unfollowing refunds, so only a follow needs the funds check; both sign in first.
-    if (!guard.check(following ? 0 : followCost, 'community', following ? 'unfollow' : 'follow this identity')) return
+    if (!guard.check(following ? 0 : followCost, writeContractKind(forge, DOC.follow), following ? 'unfollow' : 'follow this identity')) return
     setConfirming(true)
   }
   // Signed in but whether you already follow is not known yet (or unreadable): no action.

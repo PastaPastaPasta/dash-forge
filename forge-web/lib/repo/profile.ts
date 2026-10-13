@@ -28,6 +28,7 @@ import { base58Decode, base58Encode } from '../auth/base58'
 import { DOC, asIdentifierString, str, stringArray } from './contract'
 import type { BotClaim } from '../rules/profile'
 import { revisionOf } from './issues'
+import { contractOf } from './source'
 
 /** A stored profile. */
 export interface Profile {
@@ -93,7 +94,7 @@ export function profileFromDoc(doc: PlainDocument): Profile {
 /** The profile of `identityId`, or null when it has none (proof-checked either way). */
 export async function readProfile(sdk: EvoSDK, forge: ForgeIds, identityId: string): Promise<Profile | null> {
   const docs = await queryDocuments(sdk, {
-    dataContractId: forge.community,
+    dataContractId: contractOf(forge, DOC.profile),
     documentTypeName: DOC.profile,
     where: [['$ownerId', '==', identityId]],
     limit: 1,
@@ -176,7 +177,7 @@ export async function saveProfile(
 ): Promise<void> {
   if (stored === null) {
     await createDocumentIdempotent(sdk, auth, {
-      contractId: forge.community,
+      contractId: contractOf(forge, DOC.profile),
       documentType: DOC.profile,
       data: profileData(next),
       ...(intent ? { intent } : {}),
@@ -186,7 +187,7 @@ export async function saveProfile(
   const changes = profileChanges(stored.fields, next)
   if (Object.keys(changes).length === 0) return
   await replaceDocumentIdempotent(sdk, auth, {
-    contractId: forge.community,
+    contractId: contractOf(forge, DOC.profile),
     documentType: DOC.profile,
     documentId: stored.id,
     changes,
@@ -196,5 +197,5 @@ export async function saveProfile(
 
 /** Delete the signer's profile (refunds part of its storage fee). */
 export async function deleteProfile(sdk: EvoSDK, auth: WriteAuth, forge: ForgeIds, stored: Profile): Promise<void> {
-  await deleteDocumentIdempotent(sdk, auth, { contractId: forge.community, documentType: DOC.profile, documentId: stored.id })
+  await deleteDocumentIdempotent(sdk, auth, { contractId: contractOf(forge, DOC.profile), documentType: DOC.profile, documentId: stored.id })
 }
