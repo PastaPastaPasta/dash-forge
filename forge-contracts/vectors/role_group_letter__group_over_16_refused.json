@@ -1,0 +1,104 @@
+{
+  "name": "group_over_16_refused",
+  "description": "a Maintainers preset of 21 people (the owner and 20 maintainers) is refused: a message goes to at most 16, the writer included.",
+  "case": "role_group_letter",
+  "rules": "v2",
+  "input": {
+    "owner": "6owner1111111111111111111111111111111111111",
+    "sender": "6owner1111111111111111111111111111111111111",
+    "members": [
+      {
+        "identity": "MAmaint111111111111111111111111111111111111",
+        "role": "maintainer"
+      },
+      {
+        "identity": "MBmaint111111111111111111111111111111111111",
+        "role": "maintainer"
+      },
+      {
+        "identity": "MCmaint111111111111111111111111111111111111",
+        "role": "maintainer"
+      },
+      {
+        "identity": "MDmaint111111111111111111111111111111111111",
+        "role": "maintainer"
+      },
+      {
+        "identity": "MEmaint111111111111111111111111111111111111",
+        "role": "maintainer"
+      },
+      {
+        "identity": "MFmaint111111111111111111111111111111111111",
+        "role": "maintainer"
+      },
+      {
+        "identity": "MGmaint111111111111111111111111111111111111",
+        "role": "maintainer"
+      },
+      {
+        "identity": "MHmaint111111111111111111111111111111111111",
+        "role": "maintainer"
+      },
+      {
+        "identity": "MJmaint111111111111111111111111111111111111",
+        "role": "maintainer"
+      },
+      {
+        "identity": "MKmaint111111111111111111111111111111111111",
+        "role": "maintainer"
+      },
+      {
+        "identity": "MLmaint111111111111111111111111111111111111",
+        "role": "maintainer"
+      },
+      {
+        "identity": "MMmaint111111111111111111111111111111111111",
+        "role": "maintainer"
+      },
+      {
+        "identity": "MNmaint111111111111111111111111111111111111",
+        "role": "maintainer"
+      },
+      {
+        "identity": "MPmaint111111111111111111111111111111111111",
+        "role": "maintainer"
+      },
+      {
+        "identity": "MQmaint111111111111111111111111111111111111",
+        "role": "maintainer"
+      },
+      {
+        "identity": "MRmaint111111111111111111111111111111111111",
+        "role": "maintainer"
+      },
+      {
+        "identity": "MSmaint111111111111111111111111111111111111",
+        "role": "maintainer"
+      },
+      {
+        "identity": "MTmaint111111111111111111111111111111111111",
+        "role": "maintainer"
+      },
+      {
+        "identity": "MUmaint111111111111111111111111111111111111",
+        "role": "maintainer"
+      },
+      {
+        "identity": "MVmaint111111111111111111111111111111111111",
+        "role": "maintainer"
+      }
+    ],
+    "keyless": [],
+    "request": {
+      "group": "maintainers",
+      "people": []
+    },
+    "exact": null,
+    "parents": [],
+    "membersOnlyParent": false
+  },
+  "expected": {
+    "error": "tooMany",
+    "count": 21
+  }
+}

@@ -26,6 +26,11 @@ const EVENT_VALUE: u8 = 15;
 /// Tag 25 (`enc` v0x04 only, repeatable): a specific-people letter's recipient identity ids, 32
 /// bytes each, in slot order. In every other envelope it stays reserved, so malformed.
 pub const RECIPIENT: u8 = 25;
+/// Tag 29 (`enc` v0x04 only, at most once, after the recipients): the role group a letter was
+/// sent to, one byte ([`LetterGroup`]), so its recipients can say "maintainers when sent"
+/// (mixed-visibility DESIGN §4.2, "Revision 4: role groups for documents"). In every other
+/// envelope it stays reserved, so malformed.
+pub const GROUP: u8 = 29;
 /// Tags 16..=63 are reserved (malformed); 64..=255 are extensions (skipped).
 const FIRST_EXTENSION: u8 = 64;
 /// Tag 64, the first extension tag: the padding record of a members or specific-people document
@@ -210,28 +215,82 @@ fn allowed(kind: DocKind, tag: u8, anchor_with_prev: bool) -> bool {
 /// Parse `pt` as the TLV plaintext of a `kind` document. `anchor_with_prev` is true for a
 /// config of an epoch `e ≥ 1` and false otherwise (where tags 8, 9, 11 and 12 are refused). Such
 /// a config carries tag 8; a burned one (tag 11) carries neither 9 nor 12, any other carries 9
-/// and may carry 12. `None` is `Malformed`. Tag 25 is refused: it belongs to `enc` v0x04 only
+/// and may carry 12. `None` is `Malformed`. Tags 25 and 29 are refused: they belong to `enc` v0x04 only
 /// ([`parse_letter`]).
 #[must_use]
 pub fn parse(pt: &[u8], kind: DocKind, anchor_with_prev: bool) -> Option<Fields> {
     parse_inner(pt, kind, anchor_with_prev, None)
 }
 
+/// The role group a letter was sent to (tag 29): its people when it was posted, resolved from
+/// the member documents by the writer, "as listed by the sender" like the recipients.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LetterGroup {
+    /// The owner and the maintainers (byte 1).
+    Maintainers,
+    /// The owner, the maintainers and the role-1 writers (byte 2).
+    Writers,
+}
+
+impl LetterGroup {
+    /// The tag-29 byte.
+    #[must_use]
+    pub fn code(self) -> u8 {
+        match self {
+            Self::Maintainers => 1,
+            Self::Writers => 2,
+        }
+    }
+
+    /// The group a tag-29 byte names; `None` for any other byte (malformed).
+    #[must_use]
+    pub fn from_code(b: u8) -> Option<Self> {
+        match b {
+            1 => Some(Self::Maintainers),
+            2 => Some(Self::Writers),
+            _ => None,
+        }
+    }
+}
+
+/// A letter's TLV, parsed ([`parse_letter`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LetterTlv {
+    /// The content fields.
+    pub fields: Fields,
+    /// The recipient ids, in slot order.
+    pub recipients: Vec<[u8; 32]>,
+    /// The role group it was sent to (tag 29), if any.
+    pub group: Option<LetterGroup>,
+}
+
 /// Parse the TLV of a specific-people letter (`enc` v0x04): the content records of `kind`, then
-/// one tag-25 record per recipient (32 bytes each, consecutive, in slot order), then extension
-/// records. Returns the fields and the recipient ids. `None` is `Malformed`.
+/// one tag-25 record per recipient (32 bytes each, consecutive, in slot order), then at most one
+/// tag-29 group record (one byte, 1 or 2), then extension records. `None` is `Malformed`.
 #[must_use]
-pub fn parse_letter(pt: &[u8], kind: DocKind) -> Option<(Fields, Vec<[u8; 32]>)> {
-    let mut recipients = Vec::new();
-    let fields = parse_inner(pt, kind, false, Some(&mut recipients))?;
-    Some((fields, recipients))
+pub fn parse_letter(pt: &[u8], kind: DocKind) -> Option<LetterTlv> {
+    let mut letter = LetterParts::default();
+    let fields = parse_inner(pt, kind, false, Some(&mut letter))?;
+    Some(LetterTlv {
+        fields,
+        recipients: letter.recipients,
+        group: letter.group,
+    })
+}
+
+/// What only a letter's TLV carries.
+#[derive(Default)]
+struct LetterParts {
+    recipients: Vec<[u8; 32]>,
+    group: Option<LetterGroup>,
 }
 
 fn parse_inner(
     pt: &[u8],
     kind: DocKind,
     anchor_with_prev: bool,
-    mut recipients: Option<&mut Vec<[u8; 32]>>,
+    mut letter: Option<&mut LetterParts>,
 ) -> Option<Fields> {
     let mut f = Fields::default();
     let mut last: Option<u8> = None;
@@ -256,13 +315,20 @@ fn parse_inner(
         if tag >= FIRST_EXTENSION {
             continue; // forward compatibility: skipped, never interpreted
         }
-        if tag == RECIPIENT {
-            // only a letter's TLV may carry recipients; everywhere else 25 is reserved
-            let ids = recipients.as_deref_mut()?;
+        if tag == RECIPIENT || tag == GROUP {
+            // only a letter's TLV may carry recipients and a group; everywhere else 25 and 29
+            // are reserved
+            let parts = letter.as_deref_mut()?;
             if !letter_kind(kind) {
                 return None;
             }
-            ids.push(value.try_into().ok()?);
+            if tag == RECIPIENT {
+                parts.recipients.push(value.try_into().ok()?);
+            } else {
+                // exactly one byte naming a group (ascending order already refuses a second)
+                let [b] = value else { return None };
+                parts.group = Some(LetterGroup::from_code(*b)?);
+            }
             continue;
         }
         if !allowed(kind, tag, anchor_with_prev) {
@@ -370,11 +436,14 @@ pub fn pad_record(n: usize, max: usize) -> Vec<u8> {
     out
 }
 
-/// Append one tag-25 record per recipient id, in slot order: the TLV tail of a letter before its
-/// padding.
-pub fn push_recipients(out: &mut Vec<u8>, recipients: &[[u8; 32]]) {
+/// Append one tag-25 record per recipient id, in slot order, then the tag-29 record of `group`
+/// when the letter was sent to one: the TLV tail of a letter before its padding.
+pub fn push_recipients(out: &mut Vec<u8>, recipients: &[[u8; 32]], group: Option<LetterGroup>) {
     for r in recipients {
         push_record(out, RECIPIENT, r);
+    }
+    if let Some(g) = group {
+        push_record(out, GROUP, &[g.code()]);
     }
 }
 

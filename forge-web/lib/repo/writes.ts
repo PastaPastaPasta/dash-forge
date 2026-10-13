@@ -56,7 +56,11 @@ import { contractHasProperty } from './contract-shape'
 import { refNameHash, repoContentWritten } from './push'
 import type { PrivateDocType } from '../private'
 import { isSealedKind, privateWriter, sealForRepo, sealedIntent, sealedTextUse, PrivateWriteError, type PrivateWriter } from './private-writes'
-import { MEMBERS_TEXT_LIMIT, audienceFor, childAudience, hasMembersKey, keyedContentKey, membersWriter, noteAudience, sealMembersContent, targetAudience, type MembersWriter } from './members-writes'
+import { MEMBERS_TEXT_LIMIT, audienceFor, childAudience, hasMembersKey, keyedContentKey, knownAudience, membersWriter, noteAudience, sealMembersContent, storedOnce, storedTargetOnce, targetAudience, type MembersWriter } from './members-writes'
+import { LetterRefusedError, isLetterWriter, letterContentKey, letterThread, letterWriter, sdkLetterReads, sealLetterContent, type LetterWriter } from './letter-writes'
+import { docAudience } from './private-content'
+import { LETTER_EVENT_VALUE_TEXT, type LetterAsk } from '../view/audience'
+import type { ParentLetter } from '../rules/letters'
 import { invalidateRepoFeed } from './issues'
 import { refuseIfBanned } from './bans'
 import { readNewestManifestOfKind } from './packs'
@@ -335,7 +339,12 @@ export async function writeRepoDoc(
     // epoch's key (as forge-core's journal is), never a plain hash of sealed text, which would be
     // an equality oracle at rest.
     const said = contentHash(documentType, scoped(repo, data))
-    if (repo.visibility === 'private') {
+    if (audience === 'specificPeople') {
+      // To specific people (DESIGN §4.2): the action's recipients, else the thread's re-listed.
+      const w = options.letter ?? (await threadLetterWriter(sdk, auth, repo, documentType, data, null))
+      contentKey = await letterContentKey(w, said, intent)
+      data = await sealLetterContent(auth, repo, sealedType, data, w)
+    } else if (repo.visibility === 'private') {
       const w = writer ?? (await privateWriter(sdk, auth, repo))
       contentKey = await keyedContentKey(w.keys, said)
       data = await sealForRepo(sdk, auth, repo, sealedType, data, w)
@@ -372,7 +381,8 @@ export async function writeRepoDoc(
     if (result?.confirmed && reviewed !== '') void noteParticipation(auth.network, auth.identityId, reviewed, 'reviewed')
     // A follow-up write on it (a label right after the create) must not wait on a node that
     // does not show it yet to learn who it is for.
-    if (result?.confirmed && repo.visibility === 'public' && (documentType === DOC.issue || documentType === DOC.patch || documentType === DOC.comment)) {
+    // (A private repo's audience matters only for a message to specific people, recorded too.)
+    if (result?.confirmed && (repo.visibility === 'public' || audience === 'specificPeople') && (documentType === DOC.issue || documentType === DOC.patch || documentType === DOC.comment)) {
       noteAudience(repo, result.documentId, audience)
     }
     afterWrite(repo, auth.network, documentType)
@@ -388,6 +398,46 @@ export interface WriteOptions {
   readonly audience?: Audience
   /** The action's members key (one fresh read for a review and its comments, a renumbered issue). */
   readonly membersWriter?: MembersWriter
+  /**
+   * Who a message to specific people goes to (`audience` `specificPeople`): resolved once for the
+   * action (a review and its comments, a renumbered issue). Absent: the thread's people re-listed.
+   */
+  readonly letter?: LetterWriter
+}
+
+/**
+ * The {@link LetterWriter} of a `documentType` write with `data` of `repo`, as `ask` asks (null:
+ * the thread's people re-listed; a writer already resolved for the action is used as it is): an
+ * issue has no thread; a comment or review sits under its target, the comment it replies to and
+ * that thread's root, each opened as the writer.
+ */
+export async function threadLetterWriter(
+  sdk: EvoSDK,
+  auth: WriteAuth,
+  repo: RepoRef,
+  documentType: string,
+  data: Readonly<Record<string, unknown>>,
+  ask: LetterAsk | LetterWriter | null,
+  /** Messages to specific people the composer replies under besides the stored thread (one it forwards), as their writers listed them. */
+  extraParents: readonly ParentLetter[] = [],
+): Promise<LetterWriter> {
+  if (isLetterWriter(ask)) return ask
+  const idOf = (field: string): string => {
+    const v = data[field]
+    return v instanceof Uint8Array ? base58Encode(v) : asIdentifierString(v)
+  }
+  const targetId = documentType === DOC.review ? idOf('patchId') : documentType === DOC.comment ? idOf('targetId') : ''
+  const replyTo = documentType === DOC.comment ? idOf('replyTo') : ''
+  const stored =
+    targetId === ''
+      ? { parents: [], membersOnlyParent: repo.visibility === 'private' }
+      : await letterThread(sdk, auth, repo, (type, id) => storedOnce(sdk, repo, type, id), {
+          targetId,
+          ...(replyTo !== '' ? { replyTo } : {}),
+          ...(documentType === DOC.review ? { targetType: 'patch' as const } : {}),
+        })
+  const thread = extraParents.length === 0 ? stored : { ...stored, parents: [...stored.parents, ...extraParents] }
+  return letterWriter(auth, repo, ask, thread, sdkLetterReads(sdk, auth, repo))
 }
 
 /** The member types whose writes carry the signer's `asMember` proof (forge-core `MEMBER_PROOF_TYPES`). */
@@ -416,7 +466,6 @@ async function writeAudience(
   data: Readonly<Record<string, unknown>>,
   requested: Audience | undefined,
 ): Promise<Audience> {
-  if (repo.visibility === 'private') return 'members'
   const idOf = (field: string): string => {
     const v = data[field]
     return v instanceof Uint8Array ? base58Encode(v) : asIdentifierString(v)
@@ -428,8 +477,18 @@ async function writeAudience(
   }
   if (documentType === DOC.event || documentType === DOC.authorEvent) {
     const value = data['value']
-    if (typeof value !== 'string' || value === '') return 'public'
+    if (typeof value !== 'string' || value === '') return repo.visibility === 'private' ? 'members' : 'public'
+    // A value on a message to specific people is refused (decided for 2A): never sealed under the
+    // members key, never written in plaintext. A value-less change (close, lock) is public anyway.
+    if (repo.visibility === 'private') {
+      const targetId = named('targetId', 'event')
+      const known = knownAudience(repo, targetId)
+      const stored = known !== undefined ? null : await storedTargetOnce(sdk, repo, targetId)
+      if (known === 'specificPeople' || (stored !== null && docAudience(stored) === 'specificPeople')) throw new LetterRefusedError(LETTER_EVENT_VALUE_TEXT)
+      return 'members'
+    }
     const target = await targetAudience(sdk, repo, named('targetId', 'event'))
+    if (target === 'specificPeople') throw new LetterRefusedError(LETTER_EVENT_VALUE_TEXT)
     // An author event has no `enc` (consensus): its value would be public under a members-only target.
     if (documentType === DOC.authorEvent && target !== 'public') {
       throw new PrivateWriteError("this is members-only, and an author's change with a value can't be sealed yet; ask a member to make it; nothing was written")
@@ -444,7 +503,7 @@ async function writeAudience(
     return childAudience(sdk, repo, { targetId: named('targetId', 'comment'), ...(replyTo !== '' ? { replyTo } : {}), ...asked })
   }
   if (documentType === DOC.review) return childAudience(sdk, repo, { targetId: named('patchId', 'review'), ...asked })
-  return requested ?? 'public'
+  return audienceFor(repo, requested, null)
 }
 
 /** A write that found its unique slot already held by the signer: success, nothing spent. */
@@ -512,14 +571,21 @@ export async function createIssue(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  input: { title: string; body: string; intent?: string; audience?: Audience },
+  input: { title: string; body: string; intent?: string; audience?: Audience; letter?: LetterAsk },
   onRetry?: (taken: number, next: number) => void,
 ): Promise<CreateIssueResult> {
   // A maintainer's ban (UPDATE-1): refused before signing, as `dg` does (E610).
   await refuseIfBanned(sdk, repo, auth.network, auth.identityId)
-  // Who it is for: an issue has no parent (public by default; members-only on request).
+  // Who it is for: an issue has no parent (public by default; members-only or specific people on request).
   const audience = audienceFor(repo, input.audience, null)
   const data: Record<string, unknown> = { title: input.title }
+  if (audience === 'specificPeople') {
+    // Who it goes to is fixed now, once for every renumbered attempt; its text has no long-body
+    // form (the recipients' slots live in `enc`): too long is refused by the seal.
+    const letter = await threadLetterWriter(sdk, auth, repo, DOC.issue, data, input.letter ?? null)
+    if (input.body.length > 0) data['body'] = input.body
+    return createNumbered(sdk, auth, repo, 'issue', data, input.intent, onRetry, audience, letter)
+  }
   // A body longer than its field: its full text stored first (forge-v2.md §6.3), once for
   // every renumbered attempt.
   const body = await longBodyField(sdk, auth, repo, 'issue', input.body, { title: input.title }, input.intent, audience)
@@ -624,13 +690,17 @@ async function createNumbered(
   intentBase: string | undefined,
   onRetry?: (taken: number, next: number) => void,
   audience: Audience = repo.visibility === 'private' ? 'members' : 'public',
+  /** A message to specific people: who it goes to, for every renumbered attempt. */
+  letter?: LetterWriter,
 ): Promise<CreateIssueResult> {
   const noun = type === 'issue' ? 'issue' : 'PR'
   // A private repo, or members-only content: refuse over-long text before numbering, and seal
   // every renumbered retry under the one writer of this action (the AD binds each new number).
   let writer: PrivateWriter | undefined
   let members: MembersWriter | undefined
-  if (repo.visibility === 'private') {
+  if (audience === 'specificPeople') {
+    if (letter === undefined) throw new Error('a message to specific people needs its recipients')
+  } else if (repo.visibility === 'private') {
     const { used, limit } = sealedTextUse(type, fields)
     if (limit !== null && used > limit) {
       throw new PrivateWriteError(`the text is too long for a private repo: an encrypted ${type} holds at most ${limit} bytes of text (this one has ${used})`)
@@ -658,6 +728,7 @@ async function createNumbered(
       const result = await writeRepoDoc(sdk, auth, repo, DOC[type], { number, tk: type === 'issue' ? 0 : 1, ...fields }, intent, writer, undefined, {
         audience,
         ...(members ? { membersWriter: members } : {}),
+        ...(letter ? { letter } : {}),
       })
       writeTriedNumber(triedKey, null)
       return { ...result, number, audience }
@@ -743,7 +814,17 @@ export async function createComment(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  input: { targetId: string; body: string; replyTo?: string; intent?: string; post?: PostContext; audience?: Audience },
+  input: {
+    targetId: string
+    body: string
+    replyTo?: string
+    intent?: string
+    post?: PostContext
+    audience?: Audience
+    letter?: LetterAsk | LetterWriter
+    /** A forwarded message to specific people this comment answers (DESIGN D26): its people can't be left out. */
+    letterParents?: readonly ParentLetter[]
+  },
 ): Promise<WriteResult> {
   // A maintainer's ban (UPDATE-1): refused before signing, as `dg` does (E610).
   await refuseIfBanned(sdk, repo, auth.network, auth.identityId)
@@ -751,10 +832,15 @@ export async function createComment(
   // Who it is for (DESIGN §3.3): the narrowest of the issue or PR, the comment it replies to and
   // that thread's root, unless the writer asked for a narrower one; read before anything is stored.
   const audience = await childAudience(sdk, repo, { targetId: input.targetId, ...(input.replyTo ? { replyTo: input.replyTo } : {}), ...(input.audience ? { requested: input.audience } : {}) })
-  // A body longer than its field: its full text stored first (forge-v2.md §6.3).
-  const body = await longBodyField(sdk, auth, repo, 'comment', input.body, {}, input.intent, audience)
-  const data: Record<string, unknown> = { targetId: decodeIdentifier(input.targetId), body }
+  const data: Record<string, unknown> = { targetId: decodeIdentifier(input.targetId) }
   if (input.replyTo) data['replyTo'] = decodeIdentifier(input.replyTo)
+  if (audience === 'specificPeople') {
+    // To specific people: no long-body form (too long is refused by the seal).
+    const letter = await threadLetterWriter(sdk, auth, repo, DOC.comment, data, input.letter ?? null, input.letterParents)
+    return writeRepoDoc(sdk, auth, repo, DOC.comment, { ...data, body: input.body, ...commentProof(auth.identityId, input.post) }, input.intent, undefined, undefined, { audience, letter })
+  }
+  // A body longer than its field: its full text stored first (forge-v2.md §6.3).
+  data['body'] = await longBodyField(sdk, auth, repo, 'comment', input.body, {}, input.intent, audience)
   return writeRepoDoc(sdk, auth, repo, DOC.comment, { ...data, ...commentProof(auth.identityId, input.post) }, input.intent, undefined, undefined, { audience })
 }
 
@@ -845,7 +931,18 @@ export async function createReview(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  input: { patchId: string; verdict: VerdictInput; commitOid: string; body?: string; intent?: string; post: PostContext; audience?: Audience },
+  input: {
+    patchId: string
+    verdict: VerdictInput
+    commitOid: string
+    body?: string
+    intent?: string
+    post: PostContext
+    audience?: Audience
+    letter?: LetterAsk | LetterWriter
+    /** A forwarded message to specific people the review's text answers: its people can't be left out. */
+    letterParents?: readonly ParentLetter[]
+  },
 ): Promise<WriteResult> {
   // A maintainer's ban (UPDATE-1): refused before signing, as `dg` does (E610).
   await refuseIfBanned(sdk, repo, auth.network, auth.identityId)
@@ -859,6 +956,12 @@ export async function createReview(
     patchId: decodeIdentifier(input.patchId),
     ...reviewVerdictFields(input.verdict, auth.identityId, post),
     commitOid: hexToBytes(input.commitOid),
+  }
+  if (audience === 'specificPeople') {
+    // To specific people: no long-body form (too long is refused by the seal).
+    if (input.body && input.body.length > 0) data['body'] = input.body
+    const letter = await threadLetterWriter(sdk, auth, repo, DOC.review, data, input.letter ?? null, input.letterParents)
+    return writeRepoDoc(sdk, auth, repo, DOC.review, data, input.intent, undefined, undefined, { audience, letter })
   }
   // A body longer than its field: its full text stored first (forge-v2.md §6.3).
   if (input.body && input.body.length > 0) data['body'] = await longBodyField(sdk, auth, repo, 'review', input.body, {}, input.intent, audience)

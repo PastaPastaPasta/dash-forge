@@ -37,6 +37,7 @@ import { normalizeRepoName } from '../rules/v2'
 import { seedFromDomains } from './dpns'
 import { noteRepoGateways } from './storage-status'
 import type { PrivateSession } from '../repo/private-session'
+import type { LetterReading } from '../repo/private-content'
 
 /** Backend descriptor for the repo header badge / clone box. */
 export interface BackendInfo {
@@ -128,6 +129,14 @@ export type MembersAccess =
  */
 export function withMembersSession(home: RepoHome, session: PrivateSession, access: 'member' | 'former' = 'member'): RepoHome {
   return { ...home, repo: { ...home.repo, lane: session }, lane: { access, session } }
+}
+
+/**
+ * `home` for a reader with a letter reader (`letter-session.ts`): on `repo.letters`, which only
+ * the content gate reads; it opens the specific-people documents that name this reader.
+ */
+export function withLetterReader(home: RepoHome, letters: LetterReading): RepoHome {
+  return { ...home, repo: { ...home.repo, letters } }
 }
 
 /**

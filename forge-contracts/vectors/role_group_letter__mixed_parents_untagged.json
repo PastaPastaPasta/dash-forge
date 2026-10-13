@@ -1,0 +1,64 @@
+{
+  "name": "mixed_parents_untagged",
+  "description": "a reply under a Maintainers letter and a Writers-and-maintainers one: the union, and no group tag (the parents disagree).",
+  "case": "role_group_letter",
+  "rules": "v2",
+  "input": {
+    "owner": "6owner1111111111111111111111111111111111111",
+    "sender": "6owner1111111111111111111111111111111111111",
+    "members": [
+      {
+        "identity": "7maint1111111111111111111111111111111111111",
+        "role": "maintainer"
+      },
+      {
+        "identity": "8writer111111111111111111111111111111111111",
+        "role": "writer"
+      },
+      {
+        "identity": "8writer222222222222222222222222222222222222",
+        "role": "writer"
+      },
+      {
+        "identity": "9triage11111111111111111111111111111111111",
+        "role": "triage"
+      },
+      {
+        "identity": "Areader11111111111111111111111111111111111",
+        "role": "reader"
+      }
+    ],
+    "keyless": [],
+    "request": null,
+    "exact": null,
+    "parents": [
+      {
+        "recipients": [
+          "6owner1111111111111111111111111111111111111",
+          "7maint1111111111111111111111111111111111111"
+        ],
+        "group": "maintainers"
+      },
+      {
+        "recipients": [
+          "8writer111111111111111111111111111111111111",
+          "6owner1111111111111111111111111111111111111",
+          "7maint1111111111111111111111111111111111111",
+          "8writer222222222222222222222222222222222222"
+        ],
+        "group": "writers"
+      }
+    ],
+    "membersOnlyParent": false
+  },
+  "expected": {
+    "recipients": [
+      "6owner1111111111111111111111111111111111111",
+      "7maint1111111111111111111111111111111111111",
+      "8writer111111111111111111111111111111111111",
+      "8writer222222222222222222222222222222222222"
+    ],
+    "skipped": [],
+    "group": null
+  }
+}

@@ -19,7 +19,7 @@
 import { Byline } from '@/components/repo/byline'
 import { useMirrorTrust } from '@/hooks/use-mirror-trust'
 import { trustedOrigin } from '@/lib/repo/provenance'
-import { useCallback, useMemo, useRef, useState, type SetStateAction } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from 'react'
 import { CheckCircle2, CircleDot, CircleSlash, GitPullRequest, Milestone, Pencil, Pin, Tag, UserPlus } from 'lucide-react'
 import { STATE_FILL, STATE_TEXT } from '@/lib/design/state'
 import { threadAuthorIds } from '@/lib/repo/bots'
@@ -31,15 +31,17 @@ import type { LinkingPulls, RepoRef, TransitionView } from '@/lib/repo'
 import type { RepoHome, IssueThread, MembersOnlyTarget, TimelineItem } from '@/lib/view'
 import { commentDraftKey, commentEditDraftKey, discardedEdits, editDraftKey, useDraftText, useEditDraft } from '@/lib/view/draft-text'
 import { ACL_NAME, ARCHIVED_REASON, isMembersOnlyTarget, issueWriteShows, loadIssueOrMembersOnly } from '@/lib/view'
-import { publicTextOf, quotesMembersText } from '@/lib/view/audience'
+import { NO_LETTER_ASK, forwardText, notPublic, publicTextOf, quotesMembersText } from '@/lib/view/audience'
 import { cn } from '@/lib/utils'
-import { AudienceChip, AudienceWarnings, MEMBERS_CARD, MEMBERS_CARD_HEADER, MembersOnlyTargetPage, VisibleToMembers, closeWithComment, useAudienceWarnings, useComposerAudience, useMembersTexts, useQuoteGate } from '@/components/repo/audience'
+import { AudienceChip, AudienceMark, AudienceWarnings, MEMBERS_CARD, MEMBERS_CARD_HEADER, MembersOnlyTargetPage, closeWithComment, letterThreadOf, useAudienceWarnings, useComposerAudience, useMembersTexts, useQuoteGate, warningName } from '@/components/repo/audience'
+import { ForwardButton } from '@/components/repo/letter-picker'
 import { readDuplicateTargets } from '@/lib/view/issues-view'
 import { closeWhyOf, closedAsWords, closedSkipped } from '@/lib/view/close-reason'
 import type { ClosedAs } from '@/lib/rules/transition'
 import { CloseIssueButton } from '@/components/repo/close-issue-button'
 import { commentEditDrops } from '@/lib/view/issues-view'
-import { totalHidden } from '@/lib/repo/private-content'
+import { totalHidden, type LetterFacts } from '@/lib/repo/private-content'
+import type { ParentLetter } from '@/lib/rules/letters'
 import { ISSUE_LOCK, ISSUE_UNLOCK } from '@/lib/rules/transition'
 import { RoleOracle, trustedUpstreamNumber } from '@/lib/rules/v2'
 import {
@@ -197,7 +199,17 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   )
 
   // Who the comment is for (DESIGN §10): the issue's audience, or Members when picked.
-  const audience = useComposerAudience(home, { parent: data?.issue.audience ?? 'public', members: data?.members ?? null, maintainer: holdings.data?.maintain === true })
+  // A message to specific people re-lists its people for every reply (DESIGN D26), and so does a
+  // forwarded one ("Forward to…": the comment answers it, so none of its people are left out).
+  const [forwarded, setForwarded] = useState<ParentLetter | null>(null)
+  const issueView = data?.issue
+  const letterThread = useMemo(() => {
+    const t = letterThreadOf([issueView])
+    return forwarded === null ? t : { ...t, parents: [...t.parents, forwarded] }
+  }, [issueView, forwarded])
+  const audience = useComposerAudience(home, { parent: data?.issue.audience ?? 'public', members: data?.members ?? null, maintainer: holdings.data?.maintain === true, thread: letterThread })
+  // To specific people: who it goes to, as the picker asked, and the message it forwards.
+  const letterAsk = audience.audience === 'specificPeople' ? { letter: audience.letter, ...(forwarded !== null ? { letterParents: [forwarded] } : {}) } : {}
   // Members-only text on this page, and all this tab has opened in the repo: a public post that
   // repeats it asks first (product H8), and a draft that quotes it is never kept on disk.
   const pageTexts = useMemo(() => (data === null ? [] : membersTextsOf(data)), [data])
@@ -209,6 +221,10 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
     (text) => audience.audience === 'public' && !quotesMembersText(text, membersTexts),
   )
   const warnings = useAudienceWarnings(audience, comment, data === null ? null : { author: data.issue.author, kind: 'issue' })
+  // A forward the writer emptied the composer of answers nothing any more.
+  useEffect(() => {
+    if (comment === '') setForwarded(null)
+  }, [comment])
   // A public post (a comment, an edit) that repeats members-only text asks first (product H8).
   const quoteGate = useQuoteGate()
   const quotedPost = useQuotedMembersPost(home.repo.repoId)
@@ -325,7 +341,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
       ? `Couldn't read this repo's ${ACL_NAME}, so close/reopen permission is unknown.`
       : null
   const target = { id: issue.id, number: issue.number }
-  const commentCost = composeCost(home.repo, 'comment', { body: comment.trim() }, commentFirst, audience.audience)
+  const commentCost = composeCost(home.repo, 'comment', { body: comment.trim() }, commentFirst, audience.audience, audience.preview?.recipients?.length)
   const quoting = audience.audience === 'public' && quotesMembersText(comment, membersTexts)
   // A close or reopen is one `transition`, by a member or by the author.
   const stateCost = previewCreate('transition', {}, stateFirst)
@@ -334,6 +350,16 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   // One that repeats members-only text asks first: posted with the close, or neither happens.
   const withComment = comment.trim() !== '' && composeBlock === null && !lockedOutNow && !commentTooLong ? comment.trim() : null
   const toggleState = (p: Extract<Pending, { kind: 'state' }>): void => closeWithComment(quoteGate, audience.audience, membersTexts, p, setPending)
+  // "Forward to…" (DESIGN D26): the quoted text starts the comment, which answers the message:
+  // its people (and the thread's) are re-listed, the viewer adds more. Its text is never kept at
+  // rest: the draft is held off disk before the text goes in.
+  const forward = (author: string, body: string, letter: LetterFacts | undefined): void => {
+    const text = `${forwardText(warningName(network, author), body)}${comment}`
+    holdDraft(true, '')
+    if (letter !== undefined && letter !== issue.letter) setForwarded({ recipients: letter.recipients, group: letter.group })
+    audience.sendTo(NO_LETTER_ASK)
+    setComment(text)
+  }
   const labelDefs = new Map(labels.map((l) => [l.name, l]))
 
   const postComment = async (confirmed = false): Promise<void> => {
@@ -353,11 +379,12 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
     // Until the outcome is known, a reload must not bring the text back to be posted again.
     holdDraft(true, comment)
     try {
-      const posted = await createComment(sdk, signer, home.repo, { targetId: issue.id, body: comment.trim(), intent: draft.intent, post: postContext, audience: audience.audience })
+      const posted = await createComment(sdk, signer, home.repo, { targetId: issue.id, body: comment.trim(), intent: draft.intent, post: postContext, audience: audience.audience, ...letterAsk })
       setComment('')
       holdDraft(false, '')
       draft.renew()
       audience.reset()
+      setForwarded(null)
       refresh((t) => issueWriteShows(t, { kind: 'comment', id: posted.documentId }))
     } catch (e) {
       if (e instanceof SupersededWriteError) {
@@ -386,7 +413,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
       case 'state': {
         // The comment first, as GitHub posts it: it is part of why the issue closes.
         if (pending.comment !== undefined && closeComment.current?.intent !== intent) {
-          const posted = await createComment(sdk, signer, home.repo, { targetId: issue.id, body: pending.comment, intent: `${intent}:comment`, post: postContext, audience: audience.audience }).catch((e: unknown) => {
+          const posted = await createComment(sdk, signer, home.repo, { targetId: issue.id, body: pending.comment, intent: `${intent}:comment`, post: postContext, audience: audience.audience, ...letterAsk }).catch((e: unknown) => {
             if (e instanceof SupersededWriteError) return { documentId: e.documentId }
             throw e
           })
@@ -433,7 +460,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
           id: issue.id,
           ...changes,
           expectedRevision: BigInt(issue.revision),
-          seal: { current: { title: issue.title, body: issue.long?.field ?? issue.body }, bind: { number: issue.number }, imported: issue.importedRaw ?? null },
+          seal: { current: { title: issue.title, body: issue.long?.field ?? issue.body }, bind: { number: issue.number }, imported: issue.importedRaw ?? null, ...(issue.letter ? { letter: issue.letter } : {}) },
           intent,
         }))
         setEditing(null)
@@ -445,7 +472,12 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
           body: pending.body,
           ...commentEditDropsOf(timeline, pending.id, { isMember, allReadable: totalHidden(hidden) === 0 }),
           ...(timelineComment(timeline, pending.id)?.revision !== undefined ? { expectedRevision: BigInt(timelineComment(timeline, pending.id)?.revision as number) } : {}),
-          seal: { current: { body: timelineComment(timeline, pending.id)?.body ?? '' }, bind: { targetId: issue.id }, imported: timelineComment(timeline, pending.id)?.importedRaw ?? null },
+          seal: {
+            current: { body: timelineComment(timeline, pending.id)?.body ?? '' },
+            bind: { targetId: issue.id },
+            imported: timelineComment(timeline, pending.id)?.importedRaw ?? null,
+            ...(timelineComment(timeline, pending.id)?.letter ? { letter: timelineComment(timeline, pending.id)?.letter } : {}),
+          },
           intent,
         }))
         setEditingComment(null)
@@ -506,7 +538,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const pendingCost = ((): Cost => {
     switch (pending?.kind) {
       case 'state':
-        return pending.comment === undefined ? stateCost : sumPreviews([composeCost(home.repo, 'comment', { body: pending.comment }, commentFirst, audience.audience), stateCost])
+        return pending.comment === undefined ? stateCost : sumPreviews([composeCost(home.repo, 'comment', { body: pending.comment }, commentFirst, audience.audience, audience.preview?.recipients?.length), stateCost])
       case 'labels':
         return sumPreviews([...pending.change.add, ...pending.change.remove].map((value) => composeCost(home.repo, 'event', { value }, eventFirst)))
       case 'assignees':
@@ -588,7 +620,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                   <Pencil className="h-3.5 w-3.5" aria-hidden /> Edit
                 </Button>
               ) : null}
-              {isAuthor && issue.audience === 'members' && home.repo.visibility === 'public' ? (
+              {isAuthor && (issue.audience === 'members' || issue.audience === 'specificPeople') && home.repo.visibility === 'public' ? (
                 <MakePublicButton
                   onClick={() => setPending({ kind: 'makePublic', id: null, quoted: quotedPost(`${issue.title}\n${issue.body}`, issue.author, 'issue') })}
                   disabled={guard.disabledReason !== null || archived || longEditBlock(issue.long) !== null}
@@ -618,11 +650,14 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
 
         {/* Body */}
         {threadCollapsed ? null : (
-        <div className={cn('overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800', issue.audience === 'members' && MEMBERS_CARD)}>
-          <div className={cn('flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 dark:border-anvil-800 dark:bg-anvil-900', issue.audience === 'members' && MEMBERS_CARD_HEADER)}>
+        <div className={cn('overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800', notPublic(issue.audience) && MEMBERS_CARD)}>
+          <div className={cn('flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 dark:border-anvil-800 dark:bg-anvil-900', notPublic(issue.audience) && MEMBERS_CARD_HEADER)}>
             <Byline author={issue.author} createdAt={issue.createdAt} origin={origin} verb="authored" />
-            {issue.audience === 'members' ? <VisibleToMembers /> : null}
+            <AudienceMark audience={issue.audience} letter={issue.letter} />
             <EditedMarker createdAt={issue.createdAt} updatedAt={issue.updatedAt} />
+            {issue.letter !== undefined && composeBlock === null && !lockedOutNow ? (
+              <ForwardButton onForward={() => forward(issue.author, issue.body, issue.letter)} />
+            ) : null}
           </div>
           <div className="px-4 py-3">
             {discarded.boxNote !== null && editing === null && editingComment === null ? (
@@ -676,7 +711,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
             imported={origin === null ? null : { origin, signer: issue.author, createdAt: issue.createdAt }}
             duplicateRefs={(duplicatesOf.data ?? []).map((d) => ({ id: d.id, actor: d.actor, at: d.createdAt, imported: d.imported, number: d.number, title: d.title, href: addr ? repoHref('/repo/issue', addr, { number: String(d.number) }) : '' }))}
             renderComment={(item) => {
-              const slots = commentSlots({
+              const forwardable = item.comment.letter !== undefined && composeBlock === null && !lockedOutNow
+              const base = commentSlots({
                 item,
                 viewer: identity,
                 editing: editingComment,
@@ -688,13 +724,16 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                 // A public comment's edit is public text: it asks first when it repeats members-only text.
                 onSave: (id, body) => quoteGate.check(publicTextOf(body, item.comment.audience, issue.audience), membersTexts, () => setPending({ kind: 'editComment', id, body }), { before: item.comment.body }),
                 onDelete: (id) => setPending({ kind: 'deleteComment', id }),
-                // DESIGN §4.6: the author's own members-only comment, on a public repo.
+                // DESIGN §4.6: the author's own members-only comment, or one to specific people, on a public repo.
                 onMakePublic:
-                  item.comment.audience === 'members' && home.repo.visibility === 'public'
+                  (item.comment.audience === 'members' || item.comment.audience === 'specificPeople') && home.repo.visibility === 'public'
                     ? (id) => setPending({ kind: 'makePublic', id, quoted: quotedPost(item.comment.body, item.comment.author, 'comment') })
                     : undefined,
                 links,
               })
+              const slots = !forwardable
+                ? base
+                : { ...base, header: <>{base.header}<ForwardButton onForward={() => forward(item.comment.author, item.comment.body, item.comment.letter)} /></> }
               const header = item.comment.id === discarded.atComment && editingComment === null ? withDiscardedEdit(slots.header) : slots.header
               if (!whileLocked.has(item.comment.id)) return { ...slots, header }
               return {
@@ -757,8 +796,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                   variant="primary"
                   onClick={() => void postComment()}
                   loading={posting}
-                  disabled={composeBlock !== null || (!identity && locked ? false : comment.trim() === '' || commentTooLong || guard.disabledReason !== null)}
-                  title={guard.disabledReason ?? undefined}
+                  disabled={composeBlock !== null || (!identity && locked ? false : comment.trim() === '' || commentTooLong || guard.disabledReason !== null || audience.blocked !== null)}
+                  title={guard.disabledReason ?? audience.blocked ?? undefined}
                 >
                   {identity ? 'Comment' : locked ? 'Unlock to comment' : 'Sign in to comment'}
                 </Button>
@@ -859,11 +898,14 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   )
 }
 
-/** Members-only text an issue page shows: the issue's own when it is members-only, and members-only comments. */
+/**
+ * Text an issue page shows that isn't public: the issue's own when it is members-only or sent to
+ * specific people, and such comments.
+ */
 function membersTextsOf(t: IssueThread): string[] {
   return [
-    ...(t.issue.audience === 'members' ? [t.issue.title, t.issue.body] : []),
-    ...t.timeline.flatMap((x) => (x.kind === 'comment' && x.comment.audience === 'members' ? [x.comment.body] : [])),
+    ...(notPublic(t.issue.audience) ? [t.issue.title, t.issue.body] : []),
+    ...t.timeline.flatMap((x) => (x.kind === 'comment' && notPublic(x.comment.audience) ? [x.comment.body] : [])),
   ]
 }
 
@@ -1041,7 +1083,10 @@ function commentEditDropsOf(items: readonly TimelineItem[], id: string, opts: { 
 }
 
 /** A comment of the timeline by id (the text an edit re-seals from). */
-function timelineComment(items: readonly TimelineItem[], id: string): { body: string; revision?: number; importedRaw?: Readonly<Record<string, unknown>> | null } | undefined {
+function timelineComment(
+  items: readonly TimelineItem[],
+  id: string,
+): { body: string; revision?: number; importedRaw?: Readonly<Record<string, unknown>> | null; letter?: LetterFacts } | undefined {
   for (const it of items) {
     if (it.kind === 'comment' && it.comment.id === id) return it.comment
   }

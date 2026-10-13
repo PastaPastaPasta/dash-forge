@@ -11,7 +11,7 @@ import { hedgeFileId, hedgeNonce, type EpochKeys } from './keys'
 import { __unsafeSealLetterArtifactWith, __unsafeSealLetterWith, type LetterRecipient } from './named'
 import { __unsafeSealPackWithFileId } from './pack'
 import { __unsafeSealReleaseWithNonce, encodeReleaseManifest, type ReleaseFields, type ReleaseManifest } from './release'
-import type { DocFields } from './tlv'
+import type { DocFields, LetterGroup } from './tlv'
 
 /** `sealDoc` with a fixed nonce; returns the AD and TLV too. */
 export function sealDocWithNonce(
@@ -45,8 +45,9 @@ export function sealLetterWith(
   kObj: Uint8Array,
   nonce: Uint8Array,
   ivs: readonly Uint8Array[],
+  group: LetterGroup | null = null,
 ): Promise<{ commit: Bytes; head: Bytes; ad: Bytes; tlv: Bytes; enc: Bytes }> {
-  return __unsafeSealLetterWith(repoId, senderSecret, senderKeyId, doc, fields, recipients, kObj, nonce, ivs)
+  return __unsafeSealLetterWith(repoId, senderSecret, senderKeyId, doc, fields, recipients, kObj, nonce, ivs, group)
 }
 
 /** `sealLetterArtifact` with a fixed `K_obj`, `fileId` and slot IVs. */

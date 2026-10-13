@@ -9,6 +9,7 @@
 
 import type { ForgeIds } from '../deployments'
 import type { PrivateSession } from './private-session'
+import type { LetterReading } from './private-content'
 import type { Event, EventKind, RefUpdate } from '../rules'
 import { contentWellFormed, docVisibility, gitPlaneWellFormed, type ContentDoc, type ContentKind, type Visibility } from '../rules/v2'
 import type { RerunEvent } from '../rules/ci-rerun'
@@ -116,14 +117,21 @@ export interface RepoRef {
    * stand in: nothing this opens is anyone's secret). Never set on a private repo.
    */
   readonly published?: PrivateSession
+  /**
+   * A signed-in reader whose browser holds an encryption key: what opens the issues, comments and
+   * reviews written to specific people that name them (`enc` v0x04, DESIGN §4.2), in a public or
+   * a private repo, member or not. Only the content gate reads it (`gateFor`).
+   */
+  readonly letters?: LetterReading
 }
 
-/** `repo` as everyone reads it: without a reader's sessions or published keys. */
+/** `repo` as everyone reads it: without a reader's sessions, letter reader or published keys. */
 export function withoutSessions(repo: RepoRef): RepoRef {
-  const { session: _s, lane: _l, published: _p, ...plain } = repo
+  const { session: _s, lane: _l, published: _p, letters: _r, ...plain } = repo
   void _s
   void _l
   void _p
+  void _r
   return plain
 }
 
@@ -148,10 +156,13 @@ export function repoKey(repo: RepoRef): string {
  * plus the members-key session of a public repo read by a member. Caches and page reads of
  * content key by it, so a member's decrypted members-only content never outlives the session
  * that opened it, and a page re-reads once the session is ready. The git plane keeps
- * {@link repoKey}: a members-key session changes nothing there.
+ * {@link repoKey}: a members-key session changes nothing there. The reader's letter reader
+ * (`letters`) is part of it as well.
  */
 export function contentKey(repo: RepoRef): string {
-  return repo.lane === undefined ? repoKey(repo) : `${repoKey(repo)}#${repo.lane.id}`
+  const lane = repo.lane === undefined ? repoKey(repo) : `${repoKey(repo)}#${repo.lane.id}`
+  // The letters this reader opens go with its letter reader too.
+  return repo.letters === undefined ? lane : `${lane}#${repo.letters.id}`
 }
 
 /** A string field, or `''` when absent or not a string. */

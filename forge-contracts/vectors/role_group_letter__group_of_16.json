@@ -1,0 +1,102 @@
+{
+  "name": "group_of_16",
+  "description": "16 people, the writer included, fit.",
+  "case": "role_group_letter",
+  "rules": "v2",
+  "input": {
+    "owner": "6owner1111111111111111111111111111111111111",
+    "sender": "6owner1111111111111111111111111111111111111",
+    "members": [
+      {
+        "identity": "MAmaint111111111111111111111111111111111111",
+        "role": "maintainer"
+      },
+      {
+        "identity": "MBmaint111111111111111111111111111111111111",
+        "role": "maintainer"
+      },
+      {
+        "identity": "MCmaint111111111111111111111111111111111111",
+        "role": "maintainer"
+      },
+      {
+        "identity": "MDmaint111111111111111111111111111111111111",
+        "role": "maintainer"
+      },
+      {
+        "identity": "MEmaint111111111111111111111111111111111111",
+        "role": "maintainer"
+      },
+      {
+        "identity": "MFmaint111111111111111111111111111111111111",
+        "role": "maintainer"
+      },
+      {
+        "identity": "MGmaint111111111111111111111111111111111111",
+        "role": "maintainer"
+      },
+      {
+        "identity": "MHmaint111111111111111111111111111111111111",
+        "role": "maintainer"
+      },
+      {
+        "identity": "MJmaint111111111111111111111111111111111111",
+        "role": "maintainer"
+      },
+      {
+        "identity": "MKmaint111111111111111111111111111111111111",
+        "role": "maintainer"
+      },
+      {
+        "identity": "MLmaint111111111111111111111111111111111111",
+        "role": "maintainer"
+      },
+      {
+        "identity": "MMmaint111111111111111111111111111111111111",
+        "role": "maintainer"
+      },
+      {
+        "identity": "MNmaint111111111111111111111111111111111111",
+        "role": "maintainer"
+      },
+      {
+        "identity": "MPmaint111111111111111111111111111111111111",
+        "role": "maintainer"
+      },
+      {
+        "identity": "MQmaint111111111111111111111111111111111111",
+        "role": "maintainer"
+      }
+    ],
+    "keyless": [],
+    "request": {
+      "group": "maintainers",
+      "people": []
+    },
+    "exact": null,
+    "parents": [],
+    "membersOnlyParent": false
+  },
+  "expected": {
+    "recipients": [
+      "6owner1111111111111111111111111111111111111",
+      "MAmaint111111111111111111111111111111111111",
+      "MBmaint111111111111111111111111111111111111",
+      "MCmaint111111111111111111111111111111111111",
+      "MDmaint111111111111111111111111111111111111",
+      "MEmaint111111111111111111111111111111111111",
+      "MFmaint111111111111111111111111111111111111",
+      "MGmaint111111111111111111111111111111111111",
+      "MHmaint111111111111111111111111111111111111",
+      "MJmaint111111111111111111111111111111111111",
+      "MKmaint111111111111111111111111111111111111",
+      "MLmaint111111111111111111111111111111111111",
+      "MMmaint111111111111111111111111111111111111",
+      "MNmaint111111111111111111111111111111111111",
+      "MPmaint111111111111111111111111111111111111",
+      "MQmaint111111111111111111111111111111111111"
+    ],
+    "skipped": [],
+    "group": "maintainers"
+  }
+}

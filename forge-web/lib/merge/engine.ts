@@ -412,14 +412,15 @@ export function squashAuthor(authors: SquashAuthors): { name: string; email: str
  * not list again as a co-author.
  */
 export function squashDraft(
-  pr: { readonly title: string; readonly body: string; readonly number: number; readonly audience?: 'members' },
+  pr: { readonly title: string; readonly body: string; readonly number: number; readonly audience?: 'members' | 'specificPeople' },
   authors: SquashAuthors,
   merger: string,
   edited: string | null,
 ): { message: string; ready: boolean; warning: string | null; problem: string | null; author: { name: string; email: string } | null } {
   const author = squashAuthor(authors)
   const authorLine = author === null ? merger : `${author.name} <${author.email}>`
-  const members = pr.audience === 'members'
+  // A members-only PR's text (or one sent to specific people) never goes into a public commit.
+  const members = pr.audience === 'members' || pr.audience === 'specificPeople'
   const listed = authors === null || 'error' in authors ? [] : authors.authors
   const fallback = authors === null ? null : members ? membersSquashMessage(pr.number, listed, authorLine) : squashMessage(pr.title, pr.body, pr.number, listed, authorLine)
   const ready = edited !== null || fallback !== null

@@ -451,6 +451,7 @@ mod tests {
             imported: None,
             diff_hunk: None,
             audience: forge_core::rules::v2::Audience::Public,
+            letter: None,
         }
     }
 
@@ -466,6 +467,7 @@ mod tests {
             imported: None,
             members_only: false,
             audience: forge_core::rules::v2::Audience::Public,
+            letter: None,
         }
     }
 

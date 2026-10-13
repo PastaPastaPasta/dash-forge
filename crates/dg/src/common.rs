@@ -358,7 +358,9 @@ impl Reader {
                 match Box::pin(members_signer(ctx, &client, &repo, viewer)).await {
                     MembersKeys::Loaded(found) => signer = Some(*found),
                     MembersKeys::Locked => locked = true,
-                    MembersKeys::None => {}
+                    // not a member: still a possible recipient of a message to specific people
+                    // (DESIGN §4.2, D14), so a key that opens without asking is loaded
+                    MembersKeys::None => signer = letters_signer(ctx, &client).await,
                 }
             }
         }
@@ -498,6 +500,22 @@ async fn members_signer(
             MembersKeys::Locked
         }
     }
+}
+
+/// The viewer's identity for reading the messages to specific people of a public repository
+/// it is not a member of: loaded only when its key opens without asking (no passphrase, or one
+/// already given), never prompting on a public read. `None` otherwise: those messages stay
+/// placeholders.
+async fn letters_signer(
+    ctx: &crate::context::Ctx,
+    client: &PlatformClient,
+) -> Option<(forge_core::keystore::BridgeIdentity, LoadedIdentity)> {
+    let path = ctx.identity_path.as_ref()?;
+    let given = std::env::var_os(forge_core::sealed::PASSPHRASE_ENV).is_some_and(|v| !v.is_empty());
+    if ctx.unlocked_key().is_none() && key_needs_passphrase(path) && !given {
+        return None;
+    }
+    ctx.signer_on(client).await.ok()
 }
 
 /// What a reader should do to open members-only content with a key it could not open here.

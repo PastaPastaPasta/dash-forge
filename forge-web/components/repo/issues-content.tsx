@@ -288,10 +288,10 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
           {bulkAllowed ? <BulkBar kind="issue" home={home} rows={bulkRows} selection={bulk} labels={(data?.labels ?? []).filter((l) => !l.retired)} onWritten={reload} onBusy={bulkHold.setBusy} /> : null}
           <StateTabs label="Issue state">
             <StateTab active={query.state === 'open'} onClick={() => change({ state: 'open' })}>
-              <CircleDot className="h-3.5 w-3.5" aria-hidden /> {tabCount(data?.openCount)}Open<MembersOnlyShare n={data?.membersOnly?.open} />
+              <CircleDot className="h-3.5 w-3.5" aria-hidden /> {tabCount(data?.openCount)}Open<MembersOnlyShare n={data?.membersOnly?.open} letters={data?.membersOnly?.lettersOpen} />
             </StateTab>
             <StateTab active={query.state === 'closed'} onClick={() => change({ state: 'closed' })}>
-              <CheckCircle2 className="h-3.5 w-3.5" aria-hidden /> {tabCount(data?.closedCount)}Closed<MembersOnlyShare n={data?.membersOnly?.closed} />
+              <CheckCircle2 className="h-3.5 w-3.5" aria-hidden /> {tabCount(data?.closedCount)}Closed<MembersOnlyShare n={data?.membersOnly?.closed} letters={data?.membersOnly?.lettersClosed} />
             </StateTab>
             <StateTab active={query.state === 'all'} onClick={() => change({ state: 'all' })}>
               All
@@ -505,7 +505,9 @@ function ComposeIssueDialog({
   }, [wantsLabels, labelDefs.data, template])
   // Submit waits for them, so a member's issue never opens without its template's labels.
   const labelsLoading = wantsLabels && labelDefs.data === null && labelDefs.error === null
-  const cost = sumPreviews([composeCost(repo, 'issue', { title: title.trim(), body: issueBody }, first, audience.audience), ...labelsToApply.map(() => previewCreate('event'))])
+  // A message to specific people takes no labels yet (a value on one is refused): none are applied.
+  const labelsWith = audience.audience === 'specificPeople' ? [] : labelsToApply
+  const cost = sumPreviews([composeCost(repo, 'issue', { title: title.trim(), body: issueBody }, first, audience.audience, audience.preview?.recipients?.length), ...labelsWith.map(() => previewCreate('event'))])
   const bodyBytes = utf8Length(issueBody)
   // Who can't read a members-only issue it names (product H8): @mentions outside the members.
   const warnings = useAudienceWarnings(audience, `${title}\n${issueBody}`, null)
@@ -558,10 +560,20 @@ function ComposeIssueDialog({
     // Until the outcome is known, a reload must not bring the issue back to be posted again.
     holdKept(true, null)
     try {
-      const created = await createIssue(sdk, signer, repo, { title: title.trim(), body: issueBody, intent: draft.intent, ...(audience.choice !== null ? { audience: audience.audience } : {}) }, (taken, next) =>
-        setNote(`Someone claimed #${taken} a moment ago; retrying as #${next}.`),
+      const created = await createIssue(
+        sdk,
+        signer,
+        repo,
+        {
+          title: title.trim(),
+          body: issueBody,
+          intent: draft.intent,
+          ...(audience.choice !== null ? { audience: audience.audience } : {}),
+          ...(audience.audience === 'specificPeople' ? { letter: audience.letter } : {}),
+        },
+        (taken, next) => setNote(`Someone claimed #${taken} a moment ago; retrying as #${next}.`),
       )
-      await applyLabels(created, labelsToApply)
+      await applyLabels(created, labelsWith)
       holdKept(false, null)
       setTitle('')
       setBody('')
@@ -606,8 +618,8 @@ function ComposeIssueDialog({
             variant="primary"
             onClick={submit}
             loading={pending}
-            disabled={title.trim() === '' || bodyTooLong || missing.length > 0 || needsTemplate || labelsLoading || guard.disabledReason !== null}
-            title={guard.disabledReason ?? (needsTemplate ? 'Pick a template' : missing.length > 0 ? `Answer: ${missing.join(', ')}` : undefined)}
+            disabled={title.trim() === '' || bodyTooLong || missing.length > 0 || needsTemplate || labelsLoading || guard.disabledReason !== null || audience.blocked !== null}
+            title={guard.disabledReason ?? audience.blocked ?? (needsTemplate ? 'Pick a template' : missing.length > 0 ? `Answer: ${missing.join(', ')}` : undefined)}
           >
             {identity ? 'Submit issue' : locked ? 'Unlock to submit' : 'Sign in to submit'}
           </Button>
