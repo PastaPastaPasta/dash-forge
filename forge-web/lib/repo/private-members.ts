@@ -103,6 +103,14 @@ export class PrivateMembersError extends Error {
   }
 }
 
+/** The member list read twice and the reads differ: a node is behind ({@link assertMembersSettled}). */
+export class MembersUnsettledError extends PrivateMembersError {
+  constructor(message: string) {
+    super(message, 'E310')
+    this.name = 'MembersUnsettledError'
+  }
+}
+
 /** One recipient of a rotation's wraps. */
 export interface RotationRecipient {
   /** base58 identity. */
@@ -428,19 +436,24 @@ export function wrapOutcome(
  * Before a key goes to anyone: read the member list again, after the session's configs and wraps
  * were read, and require it to agree with the session's (minus what this flow just deleted). The
  * two reads can come from different nodes; a lagging membership read beside a fresh config read
- * would hand the current key to someone removed a moment ago. Refuses on any difference.
+ * would hand the current key to someone removed a moment ago. Refuses on any difference, saying
+ * `sent` when this flow had already written something.
  */
 async function assertMembersSettled(
   c: PrivateWriteContext,
   session: PrivateSession,
   drop: readonly { readonly identity: string; readonly role?: Role }[] = [],
+  /** What this flow had already written when the check refused, e.g. "@x was added, but their key share wasn't written"; omit when nothing was. */
+  sent?: string,
 ): Promise<void> {
   const again = (await readMemberships(c.sdk, c.repo)).filter(
     (m) => !drop.some((d) => d.identity === m.identity && (d.role === undefined || d.role === m.role)),
   )
   const key = (rows: readonly Membership[]): string => rows.map((m) => `${m.role}:${m.identity}`).sort().join(',')
   if (key(again) !== key(session.members)) {
-    throw new PrivateMembersError('the member list is still changing on Platform; nothing was sent. Try again in a moment.', 'E310')
+    throw sent === undefined
+      ? new MembersUnsettledError('the member list is still changing on Platform; nothing was sent. Try again in a moment.')
+      : new MembersUnsettledError(`${sent} because the member list is still changing on Platform. Try Repair in a minute.`)
   }
 }
 
@@ -988,8 +1001,21 @@ export async function addPrivateMember(c: PrivateWriteContext, memberId: string,
   // they add one (the repair check wraps them), as `dg collab add` does.
   if (!canReceive && c.repo.visibility === 'private') throw new PrivateMembersError(`${short(memberId)} has no encryption key yet`, 'E306')
   const receives = canReceive && holdsMembersKey(role)
-  // Nothing is written unless the wrap can follow, and a new maintainer's old configs must not
-  // take over any epoch (§5.3: under contiguity an earlier config of theirs would come first).
+  await precheckAdd(c, memberId, role)
+  await grantMembershipDoc(c.sdk, c.auth, c.repo, memberId, role, `${intent}:member`)
+  if (!receives) return { shared: false }
+  await waitForMembers(c, (rows) => holds(rows, memberId, role))
+  await withFreshSession(c, (session) => wrapForMember(c, session, memberId, intent))
+  return { shared: true }
+}
+
+/**
+ * What would refuse an add after the membership was written, checked before anything is signed
+ * (also by a caller that signs something first, e.g. a promotion's environment saves): the wrap
+ * must be possible, and a new maintainer's old configs must not take over any epoch (§5.3: under
+ * contiguity an earlier config of theirs would come first).
+ */
+export async function precheckAdd(c: PrivateWriteContext, memberId: string, role: Role): Promise<void> {
   await withFreshSession(c, async (s) => {
     requireWriteEpoch(s)
     if (role !== 'maintainer' || isMaintainer(s, memberId)) return
@@ -1008,11 +1034,6 @@ export async function addPrivateMember(c: PrivateWriteContext, memberId: string,
       )
     }
   })
-  await grantMembershipDoc(c.sdk, c.auth, c.repo, memberId, role, `${intent}:member`)
-  if (!receives) return { shared: false }
-  await waitForMembers(c, (rows) => holds(rows, memberId, role))
-  await withFreshSession(c, (session) => wrapForMember(c, session, memberId, intent))
-  return { shared: true }
 }
 
 /** What an add did with the key: `shared` false, a public repo's member with no encryption key yet (the repair check wraps them later). */
@@ -1038,7 +1059,7 @@ async function wrapForMember(c: PrivateWriteContext, session: PrivateSession, me
   const n = requireWriteEpoch(session)
   const key = usableEncryptionKey(session.memberKeys.get(memberId) ?? [], c.repo.forge.core)
   if (key === null) throw new PrivateMembersError(`${short(memberId)} has no encryption key yet`, 'E306')
-  await assertMembersSettled(c, session)
+  await assertMembersSettled(c, session, [], `${short(memberId)} was added, but their key share wasn't written`)
   const kn = await rawEpochKey(session, c, n)
   try {
     requireSame(await postWrap(c, session, kn.keys, kn.raw, memberId, key.keyId, intent), memberId, n)
@@ -1084,6 +1105,9 @@ export function removalEffect(members: readonly Membership[], memberId: string, 
 
 /** A rotation error after the membership was deleted: the Remove button is gone by then. */
 function afterRevoke(e: unknown): Error {
+  if (e instanceof MembersUnsettledError) {
+    return new PrivateMembersError("the member was removed, but the key wasn't rotated because the member list is still changing on Platform. Open Repair on the repo page in a minute to finish.", 'E310')
+  }
   const reason = e instanceof Error ? e.message : String(e)
   return new PrivateMembersError(`the member was removed, but the key was not rotated yet (${reason}). Open Repair on the repo page to finish.`, 'E310')
 }
@@ -1517,7 +1541,8 @@ export async function runRepair(
   if (first.rotate.length > 0 || first.burned) {
     await rotateRepoKey(c, first.rotate, `${intent}:rotate`, onStep, [...drop, ...first.rotate.map((identity) => ({ identity }))], undefined, afterLoss)
   }
-  await withFreshSession(c, (session) => wrapMissing(c, session, intent, onStep, drop), drop)
+  const rotated = first.rotate.length > 0 || first.burned
+  await withFreshSession(c, (session) => wrapMissing(c, session, intent, onStep, drop, rotated), drop)
 }
 
 /** §5.6's second action: wrap the current epoch to each member with no wrap to an enabled key. */
@@ -1527,12 +1552,14 @@ async function wrapMissing(
   intent: string,
   onStep?: (s: RotationStep) => void,
   drop: readonly { readonly identity: string; readonly role?: Role }[] = [],
+  /** This repair already rotated the key: a refusal here is not "nothing was sent". */
+  rotated = false,
 ): Promise<void> {
   const plan = planRepair(session, c.auth.identityId, c.repo.forge.core)
   if (plan === null) return
   const n = session.resolution.writeEpoch
   if (n === null || plan.wrap.length === 0) return
-  await assertMembersSettled(c, session, drop)
+  await assertMembersSettled(c, session, drop, rotated ? "the key was rotated, but it wasn't shared with everyone yet" : undefined)
   const kn = await rawEpochKey(session, c, n)
   try {
     for (const id of plan.wrap) {

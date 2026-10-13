@@ -13,9 +13,10 @@ import { Fingerprint, HardDrive, ShieldPlus, UserCog } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import type { RepoRef } from '@/lib/repo'
 import type { PrivateSession } from '@/lib/repo/private-session'
-import { ConsentMissingError, changeMemberRole, findConsent, grantMember, invalidateMembers, memberDocOf, readMembershipsCached, repoContractIds, revokeMember } from '@/lib/repo'
+import { ConsentMissingError, changeMemberRole, findConsent, grantMember, invalidateMembers, memberDocOf, precheckMemberChange, readMembershipsCached, repoContractIds, revokeMember } from '@/lib/repo'
 import { addMemberCost, planRotation, removalCost, removalEffect, roleChangeCost } from '@/lib/repo/private-members'
 import { usePrivateWrite } from '@/hooks/use-private-write'
+import { ResolvedPerson } from '@/components/repo/resolved-person'
 import { ConsentCheck, Invitations, mayAdd, useInviteAccepted } from '@/components/repo/invite-banner'
 import { MembersContentSetting, RemovalReads, useMembersKeyBlock } from '@/components/repo/audience'
 import type { Membership, Role as MemberRole } from '@/lib/rules/v2'
@@ -24,10 +25,10 @@ import { previewCreate, previewDelete } from '@/lib/sdk'
 import { ROLE_LABEL, grantableRoles, holdsMembersKey, membershipTitle } from '@/lib/rules/roles'
 import { namedAction } from '@/lib/spend-toast'
 import { RoleBadge, RolePicker, RoleSummary } from '@/components/repo/role-picker'
-import { decodeIdentifier } from '@/lib/auth'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
+import { usePersonInput } from '@/hooks/use-person-input'
 import { retryWhileMissing } from '@/lib/view/retry'
 import { useAuth } from '@/contexts/auth-context'
 import { Author } from '@/components/author'
@@ -125,17 +126,11 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
   const [action, setAction] = useState<MemberAction | null>(null)
   // The member row whose role picker is open (`role:identity`).
   const [changing, setChanging] = useState<string | null>(null)
-  const idError = (() => {
-    if (memberId.trim() === '') return null
-    try {
-      decodeIdentifier(memberId.trim())
-      return null
-    } catch {
-      return 'Not an identity id (base58, 32 bytes).'
-    }
-  })()
+  // The typed text is an identity id, or a DPNS name looked up once typing pauses (an unknown one is refused).
+  const person = usePersonInput(memberId)
+  const idError = person.error
   // Whether the typed identity accepted, read before Add prices anything (QW4-036).
-  const typed = memberId.trim() !== '' && idError === null ? memberId.trim() : null
+  const typed = person.id
   const consent = useInviteAccepted(repo, isOwner && repo.visibility !== 'private' ? typed : null)
   // A key-aware change needs this tab's encryption key: offer the unlock instead of failing on it.
   const keyBlock = useMembersKeyBlock(keyed && action !== null, network)
@@ -167,6 +162,9 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
       }, async () => {
         // what would refuse an add before signing, checked before any environment is saved first
         if (action.kind !== 'revoke' && action.member !== repo.ownerId && (await findConsent(sdk, repo, action.member)) === null) consentMissing(new ConsentMissingError(action.member))
+        // a promotion's earlier key taking over an epoch refuses the add after the first saves: check it first, as dg does
+        const to = action.kind === 'change' ? action.to : action.role
+        if (action.kind !== 'revoke' && to === 'maintainer') await precheckMemberChange(sdk, signer, repo, action.member, to, ops)
       })
     } catch (e) {
       if (!awaitingConsent) throw e
@@ -287,8 +285,8 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
             <h4 className="mb-2 text-dense font-medium">Add a member</h4>
             <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
               <div className="flex-1">
-                <Field label="Identity ID" htmlFor="member-id">
-                  <Input id="member-id" value={memberId} onChange={(e) => setMemberId(e.target.value)} placeholder="base58 identity id" className="font-mono" spellCheck={false} />
+                <Field label="Identity ID or name" htmlFor="member-id">
+                  <Input id="member-id" value={memberId} onChange={(e) => setMemberId(e.target.value)} placeholder="Identity id or name.dash" className="font-mono" spellCheck={false} />
                 </Field>
               </div>
               <RolePicker value={role} onChange={setRole} visibility={repo.visibility} />
@@ -304,6 +302,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
             </div>
             <RoleSummary role={role} />
             {idError ? <p className="mt-1 text-[12px] text-danger-700 dark:text-danger-400">{idError}</p> : null}
+            <ResolvedPerson person={person} />
             {awaiting !== typed ? <ConsentCheck identity={typed} check={consent} /> : null}
             <Invitations
               repo={repo}

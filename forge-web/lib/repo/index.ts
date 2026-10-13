@@ -221,6 +221,7 @@ export {
   followRelation,
   findConsent,
   grantMember,
+  precheckMemberChange,
   LOCKED_REASON,
   lockedOut,
   nextNumber,

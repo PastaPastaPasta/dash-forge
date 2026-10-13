@@ -113,11 +113,14 @@ export function SecurityPolicyLink({ home, addr, load }: { home: RepoHome; addr:
 }
 
 /**
- * The new-issue form's reminder (DESIGN §10, always shown): issues are public and permanent, so a
- * vulnerability goes by the policy, or to a maintainer privately when the repo has none.
+ * The new-issue form's reminder (DESIGN §10): issues are public and permanent, so a vulnerability
+ * goes by the policy, or to a maintainer privately when the repo has none. Shown for every
+ * public repo. A private repo's issues are readable only by its members, so the sentence would be
+ * false there, and its policy is never read: nothing is shown.
  */
-export function SecurityHint({ home, addr, enabled }: { home: RepoHome; addr: RepoAddress; enabled: boolean }): JSX.Element {
+export function SecurityHint({ home, addr, enabled }: { home: RepoHome; addr: RepoAddress; enabled: boolean }): JSX.Element | null {
   const policy = useSecurityPolicy(home, enabled)
+  if (home.repo.visibility === 'private') return null
   return (
     <p className="text-[12px] text-anvil-600 dark:text-anvil-400" data-testid="security-hint">
       Issues are public and permanent.
