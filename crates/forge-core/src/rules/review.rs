@@ -348,7 +348,7 @@ pub fn counts_for(oracle: &RoleOracle, policy: &Policy, identity: &str) -> bool 
         Some(Role::Maintainer) => true,
         Some(Role::Writer) => policy.approver_role == 0,
         // Never approvers: their verdicts are shown, not counted.
-        Some(Role::Triage | Role::Reader) | None => false,
+        Some(Role::Triage | Role::Reader | Role::Bot) | None => false,
     }
 }
 

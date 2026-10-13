@@ -12,6 +12,7 @@ import type { ForgeIds } from '../deployments'
 import { countDocuments, queryAllDocuments, queryDocuments } from '../sdk'
 import { DOC, asIdentifierString, str, type RepoRef } from './contract'
 import { packHashHex } from './pack-hash'
+import { contractOf } from './source'
 
 /** A repo's star count (`star.byRepo`, countable). */
 export function readStarCount(sdk: EvoSDK, forge: ForgeIds, repoId: string): Promise<number> {
@@ -195,7 +196,7 @@ export async function readFollowPage(
 ): Promise<FollowPage> {
   const [pinned, terminal] = side === 'followers' ? (['identityId', '$ownerId'] as const) : (['$ownerId', 'identityId'] as const)
   const docs = await queryDocuments(sdk, {
-    dataContractId: forge.community,
+    dataContractId: contractOf(forge, DOC.follow),
     documentTypeName: DOC.follow,
     where: [
       [pinned, '==', identityId],
@@ -216,12 +217,12 @@ export async function readFollowCounts(
 ): Promise<{ followers: number | null; following: number | null }> {
   const [followers, following] = await Promise.all([
     countDocuments(sdk, {
-      dataContractId: forge.community,
+      dataContractId: contractOf(forge, DOC.follow),
       documentTypeName: DOC.follow,
       where: [['identityId', '==', identityId]],
     }).catch(() => null),
     countDocuments(sdk, {
-      dataContractId: forge.community,
+      dataContractId: contractOf(forge, DOC.follow),
       documentTypeName: DOC.follow,
       where: [['$ownerId', '==', identityId]],
     }).catch(() => null),

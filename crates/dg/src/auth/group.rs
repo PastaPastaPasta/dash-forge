@@ -288,8 +288,9 @@ fn check_ownership<'a>(
     Ok(pinned)
 }
 
-/// forge-core, forge-collab and forge-community are whole-contract members (forge-community
-/// is forge-collab on a deployment that predates the split, so the check is then the pair).
+/// forge-core, forge-collab, forge-community and, on a four-contract set, forge-meta are
+/// whole-contract members (forge-community is forge-collab on a deployment that predates the
+/// split, so the check is then the pair).
 #[allow(clippy::result_large_err)]
 fn check_pair(
     forge: &ForgeIds,
@@ -301,10 +302,15 @@ fn check_pair(
     if forge.all().iter().all(|(_, c)| whole.contains(c)) {
         return Ok(());
     }
+    let mut named: Vec<String> = forge
+        .all()
+        .into_iter()
+        .map(|(name, id)| format!("{name} {id}"))
+        .collect();
+    let last = named.pop().unwrap_or_default();
     Err(refusal(format!(
-        "group {group} on {network} does not hold forge-core {}, forge-collab {} and \
-         forge-community {} as whole contracts",
-        forge.core, forge.collab, forge.community
+        "group {group} on {network} does not hold {} and {last} as whole contracts",
+        named.join(", ")
     )))
 }
 
@@ -377,6 +383,7 @@ mod tests {
             core: "CORE".into(),
             collab: "COLLAB".into(),
             community: "COMMUNITY".into(),
+            meta: None,
             group: "GROUP".into(),
             superseded_in_group: vec!["OLDCOLLAB".into()],
             group_owner: Some(DEPLOYER.into()),
@@ -543,6 +550,35 @@ mod tests {
             cause(&e)
         );
         assert!(chain.reads().is_empty());
+    }
+
+    /// A four-contract set (D44): forge-meta is a known whole-contract member, and a group
+    /// without it is refused.
+    #[tokio::test]
+    async fn a_four_contract_set_knows_forge_meta() {
+        let four = ForgeIds {
+            meta: Some("META".into()),
+            ..forge()
+        };
+        let chain = Chain::new(&["CORE", "COLLAB", "COMMUNITY", "META"]);
+        let r = run_check(&chain, &four, "GROUP", true, NET).await.unwrap();
+        assert_eq!(r.notice(), None);
+        assert!(chain.reads().is_empty());
+        // The three-contract build meets forge-meta as an unknown member (rule 4).
+        assert!(
+            check(&Chain::new(&["CORE", "COLLAB", "COMMUNITY", "META"]), true)
+                .await
+                .is_err()
+        );
+        let chain = Chain::new(&["CORE", "COLLAB", "COMMUNITY"]);
+        let e = run_check(&chain, &four, "GROUP", false, NET)
+            .await
+            .unwrap_err();
+        assert!(
+            cause(&e).contains("forge-community COMMUNITY and forge-meta META"),
+            "{}",
+            cause(&e)
+        );
     }
 
     #[tokio::test]

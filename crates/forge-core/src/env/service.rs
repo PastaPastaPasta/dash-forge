@@ -973,6 +973,7 @@ impl<'a> Environments<'a> {
             Some(Role::Writer) => format!("you are a writer of {}", repo.display()),
             Some(Role::Triage) => format!("you are a triage member of {}", repo.display()),
             Some(Role::Reader) => format!("you are a reader of {}", repo.display()),
+            Some(Role::Bot) => format!("you are a bot of {}", repo.display()),
             Some(Role::Maintainer) | None => format!("you are not a member of {}", repo.display()),
         };
         Err(UserError::new(

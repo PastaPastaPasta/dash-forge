@@ -195,7 +195,13 @@ export const FIRST_WRITE_CREDITS: Readonly<Record<string, Surcharge>> = {
   packManifest: { repo: 47_000_000 },
 }
 
-/** An identity's first write to a contract also stores its identity-contract nonce. */
+/**
+ * An identity's first write to a contract also stores its identity-contract nonce. The nonce is
+ * per contract, so on a four-contract set (D44) the first write of a type forge-meta holds
+ * (`lib/layout.ts` `META_TYPES`) pays it even when the signer has written the type's old home:
+ * a caller that knows the signer wrote a contract says so only for that contract
+ * (`lib/repo/first-write.ts` `contractFirst`, `contractKindOfType`).
+ */
 export const CONTRACT_FIRST_CREDITS = 12_000_000
 
 /**

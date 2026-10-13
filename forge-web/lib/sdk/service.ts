@@ -41,6 +41,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { noteClockOk, noteClockSkew } from './clock-skew'
 
 import { NETWORKS, type Network } from '../constants'
+import { forgeContractIds } from '../deployments'
 import { userQuorumUrl } from '../quorum-url'
 import { dapiBudget, installDapiFetchGate } from './budget'
 import { isContractMissingError } from './contract-missing'
@@ -371,7 +372,7 @@ export class EvoSdkService {
   private noteMissing(contract: string | undefined, e: unknown): void {
     if (this.missing !== null || this.confirming || contract === undefined || this.network === null) return
     const forge = NETWORKS[this.network].v2
-    if (forge === null || (contract !== forge.core && contract !== forge.collab && contract !== forge.community) || !isContractMissingError(e)) return
+    if (forge === null || !forgeContractIds(forge).includes(contract) || !isContractMissingError(e)) return
     const connection = this.current
     if (connection === null || this.clock.now() - this.presentAt < RECOVER_GAP_MS) return
     const epoch = this.epoch
@@ -1310,7 +1311,7 @@ setWriteHold((write) => evoSdkService.holdForWrite(write))
 /** The contracts every connection preloads: DPNS, Forge's contracts, then `extra` (deduplicated). */
 export function preloadContractIds(network: Network, extra: readonly string[] = []): string[] {
   const { dpnsContractId, v2 } = NETWORKS[network]
-  const ids = [dpnsContractId, v2?.core, v2?.collab, v2?.community, ...extra]
+  const ids = [dpnsContractId, ...(v2 ? forgeContractIds(v2) : []), ...extra]
   return [...new Set(ids.filter((id): id is string => typeof id === 'string' && id.length > 0))]
 }
 

@@ -797,8 +797,25 @@ pub struct RefWrite {
 }
 
 /// A repository's current members as the pack reader rule needs them (maintainers'
-/// copies first).
+/// copies first). Bots (role 4, mainnet) are in it, ranked after the others.
 pub type RoleMap = BTreeMap<String, Role>;
+
+/// Whether `id` is a current member whose records a reader prefers or lets retire others
+/// (gateways, mirrors, `supersedes`): any member but a bot (review-rev41 M-4).
+#[must_use]
+pub fn trusted_member(roles: &RoleMap, id: &str) -> bool {
+    roles.get(id).is_some_and(|r| *r != Role::Bot)
+}
+
+/// The ids of the current members that are not bots ([`trusted_member`]).
+#[must_use]
+pub fn trusted_members(roles: &RoleMap) -> Vec<String> {
+    roles
+        .keys()
+        .filter(|id| trusted_member(roles, id))
+        .cloned()
+        .collect()
+}
 
 /// What [`RepoService::open_or_skip`] does with one artifact.
 #[derive(Debug)]
@@ -2142,10 +2159,7 @@ impl<'a> RepoService<'a> {
                 let Some(first) = copies.first() else {
                     return Err(last);
                 };
-                let served = match self
-                    .fetch_from_mirrors(repo, contract, first, roles, reader)
-                    .await
-                {
+                let served = match self.fetch_from_mirrors(repo, first, roles, reader).await {
                     Ok(served) => served,
                     // Name the mirrors that were tried and refused beside the recorded copies.
                     Err(Some(clause)) => return Err(with_mirror_clause(last, &clause)),
@@ -2233,7 +2247,6 @@ impl<'a> RepoService<'a> {
     async fn fetch_from_mirrors(
         &self,
         repo: &RepoRef,
-        contract: &LoadedContract,
         manifest: &PackManifestInfo,
         roles: &RoleMap,
         reader: &PackReader,
@@ -2243,16 +2256,16 @@ impl<'a> RepoService<'a> {
             return Err(None);
         }
         let hash = hex::encode(manifest.pack_hash);
-        let members: Vec<String> = roles.keys().cloned().collect();
-        let mirrors = match crate::pack_mirror::mirrors_of(
-            self.client,
-            contract,
-            repo,
-            &hash,
-            &members,
-        )
-        .await
-        {
+        let members = trusted_members(roles);
+        // forge-core's records, or forge-meta's on a four-contract set (D44)
+        let listed = async {
+            let contract = self
+                .client
+                .fetch_contract(repo.forge().home(crate::pack_mirror::DOC_PACK_MIRROR))
+                .await?;
+            crate::pack_mirror::mirrors_of(self.client, &contract, repo, &hash, &members).await
+        };
+        let mirrors = match listed.await {
             Ok(m) => m,
             Err(e) => {
                 tracing::info!(pack = %hash, error = %e, "pack mirrors unreadable");
@@ -3655,7 +3668,7 @@ fn series(manifests: &[PackManifestInfo], roles: &RoleMap, kind: u8, tip: [u8; 2
     // retires one (docs/design/history-index.md).
     let superseded = planning_superseded(manifests, roles, kind);
     let kind = u64::from(kind);
-    let member = |m: &PackManifestInfo| roles.contains_key(&m.owner_id);
+    let member = |m: &PackManifestInfo| trusted_member(roles, &m.owner_id);
     // Newest first (the manifest list's order), one entry per packHash.
     let mut seen = BTreeSet::new();
     let live: Vec<HistoryEntry> = manifests
@@ -4445,7 +4458,8 @@ where
 
 /// The repo's own public gateways a reader should try first: `config.backend.uris`'s
 /// (`backend`, maintainer-written), then those recorded in manifests whose uploader is a
-/// current member (`roles`), capped ([`crate::storage::read::repo_gateways`]).
+/// current member other than a bot ([`trusted_member`]), capped
+/// ([`crate::storage::read::repo_gateways`]).
 pub fn trusted_repo_gateways(
     backend: &[String],
     manifests: &[PackManifestInfo],
@@ -4453,7 +4467,7 @@ pub fn trusted_repo_gateways(
 ) -> Vec<String> {
     let members = manifests
         .iter()
-        .filter(|m| roles.contains_key(&m.owner_id))
+        .filter(|m| trusted_member(roles, &m.owner_id))
         .flat_map(|m| &m.uris);
     crate::storage::read::repo_gateways(backend.iter().chain(members))
 }

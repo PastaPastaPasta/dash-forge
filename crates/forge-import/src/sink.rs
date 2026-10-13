@@ -33,7 +33,9 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 
 use forge_core::collab::long_body::BodyField;
-use forge_core::collab::v2::{ImportedTarget, PatchInput, PrBase, Provenance, Target, TargetKind};
+use forge_core::collab::v2::{
+    ImportedTarget, PatchInput, PrBase, Provenance, Target, TargetKind, DOC_LABEL,
+};
 use forge_core::collab::{CommentAnchor, Imported, ReleaseInput};
 use forge_core::history::Freshness;
 use forge_core::platform::PlatformClient;
@@ -298,12 +300,27 @@ const MAX_FAILED_IN_A_ROW: u32 = 5;
 
 /// Which identity-contract nonce counter a write signs against: each contract keeps its own
 /// (issues, PRs, comments, reviews and transitions are forge-collab's; events
-/// forge-community's; labels and releases forge-core's).
+/// forge-community's; releases forge-core's; labels forge-core's, or forge-meta's on a
+/// four-contract set, D44: [`Nonces::of`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Nonces {
     Collab,
     Community,
     Core,
+    Meta,
+}
+
+impl Nonces {
+    /// The counter a write of `doc_type` signs against on `repo`'s network.
+    fn of(repo: Option<&RepoRef>, doc_type: &str) -> Self {
+        use forge_core::layout::ForgeContract;
+        match repo.and_then(|r| r.forge().contract_of(doc_type)) {
+            Some(ForgeContract::Meta) => Self::Meta,
+            Some(ForgeContract::Collab) => Self::Collab,
+            Some(ForgeContract::Community) => Self::Community,
+            Some(ForgeContract::Core) | None => Self::Core,
+        }
+    }
 }
 
 /// A write that failed: what it was, the nonce counter it signed against (`None`: an issue or
@@ -1522,7 +1539,7 @@ impl<'a, C: Chain> Sink<'a, C> {
             );
             self.write(
                 format!("label {}", l.name),
-                Some(Nonces::Core),
+                Some(Nonces::of(repo, DOC_LABEL)),
                 credits,
                 |c| c.labels += 1,
                 || async move {
@@ -2473,6 +2490,25 @@ fn no_proof_reason(proof: Option<&ProofRepo>, base: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Labels sign against forge-core's counter on a three-contract set and forge-meta's on a
+    /// four-contract set (D44); a run with no destination repo yet counts them as forge-core's.
+    #[test]
+    fn a_label_signs_against_the_counter_of_its_contract() {
+        let on = |forge: forge_core::network::ForgeIds| RepoRef {
+            forge,
+            repo_id: "R".into(),
+            owner_id: "O".into(),
+            name: "n".into(),
+            visibility: forge_core::rules::v2::Visibility::Public,
+        };
+        let three = on(forge_core::network::ForgeIds::test_forge());
+        let four = on(forge_core::network::ForgeIds::test_forge_meta());
+        assert_eq!(Nonces::of(Some(&three), DOC_LABEL), Nonces::Core);
+        assert_eq!(Nonces::of(Some(&four), DOC_LABEL), Nonces::Meta);
+        assert_eq!(Nonces::of(Some(&four), "issue"), Nonces::Collab);
+        assert_eq!(Nonces::of(None, DOC_LABEL), Nonces::Core);
+    }
 
     #[test]
     fn a_stranger_squatting_an_imported_url_is_not_the_mirror_copy() {

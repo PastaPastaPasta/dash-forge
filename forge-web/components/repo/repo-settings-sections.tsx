@@ -24,6 +24,7 @@ import { isLive, plural } from '@/lib/view'
 import {
   CONFIG_LAG_MS,
   DEFAULT_CONFIG,
+  DOC,
   MAX_PATTERN_CHARS,
   MAX_PROTECTED_PATTERNS,
   MERGE_METHODS,
@@ -54,6 +55,7 @@ import {
   type RepoDocEdit,
 } from '@/lib/repo'
 import { MAX_TOPICS } from '@/lib/repo/settings'
+import { writeContractKind } from '@/lib/layout'
 import { missingDefaultProtection } from '@/lib/rules'
 import { mirrorSourceOfRepo } from '@/lib/view/mirror-source'
 import { readRunnersCached } from '@/lib/repo/checks'
@@ -352,7 +354,7 @@ function RepoDocForm({ home, owner, onSaved }: { home: RepoHome; owner: boolean;
   }
   const changed = Object.keys(edit).length > 0
   const problem = descriptionProblem(description) ?? topicsProblem(topics)
-  const cost = previewRepoEdit(edit, held.data, home.repo.visibility)
+  const cost = previewRepoEdit(edit, held.data, home.repo.visibility, home.repo.forge)
   const run = async (): Promise<void> => {
     if (!sdk || !signer || pending === null) throw new Error('sign in to continue')
     await editRepoDoc(sdk, signer, home.repo, pending)
@@ -398,7 +400,10 @@ function RepoDocForm({ home, owner, onSaved }: { home: RepoHome; owner: boolean;
             size="sm"
             disabled={!changed || problem !== null || guard.disabledReason !== null}
             onClick={() => {
-              if (guard.check(cost)) setPending(edit)
+              // The repo document is forge-core's; a public repo's topic documents are forge-meta's on
+              // a four-contract set (a private repo writes none)
+              const topicDocs = edit.topics !== undefined && home.repo.visibility !== 'private'
+              if (guard.check(cost, topicDocs ? ['core', writeContractKind(home.repo.forge, DOC.topic)] : 'core')) setPending(edit)
             }}
           >
             Save
@@ -417,7 +422,7 @@ function RepoDocForm({ home, owner, onSaved }: { home: RepoHome; owner: boolean;
             ? "Replaces the description and topics. The repo's name and visibility can't change."
             : "Replaces the description and topics. Each topic added or removed costs a little extra so Explore can count it. The repo's name and visibility can't change."
         }
-        cost={pending ? previewRepoEdit(pending, held.data, home.repo.visibility) : null}
+        cost={pending ? previewRepoEdit(pending, held.data, home.repo.visibility, home.repo.forge) : null}
         confirmLabel="Sign & save"
         toast={{ running: 'Saving the repo details…', done: 'Repository details saved' }}
         onConfirm={run}

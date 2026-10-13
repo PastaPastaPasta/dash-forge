@@ -144,7 +144,7 @@ export interface AuthSession {
   /** `vault`: a stored limited key; `session`: a tab-only key (advanced raw key). */
   readonly storage: 'vault' | 'session'
   /** Which Forge contracts this session's keys can sign on. */
-  readonly grants?: { readonly core: boolean; readonly collab: boolean; readonly community: boolean }
+  readonly grants?: { readonly core: boolean; readonly collab: boolean; readonly community: boolean; readonly meta: boolean }
   /**
    * A key this session holds has no budget or no expiry (a shipped wallet's key): whoever copies
    * it can spend until it is disabled. The UI warns.
@@ -280,7 +280,7 @@ interface SessionHint {
 
 function isScope(v: unknown): v is KeyScope {
   const s = v as Partial<KeyScope> | null
-  return typeof s === 'object' && s !== null && typeof s.core === 'boolean' && typeof s.collab === 'boolean' && typeof s.community === 'boolean' && typeof s.unbounded === 'boolean'
+  return typeof s === 'object' && s !== null && typeof s.core === 'boolean' && typeof s.collab === 'boolean' && typeof s.community === 'boolean' && typeof s.meta === 'boolean' && typeof s.unbounded === 'boolean'
 }
 
 /**
@@ -765,6 +765,7 @@ export class AuthController {
     let core = main.core
     let collab = main.collab
     let community = main.community
+    let meta = main.meta
     let unbounded = main.unbounded
     let unlimited = hasNoLimits(mainKey)
     for (const e of secret.extra ?? []) {
@@ -783,11 +784,12 @@ export class AuthController {
       core ||= scope.core
       collab ||= scope.collab
       community ||= scope.community
+      meta ||= scope.meta
       unbounded ||= scope.unbounded
       unlimited ||= hasNoLimits(k)
     }
     this.scopes = { main, extra: extraScopes }
-    return { grants: { core, collab, community }, unlimited, unbounded }
+    return { grants: { core, collab, community, meta }, unlimited, unbounded }
   }
 
   /**
@@ -1922,8 +1924,8 @@ function keyFailure(identity: WasmIdentity, keyId: number): KeyNotUsableError {
  * forge-collab grant), else under the one Forge contract it covers.
  */
 function toExtraKey(key: WalletKey, forge: ForgeIds, requested?: string): ExtraKey {
-  const covered = FORGE_CONTRACT_KINDS.find((k) => key.scope[k]) ?? 'community'
-  const contractId = requested !== undefined && scopeCovers(key.scope, forge, requested) ? requested : forge[covered]
+  const covered = FORGE_CONTRACT_KINDS.find((k) => key.scope[k] && forge[k] !== undefined) ?? 'community'
+  const contractId = requested !== undefined && scopeCovers(key.scope, forge, requested) ? requested : (forge[covered] ?? forge.community)
   return { contractId, keyId: key.keyId, wif: key.wif }
 }
 

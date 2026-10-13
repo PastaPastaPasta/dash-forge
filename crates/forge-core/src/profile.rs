@@ -1,4 +1,5 @@
-//! An identity's public profile: forge-community `profile` (`docs/contracts/forge-v2.md` §2),
+//! An identity's public profile: forge-community `profile` (forge-meta on a four-contract set,
+//! D44; `docs/contracts/forge-v2.md` §2),
 //! one per identity (unique `$ownerId`), mutable and deletable.
 //!
 //! What a profile may hold, and how an edit is normalized, is the shared rule in
@@ -18,7 +19,7 @@ use crate::rules::profile::{
     check_profile, profile_problems, BotClaim, ProfileFields, ProfileInput, MAX_OPERATED_BOTS,
 };
 
-/// forge-community: an identity's profile.
+/// forge-community (forge-meta on a four-contract set, D44): an identity's profile.
 pub const DOC_PROFILE: &str = "profile";
 /// `profile.bot` (UPDATE-1 `profile_bot`).
 pub const PROFILE_BOT: &str = "bot";
@@ -130,8 +131,8 @@ pub async fn write_bot(
     existing: Option<&Profile>,
     claim: &BotClaim,
 ) -> Result<ProfileWrite> {
-    let community = client.fetch_contract(&forge.community).await?;
-    if !community.has_property(DOC_PROFILE, PROFILE_BOT) {
+    let profiles = client.fetch_contract(forge.home(DOC_PROFILE)).await?;
+    if !profiles.has_property(DOC_PROFILE, PROFILE_BOT) {
         return Err(crate::error::Error::Config(
             "this network's Forge doesn't support bot accounts yet".into(),
         ));
@@ -144,7 +145,7 @@ pub async fn write_bot(
         (None, Some(v)) => Ok(ProfileWrite::Created(
             engine
                 .create_document(
-                    &community,
+                    &profiles,
                     DOC_PROFILE,
                     BTreeMap::from([(PROFILE_BOT.to_string(), v)]),
                 )
@@ -154,7 +155,7 @@ pub async fn write_bot(
             let changes = BTreeMap::from([(PROFILE_BOT.to_string(), v)]);
             Ok(
                 if engine
-                    .replace_document_guarded(&community, DOC_PROFILE, &p.id, &changes, p.revision)
+                    .replace_document_guarded(&profiles, DOC_PROFILE, &p.id, &changes, p.revision)
                     .await?
                 {
                     ProfileWrite::Replaced(p.id.clone())
@@ -194,11 +195,11 @@ pub async fn read_profile(
     forge: &ForgeIds,
     identity_id: &str,
 ) -> Result<Option<Profile>> {
-    let community = client.fetch_contract(&forge.community).await?;
+    let profiles = client.fetch_contract(forge.home(DOC_PROFILE)).await?;
     let owner = platform::decode_identifier(identity_id)?;
     let docs = client
         .query_documents(
-            &community,
+            &profiles,
             DOC_PROFILE,
             &[QueryFilter::eq("$ownerId", FieldValue::identifier(owner))],
             &[],
@@ -259,7 +260,7 @@ pub async fn write_profile(
     existing: Option<&Profile>,
     fields: &ProfileFields,
 ) -> Result<ProfileWrite> {
-    let community = client.fetch_contract(&forge.community).await?;
+    let profiles = client.fetch_contract(forge.home(DOC_PROFILE)).await?;
     let values = edited_values(fields);
     match existing {
         None => {
@@ -268,13 +269,13 @@ pub async fn write_profile(
                 .filter_map(|(k, v)| v.map(|v| (k, v)))
                 .collect();
             let id = engine
-                .create_document(&community, DOC_PROFILE, props)
+                .create_document(&profiles, DOC_PROFILE, props)
                 .await?;
             Ok(ProfileWrite::Created(id))
         }
         Some(p) => {
             let changed = engine
-                .replace_document_guarded(&community, DOC_PROFILE, &p.id, &values, p.revision)
+                .replace_document_guarded(&profiles, DOC_PROFILE, &p.id, &values, p.revision)
                 .await?;
             Ok(if changed {
                 ProfileWrite::Replaced(p.id.clone())
@@ -292,9 +293,9 @@ pub async fn delete_profile(
     forge: &ForgeIds,
     profile: &Profile,
 ) -> Result<()> {
-    let community = client.fetch_contract(&forge.community).await?;
+    let profiles = client.fetch_contract(forge.home(DOC_PROFILE)).await?;
     engine
-        .delete_document(&community, DOC_PROFILE, &profile.id)
+        .delete_document(&profiles, DOC_PROFILE, &profile.id)
         .await
 }
 

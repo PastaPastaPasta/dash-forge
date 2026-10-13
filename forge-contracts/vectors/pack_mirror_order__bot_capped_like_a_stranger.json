@@ -1,0 +1,49 @@
+{
+  "name": "bot_capped_like_a_stranger",
+  "description": "A bot's record (role 4) gives two addresses, as a non-member's does, after every member's: no reader takes a preference from a bot (review-rev41 M-4).",
+  "case": "pack_mirror_order",
+  "rules": "v2",
+  "input": {
+    "packHash": "abababababababababababababababababababababababababababababababab",
+    "listed": [
+      "abababababababababababababababababababababababababababababababab"
+    ],
+    "visibility": "public",
+    "mirrors": [
+      {
+        "id": "b0",
+        "ownerRole": "bot",
+        "createdAt": 0,
+        "packHash": "abababababababababababababababababababababababababababababababab",
+        "kind": 1,
+        "uris": [
+          "https://b00.example/p",
+          "https://b01.example/p",
+          "https://b02.example/p",
+          "https://b03.example/p"
+        ]
+      },
+      {
+        "id": "w1",
+        "ownerRole": "writer",
+        "createdAt": 1,
+        "packHash": "abababababababababababababababababababababababababababababababab",
+        "kind": 1,
+        "uris": [
+          "https://w10.example/p",
+          "https://w11.example/p",
+          "https://w12.example/p"
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "uris": [
+      "https://w10.example/p",
+      "https://w11.example/p",
+      "https://w12.example/p",
+      "https://b00.example/p",
+      "https://b01.example/p"
+    ]
+  }
+}

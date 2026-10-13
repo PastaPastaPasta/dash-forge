@@ -94,7 +94,7 @@ pub const DOC_WATCH: &str = "watch";
 pub const DOC_MILESTONE: &str = "milestone";
 /// forge-core: a release (maintainer-gated).
 pub const DOC_RELEASE: &str = "release";
-/// forge-core: a label definition (member-gated).
+/// forge-core (forge-meta on a four-contract set, D44): a label definition (member-gated).
 pub const DOC_LABEL: &str = "label";
 
 /// Whether a star also counts toward Trending unless the user says otherwise (the owner's
@@ -4174,6 +4174,19 @@ impl<'a> Collab<'a> {
         self.client.fetch_contract(&repo.forge().core).await
     }
 
+    /// The contract that holds `doc_type` on `repo`'s network ([`crate::network::ForgeIds::home`]):
+    /// for the types forge-meta takes on a four-contract set (`label`, `topic`, `ban`, `follow`,
+    /// …; D44), forge-meta there and the old home elsewhere.
+    pub(super) async fn contract_for(
+        &self,
+        repo: &RepoRef,
+        doc_type: &str,
+    ) -> Result<LoadedContract> {
+        self.client
+            .fetch_contract(repo.forge().home(doc_type))
+            .await
+    }
+
     pub(super) fn repo_filter(repo: &RepoRef) -> Result<QueryFilter> {
         Ok(QueryFilter::eq(
             "repoId",
@@ -8246,8 +8259,8 @@ impl<'a> Collab<'a> {
         p.insert("retired".to_string(), FieldValue::boolean(retired));
         self.require_role(repo, Role::Triage, &format!("define label {name}"))
             .await?;
-        let core = self.core_contract(repo).await?;
-        self.write(repo, &core, DOC_LABEL, p).await
+        let labels = self.contract_for(repo, DOC_LABEL).await?;
+        self.write(repo, &labels, DOC_LABEL, p).await
     }
 
     /// Delete label `name`. A `label` document is deletable by its owner only, so: when every
@@ -8258,7 +8271,7 @@ impl<'a> Collab<'a> {
     /// no such label.
     pub async fn delete_label(&self, repo: &RepoRef, name: &str) -> Result<(bool, usize)> {
         let me = self.signer_id()?;
-        let core = self.core_contract(repo).await?;
+        let labels = self.contract_for(repo, DOC_LABEL).await?;
         let docs = self.label_docs(repo, name).await?;
         if docs.is_empty() {
             return Ok((false, 0));
@@ -8270,7 +8283,7 @@ impl<'a> Collab<'a> {
         let engine = self.engine()?;
         let mut n = 0;
         for d in docs.iter().filter(|d| d.owner_id == me) {
-            engine.delete_document(&core, DOC_LABEL, &d.id).await?;
+            engine.delete_document(&labels, DOC_LABEL, &d.id).await?;
             n += 1;
         }
         Ok((!all_mine, n))
@@ -8278,10 +8291,10 @@ impl<'a> Collab<'a> {
 
     /// Every definition document of label `name` in `repo`, oldest first.
     async fn label_docs(&self, repo: &RepoRef, name: &str) -> Result<Vec<FetchedDocument>> {
-        let core = self.core_contract(repo).await?;
+        let labels = self.contract_for(repo, DOC_LABEL).await?;
         self.client
             .query_all_documents(
-                &core,
+                &labels,
                 DOC_LABEL,
                 &[
                     Self::repo_filter(repo)?,
@@ -8334,11 +8347,11 @@ impl<'a> Collab<'a> {
 
     /// Every label of `repo`, newest definition per name.
     pub async fn labels(&self, repo: &RepoRef) -> Result<Vec<Label>> {
-        let core = self.core_contract(repo).await?;
+        let labels = self.contract_for(repo, DOC_LABEL).await?;
         let docs = self
             .client
             .query_all_documents(
-                &core,
+                &labels,
                 DOC_LABEL,
                 &[Self::repo_filter(repo)?],
                 &[QueryOrder::asc("name"), QueryOrder::asc("$createdAt")],

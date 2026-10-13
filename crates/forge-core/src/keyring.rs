@@ -431,8 +431,9 @@ pub struct KeyringIo<'a> {
     pub client: &'a PlatformClient,
     /// forge-core, fetched (members and anchor configs).
     pub core: &'a LoadedContract,
-    /// forge-collab, fetched (the `repoKey` wraps; RC1 moved them out of forge-core).
-    pub collab: &'a LoadedContract,
+    /// The contract that holds the `repoKey` wraps, fetched: forge-collab (RC1 moved them out
+    /// of forge-core), or forge-meta on a four-contract set (D44).
+    pub repo_keys: &'a LoadedContract,
     /// The repository's scope.
     pub scope: &'a DocScope,
 }
@@ -449,12 +450,14 @@ impl Keyring {
     ) -> Result<Self> {
         let scope = repo.scope()?;
         let core = client.fetch_contract(&scope.contract_id).await?;
-        let collab = client.fetch_contract(&repo.forge().collab).await?;
+        let repo_keys = client
+            .fetch_contract(repo.forge().home(DOC_REPO_KEY))
+            .await?;
         Self::load_with(
             &KeyringIo {
                 client,
                 core: &core,
-                collab: &collab,
+                repo_keys: &repo_keys,
                 scope: &scope,
             },
             repo,
@@ -481,11 +484,13 @@ impl Keyring {
     pub async fn load_anonymous(client: &PlatformClient, repo: &RepoRef) -> Result<Self> {
         let scope = repo.scope()?;
         let core = client.fetch_contract(&scope.contract_id).await?;
-        let collab = client.fetch_contract(&repo.forge().collab).await?;
+        let repo_keys = client
+            .fetch_contract(repo.forge().home(DOC_REPO_KEY))
+            .await?;
         let io = KeyringIo {
             client,
             core: &core,
-            collab: &collab,
+            repo_keys: &repo_keys,
             scope: &scope,
         };
         Self::load_as(&io, repo, None, &EncryptionKeys::default()).await
@@ -514,7 +519,7 @@ impl Keyring {
         } else {
             io.client
                 .query_all_documents(
-                    io.collab,
+                    io.repo_keys,
                     DOC_REPO_KEY,
                     &io.scope.filters([]),
                     &[QueryOrder::asc("memberId")],
@@ -639,7 +644,7 @@ impl Keyring {
             if self.wraps[i].member != self.reader {
                 continue;
             }
-            let key = unwrap_own(io.collab, &self.repo_id, &self.wraps[i], enc, &keys_of);
+            let key = unwrap_own(io.repo_keys, &self.repo_id, &self.wraps[i], enc, &keys_of);
             if key.is_none() {
                 unreadable.push(self.wraps[i].epoch);
             }
@@ -1374,7 +1379,7 @@ pub fn hidden_bucket(o: &Opened) -> Option<&'static str> {
 /// `recipientKeyId`, and the sender's public key named by `senderKeyId`. `None` when either is
 /// missing or the wrap does not open (version / KCV, §5.4 (4)).
 fn unwrap_own(
-    collab: &LoadedContract,
+    repo_keys: &LoadedContract,
     repo_id: &[u8; 32],
     w: &WrapDoc,
     enc: &EncryptionKeys,
@@ -1387,7 +1392,7 @@ fn unwrap_own(
         .find(|k| k.id == w.sender_key_id && k.purpose == "ENCRYPTION")?
         .public_key;
     let secret = secret_of(mine).ok()?;
-    open_wrap(collab, repo_id, w.epoch, &w.wrapped, &secret, sender_pub).ok()
+    open_wrap(repo_keys, repo_id, w.epoch, &w.wrapped, &secret, sender_pub).ok()
 }
 
 fn secret_of(k: &PrivateKey) -> Result<WrapSecret> {
@@ -1414,6 +1419,23 @@ pub(crate) fn repo_key_fields(
         ),
         ("wrapped", FieldValue::bytes(sealed.wrapped)),
     ]
+}
+
+/// `repoKey.mr` (mainnet L4, `mainnet_bot_role`): the role the recipient's member row proves.
+/// Only a contract that declares it takes it (feature detection: sakura's has none).
+const REPO_KEY_ROLE: &str = "mr";
+
+/// The `mr` a wrap to `member` carries: its `writer` row's role code (consensus checks it with
+/// `where {"role": "mr"}`), or 1 for a maintainer, whose operand checks no role. A member this
+/// keyring does not list gets 1 and consensus answers for the row (40120).
+fn wrap_role_code(members: &[Member], member: &str) -> u64 {
+    members
+        .iter()
+        .filter(|m| m.identity_id == member)
+        .map(|m| m.role)
+        .min()
+        .and_then(Role::writer_role_code)
+        .unwrap_or(1)
 }
 
 /// Whether `repo` has a members key chain: every private repository, and a public one in which
@@ -1444,10 +1466,12 @@ pub async fn has_members_key(client: &PlatformClient, repo: &RepoRef) -> Result<
 /// ones").
 pub async fn holds_wrap(client: &PlatformClient, repo: &RepoRef, member: &str) -> Result<bool> {
     let scope = repo.scope()?;
-    let collab = client.fetch_contract(&repo.forge().collab).await?;
+    let repo_keys = client
+        .fetch_contract(repo.forge().home(DOC_REPO_KEY))
+        .await?;
     let docs = client
         .query_documents(
-            &collab,
+            &repo_keys,
             DOC_REPO_KEY,
             &scope.filters([QueryFilter::eq(
                 "memberId",
@@ -1507,7 +1531,7 @@ impl<'a> PrivateSigner<'a> {
         key: &EpochKey,
         member: [u8; 32],
     ) -> Result<WrapOutcome> {
-        let (collab, scope) = (&w.collab, &w.scope);
+        let (repo_keys, scope) = (&w.repo_keys, &w.scope);
         let (sender_id, sender) = w
             .enc
             .sender()
@@ -1519,7 +1543,7 @@ impl<'a> PrivateSigner<'a> {
         };
         let secret = secret_of(sender)?;
         let props = seal_wrap(
-            collab,
+            repo_keys,
             &scope.repo_id,
             epoch,
             key,
@@ -1530,10 +1554,16 @@ impl<'a> PrivateSigner<'a> {
                 recipient_key_id: recipient.id,
             },
         )?;
-        let doc = scope.props(repo_key_fields(member, epoch, props));
+        let mut doc = scope.props(repo_key_fields(member, epoch, props));
+        if repo_keys.has_property(DOC_REPO_KEY, REPO_KEY_ROLE) {
+            doc.insert(
+                REPO_KEY_ROLE.to_string(),
+                FieldValue::integer(wrap_role_code(&w.kr.members, &member_b58)),
+            );
+        }
         match self
             .engine()?
-            .create_document(collab, DOC_REPO_KEY, doc)
+            .create_document(repo_keys, DOC_REPO_KEY, doc)
             .await
         {
             Ok(_) => Ok(WrapOutcome::Posted),
@@ -1571,7 +1601,7 @@ impl<'a> PrivateSigner<'a> {
         let docs = self
             .client
             .query_documents(
-                &w.collab,
+                &w.repo_keys,
                 DOC_REPO_KEY,
                 &w.scope.filters([
                     QueryFilter::eq("memberId", FieldValue::identifier(member)),
@@ -1597,7 +1627,7 @@ impl<'a> PrivateSigner<'a> {
         };
         let secret = secret_of(mine)?;
         Ok(open_wrap(
-            &w.collab,
+            &w.repo_keys,
             &w.scope.repo_id,
             epoch,
             &d.wrapped,
@@ -1655,7 +1685,7 @@ enum WrapOutcome {
 /// keyring read now (§5.3: before every write).
 struct WriteCtx {
     core: LoadedContract,
-    collab: LoadedContract,
+    repo_keys: LoadedContract,
     scope: DocScope,
     me: [u8; 32],
     enc: EncryptionKeys,
@@ -1668,7 +1698,7 @@ impl PrivateSigner<'_> {
         let io = KeyringIo {
             client: self.client,
             core: &w.core,
-            collab: &w.collab,
+            repo_keys: &w.repo_keys,
             scope: &w.scope,
         };
         Keyring::load_with(&io, repo, &self.identity.id(), &w.enc).await
@@ -1696,13 +1726,16 @@ impl PrivateSigner<'_> {
     async fn open(&self, repo: &RepoRef) -> Result<WriteCtx> {
         let scope = repo.scope()?;
         let core = self.client.fetch_contract(&scope.contract_id).await?;
-        let collab = self.client.fetch_contract(&repo.forge().collab).await?;
+        let repo_keys = self
+            .client
+            .fetch_contract(repo.forge().home(DOC_REPO_KEY))
+            .await?;
         let enc = self.encryption_keys(repo);
         let kr = Keyring::load_with(
             &KeyringIo {
                 client: self.client,
                 core: &core,
-                collab: &collab,
+                repo_keys: &repo_keys,
                 scope: &scope,
             },
             repo,
@@ -1713,7 +1746,7 @@ impl PrivateSigner<'_> {
         let me = kr.reader;
         Ok(WriteCtx {
             core,
-            collab,
+            repo_keys,
             scope,
             me,
             enc,
@@ -2043,8 +2076,19 @@ pub async fn add_member_wrap(
     signer: &PrivateSigner<'_>,
     repo: &RepoRef,
     member: &str,
+    role: Role,
 ) -> Result<()> {
-    let w = signer.open(repo).await?;
+    let mut w = signer.open(repo).await?;
+    // The member row was just written and the read may lag it: the wrap's `mr` (mainnet L4)
+    // still names the role granted, not the unlisted member's 1, which consensus would refuse.
+    if !w.kr.members.iter().any(|m| m.identity_id == member) {
+        w.kr.members.push(Member {
+            identity_id: member.to_string(),
+            role,
+            document_id: String::new(),
+            created_at: 0,
+        });
+    }
     let epoch = w.kr.writer(repo)?.write_epoch();
     let key =
         w.kr.epoch_key(epoch)
@@ -3051,6 +3095,24 @@ mod tests {
             document_id: format!("d{}", id[0]),
             created_at: 1,
         }
+    }
+
+    /// `repoKey.mr` (mainnet L4): a wrap names its recipient's writer-row role, 1 for a
+    /// maintainer (whose operand checks no role) or a member this keyring does not list. Parity:
+    /// forge-web `wrapRoleCode`.
+    #[test]
+    fn a_wrap_names_its_recipients_role_code() {
+        let members = [
+            member([1; 32], Role::Maintainer),
+            member([1; 32], Role::Writer),
+            member([2; 32], Role::Triage),
+            member([3; 32], Role::Reader),
+        ];
+        let code = |id: [u8; 32]| wrap_role_code(&members, &platform::encode_identifier(id));
+        assert_eq!(code([1; 32]), 1, "the best row wins: a maintainer");
+        assert_eq!(code([2; 32]), 2);
+        assert_eq!(code([3; 32]), 3);
+        assert_eq!(code([9; 32]), 1, "unlisted: consensus answers for the row");
     }
 
     fn wrap(owner: [u8; 32], member: [u8; 32], epoch: u32, key: Option<u8>) -> WrapDoc {

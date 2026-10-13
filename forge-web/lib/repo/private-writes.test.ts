@@ -65,6 +65,8 @@ vi.mock('../sdk/write', async (orig) => {
   }
 })
 vi.mock('../sdk/facade', async (orig) => ({ ...(await orig<typeof import('../sdk/facade')>()), sleep: async () => undefined }))
+// A three-contract set's repoKey has no `mr` (mainnet L4): wraps carry none.
+vi.mock('./contract-shape', () => ({ contractHasProperty: async () => false }))
 
 let members: Membership[] = []
 let failAnchor = false

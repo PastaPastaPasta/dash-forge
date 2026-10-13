@@ -181,7 +181,7 @@ pub async fn sync(ctx: &Ctx, repo: &str, branch: Option<&str>) -> Result<()> {
     let may = match role {
         Some(Role::Maintainer) => true,
         Some(Role::Writer) => !protected,
-        Some(Role::Triage | Role::Reader) | None => false,
+        Some(Role::Triage | Role::Reader | Role::Bot) | None => false,
     };
     if !may {
         return Err(UserError::new(

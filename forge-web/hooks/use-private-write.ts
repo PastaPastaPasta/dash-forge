@@ -10,7 +10,7 @@ import { useAuth } from '@/contexts/auth-context'
 import { useAsync } from '@/hooks/use-async'
 import { useSdk } from '@/hooks/use-sdk'
 import { encryptionOps } from '@/lib/auth/encryption-key'
-import { repoContractIds, type RepoRef } from '@/lib/repo'
+import { DOC, contractOf, repoContractIds, type RepoRef } from '@/lib/repo'
 import type { PrivateWriteContext } from '@/lib/repo/private-members'
 import { refreshPrivateHome } from '@/hooks/use-private-home'
 
@@ -27,8 +27,8 @@ export function usePrivateWrite(repo: RepoRef): {
   const { sdk, ready, network } = useSdk(repoContractIds(repo))
   const { identity, signer } = useAuth()
   const ops = useAsync(
-    () => encryptionOps(sdk!, network, identity!, repo.forge.collab),
-    [ready, network, identity ?? '', repo.forge.collab, repo.session?.id ?? '', repo.lane?.id ?? ''],
+    () => encryptionOps(sdk!, network, identity!, contractOf(repo.forge, DOC.repoKey)),
+    [ready, network, identity ?? '', contractOf(repo.forge, DOC.repoKey), repo.session?.id ?? '', repo.lane?.id ?? ''],
     { enabled: ready && sdk !== null && identity !== null },
   )
   const context: PrivateWriteContext | null =

@@ -70,7 +70,7 @@ import { createSealedRelease, sealedReleaseEnv, type SealedReleaseOptions, type 
 import { noteTargetCreated } from './social'
 import { refreshRoleOnRefusal, roleClaim } from './role-claim'
 import { VerdictRefusedError, WRITER_ROLE_CODE, grantableRoles, holdsMembersKey, verdictRefusal } from '../rules/roles'
-import { repoSource } from './source'
+import { contractOf, repoSource } from './source'
 import { MAX_PATTERN_CHARS } from './settings'
 import { starShape } from './star-shape'
 import { writeLock, writeTransition, type StateTarget } from './transitions'
@@ -1111,9 +1111,10 @@ async function findOwnIndexOnly(
   targetId: string,
 ): Promise<unknown | null> {
   const field = targetField(type)
-  const rows = await retryOnStaleContract(forge.community, () =>
+  const contractId = contractOf(forge, type)
+  const rows = await retryOnStaleContract(contractId, () =>
     (sdk as unknown as { documents: RawDocumentsFacade }).documents.query({
-      dataContractId: forge.community,
+      dataContractId: contractId,
       documentTypeName: type,
       where: [
         ['$ownerId', '==', ownerId],
@@ -1137,7 +1138,7 @@ function createIndexOnly(sdk: EvoSDK, auth: WriteAuth, forge: ForgeIds, type: In
   const field = targetField(type)
   return createOrExisting(() =>
     createDocumentIdempotent(sdk, auth, {
-      contractId: forge.community,
+      contractId: contractOf(forge, type),
       documentType: type,
       data: { [field]: decodeIdentifier(targetId), ...payload },
       probe: async () => (await findOwnIndexOnly(sdk, forge, type, auth.identityId, targetId)) !== null,
@@ -1150,7 +1151,7 @@ async function deleteIndexOnly(sdk: EvoSDK, auth: WriteAuth, forge: ForgeIds, ty
   const own = await findOwnIndexOnly(sdk, forge, type, auth.identityId, targetId)
   if (own === null) return ALREADY_GONE
   return deleteDocumentIdempotent(sdk, auth, {
-    contractId: forge.community,
+    contractId: contractOf(forge, type),
     documentType: type,
     documentId: targetId,
     repo: targetField(type) === 'repoId' ? targetId : null,

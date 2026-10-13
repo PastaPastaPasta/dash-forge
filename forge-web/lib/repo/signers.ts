@@ -16,6 +16,7 @@ import { DEFAULT_NETWORK, type Network } from '../constants'
 import type { Signer } from '../rules/signature'
 import { queryDocuments } from '../sdk'
 import { DOC, repoKey, type RepoRef } from './contract'
+import { contractOf } from './source'
 import { readMembershipsCached } from './members'
 import { profileFromDoc } from './profile'
 
@@ -33,12 +34,12 @@ async function candidates(sdk: EvoSDK, repo: RepoRef, network: Network, extra: r
 }
 
 /** The signing keys `identities` list in their profiles (identities with none are left out). */
-export async function readSigningKeys(sdk: EvoSDK, community: string, identities: readonly string[]): Promise<Signer[]> {
+export async function readSigningKeys(sdk: EvoSDK, profiles: string, identities: readonly string[]): Promise<Signer[]> {
   const sorted = [...new Set(identities)].sort()
   const out: Signer[] = []
   for (let i = 0; i < sorted.length; i += IN_MAX) {
     const docs = await queryDocuments(sdk, {
-      dataContractId: community,
+      dataContractId: profiles,
       documentTypeName: DOC.profile,
       where: [['$ownerId', 'in', sorted.slice(i, i + IN_MAX)]],
       orderBy: [['$ownerId', 'asc']],
@@ -60,7 +61,7 @@ export function readRepoSigners(sdk: EvoSDK, repo: RepoRef, network: Network = D
   const key = `${network}:${repoKey(repo)}:${[...extra].sort().join(',')}`
   const hit = cache.get(key)
   if (hit !== undefined && Date.now() - hit.at < SIGNERS_TTL_MS) return hit.promise
-  const promise = candidates(sdk, repo, network, extra).then((ids) => readSigningKeys(sdk, repo.forge.community, ids))
+  const promise = candidates(sdk, repo, network, extra).then((ids) => readSigningKeys(sdk, contractOf(repo.forge, DOC.profile), ids))
   const entry = { at: Date.now(), promise }
   cache.set(key, entry)
   promise.catch(() => {

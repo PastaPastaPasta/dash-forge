@@ -313,7 +313,7 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
         .await
         .context("adding the member")?;
     if keyed && can_receive {
-        forge_core::keyring::add_member_wrap(&signer, handle, member)
+        forge_core::keyring::add_member_wrap(&signer, handle, member, role)
             .await
             .context("wrapping the repository key to the new member (re-run `dg collab add` to finish: the membership stands)")?;
     }

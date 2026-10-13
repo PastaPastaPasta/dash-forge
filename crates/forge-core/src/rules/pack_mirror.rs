@@ -14,14 +14,15 @@
 //!   kind 2), since a writer holds one record per pack.
 //! - [`mirror_read_order`]: the addresses a reader tries, in order. None for a private
 //!   repository, and none for a pack the repository's manifests do not list. Members' records
-//!   first (maintainers, then other members), then everyone else's; each group by
+//!   first (maintainers, then other members), then bots', then everyone else's; each group by
 //!   `($createdAt, $id)`. An unknown `kind` is skipped, and so is an address that does not fit
-//!   its record's kind. A non-member's record gives at most [`STRANGER_URIS_TRIED`] addresses,
-//!   so two strangers cannot fill the read; at most [`MIRROR_URIS_TRIED`] distinct addresses.
+//!   its record's kind. A non-member's or a bot's record gives at most [`STRANGER_URIS_TRIED`]
+//!   addresses, so two strangers cannot fill the read; at most [`MIRROR_URIS_TRIED`] distinct
+//!   addresses.
 
 use serde::{Deserialize, Serialize};
 
-use super::v2::{Role, Visibility};
+use super::v2::{role_rank, Role, Visibility};
 
 /// `kind` 1: an `https://` URL (a web host, or an S3 bucket's public URL).
 pub const KIND_HTTPS: u64 = 1;
@@ -187,13 +188,10 @@ pub struct MirrorReadInput {
     pub mirrors: Vec<MirrorRecord>,
 }
 
-/// Maintainers first, then other members, then everyone else (the pack-copy rank).
-fn rank(role: Option<Role>) -> u8 {
-    match role {
-        Some(Role::Maintainer) => 0,
-        Some(_) => 1,
-        None => 2,
-    }
+/// A record whose addresses are capped like a stranger's: anyone who is not a member now, and
+/// a bot (no reader takes a preference from a bot's records, review-rev41 M-4).
+fn capped(role: Option<Role>) -> bool {
+    matches!(role, None | Some(Role::Bot))
 }
 
 /// The mirror addresses a reader tries for `input.pack_hash`, in order (module docs).
@@ -212,8 +210,8 @@ pub fn mirror_read_order(input: &MirrorReadInput) -> Vec<String> {
         .filter(|m| m.kind == KIND_HTTPS || m.kind == KIND_IPFS)
         .collect();
     records.sort_by(|a, b| {
-        rank(a.owner_role)
-            .cmp(&rank(b.owner_role))
+        role_rank(a.owner_role)
+            .cmp(&role_rank(b.owner_role))
             .then_with(|| a.created_at.cmp(&b.created_at))
             .then_with(|| a.id.cmp(&b.id))
     });
@@ -221,7 +219,7 @@ pub fn mirror_read_order(input: &MirrorReadInput) -> Vec<String> {
     for m in records {
         let mut given = 0;
         for uri in &m.uris {
-            if m.owner_role.is_none() && given == STRANGER_URIS_TRIED {
+            if capped(m.owner_role) && given == STRANGER_URIS_TRIED {
                 break;
             }
             if uri_kind(uri) == Some(m.kind) && !out.contains(uri) {

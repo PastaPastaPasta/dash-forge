@@ -36,7 +36,9 @@ import {
   sealDoc,
   type Anchor,
 } from '../private'
-import type { Membership, Role } from '../rules/v2'
+import { RoleOracle, type Membership, type Role } from '../rules/v2'
+import { WRITER_ROLE_CODE } from '../rules/roles'
+import { contractHasProperty } from './contract-shape'
 import {
   ConsensusRefusal,
   DUPLICATE_UNIQUE_CODE,
@@ -495,6 +497,19 @@ export function repoKeyData(repoId: string, identity: string, epoch: number, pro
   return { repoId: decodeIdentifier(repoId), memberId: decodeIdentifier(identity), epoch, ...props }
 }
 
+/** `repoKey.mr` (mainnet L4): the role the recipient's member row proves. Only a contract that declares it takes it. */
+const REPO_KEY_ROLE = 'mr'
+
+/**
+ * The `mr` a wrap to `identity` carries: its `writer` row's role code (consensus checks it with
+ * `where {"role": "mr"}`), or 1 for a maintainer, whose operand checks no role. A member the session
+ * does not list gets 1, and consensus answers for the row. Parity: forge-core `keyring::wrap_role_code`.
+ */
+export function wrapRoleCode(members: readonly Membership[], identity: string): number {
+  const role = new RoleOracle(members).currentRole(identity)
+  return role === null || role === 'maintainer' ? 1 : WRITER_ROLE_CODE[role]
+}
+
 /**
  * Post one `repoKey` wrapping `raw` (epoch `keys.epoch`) to `identity`'s key `keyId`. The write's
  * intent names the key, so a retry never replays a wrap of another key. When this signer's wrap
@@ -513,9 +528,11 @@ async function postWrap(
   const props = await c.ops.wrap({ keys, raw, senderKey: senderKey(session, c), recipientKey: keyOf(session, identity, keyId) })
   const data = repoKeyData(c.repo.repoId, identity, keys.epoch, props)
   assertNoPlaintext(c.repo, DOC.repoKey, data)
+  const contractId = contractOf(c.repo.forge, DOC.repoKey)
+  if (await contractHasProperty(c.sdk, contractId, DOC.repoKey, REPO_KEY_ROLE)) data[REPO_KEY_ROLE] = wrapRoleCode(session.members, identity)
   try {
     await createDocumentIdempotent(c.sdk, c.auth, {
-      contractId: contractOf(c.repo.forge, DOC.repoKey),
+      contractId,
       documentType: DOC.repoKey,
       data,
       intent: `${intent}:wrap:${keys.epoch}:${keyTag(keys)}:${identity}`,

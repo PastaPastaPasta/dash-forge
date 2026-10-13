@@ -759,6 +759,7 @@ fn stale_against(
         Some(Role::Writer) => "a writer",
         Some(Role::Triage) => "a triage member",
         Some(Role::Reader) => "a reader",
+        Some(Role::Bot) => "a bot",
         None if who == people.owner => "the owner",
         None => "added to it",
     };

@@ -97,23 +97,41 @@ const ROTATING_THREADS: usize = 10;
 /// At most this many head oids tracked per repo for `checkRun` streams (newest kept).
 const MAX_HEADS: usize = 50;
 
-/// The three forge-v2 contracts.
+/// The forge-v2 contracts.
 struct Contracts {
     core: LoadedContract,
     collab: LoadedContract,
     /// forge-community: `event`, `authorEvent`, `checkRun` and `webhook` (RC1 layout).
     community: LoadedContract,
+    /// forge-meta on a four-contract set (D44). The relay reads none of its types, but the map
+    /// must not send one elsewhere.
+    meta: Option<LoadedContract>,
 }
 
 impl Contracts {
-    /// The contract that holds `doc_type` in the RC1 layout ([`forge_core::layout`]): `event`
-    /// and `authorEvent` moved to forge-community.
+    /// The network's contracts: three, or four with forge-meta.
+    async fn load(client: &PlatformClient, forge: &forge_core::network::ForgeIds) -> Result<Self> {
+        Ok(Self {
+            core: client.fetch_contract(&forge.core).await?,
+            collab: client.fetch_contract(&forge.collab).await?,
+            community: client.fetch_contract(&forge.community).await?,
+            meta: match &forge.meta {
+                Some(id) => Some(client.fetch_contract(id).await?),
+                None => None,
+            },
+        })
+    }
+
+    /// The contract that holds `doc_type` in the network's layout ([`forge_core::layout`]):
+    /// `event` and `authorEvent` moved to forge-community, and the seven forge-meta types to
+    /// forge-meta when the network has it.
     fn of(&self, doc_type: &str) -> &LoadedContract {
-        let contract = ForgeContract::of(doc_type);
+        let contract = ForgeContract::in_layout(doc_type, self.meta.is_some());
         debug_assert!(contract.is_some(), "{doc_type} is no RC1 type");
         match contract {
             Some(ForgeContract::Collab) => &self.collab,
             Some(ForgeContract::Community) => &self.community,
+            Some(ForgeContract::Meta) => self.meta.as_ref().unwrap_or(&self.core),
             Some(ForgeContract::Core) | None => &self.core,
         }
     }
@@ -245,11 +263,7 @@ pub async fn run_with(cfg: RelayConfig, embed: Embed) -> Result<()> {
         ))
     })?;
     let client = Arc::new(PlatformClient::connect(cfg.target.clone()).await?);
-    let contracts = Contracts {
-        core: client.fetch_contract(&forge.core).await?,
-        collab: client.fetch_contract(&forge.collab).await?,
-        community: client.fetch_contract(&forge.community).await?,
-    };
+    let contracts = Contracts::load(&client, &forge).await?;
 
     let identity = load_identity(&client, &cfg, &forge.community).await?;
 
