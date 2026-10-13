@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/publish.schema.json",
+  "title": "dg publish --json",
+  "description": "A members-only branch (or a members-only pull request's branch) published onto a public branch.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "published"
+      ]
+    },
+    "branch": {
+      "type": "string"
+    },
+    "onto": {
+      "type": "string"
+    },
+    "method": {
+      "type": "string",
+      "enum": [
+        "squash",
+        "history"
+      ]
+    },
+    "commit": {
+      "type": "string"
+    },
+    "membersOnlyTip": {
+      "type": "string"
+    },
+    "commits": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "files": {
+      "type": "integer"
+    },
+    "pr": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "mergeTransitionId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "localBase": {
+      "type": "string",
+      "enum": [
+        "moved",
+        "needs-reset",
+        "untouched"
+      ],
+      "description": "What happened to your local copy of the base: `moved` to the published commit, `needs-reset` (it holds more; reset it yourself) or `untouched`."
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "branch",
+    "onto",
+    "method",
+    "commit"
+  ],
+  "additionalProperties": true
+}

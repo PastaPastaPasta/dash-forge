@@ -92,7 +92,8 @@ pub async fn run(ctx: &Ctx, cmd: &PrCommand) -> Result<()> {
             limit,
             state,
             include_hidden,
-        } => list(ctx, repo, *limit, *state, *include_hidden).await,
+            audience,
+        } => list(ctx, repo, *limit, *state, *include_hidden, *audience).await,
         PrCommand::View {
             repo,
             number,
@@ -360,12 +361,24 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
         c
     };
     let svc = forge_core::repo::RepoService::new(&s.client, &s.identity, &s.bridge);
+    // One `Collab` for the command: the audience it asks for applies to the PR it opens.
+    let collab = s.collab();
+    // A member reads the target's members-only branches too (DESIGN §4.3): a PR from one, or
+    // into one, is members-only.
+    let fold = collab.members_refs(handle).await?;
     let PrHead {
         source,
         source_refs,
         ref_name: head_ref,
         oid: head_oid,
-    } = resolve_head(args, &cwd, &svc, candidates).await?;
+    } = resolve_head(
+        args,
+        &cwd,
+        &svc,
+        candidates,
+        fold.as_deref().map(|f| (handle, f)),
+    )
+    .await?;
     // The base branch: --base, else the target's default branch. It must be a branch of the
     // target now (D-501): a merge counts only into a base that existed when the PR was opened.
     let base = if let Some(b) = &args.base {
@@ -377,12 +390,95 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
             .unwrap_or_else(|| "main".into());
         git::full_ref(&d)
     };
-    let target_refs = if source.id() == handle.id() {
-        source_refs
-    } else {
-        svc.read_refs(handle).await?
+    let target_refs = match fold.as_deref() {
+        Some(f) => member_ref_states(f),
+        None if source.id() == handle.id() => source_refs,
+        None => svc.read_refs(handle).await?,
     };
     require_base_branch(handle, &base, &target_refs, "pull request not created")?;
+    let members_ref = |name: &str| {
+        fold.as_deref()
+            .and_then(|f| f.get(name))
+            .is_some_and(|r| r.members_only)
+    };
+    let (source_members, base_members) = (
+        source.id() == handle.id() && members_ref(&head_ref),
+        members_ref(&base),
+    );
+    let members = args.members || source_members || base_members;
+    if members && !args.to.is_empty() {
+        return Err(UserError::new(
+            codes::USAGE,
+            "pull request not created: a pull request for specific people comes from a public branch into a public one",
+        )
+        .cause(if source_members || base_members {
+            "its branch is members-only, and the people it would go to may not be members"
+        } else {
+            "--members and --to ask for two audiences"
+        })
+        .fix("open it members-only (--members), or from a public branch with --to")
+        .note("nothing was written")
+        .into());
+    }
+    if (source_members || base_members) && !args.members && !ctx.json {
+        eprintln!(
+            "{} is members-only, so this pull request is members-only too",
+            safe(short_branch_name(if source_members {
+                &head_ref
+            } else {
+                &base
+            }))
+        );
+    }
+    let crate::audience::Requested { audience, to } = crate::audience::requested(
+        &s.client,
+        &collab,
+        handle,
+        crate::audience::Ask {
+            members,
+            to: &args.to,
+        },
+        None,
+        None,
+    )
+    .await?;
+    // How a members-only PR names its branches and head (DESIGN §4.4): a members-only source's
+    // head is the blind its ref update carries (rule C), sealed beside the real commit.
+    let mut head_bytes = hex::decode(&head_oid).context("head oid")?;
+    if members && handle.visibility == forge_core::rules::v2::Visibility::Public {
+        let head = if source_members {
+            let b = fold
+                .as_deref()
+                .and_then(|f| f.updates.blind_of(&head_ref, &head_oid))
+                .ok_or_else(|| {
+                    UserError::new(
+                        codes::USAGE,
+                        format!(
+                            "pull request not created: {} was never pushed to {}",
+                            short(&head_oid),
+                            safe(short_branch_name(&head_ref))
+                        ),
+                    )
+                    .cause(
+                        "a members-only pull request names a commit its members-only branch held",
+                    )
+                    .fix("push it first, or leave out --head-oid")
+                    .note("nothing was written")
+                })?;
+            head_bytes.clone_from(&b.blind);
+            Some(forge_core::collab::private::HeadBlind {
+                real: b.real.clone(),
+                salt: b.salt,
+            })
+        } else {
+            None
+        };
+        collab.request_members_patch(Some(forge_core::collab::private::MembersPatch {
+            base_public: !base_members,
+            source_public: !source_members,
+            head,
+        }));
+    }
     let title = match &args.title {
         Some(t) => t.clone(),
         None => git::git(&cwd, &["log", "-1", "--format=%s", &head_oid], &[])
@@ -402,7 +498,7 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
         },
         None,
         &args.body,
-        s.collab().new_audience(handle, None, None).await?,
+        audience,
     )?;
     let mut input = PatchInput {
         title: title.clone(),
@@ -412,13 +508,13 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
         base_ref_name: base.clone(),
         source_repo_id: source.id().to_string(),
         source_ref_name: Some(head_ref.clone()),
-        head_oid: hex::decode(&head_oid).context("head oid")?,
+        head_oid: head_bytes,
         draft: args.draft,
         patch_manifest_hash: None,
     };
     let journal = default_journal_dir()?;
     // An interrupted create of this same PR resumes (it is not a second PR).
-    if !s.collab().patch_create_pending(handle, &input, &journal)? {
+    if !collab.patch_create_pending(handle, &input, &journal)? {
         refuse_duplicate(&s, handle, &source, &head_ref, &base, args.draft).await?;
     }
     // Once the PR may be created: the base's CODEOWNERS: whom to ask for review once the PR is open (GitHub's behaviour).
@@ -426,7 +522,8 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
         .iter()
         .find(|(n, _)| *n == base)
         .and_then(|(_, st)| forge_core::rules::tip_of(st));
-    let owner_plan = match (&base_tip, args.no_code_owners) {
+    // a members-only base's files are members-only: its code owners are not read
+    let owner_plan = match (&base_tip, args.no_code_owners || base_members) {
         (Some(tip), false) => {
             owners::plan(
                 ctx, &s, handle, &cwd, &base, tip, &source, &head_ref, &head_oid,
@@ -437,7 +534,8 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
     };
     if !ctx.json {
         println!(
-            "Open PR {title:?} in {}: {} {head_ref} ({}) → {base}",
+            "Open {}PR {title:?} in {}{to}: {} {head_ref} ({}) → {base}",
+            crate::audience::prefix(handle, audience),
             handle.display(),
             source.display(),
             short(&head_oid)
@@ -483,7 +581,6 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
         )
     })?;
     let before = s.balance().await;
-    let collab = s.collab();
     // An interrupted create of this PR that landed is finished first, before a long body's
     // artifact would be stored (and paid for) again.
     let created =
@@ -513,6 +610,7 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
             "sourceRepoId": source.id(),
             "sourceRepo": source.display(),
             "draft": args.draft,
+            "audience": crate::audience::json(audience),
             "draftTransitionId": created.draft_transition,
             "resumed": created.resumed,
             "codeOwners": owner_plan.as_ref().map(|p| json!({
@@ -529,8 +627,9 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
                 ""
             };
             println!(
-                "✓ opened {}PR #{} in {}{how} · {}",
+                "✓ opened {}{}PR #{} in {}{how} · {}",
                 if args.draft { "draft " } else { "" },
+                crate::audience::prefix(handle, audience),
                 created.number,
                 handle.display(),
                 cost_line(spent, price)
@@ -583,6 +682,7 @@ async fn resolve_head(
     cwd: &Path,
     svc: &forge_core::repo::RepoService<'_>,
     candidates: Vec<Repo>,
+    members: Option<(&Repo, &forge_core::repo::MembersRefs)>,
 ) -> Result<PrHead> {
     let head_ref =
         match (&args.head, git::current_branch(cwd)) {
@@ -593,7 +693,20 @@ async fn resolve_head(
             )),
         };
     let mut found = None;
+    // a members-only branch of the target, which only a member sees (it never lives in a fork)
+    if let Some((target, fold)) = members {
+        if let Some(tip) = fold
+            .get(&head_ref)
+            .filter(|r| r.members_only)
+            .and_then(|r| forge_core::rules::tip_of(&r.state))
+        {
+            found = Some((target.clone(), member_ref_states(fold), tip));
+        }
+    }
     for repo in &candidates {
+        if found.is_some() {
+            break;
+        }
         let refs = svc.read_refs(repo).await?;
         if let Some(tip) = refs
             .iter()
@@ -646,6 +759,19 @@ async fn resolve_head(
         ref_name: head_ref,
         oid: head_oid,
     })
+}
+
+/// Every ref a member reads, public and members-only, as `read_refs` lists them.
+fn member_ref_states(fold: &forge_core::repo::MembersRefs) -> Vec<(String, RefState)> {
+    fold.refs
+        .iter()
+        .map(|r| (r.name.clone(), r.state.clone()))
+        .collect()
+}
+
+/// `main` for `refs/heads/main`.
+fn short_branch_name(r: &str) -> &str {
+    r.strip_prefix("refs/heads/").unwrap_or(r)
 }
 
 /// Where a new PR's head lives ([`resolve_head`]).
@@ -816,6 +942,7 @@ async fn list(
     limit: u32,
     state: crate::PrStateArg,
     include_hidden: bool,
+    audience: Option<crate::AudienceArg>,
 ) -> Result<()> {
     let s = Reader::open_discussion(ctx, repo).await?;
     let handle = &s.repo;
@@ -849,7 +976,7 @@ async fn list(
         .chain(sealed.into_iter().map(PrRow::Sealed))
         .filter(|r| {
             let (open, merged) = r.open_merged();
-            state.matches(open, merged)
+            state.matches(open, merged) && audience.is_none_or(|a| a.matches(r.audience()))
         })
         .collect();
     // newest first, the two kinds interleaved by number
@@ -997,6 +1124,14 @@ enum PrRow {
 }
 
 impl PrRow {
+    /// Who it is for.
+    fn audience(&self) -> forge_core::rules::v2::Audience {
+        match self {
+            PrRow::Pr((v, _)) => v.patch.audience,
+            PrRow::Sealed(x) => x.placeholder.audience,
+        }
+    }
+
     fn id(&self) -> &str {
         match self {
             PrRow::Pr((v, _)) => &v.patch.document_id,
@@ -1968,6 +2103,7 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
         return Ok(());
     }
     refuse_unmergeable(&view, number)?;
+    refuse_members_merge(&view, handle, number)?;
     refuse_missing_base(&view, number, event_only)?;
     let merge_oid = event_only
         .then(|| event_only_oid(&view, a.merge_oid.as_deref(), number))
@@ -2425,7 +2561,7 @@ struct MergeHow<'a> {
 
 /// Record the merge: a merge `transition` (kind 13, a member's) naming `merge_oid`; on
 /// failure, the user error saying what already happened.
-async fn post_merge_event(
+pub(crate) async fn post_merge_event(
     collab: &Collab<'_>,
     handle: &Repo,
     view: &PatchView,
@@ -2463,6 +2599,29 @@ async fn post_merge_event(
             }),
         )
     })
+}
+
+/// Refuse to merge a members-only pull request from a members-only branch (DESIGN §4.4, D10):
+/// into a public base it is published (`dg publish --pr`, a squash by default), never merged
+/// with members-only parents; into a members-only base, `dg` cannot merge it yet.
+fn refuse_members_merge(view: &PatchView, handle: &Repo, number: u64) -> Result<()> {
+    if !members_source(view) {
+        return Ok(());
+    }
+    let repo = handle.display();
+    Err(UserError::new(
+        codes::USAGE,
+        format!("PR #{number} is from a members-only branch: it is published, not merged"),
+    )
+    .cause("a merge commit with members-only parents would leave the public branch without its history")
+    .fix(format!(
+        "dg publish --pr {number}     # one new public commit; run it in a clone of {repo}"
+    ))
+    .fix(format!(
+        "dg publish --pr {number} --history     # publish its commits as they are"
+    ))
+    .note("nothing was written")
+    .into())
 }
 
 /// A merge is legal only from an open, ready PR (the contract's `c3_mergedAfter`: the sum
@@ -3858,11 +4017,22 @@ async fn locate(ctx: &Ctx, repo: &str, number: u64) -> Result<Located> {
     let p = patch(&collab, &s.repo, repo, number).await?;
     // The PR's current head: its newest headUpdate, else the head it was opened with.
     let view = collab.patch_view(&s.repo, p).await?;
-    let (source, head, base_ref) = (
-        view.patch.source_repo_id,
-        view.head,
-        view.merge_base.ref_name,
-    );
+    // A members-only PR from a members-only branch names a blind: git needs the real commit
+    // behind it, which only a member reads (DESIGN §4.4), and its fetch needs the key.
+    let members = members_source(&view);
+    let head = if members {
+        let real = collab.real_head(&s.repo, &view).await;
+        if real.eq_ignore_ascii_case(&view.head) {
+            return Err(members_key_needed(
+                &s.repo,
+                "check out a members-only pull request",
+            ));
+        }
+        real
+    } else {
+        view.head.clone()
+    };
+    let (source, base_ref) = (view.patch.source_repo_id, view.merge_base.ref_name);
     // Every field came from a document anyone could have written: check the shapes before
     // any of them reaches git.
     if !git::is_oid(&head) {
@@ -3873,8 +4043,36 @@ async fn locate(ctx: &Ctx, repo: &str, number: u64) -> Result<Located> {
         head,
         base_ref,
         target,
-        private: s.repo.visibility == forge_core::rules::v2::Visibility::Private,
+        private: members || s.repo.visibility == forge_core::rules::v2::Visibility::Private,
     })
+}
+
+/// Whether `view` is a members-only PR from a members-only branch: its head is a blind, and the
+/// opened PR carries the real commit behind it ([`Patch::real_head`]); one from a public branch
+/// has a plain head.
+pub(crate) fn members_source(view: &PatchView) -> bool {
+    view.patch.audience == forge_core::rules::v2::Audience::Members
+        && view.patch.real_head.is_some()
+        && view.patch.repo_id == view.patch.source_repo_id
+}
+
+/// The refusal for a members-only action this reader cannot take: no members key held (not a
+/// member, locked, or no key shared yet).
+pub(crate) fn members_key_needed(repo: &Repo, action: &str) -> anyhow::Error {
+    UserError::new(
+        codes::MEMBERS_ONLY,
+        format!(
+            "can't {action} in {}: your key for its members-only content isn't available",
+            repo.display()
+        ),
+    )
+    .fix("dg auth unlock, then try again")
+    .fix(format!(
+        "if you are a member and no key was shared with you yet, ask a maintainer: `dg repo keys repair {}`",
+        repo.display()
+    ))
+    .note("nothing was written")
+    .into()
 }
 
 /// Fetch a PR head into the repository at `cwd` from `dash://<source>` (fixed refspec —
@@ -4161,6 +4359,7 @@ pub(crate) mod tests {
             upstream_number: None,
             audience: forge_core::rules::v2::Audience::Public,
             letter: None,
+            real_head: None,
         };
         PatchView {
             state: forge_core::rules::PrState::default(),

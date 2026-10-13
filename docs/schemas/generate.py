@@ -390,6 +390,7 @@ cmd('pr status', 'Your pull requests: the current branch\'s, the ones you opened
 cmd('pr create', 'A new pull request.', {
     'status': E('created'), 'number': I, 'documentId': S, 'id': S, 'title': S, 'baseRef': S, 'headRef': S, 'headOid': S,
     'sourceRepoId': S, 'sourceRepo': S, 'draft': B, 'draftTransitionId': nl(S), 'resumed': B, 'codeOwners': ANY, 'cost': COST,
+    'audience': AUD,
 }, ['status', 'number', 'documentId', 'baseRef', 'headRef'])
 cmd('pr list', 'A page of pull requests.', {
     'count': I, 'membersOnly': I, 'toSpecificPeople': I, 'prs': A(R('pullRow')), 'hidden': I, 'hiddenOmitted': I, 'truncated': B, 'otherStates': ANY,
@@ -567,6 +568,27 @@ cmd('make-public', 'Members-only posts made public: your own each edited to Publ
 cmd('collab list', 'The repository\'s members and their roles.', {
     'count': I, 'members': A(OBJ), 'ownerId': S, 'roles': {'const': True},
 }, ['count', 'members', 'ownerId', 'roles'])
+
+# -- branches and publishing ------------------------------------------------------------------
+BRANCH_ROW = O({'branch': S, 'tip': S, 'publishedAs': S, 'onto': S}, ['branch', 'tip', 'publishedAs', 'onto'])
+cmd('branch list', 'The repository\'s branches and who can see them. A member sees the members-only ones too; anyone else sees `alsoMembersOnly` instead (never how many).', {
+    'repo': S,
+    'branches': A(O({'name': S, 'ref': S, 'tip': nl(S), 'audience': E('public', 'members')}, ['name', 'ref', 'audience'])),
+    'alsoMembersOnly': B,
+}, ['repo', 'branches', 'alsoMembersOnly'])
+cmd('branch new', 'A branch started in this clone, and who will see it once pushed (null: what the repository decides).', {
+    'status': E('created'), 'branch': S, 'audience': nl(AUD),
+}, ['status', 'branch'])
+cmd('branch cleanup', 'The local branches whose content `dg publish` published: deleted, or listed with --dry-run.', {
+    'deleted': A(BRANCH_ROW), 'wouldDelete': A(BRANCH_ROW), 'keptCurrent': A(BRANCH_ROW),
+}, ['deleted', 'wouldDelete', 'keptCurrent'])
+cmd('publish', 'A members-only branch (or a members-only pull request\'s branch) published onto a public branch.', {
+    'status': E('published'), 'branch': S, 'onto': S, 'method': E('squash', 'history'), 'commit': S,
+    'membersOnlyTip': S, 'commits': SA, 'files': I, 'pr': nl(I), 'mergeTransitionId': nl(S),
+    'localBase': D('What happened to your local copy of the base: `moved` to the published commit, `needs-reset` '
+                   '(it holds more; reset it yourself) or `untouched`.', E('moved', 'needs-reset', 'untouched')),
+    'cost': COST,
+}, ['status', 'branch', 'onto', 'method', 'commit'])
 
 # -- cost, maintenance, storage ---------------------------------------------------------------
 cmd('cost estimate', 'What a first push of the current repository would cost.', {

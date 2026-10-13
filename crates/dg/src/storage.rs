@@ -1642,12 +1642,20 @@ fn mirror_line(mirror: &serde_json::Value) -> Option<String> {
     ))
 }
 
-/// A `packManifest.kind` by name: what the artifact is (`forge_core::pack` `KIND_*`).
+/// A `packManifest.kind` by name: what the artifact is (`forge_core::pack` `KIND_*`); a
+/// members-only kind (64 + k, DESIGN D6) is its plain kind's name with `members-only-` before it.
 fn artifact_kind(kind: u64) -> &'static str {
     use forge_core::pack::{
-        KIND_FLAT_INDEX, KIND_GIT_PACK, KIND_HISTORY_INDEX, KIND_HISTORY_VERSIONS, KIND_LONG_BODY,
-        KIND_MEMBERS_LONG_BODY, KIND_OBJECT_LOCATOR, KIND_RELEASE_ASSETS,
+        KIND_ENV_SNAPSHOT, KIND_FLAT_INDEX, KIND_GIT_PACK, KIND_HISTORY_INDEX,
+        KIND_HISTORY_VERSIONS, KIND_LONG_BODY, KIND_MAKE_PUBLIC, KIND_MEMBERS_LONG_BODY,
+        KIND_OBJECT_LOCATOR, KIND_RELEASE_ASSETS, KIND_SEALED_BASE,
     };
+    const MEMBERS_PACK: u8 = KIND_SEALED_BASE + KIND_GIT_PACK;
+    const MEMBERS_LOCATOR: u8 = KIND_SEALED_BASE + KIND_OBJECT_LOCATOR;
+    const MEMBERS_FLAT: u8 = KIND_SEALED_BASE + KIND_FLAT_INDEX;
+    const MEMBERS_HISTORY: u8 = KIND_SEALED_BASE + KIND_HISTORY_INDEX;
+    const MEMBERS_ASSETS: u8 = KIND_SEALED_BASE + KIND_RELEASE_ASSETS;
+    const MEMBERS_VERSIONS: u8 = KIND_SEALED_BASE + KIND_HISTORY_VERSIONS;
     match u8::try_from(kind) {
         Ok(KIND_GIT_PACK) => "pack",
         Ok(KIND_OBJECT_LOCATOR) => "browse-index",
@@ -1656,6 +1664,14 @@ fn artifact_kind(kind: u64) -> &'static str {
         Ok(KIND_RELEASE_ASSETS) => "release-assets",
         Ok(KIND_HISTORY_VERSIONS) => "history-versions",
         Ok(KIND_LONG_BODY) => "long-body",
+        Ok(KIND_MAKE_PUBLIC) => "make-public",
+        Ok(KIND_ENV_SNAPSHOT) => "environment",
+        Ok(MEMBERS_PACK) => "members-only-pack",
+        Ok(MEMBERS_LOCATOR) => "members-only-browse-index",
+        Ok(MEMBERS_FLAT) => "members-only-flat-index",
+        Ok(MEMBERS_HISTORY) => "members-only-history-index",
+        Ok(MEMBERS_ASSETS) => "members-only-release-assets",
+        Ok(MEMBERS_VERSIONS) => "members-only-history-versions",
         Ok(KIND_MEMBERS_LONG_BODY) => "members-only-long-body",
         _ => "unknown",
     }

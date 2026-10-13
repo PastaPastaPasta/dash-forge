@@ -255,6 +255,17 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         Command::Collab(C::List { repo }) => ("could not list collaborators", Some(repo)),
         Command::Collab(C::Accept { repo, .. }) => ("membership not accepted", Some(repo)),
         Command::MakePublic { repo, .. } => ("nothing made public", Some(repo)),
+        Command::Branch {
+            cmd: Some(crate::branch::BranchCommand::List { repo }),
+        } => ("could not list branches", Some(repo)),
+        Command::Branch { cmd: None } => ("could not list branches", None),
+        Command::Branch {
+            cmd: Some(crate::branch::BranchCommand::New { .. }),
+        } => ("branch not created", None),
+        Command::Branch {
+            cmd: Some(crate::branch::BranchCommand::Cleanup { .. }),
+        } => ("branches not cleaned up", None),
+        Command::Publish(_) => ("nothing was published", None),
         Command::Cost(CostCommand::Estimate { .. }) => ("no estimate", None),
         Command::Cost(CostCommand::Audit { repo, .. }) => ("audit failed", repo.as_ref()),
         Command::Cost(CostCommand::Prices) => ("no price reference", None),

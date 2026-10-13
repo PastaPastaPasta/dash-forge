@@ -395,6 +395,132 @@ pub struct MembersUpdates {
     /// Members-only updates this reader could not open (no key, another epoch, a later envelope,
     /// late, malformed): counted, never folded.
     pub unreadable: usize,
+    /// The members-only updates folded into [`Self::by_name`], by document `$id`, each with the
+    /// blind its `newOid` carries and that blind's salt when the blind checked (rule C copies
+    /// both into a PR head or head update naming the same commit); `None` for a delete or an
+    /// update whose `newOid` raised an alert.
+    pub sealed: BTreeMap<String, Option<UpdateBlind>>,
+}
+
+/// The blind a members-only ref update's `newOid` carries, with its salt: what a members-only PR
+/// or head update naming the same commit copies (rule C, `private-repos.md` §19.1).
+#[derive(Clone, PartialEq, Eq)]
+pub struct UpdateBlind {
+    /// The plaintext `newOid` as written (the blind).
+    pub blind: Vec<u8>,
+    /// The real commit.
+    pub real: Vec<u8>,
+    /// The salt of the blind.
+    pub salt: crate::private::blind::Salt,
+}
+
+/// It holds a real commit and a salt: `Debug` shows neither.
+impl std::fmt::Debug for UpdateBlind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UpdateBlind").finish_non_exhaustive()
+    }
+}
+
+impl MembersUpdates {
+    /// Whether the folded update `id` is a members-only one.
+    #[must_use]
+    pub fn is_sealed(&self, id: &str) -> bool {
+        self.sealed.contains_key(id)
+    }
+
+    /// Whether ref `name`, resolved to `state` over [`Self::by_name`], is a members-only branch
+    /// now: the update that set its tip is a members-only one. A name no update resolves (unborn)
+    /// is members-only when every update of it is.
+    #[must_use]
+    pub fn is_members_only(&self, name: &str, state: &crate::rules::RefState) -> bool {
+        let Some(updates) = self.by_name.get(name) else {
+            return false;
+        };
+        match crate::rules::tip_of(state) {
+            Some(tip) => updates
+                .iter()
+                .rev()
+                .find(|u| u.new_oid.eq_ignore_ascii_case(&tip))
+                .is_some_and(|u| self.is_sealed(&u.id)),
+            None => !updates.is_empty() && updates.iter().all(|u| self.is_sealed(&u.id)),
+        }
+    }
+
+    /// The blind (and its salt) of members-only branch `name`'s commit `real` (hex): the newest
+    /// members-only update of `name` that set it with a checked blind. `None` when no such
+    /// update is folded (a public branch, or a commit no members-only update of it introduced).
+    #[must_use]
+    pub fn blind_of(&self, name: &str, real: &str) -> Option<&UpdateBlind> {
+        self.by_name
+            .get(name)?
+            .iter()
+            .rev()
+            .filter(|u| u.new_oid.eq_ignore_ascii_case(real))
+            .find_map(|u| self.sealed.get(&u.id).and_then(Option::as_ref))
+    }
+
+    /// A map from every checked blind of these updates to its real commit, for git (diff,
+    /// fetch, checkout, merge, display); never for a folded field.
+    #[must_use]
+    pub fn blind_map(&self) -> crate::private::blind::BlindMap {
+        let mut map = crate::private::blind::BlindMap::new();
+        for b in self.sealed.values().flatten() {
+            map.learn(
+                crate::private::blind::OidField::NewOid,
+                &b.blind,
+                Some(&b.real),
+                Some(&b.salt),
+            );
+        }
+        map
+    }
+
+    /// The merge-verification tips of base `name` for a PR opened at `opened_at`, as a
+    /// members-only PR's merge names them (DESIGN §4.4): a merge into a members-only base copies
+    /// the blind of the update that landed it, so each tip is restated as the blind its update
+    /// carries (a public update's stays plain). Folded on real values, like the ref itself.
+    #[must_use]
+    pub fn merge_base(
+        &self,
+        configs: &[ConfigDoc],
+        name: &str,
+        opened_at: u64,
+    ) -> crate::rules::MergeBaseTips {
+        let empty = Vec::new();
+        let updates = self.by_name.get(name).unwrap_or(&empty);
+        let hash_hex = hex::encode(crate::backends::sha256(name.as_bytes()));
+        let real = crate::rules::pr_base_tips(updates, configs, &hash_hex, opened_at);
+        // every form a tip takes in the documents: the blind of each members-only update that
+        // set it (several pushes of one commit carry several), else the plain commit
+        let forms = |oid: &str| -> Vec<String> {
+            let mut out: Vec<String> = updates
+                .iter()
+                .filter(|u| u.new_oid.eq_ignore_ascii_case(oid))
+                .map(|u| match self.sealed.get(&u.id) {
+                    Some(Some(b)) => hex::encode(&b.blind),
+                    Some(None) => String::new(),
+                    None => u.new_oid.to_ascii_lowercase(),
+                })
+                .filter(|o| !o.is_empty())
+                .collect();
+            out.dedup();
+            out
+        };
+        let newest = |oid: Option<String>| oid.and_then(|o| forms(&o).pop());
+        let mut historical = Vec::new();
+        for oid in &real.historical {
+            for f in forms(oid) {
+                if !historical.contains(&f) {
+                    historical.push(f);
+                }
+            }
+        }
+        crate::rules::MergeBaseTips {
+            historical,
+            tip: newest(real.tip),
+            current: newest(real.current),
+        }
+    }
 }
 
 /// It holds members-only branch names and real commits: `Debug` shows only counts.
@@ -482,6 +608,20 @@ pub fn members_updates_of(
                 id: d.id.clone(),
                 kind: RefAlertKind::Blind(alert),
             }));
+            let new_checked = !real
+                .alerts
+                .iter()
+                .any(|a| a.field == crate::private::blind::OidField::NewOid);
+            let blind = d
+                .field_bytes("newOid")
+                .filter(|b| new_checked && !crate::private::blind::is_null(b))
+                .zip(real.salt)
+                .map(|(blind, salt)| UpdateBlind {
+                    blind,
+                    real: real.new_oid.clone(),
+                    salt,
+                });
+            out.sealed.insert(d.id.clone(), blind);
             members.entry(real.name).or_default().push(u);
         }
     }
@@ -498,10 +638,13 @@ pub fn members_updates_of(
             && crate::rules::resolve_ref(public, configs, &hash_hex, |a, b| a == b)
                 != crate::rules::RefState::Unborn;
         if live {
-            out.alerts.extend(sealed.into_iter().map(|u| RefAlert {
-                id: u.id,
-                kind: RefAlertKind::PublicName,
-            }));
+            for u in sealed {
+                out.sealed.remove(&u.id);
+                out.alerts.push(RefAlert {
+                    id: u.id,
+                    kind: RefAlertKind::PublicName,
+                });
+            }
         } else {
             public.extend(sealed);
         }
@@ -797,6 +940,99 @@ mod members_tests {
             RefState::Unborn,
             "the public reads it deleted"
         );
+    }
+
+    fn member_fold(state: &GitState) -> super::MembersUpdates {
+        let ctx = ctx();
+        members_updates_of(state, &[], |k, d| {
+            let mut h = crate::keyring::header_of(k, d).unwrap();
+            h.vis = crate::rules::v2::Visibility::Public;
+            open_content(&ctx, &h, &d.field_bytes("enc").unwrap())
+        })
+    }
+
+    /// Rule C's source: each folded members-only update keeps the blind its `newOid` carries and
+    /// the salt, so a PR head or head update can copy them; the public updates of a name carry
+    /// none, and a branch reads members-only by the update that set its tip.
+    #[test]
+    fn the_fold_keeps_each_members_only_blind_with_its_salt() {
+        let state = GitState {
+            ref_updates: vec![
+                sealed(1, 10, 0, 0xa, None, false),
+                sealed(2, 11, 0, 0xb, Some(0xa), false),
+            ],
+            ..GitState::default()
+        };
+        let fold = member_fold(&state);
+        let real_b = hex::encode([0xb; 20]);
+        let b = fold.blind_of(NAME, &real_b).expect("a blind for the tip");
+        assert_eq!(b.real, vec![0xb; 20]);
+        assert_eq!(
+            crate::private::blind::blind(&b.salt, &b.real).unwrap(),
+            b.blind,
+            "the blind checks against its real value under its salt"
+        );
+        assert_eq!(b.blind, state.ref_updates[1].field_bytes("newOid").unwrap());
+        assert_eq!(
+            fold.blind_map().real_of(&hex::encode(&b.blind)),
+            Some(real_b.as_str())
+        );
+        let hash = hex::encode(crate::backends::sha256(NAME.as_bytes()));
+        let st = resolve_ref(&fold.by_name[NAME], &[], &hash, |a, b| a == b);
+        assert!(fold.is_members_only(NAME, &st));
+        assert!(fold.blind_of(NAME, &"ee".repeat(20)).is_none());
+    }
+
+    /// V1c: a name whose public branch was deleted and that then went members-only reads as
+    /// members-only; a live public branch is public.
+    #[test]
+    fn a_branch_is_members_only_by_the_update_that_set_its_tip() {
+        let state = GitState {
+            ref_updates: vec![
+                public(1, 10, 0x1, None),
+                public(2, 11, 0x0, Some(0x1)),
+                sealed(3, 20, 0, 0xa, None, false),
+            ],
+            ..GitState::default()
+        };
+        let fold = member_fold(&state);
+        let hash = hex::encode(crate::backends::sha256(NAME.as_bytes()));
+        let st = resolve_ref(&fold.by_name[NAME], &[], &hash, |a, b| a == b);
+        assert!(fold.is_members_only(NAME, &st));
+        let live = GitState {
+            ref_updates: vec![public(1, 10, 0x1, None)],
+            ..GitState::default()
+        };
+        let fold = member_fold(&live);
+        let st = resolve_ref(&fold.by_name[NAME], &[], &hash, |a, b| a == b);
+        assert!(!fold.is_members_only(NAME, &st));
+        assert!(fold.sealed.is_empty());
+    }
+
+    /// DESIGN §4.4: a merge into a members-only base copies the blind of the update that landed
+    /// it, so the base's merge-verification tips are those blinds, folded on real values.
+    #[test]
+    fn a_members_only_base_answers_merges_in_blind_space() {
+        let state = GitState {
+            ref_updates: vec![
+                sealed(1, 10, 0, 0xa, None, false),
+                sealed(2, 11, 0, 0xb, Some(0xa), false),
+            ],
+            ..GitState::default()
+        };
+        let fold = member_fold(&state);
+        let tips = fold.merge_base(&[], NAME, 10);
+        let blind_a = hex::encode(state.ref_updates[0].field_bytes("newOid").unwrap());
+        let blind_b = hex::encode(state.ref_updates[1].field_bytes("newOid").unwrap());
+        assert_eq!(tips.historical, vec![blind_a, blind_b.clone()]);
+        assert_eq!(tips.tip.as_deref(), Some(blind_b.as_str()));
+        assert_eq!(tips.current.as_deref(), Some(blind_b.as_str()));
+        assert!(
+            !tips.contains(&hex::encode([0xb; 20])),
+            "never the real commit"
+        );
+        // a base that was no branch when the PR was opened has no tips (D-501)
+        assert!(fold.merge_base(&[], NAME, 5).historical.is_empty());
     }
 
     #[test]

@@ -132,24 +132,51 @@ pub async fn sync_after_push(
             let Ok(oid) = hex::decode(&m.oid) else {
                 continue;
             };
+            // A members-only PR from a members-only branch names its head by the blind the
+            // branch's ref update carries (rule C): read from the member fold this push just
+            // wrote, and sealed beside the real head (DESIGN §4.4).
+            let members_head = if members_source(&view) {
+                collab.refs_changed();
+                match collab.members_refs(&repo).await {
+                    Ok(Some(fold)) => fold.updates.blind_of(&m.ref_name, &m.oid).cloned(),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            if members_source(&view) && members_head.is_none() {
+                progress.note(&format!(
+                    "PR #{n} in {label} follows this branch, but its new head was not found among the members-only branch's updates; run `{sync_line}`"
+                ));
+                out.push(hint("members-only head not found".into()));
+                continue;
+            }
             progress.note(&format!(
                 "PR #{n} in {label} follows this branch: updating its head to {} (≈ {} DASH)",
                 &m.oid[..m.oid.len().min(12)],
                 forge_core::repo::credits_to_dash(HEAD_UPDATE_CREDITS)
             ));
-            match collab
-                .post_target_event(
-                    &repo,
-                    &view.patch.target(),
-                    EventKind::HeadUpdate,
-                    &EventPayload {
-                        oid: Some(&oid),
-                        ..EventPayload::default()
-                    },
-                )
-                .await
-            {
-                Ok((_, id)) => out.push(Outcome::Synced {
+            let posted = match &members_head {
+                Some(head) => {
+                    collab
+                        .post_members_head_update(&repo, &view.patch.target(), head)
+                        .await
+                }
+                None => collab
+                    .post_target_event(
+                        &repo,
+                        &view.patch.target(),
+                        EventKind::HeadUpdate,
+                        &EventPayload {
+                            oid: Some(&oid),
+                            ..EventPayload::default()
+                        },
+                    )
+                    .await
+                    .map(|(_, id)| id),
+            };
+            match posted {
+                Ok(id) => out.push(Outcome::Synced {
                     repo: label,
                     number: n,
                     event: id,
@@ -164,4 +191,12 @@ pub async fn sync_after_push(
         }
     }
     out
+}
+
+/// Whether `view` is a members-only PR from a members-only branch: its head is a blind, whose
+/// real commit it carries sealed ([`forge_core::collab::v2::Patch::real_head`]; a members-only PR
+/// from a public branch has a plain head and none).
+fn members_source(view: &forge_core::collab::v2::PatchView) -> bool {
+    view.patch.audience == forge_core::rules::v2::Audience::Members
+        && view.patch.real_head.is_some()
 }

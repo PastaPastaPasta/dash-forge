@@ -195,6 +195,11 @@ fn is_sealed(d: &FetchedDocument) -> bool {
     d.field_bytes("enc").is_some_and(|e| !e.is_empty())
 }
 
+/// Whether `p` is a members-only PR (its head may be a blind).
+fn is_sealed_patch(p: &Patch) -> bool {
+    p.audience == Audience::Members
+}
+
 /// Whether a fetched document is a letter: `enc` v0x04, sealed to the people its writer listed
 /// (DESIGN §4.2), in either kind of repository.
 fn is_letter(d: &FetchedDocument) -> bool {
@@ -205,6 +210,9 @@ fn is_letter(d: &FetchedDocument) -> bool {
 /// The field an opened letter's recipients are put in (base58, slot order): a `$` name, which
 /// no contract property can have, so it never comes from Platform.
 pub const LETTER_TO_FIELD: &str = "$letterTo";
+/// The field an opened members-only PR's real head is put in (hex), when its blind checked
+/// against it (`private-repos.md` §19.4): for git only, never a fold input.
+pub const REAL_HEAD_FIELD: &str = "$realHead";
 /// The field an opened letter's group (tag 29) is put in (`1` Maintainers, `2` Writers and
 /// maintainers).
 pub const LETTER_GROUP_FIELD: &str = "$letterGroup";
@@ -612,6 +620,10 @@ pub struct Patch {
     pub audience: Audience,
     /// An opened letter's people and group (`None` for anything else).
     pub letter: Option<LetterInfo>,
+    /// A members-only PR from a members-only branch, opened: the real commit behind its blinded
+    /// `head_oid` (checked against the blind). For git (fetch, diff, checkout, merge) and
+    /// display only: every fold and every write that copies the head uses `head_oid`.
+    pub real_head: Option<String>,
 }
 
 /// The base a PR's merge is folded against: `baseRefName` as of the patch's `$createdAt`
@@ -1392,6 +1404,7 @@ pub fn patch_from_doc(d: &FetchedDocument) -> Patch {
         upstream_number: upstream_number_of(d),
         audience: stored_audience(d),
         letter: LetterInfo::of(d),
+        real_head: d.field_str(REAL_HEAD_FIELD),
     }
 }
 
@@ -3164,6 +3177,12 @@ pub struct Collab<'a> {
     owner_keys: std::sync::Mutex<BTreeMap<String, Vec<crate::private::named::OwnerKey>>>,
     /// Who the last letter this `Collab` sealed went to ([`Self::last_letter`]).
     last_letter: std::sync::Mutex<Option<SentLetter>>,
+    /// How the members-only pull requests this `Collab` opens name their branches and head
+    /// ([`Self::request_members_patch`]).
+    members_patch: std::sync::Mutex<Option<private::MembersPatch>>,
+    /// A public repository's refs as this member reads them ([`Self::members_refs`]), read once
+    /// per `Collab` and keyed by repository id; dropped by [`Self::refs_changed`].
+    members_refs: std::sync::Mutex<Option<([u8; 32], Option<Arc<crate::repo::MembersRefs>>)>>,
 }
 
 /// Who a letter went to, as its writer resolved it when it was posted.
@@ -3211,6 +3230,8 @@ impl<'a> Collab<'a> {
             letter_request: std::sync::Mutex::default(),
             owner_keys: std::sync::Mutex::default(),
             last_letter: std::sync::Mutex::default(),
+            members_patch: std::sync::Mutex::default(),
+            members_refs: std::sync::Mutex::default(),
         }
     }
 
@@ -3237,6 +3258,8 @@ impl<'a> Collab<'a> {
             letter_request: std::sync::Mutex::default(),
             owner_keys: std::sync::Mutex::default(),
             last_letter: std::sync::Mutex::default(),
+            members_patch: std::sync::Mutex::default(),
+            members_refs: std::sync::Mutex::default(),
         }
     }
 
@@ -3280,6 +3303,80 @@ impl<'a> Collab<'a> {
             .private_updates
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        *crate::history::lock(&self.members_refs) = None;
+    }
+
+    /// Open the members-only pull requests this `Collab` writes from now on with `patch`'s
+    /// branch audiences and head (DESIGN §4.4): a public base or source named by `sha256`, a
+    /// members-only one by its keyed hash, a members-only source's head as the blind its ref
+    /// update carries. Without it a members-only PR is refused before signing.
+    pub fn request_members_patch(&self, patch: Option<private::MembersPatch>) {
+        *crate::history::lock(&self.members_patch) = patch;
+    }
+
+    /// Public `repo`'s refs as this reader reads them as a member (`private-repos.md` §19.3):
+    /// public and members-only branches on real values, with the fold's blinds. Read once per
+    /// `Collab` (until [`Self::refs_changed`]). `None` when this reader holds no members key for
+    /// it (an outsider, a member without a key yet, members-only content off), and for a
+    /// private repository.
+    pub async fn members_refs(
+        &self,
+        repo: &RepoRef,
+    ) -> Result<Option<Arc<crate::repo::MembersRefs>>> {
+        if repo.visibility != Visibility::Public || self.signer.is_none() {
+            return Ok(None);
+        }
+        let repo_id = repo.scope()?.repo_id;
+        if let Some((id, cached)) = crate::history::lock(&self.members_refs).clone() {
+            if id == repo_id {
+                return Ok(cached);
+            }
+        }
+        let fold = match self.lane_keys(repo).await? {
+            DocKeys::Held(kr, _) => {
+                let core = self.core_contract(repo).await?;
+                let state = crate::refs::read_git_state(
+                    self.client,
+                    &core,
+                    &repo.scope()?,
+                    crate::history::Freshness::Now,
+                )
+                .await?;
+                Some(Arc::new(crate::repo::MembersRefs::of(&state, |k, d| {
+                    kr.open(k, d)
+                })))
+            }
+            DocKeys::None(_) => None,
+        };
+        *crate::history::lock(&self.members_refs) = Some((repo_id, fold.clone()));
+        Ok(fold)
+    }
+
+    /// [`Self::real_head_of`] with `repo`'s member fold read when `view`'s head is a blind no
+    /// opened document names.
+    pub async fn real_head(&self, repo: &RepoRef, view: &PatchView) -> String {
+        let direct = Self::real_head_of(view, None);
+        if !direct.eq_ignore_ascii_case(&view.head) || !is_sealed_patch(&view.patch) {
+            return direct;
+        }
+        match self.members_refs(repo).await {
+            Ok(fold) => Self::real_head_of(view, fold.as_deref()),
+            Err(_) => direct,
+        }
+    }
+
+    /// The real commit behind `view`'s head, for git (fetch, diff, checkout, merge, display):
+    /// a members-only PR's blinded head opened through the PR itself or the member fold
+    /// `fold` ([`Self::members_refs`]); a plain head as it is. Never a fold input.
+    #[must_use]
+    pub fn real_head_of(view: &PatchView, fold: Option<&crate::repo::MembersRefs>) -> String {
+        if view.head.eq_ignore_ascii_case(&view.patch.head_oid) {
+            if let Some(real) = &view.patch.real_head {
+                return real.clone();
+            }
+        }
+        fold.and_then(|f| f.updates.blind_map().real_of(&view.head).map(str::to_owned))
+            .unwrap_or_else(|| view.head.clone())
     }
 
     /// The keys of private `repo` read NOW, replacing the cached ones: a writer re-reads the
@@ -3530,6 +3627,18 @@ impl<'a> Collab<'a> {
                 let kr = self.members_writer(repo).await?;
                 let lane = kr.lane(repo)?;
                 let owner = platform::decode_identifier(&self.signer_id()?)?;
+                if kind == DocKind::Patch {
+                    let patch = crate::history::lock(&self.members_patch)
+                        .clone()
+                        .ok_or_else(|| {
+                            Error::Config(
+                                "a members-only pull request was written without its branches' \
+                                 audiences"
+                                    .into(),
+                            )
+                        })?;
+                    return private::seal_members_patch_props(&lane, owner, props, &patch);
+                }
                 private::seal_members_props(&lane, kind, owner, props)
             }
             Audience::SpecificPeople => unreachable!("sealed above"),
@@ -5188,7 +5297,7 @@ impl<'a> Collab<'a> {
                 opened_at,
             ));
         }
-        crate::refs::read_merge_base(
+        let tips = crate::refs::read_merge_base(
             self.client,
             &core,
             &scope,
@@ -5196,7 +5305,18 @@ impl<'a> Collab<'a> {
             opened_at,
             crate::history::Freshness::Now,
         )
-        .await
+        .await?;
+        if tips.current.is_some() || tips.tip.is_some() {
+            return Ok(tips);
+        }
+        // a base the public never saw may be a members-only branch: members fold it, on the
+        // blinds a merge into it copies (DESIGN §4.4); the public answers "unknown"
+        Ok(match self.members_refs(repo).await? {
+            Some(m) if m.updates.by_name.contains_key(base_ref_name) => {
+                m.updates.merge_base(&m.configs, base_ref_name, opened_at)
+            }
+            _ => tips,
+        })
     }
 
     /// A pull request's state (§3 fold; a merge counts once its oid has been a tip of a base
@@ -5305,8 +5425,25 @@ impl<'a> Collab<'a> {
                 })
             } else {
                 let configs = state.config_history();
+                // a members-only PR's base may be a members-only branch: folded for members
+                // when the public sees no tip (DESIGN §4.4)
+                let members = if patches.iter().any(is_sealed) {
+                    self.members_refs(repo).await?
+                } else {
+                    None
+                };
                 Box::new(move |b: &rules::v2::MergeBase| {
-                    crate::refs::merge_base_of(&state, &configs, &b.ref_name, b.since)
+                    let tips = crate::refs::merge_base_of(&state, &configs, &b.ref_name, b.since);
+                    match &members {
+                        Some(m)
+                            if tips.tip.is_none()
+                                && tips.current.is_none()
+                                && m.updates.by_name.contains_key(&b.ref_name) =>
+                        {
+                            m.updates.merge_base(&m.configs, &b.ref_name, b.since)
+                        }
+                        _ => tips,
+                    }
                 })
             };
 
@@ -5575,8 +5712,11 @@ impl<'a> Collab<'a> {
     /// The open-or-closed PRs whose head branch is `source_ref_name` in `source_repo_id` (the
     /// `sourceRef` index): what a push to that branch may have to move with a `headUpdate`.
     ///
-    /// Public source repositories only (the index key is `sha256(name)`; a private repo's is a
-    /// keyed hash, and its patches are sealed): private ones never match.
+    /// Public PRs carry `sha256(name)`. A members-only PR from a members-only branch carries
+    /// `HMAC(K_ref,e, name)` under the epoch it was opened in (it keeps its epoch), so a reader
+    /// holding the source repository's members keys also looks it up under every held epoch's
+    /// hash (`private-repos.md` §19.4, `members_ref::name_hashes`) and opens it. A private
+    /// repository's PRs never match (sealed v0x01 under its own keys: `dg pr sync`).
     pub async fn patches_from_branch(
         &self,
         forge: &ForgeIds,
@@ -5584,35 +5724,84 @@ impl<'a> Collab<'a> {
         source_ref_name: &str,
     ) -> Result<Vec<Patch>> {
         let collab = self.client.fetch_contract(&forge.collab).await?;
-        let docs = self
-            .client
-            .query_all_documents(
-                &collab,
-                DOC_PATCH,
-                &[
-                    QueryFilter::eq(
-                        "sourceRepoId",
-                        FieldValue::identifier(platform::decode_identifier(source_repo_id)?),
-                    ),
-                    QueryFilter::eq(
-                        "sourceRefNameHash",
-                        FieldValue::bytes32(sha256(source_ref_name.as_bytes())),
-                    ),
-                ],
-                &[
-                    QueryOrder::asc("sourceRepoId"),
-                    QueryOrder::asc("sourceRefNameHash"),
-                ],
-            )
-            .await?;
+        let source_id = platform::decode_identifier(source_repo_id)?;
+        let query = |hash: [u8; 32]| {
+            let collab = &collab;
+            async move {
+                self.client
+                    .query_all_documents(
+                        collab,
+                        DOC_PATCH,
+                        &[
+                            QueryFilter::eq("sourceRepoId", FieldValue::identifier(source_id)),
+                            QueryFilter::eq("sourceRefNameHash", FieldValue::bytes32(hash)),
+                        ],
+                        &[
+                            QueryOrder::asc("sourceRepoId"),
+                            QueryOrder::asc("sourceRefNameHash"),
+                        ],
+                    )
+                    .await
+            }
+        };
+        let docs = query(sha256(source_ref_name.as_bytes())).await?;
         // A public patch whose name does not hash to its key is malformed (§5); the query
         // matched the hash, so compare the name too.
-        Ok(docs
+        let mut out: Vec<Patch> = docs
             .iter()
             .filter(|d| plain_well_formed(ContentKind::Patch, d))
             .map(patch_from_doc)
             .filter(|p| p.source_ref_name.as_deref() == Some(source_ref_name))
-            .collect())
+            .collect();
+        // members-only PRs from a members-only branch of a public source this reader is a
+        // member of (only a repository's own branches carry its keyed hashes)
+        let Some(source) = self.members_source(source_repo_id).await else {
+            return Ok(out);
+        };
+        let DocKeys::Held(kr, _) = self.lane_keys(&source).await? else {
+            return Ok(out);
+        };
+        let held: Vec<&crate::private::EpochKeys> = kr
+            .readable_epochs()
+            .into_iter()
+            .filter_map(|e| kr.epoch_keys(e))
+            .collect();
+        let public = sha256(source_ref_name.as_bytes());
+        for hash in crate::private::members_ref::name_hashes(source_ref_name, held) {
+            if hash == public {
+                continue;
+            }
+            let sealed: Vec<FetchedDocument> = query(hash)
+                .await?
+                .into_iter()
+                .filter(|d| {
+                    is_sealed(d) && id_field(d, "repoId").as_deref() == Some(source_repo_id)
+                })
+                .collect();
+            if sealed.is_empty() {
+                continue;
+            }
+            let read = self.readable(&source, ContentKind::Patch, sealed).await?;
+            out.extend(
+                read.rows
+                    .iter()
+                    .map(patch_from_doc)
+                    .filter(|p| p.source_ref_name.as_deref() == Some(source_ref_name)),
+            );
+        }
+        Ok(out)
+    }
+
+    /// `source_repo_id` resolved, when it is a public repository and this `Collab` signs (only a
+    /// member opens a members-only PR); `None` otherwise or when it cannot be read.
+    async fn members_source(&self, source_repo_id: &str) -> Option<RepoRef> {
+        if self.signer.is_none() {
+            return None;
+        }
+        crate::resolve::resolve_id(self.client, source_repo_id)
+            .await
+            .ok()
+            .filter(|r| r.visibility == Visibility::Public)
     }
 
     /// The open PRs a push of `source_ref_name` to `source_repo_id` should move, with their
@@ -5648,8 +5837,14 @@ impl<'a> Collab<'a> {
                 Ok::<_, Error>(Some((repo, view)))
             };
             match read.await {
+                // a members-only PR's head is a blind: compared on the real commit behind it
                 Ok(Some((repo, view)))
-                    if view.state.open && !view.head.eq_ignore_ascii_case(new_head) =>
+                    if view.state.open
+                        && !view.head.eq_ignore_ascii_case(new_head)
+                        && !self
+                            .real_head(&repo, &view)
+                            .await
+                            .eq_ignore_ascii_case(new_head) =>
                 {
                     out.push((repo, view));
                 }
@@ -6159,18 +6354,16 @@ impl<'a> Collab<'a> {
         let engine = self.engine()?;
         // an issue or PR has no parent: the command's request, else public
         let audience = self.audience_for(repo, None)?;
+        // a members-only PR names its branches and head by how they are seen (DESIGN §4.4):
+        // refused before anything is read or signed when the caller did not say
         if kind == TargetKind::Patch
-            && (audience == Audience::SpecificPeople
-                || (repo.visibility == Visibility::Public && audience != Audience::Public))
+            && repo.visibility == Visibility::Public
+            && audience == Audience::Members
+            && crate::history::lock(&self.members_patch).is_none()
         {
-            let what = if audience == Audience::SpecificPeople {
-                "pull requests for specific people are not supported yet"
-            } else {
-                "members-only pull requests are not supported yet"
-            };
-            return Err(UserError::new(codes::USAGE, what)
-                .note("nothing was written")
-                .into());
+            return Err(Error::Config(
+                "a members-only pull request was asked for without its branches' audiences".into(),
+            ));
         }
         // a letter's people are resolved once, when it is posted; a renumbered retry re-seals
         // to the same people
@@ -7504,6 +7697,41 @@ impl<'a> Collab<'a> {
         };
         let community = self.community_contract(repo).await?;
         self.write(repo, &community, doc_type, props).await
+    }
+
+    /// Move a members-only PR's head to the commit `head` names (`event` kind 16, DESIGN §4.4,
+    /// `private-repos.md` §19.4): its `oid` is the blind the ref update that moved the source
+    /// carries (rule C), and the real head and that update's salt are sealed beside it under the
+    /// current epoch. Always a member's `event`: an `authorEvent` cannot carry `enc` until
+    /// mainnet, and only members write members-only content.
+    pub async fn post_members_head_update(
+        &self,
+        repo: &RepoRef,
+        target: &Target,
+        head: &crate::refs::UpdateBlind,
+    ) -> Result<String> {
+        let props = event_payload_props(
+            target,
+            EventKind::HeadUpdate,
+            &EventPayload {
+                oid: Some(&head.blind),
+                ..EventPayload::default()
+            },
+        )?;
+        let kr = self.members_writer(repo).await?;
+        let lane = kr.lane(repo)?;
+        let owner = platform::decode_identifier(&self.signer_id()?)?;
+        let sealed = private::seal_members_head_update_props(
+            &lane,
+            owner,
+            props,
+            &private::HeadBlind {
+                real: head.real.clone(),
+                salt: head.salt,
+            },
+        )?;
+        let community = self.community_contract(repo).await?;
+        self.write(repo, &community, DOC_EVENT, sealed).await
     }
 
     /// Set the branch policy (maintainers only at consensus; the client checks first unless
