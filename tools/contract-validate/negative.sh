@@ -140,7 +140,9 @@ expect_reject transition-member-findby-non-unique collab '.documentSchemas.trans
 expect_reject immutable-allow-setting-refused community '.documentSchemas.checkRun.immutableAllowSetting = ["summary"]' 'immutableAllowSetting. is replaced'
 expect_reject immutable-condition-unknown-prop community '.documentSchemas.checkRun.immutable += [{"property":"nope","when":{"present":"$old.nope"}}]' 'not a property of the document type'
 expect_reject immutable-listed-twice community '.documentSchemas.checkRun.immutable += [{"property":"repoId","when":{"present":"$old.repoId"}}]' 'under .immutable. twice'
-expect_reject old-read-outside-immutable community '.documentSchemas.checkRun.propertyConstraints.oldRead = {"present":"$old.summary"}' '\$old\.summary'
+# Beta.6 (#5373) lets a propertyConstraints rule read `$old.` (before it was refused outside `immutable`), but
+# only on a type some write replaces: `policy` is immutable, so a create is the only write its rules judge
+expect_reject old-read-on-type-without-replace community '.documentSchemas.policy.propertyConstraints.oldRead = {"present":"$old.requiredApprovals"}' 'no write of the type replaces one'
 # The replace vectors are load-bearing: a set-once field frozen outright, or left free, and (S1) a
 # completed run's log left free, each make a replace vector disagree
 expect_reject m1-set-once-frozen-outright community '.documentSchemas.checkRun.immutable |= map(if type == "object" and .property == "startedAt" then "startedAt" else . end)' 'replace.json vectors disagree'
