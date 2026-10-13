@@ -121,6 +121,7 @@ export {
   readNewestFlatIndexManifest,
   readNewestLocatorManifest,
   readNewestManifestOfKind,
+  readManifestsOfKind,
   readPackManifests,
   readRepoPackManifests,
   readBrowseManifests,

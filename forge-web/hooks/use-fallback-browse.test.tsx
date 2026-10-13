@@ -32,14 +32,15 @@ vi.mock('@/lib/view', () => view)
 
 import { useFallbackBrowse, type FallbackBrowse } from './use-fallback-browse'
 
-const repo = { repoId: 'r1' } as RepoRef
+const plainRepo = { repoId: 'r1' } as RepoRef
+let repo = plainRepo
 const packs = [{ sizeBytes: 1024, packHash: 'aa' }] as unknown as PackManifest[]
 
 let root: Root
 let el: HTMLDivElement
 let state: FallbackBrowse
-function Probe(): null {
-  state = useFallbackBrowse(repo, packs)
+function Probe({ packList = packs }: { packList?: readonly PackManifest[] }): null {
+  state = useFallbackBrowse(repo, packList)
   return null
 }
 
@@ -50,6 +51,7 @@ async function mount(): Promise<void> {
 }
 
 beforeEach(() => {
+  repo = plainRepo
   ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
   for (const f of [view.cachedFallback, view.fallbackNeedsAsk, view.restoreFallback, view.startFallback]) f.mockReset()
   view.cachedFallback.mockReturnValue(null)
@@ -95,5 +97,35 @@ describe('useFallbackBrowse over its budget', () => {
     await mount()
     expect(state.needsAsk).toBe(false)
     expect(state.status).toBe('error')
+  })
+})
+
+describe('useFallbackBrowse across a change of repo key', () => {
+  /** A run the test settles when it likes. */
+  function deferred(): { promise: Promise<unknown>; resolve: (v: unknown) => void } {
+    let resolve: (v: unknown) => void = () => undefined
+    const promise = new Promise((r) => {
+      resolve = r
+    })
+    return { promise, resolve }
+  }
+
+  it("keeps the newer key's clone when the earlier key's run finishes last (R9)", async () => {
+    // The plain repo's run, then the run of the same repo read with its published keys (another
+    // key): the earlier one settles last, and must not replace what the later one found.
+    const plain = deferred()
+    const withKeys = deferred()
+    view.startFallback.mockReturnValueOnce(plain.promise).mockReturnValueOnce(withKeys.promise)
+    await mount()
+    repo = { ...plainRepo, repoId: 'r1#published' } as RepoRef
+    await act(async () => root.render(<Probe packList={[...packs]} />))
+    for (let i = 0; i < 5; i++) await act(async () => Promise.resolve())
+    expect(view.startFallback).toHaveBeenCalledTimes(2)
+    const fresh = { unavailable: [] }
+    const stale = { unavailable: [{ packHash: 'aa', skipped: 'noKey' }] }
+    await act(async () => withKeys.resolve(fresh))
+    await act(async () => plain.resolve(stale))
+    expect(state.status).toBe('ready')
+    expect(state.context).toBe(fresh)
   })
 })

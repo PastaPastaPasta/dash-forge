@@ -18,7 +18,7 @@ import { useBrowseReader } from '@/hooks/use-browse-reader'
 import { useTrustView } from '@/hooks/use-trust-view'
 import type { BrowseReader } from '@/lib/browse'
 import { repoKey, type RepoRef } from '@/lib/repo'
-import { formatBytes, invalidateBrowseContext, plural, StorageUnreachableError, type UnavailablePack } from '@/lib/view'
+import { formatBytes, invalidateBrowseContext, plural, skippedPacksText, StorageUnreachableError, type UnavailablePack } from '@/lib/view'
 import { readOutages, scheduleReconnect, subscribeReadOutages } from '@/lib/view/reconnect'
 import { StorageUnreachableCard } from '@/components/repo/storage-unreachable'
 import type { RepoAddress } from '@/hooks/use-query-param'
@@ -56,6 +56,33 @@ function UnavailablePacksNotice({ packs }: { packs: readonly UnavailablePack[] }
         </ul>
       </div>
     </div>
+  )
+}
+
+/**
+ * The packs of a repository made public this reader skips on purpose (R9): a plain line, never the
+ * caution above. A repo made public always keeps some history members-only.
+ */
+function SkippedPacksNote({ packs }: { packs: readonly UnavailablePack[] }): JSX.Element | null {
+  const text = skippedPacksText(packs.filter((p) => p.skipped === 'noKey').length, packs.filter((p) => p.skipped === 'otherFormat').length)
+  if (text === null) return null
+  return (
+    <p data-testid="skipped-packs" className="mb-3 text-dense text-anvil-500 dark:text-anvil-400">
+      Not shown: {text}.
+    </p>
+  )
+}
+
+/** Packs the clone could not get (the caution) and packs it skipped on purpose (a plain line). */
+export function PackNotices({ packs }: { packs: readonly UnavailablePack[] }): JSX.Element | null {
+  const failed = packs.filter((p) => p.skipped === undefined)
+  const skipped = packs.filter((p) => p.skipped !== undefined)
+  if (failed.length === 0 && skipped.length === 0) return null
+  return (
+    <>
+      {failed.length > 0 ? <UnavailablePacksNotice packs={failed} /> : null}
+      {skipped.length > 0 ? <SkippedPacksNote packs={skipped} /> : null}
+    </>
   )
 }
 
@@ -165,7 +192,7 @@ export function BrowseBoundary({
             Viewing a copy loaded into your browser — this repo&apos;s browse index{' '}
             {state.unreachable ? 'could not be fetched or read right now' : state.behind ? "doesn't cover everything stored yet" : "hasn't been published yet"}.
           </p>
-          {state.unavailable.length > 0 ? <UnavailablePacksNotice packs={state.unavailable} /> : null}
+          <PackNotices packs={state.unavailable} />
           {body}
         </div>
       )

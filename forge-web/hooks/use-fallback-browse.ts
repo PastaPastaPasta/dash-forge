@@ -54,6 +54,11 @@ export function useFallbackBrowse(
   const [cause, setCause] = useState<unknown>(null)
   const [needsAsk, setNeedsAsk] = useState(false)
   const mounted = useRef(true)
+  // The repo key the state is for: a run started for an earlier one (the repo before its
+  // published keys or a session arrived) settles nothing, whichever finishes last.
+  const key = repo === null ? '' : repoKey(repo)
+  const current = useRef(key)
+  current.current = key
   useEffect(() => {
     mounted.current = true
     return () => {
@@ -61,18 +66,19 @@ export function useFallbackBrowse(
     }
   }, [])
 
-  const settle = useCallback((run: Promise<BrowseContext>) => {
+  const settle = useCallback((run: Promise<BrowseContext>, runKey: string) => {
     setStatus('working')
     setError(null)
     setNeedsAsk(false)
+    const live = (): boolean => mounted.current && current.current === runKey
     run
       .then((ctx) => {
-        if (!mounted.current) return
+        if (!live()) return
         setContext(ctx)
         setStatus('ready')
       })
       .catch((e: unknown) => {
-        if (!mounted.current) return
+        if (!live()) return
         // Decided by the run itself: this page may have joined one another page started.
         if (e instanceof FallbackTooLargeError && e.automatic) {
           setProgress(null)
@@ -88,10 +94,12 @@ export function useFallbackBrowse(
 
   const run = useCallback((automatic: boolean) => {
     if (sdk === null || repo === null || livePacks === null || livePacks.length === 0) return
+    const runKey = repoKey(repo)
     settle(
       startFallback(sdk, repo, livePacks, (p) => {
-        if (mounted.current) setProgress(p)
+        if (mounted.current && current.current === runKey) setProgress(p)
       }, automatic),
+      runKey,
     )
   }, [sdk, repo, livePacks, settle])
   const start = useCallback(() => run(false), [run])
@@ -103,9 +111,9 @@ export function useFallbackBrowse(
   useEffect(() => {
     if (repo === null) return
     if (livePacks === null || livePacks.length === 0) return
-    const cached = cachedFallback(repoKey(repo), livePacks)
+    const cached = cachedFallback(key, livePacks)
     if (cached !== null) {
-      settle(cached)
+      settle(cached, key)
       return
     }
 
@@ -119,7 +127,7 @@ export function useFallbackBrowse(
         if (ctx !== null) {
           setContext(ctx)
           setStatus('ready')
-        } else if (fallbackNeedsAsk(repoKey(repo), livePacks)) {
+        } else if (fallbackNeedsAsk(key, livePacks)) {
           // One that started without asking already stopped at its budget: ask, not decode again.
           setProgress(null)
           setNeedsAsk(true)
@@ -141,7 +149,7 @@ export function useFallbackBrowse(
       cancelled = true
     }
     // livePacks identity tracks its load; the repo key scopes the cache probe.
-  }, [repo === null ? '' : repoKey(repo), sdk, livePacks, totalSizeBytes, settle]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [key, sdk, livePacks, totalSizeBytes, settle]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return { status, progress, context, error, cause, needsAsk, start }
 }

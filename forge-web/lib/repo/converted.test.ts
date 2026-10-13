@@ -17,7 +17,10 @@ import { CHUNK_PAYLOAD_MAX } from '../constants'
 import { ENTRY_EPOCH_KEY, EpochKeys, encodeBundle, sealDoc, sealPack, type PrivateDoc, type PrivateDocType } from '../private'
 import type { Membership } from '../rules/v2'
 import { bytesToBase64, type PlainDocument } from '../sdk'
-import { PackSkippedError, clearChunkCache, loadArtifactBytesProgress } from '../view/browse-source'
+import { PackSkippedError, clearChunkCache, loadArtifactBytesProgress, skippedGitPacks } from '../view/browse-source'
+import { readAboutTotals, repoSizeOf } from '../view/repo-facts'
+import { invalidateSessionCache } from '../view/session-cache'
+import { mockSdk, newSeen, type Doc } from './drive-mock'
 import type { RepoRef } from './contract'
 import { knownConversion, recordConversion } from './converted'
 import type { PackManifest } from './packs'
@@ -197,5 +200,89 @@ describe("a repository made public's packs", () => {
     const queried: number[][] = []
     expect(bytesToHex(await loadArtifactBytesProgress(chunkSdk(plain, queried), repo, manifestOf(plain, 50)))).toBe(bytesToHex(plain))
     expect(queried.flat().sort()).toEqual([0, 1, 2])
+  })
+})
+
+describe("a repository made public's size (R9)", () => {
+  let configs: PlainDocument[]
+  let open0: Uint8Array
+  let members1: Uint8Array
+  let fresh: Uint8Array
+  beforeEach(async () => {
+    clearChunkCache()
+    invalidateSessionCache('')
+    configs = await timeline()
+    recordConversion(REPO, configs)
+    const plain = (n: number, salt: number): Uint8Array => {
+      const p = Uint8Array.from({ length: n }, (_, i) => (i * 7 + salt) % 251)
+      p.set(new TextEncoder().encode('PACK'))
+      return p
+    }
+    // The private era's pack under epoch 0 (its key published with Everything), a members-only one
+    // under the seal-off epoch 1 (never published), and the fresh plaintext pack of the flip.
+    open0 = await sealPack(await EpochKeys.import(REPO_ID, 0, K0), plain(CHUNK_PAYLOAD_MAX + 10, 1))
+    members1 = await sealPack(await EpochKeys.import(REPO_ID, 1, K1), plain(CHUNK_PAYLOAD_MAX + 20, 2))
+    fresh = plain(5_000, 3)
+  })
+
+  /** A Drive mock holding the three git packs' manifests (the members-only one twice: two copies) and their chunks. */
+  function sdkOf(): EvoSDK {
+    const packs: [Uint8Array, number][] = [
+      [open0, 20],
+      [members1, 30],
+      [members1, 31],
+      [fresh, 50],
+    ]
+    const manifests: Doc[] = packs.map(([bytes, height], i) => ({
+      $id: `m${i}`,
+      $ownerId: b58(OWNER),
+      $createdAt: height * 1000,
+      $createdAtBlockHeight: height,
+      repoId: REPO.repoId,
+      packHash: bytesToHex(sha256(bytes)),
+      kind: 0,
+      storage: 0,
+      sizeBytes: bytes.length,
+      chunkCount: Math.ceil(bytes.length / CHUNK_PAYLOAD_MAX),
+    }))
+    const sdk = mockSdk({ CORE: { packManifest: manifests } }, newSeen()) as unknown as { documents: { query: (q: { documentTypeName: string; where?: readonly (readonly unknown[])[] }) => Promise<Map<string, unknown>> } }
+    const query = sdk.documents.query
+    const byHash = new Map([open0, members1, fresh].map((b) => [bytesToHex(sha256(b)), b]))
+    sdk.documents.query = async (q) => {
+      if (q.documentTypeName !== 'chunk') return query(q)
+      const bytes = byHash.get(bytesToHex(base58Decode(String((q.where ?? []).find((w) => w[0] === 'packHash')?.[2] ?? ''))))
+      const seqs = ((q.where ?? []).find((w) => w[0] === 'seq')?.[2] as number[]) ?? []
+      const out = new Map<string, unknown>()
+      for (const s of seqs) {
+        const from = s * CHUNK_PAYLOAD_MAX
+        if (bytes !== undefined && from < bytes.length) out.set(`c${s}`, { seq: s, d0: bytesToBase64(bytes.subarray(from, Math.min(from + CHUNK_PAYLOAD_MAX, bytes.length))) })
+      }
+      return out
+    }
+    return sdk as unknown as EvoSDK
+  }
+
+  it('leaves out the packs a reader with the published keys skips, every copy, and counts them', async () => {
+    const keys = await published(configs, [encodeBundle([epochKey(0, K0)], '')])
+    expect(await skippedGitPacks(sdkOf(), { ...REPO, published: keys })).toEqual({
+      platform: members1.length * 2,
+      external: 0,
+      membersOnly: 1,
+      otherFormat: 0,
+    })
+    // Without the published keys the epoch-0 pack is skipped too.
+    expect(await skippedGitPacks(sdkOf(), REPO)).toMatchObject({ platform: open0.length + members1.length * 2, membersOnly: 2 })
+  })
+
+  it("the About card's size is what a reader can clone, and says what it leaves out", async () => {
+    const keys = await published(configs, [encodeBundle([epochKey(0, K0)], '')])
+    const totals = await readAboutTotals(sdkOf(), { ...REPO, published: keys }, 'devnet')
+    expect(totals.gitPacks).toEqual({ platform: open0.length + fresh.length, external: 0, notShown: { membersOnly: 1, otherFormat: 0 } })
+    expect(repoSizeOf(totals.gitPacks!)?.tooltip).toMatch(/superseded, except 1 members-only pack from before this repo was public\.$/)
+  })
+
+  it('reads nothing more for a repo never made public', async () => {
+    const plain: RepoRef = { ...REPO, repoId: b58(id(0x13)) }
+    expect(await skippedGitPacks(sdkOf(), plain)).toBeNull()
   })
 })
