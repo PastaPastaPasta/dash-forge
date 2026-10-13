@@ -266,6 +266,49 @@
       ],
       "description": "Who can read a document: everyone, the repository's members, or the people listed."
     },
+    "letter": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "to": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "group": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "maintainers",
+                    "writers"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "skipped": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "to",
+            "group"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Who a message to specific people went to: `to` in slot order (the writer first), the role group it named when sent (`maintainers`, or `writers` for writers and maintainers), and, when just posted, who was left out for having no encryption key. Null for anything else."
+    },
     "oid": {
       "type": "string",
       "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$",

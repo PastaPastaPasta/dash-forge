@@ -15,8 +15,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use super::{
-    doc_kind, is_sealed, open_with, Collab, DocKeys, MembersOnly, DOC_COMMENT, DOC_ISSUE,
-    DOC_REVIEW,
+    doc_kind, is_sealed, open_with, Collab, DocKeys, LetterKeys, MembersOnly, DOC_COMMENT,
+    DOC_ISSUE, DOC_REVIEW,
 };
 use crate::error::{Error, Result};
 use crate::platform::{self, FetchedDocument, FieldValue};
@@ -323,11 +323,12 @@ impl Collab<'_> {
         repo_id: &[u8; 32],
         entries: &DocEntries,
         keys: &DocKeys,
+        letters: Option<&LetterKeys>,
         kind: ContentKind,
         d: FetchedDocument,
     ) -> std::result::Result<FetchedDocument, MembersOnly> {
         if !is_sealed(&d) || entries.is_empty() {
-            return open_with(keys, kind, d);
+            return open_with(keys, letters, kind, d);
         }
         match self.outcome(repo_id, entries, doc_kind(kind), &d) {
             Outcome::Public(doc, by) => {
@@ -348,9 +349,9 @@ impl Collab<'_> {
                         state: PublicationState::EditedAfter { published_revision },
                     },
                 );
-                open_with(keys, kind, d)
+                open_with(keys, letters, kind, d)
             }
-            Outcome::None => open_with(keys, kind, d),
+            Outcome::None => open_with(keys, letters, kind, d),
         }
     }
 

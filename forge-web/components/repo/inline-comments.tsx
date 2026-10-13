@@ -54,8 +54,8 @@ import { EditedMarker } from '@/components/repo/issue-bits'
 import { Oid } from '@/components/ui/oid'
 import type { RepoHome } from '@/lib/view'
 import type { Membership } from '@/lib/rules/v2'
-import { AudienceChip, AudienceWarnings, VisibleToMembers, MEMBERS_CARD, useAudienceWarnings, useComposerAudience, useQuoteGate } from '@/components/repo/audience'
-import { publicTextOf, type MembersTexts } from '@/lib/view/audience'
+import { AudienceChip, AudienceMark, AudienceWarnings, VisibleToMembers, MEMBERS_CARD, letterThreadOf, useAudienceWarnings, useComposerAudience, useQuoteGate, type LetterThreadContext } from '@/components/repo/audience'
+import { publicTextOf, type ComposerAudience, type MembersTexts } from '@/lib/view/audience'
 import { cn } from '@/lib/utils'
 
 /** Who a diff composer may write for: the page, its members, and the PR (DESIGN §10). */
@@ -65,7 +65,7 @@ export interface InlineAudience {
   /** The viewer may turn members-only content on. */
   readonly maintainer: boolean
   /** The PR's own audience. */
-  readonly pr: 'public' | 'members'
+  readonly pr: ComposerAudience
   readonly author: string
   /** Members-only text the tab has opened in the repo: a public comment that repeats it asks first (product H8). */
   readonly membersTexts?: MembersTexts
@@ -436,6 +436,7 @@ function Thread({ thread, repo, pullId, onPosted, writeBlock, actions, suggestio
               pullId={pullId}
               replyTo={thread.root.id}
               parent={[thread.root, ...thread.replies].some((c) => c.audience === 'members') ? 'members' : 'public'}
+              letters={letterThreadOf([thread.root])}
               label="Reply"
               onDone={(id) => {
                 setReplying(false)
@@ -505,11 +506,11 @@ function CommentBlock({
     )
   }
   return (
-    <div className={cn('border-b border-anvil-100 px-3 py-2 last:border-b-0 dark:border-anvil-850', c.audience === 'members' && MEMBERS_CARD)} data-testid="thread-comment" data-id={c.id} data-audience={c.audience ?? 'public'}>
+    <div className={cn('border-b border-anvil-100 px-3 py-2 last:border-b-0 dark:border-anvil-850', c.audience !== undefined && MEMBERS_CARD)} data-testid="thread-comment" data-id={c.id} data-audience={c.audience ?? 'public'}>
       <div className="flex flex-wrap items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400">
         <Byline author={c.author} createdAt={c.createdAt} origin={origin} link={false} />
         <EditedMarker createdAt={c.createdAt} updatedAt={c.updatedAt} />
-        {c.audience === 'members' ? <VisibleToMembers /> : null}
+        <AudienceMark audience={c.audience} letter={c.letter} />
         <MadePublicBy marks={c} />
         {!own && bundleable(c.audience) && actions?.onMakeOthersPublic !== undefined && actions.viewer !== null ? (
           <span className="ml-auto">
@@ -518,7 +519,7 @@ function CommentBlock({
         ) : null}
         {own && editing === null ? (
           <span className="ml-auto flex items-center gap-2">
-            {c.audience === 'members' && actions.onMakePublic ? (
+            {(c.audience === 'members' || c.audience === 'specificPeople') && actions.onMakePublic ? (
               // A long comment whose rest could not be read is not made public: the rest would be lost.
               <MakePublicButton onClick={() => actions.onMakePublic?.(c)} disabled={longEditBlock(c.long) !== null} title={longEditBlock(c.long) ?? undefined} />
             ) : null}
@@ -715,6 +716,7 @@ function Composer({
   anchor,
   replyTo,
   parent,
+  letters,
   label,
   pending,
   suggestions,
@@ -726,7 +728,9 @@ function Composer({
   anchor?: AnchorInput
   replyTo?: string
   /** The thread's audience (a reply): a members-only thread's reply is members-only. Absent: the PR's. */
-  parent?: 'public' | 'members'
+  parent?: ComposerAudience
+  /** A reply in a thread of messages to specific people: its people, re-listed (DESIGN D26). */
+  letters?: LetterThreadContext
   label: string
   /** The pending review (a line comment only): offers "Start a review" / "Add review comment". */
   pending?: PendingReview | undefined
@@ -743,7 +747,12 @@ function Composer({
   const [body, setBody] = useState('')
   // Who it is for (DESIGN §10): the thread's or the PR's audience, or Members when picked.
   const who = useContext(InlineAudienceOf)
-  const audience = useComposerAudience(who?.home ?? null, { parent: parent ?? who?.pr ?? 'public', members: who?.members ?? null, maintainer: who?.maintainer ?? false })
+  const audience = useComposerAudience(who?.home ?? null, {
+    parent: parent ?? who?.pr ?? 'public',
+    members: who?.members ?? null,
+    maintainer: who?.maintainer ?? false,
+    ...(letters !== undefined ? { thread: letters } : {}),
+  })
   const warnings = useAudienceWarnings(audience, body, who === null ? null : { author: who.author, kind: 'pull' })
   // A public comment or reply that repeats members-only text asks first (product H8).
   const quoteGate = useQuoteGate()
@@ -769,6 +778,7 @@ function Composer({
     },
     first,
     audience.audience,
+    audience.preview?.recipients?.length,
   )
   const tooLong = composeTooLong(repo, 'comment', { body: body.trim(), ...(anchor ? { path: anchor.path } : {}) })
   const submit = (): void => {
@@ -788,6 +798,7 @@ function Composer({
         ...(post ? { post } : {}),
         // The chosen audience, checked against the thread's; with no chip, the thread's own.
         ...(audience.choice !== null ? { audience: audience.audience } : {}),
+        ...(audience.audience === 'specificPeople' ? { letter: audience.letter } : {}),
         intent: draft.intent,
       })
       draft.renew()
@@ -829,10 +840,12 @@ function Composer({
     })
   }
   const reviewing = pending !== undefined && anchor !== undefined && !pending.frozen
+  // A review comment goes to whom its review goes (the drawer's choice): it can't be sent to people on its own.
+  const toPeople = audience.audience === 'specificPeople'
   const addToReview = (): void => {
-    if (!reviewing || body.trim() === '' || anchor === undefined) return
+    if (!reviewing || body.trim() === '' || anchor === undefined || toPeople) return
     quoteGate.check(publicText(), who?.membersTexts ?? [], () => {
-      pending.onAdd(anchor, body, audience.choice !== null ? audience.audience : undefined)
+      pending.onAdd(anchor, body, audience.choice !== null && audience.audience !== 'specificPeople' ? audience.audience : undefined)
       setBody('')
       onDone()
     }, { extra: pending.membersTexts })
@@ -879,11 +892,24 @@ function Composer({
           <Button size="sm" variant="ghost" onClick={onCancel} disabled={posting}>
             Cancel
           </Button>
-          <Button size="sm" variant={reviewing ? 'outline' : 'primary'} onClick={submit} loading={posting} disabled={body.trim() === '' || tooLong || guard.disabledReason !== null}>
+          <Button
+            size="sm"
+            variant={reviewing ? 'outline' : 'primary'}
+            onClick={submit}
+            loading={posting}
+            disabled={body.trim() === '' || tooLong || guard.disabledReason !== null || audience.blocked !== null}
+            title={audience.blocked ?? undefined}
+          >
             {replyTo ? 'Reply' : reviewing ? 'Add single comment' : 'Add comment'}
           </Button>
           {reviewing ? (
-            <Button size="sm" variant="primary" onClick={addToReview} disabled={body.trim() === '' || tooLong || posting}>
+            <Button
+              size="sm"
+              variant="primary"
+              onClick={addToReview}
+              disabled={body.trim() === '' || tooLong || posting || toPeople}
+              title={toPeople ? 'A review comment goes to whoever the review goes to: choose that when you submit the review.' : undefined}
+            >
               {pending.count === 0 ? 'Start a review' : 'Add review comment'}
             </Button>
           ) : null}

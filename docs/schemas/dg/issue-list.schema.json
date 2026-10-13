@@ -17,6 +17,9 @@
     "membersOnly": {
       "type": "integer"
     },
+    "toSpecificPeople": {
+      "type": "integer"
+    },
     "page": {
       "type": "integer"
     },

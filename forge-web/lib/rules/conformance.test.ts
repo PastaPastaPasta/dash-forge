@@ -40,6 +40,7 @@ import { releaseProvenance, type ProvenanceInput } from './releaseProvenance'
 import { applyBans, banReasonLabel, standingBans, type Ban } from './bans'
 import { auditMerge, type MergeAuditInput } from './merge-audit'
 import { refHistory } from './refHistory'
+import { letterPlan, type LetterInput } from './letters'
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
 import { encodeTlv, type DocFields } from '../private/tlv'
 import { audienceEdit, makePublicChanges, reviewTextCarriers, type CarrierComment, type CarrierReview } from './make-public'
@@ -742,6 +743,11 @@ function runCaseV2(v: Vector): void {
       expect({ valid: v2.isValidRepoName(name), normalized: v2.normalizeRepoName(name) }).toEqual(
         v.expected,
       )
+      break
+    }
+    case 'role_group_letter': {
+      onlyKeys(v, ['owner', 'sender', 'members', 'keyless', 'request', 'exact', 'parents', 'membersOnlyParent'])
+      expect(letterPlan(v.input as LetterInput)).toEqual(v.expected)
       break
     }
     case 'role_oracle': {

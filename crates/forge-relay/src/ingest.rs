@@ -317,6 +317,9 @@ pub struct TargetInfo {
     /// [`Self::pr_obj`]) and marked [`MEMBERS_ONLY_KEY`]. Its head (a blind) is not watched
     /// for check runs.
     pub members_only: bool,
+    /// A letter's recipient count (`enc` v0x04: public, DESIGN D3), reported as
+    /// [`RECIPIENTS_KEY`] beside [`MEMBERS_ONLY_KEY`].
+    pub recipients: Option<u64>,
 }
 
 impl TargetInfo {
@@ -338,6 +341,7 @@ impl TargetInfo {
             draft: false,
             merged: false,
             members_only: is_sealed(d),
+            recipients: letter_recipients(d),
         }
     }
 
@@ -359,6 +363,7 @@ impl TargetInfo {
             draft: false,
             merged: false,
             members_only: is_sealed(d),
+            recipients: letter_recipients(d),
         }
     }
 
@@ -517,6 +522,53 @@ fn id_field(d: &FetchedDocument, field: &str) -> Option<String> {
 /// key still parses it and sees an empty text.
 pub const MEMBERS_ONLY_KEY: &str = "dash_members_only";
 
+/// `"dash_recipients": n` beside [`MEMBERS_ONLY_KEY`], in the same two places, when the
+/// document is a message to specific people (`enc` v0x04): how many people it was sent to,
+/// which is public (DESIGN D3, §2.2: the notify service learns the count and nothing else). Who
+/// they are is inside `enc`.
+pub const RECIPIENTS_KEY: &str = "dash_recipients";
+
+/// A letter's recipient count (`enc[1]` of `enc` v0x04), `None` for anything else.
+pub fn letter_recipients(d: &FetchedDocument) -> Option<u64> {
+    match d.field_bytes("enc")?.as_slice() {
+        [0x04, n, ..] => Some(u64::from(*n)),
+        _ => None,
+    }
+}
+
+/// How a document is sealed, as a payload marks it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sealing {
+    /// Plaintext: not marked.
+    Plain,
+    /// Members-only (or a private repository's).
+    Members,
+    /// A message to this many specific people.
+    Letter(u64),
+}
+
+impl Sealing {
+    /// How `d` is sealed.
+    pub fn of(d: &FetchedDocument) -> Self {
+        match letter_recipients(d) {
+            Some(n) => Sealing::Letter(n),
+            None if is_sealed(d) => Sealing::Members,
+            None => Sealing::Plain,
+        }
+    }
+}
+
+impl TargetInfo {
+    /// How this issue or PR is sealed.
+    pub fn sealing(&self) -> Sealing {
+        match (self.members_only, self.recipients) {
+            (_, Some(n)) => Sealing::Letter(n),
+            (true, None) => Sealing::Members,
+            (false, None) => Sealing::Plain,
+        }
+    }
+}
+
 /// Whether `d` is sealed: it carries `enc`, so its content is ciphertext the relay cannot read
 /// (it holds no repository key) and never forwards.
 pub fn is_sealed(d: &FetchedDocument) -> bool {
@@ -558,11 +610,14 @@ pub fn reportable(doc_type: &str, d: &FetchedDocument) -> bool {
 
 /// Mark `e` ([`MEMBERS_ONLY_KEY`]): at the top level when its own document is members-only
 /// (`document`), and on its embedded issue or PR when that one is (`thread`).
-fn mark(mut e: WebhookEvent, document: bool, thread: bool) -> WebhookEvent {
-    if document {
+fn mark(mut e: WebhookEvent, document: Sealing, thread: Sealing) -> WebhookEvent {
+    if document != Sealing::Plain {
         e.payload[MEMBERS_ONLY_KEY] = serde_json::Value::Bool(true);
+        if let Sealing::Letter(n) = document {
+            e.payload[RECIPIENTS_KEY] = serde_json::Value::from(n);
+        }
     }
-    if thread {
+    if thread != Sealing::Plain {
         for obj in ["issue", "pull_request"] {
             if let Some(o) = e
                 .payload
@@ -570,6 +625,9 @@ fn mark(mut e: WebhookEvent, document: bool, thread: bool) -> WebhookEvent {
                 .and_then(serde_json::Value::as_object_mut)
             {
                 o.insert(MEMBERS_ONLY_KEY.into(), serde_json::Value::Bool(true));
+                if let Sealing::Letter(n) = thread {
+                    o.insert(RECIPIENTS_KEY.into(), serde_json::Value::from(n));
+                }
             }
         }
     }
@@ -634,7 +692,7 @@ pub fn translate_issue(repo: &RepositoryMeta, d: &FetchedDocument) -> Option<Web
         open: true,
         is_pr: false,
     };
-    let sealed = is_sealed(d);
+    let sealed = Sealing::of(d);
     Some(mark(
         issues_event(repo, &d.id, "opened", &issue),
         sealed,
@@ -662,10 +720,11 @@ pub fn translate_patch(repo: &RepositoryMeta, d: &FetchedDocument) -> Option<Web
         merged: false,
         draft: false,
     };
+    let marked = Sealing::of(d);
     Some(mark(
         pull_request_event(repo, &d.id, "opened", &pr),
-        sealed,
-        sealed,
+        marked,
+        marked,
     ))
 }
 
@@ -702,8 +761,8 @@ pub fn translate_comment(
             &d.owner_id,
             &plain_str(d, "body"),
         ),
-        is_sealed(d),
-        target.is_some_and(|t| t.members_only),
+        Sealing::of(d),
+        target.map_or(Sealing::Plain, TargetInfo::sealing),
     ))
 }
 
@@ -739,8 +798,8 @@ pub fn translate_review(
             &commit,
             &plain_str(d, "body"),
         ),
-        is_sealed(d),
-        target.members_only,
+        Sealing::of(d),
+        target.sealing(),
     ))
 }
 
@@ -764,7 +823,7 @@ pub fn translate_made_public(
     closed: &BTreeSet<String>,
 ) -> Option<WebhookEvent> {
     let source = format!("{manifest_id}:{}", d.id);
-    let (mut e, thread_members_only) = match kind {
+    let (mut e, thread) = match kind {
         "issue" => {
             let issue = IssueObj {
                 number: d.field_u64("number")?,
@@ -775,7 +834,10 @@ pub fn translate_made_public(
                 open: !closed.contains(&d.id),
                 is_pr: false,
             };
-            (issues_event(repo, &source, "edited", &issue), false)
+            (
+                issues_event(repo, &source, "edited", &issue),
+                Sealing::Plain,
+            )
         }
         "comment" => {
             let target_id = id_field(d, "targetId")?;
@@ -790,7 +852,7 @@ pub fn translate_made_public(
                     &d.owner_id,
                     &plain_str(d, "body"),
                 ),
-                t.members_only,
+                t.sealing(),
             )
         }
         "review" => {
@@ -811,7 +873,7 @@ pub fn translate_made_public(
                     &commit,
                     &plain_str(d, "body"),
                 ),
-                t.members_only,
+                t.sealing(),
             )
         }
         _ => return None,
@@ -820,7 +882,7 @@ pub fn translate_made_public(
     e.payload["action"] = serde_json::json!("edited");
     e.payload["sender"] = repo.user_json(by);
     e.payload[MADE_PUBLIC_KEY] = serde_json::json!({ "by": by });
-    Some(mark(e, false, thread_members_only))
+    Some(mark(e, Sealing::Plain, thread))
 }
 
 /// A `release` → `release` published, or `unpublished` when it newly marks the tag yanked.
@@ -1001,7 +1063,7 @@ pub fn translate_transition(
         };
         e.payload[obj]["locked"] = serde_json::Value::Bool(locked);
         e.payload["sender"] = repo.user_json(&d.owner_id);
-        return Some(mark(e, false, target.members_only));
+        return Some(mark(e, Sealing::Plain, target.sealing()));
     }
     let (action, open, merged) = transition_action(kind)?;
     let mut e = if target.is_pr {
@@ -1021,7 +1083,7 @@ pub fn translate_transition(
             "not_on_base"
         });
     }
-    Some(mark(e, false, target.members_only))
+    Some(mark(e, Sealing::Plain, target.sealing()))
 }
 
 /// An `event` or `authorEvent` → `issues` / `pull_request` with the matching action. Needs
@@ -1075,7 +1137,15 @@ pub fn translate_event(
         }
         _ => {}
     }
-    Some(mark(e, sealed, target.members_only))
+    Some(mark(
+        e,
+        if sealed {
+            Sealing::Members
+        } else {
+            Sealing::Plain
+        },
+        target.sealing(),
+    ))
 }
 
 #[cfg(test)]
@@ -1130,6 +1200,7 @@ mod tests {
             draft: false,
             merged: false,
             members_only: false,
+            recipients: None,
         }
     }
 
@@ -2039,6 +2110,43 @@ mod tests {
         d.fields
             .insert("asMember".into(), FieldValue::identifier([0x4d; 32]));
         assert!(translate_comment(&meta(), &d, &issues).is_none());
+    }
+
+    /// DESIGN §2.2's notify row: a message to specific people is reported with its recipient
+    /// count (public, `enc[1]`) and nothing else; a members-only one carries no count.
+    #[test]
+    fn a_letter_is_reported_with_its_recipient_count_only() {
+        let mut letter = enc(4, 302);
+        letter[1] = 3;
+        let issue = with_as_member(sealed(
+            "i5",
+            MEMBER,
+            &letter,
+            vec![("number", FieldValue::integer(5))],
+        ));
+        let ev = translate_issue(&meta(), &issue).unwrap();
+        assert_eq!(ev.payload[RECIPIENTS_KEY], 3);
+        assert_eq!(ev.payload["issue"][RECIPIENTS_KEY], 3);
+        assert_content_free(&ev, &letter);
+        let issues = targets([1; 32], TargetInfo::from_issue(&issue, Baseline::Beginning));
+        let c = with_as_member(sealed(
+            "c-letter",
+            MEMBER,
+            &letter,
+            vec![("targetId", FieldValue::identifier([1; 32]))],
+        ));
+        let ev = translate_comment(&meta(), &c, &issues).unwrap();
+        assert_eq!(ev.payload[RECIPIENTS_KEY], 3);
+        assert_eq!(ev.payload["issue"][RECIPIENTS_KEY], 3);
+        assert_content_free(&ev, &letter);
+        let members = with_as_member(sealed(
+            "c-members",
+            MEMBER,
+            &enc(3, 93),
+            vec![("targetId", FieldValue::identifier([1; 32]))],
+        ));
+        let ev = translate_comment(&meta(), &members, &BTreeMap::new()).unwrap();
+        assert!(ev.payload.get(RECIPIENTS_KEY).is_none());
     }
 
     #[test]

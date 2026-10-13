@@ -57,7 +57,7 @@ import { withLongBodies, withLongBody, type LongBodyState } from './long-body'
 import type { Membership } from '../rules/v2'
 import type { RerunRequest } from '../rules/ci-rerun'
 import { contentGate } from '../repo/made-public'
-import { HiddenTally, admitAll, admittedAudience, placeholderShown, publicationMarks, type BundleAlert, type PublicationMarks, type HiddenCounts, type MembersOnlyItem } from '../repo/private-content'
+import { HiddenTally, admitAll, placeholderShown, publicationMarks, viewAudience, type BundleAlert, type PublicationMarks, type HiddenCounts, type LetterFacts, type MembersOnlyItem } from '../repo/private-content'
 import { queryAllDocuments, type PlainDocument } from '../sdk'
 import { compareKey, type Event } from '../rules'
 import { foldThreadMetaV2, type ThreadMeta } from '../rules/parity'
@@ -71,8 +71,13 @@ import { reviewerRows, sinceYourReview, summarizeReviews, type ReviewerCardRow, 
 /** One comment on an issue/PR. */
 export interface CommentView extends PublicationMarks {
   readonly id: string
-  /** Who it was written for (a public repo's members-only comment reads as `members`). Absent: public. */
-  readonly audience?: 'members'
+  /**
+   * Who it was written for (a public repo's members-only comment reads as `members`; one written
+   * to specific people, in any repo, as `specificPeople`). Absent: public.
+   */
+  readonly audience?: 'members' | 'specificPeople'
+  /** Who an opened specific-people comment went to, as its writer listed them. */
+  readonly letter?: LetterFacts
   readonly author: string
   /** The text to show: a long body's full text once read (`long`, `forge-v2.md` §6.3). */
   readonly body: string
@@ -139,7 +144,7 @@ export function toCommentView(d: PlainDocument): CommentView {
   const id = (f: string): string | null => asIdentifierString(d[f]) || null
   return {
     id: str(d, '$id'),
-    ...(admittedAudience(d) === 'members' ? { audience: 'members' as const } : {}),
+    ...viewAudience(d),
     ...publicationMarks(d),
     author: str(d, '$ownerId'),
     body: str(d, 'body'),

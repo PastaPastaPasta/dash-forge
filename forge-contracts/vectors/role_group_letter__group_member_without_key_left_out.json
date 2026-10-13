@@ -1,0 +1,56 @@
+{
+  "name": "group_member_without_key_left_out",
+  "description": "a maintainer with no usable encryption key is left out of a Maintainers letter and reported, not refused.",
+  "case": "role_group_letter",
+  "rules": "v2",
+  "input": {
+    "owner": "6owner1111111111111111111111111111111111111",
+    "sender": "6owner1111111111111111111111111111111111111",
+    "members": [
+      {
+        "identity": "7maint1111111111111111111111111111111111111",
+        "role": "maintainer"
+      },
+      {
+        "identity": "8writer111111111111111111111111111111111111",
+        "role": "writer"
+      },
+      {
+        "identity": "8writer222222222222222222222222222222222222",
+        "role": "writer"
+      },
+      {
+        "identity": "9triage11111111111111111111111111111111111",
+        "role": "triage"
+      },
+      {
+        "identity": "Areader11111111111111111111111111111111111",
+        "role": "reader"
+      },
+      {
+        "identity": "7maint2222222222222222222222222222222222222",
+        "role": "maintainer"
+      }
+    ],
+    "keyless": [
+      "7maint2222222222222222222222222222222222222"
+    ],
+    "request": {
+      "group": "maintainers",
+      "people": []
+    },
+    "exact": null,
+    "parents": [],
+    "membersOnlyParent": false
+  },
+  "expected": {
+    "recipients": [
+      "6owner1111111111111111111111111111111111111",
+      "7maint1111111111111111111111111111111111111"
+    ],
+    "skipped": [
+      "7maint2222222222222222222222222222222222222"
+    ],
+    "group": "maintainers"
+  }
+}

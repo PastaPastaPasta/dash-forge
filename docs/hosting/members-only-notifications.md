@@ -16,7 +16,8 @@ holds no repository key.
   kind (issue, pull request, comment, review, label or assignment), the issue or pull request
   number, the author and the time. A review's verdict (approved, changes requested, commented)
   is public too. Titles, bodies, label names and branch names are not readable.
-- **Messages to specific people** (a later phase): the same, plus how many people a message is
+- **Messages to specific people** (issues, comments and reviews sent to Maintainers, to Writers
+  and maintainers, or to people the writer picked): the same, plus how many people a message is
   addressed to. Who they are is inside the encrypted part. The service therefore **cannot route**
   such a message to its recipients and must not try. Telling someone "you were sent a message" is
   done by the recipient's own inbox in the web app, which opens the message locally.
@@ -46,5 +47,9 @@ sends to the post's author as "participating").
 It marks members-only events with `"dash_members_only": true`: at the top level when the event's
 own document is members-only, and on the embedded `issue` or `pull_request` when that thread is
 (see "Members-only content" under Payloads in `crates/forge-relay/README.md`). A notice renderer
-uses the key to choose the wording in rule 3. A service that reads the chain directly instead
+uses the key to choose the wording in rule 3. A message to specific people also carries
+`"dash_recipients": n` in the same places: say "@alice sent a comment to 3 people on #12", never
+who they are (the relay cannot know). Rule 2 applies to it unchanged: a message from someone who
+is not a member (no `asMember`) produces no notice, though its people still see it in their own
+inbox. A service that reads the chain directly instead
 must apply the same rules itself.

@@ -279,6 +279,26 @@ export function closePrivateSessions(): void {
 // The vault locking or the encryption key changing ends every session.
 onEncryptionKeyChange(closePrivateSessions)
 
+/**
+ * Track a reader session that is not a private session (the letter reader, `letter-session.ts`):
+ * closed with every other session, and its end announced the same way, so caches keyed by its
+ * `id` drop what it opened. Returns its close.
+ */
+export function trackReaderSession(id: string, onClose: () => void): () => void {
+  let closed = false
+  const handle = {
+    close() {
+      if (closed) return
+      closed = true
+      liveSessions.delete(handle)
+      onClose()
+      for (const l of endListeners) l(id)
+    },
+  }
+  liveSessions.add(handle)
+  return () => handle.close()
+}
+
 function randomId(): string {
   return bytesToHex(randomBytes(12))
 }
@@ -550,9 +570,21 @@ export function loadPublishedSessionCached(sdk: EvoSDK, repo: RepoRef, network: 
   )
 }
 
+/** A cached session still within its TTL and not closed. */
+const fresh = (hit: { at: number; session?: PrivateSession }): boolean => Date.now() - hit.at < SESSION_TTL_MS && hit.session?.closed !== true
+
+/**
+ * The session {@link loadPublishedSessionCached} would hand out at once: one already read, still
+ * fresh and open; undefined when it would read. A page mounted again paints with it (R9).
+ */
+export function peekPublishedSession(repo: RepoRef, network: Network): PrivateSession | undefined {
+  const hit = sessionCache.get(cacheKey(network, withoutSessions(repo), `${NOBODY}:published`))
+  return hit !== undefined && fresh(hit) ? hit.session : undefined
+}
+
 function cachedSession(key: string, load: () => Promise<PrivateSession>): Promise<PrivateSession> {
   const hit = sessionCache.get(key)
-  if (hit !== undefined && Date.now() - hit.at < SESSION_TTL_MS && hit.session?.closed !== true) return hit.promise
+  if (hit !== undefined && fresh(hit)) return hit.promise
   const promise = load()
   const entry: { at: number; promise: Promise<PrivateSession>; session?: PrivateSession } = { at: Date.now(), promise }
   sessionCache.set(key, entry)

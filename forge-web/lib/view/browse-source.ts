@@ -44,6 +44,7 @@ import {
   readNewestManifestOfKind,
   readBrowseManifests,
   readForkParent,
+  readManifestsOfKind,
   staleRepoTimelines,
   onRepoContentWritten,
   repoKey,
@@ -1016,7 +1017,7 @@ export class StorageUnreachableError extends Error {
 
 /** The {@link UnavailablePack} a {@link PackUnavailableError} describes. */
 export function unavailableOf(e: PackUnavailableError): UnavailablePack {
-  return { packHash: e.packHash, hosts: e.hosts, reason: e.reason, corrupt: e.corrupt, unfollowed: e.unfollowed, ...(e instanceof PackSkippedError ? { skipped: true as const } : {}) }
+  return { packHash: e.packHash, hosts: e.hosts, reason: e.reason, corrupt: e.corrupt, unfollowed: e.unfollowed, ...(e instanceof PackSkippedError ? { skipped: e.why.reason } : {}) }
 }
 
 /**
@@ -1249,6 +1250,42 @@ async function skipBeforeDownload(sdk: EvoSDK, repo: RepoRef, copies: readonly P
   return why === null ? null : new PackSkippedError(first.packHash, why)
 }
 
+/**
+ * The stored git packs of a repository made public that this reader skips without downloading
+ * them ({@link skipBeforeDownload}): their bytes as the proved size sums count them (every
+ * manifest, by where it is stored) and how many packs, by why. Null for any other repo, which
+ * reads nothing here. The About card's size leaves them out (R9): a repo made public always keeps
+ * some history members-only, and its size is what a reader can clone.
+ */
+export async function skippedGitPacks(sdk: EvoSDK, repo: RepoRef): Promise<SkippedGitPacks | null> {
+  if (convertedReads(repo) === null) return null
+  const byHash = new Map<string, PackManifest[]>()
+  for (const m of await readManifestsOfKind(sdk, repo, PACK_KIND.GIT_PACK)) {
+    const h = m.packHash.toLowerCase()
+    byHash.set(h, [...(byHash.get(h) ?? []), m])
+  }
+  const out = { platform: 0, external: 0, membersOnly: 0, otherFormat: 0 }
+  await mapPooled([...byHash.values()], 4, async (copies) => {
+    const skipped = await skipBeforeDownload(sdk, repo, copies)
+    if (skipped === null) return
+    if (skipped.why.reason === 'noKey') out.membersOnly += 1
+    else out.otherFormat += 1
+    for (const c of copies) {
+      if (c.storage === 0) out.platform += c.sizeBytes
+      else out.external += c.sizeBytes
+    }
+  })
+  return out
+}
+
+/** {@link skippedGitPacks}: bytes by storage (0 Platform, else external) and packs by why. */
+export interface SkippedGitPacks {
+  readonly platform: number
+  readonly external: number
+  readonly membersOnly: number
+  readonly otherFormat: number
+}
+
 /** A ranged reader over one artifact (platform chunks or external URIs), optionally one copy. */
 export function artifactRangeFetch(
   sdk: EvoSDK,
@@ -1322,7 +1359,7 @@ export function artifactRangeFetch(
       if (whole !== null) return whole.subarray(start, Math.min(end, whole.length))
     }
     // The rail's "where the bytes came from" row lists the places that did not answer.
-    if (lastErr instanceof PackUnavailableError) {
+    if (lastErr instanceof PackUnavailableError && !(lastErr instanceof PackSkippedError)) {
       noteContentCheck(repoKey(repo), {
         unreachable: describePack(unavailableOf(lastErr), readGatewaysFor(repoKey(repo))),
       })
@@ -1661,8 +1698,12 @@ export interface UnavailablePack {
   readonly corrupt: boolean
   /** Recorded hosts no browser fetches (private or plain http; see {@link unfollowedHosts}). */
   readonly unfollowed?: readonly string[]
-  /** Not fetched at all: a repository made public's pack this reader cannot open ({@link PackSkippedError}); `reason` says why. */
-  readonly skipped?: true
+  /**
+   * Not fetched at all: a repository made public's pack this reader cannot open
+   * ({@link PackSkippedError}), `noKey` (members-only: stored while the repo was private, under a
+   * key that wasn't made public) or `otherFormat`; `reason` says why in words.
+   */
+  readonly skipped?: SkipReason['reason']
 }
 
 /** The assembled browse context for a repo, or a reason it is unavailable. */

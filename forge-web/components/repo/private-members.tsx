@@ -23,7 +23,6 @@ import { ConsentMissingError, repoContractIds } from '@/lib/repo'
 import { ConsentCheck, Invitations, mayAdd, useInviteAccepted } from '@/components/repo/invite-banner'
 import { ROLE_LABEL, holdsMembersKey, membershipTitle } from '@/lib/rules/roles'
 import { namedAction } from '@/lib/spend-toast'
-import { decodeIdentifier } from '@/lib/auth'
 import { noEncryptionKeyMessage } from '@/lib/auth/encryption-key'
 import type { Role } from '@/lib/rules/v2'
 import { memberDocOf } from '@/lib/repo'
@@ -33,6 +32,7 @@ import {
   addPrivateMember,
   hasUsableEncryptionKey,
   planRotation,
+  precheckAdd,
   removalEffect,
   type PrivateWriteContext,
   type RemovalEffect,
@@ -46,7 +46,9 @@ import {
 import type { PrivateSession } from '@/lib/repo/private-session'
 import { useAuth } from '@/contexts/auth-context'
 import { useAsync } from '@/hooks/use-async'
+import { usePersonInput } from '@/hooks/use-person-input'
 import { usePrivateWrite } from '@/hooks/use-private-write'
+import { ResolvedPerson } from '@/components/repo/resolved-person'
 import { useSdk } from '@/hooks/use-sdk'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { previewDelete } from '@/lib/sdk'
@@ -109,20 +111,15 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
   const [removing, setRemoving] = useState<{ member: string; role: Role } | null>(null)
   const [steps, setSteps] = useState<string[]>([])
 
-  const trimmed = memberId.trim()
+  // The typed text is an identity id, or a DPNS name looked up once typing pauses (an unknown one is refused).
+  const person = usePersonInput(memberId)
+  const trimmed = person.id ?? ''
   // Environments (DESIGN §4.5, D34): an add or a removal saves the ones whose people it changes
   // again, planned and priced before signing, made around the change.
   const envChange: MemberChange | null = adding ? { kind: 'grant', member: trimmed, role } : removing !== null ? { kind: 'revoke', member: removing.member, role: removing.role } : null
   const envFlow = useMemberEnvFlow(home, envChange, removing !== null && holdsMembersKey(removing.role))
   const planned = (): PrivateWriteContext | null => (write.context === null ? null : { ...write.context, environmentsPlanned: envFlow.plan !== null })
-  const idError = useMemo(() => {
-    if (trimmed === '') return null
-    try {
-      return decodeIdentifier(trimmed).length === 32 ? null : 'Not an identity id (base58, 32 bytes).'
-    } catch {
-      return 'Not an identity id (base58, 32 bytes).'
-    }
-  }, [trimmed])
+  const idError = person.error
   const keyCheck = useAsync(
     () => hasUsableEncryptionKey(sdk!, repo.forge.core, trimmed),
     [ready, trimmed],
@@ -215,8 +212,8 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
           </p>
           <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
             <div className="flex-1">
-              <Field label="Identity ID" htmlFor="member-id">
-                <Input id="member-id" value={memberId} onChange={(e) => setMemberId(e.target.value)} placeholder="base58 identity id" className="font-mono" spellCheck={false} />
+              <Field label="Identity ID or name" htmlFor="member-id">
+                <Input id="member-id" value={memberId} onChange={(e) => setMemberId(e.target.value)} placeholder="Identity id or name.dash" className="font-mono" spellCheck={false} />
               </Field>
             </div>
             <RolePicker value={role} onChange={setRole} visibility="private" />
@@ -232,6 +229,7 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
           </div>
           <RoleSummary role={role} />
           {idError ? <p className="mt-1 text-[12px] text-danger-700 dark:text-danger-400">{idError}</p> : null}
+          <ResolvedPerson person={person} />
           {noKey ? (
             <p className="mt-2 text-[12px] text-caution-700 dark:text-caution-400" data-testid="member-no-key">
               {noEncryptionKeyMessage(shortId(trimmed))}
@@ -275,6 +273,9 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
           try {
             await envFlow.run(async () => {
               await addPrivateMember(context, trimmed, role, intent)
+            }, async () => {
+              // what would refuse the add after a promotion's first saves, checked before any is made
+              if (role === 'maintainer') await precheckAdd(context, trimmed, role)
             })
             setMemberId('')
             setAwaiting(null)

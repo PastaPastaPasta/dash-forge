@@ -65,7 +65,7 @@ describe('what a composer offers', () => {
   })
 
   it('offers Members to members only, with why it cannot be picked yet', () => {
-    expect(choice(undefined)).toEqual({ initial: 'public', members: null, publicAllowed: true })
+    expect(choice(undefined)).toEqual({ initial: 'public', members: null, publicAllowed: true, letters: null, lettersOnly: false })
     expect(choice({ access: 'none' }, 'public', true)?.members).toBe('turn-on')
     expect(choice({ access: 'none' }, 'public', false)?.members).toBe('ask-maintainer')
     expect(choice({ access: 'no-key' })?.members).toBe('no-key')
@@ -75,8 +75,8 @@ describe('what a composer offers', () => {
 
   it('never offers Members to a member removed since, who reads only what was written before', () => {
     const session = {} as never
-    expect(choice({ access: 'former', session })).toEqual({ initial: 'public', members: 'former', publicAllowed: true })
-    expect(choice({ access: 'former', session }, 'members')).toEqual({ initial: 'members', members: 'former', publicAllowed: false })
+    expect(choice({ access: 'former', session })).toEqual({ initial: 'public', members: 'former', publicAllowed: true, letters: null, lettersOnly: false })
+    expect(choice({ access: 'former', session }, 'members')).toEqual({ initial: 'members', members: 'former', publicAllowed: false, letters: null, lettersOnly: false })
     expect(MEMBERS_OPTION_TEXT.former).toBe("You're no longer a member of this repo, so you can't write members-only content.")
   })
 

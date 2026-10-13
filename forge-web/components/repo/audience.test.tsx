@@ -21,6 +21,7 @@ vi.mock('@/contexts/auth-context', () => ({ useAuth: () => ({ identity: auth.ide
 vi.mock('@/components/author', () => ({ Author: ({ identityId }: { identityId: string }) => <span>@{identityId}</span> }))
 vi.mock('@/components/auth/unlock-more', () => ({
   UNLOCK_MEMBERS_ONLY: 'Unlock to read members-only content',
+  UNLOCK_LETTERS: 'Unlock to read messages sent to you',
   UnlockMore: ({ title, testId }: { title: string; testId: string }) => <div data-testid={testId}>{title}</div>,
 }))
 vi.mock('@/components/confirm-dialog', () => ({

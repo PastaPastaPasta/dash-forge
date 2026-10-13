@@ -175,8 +175,13 @@ async function parentWithBundles(sdk: EvoSDK, repo: RepoRef, type: string, doc: 
   return (await bundledFields(sdk, repo, type as PrivateDocType, doc).catch(() => null)) !== null ? sameParent('public') : own
 }
 
+/** The narrower of two parents' audiences: specific people over members over public (a letter thread takes only letters). */
+function tighter(a: Audience, b: Audience): Audience {
+  return a === 'specificPeople' || b === 'specificPeople' ? 'specificPeople' : narrower(a, b)
+}
+
 function narrowerParent(a: ParentAudience, b: ParentAudience): ParentAudience {
-  return { default: narrower(a.default, b.default), bound: narrower(a.bound, b.bound) }
+  return { default: tighter(a.default, b.default), bound: tighter(a.bound, b.bound) }
 }
 
 /** The audience of `repo`'s issue or pull request `targetId`, read from the stored document. */
@@ -203,21 +208,27 @@ async function targetParent(sdk: EvoSDK, repo: RepoRef, targetId: string): Promi
   return found
 }
 
+/** A reply under a message to specific people that is not one itself (DESIGN §3.3: refused). */
+const LETTER_THREAD_TEXT = "this conversation is for specific people, so a reply to it goes to them too: it can't be public or members-only"
+
 /**
  * The audience a new document of `repo` is written for, under a parent written for `parent`
  * (null: none, as an issue): `requested`, else the parent's. A public child of a members-only
  * parent is refused, unless that parent was written while a repository made public was private
- * (its {@link ParentAudience} `bound`); specific people are not written in this release. In a
- * private repo everything is members-only.
+ * (its {@link ParentAudience} `bound`). A message to specific people may sit under any parent
+ * (who it goes to is checked against its parents by `letterPlan`, D26), and under one only
+ * another such message. In a private repo everything else is members-only.
  */
 export function audienceFor(repo: RepoRef, requested: Audience | undefined, parent: Audience | ParentAudience | null): Audience {
+  const under = parent === null ? sameParent(repo.visibility === 'private' ? 'members' : 'public') : typeof parent === 'string' ? sameParent(parent) : parent
   if (repo.visibility === 'private') {
     if (requested === 'public') throw refused('this repo is private: everything in it is members-only')
-    return 'members'
+    if (under.bound === 'specificPeople' && requested !== undefined && requested !== 'specificPeople') throw refused(LETTER_THREAD_TEXT)
+    return requested === 'specificPeople' || under.default === 'specificPeople' ? 'specificPeople' : 'members'
   }
-  const under = parent === null ? sameParent('public') : typeof parent === 'string' ? sameParent(parent) : parent
   const audience = requested ?? under.default
-  if (audience === 'specificPeople') throw refused('writing to specific people is not supported yet')
+  if (under.bound === 'specificPeople' && audience !== 'specificPeople') throw refused(LETTER_THREAD_TEXT)
+  if (audience === 'specificPeople') return audience
   if (!fitsUnder(audience, under.bound)) {
     throw refused("this conversation is members-only, so a reply to it can't be public: everyone could read it, and it would answer text only members can read")
   }
@@ -234,9 +245,11 @@ export async function childAudience(
   repo: RepoRef,
   input: { readonly targetId: string; readonly replyTo?: string; readonly requested?: Audience },
 ): Promise<Audience> {
-  if (repo.visibility === 'private') return audienceFor(repo, input.requested, null)
+  // A private repo's parents matter only as messages to specific people (the rest are members-only).
+  if (repo.visibility === 'private' && input.requested === 'specificPeople') return 'specificPeople'
   // No members key: nothing here is members-only, so no parent needs reading.
-  if (!(await repoHasMembersKey(sdk, repo))) return audienceFor(repo, input.requested, 'public')
+  if (repo.visibility === 'public' && !(await repoHasMembersKey(sdk, repo))) return audienceFor(repo, input.requested, 'public')
+  if (repo.visibility === 'private') return audienceFor(repo, input.requested, await privateParent(sdk, repo, input))
   let parent = await targetParent(sdk, repo, input.targetId)
   if (input.replyTo !== undefined && input.replyTo !== '') {
     const replied = await storedAudience(sdk, repo, DOC.comment, input.replyTo)
@@ -245,6 +258,46 @@ export async function childAudience(
     if (root !== '') parent = narrowerParent(parent, await parentWithBundles(sdk, repo, DOC.comment, (await storedAudience(sdk, repo, DOC.comment, root)).doc))
   }
   return audienceFor(repo, input.requested, parent)
+}
+
+/**
+ * What a private repo's parents say about a child's audience: only a message to specific people
+ * there changes anything (everything else is members-only), and its thread's composer asks for
+ * that itself, so each parent is read once, without waiting for a node that does not show it yet
+ * (a missing one is members-only; one this tab wrote is known without a read).
+ */
+async function privateParent(sdk: EvoSDK, repo: RepoRef, input: { readonly targetId: string; readonly replyTo?: string }): Promise<Audience> {
+  const known = knownAudiences.get(`${repo.repoId}/${input.targetId}`)
+  let parent: Audience = known ?? docAudience((await storedTargetOnce(sdk, repo, input.targetId)) ?? {})
+  if (input.replyTo !== undefined && input.replyTo !== '') {
+    const replied = await storedDoc(sdk, repo, DOC.comment, input.replyTo)
+    if (replied !== null) {
+      parent = tighter(parent, docAudience(replied))
+      const root = asIdentifierString(replied['replyTo'])
+      const r = root === '' ? null : await storedDoc(sdk, repo, DOC.comment, root)
+      if (r !== null) parent = tighter(parent, docAudience(r))
+    }
+  }
+  return parent === 'specificPeople' ? 'specificPeople' : 'members'
+}
+
+/** The audience this tab already knows `repo`'s document `id` was written for (it wrote or read it), or undefined. */
+export function knownAudience(repo: RepoRef, id: string): Audience | undefined {
+  return knownAudiences.get(`${repo.repoId}/${id}`)
+}
+
+/** `repo`'s issue or pull request `targetId` as stored (cached as any parent), without waiting for a node that does not show it yet: null then. */
+export async function storedTargetOnce(sdk: EvoSDK, repo: RepoRef, targetId: string): Promise<PlainDocument | null> {
+  for (const type of [DOC.issue, DOC.patch]) {
+    const doc = await storedDoc(sdk, repo, type, targetId)
+    if (doc !== null) return doc
+  }
+  return null
+}
+
+/** {@link storedDoc}, read once (no wait for a lagging node): cached, proof-checked. */
+export function storedOnce(sdk: EvoSDK, repo: RepoRef, documentType: string, id: string): Promise<PlainDocument | null> {
+  return storedDoc(sdk, repo, documentType, id)
 }
 
 /** The retry-cache key of a sealed write saying `said` (a content hash): an HMAC under the epoch's ref key. */

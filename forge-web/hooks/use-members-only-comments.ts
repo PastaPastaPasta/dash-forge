@@ -15,11 +15,11 @@ import { membersOnlyCommentCounts, type CommentedThread } from '@/lib/repo/membe
 
 const NONE: ReadonlyMap<string, number> = new Map()
 
-/** A listed row: a members-only thread's comments all are, so it is not read. */
-type ListedThread = CommentedThread & { readonly membersOnly?: true; readonly audience?: 'members' }
+/** A listed row: a members-only thread's comments all are (a letter thread's are letters), so it is not read. */
+type ListedThread = CommentedThread & { readonly membersOnly?: true; readonly audience?: 'members' | 'specificPeople' }
 
 export function useMembersOnlyComments(sdk: EvoSDK | null, ready: boolean, repo: RepoRef, rows: readonly ListedThread[] | undefined): ReadonlyMap<string, number> {
-  const commented = (rows ?? []).filter((r) => (r.comments ?? 0) > 0 && r.membersOnly !== true && r.audience !== 'members')
+  const commented = (rows ?? []).filter((r) => (r.comments ?? 0) > 0 && r.membersOnly !== true && r.audience === undefined)
   const key = commented.map((r) => `${r.id}:${r.comments}`).join(',')
   const read = useAsync(() => membersOnlyCommentCounts(sdk!, repo, commented).catch(() => NONE), [ready, repoKey(repo), key], {
     enabled: ready && sdk !== null && key !== '',

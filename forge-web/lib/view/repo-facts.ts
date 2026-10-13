@@ -24,6 +24,8 @@ import { onPrivateSessionEnded } from '../repo/private-session'
 import { onRepoContentWritten } from '../repo/push'
 import { readReleaseCount, readReleases, releaseCountOf } from '../repo/releases'
 import { invalidateSessionCache, sessionCached } from './session-cache'
+import { skippedGitPacks } from './browse-source'
+import { skippedPacksText } from './storage-status'
 import { treeWalker } from './commit-log'
 import { historyOf } from './history-source'
 import { readBlob, type ObjectReader } from './tree-nav'
@@ -273,8 +275,27 @@ function whenFactsWanted(repoKey: string, signal?: AbortSignal): Promise<void> {
 export interface AboutTotals {
   /** Tags with a live release ({@link readReleaseCount}). */
   readonly releases: number | null
-  /** Stored git pack bytes ({@link readGitPackBytes}). */
-  readonly gitPacks: GitPackBytes | null
+  /** Stored git pack bytes ({@link readGitPackBytes}), less the packs this reader skips. */
+  readonly gitPacks: RepoPackBytes | null
+}
+
+/**
+ * The git pack bytes the About card counts: a repository made public's packs this reader skips
+ * without downloading them ({@link skippedGitPacks}) are left out, and counted in `notShown`.
+ */
+export interface RepoPackBytes extends GitPackBytes {
+  readonly notShown?: { readonly membersOnly: number; readonly otherFormat: number }
+}
+
+/** {@link readGitPackBytes} less what {@link skippedGitPacks} says this reader skips; a failed skip read leaves the sum as it is. */
+async function readRepoPackBytes(sdk: EvoSDK, repo: RepoRef): Promise<RepoPackBytes> {
+  const [sum, skipped] = await Promise.all([readGitPackBytes(sdk, repo), skippedGitPacks(sdk, repo).catch(() => null)])
+  if (skipped === null || skipped.membersOnly + skipped.otherFormat === 0) return sum
+  return {
+    platform: Math.max(0, sum.platform - skipped.platform),
+    external: Math.max(0, sum.external - skipped.external),
+    notShown: { membersOnly: skipped.membersOnly, otherFormat: skipped.otherFormat },
+  }
 }
 
 /** How long a total is kept for the session (as the releases list is). */
@@ -300,7 +321,7 @@ const GIT_PACK_BYTES = 'gitPackBytes:'
 export async function readAboutTotals(sdk: EvoSDK, repo: RepoRef, network: Network): Promise<AboutTotals> {
   const [releases, gitPacks] = await Promise.all([
     readReleaseTotal(sdk, repo, network),
-    sessionCached(`${GIT_PACK_BYTES}${repoKey(repo)}:${network}`, TOTALS_TTL_MS, () => readGitPackBytes(sdk, repo)).catch(() => null),
+    sessionCached(`${GIT_PACK_BYTES}${repoKey(repo)}:${network}`, TOTALS_TTL_MS, () => readRepoPackBytes(sdk, repo)).catch(() => null),
   ])
   return { releases, gitPacks }
 }
@@ -324,15 +345,16 @@ onRepoContentWritten((repo) => invalidateSessionCache(`${GIT_PACK_BYTES}${repo.r
  * manifest, so a pack a later push superseded, or a second member's copy, counts again; the tooltip
  * says "stored" and why. Null for a repo with no packs (GitHub shows no size for an empty one).
  */
-export function repoSizeOf(packs: GitPackBytes): { readonly text: string; readonly tooltip: string } | null {
+export function repoSizeOf(packs: RepoPackBytes): { readonly text: string; readonly tooltip: string } | null {
   const total = packs.platform + packs.external
   if (total === 0) return null
   const where: string[] = []
   if (packs.platform > 0) where.push(`${formatBytes(packs.platform)} on Platform`)
   if (packs.external > 0) where.push(`${formatBytes(packs.external)} external`)
+  const notCounted = packs.notShown === undefined ? null : skippedPacksText(packs.notShown.membersOnly, packs.notShown.otherFormat)
   return {
     text: formatBytes(total),
-    tooltip: `Git packs stored for this repo: ${where.join(', ')}. Every pack pushed counts, including ones a later push superseded.`,
+    tooltip: `Git packs stored for this repo: ${where.join(', ')}. Every pack pushed counts, including ones a later push superseded${notCounted === null ? '' : `, except ${notCounted}`}.`,
   }
 }
 

@@ -23,6 +23,7 @@
 
 import { decodeIdentifier } from '../auth/base58'
 import { openContent, openVis, propOf, type DocFields, type OpenContext, type PrivateDocType, type StoredPrivateDoc, type UnreadableReason } from '../private'
+import { MAX_LETTER_RECIPIENTS, type LetterGroup } from '../rules/letters'
 import { ENC_SPECIFIC_PEOPLE, type Audience, type ContentKind, type Visibility } from '../rules/v2'
 import { base64ToBytes, type PlainDocument } from '../sdk'
 import { asIdentifierString, num, wellFormed, type RepoRef } from './contract'
@@ -30,8 +31,8 @@ import { noteMembersKey } from './members-key-cache'
 
 /**
  * Why a document is hidden. `membersOnly`: a members-only document of a public repo this reader
- * holds no key for; `letter`: a specific-people document (`enc` v0x04), opened only by its
- * recipients (not in this release); `unknownVersion`: encrypted in a format a later version of
+ * holds no key for; `letter`: a specific-people document (`enc` v0x04) that does not name this
+ * reader (or that this tab can't open until it unlocks); `unknownVersion`: encrypted in a format a later version of
  * Forge writes (`enc` v0x05 on), never opened here.
  */
 export type HiddenReason = 'notEncrypted' | 'wrongKey' | 'late' | 'lateEdit' | 'membersOnly' | 'letter' | 'unknownVersion'
@@ -91,6 +92,10 @@ export interface MembersOnlyItem {
    * afterwards (DESIGN §4.6): "Edited after @m made it public; the new text is members-only."
    */
   readonly editedAfterBy?: string
+  /** A specific-people document's recipient count (`enc[1]`: public, the writer included). */
+  readonly recipientCount?: number
+  /** A specific-people document this tab could try once it unlocks ("Unlock to read"). */
+  readonly locked?: true
 }
 
 /**
@@ -199,9 +204,10 @@ export function docAudience(doc: PlainDocument): Audience {
 }
 
 /** The placeholder of `doc`, a well-formed sealed `type` document this reader could not open for `why`. */
-export function membersOnlyItem(type: PrivateDocType, doc: PlainDocument, why: Unopened): MembersOnlyItem {
+export function membersOnlyItem(type: PrivateDocType, doc: PlainDocument, why: Unopened, locked = false): MembersOnlyItem {
   const audience = docAudience(doc)
   const replyTo = asIdentifierString(doc['replyTo'])
+  const count = audience === 'specificPeople' ? bytesField(doc, 'enc')?.[1] : undefined
   return {
     type,
     id: asIdentifierString(doc['$id']),
@@ -212,12 +218,15 @@ export function membersOnlyItem(type: PrivateDocType, doc: PlainDocument, why: U
     replyTo: replyTo === '' ? null : replyTo,
     audience: audience === 'specificPeople' ? 'specificPeople' : 'members',
     why: audience === 'specificPeople' ? 'letter' : why,
+    // a count only a well-framed letter can carry (1..=16): never an impossible one
+    ...(count !== undefined && count > 0 && count <= MAX_LETTER_RECIPIENTS ? { recipientCount: count } : {}),
+    ...(locked && audience === 'specificPeople' ? { locked: true as const } : {}),
   }
 }
 
-/** The hidden admission of a sealed document this reader cannot open. */
-function unopened(type: PrivateDocType, doc: PlainDocument, why: Unopened, reason: HiddenReason): Admission {
-  const placeholder = membersOnlyItem(type, doc, why)
+/** The hidden admission of a sealed document this reader cannot open (`locked`: a letter this tab may open once unlocked). */
+export function unopened(type: PrivateDocType, doc: PlainDocument, why: Unopened, reason: HiddenReason, locked = false): Admission {
+  const placeholder = membersOnlyItem(type, doc, why, locked)
   return { ok: false, reason: placeholder.why === 'letter' ? 'letter' : reason, placeholder }
 }
 
@@ -436,6 +445,54 @@ export function publishedEarlierOf(doc: PlainDocument): readonly PublishedVersio
   return Array.isArray(v) ? (v as PublishedVersion[]) : []
 }
 
+/**
+ * Where an opened specific-people document keeps who it went to, as its writer listed them
+ * (DESIGN §4.2 "as listed by the sender"): the recipients' base58 ids in slot order (the writer
+ * first), and the role group it was sent to (`'maintainers'`, `'writers'`, or null).
+ */
+export const LETTER_TO = '$letterTo'
+export const LETTER_GROUP = '$letterGroup'
+
+/** Who an opened specific-people document went to. */
+export interface LetterFacts {
+  /** Base58 identity ids in slot order: the writer first. */
+  readonly recipients: readonly string[]
+  /** The role group it was sent to, when it was sent to one (tag 29). */
+  readonly group: LetterGroup | null
+}
+
+/** The {@link LetterFacts} of an admitted specific-people document, or null. */
+export function admittedLetter(doc: PlainDocument): LetterFacts | null {
+  if (admittedAudience(doc) !== 'specificPeople') return null
+  const to = doc[LETTER_TO]
+  const group = doc[LETTER_GROUP]
+  if (!Array.isArray(to)) return null
+  return { recipients: to.filter((r): r is string => typeof r === 'string'), group: group === 'maintainers' || group === 'writers' ? group : null }
+}
+
+/**
+ * The audience marks of an admitted document for a view: `members` for a members-only one,
+ * `specificPeople` with its {@link LetterFacts} for one written to specific people; none for
+ * plaintext.
+ */
+export function viewAudience(doc: PlainDocument): { audience?: 'members' | 'specificPeople'; letter?: LetterFacts } {
+  const a = admittedAudience(doc)
+  if (a === 'members') return { audience: 'members' }
+  if (a !== 'specificPeople') return {}
+  const letter = admittedLetter(doc)
+  return letter === null ? { audience: 'specificPeople' } : { audience: 'specificPeople', letter }
+}
+
+/**
+ * A reader's letter reader (`letter-session.ts`), as a repo carries it (`RepoRef.letters`): its
+ * `id` keys the content caches, and `gate` wraps a repo's content gate so the specific-people
+ * documents that name this reader open (the rest go to the inner gate as before).
+ */
+export interface LetterReading {
+  readonly id: string
+  gate(repo: RepoRef, inner: ContentGate): ContentGate
+}
+
 /** The plaintext-shaped copy of an opened document: `enc` and `epoch` dropped, fields set. */
 export function asPlaintext(doc: PlainDocument, fields: DocFields): PlainDocument {
   const out: PlainDocument = { ...doc }
@@ -491,7 +548,8 @@ export function privateGate(repo: RepoRef, ctx: OpenContext): ContentGate {
         case 'badTag':
           return { ok: false, reason: 'notEncrypted' }
         case 'letter':
-          return { ok: false, reason: 'letter' }
+          // who wrote it, when, and to how many people stay readable (DESIGN D14)
+          return unopened(type, doc, 'letter', 'letter')
         case 'unknownVersion':
           return { ok: false, reason: 'unknownVersion' }
         default:
@@ -640,8 +698,10 @@ export async function readableEvents(repo: RepoRef, docs: readonly PlainDocument
 
 /**
  * The gate a read of `repo` goes through: a private repo's session for a member, a public repo's
- * members-key session (`repo.lane`) for a member who holds it, else {@link defaultGate}.
+ * members-key session (`repo.lane`) for a member who holds it, else {@link defaultGate}; wrapped
+ * by the reader's letter reader (`repo.letters`), which opens what was written to them.
  */
 export function gateFor(repo: RepoRef): ContentGate {
-  return repo.session?.gate ?? repo.lane?.gate ?? defaultGate(repo)
+  const inner = repo.session?.gate ?? repo.lane?.gate ?? defaultGate(repo)
+  return repo.letters === undefined ? inner : repo.letters.gate(repo, inner)
 }

@@ -502,14 +502,41 @@ function stateReason(kind: number, value: string | undefined, me: string, refId:
 const VERDICT_WHAT: Readonly<Record<number, string>> = { 1: 'approved', 2: 'requested changes', 3: 'reviewed', 4: 'approved', 5: 'requested changes' }
 
 /**
+ * A message to specific people's recipient count, from its stored `enc` (`enc[1]`, public: DESIGN
+ * §2.3), or null when `enc` is not one (`enc[0]` is not 0x04).
+ */
+export function letterRecipients(enc: unknown): number | null {
+  let head: readonly number[] = []
+  if (enc instanceof Uint8Array || Array.isArray(enc)) head = Array.from(enc as ArrayLike<number>).slice(0, 2)
+  else if (typeof enc === 'string' && enc !== '') {
+    try {
+      const hex = base64ToHex(enc)
+      head = [Number.parseInt(hex.slice(0, 2), 16), Number.parseInt(hex.slice(2, 4), 16)]
+    } catch {
+      return null
+    }
+  }
+  const [version, n] = head
+  return version === 0x04 && n !== undefined && n > 0 ? n : null
+}
+
+/** "3 people", "1 person". */
+function people(n: number): string {
+  return `${n} ${n === 1 ? 'person' : 'people'}`
+}
+
+/**
  * Who may read a comment or review in `repo`, as the inbox shows it (DESIGN D14). A private repo's
  * documents are all sealed and all its members': `'public'`, as before (the inbox never opens
  * them). In a public repo a sealed one is `'members'` when it carries `asMember` naming its writer,
  * and `'stranger'` otherwise: ciphertext anyone may post and no member's client shows, which never
- * becomes an item.
+ * becomes an item. A message to specific people (in either kind of repo) is `'letter'` when a
+ * member wrote it (counted, never opened: "sent a comment to 3 people"), else `'stranger'`.
  */
-export function audienceOf(repo: RepoLite, d: { readonly enc?: unknown; readonly asMember?: string | undefined; readonly $ownerId: string }): 'public' | 'members' | 'stranger' {
-  if (repo.private || d.enc == null) return 'public'
+export function audienceOf(repo: RepoLite, d: { readonly enc?: unknown; readonly asMember?: string | undefined; readonly $ownerId: string }): 'public' | 'members' | 'letter' | 'stranger' {
+  if (d.enc == null) return 'public'
+  if (letterRecipients(d.enc) !== null) return d.asMember === d.$ownerId ? 'letter' : 'stranger'
+  if (repo.private) return 'public'
   return d.asMember === d.$ownerId ? 'members' : 'stranger'
 }
 
@@ -525,11 +552,18 @@ const MEMBERS_VERDICT_WHAT: Readonly<Record<number, string>> = {
   3: 'posted a members-only review',
 }
 
-/** A review's words: a members-only one says so; a stranger's sealed review is no item (null). */
+/**
+ * A review's words: a members-only one says so, one to specific people how many it went to; a
+ * stranger's sealed review is no item (null).
+ */
 function reviewWhat(repo: RepoLite, d: z.infer<typeof reviewDoc>): string | null {
   switch (audienceOf(repo, d)) {
     case 'stranger':
       return null
+    case 'letter': {
+      const to = people(letterRecipients(d.enc) ?? 0)
+      return d.verdict === 1 || d.verdict === 4 ? `approved in a review to ${to}` : d.verdict === 2 || d.verdict === 5 ? `requested changes in a review to ${to}` : `sent a review to ${to}`
+    }
     case 'members':
       return MEMBERS_VERDICT_WHAT[d.verdict] ?? 'posted a members-only review'
     case 'public':
@@ -577,13 +611,21 @@ export function toItems(f: Feed, docs: readonly PlainDocument[], me: string, nam
       const kind = f.type === 'issue' ? 'issue' : 'pull'
       return parseDocs(targetDoc, docs)
         .filter(notMine)
-        .map((d) => {
+        .flatMap((d) => {
+          // A member's issue or PR to specific people: how many it went to (public), never its
+          // title; a stranger's is no item (D14).
+          const n = letterRecipients(d.enc)
+          if (n !== null) {
+            if (audienceOf(f.repo, d) !== 'letter') return []
+            const title = `${kind === 'issue' ? 'Issue' : 'Pull request'} to ${people(n)}`
+            return [item(d, { kind, repo: f.repo, what: `opened ${kind === 'issue' ? 'an issue' : 'a pull request'} for ${people(n)}`, target: { kind, number: d.number, title } })]
+          }
           // A members-only issue or PR in a public repo always gets its row: its number is public
           // (D14), whoever wrote it. Its title is not.
           if (!f.repo.private && d.enc != null) {
-            return item(d, { kind, repo: f.repo, what: kind === 'issue' ? 'opened a members-only issue' : 'opened a members-only pull request', target: { kind, number: d.number, title: membersOnlyTitle(kind) } })
+            return [item(d, { kind, repo: f.repo, what: kind === 'issue' ? 'opened a members-only issue' : 'opened a members-only pull request', target: { kind, number: d.number, title: membersOnlyTitle(kind) } })]
           }
-          return item(d, { kind, repo: f.repo, what: kind === 'issue' ? 'opened an issue' : 'opened a pull request', target: { kind, number: d.number, title: titleOf(d) }, ...mentioned(f.repo, d.body) })
+          return [item(d, { kind, repo: f.repo, what: kind === 'issue' ? 'opened an issue' : 'opened a pull request', target: { kind, number: d.number, title: titleOf(d) }, ...mentioned(f.repo, d.body) })]
         })
     }
     case 'push':
@@ -622,6 +664,7 @@ export function toItems(f: Feed, docs: readonly PlainDocument[], me: string, nam
           .flatMap((d) => {
             const audience = audienceOf(t.repo, d)
             if (audience === 'stranger') return []
+            if (audience === 'letter') return [item(d, { kind: 'comment', repo: t.repo, what: `sent a comment to ${people(letterRecipients(d.enc) ?? 0)}`, target })]
             return [item(d, { kind: 'comment', repo: t.repo, what: audience === 'members' ? 'posted a members-only comment' : 'commented', target, ...mentioned(t.repo, d.body) })]
           })
       }

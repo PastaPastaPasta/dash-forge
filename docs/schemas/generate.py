@@ -73,6 +73,7 @@ NCOST = nl(R('cost'))
 STEPS = R('steps')
 AUD = R('audience')
 MADE_PUBLIC = nl(O({'by': S, 'state': E('public', 'editedAfter'), 'publishedRevision': I}, ['by', 'state']))
+LETTER = R('letter')
 OID = R('oid')
 
 # ---------------------------------------------------------------------------------------------
@@ -100,6 +101,10 @@ COMMON = {
     }, ['state', 'labels', 'sort', 'q'])),
     'audience': D('Who can read a document: everyone, the repository\'s members, or the people listed.',
                   E('public', 'members', 'specificPeople')),
+    'letter': D('Who a message to specific people went to: `to` in slot order (the writer first), the role group it '
+                'named when sent (`maintainers`, or `writers` for writers and maintainers), and, when just posted, '
+                'who was left out for having no encryption key. Null for anything else.',
+                nl(O({'to': SA, 'group': nl(E('maintainers', 'writers')), 'skipped': SA}, ['to', 'group']))),
     'oid': D('A git object id, lowercase hex.', {'type': 'string', 'pattern': '^[0-9a-f]{40}([0-9a-f]{24})?$'}),
     'hiddenBy': D('A maintainer\'s hide of the whole thread, or null. `via` `ban`: its author is banned from the '
                   'repository (`eventId` is then the ban\'s id, `banReason` its reason).',
@@ -320,15 +325,15 @@ cmd('issue status', 'Issues assigned to you, mentioning you, and opened by you.'
     'repo': S, 'assigned': A(OBJ), 'mentioned': A(OBJ), 'authored': A(OBJ), 'hidden': I, 'membersOnly': I, 'hiddenOmitted': I,
 }, ['repo', 'assigned', 'mentioned', 'authored'])
 cmd('issue list', 'A page of issues.', {
-    'count': I, 'total': I, 'membersOnly': I, 'page': I, 'pages': I, 'issues': A(R('issueRow')), 'hidden': I,
+    'count': I, 'total': I, 'membersOnly': I, 'toSpecificPeople': I, 'page': I, 'pages': I, 'issues': A(R('issueRow')), 'hidden': I,
     'hiddenOmitted': I, 'truncated': B,
 }, ['count', 'total', 'page', 'pages', 'issues', 'truncated'])
 cmd('issue view', 'An issue, its comments, events and state.', {
     'number': I, 'title': nl(S), 'body': nl(S), 'bodyIncomplete': ANY, 'author': S, 'documentId': S, 'id': S,
-    'audience': AUD, 'readable': B, 'why': S, 'createdAt': I, 'state': E('open', 'closed'), 'open': B, 'labels': SA,
-    'assignees': SA, 'stateReason': nl(S), 'duplicateOf': nl(I), 'milestone': nl(S), 'pinned': B, 'locked': B,
-    'comments': A(O({'id': S, 'author': S, 'body': nl(S), 'bodyIncomplete': ANY, 'audience': AUD, 'createdAt': I,
-                     'madePublic': MADE_PUBLIC}, ['id', 'author'])),
+    'audience': AUD, 'letter': LETTER, 'recipients': nl(I), 'readable': B, 'why': S, 'createdAt': I,
+    'state': E('open', 'closed'), 'open': B, 'labels': SA, 'assignees': SA, 'stateReason': nl(S), 'duplicateOf': nl(I), 'milestone': nl(S), 'pinned': B, 'locked': B,
+    'comments': A(O({'id': S, 'author': S, 'body': nl(S), 'bodyIncomplete': ANY, 'audience': AUD, 'letter': LETTER,
+                     'replyTo': nl(S), 'createdAt': I, 'madePublic': MADE_PUBLIC}, ['id', 'author'])),
     'membersOnlyComments': A(OBJ), 'membersOnlyHidden': I, 'events': A(EVENT), 'transitions': A(TRANSITION),
     'hiddenComments': ANY, 'moderation': ANY, 'hiddenEventValues': ANY, 'plaintextEventValues': ANY,
     'madePublic': D('Who made this members-only issue public with a make-public bundle, and whether its author edited it since; null when no maintainer did.', MADE_PUBLIC),
@@ -336,7 +341,8 @@ cmd('issue view', 'An issue, its comments, events and state.', {
     'bundleAlerts': D('Make-public entries whose key does not match the post they name: ignored.', A(O({'documentId': S, 'revision': I, 'by': S}, ['documentId', 'revision', 'by']))),
 }, ['number', 'author', 'id', 'readable', 'state', 'open', 'labels', 'assignees'])
 cmd('issue create', 'A new issue.', {
-    'status': E('created'), 'number': I, 'documentId': S, 'id': S, 'title': S, 'audience': AUD, 'resumed': B, 'cost': COST,
+    'status': E('created'), 'number': I, 'documentId': S, 'id': S, 'title': S, 'audience': AUD, 'letter': LETTER,
+    'resumed': B, 'cost': COST,
 }, ['status', 'number', 'documentId'])
 cmd('pr edit', 'A pull request\'s title, body or metadata edited.', {
     'status': E('edited', 'unchanged'), 'pr': I, 'written': B, 'title': ANY, 'bodyChanged': B, 'changes': A(OBJ),
@@ -347,7 +353,8 @@ cmd('issue edit', 'An issue\'s title, body or metadata edited.', {
     'eventIds': SA, 'unchanged': ANY, 'cost': COST,
 }, ['status', 'issue'])
 cmd('issue comment', 'A comment posted.', {
-    'status': E('commented'), 'issue': I, 'commentId': S, 'audience': AUD, 'cost': COST,
+    'status': E('commented'), 'issue': I, 'commentId': S, 'replyTo': nl(S), 'audience': AUD, 'letter': LETTER,
+    'cost': COST,
 }, ['status', 'issue', 'commentId'])
 cmd('issue edit-comment', 'A comment edited.', {'status': E('edited', 'unchanged'), 'comment': S, 'cost': COST}, ['status', 'comment'])
 cmd('issue delete-comment', 'A comment deleted.', {'status': E('deleted', 'absent'), 'comment': S, 'cost': COST}, ['status', 'comment'])
@@ -385,7 +392,7 @@ cmd('pr create', 'A new pull request.', {
     'sourceRepoId': S, 'sourceRepo': S, 'draft': B, 'draftTransitionId': nl(S), 'resumed': B, 'codeOwners': ANY, 'cost': COST,
 }, ['status', 'number', 'documentId', 'baseRef', 'headRef'])
 cmd('pr list', 'A page of pull requests.', {
-    'count': I, 'membersOnly': I, 'prs': A(R('pullRow')), 'hidden': I, 'hiddenOmitted': I, 'truncated': B, 'otherStates': ANY,
+    'count': I, 'membersOnly': I, 'toSpecificPeople': I, 'prs': A(R('pullRow')), 'hidden': I, 'hiddenOmitted': I, 'truncated': B, 'otherStates': ANY,
 }, ['count', 'prs', 'truncated'])
 cmd('pr view', 'A pull request: its state, head, reviews, threads and comments.', {
     'number': I, 'id': S, 'repoId': S, 'title': nl(S), 'body': nl(S), 'bodyIncomplete': ANY, 'author': S, 'createdAt': I,
@@ -395,8 +402,8 @@ cmd('pr view', 'A pull request: its state, head, reviews, threads and comments.'
     'approvedBy': SA, 'changesRequestedBy': SA, 'reviewers': A(OBJ), 'requestedReviewers': A(OBJ), 'dismissedReviews': A(OBJ),
     'sinceYourReview': ANY, 'policy': R('policy'), 'approvals': ANY, 'reviews': A(OBJ), 'threads': A(OBJ),
     'generalComments': A(OBJ), 'comments': A(OBJ), 'hiddenComments': ANY, 'hiddenReviews': ANY, 'moderation': ANY,
-    'hiddenEventValues': ANY, 'plaintextEventValues': ANY, 'audience': AUD, 'readable': B, 'why': S,
-    'membersOnlyComments': A(OBJ), 'membersOnlyHidden': I, 'membersOnlyReviewsHidden': I, 'mergeContent': ANY,
+    'hiddenEventValues': ANY, 'plaintextEventValues': ANY, 'audience': AUD, 'recipients': nl(I), 'readable': B,
+    'why': S, 'membersOnlyComments': A(OBJ), 'membersOnlyHidden': I, 'membersOnlyReviewsHidden': I, 'mergeContent': ANY,
     'madePublic': D('The comments and reviews maintainers made public with a make-public bundle, by id.', {'type': 'object', 'additionalProperties': MADE_PUBLIC}),
     'bundleAlerts': D('Make-public entries whose key does not match the post they name: ignored.', A(OBJ)),
     'policyMet': D('Whether the open PR meets the branch policy; null with no policy, on a PR that is not open, or when only code owner approvals are left (`dg pr merge` checks them).', nl(B)),
@@ -414,14 +421,15 @@ cmd('pr checkout', 'The pull request\'s head checked out as a local branch.', {
 }, ['pr', 'headOid', 'branch'])
 cmd('pr review', 'A review: submitted, kept pending, or discarded.', {
     'status': E('reviewed', 'pending', 'discarded', 'no_pending_review'), 'pr': I, 'verdict': ANY, 'verdictLabel': ANY,
-    'audience': AUD, 'commitOid': S, 'reviewId': nl(S), 'comments': A(ANY), 'documents': ANY, 'landed': ANY, 'failed': ANY,
+    'audience': AUD, 'letter': LETTER, 'commitOid': S, 'reviewId': nl(S), 'comments': A(ANY), 'documents': ANY, 'landed': ANY, 'failed': ANY,
     'resumed': ANY, 'counts': D('Whether the verdict counts toward the required approvals (yours is an approver\'s).', B),
     'added': I, 'anchoredTo': S, 'headMoved': B, 'encrypted': B, 'draftFile': S,
     'discarded': D('How many pending comments were thrown away; null when the pending review could not be read.', nl(I)),
     'cost': COST,
 }, ['status', 'pr'])
 cmd('pr comment', 'A comment on a pull request: general, inline, or a reply.', {
-    'status': E('commented'), 'pr': I, 'commentId': S, 'kind': S, 'audience': AUD, 'replyTo': nl(S), 'location': ANY,
+    'status': E('commented'), 'pr': I, 'commentId': S, 'kind': S, 'audience': AUD, 'letter': LETTER, 'replyTo': nl(S),
+    'location': ANY,
     'commitOid': nl(S),
 }, ['status', 'pr', 'commentId', 'kind'])
 cmd('pr sync', 'The pull request\'s head moved to its branch\'s tip.', {

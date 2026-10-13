@@ -44,7 +44,7 @@ import {
 } from './doc'
 import { bytesEqual } from './ids'
 import { objKeys, type ObjKeys } from './keys'
-import { MalformedError, buildTlv, encodeRecipients, letterKind, parseLetterTlv, type DocFields } from './tlv'
+import { MalformedError, buildTlv, encodeRecipients, letterKind, parseLetterTlv, type DocFields, type LetterGroup, type LetterTlv } from './tlv'
 
 /** The slot plaintext's version byte: a specific-people slot (a `repoKey` wrap is `0x01`). */
 export const SLOT_VERSION = 0x02
@@ -82,7 +82,14 @@ export interface LetterReader {
 }
 
 export type LetterOpenResult =
-  | { readonly status: 'readable'; readonly fields: DocFields; readonly recipients: readonly Uint8Array[]; readonly slot: number }
+  | {
+      readonly status: 'readable'
+      readonly fields: DocFields
+      readonly recipients: readonly Uint8Array[]
+      readonly slot: number
+      /** The role group it was sent to (tag 29), "as listed by the sender". */
+      readonly group: LetterGroup | null
+    }
   | { readonly status: 'unreadable'; readonly reason: 'notARecipient' | 'badTag' }
   | { readonly status: 'malformed' }
 
@@ -166,6 +173,7 @@ async function sealWith(
   kObj: Uint8Array,
   nonce: Uint8Array,
   sealSlot: SlotSealer,
+  group: LetterGroup | null,
 ): Promise<LetterSealed> {
   const n = recipients.length
   if (doc.epoch !== 0 || !letterKind(doc.type)) throw new MalformedError('a letter is an issue, PR, comment, review or event under epoch 0')
@@ -173,7 +181,7 @@ async function sealWith(
   if (nonce.length !== NONCE_LEN) throw new RangeError('a nonce is 12 bytes')
   const records = buildTlv(fields, { type: doc.type, epoch: 0 })
   if (!(await publicRefNamesMatch(doc, fields))) throw new MalformedError('a ref name does not match its hash')
-  const body = concat(records, encodeRecipients(recipients.map((r) => r.identityId)))
+  const body = concat(records, encodeRecipients(recipients.map((r) => r.identityId), group))
   records.fill(0)
   const room = maxLetterPlaintext(doc.type, n)
   if (body.length > room) throw new TooLargeError(room)
@@ -203,7 +211,8 @@ async function sealWith(
  * the sender itself (identity `doc.ownerId`, `senderSecret`'s public key) and no identity appears
  * twice; each other key is that identity's highest-id usable ENCRYPTION key
  * (`usableEncryptionKey`). Draws a fresh `K_obj`, a random nonce and a random IV per slot.
- * `doc.epoch` must be 0 (D20). Throws {@link MalformedError} and {@link TooLargeError}.
+ * `doc.epoch` must be 0 (D20). `group` is the role group the recipients are when the writer chose
+ * a preset (tag 29). Throws {@link MalformedError} and {@link TooLargeError}.
  */
 export async function sealLetter(
   repoId: Uint8Array,
@@ -212,6 +221,7 @@ export async function sealLetter(
   doc: PrivateDoc,
   fields: DocFields,
   recipients: readonly LetterRecipient[],
+  group: LetterGroup | null = null,
 ): Promise<Bytes> {
   const kObj = randomBytes(32)
   try {
@@ -222,7 +232,7 @@ export async function sealLetter(
       } finally {
         shared.fill(0)
       }
-    })
+    }, group)
     sealed.tlv.fill(0)
     return sealed.enc
   } finally {
@@ -244,10 +254,20 @@ export function __unsafeSealLetterWith(
   kObj: Uint8Array,
   nonce: Uint8Array,
   ivs: readonly Uint8Array[],
+  group: LetterGroup | null = null,
 ): Promise<LetterSealed> {
   if (ivs.length !== recipients.length) throw new RangeError('one IV per recipient')
-  return sealWith(repoId, senderSecret, senderKeyId, doc, fields, recipients, kObj, nonce, async (r, i, pt) =>
-    cbcSeal(await letterSharedKey(senderSecret, r.publicKey), ivs[i] as Uint8Array, pt),
+  return sealWith(
+    repoId,
+    senderSecret,
+    senderKeyId,
+    doc,
+    fields,
+    recipients,
+    kObj,
+    nonce,
+    async (r, i, pt) => cbcSeal(await letterSharedKey(senderSecret, r.publicKey), ivs[i] as Uint8Array, pt),
+    group,
   )
 }
 
@@ -341,7 +361,7 @@ export async function openLetter(
   } catch {
     return { status: 'unreadable', reason: 'badTag' }
   }
-  let parsed: { fields: DocFields; recipients: Uint8Array[] }
+  let parsed: LetterTlv
   try {
     parsed = parseLetterTlv(pt, doc.type)
   } catch (e) {
@@ -356,7 +376,7 @@ export async function openLetter(
   if (parsed.recipients.length !== n || first === undefined || !bytesEqual(first, doc.ownerId) || hasDuplicate(parsed.recipients)) return MALFORMED
   if (mine === undefined || !bytesEqual(mine, reader.identityId)) return MALFORMED
   if (!(await publicRefNamesMatch(doc, parsed.fields))) return MALFORMED
-  return { status: 'readable', fields: parsed.fields, recipients: parsed.recipients, slot: found.slot }
+  return { status: 'readable', fields: parsed.fields, recipients: parsed.recipients, slot: found.slot, group: parsed.group }
 }
 
 // --- a maintainer's make-public bundle (DESIGN §4.6) -----------------------------------------

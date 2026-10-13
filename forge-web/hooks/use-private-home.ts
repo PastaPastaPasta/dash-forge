@@ -10,11 +10,16 @@
  *   public config, branches and packs stay exactly what everyone sees (DESIGN §4.1). A repository
  *   made public whose owner published keys of its earlier history (`private-repos.md` §18): every
  *   reader, signed in or not, gets those keys on `repo.published` (its packs) and, without a
- *   members-key session of their own, on `repo.lane` (its earlier discussion).
+ *   members-key session of their own, on `repo.lane` (its earlier discussion). Such a repo's
+ *   home waits for them (`pending`): its packs are skipped or opened by them, so a home handed
+ *   out without them would have the page skip, and list as missing, a pack they open.
  * - Private repo: signed out → `signed-out`; not a member → `outsider`; a member whose browser
  *   holds no encryption key → `no-key`; a member with one → the home re-read through their
  *   decryption session (`member`), whose `repo.session` every read of the page then decrypts
  *   through.
+ * - Either kind, for a signed-in viewer whose browser holds an encryption key: their letter
+ *   reader on `repo.letters` (`letter-session.ts`), which opens what was written to them by name
+ *   or by role group, member or not.
  *
  * The decrypted home lives in memory only (a per-tab map for warm navigations, dropped when
  * the vault locks or the encryption key changes).
@@ -33,7 +38,9 @@ import {
   loadPublishedSessionCached,
   onPrivateSessionsClosed,
   privateSessionGeneration,
+  peekPublishedSession,
   sessionUnwrapper,
+  type PrivateSession,
 } from '@/lib/repo/private-session'
 import { hasMembersKey } from '@/lib/repo/writes'
 import { repoHasMembersKey } from '@/lib/repo/members-writes'
@@ -41,8 +48,9 @@ import { membersAccessOf } from '@/lib/repo/members-access'
 import { knownConversion } from '@/lib/repo/converted'
 import { DOC } from '@/lib/repo/contract'
 import { repoSource } from '@/lib/repo/source'
+import { letterSessionFor } from '@/lib/repo/letter-session'
 import { queryDocuments } from '@/lib/sdk'
-import { loadPrivateHome, withMembersSession, type RepoHome } from '@/lib/view'
+import { loadPrivateHome, withLetterReader, withMembersSession, type RepoHome } from '@/lib/view'
 import { forgetPrivateNav, sealRepoUrls } from '@/lib/view/private-nav'
 import type { RepoAddress } from '@/hooks/use-query-param'
 
@@ -63,6 +71,9 @@ onPrivateSessionsClosed(() => {
 })
 
 const refreshListeners = new Set<(repoId: string) => void>()
+
+/** How long a failed read of a repository made public's published keys waits before its one retry. */
+export const PUBLISHED_RETRY_MS = 1_500
 
 /** Forget a repo's decrypted home and session (Retry / reload: read everything again). */
 export function forgetPrivateHome(repo: RepoHome['repo']): void {
@@ -116,18 +127,53 @@ export function usePrivateHome(home: RepoHome | null, addr: RepoAddress): Privat
   // Re-derive when the plain home is re-read (revalidation, Retry); the session itself is re-read
   // once its view-session TTL runs out, so new pushes and rotations show up.
   const revision = useRevision(home)
+  // A repository made public: the keys its owner published, for everyone, read before the page
+  // reads anything through the repo; none read (or none published) leaves the plain home. A
+  // failed read is tried once more first, so a passing node error does not show packs those keys
+  // open as members-only. A page mounted again starts from the keys already read.
+  const usable = (session: PrivateSession | null): PrivateSession | null => (session !== null && session.resolution.keys.size > 0 ? session : null)
+  const published = useAsync<PrivateSession | null>(
+    async () => {
+      const read = (): Promise<PrivateSession> => loadPublishedSessionCached(sdk!, (home as RepoHome).repo, network)
+      const session = await read().catch(() => new Promise<void>((r) => setTimeout(r, PUBLISHED_RETRY_MS)).then(read)).catch(() => null)
+      return usable(session)
+    },
+    [network, repoId, ready, epoch],
+    {
+      enabled: converted && ready && sdk !== null && home !== null,
+      initial: () => {
+        const hit = converted && repo !== null ? peekPublishedSession(repo, network) : undefined
+        return hit === undefined ? undefined : usable(hit)
+      },
+    },
+  )
+  // The plain home re-read (Retry, a write) drops the cached session and closes it a minute later:
+  // read the keys again. The ones in hand stay meanwhile, so the page never waits again.
+  const keysRead = useRef({ repoId, revision })
+  useEffect(() => {
+    const before = keysRead.current
+    keysRead.current = { repoId, revision }
+    if (converted && before.repoId === repoId && before.revision !== revision) published.reload()
+  }, [converted, repoId, revision]) // eslint-disable-line react-hooks/exhaustive-deps
+  const publishedKnown = !converted || published.settled
+  const keys = converted ? published.data : null
+  // The home every reader starts from: with the published keys on `repo.published`, and for a
+  // reader without a members-key session of their own (`outsider`) on `repo.lane` too.
+  const publishedHome = useMemo<{ base: RepoHome; outsider: RepoHome } | null>(() => {
+    if (home === null) return null
+    if (keys === null) return { base: home, outsider: home }
+    const base: RepoHome = { ...home, repo: { ...home.repo, published: keys } }
+    return { base, outsider: { ...base, repo: { ...base.repo, lane: keys } } }
+  }, [home, keys])
   /**
    * A public repo's home for this viewer: with their members-key session when they hold one (a
    * current member, or a member removed since who holds earlier key shares: `former`).
    */
-  const membersHome = async (plainHome: RepoHome, generation: number): Promise<RepoHome> => {
-    // A repository made public: the keys its owner published, for everyone; none read, none kept.
-    const published = converted ? await loadPublishedSessionCached(sdk!, plainHome.repo, network).catch(() => null) : null
-    const keys = published !== null && published.resolution.keys.size > 0 ? published : null
-    const base: RepoHome = keys === null ? plainHome : { ...plainHome, repo: { ...plainHome.repo, published: keys } }
-    // Without a members-key session of their own, a reader opens the earlier history with them.
-    const outsider = (): RepoHome => (keys === null ? base : { ...base, repo: { ...base.repo, lane: keys } })
-    if (viewer === null) return outsider()
+  const membersHome = async (generation: number): Promise<RepoHome> => {
+    // Without a members-key session of their own, a reader opens the earlier history with the
+    // published keys (`outsider`).
+    const { base, outsider } = publishedHome as NonNullable<typeof publishedHome>
+    if (viewer === null) return outsider
     const members = await readMembershipsCached(sdk!, base.repo, network)
     const isMember = members.some((m) => m.identity === viewer)
     const lane = await membersAccessOf({
@@ -146,17 +192,28 @@ export function usePrivateHome(home: RepoHome | null, addr: RepoAddress): Privat
         return session
       },
     })
-    if (lane === null) return outsider()
-    if (lane.access !== 'member' && lane.access !== 'former') return { ...outsider(), lane }
+    if (lane === null) return outsider
+    if (lane.access !== 'member' && lane.access !== 'former') return { ...outsider, lane }
     const out = withMembersSession(base, lane.session, lane.access)
     warm.set(key, out)
     return out
+  }
+  /** `h` with this viewer's letter reader, when their browser holds an encryption key. */
+  const withLetters = async (h: RepoHome, generation: number): Promise<RepoHome> => {
+    if (identity === null) return h
+    const letters = await letterSessionFor(sdk!, network, identity).catch(() => null)
+    if (letters === null || generation !== privateSessionGeneration()) return h
+    return withLetterReader(h, letters)
   }
   const state = useAsync<RepoHome>(
     async () => {
       const base = home as RepoHome
       const generation = privateSessionGeneration()
-      if (!isPrivate) return membersHome(base, generation)
+      if (!isPrivate) {
+        const out = await withLetters(await membersHome(generation), generation)
+        if (out.lane?.access === 'member' || out.lane?.access === 'former') warm.set(key, out)
+        return out
+      }
       if (identity === null) return { ...base, private: { access: 'signed-out' } }
       const members = await readMembershipsCached(sdk!, base.repo, network)
       if (!members.some((m) => m.identity === identity)) return { ...base, private: { access: 'outsider' } }
@@ -166,7 +223,7 @@ export function usePrivateHome(home: RepoHome | null, addr: RepoAddress): Privat
       // an interactive unlock in this tab first.
       if (controller.unlockScope() === 'signing') return { ...base, private: { access: 'locked' } }
       const session = await loadPrivateSessionCached(sdk!, base.repo, network, identity, sessionUnwrapper(ops))
-      const decrypted = await loadPrivateHome(sdk!, base, session)
+      const decrypted = await withLetters(await loadPrivateHome(sdk!, base, session), generation)
       // A lock while this ran ended the session: nothing decrypted may be kept or shown.
       if (generation !== privateSessionGeneration()) throw new Error('the vault locked; unlock to read this private repo')
       // From here on, this repo's links carry tokens instead of decrypted names.
@@ -175,11 +232,11 @@ export function usePrivateHome(home: RepoHome | null, addr: RepoAddress): Privat
       return decrypted
     },
     // An unlock in this tab (inline, or from the sign-in sheet) re-resolves the repo.
-    [key, ready, epoch, revision, unlockScope, converted],
+    [key, ready, epoch, revision, unlockScope, converted, publishedKnown, keys?.id ?? ''],
     {
       // A kept session is still being picked up: wait, rather than show the signed-out state. A
       // public repo's members-only content is looked up for a signed-in viewer only.
-      enabled: (isPrivate || viewer !== null || converted) && ready && sdk !== null && home !== null && !resuming,
+      enabled: (isPrivate || viewer !== null || converted) && ready && sdk !== null && home !== null && !resuming && publishedKnown,
       initial: () => {
         const hit = warm.get(key)
         if (hit === undefined) return undefined
@@ -188,18 +245,28 @@ export function usePrivateHome(home: RepoHome | null, addr: RepoAddress): Privat
       },
     },
   )
-  reloadRef.current = state.reload
+  const reload = (): void => {
+    if (converted) published.reload()
+    state.reload()
+  }
+  reloadRef.current = reload
   // A public repo read for a signed-in viewer before their members access is known: marked, so
   // members-only placeholders wait rather than speak to an outsider (one object per home).
   const laneUnknown = !isPrivate && home !== null && viewer !== null && state.error === null && (state.data === null || state.data.repo.repoId !== home.repo.repoId)
-  const loadingHome = useMemo<RepoHome | null>(() => (laneUnknown && home !== null ? { ...home, laneLoading: true } : null), [laneUnknown, home])
-  if (home === null) return null
+  const loadingHome = useMemo<RepoHome | null>(
+    () => (laneUnknown && publishedHome !== null ? { ...publishedHome.base, laneLoading: true } : null),
+    [laneUnknown, publishedHome],
+  )
+  if (home === null || publishedHome === null) return null
   // A public repo renders at once; once a member's members-key session is ready the page re-reads
   // its discussion through it (`contentKey`). A failed lookup leaves the public view as it is.
   if (!isPrivate) {
+    // A repository made public waits for the keys its owner published (R9: its packs are skipped
+    // or opened by them).
+    if (!publishedKnown) return { home, pending: true, error: null, retry: reload }
     const data = state.data
-    const fresh = data !== null && state.error === null && data.repo.repoId === home.repo.repoId ? data : loadingHome ?? home
-    return { home: fresh, pending: false, error: null, retry: state.reload }
+    const fresh = data !== null && state.error === null && data.repo.repoId === home.repo.repoId ? data : loadingHome ?? publishedHome.outsider
+    return { home: fresh, pending: false, error: null, retry: reload }
   }
   if (state.error !== null) return { home, pending: false, error: state.error, retry: state.reload }
   if (state.data === null) return { home, pending: true, error: null, retry: state.reload }

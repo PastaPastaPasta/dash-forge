@@ -292,8 +292,8 @@ export function ReviewDrawer({
   const prAudience = membersOnly ? 'members' : 'public'
   // It starts on the draft's audience: a members-only draft stays members-only (and off disk)
   // until the writer picks Public.
-  const draftAudience = draft === null ? undefined : draft.audience === 'members' ? ('members' as const) : ('public' as const)
-  const textAudience = useComposerAudience(home, { parent: prAudience, members, maintainer, start: draftAudience })
+  const draftAudience = draft === null ? undefined : draft.audience ?? ('public' as const)
+  const textAudience = useComposerAudience(home, { parent: prAudience, members, maintainer, start: draftAudience, ...(draft?.letter ? { startLetter: draft.letter } : {}) })
   // A members-only "Request changes" the author can't read: one public line beside it (product H8).
   const [publicLine, setPublicLine] = useState('')
   const [summary, setSummary] = useState(draft?.summary ?? '')
@@ -331,17 +331,19 @@ export function ReviewDrawer({
   const verdictBlocked = !frozen && (refused !== null || roleUnread)
   // Members-only text is never kept on disk: the draft says so before its summary is saved.
   const textChoice = textAudience.audience
+  const textLetter = textAudience.letter
   useEffect(() => {
     if (!loaded || frozen || progress !== null) return
-    const sameAudience = (draft?.audience === 'members') === (textChoice === 'members')
+    const sameAudience =
+      (draft?.audience ?? 'public') === textChoice && (textChoice !== 'specificPeople' || JSON.stringify(draft?.letter ?? null) === JSON.stringify(textLetter))
     const same = draft === null ? summary === '' && verdict === 'comment' : draft.summary === summary && draft.verdict === verdict && sameAudience
     if (same) return
     const t = setTimeout(() => {
       const d = ensure()
-      if (d !== null && !submitStarted(d)) update(setDraftAudience(setDraftVerdict(d, verdict, summary), textChoice))
+      if (d !== null && !submitStarted(d)) update(setDraftAudience(setDraftVerdict(d, verdict, summary), textChoice, textLetter))
     }, sameAudience ? 250 : 0)
     return () => clearTimeout(t)
-  }, [summary, verdict, textChoice, draft, loaded, frozen, progress, ensure, update])
+  }, [summary, verdict, textChoice, textLetter, draft, loaded, frozen, progress, ensure, update])
 
   const count = draft?.comments.length ?? 0
   const headMoved = draft !== null && draft.headOid !== headOid && !frozen
@@ -349,11 +351,15 @@ export function ReviewDrawer({
     identity === null
       ? null
       : draft ?? newReviewDraft({ draftId: 'preview', network, identity, repoId: repo.repoId, prId: pullId, headOid, private: repo.visibility === 'private', membersOnly, now: 0 })
-  const planned = working === null ? null : frozen ? working : setDraftAudience({ ...working, summary, verdict }, textAudience.audience)
-  // What a submit writes, each document priced for its audience (members-only text is stored encrypted).
+  const planned = working === null ? null : frozen ? working : setDraftAudience({ ...working, summary, verdict }, textAudience.audience, textAudience.letter)
+  // What a submit writes, each document priced for its audience (members-only text is stored
+  // encrypted; a review to specific people takes every comment of it along).
+  const recipients = textAudience.preview?.recipients?.length
   const toWrite = planned === null ? [] : [
-    ...(planned.reviewId === undefined ? [composeCost(repo, 'review', { body: planned.summary }, {}, planned.audience === 'members' ? 'members' : prAudience)] : []),
-    ...planned.comments.filter((c) => c.landedId === undefined).map((c) => composeCost(repo, 'comment', { body: c.body, path: c.anchor.path }, {}, c.audience === 'members' ? 'members' : prAudience)),
+    ...(planned.reviewId === undefined ? [composeCost(repo, 'review', { body: planned.summary }, {}, planned.audience ?? prAudience, recipients)] : []),
+    ...planned.comments
+      .filter((c) => c.landedId === undefined)
+      .map((c) => composeCost(repo, 'comment', { body: c.body, path: c.anchor.path }, {}, planned.audience === 'specificPeople' ? 'specificPeople' : c.audience === 'members' ? 'members' : prAudience, recipients)),
   ]
   const documents = toWrite.length
   const cost = planned === null ? null : sumPreviews(toWrite)
@@ -361,7 +367,14 @@ export function ReviewDrawer({
   const question =
     planned === null
       ? null
-      : publicLineQuestion({ verdict, audience: planned.audience === 'members' || prAudience === 'members' ? 'members' : 'public', prMembersOnly: membersOnly, author, authorName: warningName(network, author), holders: textAudience.holders })
+      : publicLineQuestion({
+          verdict,
+          audience: planned.audience ?? prAudience,
+          prMembersOnly: membersOnly,
+          author,
+          authorName: warningName(network, author),
+          holders: planned.audience === 'specificPeople' ? new Set(textAudience.preview?.recipients ?? []) : textAudience.holders,
+        })
   // The public line is public text: one that repeats members-only text, the review's own unposted
   // members-only text included, is not posted.
   const lineQuotes = question !== null && planned !== null && quotesMembersText(publicLine, membersTexts, { extra: draftMembersTexts(planned, prAudience) })
@@ -390,7 +403,7 @@ export function ReviewDrawer({
       const base = ensure()
       if (base === null) return
       // With the audience the chip shows, never a stale save's: members-only text stays so.
-      toSubmit = startSubmit(setDraftAudience(base, textAudience.audience), verdict, summary, Date.now())
+      toSubmit = startSubmit(setDraftAudience(base, textAudience.audience, textAudience.letter), verdict, summary, Date.now())
       setSummary(toSubmit.summary)
       // What is submitted carries the memory-only mark the save just set.
       toSubmit = update(toSubmit) ?? toSubmit
@@ -472,7 +485,7 @@ export function ReviewDrawer({
         >
           <h3 className="text-dense font-semibold">Finish your review</h3>
           <p className="text-[12px] text-anvil-600 dark:text-anvil-400" data-testid="draft-whereabouts">
-            {draftWhereabouts(repo.visibility === 'private', membersOnly || (planned !== null && (planned.audience === 'members' || planned.comments.some((c) => c.audience === 'members'))))} Nothing is on Platform until you submit.
+            {draftWhereabouts(repo.visibility === 'private', membersOnly || (planned !== null && (planned.audience !== undefined || planned.comments.some((c) => c.audience === 'members'))))} Nothing is on Platform until you submit.
           </p>
           {newer !== null && !frozen ? <StaleHeadNote headOid={headOid} newer={newer} testId="review-stale-head" /> : null}
           {headMoved && draft ? (
@@ -552,7 +565,11 @@ export function ReviewDrawer({
                     {anchorLabel({ path: c.anchor.path, line: c.anchor.line ?? null, startLine: c.anchor.startLine ?? null, side: c.anchor.side ?? null, commitOid: c.anchor.commitOid ?? '' })}
                   </span>
                   <span className="truncate text-anvil-600 dark:text-anvil-300">{c.body.split('\n')[0]}</span>
-                  {c.audience === 'members' || membersOnly ? <span className="shrink-0 text-anvil-500 dark:text-anvil-400">members-only</span> : null}
+                  {planned?.audience === 'specificPeople' ? (
+                    <span className="shrink-0 text-anvil-500 dark:text-anvil-400">to specific people</span>
+                  ) : c.audience === 'members' || membersOnly ? (
+                    <span className="shrink-0 text-anvil-500 dark:text-anvil-400">members-only</span>
+                  ) : null}
                   {c.landedId ? <span>landed</span> : null}
                 </li>
               ))}
@@ -595,7 +612,7 @@ export function ReviewDrawer({
                   {frozen ? 'Discard the rest' : 'Discard'}
                 </Button>
               ) : null}
-              <Button size="sm" variant="primary" onClick={submit} loading={progress !== null} disabled={guard.disabledReason !== null || progress !== null || lineQuotes || verdictBlocked}>
+              <Button size="sm" variant="primary" onClick={submit} loading={progress !== null} disabled={guard.disabledReason !== null || progress !== null || lineQuotes || verdictBlocked || (!frozen && textAudience.blocked !== null)} title={frozen ? undefined : (textAudience.blocked ?? undefined)}>
                 {frozen || error ? 'Retry' : 'Submit review'}
               </Button>
             </div>

@@ -861,10 +861,11 @@ async fn list(
         rows.iter().map(|r| (r.target(), r.events())).collect();
     let hides = collab.hidden_threads(handle, &threads).await;
     let (rows, omitted) = crate::fmt::split_hidden(rows, &hides, PrRow::id, include_hidden);
-    let total_sealed = rows
-        .iter()
-        .filter(|(r, _)| matches!(r, PrRow::Sealed(_)))
-        .count();
+    let (total_sealed, total_letters) =
+        crate::audience::count_sealed(rows.iter().filter_map(|(r, _)| match r {
+            PrRow::Sealed(x) => Some(&x.placeholder),
+            PrRow::Pr(_) => None,
+        }));
     let names = if ctx.json {
         std::collections::BTreeMap::new()
     } else {
@@ -919,6 +920,7 @@ async fn list(
         json!({
             "count": rows.len(),
             "membersOnly": total_sealed,
+            "toSpecificPeople": total_letters,
             "prs": json_rows,
             "hidden": hidden,
             "hiddenOmitted": omitted,
@@ -957,18 +959,19 @@ async fn list(
                             forge_core::collab::v2::TargetKind::Patch,
                             &x.log
                         ),
-                        crate::audience::sealed_noun(x.placeholder.audience, "pull request"),
+                        crate::audience::sealed_noun(&x.placeholder, "pull request"),
                         crate::audience::at_name(&x.placeholder.author, &names),
                         safe(&hid)
                     ),
                 }
             }
-            if total_sealed > 0 {
-                println!(
-                    "Pull requests {} ({total_sealed} members-only; only members of {} can read them)",
-                    rows.len(),
-                    handle.display()
-                );
+            if let Some(line) = crate::audience::sealed_rows_line(
+                "Pull requests",
+                rows.len(),
+                (total_sealed, total_letters),
+                handle,
+            ) {
+                println!("{line}");
             }
             if let Some(note) = crate::fmt::hidden_rows_note(omitted) {
                 println!("{note}");
@@ -1104,6 +1107,7 @@ fn reviews_json(
                 "bodyIncomplete": incomplete.get(&r.document_id),
                 "createdAt": r.created_at,
                 "audience": crate::audience::json(r.audience),
+                "letter": r.letter.as_ref().map(crate::audience::letter_json),
                 // a members-only review this reader cannot open: its verdict counts (D15)
                 "readable": !r.members_only,
                 // the public comment its author attached to make its text public (DESIGN §4.6)
@@ -1133,6 +1137,7 @@ fn comments_json(
                 "anchor": forge_core::rules::v2::anchor_of(&c.anchor),
                 "createdAt": c.created_at,
                 "audience": crate::audience::json(c.audience),
+                "letter": c.letter.as_ref().map(crate::audience::letter_json),
             })
         })
         .collect()
@@ -1250,6 +1255,15 @@ async fn view(
     let audience_of: std::collections::BTreeMap<&str, forge_core::rules::v2::Audience> = comments
         .iter()
         .map(|c| (c.document_id.as_str(), c.audience))
+        .collect();
+    let letters: std::collections::BTreeMap<&str, &forge_core::collab::v2::LetterInfo> = comments
+        .iter()
+        .filter_map(|c| c.letter.as_ref().map(|l| (c.document_id.as_str(), l)))
+        .chain(
+            reviews
+                .iter()
+                .filter_map(|r| r.letter.as_ref().map(|l| (r.document_id.as_str(), l))),
+        )
         .collect();
     let printed_conv = if (show_hidden || moderation.items.is_empty()) && incomplete.is_empty() {
         None
@@ -1465,10 +1479,33 @@ async fn view(
             .chain(bypasses.iter().map(|b| b.actor.as_str()))
             // who hid the thread or a review, for its "hidden by" line
             .chain(moderation.thread.iter().map(|h| h.by.as_str()))
-            .chain(moderation.items.values().map(|h| h.by.as_str()));
+            .chain(moderation.items.values().map(|h| h.by.as_str()))
+            // the people of the messages to specific people (DESIGN §10: names after posting)
+            .chain(
+                letters
+                    .values()
+                    .flat_map(|l| l.recipients.iter().map(String::as_str)),
+            );
         client.dpns_first_names(ids).await
     };
     let who = |id: &str| crate::fmt::with_name(id, &names);
+    let me = s.viewer().unwrap_or_default();
+    let mark = |id: &str| match letters.get(id) {
+        Some(l) => format!(
+            " · to {}",
+            crate::audience::letter_to(&l.recipients, l.group, Some(me), &names)
+        ),
+        None if members_ids.contains(id) => " · members-only".to_string(),
+        None => {
+            let aud = audience_of
+                .get(id)
+                .copied()
+                .unwrap_or(forge_core::rules::v2::Audience::Public);
+            published
+                .line(id, aud, &who)
+                .map_or(String::new(), |l| format!(" · {l}"))
+        }
+    };
     ctx.emit(
         out,
         || {
@@ -1618,12 +1655,16 @@ async fn view(
                     short(&r.commit_oid),
                     short(&r.document_id),
                     if r.members_only {
-                        ""
+                        String::new()
+                    } else if r.letter.is_some() {
+                        mark(&r.document_id)
                     } else {
-                        crate::audience::suffix(handle, r.audience)
+                        crate::audience::suffix(handle, r.audience).to_string()
                     }
                 );
-                if r.members_only {
+                if r.members_only && r.audience == forge_core::rules::v2::Audience::SpecificPeople {
+                    println!("  review text for specific people (its verdict counts)");
+                } else if r.members_only {
                     // DESIGN §10: "Approved by @bob · review text visible to members"
                     if uncounted_role(&oracle, r).is_some() {
                         println!("  review text visible to members");
@@ -1655,19 +1696,6 @@ async fn view(
                 }
             }
             if show_comments {
-                let mark = |id: &str| {
-                    if members_ids.contains(id) {
-                        " · members-only".to_string()
-                    } else {
-                        let aud = audience_of
-                            .get(id)
-                            .copied()
-                            .unwrap_or(forge_core::rules::v2::Audience::Public);
-                        published
-                            .line(id, aud, &who)
-                            .map_or(String::new(), |l| format!(" · {l}"))
-                    }
-                };
                 print_conversations(printed_conv.as_ref().unwrap_or(&conv), &mark);
                 if !placeholders.is_empty() {
                     println!("\nMembers-only");
@@ -1676,7 +1704,7 @@ async fn view(
                             "  — {} [{}]: [{}]",
                             who(&m.author),
                             short(&m.document_id),
-                            crate::audience::sealed_noun(m.audience, "comment")
+                            crate::audience::sealed_noun(m, "comment")
                         );
                     }
                 }
@@ -1760,8 +1788,9 @@ fn check_word(state: forge_core::rules::v2::CheckState) -> &'static str {
 
 /// The threads under their file and line, then the general comments.
 fn print_conversations(conv: &threads::Conversations, mark: &dyn Fn(&str) -> String) {
-    // " · members-only" (or who made it public) beside a comment's author, added here (never
-    // written into the comment: who wrote it is what the hunk-trust check reads)
+    // " · members-only", " · to bob and you" for a message to specific people, or who made it
+    // public, beside a comment's author, added here (never written into the comment: who wrote it
+    // is what the hunk-trust check reads)
     let mut last_path = "";
     for t in &conv.threads {
         if t.anchor.path != last_path {
@@ -4131,6 +4160,7 @@ pub(crate) mod tests {
             imported: None,
             upstream_number: None,
             audience: forge_core::rules::v2::Audience::Public,
+            letter: None,
         };
         PatchView {
             state: forge_core::rules::PrState::default(),

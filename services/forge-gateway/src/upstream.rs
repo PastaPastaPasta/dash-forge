@@ -338,18 +338,7 @@ impl PlatformUpstream {
         // published. git-remote-dash skips the rest without downloading them, so they neither
         // count toward the mirror's size nor appear in its manifest.
         let skipped = sealed_packs(&svc, r, &manifests).await;
-        let mut packs: BTreeMap<String, ManifestPack> = BTreeMap::new();
-        for m in manifests.iter().filter(|m| !skipped.contains(&m.pack_hash)) {
-            let hash = hex::encode(m.pack_hash);
-            packs
-                .entry(hash.clone())
-                .and_modify(|p| p.copies += 1)
-                .or_insert(ManifestPack {
-                    pack_hash: hash,
-                    copies: 1,
-                    size_bytes: m.size_bytes,
-                });
-        }
+        let packs = git_packs(&manifests, &skipped);
         Ok(Some(Snapshot {
             records,
             default_branch,
@@ -357,9 +346,35 @@ impl PlatformUpstream {
                 height: tip.height,
                 time_ms: tip.time_ms.saturating_sub(SNAPSHOT_MARGIN_MS),
             },
-            packs: packs.into_values().collect(),
+            packs,
         }))
     }
+}
+
+/// The git packs (kind 0) a mirror serves, each once with how many copies were recorded, less
+/// `skipped`. Every other artifact (an index, a long body, release assets, a make-public bundle)
+/// is no git pack: the manifest's `packs` never lists it, nor does it count toward the cap.
+fn git_packs(
+    manifests: &[forge_core::repo::PackManifestInfo],
+    skipped: &std::collections::BTreeSet<[u8; 32]>,
+) -> Vec<ManifestPack> {
+    let mut packs: BTreeMap<String, ManifestPack> = BTreeMap::new();
+    for m in manifests
+        .iter()
+        .filter(|m| m.kind == u64::from(forge_core::pack::KIND_GIT_PACK))
+        .filter(|m| !skipped.contains(&m.pack_hash))
+    {
+        let hash = hex::encode(m.pack_hash);
+        packs
+            .entry(hash.clone())
+            .and_modify(|p| p.copies += 1)
+            .or_insert(ManifestPack {
+                pack_hash: hash,
+                copies: 1,
+                size_bytes: m.size_bytes,
+            });
+    }
+    packs.into_values().collect()
 }
 
 /// The git packs of a repository made public that this anonymous reader skips without
@@ -725,6 +740,50 @@ mod tests {
         ] {
             assert_eq!(failure(&read), Failure::Read, "{read:?}");
         }
+    }
+
+    /// R9: the manifest's `packs` are the git packs alone. A repository made public's kind-7
+    /// make-public bundle (and any index or release artifact) is not one, and a pack the mirror
+    /// skips is not served.
+    #[test]
+    fn the_manifest_lists_only_git_packs() {
+        use forge_core::pack::{KIND_GIT_PACK, KIND_MAKE_PUBLIC, KIND_OBJECT_LOCATOR};
+        let m = |hash: u8, kind: u8, size: u64| forge_core::repo::PackManifestInfo {
+            document_id: format!("d{hash}{kind}{size}"),
+            created_at: 0,
+            owner_id: "O1".into(),
+            pack_hash: [hash; 32],
+            kind: u64::from(kind),
+            size_bytes: size,
+            object_count: 0,
+            chunk_count: 1,
+            storage: 0,
+            uris: Vec::new(),
+            supersedes: Vec::new(),
+            tips: Vec::new(),
+            created_at_block_height: 0,
+        };
+        let manifests = [
+            m(1, KIND_GIT_PACK, 100),
+            m(1, KIND_GIT_PACK, 100),
+            m(2, KIND_GIT_PACK, 200),
+            m(3, KIND_GIT_PACK, 300),
+            m(4, KIND_MAKE_PUBLIC, 133),
+            m(5, KIND_OBJECT_LOCATOR, 50),
+        ];
+        let skipped = std::collections::BTreeSet::from([[3u8; 32]]);
+        let got = git_packs(&manifests, &skipped);
+        let listed: Vec<(String, usize, u64)> = got
+            .iter()
+            .map(|p| (p.pack_hash.clone(), p.copies, p.size_bytes))
+            .collect();
+        assert_eq!(
+            listed,
+            vec![
+                (hex::encode([1u8; 32]), 2, 100),
+                (hex::encode([2u8; 32]), 1, 200),
+            ]
+        );
     }
 
     #[test]

@@ -326,6 +326,11 @@ octokit) reads them:
   - on the embedded `issue` or `pull_request` object when that issue or pull request is
     members-only: its `title`, `body`, `head.sha` and `base.ref` are empty on purpose.
 
+  A message to specific people (`enc` version 0x04: an issue, comment or review sent to a role
+  group or to people its writer picked) is marked the same way and also carries
+  `"dash_recipients": n`, beside each `dash_members_only` it has: how many people it was sent to,
+  which is public. Who they are is encrypted; the relay never knows it.
+
   The event name, action and every other field are the ones a public event of the same kind
   has, so a GitHub webhook parser reads it unchanged and finds an empty text. A receiver that
   shows notices should say "posted a members-only comment on #12" (top-level key) or "closed

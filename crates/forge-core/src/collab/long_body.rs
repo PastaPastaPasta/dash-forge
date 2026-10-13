@@ -204,12 +204,7 @@ impl Collab<'_> {
         }
         let members = repo.visibility == Visibility::Public && audience != Audience::Public;
         if audience == Audience::SpecificPeople {
-            return Err(UserError::new(
-                codes::USAGE,
-                "writing to specific people is not supported yet",
-            )
-            .note("nothing was written")
-            .into());
+            return Err(letter_too_long(room));
         }
         if full.len() as u64 > long_body::MAX_BYTES {
             return Err(UserError::new(
@@ -483,6 +478,23 @@ struct CopyView<'a> {
     svc: RepoService<'a>,
     manifests: Vec<PackManifestInfo>,
     roles: crate::repo::RoleMap,
+}
+
+/// A letter's text too long for its field: a letter's text lives in its own `enc` only (stored
+/// as an artifact it would be under the members key, or public: wider than the letter, DESIGN
+/// §4.2). `room` is the field's room before any recipient is counted.
+#[must_use]
+pub fn letter_too_long(room: usize) -> crate::error::Error {
+    UserError::new(
+        codes::USAGE,
+        "this text is too long for a message to specific people",
+    )
+    .cause(format!(
+        "a message to specific people holds its text in one field: at most {room} bytes, less for each person it goes to"
+    ))
+    .fix("shorten it, or split it into several messages")
+    .note("nothing was written")
+    .into()
 }
 
 #[cfg(test)]

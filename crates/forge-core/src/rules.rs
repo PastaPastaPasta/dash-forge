@@ -50,6 +50,7 @@ pub mod asset_name;
 pub mod bans;
 pub mod ci_rerun;
 pub mod codeowners;
+pub mod letters;
 pub mod long_body;
 pub mod make_public;
 pub mod merge_audit;
@@ -3311,6 +3312,15 @@ mod tests {
             "webhook_url" => run_webhook_url_case(v),
             "asset_file_name" | "asset_file_names" => run_asset_file_name_case(v),
             "role_oracle" => run_role_oracle(v),
+            "role_group_letter" => {
+                let inp: super::letters::LetterInput = input(v);
+                let got = match super::letters::plan(&inp) {
+                    Ok(p) => serde_json::to_value(p),
+                    Err(e) => serde_json::to_value(e),
+                }
+                .unwrap();
+                assert_eq!(got, v.expected, "vector `{ctx}`");
+            }
             "code_owners" | "code_owner_requests" | "code_owner_review" => {
                 run_code_owners_case(v);
             }
