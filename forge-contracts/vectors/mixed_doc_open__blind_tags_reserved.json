@@ -1,6 +1,6 @@
 {
   "name": "blind_tags_reserved",
-  "description": "tags 22-24 and 27 (sealed ref values, defined for later clients) stay reserved: malformed.",
+  "description": "tags 22-24 and 27 (the real OIDs and salt of members-only ref updates, PRs and head updates, §19) are not issue fields: malformed.",
   "case": "mixed_doc_open",
   "rules": "v2",
   "input": {

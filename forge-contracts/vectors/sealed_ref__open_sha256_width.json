@@ -1,0 +1,43 @@
+{
+  "name": "open_sha256_width",
+  "description": "a member opens the sha256_width vector: the real values from TLV 22 and 23, each blind checked.",
+  "case": "sealed_ref",
+  "rules": "v2",
+  "input": {
+    "op": "open",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        }
+      },
+      "members": []
+    },
+    "doc": {
+      "type": "refUpdate",
+      "vis": "public",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "refNameHash": "f9337f26a53b55ef8817947cb1554159ae4637a5565e5f88b01eed029b69ccfb",
+      "newOid": "08b92b1a1cd2747d1b8439ab821315977d065a094fdc616475c5445c7626de76",
+      "force": false,
+      "prevOid": "1dcca278d3bc2c2a35238fa11ebfb5929750d20ad4a2b0df743b4c1a69365a66",
+      "enc": "03000102030405060708090a0bc14d61fc568a4ccf82e201397f79b11fbb84f1c52d6aa1078c0bfef6b25f19be5f543f7ec1ef82eea2b3678c3e06a8b5f22a14cac44d269fdcff8722188f2c7ca4983140998bb4106c3e3a4da5a20fa0fb52c57a3dca7bf96776edfaa90ef291c211bd1d8c8f8e80d0eb96d43c3cb4211ccadcd226f43dffd2f16f0bec2c7971151d0dbb4f3968937a8c4c526d4e67a2784f7d0eb58cb2d2e2302ad153f2bbce92dc2cf76f7cb60bb52dc4be070a",
+      "createdAtBlockHeight": 50
+    }
+  },
+  "expected": {
+    "status": "readable",
+    "ref": {
+      "name": "refs/heads/sec/fix",
+      "newOid": "de8ed34d0343cb7015311aca01897865e6907bbd67d59ce0e2ec3a02f495b207",
+      "prevOid": "dbb7b5d35594194b81cf6aaf23cf39e835fe0d28d42eddd379d2b8ff9c8dc89b"
+    },
+    "alerts": []
+  }
+}

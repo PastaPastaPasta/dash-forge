@@ -1,6 +1,6 @@
 {
   "name": "reserved_tag_23",
-  "description": "tag 23 (a sealed ref update's real prevOid) stays reserved: malformed.",
+  "description": "tag 23 (a members-only ref update's real prevOid, §19) is not an issue field: malformed.",
   "case": "mixed_doc_open",
   "rules": "v2",
   "input": {

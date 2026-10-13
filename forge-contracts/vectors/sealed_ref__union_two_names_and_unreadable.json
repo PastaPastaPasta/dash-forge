@@ -1,0 +1,107 @@
+{
+  "name": "union_two_names_and_unreadable",
+  "description": "two names; a protected update keeps its flag; an update under an epoch the reader does not hold is left out (it is counted, not folded).",
+  "case": "sealed_ref",
+  "rules": "v2",
+  "input": {
+    "op": "union",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        }
+      },
+      "members": []
+    },
+    "rows": [
+      {
+        "id": "6f0a09b8e2d9090ebc9ae0a032c11d6f479c7bd64a3a74931b15972e01e8ed54",
+        "createdAt": 1000,
+        "createdAtBlockHeight": 100,
+        "protected": false,
+        "vis": "public",
+        "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+        "epoch": 0,
+        "refNameHash": "d1a6688b652bdb69479a618dfa8815cff6f4d3d0894a4ca3c4b9c3860cd365a4",
+        "newOid": "9ddf202777ad198fcb0d8705069cf96cb307d841",
+        "force": false,
+        "enc": "03000102030405060708090a0ba42ddb48d3f24a4974a5f0c3002fc6c25cb76eae72aeeb850cb35224b6366fa6f1f9b26332a7f4a618c74adc761778900c871fa41c7727463854101a34d751347c415911b9e058bb5823c4366bae816f64b393c1a9ea18708c148eeca772754d50021abbe5d56f753f70f9369964828dab2339661322a496d3d8e4fdfb6548d632"
+      },
+      {
+        "id": "bfbfa1ebd9c34765c7369fd5650ca5106fe0ea84c855c655c38b1d8a85da1a2b",
+        "createdAt": 1001,
+        "createdAtBlockHeight": 100,
+        "protected": true,
+        "vis": "public",
+        "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+        "epoch": 0,
+        "refNameHash": "d1a6688b652bdb69479a618dfa8815cff6f4d3d0894a4ca3c4b9c3860cd365a4",
+        "newOid": "d44bbeca9b14ce937bf8bb4078892d1680df8238",
+        "force": false,
+        "prevOid": "c6de995d59e0bb9b55de67c69e57069c96a74a99",
+        "enc": "03000102030405060708090a0b473f8d44e75781db55ce085f0ce763d5994094d7d4f63020ea5839781b9a8928231073230aae251a3c64965f0b39737ea680970d84704aefac5b0423e8072f25ec54eafd8cb32e1c88ad00ea93de76c7537b6967ea434ef49a567902b43adade3150692bb59966427460c1db2ca35da93d651e40452afb5e29b965454fc6f5bb149cafe360c8236353000d37d188dccd9908a74011ce87aa"
+      },
+      {
+        "id": "e3fd68e393870c1bb8ac4b47038c5c5c83845f820865b7ccd8a1f551d63a222f",
+        "createdAt": 1002,
+        "createdAtBlockHeight": 100,
+        "protected": false,
+        "vis": "public",
+        "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+        "epoch": 0,
+        "refNameHash": "f9337f26a53b55ef8817947cb1554159ae4637a5565e5f88b01eed029b69ccfb",
+        "newOid": "d1cfe9a5fbf7681d7c99aa6a3e9b94a886c48b1d",
+        "force": false,
+        "enc": "03000102030405060708090a0b364e9f79d399f73098f457e13938451d7989f97ad7347304a1286e6a0dfb1637107e581a1ab397ba843597f3c021a8e00f7378de750caad4cc82d4ea5cbd43554a409255583a022ccd011ddd967cde0d25ac29be26fa550702892e2fe13555e12497927331b1c7167ba8c7060ae700a280e2d11da3a8d64d918b4e14ba29c7"
+      },
+      {
+        "id": "f27d68c44ab85b244c3ba4f213b2c245953477042642319889c86d09d60b36c3",
+        "createdAt": 1003,
+        "createdAtBlockHeight": 100,
+        "protected": false,
+        "vis": "public",
+        "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+        "epoch": 1,
+        "refNameHash": "fa421c081068d0c946f33c20741589b9762f7a645c2604e458e9e4ed30c7856f",
+        "newOid": "806377771bef5c93ac4be13aebbd4b8d8acdc94b",
+        "force": false,
+        "prevOid": "5e142af5d918e945d30d164001387e798cb82b37",
+        "enc": "03000102030405060708090a0b8d0db8183ae2cd35d2fae75bd7245242d0e30ed3e0ea9e76c0db099d4070c6dae1feb2557a3a115fa3dd4655871cce31e9955fa24bbaec92ac7bb801e4eec0a511d82a7c255a3258c880a5c9f415c50b9b97fecae5fbf3e37c2369ac13d163aab0f69e01f6542245158d6d27126098314d2a03c9047a70f7064e23634d36267588b184be822b054111ab17bf756df9a5c93c6b8905b0"
+      }
+    ]
+  },
+  "expected": {
+    "refs": {
+      "refs/heads/sec/other": [
+        {
+          "id": "6f0a09b8e2d9090ebc9ae0a032c11d6f479c7bd64a3a74931b15972e01e8ed54",
+          "newOid": "de8ed34d0343cb7015311aca01897865e6907bbd",
+          "force": false,
+          "protected": false
+        },
+        {
+          "id": "bfbfa1ebd9c34765c7369fd5650ca5106fe0ea84c855c655c38b1d8a85da1a2b",
+          "newOid": "ac57952b296a19e0255ee8ff9b20adcfab2a599c",
+          "force": false,
+          "protected": true,
+          "prevOid": "de8ed34d0343cb7015311aca01897865e6907bbd"
+        }
+      ],
+      "refs/heads/sec/fix": [
+        {
+          "id": "e3fd68e393870c1bb8ac4b47038c5c5c83845f820865b7ccd8a1f551d63a222f",
+          "newOid": "da31d9d1006fc4633d1b3bbc71b0143c188395ac",
+          "force": false,
+          "protected": false
+        }
+      ]
+    },
+    "publicRefs": {},
+    "alerts": []
+  }
+}

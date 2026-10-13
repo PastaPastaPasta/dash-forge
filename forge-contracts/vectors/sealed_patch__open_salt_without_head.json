@@ -1,0 +1,37 @@
+{
+  "name": "open_salt_without_head",
+  "description": "a salt without a real head: malformed.",
+  "case": "sealed_patch",
+  "rules": "v2",
+  "input": {
+    "op": "open",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        }
+      },
+      "members": []
+    },
+    "doc": {
+      "type": "patch",
+      "vis": "public",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "number": 12,
+      "baseRefNameHash": "f921bd05e68b03740c450e565e0e6173e546193170b2dd404ddb6f153e9b5bf3",
+      "sourceRefNameHash": "f9337f26a53b55ef8817947cb1554159ae4637a5565e5f88b01eed029b69ccfb",
+      "enc": "03000102030405060708090a0ba356be5eeb40790d82c00c39a168e2608321a201ac1203d81291d9c0b27fb45d5663ae37d93aab3bbcd7782c721316e39e1dc780c1fb9f53389fc00d4e2c5672697c6830d1acf3d5d364a1ca6f005e75a6cc07ed97d44afe7f536806b9f971601deda69c742409dc596bd11aba35ef013410db4b70356ad66e18b98f20bb241823c9751a2dbcaf0ac3f070f418c42dffff2a0058cfc8dfc021b8ed1c5e7020fc7c72db15b96dec3669cba6e08e0525f6fd5d14d2818d48f3a20ac6917ac07b2fa0a287bf98915a0318b09dfa9ca5cea4a15ff3314ead8eff9ff13f59178079391a01c3ea746d7acb48989b38a9d80857",
+      "createdAtBlockHeight": 50
+    },
+    "plainHead": "7eede9362a48efb9e4e4e1e63eacc998c525c4da"
+  },
+  "expected": {
+    "status": "malformed"
+  }
+}

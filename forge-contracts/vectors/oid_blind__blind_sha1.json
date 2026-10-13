@@ -1,0 +1,14 @@
+{
+  "name": "blind_sha1",
+  "description": "a SHA-1 commit: the first 20 bytes of the salted SHA-256.",
+  "case": "oid_blind",
+  "rules": "v2",
+  "input": {
+    "op": "blind",
+    "salt": "c593c3811de01bebe941c9a10da7688ddbce11616faeb6b3928e3f17fb2e9987",
+    "oid": "de8ed34d0343cb7015311aca01897865e6907bbd"
+  },
+  "expected": {
+    "blind": "c1e747501a81cce7aaed1a1739060a3149b4c340"
+  }
+}

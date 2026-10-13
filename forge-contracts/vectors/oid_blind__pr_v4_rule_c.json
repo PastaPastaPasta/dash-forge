@@ -1,0 +1,55 @@
+{
+  "name": "pr_v4_rule_c",
+  "description": "S5 V4 rule C: after a rotation the branch moves to H3; the head update copies the push's blind and carol's review copies the folded head: counted for both readers.",
+  "case": "oid_blind",
+  "rules": "v2",
+  "input": {
+    "op": "prFold",
+    "author": "author",
+    "patch": {
+      "headOid": "7eede9362a48efb9e4e4e1e63eacc998c525c4da",
+      "real": "e6d7f353ee2800b1093c04b07ee9fd7cfa324881",
+      "salt": "adc02a522db7fe8d31e951c6333b188cd96b14b4e8a5a98262878a856389e763"
+    },
+    "headUpdates": [
+      {
+        "id": "hu1",
+        "createdAt": 20,
+        "oid": "304f93e2333b387e7146a49ddf9b8152b2169417",
+        "real": "3cb137b1d9cf13766fd264d37da90e34e6c0e0d5",
+        "salt": "708967df4c8282561a6401ce68b4beee0b7012f6d92a775dc578ab7eb74c3f3f"
+      },
+      {
+        "id": "hu2",
+        "createdAt": 40,
+        "oid": "42bf403ba584d715d9a60c17eee583b979fe1eff",
+        "real": "7153e158863efe49ee17b9fdefe0c8e5f5ec345b",
+        "salt": "293fc9ff7a257be5642f0d484d54b56404f4433557e1d049e9af3bac97c3993f"
+      }
+    ],
+    "reviews": [
+      {
+        "id": "r1",
+        "reviewer": "bob",
+        "verdict": 1,
+        "commitOid": "304f93e2333b387e7146a49ddf9b8152b2169417",
+        "createdAt": 30
+      },
+      {
+        "id": "r2",
+        "reviewer": "carol",
+        "verdict": 1,
+        "commitOid": "42bf403ba584d715d9a60c17eee583b979fe1eff",
+        "createdAt": 50
+      }
+    ]
+  },
+  "expected": {
+    "head": "42bf403ba584d715d9a60c17eee583b979fe1eff",
+    "approvers": [
+      "carol"
+    ],
+    "alerts": [],
+    "realHead": "7153e158863efe49ee17b9fdefe0c8e5f5ec345b"
+  }
+}

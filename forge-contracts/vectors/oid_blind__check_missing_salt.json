@@ -1,0 +1,14 @@
+{
+  "name": "check_missing_salt",
+  "description": "a blind without its salt: malformed.",
+  "case": "oid_blind",
+  "rules": "v2",
+  "input": {
+    "op": "check",
+    "plain": "c1e747501a81cce7aaed1a1739060a3149b4c340",
+    "real": "de8ed34d0343cb7015311aca01897865e6907bbd"
+  },
+  "expected": {
+    "status": "malformed"
+  }
+}

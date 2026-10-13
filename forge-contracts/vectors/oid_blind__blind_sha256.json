@@ -1,0 +1,14 @@
+{
+  "name": "blind_sha256",
+  "description": "a SHA-256 commit: the whole digest.",
+  "case": "oid_blind",
+  "rules": "v2",
+  "input": {
+    "op": "blind",
+    "salt": "c593c3811de01bebe941c9a10da7688ddbce11616faeb6b3928e3f17fb2e9987",
+    "oid": "de8ed34d0343cb7015311aca01897865e6907bbd67d59ce0e2ec3a02f495b207"
+  },
+  "expected": {
+    "blind": "6a68e76e86d2c207aaa5395fdf4270342ec507ff10b3ba5e079f10dab7ce460d"
+  }
+}

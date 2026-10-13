@@ -1,0 +1,48 @@
+{
+  "name": "open_width_mismatch",
+  "description": "a 32-byte blind of a 20-byte commit (oidWidth admits each field alone): an alert.",
+  "case": "sealed_ref",
+  "rules": "v2",
+  "input": {
+    "op": "open",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        }
+      },
+      "members": []
+    },
+    "doc": {
+      "type": "refUpdate",
+      "vis": "public",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "refNameHash": "f9337f26a53b55ef8817947cb1554159ae4637a5565e5f88b01eed029b69ccfb",
+      "newOid": "30fa02ce0144bb1988ca9c03c6fe72718c953debbec93e253de5046ed7e6b10d",
+      "force": false,
+      "prevOid": "c6de995d59e0bb9b55de67c69e57069c96a74a99",
+      "enc": "03000102030405060708090a0b11c61002368850b540b3491588f21f2a4309a2de61ddf493880f17e2af3033acc98add1a9a25c3c518b9d22ac3b2f629d8e68f53154bf8137625f3cde29d5712aa5eb6267680533e2e3765e77d3e2668b06a6cf80af0ad444eb7a296e5e0867a8f5bda00c8a8d043ae10756a46c85eb9082469ffac64ff3430f7c12ca3b7796b80a9ba1d788737d5cac3bfd5f84b8701cbe8f6d7dd61",
+      "createdAtBlockHeight": 50
+    }
+  },
+  "expected": {
+    "status": "readable",
+    "ref": {
+      "name": "refs/heads/sec/fix",
+      "newOid": "ac57952b296a19e0255ee8ff9b20adcfab2a599c",
+      "prevOid": "de8ed34d0343cb7015311aca01897865e6907bbd"
+    },
+    "alerts": [
+      {
+        "field": "newOid",
+        "kind": "width"
+      }
+    ]
+  }
+}

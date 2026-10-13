@@ -1,0 +1,36 @@
+{
+  "name": "deletes_and_known",
+  "description": "deletes pack nothing; a members branch set to a public commit needs no pack.",
+  "case": "members_pack_plan",
+  "rules": "v2",
+  "input": {
+    "publicTips": [
+      "cfff9697be9e8a78416dde4cb4f9cba34929127e",
+      "a52eea110b44deca2464264f16153e35bd3ec119"
+    ],
+    "membersTips": {
+      "refs/heads/sec/a": "500d251a54e54de695d738cd4c4000d4910824f6"
+    },
+    "batch": [
+      {
+        "dst": "refs/heads/old",
+        "new": null,
+        "audience": "public"
+      },
+      {
+        "dst": "refs/heads/sec/a",
+        "new": "cfff9697be9e8a78416dde4cb4f9cba34929127e",
+        "audience": "members"
+      },
+      {
+        "dst": "refs/heads/sec/gone",
+        "new": null,
+        "audience": "members"
+      }
+    ]
+  },
+  "expected": {
+    "public": null,
+    "members": []
+  }
+}

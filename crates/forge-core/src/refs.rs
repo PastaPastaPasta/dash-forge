@@ -363,6 +363,153 @@ pub fn private_updates_of(state: &GitState, keyring: &crate::keyring::Keyring) -
     by_name
 }
 
+/// A members-only ref update whose blind did not check against its real value: the update is
+/// kept on its real values ([`crate::private::members_ref::real_values`]); readers show the alert.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefAlert {
+    /// The ref update document's `$id`.
+    pub id: String,
+    /// What did not check.
+    pub alert: crate::private::blind::Alert,
+}
+
+/// A member's view of a PUBLIC repository's refs ([`members_updates_of`]): every public update
+/// and every members-only update the reader opens, grouped by ref name on real values.
+#[derive(Debug, Clone, Default)]
+pub struct MembersUpdates {
+    /// Updates by full ref name, restated with the public key (`refNameHash = sha256(name)`,
+    /// the name set, real OIDs), so the public folds apply.
+    pub by_name: PrivateUpdates,
+    /// Blinds that did not check.
+    pub alerts: Vec<RefAlert>,
+    /// Members-only updates this reader could not open (no key, another epoch, late, malformed):
+    /// counted, never folded.
+    pub unreadable: usize,
+}
+
+/// A member's ref updates of a PUBLIC repository with members-only branches
+/// (`docs/security/private-repos.md` §19.3, DESIGN §4.3): the union, per ref name, of the
+/// public updates (plaintext, [`git_plane_well_formed`]) and the members-only ones (`enc` v0x03,
+/// `vis: "public"`) that `open` reads, each members-only update taken to its real values with
+/// every blind checked. The path is chosen per document, never by the repository's visibility:
+/// a plaintext update is folded as written, a sealed one only through `open`. The public reader
+/// ([`GitState::ref_histories`]) folds the plaintext updates alone.
+pub fn members_updates_of(
+    state: &GitState,
+    open: impl Fn(crate::private::DocKind, &FetchedDocument) -> crate::private::Opened,
+) -> MembersUpdates {
+    use crate::private::members_ref::RefOpened;
+    use crate::private::DocKind;
+    let mut out = MembersUpdates::default();
+    for (rows, protected, kind) in [
+        (&state.ref_updates, false, DocKind::RefUpdate),
+        (
+            &state.protected_ref_updates,
+            true,
+            DocKind::ProtectedRefUpdate,
+        ),
+    ] {
+        for d in rows {
+            if well_formed_in(ContentKind::RefUpdate, d) {
+                let Some(name) = d.field_str("refName") else {
+                    continue;
+                };
+                let hash_hex = hex::encode(crate::backends::sha256(name.as_bytes()));
+                out.by_name
+                    .entry(name)
+                    .or_default()
+                    .push(ref_update_from_doc(d, &hash_hex, protected));
+                continue;
+            }
+            // a members-only ref update: `enc` v0x03 and an epoch, its name only inside `enc`
+            // (the content predicate keeps sealed ref updates out of a public repository's
+            // content; this reader is the one place that folds them)
+            let members = d.field_bytes("enc").and_then(|e| e.first().copied())
+                == Some(crate::private::doc::V3)
+                && d.field_u64("epoch").is_some()
+                && d.field_str("refName").is_none();
+            if !members {
+                continue;
+            }
+            let Some(header) = crate::keyring::header_of(kind, d) else {
+                out.unreadable += 1;
+                continue;
+            };
+            let RefOpened::Readable(real) = RefOpened::from_opened(&header, open(kind, d)) else {
+                out.unreadable += 1;
+                continue;
+            };
+            let hash_hex = hex::encode(crate::backends::sha256(real.name.as_bytes()));
+            let mut u = ref_update_from_doc(d, &hash_hex, protected);
+            u.ref_name.clone_from(&real.name);
+            u.new_oid = hex::encode(&real.new_oid);
+            u.prev_oid = real
+                .prev_oid
+                .as_deref()
+                .map(hex::encode)
+                .unwrap_or_default();
+            out.alerts.extend(real.alerts.iter().map(|&alert| RefAlert {
+                id: d.id.clone(),
+                alert,
+            }));
+            out.by_name.entry(real.name).or_default().push(u);
+        }
+    }
+    for updates in out.by_name.values_mut() {
+        updates.sort_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+    }
+    out
+}
+
+/// Every ref of a PUBLIC repository as a member reads it ([`members_updates_of`] over the
+/// repository's history, opened with `keyring`'s members key), resolved per name over the public
+/// config timeline: public and members-only branches together, on real values.
+pub async fn read_members_refs(
+    client: &PlatformClient,
+    contract: &LoadedContract,
+    scope: &DocScope,
+    keyring: &crate::keyring::Keyring,
+) -> Result<(Vec<(String, crate::rules::RefState)>, MembersUpdates)> {
+    let state = read_git_state(client, contract, scope, Freshness::Now).await?;
+    let configs = state.config_history();
+    let updates = members_updates_of(&state, |k, d| keyring.open(k, d));
+    let refs = updates
+        .by_name
+        .iter()
+        .map(|(name, ups)| {
+            let hash_hex = hex::encode(crate::backends::sha256(name.as_bytes()));
+            let state = crate::rules::resolve_ref(ups, &configs, &hash_hex, |a, b| a == b);
+            (name.clone(), state)
+        })
+        .collect();
+    Ok((refs, updates))
+}
+
+/// What an outsider learns of a public repository's members-only branches: how many sealed
+/// updates there are and how many distinct name hashes they carry (one name has one hash per
+/// epoch, so this counts names within epochs). Shown as "this repository also has members-only
+/// branches", never as a number to outsiders (DESIGN §10).
+#[must_use]
+pub fn members_only_ref_count(state: &GitState) -> (usize, usize) {
+    let mut hashes = BTreeSet::new();
+    let mut updates = 0usize;
+    for d in state.ref_updates.iter().chain(&state.protected_ref_updates) {
+        let sealed =
+            d.field_bytes("enc").is_some_and(|e| !e.is_empty()) && d.field_str("refName").is_none();
+        if sealed {
+            updates += 1;
+            if let Some(h) = d.field_bytes32("refNameHash") {
+                hashes.insert(h);
+            }
+        }
+    }
+    (updates, hashes.len())
+}
+
 /// How a reader sees one private ref update, for [`stale_by_epoch`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateSeen {
@@ -443,6 +590,180 @@ pub fn ref_update_from_doc(d: &FetchedDocument, hash_hex: &str, protected: bool)
         protected,
         author: d.owner_id.clone(),
         created_at: d.created_at.unwrap_or(0),
+    }
+}
+
+#[cfg(test)]
+mod members_tests {
+    //! The member fold of a public repository's members-only branches (S5 V1, V1b, V1c): real
+    //! values over the union of public and members-only updates of one name.
+    use super::{members_only_ref_count, members_updates_of, GitState};
+    use crate::platform::{FetchedDocument, FieldValue};
+    use crate::private::doc::{open_content, AnchorRef, OpenContext};
+    use crate::private::members_ref::{self, RefUpdateIn};
+    use crate::private::{DocKind, EpochKey, EpochKeys};
+    use crate::rules::{resolve_ref, RefState};
+    use std::collections::BTreeMap;
+
+    const REPO: [u8; 32] = [0x11; 32];
+    const NAME: &str = "refs/heads/sec/fix";
+
+    fn keys(e: u32) -> EpochKeys {
+        EpochKeys::derive(
+            &REPO,
+            e,
+            &EpochKey::from_bytes([3 + u8::try_from(e).unwrap(); 32]),
+        )
+    }
+
+    fn ctx() -> OpenContext {
+        let anchor = |h: u64| AnchorRef {
+            id: [u8::try_from(h).unwrap(); 32],
+            height: h,
+            stated_height: h,
+        };
+        OpenContext {
+            keys: [(0, keys(0)), (1, keys(1))].into(),
+            anchors: [(0, anchor(1)), (1, anchor(2))].into(),
+            ..OpenContext::default()
+        }
+    }
+
+    fn doc(id: u8, at: u64, fields: BTreeMap<String, FieldValue>) -> FetchedDocument {
+        FetchedDocument {
+            id: crate::platform::encode_identifier([id; 32]),
+            owner_id: crate::platform::encode_identifier([0x22; 32]),
+            created_at: Some(at),
+            created_at_block_height: Some(10),
+            updated_at_block_height: None,
+            updated_at: None,
+            revision: Some(1),
+            fields,
+        }
+    }
+
+    fn sealed(id: u8, at: u64, e: u32, new: u8, prev: Option<u8>, force: bool) -> FetchedDocument {
+        let new = if new == 0 { [0; 20] } else { [new; 20] };
+        let prev = prev.map(|p| [p; 20]);
+        let s = members_ref::seal(
+            &keys(e),
+            [0x22; 32],
+            &RefUpdateIn {
+                kind: DocKind::RefUpdate,
+                name: NAME,
+                new_oid: &new,
+                prev_oid: prev.as_ref().map(|p| &p[..]),
+                force,
+            },
+        )
+        .unwrap();
+        doc(id, at, s.props())
+    }
+
+    fn public(id: u8, at: u64, new: u8, prev: Option<u8>) -> FetchedDocument {
+        let mut f = BTreeMap::new();
+        f.insert(
+            "refNameHash".into(),
+            FieldValue::Bytes32(crate::backends::sha256(NAME.as_bytes())),
+        );
+        f.insert("refName".into(), FieldValue::text(NAME));
+        f.insert("newOid".into(), FieldValue::bytes(vec![new; 20]));
+        if let Some(p) = prev {
+            f.insert("prevOid".into(), FieldValue::bytes(vec![p; 20]));
+        }
+        f.insert("vis".into(), FieldValue::text("public"));
+        doc(id, at, f)
+    }
+
+    fn member_state(state: &GitState) -> RefState {
+        let ctx = ctx();
+        let got = members_updates_of(state, |k, d| {
+            let mut h = crate::keyring::header_of(k, d).unwrap();
+            h.vis = crate::rules::v2::Visibility::Public;
+            open_content(&ctx, &h, &d.field_bytes("enc").unwrap())
+        });
+        assert!(got.alerts.is_empty());
+        let hash = hex::encode(crate::backends::sha256(NAME.as_bytes()));
+        resolve_ref(&got.by_name[NAME], &[], &hash, |a, b| a == b)
+    }
+
+    fn tip(s: &RefState) -> String {
+        match s {
+            RefState::Resolved { oid, .. } => oid.clone(),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn v1_members_fold_a_members_only_branch_on_real_values() {
+        let state = GitState {
+            ref_updates: vec![
+                sealed(1, 10, 0, 0xa, None, false),
+                sealed(2, 11, 0, 0xb, Some(0xa), false),
+                sealed(3, 12, 0, 0xc, Some(0xb), false),
+                sealed(4, 13, 0, 0xd, Some(0xc), true),
+            ],
+            ..GitState::default()
+        };
+        assert_eq!(tip(&member_state(&state)), hex::encode([0xd; 20]));
+        // the public folds nothing of it, and learns only that it exists
+        assert!(state.ref_histories().is_empty());
+        assert_eq!(members_only_ref_count(&state), (4, 1));
+    }
+
+    #[test]
+    fn v1b_the_chain_holds_across_a_rotation() {
+        let state = GitState {
+            ref_updates: vec![
+                sealed(1, 10, 0, 0xa, None, false),
+                sealed(2, 11, 0, 0xb, Some(0xa), false),
+                sealed(3, 12, 1, 0xc, Some(0xb), false),
+                sealed(4, 13, 1, 0xd, Some(0xc), false),
+            ],
+            ..GitState::default()
+        };
+        assert_eq!(tip(&member_state(&state)), hex::encode([0xd; 20]));
+        // one name, one hash per epoch
+        assert_eq!(members_only_ref_count(&state), (4, 2));
+    }
+
+    #[test]
+    fn v1c_public_then_members_only_under_one_name() {
+        let state = GitState {
+            ref_updates: vec![
+                public(1, 10, 0x1, None),
+                public(2, 11, 0x2, Some(0x1)),
+                public(3, 12, 0x0, Some(0x2)),
+                sealed(4, 20, 0, 0xa, None, false),
+                sealed(5, 21, 0, 0xb, Some(0xa), false),
+            ],
+            ..GitState::default()
+        };
+        assert_eq!(tip(&member_state(&state)), hex::encode([0xb; 20]));
+        let hash = crate::backends::sha256(NAME.as_bytes());
+        let public_state = resolve_ref(
+            &state.ref_histories()[&hash],
+            &[],
+            &hex::encode(hash),
+            |a, b| a == b,
+        );
+        assert_eq!(
+            public_state,
+            RefState::Unborn,
+            "the public reads it deleted"
+        );
+    }
+
+    #[test]
+    fn a_members_only_delete_folds_as_a_delete() {
+        let state = GitState {
+            ref_updates: vec![
+                sealed(1, 10, 0, 0xa, None, false),
+                sealed(2, 11, 0, 0, Some(0xa), false),
+            ],
+            ..GitState::default()
+        };
+        assert_eq!(member_state(&state), RefState::Unborn);
     }
 }
 

@@ -1,0 +1,47 @@
+{
+  "name": "pr_request_changes_then_approve",
+  "description": "a reviewer's newest verdict on the blinded head stands.",
+  "case": "oid_blind",
+  "rules": "v2",
+  "input": {
+    "op": "prFold",
+    "author": "author",
+    "patch": {
+      "headOid": "7eede9362a48efb9e4e4e1e63eacc998c525c4da",
+      "real": "e6d7f353ee2800b1093c04b07ee9fd7cfa324881",
+      "salt": "adc02a522db7fe8d31e951c6333b188cd96b14b4e8a5a98262878a856389e763"
+    },
+    "headUpdates": [],
+    "reviews": [
+      {
+        "id": "r1",
+        "reviewer": "bob",
+        "verdict": 2,
+        "commitOid": "7eede9362a48efb9e4e4e1e63eacc998c525c4da",
+        "createdAt": 10
+      },
+      {
+        "id": "r2",
+        "reviewer": "bob",
+        "verdict": 1,
+        "commitOid": "7eede9362a48efb9e4e4e1e63eacc998c525c4da",
+        "createdAt": 20
+      },
+      {
+        "id": "r3",
+        "reviewer": "author",
+        "verdict": 1,
+        "commitOid": "7eede9362a48efb9e4e4e1e63eacc998c525c4da",
+        "createdAt": 25
+      }
+    ]
+  },
+  "expected": {
+    "head": "7eede9362a48efb9e4e4e1e63eacc998c525c4da",
+    "approvers": [
+      "bob"
+    ],
+    "alerts": [],
+    "realHead": "e6d7f353ee2800b1093c04b07ee9fd7cfa324881"
+  }
+}

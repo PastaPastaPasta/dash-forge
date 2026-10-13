@@ -1,0 +1,41 @@
+{
+  "name": "open_head_update",
+  "description": "a member opens a head update: the real head of its blind oid.",
+  "case": "sealed_patch",
+  "rules": "v2",
+  "input": {
+    "op": "open",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        }
+      },
+      "members": []
+    },
+    "doc": {
+      "type": "event",
+      "vis": "public",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "targetId": "4e6f38e995b8c1a6edb48ac2970fc64caa486b620c0bc6cd7287cd8c29b25fe5",
+      "enc": "03000102030405060708090a0b9810a6edfb7f23ef9cf7c5eff637c4b454fee995e12a7451507c6c3b7dbb4766c3a245d49efaa44636bebe7659e1ffe10e97270c3e4f81f06f9213593587cdcd72c05af18edd77cc9cec223dc1be52a1ef1514eff72f42aff7f9913419bdb0518754ac37d861bbd2dcf0",
+      "createdAtBlockHeight": 50
+    },
+    "plainHead": "304f93e2333b387e7146a49ddf9b8152b2169417"
+  },
+  "expected": {
+    "status": "readable",
+    "fields": {},
+    "head": {
+      "real": "3cb137b1d9cf13766fd264d37da90e34e6c0e0d5",
+      "salt": "708967df4c8282561a6401ce68b4beee0b7012f6d92a775dc578ab7eb74c3f3f"
+    },
+    "alerts": []
+  }
+}

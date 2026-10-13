@@ -61,6 +61,7 @@ pub mod layout;
 #[cfg(feature = "cli-logging")]
 pub mod logging;
 pub mod members;
+pub mod members_git;
 pub mod mirror;
 pub mod network;
 pub mod pack;

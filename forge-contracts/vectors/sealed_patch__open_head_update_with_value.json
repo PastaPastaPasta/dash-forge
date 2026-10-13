@@ -1,0 +1,43 @@
+{
+  "name": "open_head_update_with_value",
+  "description": "a value beside the head is read too (the fold ignores a head update's value).",
+  "case": "sealed_patch",
+  "rules": "v2",
+  "input": {
+    "op": "open",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        }
+      },
+      "members": []
+    },
+    "doc": {
+      "type": "event",
+      "vis": "public",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "targetId": "4e6f38e995b8c1a6edb48ac2970fc64caa486b620c0bc6cd7287cd8c29b25fe5",
+      "enc": "03000102030405060708090a0b9810a6edfb7f23ef9cf7c5eff637c4b454fee995e12a7451507c6c3b7dbb4766d4a2509037cd01a3489a79c044965af375fdc09757a1600daf52b6cb5278f1c697490c170d45051c23cc41f96da680fb8abe08bd2b0c309b63b8fbbe1da0eaaede81c6b28c657c329c8420477e56",
+      "createdAtBlockHeight": 50
+    },
+    "plainHead": "304f93e2333b387e7146a49ddf9b8152b2169417"
+  },
+  "expected": {
+    "status": "readable",
+    "fields": {
+      "eventValue": "x"
+    },
+    "head": {
+      "real": "3cb137b1d9cf13766fd264d37da90e34e6c0e0d5",
+      "salt": "708967df4c8282561a6401ce68b4beee0b7012f6d92a775dc578ab7eb74c3f3f"
+    },
+    "alerts": []
+  }
+}

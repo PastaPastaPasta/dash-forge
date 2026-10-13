@@ -1,0 +1,48 @@
+{
+  "name": "open_blind_mismatch",
+  "description": "newOid in plaintext is not the blind of TLV 22 under TLV 27: the update is kept on its real values and an alert raised (members fold the real values; the public sees the plaintext).",
+  "case": "sealed_ref",
+  "rules": "v2",
+  "input": {
+    "op": "open",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        }
+      },
+      "members": []
+    },
+    "doc": {
+      "type": "refUpdate",
+      "vis": "public",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "refNameHash": "f9337f26a53b55ef8817947cb1554159ae4637a5565e5f88b01eed029b69ccfb",
+      "newOid": "83e9aac5a1c4cb598cc00cc65792e83f10ef0edf",
+      "force": false,
+      "prevOid": "c6de995d59e0bb9b55de67c69e57069c96a74a99",
+      "enc": "03000102030405060708090a0bee3124dcaafae96268a6b6a1a313c504039c6be4acf4c8c155631dca3bde24ea43c3ff87c527f639045af4d086ff20ce9391b818a26d08050bca79d3b49da5e44088d20053b41d082eb4aa0e2c7da2750db1baeefcaadec804fd387280d12e03ad359fc8cc4182d5cab879f4e7b3f8249add2faafba232a3a53d50c1df65b7cc0a8ee5133df59f1793b888cf9ec0d2a79854982d81f3",
+      "createdAtBlockHeight": 50
+    }
+  },
+  "expected": {
+    "status": "readable",
+    "ref": {
+      "name": "refs/heads/sec/fix",
+      "newOid": "ac57952b296a19e0255ee8ff9b20adcfab2a599c",
+      "prevOid": "de8ed34d0343cb7015311aca01897865e6907bbd"
+    },
+    "alerts": [
+      {
+        "field": "newOid",
+        "kind": "mismatch"
+      }
+    ]
+  }
+}

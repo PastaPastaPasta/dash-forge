@@ -1,0 +1,47 @@
+{
+  "name": "seal_members_base",
+  "description": "a members-only PR into a members-only base: both names keyed.",
+  "case": "sealed_patch",
+  "rules": "v2",
+  "input": {
+    "op": "seal",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "epoch": 0,
+    "type": "patch",
+    "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+    "props": {
+      "number": 12,
+      "title": "Fix the token leak",
+      "body": "Members-only until the release.",
+      "baseRefName": "refs/heads/main",
+      "sourceRefName": "refs/heads/sec/fix",
+      "draft": false,
+      "sourceRepoId": "1111111111111111111111111111111111111111111111111111111111111111",
+      "asMember": true,
+      "vis": "public",
+      "headOid": "7eede9362a48efb9e4e4e1e63eacc998c525c4da"
+    },
+    "basePublic": false,
+    "sourcePublic": false,
+    "nonce": "000102030405060708090a0b",
+    "head": {
+      "real": "e6d7f353ee2800b1093c04b07ee9fd7cfa324881",
+      "salt": "adc02a522db7fe8d31e951c6333b188cd96b14b4e8a5a98262878a856389e763"
+    }
+  },
+  "expected": {
+    "props": {
+      "number": 12,
+      "draft": false,
+      "sourceRepoId": "1111111111111111111111111111111111111111111111111111111111111111",
+      "asMember": true,
+      "vis": "public",
+      "baseRefNameHash": "e729d18b929db396450159dfc6256e24302b94c9c3c9eb40643f5ae0be3fe579",
+      "sourceRefNameHash": "f9337f26a53b55ef8817947cb1554159ae4637a5565e5f88b01eed029b69ccfb",
+      "headOid": "7eede9362a48efb9e4e4e1e63eacc998c525c4da",
+      "epoch": 0,
+      "enc": "03000102030405060708090a0ba356be5eeb40790d82c00c39a168e2608321a201ac1203d81291d9c0b27fb45d5663ae37d93aab3bbcd7782c721316e39e1dc780c1fb9f53389fc00d4e2c5672697c6830d1acf3d5d364a1ca6f005e75a6cc07ed97d44afe7f536806b9f971601deda69c742409dc596bd11aba35ef013410db4b70356ad66e18b98f20bb2718178262c32c7f30f4ffc8a5a16e89ff1a0f095904fa3b7a490e1a40c4f6a457962edb8aef8a56f4bab0a0b25466a08c749fda9e57e204af90e20ae3917ac07b2fa0a287bf98915a0318b09dfa9ca5cea4a15ff3314ead8eff9ff13f59178079394508a9d9c83aa64e68b9c83b86134922"
+    }
+  }
+}

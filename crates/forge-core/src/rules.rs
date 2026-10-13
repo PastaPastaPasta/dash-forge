@@ -3442,6 +3442,7 @@ mod tests {
                 .iter()
                 .any(|p| v.case.starts_with(p))
                 || v.case.starts_with(crate::env::conformance::CASE_PREFIX)
+                || crate::members_git::conformance::CASES.contains(&v.case.as_str())
             {
                 continue;
             }
