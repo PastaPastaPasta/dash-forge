@@ -186,6 +186,8 @@ test('a member who is not a recipient sees the placeholders only', async ({ brow
 test('the picker offers the §10 options', async ({ browser }, info) => {
   const page = await signedInAs(browser, RECIPIENT)
   await openIssue(page, issueUrl(ISSUE))
+  // the role groups need this tab's encryption key (a locked tab offers the unlock instead)
+  await unlockLetters(page, page.getByTestId('timeline-comment').filter({ hasText: MARKER }))
   const chip = page.getByTestId('issue-composer').getByTestId('audience-chip')
   await expect(chip).toBeVisible({ timeout: 120_000 })
   await chip.click()
@@ -197,7 +199,8 @@ test('the picker offers the §10 options', async ({ browser }, info) => {
   await expect(page.getByTestId('audience-option-writers')).toContainText(/Writers and maintainers \(\d+\)/)
   await expect(page.getByTestId('audience-option-people')).toContainText("Specific people…You're always included. Up to 16 people.")
   await snap(page, info, 'picker-options')
-  await page.getByTestId('audience-option-maintainers').locator('input').check()
+  // choosing closes the picker, so a click (check() would wait on the closed option)
+  await page.getByTestId('audience-option-maintainers').locator('input').click()
   await expect(chip).toContainText(/Maintainers \(\d+\)/)
   await page.context().close()
 })

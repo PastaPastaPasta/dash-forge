@@ -515,7 +515,9 @@ export async function unlock(page: Page): Promise<void> {
   await openSignIn(page, passphrase)
   await passphrase.fill(PASSPHRASE)
   await page.getByRole('button', { name: /^unlock$/i }).click()
-  await expect(pill).toBeVisible({ timeout: 60_000 })
+  // signed in: the pill is there (a phone's header hides it) and the header's Unlock is gone
+  await expect(pill).toBeAttached({ timeout: 60_000 })
+  await expect(locked).toHaveCount(0, { timeout: 60_000 })
 }
 
 /** The header's funds pill (signed in) and its "Session locked — Unlock" button. */
