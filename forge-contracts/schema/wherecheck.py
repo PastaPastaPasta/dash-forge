@@ -11,7 +11,11 @@ contract parse (b7gate, DataContract::from_json) does not run:
   40126  every `where` pair: both sides exist, are plain single values (no object, no typed
          array), share one value kind (integers by their sized type), the referring side is not
          the reference property itself, and a referenced `$ownerId`/`$creatorId`/`$id` faces an
-         identifier
+         identifier; every `where` condition (Platform beta.5 #5369, book contract-keywords/
+         refers-to.md "Conditions" at v5.0.0-beta.6): a `const` or `in` literal of the referenced
+         property's kind (in its enum, inside its bounds), a `notEqual` of one kind, an ordering
+         of an integer against an integer property, an integer literal, or a time or height the
+         declaring type lists in `required`
 
   python3 forge-contracts/schema/wherecheck.py [contracts-dir]      (default: forge-contracts/contracts)
 
@@ -78,6 +82,8 @@ def int_kind(s):
 def kind(contract, schema):
     s = resolve(contract, schema)
     t = s.get('type')
+    if t in ('identifier', 'bytes'):   # protocol-14 shorthands (property-schemas.md "Shorthands")
+        return t
     if t == 'array' and s.get('byteArray'):
         return 'identifier' if s.get('contentMediaType') == IDENTIFIER else 'bytes'
     if t == 'array':
@@ -120,6 +126,35 @@ SYSTEM_FIXED = {'$ownerId', '$id', '$createdAt', '$createdAtBlockHeight', '$crea
 # v5's third reference kind (`moderatedDocument`, and the moderator deletes that decide which kind
 # a type admits: 40143/40144) is among them; tools/contract-validate judges it.
 UNPORTED = ('inList', 'creatorRefersTo', 'revealed', 'consume', 'minimumAgeBlocks', 'moderatedDocument', 'moderatorAbilities')
+
+
+ORDERINGS = ('greaterThan', 'greaterThanOrEqual', 'lessThan', 'lessThanOrEqual')
+B58 = set('123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz')
+
+
+def literal_problem(dk, schema, v):
+    """Why the literal `v` cannot be a value of the referenced property (kind `dk`, `schema`), if it cannot."""
+    if dk in ('object', 'typedArray', 'number', None):
+        return f'a condition needs a single value on the referenced side, not {dk}'
+    if dk == 'string':
+        if not isinstance(v, str):
+            return 'a string property takes a string literal'
+        if 'enum' in schema and v not in schema['enum']:
+            return f'{v!r} is not one of its enum values'
+        return None
+    if dk == 'boolean':
+        return None if isinstance(v, bool) else 'a boolean property takes true or false'
+    if dk == 'identifier':
+        return None if isinstance(v, str) and set(v) <= B58 else 'an identifier literal is base58'
+    if dk == 'bytes':
+        return None if isinstance(v, str) and len(v) % 2 == 0 and all(ch in '0123456789abcdefABCDEF' for ch in v) else 'a byte array literal is hex'
+    # an integer kind
+    if isinstance(v, bool) or not isinstance(v, int):
+        return 'an integer property takes an integer literal'
+    lo, hi = schema.get('minimum'), schema.get('maximum')
+    if (lo is not None and v < lo) or (hi is not None and v > hi):
+        return f'{v} is outside its bounds'
+    return None
 
 
 def leaves(decl):
@@ -207,8 +242,56 @@ def check(contracts):
                                 problems.append(f'40137 {at}: findBy {k} ({dk}) from {src} ({sk})')
                             if td.get('documentsMutable', True) and k not in fixed:
                                 problems.append(f'40137 {at}: findBy names {rt}.{k}, which a replace can change')
+                    required = set(c['documentSchemas'][t].get('required', []))
                     for referenced, referring in leaf.get('where', {}).items():
                         bad = lambda why: problems.append(f'40126 {at}: where {referenced} = {referring}: {why}')
+                        if isinstance(referring, dict):
+                            # a condition: a literal, an inequality, a list or an ordering
+                            if len(referring) != 1:
+                                bad('a condition is an object with one key')
+                                continue
+                            (op, arg), = referring.items()
+                            if referenced.startswith('$'):
+                                dk, ds = SYSTEM_KINDS.get(referenced), {}
+                            elif referenced in target_props:
+                                ds = target_props[referenced]
+                                dk = kind(tc, ds)
+                            else:
+                                bad(f'{rt} does not define the referenced property')
+                                continue
+                            ints = dk is not None and dk[0] in 'ui' and dk[1:].isdigit()
+                            if op == 'const':
+                                why = literal_problem(dk, ds, arg)
+                            elif op == 'in':
+                                why = ('an in lists 2 to 30 distinct literals' if not isinstance(arg, list) or not 2 <= len(arg) <= 30
+                                       or len({json.dumps(x) for x in arg}) != len(arg)
+                                       else next(filter(None, (literal_problem(dk, ds, x) for x in arg)), None))
+                            elif op == 'notEqual':
+                                if isinstance(arg, dict) and set(arg) == {'const'}:
+                                    why = literal_problem(dk, ds, arg['const'])
+                                elif arg == ref_prop:
+                                    why = 'a notEqual never names the reference property itself'
+                                else:
+                                    sk = source_kind(arg) if isinstance(arg, str) and (arg == '$ownerId' or not arg.startswith('$')) else None
+                                    why = None if sk is not None and sk == dk else f'a notEqual compares one kind: {dk} vs {arg} ({sk})'
+                            elif op in ORDERINGS:
+                                if not ints:
+                                    why = f'an ordering compares an integer, not {dk}'
+                                elif isinstance(arg, dict) and set(arg) == {'const'}:
+                                    why = None if isinstance(arg['const'], int) and not isinstance(arg['const'], bool) else 'an ordering literal is an integer'
+                                elif isinstance(arg, str) and arg.startswith('$'):
+                                    why = (None if arg in SYSTEM_KINDS and SYSTEM_KINDS[arg] != 'identifier' and arg in required
+                                           else f'{arg} is not a time or height the declaring type lists in required')
+                                elif isinstance(arg, str) and arg in props:
+                                    sk = kind(c, props[arg])
+                                    why = None if sk[0] in 'ui' and sk[1:].isdigit() else f'an ordering bound is an integer, not {sk}'
+                                else:
+                                    why = f'the declaring type does not define {arg}'
+                            else:
+                                why = f'unknown condition {op}'
+                            if why:
+                                bad(why)
+                            continue
                         if ref_prop is not None and referring == ref_prop:
                             bad('the referring property is the reference property itself')
                             continue
@@ -294,13 +377,36 @@ def self_test(d):
             ('40126', 'an exact grant matched against the ref name instead of its hash',
              lambda cs: core(cs)['refUpdate']['properties']['pg']['refersTo']['where'].update({"scope": "refName"})),
             ('40126', 'a grant until compared with a string',
-             lambda cs: core(cs)['refUpdate']['properties']['pp']['refersTo']['where'].update({"until": "gp"})),
+             lambda cs: core(cs)['refUpdate']['properties']['pp']['refersTo']['where'].update({"until": "refName"})),
             ('40122', 'a grant referred to as a permanent document',
              lambda cs: core(cs)['refUpdate']['properties']['pg']['refersTo'].update({"type": "permanentDocument"})),
             ('40126', 'a wrap role compared with the epoch (u32)',
              lambda cs: meta(cs)['repoKey']['properties']['memberId']['refersTo']['anyOf'][1]['where'].update({"role": "epoch"})),
             ('40126', "an event's tAud compared with its kind's string value",
              lambda cs: cs['forge-community']['documentSchemas']['event']['properties']['targetId']['refersTo']['anyOf'][0]['where'].update({"aud": "value"})),
+        ]
+    def grant_until(cond):
+        return lambda cs: cs['forge-core']['documentSchemas']['refUpdate']['properties']['pp']['refersTo']['where'].update({"until": cond})
+    if META in base and isinstance(base['forge-core']['documentSchemas']['refUpdate']['properties']['pp']['refersTo']['where'].get('until'), dict):
+        # M-A2 (R-06, R-11, R-12): `where` conditions
+        cases += [
+            ('40126', 'an ordering bounded by a time the declaring type does not require',
+             grant_until({"greaterThanOrEqual": "$updatedAt"})),
+            ('40126', 'an ordering bounded by a string property', grant_until({"greaterThanOrEqual": "refName"})),
+            ('40126', 'an ordering on a string property',
+             lambda cs: cs['forge-core']['documentSchemas']['refUpdate']['properties']['pp']['refersTo']['where'].update({"prefix": {"lessThan": "$createdAt"}})),
+            ('40126', 'a const outside the enum (visibility "internal")',
+             lambda cs: cs['forge-community']['documentSchemas']['star']['properties']['repoId']['refersTo'].update({"where": {"visibility": {"const": "internal"}}})),
+            ('40126', 'a const of the wrong kind (role "4")',
+             lambda cs: cs['forge-core']['documentSchemas']['pushGrant']['properties']['botId']['refersTo']['where'].update({"role": {"const": "4"}})),
+            ('40126', 'a const outside the bounds (role 5)',
+             lambda cs: cs['forge-core']['documentSchemas']['pushGrant']['properties']['botId']['refersTo']['where'].update({"role": {"const": 5}})),
+            ('40126', 'a notEqual of two kinds (role vs an identifier)',
+             lambda cs: cs['forge-core']['documentSchemas']['pushGrant']['properties']['botId']['refersTo']['where'].update({"role": {"notEqual": "repoId"}})),
+            ('40126', 'a notEqual naming the reference property itself',
+             lambda cs: cs['forge-community']['documentSchemas']['star']['properties']['repoId']['refersTo'].update({"where": {"$id": {"notEqual": "repoId"}}})),
+            ('40126', 'an in with one literal',
+             lambda cs: cs['forge-community']['documentSchemas']['watch']['properties']['repoId']['refersTo'].update({"where": {"visibility": {"in": ["public"]}}})),
         ]
     bad = 0
     for code, what, fn in cases:

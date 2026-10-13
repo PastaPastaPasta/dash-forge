@@ -229,7 +229,8 @@ expect_reject mainnet-grant-bot-row-role-vs-string core '.documentSchemas.pushGr
 # The bot's role and claims are load-bearing in the vectors
 expect_reject mainnet-push-r-max-1 core '.documentSchemas.refUpdate.properties.r.maximum = 1' 'vectors disagree'
 expect_reject mainnet-pack-r-max-1 core '.documentSchemas.packManifest.properties.r.maximum = 1' 'vectors disagree'
-expect_reject mainnet-writer-role-max-3 core '.documentSchemas.writer.properties.role.maximum = 3' 'vectors disagree'
+# (and, with R-06, the grant's `where` literal role 4 no longer fits the writer row: 40126 at registration)
+expect_reject mainnet-writer-role-max-3 core '.documentSchemas.writer.properties.role.maximum = 3' 'vectors disagree|outside the values'
 expect_reject mainnet-wrap-mr-optional meta '.documentSchemas.repoKey.required -= ["mr"]' 'expected refused by required, got accepted'
 expect_reject mainnet-wrap-mr-admits-bot meta '.documentSchemas.repoKey.properties.mr.maximum = 4' 'expected refused by maximum, got accepted'
 # C1, L1, M1: the conditional immutables are load-bearing in the replace vectors
@@ -244,6 +245,33 @@ expect_reject mainnet-check-aud-mutable community '.documentSchemas.checkRun.imm
 # L1: aud present <=> enc present
 expect_reject mainnet-aud-without-enc collab '.documentSchemas.issue.dependentRequired = {"enc": ["epoch", "aud"]}' 'vectors disagree'
 expect_reject mainnet-enc-without-aud collab '.documentSchemas.comment.dependentRequired = {"aud": ["enc"], "enc": ["epoch"]}' 'vectors disagree'
+
+# ---- M-A2: the Platform beta.6 items (dash-forge-qa design/v5/PLATFORM-OPPORTUNITIES-5.0.0-beta.6.md) ----
+# R-02: a shorthand never repeats its long form, and `bytes` needs a size (property-schemas.md "Shorthands")
+expect_reject mainnet-shorthand-with-long-keyword core '.schemaDefs.id.byteArray = true' 'byteArray'
+expect_reject mainnet-bytes-without-size core 'del(.schemaDefs.h32.size)' 'size'
+expect_reject mainnet-identifier-with-size core '.schemaDefs.id.size = 32' 'size'
+# R-03: a rule reads a referenced document only through one by-id reference (comment.targetId is an
+# anyOf), and only a field the referenced type has
+expect_reject mainnet-referenced-through-anyof collab '.documentSchemas.comment.propertyConstraints.authorOnly = {"notEqual": ["$ownerId", {"referenced": ["targetId", "$ownerId"]}]}' 'targetId'
+expect_reject mainnet-referenced-unknown-field collab '.documentSchemas.review.propertyConstraints.authorNoVerdict.ifThen[1].notEqual[1].referenced[1] = "nope"' 'nope'
+# R-05: $revision only on a type that keeps one (review is immutable)
+expect_reject mainnet-revision-on-immutable-type collab '.documentSchemas.review.propertyConstraints.lockGate.anyOf += [{"greaterThan": ["$revision", 1]}]' 'revision'
+# R-06: the grant's until is bounded by a time refUpdate requires; the bot row's role literal is a writer role
+expect_reject mainnet-grant-until-vs-unrequired-time core '.documentSchemas.refUpdate.properties.pp.refersTo.where.until = {"greaterThanOrEqual": "$updatedAt"}' '40126'
+expect_reject mainnet-grant-role-literal-out-of-range core '.documentSchemas.pushGrant.properties.botId.refersTo.where.role = {"const": 5}' '40126'
+expect_reject mainnet-grant-prefix-unknown-field core '.documentSchemas.refUpdate.propertyConstraints.grantPrefix.anyOf[1].startsWith[1].referenced[1] = "nope"' 'nope'
+# R-08, R-09: a delete rule reads the stored document by its plain path, on a type its owner deletes
+expect_reject mainnet-delete-rule-reads-old core '.documentSchemas.maintainer.deleteConstraints.ownerRowStays.notEqual[0] = "$old.memberId"' 'old'
+expect_reject mainnet-delete-rule-unknown-prop core '.documentSchemas.maintainer.deleteConstraints.ownerRowStays.notEqual[0] = "nope"' 'nope'
+expect_reject mainnet-delete-rule-on-undeletable collab '.documentSchemas.review.canBeDeleted = false' 'deleteConstraints'
+# R-11, R-12: a `where` literal is a value the repo's visibility can hold
+expect_reject mainnet-public-const-outside-enum community '.documentSchemas.webhook.properties.repoId.refersTo.where.visibility = {"const": "internal"}' '40126'
+expect_reject mainnet-star-const-outside-enum community '.documentSchemas.star.properties.repoId.refersTo.where.visibility = {"const": "internal"}' '40126'
+expect_reject mainnet-topic-const-vs-integer meta '.documentSchemas.topic.properties.repoId.refersTo.where.visibility = {"const": 1}' '40126'
+# R-04: byteAt reads only a byte array, and the encFraming / encV2 rules are load-bearing in the
+# vectors (every_rule_is_load_bearing above)
+expect_reject mainnet-byteat-on-integer collab '.documentSchemas.issue.propertyConstraints.encFraming.allOf[0].notEqual[0].byteAt[0] = "epoch"' 'reads the bytes of'
 
 if [ "$fails" -ne 0 ]; then
   echo "$fails mutation(s) were NOT rejected"

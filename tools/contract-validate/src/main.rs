@@ -787,6 +787,140 @@ fn check_leaf(
             return Err(invalid("the two properties hold different kinds of value"));
         }
     }
+    check_where_conditions(
+        declaring,
+        reference_property,
+        referenced,
+        referenced_contract,
+        decl,
+        at,
+    )
+}
+
+/// The `where` conditions of one leaf (protocol 14, platform beta.5 #5369): a port of the loop over
+/// `where_conditions` in drive-abci `validate_reference_target_declaration_v0`
+/// (data_contract_reference_validation/v0/mod.rs:1125-1268 at v5.0.0-beta.6). The referenced side
+/// exists and is stored and holds a single value; each literal is a value it can hold
+/// (rs-dpp's own `where_condition_literal_error`); a `notEqual` compares one kind, never the
+/// reference's own value, the writer an identifier; an ordering compares integers, bounded by an
+/// integer property of the declaring type, an integer, or a time or height the declaring type
+/// lists in `required`. The list conditions (`contains`, `containsAll`) are not ported: no forge
+/// contract writes one, so one is refused here rather than passed unchecked.
+fn check_where_conditions(
+    declaring: DocumentTypeRef,
+    reference_property: Option<&str>,
+    referenced: DocumentTypeRef,
+    referenced_contract: &DataContract,
+    decl: &dpp::data_contract::document_type::DocumentReferenceDeclaration,
+    at: &str,
+) -> Result<()> {
+    use dpp::data_contract::document_type::class_methods::where_condition_literal_error;
+    use dpp::data_contract::document_type::{
+        WhereCondition as C, WhereLiteralKind as K, WhereNotEqualBound as NE,
+        WhereOrderingBound as OB,
+    };
+    use dpp::data_contract::schema::DataContractSchemaMethodsV0;
+    for (referenced_prop, condition) in decl.where_conditions {
+        let invalid =
+            |why: &str| anyhow!("{at}: where {referenced_prop} {condition} invalid (40126): {why}");
+        if !is_referenced_system_agreement_property(referenced_prop) {
+            if referenced
+                .flattened_properties()
+                .get(referenced_prop)
+                .is_none()
+            {
+                return Err(invalid(
+                    "the referenced type does not define the referenced property",
+                ));
+            }
+            if is_transient(referenced, referenced_prop) {
+                return Err(invalid("the referenced property is transient"));
+            }
+        } else if referenced_prop == "$creatorId" {
+            return Err(invalid("$creatorId conditions are not ported here"));
+        }
+        if condition.reads_a_list() {
+            return Err(invalid(
+                "a list condition (contains / containsAll) is not ported here",
+            ));
+        }
+        let Some(kind) = K::of_referenced(referenced, referenced_prop) else {
+            return Err(invalid(
+                "the referenced property holds no single value a where entry compares",
+            ));
+        };
+        if let Some(reason) = where_condition_literal_error(
+            referenced,
+            referenced_contract.schema_defs(),
+            referenced_prop,
+            kind,
+            condition,
+        )
+        .map_err(|e| anyhow!("{e}"))?
+        {
+            return Err(invalid(&reason));
+        }
+        match condition {
+            C::Constant(_) | C::In(_) | C::NotEqual(NE::Constant(_)) => {}
+            C::NotEqual(NE::Writer) => {
+                if kind != K::Identifier {
+                    return Err(invalid(
+                        "$ownerId, the writer, is an identifier, so the referenced side must be one",
+                    ));
+                }
+            }
+            C::NotEqual(NE::Property(referring)) => {
+                if Some(referring.as_str()) == reference_property {
+                    return Err(invalid(
+                        "the referring property cannot be the reference property itself",
+                    ));
+                }
+                let Some(ours) = declaring.flattened_properties().get(referring) else {
+                    return Err(invalid(
+                        "the declaring type does not define the referring property",
+                    ));
+                };
+                let same = match referenced.flattened_properties().get(referenced_prop) {
+                    Some(theirs) => {
+                        ours.property_type.value_kind() == theirs.property_type.value_kind()
+                    }
+                    None => ours.property_type.is_identifier(),
+                };
+                if !same {
+                    return Err(invalid("the two properties must share one value kind"));
+                }
+            }
+            C::Ordering { bound, .. } => {
+                if kind != K::Integer {
+                    return Err(invalid("an ordering compares integers"));
+                }
+                match bound {
+                    OB::Property(referring) => {
+                        let integer = declaring
+                            .flattened_properties()
+                            .get(referring)
+                            .and_then(|p| K::of(&p.property_type))
+                            == Some(K::Integer);
+                        if !integer {
+                            return Err(invalid(
+                                "an ordering is bounded by an integer property of the declaring type",
+                            ));
+                        }
+                    }
+                    OB::System(system) => {
+                        if !declaring.required_fields().contains(system.name()) {
+                            return Err(invalid(&format!(
+                                "the declaring type does not record {}: list it in required",
+                                system.name()
+                            )));
+                        }
+                    }
+                    OB::Constant(_) => {}
+                }
+            }
+            C::Contains(_) | C::ContainsAll(_) => unreachable!("refused above"),
+        }
+    }
     Ok(())
 }
 
@@ -907,8 +1041,35 @@ fn judge(
     owner: Identifier,
     pv: &PlatformVersion,
 ) -> Result<Option<(String, String)>> {
+    use dpp::data_contract::document_type::property_constraints::{
+        StoredDocument, StoredSystemValues, StoredVersion,
+    };
     let signer = case.owner.unwrap_or(owner);
-    let system = DocumentSystemValues::owned_by(signer);
+    // As consensus judges the write (and the JS pre-check `checkDocumentPropertyConstraints(doc,
+    // stored)`, platform beta.5 #5373): a create is revision 1 with no stored version, so a rule
+    // reading `$old.` or `$revision` is judged on it too; a replace is revision 2 of the stored
+    // document the case names. Times and heights stay unknown, so rules reading them are not judged.
+    let mut system = DocumentSystemValues::owned_by(signer);
+    match &case.stored {
+        None => {
+            system.revision = Some(1);
+            system.stored = Some(StoredVersion::Absent);
+        }
+        Some(stored) => {
+            let properties = case_value(stored)?
+                .into_btree_string_map()
+                .map_err(|e| anyhow!("{e}"))?;
+            system.revision = Some(2);
+            system.stored = Some(StoredVersion::Present(Box::new(StoredDocument {
+                properties: Some(properties),
+                system: StoredSystemValues {
+                    owner_id: signer,
+                    revision: Some(1),
+                    ..Default::default()
+                },
+            })));
+        }
+    }
     let data = case_value(&case.doc)?;
     let mut errors = contract
         .validate_document_properties(&case.doc_type, data.clone(), &system, pv)

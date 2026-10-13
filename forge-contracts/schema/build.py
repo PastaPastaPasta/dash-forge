@@ -171,6 +171,16 @@ MAINNET_FLAGS = dict(
     mainnet_author_event_enc=False,  # 10 M3: authorEvent enc/epoch and tAud; no plaintext value on a sealed target (row 19)
     mainnet_bot_push=False,        # 11 B1: pushGrant; a bot's refUpdate (r = 4) only under a live grant of a current
                                    #   maintainer; bot packs and chunks of the push kinds only (rows 42-45)
+    # ---- Platform 5.0.0-beta.6 (dash-forge-qa design/v5/PLATFORM-OPPORTUNITIES-5.0.0-beta.6.md, the
+    # R-nn items; DESIGN rev 4.2 phase M-A2). forge-v2.md §9.1 describes each.
+    mainnet_shorthand=False,       # R-02: identifiers and fixed byte arrays as `identifier` / `bytes` (size only)
+    mainnet_author_no_verdict=False,  # R-03 (row 29): a PR author's own approve or request changes is refused
+    mainnet_enc_framing=False,     # R-04 (row 26): enc's version byte fits vis and aud; a config is framed 0x02
+    mainnet_revision_guards=False,  # R-05 (row 23): dense and lockGate tell a create by $revision, not block heights
+    mainnet_owner_row_stays=False,  # R-08: the owner's own maintainer row is undeletable (deleteConstraints)
+    mainnet_keep_verdicts=False,   # R-09: an approve or request changes is undeletable (deleteConstraints)
+    mainnet_public_const=False,    # R-11: webhook, topic, packMirror: public-only by a `where` const, no vis stamp
+    mainnet_public_stars=False,    # R-12 (owner decision: public only, self-stars allowed): star / watch public repos only
     # Declared, not built: each needs a design pass and a re-cut test before it can be switched on.
     mainnet_consensus_archive=False,  # repo.archived refuses every gated write (client-rules #10)
     mainnet_epoch_writes=False,    # sealed writes only under the current epoch (client-rules §11-18)
@@ -182,6 +192,10 @@ MAINNET_BUILT = [k for k in MAINNET_FLAGS if k not in MAINNET_UNBUILT]   # what 
 MV_FLAGS = ('layout_meta', 'mainnet_aud', 'mainnet_one_way_visibility', 'mainnet_vis_via_repo', 'mainnet_member_role',
             'mainnet_bot_role', 'mainnet_maint_kinds', 'mainnet_check_aud', 'mainnet_event_kinds',
             'mainnet_event_target_aud', 'mainnet_author_event_enc', 'mainnet_bot_push')
+# The Platform beta.6 items (phase M-A2): variants.py validates every combination of them with every
+# mixed-visibility item on, and the mixed-visibility matrix with all of them on.
+MA2_FLAGS = ('mainnet_shorthand', 'mainnet_author_no_verdict', 'mainnet_enc_framing', 'mainnet_revision_guards',
+             'mainnet_owner_row_stays', 'mainnet_keep_verdicts', 'mainnet_public_const', 'mainnet_public_stars')
 # What each flag needs: a `where` naming a property the other adds (else 40126 at registration), a
 # rule rewriting one the other adds, or (B1) the room only the four-contract layout leaves in
 # forge-core. build() refuses a combination that breaks one.
@@ -204,6 +218,17 @@ NEEDS = {
     # a bot's push gate admits role 4 rows, and forge-core holds it only with label, topic and
     # packMirror moved to forge-meta (create transition 18,129 B with them out, about 21 KB without)
     'mainnet_bot_push': ('mainnet_bot_role', 'layout_meta'),
+    # M-A2 (Platform beta.6): the verdicts the rules name exist with R-16; R-04's aud clause needs L1;
+    # R-05 rewrites dense (base) and lockGate (R-15); R-11 replaces the stamps webhook (L3 + C4),
+    # topic (R-20) and packMirror (its mainnet where) carry
+    'mainnet_author_no_verdict': ('member_verdicts',),
+    'mainnet_keep_verdicts': ('member_verdicts',),
+    # (and room, as B1 needs D44: without the shorthands, R-03 + R-04 + R-09 leave forge-collab's
+    # create transition 1,970 B under the limit, short of ROOM_MIN; R-04 is the largest, about +800 B)
+    'mainnet_enc_framing': ('mainnet_aud', 'free_tightenings', 'mainnet_shorthand'),
+    'mainnet_revision_guards': ('thread_lock',),
+    'mainnet_owner_row_stays': ('member_consent',),
+    'mainnet_public_const': ('mainnet_vis_via_repo', 'topic_public', 'mainnet_mirror_public'),
 }
 # The RC2 items with a flag: forge-contracts/schema/variants.py validates every combination.
 RC2_FLAGS = ('check_evidence_freeze', 'review_to_author', 'review_author', 'fused_star', 'event_as_maintainer',
@@ -1032,26 +1057,29 @@ def build(flags):
         # prefix, until at most 90 days after it is written. A bot's refUpdate claims r = 4 and
         # names a grant by id: pg (exact) or pp (prefix), two properties because a deletable
         # document by id is no anyOf operand. The grant's `where` pins the repo, the bot
-        # ($ownerId), the granter (grantor, whose maintainer row must still exist), the until (gu)
-        # and the scope or prefix (gp); botGrant needs $createdAt <= gu, a ref under gp, and
-        # enc for an exact grant, so an exact grant never yields a public ref. Everyone else
-        # sends r = 1. protectedRefUpdate stays maintainer-only.
+        # ($ownerId), the granter (grantor, whose maintainer row must still exist), the scope of an
+        # exact grant (the ref's refNameHash), and (R-06, Platform beta.5 #5369) an until at or
+        # after the update's $createdAt, an ordering checked on the grant the reference fetched.
+        # botGrant needs a grant, and enc for an exact grant, so an exact grant never yields a
+        # public ref; grantPrefix reads the prefix grant's own prefix (`referenced`, no extra read)
+        # and needs the ref under it. Everyone else sends r = 1. The bot's row is role 4 by a
+        # `where` literal on botId. protectedRefUpdate stays maintainer-only.
         def grant(match):
             return {"type": "deletableDocument", "documentType": "pushGrant",
-                    "where": dict({"repoId": "repoId", "botId": "$ownerId", "until": "gu", "$ownerId": "grantor"}, **match)}
+                    "where": dict({"repoId": "repoId", "botId": "$ownerId", "$ownerId": "grantor",
+                                   "until": {"greaterThanOrEqual": "$createdAt"}}, **match)}
         cd['pushGrant'] = {
             "type": "object", "documentsMutable": False, "canBeDeleted": True,
             "ownerRefersTo": find_leaf("maintainer"),
             "properties": {
                 "repoId": {"$ref": "#/$defs/id", "position": 0},
-                "botId": ident(refersTo=dict(find_leaf("writer"), where={"role": "br"}), position=1),
-                "br": {"type": "integer", "minimum": 4, "maximum": 4, "position": 2},
-                "scope": {"$ref": "#/$defs/h32", "position": 3},
-                "prefix": {"type": "string", "minLength": 1, "maxLength": 255, "maxBytes": 255, "position": 4},
-                "until": {"type": "integer", "minimum": 0, "position": 5}},
+                "botId": ident(refersTo=dict(find_leaf("writer"), where={"role": {"const": 4}}), position=1),
+                "scope": {"$ref": "#/$defs/h32", "position": 2},
+                "prefix": {"type": "string", "minLength": 1, "maxLength": 255, "maxBytes": 255, "position": 3},
+                "until": {"type": "integer", "minimum": 0, "position": 4}},
             # a bot's grants, oldest first (the runner and readers find them here)
             "indices": [{"name": "byBot", "properties": [{"repoId": "asc"}, {"botId": "asc"}, {"$createdAt": "asc"}]}],
-            "required": ["$createdAt", "repoId", "botId", "br", "until"], "additionalProperties": False,
+            "required": ["$createdAt", "repoId", "botId", "until"], "additionalProperties": False,
             "propertyConstraints": {
                 "ttl90": {"allOf": [{"greaterThan": ["until", "$createdAt"]},
                                     {"lessThanOrEqual": ["until", {"add": ["$createdAt", GRANT_TTL_MS]}]}]},
@@ -1060,19 +1088,17 @@ def build(flags):
         ru = cd['refUpdate']
         ru['properties']['r']['maximum'] = 4
         add_prop(ru, 'pg', ident(refersTo=grant({"scope": "refNameHash"})))
-        add_prop(ru, 'pp', ident(refersTo=grant({"prefix": "gp"})))
+        add_prop(ru, 'pp', ident(refersTo=grant({})))
         add_prop(ru, 'grantor', ident(refersTo=find_leaf("maintainer")))
-        add_prop(ru, 'gp', {"type": "string", "minLength": 1, "maxLength": 255, "maxBytes": 255})
-        add_prop(ru, 'gu', {"type": "integer", "minimum": 0})
         ru['propertyConstraints']['botGrant'] = {"ifThenElse": [{"equal": ["r", 4]}, {"allOf": [
             {"anyOf": [{"present": "pg"}, {"present": "pp"}]},
-            {"anyOf": [{"absent": "pp"}, {"startsWith": ["refName", "gp"]}]},
             {"anyOf": [{"absent": "pg"}, {"present": "enc"}]}]}, {"equal": ["r", 1]}]}
-        # The time check is a rule of its own, so botGrant reads no time and the offline vectors
-        # judge it (contract-validate gives no times; a node judges grantLive with the block's,
-        # an SDK pre-check with the device clock). A bot's update without gu fails the grant's
-        # `where {"until": "gu"}` (until is required).
-        ru['propertyConstraints']['grantLive'] = {"anyOf": [{"absent": "gu"}, {"lessThanOrEqual": ["$createdAt", "gu"]}]}
+        # The prefix check is a rule of its own, so botGrant reads nothing but the document and
+        # the offline vectors (and an SDK pre-check) judge it; a rule reading a referenced
+        # document is judged only by a node. A prefix grant's prefix is present (oneScope), and an
+        # exact grant named as pp has none, which no refName starts with.
+        ru['propertyConstraints']['grantPrefix'] = {"anyOf": [
+            {"absent": "pp"}, {"startsWith": ["refName", {"referenced": ["pp", "prefix"]}]}]}
         # Packs and chunks admit the bot's row (r = 4: the writer leaf proves role 4) for the push
         # and long-body kinds only, never superseding others' packs; raising r alone would also
         # admit triage (2) and readers (3), so the other writers keep r in {0, 1}.
@@ -1084,12 +1110,97 @@ def build(flags):
         ch['properties']['r']['maximum'] = 4
         ch.setdefault('propertyConstraints', {})['botChunk'] = {"in": ["r", [1, 4]]}
 
+    # ======================= Platform beta.6 (phase M-A2) =======================
+    # dash-forge-qa design/v5/PLATFORM-OPPORTUNITIES-5.0.0-beta.6.md §2 (the R-nn items) and §6; each
+    # rule cites the book chapter at v5.0.0-beta.6 (book/src/contract-keywords/) it relies on.
+    if up['mainnet_author_no_verdict']:
+        # R-03 (row 29, ask A4): a PR's author never approves or requests changes on it. The rule
+        # reads the patch the patchId reference already fetched (property-constraints.md "Values of
+        # a referenced document": one by-id reference, no extra read; review is neither mutable nor
+        # transferable). No import exemption: the importer writes only comment verdicts (3), and
+        # any writer of a counted verdict may set `imported`. An author's comment verdict stays.
+        ld['review']['propertyConstraints']['authorNoVerdict'] = {"ifThen": [
+            {"in": ["verdict", [1, 2]]}, {"notEqual": ["$ownerId", {"referenced": ["patchId", "$ownerId"]}]}]}
+
+    if up['mainnet_enc_framing']:
+        # R-04 (row 26, ask A2): enc's first byte is its framing version (docs/security/private-repos.md
+        # §4.1: 0x01 private, 0x02 config, 0x03 members-only, 0x04 letter, 0x05 and up later). A deny
+        # form, so a version defined later stays writable: never 0x02 on a collab document, never
+        # 0x01 on a public one, never 0x04 when aud = 1 (byteAt, property-constraints.md "Byte
+        # arrays": an absent enc reads 0 and passes). The smallest equivalent of research1's three
+        # notIn clauses (each 0x02 half folds into the first).
+        b0 = {"byteAt": ["enc", 0]}
+        for t in ('issue', 'patch', 'comment', 'review'):
+            ld[t]['propertyConstraints']['encFraming'] = {"allOf": [
+                {"notEqual": [b0, 2]},
+                {"ifThen": [PUBLIC, {"notEqual": [b0, 1]}]},
+                {"ifThen": [{"equal": ["aud", 1]}, {"notEqual": [b0, 4]}]}]}
+        # a sealed config is an epoch anchor (0x02)
+        cd['config']['propertyConstraints']['encV2'] = {"anyOf": [{"absent": "enc"}, {"allOf": [
+            {"greaterThanOrEqual": [{"count": "enc"}, 61]}, {"equal": [b0, 2]}]}]}
+
+    if up['mainnet_revision_guards']:
+        # R-05 (row 23): "is a create" is $revision = 1 (property-constraints.md "Times and heights":
+        # 1 on a create, one more per write), not equal creation and update heights, which a
+        # replace in its create's block also has. The heights stay required (readers order by them).
+        same = {"equal": ["$createdAtBlockHeight", "$updatedAtBlockHeight"]}
+        for t in ('issue', 'patch'):
+            dense = ld[t]['propertyConstraints']['dense']
+            assert dense['ifThen'][0] == same, (t, dense)
+            dense['ifThen'][0] = {"equal": ["$revision", 1]}
+        gate = ld['comment']['propertyConstraints']['lockGate']['anyOf']
+        assert gate[1] == {"notEqual": same['equal']}, gate
+        gate[1] = {"greaterThan": ["$revision", 1]}
+
+    if up['mainnet_owner_row_stays']:
+        # R-08: the repo owner writes every maintainer row, so its own (memberId = $ownerId) is the
+        # one a delete may never take (deletion.md "deleteConstraints": judged on the owner's delete
+        # against the stored row, 40147). byRepoMember is unique and the owner self-enrols at create,
+        # so this row is never re-issued: C4 (DESIGN §8.3) keeps it as it is.
+        cd['maintainer']['deleteConstraints'] = {"ownerRowStays": {"notEqual": ["memberId", "$ownerId"]}}
+
+    if up['mainnet_keep_verdicts']:
+        # R-09: an approve or request changes outlives the merge it justified; a dismissal (event
+        # kind 15) is the way back, as on GitHub. Comment verdicts (3) and outside verdicts (4, 5)
+        # stay deletable.
+        ld['review']['deleteConstraints'] = {"keepVerdicts": {"notIn": ["verdict", [1, 2]]}}
+
+    def public_const(t, stamp_rule=None):
+        """R-11: the repo reference holds the repo public by a literal (refers-to.md "Conditions"),
+        and the `vis` stamp that carried the same check goes, with the rule pinning it."""
+        where = t['properties']['repoId']['refersTo']['where']
+        assert where.get('visibility') == 'vis', where
+        where['visibility'] = {"const": "public"}
+        del t['properties']['vis']
+        t['required'].remove('vis')
+        if stamp_rule:
+            del t['propertyConstraints'][stamp_rule]
+            if not t['propertyConstraints']:
+                del t['propertyConstraints']
+
+    if up['mainnet_public_const']:
+        # R-11: webhooks (row: no hooks on private repos), topics and pack mirrors are of public repos
+        # only. Not forkOf: its `where` there with forkIsPublic holds both repos public, which a
+        # literal on the parent alone would not.
+        public_const(md['webhook'], 'publicOnly')
+        public_const(cd['topic'])
+        public_const(cd['packMirror'])
+
+    if up['mainnet_public_stars']:
+        # R-12 (owner decision 2026-10-13: public only, self-stars allowed): a star or a watch names a
+        # public repo, so Trending's public-only filter (O-08) is consensus again. `where` is allowed
+        # on an index-only type's reference; an unstar (indexOnly delete) checks no reference.
+        for t in ('star', 'watch'):
+            md[t]['properties']['repoId']['refersTo']['where'] = {"visibility": {"const": "public"}}
+
     core['description'] = "Dash Forge v2 core: repositories, refs, packs, members, releases, labels, topics"
     collab['description'] = "Dash Forge v2 collaboration: issues, pull requests, transitions, comments, reviews, repo keys"
     comm['description'] = "Dash Forge v2 community: events, milestones, runners, check runs, policies, stars, webhooks"
     contracts = {'forge-core': core, 'forge-collab': collab, 'forge-community': comm}
     if f['layout_meta']:
         contracts[META] = split_meta(contracts, f['mainnet_bot_push'])
+    if up['mainnet_shorthand']:
+        contracts = {n: shorthand(c) for n, c in contracts.items()}
     return contracts
 
 
@@ -1167,6 +1278,38 @@ def split_meta(contracts, bot_push):
         ", push grants" if bot_push else "")
     contracts['forge-collab']['description'] = "Dash Forge v2 collaboration: issues, pull requests, transitions, comments, reviews"
     return meta
+
+
+IDENTIFIER = "application/x.dash.dpp.identifier"
+LONG_FORM = ('byteArray', 'minItems', 'maxItems', 'contentMediaType')
+
+
+def shorthand(node):
+    """R-02 (MAINNET_FLAGS `mainnet_shorthand`): every identifier and every fixed-length byte array,
+    wherever it is written (a property, a typed array's items, a schemaDef), in its protocol-14
+    one-keyword form: `"type": "identifier"`, `"type": "bytes", "size": n` (book
+    contract-keywords/property-schemas.md "Shorthands" at v5.0.0-beta.6). The two spellings are the
+    same property, validated, indexed and stored in the same bytes; the contract is stored as sent,
+    so only its own size changes. A byte array of variable length (`enc`) keeps its long form."""
+    if isinstance(node, list):
+        return [shorthand(x) for x in node]
+    if not isinstance(node, dict):
+        return node
+    out = {k: shorthand(v) for k, v in node.items()}
+    if out.get('type') == 'array' and out.get('byteArray') is True and 'minItems' in out \
+            and out.get('minItems') == out.get('maxItems') and 'uniqueItems' not in out:
+        n, media = out['minItems'], out.get('contentMediaType')
+        if media == IDENTIFIER and n == 32:
+            short = {'type': 'identifier'}
+        elif media is None:
+            short = {'type': 'bytes', 'size': n}
+        else:
+            return out
+        for k, v in out.items():
+            if k not in LONG_FORM and k != 'type':
+                short[k] = v
+        return short
+    return out
 
 
 def dumps(j):
