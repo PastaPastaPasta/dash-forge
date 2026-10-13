@@ -388,7 +388,9 @@ mod tests {
             assert_eq!(three.home(t), old, "{t}");
         }
         // The other types do not move.
-        for t in ["repo", "issue", "comment", "star", "watch", "event", "runner"] {
+        for t in [
+            "repo", "issue", "comment", "star", "watch", "event", "runner",
+        ] {
             assert_eq!(three.contract_id_of(t), four.contract_id_of(t), "{t}");
         }
         assert_eq!(ForgeContract::Meta.id(&three), None);

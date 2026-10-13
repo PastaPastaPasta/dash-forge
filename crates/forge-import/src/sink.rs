@@ -33,7 +33,9 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 
 use forge_core::collab::long_body::BodyField;
-use forge_core::collab::v2::{ImportedTarget, DOC_LABEL, PatchInput, PrBase, Provenance, Target, TargetKind};
+use forge_core::collab::v2::{
+    ImportedTarget, PatchInput, PrBase, Provenance, Target, TargetKind, DOC_LABEL,
+};
 use forge_core::collab::{CommentAnchor, Imported, ReleaseInput};
 use forge_core::history::Freshness;
 use forge_core::platform::PlatformClient;

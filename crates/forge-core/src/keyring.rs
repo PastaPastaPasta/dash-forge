@@ -450,7 +450,9 @@ impl Keyring {
     ) -> Result<Self> {
         let scope = repo.scope()?;
         let core = client.fetch_contract(&scope.contract_id).await?;
-        let repo_keys = client.fetch_contract(repo.forge().home(DOC_REPO_KEY)).await?;
+        let repo_keys = client
+            .fetch_contract(repo.forge().home(DOC_REPO_KEY))
+            .await?;
         Self::load_with(
             &KeyringIo {
                 client,
@@ -482,7 +484,9 @@ impl Keyring {
     pub async fn load_anonymous(client: &PlatformClient, repo: &RepoRef) -> Result<Self> {
         let scope = repo.scope()?;
         let core = client.fetch_contract(&scope.contract_id).await?;
-        let repo_keys = client.fetch_contract(repo.forge().home(DOC_REPO_KEY)).await?;
+        let repo_keys = client
+            .fetch_contract(repo.forge().home(DOC_REPO_KEY))
+            .await?;
         let io = KeyringIo {
             client,
             core: &core,
@@ -1462,7 +1466,9 @@ pub async fn has_members_key(client: &PlatformClient, repo: &RepoRef) -> Result<
 /// ones").
 pub async fn holds_wrap(client: &PlatformClient, repo: &RepoRef, member: &str) -> Result<bool> {
     let scope = repo.scope()?;
-    let repo_keys = client.fetch_contract(repo.forge().home(DOC_REPO_KEY)).await?;
+    let repo_keys = client
+        .fetch_contract(repo.forge().home(DOC_REPO_KEY))
+        .await?;
     let docs = client
         .query_documents(
             &repo_keys,
@@ -1720,7 +1726,10 @@ impl PrivateSigner<'_> {
     async fn open(&self, repo: &RepoRef) -> Result<WriteCtx> {
         let scope = repo.scope()?;
         let core = self.client.fetch_contract(&scope.contract_id).await?;
-        let repo_keys = self.client.fetch_contract(repo.forge().home(DOC_REPO_KEY)).await?;
+        let repo_keys = self
+            .client
+            .fetch_contract(repo.forge().home(DOC_REPO_KEY))
+            .await?;
         let enc = self.encryption_keys(repo);
         let kr = Keyring::load_with(
             &KeyringIo {
@@ -2067,8 +2076,19 @@ pub async fn add_member_wrap(
     signer: &PrivateSigner<'_>,
     repo: &RepoRef,
     member: &str,
+    role: Role,
 ) -> Result<()> {
-    let w = signer.open(repo).await?;
+    let mut w = signer.open(repo).await?;
+    // The member row was just written and the read may lag it: the wrap's `mr` (mainnet L4)
+    // still names the role granted, not the unlisted member's 1, which consensus would refuse.
+    if !w.kr.members.iter().any(|m| m.identity_id == member) {
+        w.kr.members.push(Member {
+            identity_id: member.to_string(),
+            role,
+            document_id: String::new(),
+            created_at: 0,
+        });
+    }
     let epoch = w.kr.writer(repo)?.write_epoch();
     let key =
         w.kr.epoch_key(epoch)

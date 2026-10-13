@@ -442,14 +442,14 @@ export function previewRepoEdit(
   const { added, removed } = held === null ? { added: [...edit.topics], removed: [] } : topicChanges(held, edit.topics)
   // Only the owner edits, and they wrote the repo document to forge-core: no contract nonce where
   // topics live there. On a four-contract set they are in forge-meta (D44), which the owner may
-  // never have written to, so the first topic is priced with it. Only the repo's first topic
-  // builds its subtree (QW3-037).
-  const inCore = contractKindOfType(DOC.topic, forge) === 'core'
+  // never have written to, so the first topic is priced with it, unless the repo already holds
+  // one (the owner wrote it there). Only the repo's first topic builds its subtree (QW3-037).
+  const noNonce = contractKindOfType(DOC.topic, forge) === 'core' || (held !== null && held.length > 0)
   return sumPreviews([
     previewReplace(DOC.repo, changes),
     ...added.map((name, i) =>
       previewCreate(DOC.topic, withVis('public', DOC.topic, { name }), {
-        ...(inCore || i > 0 ? { contract: false } : {}),
+        ...(noNonce || i > 0 ? { contract: false } : {}),
         ...(held !== null && (held.length > 0 || i > 0) ? { repo: false } : {}),
       }),
     ),

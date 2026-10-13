@@ -3550,7 +3550,9 @@ impl<'a> Collab<'a> {
         repo: &RepoRef,
         doc_type: &str,
     ) -> Result<LoadedContract> {
-        self.client.fetch_contract(repo.forge().home(doc_type)).await
+        self.client
+            .fetch_contract(repo.forge().home(doc_type))
+            .await
     }
 
     pub(super) fn repo_filter(repo: &RepoRef) -> Result<QueryFilter> {

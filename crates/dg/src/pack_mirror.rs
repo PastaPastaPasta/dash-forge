@@ -196,11 +196,16 @@ async fn add(ctx: &Ctx, repo: &str, pack: &str, uris: &[String], no_verify: bool
     let Some(manifest) = manifests.iter().find(|m| hex::encode(m.pack_hash) == pack) else {
         bail!(unlisted_pack(&s.repo.display(), repo, &pack));
     };
-    let mirrors = s.client.fetch_contract(s.repo.forge().home(DOC_PACK_MIRROR)).await?;
+    let mirrors = s
+        .client
+        .fetch_contract(s.repo.forge().home(DOC_PACK_MIRROR))
+        .await?;
     // Before the download and the cost prompt: a network without the type cannot record one.
     require_support(&mirrors)?;
     // One record per pack each: a second would be refused at consensus, after paying for it.
-    if let Some(mine) = mirror_of_owner(&s.client, &mirrors, &s.repo, &pack, &s.identity.id()).await? {
+    if let Some(mine) =
+        mirror_of_owner(&s.client, &mirrors, &s.repo, &pack, &s.identity.id()).await?
+    {
         bail!(UserError::new(
             codes::ALREADY_EXISTS,
             format!(
@@ -310,7 +315,10 @@ async fn list(ctx: &Ctx, repo: Option<&str>, mine: bool) -> Result<()> {
         (mirrors, names)
     } else {
         let r = Reader::open_unsealed(ctx, repo.unwrap_or_default()).await?;
-        let contract = r.client.fetch_contract(r.repo.forge().home(DOC_PACK_MIRROR)).await?;
+        let contract = r
+            .client
+            .fetch_contract(r.repo.forge().home(DOC_PACK_MIRROR))
+            .await?;
         let svc = r.service();
         let manifests = svc.read_pack_manifests(&r.repo).await?;
         // Each pack once (a pack has a manifest per copy).

@@ -565,9 +565,11 @@ mod tests {
         assert_eq!(r.notice(), None);
         assert!(chain.reads().is_empty());
         // The three-contract build meets forge-meta as an unknown member (rule 4).
-        assert!(check(&Chain::new(&["CORE", "COLLAB", "COMMUNITY", "META"]), true)
-            .await
-            .is_err());
+        assert!(
+            check(&Chain::new(&["CORE", "COLLAB", "COMMUNITY", "META"]), true)
+                .await
+                .is_err()
+        );
         let chain = Chain::new(&["CORE", "COLLAB", "COMMUNITY"]);
         let e = run_check(&chain, &four, "GROUP", false, NET)
             .await

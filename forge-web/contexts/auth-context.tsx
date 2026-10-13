@@ -26,7 +26,8 @@ import {
 import { MissingGrantError, UnlockNeededError } from '../lib/auth/controller'
 import type { WalletKey } from '../lib/auth/key-registration'
 import { useUiStore } from '../hooks/use-ui-store'
-import { DEFAULT_NETWORK, type Network } from '../lib/constants'
+import { DEFAULT_NETWORK, NETWORKS, type Network } from '../lib/constants'
+import { contractKind, type ForgeContractKind } from '../lib/deployments'
 import { type SpendEvent, type WriteAuth } from '../lib/sdk'
 import { connectPlatform } from '../lib/auth/connect'
 import { recordSpend } from '../lib/spend'
@@ -145,6 +146,12 @@ interface AuthContextValue {
 const NO_KEYS: readonly WatchedKey[] = []
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined)
+
+/** The grant a refused write asks for: the contract it was signed for (undefined: the sheet's default). */
+function grantKindOf(network: Network, contractId: string): ForgeContractKind | undefined {
+  const forge = NETWORKS[network].v2
+  return (forge && contractKind(forge, contractId)) ?? undefined
+}
 
 export function AuthProvider({
   children,
@@ -273,13 +280,13 @@ export function AuthProvider({
         try {
           return auth.getSigningKeyWif(contractId)
         } catch (e) {
-          if (e instanceof MissingGrantError) useUiStore.getState().openLogin('grant')
+          if (e instanceof MissingGrantError) useUiStore.getState().openLogin('grant', grantKindOf(network, e.contractId))
           else if (e instanceof UnlockNeededError) useUiStore.getState().openLogin('unlock')
           throw e
         }
       },
     }
-  }, [controller, sessionIdentity, onSpend])
+  }, [controller, sessionIdentity, onSpend, network])
   const keyLimits = session?.keyLimits ?? null
   // The funds state depends on the clock (a key expires, or comes within a week of it): wake
   // up at the next such moment and judge again, so the pill turns red when the key expires,

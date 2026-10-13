@@ -2149,10 +2149,7 @@ impl<'a> RepoService<'a> {
                 let Some(first) = copies.first() else {
                     return Err(last);
                 };
-                let served = match self
-                    .fetch_from_mirrors(repo, first, roles, reader)
-                    .await
-                {
+                let served = match self.fetch_from_mirrors(repo, first, roles, reader).await {
                     Ok(served) => served,
                     // Name the mirrors that were tried and refused beside the recorded copies.
                     Err(Some(clause)) => return Err(with_mirror_clause(last, &clause)),

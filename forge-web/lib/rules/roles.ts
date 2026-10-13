@@ -328,20 +328,21 @@ const TRANSITION_WHAT: Readonly<Record<number, string>> = {
  * - an author's transition (`asAuthor` > 0): 1;
  * - a maintainer, a role-1 writer, or no membership: 1;
  * - triage: 2, refused for the writer-only transition and event kinds;
- * - reader: refused.
+ * - reader, and a bot (role 4, mainnet; it pushes only under a maintainer's grant, phase 4C):
+ *   refused (parity: forge-core `require_role`, where a bot ranks below triage).
  *
  * @throws RoleRefusedError when consensus would refuse the write for the signer's role.
  */
 export function claimedRole(documentType: string, data: Readonly<Record<string, unknown>>, role: Role | null): 1 | 2 | null {
   if (!isRoleGated(documentType)) return null
   if (PUSH_GATED_TYPES.has(documentType)) {
-    if (role === 'triage' || role === 'reader') throw new RoleRefusedError(role, documentType === 'checkRun' ? 'post check runs' : 'push')
+    if (role === 'triage' || role === 'reader' || role === 'bot') throw new RoleRefusedError(role, documentType === 'checkRun' ? 'post check runs' : 'push')
     return 1
   }
   if (documentType === 'transition' && (intOf(data['asAuthor']) ?? 0) > 0) return 1
   if (role === null || role === 'maintainer' || role === 'writer') return 1
   const kind = intOf(data['kind'])
-  if (role === 'reader') {
+  if (role === 'reader' || role === 'bot') {
     const what = documentType === 'transition' ? 'change its state as a member (only as the author of your own issue or pull request)' : documentType === 'event' ? 'label, assign, or otherwise change issues and pull requests as a member' : `define ${documentType}s`
     throw new RoleRefusedError(role, what)
   }
@@ -361,7 +362,7 @@ export function claimedRole(documentType: string, data: Readonly<Record<string, 
  * membership, which other notes cover.
  */
 export function roleLimit(role: Role | null | undefined, cap: keyof Capabilities, what: string): string | null {
-  if (role !== 'triage' && role !== 'reader') return null
+  if (role !== 'triage' && role !== 'reader' && role !== 'bot') return null
   if (capabilitiesOf(role)[cap]) return null
   return `Your role here is ${role}: ${ROLE_NOUN[role]} can't ${what}.`
 }

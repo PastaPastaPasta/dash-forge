@@ -350,7 +350,9 @@ pub async fn record_mirror(
     };
     require_support(mirrors)?;
     let props = mirror_props(mirrors, repo, pack_hash, kind, uris)?;
-    engine.create_document(mirrors, DOC_PACK_MIRROR, props).await
+    engine
+        .create_document(mirrors, DOC_PACK_MIRROR, props)
+        .await
 }
 
 /// Delete the signer's mirror record `id` (its writer only).

@@ -52,7 +52,12 @@ impl Collab<'_> {
         }
         let docs = self
             .client()
-            .query_all_documents(&contract, DOC_BAN, &filters, &[QueryOrder::asc("identityId")])
+            .query_all_documents(
+                &contract,
+                DOC_BAN,
+                &filters,
+                &[QueryOrder::asc("identityId")],
+            )
             .await?;
         Ok(docs.iter().filter_map(ban_from_doc).collect())
     }

@@ -50,10 +50,14 @@ export async function main(argv, injected) {
   const run = Date.now().toString(36);
   // 1. the moved types are where the RC1 layout puts them
   const missing = [];
-  for (const [contract, types] of Object.entries(MOVED)) {
-    const fetched = await retry((sdk) => sdk.contracts.fetch(ids[contract]));
-    const known = fetched.getDocumentTypes ? Object.keys(fetched.getDocumentTypes()) : Object.keys(fetched.toJSON().documentSchemas);
-    missing.push(...types.filter((t) => !known.includes(t)).map((t) => `${contract}.${t}`));
+  for (const [home, types] of Object.entries(MOVED)) {
+    for (const t of types) {
+      // forge-meta holds topic and repoKey on a four-contract set (D44)
+      const contract = contractOn(ids, t) === 'meta' ? 'meta' : home;
+      const fetched = await retry((sdk) => sdk.contracts.fetch(ids[contract]));
+      const known = fetched.getDocumentTypes ? Object.keys(fetched.getDocumentTypes()) : Object.keys(fetched.toJSON().documentSchemas);
+      if (!known.includes(t)) missing.push(`${contract}.${t}`);
+    }
   }
   check('the contracts hold the RC1 layout', missing.length === 0, missing.join(', '));
 

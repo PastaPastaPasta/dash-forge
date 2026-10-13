@@ -400,8 +400,10 @@ function RepoDocForm({ home, owner, onSaved }: { home: RepoHome; owner: boolean;
             size="sm"
             disabled={!changed || problem !== null || guard.disabledReason !== null}
             onClick={() => {
-              // The repo document is forge-core's; its topic documents forge-meta's on a four-contract set
-              if (guard.check(cost) && (edit.topics === undefined || guard.check(0, writeContractKind(home.repo.forge, DOC.topic)))) setPending(edit)
+              // The repo document is forge-core's; a public repo's topic documents are forge-meta's on
+              // a four-contract set (a private repo writes none)
+              const topicDocs = edit.topics !== undefined && home.repo.visibility !== 'private'
+              if (guard.check(cost, topicDocs ? ['core', writeContractKind(home.repo.forge, DOC.topic)] : 'core')) setPending(edit)
             }}
           >
             Save

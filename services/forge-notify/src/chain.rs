@@ -272,7 +272,13 @@ impl Chain for PlatformChain {
             // A private repo's members hold its key wraps (`repoKey.byMember`); not every
             // network's contract has the index, so a failed read only loses those.
             match self
-                .ids_by(&c.repo_keys, "repoKey", "memberId", &identity, Some("repoId"))
+                .ids_by(
+                    &c.repo_keys,
+                    "repoKey",
+                    "memberId",
+                    &identity,
+                    Some("repoId"),
+                )
                 .await
             {
                 Ok(ids) => out.extend(ids),
