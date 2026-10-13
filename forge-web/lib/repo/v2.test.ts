@@ -87,9 +87,9 @@ function matches(doc: Doc, [field, op, value]: readonly [string, string, unknown
   }
 }
 
-/** The wasm SDK's group key: an identifier's 32 bytes, an unsigned integer big-endian with the top bit flipped. */
+/** The wasm SDK's group key: an identifier's 32 bytes, an unsigned integer as its plain big-endian byte (protocol 14). */
 function groupKey(v: unknown): string {
-  if (typeof v === 'number') return (v ^ 0x80).toString(16).padStart(2, '0')
+  if (typeof v === 'number') return v.toString(16).padStart(2, '0')
   const s = String(v)
   try {
     const bytes = base58Decode(s)

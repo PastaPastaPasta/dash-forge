@@ -8,13 +8,15 @@
 import { isContractMissingError } from './contract-missing'
 import { errorMessage } from '../utils'
 
-const STALE = /quorum not found|no available addresses/i
+const STALE = /quorum not found|quorum source unavailable|no available addresses/i
 /**
  * A proof signed by a quorum whose key the connection does not have: "Quorum not found in cache"
  * (the keys prefetched at connect), or "Quorum not found for type …" (a refetch that missed too).
- * Right after a rotation that is the network's quorum service lagging it (#212).
+ * Right after a rotation that is the network's quorum service lagging it (#212). Platform 5.0.0-beta.6
+ * (#5313) fetches a missing key itself; when that gets no usable answer the error reads "quorum source
+ * unavailable: quorum T:... at Core chain-locked height H: ...", the same lag seen from the other side.
  */
-const QUORUM_MISS = /quorum not found/i
+const QUORUM_MISS = /quorum not found|quorum source unavailable/i
 const UNREACHABLE =
   /failed to fetch|fetch failed|networkerror|network error|load failed|timed out|timeout|deadline exceeded|\bunavailable\b|resourceexhausted|resource exhausted|transport error|connection (?:refused|reset)|HTTP 5\d\d|could not reach platform|can't reach platform|internet disconnected/i
 
