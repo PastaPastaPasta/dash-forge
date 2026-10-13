@@ -14,7 +14,7 @@ names=(forge-core forge-collab forge-community)
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.cache/dash-forge-target-contract-validate}"
-# Pinned like the rs-dpp tag it builds against (platform v5.0.0-beta.3's rust-toolchain.toml). Release:
+# Pinned like the rs-dpp tag it builds against (platform v5.0.0-beta.6's rust-toolchain.toml). Release:
 # variants.py runs it on every mainnet flag combination, so CI builds this one.
 cargo +1.98.1 build -q --release --locked --manifest-path "$here/Cargo.toml"
 bin="$CARGO_TARGET_DIR/release/contract-validate"
