@@ -132,7 +132,7 @@ const readQueue: Membership[][] = []
 /** Member-list reads so far, and the read (1-based, counted from `readCount = 0`) that answers `lagging` instead of the truth. */
 let readCount = 0
 let laggingAt: { read: number; rows: () => Membership[] } | null = null
-/** From a revoke on, member-list reads alternate between the truth and a list without CAROL (two nodes that never agree). */
+/** From a revoke on, every member-list read answers the truth plus one more reader than the last (nodes that never agree). */
 let flipFromRevoke = false
 let flipping = 0
 
@@ -147,8 +147,9 @@ vi.mock('./members', async (orig) => {
       }
       readCount += 1
       if (flipping > 0) {
+        // a different extra reader on every read: no two reads ever agree
         flipping += 1
-        if (flipping % 2 === 1) return members.filter((m) => m.identity !== b58(CAROL))
+        return [...members, { identity: b58(id(flipping)), role: 'reader', createdAt: 1 }]
       }
       if (laggingAt !== null && readCount === laggingAt.read) return laggingAt.rows()
       return readQueue.shift() ?? staleMembers ?? members
