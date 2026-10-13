@@ -231,11 +231,12 @@ describe('proved reads', () => {
     expect(codes.size).toBe(150)
   })
 
-  it('decodes a grouped kind count from the tree key (top bit flipped), at any integer width', async () => {
-    expect(uintGroupKey(1)).toBe('81')
-    expect(uintGroupKey(13)).toBe('8d')
-    expect(uintGroupKey(0x1234, 2)).toBe('9234')
-    expect([uintOfGroupKey('81'), uintOfGroupKey('8000000d'), uintOfGroupKey('800000000000000b'), uintOfGroupKey('zz'), uintOfGroupKey('')]).toEqual([1, 13, 11, null, null])
+  it('decodes a grouped kind count from the tree key (plain big-endian, protocol 14), at any integer width', async () => {
+    expect(uintGroupKey(1)).toBe('01')
+    expect(uintGroupKey(13)).toBe('0d')
+    expect(uintGroupKey(0x1234, 2)).toBe('1234')
+    expect(uintGroupKey(200)).toBe('c8')
+    expect([uintOfGroupKey('01'), uintOfGroupKey('0000000d'), uintOfGroupKey('000000000000000b'), uintOfGroupKey('c8'), uintOfGroupKey('zz'), uintOfGroupKey('')]).toEqual([1, 13, 11, 200, null, null])
     const sdk = (keys: [string, bigint][]) =>
       ({
         documents: {
@@ -247,9 +248,9 @@ describe('proved reads', () => {
           },
         },
       }) as unknown as EvoSDK
-    expect([...(await readKindCounts(sdk([['81', 5n], ['82', 2n], ['8d', 1n]]), REPO))]).toEqual([[1, 5], [2, 2], [13, 1]])
+    expect([...(await readKindCounts(sdk([['01', 5n], ['02', 2n], ['0d', 1n]]), REPO))]).toEqual([[1, 5], [2, 2], [13, 1]])
     // A u32-sized kind (a contract without sized integers) reads the same; unknown kinds are dropped.
-    expect([...(await readKindCounts(sdk([['80000001', 4n], ['80000003', 9n]]), REPO))]).toEqual([[1, 4]])
+    expect([...(await readKindCounts(sdk([['00000001', 4n], ['00000003', 9n]]), REPO))]).toEqual([[1, 4]])
   })
 })
 

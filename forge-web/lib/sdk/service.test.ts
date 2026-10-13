@@ -469,6 +469,10 @@ describe('isStaleConnectionError', () => {
     expect(isStaleConnectionError(QUORUM_GONE)).toBe(true)
     expect(isStaleConnectionError(new Error('Failed to find quorum: Quorum not found for type 107 and hash 1e85'))).toBe(true)
     expect(isQuorumMiss(QUORUM_GONE)).toBe(true)
+    // Platform 5.0.0-beta.6 (#5313): the SDK's own key fetch got no usable answer from the quorum source.
+    const SOURCE_DOWN = new Error('Context provider error: quorum source unavailable: quorum 107:1e85 at Core chain-locked height 99: current quorums: HTTP 503')
+    expect(isQuorumMiss(SOURCE_DOWN)).toBe(true)
+    expect(isStaleConnectionError(SOURCE_DOWN)).toBe(true)
     expect(isQuorumMiss(new Error('no available addresses to use'))).toBe(false)
     expect(isStaleConnectionError({ message: 'no available addresses to use' })).toBe(true)
     expect(isStaleConnectionError(new Error('document type not found'))).toBe(false)
