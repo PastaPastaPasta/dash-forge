@@ -45,7 +45,7 @@ A **private** repository is different: everything in it is encrypted, code inclu
 | Comments on issues and pull requests | yes, the same |
 | Reviews of a pull request (the review's text; its verdict stays public, [below](#what-everyone-can-still-see)) | yes, the same |
 | [Environments](../guides/environments.md): configuration and secrets kept outside git | yes: always for a chosen audience, **Maintainers**, **Writers and maintainers**, **All members** or **Specific people**, encrypted for those people when it is saved |
-| Pull requests themselves, branches, commits and code | **coming later**. Everything you push to a public repository is public. |
+| Branches, the commits on them, and pull requests from them | yes, for All members: [members-only branches](#members-only-branches-and-pull-requests). Everything you push to a public branch is public. |
 | Releases | **coming later** |
 | Label and milestone definitions | no, they stay public. Which label or milestone a members-only issue has is encrypted. |
 
@@ -150,7 +150,7 @@ dg pr review     <owner>/<repo> 7 --comment --to @carol --body "Details of the b
 - Inside a members-only conversation, a message to specific people can go to members only.
 - Its text lives only in the message itself: a text too long for it is refused ("shorten it, or send it to fewer people"); each person takes about 100 bytes. A review for specific people is submitted in one command: it is never kept as a pending review on your computer.
 - Labels, milestones and assignees can't be set on an issue sent to specific people yet. Closing and reopening it works as usual.
-- Pull requests for specific people are **coming later**.
+- A pull request can go to specific people too (`dg pr create --to …`) when its branch is public: its title, description and branch names are then theirs only, and its commits are public like any public branch's.
 
 Before anything is signed, `dg` names who it goes to, including the people a reply re-lists without being asked: "Post a comment on issue #12 to the maintainers now (@alice and @bob)?". What you see after posting, and in `dg issue view` / `dg pr view --comments`: who it went to, "as listed by" its writer.
 
@@ -167,6 +167,29 @@ $ dg issue view alice/shop 12
 Everyone else sees that a message was posted, by whom, when, and **to how many people**, never who they are or what it says: "#14 · issue to 3 people by @carol · open", or a placeholder "comment to 3 people". A message from someone who is not a member is shown to its people and only counted for everyone else. With `--json`, a message carries `"audience": "specificPeople"` and, for its people, `"letter": {"to": [...], "group": ...}`; a placeholder carries `"recipients"`.
 
 **In the web app**, the audience chip beside every composer offers Public, All members, Maintainers, Writers and maintainers and Specific people… ("Who can read this?"). The people picker greys out anyone who can't receive one yet. After posting, the message says "Visible to alice, bob and you" or "Visible to alice, bob, carol (maintainers when sent)". **Forward to…** on a message you can read starts a reply that quotes it, with the same people and anyone you add. A message's text is never kept as a draft.
+
+## Members-only branches and pull requests
+
+A branch can be members-only: only members see its name and its commits. Start one with `dg branch new --members`, push it as usual, and open a pull request from it; when the work is ready, **publish** it onto a public branch.
+
+```sh
+dg branch new --members sec/fix             # records that sec/fix is members-only, and switches to it
+git push origin sec/fix                      # pushed members-only
+dg pr create --head sec/fix --title "Fix the bounds check"   # a members-only pull request
+dg branch                                    # Public and Members only groups
+dg pr list <owner>/<repo> --audience members
+dg pr checkout <owner>/<repo> 42            # members check out its real commit
+dg publish --pr 42                           # one new public commit on its base; the PR is recorded merged
+```
+
+- `dg branch new --members <name>` needs your encryption key and members-only content turned on ([E312](#e312) otherwise). A name that is already public is refused (E809: "nothing already pushed can be hidden"): start a new members-only branch from it instead.
+- A pull request from a members-only branch, or into one, is members-only without `--members`. Everyone sees its number, who opened it, its state, its reviews' verdicts and its checks' outcomes; only members read its title, description, branch names and commits. `git push` moves its head as for any pull request.
+- `dg branch` lists the branches in two groups, Public and Members only. Anyone else sees the public ones and "This repo also has members-only branches.", never how many.
+- **Publishing** (`dg publish <branch> --onto main`, or `dg publish --pr N`) is the only way a members-only branch's work reaches a public branch, and it can't be undone. Before anything is pushed it lists what becomes public ("3 commits by alice and bob · 14 files"), checks the files for secrets, and asks. By default it **squashes** the branch into one new commit whose author is you: the members-only commits stay members-only, and `--co-authors` adds a `Co-authored-by` line for each other author (their emails become public). `--history` publishes the commits as they are instead; the last one then becomes visibly linked to the branch's members-only activity, so it needs the word `publish` typed. After publishing, `dg branch cleanup` deletes your local branches whose content is published. `dg publish --pr N --make-public` also makes the pull request's comments and reviews public (a maintainer's choice); its own title and description stay members-only for now.
+- `dg pr merge` refuses a pull request from a members-only branch and names `dg publish --pr N`: a merge commit with members-only parents is never made. Merging one into another members-only branch from `dg` is coming later.
+- `dg repack` consolidates the public packs only; members-only packs are never combined, so publishing one branch never exposes another.
+
+Everyone can still see, for a members-only branch: that a members-only push happened, by whom and when, whether it was forced, that a branch was created or deleted, and which pushes within one key period share a branch; a blinded commit id that links the push to the pull request, its reviews and its checks. For a members-only pull request: as above, and which public branch it targets.
 
 ## What it costs
 
@@ -232,7 +255,7 @@ A review's verdict is public on purpose: everyone agrees on whether a pull reque
 
 Forge stops accidents, not intent. A member who copies members-only text by hand into a public issue, a commit, an email or anywhere else has published it, and no check can stop that.
 
-When members-only branches arrive (coming later), the same holds for code: the checks before a push stop a member from publishing members-only commits by accident. A member who copies files by hand into a public branch, or who pushes with `git push --no-verify`, is out of scope.
+The same holds for code: the checks before a push stop a member from publishing members-only commits by accident. A member who copies files by hand into a public branch, or who pushes with `git push --no-verify`, is out of scope.
 
 ## Older Forge builds
 
@@ -296,7 +319,7 @@ Forge uses the same words in `dg`, the web app and these pages.
 
 | Word | Means |
 |---|---|
-| **Publish** | Widen code to everyone (coming later). It can't be undone. |
+| **Publish** | Widen code to everyone: `dg publish`. It can't be undone. |
 | **Make public** | Widen a post, such as a comment, to everyone. The author does it for their own posts; a maintainer for anyone's. It can't be undone. |
 | **Make this repo public** | Widen a whole private repository. It can't be undone: it can never be private again (coming later). |
 
