@@ -90,7 +90,7 @@ the pinned Platform tag, and how to develop against a local Platform checkout.
 attestations, `cargo binstall` and shell completions (`dg completions <shell>`).
 
 **Networks.** Testnet is the default network, but Forge runs on devnet sakura (its forge-v2
-registration is in progress), so pass `--network devnet --devnet-name sakura` (`dg auth new` / `dg auth login` record
+contracts are registered there), so pass `--network devnet --devnet-name sakura` (`dg auth new` / `dg auth login` record
 it as your default; `--dapi-addresses` sets the devnet's nodes). The helper reads the same
 settings from `DASH_FORGE_NETWORK` / `DASH_FORGE_DEVNET_NAME`, git config
 (`dash.network`, `dash.devnetName`, `dash.dapiAddresses`), or else the default `dg` recorded, and the web build reads them from

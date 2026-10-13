@@ -411,7 +411,9 @@ function bigintMap(m: Map<string, bigint> | unknown): Map<string, number> {
 /**
  * The unsigned integer a group key encodes (big-endian, whatever its width; protocol 14 keys
  * an unsigned integer by its plain bytes, platform#5350); null for a key that is not 1–8 bytes
- * of hex.
+ * of hex. No Forge index is subject to platform#5350's one exception, an unsigned integer that ends
+ * a `rangeSummable` index (it keeps the flipped top bit); the only such index, `release.perTag`,
+ * ends in a string. A contract that ends one in an integer must decode that property differently.
  */
 export function uintOfGroupKey(key: string): number | null {
   if (!/^(?:[0-9a-f]{2}){1,8}$/i.test(key)) return null

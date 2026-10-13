@@ -177,7 +177,7 @@ complete readers (`query_all_documents` / `queryAllDocuments`):
 
 Every binary and the web app target one of **testnet**, **mainnet**, or a **named devnet**
 such as `sakura`. The CLI tools default to testnet, but Forge targets devnet sakura (Platform
-protocol 14, v5.0.0-beta.1), where its RC2 registration is in progress. Testnet and mainnet run protocol 13; forge-v2 is
+protocol 14, v5.0.0-beta.6), where its RC2 contracts are registered. Testnet and mainnet run protocol 13; forge-v2 is
 registered on testnet once protocol 14 reaches it, and on mainnet after protocol 14
 activates there ([mainnet-runbook.md](mainnet-runbook.md)). Until then, pass
 `--network devnet --devnet-name sakura` (or just `--devnet-name sakura`), or record it once
