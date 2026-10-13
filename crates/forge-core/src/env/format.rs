@@ -539,6 +539,8 @@ pub struct DotenvError {
 /// A name given twice keeps the last value. Values are returned in a zeroized map.
 pub fn parse_dotenv(text: &str) -> Result<BTreeMap<String, Zeroizing<String>>, DotenvError> {
     let mut out = BTreeMap::new();
+    // a leading byte-order mark is not part of the first name (the web strips it too)
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let lines: Vec<&str> = text.lines().collect();
     let mut i = 0;
     while i < lines.len() {
@@ -837,5 +839,6 @@ mod tests {
         let e = parse_dotenv("1A=secret-value\n").unwrap_err();
         assert!(!e.to_string().contains("secret-value"));
         assert!(parse_dotenv("A=\"open\n").is_err());
+        assert_eq!(parse_dotenv("\u{feff}A=1\n").unwrap()["A"].as_str(), "1");
     }
 }

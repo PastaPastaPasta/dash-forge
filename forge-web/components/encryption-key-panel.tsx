@@ -1,7 +1,7 @@
 'use client'
 
 /**
- * Settings → Private repos (`docs/security/private-repos.md` §5.2,
+ * Settings → Members-only and private content (`docs/security/private-repos.md` §5.2,
  * `ux-dx-spec.md` §2.3): keep this identity's ENCRYPTION key in the browser vault, beside the
  * limited key and protected the same way (passkey PRF or passphrase), dropped on lock.
  *
@@ -85,7 +85,7 @@ export function EncryptionKeyPanel(): JSX.Element | null {
     }
   }, [identity, network])
 
-  // Opened from a "Settings → Private repos" link (`#private-repos`): the card renders once the
+  // Opened from a "Settings → Members-only and private content" link (`#private-repos`): the card renders once the
   // session is known, after the browser's own jump to the fragment found nothing, so scroll here.
   const sectionRef = useRef<HTMLElement>(null)
   const shown = identity !== null && core !== null
@@ -108,7 +108,7 @@ export function EncryptionKeyPanel(): JSX.Element | null {
       if (id === null) {
         setError('This identity has no encryption key that opens with that. Register one (Register a new key), or run `dg auth keys add --encryption`.')
       } else {
-        setNote(`Private repos enabled: encryption key ${id} is stored in this browser.`)
+        setNote(`Members-only and private content can be read and written here: encryption key ${id} is stored in this browser.`)
       }
     } catch (e) {
       setError(errorMessage(e))
@@ -184,7 +184,7 @@ export function EncryptionKeyPanel(): JSX.Element | null {
       data-testid="encryption-key-panel"
     >
       <h2 id="enc-key-title" className="mb-2 flex items-center gap-2 text-dense font-medium text-anvil-500 dark:text-anvil-400">
-        <KeyRound className="h-3.5 w-3.5" aria-hidden /> Private repos
+        <KeyRound className="h-3.5 w-3.5" aria-hidden /> Members-only and private content
       </h2>
       <p className="text-[12px] text-anvil-600 dark:text-anvil-300">{ENCRYPTION_KEY_BLAST_RADIUS}</p>
       <BuildIntegrityNotice className="mt-2" />
@@ -197,7 +197,7 @@ export function EncryptionKeyPanel(): JSX.Element | null {
           <span className="text-dense" data-testid="encryption-key-stored">
             {storage === 'session'
               ? `${heldKeys(keyIds)} held for this tab only; ${keyIds.length === 1 ? 'it is' : 'they are'} forgotten on reload or lock.`
-              : `${heldKeys(keyIds)} stored in this browser and unlocked now: private repos you're a member of open here. It locks again with this browser's key (Lock, or after 12 hours).`}
+              : `${heldKeys(keyIds)} stored in this browser and unlocked now: members-only and private content of repos you're a member of opens here. It locks again with this browser's key (Lock, or after 12 hours).`}
           </span>
           <Button
             size="sm"
@@ -205,7 +205,7 @@ export function EncryptionKeyPanel(): JSX.Element | null {
             onClick={() => {
               void confirm({
                 title: 'Remove the encryption key from this browser?',
-                body: 'Private repos stop opening here until you add it again (from your identity file, the key itself or your recovery phrase). The key stays on your identity.',
+                body: 'Members-only and private content stops opening here until you add it again (from your identity file, the key itself or your recovery phrase). The key stays on your identity.',
                 confirmLabel: 'Remove key',
               }).then((ok) => {
                 if (ok) removeEncryptionKey(network, identity).catch((e: unknown) => setError(errorMessage(e)))
@@ -219,7 +219,7 @@ export function EncryptionKeyPanel(): JSX.Element | null {
       {/* Another key can always be added: one held here never blocks a newer one (DESIGN D27). */}
       {unlockScope !== 'signing' && keyIds !== undefined ? (
         <div className="mt-3 space-y-3">
-          <p className="text-dense font-medium">{keyIds === null ? 'Enable private repos' : 'Add another encryption key'}</p>
+          <p className="text-dense font-medium">{keyIds === null ? 'Read and write members-only and private content' : 'Add another encryption key'}</p>
           <div role="tablist" className="inline-flex rounded-md border border-anvil-200 p-0.5 dark:border-anvil-750">
             {(
               [

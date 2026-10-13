@@ -9,7 +9,7 @@
  *   mnemonic), a recovery phrase, a pasted WIF/hex key, or a wallet login (the key its login
  *   key stands for, {@link adoptWalletEncryptionKey}). Every route checks that the public key
  *   matches an enabled ENCRYPTION key on the identity before anything is stored.
- * - Registering one (Settings → Private repos): an `IdentityUpdate` signed once by
+ * - Registering one (Settings → Members-only and private content): an `IdentityUpdate` signed once by
  *   the master key, adding the next key id, derived from the recovery phrase at
  *   `m/9'/<coin>'/5'/0'/0'/<identityIndex>'/<keyId>'` (the CLI's path, so either client can
  *   re-derive it).
@@ -95,7 +95,7 @@ export function usableEncryptionKey<K extends EncKeyLike>(keys: readonly K[], co
 
 /** The verbatim add-member message for an identity with no encryption key (`ux-dx-spec.md` §9). */
 export function noEncryptionKeyMessage(name: string): string {
-  return `${name} has no encryption key yet. Send them this: \`dg auth keys add --encryption\`, or Settings → Private repos (one master-key signature).`
+  return `${name} has no encryption key yet. Send them this: \`dg auth keys add --encryption\`, or Settings → Members-only and private content (one master-key signature).`
 }
 
 /** The blast-radius sentence of `private-repos.md` §5.2, verbatim. */
@@ -150,7 +150,7 @@ export async function adoptEncryptionKey(sdk: EvoSDK, network: Network, identity
  * The identity's usable encryption key (the one writers wrap to) is not one this browser holds,
  * and no approval of the wallet registered it (a key from `dg`, say). Shown at sign-in.
  */
-export const ENCRYPTION_KEY_ELSEWHERE = 'Your encryption key is held elsewhere. Import it under Settings → Private repos.'
+export const ENCRYPTION_KEY_ELSEWHERE = 'Your encryption key is held elsewhere. Import it under Settings → Members-only and private content.'
 
 /**
  * A repo was wrapped only to keys this browser does not hold, and the one it was wrapped to last
@@ -361,7 +361,7 @@ export class EncryptionKeyExistsError extends Error {
 }
 
 /**
- * Enable private repos from a recovery phrase (Settings → Private repos): when the
+ * Store the encryption key from a recovery phrase (Settings → Members-only and private content): when the
  * identity already has a usable ENCRYPTION key the phrase derives, that key is stored (nothing
  * is registered); when it has one the phrase does not derive, this refuses
  * ({@link EncryptionKeyExistsError}: registering another would strand the wraps to the old one,

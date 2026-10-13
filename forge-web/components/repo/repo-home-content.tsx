@@ -54,6 +54,7 @@ import { Oid } from '@/components/ui/oid'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { pinnedHref, usePermalinkKey } from '@/components/repo/permalink'
 import { ForkSyncBar } from '@/components/repo/fork-sync'
+import { RecentPushBanner } from '@/components/repo/recent-push-banner'
 import { ownerLabel } from '@/lib/page-title'
 
 /** The ref bar counts at most this many commits (one read each), then shows `100+`. */
@@ -183,6 +184,7 @@ function RootBody({
   // The README's relative links and images resolve against the repo root at this commit.
   return (
     <div className="space-y-4">
+      <RecentPushBanner home={home} addr={addr} />
       <div className="flex flex-wrap items-center gap-2 text-dense text-anvil-500 dark:text-anvil-400">
         <RefSwitcher home={home} addr={addr} current={selected} />
         <Link

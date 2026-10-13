@@ -30,7 +30,7 @@ export interface SignInIntent {
   readonly credits?: number
   /**
    * The sheet opened to read a private repo (QW2-016): Import keeps the identity's encryption
-   * key by default ("Enable private repos" ticked), so the member lands on readable content.
+   * key by default ("Read and write members-only and private content" ticked), so the member lands on readable content.
    */
   readonly privateRepo?: boolean
 }
