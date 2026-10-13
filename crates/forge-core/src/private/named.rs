@@ -359,6 +359,9 @@ pub(crate) fn find_slot(
         .map(|(i, k_obj)| (i, ObjKeys::derive(repo_id, &k_obj))))
 }
 
+/// A reader's slot index and the raw `K_obj` it wraps.
+type SlotKey = (usize, Zeroizing<[u8; 32]>);
+
 /// [`find_slot`], returning the raw `K_obj` the slot wraps (checked against the full commitment).
 fn find_slot_key(
     repo_id: &[u8; 32],
@@ -366,7 +369,7 @@ fn find_slot_key(
     n: usize,
     sender_public: &[u8],
     reader: &Reader<'_>,
-) -> Result<Option<(usize, Zeroizing<[u8; 32]>)>, ()> {
+) -> Result<Option<SlotKey>, ()> {
     let commit = &block[5..37];
     let slots = &block[37..37 + SLOT_LEN * n];
     for key in reader.keys {

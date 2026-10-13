@@ -14,14 +14,13 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { base58Encode } from '../auth/base58'
-import { PACK_KIND } from '../constants'
 import type { ForgeIds } from '../deployments'
 import { ENTRY_COMMENT, ENTRY_ISSUE, ENTRY_REVIEW, parseBundle, type Bundle } from '../private'
 import { DOC, asIdentifierString, type RepoRef } from '../repo/contract'
 import { readMaintainers } from '../repo/members'
 import { toManifest } from '../repo/packs'
 import { contractOf } from '../repo/source'
-import { queryDocumentsWithProof, type DocumentQuery, type PlainDocument } from '../sdk'
+import { queryDocumentsWithProof, type PlainDocument } from '../sdk'
 import { readTargetsByIds, type RepoLite } from './mine'
 import type { InboxItem } from './inbox'
 
@@ -31,25 +30,6 @@ export const MAX_TARGETS = 20
 /** The repo of a feed as the readers take it. */
 function repoOf(forge: ForgeIds, repo: RepoLite): RepoRef {
   return { forge, repoId: repo.id, ownerId: repo.ownerId, name: repo.name, visibility: repo.private ? 'private' : 'public' }
-}
-
-/** The query of a repo's make-public bundles after `after` (a `$createdAt` clause), oldest first. */
-export function madePublicQuery(
-  forge: ForgeIds,
-  repo: RepoLite,
-  after: readonly [string, '>' | '>=', number],
-  shape: { readonly limit: number; readonly startAfter?: string },
-): DocumentQuery {
-  return {
-    dataContractId: contractOf(forge, DOC.packManifest),
-    documentTypeName: DOC.packManifest,
-    where: [['repoId', '==', repo.id], ['kind', '==', PACK_KIND.MAKE_PUBLIC], after],
-    orderBy: [
-      ['kind', 'asc'],
-      ['$createdAt', 'asc'],
-    ],
-    ...shape,
-  }
 }
 
 const NOUN: Readonly<Record<number, { readonly type: string; readonly noun: string }>> = {

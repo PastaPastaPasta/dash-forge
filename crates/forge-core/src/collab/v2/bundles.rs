@@ -468,9 +468,10 @@ impl Collab<'_> {
             },
             DocKeys::None(_) => None,
         };
-        let opened = match opened {
-            Some(f) => f,
-            None => {
+        let opened = if let Some(f) = opened {
+            f
+        } else {
+            {
                 let repo_id = repo.scope()?.repo_id;
                 let entries = self.doc_entries(repo).await;
                 match self.outcome(&repo_id, &entries, kind, stored) {
