@@ -14,11 +14,12 @@
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
+import { sha256 } from '@noble/hashes/sha2.js'
 
 import { decodeIdentifier } from '../auth/base58'
 import { encryptionOps } from '../auth/encryption-key'
 import { idbDelete, idbEntries, idbGet, idbPut } from '../idb'
-import { EpochKeys, MalformedError, TooLargeError, type EpochResolution, openPack, propOf, refNameHash, sealDoc, sealPack, type DocFields, type PrivateDoc, type PrivateDocType } from '../private'
+import { EpochKeys, MalformedError, TooLargeError, checkBlind, type EpochResolution, openPack, propOf, refNameHash, sealDoc, sealPack, type DocFields, type PrivateDoc, type PrivateDocType } from '../private'
 import type { WriteAuth } from '../sdk'
 import type { RepoRef } from './contract'
 import { loadPrivateSessionUncached, sessionUnwrapper, type PrivateSession } from './private-session'
@@ -210,13 +211,66 @@ export async function sealForRepo(
 export type DocSealer = (keys: EpochKeys, doc: PrivateDoc, fields: DocFields) => Promise<Uint8Array>
 
 /**
+ * The blind a members-only PR's `headOid`, or a head update's `oid`, carries (rule C,
+ * `private-repos.md` §19; forge-core `HeadBlind`): the caller copies the plaintext from the
+ * document that introduced the commit (the source branch's ref update) and seals its real value
+ * and that document's salt beside it (TLV 24, 27).
+ */
+export interface HeadBlind {
+  /** The real head commit. */
+  readonly real: Uint8Array
+  /** The salt of the document that introduced its blind. */
+  readonly salt: Uint8Array
+}
+
+/**
+ * How a members-only pull request names its branches and its head (mixed-visibility DESIGN §4.4;
+ * forge-core `MembersPatch`): a **public** base or source by its public `sha256(name)`, a
+ * members-only one by its keyed hash; a members-only source's head is a blind ({@link HeadBlind}),
+ * a public source's the plain commit (`head` absent). A head update passes its `head` only.
+ */
+export interface MembersPatch {
+  readonly basePublic: boolean
+  readonly sourcePublic: boolean
+  readonly head?: HeadBlind
+}
+
+/**
+ * Seal `head`'s real value and salt into `fields` after checking that `plain` (the document's
+ * plaintext `headOid` / `oid`) is its blind: a writer never writes what readers alert on.
+ */
+async function sealHead(head: HeadBlind | undefined, plain: Uint8Array | undefined, fields: Record<string, unknown>): Promise<void> {
+  if (head === undefined) return
+  if (plain === undefined || (await checkBlind(plain, head.real, head.salt)) !== 'ok') {
+    throw new MalformedError('the plaintext head is not the blind of the real head it seals')
+  }
+  fields['headOid'] = new Uint8Array(head.real)
+  fields['oidSalt'] = new Uint8Array(head.salt)
+}
+
+/**
  * The sealed document of `data` under `keys`, signed by `ownerId` (pure: the transform the CLI's
  * `collab::private::seal_props` makes, pinned by the shared `private_collab_seal` vectors): the
  * sealed fields leave the plaintext for `enc`, an importer's `imported.author` / `imported.url`
  * become TLV 13 / 14 (`createdAt` stays), ref names become keyed hashes, `epoch` is set. Throws
  * `TooLargeError` / `MalformedError` from the seal.
+ *
+ * `members`: a members-only pull request or head update (forge-core `seal_members_patch_props` /
+ * `seal_members_head_update_props`, pinned by the shared `sealed_patch` vectors; `seal` must then
+ * be a v0x03 sealer): a patch names each branch by {@link MembersPatch}, and a members-only
+ * source's plaintext `headOid` (an event's `oid`) must already be the blind of `members.head`,
+ * whose real value and salt are sealed beside it (TLV 24, 27). Refused ({@link MalformedError})
+ * otherwise, for a members-only source without `members.head`, and for a public source that
+ * claims a blinded head.
  */
-export async function sealContent(keys: EpochKeys, type: PrivateDocType, ownerId: Uint8Array, data: Data, seal: DocSealer = sealDoc): Promise<Data> {
+export async function sealContent(
+  keys: EpochKeys,
+  type: PrivateDocType,
+  ownerId: Uint8Array,
+  data: Data,
+  seal: DocSealer = sealDoc,
+  members?: MembersPatch,
+): Promise<Data> {
   const out: Data = { ...data }
   const fields: Record<string, unknown> = {}
   for (const f of SEALED_FIELDS[type]) {
@@ -242,7 +296,24 @@ export async function sealContent(keys: EpochKeys, type: PrivateDocType, ownerId
     case 'issue':
     case 'patch':
       doc.number = out['number'] as number
-      if (type === 'patch') {
+      if (type === 'patch' && members !== undefined) {
+        // A members-only PR: a public branch by its public sha256, a members-only one keyed.
+        const hash = async (name: unknown, pub: boolean): Promise<Uint8Array | undefined> => {
+          if (typeof name !== 'string') return undefined
+          return pub ? sha256(new TextEncoder().encode(name)) : refNameHash(keys, name)
+        }
+        doc.baseRefNameHash = await hash(fields['baseRefName'], members.basePublic)
+        doc.sourceRefNameHash = await hash(fields['sourceRefName'], members.sourcePublic)
+        // a public source has a plain head; a members-only one never does (its real head would be
+        // the plaintext headOid)
+        if (members.sourcePublic && members.head !== undefined) throw new MalformedError('a public source branch has a plain head, not a blind')
+        if (!members.sourcePublic && members.head === undefined) throw new MalformedError('a members-only source branch needs its head blind')
+        await sealHead(members.head, bytesOf(out['headOid']), fields)
+        for (const [k, h] of [['baseRefNameHash', doc.baseRefNameHash], ['sourceRefNameHash', doc.sourceRefNameHash]] as const) {
+          if (h === undefined) delete out[k]
+          else out[k] = h
+        }
+      } else if (type === 'patch') {
         // The ref-name hashes are HMACs under the patch's epoch (§4.5), never sha256.
         doc.baseRefNameHash = await refNameHash(keys, fields['baseRefName'] as string)
         out['baseRefNameHash'] = doc.baseRefNameHash
@@ -257,6 +328,8 @@ export async function sealContent(keys: EpochKeys, type: PrivateDocType, ownerId
     case 'comment':
     case 'event':
       doc.targetId = idOf(out['targetId'])
+      // a members-only PR's head update (kind 16): its blind `oid`, the real head sealed beside it
+      if (type === 'event') await sealHead(members?.head, bytesOf(out['oid']), fields)
       break
     case 'review':
       doc.patchId = idOf(out['patchId'])

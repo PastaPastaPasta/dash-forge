@@ -8,6 +8,7 @@
 import { sha256, utf8, type Bytes } from './bytes'
 import { __unsafeSealDocWithNonce, __unsafeSealMembersDocWithNonce, type PrivateDoc, type SealDocOptions } from './doc'
 import { hedgeFileId, hedgeNonce, type EpochKeys } from './keys'
+import { __unsafeSealMembersRefWith, type RefUpdateIn, type SealedRefUpdate } from './members-ref'
 import { __unsafeSealLetterArtifactWith, __unsafeSealLetterWith, type LetterRecipient } from './named'
 import { __unsafeSealPackWithFileId } from './pack'
 import { __unsafeSealReleaseWithNonce, encodeReleaseManifest, type ReleaseFields, type ReleaseManifest } from './release'
@@ -32,6 +33,17 @@ export function sealMembersDocWithNonce(
   nonce: Uint8Array,
 ): Promise<{ ad: Bytes; kObj: Bytes; commit: Bytes; tlv: Bytes; enc: Bytes }> {
   return __unsafeSealMembersDocWithNonce(keys, doc, fields, nonce)
+}
+
+/** `sealMembersRef` with a fixed salt and nonce (the `sealed_ref` vectors). */
+export function sealMembersRefWithNonce(
+  keys: EpochKeys,
+  ownerId: Uint8Array,
+  input: RefUpdateIn,
+  salt: Uint8Array,
+  nonce: Uint8Array,
+): Promise<SealedRefUpdate> {
+  return __unsafeSealMembersRefWith(keys, ownerId, input, salt, async (doc, fields) => (await __unsafeSealMembersDocWithNonce(keys, doc, fields, nonce)).enc)
 }
 
 /** `sealLetter` with a fixed `K_obj`, nonce and slot IVs; returns the commitment, H, AD' and TLV too. */

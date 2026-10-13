@@ -67,7 +67,7 @@ import { EpochKeys, type OpenContext } from '../private'
 import type { WriteAuth } from '../sdk'
 import type { RepoRef } from './contract'
 import { LongBodyRefusedError, longBodyField } from './long-body'
-import { MEMBERS_TEXT_LIMIT, audienceFor, childAudience, sealMembersContent, targetAudience } from './members-writes'
+import { MEMBERS_TEXT_LIMIT, audienceFor, childAudience, sealMembersContent, sealMembersEdit, targetAudience } from './members-writes'
 import { admitAll, laneGate } from './private-content'
 import { SEALED_TEXT_LIMIT } from './private-writes'
 import { saveReviewDraft, loadReviewDraft, updateComment, type ReviewDraft } from './review-writes'
@@ -217,6 +217,13 @@ describe('the members-only seal', () => {
   it('a members-only pull request or ref update is not written in this release', async () => {
     const writer = { keys: await EpochKeys.import(REPO_ID, 0, new Uint8Array(K0)) }
     await expect(sealMembersContent(auth, 'patch', { title: 't', number: 1 }, writer)).rejects.toThrow(/not supported yet/)
+    // nor a PR edit (its TLV 24 / 27 would be dropped: members-only PR edits come with phase 3C)
+    await expect(sealMembersEdit(sdk, auth, REPO, 'patch', { number: 1 }, { title: 't' }, { title: 'u' })).rejects.toThrow(/not supported yet/)
+    // a members-only event naming a commit is a head update: it never goes through here, where
+    // its `oid` would stay the real commit in plaintext
+    const head = { targetId: decodeIdentifier(ISSUE_MEMBERS), targetNumber: 1, kind: 16, oid: new Uint8Array(20).fill(1) }
+    await expect(sealMembersContent(auth, 'event', head, writer)).rejects.toThrow(/head update/)
+    expect(writes).toEqual([])
   })
 
   it('a public repo’s sealed write never carries plaintext content beside enc', () => {

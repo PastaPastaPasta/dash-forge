@@ -4,6 +4,7 @@
  * runs its own output through it before sealing, so it never seals what a reader refuses.
  */
 
+import { isOidWidth, SALT_LEN } from './blind'
 import { concat, u16, u32, type Bytes } from './bytes'
 
 /** The contract types whose content is encrypted (§4.4 `docType`). */
@@ -52,6 +53,20 @@ export interface DocFields {
    * assignee, a retarget base), sealed in a private repo (§7).
    */
   readonly eventValue?: string
+  /**
+   * Tag 22 (members-only ref update, `enc` v0x03 only): the real `newOid` (20 or 32 bytes) behind
+   * the plaintext blind (§19).
+   */
+  readonly newOid?: Uint8Array
+  /** Tag 23 (members-only ref update, `enc` v0x03 only): the real `prevOid` (20 or 32 bytes). */
+  readonly prevOid?: Uint8Array
+  /**
+   * Tag 24 (members-only PR or kind-16 head update, `enc` v0x03 only): the real head (20 or 32
+   * bytes) behind the plaintext blind `headOid` / `oid`.
+   */
+  readonly headOid?: Uint8Array
+  /** Tag 27 (`enc` v0x03 only, exactly when one of 22-24 is present): the salt of the blinds (32 bytes). */
+  readonly oidSalt?: Uint8Array
 }
 
 /** A §4.3 violation. */
@@ -78,7 +93,30 @@ export const TAG = {
   importedAuthor: 13,
   importedUrl: 14,
   eventValue: 15,
+  newOid: 22,
+  prevOid: 23,
+  headOid: 24,
+  oidSalt: 27,
 } as const
+
+/**
+ * The blind tags (22-24, 27, §19) each kind may carry in a members-only (`enc` v0x03) envelope.
+ * In every other envelope they stay reserved, so a reader that does not fold them refuses the
+ * document instead of reading it without them.
+ */
+const BLIND_TAGS_OF: Readonly<Partial<Record<PrivateDocType, readonly number[]>>> = {
+  refUpdate: [TAG.newOid, TAG.prevOid, TAG.oidSalt],
+  protectedRefUpdate: [TAG.newOid, TAG.prevOid, TAG.oidSalt],
+  patch: [TAG.headOid, TAG.oidSalt],
+  event: [TAG.headOid, TAG.oidSalt],
+}
+
+/** The field each real-OID tag (22-24) fills. */
+const OID_FIELD_OF: Readonly<Record<number, 'newOid' | 'prevOid' | 'headOid'>> = {
+  [TAG.newOid]: 'newOid',
+  [TAG.prevOid]: 'prevOid',
+  [TAG.headOid]: 'headOid',
+}
 
 type TextField =
   | 'title'
@@ -174,6 +212,13 @@ export interface TlvContext {
   readonly epoch: number
   /** Config only: whether this document is its epoch's anchor (§5.3). */
   readonly anchor?: boolean
+  /**
+   * The envelope is members-only (`enc` v0x03): a ref update may carry its real `newOid` /
+   * `prevOid` (tags 22, 23), a patch or an event its real head (24), each with the salt of their
+   * blinds (27), present exactly when one of them is (§19). An event then needs a value (15), a
+   * head (24), or both. Off: those tags stay reserved (forge-core `tlv::parse` vs `parse_members`).
+   */
+  readonly blinds?: boolean
 }
 
 const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
@@ -196,10 +241,16 @@ function decodeText(value: Uint8Array, spec: TextSpec): string {
 
 /**
  * Parse and validate a TLV plaintext for a document of `ctx.type` (§4.3). Tags 25 and 29 are
- * refused: they belong to `enc` v0x04 only ({@link parseLetterTlv}).
+ * refused: they belong to `enc` v0x04 only ({@link parseLetterTlv}); tags 22-24 and 27 unless
+ * `ctx.blinds` ({@link parseMembersTlv}).
  */
 export function parseTlv(pt: Uint8Array, ctx: TlvContext): DocFields {
   return parseWith(pt, ctx, undefined)
+}
+
+/** The TLV of a members-only document (`enc` v0x03): {@link parseTlv} with `blinds` on (forge-core `parse_members`). */
+export function parseMembersTlv(pt: Uint8Array, type: PrivateDocType): DocFields {
+  return parseWith(pt, { type, epoch: 0, blinds: true }, undefined)
 }
 
 /** A letter's TLV, parsed. */
@@ -264,9 +315,19 @@ function parseWith(pt: Uint8Array, ctx: TlvContext, letter: LetterParts | undefi
       letter.group = group
       continue
     }
+    const value = pt.subarray(start, end)
+    if (ctx.blinds === true && BLIND_TAGS_OF[ctx.type]?.includes(tag) === true) {
+      if (tag === TAG.oidSalt) {
+        if (len !== SALT_LEN) throw new MalformedError('oidSalt is not 32 bytes')
+        out.oidSalt = value.slice()
+      } else {
+        if (!isOidWidth(len)) throw new MalformedError(`tag ${tag}: an OID is 20 or 32 bytes`)
+        out[OID_FIELD_OF[tag] as 'newOid' | 'prevOid' | 'headOid'] = value.slice()
+      }
+      continue
+    }
     if (tag >= FIRST_RESERVED) throw new MalformedError(`reserved tag ${tag}`)
     if (!allowed.includes(tag)) throw new MalformedError(`tag ${tag} is not a ${ctx.type} field`)
-    const value = pt.subarray(start, end)
     if (tag === TAG.burned) {
       if (!anchorWithPrev) throw new MalformedError('burned outside a config for epoch >= 1')
       if (len !== 1 || value[0] !== 0x01) throw new MalformedError('burned is not the single byte 0x01')
@@ -296,6 +357,9 @@ function parseWith(pt: Uint8Array, ctx: TlvContext, letter: LetterParts | undefi
   }
   if (patterns.length > 0) out.protectedPatterns = patterns
   requireFields(out, ctx, anchorWithPrev)
+  // the salt is sealed exactly when something is blinded with it
+  const blinded = out.newOid !== undefined || out.prevOid !== undefined || out.headOid !== undefined
+  if (blinded !== (out.oidSalt !== undefined)) throw new MalformedError(blinded ? 'a real OID without its salt' : 'a salt with nothing blinded')
   return out
 }
 
@@ -325,7 +389,7 @@ function requireFields(f: DocFields, ctx: TlvContext, anchorWithPrev: boolean): 
       }
       return
     case 'event':
-      if (f.eventValue === undefined) throw new MalformedError('event without a value')
+      if (f.eventValue === undefined && f.headOid === undefined) throw new MalformedError('event without a value')
       return
     case 'review':
       return
@@ -339,7 +403,7 @@ function record(tag: number, value: Uint8Array): Bytes {
 
 /**
  * Encode `fields` as TLV in ascending tag order, `protectedPatterns` as repeated tag-7
- * records. No validation: {@link buildTlv} validates.
+ * records, the blind tags (22 < 23 < 24 < 27) last. No validation: {@link buildTlv} validates.
  */
 export function encodeTlv(fields: DocFields): Bytes {
   const enc = new TextEncoder()
@@ -362,6 +426,14 @@ export function encodeTlv(fields: DocFields): Bytes {
   text(TAG.importedAuthor, fields.importedAuthor)
   text(TAG.importedUrl, fields.importedUrl)
   text(TAG.eventValue, fields.eventValue)
+  for (const [tag, v] of [
+    [TAG.newOid, fields.newOid],
+    [TAG.prevOid, fields.prevOid],
+    [TAG.headOid, fields.headOid],
+    [TAG.oidSalt, fields.oidSalt],
+  ] as const) {
+    if (v !== undefined) parts.push(record(tag, v))
+  }
   return concat(...parts)
 }
 

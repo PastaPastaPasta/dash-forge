@@ -23,7 +23,7 @@ import { retryWhileMissing } from '../view/retry'
 import { DOC, asIdentifierString, withoutSessions, type RepoRef } from './contract'
 import { docAudience } from './private-content'
 import { loadPrivateSessionUncached, sessionUnwrapper } from './private-session'
-import { PrivateWriteError, editFields, isSealedKind, sealContent, sealedTextUse, writeBlockReason } from './private-writes'
+import { PrivateWriteError, editFields, isSealedKind, sealContent, sealedTextUse, writeBlockReason, type DocSealer, type HeadBlind, type MembersPatch } from './private-writes'
 import { contractOf, repoSource } from './source'
 import { knownMembersKey, noteMembersKey as noteKey, recordMembersKey } from './members-key-cache'
 
@@ -322,6 +322,12 @@ export async function membersWriter(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef)
   }
 }
 
+/** The event kind of a PR head update (`pr_sync`). */
+const HEAD_UPDATE_KIND = 16
+
+/** The v0x03 sealer of members-only content (`sealMembersDoc` with `vis: "public"`). */
+const sealMembers: DocSealer = (k, doc, f) => sealMembersDoc(k, { ...doc, vis: 'public' }, f)
+
 /** The sealed types members-only content takes in this release (PRs and ref updates are phase 3). */
 const MEMBERS_TYPES: ReadonlySet<PrivateDocType> = new Set(['issue', 'comment', 'review', 'event'])
 
@@ -331,7 +337,11 @@ const MEMBERS_TYPES: ReadonlySet<PrivateDocType> = new Set(['issue', 'comment', 
  * set, and `asMember` proves the signer a member (D14). Returns the document data to post.
  */
 export async function sealMembersContent(auth: WriteAuth, type: PrivateDocType, data: Record<string, unknown>, writer: MembersWriter): Promise<Record<string, unknown>> {
+  // a members-only PR goes only through `sealMembersPatch`, a PR head update (an event naming a
+  // commit) only through `sealMembersHeadUpdate`: here its `oid` would be sealed nowhere and the
+  // real commit left in plaintext
   if (!MEMBERS_TYPES.has(type)) throw refused(`a members-only ${type} is not supported yet`)
+  if (type === 'event' && data['oid'] !== undefined && data['oid'] !== null) throw refused('a members-only event that names a commit is written as a head update')
   if (isSealedKind(type)) {
     const { used } = sealedTextUse(type, data)
     const limit = MEMBERS_TEXT_LIMIT[type]
@@ -344,7 +354,7 @@ export async function sealMembersContent(auth: WriteAuth, type: PrivateDocType, 
   const verdict = data['verdict']
   const member = verdict === 4 ? { ...data, verdict: 1 } : verdict === 5 ? { ...data, verdict: 2 } : data
   try {
-    const sealed = await sealContent(writer.keys, type, owner, member, (k, doc, f) => sealMembersDoc(k, { ...doc, vis: 'public' }, f))
+    const sealed = await sealContent(writer.keys, type, owner, member, sealMembers)
     // An event carries no proof field (its gate is the member event type itself).
     return type === 'event' ? sealed : { ...sealed, asMember: owner }
   } catch (e) {
@@ -352,6 +362,30 @@ export async function sealMembersContent(auth: WriteAuth, type: PrivateDocType, 
     if (e instanceof MalformedError) throw refused(`this ${type} can't be written members-only: ${e.message}`)
     throw e
   }
+}
+
+/**
+ * The sealed document of a members-only **pull request** `data` under the members key's write
+ * epoch `keys` (pure; forge-core `seal_members_patch_props`, pinned by the `sealed_patch`
+ * vectors): its text and branch names in `enc` v0x03, `baseRefNameHash` / `sourceRefNameHash` by
+ * `patch`, and for a members-only source the copied blind `headOid` (rule C) with the real head
+ * and its salt sealed beside it. Throws `MalformedError` before anything is signed when `headOid`
+ * is not the blind of `patch.head`. Not wired to a write path yet (phase 3C).
+ */
+export function sealMembersPatch(keys: EpochKeys, ownerId: Uint8Array, data: Record<string, unknown>, patch: MembersPatch): Promise<Record<string, unknown>> {
+  return sealContent(keys, 'patch', ownerId, data, sealMembers, patch)
+}
+
+/**
+ * The sealed **head update** (`event` kind 16) of a members-only PR whose source is members-only
+ * (pure; forge-core `seal_members_head_update_props`): `oid` is the blind copied from the ref
+ * update that moved the branch, and the real head and that update's salt are sealed in `enc`
+ * (TLV 24, 27). Throws `MalformedError` when `oid` is not the blind of `head`, or `data` is not a
+ * kind-16 event.
+ */
+export async function sealMembersHeadUpdate(keys: EpochKeys, ownerId: Uint8Array, data: Record<string, unknown>, head: HeadBlind): Promise<Record<string, unknown>> {
+  if (data['kind'] !== HEAD_UPDATE_KIND) throw new MalformedError('a head update is an event of kind 16')
+  return sealContent(keys, 'event', ownerId, data, sealMembers, { basePublic: false, sourcePublic: false, head })
 }
 
 /**

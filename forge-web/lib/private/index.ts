@@ -9,7 +9,8 @@
  * `./testing`, which this module deliberately does not re-export (ESLint bans importing it
  * outside tests); `__unsafe*` symbols of `./doc`, `./pack` and `./release` are likewise not
  * re-exported. `./named` is the specific-people letter (`enc` v0x04); `sealMembersDoc` the
- * members-only (`enc` v0x03) seal of a public repository's lane. `./bundle` and `./convert` are
+ * members-only (`enc` v0x03) seal of a public repository's lane. `./blind` and `./members-ref` are the blinded OIDs of members-only
+ * branches and pull requests (§19; `sealMembersRef`'s fixed-salt twin is test-only). `./bundle` and `./convert` are
  * a repository made public's readers (§18): its conversion facts and the keys its owner published. `./release`'s `sealRelease` and `sealReleaseManifest` are, since the web writes
  * sealed releases (`private-repos.md` §16.8, `lib/repo/sealed-release.ts`): both draw hedged
  * randomness, and only their fixed-nonce twins stay test-only.
@@ -41,6 +42,7 @@ export {
   RECIPIENT_TAG,
   letterKind,
   parseLetterTlv,
+  parseMembersTlv,
   parseTlv,
   propOf,
   type DocFields,
@@ -146,6 +148,33 @@ export {
   type ReleaseStatus,
   type StoredRelease,
 } from './release'
+export {
+  BlindMap,
+  SALT_LEN,
+  alertOf,
+  blind,
+  check as checkBlind,
+  freshSalt,
+  headOf,
+  isOidWidth,
+  plaintextOf as blindedPlaintextOf,
+  type Alert as BlindAlert,
+  type CheckStatus as BlindCheck,
+  type Head as BlindHead,
+  type OidField,
+} from './blind'
+export {
+  openMembersRef,
+  realValues as refRealValues,
+  refOpenedFrom,
+  sealMembersRef,
+  sealedRefProps,
+  type RealRefUpdate,
+  type RefOpened,
+  type RefUpdateIn,
+  type RefUpdateType,
+  type SealedRefUpdate,
+} from './members-ref'
 export {
   WrapError,
   buildWrapPlaintext,
