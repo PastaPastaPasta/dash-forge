@@ -142,6 +142,22 @@ const FIRST_EXTENSION = 64
  * bytes each, in slot order. In every other envelope it stays reserved, so malformed.
  */
 export const RECIPIENT_TAG = 25
+/**
+ * Tag 29 (`enc` v0x04 only, at most once, after the recipients): the role group a letter was sent
+ * to, one byte (1 Maintainers, 2 Writers and maintainers), so its recipients can say "maintainers
+ * when sent" (mixed-visibility DESIGN §4.2). In every other envelope it stays reserved.
+ */
+export const GROUP_TAG = 29
+
+/** The role group a letter was sent to (tag 29), "as listed by the sender" like its recipients. */
+export type LetterGroup = 'maintainers' | 'writers'
+
+const GROUP_CODES: Readonly<Record<LetterGroup, number>> = { maintainers: 1, writers: 2 }
+
+/** The tag-29 byte of `group`. */
+export function letterGroupCode(group: LetterGroup): number {
+  return GROUP_CODES[group]
+}
 /** Tag 64, the first extension tag: the padding record of a members or specific-people document (§4.3). */
 export const PAD_TAG = FIRST_EXTENSION
 /** Members and specific-people documents pad their TLV to a multiple of this many bytes (D28). */
@@ -179,25 +195,38 @@ function decodeText(value: Uint8Array, spec: TextSpec): string {
 }
 
 /**
- * Parse and validate a TLV plaintext for a document of `ctx.type` (§4.3). Tag 25 is refused: it
- * belongs to `enc` v0x04 only ({@link parseLetterTlv}).
+ * Parse and validate a TLV plaintext for a document of `ctx.type` (§4.3). Tags 25 and 29 are
+ * refused: they belong to `enc` v0x04 only ({@link parseLetterTlv}).
  */
 export function parseTlv(pt: Uint8Array, ctx: TlvContext): DocFields {
   return parseWith(pt, ctx, undefined)
 }
 
-/**
- * Parse the TLV of a specific-people letter (`enc` v0x04): the content records of `type`, one
- * tag-25 record per recipient (32 bytes each, consecutive, in slot order), then extension
- * records. Throws {@link MalformedError}.
- */
-export function parseLetterTlv(pt: Uint8Array, type: PrivateDocType): { fields: DocFields; recipients: Uint8Array[] } {
-  const recipients: Uint8Array[] = []
-  const fields = parseWith(pt, { type, epoch: 0 }, recipients)
-  return { fields, recipients }
+/** A letter's TLV, parsed. */
+export interface LetterTlv {
+  readonly fields: DocFields
+  readonly recipients: Uint8Array[]
+  readonly group: LetterGroup | null
 }
 
-function parseWith(pt: Uint8Array, ctx: TlvContext, recipients: Uint8Array[] | undefined): DocFields {
+/**
+ * Parse the TLV of a specific-people letter (`enc` v0x04): the content records of `type`, one
+ * tag-25 record per recipient (32 bytes each, consecutive, in slot order), at most one tag-29
+ * group record (one byte, 1 or 2), then extension records. Throws {@link MalformedError}.
+ */
+export function parseLetterTlv(pt: Uint8Array, type: PrivateDocType): LetterTlv {
+  const letter: LetterParts = { recipients: [], group: null }
+  const fields = parseWith(pt, { type, epoch: 0 }, letter)
+  return { fields, recipients: letter.recipients, group: letter.group }
+}
+
+/** What only a letter's TLV carries. */
+interface LetterParts {
+  readonly recipients: Uint8Array[]
+  group: LetterGroup | null
+}
+
+function parseWith(pt: Uint8Array, ctx: TlvContext, letter: LetterParts | undefined): DocFields {
   const allowed = TAGS_OF[ctx.type]
   // Every config of an epoch e >= 1 carries prevEpoch/prevEpochKey, anchor or not (§4.3): any
   // of them may become the anchor once an earlier one's author stops being a maintainer.
@@ -223,9 +252,16 @@ function parseWith(pt: Uint8Array, ctx: TlvContext, recipients: Uint8Array[] | u
     }
     lastTag = tag
     if (tag >= FIRST_EXTENSION) continue
-    if (tag === RECIPIENT_TAG && recipients !== undefined && letterKind(ctx.type)) {
+    if (tag === RECIPIENT_TAG && letter !== undefined && letterKind(ctx.type)) {
       if (len !== 32) throw new MalformedError('a recipient id is not 32 bytes')
-      recipients.push(pt.slice(start, end))
+      letter.recipients.push(pt.slice(start, end))
+      continue
+    }
+    if (tag === GROUP_TAG && letter !== undefined && letterKind(ctx.type)) {
+      // exactly one byte naming a group (ascending order already refuses a second record)
+      const group = len === 1 ? (Object.keys(GROUP_CODES) as LetterGroup[]).find((g) => GROUP_CODES[g] === pt[start]) : undefined
+      if (group === undefined) throw new MalformedError('tag 29 names no group')
+      letter.group = group
       continue
     }
     if (tag >= FIRST_RESERVED) throw new MalformedError(`reserved tag ${tag}`)
@@ -341,9 +377,13 @@ export function padRecord(n: number, room: number): Bytes {
   return record(PAD_TAG, new Uint8Array(fill))
 }
 
-/** One tag-25 record per recipient id, in slot order: a letter's TLV tail before its padding. */
-export function encodeRecipients(ids: readonly Uint8Array[]): Bytes {
-  return concat(...ids.map((id) => record(RECIPIENT_TAG, id)))
+/**
+ * One tag-25 record per recipient id, in slot order, then the tag-29 record of `group` when the
+ * letter was sent to one: a letter's TLV tail before its padding.
+ */
+export function encodeRecipients(ids: readonly Uint8Array[], group: LetterGroup | null = null): Bytes {
+  const tail = group === null ? [] : [record(GROUP_TAG, new Uint8Array([GROUP_CODES[group]]))]
+  return concat(...ids.map((id) => record(RECIPIENT_TAG, id)), ...tail)
 }
 
 /** {@link encodeTlv}, then {@link parseTlv} with the same context; throws {@link MalformedError}. */

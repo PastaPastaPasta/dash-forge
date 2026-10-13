@@ -1,0 +1,61 @@
+{
+  "name": "reply_widens",
+  "description": "a reply naming someone else goes to the parent's people and them: they read from this reply on.",
+  "case": "role_group_letter",
+  "rules": "v2",
+  "input": {
+    "owner": "6owner1111111111111111111111111111111111111",
+    "sender": "8writer111111111111111111111111111111111111",
+    "members": [
+      {
+        "identity": "7maint1111111111111111111111111111111111111",
+        "role": "maintainer"
+      },
+      {
+        "identity": "8writer111111111111111111111111111111111111",
+        "role": "writer"
+      },
+      {
+        "identity": "8writer222222222222222222222222222222222222",
+        "role": "writer"
+      },
+      {
+        "identity": "9triage11111111111111111111111111111111111",
+        "role": "triage"
+      },
+      {
+        "identity": "Areader11111111111111111111111111111111111",
+        "role": "reader"
+      }
+    ],
+    "keyless": [],
+    "request": {
+      "group": null,
+      "people": [
+        "7maint1111111111111111111111111111111111111"
+      ]
+    },
+    "exact": null,
+    "parents": [
+      {
+        "recipients": [
+          "8writer111111111111111111111111111111111111",
+          "Bfrank111111111111111111111111111111111111",
+          "Cstranger11111111111111111111111111111111"
+        ],
+        "group": null
+      }
+    ],
+    "membersOnlyParent": false
+  },
+  "expected": {
+    "recipients": [
+      "8writer111111111111111111111111111111111111",
+      "7maint1111111111111111111111111111111111111",
+      "Bfrank111111111111111111111111111111111111",
+      "Cstranger11111111111111111111111111111111"
+    ],
+    "skipped": [],
+    "group": null
+  }
+}

@@ -1,0 +1,154 @@
+{
+  "name": "group_writers",
+  "description": "a comment to the writers preset (5 people, the sender in slot 0): the TLV carries tag 29 (2) after the recipients, which every recipient reads back as the group.",
+  "case": "named_envelope",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "doc": {
+      "type": "comment",
+      "vis": "public",
+      "ownerId": "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+      "epoch": 0,
+      "targetId": "3333333333333333333333333333333333333333333333333333333333333333"
+    },
+    "fields": {
+      "body": "A letter to the writers when sent (5 people)."
+    },
+    "sender": {
+      "identityId": "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+      "priv": "2ad1b589f470e72d6946b4924abacbed51bb782d293e76cc8541010dec32ddb3",
+      "pub": "021d144ab1f60cb016060ab65044c6cc99287f65bcddb72ed65aca72fd61ff0082",
+      "keyId": 4
+    },
+    "recipients": [
+      {
+        "identityId": "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+        "priv": "2ad1b589f470e72d6946b4924abacbed51bb782d293e76cc8541010dec32ddb3",
+        "pub": "021d144ab1f60cb016060ab65044c6cc99287f65bcddb72ed65aca72fd61ff0082"
+      },
+      {
+        "identityId": "8fcef67268ac484a9ff85e6548ec6f5b3fb7a70feef773ea35daac8dc042e688",
+        "priv": "99905f5e10fe3d19ebf9e2a51a5c872d1a54f749f46bd565529d638c325ef955",
+        "pub": "02bf17b1a250a78519af75826803dc13b2182a3ce97a7badb50135cb3194e2388a"
+      },
+      {
+        "identityId": "3ccad8405e96a830932809a33cf77267873831cf5e1183cfd83d275378ddf810",
+        "priv": "800419f853a2e11eeb44d05d603918884d93a42258c72df493c7d252e30130e8",
+        "pub": "026e30ff71fd069a535f7f75eee8118a4342cb224934cc4fb34959ca59814c9feb"
+      },
+      {
+        "identityId": "6983d325810def364424409135bb8c6cecca0ba0ea80f229c0f46a455a836275",
+        "priv": "0abadf5fa1f7846dfa8e073bd9b40da5c2d54e1b0b6b9a0139fc4077bd25f155",
+        "pub": "025b0a23ba6f307d8a7c52f37a1daeca4a56aafebdefcd75ce6eeca2dc47ef31a0"
+      },
+      {
+        "identityId": "64ac82c9a356f7c8c36196070c575f76f1faa2b1425a10fefcbdf7b642a46991",
+        "priv": "e6a0d90cd98908367bec7faf5b3e35603ece3bbe457e19d0e31aa9c586bfe4c1",
+        "pub": "03775f7907b68b65e9aabc5ca4dbe0947cdf3376eafed8622d007b0a0a9a704cc8"
+      }
+    ],
+    "kObj": "8f171487636f06fdbb7d3e54998d02f77d3197659913a69f0afaf91eaadf1540",
+    "nonce": "22363d953d6afa8a11cc9fab",
+    "ivs": [
+      "eb5590938c676758a07fca350a091fa7",
+      "c8cc1aef76a08e596fa1576408e8cd05",
+      "b768bcb80dfc2d70f3fd56010e068d64",
+      "3e4e0027423e4448f61a291a4f726749",
+      "96e1d39f3d442a1dbef3a4c9765f7057"
+    ],
+    "group": "writers"
+  },
+  "expected": {
+    "shared": [
+      "c7524c877dacb46526e61feb3284a734dce449c07bfb0aae69308c5062f8c7f5",
+      "395ac332bd12c170bcabb57015859838f0715f1d95c0cbe8fe27a7a2dbe91182",
+      "f07bef68ec795b682684e4deca440a944703f1f196a43ede3987a3d638a3ed61",
+      "4d9bd87b92ea430662917282463fe1335c4143d3939352a4f2c17d3d17e356bf",
+      "cff6d569999e5abad79773e5a67798af98b5a710af0c11e7f88c171b59fc4688"
+    ],
+    "commit": "27ccdfd518f4e7cbcdf78152c7023cb79fe6ddfe88a44a64914d427c00a029c8",
+    "kcv": "27ccdfd518f4e7cbcdf78152c702",
+    "headerSha256": "e3a26f46076f3c4846858b3c55e14a035f45625a03a0117cb2054b78a7208e0f",
+    "ad": "646173682d666f7267652f76322f646f63000411111111111111111111111111111111111111111111111111111111111111115e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea00000000636f6d6d656e74003333333333333333333333333333333333333333333333333333333333333333e3a26f46076f3c4846858b3c55e14a035f45625a03a0117cb2054b78a7208e0f",
+    "tlv": "02002d41206c657474657220746f207468652077726974657273207768656e2073656e742028352070656f706c65292e1900205e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea1900208fcef67268ac484a9ff85e6548ec6f5b3fb7a70feef773ea35daac8dc042e6881900203ccad8405e96a830932809a33cf77267873831cf5e1183cfd83d275378ddf8101900206983d325810def364424409135bb8c6cecca0ba0ea80f229c0f46a455a83627519002064ac82c9a356f7c8c36196070c575f76f1faa2b1425a10fefcbdf7b642a469911d00010240001a0000000000000000000000000000000000000000000000000000",
+    "enc": "04050000000427ccdfd518f4e7cbcdf78152c7023cb79fe6ddfe88a44a64914d427c00a029c8eb5590938c676758a07fca350a091fa78eda63bf0339c49f812e74de35b7788d50675be78733c66df381ab72aedd92f9bec4ee58b2b9ff13ddedf8ca978fe551c8cc1aef76a08e596fa1576408e8cd05b952791251c0b858c13fabd49af7b2fe25c1a98dfb8c7301e398beea5c5d6c6efce96e34bdd931ac035ad8157bc47a0fb768bcb80dfc2d70f3fd56010e068d643076828bf8425ac48a475ae507ebc99498a462f914223120eb67d6a07abfc490cd72ca7b232253a225bea8b2fa3093113e4e0027423e4448f61a291a4f72674916ae1c8503f97a2f352ddc279d468c363561947a8cf5419cb5b5f83a31e77c4d6b788a8776133d27cca069aebaa6044696e1d39f3d442a1dbef3a4c9765f7057d04c99e2c80ae9c39a6dd16e06e4569e1ab5eef8b3ab48e5339f8c4f9a431a1ed0bcbf3cfd986b6a69bb8ffc95a911fa22363d953d6afa8a11cc9fabf008fc3b1c700981b958ed1a571f58859f5960c29588143fd03d37bcae28cef7de4f021a685b1c3a8c4519ed1ba8f5dfb3e008dae211465e10eaaf721a0dc40ad657cde13292ad54a1e331113ac3480d8f5d4c17d2e09637a7fb7b112eed1ac8b2e882efb636ab4b7c2f37d8340d8383e93de4a140d681e8987a598f348711615f26e6a07a3c798f846dd921eb0e178b9bf86fe4cee8464fe2f373aa802fe12588f4b3781c4de89721c852fbb9de7f080cfcbdec5080bfae13f204639edf90258859dafbd2db3cd3c3175dd22d3ae3d727a8ffde7f610d3796c2fadf2540daff4875227885236c5435c38608312b1ae01649d88dfed92a33cdc1b8552e6dd4de2419ef88e9291b707c491fa6e3d9e3ea",
+    "opened": [
+      {
+        "status": "readable",
+        "fields": {
+          "body": "A letter to the writers when sent (5 people)."
+        },
+        "recipients": [
+          "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+          "8fcef67268ac484a9ff85e6548ec6f5b3fb7a70feef773ea35daac8dc042e688",
+          "3ccad8405e96a830932809a33cf77267873831cf5e1183cfd83d275378ddf810",
+          "6983d325810def364424409135bb8c6cecca0ba0ea80f229c0f46a455a836275",
+          "64ac82c9a356f7c8c36196070c575f76f1faa2b1425a10fefcbdf7b642a46991"
+        ],
+        "slot": 0,
+        "group": "writers"
+      },
+      {
+        "status": "readable",
+        "fields": {
+          "body": "A letter to the writers when sent (5 people)."
+        },
+        "recipients": [
+          "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+          "8fcef67268ac484a9ff85e6548ec6f5b3fb7a70feef773ea35daac8dc042e688",
+          "3ccad8405e96a830932809a33cf77267873831cf5e1183cfd83d275378ddf810",
+          "6983d325810def364424409135bb8c6cecca0ba0ea80f229c0f46a455a836275",
+          "64ac82c9a356f7c8c36196070c575f76f1faa2b1425a10fefcbdf7b642a46991"
+        ],
+        "slot": 1,
+        "group": "writers"
+      },
+      {
+        "status": "readable",
+        "fields": {
+          "body": "A letter to the writers when sent (5 people)."
+        },
+        "recipients": [
+          "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+          "8fcef67268ac484a9ff85e6548ec6f5b3fb7a70feef773ea35daac8dc042e688",
+          "3ccad8405e96a830932809a33cf77267873831cf5e1183cfd83d275378ddf810",
+          "6983d325810def364424409135bb8c6cecca0ba0ea80f229c0f46a455a836275",
+          "64ac82c9a356f7c8c36196070c575f76f1faa2b1425a10fefcbdf7b642a46991"
+        ],
+        "slot": 2,
+        "group": "writers"
+      },
+      {
+        "status": "readable",
+        "fields": {
+          "body": "A letter to the writers when sent (5 people)."
+        },
+        "recipients": [
+          "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+          "8fcef67268ac484a9ff85e6548ec6f5b3fb7a70feef773ea35daac8dc042e688",
+          "3ccad8405e96a830932809a33cf77267873831cf5e1183cfd83d275378ddf810",
+          "6983d325810def364424409135bb8c6cecca0ba0ea80f229c0f46a455a836275",
+          "64ac82c9a356f7c8c36196070c575f76f1faa2b1425a10fefcbdf7b642a46991"
+        ],
+        "slot": 3,
+        "group": "writers"
+      },
+      {
+        "status": "readable",
+        "fields": {
+          "body": "A letter to the writers when sent (5 people)."
+        },
+        "recipients": [
+          "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+          "8fcef67268ac484a9ff85e6548ec6f5b3fb7a70feef773ea35daac8dc042e688",
+          "3ccad8405e96a830932809a33cf77267873831cf5e1183cfd83d275378ddf810",
+          "6983d325810def364424409135bb8c6cecca0ba0ea80f229c0f46a455a836275",
+          "64ac82c9a356f7c8c36196070c575f76f1faa2b1425a10fefcbdf7b642a46991"
+        ],
+        "slot": 4,
+        "group": "writers"
+      }
+    ]
+  }
+}

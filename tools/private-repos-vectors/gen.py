@@ -2021,6 +2021,8 @@ def mixed_vectors():
          rec(64, b"") + ISSUE_TLV, MALFORMED),
         ("recipient_tag_refused", "tag 25 (a letter's recipient list) is reserved outside enc v0x04: malformed.",
          ISSUE_TLV + rec(25, bytes(32)), MALFORMED),
+        ("group_tag_refused", "tag 29 (a letter's role group) is reserved outside enc v0x04: malformed.",
+         ISSUE_TLV + rec(29, bytes([1])), MALFORMED),
         ("blind_tags_reserved", "tags 22-24 and 27 (sealed ref values, defined for later clients) stay reserved: "
          "malformed.", ISSUE_TLV + rec(22, bytes(20)), MALFORMED),
         ("reserved_tag_23", "tag 23 (a sealed ref update's real prevOid) stays reserved: malformed.",
@@ -2086,9 +2088,14 @@ def ecdh(d, pub_bytes):
     return sha256(comp(ec_mul(d, (x, y))))
 
 
+GROUP_TAG = 29
+GROUP_CODES = {"maintainers": 1, "writers": 2}
+
+
 def seal_named(doc, sender, key_id, recipients, records, k_obj, nonce, ivs, slot_pt=None, slot_override=None,
-               tlv_override=None):
-    """(shared keys, COMMIT_obj, H, AD', TLV, enc) of a letter; the overrides build negative vectors."""
+               tlv_override=None, group=None):
+    """(shared keys, COMMIT_obj, H, AD', TLV, enc) of a letter; the overrides build negative vectors. `group`
+    ("maintainers" or "writers") adds the tag-29 record after the recipients (§4.2, role groups)."""
     n = len(recipients)
     kd, C = obj_keys(k_obj)
     spt = bytes([SLOT_VERSION]) + C[:14] + k_obj if slot_pt is None else slot_pt
@@ -2101,6 +2108,8 @@ def seal_named(doc, sender, key_id, recipients, records, k_obj, nonce, ivs, slot
     A = ad(doc, None, V4) + sha256(head)
     if tlv_override is None:
         body = records + b"".join(rec(RECIPIENT_TAG, r["id"]) for r in recipients)
+        if group is not None:
+            body += rec(GROUP_TAG, bytes([GROUP_CODES[group]]))
         room = MAX_ENC[doc["type"]] - (66 + 64 * n)
         pt = body + (doc_pad(len(body), room) if doc["type"] in PADDED else b"")
     else:
@@ -2118,8 +2127,9 @@ def cbc_open(key, data):
 
 
 def parse_letter_tlv(pt):
-    """(body, recipient ids) of a comment letter's TLV, or None (the strictness the vectors need)."""
-    pos, last, body, ids = 0, -1, None, []
+    """(body, recipient ids, group) of a comment letter's TLV, or None (the strictness the vectors need): tag 29
+    is one byte, 1 or 2, after the recipients (ascending order), at most once."""
+    pos, last, body, ids, group = 0, -1, None, [], None
     while pos < len(pt):
         if len(pt) - pos < 3:
             return None
@@ -2134,9 +2144,11 @@ def parse_letter_tlv(pt):
             body = val.decode()
         elif tag == RECIPIENT_TAG and ln == 32:
             ids.append(val)
+        elif tag == GROUP_TAG and ln == 1 and val[0] in GROUP_CODES.values():
+            group = {v: k for k, v in GROUP_CODES.items()}[val[0]]
         else:
             return None
-    return (body, ids) if body else None
+    return (body, ids, group) if body else None
 
 
 def open_named(doc, enc, owner_keys, reader_id, reader_privs):
@@ -2180,7 +2192,10 @@ def open_named(doc, enc, owner_keys, reader_id, reader_privs):
     if parsed is None or len(parsed[1]) != n or parsed[1][0] != bytes.fromhex(doc["ownerId"]) \
             or len(set(parsed[1])) != n or parsed[1][slot] != reader_id:
         return MALFORMED
-    return dict(status="readable", fields={"body": parsed[0]}, recipients=[H(r) for r in parsed[1]], slot=slot)
+    out = dict(status="readable", fields={"body": parsed[0]}, recipients=[H(r) for r in parsed[1]], slot=slot)
+    if parsed[2] is not None:
+        out["group"] = parsed[2]
+    return out
 
 
 def owner_key(party, key_id=4, purpose=PURPOSE_ENCRYPTION, key_type=KEY_TYPE_SECP256K1):
@@ -2379,6 +2394,45 @@ def named_vectors():
     room = MAX_ENC["comment"] - (66 + 64 * 3) - 3 * 35 - 3
     refused("refused_over_cap", f"a comment body one byte over the room of a letter to 3 ({room} bytes) does not "
             "fit.", NAMED_N3, "tooLarge", fields={"body": "b" * (room + 1)})
+
+    # role groups (§4.2, revision 4): the letter to a group's people carries tag 29 after the recipients, so they
+    # can say "maintainers when sent"; everyone else sees n recipients, as for any letter
+    for group, members in (("maintainers", NAMED_N3), ("writers", [NAMED_SENDER] + NAMED_OTHERS[:4])):
+        n = len(members)
+        k_obj, nonce, ivs = named_inputs(n)
+        body = f"A letter to the {group} when sent ({n} people)."
+        doc = named_doc()
+        shared, C, head, A, pt, enc = seal_named(doc, NAMED_SENDER, 4, members, tlv((2, body.encode())), k_obj,
+                                                 nonce, ivs, group=group)
+        okeys = [owner_key(NAMED_SENDER)]
+        opened = [open_named(doc, enc, okeys, p["id"], [p["priv"]]) for p in members]
+        assert all(o["status"] == "readable" and o["group"] == group for o in opened)
+        assert open_named(doc, enc, okeys, NAMED_OUTSIDER["id"], [NAMED_OUTSIDER["priv"]]) == unreadable("notARecipient")
+        vector("named_envelope", f"group_{group}",
+               f"a comment to the {group} preset ({n} people, the sender in slot 0): the TLV carries tag 29 "
+               f"({GROUP_CODES[group]}) after the recipients, which every recipient reads back as the group.",
+               dict(repoId=H(repoId), doc=doc, fields={"body": body}, sender=dict(party_json(NAMED_SENDER), keyId=4),
+                    recipients=[party_json(p) for p in members], kObj=H(k_obj), nonce=H(nonce),
+                    ivs=[H(i) for i in ivs], group=group),
+               dict(shared=[H(s) for s in shared], commit=H(C), kcv=H(C[:14]), headerSha256=H(sha256(head)), ad=H(A),
+                    tlv=H(pt), enc=H(enc), opened=opened))
+
+    k_obj, nonce, ivs = named_inputs(3)
+    body = tlv((2, b"A letter to the maintainers when sent."))
+    doc = named_doc()
+    ids3 = b"".join(rec(25, p["id"]) for p in NAMED_N3)
+    for name, desc, tail in (
+            ("group_byte_zero", "tag 29 holds 0, which names no group: malformed.", ids3 + rec(29, b"\x00")),
+            ("group_byte_three", "tag 29 holds 3 (only 1, Maintainers, and 2, Writers and maintainers, exist): "
+             "malformed.", ids3 + rec(29, b"\x03")),
+            ("group_two_bytes", "tag 29 is exactly one byte: two are malformed.", ids3 + rec(29, b"\x01\x01")),
+            ("group_twice", "tag 29 at most once: a second record is malformed.",
+             ids3 + rec(29, b"\x01") + rec(29, b"\x01")),
+            ("group_before_recipients", "tag 29 before the tag-25 records breaks the ascending order: malformed.",
+             rec(29, b"\x01") + ids3)):
+        e = seal_named(doc, NAMED_SENDER, 4, NAMED_N3, body, k_obj, nonce, ivs, tlv_override=body + tail)[5]
+        res = neg(name, desc, e, readers3[:1])
+        assert res == [MALFORMED], name
 
 
 # --- sealed artifacts under a specific-people header (DFPK version 0x02) ---------------------------

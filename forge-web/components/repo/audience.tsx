@@ -9,15 +9,19 @@
  * - what a reader who cannot open something sees: a placeholder row ("Members-only comment ·
  *   @alice · 2h ago"), one line for a locked member ("3 members-only comments · Unlock to
  *   read"), and the "#N · members-only" page;
- * - the sealed card's "Visible to members", the header chip, and "View as public".
+ * - the sealed card's "Visible to members", the header chip, and "View as public";
+ * - messages to specific people (DESIGN §4.2): the Maintainers, Writers and maintainers and
+ *   Specific people… options, a thread's people re-listed, and their placeholders ("Comment to 3
+ *   people · @alice · 2h ago"); the people picker and "Visible to alice, bob and you" live in
+ *   `letter-picker.tsx`.
  *
- * Every string here follows the glossary: Public, Members, members-only. Never "sealed" or
- * "lane", nor any internal id.
+ * Every string here follows the glossary: Public, Members, members-only, a "message" to specific
+ * people. Never "sealed", "lane" or "letter", nor any internal id.
  */
 
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import Link from 'next/link'
-import { CircleDot, Eye, EyeOff, Globe, GitPullRequest, Lock } from 'lucide-react'
+import { CircleDot, Eye, EyeOff, Globe, GitPullRequest, Lock, Users } from 'lucide-react'
 
 import type { RepoHome, MembersOnlyEntry, MembersOnlyTarget } from '@/lib/view'
 import type { MembersAccess } from '@/lib/view/repo-view'
@@ -27,6 +31,9 @@ import { readRunners } from '@/lib/repo/checks'
 import { enableMembersContent } from '@/lib/repo/private-members'
 import { encryptionKeyState } from '@/lib/auth/encryption-key'
 import { NO_KEY_SHARED_TEXT } from '@/lib/repo/members-writes'
+import { composerCandidates, previewLetter, type LetterPreview, type LetterThread } from '@/lib/repo/letter-writes'
+import type { LetterFacts } from '@/lib/repo/private-content'
+import type { LetterGroup, ParentLetter } from '@/lib/rules/letters'
 import { openedMembersTexts, subscribeMembersTexts } from '@/lib/repo/members-texts'
 import { PRIVATE_REPOS_SETTINGS } from '@/lib/settings-links'
 import { previewCredits } from '@/lib/sdk'
@@ -35,6 +42,22 @@ import { shortId } from '@/lib/utils'
 import { plural, timeAgo } from '@/lib/view/format'
 import {
   AUDIENCE_QUESTION,
+  LETTER_GROUPS,
+  LETTER_OPTION_TEXT,
+  NO_LETTER_ASK,
+  SPECIFIC_PEOPLE,
+  SPECIFIC_PEOPLE_SENTENCE,
+  groupLabel,
+  groupSentence,
+  letterChipLabel,
+  letterRefusalText,
+  notPublic,
+  placeholderTitle,
+  skippedText,
+  tooManyText,
+  wideningText,
+  type LetterAsk,
+  type LetterOffer,
   MEMBERS_OPTION_TEXT,
   PUBLIC_SENTENCE,
   QUOTE_CONFIRM,
@@ -50,7 +73,7 @@ import {
   lockedCount,
   membersCount,
   membersOnlyNoun,
-  membersOnlyTitle,
+  peopleCount,
   membersSentence,
   quotesMembersText,
   QuoteIndex,
@@ -70,11 +93,12 @@ import { takePublicViewFocus, usePublicView } from '@/hooks/use-public-view'
 import { useParam } from '@/hooks/use-query-param'
 import { Author } from '@/components/author'
 import { ConfirmDialog } from '@/components/confirm-dialog'
-import { UnlockMore, UNLOCK_MEMBERS_ONLY } from '@/components/auth/unlock-more'
+import { UnlockMore, UNLOCK_LETTERS, UNLOCK_MEMBERS_ONLY } from '@/components/auth/unlock-more'
 import type { Network } from '@/lib/constants'
 import { Button } from '@/components/ui/button'
 import { Dialog, useEscapeLayer } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
+import { PeoplePicker, VisibleToPeople, letterPeople, useKeyless, useNames } from '@/components/repo/letter-picker'
 
 const MUTED = 'text-anvil-500 dark:text-anvil-400'
 
@@ -97,7 +121,44 @@ export interface ComposerAudienceState {
   readonly maintainer: boolean
   /** Turn the audience back to the thread's (after a post). */
   readonly reset: () => void
+  /** Who a message to specific people goes to, as asked (`audience` `specificPeople`). */
+  readonly letter: LetterAsk
+  readonly setLetter: (a: LetterAsk) => void
+  /** Pick specific people with `ask` in one go (a role group, a forward's people). */
+  readonly sendTo: (ask: LetterAsk) => void
+  /** The plan of a message to specific people as it stands (null until members and keys are read). */
+  readonly preview: LetterPreview | null
+  /** The thread's messages to specific people this one replies under, and its members-only parents. */
+  readonly thread: LetterThread
+  /** The repo's members (null until read). */
+  readonly members: readonly Membership[] | null
+  /** The viewer (base58), or null signed out. */
+  readonly viewer: string | null
+  /** Why the composer can't post as it stands (a refused message to specific people), or null. */
+  readonly blocked: string | null
 }
+
+/** What a composer knows of its thread's messages to specific people (DESIGN D26). */
+export interface LetterThreadContext {
+  /** The opened ones it replies under (the target, the comment replied to, its root), each as listed by its writer. */
+  readonly parents: readonly ParentLetter[]
+  /** One of them is a message this viewer can't read: only its recipients can reply. */
+  readonly unreadable?: boolean
+}
+
+/** The {@link LetterThreadContext} of a thread whose items (target, replied comment, root) carry these marks. */
+export function letterThreadOf(items: readonly ({ readonly audience?: string; readonly letter?: LetterFacts; readonly membersOnly?: true } | null | undefined)[]): LetterThreadContext {
+  const parents: ParentLetter[] = []
+  let unreadable = false
+  for (const it of items) {
+    if (it?.audience !== 'specificPeople') continue
+    if (it.letter === undefined || it.membersOnly === true) unreadable = true
+    else parents.push({ recipients: it.letter.recipients, group: it.letter.group })
+  }
+  return { parents, unreadable }
+}
+
+const NO_THREAD: LetterThreadContext = { parents: [] }
 
 /**
  * The audience of a composer on `home`: it starts on the thread's (`parent`), may pick Members
@@ -112,6 +173,9 @@ export function useComposerAudience(
     members = null,
     maintainer = false,
     start,
+    startLetter,
+    letters = true,
+    thread = NO_THREAD,
   }: {
     parent?: ComposerAudience
     members?: readonly Membership[] | null
@@ -121,20 +185,43 @@ export function useComposerAudience(
      * pick holds until this or the thread's audience changes.
      */
     start?: ComposerAudience | undefined
+    /** A saved draft's people (the review drawer), with `start` `specificPeople`. */
+    startLetter?: LetterAsk
+    /** Messages to specific people may be written here (every composer but a new pull request's). */
+    letters?: boolean
+    /** The thread's messages to specific people (a reply re-lists their people). */
+    thread?: LetterThreadContext
   },
 ): ComposerAudienceState {
   const repo = home?.repo ?? null
   const { sdk, ready, network } = useSdk(repoContractIds(repo))
-  const choice = home === null ? null : audienceChoice({ visibility: home.repo.visibility, parent, lane: home.lane, maintainer })
-  // Only a member's chip shows a count, so only a member reads the members for it.
-  const wants = repo !== null && members === null && choice !== null && choice.members !== null
+  const { identity, unlockScope } = useAuth()
+  // The viewer's encryption key here: a message to specific people is sealed with it.
+  const key = useAsync(() => encryptionKeyState(network, identity!), [network, identity ?? '', unlockScope ?? ''], { enabled: identity !== null && letters && home !== null })
+  const offer: LetterOffer = {
+    offered: letters && identity !== null,
+    key: identity === null ? null : (key.data ?? null),
+    ...(thread.unreadable === true ? { thread: 'unreadable' as const } : thread.parents.length > 0 ? { thread: 'open' as const } : {}),
+  }
+  // A thread of messages to specific people takes only those (DESIGN §3.3).
+  const threadParent: ComposerAudience = thread.parents.length > 0 || thread.unreadable === true ? 'specificPeople' : parent
+  const choice = home === null ? null : audienceChoice({ visibility: home.repo.visibility, parent: threadParent, lane: home.lane, maintainer, letters: offer })
+  // Only a member's chip shows a count, so only a member reads the members for it (and anyone
+  // who may send to a role group or to people, for the groups and the plan).
+  const wants = repo !== null && members === null && choice !== null && (choice.members !== null || choice.letters !== null)
   const read = useAsync(() => readMembershipsCached(sdk!, repo!, network), [ready, repo?.repoId ?? '', network], { enabled: ready && sdk !== null && wants })
   const list = members ?? read.data
   const count = list === null || list === undefined ? null : membersCount(list)
   const holders = list === null || list === undefined ? EMPTY : keyHolders(list)
   const initial = choice?.initial ?? 'members'
-  // Inside a members-only thread nothing starts public, whatever a draft says.
-  const preferred: ComposerAudience = start === 'members' || (start === 'public' && choice?.publicAllowed !== false) ? start : initial
+  // Inside a members-only thread nothing starts public, whatever a draft says; inside a thread of
+  // messages to specific people nothing starts anywhere else.
+  const preferred: ComposerAudience =
+    choice?.lettersOnly === true
+      ? 'specificPeople'
+      : start === 'members' || (start === 'specificPeople' && choice?.letters != null) || (start === 'public' && choice?.publicAllowed !== false)
+        ? start
+        : initial
   // The writer's pick, made over `preferred`: it holds until the thread or the draft moves the
   // starting point (the thread loaded, or turned out members-only), and is derived during render,
   // so no render shows a stale audience.
@@ -144,10 +231,82 @@ export function useComposerAudience(
   if (picked !== null && picked.over !== preferred) setPicked(null)
   const audience = picked !== null && picked.over === preferred ? picked.to : preferred
   const setAudience = useCallback((a: ComposerAudience) => setPicked({ over: preferred, to: a }), [preferred])
-  const reset = useCallback(() => setPicked(null), [])
+  // Who a message to specific people goes to: the draft's, else nobody named yet (in a thread:
+  // its people re-listed). A draft read after the composer opened (the review drawer) brings its
+  // people with it, as `start` brings its audience (render-phase, so no render shows a stale list).
+  const startKey = JSON.stringify(startLetter ?? null)
+  const [asked, setAsked] = useState<{ readonly from: string; readonly ask: LetterAsk }>({ from: startKey, ask: startLetter ?? NO_LETTER_ASK })
+  if (asked.from !== startKey) setAsked({ from: startKey, ask: startLetter ?? NO_LETTER_ASK })
+  const letter = asked.from === startKey ? asked.ask : (startLetter ?? NO_LETTER_ASK)
+  const setLetter = useCallback((ask: LetterAsk) => setAsked({ from: startKey, ask }), [startKey])
+  const reset = useCallback(() => {
+    setPicked(null)
+    setAsked({ from: startKey, ask: NO_LETTER_ASK })
+  }, [startKey])
+  const sendTo = useCallback(
+    (ask: LetterAsk) => {
+      setAsked({ from: startKey, ask })
+      setPicked({ over: preferred, to: 'specificPeople' })
+    },
+    [preferred, startKey],
+  )
   // A private repo's composer writes members-only content; one with no page takes its parents'.
-  const settled: ComposerAudience = choice !== null ? audience : repo?.visibility === 'private' ? 'members' : parent
-  return { choice, audience: settled, setAudience, count, holders, maintainer, reset }
+  const settled: ComposerAudience = choice !== null ? audience : repo?.visibility === 'private' ? 'members' : threadParent
+  const letterThread: LetterThread = useMemo(
+    () => ({ parents: thread.parents, membersOnlyParent: repo?.visibility === 'private' || parent === 'members' }),
+    [thread.parents, repo?.visibility, parent],
+  )
+  const preview = useLetterPreview(home, list ?? null, identity, letter, letterThread, choice?.letters != null)
+  const nameOf = useNames(preview?.refusal !== null && preview?.refusal !== undefined && 'people' in preview.refusal ? preview.refusal.people : [])
+  let blocked: string | null = null
+  if (settled === 'specificPeople' && choice !== null) {
+    if (choice.letters !== 'ok') blocked = LETTER_OPTION_TEXT[choice.letters ?? 'no-key']
+    else if (preview?.refusal != null) blocked = letterRefusalText(preview.refusal, nameOf, letter.group)
+  }
+  return {
+    choice,
+    audience: settled,
+    setAudience,
+    count,
+    holders,
+    maintainer,
+    reset,
+    letter,
+    setLetter,
+    sendTo,
+    preview,
+    thread: letterThread,
+    members: list ?? null,
+    viewer: identity,
+    blocked,
+  }
+}
+
+/**
+ * The plan of a message to specific people as the composer stands (`previewLetter`): who it
+ * would go to, who is left out for want of a key, a refusal, the role groups' sizes. Null until
+ * the members and the candidates' keys are read.
+ */
+function useLetterPreview(
+  home: RepoHome | null,
+  members: readonly Membership[] | null,
+  viewer: string | null,
+  ask: LetterAsk,
+  thread: LetterThread,
+  enabled: boolean,
+): LetterPreview | null {
+  const candidates = useMemo(() => {
+    if (home === null || members === null || viewer === null || !enabled) return []
+    // Every role group's people too: the picker sizes both groups.
+    const all = composerCandidates(viewer, home.repo.ownerId, members, ask, thread.parents)
+    for (const g of LETTER_GROUPS) for (const p of composerCandidates(viewer, home.repo.ownerId, members, { group: g, people: [], exact: null }, [])) all.add(p)
+    return [...all]
+  }, [home, members, viewer, ask, thread.parents, enabled])
+  const { keyless, ready } = useKeyless(home?.repo ?? null, candidates, home !== null && enabled)
+  return useMemo(() => {
+    if (home === null || members === null || viewer === null || !enabled || !ready) return null
+    return previewLetter({ owner: home.repo.ownerId, viewer, members, keyless, ask, thread })
+  }, [home, members, viewer, enabled, ready, keyless, ask, thread])
 }
 
 const EMPTY: ReadonlySet<string> = new Set()
@@ -186,12 +345,22 @@ export function AudienceChip({ home, state, testId = 'audience-chip' }: { home: 
     const right = wrap.current.getBoundingClientRect().right
     setAlign(right - PICKER_WIDTH >= PICKER_MARGIN ? 'right' : 'left')
   }, [open])
+ const chipNames = useNames(state.preview?.recipients ?? letterPeople(state.letter, []))
   if (choice === null) return null
-  const label = audienceLabel(audience, state.count?.total ?? null)
-  const Icon = audience === 'public' ? Globe : Lock
-  const pickable = choice.members !== null && (choice.publicAllowed || choice.members !== 'ok')
+  const label =
+    audience === 'specificPeople'
+      ? letterChipLabel(state.letter, {
+          recipients: state.preview?.recipients ?? null,
+          groupCount: state.letter.group === null ? null : (state.preview?.groups[state.letter.group].count ?? null),
+          viewer: state.viewer,
+          nameOf: chipNames,
+        })
+      : audienceLabel(audience, state.count?.total ?? null)
+  const Icon = audience === 'public' ? Globe : audience === 'specificPeople' ? Users : Lock
+  // A choice to make: more than one option, or people to pick.
+  const pickable = choice.letters !== null || (choice.members !== null && (choice.publicAllowed || choice.members !== 'ok'))
   const chip = 'inline-flex items-center gap-1 whitespace-nowrap rounded-full border px-2 py-0.5 text-[12px] font-medium coarse:min-h-11'
-  const tone = audience === 'members' ? 'border-anvil-400 bg-anvil-100 text-anvil-800 dark:border-anvil-600 dark:bg-anvil-800 dark:text-anvil-100' : 'border-anvil-300 text-anvil-700 dark:border-anvil-700 dark:text-anvil-200'
+  const tone = notPublic(audience) ? 'border-anvil-400 bg-anvil-100 text-anvil-800 dark:border-anvil-600 dark:bg-anvil-800 dark:text-anvil-100' : 'border-anvil-300 text-anvil-700 dark:border-anvil-700 dark:text-anvil-200'
   if (!pickable) {
     return (
       <span className={cn(chip, tone)} data-testid={testId} data-audience={audience} title={audience === 'public' ? PUBLIC_SENTENCE : undefined}>
@@ -234,6 +403,7 @@ export function AudienceChip({ home, state, testId = 'audience-chip' }: { home: 
               state.setAudience(a)
               close(true)
             }}
+            onDone={() => close(true)}
             onTurnOn={() => {
               setOpen(false)
               setTurnOn(true)
@@ -250,16 +420,32 @@ export function AudienceChip({ home, state, testId = 'audience-chip' }: { home: 
 const PICKER_WIDTH = 352
 const PICKER_MARGIN = 8
 
-/** "Who can read this?": Public and Members, each with what it means (DESIGN §10). */
+/** Which option of the picker is chosen: Public, Members, a role group, or people one by one. */
+type PickerValue = 'public' | 'members' | LetterGroup | 'people'
+
+/** The picker option `state` stands on. */
+function pickedValue(state: ComposerAudienceState): PickerValue {
+  if (state.audience !== 'specificPeople') return state.audience
+  const l = state.letter
+  return l.exact === null && l.group !== null && l.people.length === 0 ? l.group : 'people'
+}
+
+/**
+ * "Who can read this?" (DESIGN §10): Public, Members, Maintainers, Writers and maintainers and
+ * Specific people…, each with what it means; the options the context forbids are hidden.
+ */
 export function AudiencePicker({
   home,
   state,
   onPick,
+  onDone,
   onTurnOn,
 }: {
   home: RepoHome
   state: ComposerAudienceState
   onPick: (a: ComposerAudience) => void
+  /** The picker is done (a role group picked). */
+  onDone?: () => void
   onTurnOn: () => void
 }): JSX.Element | null {
   const { sdk, ready } = useSdk(repoContractIds(home.repo))
@@ -270,22 +456,40 @@ export function AudiencePicker({
   if (choice === null) return null
   const members = choice.members
   const count = state.count === null ? null : runners.data === null ? state.count : { ...state.count, bots: membersCountBots(state, runners.data) }
+  const picked = pickedValue(state)
+  const letters = choice.letters
+  const preview = state.preview
+  const pickValue = (v: string): void => {
+    const value = v as PickerValue
+    if (value === 'public' || value === 'members') {
+      onPick(value)
+      return
+    }
+    if (value === 'people') {
+      // In a thread: its people re-listed, as they are now; elsewhere nobody named yet.
+      state.sendTo(NO_LETTER_ASK)
+      return
+    }
+    state.sendTo({ group: value, people: [], exact: null })
+    onDone?.()
+  }
+  const peopleOpen = state.audience === 'specificPeople' && picked === 'people' && letters === 'ok' && state.viewer !== null
   return (
     <fieldset data-testid="audience-picker">
       <legend className="mb-2 text-dense font-semibold">{AUDIENCE_QUESTION}</legend>
       <div className="space-y-2">
-        {choice.publicAllowed ? (
-          <Option name={name} value="public" checked={state.audience === 'public'} onPick={onPick} icon={<Globe className="h-3.5 w-3.5" aria-hidden />} label="Public">
+        {choice.publicAllowed && !choice.lettersOnly ? (
+          <Option name={name} value="public" checked={picked === 'public'} onPick={pickValue} icon={<Globe className="h-3.5 w-3.5" aria-hidden />} label="Public">
             {PUBLIC_SENTENCE}
           </Option>
         ) : null}
-        {members !== null ? (
+        {members !== null && !choice.lettersOnly ? (
           <Option
             name={name}
             value="members"
-            checked={state.audience === 'members'}
+            checked={picked === 'members'}
             disabled={members !== 'ok'}
-            onPick={onPick}
+            onPick={pickValue}
             icon={<Lock className="h-3.5 w-3.5" aria-hidden />}
             label={audienceLabel('members', count?.total ?? null)}
           >
@@ -293,8 +497,68 @@ export function AudiencePicker({
             {members !== 'ok' ? <MembersBlocked option={members} onTurnOn={onTurnOn} /> : null}
           </Option>
         ) : null}
+        {letters !== null && !choice.lettersOnly
+          ? LETTER_GROUPS.map((g) => {
+              const sized = preview?.groups[g] ?? null
+              return (
+                <Option
+                  key={g}
+                  name={name}
+                  value={g}
+                  checked={picked === g}
+                  disabled={letters !== 'ok' || sized === null || sized.tooMany}
+                  onPick={pickValue}
+                  icon={<Users className="h-3.5 w-3.5" aria-hidden />}
+                  label={groupLabel(g, sized?.count ?? null)}
+                >
+                  {sized === null ? 'Reading who is in it…' : sized.tooMany ? <span data-testid="audience-too-many">{tooManyText(g, sized.count)}</span> : groupSentence(g, sized.count)}
+                </Option>
+              )
+            })
+          : null}
+        {letters !== null ? (
+          <Option
+            name={name}
+            value="people"
+            checked={picked === 'people'}
+            disabled={letters !== 'ok'}
+            onPick={pickValue}
+            icon={<Users className="h-3.5 w-3.5" aria-hidden />}
+            label={SPECIFIC_PEOPLE}
+          >
+            {SPECIFIC_PEOPLE_SENTENCE}
+            {letters !== 'ok' ? <LettersBlocked option={letters} /> : null}
+          </Option>
+        ) : null}
+        {peopleOpen ? (
+          <PeoplePicker
+            home={home}
+            viewer={state.viewer as string}
+            people={letterPeople(state.letter, preview?.relisted ?? []).filter((p) => p !== state.viewer)}
+            onChange={(people) => state.setLetter(state.thread.parents.length > 0 ? { group: null, people: [], exact: people } : { group: null, people, exact: null })}
+          />
+        ) : null}
       </div>
     </fieldset>
+  )
+}
+
+/** Why the specific-people options can't be picked yet, and what to do about it. */
+function LettersBlocked({ option }: { option: Exclude<NonNullable<AudienceChoice['letters']>, 'ok'> }): JSX.Element {
+  return (
+    <span className="mt-1 block text-anvil-700 dark:text-anvil-200" data-testid="audience-letters-blocked" data-why={option}>
+      {LETTER_OPTION_TEXT[option]}{' '}
+      {option === 'no-key' ? (
+        <Link href={PRIVATE_REPOS_SETTINGS} className="hit-area font-medium text-forge-700 underline dark:text-forge-400">
+          {SET_UP_KEY}
+        </Link>
+      ) : null}
+      {option === 'locked' ? (
+        <span className="mt-2 block">
+          <UnlockMore title={UNLOCK_LETTERS} testId="audience-letters-unlock" forgot={false} />
+        </span>
+      ) : null}
+    </span>
   )
 }
 
@@ -314,10 +578,10 @@ function Option({
   children,
 }: {
   name: string
-  value: ComposerAudience
+  value: string
   checked: boolean
   disabled?: boolean
-  onPick: (a: ComposerAudience) => void
+  onPick: (value: string) => void
   icon: ReactNode
   label: string
   children: ReactNode
@@ -386,11 +650,34 @@ export function warningName(network: Parameters<typeof cachedDpnsName>[0], id: s
 
 /**
  * Who can't read what the composer holds (product H8): with Members chosen, the thread's author
- * and every @mention that is not a member's name, as {@link AudienceWarnings} lists them.
+ * and every @mention that is not a member's name; with specific people, everyone of those not
+ * among its recipients, then who is left out for want of a key, who reads from this reply on, and
+ * why it can't be sent, as {@link AudienceWarnings} lists them.
  */
 export function useAudienceWarnings(state: ComposerAudienceState, text: string, thread: { readonly author: string; readonly kind: 'issue' | 'pull' } | null): string[] {
   const { network } = useSdk()
-  if (state.choice === null || state.audience !== 'members' || state.count === null) return []
+  const preview = state.preview
+  const extra = [...(preview?.skipped ?? []), ...(preview?.widened ?? [])]
+  const nameOf = useNames(extra)
+  if (state.choice === null) return []
+  if (state.audience === 'specificPeople') {
+    const out: string[] = []
+    if (state.blocked !== null) out.push(state.blocked)
+    if (preview?.recipients != null) {
+      const holders = new Set(preview.recipients)
+      const holderNames = new Set<string>()
+      for (const id of holders) {
+        const name = cachedDpnsName(network, id)
+        if (name) holderNames.add(mentionName(name))
+      }
+      out.push(...audienceWarnings({ audience: 'specificPeople', text, holders, holderNames, thread: thread === null ? null : { ...thread, authorName: warningName(network, thread.author) } }))
+      const skipped = skippedText(preview.skipped, nameOf)
+      if (skipped !== null) out.push(skipped)
+      for (const p of preview.widened) out.push(wideningText(nameOf(p)))
+    }
+    return out
+  }
+  if (state.audience !== 'members' || state.count === null) return []
   const holderNames = new Set<string>()
   for (const id of state.holders) {
     const name = cachedDpnsName(network, id)
@@ -631,17 +918,40 @@ function memberCantRead(lane: MembersAccess | undefined): 'locked' | 'no-key' | 
   return a === 'locked' || a === 'no-key' || a === 'no-key-shared' ? a : null
 }
 
-/** "Members-only comment · @alice · 2h ago" (DESIGN D14, §10); a review says its public verdict. */
+/**
+ * "Members-only comment · @alice · 2h ago" (DESIGN D14, §10); a message to specific people says
+ * how many it went to, "Comment to 3 people · @alice · 2h ago" (and "Unlock to read" while this
+ * tab can't try it); a review says its public verdict.
+ */
 export function MembersOnlyRow({ entry }: { entry: MembersOnlyEntry }): JSX.Element {
   const { item, verdict } = entry
+  const [unlocking, setUnlocking] = useState(false)
   const did = verdict === 'approve' ? 'approved' : verdict === 'requestChanges' ? 'requested changes' : null
+  const letter = isLetter(item)
   return (
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-dashed border-anvil-300 px-4 py-2 text-dense text-anvil-600 dark:border-anvil-700 dark:text-anvil-300" data-testid="members-only-placeholder" data-type={item.type}>
-      <Lock className="h-3.5 w-3.5 shrink-0" aria-hidden />
-      <span>
-        {membersOnlyTitle(item.type, isLetter(item) ? 'specificPeople' : 'members')} · <Author identityId={item.author} link={false} className="align-middle" />
-        {did !== null ? ` ${did}` : ''} · <span className={MUTED}>{timeAgo(item.createdAt)}</span>
-      </span>
+    <div
+      className="space-y-2 rounded-lg border border-dashed border-anvil-300 px-4 py-2 text-dense text-anvil-600 dark:border-anvil-700 dark:text-anvil-300"
+      data-testid="members-only-placeholder"
+      data-type={item.type}
+      data-audience={letter ? 'specificPeople' : 'members'}
+      {...(item.recipientCount !== undefined ? { 'data-recipients': item.recipientCount } : {})}
+    >
+      <p className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        {letter ? <Users className="h-3.5 w-3.5 shrink-0" aria-hidden /> : <Lock className="h-3.5 w-3.5 shrink-0" aria-hidden />}
+        <span>
+          {placeholderTitle(item)} · <Author identityId={item.author} link={false} className="align-middle" />
+          {did !== null ? ` ${did}` : ''} · <span className={MUTED}>{timeAgo(item.createdAt)}</span>
+        </span>
+        {item.locked === true ? (
+          <>
+            <span aria-hidden> · </span>
+            <button type="button" className="hit-area font-medium text-forge-700 hover:underline dark:text-forge-400" aria-expanded={unlocking} onClick={() => setUnlocking((u) => !u)} data-testid="letter-unlock">
+              Unlock to read
+            </button>
+          </>
+        ) : null}
+      </p>
+      {unlocking ? <UnlockMore title={UNLOCK_LETTERS} testId="letter-unlock-panel" forgot={false} /> : null}
     </div>
   )
 }
@@ -698,6 +1008,24 @@ export function VisibleToMembers({ what }: { what?: 'review' }): JSX.Element {
   )
 }
 
+/**
+ * The label of a card this reader opened that isn't public: "Visible to members", or for a
+ * message to specific people "Visible to alice, bob and you" (`letter-picker.tsx`).
+ */
+export function AudienceMark({
+  audience,
+  letter,
+  what,
+}: {
+  audience: 'members' | 'specificPeople' | undefined
+  letter?: LetterFacts | undefined
+  what?: 'review'
+}): JSX.Element | null {
+  if (audience === 'members') return <VisibleToMembers {...(what ? { what } : {})} />
+  if (audience === 'specificPeople' && letter !== undefined) return <VisibleToPeople letter={letter} {...(what ? { what } : {})} />
+  return null
+}
+
 /** A members-only card's tint (its border and header), for a card this reader opened. */
 export const MEMBERS_CARD = 'border-anvil-400 dark:border-anvil-600'
 export const MEMBERS_CARD_HEADER = 'bg-anvil-100 dark:bg-anvil-850'
@@ -713,24 +1041,31 @@ export function MembersOnlyTargetPage({ home, target }: { home: RepoHome; target
   const why = memberCantRead(home.lane)
   const letter = isLetter(target.placeholder)
   const noun = membersOnlyNoun(target.placeholder.type)
+  const people = target.placeholder.recipientCount
   // A read cut at its page size says "100+", never a count it didn't finish.
   const comments = target.comments === 0 ? '' : target.moreComments === true ? ` · ${target.comments}+ comments` : ` · ${plural(target.comments, 'comment')}`
   return (
     <div className="space-y-4" data-testid="members-only-target" data-kind={kind}>
       <h1 className="text-2xl">
-        <span className="font-mono">#{target.number}</span> <span className="text-anvil-500 dark:text-anvil-400">· {letter ? 'encrypted' : 'members-only'}</span>
+        <span className="font-mono">#{target.number}</span>{' '}
+        <span className="text-anvil-500 dark:text-anvil-400">· {letter ? (people !== undefined ? `to ${peopleCount(people)}` : 'encrypted') : 'members-only'}</span>
       </h1>
       <p className="flex items-start gap-2 text-dense text-anvil-600 dark:text-anvil-300">
         <Icon className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
         <span>
-          {membersOnlyTitle(target.placeholder.type, letter ? 'specificPeople' : 'members')} · opened by <Author identityId={target.placeholder.author} link={false} className="align-middle" />{' '}
+          {placeholderTitle(target.placeholder)} · opened by <Author identityId={target.placeholder.author} link={false} className="align-middle" />{' '}
           <span className={MUTED}>{timeAgo(target.placeholder.createdAt)}</span> · <span data-testid="members-only-state">{state}</span>
           <span data-testid="members-only-comments">{comments}</span>
         </span>
       </p>
       <div className="rounded-lg border border-dashed border-anvil-300 px-4 py-3 text-dense dark:border-anvil-700" data-testid="members-only-why">
-        {letter ? (
-          <p>This {noun} is encrypted for specific people. Everyone can see that it exists, who opened it and when.</p>
+        {letter && target.placeholder.locked === true ? (
+          <UnlockMore title={UNLOCK_LETTERS} testId="letter-target-unlock" forgot={false} />
+        ) : letter ? (
+          <p>
+            {people !== undefined ? `This ${noun} was sent to ${peopleCount(people)}.` : `This ${noun} is encrypted for specific people.`} Everyone can see that it exists, who opened it
+            and when.
+          </p>
         ) : home.laneLoading === true ? (
           // A member's key session is still being read: no outsider's text meanwhile.
           <p className={MUTED} role="status" data-testid="members-only-reading">

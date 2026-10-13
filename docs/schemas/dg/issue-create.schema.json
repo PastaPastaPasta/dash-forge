@@ -29,6 +29,9 @@
     "audience": {
       "$ref": "common.schema.json#/$defs/audience"
     },
+    "letter": {
+      "$ref": "common.schema.json#/$defs/letter"
+    },
     "resumed": {
       "type": "boolean"
     },

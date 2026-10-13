@@ -57,8 +57,8 @@ import { STATE_FILL, STATE_TEXT } from '@/lib/design/state'
 
 import type { PullThread, RepoHome, TimelineItem } from '@/lib/view'
 import { ACL_NAME, ARCHIVED_REASON, forkSourcePrefix, isLive, isMembersOnlyTarget, loadPullOrMembersOnly, loadPullThread, plural, policyOf, pullActions, type CommentView, type MembersOnlyTarget } from '@/lib/view'
-import { QUOTE_CONFIRM, publicLineQuestion, publicTextOf, quotesMembersText } from '@/lib/view/audience'
-import { AudienceChip, AudienceWarnings, MEMBERS_CARD, MEMBERS_CARD_HEADER, MembersOnlyTargetPage, VisibleToMembers, closeWithComment, useAudienceWarnings, useComposerAudience, useMembersTexts, useQuoteGate, warningName } from '@/components/repo/audience'
+import { NO_LETTER_ASK, QUOTE_CONFIRM, forwardText, notPublic, publicLineQuestion, publicTextOf, quotesMembersText, type ComposerAudience, type LetterAsk } from '@/lib/view/audience'
+import { AudienceChip, AudienceMark, AudienceWarnings, MEMBERS_CARD, MEMBERS_CARD_HEADER, MembersOnlyTargetPage, closeWithComment, letterThreadOf, useAudienceWarnings, useComposerAudience, useMembersTexts, useQuoteGate, warningName } from '@/components/repo/audience'
 import { commentDraftKey, commentEditDraftKey, discardedEdits, editDraftKey, useDraftText, useEditDraft } from '@/lib/view/draft-text'
 import { EditBase } from './edit-base'
 import { RulesAtMerge } from './rules-at-merge'
@@ -116,6 +116,8 @@ import { pendingReruns, rerunCounts } from '@/lib/rules/ci-rerun'
 import { SupersededWriteError, UnconfirmedWriteError, previewCreate, previewCredits, previewDelete, previewReplace, sumPreviews, withAddressee, type CostPreview as Cost } from '@/lib/sdk'
 import { commentEditDrops, pullSinceYourReview } from '@/lib/view/issues-view'
 import { totalHidden } from '@/lib/repo/private-content'
+import { ForwardButton } from '@/components/repo/letter-picker'
+import type { ParentLetter } from '@/lib/rules/letters'
 import { firstPushers, headUpdatePhrases, sourceBranchEvents, type HeadUpdatePhrase } from '@/lib/view/head-updates'
 import { inlineCommentIds, lineKey, repliesByRoot } from '@/lib/view/inline-threads'
 import { appliedSuggestions, prCommits, prHaveSet } from '@/lib/view/pr-commits'
@@ -229,7 +231,7 @@ type Pending =
   /** Record a merge done elsewhere: `oid` the head on the base, or the base tip that already makes the PR's changes. */
   | { kind: 'mark-merged'; bypass: readonly string[]; oid: string }
   /** A review from the composer; `audience`: who its text is for (its verdict is always public, D15). */
-  | { kind: 'review'; verdict: VerdictInput; body: string; audience: 'public' | 'members' }
+  | { kind: 'review'; verdict: VerdictInput; body: string; audience: ComposerAudience; letter?: LetterAsk; letterParents?: readonly ParentLetter[] }
   | { kind: 'draft'; to: 'draft' | 'ready' }
   | { kind: 'head'; oid: string }
   | { kind: 'request'; who: string; remove: boolean }
@@ -691,7 +693,15 @@ function PullPage({
   const threadCollapsed = threadHidden !== null && !threadRevealed
 
   // Who the comment or review text is for (DESIGN §10): the PR's audience, or Members when picked.
-  const audience = useComposerAudience(home, { parent: pull.audience ?? 'public', members: thread.members, maintainer: holdings.data?.maintain === true })
+  // A message to specific people re-lists its people for every reply (DESIGN D26), and so does a
+  // forwarded one ("Forward to…": the comment answers it, so none of its people are left out).
+  const [forwarded, setForwarded] = useState<ParentLetter | null>(null)
+  const letterThread = useMemo(() => {
+    const t = letterThreadOf([pull])
+    return forwarded === null ? t : { ...t, parents: [...t.parents, forwarded] }
+  }, [pull, forwarded])
+  const audience = useComposerAudience(home, { parent: pull.audience ?? 'public', members: thread.members, maintainer: holdings.data?.maintain === true, thread: letterThread })
+  const letterAsk = audience.audience === 'specificPeople' ? { letter: audience.letter, ...(forwarded !== null ? { letterParents: [forwarded] } : {}) } : {}
   // Members-only text on this page, and all this tab has opened in the repo: a public post that
   // repeats it asks first (product H8), and a draft that quotes it is never kept on disk.
   const pageTexts = useMemo(() => membersTextsOf(thread), [thread])
@@ -703,13 +713,25 @@ function PullPage({
     (text) => audience.audience === 'public' && !quotesMembersText(text, membersTexts),
   )
   const warnings = useAudienceWarnings(audience, comment, { author: pull.author, kind: 'pull' })
+  // A forward the writer emptied the composer of answers nothing any more.
+  useEffect(() => {
+    if (comment === '') setForwarded(null)
+  }, [comment])
   // The diff's composers pick their audience the same way (stable while these are).
   const inlineAudience = useMemo(
     () => ({ home, members: thread.members, maintainer: holdings.data?.maintain === true, pr: pull.audience ?? ('public' as const), author: pull.author, membersTexts }),
     [home, thread.members, holdings.data?.maintain, pull.audience, pull.author, membersTexts],
   )
-  const blockingQuestion = (p: { verdict: VerdictInput; audience: 'public' | 'members' }): string | null =>
-    publicLineQuestion({ verdict: p.verdict, audience: p.audience, prMembersOnly: pull.audience === 'members', author: pull.author, authorName: warningName(network, pull.author), holders: audience.holders })
+  const blockingQuestion = (p: { verdict: VerdictInput; audience: ComposerAudience }): string | null =>
+    publicLineQuestion({
+      verdict: p.verdict,
+      audience: p.audience,
+      prMembersOnly: notPublic(pull.audience),
+      author: pull.author,
+      authorName: warningName(network, pull.author),
+      // A review to specific people: its recipients read it, nobody else.
+      holders: p.audience === 'specificPeople' ? new Set(audience.preview?.recipients ?? []) : audience.holders,
+    })
   // A public post (a comment, a review, an edit) that repeats members-only text asks first (product H8).
   const quoteGate = useQuoteGate()
   const quoteCheck = quoteGate.check
@@ -785,7 +807,7 @@ function PullPage({
   const confirmEvent = (p: Pending, cost: Cost = eventCost): void => {
     if (guard.check(cost, 'collab')) setPending(p)
   }
-  const reviewDraft = useReviewDraft(repo, pull.id, pull.headOid, pull.audience === 'members', membersTexts)
+  const reviewDraft = useReviewDraft(repo, pull.id, pull.headOid, notPublic(pull.audience), membersTexts)
   // The diff's lines, as the inline comments saw them load (re-anchoring a pending review).
   const knownLines = useRef<ReadonlyMap<string, ReadonlySet<string>>>(new Map())
   const refreshRef = useRef(refresh)
@@ -910,7 +932,17 @@ function PullPage({
     }),
     [canResolve, resolvedKey, identity, setPending, moderation, quoteCheck, membersTexts, pullAudience, makeCommentPublic, home.repo.visibility],
   )
-  const commentCost = composeCost(repo, 'comment', { body: comment.trim() }, commentFirst, audience.audience)
+  const commentCost = composeCost(repo, 'comment', { body: comment.trim() }, commentFirst, audience.audience, audience.preview?.recipients?.length)
+  // "Forward to…" (DESIGN D26): the quoted text starts the comment, which answers the message:
+  // its people (and the thread's) are re-listed, the viewer adds more. Its text is never kept at
+  // rest: the draft is held off disk before the text goes in.
+  const forward = (author: string, body: string, letter: { readonly recipients: readonly string[]; readonly group: ParentLetter['group'] }): void => {
+    const text = `${forwardText(warningName(network, author), body)}${comment}`
+    holdDraft(true, '')
+    setForwarded({ recipients: letter.recipients, group: letter.group })
+    audience.sendTo(NO_LETTER_ASK)
+    setComment(text)
+  }
   const quoting = audience.audience === 'public' && quotesMembersText(comment, membersTexts)
   // A text over its field: stored whole by a maintainer or writer (forge-v2.md §6.3).
   const commentLong = useLongCompose(repo, 'comment', comment.trim())
@@ -921,8 +953,8 @@ function PullPage({
     const refusal = verdictRefusal(viewerRole, v)
     setVerdictRefused(refusal)
     if (refusal !== null) return
-    if (commentTooLong || !guard.check(composeCost(repo, 'review', { body: comment.trim() }, reviewFirst, audience.audience), 'collab')) return
-    const review = { kind: 'review' as const, verdict: v, body: comment.trim(), audience: audience.audience }
+    if (commentTooLong || !guard.check(composeCost(repo, 'review', { body: comment.trim() }, reviewFirst, audience.audience, audience.preview?.recipients?.length), 'collab')) return
+    const review = { kind: 'review' as const, verdict: v, body: comment.trim(), audience: audience.audience, ...letterAsk }
     // A public review's text is public: it asks first when it repeats members-only text.
     quoteCheck(publicTextOf(review.body, review.audience, pull.audience), membersTexts, () => setPending(review))
   }
@@ -961,11 +993,12 @@ function PullPage({
     // Until the outcome is known, a reload must not bring the text back to be posted again.
     holdDraft(true, comment)
     try {
-      const r = await createComment(sdk, signer, repo, { targetId: pull.id, body: comment.trim(), intent: commentIntent.intent, post: postContext, audience: audience.audience })
+      const r = await createComment(sdk, signer, repo, { targetId: pull.id, body: comment.trim(), intent: commentIntent.intent, post: postContext, audience: audience.audience, ...letterAsk })
       setComment('')
       holdDraft(false, '')
       commentIntent.renew()
       audience.reset()
+      setForwarded(null)
       refresh((t) => t.comments.some((c) => c.id === r.documentId))
     } catch (e) {
       // Another tab of this identity wrote it: the composer's text is on chain, clear it.
@@ -999,7 +1032,7 @@ function PullPage({
       case 'state': {
         // The comment first, as GitHub posts it.
         if (p.comment !== undefined && closeComment.current?.intent !== intent) {
-          const r = await createComment(sdk, signer, repo, { targetId: pull.id, body: p.comment, intent: `${intent}:comment`, post: postContext, audience: audience.audience }).catch((e: unknown) => {
+          const r = await createComment(sdk, signer, repo, { targetId: pull.id, body: p.comment, intent: `${intent}:comment`, post: postContext, audience: audience.audience, ...letterAsk }).catch((e: unknown) => {
             if (e instanceof SupersededWriteError) return { documentId: e.documentId }
             throw e
           })
@@ -1033,7 +1066,7 @@ function PullPage({
         refresh((t) => t.pull.state.merged)
         return
       case 'review': {
-        const r = await createReview(sdk, signer, repo, { patchId: pull.id, verdict: p.verdict, commitOid: pull.headOid, body: p.body, intent, post: postContext, audience: p.audience })
+        const r = await createReview(sdk, signer, repo, { patchId: pull.id, verdict: p.verdict, commitOid: pull.headOid, body: p.body, intent, post: postContext, audience: p.audience, ...(p.letter ? { letter: p.letter } : {}), ...(p.letterParents ? { letterParents: p.letterParents } : {}) })
         // The public line the author can read, after the members-only review (one intent per action).
         const line = publicLine.trim()
         // The review is on Platform: a failed line never fails the action (a retry would sign the
@@ -1183,7 +1216,7 @@ function PullPage({
           body: p.body,
           ...(c ? commentEditDrops(c, thread.comments, { isMember, allReadable: totalHidden(thread.hidden) === 0 }) : {}),
           ...(c?.revision !== undefined ? { expectedRevision: BigInt(c.revision) } : {}),
-          seal: { current: { body: c?.body ?? '', path: c?.anchor?.path }, bind: { targetId: pull.id }, imported: c?.importedRaw ?? null },
+          seal: { current: { body: c?.body ?? '', path: c?.anchor?.path }, bind: { targetId: pull.id }, imported: c?.importedRaw ?? null, ...(c?.letter ? { letter: c.letter } : {}) },
           intent,
         }))
         setEditingComment(null)
@@ -1197,7 +1230,7 @@ function PullPage({
     if (pending === null) return eventCost
     switch (pending.kind) {
       case 'review': {
-        const review = composeCost(repo, 'review', { body: pending.body }, reviewFirst, pending.audience)
+        const review = composeCost(repo, 'review', { body: pending.body }, reviewFirst, pending.audience, audience.preview?.recipients?.length)
         return publicLine.trim() !== '' && blockingQuestion(pending) !== null ? sumPreviews([review, composeCost(repo, 'comment', { body: publicLine.trim() }, commentFirst)]) : review
       }
       case 'mark-merged':
@@ -1205,7 +1238,7 @@ function PullPage({
           ? previewCredits(transitionCost.credits + previewCreate('event', { value: bypassValue(pending.bypass) }).credits)
           : transitionCost
       case 'state':
-        return pending.comment === undefined ? transitionCost : previewCredits(transitionCost.credits + composeCost(repo, 'comment', { body: pending.comment }, commentFirst, audience.audience).credits)
+        return pending.comment === undefined ? transitionCost : previewCredits(transitionCost.credits + composeCost(repo, 'comment', { body: pending.comment }, commentFirst, audience.audience, audience.preview?.recipients?.length).credits)
       case 'draft':
       case 'lock':
         return transitionCost
@@ -1571,7 +1604,7 @@ function PullPage({
           <MessageSquareDashed className="h-4 w-4 text-caution-700 dark:text-caution-400" aria-hidden />
           <span className="min-w-0 flex-1">
             You have a pending review ({plural(reviewDraft.draft.comments.length, 'comment')}), not yet submitted.{' '}
-            <span className="text-anvil-600 dark:text-anvil-400">{draftWhereabouts(repo.visibility === 'private', pull.audience === 'members')}</span>
+            <span className="text-anvil-600 dark:text-anvil-400">{draftWhereabouts(repo.visibility === 'private', notPublic(pull.audience))}</span>
           </span>
           {tab !== 'files' ? (
             <Button size="sm" variant="outline" onClick={() => setTab('files')}>
@@ -1635,10 +1668,10 @@ function PullPage({
               {threadCollapsed ? null : (
               <>
               {/* Description */}
-              <div className={cn('overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800', pull.audience === 'members' && MEMBERS_CARD)}>
-                <div className={cn('flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 dark:border-anvil-800 dark:bg-anvil-900', pull.audience === 'members' && MEMBERS_CARD_HEADER)}>
+              <div className={cn('overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800', notPublic(pull.audience) && MEMBERS_CARD)}>
+                <div className={cn('flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 dark:border-anvil-800 dark:bg-anvil-900', notPublic(pull.audience) && MEMBERS_CARD_HEADER)}>
                   <Byline author={pull.author} createdAt={pull.createdAt} origin={origin} verb="opened this" />
-                  {pull.audience === 'members' ? <VisibleToMembers /> : null}
+                  <AudienceMark audience={pull.audience} letter={pull.letter} />
                   <EditedMarker createdAt={pull.createdAt} updatedAt={pull.updatedAt} />
                 </div>
                 <div className="px-4 py-3">
@@ -1675,7 +1708,7 @@ function PullPage({
                   {...(moderation ? { moderation } : {})}
                   reviewActions={(r) =>
                     // DESIGN §4.6: a review is immutable, so its author makes its text public as an attached comment.
-                    identity !== null && identity === r.reviewer && r.audience === 'members' && repo.visibility === 'public' && r.body.trim() !== '' ? (
+                    identity !== null && identity === r.reviewer && (r.audience === 'members' || r.audience === 'specificPeople') && repo.visibility === 'public' && r.body.trim() !== '' ? (
                       <MakePublicButton
                         onClick={() => setPending({ kind: 'make-review-public', id: r.id, text: r.body, quoted: quotedPost(r.body, r.reviewer, 'review') })}
                         disabled={writeBlocked || guard.disabledReason !== null || longEditBlock(r.long) !== null}
@@ -1712,8 +1745,8 @@ function PullPage({
                       // A public comment's edit is public text: it asks first when it repeats members-only text.
                       onSave: (id, body) => quoteCheck(publicTextOf(body, item.comment.audience, pull.audience), membersTexts, () => setPending({ kind: 'edit-comment', id, body }), { before: item.comment.body }),
                       onDelete: (id) => setPending({ kind: 'delete-comment', id }),
-                      // DESIGN §4.6: the author's own members-only comment, on a public repo.
-                      ...(item.comment.audience === 'members' && repo.visibility === 'public' ? { onMakePublic: makeCommentPublic } : {}),
+                      // DESIGN §4.6: the author's own members-only comment, or one to specific people, on a public repo.
+                      ...((item.comment.audience === 'members' || item.comment.audience === 'specificPeople') && repo.visibility === 'public' ? { onMakePublic: makeCommentPublic } : {}),
                       links,
                       replies: repliesOf.get(item.comment.id) ?? [],
                       trust,
@@ -1724,8 +1757,14 @@ function PullPage({
                       suggestions: suggest.actions,
                       carry: withCarried,
                     })
-                    if (item.comment.id !== discarded.atComment || editingComment !== null) return slots
-                    return { ...slots, header: withDiscardedEdit(slots.header) }
+                    // "Forward to…" on an opened message to specific people (DESIGN D26).
+                    const letter = item.comment.letter
+                    const forwarded =
+                      letter === undefined || writeBlocked
+                        ? slots
+                        : { ...slots, header: <>{slots.header}<ForwardButton onForward={() => forward(item.comment.author, item.comment.body, letter)} /></> }
+                    if (item.comment.id !== discarded.atComment || editingComment !== null) return forwarded
+                    return { ...forwarded, header: withDiscardedEdit(forwarded.header) }
                   }}
                 />
               ) : null}
@@ -2000,8 +2039,8 @@ function PullPage({
                         variant="primary"
                         onClick={() => void postComment()}
                         loading={posting}
-                        disabled={!identity && locked ? false : comment.trim() === '' || commentTooLong || guard.disabledReason !== null}
-                        title={guard.disabledReason ?? undefined}
+                        disabled={!identity && locked ? false : comment.trim() === '' || commentTooLong || guard.disabledReason !== null || audience.blocked !== null}
+                        title={guard.disabledReason ?? audience.blocked ?? undefined}
                       >
                         {identity ? 'Comment' : locked ? 'Unlock to comment' : 'Sign in to comment'}
                       </Button>
@@ -2020,7 +2059,7 @@ function PullPage({
                         size="sm"
                         variant={v === 'approve' ? 'primary' : 'outline'}
                         // Until the viewer's membership is read, a verdict would be recorded as a non-member's.
-                        disabled={guard.disabledReason !== null || (v !== 'comment' && !holdings.settled)}
+                        disabled={guard.disabledReason !== null || (v !== 'comment' && !holdings.settled) || audience.blocked !== null}
                         onClick={() => reviewAs(v)}
                       >
                         {VERDICT_TEXT[v]}
@@ -2114,7 +2153,7 @@ function PullPage({
                     members={thread.members}
                     maintainer={holdings.data?.maintain === true}
                     author={pull.author}
-                    membersOnly={pull.audience === 'members'}
+                    membersOnly={notPublic(pull.audience)}
                     membersTexts={membersTexts}
                     repo={repo}
                     pullId={pull.id}
@@ -2358,12 +2397,15 @@ function PullPage({
   )
 }
 
-/** Members-only text a PR page shows: the PR's own when it is members-only, and members-only comments and reviews. */
+/**
+ * Text a PR page shows that isn't public: the PR's own when it is members-only or sent to
+ * specific people, and such comments and reviews.
+ */
 function membersTextsOf(t: PullThread): string[] {
   return [
-    ...(t.pull.audience === 'members' ? [t.pull.title, t.pull.body] : []),
-    ...t.comments.flatMap((c) => (c.audience === 'members' ? [c.body] : [])),
-    ...t.reviews.flatMap((r) => (r.audience === 'members' ? [r.body] : [])),
+    ...(notPublic(t.pull.audience) ? [t.pull.title, t.pull.body] : []),
+    ...t.comments.flatMap((c) => (notPublic(c.audience) ? [c.body] : [])),
+    ...t.reviews.flatMap((r) => (notPublic(r.audience) ? [r.body] : [])),
   ]
 }
 

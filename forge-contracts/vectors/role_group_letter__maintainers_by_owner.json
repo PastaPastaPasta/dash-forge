@@ -1,0 +1,48 @@
+{
+  "name": "maintainers_by_owner",
+  "description": "the owner sends to Maintainers: the owner and the one maintainer; writers, triage and readers are not in the group; tag 29 names it.",
+  "case": "role_group_letter",
+  "rules": "v2",
+  "input": {
+    "owner": "6owner1111111111111111111111111111111111111",
+    "sender": "6owner1111111111111111111111111111111111111",
+    "members": [
+      {
+        "identity": "7maint1111111111111111111111111111111111111",
+        "role": "maintainer"
+      },
+      {
+        "identity": "8writer111111111111111111111111111111111111",
+        "role": "writer"
+      },
+      {
+        "identity": "8writer222222222222222222222222222222222222",
+        "role": "writer"
+      },
+      {
+        "identity": "9triage11111111111111111111111111111111111",
+        "role": "triage"
+      },
+      {
+        "identity": "Areader11111111111111111111111111111111111",
+        "role": "reader"
+      }
+    ],
+    "keyless": [],
+    "request": {
+      "group": "maintainers",
+      "people": []
+    },
+    "exact": null,
+    "parents": [],
+    "membersOnlyParent": false
+  },
+  "expected": {
+    "recipients": [
+      "6owner1111111111111111111111111111111111111",
+      "7maint1111111111111111111111111111111111111"
+    ],
+    "skipped": [],
+    "group": "maintainers"
+  }
+}

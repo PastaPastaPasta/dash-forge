@@ -166,11 +166,18 @@ struct DraftFile {
     /// The members' write keys a draft that is not public is sealed under; `None` for a
     /// public draft.
     keys: Option<forge_core::private::EpochKeys>,
+    /// A review for specific people: never written to disk (a run interrupted mid-submit is
+    /// not resumable).
+    memory_only: bool,
 }
 
 impl DraftFile {
-    /// Save `draft`: in the clear when public, else sealed (and refused without the key).
+    /// Save `draft`: in the clear when public, else sealed (and refused without the key);
+    /// nothing for a review for specific people.
     fn save(&self, draft: &ReviewDraft) -> std::io::Result<()> {
+        if self.memory_only {
+            return Ok(());
+        }
         if !draft.members {
             return save_draft(&self.path, &serde_json::to_vec_pretty(draft)?);
         }
@@ -347,6 +354,7 @@ enum Mode {
 }
 
 /// `dg pr review`.
+#[allow(clippy::too_many_lines)] // one flow: the mode, the draft, the audience, then the write
 pub async fn review(ctx: &Ctx, a: &PrReviewArgs) -> Result<()> {
     let mode = if a.pending {
         Mode::Pending
@@ -406,9 +414,25 @@ pub async fn review(ctx: &Ctx, a: &PrReviewArgs) -> Result<()> {
     // (every review of a private repository is for its members). Refused here when it cannot
     // be written; a draft that is not public is kept sealed, never in the clear.
     let asked = a.members || existing.as_ref().is_some_and(|d| d.members);
-    let audience =
-        crate::audience::requested(&collab, &s.repo, asked, Some(&view.patch.document_id), None)
-            .await?;
+    let ask = crate::audience::Ask {
+        members: asked && a.to.is_empty(),
+        to: &a.to,
+    };
+    let crate::audience::Requested { audience, to } = crate::audience::requested(
+        &s.client,
+        &collab,
+        &s.repo,
+        ask,
+        Some(&view.patch.document_id),
+        None,
+    )
+    .await?;
+    // a review for specific people is never kept on disk: its text would be stored under the
+    // members key (wider than its people) or in the clear (DESIGN §4.2, letters never at rest)
+    let letter = audience == Audience::SpecificPeople;
+    if letter {
+        refuse_kept_letter(a, matches!(mode, Mode::Pending), existing.is_some())?;
+    }
     let sealed = audience != Audience::Public;
     if let Some(d) = existing
         .as_ref()
@@ -416,7 +440,7 @@ pub async fn review(ctx: &Ctx, a: &PrReviewArgs) -> Result<()> {
     {
         return Err(refuse_attempted(d, &a.repo, a.number));
     }
-    let keys = if sealed {
+    let keys = if sealed && !letter {
         let kr = collab.keyring(&s.repo).await?;
         Some(
             if s.repo.visibility == forge_core::rules::v2::Visibility::Private {
@@ -428,10 +452,15 @@ pub async fn review(ctx: &Ctx, a: &PrReviewArgs) -> Result<()> {
     } else {
         None
     };
-    let file = DraftFile { path, keys };
+    let file = DraftFile {
+        path,
+        keys,
+        memory_only: letter,
+    };
     let shown = Shown {
         repo: &s.repo,
         audience,
+        to: &to,
     };
     match mode {
         Mode::Discard => unreachable!("handled above"),
@@ -440,11 +469,41 @@ pub async fn review(ctx: &Ctx, a: &PrReviewArgs) -> Result<()> {
     }
 }
 
+/// A review for specific people is never kept on disk: refused as a pending review (`pending`),
+/// and while another review is pending (`existing`), which it would be mixed with.
+fn refuse_kept_letter(a: &PrReviewArgs, pending: bool, existing: bool) -> Result<()> {
+    if pending {
+        return Err(UserError::new(
+            codes::USAGE,
+            "a review for specific people can't be kept as a pending review",
+        )
+        .cause("a pending review is kept on this computer, and a message to specific people is never stored")
+        .fix("submit it in one command: --approve, --request-changes or --comment, with its inline comments")
+        .note("nothing was written")
+        .into());
+    }
+    if existing {
+        return Err(UserError::new(
+            codes::USAGE,
+            format!("you have a pending review on PR #{}", a.number),
+        )
+        .fix(format!(
+            "submit it first (`dg pr review {} {} --comment`) or discard it (`--discard`), then send this one",
+            a.repo, a.number
+        ))
+        .note("nothing was written")
+        .into());
+    }
+    Ok(())
+}
+
 /// Who a review is for, and the repository it is in: what its output names.
 #[derive(Clone, Copy)]
 struct Shown<'r> {
     repo: &'r forge_core::scope::RepoRef,
     audience: Audience,
+    /// Who a letter goes to (" to @bob and @carol"), for the question before submitting.
+    to: &'r str,
 }
 
 impl Shown<'_> {
@@ -767,13 +826,14 @@ async fn submit(
         }
     }
     ctx.confirm_or_cancel(&format!(
-        "{}{}, {}. Submit?",
+        "{}{}{}, {}. Submit?",
         if resumed {
             "Finish the interrupted submit: "
         } else {
             ""
         },
         crate::fmt::plural(todo, "write"),
+        shown.to,
         cost_line(est, price)
     ))?;
 
@@ -831,6 +891,18 @@ async fn submit(
         } else {
             "nothing was recorded yet; the review is kept in your pending review".to_string()
         };
+        if file.memory_only {
+            // a review for specific people is never kept on disk, so it cannot be resumed
+            return Err(crate::errors::reported(
+                u.note(format!(
+                    "{} of {} documents were written; a review for specific people is not kept on this computer",
+                    landed,
+                    n + 1
+                ))
+                .fix("check what landed with `dg pr view --comments`, then send what is missing again"),
+                body,
+            ));
+        }
         return Err(crate::errors::reported(
             u.note(recorded).fix(format!(
                 "run the same command again (or `dg pr review {} {} --resume`) to finish: nothing is written twice",
@@ -846,6 +918,8 @@ async fn submit(
     let counts = role.is_some_and(forge_core::rules::v2::Role::is_approver);
     let mut body = body;
     body["counts"] = json!(counts);
+    let (letter, sent_to) = crate::audience::posted(ctx, &s.client, collab).await;
+    body["letter"] = letter;
     ctx.emit(body, || {
         println!(
             "✓ {} PR #{} at {}{} · {} · {}",
@@ -856,7 +930,12 @@ async fn submit(
             crate::fmt::plural(n, "inline comment"),
             cost_line(spent, price)
         );
-        if shown.marked() {
+        if !sent_to.is_empty() {
+            for line in &sent_to {
+                println!("{line}");
+            }
+            println!("  the verdict counts for everyone");
+        } else if shown.marked() {
             println!("  review text visible to members; the verdict counts for everyone");
         }
         for c in &draft.comments {
@@ -1041,10 +1120,14 @@ pub async fn comment(ctx: &Ctx, a: &PrCommentArgs) -> Result<()> {
     // Who it is for: the PR's, the comment replied to and its thread root's, as the write reads
     // them (DESIGN §3.3); `--reply-to` names any comment of the thread.
     // `--members` asks for members-only; refused here, before the price, when it cannot be.
-    let audience = crate::audience::requested(
+    let crate::audience::Requested { audience, to } = crate::audience::requested(
+        &s.client,
         &collab,
         &s.repo,
-        a.members,
+        crate::audience::Ask {
+            members: a.members,
+            to: &a.to,
+        },
         Some(&view.patch.document_id),
         a.reply_to.as_deref(),
     )
@@ -1062,7 +1145,7 @@ pub async fn comment(ctx: &Ctx, a: &PrCommentArgs) -> Result<()> {
     let field_bytes = usize::try_from(planned.field_bytes()).unwrap_or(usize::MAX);
     let est = estimate(Est::Comment, field_bytes + path_len) + planned.extra_credits(&s.repo);
     ctx.confirm_or_cancel(&format!(
-        "Post a {}{kind} comment on PR #{}? (one document, {}{})",
+        "Post a {}{kind} comment on PR #{}{to}? (one document, {}{})",
         crate::audience::prefix(&s.repo, audience),
         a.number,
         cost_line(est, price),
@@ -1079,6 +1162,7 @@ pub async fn comment(ctx: &Ctx, a: &PrCommentArgs) -> Result<()> {
         )
         .await?;
     let location = spec.as_ref().map(InlineSpec::location);
+    let (letter, sent_to) = crate::audience::posted(ctx, &s.client, &collab).await;
     ctx.emit(
         json!({
             "status": "commented",
@@ -1086,6 +1170,7 @@ pub async fn comment(ctx: &Ctx, a: &PrCommentArgs) -> Result<()> {
             "commentId": id,
             "kind": kind,
             "audience": crate::audience::json(audience),
+            "letter": letter,
             "replyTo": anchor.as_ref().and_then(|a| a.reply_to.as_ref()),
             "location": location,
             "commitOid": (kind == "inline").then(|| view.head.clone()),
@@ -1101,6 +1186,9 @@ pub async fn comment(ctx: &Ctx, a: &PrCommentArgs) -> Result<()> {
                 short(&id),
                 crate::audience::suffix(&s.repo, audience)
             );
+            for line in &sent_to {
+                println!("{line}");
+            }
         },
     );
     Ok(())
@@ -1163,6 +1251,7 @@ mod tests {
         let file = DraftFile {
             path: path.clone(),
             keys: None,
+            memory_only: false,
         };
         file.save(&d).unwrap();
         let back = load_plain(&path).unwrap();
@@ -1198,6 +1287,7 @@ mod tests {
         DraftFile {
             path: path.clone(),
             keys: Some(keys),
+            memory_only: false,
         }
         .save(&d)
         .unwrap();
@@ -1220,6 +1310,7 @@ mod tests {
         let keyless = DraftFile {
             path: dir.path().join("k.json"),
             keys: None,
+            memory_only: false,
         };
         assert!(keyless.save(&d).is_err());
         assert!(!dir.path().join("k.json").exists());
@@ -1236,6 +1327,7 @@ mod tests {
         DraftFile {
             path: path.clone(),
             keys: None,
+            memory_only: false,
         }
         .save(&pending)
         .unwrap();

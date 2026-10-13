@@ -35,7 +35,7 @@ import {
   type WriteResult,
 } from '../sdk'
 import { DOC, asIdentifierString, byteFieldToHex, contentDocOf, num, str, type RepoRef } from './contract'
-import { childAudience, membersWriter, repoHasMembersKey, sealMembersEdit, storedAudience, type MembersWriter } from './members-writes'
+import { childAudience, membersWriter, repoHasMembersKey, sealMembersEdit, storedAudience, storedOnce, type MembersWriter } from './members-writes'
 import { invalidateRepoFeed, readReviews, readTargetLog } from './issues'
 import { readMemberships } from './members'
 import { readRunners } from './checks'
@@ -46,7 +46,10 @@ import { bypassValue } from '../view/pull-actions'
 import { repoSource } from './source'
 import { contractHasProperty } from './contract-shape'
 import { refuseIfBanned } from './bans'
-import { admitAll, gateFor } from './private-content'
+import { admitAll, docAudience, gateFor } from './private-content'
+import { editLetterWriter, sdkLetterReads, sealLetterEdit, type LetterWriter } from './letter-writes'
+import type { LetterFacts } from './private-content'
+import type { LetterAsk } from '../view/audience'
 import { privateWriterWithSession, type PrivateWriter } from './private-writes'
 import type { PrivateSession } from './private-session'
 import {
@@ -63,6 +66,7 @@ import {
   refuseVerdictForRole,
   settledPost,
   reviewVerdictFields,
+  threadLetterWriter,
   writeRepoDoc,
   type PostContext,
   type VerdictInput,
@@ -204,6 +208,8 @@ export interface CommentInput {
   readonly post?: PostContext
   /** Who it is for, as its composer chose (absent: its parents', settled by the write). */
   readonly audience?: Audience
+  /** To specific people (`audience` `specificPeople`): who, as asked or resolved (absent: the thread's re-listed). */
+  readonly letter?: LetterAsk | LetterWriter
 }
 
 /**
@@ -227,11 +233,13 @@ export async function postComment(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, i
   await refuseIfBanned(sdk, repo, auth.network, auth.identityId)
   // A chosen audience is checked against the comment's parents first (DESIGN §3.3): a public reply
   // in a members-only thread is refused, never written.
-  const options =
-    input.audience === undefined
-      ? {}
-      : { audience: await childAudience(sdk, repo, { targetId: input.targetId, ...(input.replyTo ? { replyTo: input.replyTo } : {}), requested: input.audience }) }
-  return write(sdk, auth, repo, DOC.comment, commentData(input, auth.identityId), input.intent, undefined, undefined, options)
+  const audience =
+    input.audience === undefined ? undefined : await childAudience(sdk, repo, { targetId: input.targetId, ...(input.replyTo ? { replyTo: input.replyTo } : {}), requested: input.audience })
+  const data = commentData(input, auth.identityId)
+  // To specific people: who it goes to is resolved once, before anything is signed.
+  const letter = audience === 'specificPeople' ? await threadLetterWriter(sdk, auth, repo, DOC.comment, data, input.letter ?? null) : undefined
+  const options = audience === undefined ? {} : { audience, ...(letter ? { letter } : {}) }
+  return write(sdk, auth, repo, DOC.comment, data, input.intent, undefined, undefined, options)
 }
 
 /** A review verdict with the number of comments the submit will attach. */
@@ -276,16 +284,20 @@ export interface DraftComment {
   readonly body: string
   /**
    * Members-only (a public repo, DESIGN §4.1): this comment's text is for members, whatever the
-   * review's is. Absent: its PR's audience.
+   * review's is. Absent: its PR's audience. (A review to specific people takes all its comments
+   * with it: {@link ReviewDraft.audience}.)
    */
   readonly audience?: 'members'
   /** Set once the comment landed. */
   readonly landedId?: string
 }
 
-/** Whether a draft holds members-only text (its summary's or a comment's): it is then kept in memory only. */
+/**
+ * Whether a draft holds members-only text, or text to specific people (its summary's or a
+ * comment's): it is then kept in memory only.
+ */
 export function draftHasMembersText(d: Pick<ReviewDraft, 'audience' | 'comments'>): boolean {
-  return d.audience === 'members' || d.comments.some((c) => c.audience === 'members')
+  return d.audience === 'members' || d.audience === 'specificPeople' || d.comments.some((c) => c.audience === 'members')
 }
 
 /**
@@ -304,8 +316,12 @@ export interface ReviewDraft {
   /**
    * A public repo's members-only review: its text is for members, so, as a private repo's, the
    * draft lives in this page's memory only (no members-only text at rest, DESIGN §4.1).
+   * `specificPeople`: a review to specific people (in any repo), every comment of it too, also
+   * kept in memory only.
    */
-  readonly audience?: 'members'
+  readonly audience?: 'members' | 'specificPeople'
+  /** A review to specific people: who it goes to, as the picker asked (absent: the PR's people re-listed). */
+  readonly letter?: LetterAsk
   /**
    * Its public text quotes members-only text the tab has opened (DESIGN §4.1): kept in this
    * page's memory only, as a members-only draft is. Set on the draft itself, so every save of it
@@ -559,16 +575,23 @@ export async function submitReviewDraft(
   if (repo.visibility === 'private' && repo.session === undefined) throw new Error("a private repo's review is submitted by a member reading it with their key")
   // Who its text is for: the PR's audience, or narrower when the draft asks (its verdict is public).
   const audience =
-    repo.visibility === 'private' ? 'members' : await childAudience(sdk, repo, { targetId: draft.prId, ...(draft.audience ? { requested: draft.audience } : {}) })
+    repo.visibility === 'private' && draft.audience !== 'specificPeople'
+      ? 'members'
+      : await childAudience(sdk, repo, { targetId: draft.prId, ...(draft.audience ? { requested: draft.audience } : {}) })
+  // To specific people: the review and every comment of it go to the same people, resolved once.
+  const letter = audience === 'specificPeople' ? await threadLetterWriter(sdk, auth, repo, DOC.review, { patchId: draft.prId }, draft.letter ?? null) : undefined
   // Members-only text (the review's, or one comment's): written under one members key read.
-  const membersText = audience === 'members' || draft.comments.some((c) => c.audience === 'members')
+  const membersText = letter === undefined && (audience === 'members' || draft.comments.some((c) => c.audience === 'members'))
   // Members-only: the reconcile reads the landed comments through the reader's members key.
   if (repo.visibility === 'public' && membersText && repo.lane === undefined) throw new Error('a members-only review is submitted by a member reading the repo with their key')
+  // To specific people: the reconcile reads the landed comments through the reader's own key.
+  if (letter !== undefined && repo.letters === undefined) throw new Error('a review to specific people is submitted with your encryption key unlocked in this tab')
   // One writer (one fresh key read) for the review and all its comments.
   const fresh = repo.visibility === 'private' ? await privateWriterWithSession(sdk, auth, repo) : undefined
   const members = repo.visibility === 'public' && membersText ? await membersWriter(sdk, auth, repo) : undefined
   try {
-    return await submitWith(sdk, auth, repo, audience === 'members' && repo.visibility === 'public' ? { ...draft, audience: 'members' } : draft, post, fresh, onProgress, reads, members)
+    const settled: ReviewDraft = letter !== undefined ? { ...draft, audience: 'specificPeople' } : audience === 'members' && repo.visibility === 'public' ? { ...draft, audience: 'members' } : draft
+    return await submitWith(sdk, auth, repo, settled, post, fresh, onProgress, reads, members, letter)
   } finally {
     fresh?.session.close()
   }
@@ -584,13 +607,16 @@ async function submitWith(
   onProgress?: (p: SubmitProgress) => void,
   reads?: SubmitReads,
   members?: MembersWriter,
+  letter?: LetterWriter,
 ): Promise<SubmittedReview> {
   const writer = fresh?.writer
   // Who each document is for: the review's text by the draft, each comment by its own audience
-  // (else its PR's, settled by the write itself, failing closed).
+  // (else its PR's, settled by the write itself, failing closed); a review to specific people
+  // and every comment of it, to its people.
   const membersOptions = members ? { audience: 'members' as const, membersWriter: members } : {}
-  const options = draft.audience === 'members' ? membersOptions : {}
-  const commentOptions = (c: DraftComment) => (c.audience === 'members' ? membersOptions : {})
+  const letterOptions = letter ? { audience: 'specificPeople' as const, letter } : null
+  const options = letterOptions ?? (draft.audience === 'members' ? membersOptions : {})
+  const commentOptions = (c: DraftComment) => letterOptions ?? (c.audience === 'members' ? membersOptions : {})
   if (repo.visibility === 'private' && draft.private !== true) draft = { ...draft, private: true }
   // The reconcile reads through the writer's fresh session: a comment an earlier attempt sealed
   // under a newer epoch than the page's session knows still opens, and is not posted again.
@@ -834,6 +860,8 @@ export interface SealContext {
   readonly patchEpoch?: number
   /** An imported document's provenance as read (decrypted): kept in the re-sealed content. */
   readonly imported?: Readonly<Record<string, unknown>> | null
+  /** An opened message to specific people: who it went to, which its edit is re-sealed to. */
+  readonly letter?: LetterFacts
 }
 
 /** A comment's plaintext references an edit may remove (never sealed). */
@@ -854,9 +882,19 @@ interface EditAudience {
  * closed (it cannot be read: an error, never "public"). A public repo with no members key holds
  * no members-only content: nothing is read.
  */
-async function editAudience(sdk: EvoSDK, repo: RepoRef, documentType: string, id: string): Promise<EditAudience> {
-  if (repo.visibility === 'private') return { audience: 'members', doc: null }
-  if (!(await repoHasMembersKey(sdk, repo))) return { audience: 'public', doc: null }
+async function editAudience(sdk: EvoSDK, repo: RepoRef, documentType: string, id: string, seal?: SealContext): Promise<EditAudience> {
+  // An opened message to specific people (in any repo): read from the stored document too.
+  if (seal?.letter !== undefined) return storedAudience(sdk, repo, documentType, id)
+  // A private edit without its sealing context is refused anyway (never a plaintext replace).
+  if (repo.visibility === 'private' && seal === undefined) return { audience: 'members', doc: null }
+  // Where nothing else would be read, the stored document is still read once: a message to
+  // specific people is never re-sealed for members, nor replaced with plaintext (a missing one
+  // is the repo's default, as before).
+  if (repo.visibility === 'private' || !(await repoHasMembersKey(sdk, repo))) {
+    const doc = await storedOnce(sdk, repo, documentType, id)
+    if (doc !== null && docAudience(doc) === 'specificPeople') return { audience: 'specificPeople', doc }
+    return { audience: repo.visibility === 'private' ? 'members' : 'public', doc: null }
+  }
   return storedAudience(sdk, repo, documentType, id)
 }
 
@@ -877,6 +915,23 @@ async function replace(
   read: EditAudience,
 ): Promise<ReplaceResult> {
   let replaced = changes
+  // A message to specific people keeps its people (DESIGN §4.2): re-sealed to the same list and
+  // group, with their keys now and a fresh K_obj; refused when one of them can't receive it.
+  if (read.audience === 'specificPeople' || seal?.letter !== undefined) {
+    if (read.doc === null || read.audience !== 'specificPeople' || seal?.letter === undefined || documentType === 'patch') {
+      throw new PrivateWriteError(`this ${read.audience === 'specificPeople' ? 'message is for specific people' : `${documentType} isn't for specific people`}, and an edit keeps who can read it; nothing was written`)
+    }
+    if (expectedRevision === undefined) throw new Error(`an edit of a message to specific people needs the revision it was read at`)
+    await precheckEdit(sdk, auth, { contractId: contractFor(repo, documentType), documentType, documentId, expectRepoId: repo.repoId, expectedRevision })
+    const writer = await editLetterWriter(auth, repo, seal.letter, sdkLetterReads(sdk, auth, repo))
+    const sealed = await sealLetterEdit(auth, repo, documentType, { ...seal.bind }, seal.current, changes, writer, seal.imported)
+    const drops = Object.fromEntries(Object.entries(changes).filter(([k, v]) => v === undefined && REFERENCE_FIELDS.includes(k) && k !== 'asMember'))
+    replaced = { ...sealed, ...Object.fromEntries(PLAINTEXT_OF[documentType].map((f) => [f, undefined])), ...drops }
+    if (!editKeepsAudience(contentDocOf(documentType, read.doc), contentDocOf(documentType, { ...read.doc, ...replaced }))) {
+      throw new PrivateWriteError('this message is for specific people, and an edit keeps who can read it; nothing was written')
+    }
+    return finishReplace(sdk, auth, repo, documentType, documentId, replaced, expectedRevision)
+  }
   // A public repo's document keeps the audience it was written for (DESIGN §2.4): a members-only
   // one is re-sealed as a whole under the members key, never replaced with plaintext; a public
   // one stays plaintext. Read from the stored document, failing closed ({@link editAudience}).
@@ -908,6 +963,19 @@ async function replace(
     const drops = Object.fromEntries(Object.entries(changes).filter(([k, v]) => v === undefined && REFERENCE_FIELDS.includes(k)))
     replaced = { ...sealed, ...Object.fromEntries(PLAINTEXT_OF[documentType].map((f) => [f, undefined])), ...drops }
   }
+  return finishReplace(sdk, auth, repo, documentType, documentId, replaced, expectedRevision)
+}
+
+/** The replace itself, then the caches it invalidates. */
+async function finishReplace(
+  sdk: EvoSDK,
+  auth: WriteAuth,
+  repo: RepoRef,
+  documentType: 'issue' | 'patch' | 'comment',
+  documentId: string,
+  replaced: Record<string, unknown>,
+  expectedRevision: bigint | undefined,
+): Promise<ReplaceResult> {
   try {
     return await replaceDocumentIdempotent(sdk, auth, {
       contractId: contractFor(repo, documentType),
@@ -944,8 +1012,11 @@ export async function updateTarget(
   const others = { ...(input.seal?.current ?? {}), ...changes, imported: input.seal?.imported }
   // Who it is for, read before anything is stored: a members-only issue's long body must never
   // go to a plaintext artifact (an artifact stored is public for good).
-  const read = await editAudience(sdk, repo, input.type, input.id)
-  if (input.body !== undefined && input.body !== '') {
+  const read = await editAudience(sdk, repo, input.type, input.id, input.seal)
+  // A message to specific people has no long-body form: its text goes in whole (too long is refused by the seal).
+  if (read.audience === 'specificPeople' && input.body !== undefined) {
+    changes['body'] = input.body === '' ? undefined : input.body
+  } else if (input.body !== undefined && input.body !== '') {
     changes['body'] = await longBodyField(sdk, auth, repo, input.type, input.body, others, input.intent, read.audience, { type: input.type, id: input.id })
   } else if (input.body !== undefined) changes['body'] = undefined
   else if (repo.visibility === 'private' && typeof input.seal?.current['body'] === 'string') {
@@ -975,10 +1046,13 @@ export async function updateComment(
   if (input.body.trim() === '') throw new Error('a comment needs a body')
   // Who it is for, read before anything is stored: a members-only comment's long body must never
   // go to a plaintext artifact (an artifact stored is public for good).
-  const read = await editAudience(sdk, repo, 'comment', input.id)
+  const read = await editAudience(sdk, repo, 'comment', input.id, input.seal)
   // A body longer than its field: its full text stored first (forge-v2.md §6.3); an inline
-  // comment's path shares a private comment's room.
-  const body = await longBodyField(sdk, auth, repo, 'comment', input.body, input.seal?.current ?? {}, input.intent, read.audience, { type: 'comment', id: input.id })
+  // comment's path shares a private comment's room. A message to specific people has none.
+  const body =
+    read.audience === 'specificPeople'
+      ? input.body
+      : await longBodyField(sdk, auth, repo, 'comment', input.body, input.seal?.current ?? {}, input.intent, read.audience, { type: 'comment', id: input.id })
   const changes: Record<string, unknown> = { body }
   if (input.dropReviewId) changes['reviewId'] = undefined
   if (input.dropReplyTo) changes['replyTo'] = undefined

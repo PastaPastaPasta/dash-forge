@@ -11,6 +11,7 @@ import type { AnchorInput, DraftComment, ReviewDraft, VerdictInput } from '../re
 import { previewCreate, previewCredits, type CostPreview } from '../sdk'
 import { plural } from './format'
 import { quoteIndex, quotesMembersText, type MembersTexts } from './quote-check'
+import type { LetterAsk } from './audience'
 
 /**
  * Where a pending review lives, said wherever one is shown: unlike a GitHub pending review it is
@@ -79,23 +80,35 @@ export function addDraftComment(d: ReviewDraft, localId: string, anchor: AnchorI
   return { ...d, comments: [...d.comments, comment] }
 }
 
-/** Who the review's own text is for (a public repo): members-only, or the PR's audience. */
-export function setDraftAudience(d: ReviewDraft, audience: 'public' | 'members'): ReviewDraft {
-  if ((d.audience === 'members') === (audience === 'members')) return d
+/**
+ * Who the review's own text is for: members-only (a public repo), specific people (`letter`, as
+ * the picker asks; every comment of it goes with it), or the PR's audience.
+ */
+export function setDraftAudience(d: ReviewDraft, audience: 'public' | 'members' | 'specificPeople', letter?: LetterAsk): ReviewDraft {
+  if (audience === 'specificPeople') {
+    if (d.audience === 'specificPeople' && JSON.stringify(d.letter ?? null) === JSON.stringify(letter ?? null)) return d
+    editable(d)
+    return { ...d, audience: 'specificPeople', ...(letter ? { letter } : {}) }
+  }
+  if (d.audience !== 'specificPeople' && (d.audience === 'members') === (audience === 'members')) return d
   editable(d)
-  if (audience === 'members') return { ...d, audience: 'members' }
-  const { audience: _dropped, ...rest } = d
+  const { audience: _dropped, letter: _letter, ...rest } = d
   void _dropped
+  void _letter
+  if (audience === 'members') return { ...rest, audience: 'members' }
   return rest
 }
+
+/** A PR's own audience, as the draft helpers take it. */
+type PrAudience = 'public' | 'members' | 'specificPeople'
 
 /**
  * What a submit of `d` would make public that is not public yet: its summary when that is public
  * and its review not yet on Platform, and each public comment not yet on Platform. `pr`: the PR's
  * own audience (a members-only PR's text is all members-only).
  */
-export function draftPublicTexts(d: Pick<ReviewDraft, 'audience' | 'summary' | 'comments' | 'reviewId'>, pr: 'public' | 'members' = 'public'): string[] {
-  if (pr === 'members') return []
+export function draftPublicTexts(d: Pick<ReviewDraft, 'audience' | 'summary' | 'comments' | 'reviewId'>, pr: PrAudience = 'public'): string[] {
+  if (pr !== 'public' || d.audience === 'specificPeople') return []
   return [
     ...(d.audience === 'members' || d.reviewId !== undefined ? [] : [d.summary]),
     ...d.comments.filter((c) => c.audience !== 'members' && c.landedId === undefined).map((c) => c.body),
@@ -103,8 +116,8 @@ export function draftPublicTexts(d: Pick<ReviewDraft, 'audience' | 'summary' | '
 }
 
 /** A draft's own members-only text (its summary when members-only, and its members-only comments): a public line beside it must not repeat it. */
-export function draftMembersTexts(d: Pick<ReviewDraft, 'audience' | 'summary' | 'comments'>, pr: 'public' | 'members' = 'public'): string[] {
-  const members = (own: 'members' | undefined): boolean => own === 'members' || pr === 'members'
+export function draftMembersTexts(d: Pick<ReviewDraft, 'audience' | 'summary' | 'comments'>, pr: PrAudience = 'public'): string[] {
+  const members = (own: 'members' | 'specificPeople' | undefined): boolean => own !== undefined || pr !== 'public' || d.audience === 'specificPeople'
   return [...(members(d.audience) ? [d.summary] : []), ...d.comments.filter((c) => members(c.audience)).map((c) => c.body)].filter((t) => t.trim() !== '')
 }
 
@@ -112,7 +125,7 @@ export function draftMembersTexts(d: Pick<ReviewDraft, 'audience' | 'summary' | 
  * Whether a draft's public text ({@link draftPublicTexts}) repeats members-only text the tab has
  * opened: such a draft is kept in memory only, as a members-only one is (DESIGN §4.1).
  */
-export function draftQuotesMembersText(d: Pick<ReviewDraft, 'audience' | 'summary' | 'comments' | 'reviewId'>, membersTexts: MembersTexts, pr: 'public' | 'members' = 'public'): boolean {
+export function draftQuotesMembersText(d: Pick<ReviewDraft, 'audience' | 'summary' | 'comments' | 'reviewId'>, membersTexts: MembersTexts, pr: PrAudience = 'public'): boolean {
   const index = quoteIndex(membersTexts)
   if (index.empty) return false
   return draftPublicTexts(d, pr).some((t) => quotesMembersText(t, index))
@@ -132,8 +145,10 @@ export function withMemoryOnly(d: ReviewDraft, on: boolean): ReviewDraft {
  * and how many public, for the submit summary (product H8). `pr`: the PR's own audience, which a
  * text without its own follows.
  */
-export function draftAudienceCounts(d: Pick<ReviewDraft, 'audience' | 'summary' | 'comments'>, pr: 'public' | 'members'): { members: number; public: number } {
-  const of = (own: 'members' | undefined): 'public' | 'members' => (own === 'members' || pr === 'members' ? 'members' : 'public')
+export function draftAudienceCounts(d: Pick<ReviewDraft, 'audience' | 'summary' | 'comments'>, pr: PrAudience): { members: number; public: number } {
+  // A review to specific people sends every text of it to them: nothing members-only or public to sum up.
+  if (d.audience === 'specificPeople' || pr === 'specificPeople') return { members: 0, public: 0 }
+  const of = (own: 'members' | 'specificPeople' | undefined): 'public' | 'members' => (own === 'members' || pr === 'members' ? 'members' : 'public')
   const all = [...(d.summary.trim() !== '' ? [of(d.audience)] : []), ...d.comments.map((c) => of(c.audience))]
   const members = all.filter((a) => a === 'members').length
   return { members, public: all.length - members }

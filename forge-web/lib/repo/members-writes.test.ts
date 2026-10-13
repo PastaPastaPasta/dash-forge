@@ -122,10 +122,16 @@ describe('who a new document is for', () => {
     expect(await childAudience(sdk, REPO, { targetId: ISSUE_PUBLIC, requested: 'members' })).toBe('members')
   })
 
-  it('refuses a public child of a members-only parent, and specific people for now', async () => {
+  it('refuses a public child of a members-only parent; specific people sit under any parent, and only they under one of theirs', async () => {
     await expect(childAudience(sdk, REPO, { targetId: ISSUE_MEMBERS, requested: 'public' })).rejects.toThrow(/can't be public/)
     await expect(childAudience(sdk, REPO, { targetId: ISSUE_PUBLIC, replyTo: REPLY_MEMBERS, requested: 'public' })).rejects.toThrow(/can't be public/)
-    expect(() => audienceFor(REPO, 'specificPeople', null)).toThrow(/specific people/)
+    expect(audienceFor(REPO, 'specificPeople', null)).toBe('specificPeople')
+    expect(audienceFor(REPO, 'specificPeople', 'members')).toBe('specificPeople')
+    // a members-only or public reply in a thread of messages to specific people is refused (DESIGN §3.3)
+    expect(() => audienceFor(REPO, 'members', 'specificPeople')).toThrow(/for specific people/)
+    expect(() => audienceFor(REPO, 'public', 'specificPeople')).toThrow(/for specific people/)
+    // asking for nothing there: it goes to specific people too
+    expect(audienceFor(REPO, undefined, 'specificPeople')).toBe('specificPeople')
   })
 
   it('fails closed: a parent that cannot be read is an error, never public', async () => {

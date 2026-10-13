@@ -81,9 +81,59 @@ pub fn seal_props(
     owner: [u8; 32],
     props: BTreeMap<String, FieldValue>,
 ) -> Result<BTreeMap<String, FieldValue>> {
-    seal_props_inner(keys, kind, owner, props, false, |h, f| {
+    seal_props_inner(epoch_hashing(keys), kind, owner, props, false, |h, f| {
         crate::private::doc::seal(keys, h, f)
     })
+}
+
+/// An epoch's number and its ref-name hash (`HMAC(K_ref,e, name)`, §4.5), for
+/// [`seal_props_inner`].
+fn epoch_hashing(keys: &EpochKeys) -> (u32, impl Fn(&str) -> [u8; 32] + '_) {
+    (keys.epoch(), move |n: &str| keys.ref_name_hash(n))
+}
+
+/// [`seal_props`] for a **letter** (`enc` v0x04, DESIGN §4.2): the same transform, sealed by
+/// [`crate::private::named::seal`] from `sender` (its ENCRYPTION key, id `sender_key_id`) to
+/// `recipients` (slot order, the sender first) in the repository `repo_id`, under `epoch = 0`
+/// (D20); `group` is the role group the recipients are, when one was chosen (tag 29). A letter's
+/// PR names its branches by their public `sha256`.
+#[allow(clippy::too_many_arguments)]
+pub fn seal_letter_props(
+    repo_id: &[u8; 32],
+    sender: &crate::envelope::PrivateKey,
+    sender_key_id: u32,
+    recipients: &[crate::private::named::Recipient],
+    group: Option<crate::private::tlv::LetterGroup>,
+    kind: DocKind,
+    owner: [u8; 32],
+    props: BTreeMap<String, FieldValue>,
+) -> Result<BTreeMap<String, FieldValue>> {
+    let public_hash = |n: &str| crate::private::keys::sha256(n.as_bytes());
+    seal_props_inner((0, public_hash), kind, owner, props, true, |h, f| {
+        crate::private::named::seal(repo_id, sender, sender_key_id, h, f, recipients, group)
+    })
+    .map_err(|e| match e {
+        Error::User(u) if u.message.contains(TOO_LARGE_MARK) => {
+            letter_too_large(kind, recipients.len())
+        }
+        other => other,
+    })
+}
+
+/// A letter whose text does not fit beside its recipients' slots.
+fn letter_too_large(kind: DocKind, n: usize) -> Error {
+    crate::user_error::UserError::new(
+        crate::user_error::codes::USAGE,
+        format!(
+            "this {} is too long to send to {} {TOO_LARGE_MARK}",
+            kind.type_name(),
+            crate::rules::letters::people(n)
+        ),
+    )
+    .cause("each person a message goes to takes room from its text (about 100 bytes each)")
+    .fix("shorten it, or send it to fewer people")
+    .note("nothing was written")
+    .into()
 }
 
 /// [`seal_props`] for a **members-only** document of a public repository
@@ -97,9 +147,14 @@ pub fn seal_members_props(
     owner: [u8; 32],
     props: BTreeMap<String, FieldValue>,
 ) -> Result<BTreeMap<String, FieldValue>> {
-    seal_props_inner(lane.write_keys(), kind, owner, props, true, |h, f| {
-        lane.seal_doc(h, f)
-    })
+    seal_props_inner(
+        epoch_hashing(lane.write_keys()),
+        kind,
+        owner,
+        props,
+        true,
+        |h, f| lane.seal_doc(h, f),
+    )
 }
 
 /// [`reseal_edit`] for a members-only issue or comment of a public repository: the whole
@@ -184,20 +239,19 @@ pub fn seal_props_with_nonce(
     props: BTreeMap<String, FieldValue>,
     nonce: [u8; 12],
 ) -> Result<BTreeMap<String, FieldValue>> {
-    seal_props_inner(keys, kind, owner, props, false, |h, f| {
+    seal_props_inner(epoch_hashing(keys), kind, owner, props, false, |h, f| {
         crate::private::doc::seal_with_nonce(keys, h, f, false, nonce)
     })
 }
 
 fn seal_props_inner(
-    keys: &EpochKeys,
+    (epoch, ref_name_hash): (u32, impl Fn(&str) -> [u8; 32]),
     kind: DocKind,
     owner: [u8; 32],
     mut props: BTreeMap<String, FieldValue>,
     members: bool,
     seal: impl FnOnce(&DocHeader, &Fields) -> std::result::Result<Vec<u8>, PrivateError>,
 ) -> Result<BTreeMap<String, FieldValue>> {
-    let epoch = keys.epoch();
     let mut header = DocHeader::new(kind, owner, epoch);
     let mut fields = Fields::default();
     match kind {
@@ -211,7 +265,7 @@ fn seal_props_inner(
             if kind == DocKind::Patch {
                 fields.base_ref_name = take_text(&mut props, "baseRefName");
                 fields.source_ref_name = take_text(&mut props, "sourceRefName");
-                let hash = |name: &Option<String>| name.as_deref().map(|n| keys.ref_name_hash(n));
+                let hash = |name: &Option<String>| name.as_deref().map(&ref_name_hash);
                 header.base_ref_name_hash = hash(&fields.base_ref_name);
                 header.source_ref_name_hash = hash(&fields.source_ref_name);
                 for (name, h) in [
@@ -339,6 +393,39 @@ pub fn open_doc(opened: Opened, d: FetchedDocument) -> Option<FetchedDocument> {
         Opened::Readable(f) => Some(restore(*f, d)),
         _ => None,
     }
+}
+
+/// The fetched letter `d` as the public codecs read it, given the opened `letter`: its fields
+/// put back in place, and its recipients and group in the `$letterTo` / `$letterGroup` fields
+/// ([`super::v2::LETTER_TO_FIELD`]) the views read.
+///
+/// The group is kept only on a letter that carries `asMember`: anyone may set tag 29, and a
+/// stranger's claim that it went to "the maintainers" would otherwise label it so and make a
+/// reply re-list the group (DESIGN §4.2: strangers' letters are a display rule, never a group's).
+#[must_use]
+pub fn open_letter_doc(
+    letter: crate::private::named::Letter,
+    d: FetchedDocument,
+) -> FetchedDocument {
+    let crate::private::named::Letter {
+        fields,
+        recipients,
+        group,
+        ..
+    } = letter;
+    let group = group.filter(|_| d.fields.contains_key(crate::layout::AS_MEMBER));
+    let mut d = restore(fields, d);
+    d.fields.insert(
+        super::v2::LETTER_TO_FIELD.into(),
+        FieldValue::List(recipients.into_iter().map(FieldValue::Identifier).collect()),
+    );
+    if let Some(g) = group {
+        d.fields.insert(
+            super::v2::LETTER_GROUP_FIELD.into(),
+            FieldValue::integer(u64::from(g.code())),
+        );
+    }
+    d
 }
 
 /// `d` with the decrypted `f` put back where the public codecs read it.

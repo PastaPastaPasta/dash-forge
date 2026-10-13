@@ -14,6 +14,9 @@
     "membersOnly": {
       "type": "integer"
     },
+    "toSpecificPeople": {
+      "type": "integer"
+    },
     "prs": {
       "type": "array",
       "items": {

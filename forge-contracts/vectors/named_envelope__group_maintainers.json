@@ -1,0 +1,104 @@
+{
+  "name": "group_maintainers",
+  "description": "a comment to the maintainers preset (3 people, the sender in slot 0): the TLV carries tag 29 (1) after the recipients, which every recipient reads back as the group.",
+  "case": "named_envelope",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "doc": {
+      "type": "comment",
+      "vis": "public",
+      "ownerId": "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+      "epoch": 0,
+      "targetId": "3333333333333333333333333333333333333333333333333333333333333333"
+    },
+    "fields": {
+      "body": "A letter to the maintainers when sent (3 people)."
+    },
+    "sender": {
+      "identityId": "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+      "priv": "2ad1b589f470e72d6946b4924abacbed51bb782d293e76cc8541010dec32ddb3",
+      "pub": "021d144ab1f60cb016060ab65044c6cc99287f65bcddb72ed65aca72fd61ff0082",
+      "keyId": 4
+    },
+    "recipients": [
+      {
+        "identityId": "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+        "priv": "2ad1b589f470e72d6946b4924abacbed51bb782d293e76cc8541010dec32ddb3",
+        "pub": "021d144ab1f60cb016060ab65044c6cc99287f65bcddb72ed65aca72fd61ff0082"
+      },
+      {
+        "identityId": "8fcef67268ac484a9ff85e6548ec6f5b3fb7a70feef773ea35daac8dc042e688",
+        "priv": "99905f5e10fe3d19ebf9e2a51a5c872d1a54f749f46bd565529d638c325ef955",
+        "pub": "02bf17b1a250a78519af75826803dc13b2182a3ce97a7badb50135cb3194e2388a"
+      },
+      {
+        "identityId": "3ccad8405e96a830932809a33cf77267873831cf5e1183cfd83d275378ddf810",
+        "priv": "800419f853a2e11eeb44d05d603918884d93a42258c72df493c7d252e30130e8",
+        "pub": "026e30ff71fd069a535f7f75eee8118a4342cb224934cc4fb34959ca59814c9feb"
+      }
+    ],
+    "kObj": "c4245c2ee814320decd5b6250c6f60c3e76d67ff5e6d843eb59a5b947ce3479c",
+    "nonce": "1dfc5ec0c8c829dd5f390066",
+    "ivs": [
+      "a903f59800dc53b0c37ef30bb7eade16",
+      "00557b9d66a8a6e3d64be8c820ed06b6",
+      "18e5bdb5a4a95b3b84c7ffea4e0082af"
+    ],
+    "group": "maintainers"
+  },
+  "expected": {
+    "shared": [
+      "c7524c877dacb46526e61feb3284a734dce449c07bfb0aae69308c5062f8c7f5",
+      "395ac332bd12c170bcabb57015859838f0715f1d95c0cbe8fe27a7a2dbe91182",
+      "f07bef68ec795b682684e4deca440a944703f1f196a43ede3987a3d638a3ed61"
+    ],
+    "commit": "d621f7a2533441093911492768c8b0dedf060a6ccff511d499fc8c8743fd02ee",
+    "kcv": "d621f7a2533441093911492768c8",
+    "headerSha256": "81d244237ec95af45db169bf446136462f5b5a7910c0499a62aedb6add9ae38a",
+    "ad": "646173682d666f7267652f76322f646f63000411111111111111111111111111111111111111111111111111111111111111115e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea00000000636f6d6d656e7400333333333333333333333333333333333333333333333333333333333333333381d244237ec95af45db169bf446136462f5b5a7910c0499a62aedb6add9ae38a",
+    "tlv": "02003141206c657474657220746f20746865206d61696e7461696e657273207768656e2073656e742028332070656f706c65292e1900205e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea1900208fcef67268ac484a9ff85e6548ec6f5b3fb7a70feef773ea35daac8dc042e6881900203ccad8405e96a830932809a33cf77267873831cf5e1183cfd83d275378ddf8101d00010140001c00000000000000000000000000000000000000000000000000000000",
+    "enc": "040300000004d621f7a2533441093911492768c8b0dedf060a6ccff511d499fc8c8743fd02eea903f59800dc53b0c37ef30bb7eade1630a8cca3daf2e5d2ad6788c23ee41899cef9431df40365b0aa20c16570888c36ffd4bc7b7148b7d509f1ef8721fd978100557b9d66a8a6e3d64be8c820ed06b68155bb1be4f944d68940aa4020737531cf417e0c78acdc9aa774c3779ef92709eacd16e51655033ec1edbe3ee8b28a3818e5bdb5a4a95b3b84c7ffea4e0082af5ee3856c92bd2b93b0cdc5ff01da3f8165b16c1e8fe7074041b1d7035f2c77bfea3f7aa23c5f1e7a7055a5f72bd94ce71dfc5ec0c8c829dd5f390066f5cb68d947ca05a054bc8cac3ddc1695aa1beec7c66b4aa29cf6e0b3bf04f51166745b756670ce9463184bb4e604cfa2bf572dd4e12ab339a7b33a1f6610f9d57697cf9b67daf79e06bc3819afb928623e3c3899d8f3b05fb4af0f58cfe05d503c04349af7eb13941f90ee55411b68f0deb8872b3bc2b2624173b23351aa36fc480a5840d1faaf36dcac141adcc1eeae94ad4d232d8dd64aeb525edc5b9c7b9923d9fe55269924bef6fa5d646b44025fdf5938456046cb0c3bdc9112738088d9936e088271ac9408d8805e6ee0141c28",
+    "opened": [
+      {
+        "status": "readable",
+        "fields": {
+          "body": "A letter to the maintainers when sent (3 people)."
+        },
+        "recipients": [
+          "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+          "8fcef67268ac484a9ff85e6548ec6f5b3fb7a70feef773ea35daac8dc042e688",
+          "3ccad8405e96a830932809a33cf77267873831cf5e1183cfd83d275378ddf810"
+        ],
+        "slot": 0,
+        "group": "maintainers"
+      },
+      {
+        "status": "readable",
+        "fields": {
+          "body": "A letter to the maintainers when sent (3 people)."
+        },
+        "recipients": [
+          "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+          "8fcef67268ac484a9ff85e6548ec6f5b3fb7a70feef773ea35daac8dc042e688",
+          "3ccad8405e96a830932809a33cf77267873831cf5e1183cfd83d275378ddf810"
+        ],
+        "slot": 1,
+        "group": "maintainers"
+      },
+      {
+        "status": "readable",
+        "fields": {
+          "body": "A letter to the maintainers when sent (3 people)."
+        },
+        "recipients": [
+          "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+          "8fcef67268ac484a9ff85e6548ec6f5b3fb7a70feef773ea35daac8dc042e688",
+          "3ccad8405e96a830932809a33cf77267873831cf5e1183cfd83d275378ddf810"
+        ],
+        "slot": 2,
+        "group": "maintainers"
+      }
+    ]
+  }
+}

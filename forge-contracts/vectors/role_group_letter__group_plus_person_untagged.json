@@ -1,0 +1,51 @@
+{
+  "name": "group_plus_person_untagged",
+  "description": "a preset plus a person named: the letter goes to both and carries no group tag (not everyone is in the group).",
+  "case": "role_group_letter",
+  "rules": "v2",
+  "input": {
+    "owner": "6owner1111111111111111111111111111111111111",
+    "sender": "6owner1111111111111111111111111111111111111",
+    "members": [
+      {
+        "identity": "7maint1111111111111111111111111111111111111",
+        "role": "maintainer"
+      },
+      {
+        "identity": "8writer111111111111111111111111111111111111",
+        "role": "writer"
+      },
+      {
+        "identity": "8writer222222222222222222222222222222222222",
+        "role": "writer"
+      },
+      {
+        "identity": "9triage11111111111111111111111111111111111",
+        "role": "triage"
+      },
+      {
+        "identity": "Areader11111111111111111111111111111111111",
+        "role": "reader"
+      }
+    ],
+    "keyless": [],
+    "request": {
+      "group": "maintainers",
+      "people": [
+        "Bfrank111111111111111111111111111111111111"
+      ]
+    },
+    "exact": null,
+    "parents": [],
+    "membersOnlyParent": false
+  },
+  "expected": {
+    "recipients": [
+      "6owner1111111111111111111111111111111111111",
+      "7maint1111111111111111111111111111111111111",
+      "Bfrank111111111111111111111111111111111111"
+    ],
+    "skipped": [],
+    "group": null
+  }
+}
