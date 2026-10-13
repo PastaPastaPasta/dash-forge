@@ -223,34 +223,10 @@ pub fn render(event: &WebhookEvent, names: &BTreeMap<String, String>) -> Option<
     let (title, url) = match event.event {
         // a maintainer made someone's members-only post public (DESIGN §4.6)
         "issues" | "issue_comment" | "pull_request_review" if made_public => {
-            let (obj, what, post) = match event.event {
-                "issues" => ("issue", "issue", "issue"),
-                "issue_comment" if p["issue"].get("pull_request").is_some() => {
-                    ("issue", "pull request", "comment")
-                }
-                "issue_comment" => ("issue", "issue", "comment"),
-                _ => ("pull_request", "pull request", "review"),
-            };
-            let number = u64_at(p, &[obj, "number"]);
-            thread = Some((what == "pull request", number));
-            let (author_path, body_path): (&[&str], &[&str]) = match post {
-                "issue" => (&["issue", "user", "login"], &["issue", "body"]),
-                "comment" => (&["comment", "user", "login"], &["comment", "body"]),
-                _ => (&["review", "user", "login"], &["review", "body"]),
-            };
-            excerpt = clean_text(str_at(p, body_path), MAX_EXCERPT_CHARS);
-            let author = name(str_at(p, author_path));
-            let line = if post == "issue" {
-                format!("{actor} made {author}'s issue #{number} public")
-            } else {
-                format!("{actor} made {author}'s {post} on {what} #{number} public")
-            };
-            let url_path: &[&str] = match post {
-                "issue" => &["issue", "html_url"],
-                "comment" => &["comment", "html_url"],
-                _ => &["review", "html_url"],
-            };
-            (line, str_at(p, url_path).to_string())
+            let (line, url, at, body) = made_public_title(event.event, p, &actor, &name);
+            thread = Some(at);
+            excerpt = body;
+            (line, url)
         }
         "push" => push_title(p, &actor),
         "issues" | "pull_request" => {
@@ -337,6 +313,34 @@ pub fn render(event: &WebhookEvent, names: &BTreeMap<String, String>) -> Option<
         thread,
         id: format!("{}:{}", event.event, event.source_doc_id),
     })
+}
+
+/// A post a maintainer made public (DESIGN §4.6): its line naming the maintainer and the post's
+/// author, its link, its thread, and the now-public text as the excerpt.
+fn made_public_title(
+    event: &str,
+    p: &Value,
+    actor: &str,
+    name: &dyn Fn(&str) -> String,
+) -> (String, String, (bool, u64), String) {
+    let (obj, what, post) = match event {
+        "issues" => ("issue", "issue", "issue"),
+        "issue_comment" if p["issue"].get("pull_request").is_some() => {
+            ("issue", "pull request", "comment")
+        }
+        "issue_comment" => ("issue", "issue", "comment"),
+        _ => ("pull_request", "pull request", "review"),
+    };
+    let number = u64_at(p, &[obj, "number"]);
+    let excerpt = clean_text(str_at(p, &[post, "body"]), MAX_EXCERPT_CHARS);
+    let author = name(str_at(p, &[post, "user", "login"]));
+    let line = if post == "issue" {
+        format!("{actor} made {author}'s issue #{number} public")
+    } else {
+        format!("{actor} made {author}'s {post} on {what} #{number} public")
+    };
+    let url = str_at(p, &[post, "html_url"]).to_string();
+    (line, url, (what == "pull request", number), excerpt)
 }
 
 /// A release's line, link and excerpt.
@@ -523,13 +527,17 @@ mod tests {
             open: true,
             is_pr: false,
         };
-        let mut e = issue_comment_event(&meta(), "M:C1", &issue, "C1", "BOBID12345", "the fix is in");
+        let mut e =
+            issue_comment_event(&meta(), "M:C1", &issue, "C1", "BOBID12345", "the fix is in");
         e.action = Some("edited");
         e.payload["sender"] = meta().user_json("ALICEID");
         e.payload[crate::ingest::MADE_PUBLIC_KEY] = serde_json::json!({ "by": "ALICEID" });
         assert!(named_ids(&e).contains(&"BOBID12345".to_string()));
         let n = render(&e, &names()).unwrap();
-        assert_eq!(n.title, "alice made BOBID12345's comment on issue #3 public");
+        assert_eq!(
+            n.title,
+            "alice made BOBID12345's comment on issue #3 public"
+        );
         assert_eq!(n.excerpt, "the fix is in");
         assert_eq!(n.thread, Some((false, 3)));
     }

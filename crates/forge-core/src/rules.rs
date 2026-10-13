@@ -1883,6 +1883,7 @@ mod tests {
     }
 
     /// The `make_public__bundle_*` ops (DESIGN §4.6, a maintainer's bundle).
+    #[allow(clippy::too_many_lines)] // one arm per vector op
     fn run_make_public_bundle(v: &Vector, inp: MakePublicInput) {
         use crate::private::bundle::{self, BundleRead, DocEntries};
         use crate::private::convert::PublishedBundle;
@@ -1924,7 +1925,9 @@ mod tests {
                         .as_array()
                         .unwrap()
                         .iter()
-                        .map(|k| crate::envelope::PrivateKey::from_hex(k.as_str().unwrap()).unwrap())
+                        .map(|k| {
+                            crate::envelope::PrivateKey::from_hex(k.as_str().unwrap()).unwrap()
+                        })
                         .collect();
                     let reader = named::Reader {
                         identity_id: hex32(r["identityId"].as_str().unwrap()),
@@ -1979,9 +1982,9 @@ mod tests {
                         entries.of_doc(d.doc.kind, &id),
                     );
                     let (id, revision) = (hex::encode(id), d.revision);
-                    alerts.extend(mismatches.iter().map(|m| {
-                        json!({ "id": id, "revision": m.revision, "by": hex::encode(m.by) })
-                    }));
+                    alerts.extend(mismatches.iter().map(
+                        |m| json!({ "id": id, "revision": m.revision, "by": hex::encode(m.by) }),
+                    ));
                     reads.push(match read {
                         BundleRead::Public { by, fields } => json!({
                             "id": id, "revision": revision, "state": "public",

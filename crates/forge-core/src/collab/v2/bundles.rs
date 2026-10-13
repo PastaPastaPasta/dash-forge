@@ -421,10 +421,12 @@ impl Collab<'_> {
         Ok(history
             .into_iter()
             .filter(is_sealed)
-            .filter_map(|h| match self.outcome(&repo_id, &entries, DocKind::Issue, &h) {
-                Outcome::Public(doc, by) => Some((doc, by)),
-                _ => None,
-            })
+            .filter_map(
+                |h| match self.outcome(&repo_id, &entries, DocKind::Issue, &h) {
+                    Outcome::Public(doc, by) => Some((doc, by)),
+                    _ => None,
+                },
+            )
             .collect())
     }
 
@@ -667,10 +669,12 @@ impl Collab<'_> {
                 .map(|l| format!("{} {}: {}", noun(l.kind), l.id, l.why.words()))
                 .collect::<Vec<_>>()
                 .join("; ");
-            return Err(UserError::new(codes::USAGE, "there is nothing to make public")
-                .cause(why)
-                .note("checked before anything was signed; nothing was written or paid")
-                .into());
+            return Err(
+                UserError::new(codes::USAGE, "there is nothing to make public")
+                    .cause(why)
+                    .note("checked before anything was signed; nothing was written or paid")
+                    .into(),
+            );
         }
         if plan.entries.len() > bundle::MAX_DOC_ENTRIES {
             return Err(UserError::new(
@@ -829,10 +833,9 @@ impl Collab<'_> {
 /// Whether opened `fields` carry a text that continues in a separate artifact (a long body's
 /// trailer): a bundle publishes the document, not that artifact (DESIGN decision P2B-D4).
 fn long_body(fields: &crate::private::Fields) -> bool {
-    fields
-        .body
-        .as_deref()
-        .is_some_and(|b| crate::rules::long_body::parse(b) != crate::rules::long_body::LongBody::Plain)
+    fields.body.as_deref().is_some_and(|b| {
+        crate::rules::long_body::parse(b) != crate::rules::long_body::LongBody::Plain
+    })
 }
 
 /// The content fields of a document in its public form (as [`as_public`] made it).

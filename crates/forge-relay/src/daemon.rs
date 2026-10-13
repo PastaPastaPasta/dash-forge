@@ -1674,7 +1674,14 @@ async fn poll_made_public(
     ];
     let core = &shared.contracts.core;
     let Some(r) = st
-        .read(shared, "makePublic".into(), "packManifest", core, &prefix, base)
+        .read(
+            shared,
+            "makePublic".into(),
+            "packManifest",
+            core,
+            &prefix,
+            base,
+        )
         .await
     else {
         return 0;

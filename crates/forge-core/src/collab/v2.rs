@@ -44,6 +44,7 @@ use crate::platform::{
     PlatformClient, PreparedWrite, QueryFilter, QueryOrder, Resign, WriteEngine, WriteIntent,
 };
 use crate::private::DocKind;
+use crate::rules::v2::{audience_edit, edit_keeps_audience, Audience, AudienceEdit};
 use crate::rules::v2::{
     checks_state, content_well_formed, count_approvals, counted_reviews, dense_number,
     fold_pr_review_v2, git_plane_well_formed, is_author_kind, is_state_kind, issue_state_v2,
@@ -53,7 +54,6 @@ use crate::rules::v2::{
     RoleOracle, StateAction, Transition, TransitionMove, TransitionTarget, Visibility,
     TRANSITION_KINDS,
 };
-use crate::rules::v2::{audience_edit, edit_keeps_audience, Audience, AudienceEdit};
 use crate::rules::v2::{CloseReason, ClosedAs};
 use crate::rules::{self, Event, EventKind, IssueState, PrState};
 use crate::scope::RepoRef;
@@ -5834,7 +5834,10 @@ impl<'a> Collab<'a> {
         }
         // after a maintainer made it public, its author's edit is public too (DESIGN §4.6)
         if let Some(by) = self.bundle_covers(repo, kind, &stored).await {
-            if self.requested_audience().is_some_and(|want| want != Audience::Public) {
+            if self
+                .requested_audience()
+                .is_some_and(|want| want != Audience::Public)
+            {
                 return Err(audience_fixed(doc_type, Audience::Public));
             }
             let mut changes = self

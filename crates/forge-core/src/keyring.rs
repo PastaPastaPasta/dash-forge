@@ -1051,7 +1051,11 @@ impl Keyring {
     /// ([`Self::open`]: the epoch, the late-content rule, the commitment, GCM), and only for a
     /// kind bundles publish. `None` otherwise.
     #[must_use]
-    pub fn obj_key(&self, kind: DocKind, d: &FetchedDocument) -> Option<zeroize::Zeroizing<[u8; 32]>> {
+    pub fn obj_key(
+        &self,
+        kind: DocKind,
+        d: &FetchedDocument,
+    ) -> Option<zeroize::Zeroizing<[u8; 32]>> {
         if !matches!(self.open(kind, d), Opened::Readable(_)) {
             return None;
         }

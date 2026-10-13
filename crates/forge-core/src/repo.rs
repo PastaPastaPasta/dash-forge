@@ -1286,7 +1286,10 @@ impl<'a> RepoService<'a> {
         // one bundle per uploader and hash: the same bytes from two maintainers are two bundles
         let mut by_owner: BTreeMap<&str, Vec<PackManifestInfo>> = BTreeMap::new();
         for m in &manifests {
-            by_owner.entry(m.owner_id.as_str()).or_default().push(m.clone());
+            by_owner
+                .entry(m.owner_id.as_str())
+                .or_default()
+                .push(m.clone());
         }
         for (owner_id, mine) in by_owner {
             let Ok(owner) = platform::decode_identifier(owner_id) else {

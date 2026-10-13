@@ -492,7 +492,12 @@ impl Published {
 
     /// The line a post read as `audience` gets: "made public by @m", or what an edit since
     /// changed.
-    pub fn line(&self, id: &str, audience: Audience, who: &dyn Fn(&str) -> String) -> Option<String> {
+    pub fn line(
+        &self,
+        id: &str,
+        audience: Audience,
+        who: &dyn Fn(&str) -> String,
+    ) -> Option<String> {
         use forge_core::collab::v2::PublicationState;
         let p = self.0.get(id)?;
         let by = who(&p.by);
@@ -534,4 +539,3 @@ pub fn alert_lines(
         })
         .collect()
 }
-

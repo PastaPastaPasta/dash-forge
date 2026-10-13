@@ -643,13 +643,7 @@ fn issue_line(v: &IssueView, pinned: bool, hid: &str) -> String {
 }
 
 #[allow(clippy::too_many_lines)] // one view: the reads, then its JSON and its human rendering
-async fn view(
-    ctx: &Ctx,
-    repo: &str,
-    number: u64,
-    show_hidden: bool,
-    history: bool,
-) -> Result<()> {
+async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool, history: bool) -> Result<()> {
     let s = Reader::open_discussion(ctx, repo).await?;
 
     let collab = s.collab();

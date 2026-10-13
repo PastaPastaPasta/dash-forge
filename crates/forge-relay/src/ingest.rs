@@ -782,7 +782,14 @@ pub fn translate_made_public(
             let t = targets.get(&target_id)?;
             let issue = t.issue_obj(&target_id, !closed.contains(&target_id));
             (
-                issue_comment_event(repo, &source, &issue, &d.id, &d.owner_id, &plain_str(d, "body")),
+                issue_comment_event(
+                    repo,
+                    &source,
+                    &issue,
+                    &d.id,
+                    &d.owner_id,
+                    &plain_str(d, "body"),
+                ),
                 t.members_only,
             )
         }
@@ -2035,8 +2042,16 @@ mod tests {
                 ("body", FieldValue::text("now everyone can read this")),
             ],
         );
-        let e = translate_made_public(&meta(), "M1", "comment", &c, "MAINT", &issues, &BTreeSet::new())
-            .unwrap();
+        let e = translate_made_public(
+            &meta(),
+            "M1",
+            "comment",
+            &c,
+            "MAINT",
+            &issues,
+            &BTreeSet::new(),
+        )
+        .unwrap();
         assert_eq!(e.event, "issue_comment");
         assert_eq!(e.payload["action"], "edited");
         assert_eq!(e.payload["sender"]["login"], "MAINT");
@@ -2053,15 +2068,45 @@ mod tests {
                 ("title", FieldValue::text("Rotate the key")),
             ],
         );
-        let e = translate_made_public(&meta(), "M1", "issue", &i, "MAINT", &issues, &BTreeSet::new())
-            .unwrap();
+        let e = translate_made_public(
+            &meta(),
+            "M1",
+            "issue",
+            &i,
+            "MAINT",
+            &issues,
+            &BTreeSet::new(),
+        )
+        .unwrap();
         assert_eq!((e.event, e.action), ("issues", Some("edited")));
         assert_eq!(e.payload["issue"]["user"]["login"], "BOB");
         assert_eq!(e.payload["issue"]["title"], "Rotate the key");
         // a comment on a thread the relay does not know is skipped, as is another kind
-        let orphan = doc("c2", "ALICE", vec![("targetId", FieldValue::identifier([7; 32]))]);
-        assert!(translate_made_public(&meta(), "M1", "comment", &orphan, "MAINT", &issues, &BTreeSet::new()).is_none());
-        assert!(translate_made_public(&meta(), "M1", "patch", &i, "MAINT", &issues, &BTreeSet::new()).is_none());
+        let orphan = doc(
+            "c2",
+            "ALICE",
+            vec![("targetId", FieldValue::identifier([7; 32]))],
+        );
+        assert!(translate_made_public(
+            &meta(),
+            "M1",
+            "comment",
+            &orphan,
+            "MAINT",
+            &issues,
+            &BTreeSet::new()
+        )
+        .is_none());
+        assert!(translate_made_public(
+            &meta(),
+            "M1",
+            "patch",
+            &i,
+            "MAINT",
+            &issues,
+            &BTreeSet::new()
+        )
+        .is_none());
     }
 
     #[test]
