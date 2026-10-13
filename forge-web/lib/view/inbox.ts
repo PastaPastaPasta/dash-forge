@@ -22,7 +22,9 @@
  *     author's own requests too (`authorEvent` `feed`: a non-member author's review request);
  *   - each thread: comments (`comment.target`); each PR I opened: reviews (`review.patch`), or,
  *     where the registered forge-collab has the RC2 S2 `review.toAuthor` index, one feed of the
- *     reviews on every PR I opened (`patchId.$ownerId`), past the thread cap too.
+ *     reviews on every PR I opened (`patchId.$ownerId`), past the thread cap too;
+ *   - each public repo I belong to: its maintainers' make-public bundles (`packManifest` kind 7),
+ *     an item for each that made my posts public (`./inbox-made-public`, mixed-visibility §4.6).
  * A poll runs at most {@link ROUND_BUDGET} feeds, round-robin, so a big watch list is spread
  * over several minutes instead of bursting DAPI. My own documents never become items.
  *
@@ -33,7 +35,7 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { z } from 'zod'
 
-import type { Network } from '../constants'
+import { PACK_KIND, type Network } from '../constants'
 import type { ForgeIds } from '../deployments'
 import { idbBatch, idbDelete, idbEntries, idbGet, idbPut } from '../idb'
 import { DOC, EVENT_KIND_BY_INT } from '../repo/contract'
@@ -45,6 +47,7 @@ import { contractOf } from '../repo/source'
 import { isLegalRefName, refNameHashMatches } from '../rules/oid'
 import { base64ToHex, queryDocumentsWithProof, type DocumentQuery, type PlainDocument } from '../sdk'
 import { listReposByOwner } from './discovery'
+import { madePublicItems } from './inbox-made-public'
 import { listParticipation, noteParticipation } from './participation'
 import {
   baseDoc,
@@ -91,7 +94,7 @@ export const BACKFILL_MS = 7 * 24 * 60 * 60_000
 /** Items kept; the oldest read ones go first. */
 export const MAX_ITEMS = 300
 
-export type RepoReason = 'owner' | 'maintainer' | 'writer' | 'triage' | 'reader' | 'watched' | 'starred'
+export type RepoReason = 'owner' | 'maintainer' | 'writer' | 'triage' | 'reader' | 'bot' | 'watched' | 'starred'
 
 export interface RepoSub {
   readonly repo: RepoLite
@@ -165,7 +168,7 @@ export interface InboxPrefs {
 
 export const DEFAULT_PREFS: InboxPrefs = { stars: false, pushes: false }
 
-export type ItemKind = 'issue' | 'pull' | 'comment' | 'state' | 'review' | 'push'
+export type ItemKind = 'issue' | 'pull' | 'comment' | 'state' | 'review' | 'push' | 'madePublic'
 
 /**
  * Why an item reached me beyond following its thread or repo (QW2-056); `author`: a review on a
@@ -201,6 +204,8 @@ export type Feed =
   | { readonly kind: 'reviews'; readonly thread: ThreadSub }
   /** The reviews on every PR `owner` opened (S2 `toAuthor`); `threads` name the PRs already known. */
   | { readonly kind: 'myReviews'; readonly owner: string; readonly threads: readonly ThreadSub[] }
+  /** A public repo I belong to: its make-public bundles, for the ones that made my posts public. */
+  | { readonly kind: 'madePublic'; readonly repo: RepoLite }
 
 /** A feed's stable cursor key. */
 export function feedKey(f: Feed): string {
@@ -209,6 +214,8 @@ export function feedKey(f: Feed): string {
     case 'push':
     case 'state':
       return `${f.kind}:${f.type}:${f.repo.id}`
+    case 'madePublic':
+      return `madePublic:${f.repo.id}`
     case 'comments':
     case 'reviews':
       return `${f.kind}:${f.thread.id}`
@@ -248,6 +255,8 @@ export function planFeeds(subs: Subscriptions, prefs: InboxPrefs, me?: string, h
     // are read for hides alone ({@link visibleItems}), so a hidden spam issue leaves the inbox.
     if (hideWatch.has(repo.id) && !threadsByRepo.has(repo.id)) feeds.push({ kind: 'state', type: 'event', repo, threads: [] })
     if (prefs.pushes) feeds.push({ kind: 'push', type: 'refUpdate', repo }, { kind: 'push', type: 'protectedRefUpdate', repo })
+    // Only a member writes members-only posts there, so only a member's posts are made public.
+    if (!repo.private && reason !== 'starred' && reason !== 'watched') feeds.push({ kind: 'madePublic', repo })
   }
   return feeds
 }
@@ -312,6 +321,18 @@ export function feedQuery(forge: ForgeIds, f: Feed, cursor: Cursor): DocumentQue
       return { dataContractId: forge.collab, documentTypeName: DOC.comment, where: [['targetId', '==', f.thread.id], after], ...shape }
     case 'reviews':
       return { dataContractId: forge.collab, documentTypeName: DOC.review, where: [['patchId', '==', f.thread.id], after], ...shape }
+    case 'madePublic':
+      // The `kind` index (`repoId`, `kind`, `$createdAt`).
+      return {
+        dataContractId: contractOf(forge, DOC.packManifest),
+        documentTypeName: DOC.packManifest,
+        where: [['repoId', '==', f.repo.id], ['kind', '==', PACK_KIND.MAKE_PUBLIC], after],
+        ...shape,
+        orderBy: [
+          ['kind', 'asc'],
+          ['$createdAt', 'asc'],
+        ],
+      }
     case 'myReviews':
       // A derived index property (`patchId.$ownerId`, v5): Drive places a `startAfter` cursor only
       // when the query fixes it with `==` (rs-drive `query/mod.rs` `cursor_with_derived_values`),
@@ -654,6 +675,9 @@ export function toItems(f: Feed, docs: readonly PlainDocument[], me: string, nam
           return what === null ? [] : [item(d, { kind: 'review', repo: t.repo, what, target, ...mentioned(t.repo, d.body) })]
         })
     }
+    case 'madePublic':
+      // Its items need the bundles' bytes and posts read ({@link madePublicItems}, in the poll).
+      return []
     case 'myReviews': {
       // A review on a PR the feed cannot name yet is left for the poll to resolve
       // ({@link withReviewedThreads}); it never shows without its PR.
@@ -1208,6 +1232,8 @@ export async function pollOnce(
       // The S2 feed's reviews on PRs past the thread cap: their PRs are read before the cursor
       // moves (a failed read retries the page).
       if (f.kind === 'myReviews') feed = await withReviewedThreads(sdk, forge, f, docs)
+      // A bundle's items are read before the cursor moves past it (a failed read retries the page).
+      if (f.kind === 'madePublic') await store(await madePublicItems(sdk, forge, f.repo, docs, me))
     } catch {
       failed++
       continue

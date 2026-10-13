@@ -35,7 +35,8 @@ pub async fn run(ctx: &Ctx, cmd: &IssueCommand) -> Result<()> {
             repo,
             number,
             show_hidden,
-        } => view(ctx, repo, *number, *show_hidden).await,
+            history,
+        } => view(ctx, repo, *number, *show_hidden, *history).await,
         IssueCommand::Create {
             repo,
             title,
@@ -667,7 +668,7 @@ fn issue_line(v: &IssueView, pinned: bool, hid: &str) -> String {
 }
 
 #[allow(clippy::too_many_lines)] // one view: the reads, then its JSON and its human rendering
-async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<()> {
+async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool, history: bool) -> Result<()> {
     let s = Reader::open_discussion(ctx, repo).await?;
 
     let collab = s.collab();
@@ -760,6 +761,18 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<(
     let i = view.issue;
     let issue_letter = i.letter;
     let (id, title, author) = (i.document_id, i.title, i.author);
+    // What maintainers made public (DESIGN §4.6): who, and whether the author sealed it again.
+    let published = crate::audience::Published::of(
+        &collab,
+        std::iter::once(id.as_str())
+            .chain(comments.iter().map(|c| c.document_id.as_str()))
+            .chain(members_only.iter().map(|m| m.document_id.as_str())),
+    );
+    let earlier = if history {
+        collab.published_issue_history(&s.repo, &id).await?
+    } else {
+        Vec::new()
+    };
     // DPNS names for the human view only, read together; a failed read shows the bare id.
     let names = if ctx.json {
         std::collections::BTreeMap::default()
@@ -769,6 +782,8 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<(
         let actors = actors.chain(events.iter().map(|e| e.actor.as_str()));
         let actors = actors.chain(transitions.iter().map(|t| t.actor.as_str()));
         let actors = actors.chain(state.assignees.iter().map(String::as_str));
+        let actors = actors.chain(published.people());
+        let actors = actors.chain(earlier.iter().map(|(_, by)| by.as_str()));
         // whom an (un)assign event names (QW3-070: event targets were bare ids)
         let actors = actors.chain(
             events
@@ -814,7 +829,16 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<(
             "milestone": meta.milestone,
             "pinned": meta.pinned,
             "locked": locked,
-            "comments": comments.iter().map(|c| json!({"id": c.document_id, "author": c.author, "body": c.body, "bodyIncomplete": incomplete.get(&c.document_id), "audience": crate::audience::json(c.audience), "letter": c.letter.as_ref().map(crate::audience::letter_json), "replyTo": c.reply_to, "createdAt": c.created_at})).collect::<Vec<_>>(),
+            "madePublic": published.json(&id),
+            "comments": comments.iter().map(|c| json!({"id": c.document_id, "author": c.author, "body": c.body, "bodyIncomplete": incomplete.get(&c.document_id), "audience": crate::audience::json(c.audience), "letter": c.letter.as_ref().map(crate::audience::letter_json), "replyTo": c.reply_to, "createdAt": c.created_at, "madePublic": published.json(&c.document_id)})).collect::<Vec<_>>(),
+            "earlierVersions": earlier.iter().map(|(d, by)| json!({
+                "revision": d.revision,
+                "title": d.field_str("title"),
+                "body": d.field_str("body"),
+                "updatedAt": d.updated_at.or(d.created_at),
+                "madePublicBy": by,
+            })).collect::<Vec<_>>(),
+            "bundleAlerts": crate::audience::alerts_json(&collab.bundle_alerts()),
             // members-only comments this reader cannot open: the ones D14 shows, and how many
             "membersOnlyComments": placeholders.iter().map(|m| crate::audience::placeholder_json(m)).collect::<Vec<_>>(),
             "membersOnlyHidden": members_only.len(),
@@ -853,6 +877,9 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<(
             } else if crate::audience::marked(&s.repo, issue_audience) {
                 println!("members-only: visible to members of {}", s.repo.display());
             }
+            if let Some(line) = published.line(&id, issue_audience, &who) {
+                println!("{line}");
+            }
             let labels: Vec<&str> = state.labels.iter().map(String::as_str).collect();
             let assignees: Vec<String> = state.assignees.iter().map(|a| who(a)).collect();
             for line in crate::fmt::triage_lines(&labels, &assignees, meta.milestone.as_deref()) {
@@ -873,21 +900,26 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<(
             for item in &timeline {
                 match item {
                     Item::Placeholder(m) => println!(
-                        "\n— {} ({}): [{}]",
+                        "\n— {} ({}): [{}]{}",
                         who(&m.author),
                         m.document_id,
-                        crate::audience::sealed_noun(m, "comment")
+                        crate::audience::sealed_noun(m, "comment"),
+                        published
+                            .line(&m.document_id, m.audience, &who)
+                            .map_or(String::new(), |l| format!(" ({l})"))
                     ),
                     Item::Comment(c) => {
                         let author = who(&c.author);
                         // "— alice (id) · members-only:" for a members-only comment, "— alice
-                        // (id) · to bob and you:" for a letter
+                        // (id) · to bob and you:" for a letter, or who made it public
                         let mut mark = if let Some(l) = &c.letter {
                             format!(" · to {}", to(l))
                         } else if crate::audience::marked(&s.repo, c.audience) {
                             " · members-only".to_string()
                         } else {
-                            String::new()
+                            published
+                                .line(&c.document_id, c.audience, &who)
+                                .map_or(String::new(), |l| format!(" · {l}"))
                         };
                         if let Some(r) = &c.reply_to {
                             mark = format!("{mark} · reply to {r}");
@@ -930,6 +962,20 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<(
             let unread: Vec<_> = members_only.iter().collect();
             for note in crate::audience::hidden_notes(&s.repo, malformed, &unread, "comment") {
                 println!("\n{note}");
+            }
+            for (d, by) in &earlier {
+                println!(
+                    "\n· earlier version (revision {}), made public by {}:",
+                    d.revision.unwrap_or_default(),
+                    who(by)
+                );
+                println!("{}", safe(&d.field_str("title").unwrap_or_default()));
+                if let Some(b) = d.field_str("body").filter(|b| !b.is_empty()) {
+                    println!("{}", safe(&b));
+                }
+            }
+            for line in crate::audience::alert_lines(&collab.bundle_alerts(), &who) {
+                println!("\n{line}");
             }
             if let Some(n) = &values_note {
                 println!("\n{n}");

@@ -21,6 +21,7 @@ import { binding, fitsUnder, narrower, type Audience } from '../rules/v2'
 import { queryAllDocuments, queryDocumentsWithProof, type PlainDocument, type WriteAuth } from '../sdk'
 import { retryWhileMissing } from '../view/retry'
 import { DOC, asIdentifierString, withoutSessions, type RepoRef } from './contract'
+import { bundledFields } from './made-public'
 import { docAudience } from './private-content'
 import { loadPrivateSessionUncached, sessionUnwrapper } from './private-session'
 import { PrivateWriteError, editFields, isSealedKind, sealContent, sealedTextUse, writeBlockReason } from './private-writes'
@@ -162,6 +163,18 @@ function parentOf(doc: PlainDocument): ParentAudience {
   return { default: a, bound: binding(a, doc['vis'] === 'private') }
 }
 
+/**
+ * {@link parentOf}, where a maintainer's bundle made the stored members-only `type` parent public
+ * (its current revision, DESIGN §4.6): such a thread is public for everyone, so it takes public
+ * replies, and a reply that asks for none is public too. Edited again after it was made public,
+ * its current text is members-only, and so are its replies.
+ */
+async function parentWithBundles(sdk: EvoSDK, repo: RepoRef, type: string, doc: PlainDocument): Promise<ParentAudience> {
+  const own = parentOf(doc)
+  if (own.default === 'public' || (type !== DOC.issue && type !== DOC.comment)) return own
+  return (await bundledFields(sdk, repo, type as PrivateDocType, doc).catch(() => null)) !== null ? sameParent('public') : own
+}
+
 /** The narrower of two parents' audiences: specific people over members over public (a letter thread takes only letters). */
 function tighter(a: Audience, b: Audience): Audience {
   return a === 'specificPeople' || b === 'specificPeople' ? 'specificPeople' : narrower(a, b)
@@ -186,7 +199,7 @@ async function targetParent(sdk: EvoSDK, repo: RepoRef, targetId: string): Promi
   const found = await retryWhileMissing(async () => {
     for (const type of [DOC.issue, DOC.patch]) {
       const doc = await storedDoc(sdk, repo, type, targetId)
-      if (doc !== null) return parentOf(doc)
+      if (doc !== null) return parentWithBundles(sdk, repo, type, doc)
     }
     return null
   }, PARENT_RETRIES)
@@ -240,9 +253,9 @@ export async function childAudience(
   let parent = await targetParent(sdk, repo, input.targetId)
   if (input.replyTo !== undefined && input.replyTo !== '') {
     const replied = await storedAudience(sdk, repo, DOC.comment, input.replyTo)
-    parent = narrowerParent(parent, parentOf(replied.doc))
+    parent = narrowerParent(parent, await parentWithBundles(sdk, repo, DOC.comment, replied.doc))
     const root = asIdentifierString(replied.doc['replyTo'])
-    if (root !== '') parent = narrowerParent(parent, parentOf((await storedAudience(sdk, repo, DOC.comment, root)).doc))
+    if (root !== '') parent = narrowerParent(parent, await parentWithBundles(sdk, repo, DOC.comment, (await storedAudience(sdk, repo, DOC.comment, root)).doc))
   }
   return audienceFor(repo, input.requested, parent)
 }
@@ -305,7 +318,7 @@ export interface MembersWriter {
  */
 export async function membersWriter(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef): Promise<MembersWriter> {
   if (repo.visibility !== 'public') throw new Error('members-only content is written in public repos')
-  const ops = await encryptionOps(sdk, auth.network, auth.identityId, repo.forge.collab)
+  const ops = await encryptionOps(sdk, auth.network, auth.identityId, contractOf(repo.forge, DOC.repoKey))
   if (ops === null) throw refused('add your encryption key to this browser (Settings → Members-only and private content) to write members-only content', 'E306')
   const s = await loadPrivateSessionUncached(sdk, withoutSessions(repo), auth.network, auth.identityId, sessionUnwrapper(ops))
   try {

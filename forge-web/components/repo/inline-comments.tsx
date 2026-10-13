@@ -17,7 +17,8 @@
  */
 
 import { longEditBlock } from '@/components/repo/long-body'
-import { MakePublicButton } from '@/components/repo/make-public'
+import { MakeOthersPublicButton, MakePublicButton, bundleable } from '@/components/repo/make-public'
+import { EditedAfterPublicNote, MadePublicBy, PublicEditHint } from '@/components/repo/made-public'
 import { Byline } from '@/components/repo/byline'
 import { useMirrorTrust } from '@/hooks/use-mirror-trust'
 import { trustedOrigin } from '@/lib/repo/provenance'
@@ -84,6 +85,8 @@ export interface ThreadActions {
   readonly onDelete: (comment: CommentView) => void
   /** Make the author's own members-only comment public (DESIGN §4.6); absent: not offered. */
   readonly onMakePublic?: (comment: CommentView) => void
+  /** Someone else's members-only comment: "Make public…", a maintainer's bundle (DESIGN §4.6); absent: not offered. */
+  readonly onMakeOthersPublic?: (comment: CommentView) => void
   /** What maintainers hid (RC2 MOD): those comments show collapsed, with Show. */
   readonly hidden?: HiddenItems
 }
@@ -508,6 +511,12 @@ function CommentBlock({
         <Byline author={c.author} createdAt={c.createdAt} origin={origin} link={false} />
         <EditedMarker createdAt={c.createdAt} updatedAt={c.updatedAt} />
         <AudienceMark audience={c.audience} letter={c.letter} />
+        <MadePublicBy marks={c} />
+        {!own && bundleable(c.audience) && actions?.onMakeOthersPublic !== undefined && actions.viewer !== null ? (
+          <span className="ml-auto">
+            <MakeOthersPublicButton onClick={() => actions.onMakeOthersPublic?.(c)} />
+          </span>
+        ) : null}
         {own && editing === null ? (
           <span className="ml-auto flex items-center gap-2">
             {(c.audience === 'members' || c.audience === 'specificPeople') && actions.onMakePublic ? (
@@ -526,6 +535,7 @@ function CommentBlock({
       {editing !== null && actions ? (
         <div className="mt-1 space-y-2">
           <Textarea aria-label="Edit comment" value={editing} onChange={(e) => setEditing(e.target.value)} className="min-h-[72px]" autoFocus />
+          <PublicEditHint marks={c} />
           <div className="flex gap-2">
             <Button
               size="sm"
@@ -545,6 +555,7 @@ function CommentBlock({
         </div>
       ) : (
         <div className="mt-1">
+          <EditedAfterPublicNote marks={c} kind="comment" />
           {/* A trusted mirror's comment without the provenance quote and file line the import repeats on each one (QW4-029). */}
           <SuggestedBody comment={c} suggestions={suggestions} source={origin !== null ? mirroredCommentText(c.body, c.anchor).text : c.body} />
         </div>

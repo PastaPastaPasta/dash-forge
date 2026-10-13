@@ -216,9 +216,9 @@ pub enum Command {
     /// Repository members and their access (Read, Triage, Write, Maintain).
     #[command(subcommand)]
     Collab(CollabCommand),
-    /// Make your own members-only posts public: issues, comments and reviews.
-    /// Everyone can read them from then on; earlier versions stay members-only. This can't be
-    /// undone.
+    /// Make members-only posts public: issues, comments and reviews.
+    /// Your own posts are edited to Public; a maintainer makes anyone's public, and their authors
+    /// are told. Everyone can read them from then on. This can't be undone.
     MakePublic {
         /// The repository (`owner/name`).
         repo: String,
@@ -226,6 +226,13 @@ pub enum Command {
         /// --json`, a review's too), or an issue's or pull request's number.
         #[arg(required = true, num_args = 1.., value_name = "POST")]
         posts: Vec<String>,
+        /// Each POST is an issue or pull request: make its whole thread public, every comment
+        /// and review you can read (maintainers).
+        #[arg(long)]
+        thread: bool,
+        /// Also make an issue's earlier edits public (maintainers).
+        #[arg(long)]
+        history: bool,
     },
     /// Cost estimates and spend audits.
     #[command(subcommand)]
@@ -844,6 +851,9 @@ pub enum IssueCommand {
         /// Show what maintainers hid (collapsed to one line by default).
         #[arg(long)]
         show_hidden: bool,
+        /// Also show the earlier versions a maintainer made public.
+        #[arg(long)]
+        history: bool,
     },
     /// Create an issue.
     Create {
@@ -2483,7 +2493,7 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
         Command::Repo(cmd) => Box::pin(repo::run(ctx, cmd)).await,
         Command::Issue(cmd) => issue::run(ctx, cmd).await,
         Command::Pr(cmd) => Box::pin(pr::run(ctx, cmd)).await,
-        Command::Release(cmd) => release::run(ctx, cmd).await,
+        Command::Release(cmd) => Box::pin(release::run(ctx, cmd)).await,
         Command::Label(cmd) => label::run(ctx, cmd).await,
         Command::Milestone(cmd) => milestone::run(ctx, cmd).await,
         Command::Profile(cmd) => profile::run(ctx, cmd).await,
@@ -2492,7 +2502,12 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
         }
         Command::VerifyMirror { url, strict } => verify_mirror::run(ctx, url, *strict).await,
         Command::Collab(cmd) => collab::run(ctx, cmd).await,
-        Command::MakePublic { repo, posts } => make_public::run(ctx, repo, posts).await,
+        Command::MakePublic {
+            repo,
+            posts,
+            thread,
+            history,
+        } => make_public::run(ctx, repo, posts, *thread, *history).await,
         Command::Cost(cmd) => cost::run(ctx, cmd).await,
         Command::Storage(cmd) => storage::run(ctx, cmd).await,
         Command::Webhook(cmd) => webhook::run(ctx, cmd).await,

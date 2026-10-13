@@ -1524,10 +1524,12 @@ async fn mirror_status(
     reader: &PackReader,
 ) -> serde_json::Value {
     let checked = async {
-        let core = client.fetch_contract(&repo.forge().core).await?;
-        let members: Vec<String> = roles.keys().cloned().collect();
+        let contract = client
+            .fetch_contract(repo.forge().home(forge_core::pack_mirror::DOC_PACK_MIRROR))
+            .await?;
+        let members = forge_core::repo::trusted_members(roles);
         let hash = hex::encode(m.pack_hash);
-        forge_core::pack_mirror::mirrors_of(client, &core, repo, &hash, &members).await
+        forge_core::pack_mirror::mirrors_of(client, &contract, repo, &hash, &members).await
     }
     .await;
     let mirrors = match checked {
@@ -1572,7 +1574,10 @@ async fn mirror_status(
                 let by = mirrors
                     .iter()
                     .filter(|x| x.uris.contains(uri))
-                    .min_by_key(|x| (!roles.contains_key(&x.owner_id), x.created_at, x.id.clone()))
+                    .min_by_key(|x| {
+                        let member = forge_core::repo::trusted_member(roles, &x.owner_id);
+                        (!member, x.created_at, x.id.clone())
+                    })
                     .map_or("", |x| x.owner_id.as_str());
                 return json!({
                     "checked": true,

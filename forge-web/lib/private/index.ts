@@ -10,7 +10,10 @@
  * outside tests); `__unsafe*` symbols of `./doc`, `./pack` and `./release` are likewise not
  * re-exported. `./named` is the specific-people letter (`enc` v0x04); `sealMembersDoc` the
  * members-only (`enc` v0x03) seal of a public repository's lane. `./bundle` and `./convert` are
- * a repository made public's readers (§18): its conversion facts and the keys its owner published. `./release`'s `sealRelease` and `sealReleaseManifest` are, since the web writes
+ * a repository made public's readers (§18): its conversion facts and the keys its owner published;
+ * `./bundle` also reads and writes a maintainer's make-public bundle (DESIGN §4.6), whose entries
+ * publish one document revision's per-object key (`membersObjKey`, `letterObjKey`) and open it
+ * with no other key (`openMembersWithKey`, `openLetterWithKey`). `./release`'s `sealRelease` and `sealReleaseManifest` are, since the web writes
  * sealed releases (`private-repos.md` §16.8, `lib/repo/sealed-release.ts`): both draw hedged
  * randomness, and only their fixed-nonce twins stay test-only.
  */
@@ -56,7 +59,9 @@ export {
   V3,
   V4,
   FIRST_UNKNOWN,
+  bundlesKind,
   docAd,
+  docAdIn,
   docAdWithoutKeys,
   isLate,
   isUnknownVersion,
@@ -65,7 +70,9 @@ export {
   maxLetterPlaintext,
   maxMembersPlaintext,
   maxPlaintext,
+  membersObjKey,
   openContent,
+  openMembersWithKey,
   openWithKey,
   pads,
   sealDoc,
@@ -87,9 +94,11 @@ export {
   PURPOSE_ENCRYPTION,
   SLOT_VERSION,
   artifactHeaderLength,
+  letterObjKey,
   letterSharedKey,
   openLetter,
   openLetterArtifact,
+  openLetterWithKey,
   sealLetter,
   sealLetterArtifact,
   type ArtifactErrorCode,
@@ -180,12 +189,25 @@ export {
 } from './epoch'
 export {
   BUNDLE_VERSION,
+  ENTRY_COMMENT,
   ENTRY_EPOCH_KEY,
+  ENTRY_ISSUE,
+  ENTRY_REVIEW,
   MAX_BUNDLE_NOTE,
+  MAX_DOC_ENTRIES,
+  docEntries,
   encodeBundle,
+  encodeDocBundle,
+  entryKind,
   parseBundle,
+  readRevision,
   type Bundle,
   type BundleEntry,
+  type BundleRead,
+  type DocBundleEntry,
+  type DocEntries,
+  type DocEntry,
+  type EntryMismatch,
 } from './bundle'
 export {
   CONVERTED_REPO_MIN_CLIENT_VERSION,

@@ -1,0 +1,47 @@
+{
+  "name": "bot_after_members_before_others",
+  "description": "Role 4 (a bot, mainnet only): a bot's copy is tried after every member's and before a non-member's (review-rev41 M-4).",
+  "case": "pack_copies",
+  "rules": "v2",
+  "input": {
+    "copies": [
+      {
+        "id": "b1",
+        "packHash": "P",
+        "ownerRole": "bot",
+        "createdAt": 1,
+        "verified": true
+      },
+      {
+        "id": "o1",
+        "packHash": "P",
+        "ownerRole": null,
+        "createdAt": 2,
+        "verified": true
+      },
+      {
+        "id": "r1",
+        "packHash": "P",
+        "ownerRole": "reader",
+        "createdAt": 30,
+        "verified": true
+      },
+      {
+        "id": "m1",
+        "packHash": "P",
+        "ownerRole": "maintainer",
+        "createdAt": 20,
+        "verified": true
+      }
+    ]
+  },
+  "expected": {
+    "order": [
+      "m1",
+      "r1",
+      "b1",
+      "o1"
+    ],
+    "selected": "m1"
+  }
+}

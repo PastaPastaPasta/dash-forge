@@ -1,0 +1,70 @@
+{
+  "name": "bundle_read_history",
+  "description": "Entries for two revisions of one document (the history checkbox writes one per revision of an issue, whose history Platform keeps): each revision is public on its own key.",
+  "case": "make_public",
+  "rules": "v2",
+  "input": {
+    "op": "bundleRead",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "visibility": "public",
+    "maintainers": [
+      "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"
+    ],
+    "bundles": [
+      {
+        "owner": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+        "bytes": "4446525601000201ed207edd7c7766627b8cd4fdf8a189c1369d179b25833a353b101a0ab98d39ab000000014faf51f6930dfb44ded0de72f22d0bd0233a50c420b375ece2ce3edc56fb695801ed207edd7c7766627b8cd4fdf8a189c1369d179b25833a353b101a0ab98d39ab00000002ba8f8257d2adc36ba10e97e6dbbd0eb2b1d5782ed11fb6bda277a56b13f06fe3"
+      }
+    ],
+    "docs": [
+      {
+        "doc": {
+          "type": "comment",
+          "vis": "public",
+          "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+          "epoch": 0,
+          "targetId": "3333333333333333333333333333333333333333333333333333333333333333",
+          "id": "ed207edd7c7766627b8cd4fdf8a189c1369d179b25833a353b101a0ab98d39ab"
+        },
+        "enc": "03000102030405060708090a0bf9a7fa2b8dc201ec7c98681cdcfcfdd62d0c8514308e08b3254c75e528853e9f68c2c84f9892eab0fdb7a611874cf68f179a64d1f255e203d2fcd039a43f1e5e4427ffea6920a5296635807834ce89db33640789703539675c630fe4e0e9e440fa0941eba61eeb6f2957e4f93ebbccfe",
+        "revision": 1
+      },
+      {
+        "doc": {
+          "type": "comment",
+          "vis": "public",
+          "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+          "epoch": 0,
+          "targetId": "3333333333333333333333333333333333333333333333333333333333333333",
+          "id": "ed207edd7c7766627b8cd4fdf8a189c1369d179b25833a353b101a0ab98d39ab"
+        },
+        "enc": "030b0a090807060504030201003d9c1be5ee48776afd298642ac43c4dcaaf3e0a2c3c4b47a63d6be2aa467dee21380d24f0015e3789b991ed876201db193187f11c1b87ebb2a29a3bb19fbec865853688f17f0e3a7bd7db1a8b1bec7469555aeb7430b1c8f4e42e9b79767f5c3c7ee205c42d4ab0323ea021758ad6904",
+        "revision": 2
+      }
+    ]
+  },
+  "expected": {
+    "reads": [
+      {
+        "id": "ed207edd7c7766627b8cd4fdf8a189c1369d179b25833a353b101a0ab98d39ab",
+        "revision": 1,
+        "state": "public",
+        "by": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+        "fields": {
+          "body": "members-only: the fix is in sec/cve-1"
+        }
+      },
+      {
+        "id": "ed207edd7c7766627b8cd4fdf8a189c1369d179b25833a353b101a0ab98d39ab",
+        "revision": 2,
+        "state": "public",
+        "by": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+        "fields": {
+          "body": "members-only: edited, the fix moved to sec/cve-2"
+        }
+      }
+    ],
+    "alerts": []
+  }
+}

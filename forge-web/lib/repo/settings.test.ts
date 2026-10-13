@@ -4,6 +4,7 @@
  * `RepoEdit` (the same limits and cases in `repo::tests::settings`).
  */
 
+import { CONTRACT_FIRST_CREDITS } from '../sdk/cost'
 import { describe, expect, it, vi } from 'vitest'
 
 // The topic-document writes, observed (every other SDK export is the real one).
@@ -241,6 +242,16 @@ describe('repo document edits', () => {
     expect(previewRepoEdit({}, ['rust']).credits).toBe(0)
     // A private repo has no topic documents (RC1 `topic.vis` is public-only): the replace alone.
     expect(previewRepoEdit({ topics: ['rust', 'git'] }, [], 'private').credits).toBe(previewRepoEdit({ topics: ['rust', 'git'] }, ['rust', 'git']).credits)
+  })
+
+  it("on a four-contract set (D44) prices forge-meta's contract nonce once, only before the repo holds a topic", () => {
+    const four = { meta: 'META' }
+    const nonce = CONTRACT_FIRST_CREDITS
+    // One nonce (with the preview's margin), not one per topic.
+    const extra = previewRepoEdit({ topics: ['rust', 'git'] }, [], 'public', four).credits - previewRepoEdit({ topics: ['rust', 'git'] }, []).credits
+    expect(extra).toBeGreaterThanOrEqual(nonce)
+    expect(extra).toBeLessThan(2 * nonce)
+    expect(previewRepoEdit({ topics: ['rust', 'git'] }, ['rust'], 'public', four).credits).toBe(previewRepoEdit({ topics: ['rust', 'git'] }, ['rust']).credits)
   })
 })
 

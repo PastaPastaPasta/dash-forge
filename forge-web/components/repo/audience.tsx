@@ -952,6 +952,11 @@ export function MembersOnlyRow({ entry }: { entry: MembersOnlyEntry }): JSX.Elem
         ) : null}
       </p>
       {unlocking ? <UnlockMore title={UNLOCK_LETTERS} testId="letter-unlock-panel" forgot={false} /> : null}
+      {item.editedAfterBy !== undefined ? (
+        <p className={MUTED} data-testid="edited-after-public">
+          Edited after <Author identityId={item.editedAfterBy} link={false} className="align-middle" /> made it public; the new text is members-only.
+        </p>
+      ) : null}
     </div>
   )
 }

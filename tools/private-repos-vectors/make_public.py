@@ -16,6 +16,16 @@ Every vector it writes has case `make_public` and an `input.op` naming what it c
 - `reviewText`: which public comment carries each sealed review's text (a review is immutable, so
   its author attaches a public comment: `reviewId`, no path, line, reply or commit; the review's
   author only; the newest wins).
+- `bundleKey`, `bundleOpen`, `bundleRead` (`make_public__bundle_*`): a maintainer's make-public
+  bundle (packManifest kind 7, `DFRV` entries 0x01 comment, 0x02 issue, 0x03 review: the
+  revision's per-object key `K_obj`). `bundleKey` is the key a member publishes (derived under the
+  epoch key and checked against the document's commitment; a letter's, unwrapped from the
+  maintainer's own slot, so a letter the maintainer was not sent has none); `bundleOpen` opens one
+  document with a published key and no epoch key (commitment first: a key that does not commit is
+  `commitMismatch`, never shown); `bundleRead` is the reader rule over a repository's bundles: only
+  a public repository, only bundles by a current maintainer (or the owner), the first entry of the
+  document's revision whose key opens it makes it public, a lying entry is an alert and ignored,
+  and an entry for an earlier revision only says it was edited after it was made public.
 
 The Rust harness (`forge_core::rules`, `rules::make_public`) and the TypeScript harness
 (`forge-web/lib/rules/conformance.test.ts`, `lib/rules/make-public.ts`) run every file and must
@@ -226,11 +236,267 @@ def review_text_vectors():
                review_text_carriers(reviews, comments))
 
 
+# --- maintainer bundles (phase 2B) ------------------------------------------------------------
+
+ENTRY_COMMENT, ENTRY_ISSUE, ENTRY_REVIEW, ENTRY_PATCH, ENTRY_EPOCH = 0x01, 0x02, 0x03, 0x04, 0x06
+ENTRY_OF = {"comment": ENTRY_COMMENT, "issue": ENTRY_ISSUE, "review": ENTRY_REVIEW}
+
+
+def bundle_vectors():
+    import gen as G
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    H = G.H
+    repo = G.repoId
+
+    def members_key(doc, K, enc):
+        """The K_obj a member derives for a v0x03 doc (None unless it commits; bundles publish issues, comments
+        and reviews only)."""
+        if enc[0] != G.V3 or doc["type"] not in ENTRY_OF:
+            return None
+        A = G.ad(doc, K, G.V3)
+        ko = G.k_obj_members(K, doc["epoch"], enc[1:13], A)
+        return ko if G.obj_keys(ko)[1] == enc[13:45] else None
+
+    def open_with_key(doc, enc, ko):
+        """The reference reader of a published key: (status, raw TLV or reason)."""
+        if doc["type"] not in ENTRY_OF:
+            return "malformed", None
+        kd, C2 = G.obj_keys(ko)
+        if enc[0] == G.V3:
+            nonce, C, ct, A = enc[1:13], enc[13:45], enc[45:], G.ad(doc, None, G.V3) + enc[13:45]
+        elif enc[0] == G.V4:
+            n = enc[1]
+            head = enc[1:38 + 64 * n]
+            nonce, C, ct, A = enc[38 + 64 * n:50 + 64 * n], enc[6:38], enc[50 + 64 * n:], G.ad(doc, None, G.V4) + G.sha256(head)
+        else:
+            return "malformed", None
+        if C2 != C:
+            return "commitMismatch", None
+        try:
+            return "readable", AESGCM(kd).decrypt(nonce, ct, A)
+        except Exception:
+            return "badTag", None
+
+    def opened(status, fields=None):
+        if status == "readable":
+            return dict(status="readable", fields=fields)
+        if status == "malformed":
+            return dict(status="malformed")
+        return dict(status="unreadable", reason=status)
+
+    MAINT = bytes([0xb0]) * 32
+    WRITER = bytes([0xc0]) * 32
+    REPO_OWNER = bytes([0xa1]) * 32
+
+    comment = dict(G.MDOC, id=H(G.cid("bundle comment")))
+    body = "members-only: the fix is in sec/cve-1"
+    _, ko_c, _, pt_c, enc_c = G.seal_members(comment, G.K0, G.tlv((2, body.encode())))
+    assert members_key(comment, G.K0, enc_c) == ko_c
+    issue = dict(G.MISSUE, id=H(G.cid("bundle issue")))
+    _, ko_i, _, _, enc_i = G.seal_members(issue, G.K0, G.ISSUE_TLV)
+    review = dict(G.MREVIEW, id=H(G.cid("bundle review")))
+    rbody = "Blocking: the token is logged."
+    _, ko_r, _, _, enc_r = G.seal_members(review, G.K0, G.tlv((2, rbody.encode())))
+    # the same comment re-sealed (an edit): a new nonce, so a new K_obj
+    nonce2 = bytes.fromhex("0b0a09080706050403020100")
+    body2 = "members-only: edited, the fix moved to sec/cve-2"
+    _, ko_c2, _, _, enc_c2 = G.seal_members(comment, G.K0, G.tlv((2, body2.encode())), nonce=nonce2)
+    # a letter to alice (sender), r1, r2
+    k_obj_l, nonce_l, ivs_l = G.named_inputs(3)
+    letter = dict(G.named_doc(), id=H(G.cid("bundle letter")))
+    lbody = "A letter to 3 people (the sender included): the embargo ends on Friday."
+    _, _, _, _, _, enc_l = G.seal_named(letter, G.NAMED_SENDER, 4, G.NAMED_N3, G.tlv((2, lbody.encode())), k_obj_l,
+                                        nonce_l, ivs_l)
+    owner_keys = [G.owner_key(G.NAMED_SENDER)]
+    # a members-only PR: bundles do not publish it (its branch names are keyed by its epoch; phase 3)
+    patch = dict(G.PATCH, vis="public", id=H(G.cid("bundle patch")))
+    _, ko_p, _, _, enc_p = G.seal_members(patch, G.K0, G.PATCH_TLV)
+
+    # --- bundleKey ---
+    def key_vector(name, desc, doc, enc, expected, **inp):
+        vector(name, desc, dict(op="bundleKey", repoId=H(repo), doc=doc, enc=H(enc), **inp),
+               dict(kObj=None if expected is None else H(expected)))
+
+    key_vector("bundle_key_members_comment", "A member derives the comment's K_obj under the epoch key (PRK_e, the "
+               "nonce and SHA-256(AD)) and checks it against the commitment: the key a bundle entry publishes.",
+               comment, enc_c, ko_c, epochKey=H(G.K0), epoch=0)
+    key_vector("bundle_key_members_issue", "An issue revision's K_obj.", issue, enc_i, ko_i, epochKey=H(G.K0), epoch=0)
+    key_vector("bundle_key_members_review", "A review's K_obj.", review, enc_r, ko_r, epochKey=H(G.K0), epoch=0)
+    key_vector("bundle_key_other_epoch_none", "The epoch key held is not the document's epoch's: no key.",
+               dict(comment, epoch=1), enc_c, None, epochKey=H(G.K0), epoch=0)
+    key_vector("bundle_key_patch_none", "A members-only PR is not bundled (its branch names are keyed by its epoch, "
+               "which a bundle does not publish): no key.", patch, enc_p, None, epochKey=H(G.K0), epoch=0)
+    key_vector("bundle_key_letter_recipient", "A maintainer the letter was sent to (r1) unwraps K_obj from their own "
+               "slot, after the whole letter reader rule: the key a bundle entry publishes.", letter, enc_l, k_obj_l,
+               ownerKeys=owner_keys, reader=G.reader_json(G.NAMED_N3[1]))
+    key_vector("bundle_key_letter_not_sent_none", "A letter the maintainer (dave) was not sent: no slot opens, so "
+               "they cannot bundle it.", letter, enc_l, None, ownerKeys=owner_keys,
+               reader=G.reader_json(G.NAMED_OUTSIDER))
+
+    # --- bundleOpen ---
+    def open_vector(name, desc, doc, enc, ko, expected_status, fields=None):
+        got, raw = open_with_key(doc, enc, ko)
+        assert got == expected_status, (name, got)
+        vector(name, desc, dict(op="bundleOpen", repoId=H(repo), doc=doc, enc=H(enc), key=H(ko)),
+               opened(expected_status, fields))
+        return raw
+
+    raw = open_vector("bundle_open_members_comment", "Anyone holding the published K_obj, and no epoch key, opens "
+                      "the comment: the AD is rebuilt from its public fields, the commitment checked, then GCM.",
+                      comment, enc_c, ko_c, "readable", {"body": body})
+    assert raw == pt_c
+    open_vector("bundle_open_members_issue", "An issue's title and body.", issue, enc_i, ko_i, "readable",
+                G.ISSUE_FIELDS)
+    open_vector("bundle_open_members_review", "A review's text.", review, enc_r, ko_r, "readable", {"body": rbody})
+    open_vector("bundle_open_letter", "A letter opens with its K_obj and no recipient key; its recipient list "
+                "is still checked (n ids, the owner first, none twice).", letter, enc_l, k_obj_l, "readable",
+                {"body": lbody})
+    open_vector("bundle_open_wrong_key_mismatch", "A key that is not the document's: the commitment it derives "
+                "differs, so CommitMismatch before GCM runs (a lying entry, never shown).", comment, enc_c,
+                bytes([0x5a]) * 32, "commitMismatch")
+    open_vector("bundle_open_other_revision_mismatch", "The key of revision 1 against revision 2 (re-sealed with a "
+                "new nonce by an edit): CommitMismatch. A key opens one revision of one document.", comment,
+                enc_c2, ko_c, "commitMismatch")
+    mallory = dict(comment, ownerId=H(G.MALLORY_ID))
+    kd, C = G.obj_keys(ko_c)
+    forged = bytes([G.V3]) + G.NONCE + C + AESGCM(kd).encrypt(
+        G.NONCE, G.members_tlv("comment", G.tlv((2, b"FORGED"))), G.ad(mallory, None, G.V3) + C)
+    open_vector("bundle_open_forged_opens_with_the_key", "Mallory re-encrypts her own text under the published K_obj "
+                "as her own comment, copying the nonce and commitment: the key alone opens it (the AD is public). "
+                "This is why a reader uses a key only for the document its entry names by $id "
+                "(bundle_read_forged_copy_not_covered), and why members, who derive K_obj from her AD, refuse it "
+                "(mixed_doc_open__forged_after_reveal_refused).", mallory, forged, ko_c, "readable", {"body": "FORGED"})
+    moved = dict(comment, targetId="55" * 32)
+    open_vector("bundle_open_moved_to_other_target_badtag", "The comment's enc copied onto another issue's comment: "
+                "the AD binds the target, so BadTag.", moved, enc_c, ko_c, "badTag")
+    tampered = bytearray(enc_c)
+    tampered[-1] ^= 0x01
+    open_vector("bundle_open_body_tampered_badtag", "The right key, a tampered tag: BadTag.", comment, bytes(tampered),
+                ko_c, "badTag")
+    open_vector("bundle_open_patch_malformed", "A PR is not opened by a bundle (phase 3).", patch, enc_p, ko_p,
+                "malformed")
+
+    # --- bundleRead ---
+    def bundle(owner, entries):
+        return dict(owner=H(owner), bytes=H(G.bundle_bytes(entries)))
+
+    def item(doc, enc, revision):
+        return dict(doc=doc, enc=H(enc), revision=revision)
+
+    def read(bundles, items, visibility, maintainers):
+        """The reference reader rule: (reads, alerts)."""
+        honoured = []
+        if visibility == "public":
+            for b in bundles:
+                if bytes.fromhex(b["owner"]) not in maintainers:
+                    continue
+                parsed = G.parse_bundle(bytes.fromhex(b["bytes"]))
+                if parsed is None:
+                    continue
+                honoured += [(k, t, r, key, b["owner"]) for k, t, r, key in parsed
+                             if k in (ENTRY_COMMENT, ENTRY_ISSUE, ENTRY_REVIEW)]
+        reads, alerts = [], []
+        for it in items:
+            doc, enc, rev = it["doc"], bytes.fromhex(it["enc"]), it["revision"]
+            mine = [e for e in honoured if e[0] == ENTRY_OF.get(doc["type"]) and e[1] == bytes.fromhex(doc["id"])]
+            out = None
+            for k, t, r, key, by in mine:
+                if r != rev:
+                    continue
+                status, raw = open_with_key(doc, enc, key)
+                if status == "readable":
+                    out = dict(id=doc["id"], revision=rev, state="public", by=by)
+                    break
+                if status == "commitMismatch":
+                    alerts.append(dict(id=doc["id"], revision=rev, by=by))
+            if out is None:
+                earlier = [e for e in mine if e[2] < rev]
+                if earlier:
+                    e = max(earlier, key=lambda e: e[2])
+                    out = dict(id=doc["id"], revision=rev, state="editedAfter", by=e[4], publishedRevision=e[2])
+                else:
+                    out = dict(id=doc["id"], revision=rev, state="none")
+            reads.append(out)
+        return dict(reads=reads, alerts=alerts)
+
+    def read_vector(name, desc, bundles, items, expected_states, visibility="public", maintainers=(REPO_OWNER, MAINT),
+                    fields=None):
+        got = read(bundles, items, visibility, set(maintainers))
+        assert [r["state"] for r in got["reads"]] == expected_states, (name, got)
+        for r, f in zip(got["reads"], fields or []):
+            if f is not None:
+                r["fields"] = f
+        vector(name, desc, dict(op="bundleRead", repoId=H(repo), visibility=visibility,
+                                maintainers=[H(m) for m in maintainers], bundles=bundles, docs=items), got)
+        return got
+
+    cid_c, cid_i, cid_r, cid_l = (bytes.fromhex(d["id"]) for d in (comment, issue, review, letter))
+    read_vector("bundle_read_maintainer_bundle_public", "A maintainer's bundle naming the comment's current revision: "
+                "it is public, for everyone, made public by the maintainer.",
+                [bundle(MAINT, [(ENTRY_COMMENT, cid_c, 1, ko_c)])], [item(comment, enc_c, 1)], ["public"],
+                fields=[{"body": body}])
+    read_vector("bundle_read_owner_bundle_public", "The repository's owner is a maintainer: their bundle counts.",
+                [bundle(REPO_OWNER, [(ENTRY_ISSUE, cid_i, 1, ko_i)])], [item(issue, enc_i, 1)], ["public"],
+                fields=[G.ISSUE_FIELDS])
+    read_vector("bundle_read_thread", "A whole thread in one bundle: the issue, a comment and a review.",
+                [bundle(MAINT, [(ENTRY_ISSUE, cid_i, 1, ko_i), (ENTRY_COMMENT, cid_c, 1, ko_c),
+                                (ENTRY_REVIEW, cid_r, 1, ko_r)])],
+                [item(issue, enc_i, 1), item(comment, enc_c, 1), item(review, enc_r, 1)], ["public"] * 3,
+                fields=[G.ISSUE_FIELDS, {"body": body}, {"body": rbody}])
+    read_vector("bundle_read_writer_bundle_ignored", "A writer's bundle (a role-1 writer may write a kind-7 manifest "
+                "on sakura): readers ignore it, with no alert. On mainnet consensus refuses it (C3).",
+                [bundle(WRITER, [(ENTRY_COMMENT, cid_c, 1, ko_c)])], [item(comment, enc_c, 1)], ["none"])
+    read_vector("bundle_read_private_repo_ignored", "Bundles are ignored in a private repository: it goes public as a "
+                "whole (§4.10).", [bundle(MAINT, [(ENTRY_COMMENT, cid_c, 1, ko_c)])], [item(comment, enc_c, 1)],
+                ["none"], visibility="private")
+    read_vector("bundle_read_lying_entry_alert", "An entry whose key does not commit to the revision it names: "
+                "ignored, and raised as an alert naming the bundle's author.",
+                [bundle(MAINT, [(ENTRY_COMMENT, cid_c, 1, bytes([0x5a]) * 32)])], [item(comment, enc_c, 1)], ["none"])
+    read_vector("bundle_read_lying_then_honest", "A lying entry and an honest one: the honest one makes it public, "
+                "the lying one is still an alert.",
+                [bundle(MAINT, [(ENTRY_COMMENT, cid_c, 1, bytes([0x5a]) * 32)]),
+                 bundle(REPO_OWNER, [(ENTRY_COMMENT, cid_c, 1, ko_c)])], [item(comment, enc_c, 1)], ["public"],
+                fields=[{"body": body}])
+    read_vector("bundle_read_edited_after", "The author sealed the comment again after it was made public (revision "
+                "2): the entry names revision 1, so revision 2 stays members-only and readers say it was edited "
+                "after it was made public.", [bundle(MAINT, [(ENTRY_COMMENT, cid_c, 1, ko_c)])],
+                [item(comment, enc_c2, 2)], ["editedAfter"])
+    read_vector("bundle_read_history", "Entries for two revisions of one document (the history checkbox writes "
+                "one per revision of an issue, whose history Platform keeps): each revision is public on its own key.",
+                [bundle(MAINT, [(ENTRY_COMMENT, cid_c, 1, ko_c), (ENTRY_COMMENT, cid_c, 2, ko_c2)])],
+                [item(comment, enc_c, 1), item(comment, enc_c2, 2)], ["public", "public"],
+                fields=[{"body": body}, {"body": body2}])
+    read_vector("bundle_read_letter", "A letter a maintainer was sent, bundled: everyone reads it.",
+                [bundle(MAINT, [(ENTRY_COMMENT, cid_l, 1, k_obj_l)])], [item(letter, enc_l, 1)], ["public"],
+                fields=[{"body": lbody}])
+    read_vector("bundle_read_other_type_ignored", "An entry of type issue naming a comment's id does not apply to "
+                "the comment.", [bundle(MAINT, [(ENTRY_ISSUE, cid_c, 1, ko_c)])], [item(comment, enc_c, 1)], ["none"])
+    read_vector("bundle_read_epoch_and_patch_entries_ignored", "Epoch-key (0x06) and PR (0x04) entries are not "
+                "document entries here.", [bundle(MAINT, [(ENTRY_EPOCH, repo, 0, G.K0), (ENTRY_PATCH, cid_c, 1, ko_c)])],
+                [item(comment, enc_c, 1)], ["none"])
+    mallory_doc = dict(mallory, id=H(G.cid("bundle forged copy")))
+    read_vector("bundle_read_forged_copy_not_covered", "Mallory's comment minted under the published key has its "
+                "own $id: no entry names it, so it stays members-only (and members refuse it).",
+                [bundle(MAINT, [(ENTRY_COMMENT, cid_c, 1, ko_c)])], [item(mallory_doc, forged, 1)], ["none"])
+    read_vector("bundle_read_malformed_bundle_ignored", "A bundle that does not parse publishes nothing.",
+                [dict(owner=H(MAINT), bytes=H(G.bundle_bytes([(ENTRY_COMMENT, cid_c, 1, ko_c)]) + b"\xff"))],
+                [item(comment, enc_c, 1)], ["none"])
+
+    # --- the bytes a maintainer's bundle carries ---
+    entries = [(ENTRY_ISSUE, cid_i, 1, ko_i), (ENTRY_COMMENT, cid_c, 1, ko_c)]
+    vector("bundle_encode", "A maintainer's bundle: DFRV, version 1, two document entries (type, $id, $revision, "
+           "K_obj), no note.", dict(op="bundleEncode", entries=[dict(kind=k, target=H(t), revision=r, key=H(key))
+                                                              for k, t, r, key in entries]),
+           dict(bytes=H(G.bundle_bytes(entries))))
+
+
 def build():
     VECTORS.clear()
     edit_vectors()
     replace_vectors()
     review_text_vectors()
+    bundle_vectors()
 
 
 def write_vectors(out_dir):

@@ -9,6 +9,7 @@
  */
 
 import { MakePublicButton } from '@/components/repo/make-public'
+import { EditedAfterPublicNote, MadePublicBy } from '@/components/repo/made-public'
 import { Byline, Time } from '@/components/repo/byline'
 import { importedVerdictOf, searchableBody, trustedOrigin, type Origin } from '@/lib/repo/provenance'
 import { Check, CheckCircle2, CircleDot, CircleSlash, Eye, EyeOff, GitBranch, GitCommit, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, Lock, LockOpen, Milestone, MessageSquare, Pencil, Pin, ShieldAlert, Tag, Trash2, UserPlus, X } from 'lucide-react'
@@ -418,8 +419,10 @@ function ReviewComment({
         {file !== null ? <span className="break-all font-mono text-anvil-700 dark:text-anvil-300">{file}</span> : null}
         {origin !== null ? <Byline author={c.author} createdAt={c.createdAt} origin={origin} link={false} /> : null}
         <AudienceMark audience={c.audience} letter={c.letter} />
+        <MadePublicBy marks={c} />
         {slot.header}
       </div>
+      <EditedAfterPublicNote marks={c} kind="comment" />
       {slot.body ?? (
         <div className="space-y-2 px-3 py-2">
           {c.anchor ? anchorContext?.(c) : null}
@@ -653,9 +656,11 @@ export function Timeline({
                 />
                 <EditedMarker createdAt={item.comment.createdAt} updatedAt={item.comment.updatedAt} />
                 <AudienceMark audience={item.comment.audience} letter={item.comment.letter} />
+                <MadePublicBy marks={item.comment} />
                 {slot.header}
                 {actions ? <span className={slot.header ? '' : 'ml-auto'}>{actions}</span> : null}
               </div>
+              <EditedAfterPublicNote marks={item.comment} kind="comment" />
               {slot.body ?? (
                 <div className="px-4 py-3">
                   <MarkdownView source={item.comment.body} links={links} imported={importedUrlOf(item.comment.importedRaw)} />
@@ -722,6 +727,7 @@ export function Timeline({
                   <span className="flex items-center gap-1 text-anvil-500 dark:text-anvil-400">on <Oid value={review.commitOid} chars={9} /></span>
                 ) : null}
                 <AudienceMark audience={review.audience} letter={review.letter} what="review" />
+                <MadePublicBy marks={review} />
                 {review.madePublic ? (
                   <span className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="review-text-made-public">
                     Review text made public by <Author identityId={review.reviewer} link={false} className="align-middle" />
@@ -730,6 +736,7 @@ export function Timeline({
                 {reviewActions?.(review) ?? null}
                 {actions ? <span className="ml-auto">{actions}</span> : null}
               </div>
+              <EditedAfterPublicNote marks={review} kind="review" />
               {/* A mirrored review with no text of its own: its header already says who and when. */}
               {review.body && !(origin !== null && searchableBody(review.body).trim() === '') ? (
                 <div className="px-4 py-3">

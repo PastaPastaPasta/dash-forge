@@ -104,15 +104,20 @@ export interface MirrorReadInput {
   readonly mirrors: readonly MirrorRecord[]
 }
 
-/** Maintainers first, then other members, then everyone else (the pack-copy rank). */
+/** Maintainers first, then other members, then bots, then everyone else (the pack-copy rank). */
 function rank(role: Role | null | undefined): number {
-  return role === 'maintainer' ? 0 : role == null ? 2 : 1
+  return role === 'maintainer' ? 0 : role === 'bot' ? 2 : role == null ? 3 : 1
+}
+
+/** A record whose addresses are capped like a stranger's: a non-member's, or a bot's (review-rev41 M-4). */
+function capped(role: Role | null | undefined): boolean {
+  return role == null || role === 'bot'
 }
 
 /**
  * The mirror addresses a reader tries for `packHash`, in order: none for a private repository or
- * an unlisted pack; members' records first, each group by `(createdAt, id)`; unknown kinds and
- * addresses that do not fit their record's kind skipped; a non-member's record gives at most
+ * an unlisted pack; members' records first, then bots', each group by `(createdAt, id)`; unknown
+ * kinds and addresses that do not fit their record's kind skipped; a non-member's or a bot's record gives at most
  * {@link STRANGER_URIS_TRIED}; at most {@link MIRROR_URIS_TRIED} in all.
  */
 export function mirrorReadOrder(input: MirrorReadInput): string[] {
@@ -125,7 +130,7 @@ export function mirrorReadOrder(input: MirrorReadInput): string[] {
   for (const m of records) {
     let given = 0
     for (const uri of m.uris) {
-      if (m.ownerRole == null && given === STRANGER_URIS_TRIED) break
+      if (capped(m.ownerRole) && given === STRANGER_URIS_TRIED) break
       if (uriKind(uri) === m.kind && !out.includes(uri)) {
         out.push(uri)
         given += 1

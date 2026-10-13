@@ -97,23 +97,41 @@ const ROTATING_THREADS: usize = 10;
 /// At most this many head oids tracked per repo for `checkRun` streams (newest kept).
 const MAX_HEADS: usize = 50;
 
-/// The three forge-v2 contracts.
+/// The forge-v2 contracts.
 struct Contracts {
     core: LoadedContract,
     collab: LoadedContract,
     /// forge-community: `event`, `authorEvent`, `checkRun` and `webhook` (RC1 layout).
     community: LoadedContract,
+    /// forge-meta on a four-contract set (D44). The relay reads none of its types, but the map
+    /// must not send one elsewhere.
+    meta: Option<LoadedContract>,
 }
 
 impl Contracts {
-    /// The contract that holds `doc_type` in the RC1 layout ([`forge_core::layout`]): `event`
-    /// and `authorEvent` moved to forge-community.
+    /// The network's contracts: three, or four with forge-meta.
+    async fn load(client: &PlatformClient, forge: &forge_core::network::ForgeIds) -> Result<Self> {
+        Ok(Self {
+            core: client.fetch_contract(&forge.core).await?,
+            collab: client.fetch_contract(&forge.collab).await?,
+            community: client.fetch_contract(&forge.community).await?,
+            meta: match &forge.meta {
+                Some(id) => Some(client.fetch_contract(id).await?),
+                None => None,
+            },
+        })
+    }
+
+    /// The contract that holds `doc_type` in the network's layout ([`forge_core::layout`]):
+    /// `event` and `authorEvent` moved to forge-community, and the seven forge-meta types to
+    /// forge-meta when the network has it.
     fn of(&self, doc_type: &str) -> &LoadedContract {
-        let contract = ForgeContract::of(doc_type);
+        let contract = ForgeContract::in_layout(doc_type, self.meta.is_some());
         debug_assert!(contract.is_some(), "{doc_type} is no RC1 type");
         match contract {
             Some(ForgeContract::Collab) => &self.collab,
             Some(ForgeContract::Community) => &self.community,
+            Some(ForgeContract::Meta) => self.meta.as_ref().unwrap_or(&self.core),
             Some(ForgeContract::Core) | None => &self.core,
         }
     }
@@ -245,11 +263,7 @@ pub async fn run_with(cfg: RelayConfig, embed: Embed) -> Result<()> {
         ))
     })?;
     let client = Arc::new(PlatformClient::connect(cfg.target.clone()).await?);
-    let contracts = Contracts {
-        core: client.fetch_contract(&forge.core).await?,
-        collab: client.fetch_contract(&forge.collab).await?,
-        community: client.fetch_contract(&forge.community).await?,
-    };
+    let contracts = Contracts::load(&client, &forge).await?;
 
     let identity = load_identity(&client, &cfg, &forge.community).await?;
 
@@ -1648,7 +1662,78 @@ async fn poll_repo_rest(
         }
         high = high.max(st.commit(r));
     }
+    if Instant::now() < deadline {
+        high = high.max(poll_made_public(shared, st, rf, base).await);
+    }
     (high, true)
+}
+
+/// Maintainers' make-public bundles (packManifest kind 7, its `kind (repoId, kind, $createdAt)`
+/// index): each post a bundle made public, as an `edited` event marked
+/// [`ingest::MADE_PUBLIC_KEY`], which forge-notify sends to the post's author (DESIGN §4.6).
+/// A writer's bundle, which readers ignore, makes nothing. A failed read is retried next cycle
+/// from the same cursor. Returns the newest `$createdAt` read.
+async fn poll_made_public(
+    shared: &Shared,
+    st: &mut RepoState,
+    rf: &QueryFilter,
+    base: Baseline,
+) -> u64 {
+    let prefix = [
+        rf.clone(),
+        QueryFilter::eq(
+            "kind",
+            FieldValue::integer(u64::from(forge_core::pack::KIND_MAKE_PUBLIC)),
+        ),
+    ];
+    let core = &shared.contracts.core;
+    let Some(r) = st
+        .read(
+            shared,
+            "makePublic".into(),
+            "packManifest",
+            core,
+            &prefix,
+            base,
+        )
+        .await
+    else {
+        return 0;
+    };
+    if !r.docs.is_empty() {
+        let repo = match resolve_repo(&shared.client, &st.meta.repo_id).await {
+            Ok(repo) => repo,
+            Err(e) => {
+                tracing::warn!(repo = %st.meta.repo_id, error = %e, "make-public bundles not read; retrying next cycle");
+                return 0;
+            }
+        };
+        let collab = forge_core::collab::v2::Collab::reader(&shared.client);
+        let mut events = Vec::new();
+        for d in &r.docs {
+            match collab.bundle_publications(&repo, d).await {
+                Ok(posts) => events.extend(posts.into_iter().map(|(kind, doc)| {
+                    ingest::translate_made_public(
+                        &st.meta,
+                        &d.id,
+                        forge_core::collab::v2::bundle_noun(kind),
+                        &doc,
+                        &d.owner_id,
+                        &st.targets,
+                        &st.closed,
+                    )
+                })),
+                Err(e) => {
+                    tracing::warn!(repo = %st.meta.repo_id, bundle = %d.id, error = %e, "a make-public bundle could not be read; retrying next cycle");
+                    return 0;
+                }
+            }
+        }
+        for e in events {
+            st.emit(shared, e);
+        }
+    }
+    st.commit(r)
 }
 
 /// Whether `d`, read from the `doc_type` stream, is a CI re-run request: a member `event` of

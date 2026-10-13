@@ -527,7 +527,7 @@ export async function encryptionOps(sdk: EvoSDK, network: Network, identityId: s
   const facade = (sdk as unknown as { encryptedFor: WrapFacade }).encryptedFor
   const { Document, PrivateKey } = await import('@dashevo/evo-sdk')
   const contract = (await authSdk(sdk).contracts.fetch(repoKeyContractId)) as DataContract | undefined
-  if (contract === undefined) throw new Error('forge-collab could not be read')
+  if (contract === undefined) throw new Error('the contract that holds repo keys could not be read')
   const version = (sdk as unknown as { version(): number }).version()
   const net = wasmNetwork(network)
   const withPrivate = <T>(id: number, use: (pk: WasmPrivateKey) => Promise<T>): Promise<T> =>

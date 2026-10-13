@@ -28,7 +28,7 @@ export function BotBadgeScope({ ids, children }: { ids: readonly string[]; child
   const { sdk, ready, network } = useSdk()
   const forge = NETWORKS[network].v2
   const key = ids.join(',')
-  const { data } = useAsync(() => readBotOperators(sdk!, forge!.community, ids), [ready, network, key], {
+  const { data } = useAsync(() => readBotOperators(sdk!, forge!, ids), [ready, network, key], {
     enabled: ready && sdk !== null && forge !== null && ids.length > 0,
   })
   // A participant joining re-reads the set: the badges already shown stay until it answers.

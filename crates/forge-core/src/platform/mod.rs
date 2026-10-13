@@ -1048,6 +1048,55 @@ impl PlatformClient {
             .is_some())
     }
 
+    /// Every stored revision of the `document_type` document `document_id` in `contract`, oldest
+    /// first (Platform's `getDocumentHistory`, proved): only a type that keeps history
+    /// (`documentsKeepHistory`, an issue or a PR) has more than its current revision. At most
+    /// `max` revisions are read, ten per request (Drive's page limit).
+    pub async fn fetch_document_history(
+        &self,
+        contract: &LoadedContract,
+        document_type: &str,
+        document_id: &str,
+        max: usize,
+    ) -> Result<Vec<FetchedDocument>> {
+        use dash_sdk::platform::DocumentHistoryQuery;
+        const PAGE: u32 = 10;
+        let doc_id = parse_id(document_id, "document id")?;
+        let mut out: Vec<FetchedDocument> = Vec::new();
+        let mut offset = 0u32;
+        while out.len() < max {
+            let query = DocumentHistoryQuery {
+                data_contract_id: contract.0.id(),
+                document_type_name: document_type.to_string(),
+                document_id: doc_id,
+                start_at_ms: 0,
+                limit: Some(PAGE),
+                offset: (offset > 0).then_some(offset),
+            };
+            let page = retry_transient_read("fetch document history", || {
+                drive_proof_verifier::types::DocumentHistory::fetch(&self.sdk, query.clone())
+            })
+            .await
+            .map_err(|e| {
+                self.read_error(
+                    &contract.id(),
+                    &e,
+                    &format!("fetching the history of document {document_id}"),
+                )
+            })?
+            .unwrap_or_default();
+            let got = page.len();
+            out.extend(page.values().map(FetchedDocument::from_document));
+            if got < PAGE as usize {
+                break;
+            }
+            offset += PAGE;
+        }
+        out.truncate(max);
+        out.sort_by_key(|d| d.revision.unwrap_or_default());
+        Ok(out)
+    }
+
     /// The document of `document_type` with base58 `document_id` in `contract`, or `None`
     /// when it provably does not exist (proof-verified single-document fetch).
     pub async fn fetch_document(

@@ -11,6 +11,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { KeyRound, Trash2 } from 'lucide-react'
 
 import { NETWORKS } from '@/lib/constants'
+import { writeContractKind } from '@/lib/layout'
+import { DOC } from '@/lib/repo/contract'
 import { forgetRepoSigners } from '@/lib/repo/signers'
 import { keyEntry, MAX_KEYS, pubkeysCost, savePubkeys, withKey } from '@/lib/repo/signing-keys'
 import { readProfile, type Profile } from '@/lib/repo/profile'
@@ -52,7 +54,7 @@ export function SigningKeysSection({ identity, stored, onSaved }: { identity: st
       const next = await withKey(keys, entry)
       const view = await readPubkeyEntry(entry)
       const p: Pending = { kind: 'add', keys: next, label: `${view.kind === 'ssh' ? 'SSH' : 'OpenPGP'} key ${view.fingerprint ?? ''}` }
-      if (guard.check(pubkeysCost(stored, next), 'community', 'add a signing key')) setPending(p)
+      if (guard.check(pubkeysCost(stored, next), writeContractKind(forge, DOC.profile), 'add a signing key')) setPending(p)
     } catch (e) {
       setProblem(errorMessage(e))
     }
@@ -61,7 +63,7 @@ export function SigningKeysSection({ identity, stored, onSaved }: { identity: st
     const next = keys.filter((_, j) => j !== i)
     const p: Pending = { kind: 'remove', keys: next, label: views[i]?.fingerprint ?? 'this key' }
     // A removal is a paid replace too: the funds check runs on its cost.
-    if (guard.check(pubkeysCost(stored, next), 'community', 'remove a signing key')) setPending(p)
+    if (guard.check(pubkeysCost(stored, next), writeContractKind(forge, DOC.profile), 'remove a signing key')) setPending(p)
   }
   const run = async (intent: string): Promise<void> => {
     if (!sdk || !signer || pending === null) throw new Error('sign in to continue')

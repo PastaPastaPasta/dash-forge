@@ -1,0 +1,59 @@
+{
+  "name": "bundle_read_lying_then_honest",
+  "description": "A lying entry and an honest one: the honest one makes it public, the lying one is still an alert.",
+  "case": "make_public",
+  "rules": "v2",
+  "input": {
+    "op": "bundleRead",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "visibility": "public",
+    "maintainers": [
+      "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"
+    ],
+    "bundles": [
+      {
+        "owner": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+        "bytes": "4446525601000101ed207edd7c7766627b8cd4fdf8a189c1369d179b25833a353b101a0ab98d39ab000000015a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+      },
+      {
+        "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "bytes": "4446525601000101ed207edd7c7766627b8cd4fdf8a189c1369d179b25833a353b101a0ab98d39ab000000014faf51f6930dfb44ded0de72f22d0bd0233a50c420b375ece2ce3edc56fb6958"
+      }
+    ],
+    "docs": [
+      {
+        "doc": {
+          "type": "comment",
+          "vis": "public",
+          "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+          "epoch": 0,
+          "targetId": "3333333333333333333333333333333333333333333333333333333333333333",
+          "id": "ed207edd7c7766627b8cd4fdf8a189c1369d179b25833a353b101a0ab98d39ab"
+        },
+        "enc": "03000102030405060708090a0bf9a7fa2b8dc201ec7c98681cdcfcfdd62d0c8514308e08b3254c75e528853e9f68c2c84f9892eab0fdb7a611874cf68f179a64d1f255e203d2fcd039a43f1e5e4427ffea6920a5296635807834ce89db33640789703539675c630fe4e0e9e440fa0941eba61eeb6f2957e4f93ebbccfe",
+        "revision": 1
+      }
+    ]
+  },
+  "expected": {
+    "reads": [
+      {
+        "id": "ed207edd7c7766627b8cd4fdf8a189c1369d179b25833a353b101a0ab98d39ab",
+        "revision": 1,
+        "state": "public",
+        "by": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "fields": {
+          "body": "members-only: the fix is in sec/cve-1"
+        }
+      }
+    ],
+    "alerts": [
+      {
+        "id": "ed207edd7c7766627b8cd4fdf8a189c1369d179b25833a353b101a0ab98d39ab",
+        "revision": 1,
+        "by": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"
+      }
+    ]
+  }
+}

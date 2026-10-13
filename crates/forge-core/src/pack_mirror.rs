@@ -21,7 +21,7 @@ use crate::rules::v2::{Role, Visibility};
 use crate::scope::RepoRef;
 use crate::storage::read::PackReader;
 
-/// forge-core's pack mirror type.
+/// The pack mirror type: forge-core's, or forge-meta's on a four-contract set (D44).
 pub const DOC_PACK_MIRROR: &str = "packMirror";
 
 /// The records one read of a pack's mirrors returns at most (one page), and the members one
@@ -104,12 +104,12 @@ fn repo_value(repo: &RepoRef) -> Result<FieldValue> {
 /// contract without the type.
 pub async fn mirrors_of(
     client: &PlatformClient,
-    core: &LoadedContract,
+    mirrors: &LoadedContract,
     repo: &RepoRef,
     pack_hash: &str,
     members: &[String],
 ) -> Result<Vec<PackMirror>> {
-    if !core.has_document_type(DOC_PACK_MIRROR) {
+    if !mirrors.has_document_type(DOC_PACK_MIRROR) {
         return Ok(Vec::new());
     }
     let pack = [
@@ -133,7 +133,7 @@ pub async fn mirrors_of(
         docs.extend(
             client
                 .query_documents(
-                    core,
+                    mirrors,
                     DOC_PACK_MIRROR,
                     &filters,
                     &by_writer,
@@ -146,7 +146,7 @@ pub async fn mirrors_of(
     docs.extend(
         client
             .query_documents(
-                core,
+                mirrors,
                 DOC_PACK_MIRROR,
                 &pack,
                 &by_writer,
@@ -171,17 +171,17 @@ fn dedup_records(records: impl IntoIterator<Item = PackMirror>) -> Vec<PackMirro
 /// record per pack each).
 pub async fn mirror_of_owner(
     client: &PlatformClient,
-    core: &LoadedContract,
+    mirrors: &LoadedContract,
     repo: &RepoRef,
     pack_hash: &str,
     owner: &str,
 ) -> Result<Option<PackMirror>> {
-    if !core.has_document_type(DOC_PACK_MIRROR) {
+    if !mirrors.has_document_type(DOC_PACK_MIRROR) {
         return Ok(None);
     }
     let docs = client
         .query_documents(
-            core,
+            mirrors,
             DOC_PACK_MIRROR,
             &[
                 QueryFilter::eq("repoId", repo_value(repo)?),
@@ -246,15 +246,15 @@ pub async fn check_serves(
 /// Every mirror `owner` recorded (its `byOwner` index), oldest first.
 pub async fn mirrors_by(
     client: &PlatformClient,
-    core: &LoadedContract,
+    mirrors: &LoadedContract,
     owner: &str,
 ) -> Result<Vec<PackMirror>> {
-    if !core.has_document_type(DOC_PACK_MIRROR) {
+    if !mirrors.has_document_type(DOC_PACK_MIRROR) {
         return Ok(Vec::new());
     }
     let docs = client
         .query_all_documents(
-            core,
+            mirrors,
             DOC_PACK_MIRROR,
             &[QueryFilter::eq(
                 "$ownerId",
@@ -295,10 +295,10 @@ pub fn read_order(
 }
 
 /// The `packMirror` properties recording `uris` (of `kind`) for `pack_hash` of `repo`, for
-/// `core`: stamped `vis: "public"` where the contract declares it (the mainnet build's
+/// `mirrors`: stamped `vis: "public"` where the contract declares it (the mainnet build's
 /// `mainnet_mirror_public`, whose `repoId` reference requires it to equal the repository's).
 pub fn mirror_props(
-    core: &LoadedContract,
+    mirrors: &LoadedContract,
     repo: &RepoRef,
     pack_hash: &str,
     kind: u64,
@@ -310,16 +310,16 @@ pub fn mirror_props(
         ("kind".to_string(), FieldValue::integer(kind)),
         ("uris".to_string(), FieldValue::text_list(uris.to_vec())),
     ]);
-    if core.has_property(DOC_PACK_MIRROR, "vis") {
+    if mirrors.has_property(DOC_PACK_MIRROR, "vis") {
         crate::layout::stamp_public(&mut props);
     }
     Ok(props)
 }
 
-/// Whether `core` has the `packMirror` type, as an error naming the network when it does not.
+/// Whether `mirrors` has the `packMirror` type, as an error naming the network when it does not.
 /// Callers check it before any download or cost prompt that a record would follow.
-pub fn require_support(core: &LoadedContract) -> Result<()> {
-    if core.has_document_type(DOC_PACK_MIRROR) {
+pub fn require_support(mirrors: &LoadedContract) -> Result<()> {
+    if mirrors.has_document_type(DOC_PACK_MIRROR) {
         return Ok(());
     }
     Err(Error::Config(
@@ -332,7 +332,7 @@ pub fn require_support(core: &LoadedContract) -> Result<()> {
 /// type. Returns the document id.
 pub async fn record_mirror(
     engine: &WriteEngine<'_>,
-    core: &LoadedContract,
+    mirrors: &LoadedContract,
     repo: &RepoRef,
     pack_hash: &str,
     uris: &[String],
@@ -348,18 +348,20 @@ pub async fn record_mirror(
             uri_problem_words(&check).unwrap_or_default(),
         ));
     };
-    require_support(core)?;
-    let props = mirror_props(core, repo, pack_hash, kind, uris)?;
-    engine.create_document(core, DOC_PACK_MIRROR, props).await
+    require_support(mirrors)?;
+    let props = mirror_props(mirrors, repo, pack_hash, kind, uris)?;
+    engine
+        .create_document(mirrors, DOC_PACK_MIRROR, props)
+        .await
 }
 
 /// Delete the signer's mirror record `id` (its writer only).
 pub async fn delete_mirror(
     engine: &WriteEngine<'_>,
-    core: &LoadedContract,
+    mirrors: &LoadedContract,
     id: &str,
 ) -> Result<()> {
-    engine.delete_document(core, DOC_PACK_MIRROR, id).await
+    engine.delete_document(mirrors, DOC_PACK_MIRROR, id).await
 }
 
 #[cfg(test)]

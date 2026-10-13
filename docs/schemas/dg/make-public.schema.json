@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/make-public.schema.json",
   "title": "dg make-public --json",
-  "description": "Your own members-only posts made public: each one edited to Public, or a review given a public comment that carries its text.",
+  "description": "Members-only posts made public: your own each edited to Public (a review given a public comment that carries its text), or anyone's by a maintainer's make-public bundle (`carrier` \"bundle\").",
   "type": "object",
   "properties": {
     "schemaVersion": {
@@ -16,6 +16,22 @@
     },
     "cost": {
       "$ref": "common.schema.json#/$defs/cost"
+    },
+    "carrier": {
+      "type": "string",
+      "enum": [
+        "bundle"
+      ]
+    },
+    "manifest": {
+      "type": "string",
+      "description": "The bundle's packManifest document id."
+    },
+    "authors": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
     },
     "posts": {
       "type": "array",
@@ -47,14 +63,54 @@
             "items": {
               "type": "string"
             }
+          },
+          "author": {
+            "type": "string"
+          },
+          "revisions": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
           }
         },
         "required": [
           "id",
-          "kind",
-          "written"
+          "kind"
         ]
       }
+    },
+    "leftOut": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "author": {
+            "type": "string"
+          },
+          "why": {
+            "type": "string",
+            "enum": [
+              "alreadyPublic",
+              "unreadable",
+              "notSent",
+              "longBody",
+              "pullRequest"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "why"
+        ]
+      },
+      "description": "Posts named that the bundle leaves out, and why."
     }
   },
   "required": [

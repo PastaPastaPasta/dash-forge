@@ -65,8 +65,8 @@ import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import {
-  CONTRACT_OF, EVENT, FUSED_STAR, ROOT, TRANSITION, VIS, checkOutcome, idBytes, loadIdentity, log, membership, openSession, parseArgs,
-  runIfMain, transition, until,
+  EVENT, FUSED_STAR, ROOT, TRANSITION, VIS, checkOutcome, idBytes, loadIdentity, log, membership, openSession, parseArgs,
+  contractOn, runIfMain, transition, until,
 } from './lib/seed-io.mjs';
 
 const DEMO = 'forge-v2-demo';
@@ -205,7 +205,7 @@ export async function main(argv, injected) {
   const MAINTAINER = load('MAINTAINER');
   const COLLAB = load('COLLAB');
   const CONTRIB = load('CONTRIB');
-  const contracts = { forgeCore: ids.core, forgeCollab: ids.collab, forgeCommunity: ids.community };
+  const contracts = { forgeCore: ids.core, forgeCollab: ids.collab, forgeCommunity: ids.community, ...(ids.meta ? { forgeMeta: ids.meta } : {}) };
 
   const statePath = a.state ?? join(homedir(), '.cache/dash-forge', `seed-v2-${key}.json`);
   mkdirSync(dirname(statePath), { recursive: true });
@@ -260,7 +260,7 @@ export async function main(argv, injected) {
   // forge-community's events name forge-collab's issues and PRs
   if (changed.has('collab')) changed.add('community');
   if (changed.size > 0) {
-    const stale = Object.keys(state.types).filter((k) => changed.has(CONTRACT_OF[state.types[k]]) && state[k]);
+    const stale = Object.keys(state.types).filter((k) => changed.has(contractOn(ids, state.types[k])) && state[k]);
     state.superseded = [...(state.superseded ?? []), { contracts: state.contracts, steps: Object.fromEntries(stale.map((k) => [k, state[k]])) }];
     for (const k of stale) delete state[k];
     log(`${[...changed].map((c) => `forge-${c}`).join(' and ')} re-registered: re-seeding ${stale.length} steps`);

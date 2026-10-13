@@ -41,9 +41,24 @@ export const CONTRACT_OF = Object.fromEntries(
   Object.entries(CONTRACTS).flatMap(([c, json]) => Object.keys(json.documentSchemas).map((t) => [t, c])),
 );
 
+/**
+ * The types forge-meta holds on a four-contract set (DESIGN rev 4.1 D44); a three-contract set
+ * keeps them in their `CONTRACT_OF` homes. Parity: forge-core `layout::META_TYPES`, forge-web
+ * `lib/layout.ts`.
+ */
+export const META_TYPES = new Set(['repoKey', 'ban', 'label', 'topic', 'packMirror', 'profile', 'follow']);
+
+/**
+ * The contract (`core`, `collab`, `community`, `meta`) that holds `type` on the network whose ids
+ * are `ids`: forge-meta for `META_TYPES` when the deployment record has one, else `CONTRACT_OF`.
+ */
+export function contractOn(ids, type) {
+  return ids.meta && META_TYPES.has(type) ? 'meta' : CONTRACT_OF[type];
+}
+
 /** The id, on `net`, of the contract that holds `type`. */
 function contractIdOf(net, type) {
-  const contract = CONTRACT_OF[type];
+  const contract = contractOn(net.ids, type);
   if (!contract) throw new Error(`no RC1 contract holds a ${type}`);
   return net.ids[contract];
 }
@@ -68,7 +83,7 @@ export function parseArgs(argv, multi = []) {
  * The network to write to: `--network` / `--devnet-name`, else `DASH_FORGE_NETWORK` /
  * `DASH_FORGE_DEVNET_NAME`, else devnet sakura. Its contract ids come from
  * `deployments/<network>.json` (or `--deployment <file>`), which must record all three RC1
- * contracts. moutai is refused: it runs the beta.6 contracts, which refuse every RC1 document.
+ * contracts (and forge-meta's, on a four-contract set). moutai is refused: it runs the beta.6 contracts, which refuse every RC1 document.
  */
 export function resolveNetwork(a, env = process.env) {
   const network = a.network ?? env.DASH_FORGE_NETWORK ?? 'devnet';
@@ -83,10 +98,13 @@ export function resolveNetwork(a, env = process.env) {
     core: dep.v2?.forgeCore?.contractId,
     collab: dep.v2?.forgeCollab?.contractId,
     community: dep.v2?.forgeCommunity?.contractId,
+    // A four-contract set (D44): the moved types are written to forge-meta (`contractOn`).
+    ...(dep.v2?.forgeMeta ? { meta: dep.v2.forgeMeta.contractId } : {}),
   };
   if (!ids.core || !ids.collab || !ids.community) {
     throw new Error(`${file} records no RC1 deployment (forge-core, forge-collab and forge-community under v2); deploy-v2.mjs writes it`);
   }
+  if ('meta' in ids && !ids.meta) throw new Error(`${file} records forge-meta without a contract id: a half-finished deploy`);
   return { network, devnetName, key, dep, ids };
 }
 
