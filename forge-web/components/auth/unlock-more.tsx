@@ -24,6 +24,9 @@ import { errorMessage } from '@/lib/utils'
  */
 export const UNLOCK_MEMBERS_ONLY = 'Unlock to read members-only content'
 
+/** The same prompt over messages sent to specific people (this reader among them). */
+export const UNLOCK_LETTERS = 'Unlock to read messages sent to you'
+
 export function UnlockMore({
   title,
   testId = 'unlock-more',

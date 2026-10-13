@@ -93,7 +93,7 @@ import { takePublicViewFocus, usePublicView } from '@/hooks/use-public-view'
 import { useParam } from '@/hooks/use-query-param'
 import { Author } from '@/components/author'
 import { ConfirmDialog } from '@/components/confirm-dialog'
-import { UnlockMore, UNLOCK_MEMBERS_ONLY } from '@/components/auth/unlock-more'
+import { UnlockMore, UNLOCK_LETTERS, UNLOCK_MEMBERS_ONLY } from '@/components/auth/unlock-more'
 import type { Network } from '@/lib/constants'
 import { Button } from '@/components/ui/button'
 import { Dialog, useEscapeLayer } from '@/components/ui/dialog'
@@ -555,7 +555,7 @@ function LettersBlocked({ option }: { option: Exclude<NonNullable<AudienceChoice
       ) : null}
       {option === 'locked' ? (
         <span className="mt-2 block">
-          <UnlockMore title={UNLOCK_MEMBERS_ONLY} testId="audience-letters-unlock" forgot={false} />
+          <UnlockMore title={UNLOCK_LETTERS} testId="audience-letters-unlock" forgot={false} />
         </span>
       ) : null}
     </span>
@@ -951,7 +951,7 @@ export function MembersOnlyRow({ entry }: { entry: MembersOnlyEntry }): JSX.Elem
           </>
         ) : null}
       </p>
-      {unlocking ? <UnlockMore title={UNLOCK_MEMBERS_ONLY} testId="letter-unlock-panel" forgot={false} /> : null}
+      {unlocking ? <UnlockMore title={UNLOCK_LETTERS} testId="letter-unlock-panel" forgot={false} /> : null}
     </div>
   )
 }
@@ -1060,7 +1060,7 @@ export function MembersOnlyTargetPage({ home, target }: { home: RepoHome; target
       </p>
       <div className="rounded-lg border border-dashed border-anvil-300 px-4 py-3 text-dense dark:border-anvil-700" data-testid="members-only-why">
         {letter && target.placeholder.locked === true ? (
-          <UnlockMore title={UNLOCK_MEMBERS_ONLY} testId="letter-target-unlock" forgot={false} />
+          <UnlockMore title={UNLOCK_LETTERS} testId="letter-target-unlock" forgot={false} />
         ) : letter ? (
           <p>
             {people !== undefined ? `This ${noun} was sent to ${peopleCount(people)}.` : `This ${noun} is encrypted for specific people.`} Everyone can see that it exists, who opened it

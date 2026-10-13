@@ -152,8 +152,10 @@ test('recipient: reads both, with who they went to', async ({ browser }, info) =
   await expect(label).toHaveText(/^\s*Visible to .+ \(maintainers when sent\)( and .+)?$/)
   await expect(label).toHaveAttribute('title', 'as listed by the sender')
   await snap(page, info, 'recipient-letter-comment')
+  // a page load starts a new tab session: the issue itself offers the unlock
   await openIssue(page, issueUrl(LETTER))
   const body = page.getByTestId('thread-conversation')
+  await unlockLetters(page, body)
   await expect(body).toContainText(MARKER, { timeout: 120_000 })
   await expect(body.getByTestId('visible-to-people').first()).toHaveText(/^\s*Visible to .*you$/)
   // a reply in it goes to the same people: only Specific people is offered
