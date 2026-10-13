@@ -18,9 +18,11 @@ export interface PersonInputState {
   readonly error: string | null
   /** A name is being looked up. */
   readonly resolving: boolean
+  /** Looks the name up again; set only when the last lookup failed (as opposed to finding no such name). */
+  readonly retry: (() => void) | null
 }
 
-const NOTHING: PersonInputState = { id: null, name: null, error: null, resolving: false }
+const NOTHING: PersonInputState = { id: null, name: null, error: null, resolving: false, retry: null }
 
 /** The text of a member field as a person: an identity id, or a DPNS name looked up once typing pauses. */
 export function usePersonInput(text: string): PersonInputState {
@@ -39,7 +41,7 @@ export function usePersonInput(text: string): PersonInputState {
   if (input.kind === 'invalid') return { ...NOTHING, error: input.error }
   if (input.kind === 'empty') return NOTHING
   if (!looked || !found.settled) return { ...NOTHING, resolving: true }
-  if (found.error !== null) return { ...NOTHING, error: NAME_LOOKUP_FAILED }
+  if (found.error !== null) return { ...NOTHING, error: NAME_LOOKUP_FAILED, retry: found.reload }
   if (found.data === null) return { ...NOTHING, error: unknownName(input.name) }
-  return { id: found.data, name: input.name, error: null, resolving: false }
+  return { ...NOTHING, id: found.data, name: input.name }
 }

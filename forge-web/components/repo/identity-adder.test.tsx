@@ -32,6 +32,7 @@ import { AudiencePicker, type AudienceChoice } from './environment-editor'
 
 const VIEWER = base58Encode(new Uint8Array(32).fill(1))
 const ALICE = base58Encode(new Uint8Array(32).fill(2))
+const BOB = base58Encode(new Uint8Array(32).fill(3))
 const PEOPLE: PeopleView = { owner: VIEWER, members: [{ identity: VIEWER, role: 'maintainer' }] }
 
 let root: Root
@@ -126,5 +127,24 @@ describe('Specific people takes a name', () => {
     await press()
     expect(value.people).toEqual([])
     expect(document.body.textContent).toContain('Not an identity id or a name like alice.dash.')
+  })
+
+  it('adds to the choice as it is when the lookup returns, and holds the field meanwhile', async () => {
+    let release: (m: Map<string, string | null>) => void = () => undefined
+    resolve.mockImplementation(() => new Promise((r) => (release = r)))
+    render()
+    type(q('[data-testid="env-people-add"]'), 'alice.dash')
+    await act(async () => {
+      addButton().click()
+    })
+    expect((q('[data-testid="env-people-add"]') as HTMLInputElement).disabled).toBe(true)
+    // someone else is added while the name is being looked up
+    value = { ...value, people: [BOB] }
+    render()
+    await act(async () => {
+      release(new Map([['alice.dash', ALICE]]))
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    expect(value.people).toEqual([BOB, ALICE])
   })
 })

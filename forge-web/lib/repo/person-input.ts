@@ -45,9 +45,9 @@ export async function lookUpName(sdk: EvoSDK, name: string, network: Network): P
   return (await resolveDpnsIds(sdk, [name], network)).get(name) ?? null
 }
 
-/** `text` resolved to an identity id (and the name it was given by, if any), or why not. */
+/** `text` resolved to an identity id (and the name it was given by, if any), or why not. An id needs no `sdk`. */
 export async function resolvePerson(
-  sdk: EvoSDK,
+  sdk: EvoSDK | null,
   network: Network,
   text: string,
 ): Promise<{ readonly id: string; readonly name: string | null } | { readonly error: string }> {
@@ -55,6 +55,7 @@ export async function resolvePerson(
   if (input.kind === 'id') return { id: input.id, name: null }
   if (input.kind === 'invalid') return { error: input.error }
   if (input.kind === 'empty') return { error: NOT_A_PERSON }
+  if (sdk === null) return { error: NAME_LOOKUP_FAILED }
   try {
     const id = await lookUpName(sdk, input.name, network)
     return id === null ? { error: unknownName(input.name) } : { id, name: input.name }

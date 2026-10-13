@@ -669,7 +669,10 @@ export async function rotateRepoKey(
     try {
       await runRepair(c, `${intent}:after-lost`, onStep, drop, true)
     } catch (e) {
-      repair = `the repair check after it failed (${e instanceof Error ? e.message : String(e)}); open Repair on the repo page`
+      repair =
+        e instanceof MembersUnsettledError
+          ? 'the repair check after it was refused because the member list is still changing on Platform; open Repair on the repo page in a minute'
+          : `the repair check after it failed (${e instanceof Error ? e.message : String(e)}); open Repair on the repo page`
     }
   }
   throw new PrivateMembersError(`another maintainer rotated to epoch ${epoch} first; their key is the repo's key, and ${repair}.`, 'E310', 'lost')
@@ -1220,7 +1223,15 @@ export async function removePrivateMember(
   }
   // Once more, the repair check (§5.6): a concurrent rotation that lost, or one by a maintainer
   // who did not exclude this member, shows up here and is fixed now.
-  await runRepair(c, `${intent}:repair`, onStep, drop)
+  try {
+    await runRepair(c, `${intent}:repair`, onStep, drop)
+  } catch (e) {
+    // the removal and the rotation both landed: only the last key shares are left
+    if (e instanceof MembersUnsettledError) {
+      throw new PrivateMembersError("the member was removed and the key was rotated, but it wasn't shared with everyone yet because the member list is still changing on Platform. Open Repair on the repo page in a minute to finish.", 'E310')
+    }
+    throw e
+  }
   return epoch
 }
 
