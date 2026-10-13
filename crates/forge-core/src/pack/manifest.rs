@@ -177,9 +177,7 @@ impl PackManifest {
             supersedes,
         }
     }
-}
 
-impl PackManifest {
     /// Manifest for a members-only artifact (`members_kind(plain_kind)`) of `sealed` bytes: DFPK
     /// 0x01 under the members key. It **never carries `tips`**: a sealed kind's tips would be the
     /// real commits its blinds hide (DESIGN §4.3, review M3 (a)), so a members-only index names its

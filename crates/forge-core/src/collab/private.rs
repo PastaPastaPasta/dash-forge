@@ -114,13 +114,14 @@ pub fn seal_letter_props(
     props: BTreeMap<String, FieldValue>,
 ) -> Result<BTreeMap<String, FieldValue>> {
     let public_hash = |n: &str| crate::private::keys::sha256(n.as_bytes());
-    let letter = Members {
-        sealed: true,
-        ..Members::default()
-    };
-    seal_props_inner((0, public_hash), kind, owner, props, &letter, |h, f| {
-        crate::private::named::seal(repo_id, sender, sender_key_id, h, f, recipients, group)
-    })
+    seal_props_inner(
+        (0, public_hash),
+        kind,
+        owner,
+        props,
+        &Members::sealed(),
+        |h, f| crate::private::named::seal(repo_id, sender, sender_key_id, h, f, recipients, group),
+    )
     .map_err(|e| match e {
         Error::User(u) if u.message.contains(TOO_LARGE_MARK) => {
             letter_too_large(kind, recipients.len())
@@ -166,16 +167,12 @@ pub fn seal_members_props(
             kind.type_name()
         )));
     }
-    let members = Members {
-        sealed: true,
-        ..Members::default()
-    };
     seal_props_inner(
         epoch_hashing(lane.write_keys()),
         kind,
         owner,
         props,
-        &members,
+        &Members::sealed(),
         |h, f| lane.seal_doc(h, f),
     )
 }
@@ -223,6 +220,29 @@ struct Members {
     head: Option<HeadBlind>,
 }
 
+impl Members {
+    fn sealed() -> Self {
+        Self {
+            sealed: true,
+            ..Self::default()
+        }
+    }
+
+    fn patch(p: &MembersPatch) -> Self {
+        Self {
+            patch: Some(p.clone()),
+            ..Self::sealed()
+        }
+    }
+
+    fn head_update(head: Option<HeadBlind>) -> Self {
+        Self {
+            head,
+            ..Self::sealed()
+        }
+    }
+}
+
 /// [`seal_members_props`] for a members-only **pull request** (`patch`): its text and branch names
 /// in `enc` v0x03, `baseRefNameHash` / `sourceRefNameHash` by [`MembersPatch`], and, for a
 /// members-only source, the copied blind `headOid` with the real head and its salt sealed beside
@@ -253,17 +273,12 @@ pub fn seal_members_head_update_props(
     props: BTreeMap<String, FieldValue>,
     head: &HeadBlind,
 ) -> Result<BTreeMap<String, FieldValue>> {
-    let members = Members {
-        sealed: true,
-        head: Some(head.clone()),
-        ..Members::default()
-    };
     seal_props_inner(
         epoch_hashing(lane.write_keys()),
         DocKind::Event,
         owner,
         props,
-        &members,
+        &Members::head_update(Some(head.clone())),
         |h, f| lane.seal_doc(h, f),
     )
 }
@@ -357,11 +372,7 @@ pub fn seal_members_props_with_nonce(
         owner,
         props,
         &if kind == DocKind::Event {
-            Members {
-                sealed: true,
-                patch: None,
-                head: patch.head.clone(),
-            }
+            Members::head_update(patch.head.clone())
         } else {
             Members::patch(patch)
         },
@@ -371,16 +382,6 @@ pub fn seal_members_props_with_nonce(
             crate::private::doc::seal_members_with_nonce(keys, &h, f, nonce)
         },
     )
-}
-
-impl Members {
-    fn patch(p: &MembersPatch) -> Self {
-        Self {
-            sealed: true,
-            patch: Some(p.clone()),
-            head: None,
-        }
-    }
 }
 
 /// Seal `head`'s real value and salt into `fields` after checking that `plain` (the document's
@@ -810,17 +811,22 @@ mod members_pr_tests {
         .unwrap()
     }
 
-    fn opened_head(kind: DocKind, props: &BTreeMap<String, FieldValue>, plain: &str) -> Head {
-        let d = FetchedDocument {
+    /// The document as a reader fetches it.
+    fn fetched(fields: BTreeMap<String, FieldValue>) -> FetchedDocument {
+        FetchedDocument {
             id: crate::platform::encode_identifier([0x5a; 32]),
             owner_id: crate::platform::encode_identifier(OWNER),
             created_at: Some(1),
             created_at_block_height: Some(5),
             updated_at_block_height: None,
             updated_at: None,
-            fields: props.clone(),
+            fields,
             revision: Some(1),
-        };
+        }
+    }
+
+    fn opened_head(kind: DocKind, props: &BTreeMap<String, FieldValue>, plain: &str) -> Head {
+        let d = fetched(props.clone());
         let mut header = crate::keyring::header_of(kind, &d).unwrap();
         header.vis = crate::rules::v2::Visibility::Public;
         let Opened::Readable(f) = open_content(&ctx(), &header, &d.field_bytes("enc").unwrap())
@@ -1091,16 +1097,7 @@ mod members_pr_tests {
         )
         .unwrap();
         // the stored document, opened as a member reads it
-        let d = FetchedDocument {
-            id: crate::platform::encode_identifier([0x5a; 32]),
-            owner_id: crate::platform::encode_identifier(OWNER),
-            created_at: Some(1),
-            created_at_block_height: Some(5),
-            updated_at_block_height: None,
-            updated_at: None,
-            fields: sealed.clone(),
-            revision: Some(1),
-        };
+        let d = fetched(sealed.clone());
         let mut header = crate::keyring::header_of(DocKind::Patch, &d).unwrap();
         header.vis = crate::rules::v2::Visibility::Public;
         let Opened::Readable(fields) =

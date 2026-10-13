@@ -408,7 +408,7 @@ fn run_sealed_ref(v: &Vector) -> Value {
             json!({
                 "refs": by_name(&got.by_name),
                 "publicRefs": by_name(&public),
-            "alerts": got.alerts.iter().map(|a| {
+                "alerts": got.alerts.iter().map(|a| {
                     let id = hex::encode(crate::platform::decode_identifier(&a.id).unwrap());
                     match a.kind {
                         crate::refs::RefAlertKind::Blind(b) => {
