@@ -44,6 +44,7 @@ use crate::platform::{
     PlatformClient, PreparedWrite, QueryFilter, QueryOrder, Resign, WriteEngine, WriteIntent,
 };
 use crate::private::DocKind;
+use crate::rules::v2::{audience_edit, edit_keeps_audience, Audience, AudienceEdit};
 use crate::rules::v2::{
     checks_state, content_well_formed, count_approvals, counted_reviews, dense_number,
     fold_pr_review_v2, git_plane_well_formed, is_author_kind, is_state_kind, issue_state_v2,
@@ -53,13 +54,17 @@ use crate::rules::v2::{
     RoleOracle, StateAction, Transition, TransitionMove, TransitionTarget, Visibility,
     TRANSITION_KINDS,
 };
-use crate::rules::v2::{edit_keeps_audience, Audience};
 use crate::rules::v2::{CloseReason, ClosedAs};
 use crate::rules::{self, Event, EventKind, IssueState, PrState};
 use crate::scope::RepoRef;
 use crate::user_error::{codes, UserError};
 
+mod bundles;
 mod make_public;
+pub use bundles::{
+    noun as bundle_noun, BundleAlert, BundlePlan, BundledPost, LeftOut, LeftOutWhy, Publication,
+    PublicationState,
+};
 pub use make_public::{apply_review_texts, MakePublicPlan};
 
 /// forge-collab document types (issue through milestone); forge-community ones are marked.
@@ -405,6 +410,7 @@ fn written_private(d: &FetchedDocument) -> bool {
 }
 
 /// [`ParentAudience`] of a child under `target` replying in `thread`.
+#[cfg(test)]
 fn thread_parents(target: ParentAudience, thread: &[&FetchedDocument]) -> ParentAudience {
     thread
         .iter()
@@ -3148,6 +3154,9 @@ pub struct Collab<'a> {
     /// The audience this command asked for on the content it writes
     /// ([`Self::request_audience`]); `None`: the context's.
     requested: std::sync::Mutex<Option<Audience>>,
+    /// Maintainers' make-public bundles of a repository, read once per `Collab`, and what they
+    /// did to the documents read ([`bundles`]).
+    bundles: bundles::BundleState,
     /// Who the letters this command writes go to ([`Self::request_letter`]); `None`: re-list
     /// the letters they reply under.
     letter_request: std::sync::Mutex<Option<crate::rules::letters::LetterRequest>>,
@@ -3198,6 +3207,7 @@ impl<'a> Collab<'a> {
             private_updates: std::sync::Mutex::default(),
             member: std::sync::Mutex::default(),
             requested: std::sync::Mutex::default(),
+            bundles: bundles::BundleState::default(),
             letter_request: std::sync::Mutex::default(),
             owner_keys: std::sync::Mutex::default(),
             last_letter: std::sync::Mutex::default(),
@@ -3223,6 +3233,7 @@ impl<'a> Collab<'a> {
             private_updates: std::sync::Mutex::default(),
             member: std::sync::Mutex::default(),
             requested: std::sync::Mutex::default(),
+            bundles: bundles::BundleState::default(),
             letter_request: std::sync::Mutex::default(),
             owner_keys: std::sync::Mutex::default(),
             last_letter: std::sync::Mutex::default(),
@@ -3361,9 +3372,29 @@ impl<'a> Collab<'a> {
     /// [`Self::target_audience`] of a public repository's target as a comment's or review's
     /// parent ([`ParentAudience`]).
     async fn target_parent(&self, repo: &RepoRef, target_id: &str) -> Result<ParentAudience> {
-        Ok(ParentAudience::of(
-            &self.target_doc_by_id(repo, target_id).await?.1,
-        ))
+        let (kind, d) = self.target_doc_by_id(repo, target_id).await?;
+        Ok(self.parent_with_bundles(repo, doc_kind(kind), &d).await)
+    }
+
+    /// [`ParentAudience::of`], where a maintainer's bundle made the stored members-only issue or
+    /// comment `d` public (its current revision, DESIGN §4.6): such a thread is public for
+    /// everyone, so it takes public replies, and a reply that asks for none is public too, as
+    /// on the web. Sealed again after it was made public, its replies are members-only.
+    async fn parent_with_bundles(
+        &self,
+        repo: &RepoRef,
+        kind: DocKind,
+        d: &FetchedDocument,
+    ) -> ParentAudience {
+        let own = ParentAudience::of(d);
+        if own.default == Audience::Public || !matches!(kind, DocKind::Issue | DocKind::Comment) {
+            return own;
+        }
+        if self.bundle_covers(repo, kind, d).await.is_some() {
+            ParentAudience::same(Audience::Public)
+        } else {
+            own
+        }
     }
 
     /// `repo`'s issue or patch `target_id`, as stored, with its kind, failing closed
@@ -3400,8 +3431,11 @@ impl<'a> Collab<'a> {
         target_id: &str,
         thread: &[&FetchedDocument],
     ) -> Result<Audience> {
-        let target = self.target_parent(repo, target_id).await?;
-        self.audience_for(repo, Some(thread_parents(target, thread)))
+        let mut parent = self.target_parent(repo, target_id).await?;
+        for d in thread {
+            parent = parent.narrower(self.parent_with_bundles(repo, DocKind::Comment, d).await);
+        }
+        self.audience_for(repo, Some(parent))
     }
 
     /// The audience a new document of `repo` would be written for by this `Collab`: an issue or
@@ -3939,10 +3973,38 @@ impl<'a> Collab<'a> {
                 return Ok(Some(TargetRead::Readable(d)));
             }
             if is_letter(&d) {
+                // a letter a maintainer's bundle made public opens for everyone (DESIGN §4.6)
+                let entries = self.doc_entries(repo).await;
+                if !entries.is_empty() {
+                    let repo_id = repo.scope()?.repo_id;
+                    let none = DocKeys::None(Unopened::NotARecipient);
+                    if let Ok(d) = self.open_read(
+                        &repo_id,
+                        &entries,
+                        &none,
+                        None,
+                        kind.content_kind(),
+                        d.clone(),
+                    ) {
+                        return Ok(Some(TargetRead::Readable(d)));
+                    }
+                }
                 return self.read_letter_target(repo, kind, d).await.map(Some);
             }
             let keys = self.lane_keys(repo).await?;
-            return Ok(Some(match open_with(&keys, None, kind.content_kind(), d) {
+            let entries = self.doc_entries(repo).await;
+            let repo_id = repo.scope()?.repo_id;
+            let stored = d.clone();
+            let read = self.open_read(&repo_id, &entries, &keys, None, kind.content_kind(), d);
+            // An issue sealed again after a maintainer made it public reads, for everyone, as the
+            // bundle published it (DESIGN §4.6: "readers show 'edited after it was made public'
+            // with the bundle's text"), members included, as the web shows it.
+            if kind == TargetKind::Issue {
+                if let Some(d) = self.published_issue(repo, &stored).await {
+                    return Ok(Some(TargetRead::Readable(d)));
+                }
+            }
+            return Ok(Some(match read {
                 Ok(d) => TargetRead::Readable(d),
                 Err(m) => TargetRead::MembersOnly(m),
             }));
@@ -4033,8 +4095,15 @@ impl<'a> Collab<'a> {
         let letters = self
             .letter_keys(repo, &docs.iter().collect::<Vec<_>>())
             .await?;
+        // a public repository's maintainers' bundles, read only when a sealed row is met
+        let entries = if repo.visibility == Visibility::Public && docs.iter().any(is_sealed) {
+            self.doc_entries(repo).await
+        } else {
+            Arc::default()
+        };
+        let repo_id = repo.scope()?.repo_id;
         for d in docs {
-            match open_with(&keys, letters.as_ref(), kind, d) {
+            match self.open_read(&repo_id, &entries, &keys, letters.as_ref(), kind, d) {
                 Ok(d) => out.rows.push(d),
                 Err(m) => out.members_only.push(m),
             }
@@ -6471,6 +6540,44 @@ impl<'a> Collab<'a> {
             .is_some_and(|want| want != audience && repo.visibility == Visibility::Public)
         {
             return Err(audience_fixed(doc_type, audience));
+        }
+        // after a maintainer made it public, its author's edit is public too (DESIGN §4.6)
+        if let Some(by) = self.bundle_covers(repo, kind, &stored).await {
+            if self
+                .requested_audience()
+                .is_some_and(|want| want != Audience::Public)
+            {
+                return Err(audience_fixed(doc_type, Audience::Public));
+            }
+            let mut changes = self
+                .bundled_edit(repo, kind, &stored, &changes, &by)
+                .await?;
+            let ck = content_kind_of(kind).ok_or(Error::NotFound)?;
+            let mut edited = stored.clone();
+            for (k, v) in &changes {
+                match v {
+                    Some(v) => edited.fields.insert(k.clone(), v.clone()),
+                    None => edited.fields.remove(k),
+                };
+            }
+            let me = self.signer_id()?;
+            if audience_edit(
+                repo.visibility,
+                &content_of(ck, &stored),
+                &content_of(ck, &edited),
+                &stored.owner_id,
+                &me,
+            ) != AudienceEdit::MakesPublic
+            {
+                return Err(audience_fixed(doc_type, Audience::Public));
+            }
+            for field in self.dead_references(repo, collab, &stored).await? {
+                changes.insert(field.to_string(), None);
+            }
+            return self
+                .engine()?
+                .replace_document_guarded(collab, doc_type, id, &changes, Some(revision))
+                .await;
         }
         let mut changes = if repo.visibility == Visibility::Private || is_sealed(&stored) {
             self.private_edit(repo, kind, &stored, &changes).await?

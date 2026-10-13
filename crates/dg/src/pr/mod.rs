@@ -1243,6 +1243,19 @@ async fn view(
         .filter(|c| crate::audience::marked(handle, c.audience))
         .map(|c| c.document_id.as_str())
         .collect();
+    // what maintainers made public (DESIGN §4.6)
+    let published = crate::audience::Published::of(
+        &collab,
+        comments
+            .iter()
+            .map(|c| c.document_id.as_str())
+            .chain(reviews.iter().map(|r| r.document_id.as_str()))
+            .chain(members_only.iter().map(|m| m.document_id.as_str())),
+    );
+    let audience_of: std::collections::BTreeMap<&str, forge_core::rules::v2::Audience> = comments
+        .iter()
+        .map(|c| (c.document_id.as_str(), c.audience))
+        .collect();
     let letters: std::collections::BTreeMap<&str, &forge_core::collab::v2::LetterInfo> = comments
         .iter()
         .filter_map(|c| c.letter.as_ref().map(|l| (c.document_id.as_str(), l)))
@@ -1442,6 +1455,8 @@ async fn view(
         "membersOnlyComments": placeholders.iter().map(|m| crate::audience::placeholder_json(m)).collect::<Vec<_>>(),
         "membersOnlyHidden": members_only.len(),
         "membersOnlyReviewsHidden": uncounted_reviews.len(),
+        "madePublic": comments.iter().map(|c| c.document_id.as_str()).chain(reviews.iter().map(|r| r.document_id.as_str())).filter_map(|id| Some((id.to_string(), Some(published.json(id)).filter(|j| !j.is_null())?))).collect::<serde_json::Map<_, _>>(),
+        "bundleAlerts": crate::audience::alerts_json(&collab.bundle_alerts()),
     });
     for extra in [standing, audience] {
         if let (Some(o), serde_json::Value::Object(extra)) = (out.as_object_mut(), extra) {
@@ -1460,6 +1475,7 @@ async fn view(
             .chain(rows.iter().map(|r| r.identity.as_str()))
             .chain(reviews.iter().map(|r| r.reviewer.as_str()))
             .chain(placeholders.iter().map(|m| m.author.as_str()))
+            .chain(published.people())
             .chain(bypasses.iter().map(|b| b.actor.as_str()))
             // who hid the thread or a review, for its "hidden by" line
             .chain(moderation.thread.iter().map(|h| h.by.as_str()))
@@ -1480,7 +1496,15 @@ async fn view(
             crate::audience::letter_to(&l.recipients, l.group, Some(me), &names)
         ),
         None if members_ids.contains(id) => " · members-only".to_string(),
-        None => String::new(),
+        None => {
+            let aud = audience_of
+                .get(id)
+                .copied()
+                .unwrap_or(forge_core::rules::v2::Audience::Public);
+            published
+                .line(id, aud, &who)
+                .map_or(String::new(), |l| format!(" · {l}"))
+        }
     };
     ctx.emit(
         out,
@@ -1651,6 +1675,9 @@ async fn view(
                 if made_public.contains_key(&r.document_id) {
                     println!("  Review text made public by {}", who(&r.reviewer));
                 }
+                if let Some(line) = published.line(&r.document_id, r.audience, &who) {
+                    println!("  {line}");
+                }
                 if let Some(h) = moderation.item(&r.document_id) {
                     // Still counted: hiding is display only (dismiss to stop it counting).
                     println!(
@@ -1690,6 +1717,9 @@ async fn view(
             }
             for note in &members_notes {
                 println!("\n{note}");
+            }
+            for line in crate::audience::alert_lines(&collab.bundle_alerts(), &who) {
+                println!("\n{line}");
             }
             if let Some(n) =
                 crate::fmt::event_values_note(v.log.hidden_values, v.log.plaintext_values)
@@ -1758,9 +1788,9 @@ fn check_word(state: forge_core::rules::v2::CheckState) -> &'static str {
 
 /// The threads under their file and line, then the general comments.
 fn print_conversations(conv: &threads::Conversations, mark: &dyn Fn(&str) -> String) {
-    // " · members-only" (or " · to bob and you" for a message to specific people) beside a
-    // comment's author, added here (never written into the comment: who wrote it is what the
-    // hunk-trust check reads)
+    // " · members-only", " · to bob and you" for a message to specific people, or who made it
+    // public, beside a comment's author, added here (never written into the comment: who wrote it
+    // is what the hunk-trust check reads)
     let mut last_path = "";
     for t in &conv.threads {
         if t.anchor.path != last_path {

@@ -18,6 +18,7 @@ import { RoleOracle, type Membership, type Role } from '../rules/v2'
 import { queryAllDocuments, type PlainDocument } from '../sdk'
 import { DOC, asIdentifierString, type RepoRef } from './contract'
 import { repoSource } from './source'
+import { membersInvalidated } from './members-events'
 
 /** The two membership document types: `maintainer`, and `writer` (whose `role` is writer, triage or reader). */
 const MEMBER_DOCS = [DOC.maintainer, DOC.writer] as const
@@ -156,6 +157,7 @@ export function seedMemberships(repo: RepoRef, network: Network, memberships: Me
 export function invalidateMembers(repo: RepoRef, network: Network = DEFAULT_NETWORK): void {
   membersCache.delete(membersKey(network, repo))
   membersInvalidatedAt = membersGeneration()
+  membersInvalidated(repo)
 }
 
 /**

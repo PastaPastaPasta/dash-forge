@@ -1,0 +1,26 @@
+{
+  "name": "bundle_open_members_review",
+  "description": "A review's text.",
+  "case": "make_public",
+  "rules": "v2",
+  "input": {
+    "op": "bundleOpen",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "doc": {
+      "type": "review",
+      "vis": "public",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "patchId": "4444444444444444444444444444444444444444444444444444444444444444",
+      "id": "cabdad88b6ee0675460bc62bbadf9c9636737724a7010f1159ff714e860b0888"
+    },
+    "enc": "03000102030405060708090a0b09cd070e622d12ef50c0b0e0eb2eb9321db57973797d09f90d2e03025be661dcc54833dfe82100f0012aa20a6eb56d3a898cfe6b009f13769f3116873457dc5b95eba251a75423034628377a368c757bdc1c2cd173b7cc702391cdcfbdadc9ff5a931c611d430911f0d0b78984d4370f",
+    "key": "6d31a85d5024f7902e765ed5c5fdbec7fcbe519af60f2b0a79807d0123173a5a"
+  },
+  "expected": {
+    "status": "readable",
+    "fields": {
+      "body": "Blocking: the token is logged."
+    }
+  }
+}

@@ -363,6 +363,21 @@ pub(crate) fn find_slot(
     sender_public: &[u8],
     reader: &Reader<'_>,
 ) -> Result<Option<(usize, ObjKeys)>, ()> {
+    Ok(find_slot_key(repo_id, block, n, sender_public, reader)?
+        .map(|(i, k_obj)| (i, ObjKeys::derive(repo_id, &k_obj))))
+}
+
+/// A reader's slot index and the raw `K_obj` it wraps.
+type SlotKey = (usize, Zeroizing<[u8; 32]>);
+
+/// [`find_slot`], returning the raw `K_obj` the slot wraps (checked against the full commitment).
+fn find_slot_key(
+    repo_id: &[u8; 32],
+    block: &[u8],
+    n: usize,
+    sender_public: &[u8],
+    reader: &Reader<'_>,
+) -> Result<Option<SlotKey>, ()> {
     let commit = &block[5..37];
     let slots = &block[37..37 + SLOT_LEN * n];
     for key in reader.keys {
@@ -380,9 +395,8 @@ pub(crate) fn find_slot(
             }
             let mut k_obj = Zeroizing::new([0u8; 32]);
             k_obj.copy_from_slice(&pt[15..]);
-            let obj = ObjKeys::derive(repo_id, &k_obj);
-            if ct_eq(obj.commit(), commit) {
-                return Ok(Some((i, obj)));
+            if ct_eq(ObjKeys::derive(repo_id, &k_obj).commit(), commit) {
+                return Ok(Some((i, k_obj)));
             }
         }
     }
@@ -456,6 +470,84 @@ pub fn open(
         slot,
         group,
     }))
+}
+
+/// `K_obj` of the letter `enc` as `reader`, one of its recipients, unwraps it: what a maintainer
+/// the letter was sent to publishes in a make-public bundle (DESIGN §4.6). The whole reader rule
+/// runs first ([`open`]), so `None` for a letter that does not open for `reader`: a letter the
+/// maintainer was not sent cannot be bundled by them.
+#[must_use]
+pub fn letter_obj_key(
+    repo_id: &[u8; 32],
+    header: &DocHeader,
+    enc: &[u8],
+    owner_keys: &[OwnerKey],
+    reader: &Reader<'_>,
+) -> Option<Zeroizing<[u8; 32]>> {
+    if !matches!(
+        open(repo_id, header, enc, owner_keys, reader),
+        LetterOpened::Readable(_)
+    ) {
+        return None;
+    }
+    let n = usize::from(enc[1]);
+    let sender_key_id = u32::from_be_bytes(enc[2..6].try_into().ok()?);
+    let sender_public = sender_key(owner_keys, sender_key_id)?;
+    let head = HEAD_LEN + SLOT_LEN * n;
+    find_slot_key(repo_id, &enc[1..head], n, sender_public, reader)
+        .ok()?
+        .map(|(_, k)| k)
+}
+
+/// Open the letter `enc` of the document `header` with a published per-object key `k_obj`
+/// (DESIGN §4.6, a maintainer's bundle), holding no recipient key: the framing, then the
+/// commitment `k_obj` derives against the one in `enc` **before** GCM (a mismatch is
+/// `CommitMismatch`: a lying entry), then GCM under `AD'`, then the recipient list as the writer
+/// rule makes it (`n` ids, the owner in slot 0, none twice; there is no reader slot to check).
+#[must_use]
+pub fn open_with_key(
+    repo_id: &[u8; 32],
+    header: &DocHeader,
+    enc: &[u8],
+    k_obj: &[u8; 32],
+) -> doc::Opened {
+    if !well_framed(header, enc) || !doc::bundles_kind(header.kind) {
+        return doc::Opened::Malformed;
+    }
+    let n = usize::from(enc[1]);
+    let head = HEAD_LEN + SLOT_LEN * n;
+    let obj = ObjKeys::derive(repo_id, k_obj);
+    if !ct_eq(obj.commit(), &enc[6..HEAD_LEN]) {
+        return doc::Opened::Unreadable(doc::Unreadable::CommitMismatch);
+    }
+    let Ok(ad) = letter_ad(repo_id, header, &enc[1..head]) else {
+        return doc::Opened::Malformed;
+    };
+    let (nonce, ct) = enc[head..].split_at(NONCE_LEN);
+    let Ok(pt) = Aes256Gcm::new(obj.doc_key().into())
+        .decrypt(Nonce::from_slice(nonce), Payload { msg: ct, aad: &ad })
+    else {
+        return doc::Opened::Unreadable(doc::Unreadable::BadTag);
+    };
+    let pt = Zeroizing::new(pt);
+    let Some(tlv::LetterTlv {
+        fields, recipients, ..
+    }) = tlv::parse_letter(&pt, header.kind)
+    else {
+        return doc::Opened::Malformed;
+    };
+    let unique = recipients
+        .iter()
+        .enumerate()
+        .all(|(i, r)| !recipients[..i].contains(r));
+    if recipients.len() != n
+        || recipients[0] != header.owner_id
+        || !unique
+        || !public_ref_names_match(header, &fields)
+    {
+        return doc::Opened::Malformed;
+    }
+    doc::Opened::Readable(Box::new(fields))
 }
 
 // --- sealed artifacts under a specific-people header (DFPK version 0x02) ---------------------

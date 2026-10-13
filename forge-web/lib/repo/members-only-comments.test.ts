@@ -67,8 +67,12 @@ describe('membersOnlyCommentCounts', () => {
       { id: id('unknown'), comments: null },
     ])
     expect([...got]).toEqual([[A, 2]])
-    expect(seen).toHaveLength(1)
-    expect(seen[0]?.where).toEqual([['targetId', 'in', [A, B].sort()]])
+    // one comment read; beside it, once per page, the repo's maintainers and their make-public
+    // bundles (a bundled comment is public, so not in the label)
+    const comments = seen.filter((q) => q.documentTypeName === 'comment')
+    expect(comments).toHaveLength(1)
+    expect(comments[0]?.where).toEqual([['targetId', 'in', [A, B].sort()]])
+    expect(seen.map((q) => q.documentTypeName).sort()).toEqual(['comment', 'maintainer', 'packManifest'])
   })
 
   it('counts what the thread page shows as a members-only placeholder: no letter, nothing without asMember', async () => {

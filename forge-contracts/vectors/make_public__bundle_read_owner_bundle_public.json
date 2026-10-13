@@ -1,0 +1,50 @@
+{
+  "name": "bundle_read_owner_bundle_public",
+  "description": "The repository's owner is a maintainer: their bundle counts.",
+  "case": "make_public",
+  "rules": "v2",
+  "input": {
+    "op": "bundleRead",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "visibility": "public",
+    "maintainers": [
+      "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"
+    ],
+    "bundles": [
+      {
+        "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "bytes": "44465256010001029a68370102a0b7296ccdc73da668530e8daff36d2ef53e8ccc54e83a6c0ea821000000017cd697eab0a0d58579c755ff10e3b24e64755c46df6f3c9fd33e8335fd7f1ce1"
+      }
+    ],
+    "docs": [
+      {
+        "doc": {
+          "type": "issue",
+          "vis": "public",
+          "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+          "epoch": 0,
+          "number": 7,
+          "id": "9a68370102a0b7296ccdc73da668530e8daff36d2ef53e8ccc54e83a6c0ea821"
+        },
+        "enc": "03000102030405060708090a0b0509e03d972f69352a14741ce54b415865c97d7c75531b8f21f8be7fccbe453bfaa76807fe1bc9f4e63cfdd3bb2fd9bd690c6fe2bcd6c34bbae141c0cc2cb19833cd4078740863c5e92a7056a588eb236d2ff4e49b1362edb7e579e4a15e7c01201e53161876d3bc0444d0468b6b625e",
+        "revision": 1
+      }
+    ]
+  },
+  "expected": {
+    "reads": [
+      {
+        "id": "9a68370102a0b7296ccdc73da668530e8daff36d2ef53e8ccc54e83a6c0ea821",
+        "revision": 1,
+        "state": "public",
+        "by": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "fields": {
+          "title": "Rotate the signing key",
+          "body": "See the runbook."
+        }
+      }
+    ],
+    "alerts": []
+  }
+}

@@ -37,8 +37,13 @@ The same rule as the web app's inbox and thread pages:
    "@alice posted a members-only comment on #12", "@bob approved #7 in a members-only review".
    Never quote an empty body, and never write "sealed" or "encrypted by" in a notice.
 4. **A members-only release or branch update** produces no notice.
+5. **A post a maintainer made public** (mixed-visibility DESIGN §4.6) notifies its author, and only
+   them: "@carol made bob's comment on issue #3 public", with the text, which is public now. Only
+   a bundle by a current maintainer or the owner counts; readers ignore anyone else's.
 
-`forge-relay` already applies rules 1, 2 and 4 to the events it hands to sinks and to forge-notify.
+`forge-relay` already applies rules 1, 2, 4 and 5 to the events it hands to sinks and to forge-notify
+(rule 5: an `edited` event marked `"dash_made_public": {"by": …}` per post, which forge-notify
+sends to the post's author as "participating").
 It marks members-only events with `"dash_members_only": true`: at the top level when the event's
 own document is members-only, and on the embedded `issue` or `pull_request` when that thread is
 (see "Members-only content" under Payloads in `crates/forge-relay/README.md`). A notice renderer

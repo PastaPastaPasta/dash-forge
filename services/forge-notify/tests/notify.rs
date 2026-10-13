@@ -446,6 +446,32 @@ async fn subscribe_confirm_route_unsubscribe_export_delete() {
         .text
         .contains("you took part in this conversation"));
 
+    // Bob, a maintainer, makes alice's members-only comment public (a make-public bundle, DESIGN
+    // §4.6): alice, its author, is told; the text it now shows is the excerpt.
+    let n = mails(&w).len();
+    let mut made = issue_comment_event(
+        &meta(),
+        "M1:C9",
+        &issue(BOB, ""),
+        "C9",
+        ALICE,
+        "my words, public now",
+    );
+    made.action = Some("edited");
+    made.payload["action"] = json!("edited");
+    made.payload["sender"] = meta().user_json(BOB);
+    made.payload[forge_relay::ingest::MADE_PUBLIC_KEY] = json!({ "by": BOB });
+    w.router.route(REPO, &made).await.unwrap();
+    let got = mails(&w);
+    assert_eq!(got.len(), n + 1);
+    let m = got.last().unwrap();
+    assert!(
+        m.subject.contains("comment on issue #3 public"),
+        "{}",
+        m.subject
+    );
+    assert!(m.text.contains("my words, public now"), "{}", m.text);
+
     // A review request, read from the addressee index (the first poll only sets the cursor).
     w.indexer.poll_addressed().await.unwrap();
     let n = mails(&w).len();
@@ -507,7 +533,7 @@ async fn subscribe_confirm_route_unsubscribe_export_delete() {
     );
     w.router.route(REPO, &e2).await.unwrap();
     assert_eq!(mails(&w).len(), n, "no mail after unsubscribing");
-    assert_eq!(w.pusher.sent.lock().unwrap().len(), 6, "push is unaffected");
+    assert_eq!(w.pusher.sent.lock().unwrap().len(), 7, "push is unaffected");
 
     // Export, then delete.
     let (_, v) = signed(&w, "data.export", json!({})).await;

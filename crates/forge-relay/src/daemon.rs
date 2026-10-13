@@ -1662,7 +1662,78 @@ async fn poll_repo_rest(
         }
         high = high.max(st.commit(r));
     }
+    if Instant::now() < deadline {
+        high = high.max(poll_made_public(shared, st, rf, base).await);
+    }
     (high, true)
+}
+
+/// Maintainers' make-public bundles (packManifest kind 7, its `kind (repoId, kind, $createdAt)`
+/// index): each post a bundle made public, as an `edited` event marked
+/// [`ingest::MADE_PUBLIC_KEY`], which forge-notify sends to the post's author (DESIGN §4.6).
+/// A writer's bundle, which readers ignore, makes nothing. A failed read is retried next cycle
+/// from the same cursor. Returns the newest `$createdAt` read.
+async fn poll_made_public(
+    shared: &Shared,
+    st: &mut RepoState,
+    rf: &QueryFilter,
+    base: Baseline,
+) -> u64 {
+    let prefix = [
+        rf.clone(),
+        QueryFilter::eq(
+            "kind",
+            FieldValue::integer(u64::from(forge_core::pack::KIND_MAKE_PUBLIC)),
+        ),
+    ];
+    let core = &shared.contracts.core;
+    let Some(r) = st
+        .read(
+            shared,
+            "makePublic".into(),
+            "packManifest",
+            core,
+            &prefix,
+            base,
+        )
+        .await
+    else {
+        return 0;
+    };
+    if !r.docs.is_empty() {
+        let repo = match resolve_repo(&shared.client, &st.meta.repo_id).await {
+            Ok(repo) => repo,
+            Err(e) => {
+                tracing::warn!(repo = %st.meta.repo_id, error = %e, "make-public bundles not read; retrying next cycle");
+                return 0;
+            }
+        };
+        let collab = forge_core::collab::v2::Collab::reader(&shared.client);
+        let mut events = Vec::new();
+        for d in &r.docs {
+            match collab.bundle_publications(&repo, d).await {
+                Ok(posts) => events.extend(posts.into_iter().map(|(kind, doc)| {
+                    ingest::translate_made_public(
+                        &st.meta,
+                        &d.id,
+                        forge_core::collab::v2::bundle_noun(kind),
+                        &doc,
+                        &d.owner_id,
+                        &st.targets,
+                        &st.closed,
+                    )
+                })),
+                Err(e) => {
+                    tracing::warn!(repo = %st.meta.repo_id, bundle = %d.id, error = %e, "a make-public bundle could not be read; retrying next cycle");
+                    return 0;
+                }
+            }
+        }
+        for e in events {
+            st.emit(shared, e);
+        }
+    }
+    st.commit(r)
 }
 
 /// Whether `d`, read from the `doc_type` stream, is a CI re-run request: a member `event` of
