@@ -3077,6 +3077,24 @@ mod tests {
         }
     }
 
+    /// `repoKey.mr` (mainnet L4): a wrap names its recipient's writer-row role, 1 for a
+    /// maintainer (whose operand checks no role) or a member this keyring does not list. Parity:
+    /// forge-web `wrapRoleCode`.
+    #[test]
+    fn a_wrap_names_its_recipients_role_code() {
+        let members = [
+            member([1; 32], Role::Maintainer),
+            member([1; 32], Role::Writer),
+            member([2; 32], Role::Triage),
+            member([3; 32], Role::Reader),
+        ];
+        let code = |id: [u8; 32]| wrap_role_code(&members, &platform::encode_identifier(id));
+        assert_eq!(code([1; 32]), 1, "the best row wins: a maintainer");
+        assert_eq!(code([2; 32]), 2);
+        assert_eq!(code([3; 32]), 3);
+        assert_eq!(code([9; 32]), 1, "unlisted: consensus answers for the row");
+    }
+
     fn wrap(owner: [u8; 32], member: [u8; 32], epoch: u32, key: Option<u8>) -> WrapDoc {
         WrapDoc {
             id: [u8::try_from(epoch).unwrap_or(0xff); 32],

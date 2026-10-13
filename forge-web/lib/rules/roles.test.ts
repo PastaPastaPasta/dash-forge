@@ -19,14 +19,15 @@ import {
 import type { Role } from './v2'
 
 describe('writerRoleOf (read tolerant)', () => {
-  it('absent or 1 is a writer, 2 triage, 3 reader; anything else grants nothing', () => {
+  it('absent or 1 is a writer, 2 triage, 3 reader, 4 a bot (mainnet); anything else grants nothing', () => {
     expect(writerRoleOf(undefined)).toBe('writer')
     expect(writerRoleOf(null)).toBe('writer')
     expect(writerRoleOf(1)).toBe('writer')
     expect(writerRoleOf(2n)).toBe('triage')
     expect(writerRoleOf(3)).toBe('reader')
     expect(writerRoleOf(0)).toBeNull()
-    expect(writerRoleOf(4)).toBeNull()
+    expect(writerRoleOf(4)).toBe('bot')
+    expect(writerRoleOf(5)).toBeNull()
     expect(writerRoleOf('writer')).toBeNull()
   })
 })

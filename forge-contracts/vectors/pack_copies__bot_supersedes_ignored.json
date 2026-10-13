@@ -1,0 +1,41 @@
+{
+  "name": "bot_supersedes_ignored",
+  "description": "A bot's verified manifest that names supersedes retires nothing: both packs are read, neither superseded (review-rev41 M-4; the mainnet contract refuses it anyway).",
+  "case": "pack_copies",
+  "rules": "v2",
+  "input": {
+    "copies": [
+      {
+        "id": "c1",
+        "packHash": "P1",
+        "ownerRole": "writer",
+        "createdAt": 10,
+        "verified": true
+      },
+      {
+        "id": "c2",
+        "packHash": "P2",
+        "ownerRole": "bot",
+        "createdAt": 20,
+        "verified": true,
+        "supersedes": [
+          "P1"
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "readOrder": [
+      {
+        "packHash": "P1",
+        "copyId": "c1",
+        "superseded": false
+      },
+      {
+        "packHash": "P2",
+        "copyId": "c2",
+        "superseded": false
+      }
+    ]
+  }
+}

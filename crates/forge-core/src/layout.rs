@@ -329,21 +329,22 @@ mod tests {
         }
     }
 
-    /// The four-contract map (D44) agrees with `build.py --mainnet`, type for type: forge-meta
-    /// holds [`META_TYPES`] and the other three keep the rest.
+    /// The four-contract map (D44) agrees with `build.py --on layout_meta` (the layout alone;
+    /// `--mainnet` adds types such as B1's `pushGrant` that clients learn later), type for
+    /// type: forge-meta holds [`META_TYPES`] and the other three keep the rest.
     #[test]
-    fn the_four_contract_map_matches_the_mainnet_build() {
+    fn the_four_contract_map_matches_the_layout_build() {
         let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../forge-contracts");
         let dir = tempfile::tempdir().expect("temp dir");
         let out = std::process::Command::new("python3")
             .arg(format!("{root}/schema/build.py"))
-            .args(["--mainnet", "--out"])
+            .args(["--on", "layout_meta", "--out"])
             .arg(dir.path())
             .output()
             .expect("python3 runs build.py");
         assert!(
             out.status.success(),
-            "build.py --mainnet: {}",
+            "build.py --on layout_meta: {}",
             String::from_utf8_lossy(&out.stderr)
         );
         let forge = ForgeIds::test_forge_meta();

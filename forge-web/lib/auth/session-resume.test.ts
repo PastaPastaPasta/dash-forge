@@ -397,7 +397,7 @@ describe('the controller', () => {
     expect(next.getState().resuming).toBe(true)
     expect(await next.resume()).toBe(true)
     expect(next.getState()).toMatchObject({ resuming: false, scope: 'signing' })
-    expect(next.getState().session?.grants).toEqual({ core: true, collab: true, community: true })
+    expect(next.getState().session?.grants).toEqual({ core: true, collab: true, community: true, meta: true })
     expect(next.writeAuth!.getSigningKeyWif(FORGE.collab)).toBe(WIF)
     expect(next.unlockScope()).toBe('signing')
   }, 30_000)
@@ -592,12 +592,12 @@ describe('the controller', () => {
     const hint = rec.hint as { session: { grants: unknown }; scopes: { main: unknown } }
     await idbPut('vault', SESSION_KEY, {
       ...rec,
-      hint: { ...hint, session: { ...hint.session, grants: { core: true, collab: true, community: true } }, scopes: { main: { core: true, collab: true, community: true, meta: true, unbounded: false }, extra: [] } },
+      hint: { ...hint, session: { ...hint.session, grants: { core: true, collab: true, community: true, meta: true } }, scopes: { main: { core: true, collab: true, community: true, meta: true, unbounded: false }, extra: [] } },
     })
     releaseUnlocked()
     const next = make()
     await next.resume()
-    await vi.waitFor(() => expect(next.getState().session?.grants).toEqual({ core: true, collab: false, community: false }))
+    await vi.waitFor(() => expect(next.getState().session?.grants).toEqual({ core: true, collab: false, community: false, meta: true }))
   }, 30_000)
 
   it('a discarded instance (React StrictMode double construct) holds no listener', async () => {

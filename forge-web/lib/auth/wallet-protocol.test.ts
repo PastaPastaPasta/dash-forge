@@ -209,6 +209,18 @@ describe('which keys Forge signs with', () => {
     expect(contractKind(three, 'SomeOtherContract')).toBeNull()
   })
 
+  it('scopes keys over four contracts (D44): forge-meta is a grant of its own', () => {
+    const four = { ...FORGE, community: 'CommunityContractId1111111111111111111111111', meta: 'MetaContractId11111111111111111111111111111' }
+    expect(keyScope(bound({ $type: 'singleContract', id: four.meta }), four)).toEqual({ core: false, collab: false, community: false, meta: true, unbounded: false })
+    expect(keyScope(bound({ $type: 'singleContract', id: four.core }), four)).toEqual({ core: true, collab: false, community: false, meta: false, unbounded: false })
+    expect(keyScope(bound({ $type: 'contractGroup', id: four.group }), four)).toEqual({ core: true, collab: true, community: true, meta: true, unbounded: false })
+    const core = keyScope(bound({ $type: 'singleContract', id: four.core }), four)!
+    expect(scopeCovers(core, four, four.meta)).toBe(false)
+    expect(contractKind(four, four.meta)).toBe('meta')
+    expect(nextGrant({ collab: true, community: true, meta: false })).toBe('meta')
+    expect(nextGrant({ collab: true, community: true, meta: true })).toBeNull()
+  })
+
   it('flags a key without a budget or an expiry as unlimited', () => {
     expect(isUnlimited({ limits: null })).toBe(true)
     expect(isUnlimited({ limits: { remaining: 1n, total: 1n, expiresAt: null } })).toBe(true)
