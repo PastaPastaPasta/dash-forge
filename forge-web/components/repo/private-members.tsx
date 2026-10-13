@@ -34,6 +34,7 @@ import {
   hasUsableEncryptionKey,
   planRotation,
   removalEffect,
+  type PrivateWriteContext,
   type RemovalEffect,
   removalCost,
   removePrivateMember,
@@ -53,7 +54,8 @@ import { Author } from '@/components/author'
 import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/input'
 import { ConfirmDialog } from '@/components/confirm-dialog'
-import { EnvironmentsRemoval } from '@/components/repo/environments-content'
+import { MemberEnvOutcomeView, MemberEnvPlanView, useMemberEnvFlow } from '@/components/repo/member-env-plan'
+import type { MemberChange } from '@/lib/env/member-change'
 import { shortId } from '@/lib/utils'
 
 /** The spec's removal warning, verbatim, with the member's name. */
@@ -108,6 +110,11 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
   const [steps, setSteps] = useState<string[]>([])
 
   const trimmed = memberId.trim()
+  // Environments (DESIGN §4.5, D34): an add or a removal saves the ones whose people it changes
+  // again, planned and priced before signing, made around the change.
+  const envChange: MemberChange | null = adding ? { kind: 'grant', member: trimmed, role } : removing !== null ? { kind: 'revoke', member: removing.member, role: removing.role } : null
+  const envFlow = useMemberEnvFlow(home, envChange, removing !== null && holdsMembersKey(removing.role))
+  const planned = (): PrivateWriteContext | null => (write.context === null ? null : { ...write.context, environmentsPlanned: envFlow.plan !== null })
   const idError = useMemo(() => {
     if (trimmed === '') return null
     try {
@@ -233,7 +240,7 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
           {keyCheck.error ? <p className="mt-1 text-[12px] text-danger-700 dark:text-danger-400">Couldn&apos;t read that identity: {keyCheck.error}</p> : null}
           {awaiting !== trimmed ? <ConsentCheck identity={trimmed !== '' && idError === null ? trimmed : null} check={consent} /> : null}
           {locked ? (
-            <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">Unlock with your encryption key (Settings → Private repos) to add or remove members.</p>
+            <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">Unlock with your encryption key (Settings → Members-only and private content) to add or remove members.</p>
           ) : null}
           <Invitations
             repo={repo}
@@ -259,12 +266,16 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
         title={`Add with ${ROLE_LABEL[role]} access`}
         toast={namedAction(membershipTitle('grant', role))}
         description={`Gives ${shortId(trimmed)} ${ROLE_LABEL[role]} access and shares the repo's key with them.${role === 'reader' ? ' With Read access they can read the repo and its history, open issues and pull requests, and comment, but not push or approve.' : ''}`}
-        cost={addMemberCost(role)}
-        confirmLabel="Sign & add"
+        cost={envFlow.cost(addMemberCost(role))}
+        confirmLabel={envFlow.confirmLabel('Sign & add', 'add')}
+        blocked={envFlow.blocked}
         onConfirm={async (intent) => {
-          if (write.context === null) throw new Error('unlock with your encryption key first')
+          const context = planned()
+          if (context === null) throw new Error('unlock with your encryption key first')
           try {
-            await addPrivateMember(write.context, trimmed, role, intent)
+            await envFlow.run(async () => {
+              await addPrivateMember(context, trimmed, role, intent)
+            })
             setMemberId('')
             setAwaiting(null)
           } catch (e) {
@@ -277,7 +288,9 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
             write.done()
           }
         }}
-      />
+      >
+        <MemberEnvPlanView flow={envFlow} />
+      </ConfirmDialog>
       <ConfirmDialog
         open={removing !== null}
         onClose={() => setRemoving(null)}
@@ -296,29 +309,32 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
         cost={
           removing === null
             ? null
-            : removalPlan.plan === null && memberDocOf(removing.role) === 'writer'
-              ? previewDelete(memberDocOf(removing.role))
-              : removalCost(session, identity ?? '', removing.member, removing.role, removalPlan.plan)
+            : envFlow.cost(
+                removalPlan.plan === null && memberDocOf(removing.role) === 'writer'
+                  ? previewDelete(memberDocOf(removing.role))
+                  : removalCost(session, identity ?? '', removing.member, removing.role, removalPlan.plan),
+              )
         }
-        confirmLabel="Sign & remove"
+        confirmLabel={envFlow.confirmLabel('Sign & remove', 'remove')}
+        blocked={envFlow.blocked}
         onConfirm={async (intent) => {
-          if (write.context === null || removing === null) throw new Error('unlock with your encryption key first')
+          const context = planned()
+          if (context === null || removing === null) throw new Error('unlock with your encryption key first')
           if (removalPlan.error !== null) throw new Error(removalPlan.error)
+          const leaving = removing
           try {
-            await removePrivateMember(write.context, removing.member, removing.role, intent, (s) => setSteps((prev) => [...prev, stepText(s)]))
+            await envFlow.run(async () => {
+              await removePrivateMember(context, leaving.member, leaving.role, intent, (s) => setSteps((prev) => [...prev, stepText(s)]))
+            })
           } finally {
             write.done()
           }
         }}
       >
-        {/* What they could read in the repo's environments (every member holds the repo key). */}
-        {removing !== null && removing.role !== 'maintainer' ? <EnvironmentsRemoval
-            home={home}
-            member={removing.member}
-            heldMembersKey={holdsMembersKey(removing.role)}
-            staysMaintainer={removalEffect(session.members, removing.member, removing.role) === 'none'}
-          /> : null}
+        {/* The environments the removal saves again, what it can't, and what they could read. */}
+        <MemberEnvPlanView flow={envFlow} />
       </ConfirmDialog>
+      <MemberEnvOutcomeView home={home} flow={envFlow} />
       {removing?.role === 'maintainer' ? <VanishingNote session={session} leaving={removing.member} /> : null}
       {removing !== null && removalPlan.error !== null ? <p className="text-[12px] text-danger-700 dark:text-danger-400">{removalPlan.error}</p> : null}
       {removing !== null && removalPlan.plan !== null && removalPlan.plan.unreachable.length > 0 ? (

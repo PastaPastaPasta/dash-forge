@@ -515,8 +515,8 @@ pub async fn register_and_store(
 /// The identity's `ENCRYPTION` keys to store beside a new limited key (QW2-004): those the
 /// `sources` hold (the master identity, which may derive them from its recovery words, and the
 /// key in use, so a replacement never drops one) that match the identity's keys on chain. A
-/// private repository then opens with the limited key, as with the web app's "Enable private
-/// repos", instead of needing the master key on disk. None with `--signing-only`, nor with
+/// private repository then opens with the limited key, as with the web app's "Read and write
+/// members-only and private content", instead of needing the master key on disk. None with `--signing-only`, nor with
 /// `--insecure-plaintext` (it would be written in the clear), nor on a network with no
 /// forge-v2 contracts.
 pub fn encryption_to_store(

@@ -57,7 +57,7 @@ export function PrivateRepoState({
             <>
               Private: contents are encrypted for members. Add your encryption key to this browser in{' '}
               <Link href={PRIVATE_REPOS_SETTINGS} className="text-forge-700 underline dark:text-forge-400">
-                Settings → Private repos
+                Settings → Members-only and private content
               </Link>{' '}
               to read them.
             </>
