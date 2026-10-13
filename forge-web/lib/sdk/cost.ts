@@ -286,6 +286,26 @@ export const KEY_RENEW_CREDITS = 28_000_000
 export const KEY_ADD_FLOOR_CREDITS = 26_500_000
 
 /**
+ * Registering a DPNS username that is not contested (#452): a `preorder` and a `domain` document
+ * on the DPNS contract, paid from the identity balance (the identity's own unbound key signs, not
+ * this browser's budgeted one). Measured: 71,000,000 credits for a 9-character name on bonsia
+ * (QW2-080) and 72.6M (0.000726 DASH) for `qa5c-newbie-7x9` on sakura (qa5 evidence c/notes.md).
+ * A 63-character label stores about 110 more bytes (the label and its normalized form, each
+ * indexed), a few million credits more: the preview's bound is `dg auth name register`'s
+ * (`crates/dg/src/auth/mod.rs` `DPNS_ESTIMATE_CREDITS`), the low end the measured charge.
+ */
+export const NAME_REGISTER_CREDITS = 100_000_000
+/** The least a username registration was measured to cost (see {@link NAME_REGISTER_CREDITS}). */
+export const NAME_REGISTER_FLOOR_CREDITS = 71_000_000
+/**
+ * What a contested username pays into its masternode vote from protocol version 14: 0.1 DASH
+ * (platform v5.0.0-beta.3 `rs-platform-version/src/version/fee/vote_resolution_fund_fees/v2.rs`),
+ * doubling once a contest holds 250 contenders. Quoted only to explain why the web does not
+ * enter contests; nothing here pays it.
+ */
+export const NAME_CONTEST_FUND_CREDITS = 10_000_000_000
+
+/**
  * What copy quotes for "an issue" (L-73): the preview a newcomer's first issue gets — a short
  * title and a paragraph, with every first-write surcharge, as the New issue form shows before
  * it is signed (so the sign-in sheet and the form never disagree). A steady-state issue by an

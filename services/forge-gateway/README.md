@@ -24,7 +24,7 @@ Code map:
 | `src/git_http.rs` | Smart HTTP through `git http-backend`, streamed. |
 | `src/server.rs` | Routes, resolution, limits, badges, feeds, previews, health and metrics. |
 | `src/limits.rs`, `src/cache.rs` | Per-client token buckets and concurrency; the render cache. |
-| `src/badge.rs`, `src/feed.rs`, `src/og.rs` | Badge SVG and shields JSON; Atom; preview cards (resvg). |
+| `src/badge.rs`, `src/feed.rs`, `src/og.rs` | Badge SVG and shields JSON; Atom; share links and their preview cards (resvg). |
 | `src/wake.rs` | forge-relay wake stream client (`forge-wake-v1`). |
 | `tests/gateway.rs` | End to end with a stub upstream: plain `git` clones, fetches, push refused, private refused, Platform down, a repository proved gone, restarts, eviction, limits. |
 

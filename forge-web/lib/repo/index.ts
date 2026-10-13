@@ -45,6 +45,7 @@ export {
   resolveAnyRepoWith,
   isIdentifier,
   resolveOwner,
+  seedOwner,
   toRepoDoc,
   repoRefOf,
   type RepoAddressParams,
@@ -188,6 +189,7 @@ export {
   type IssueSelection,
   type RowFilters,
 } from './issue-index'
+export { coveredPushes, type BranchPush } from './branch-pulls'
 export {
   openPullsOnBranch,
   pullMilestoneItems,
