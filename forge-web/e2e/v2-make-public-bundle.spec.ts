@@ -80,18 +80,25 @@ async function signedInAs(browser: Browser, name: string): Promise<Page> {
   return page
 }
 
-/** Open a thread and, for a member whose tab holds the key locked, unlock it inline. */
+/**
+ * Open a thread and, for a member whose tab holds the key locked, unlock it inline: an offer on a
+ * public thread, or the form a members-only issue shows in place of its text.
+ */
 async function openThread(page: Page, path: string, readable: string): Promise<void> {
   await page.goto(path, { waitUntil: 'domcontentloaded' })
   await waitForRepoResolved(page, 120_000)
   const offer = page.getByTestId('members-only-unlock')
+  const form = page.getByRole('main').getByLabel('Passphrase')
   const text = page.getByText(readable).first()
-  await expect(offer.or(text).first()).toBeVisible({ timeout: 120_000 })
+  await expect(offer.or(form).or(text).first()).toBeVisible({ timeout: 120_000 })
   if (await offer.isVisible()) {
     await offer.click()
     const panel = page.getByTestId('members-only-unlock-panel')
     await panel.getByLabel('Passphrase').fill(PASSPHRASE)
     await panel.getByRole('button', { name: /^unlock$/i }).click()
+  } else if (await form.isVisible()) {
+    await form.fill(PASSPHRASE)
+    await page.getByRole('main').getByRole('button', { name: /^unlock$/i }).click()
   }
   await expect(text).toBeVisible({ timeout: 120_000 })
 }
@@ -121,15 +128,17 @@ test("maintainer: makes a reader's members-only comment public", async ({ browse
   const page = await signedInAs(browser, MAINTAINER)
   await openThread(page, url(ISSUE), MARKER)
   const card = page.getByTestId('timeline-comment').filter({ hasText: MARKER })
-  await expect(card).toHaveAttribute('data-audience', 'members')
-  const sent = broadcasts(page)
-  await card.getByTestId('make-others-public').click()
-  const dialog = page.getByRole('dialog', { name: 'Make 1 post public?' })
-  await expect(dialog).toContainText(/Words by \S+ become public\. They'll be notified\..*This can't be undone\./, { timeout: 120_000 })
-  await shot(page, 'maintainer-comment-dialog')
-  expect(sent).toEqual([])
-  // the quote check may warn (the reader's comments share words): the button then says so
-  await confirm(dialog)
+  // A rerun against the same repo finds it public already (a bundle can't be undone).
+  if ((await card.getAttribute('data-audience')) === 'members') {
+    const sent = broadcasts(page)
+    await card.getByTestId('make-others-public').click()
+    const dialog = page.getByRole('dialog', { name: 'Make 1 post public?' })
+    await expect(dialog).toContainText(/Words by \S+ become public\. They'll be notified\..*This can't be undone\./, { timeout: 120_000 })
+    await shot(page, 'maintainer-comment-dialog')
+    expect(sent).toEqual([])
+    // the quote check may warn (the reader's comments share words): the button then says so
+    await confirm(dialog)
+  }
   const after = page.getByTestId('timeline-comment').filter({ hasText: MARKER })
   await expect(after).toHaveAttribute('data-audience', 'public', { timeout: 240_000 })
   await expect(after.getByTestId('made-public-by')).toBeVisible()

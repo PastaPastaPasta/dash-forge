@@ -644,27 +644,12 @@ impl Collab<'_> {
             };
             let mut revisions = Vec::new();
             if history && kind == DocKind::Issue && !letter {
-                let mut old = self
-                    .client
-                    .fetch_document_history(&collab, DOC_ISSUE, &d.id, MAX_HISTORY)
-                    .await?;
-                old.retain(|h| revision_of(h) < revision_of(&d) && is_sealed(h));
-                for mut h in old {
-                    // a history row is the same document: its creation stays the current one's
-                    if h.created_at_block_height.is_none() {
-                        h.created_at_block_height = d.created_at_block_height;
-                    }
-                    // an earlier revision a bundle published already is not published twice
-                    if matches!(
-                        self.outcome(&repo_id, &entries, kind, &h),
-                        Outcome::Public(..)
-                    ) {
-                        continue;
-                    }
-                    if let Ok(k) = self.post_key(repo, &keys, kind, &h).await {
-                        plan.entries.push((entry_kind, target, revision_of(&h), k));
-                        revisions.push(revision_of(&h));
-                    }
+                for (revision, k) in self
+                    .earlier_keys(repo, &collab, &repo_id, &entries, &keys, &d)
+                    .await?
+                {
+                    plan.entries.push((entry_kind, target, revision, k));
+                    revisions.push(revision);
                 }
             }
             plan.entries
@@ -707,6 +692,43 @@ impl Collab<'_> {
             .into());
         }
         Ok(plan)
+    }
+
+    /// The keys of members-only issue `d`'s earlier sealed revisions the signer reads as a member
+    /// (Platform keeps an issue's history), oldest first, leaving out those a bundle published
+    /// already.
+    async fn earlier_keys(
+        &self,
+        repo: &RepoRef,
+        collab: &platform::LoadedContract,
+        repo_id: &[u8; 32],
+        entries: &DocEntries,
+        keys: &DocKeys,
+        d: &FetchedDocument,
+    ) -> Result<Vec<(u32, EpochKey)>> {
+        let mut old = self
+            .client
+            .fetch_document_history(collab, DOC_ISSUE, &d.id, MAX_HISTORY)
+            .await?;
+        old.retain(|h| revision_of(h) < revision_of(d) && is_sealed(h));
+        let mut out = Vec::new();
+        for mut h in old {
+            // a history row is the same document: its creation stays the current one's
+            if h.created_at_block_height.is_none() {
+                h.created_at_block_height = d.created_at_block_height;
+            }
+            // an earlier revision a bundle published already is not published twice
+            if matches!(
+                self.outcome(repo_id, entries, DocKind::Issue, &h),
+                Outcome::Public(..)
+            ) {
+                continue;
+            }
+            if let Ok(k) = self.post_key(repo, keys, DocKind::Issue, &h).await {
+                out.push((revision_of(&h), k));
+            }
+        }
+        Ok(out)
     }
 
     /// Write the planned bundle: its bytes stored on Platform with a kind-7 manifest. Returns

@@ -19,6 +19,7 @@ import { base58Encode, decodeIdentifier } from '../auth/base58'
 import type { ForgeIds } from '../deployments'
 import { ENTRY_COMMENT, ENTRY_ISSUE, ENTRY_REVIEW, parseBundle, readRevision, type Bundle, type BundleEntry } from '../private'
 import { DOC, asIdentifierString, type RepoRef } from '../repo/contract'
+import { revisionOf } from '../repo/made-public'
 import { readMaintainers } from '../repo/members'
 import { toManifest } from '../repo/packs'
 import { storedPrivateDoc } from '../repo/private-content'
@@ -47,12 +48,6 @@ interface NamedPost {
   readonly author: string
   /** The issue or PR it is on (itself for an issue). */
   readonly thread: string
-}
-
-/** A document's `$revision` (1 when not recorded, as `lib/repo/made-public.ts` reads it). */
-function revisionOf(doc: PlainDocument): number {
-  const r = doc['$revision']
-  return typeof r === 'number' && r > 0 ? r : typeof r === 'bigint' ? Number(r) : 1
 }
 
 /**

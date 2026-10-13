@@ -172,7 +172,10 @@ export function docEntries(isPublic: boolean, maintainers: Iterable<PrivateId>, 
       for (const e of parsed.entries) {
         if (e.kind !== ENTRY_COMMENT && e.kind !== ENTRY_ISSUE && e.kind !== ENTRY_REVIEW) continue
         const k = `${e.kind}:${bytesToHex(e.target)}`
-        byTarget.set(k, [...(byTarget.get(k) ?? []), { by: b.owner, revision: e.revision, key: e.key }])
+        const list = byTarget.get(k)
+        const entry: DocEntry = { by: b.owner, revision: e.revision, key: e.key }
+        if (list === undefined) byTarget.set(k, [entry])
+        else list.push(entry)
       }
     }
   }

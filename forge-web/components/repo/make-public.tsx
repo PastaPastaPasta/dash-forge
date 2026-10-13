@@ -17,6 +17,7 @@ import { useAuth } from '@/contexts/auth-context'
 import { useAsync } from '@/hooks/use-async'
 import { quotedMembersPost, quotedMembersPostExcept, type MembersPostKind } from '@/lib/repo/members-texts'
 import {
+  NOT_MAINTAINER,
   bundleCredits,
   planMakePublicBundle,
   writeMakePublicBundle,
@@ -117,7 +118,7 @@ export function bundleable(audience: string | undefined): boolean {
 }
 
 /** Someone else's post, for a reader who is not a maintainer: the §10 words in the dialog that opens in place of a plan. */
-export const ASK_A_MAINTAINER = "Only maintainers can make other people's posts public. Ask a maintainer"
+export const ASK_A_MAINTAINER = NOT_MAINTAINER
 
 /** A post's kind in words. */
 function noun(type: BundledPost['type'] | BundleRequest['type']): MembersPostKind {

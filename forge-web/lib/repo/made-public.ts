@@ -53,7 +53,7 @@ const NONE: DocEntries = { size: 0, ofDoc: () => [] }
 
 const cache = new Map<string, { at: number; promise: Promise<DocEntries> }>()
 
-const keyOf = (repo: RepoRef): string => `${repo.forge.core}:${repo.repoId}`
+const keyOf = (repo: Pick<RepoRef, 'forge' | 'repoId'>): string => `${repo.forge.core}:${repo.repoId}`
 
 /**
  * The honoured document entries of public `repo`'s make-public bundles (none for a private
@@ -81,14 +81,14 @@ export function repoBundleEntries(sdk: EvoSDK, repo: RepoRef): Promise<DocEntrie
 
 /** Forget `repo`'s bundles (this tab wrote one, or changed its members): the next read reads them again. */
 export function invalidateRepoBundles(repo: Pick<RepoRef, 'forge' | 'repoId'>): void {
-  cache.delete(`${repo.forge.core}:${repo.repoId}`)
+  cache.delete(keyOf(repo))
 }
 
 // A maintainer removed through this tab: their bundles stop counting at once.
 onMembersInvalidated(invalidateRepoBundles)
 
-/** A document's `$revision` (1 when not recorded). */
-function revisionOf(doc: PlainDocument): number {
+/** A document's `$revision` (1 when not recorded; the same as `./issues`' `revisionOf`, which imports this module). */
+export function revisionOf(doc: PlainDocument): number {
   const r = doc['$revision']
   return typeof r === 'number' && r > 0 ? r : typeof r === 'bigint' ? Number(r) : 1
 }

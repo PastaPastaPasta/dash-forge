@@ -46,7 +46,7 @@ import { asIdentifierString, withoutSessions, type RepoRef } from './contract'
 import { invalidateRepoFeed } from './issues'
 import { LONG_BODY_MANIFEST_CREDITS } from './long-body'
 import { MakePublicRefusedError } from './make-public-writes'
-import { bundledFields, invalidateRepoBundles, readDocumentHistory } from './made-public'
+import { bundledFields, invalidateRepoBundles, readDocumentHistory, revisionOf } from './made-public'
 import { readMaintainers } from './members'
 import { forgetMembersTexts } from './members-texts'
 import { forgetStoredDoc, noteAudience } from './members-writes'
@@ -118,19 +118,13 @@ export function bundleCredits(entries: number): number {
   return LONG_BODY_MANIFEST_CREDITS + estimateChunkCredits(bundleBytes(entries))
 }
 
-const NOT_MAINTAINER = "Only maintainers can make other people's posts public. Ask a maintainer"
+export const NOT_MAINTAINER = "Only maintainers can make other people's posts public. Ask a maintainer"
 
 /** The stored `type` document `id` of `repo`, read now (one proof-checked read), or null. */
 async function readNow(sdk: EvoSDK, repo: RepoRef, type: string, id: string): Promise<PlainDocument | null> {
   const { documents } = await queryDocumentsWithProof(sdk, { dataContractId: contractOf(repo.forge, type), documentTypeName: type, where: [['$id', '==', id]], limit: 1 })
   const doc = documents[0]
   return doc !== undefined && asIdentifierString(doc['repoId']) === repo.repoId ? doc : null
-}
-
-/** A document's `$revision` (1 when not recorded). */
-function revisionOf(doc: PlainDocument): number {
-  const r = doc['$revision']
-  return typeof r === 'number' && r > 0 ? r : typeof r === 'bigint' ? Number(r) : 1
 }
 
 /** Whether opened `fields` carry a text that continues in a separate artifact (a long body's trailer). */
@@ -162,6 +156,12 @@ async function keySession(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef): Promise<
   return loadPrivateSessionUncached(sdk, withoutSessions(repo), auth.network, auth.identityId, sessionUnwrapper(ops))
 }
 
+/** The members-key per-object key of sealed `stored` under the epoch's key in `session`, or null. */
+async function membersKeyOf(session: PrivateSession, stored: StoredPrivateDoc): Promise<Uint8Array | null> {
+  const keys = session.resolution.keys.get(stored.epoch)
+  return keys === undefined ? null : membersObjKey(keys, stored, stored.enc)
+}
+
 /** A post's key as the signer reads it, and its text; or why it is left out. */
 type PostKey = { readonly key: Uint8Array; readonly fields: DocFields; readonly recipients: number | null } | { readonly why: LeftOutWhy }
 
@@ -176,8 +176,7 @@ async function postKey(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, session: Pri
     const opened = await openContent(stored, session.ctx)
     if (opened.status !== 'readable') return { why: 'unreadable' }
     if (continued(opened.fields)) return { why: 'longBody' }
-    const keys = session.resolution.keys.get(stored.epoch)
-    const key = keys === undefined ? null : await membersObjKey(keys, stored, stored.enc)
+    const key = await membersKeyOf(session, stored)
     return key === null ? { why: 'unreadable' } : { key, fields: opened.fields, recipients: null }
   }
   if (stored.enc[0] === V4) {
@@ -252,6 +251,7 @@ async function plan(
         leave(got.why)
         continue
       }
+      const current = revisionOf(doc)
       const revisions: number[] = []
       let earlier = 0
       try {
@@ -260,22 +260,22 @@ async function plan(
         // left out like the current one when its text continues in a members-only artifact.
         if (r.type === 'issue' && got.recipients === null && session !== null) {
           const old = (await readDocumentHistory(sdk, repo, 'issue', r.id).catch(() => [] as PlainDocument[])).filter(
-            (h) => revisionOf(h) < revisionOf(doc) && isSealedDoc(h),
+            (h) => revisionOf(h) < current && isSealedDoc(h),
           )
           for (const h of old) {
-            const row: PlainDocument = { ...doc, ...h, $id: doc['$id'], $ownerId: doc['$ownerId'], $revision: revisionOf(h) }
+            const revision = revisionOf(h)
+            const row: PlainDocument = { ...doc, ...h, $id: doc['$id'], $ownerId: doc['$ownerId'], $revision: revision }
             if ((await bundledFields(sdk, repo, 'issue', row)) !== null) continue
             const s = storedPrivateDoc('issue', row, 'public')
             if (s === null) continue
             const opened = await openContent(s, session.ctx)
             if (opened.status !== 'readable' || continued(opened.fields)) continue
-            const keys = session.resolution.keys.get(s.epoch)
-            const key = keys === undefined ? null : await membersObjKey(keys, s, s.enc)
+            const key = await membersKeyOf(session, s)
             if (key === null) continue
             earlier += 1
             if (history) {
-              take({ kind, target: stored.id, revision: revisionOf(h), key })
-              revisions.push(revisionOf(h))
+              take({ kind, target: stored.id, revision, key })
+              revisions.push(revision)
             } else key.fill(0)
           }
         }
@@ -284,8 +284,8 @@ async function plan(
         got.key.fill(0)
         throw e
       }
-      take({ kind, target: stored.id, revision: revisionOf(doc), key: got.key })
-      revisions.push(revisionOf(doc))
+      take({ kind, target: stored.id, revision: current, key: got.key })
+      revisions.push(current)
       earlierTotal += earlier
       posts.push({
         type: r.type,
