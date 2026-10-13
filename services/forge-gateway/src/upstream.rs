@@ -773,7 +773,7 @@ mod tests {
         ];
         let skipped = std::collections::BTreeSet::from([[3u8; 32]]);
         let got = git_packs(&manifests, &skipped);
-        let listed: Vec<(String, u64, u64)> = got
+        let listed: Vec<(String, usize, u64)> = got
             .iter()
             .map(|p| (p.pack_hash.clone(), p.copies, p.size_bytes))
             .collect();
