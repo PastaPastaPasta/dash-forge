@@ -1235,6 +1235,56 @@ mod tests {
         assert_eq!(e.payload["issue"]["number"], 0);
     }
 
+    /// A post a maintainer's bundle made public (DESIGN §4.6): `edited`, the maintainer as
+    /// sender, the post's author as its user, its text as everyone now reads it, and the mark.
+    #[test]
+    fn a_post_made_public_is_an_edited_event_marked_by_its_maintainer() {
+        let empty = BTreeSet::new();
+        let c = doc(
+            "c1",
+            "BOB",
+            vec![
+                ("targetId", FieldValue::identifier([7; 32])),
+                ("body", FieldValue::text("now public")),
+            ],
+        );
+        let t = targets([7; 32], target(false, 42));
+        let e = translate_made_public(&meta(), "M1", "comment", &c, "MAINT", &t, &empty).unwrap();
+        assert_eq!((e.event, e.action), ("issue_comment", Some("edited")));
+        assert_eq!(e.payload["sender"]["login"], "MAINT");
+        assert_eq!(e.payload["comment"]["user"]["login"], "BOB");
+        assert_eq!(e.payload["comment"]["body"], "now public");
+        assert_eq!(e.payload[MADE_PUBLIC_KEY]["by"], "MAINT");
+        assert_eq!(e.source_doc_id, "M1:c1");
+        // a comment on an unknown thread, a review of an issue and an unknown kind: none
+        assert!(translate_made_public(
+            &meta(),
+            "M1",
+            "comment",
+            &c,
+            "MAINT",
+            &BTreeMap::new(),
+            &empty
+        )
+        .is_none());
+        let r = doc(
+            "rv1",
+            "ALICE",
+            vec![
+                ("patchId", FieldValue::identifier([7; 32])),
+                ("verdict", FieldValue::integer(3)),
+                ("body", FieldValue::text("looks right")),
+            ],
+        );
+        assert!(translate_made_public(&meta(), "M1", "review", &r, "MAINT", &t, &empty).is_none());
+        assert!(translate_made_public(&meta(), "M1", "patch", &c, "MAINT", &t, &empty).is_none());
+        let pr = targets([7; 32], target(true, 8));
+        let e = translate_made_public(&meta(), "M1", "review", &r, "MAINT", &pr, &empty).unwrap();
+        assert_eq!(e.event, "pull_request_review");
+        assert_eq!(e.payload["review"]["user"]["login"], "ALICE");
+        assert_eq!(e.payload["review"]["body"], "looks right");
+    }
+
     #[test]
     fn review_translates_with_its_pr() {
         let r = doc(

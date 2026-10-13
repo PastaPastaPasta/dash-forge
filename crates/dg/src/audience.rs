@@ -532,7 +532,7 @@ pub fn alert_lines(
         .iter()
         .map(|a| {
             format!(
-                "warning: {} made {} public with a key that doesn't match it, so it was ignored",
+                "warning: {}'s make-public entry for post {} doesn't match it, so it was ignored",
                 who(&a.by),
                 a.document_id
             )

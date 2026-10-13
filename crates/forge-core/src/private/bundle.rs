@@ -277,7 +277,7 @@ pub fn read_revision(
                 return (BundleRead::Public { by: e.by, fields }, mismatches);
             }
             Opened::Unreadable(Unreadable::CommitMismatch) => {
-                mismatches.push(EntryMismatch { by: e.by, revision })
+                mismatches.push(EntryMismatch { by: e.by, revision });
             }
             _ => {}
         }
