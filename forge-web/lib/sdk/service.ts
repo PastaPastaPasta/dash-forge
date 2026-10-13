@@ -1311,7 +1311,7 @@ setWriteHold((write) => evoSdkService.holdForWrite(write))
 /** The contracts every connection preloads: DPNS, Forge's contracts, then `extra` (deduplicated). */
 export function preloadContractIds(network: Network, extra: readonly string[] = []): string[] {
   const { dpnsContractId, v2 } = NETWORKS[network]
-  const ids = [dpnsContractId, v2?.core, v2?.collab, v2?.community, ...extra]
+  const ids = [dpnsContractId, ...(v2 ? forgeContractIds(v2) : []), ...extra]
   return [...new Set(ids.filter((id): id is string => typeof id === 'string' && id.length > 0))]
 }
 

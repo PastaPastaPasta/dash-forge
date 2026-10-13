@@ -2,18 +2,21 @@
  * Which identities are bots, by mutual claim (`profile.bot`, UPDATE-1): a bot's profile names its
  * operator and the operator's profile lists the bot ({@link botOperator}). Read for a set of
  * identities at once: one `$ownerId in` query for their profiles (100 at a time), then one for the
- * operators they name that were not in the set. Answers are kept per contract for
+ * operators they name that were not in the set, from the contract that holds `profile` (forge-meta
+ * on a four-contract set, D44). Answers are kept per contract for
  * {@link CLAIM_TTL_MS}, so a claim changed or withdrawn elsewhere shows within minutes; a failed
  * read keeps nothing and badges nobody.
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
+import type { ForgeIds } from '../deployments'
 import { queryDocuments } from '../sdk'
 import type { TimelineItem } from '../view/issues-view'
 import { botOperator, type BotClaim } from '../rules/profile'
 import { DOC } from './contract'
 import { botClaimOf } from './profile'
+import { contractOf } from './source'
 
 /** An `in` query names at most this many values. */
 const IN_MAX = 100
@@ -21,7 +24,7 @@ const IN_MAX = 100
 /** How long a claim read is reused before it is read again. */
 export const CLAIM_TTL_MS = 10 * 60_000
 
-/** Each identity's claim (null: no profile or no claim) and when it was read, by `community:id`. */
+/** Each identity's claim (null: no profile or no claim) and when it was read, by `contract:id`. */
 const claims = new Map<string, { readonly claim: BotClaim | null; readonly at: number }>()
 
 const held = (key: string): boolean => {
@@ -29,12 +32,12 @@ const held = (key: string): boolean => {
   return c !== undefined && Date.now() - c.at < CLAIM_TTL_MS
 }
 
-async function readClaims(sdk: EvoSDK, community: string, ids: readonly string[]): Promise<void> {
-  const missing = [...new Set(ids)].filter((id) => !held(`${community}:${id}`))
+async function readClaims(sdk: EvoSDK, contractId: string, ids: readonly string[]): Promise<void> {
+  const missing = [...new Set(ids)].filter((id) => !held(`${contractId}:${id}`))
   for (let i = 0; i < missing.length; i += IN_MAX) {
     const chunk = missing.slice(i, i + IN_MAX)
     const docs = await queryDocuments(sdk, {
-      dataContractId: community,
+      dataContractId: contractId,
       documentTypeName: DOC.profile,
       where: [['$ownerId', 'in', chunk]],
       orderBy: [['$ownerId', 'asc']],
@@ -42,21 +45,22 @@ async function readClaims(sdk: EvoSDK, community: string, ids: readonly string[]
     })
     const found = new Map(docs.map((d) => [String(d['$ownerId']), botClaimOf(d) ?? null]))
     const at = Date.now()
-    for (const id of chunk) claims.set(`${community}:${id}`, { claim: found.get(id) ?? null, at })
+    for (const id of chunk) claims.set(`${contractId}:${id}`, { claim: found.get(id) ?? null, at })
   }
 }
 
 /** Record a claim already read with its profile (a profile page), so it is not read again. */
-export function noteBotClaim(community: string, id: string, claim: BotClaim | null): void {
-  claims.set(`${community}:${id}`, { claim, at: Date.now() })
+export function noteBotClaim(forge: ForgeIds, id: string, claim: BotClaim | null): void {
+  claims.set(`${contractOf(forge, DOC.profile)}:${id}`, { claim, at: Date.now() })
 }
 
 /** The verified operator of each of `ids` that is a bot (others are absent). */
-export async function readBotOperators(sdk: EvoSDK, community: string, ids: readonly string[]): Promise<ReadonlyMap<string, string>> {
-  const claimOf = (id: string): BotClaim | null => claims.get(`${community}:${id}`)?.claim ?? null
-  await readClaims(sdk, community, ids)
+export async function readBotOperators(sdk: EvoSDK, forge: ForgeIds, ids: readonly string[]): Promise<ReadonlyMap<string, string>> {
+  const contractId = contractOf(forge, DOC.profile)
+  const claimOf = (id: string): BotClaim | null => claims.get(`${contractId}:${id}`)?.claim ?? null
+  await readClaims(sdk, contractId, ids)
   const operators = ids.map((id) => claimOf(id)?.operator).filter((o): o is string => typeof o === 'string' && o !== '')
-  if (operators.length > 0) await readClaims(sdk, community, operators)
+  if (operators.length > 0) await readClaims(sdk, contractId, operators)
   const out = new Map<string, string>()
   for (const id of ids) {
     const bot = claimOf(id)

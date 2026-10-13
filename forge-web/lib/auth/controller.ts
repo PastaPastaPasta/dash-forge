@@ -280,7 +280,7 @@ interface SessionHint {
 
 function isScope(v: unknown): v is KeyScope {
   const s = v as Partial<KeyScope> | null
-  return typeof s === 'object' && s !== null && typeof s.core === 'boolean' && typeof s.collab === 'boolean' && typeof s.community === 'boolean' && typeof s.unbounded === 'boolean'
+  return typeof s === 'object' && s !== null && typeof s.core === 'boolean' && typeof s.collab === 'boolean' && typeof s.community === 'boolean' && typeof s.meta === 'boolean' && typeof s.unbounded === 'boolean'
 }
 
 /**
