@@ -129,6 +129,12 @@ const removedAtWrap = new Set<string>()
 let membersFail = 0
 /** One-off answers for the next member-list reads, in order (a node per read). */
 const readQueue: Membership[][] = []
+/** Member-list reads so far, and the read (1-based, counted from `readCount = 0`) that answers `lagging` instead of the truth. */
+let readCount = 0
+let laggingAt: { read: number; rows: () => Membership[] } | null = null
+/** From a revoke on, every member-list read answers the truth plus one more reader than the last (nodes that never agree). */
+let flipFromRevoke = false
+let flipping = 0
 
 vi.mock('./members', async (orig) => {
   const real = await orig<typeof import('./members')>()
@@ -139,6 +145,13 @@ vi.mock('./members', async (orig) => {
         membersFail -= 1
         throw new Error('network: member list read failed')
       }
+      readCount += 1
+      if (flipping > 0) {
+        // a different extra reader on every read: no two reads ever agree
+        flipping += 1
+        return [...members, { identity: b58(id(flipping)), role: 'reader', createdAt: 1 }]
+      }
+      if (laggingAt !== null && readCount === laggingAt.read) return laggingAt.rows()
       return readQueue.shift() ?? staleMembers ?? members
     },
     invalidateMembers: () => undefined,
@@ -158,6 +171,7 @@ vi.mock('./writes', async (orig) => {
     revokeMembershipDoc: async (_s: unknown, _a: unknown, _r: unknown, memberId: string, role: string) => {
       if (revokeFails) throw new Error('network: revoke failed')
       members = members.filter((m) => !(m.identity === memberId && m.role === role))
+      if (flipFromRevoke) flipping = 1
       return { deleted: true, actualCredits: 0 }
     },
   }
@@ -255,6 +269,10 @@ beforeEach(async () => {
   staleMembers = null
   readQueue.length = 0
   membersFail = 0
+  readCount = 0
+  laggingAt = null
+  flipFromRevoke = false
+  flipping = 0
   keyless.clear()
   oldKey.clear()
   newerKey.clear()
@@ -268,7 +286,7 @@ beforeEach(async () => {
   for (const m of [ALICE, BOB, CAROL]) wrap(ALICE, m, 0, K0)
 })
 
-const { addPrivateMember, planRepair, rotateRepoKey, removePrivateMember, runRepair } = await import('./private-members')
+const { MembersUnsettledError, addPrivateMember, planRepair, precheckAdd, rotateRepoKey, removePrivateMember, runRepair } = await import('./private-members')
 const { loadPrivateSession, sdkSessionSource, sessionUnwrapper } = await import('./private-session')
 
 const ctx = { sdk, auth, repo: REPO_REF, network: 'devnet' as const, ops }
@@ -312,6 +330,44 @@ describe('a member removed while the wraps go out (RC1 R-13, 40120 on memberId)'
     const dave = new Uint8Array(32).fill(0x0d)
     removedAtWrap.add(b58(dave))
     await expect(addPrivateMember(ctx, b58(dave), 'writer', 'add-dave')).rejects.toThrow(/not a maintainer or writer of this repo any more/)
+  })
+})
+
+describe('the member list still changing is reported for what was already written', () => {
+  it('an add says the member was added when only their key share was refused', async () => {
+    // A first add counts the member-list reads of a whole add; the last one is the settle check.
+    const EVE = id(0x26)
+    const DAN = id(0x25)
+    readCount = 0
+    await addPrivateMember(ctx, b58(DAN), 'writer', 'add-dan')
+    const reads = readCount
+    readCount = 0
+    laggingAt = { read: reads, rows: () => members.filter((m) => m.identity !== b58(BOB)) }
+    const wrapsBefore = (chain['repoKey'] ?? []).length
+    const err = await addPrivateMember(ctx, b58(EVE), 'writer', 'add-eve').catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(MembersUnsettledError)
+    expect((err as Error).message).toBe(`${shortId(b58(EVE))} was added, but their key share wasn't written because the member list is still changing on Platform. Try Repair in a minute.`)
+    expect((err as Error).message).not.toMatch(/nothing was sent/)
+    // exactly what the copy says: the membership landed, no key share did
+    expect(members.some((m) => m.identity === b58(EVE))).toBe(true)
+    expect((chain['repoKey'] ?? []).length).toBe(wrapsBefore)
+  })
+
+  it('a removal says the member was removed and the key is left for Repair', async () => {
+    flipFromRevoke = true
+    const err = await removePrivateMember(ctx, b58(BOB), 'writer', 'rm-bob').catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(Error)
+    expect((err as Error).message).toBe(
+      "the member was removed, but the key wasn't rotated because the member list is still changing on Platform. Open Repair on the repo page in a minute to finish.",
+    )
+    expect(members.some((m) => m.identity === b58(BOB))).toBe(false)
+  })
+
+  it('a rotation that refuses before writing anything still says nothing was sent', async () => {
+    const lagging = [...members]
+    members = members.filter((m) => m.identity !== b58(CAROL))
+    readQueue.push(lagging)
+    await expect(rotateRepoKey(ctx, [], 'flip')).rejects.toMatchObject({ message: /nothing was sent/ })
   })
 })
 
@@ -579,6 +635,17 @@ describe('burn and contiguity review', () => {
       expect(String(got)).toMatch(/epoch 2/)
       expect(steps).not.toContain('anchored')
     }
+  })
+
+  it('precheckAdd refuses a promotion whose old config would take over, writing nothing', async () => {
+    const evil = new Uint8Array(32).fill(0x68)
+    await anchor(CAROL, await EpochKeys.import(REPO, 2, evil), { defaultBranch: 'main', prevEpoch: 1, prevEpochKey: new Uint8Array(32).fill(1) })
+    const before = members.length
+    await expect(precheckAdd(ctx, b58(CAROL), 'maintainer')).rejects.toMatchObject({ epochs: [2], code: 'E310' })
+    expect(members.length).toBe(before)
+    // a writer add, and a maintainer who already is one, have nothing to check
+    await expect(precheckAdd(ctx, b58(CAROL), 'writer')).resolves.toBeUndefined()
+    await expect(precheckAdd(ctx, b58(ALICE), 'maintainer')).resolves.toBeUndefined()
   })
 
   it('#5 re-adding a maintainer whose old config would take over an epoch is refused', async () => {

@@ -1450,6 +1450,24 @@ export function membershipData(repo: RepoRef, memberId: string, extra: Record<st
 }
 
 /**
+ * What would refuse a member change of public `repo` after its first signature, checked before
+ * any: on a repo with members-only content, a promotion to maintainer whose earlier key would
+ * take over an epoch (`dg collab add` checks it before its prompt). Nothing to check otherwise.
+ */
+export async function precheckMemberChange(
+  sdk: EvoSDK,
+  auth: WriteAuth,
+  repo: RepoRef,
+  memberId: string,
+  role: Role,
+  ops?: EncryptionOps | null,
+): Promise<void> {
+  if (repo.visibility === 'private') return
+  const keyed = await membersKeyContext(sdk, auth, repo, ops, true)
+  if (keyed !== null) await keyed.flows.precheckAdd(keyed.c, memberId, role)
+}
+
+/**
  * Grant `memberId` a role on a public repo: the owner creates a `maintainer` or `writer`
  * document (consensus refuses anyone else). Idempotent: an existing membership is success.
  * Refused on a private repo ({@link PrivateMembershipError}), and while the member has not
