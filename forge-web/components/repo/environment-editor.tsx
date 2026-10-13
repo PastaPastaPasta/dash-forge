@@ -26,8 +26,7 @@ import type { EnvBook } from '@/lib/env/loader'
 import { resolvePeople, type PeopleView } from '@/lib/env/view'
 import { EnvSaveError, prepareSave, storeSave, tooManyText, type EnvSaver, type Prepared } from '@/lib/env/write'
 import type { MemberEnvIO } from '@/lib/env/member-change'
-import { decodeIdentifier } from '@/lib/auth'
-import { base58Encode } from '@/lib/auth/base58'
+import { resolvePerson } from '@/lib/repo/person-input'
 import { previewCredits } from '@/lib/sdk'
 import { errText } from '@/lib/storage/util'
 import { onRadioGroupKeyDown, radioTabIndex } from '@/components/ui/radio-group'
@@ -37,6 +36,7 @@ import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/input'
 import { Author } from '@/components/author'
 import { useDpnsName } from '@/hooks/use-dpns-name'
+import { useSdk } from '@/hooks/use-sdk'
 import { shortId } from '@/lib/utils'
 
 /** The help line under the picker, after {@link JOINERS_LINE} (DESIGN §10). */
@@ -75,53 +75,72 @@ export function audienceSize(a: Audience, people: PeopleView, viewer: string): n
   return all.size
 }
 
-/** An identity id typed into a field, or why it isn't one. */
-function parseIdentity(text: string): { readonly id: string } | { readonly error: string } {
-  const t = text.trim().replace(/^@/, '')
-  try {
-    // the canonical form: an audience lists ids exactly as the artifact writes them
-    return { id: base58Encode(decodeIdentifier(t)) }
-  } catch {
-    return { error: 'Not an identity id (base58, 32 bytes).' }
-  }
-}
-
+/**
+ * A field that takes one person, by identity id or DPNS name (`alice.dash`). A name is looked up
+ * when Add is pressed; an unknown one is refused, and the id it resolved to is shown. The field is
+ * held while it looks, and a result that arrives after the field went away is dropped.
+ */
 function IdentityAdder({ label, onAdd, testId }: { label: string; onAdd: (id: string) => void; testId: string }): JSX.Element {
+  const { sdk, network } = useSdk()
   const [text, setText] = useState('')
   const [error, setError] = useState<string | null>(null)
-  const add = (): void => {
-    const r = parseIdentity(text)
-    if ('error' in r) {
-      setError(r.error)
-      return
+  const [added, setAdded] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
     }
-    onAdd(r.id)
-    setText('')
-    setError(null)
+  }, [])
+  const add = async (): Promise<void> => {
+    if (busy) return
+    setBusy(true)
+    setAdded(null)
+    try {
+      const r = await resolvePerson(sdk, network, text)
+      if (!mounted.current) return
+      if ('error' in r) {
+        setError(r.error)
+        return
+      }
+      onAdd(r.id)
+      setAdded(r.name === null ? null : `${r.name} is ${shortId(r.id)}.`)
+      setText('')
+      setError(null)
+    } finally {
+      if (mounted.current) setBusy(false)
+    }
   }
   return (
     <div className="space-y-1">
       <div className="flex gap-2">
         <Input
           aria-label={label}
-          placeholder="Identity id"
+          placeholder="Identity id or name.dash"
           value={text}
+          disabled={busy}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
               e.preventDefault()
-              add()
+              void add()
             }
           }}
           className="font-mono"
           spellCheck={false}
           data-testid={testId}
         />
-        <Button size="sm" variant="outline" onClick={add} disabled={text.trim() === ''}>
-          Add
+        <Button size="sm" variant="outline" onClick={() => void add()} disabled={text.trim() === '' || busy}>
+          {busy ? 'Looking up…' : 'Add'}
         </Button>
       </div>
       {error !== null ? <p className="text-[12px] text-danger-700 dark:text-danger-400">{error}</p> : null}
+      {added !== null ? (
+        <p className="text-[12px] text-anvil-600 dark:text-anvil-300" data-testid={`${testId}-resolved`}>
+          {added}
+        </p>
+      ) : null}
     </div>
   )
 }
@@ -157,6 +176,9 @@ export function AudiencePicker({
   viewer: string
 }): JSX.Element {
   const [showAlso, setShowAlso] = useState(value.also.length > 0)
+  // A name takes a moment to look up: its add applies to the choice as it is then, not as it was when Add was pressed.
+  const latest = useRef(value)
+  latest.current = value
   const options: { readonly kind: Group | 'people'; readonly label: string }[] = [
     ...GROUPS.map((g) => ({ kind: g, label: audienceLabel({ group: g, also: [] }) })),
     { kind: 'people' as const, label: 'Specific people…' },
@@ -222,7 +244,7 @@ export function AudiencePicker({
               ))}
             </div>
           ) : null}
-          <IdentityAdder label="Add someone by identity id" testId="env-people-add" onAdd={(id) => id !== viewer && !value.people.includes(id) && onChange({ ...value, people: [...value.people, id] })} />
+          <IdentityAdder label="Add someone by identity id or name" testId="env-people-add" onAdd={(id) => id !== viewer && !latest.current.people.includes(id) && onChange({ ...latest.current, people: [...latest.current.people, id] })} />
         </div>
       ) : null}
       {value.kind !== null && value.kind !== 'people' ? (
@@ -235,7 +257,7 @@ export function AudiencePicker({
             </div>
           ) : null}
           {showAlso ? (
-            <IdentityAdder label="Also give access to (identity id)" testId="env-also-add" onAdd={(id) => !value.also.includes(id) && onChange({ ...value, also: [...value.also, id] })} />
+            <IdentityAdder label="Also give access to (identity id or name)" testId="env-also-add" onAdd={(id) => !latest.current.also.includes(id) && onChange({ ...latest.current, also: [...latest.current.also, id] })} />
           ) : (
             <Button size="sm" variant="ghost" onClick={() => setShowAlso(true)} data-testid="env-also-open">
               <Plus className="h-3.5 w-3.5" aria-hidden /> Also give access to…
