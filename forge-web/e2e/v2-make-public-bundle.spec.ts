@@ -220,7 +220,7 @@ test("reader: their inbox says a maintainer made their comment public, and an ed
 
   await openThread(page, url(ISSUE), MARKER)
   const card = page.getByTestId('timeline-comment').filter({ hasText: MARKER })
-  await card.getByRole('button', { name: /^edit$/i }).first().click()
+  await card.getByRole('button', { name: 'Edit comment' }).first().click()
   await expect(page.getByTestId('public-edit-hint')).toContainText('made this public, so your edit is public too.')
   await shot(page, 'reader-edit-hint')
   await page.context().close()

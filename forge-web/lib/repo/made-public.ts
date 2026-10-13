@@ -25,7 +25,8 @@ import { bundlesKind, docEntries, readRevision, type DocEntries, type DocEntry, 
 import { normalizeDocument, type PlainDocument } from '../sdk'
 import { asIdentifierString, type RepoRef } from './contract'
 import { readMakePublicBundles } from './converted'
-import { onMembersInvalidated, readMaintainers } from './members'
+import { readMaintainers } from './members'
+import { onMembersInvalidated } from './members-events'
 import { noteMembersKey } from './members-key-cache'
 import {
   EDITED_AFTER_PUBLIC,

@@ -18,6 +18,7 @@ import { RoleOracle, type Membership, type Role } from '../rules/v2'
 import { queryAllDocuments, type PlainDocument } from '../sdk'
 import { DOC, asIdentifierString, type RepoRef } from './contract'
 import { repoSource } from './source'
+import { membersInvalidated } from './members-events'
 
 /** The two membership document types: `maintainer`, and `writer` (whose `role` is writer, triage or reader). */
 const MEMBER_DOCS = [DOC.maintainer, DOC.writer] as const
@@ -152,18 +153,11 @@ export function seedMemberships(repo: RepoRef, network: Network, memberships: Me
   membersCache.set(key, { at: Date.now(), started: generation, promise: Promise.resolve(memberships) })
 }
 
-const invalidationListeners = new Set<(repo: RepoRef) => void>()
-
-/** Call `f` whenever a repo's membership changes through this tab ({@link invalidateMembers}). */
-export function onMembersInvalidated(f: (repo: RepoRef) => void): void {
-  invalidationListeners.add(f)
-}
-
 /** Drop a repo's cached membership (tests; and after a member add/revoke). */
 export function invalidateMembers(repo: RepoRef, network: Network = DEFAULT_NETWORK): void {
   membersCache.delete(membersKey(network, repo))
   membersInvalidatedAt = membersGeneration()
-  for (const f of invalidationListeners) f(repo)
+  membersInvalidated(repo)
 }
 
 /**
