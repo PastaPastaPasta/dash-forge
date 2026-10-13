@@ -1236,7 +1236,8 @@ impl<'a> RepoService<'a> {
 
     /// The bytes of the make-public bundle recorded by the kind-7 manifest document `manifest`
     /// of public `repo` (checked against its `packHash`), with its uploader. `None` for another
-    /// kind, a private repository, or a bundle no copy of which can be read.
+    /// kind, a private repository, or bytes that do not hash to the manifest's; a read that
+    /// fails is an error, so a caller that moves a cursor past the manifest reads it again.
     pub async fn bundle_of_manifest(
         &self,
         repo: &RepoRef,
@@ -1251,12 +1252,11 @@ impl<'a> RepoService<'a> {
         let owner = platform::decode_identifier(&info.owner_id)?;
         let contract = self.repo_contract(repo).await?;
         let reader = PackReader::from_user_config();
-        Ok(self
+        let bytes = self
             .fetch_artifact_from(repo, &contract, &info, &reader)
-            .await
-            .ok()
-            .filter(|b| crate::backends::sha256(b) == info.pack_hash)
-            .map(|bytes| crate::private::convert::PublishedBundle { owner, bytes }))
+            .await?;
+        Ok((crate::backends::sha256(&bytes) == info.pack_hash)
+            .then_some(crate::private::convert::PublishedBundle { owner, bytes }))
     }
 
     /// The kind-7 bundles of public `repo` written by the uploaders `roles` names, each read from

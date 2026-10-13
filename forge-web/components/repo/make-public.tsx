@@ -108,7 +108,15 @@ export function MakeOthersPublicButton({ onClick, disabled, thread = false }: { 
   )
 }
 
-/** Someone else's post, for a reader who is not a maintainer: the §10 words, never a button. */
+/**
+ * Whether a post read with `audience` can go in a maintainer's bundle: members-only, or a message
+ * to specific people the reader was sent (one they were not sent never opens, so never shows).
+ */
+export function bundleable(audience: string | undefined): boolean {
+  return audience === 'members' || audience === 'specificPeople'
+}
+
+/** Someone else's post, for a reader who is not a maintainer: the §10 words in the dialog that opens in place of a plan. */
 export const ASK_A_MAINTAINER = "Only maintainers can make other people's posts public. Ask a maintainer"
 
 /** A post's kind in words. */

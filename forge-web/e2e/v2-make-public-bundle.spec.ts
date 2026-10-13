@@ -30,7 +30,7 @@
 import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { devices, expect, test, type Browser, type Page } from '@playwright/test'
+import { devices, expect, test, type Browser, type Locator, type Page } from '@playwright/test'
 import { DAPI_METHOD, PASSPHRASE, idFile, runAxe, stateFile, unlock, waitForRepoResolved } from './helpers'
 
 const env = (k: string, d = ''): string => process.env[k] ?? d
@@ -106,6 +106,11 @@ function broadcasts(page: Page): string[] {
   return out
 }
 
+/** Confirm a make-public dialog: "Make public", or "Make public anyway" after a quote warning. */
+async function confirm(dialog: Locator): Promise<void> {
+  await dialog.getByRole('button', { name: /^Make public( anyway)?$/ }).click()
+}
+
 async function shot(page: Page, name: string, fullPage = false): Promise<void> {
   mkdirSync(SHOTS, { recursive: true })
   await page.waitForTimeout(500) // a dialog's open animation
@@ -120,10 +125,11 @@ test("maintainer: makes a reader's members-only comment public", async ({ browse
   const sent = broadcasts(page)
   await card.getByTestId('make-others-public').click()
   const dialog = page.getByRole('dialog', { name: 'Make 1 post public?' })
-  await expect(dialog).toContainText(/Words by \S+ become public\. They'll be notified\. This can't be undone\./, { timeout: 120_000 })
+  await expect(dialog).toContainText(/Words by \S+ become public\. They'll be notified\..*This can't be undone\./, { timeout: 120_000 })
   await shot(page, 'maintainer-comment-dialog')
   expect(sent).toEqual([])
-  await dialog.getByRole('button', { name: 'Make public' }).click()
+  // the quote check may warn (the reader's comments share words): the button then says so
+  await confirm(dialog)
   const after = page.getByTestId('timeline-comment').filter({ hasText: MARKER })
   await expect(after).toHaveAttribute('data-audience', 'public', { timeout: 240_000 })
   await expect(after.getByTestId('made-public-by')).toBeVisible()
@@ -144,7 +150,7 @@ test('maintainer: makes a whole members-only thread public, with its earlier edi
   await earlier.getByRole('checkbox').check()
   await shot(page, 'maintainer-thread-dialog')
   expect(sent).toEqual([])
-  await dialog.getByRole('button', { name: 'Make public' }).click()
+  await confirm(dialog)
   await expect(page.getByTestId('made-public-by').first()).toBeVisible({ timeout: 240_000 })
   await shot(page, 'maintainer-thread-after', true)
   await page.context().close()

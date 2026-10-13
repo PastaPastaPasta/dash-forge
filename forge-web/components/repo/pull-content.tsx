@@ -145,7 +145,7 @@ import { useAuth } from '@/contexts/auth-context'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { TargetNotFound } from '@/components/repo/number-content'
 import { CommentOwnActions, Timeline, type CommentSlots } from '@/components/repo/timeline'
-import { MakeOthersPublicButton, MakePublicBundleDialog, MakePublicButton, makePublicWords, useQuotedMembersPost } from '@/components/repo/make-public'
+import { MakeOthersPublicButton, MakePublicBundleDialog, MakePublicButton, bundleable, makePublicWords, useQuotedMembersPost } from '@/components/repo/make-public'
 import { BundleAlertsNote, PublicEditHint, editIsPublic } from '@/components/repo/made-public'
 import type { BundleRequest } from '@/lib/repo/make-public-bundle'
 import { makePostPublic, makeReviewTextPublic, provenanceOf } from '@/lib/repo/make-public-writes'
@@ -695,8 +695,8 @@ function PullPage({
   const canBundle = identity !== null && !archived && guard.disabledReason === null && repo.visibility === 'public'
   const threadPosts: BundleRequest[] = canBundle
     ? [
-        ...thread.comments.filter((c) => c.audience === 'members').map((c) => ({ type: 'comment' as const, id: c.id, author: c.author })),
-        ...thread.reviews.filter((r) => r.audience === 'members').map((r) => ({ type: 'review' as const, id: r.id, author: r.reviewer })),
+        ...thread.comments.filter((c) => bundleable(c.audience)).map((c) => ({ type: 'comment' as const, id: c.id, author: c.author })),
+        ...thread.reviews.filter((r) => bundleable(r.audience)).map((r) => ({ type: 'review' as const, id: r.id, author: r.reviewer })),
       ].map(({ type, id }) => ({ type, id }))
     : []
   const othersInThread =
@@ -1701,7 +1701,7 @@ function PullPage({
                         onClick={() => setPending({ kind: 'make-review-public', id: r.id, text: r.body, quoted: quotedPost(r.body, r.reviewer, 'review') })}
                         disabled={writeBlocked || guard.disabledReason !== null || longEditBlock(r.long) !== null}
                       />
-                    ) : canBundle && r.reviewer !== identity && r.audience === 'members' ? (
+                    ) : canBundle && r.reviewer !== identity && bundleable(r.audience) ? (
                       // Someone else's members-only review: a maintainer's bundle.
                       <MakeOthersPublicButton onClick={() => setBundleAsk([{ type: 'review', id: r.id }])} />
                     ) : null
@@ -1740,7 +1740,7 @@ function PullPage({
                       // DESIGN §4.6: the author's own members-only comment, on a public repo.
                       ...(item.comment.audience === 'members' && repo.visibility === 'public' ? { onMakePublic: makeCommentPublic } : {}),
                       // Someone else's: a maintainer's bundle.
-                      ...(canBundle && item.comment.audience === 'members' ? { onMakeOthersPublic: makeOthersPublic } : {}),
+                      ...(canBundle && bundleable(item.comment.audience) ? { onMakeOthersPublic: makeOthersPublic } : {}),
                       links,
                       replies: repliesOf.get(item.comment.id) ?? [],
                       trust,

@@ -9,8 +9,8 @@
  *   (anyone else's is never downloaded), and only a key that commits to the revision it names: a
  *   lying entry is an alert ({@link BundleAlert}), said once per page, and is ignored.
  * - A repo's bundles are read once per page load ({@link repoBundleEntries}, a memoised promise,
- *   dropped after this tab writes one), and only when a page meets a sealed post in a public repo:
- *   a repo without members-only content never reads them.
+ *   dropped after this tab writes one or changes the repo's members), and only when a page meets
+ *   a sealed post in a public repo: a repo without members-only content never reads them.
  * - {@link withBundles} puts them in front of any content gate: a bundled post comes back as
  *   public with {@link MADE_PUBLIC_BY}; a post its author sealed again afterwards carries
  *   {@link EDITED_AFTER_PUBLIC} (an issue is shown as the version made public, read from
@@ -25,7 +25,7 @@ import { bundlesKind, docEntries, readRevision, type DocEntries, type DocEntry, 
 import { normalizeDocument, type PlainDocument } from '../sdk'
 import { asIdentifierString, type RepoRef } from './contract'
 import { readMakePublicBundles } from './converted'
-import { readMaintainers } from './members'
+import { onMembersInvalidated, readMaintainers } from './members'
 import { noteMembersKey } from './members-key-cache'
 import {
   EDITED_AFTER_PUBLIC,
@@ -65,22 +65,27 @@ export function repoBundleEntries(sdk: EvoSDK, repo: RepoRef): Promise<DocEntrie
   const key = keyOf(repo)
   const hit = cache.get(key)
   if (hit !== undefined && Date.now() - hit.at < BUNDLES_TTL_MS) return hit.promise
-  const promise = (async () => {
+  const read = (async () => {
     const maintainers = new Set([...(await readMaintainers(sdk, repo)), repo.ownerId])
     const bundles = await readMakePublicBundles(sdk, repo, maintainers)
     return docEntries(true, [...maintainers].map((m) => decodeIdentifier(m)), bundles)
   })()
-  cache.set(key, { at: Date.now(), promise })
-  return promise.catch(() => {
+  // Every caller, the concurrent ones included, gets the promise that never rejects.
+  const promise = read.catch(() => {
     if (cache.get(key)?.promise === promise) cache.delete(key)
     return NONE
   })
+  cache.set(key, { at: Date.now(), promise })
+  return promise
 }
 
-/** Forget `repo`'s bundles (this tab wrote one): the next read reads them again. */
+/** Forget `repo`'s bundles (this tab wrote one, or changed its members): the next read reads them again. */
 export function invalidateRepoBundles(repo: Pick<RepoRef, 'forge' | 'repoId'>): void {
   cache.delete(`${repo.forge.core}:${repo.repoId}`)
 }
+
+// A maintainer removed through this tab: their bundles stop counting at once.
+onMembersInvalidated(invalidateRepoBundles)
 
 /** A document's `$revision` (1 when not recorded). */
 function revisionOf(doc: PlainDocument): number {
@@ -241,16 +246,18 @@ export function contentGate(sdk: EvoSDK, repo: RepoRef, options: BundleGateOptio
 }
 
 /**
- * The maintainer (base58) whose honoured entry names any revision of the signer's sealed `type`
- * post `doc` of public `repo`, or null: an edit of it is then written as Public (DESIGN §4.6,
- * "after a bundle"; forge-core `Collab::bundle_covers`).
+ * The maintainer (base58) whose honoured entry opens the current revision of the signer's sealed
+ * `type` post `doc` of public `repo` (its key checked as every reader checks it), or null: an
+ * edit of it is then written as Public (DESIGN §4.6, "after a bundle"; forge-core
+ * `Collab::bundle_covers`). A lying entry covers nothing, so it can never turn an author's
+ * members-only edit public; nor does a bundle of an earlier revision the author sealed again.
  */
 export async function bundleCovers(sdk: EvoSDK, repo: RepoRef, type: PrivateDocType, doc: PlainDocument): Promise<string | null> {
   if (repo.visibility !== 'public' || !bundlesKind(type) || !isSealedDoc(doc)) return null
   const id = storedPrivateDoc(type, doc, 'public')?.id
   if (id === undefined) return null
-  const first = (await repoBundleEntries(sdk, repo)).ofDoc(type, id)[0]
-  return first === undefined ? null : base58Encode(first.by)
+  const o = await outcomeOf(repo, type, doc, (await repoBundleEntries(sdk, repo)).ofDoc(type, id), [])
+  return o.state === 'public' ? o.by : null
 }
 
 /**

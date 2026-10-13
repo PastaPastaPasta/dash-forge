@@ -92,7 +92,11 @@ export async function readMakePublicBundles(sdk: EvoSDK, repo: RepoRef, uploader
   const { loadStoredArtifactBytes } = await import('../view/browse-source')
   const plain = withoutSessions(repo)
   const out: PublishedBundle[] = []
-  for (const copies of byAuthorHash.values()) {
+  // In forge-core's order (by uploader, then by hash), so where two maintainers' entries name one
+  // revision both stacks credit the same one.
+  const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0)
+  const order = [...byAuthorHash.values()].sort((a, b) => cmp(a[0]!.uploader, b[0]!.uploader) || cmp(a[0]!.packHash.toLowerCase(), b[0]!.packHash.toLowerCase()))
+  for (const copies of order) {
     const first = copies[0] as PackManifest
     try {
       out.push({ owner: decodeIdentifier(first.uploader), bytes: await loadStoredArtifactBytes(sdk, plain, { ...first, copies }) })

@@ -206,6 +206,7 @@ pub fn named_ids(event: &WebhookEvent) -> Vec<String> {
 
 /// `event` as a [`Notice`]. `names` maps identity ids to DPNS names ([`named_ids`]); ids
 /// without one show shortened. `None` for an event this does not know how to say.
+#[allow(clippy::too_many_lines)] // one arm per event kind
 pub fn render(event: &WebhookEvent, names: &BTreeMap<String, String>) -> Option<Notice> {
     let p = &event.payload;
     let name = |id: &str| display_name(id, names);

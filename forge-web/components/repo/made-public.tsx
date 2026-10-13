@@ -102,8 +102,8 @@ export function BundleAlertsNote({ alerts }: { alerts: readonly BundleAlert[] | 
  * (DESIGN §4.6, "after a bundle"), so the public and members never see different text.
  */
 export function PublicEditHint({ marks }: { marks: PublicationMarks }): JSX.Element | null {
-  const by = marks.madePublicBy ?? marks.editedAfterPublicBy
-  if (by === undefined) return null
+  if (!editIsPublic(marks)) return null
+  const by = marks.madePublicBy as string
   return (
     <p className={`flex flex-wrap items-center gap-1 ${MUTED}`} data-testid="public-edit-hint">
       <Globe className="h-3 w-3" aria-hidden /> <span className="font-medium">Public</span> ·
@@ -112,7 +112,11 @@ export function PublicEditHint({ marks }: { marks: PublicationMarks }): JSX.Elem
   )
 }
 
-/** Whether an author's edit of a post with `marks` is written as Public (a maintainer made it public). */
+/**
+ * Whether an author's edit of a post with `marks` is written as Public: a maintainer made its
+ * current revision public (`lib/repo/made-public.ts` `bundleCovers`, which the write reads). One
+ * sealed again since stays members-only.
+ */
 export function editIsPublic(marks: PublicationMarks): boolean {
-  return marks.madePublicBy !== undefined || marks.editedAfterPublicBy !== undefined
+  return marks.madePublicBy !== undefined && marks.editedAfterPublicBy === undefined
 }

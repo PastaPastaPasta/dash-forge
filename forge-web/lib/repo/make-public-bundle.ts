@@ -254,25 +254,35 @@ async function plan(
       }
       const revisions: number[] = []
       let earlier = 0
-      // An issue's earlier members-only revisions (Platform keeps an issue's history; a letter's
-      // revisions are not read).
-      if (r.type === 'issue' && got.recipients === null && session !== null) {
-        const old = (await readDocumentHistory(sdk, repo, 'issue', r.id).catch(() => [] as PlainDocument[])).filter(
-          (h) => revisionOf(h) < revisionOf(doc) && isSealedDoc(h),
-        )
-        for (const h of old) {
-          const row: PlainDocument = { ...doc, ...h, $id: doc['$id'], $ownerId: doc['$ownerId'], $revision: revisionOf(h) }
-          if ((await bundledFields(sdk, repo, 'issue', row)) !== null) continue
-          const s = storedPrivateDoc('issue', row, 'public')
-          const keys = s === null ? undefined : session.resolution.keys.get(s.epoch)
-          const key = s === null || keys === undefined ? null : await membersObjKey(keys, s, s.enc)
-          if (key === null) continue
-          earlier += 1
-          if (history) {
-            take({ kind, target: stored.id, revision: revisionOf(h), key })
-            revisions.push(revisionOf(h))
-          } else key.fill(0)
+      try {
+        // An issue's earlier members-only revisions (Platform keeps an issue's history; a letter's
+        // revisions are not read), each read as a member reads it (the epoch and late rules), and
+        // left out like the current one when its text continues in a members-only artifact.
+        if (r.type === 'issue' && got.recipients === null && session !== null) {
+          const old = (await readDocumentHistory(sdk, repo, 'issue', r.id).catch(() => [] as PlainDocument[])).filter(
+            (h) => revisionOf(h) < revisionOf(doc) && isSealedDoc(h),
+          )
+          for (const h of old) {
+            const row: PlainDocument = { ...doc, ...h, $id: doc['$id'], $ownerId: doc['$ownerId'], $revision: revisionOf(h) }
+            if ((await bundledFields(sdk, repo, 'issue', row)) !== null) continue
+            const s = storedPrivateDoc('issue', row, 'public')
+            if (s === null) continue
+            const opened = await openContent(s, session.ctx)
+            if (opened.status !== 'readable' || continued(opened.fields)) continue
+            const keys = session.resolution.keys.get(s.epoch)
+            const key = keys === undefined ? null : await membersObjKey(keys, s, s.enc)
+            if (key === null) continue
+            earlier += 1
+            if (history) {
+              take({ kind, target: stored.id, revision: revisionOf(h), key })
+              revisions.push(revisionOf(h))
+            } else key.fill(0)
+          }
         }
+      } catch (e) {
+        // the current revision's key is not kept past a failed read
+        got.key.fill(0)
+        throw e
       }
       take({ kind, target: stored.id, revision: revisionOf(doc), key: got.key })
       revisions.push(revisionOf(doc))

@@ -38,6 +38,7 @@ struct Post {
 }
 
 /// `dg make-public <repo> <post>… [--thread] [--history]`.
+#[allow(clippy::too_many_lines)] // one command: find, then a bundle or the author's edits
 pub async fn run(
     ctx: &Ctx,
     repo: &str,

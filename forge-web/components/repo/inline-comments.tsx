@@ -17,7 +17,7 @@
  */
 
 import { longEditBlock } from '@/components/repo/long-body'
-import { MakeOthersPublicButton, MakePublicButton } from '@/components/repo/make-public'
+import { MakeOthersPublicButton, MakePublicButton, bundleable } from '@/components/repo/make-public'
 import { EditedAfterPublicNote, MadePublicBy, PublicEditHint } from '@/components/repo/made-public'
 import { Byline } from '@/components/repo/byline'
 import { useMirrorTrust } from '@/hooks/use-mirror-trust'
@@ -511,7 +511,7 @@ function CommentBlock({
         <EditedMarker createdAt={c.createdAt} updatedAt={c.updatedAt} />
         {c.audience === 'members' ? <VisibleToMembers /> : null}
         <MadePublicBy marks={c} />
-        {!own && c.audience === 'members' && actions?.onMakeOthersPublic !== undefined && actions.viewer !== null ? (
+        {!own && bundleable(c.audience) && actions?.onMakeOthersPublic !== undefined && actions.viewer !== null ? (
           <span className="ml-auto">
             <MakeOthersPublicButton onClick={() => actions.onMakeOthersPublic?.(c)} />
           </span>

@@ -286,6 +286,7 @@ fn written_private(d: &FetchedDocument) -> bool {
 }
 
 /// [`ParentAudience`] of a child under `target` replying in `thread`.
+#[cfg(test)]
 fn thread_parents(target: ParentAudience, thread: &[&FetchedDocument]) -> ParentAudience {
     thread
         .iter()
@@ -3062,17 +3063,44 @@ impl<'a> Collab<'a> {
     async fn target_parent(&self, repo: &RepoRef, target_id: &str) -> Result<ParentAudience> {
         let collab = self.collab_contract(repo).await?;
         let mut found = None;
-        for doc_type in [DOC_ISSUE, DOC_PATCH] {
+        for (doc_type, kind) in [(DOC_ISSUE, DocKind::Issue), (DOC_PATCH, DocKind::Patch)] {
             found = self
                 .client
                 .fetch_document(&collab, doc_type, target_id)
-                .await?;
+                .await?
+                .map(|d| (kind, d));
             if found.is_some() {
                 break;
             }
         }
-        audience_of_found(found.as_ref(), "issue or pull request", target_id)?;
-        Ok(ParentAudience::of(found.as_ref().expect("found")))
+        audience_of_found(
+            found.as_ref().map(|(_, d)| d),
+            "issue or pull request",
+            target_id,
+        )?;
+        let (kind, d) = found.expect("found");
+        Ok(self.parent_with_bundles(repo, kind, &d).await)
+    }
+
+    /// [`ParentAudience::of`], where a maintainer's bundle made the stored members-only issue or
+    /// comment `d` public (its current revision, DESIGN §4.6): such a thread is public for
+    /// everyone, so it takes public replies, and a reply that asks for none is public too, as
+    /// on the web. Sealed again after it was made public, its replies are members-only.
+    async fn parent_with_bundles(
+        &self,
+        repo: &RepoRef,
+        kind: DocKind,
+        d: &FetchedDocument,
+    ) -> ParentAudience {
+        let own = ParentAudience::of(d);
+        if own.default == Audience::Public || !matches!(kind, DocKind::Issue | DocKind::Comment) {
+            return own;
+        }
+        if self.bundle_covers(repo, kind, d).await.is_some() {
+            ParentAudience::same(Audience::Public)
+        } else {
+            own
+        }
     }
 
     /// The audience a new comment or review on `target_id` is written for, replying (for a
@@ -3089,8 +3117,11 @@ impl<'a> Collab<'a> {
         if repo.visibility == Visibility::Private {
             return self.audience_for(repo, None);
         }
-        let target = self.target_parent(repo, target_id).await?;
-        self.audience_for(repo, Some(thread_parents(target, thread)))
+        let mut parent = self.target_parent(repo, target_id).await?;
+        for d in thread {
+            parent = parent.narrower(self.parent_with_bundles(repo, DocKind::Comment, d).await);
+        }
+        self.audience_for(repo, Some(parent))
     }
 
     /// The audience a new document of `repo` would be written for by this `Collab`: an issue or
@@ -3332,17 +3363,19 @@ impl<'a> Collab<'a> {
             let entries = self.doc_entries(repo).await;
             let repo_id = repo.scope()?.repo_id;
             let stored = d.clone();
-            return Ok(Some(
-                match self.open_read(&repo_id, &entries, &keys, kind.content_kind(), d) {
-                    Ok(d) => TargetRead::Readable(d),
-                    // an issue sealed again after a maintainer made it public reads, for those
-                    // who cannot open it, as the bundle published it (DESIGN §4.6)
-                    Err(m) => match self.published_issue(repo, &stored).await {
-                        Some(d) if kind == TargetKind::Issue => TargetRead::Readable(d),
-                        _ => TargetRead::MembersOnly(m),
-                    },
-                },
-            ));
+            let read = self.open_read(&repo_id, &entries, &keys, kind.content_kind(), d);
+            // An issue sealed again after a maintainer made it public reads, for everyone, as the
+            // bundle published it (DESIGN §4.6: "readers show 'edited after it was made public'
+            // with the bundle's text"), members included, as the web shows it.
+            if kind == TargetKind::Issue {
+                if let Some(d) = self.published_issue(repo, &stored).await {
+                    return Ok(Some(TargetRead::Readable(d)));
+                }
+            }
+            return Ok(Some(match read {
+                Ok(d) => TargetRead::Readable(d),
+                Err(m) => TargetRead::MembersOnly(m),
+            }));
         }
         let Some(kr) = self.private_keys(repo).await? else {
             return Ok(Some(TargetRead::Readable(d)));

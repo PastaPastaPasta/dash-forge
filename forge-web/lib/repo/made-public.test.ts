@@ -126,6 +126,8 @@ describe('a maintainer’s bundle in front of the gate', () => {
     const a = await withBundles(sdk, repo, anonymous(repo.visibility)).admit(type, doc)
     expect(a.ok).toBe(false)
     expect(a.alerts).toEqual([{ id: doc['$id'], revision: 1, by: maintainers[1], author: doc['$ownerId'] }])
+    // nor does it make the author's next edit public: only a key that opens the post counts
+    expect(await bundleCovers(sdk, repo, type, doc)).toBeNull()
   })
 
   it('a lying entry next to an honest one: public, and the lie is still said', async () => {
@@ -143,6 +145,8 @@ describe('a maintainer’s bundle in front of the gate', () => {
     expect(a.ok).toBe(false)
     if (a.ok) return
     expect(a.placeholder?.editedAfterBy).toBe(maintainers[1])
+    // sealed again by its author: an edit of it stays members-only
+    expect(await bundleCovers(sdk, repo, type, doc)).toBeNull()
   })
 
   it('a member’s own admission of an edited-after comment carries the mark', async () => {

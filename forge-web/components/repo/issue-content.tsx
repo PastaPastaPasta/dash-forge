@@ -101,7 +101,7 @@ import { moderationBlocked } from '@/lib/repo/moderation-fold'
 import { isHiddenByHide } from '@/lib/view/issues-view'
 import type { HideReason } from '@/lib/rules/moderation'
 import { AuthorRolesProvider } from '@/components/repo/author-roles'
-import { MakeOthersPublicButton, MakePublicBundleDialog, MakePublicButton, makePublicWords, useQuotedMembersPost } from '@/components/repo/make-public'
+import { MakeOthersPublicButton, MakePublicBundleDialog, MakePublicButton, bundleable, makePublicWords, useQuotedMembersPost } from '@/components/repo/make-public'
 import { BundleAlertsNote, EarlierVersions, EditedAfterPublicNote, MadePublicBy, PublicEditHint, editIsPublic } from '@/components/repo/made-public'
 import type { BundleRequest } from '@/lib/repo/make-public-bundle'
 import { makePostPublic, provenanceOf } from '@/lib/repo/make-public-writes'
@@ -319,8 +319,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const publicRepo = home.repo.visibility === 'public'
   const threadPosts: BundleRequest[] = publicRepo
     ? [
-        ...(issue.audience === 'members' ? [{ type: 'issue' as const, id: issue.id }] : []),
-        ...timeline.flatMap((t) => (t.kind === 'comment' && t.comment.audience === 'members' ? [{ type: 'comment' as const, id: t.comment.id }] : [])),
+        ...(bundleable(issue.audience) ? [{ type: 'issue' as const, id: issue.id }] : []),
+        ...timeline.flatMap((t) => (t.kind === 'comment' && bundleable(t.comment.audience) ? [{ type: 'comment' as const, id: t.comment.id }] : [])),
       ]
     : []
   const othersInThread = threadPosts.some((p) => (p.type === 'issue' ? issue.author : timelineAuthor(timeline, p.id)) !== identity)
@@ -611,7 +611,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                   title={longEditBlock(issue.long) ?? undefined}
                 />
               ) : null}
-              {canBundle && !isAuthor && issue.audience === 'members' && publicRepo ? (
+              {canBundle && !isAuthor && bundleable(issue.audience) && publicRepo ? (
                 <MakeOthersPublicButton onClick={() => setBundleAsk([{ type: 'issue', id: issue.id }])} />
               ) : null}
               {canBundle && isMaintainer && othersInThread && (threadPosts.length > 1 || issue.audience !== 'members') ? (
@@ -722,7 +722,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                     : undefined,
                 // Someone else's members-only comment: a maintainer's bundle (DESIGN §4.6).
                 onMakeOthersPublic:
-                  canBundle && item.comment.audience === 'members' && publicRepo ? (id) => setBundleAsk([{ type: 'comment', id }]) : undefined,
+                  canBundle && bundleable(item.comment.audience) && publicRepo ? (id) => setBundleAsk([{ type: 'comment', id }]) : undefined,
                 links,
               })
               const header = item.comment.id === discarded.atComment && editingComment === null ? withDiscardedEdit(slots.header) : slots.header

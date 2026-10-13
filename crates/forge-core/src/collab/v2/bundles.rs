@@ -417,7 +417,9 @@ impl Collab<'_> {
             .client
             .fetch_document_history(&collab, DOC_ISSUE, id, MAX_HISTORY)
             .await?;
-        history.pop();
+        // the current revision is the one read, not an earlier version
+        let current = history.iter().map(revision_of).max().unwrap_or_default();
+        history.retain(|h| revision_of(h) < current);
         Ok(history
             .into_iter()
             .filter(is_sealed)
@@ -430,8 +432,12 @@ impl Collab<'_> {
             .collect())
     }
 
-    /// Whether a maintainer's bundle covers any revision of the signer's sealed `kind` document
-    /// `stored`: then an edit of it is written as Public (DESIGN §4.6, "after a bundle").
+    /// The maintainer whose bundle made the current revision of the signer's sealed `kind`
+    /// document `stored` public (its key checked against the revision, as every reader checks
+    /// it): then an edit of it is written as Public (DESIGN §4.6, "after a bundle"). An entry
+    /// whose key does not open the current revision covers nothing, so a maintainer's lying
+    /// entry can never turn an author's members-only edit into a public one; neither does a
+    /// bundle of an earlier revision the author has sealed again since (the edit stays sealed).
     pub(super) async fn bundle_covers(
         &self,
         repo: &RepoRef,
@@ -441,12 +447,12 @@ impl Collab<'_> {
         if repo.visibility != Visibility::Public || !is_sealed(stored) {
             return None;
         }
-        let id = platform::decode_identifier(&stored.id).ok()?;
+        let repo_id = repo.scope().ok()?.repo_id;
         let entries = self.doc_entries(repo).await;
-        entries
-            .of_doc(kind, &id)
-            .first()
-            .map(|e| platform::encode_identifier(e.by))
+        match self.outcome(&repo_id, &entries, kind, stored) {
+            Outcome::Public(_, by) => Some(by),
+            _ => None,
+        }
     }
 
     /// The changes that write the signer's edit `changes` of their sealed `kind` document
@@ -643,7 +649,18 @@ impl Collab<'_> {
                     .fetch_document_history(&collab, DOC_ISSUE, &d.id, MAX_HISTORY)
                     .await?;
                 old.retain(|h| revision_of(h) < revision_of(&d) && is_sealed(h));
-                for h in old {
+                for mut h in old {
+                    // a history row is the same document: its creation stays the current one's
+                    if h.created_at_block_height.is_none() {
+                        h.created_at_block_height = d.created_at_block_height;
+                    }
+                    // an earlier revision a bundle published already is not published twice
+                    if matches!(
+                        self.outcome(&repo_id, &entries, kind, &h),
+                        Outcome::Public(..)
+                    ) {
+                        continue;
+                    }
                     if let Ok(k) = self.post_key(repo, &keys, kind, &h).await {
                         plan.entries.push((entry_kind, target, revision_of(&h), k));
                         revisions.push(revision_of(&h));
@@ -696,12 +713,14 @@ impl Collab<'_> {
     /// the manifest's document id. The signer's role is checked again first.
     pub async fn write_bundle(&self, repo: &RepoRef, plan: &BundlePlan) -> Result<String> {
         self.require_bundle_writer(repo).await?;
-        let bytes = bundle::encode_doc_bundle(&plan.entries).map_err(|e| {
-            Error::from(UserError::new(
-                codes::USAGE,
-                format!("the posts could not be made public: {e}"),
-            ))
-        })?;
+        // the bytes carry the keys: wiped however the write ends
+        let bytes =
+            zeroize::Zeroizing::new(bundle::encode_doc_bundle(&plan.entries).map_err(|e| {
+                Error::from(UserError::new(
+                    codes::USAGE,
+                    format!("the posts could not be made public: {e}"),
+                ))
+            })?);
         let (id, _) = self
             .repo_service()?
             .store_make_public_bundle(repo, &bytes)
@@ -759,17 +778,28 @@ impl Collab<'_> {
                 let DocKeys::Held(kr, _) = keys else {
                     return Err(LeftOutWhy::Unreadable);
                 };
-                if let Opened::Readable(f) = kr.open(kind, d) {
+                // only what the signer reads as a member (the epoch and late rules included)
+                match kr.open(kind, d) {
+                    Opened::Readable(f) if long_body(&f) => return Err(LeftOutWhy::LongBody),
+                    Opened::Readable(_) => {}
+                    _ => return Err(LeftOutWhy::Unreadable),
+                }
+                kr.obj_key(kind, d).ok_or(LeftOutWhy::Unreadable)?
+            }
+            Some(&doc::V4) => {
+                let k = self
+                    .letter_key(repo, kind, d, &enc)
+                    .await
+                    .ok_or(LeftOutWhy::NotSent)?;
+                let header = crate::keyring::header_of(kind, d).ok_or(LeftOutWhy::NotSent)?;
+                let repo_id = repo.scope().map_err(|_| LeftOutWhy::NotSent)?.repo_id;
+                if let Opened::Readable(f) = named::open_with_key(&repo_id, &header, &enc, &k) {
                     if long_body(&f) {
                         return Err(LeftOutWhy::LongBody);
                     }
                 }
-                kr.obj_key(kind, d).ok_or(LeftOutWhy::Unreadable)?
+                k
             }
-            Some(&doc::V4) => self
-                .letter_key(repo, kind, d, &enc)
-                .await
-                .ok_or(LeftOutWhy::NotSent)?,
             _ => return Err(LeftOutWhy::Unreadable),
         };
         Ok(EpochKey::from_bytes(*key))
