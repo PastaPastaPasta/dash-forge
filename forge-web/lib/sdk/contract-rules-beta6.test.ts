@@ -75,9 +75,9 @@ describe('wasm-sdk 4.2.0-beta.6 contract rules', () => {
         properties: { repoId: REPO, targetId: REPO, targetNumber: 1, kind, value: 'triaged' },
       })
     // `noState`: { notIn: ['kind', [9, 10]] } (draft and ready are author events, never member ones).
-    const broken = contract.checkDocumentPropertyConstraints(event(9))
+    const broken = contract.checkDocumentPropertyConstraints(event(9), null)
     expect(broken?.rule).toBe('noState')
     expect(broken?.violation).toBe('NotMet')
-    expect(contract.checkDocumentPropertyConstraints(event(4))).toBeUndefined()
+    expect(contract.checkDocumentPropertyConstraints(event(4), null)).toBeUndefined()
   })
 })
