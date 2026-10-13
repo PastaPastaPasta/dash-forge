@@ -270,9 +270,10 @@ let lastAttempts = 0;
  * Create a document and return it as Platform committed it. After a transport failure the SDK is
  * replaced and the write retried, but only once reads show that no earlier attempt landed: a
  * numbered write (`dense`) retried after it landed would be refused as the wrong number. From
- * protocol 14 a new document's id commits to the identity contract nonce of its transition, and
- * the SDK sends a copy of the document, so the ids an attempt may have landed under are derived
- * here from the document's entropy and the nonces around the identity's current one.
+ * protocol 14 a new document's id commits to its transition's identity contract nonce: evo-sdk
+ * 5.0.0-beta.6 sets it on `document` inside create, and beta.3 signed a copy, so the ids an
+ * attempt may have landed under are the document's own and those derived here from its entropy
+ * and the nonces around the identity's current one.
  */
 async function create(who, type, data, { contract = CONTRACT[type], key = who.identityKey, signer = who.signer } = {}) {
   if (TOTALS.has(type)) await sleep(A_BLOCK);
@@ -303,8 +304,9 @@ async function landed(who, type, contract, document) {
   const MASK = (1n << 40n) - 1n; // the identity contract nonce's low 40 bits (rs-dpp)
   const nonce = await sdk.identities.contractNonce(who.id, contract).catch(() => undefined);
   if (nonce === undefined) return undefined;
-  const ids = [];
-  for (let k = (BigInt(nonce) & MASK) + 1n; k > 0n && ids.length < 4; k--) ids.push(Document.generateId(type, who.id, contract, document.entropy, k));
+  // evo-sdk beta.6 gives `document` its committed id inside create; earlier SDKs signed a copy
+  const ids = [document.id];
+  for (let k = (BigInt(nonce) & MASK) + 1n; k > 0n && ids.length < 5; k--) ids.push(Document.generateId(type, who.id, contract, document.entropy, k));
   for (let round = 0; round < 4; round++) {
     if (round) await sleep(3000);
     for (const docIdentifier of ids) {
@@ -1107,12 +1109,16 @@ async function sameBlockEdit(I, r) {
   const data = { repoId: r.R, number: r.n + 1, tk: 0, title: 'same block', vis: 'public' };
   const base = new Document({ properties: {}, documentTypeName: 'issue', dataContractId: COLLAB, ownerId: W.id });
   const document = Document.fromObject({ ...base.toObject(), ...clean(data) }, version);
-  const nonce = BigInt(await sdk.identities.contractNonce(W.id, COLLAB));
-  const docIdentifier = Document.generateId('issue', W.id, COLLAB, document.entropy, (nonce & ((1n << 40n) - 1n)) + 1n);
-  const edited = Document.fromObject({ ...document.toObject(), $id: docIdentifier, title: 'edited in the same block', $revision: 2n }, version);
-  const created = sdk.documents.create({ document, identityKey: W.identityKey, signer: W.signer });
-  await sleep(400);
-  const replaced = sdk.documents.replace({ document: edited, identityKey: W.identityKey, signer: W.signer });
+  // evo-sdk 5.0.0-beta.6 gives the document its nonce-bound id inside create, once it has the
+  // nonce and before it broadcasts (measured: `document.id` then equals the committed id), so
+  // the edit is built from the document as soon as its id moves
+  const fresh = await connect();
+  const before = document.id.toBase58();
+  const created = fresh.documents.create({ document, identityKey: W.identityKey, signer: W.signer });
+  for (let i = 0; i < 40 && document.id.toBase58() === before; i++) await sleep(50);
+  const docIdentifier = document.id;
+  const edited = Document.fromObject({ ...document.toObject(), title: 'edited in the same block', $revision: 2n }, version);
+  const replaced = fresh.documents.replace({ document: edited, identityKey: W.identityKey, signer: W.signer });
   const [c, e] = await Promise.allSettled([created, replaced]);
   if (c.status === 'fulfilled') r.n += 1;
   const label = 'an issue created and edited right after, without waiting ($revision 2 is no create)';
