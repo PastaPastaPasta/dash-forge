@@ -35,6 +35,7 @@ import {
   loadPublishedSessionCached,
   onPrivateSessionsClosed,
   privateSessionGeneration,
+  peekPublishedSession,
   sessionUnwrapper,
   type PrivateSession,
 } from '@/lib/repo/private-session'
@@ -66,6 +67,9 @@ onPrivateSessionsClosed(() => {
 })
 
 const refreshListeners = new Set<(repoId: string) => void>()
+
+/** How long a failed read of a repository made public's published keys waits before its one retry. */
+export const PUBLISHED_RETRY_MS = 1_500
 
 /** Forget a repo's decrypted home and session (Retry / reload: read everything again). */
 export function forgetPrivateHome(repo: RepoHome['repo']): void {
@@ -120,15 +124,33 @@ export function usePrivateHome(home: RepoHome | null, addr: RepoAddress): Privat
   // once its view-session TTL runs out, so new pushes and rotations show up.
   const revision = useRevision(home)
   // A repository made public: the keys its owner published, for everyone, read before the page
-  // reads anything through the repo; none read (or none published) leaves the plain home.
+  // reads anything through the repo; none read (or none published) leaves the plain home. A
+  // failed read is tried once more first, so a passing node error does not show packs those keys
+  // open as members-only. A page mounted again starts from the keys already read.
+  const usable = (session: PrivateSession | null): PrivateSession | null => (session !== null && session.resolution.keys.size > 0 ? session : null)
   const published = useAsync<PrivateSession | null>(
     async () => {
-      const session = await loadPublishedSessionCached(sdk!, (home as RepoHome).repo, network).catch(() => null)
-      return session !== null && session.resolution.keys.size > 0 ? session : null
+      const read = (): Promise<PrivateSession> => loadPublishedSessionCached(sdk!, (home as RepoHome).repo, network)
+      const session = await read().catch(() => new Promise<void>((r) => setTimeout(r, PUBLISHED_RETRY_MS)).then(read)).catch(() => null)
+      return usable(session)
     },
     [network, repoId, ready, epoch],
-    { enabled: converted && ready && sdk !== null && home !== null },
+    {
+      enabled: converted && ready && sdk !== null && home !== null,
+      initial: () => {
+        const hit = converted && repo !== null ? peekPublishedSession(repo, network) : undefined
+        return hit === undefined ? undefined : usable(hit)
+      },
+    },
   )
+  // The plain home re-read (Retry, a write) drops the cached session and closes it a minute later:
+  // read the keys again. The ones in hand stay meanwhile, so the page never waits again.
+  const keysRead = useRef({ repoId, revision })
+  useEffect(() => {
+    const before = keysRead.current
+    keysRead.current = { repoId, revision }
+    if (converted && before.repoId === repoId && before.revision !== revision) published.reload()
+  }, [converted, repoId, revision]) // eslint-disable-line react-hooks/exhaustive-deps
   const publishedKnown = !converted || published.settled
   const keys = converted ? published.data : null
   // The home every reader starts from: with the published keys on `repo.published`, and for a
