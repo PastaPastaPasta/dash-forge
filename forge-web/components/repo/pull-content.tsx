@@ -143,7 +143,9 @@ import { useAuth } from '@/contexts/auth-context'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { TargetNotFound } from '@/components/repo/number-content'
 import { CommentOwnActions, Timeline, type CommentSlots } from '@/components/repo/timeline'
-import { MakePublicButton, makePublicWords, useQuotedMembersPost } from '@/components/repo/make-public'
+import { MakeOthersPublicButton, MakePublicBundleDialog, MakePublicButton, makePublicWords, useQuotedMembersPost } from '@/components/repo/make-public'
+import { BundleAlertsNote, PublicEditHint, editIsPublic } from '@/components/repo/made-public'
+import type { BundleRequest } from '@/lib/repo/make-public-bundle'
 import { makePostPublic, makeReviewTextPublic, provenanceOf } from '@/lib/repo/make-public-writes'
 import { ComparisonView, pullBase, pullSpec, usePullComparison } from '@/components/repo/pull-diff'
 import { CodeOwnersProvider, codeOwnerChangesIncomplete, useCodeOwnerStatus } from '@/components/repo/code-owners'
@@ -641,6 +643,19 @@ function PullPage({
   const canMember = identity !== null && isMember && !archived && guard.disabledReason === null
   // RC2 MOD: maintainers hide; readers see collapsed rows, and a hidden PR opens behind a banner.
   const canModerate = canMember && holdings.data?.maintain === true
+  // Making other people's members-only posts public (DESIGN §4.6): a maintainer's bundle. The PR's
+  // own text is never in one before phase 3; its members-only comments and reviews this reader
+  // opened are (the maintainer's own go in the same write), offered when one is someone else's.
+  const isMaintainer = holdings.data?.maintain === true
+  const canBundle = identity !== null && !archived && guard.disabledReason === null && repo.visibility === 'public'
+  const threadPosts: BundleRequest[] = canBundle
+    ? [
+        ...thread.comments.filter((c) => c.audience === 'members').map((c) => ({ type: 'comment' as const, id: c.id, author: c.author })),
+        ...thread.reviews.filter((r) => r.audience === 'members').map((r) => ({ type: 'review' as const, id: r.id, author: r.reviewer })),
+      ].map(({ type, id }) => ({ type, id }))
+    : []
+  const othersInThread =
+    thread.comments.some((c) => c.audience === 'members' && c.author !== identity) || thread.reviews.some((r) => r.audience === 'members' && r.reviewer !== identity)
   const moderation = useThreadModeration(sdk, ready, repo, thread.moderationInput, thread.moderation)
   const threadHidden = moderation?.thread ?? null
   const threadCollapsed = threadHidden !== null && !threadRevealed
@@ -676,6 +691,8 @@ function PullPage({
   const [posting, setPosting] = useState(false)
   const [commentError, setCommentError] = useState<string | null>(null)
   const [pending, setPendingState] = useState<Pending | null>(null)
+  // A maintainer's make-public dialog (DESIGN §4.6): one post of someone else's, or the thread.
+  const [bundleAsk, setBundleAsk] = useState<readonly BundleRequest[] | null>(null)
   // One confirm at a time: a write asked for while one is open (a picker applying on the same
   // click that opens another action) never silently replaces it.
   const setPending = useCallback((p: SetStateAction<Pending | null>) => setPendingState((cur) => (typeof p === 'function' ? p(cur) : p === null ? null : cur ?? p)), [])
@@ -684,6 +701,8 @@ function PullPage({
     (c: CommentView) => setPending({ kind: 'make-public', id: c.id, quoted: quotedPost(c.body, c.author, 'comment'), losesFile: c.anchor !== null }),
     [setPending, quotedPost],
   )
+  // Someone else's members-only comment, inline or not: a maintainer's bundle (DESIGN §4.6).
+  const makeOthersPublic = useCallback((c: CommentView) => setBundleAsk([{ type: 'comment', id: c.id }]), [])
   // "Close with comment": the comment a close already posted, by the confirm's intent, so a retry
   // of a close that failed after it never posts the comment twice.
   const closeComment = useRef<{ intent: string; id: string } | null>(null)
@@ -858,12 +877,13 @@ function PullPage({
       },
       viewer: identity,
       // A public comment's edit is public text: it asks first when it repeats members-only text.
-      onEdit: (c, body) => quoteCheck(publicTextOf(body, c.audience, pullAudience), membersTexts, () => setPending({ kind: 'edit-comment', id: c.id, body }), { before: c.body }),
+      onEdit: (c, body) => quoteCheck(publicTextOf(body, editIsPublic(c) ? undefined : c.audience, pullAudience), membersTexts, () => setPending({ kind: 'edit-comment', id: c.id, body }), { before: c.body }),
       onDelete: (c) => setPending({ kind: 'delete-comment', id: c.id }),
       ...(home.repo.visibility === 'public' ? { onMakePublic: makeCommentPublic } : {}),
+      ...(canBundle ? { onMakeOthersPublic: makeOthersPublic } : {}),
       ...(moderation ? { hidden: moderation } : {}),
     }),
-    [canResolve, resolvedKey, identity, setPending, moderation, quoteCheck, membersTexts, pullAudience, makeCommentPublic, home.repo.visibility],
+    [canResolve, resolvedKey, identity, setPending, moderation, quoteCheck, membersTexts, pullAudience, makeCommentPublic, makeOthersPublic, canBundle, home.repo.visibility],
   )
   const commentCost = composeCost(repo, 'comment', { body: comment.trim() }, commentFirst, audience.audience)
   const quoting = audience.audience === 'public' && quotesMembersText(comment, membersTexts)
@@ -1396,6 +1416,7 @@ function PullPage({
                 <Pencil className="h-3.5 w-3.5" aria-hidden /> Edit
               </Button>
             ) : null}
+            {canBundle && isMaintainer && othersInThread ? <MakeOthersPublicButton thread onClick={() => setBundleAsk(threadPosts)} /> : null}
           </div>
         )}
         <div className="mt-2 flex flex-wrap items-center gap-2 text-dense">
@@ -1613,6 +1634,9 @@ function PullPage({
                         onClick={() => setPending({ kind: 'make-review-public', id: r.id, text: r.body, quoted: quotedPost(r.body, r.reviewer, 'review') })}
                         disabled={writeBlocked || guard.disabledReason !== null || longEditBlock(r.long) !== null}
                       />
+                    ) : canBundle && r.reviewer !== identity && r.audience === 'members' ? (
+                      // Someone else's members-only review: a maintainer's bundle.
+                      <MakeOthersPublicButton onClick={() => setBundleAsk([{ type: 'review', id: r.id }])} />
                     ) : null
                   }
                   {...(canModerate
@@ -1643,10 +1667,13 @@ function PullPage({
                       deleteDisabled: archived || guard.disabledReason !== null,
                       onEdit: setEditingComment,
                       // A public comment's edit is public text: it asks first when it repeats members-only text.
-                      onSave: (id, body) => quoteCheck(publicTextOf(body, item.comment.audience, pull.audience), membersTexts, () => setPending({ kind: 'edit-comment', id, body }), { before: item.comment.body }),
+                      onSave: (id, body) =>
+                        quoteCheck(publicTextOf(body, editIsPublic(item.comment) ? undefined : item.comment.audience, pull.audience), membersTexts, () => setPending({ kind: 'edit-comment', id, body }), { before: item.comment.body }),
                       onDelete: (id) => setPending({ kind: 'delete-comment', id }),
                       // DESIGN §4.6: the author's own members-only comment, on a public repo.
                       ...(item.comment.audience === 'members' && repo.visibility === 'public' ? { onMakePublic: makeCommentPublic } : {}),
+                      // Someone else's: a maintainer's bundle.
+                      ...(canBundle && item.comment.audience === 'members' ? { onMakeOthersPublic: makeOthersPublic } : {}),
                       links,
                       replies: repliesOf.get(item.comment.id) ?? [],
                       trust,
@@ -1665,6 +1692,7 @@ function PullPage({
               </>
               )}
               <HiddenNote hidden={totalHidden(thread.hidden)} what="comment or review" many="comments and reviews" home={home} by={thread.hidden} shown={thread.membersOnly.length} />
+              <BundleAlertsNote alerts={thread.bundleAlerts} />
               <EventValuesNote counts={thread.eventValues} />
 
               {closedBranch !== null && guard.disabledReason === null && !archived && !mergeBusy ? (
@@ -2258,6 +2286,7 @@ function PullPage({
       </div>
 
       {quoteGate.dialog}
+      <MakePublicBundleDialog repo={repo} requests={bundleAsk} maintainer={isMaintainer} onClose={() => setBundleAsk(null)} onDone={() => refresh()} />
       <ConfirmDialog
         open={pending !== null}
         onClose={() => setPending(null)}
@@ -2502,6 +2531,7 @@ function commentSlots({
   onSave,
   onDelete,
   onMakePublic,
+  onMakeOthersPublic,
   links,
   replies,
   trust,
@@ -2525,6 +2555,8 @@ function commentSlots({
   onDelete: (id: string) => void
   /** Make the author's own members-only comment public (absent: not offered). */
   onMakePublic?: (c: CommentView) => void
+  /** Someone else's members-only comment: "Make public…" (a maintainer's bundle; absent: not offered). */
+  onMakeOthersPublic?: (c: CommentView) => void
   links: MarkdownLinks
   replies: readonly CommentView[]
   /** Who may mirror: an imported reply of theirs shows its original author and date (FG-6). */
@@ -2555,6 +2587,10 @@ function commentSlots({
         disabled={disabled || longEditBlock(c.long) !== null}
         deleteDisabled={deleteDisabled}
       />
+    ) : viewer !== null && viewer !== c.author && onMakeOthersPublic !== undefined ? (
+      <span className="ml-auto">
+        <MakeOthersPublicButton onClick={() => onMakeOthersPublic(c)} />
+      </span>
     ) : null
   const header = (
     <>
@@ -2569,6 +2605,7 @@ function commentSlots({
         <div className="space-y-2 px-4 py-3">
           <MarkdownEditor id={`edit-comment-${c.id}`} label="Edit comment" value={editing.body} onChange={(body) => onEdit({ id: c.id, body })} links={links} autoFocus />
           <BodyCounter repo={repo} text={editing.body} field="comment" long={editLong} />
+          <PublicEditHint marks={c} />
           <div className="flex gap-2">
             <Button variant="primary" size="sm" disabled={editing.body.trim() === '' || editing.body === c.body || (editLong.long ? editLong.problem !== null : utf8Length(editing.body) > BODY_MAX)} onClick={() => onSave(c.id, editing.body)}>
               Save

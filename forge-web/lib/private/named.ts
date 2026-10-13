@@ -33,10 +33,12 @@ import {
   MAX_LETTER_RECIPIENTS,
   TooLargeError,
   V4,
+  bundlesKind,
   docAdWithoutKeys,
   letterFramed,
   maxLetterPlaintext,
   padded,
+  type OpenResult,
   type PrivateDoc,
   type StoredPrivateDoc,
 } from './doc'
@@ -355,6 +357,94 @@ export async function openLetter(
   if (mine === undefined || !bytesEqual(mine, reader.identityId)) return MALFORMED
   if (!(await publicRefNamesMatch(doc, parsed.fields))) return MALFORMED
   return { status: 'readable', fields: parsed.fields, recipients: parsed.recipients, slot: found.slot }
+}
+
+// --- a maintainer's make-public bundle (DESIGN §4.6) -----------------------------------------
+
+/**
+ * `K_obj` of the letter `doc.enc` as `reader`, one of its recipients, unwraps it: what a
+ * maintainer the letter was sent to publishes in a make-public bundle (DESIGN §4.6; forge-core
+ * `named::letter_obj_key`). The whole reader rule runs first ({@link openLetter}), so null for a
+ * letter that does not open for `reader`: a letter the maintainer was not sent cannot be bundled by
+ * them. The key is checked against the full commitment again; the caller wipes it.
+ */
+export async function letterObjKey(
+  repoId: Uint8Array,
+  doc: StoredPrivateDoc,
+  ownerKeys: readonly OwnerKey[],
+  reader: LetterReader,
+): Promise<Bytes | null> {
+  if (!bundlesKind(doc.type)) return null
+  const opened = await openLetter(repoId, doc, ownerKeys, reader)
+  if (opened.status !== 'readable') return null
+  const enc = doc.enc
+  const senderPublic = senderKey(ownerKeys, new DataView(enc.buffer, enc.byteOffset).getUint32(2))
+  if (senderPublic === undefined) return null
+  const commit = enc.subarray(6, HEAD_LEN)
+  const slot = enc.subarray(HEAD_LEN + LETTER_SLOT_LEN * opened.slot, HEAD_LEN + LETTER_SLOT_LEN * (opened.slot + 1))
+  for (const secret of reader.secrets) {
+    const shared = await letterSharedKey(secret, senderPublic)
+    const key = await cbcKey(shared, 'decrypt')
+    shared.fill(0)
+    let pt: Uint8Array
+    try {
+      pt = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-CBC', iv: bytes(slot.slice(0, 16)) }, key, bytes(slot.slice(16))))
+    } catch {
+      continue
+    }
+    try {
+      if (pt.length !== SLOT_PLAINTEXT_LEN || pt[0] !== SLOT_VERSION) continue
+      const kObj = bytes(pt.slice(15))
+      if (constantTimeEqual((await objKeys(repoId, kObj)).commit, commit)) return kObj
+      kObj.fill(0)
+    } finally {
+      pt.fill(0)
+    }
+  }
+  return null
+}
+
+/**
+ * Open the letter `enc` of the document `doc` with a published per-object key `kObj` (DESIGN §4.6,
+ * a maintainer's bundle), holding no recipient key (forge-core `named::open_with_key`): the
+ * framing, then the commitment `kObj` derives against the one in `enc` **before** GCM (a mismatch
+ * is `commitMismatch`: a lying entry), then GCM under `AD'`, then the recipient list as the writer
+ * rule makes it (`n` ids, the owner in slot 0, none twice; there is no reader slot to check).
+ */
+export async function openLetterWithKey(repoId: Uint8Array, doc: PrivateDoc, enc: Uint8Array, kObj: Uint8Array): Promise<OpenResult> {
+  if (!letterFramed(doc, enc) || !bundlesKind(doc.type)) return { status: 'malformed' }
+  const n = enc[1] as number
+  const headEnd = HEAD_LEN + LETTER_SLOT_LEN * n
+  const obj = await objKeys(repoId, kObj)
+  if (!constantTimeEqual(obj.commit, enc.subarray(6, HEAD_LEN))) return { status: 'unreadable', reason: 'commitMismatch' }
+  let ad: Bytes
+  try {
+    ad = concat(docAdWithoutKeys(doc, repoId, V4), await sha256(enc.subarray(1, headEnd)))
+  } catch (e) {
+    if (e instanceof MalformedError) return { status: 'malformed' }
+    throw e
+  }
+  let pt: Uint8Array
+  try {
+    pt = new Uint8Array(
+      await crypto.subtle.decrypt({ name: 'AES-GCM', iv: bytes(enc.slice(headEnd, headEnd + NONCE_LEN)), additionalData: ad }, obj.docKey, bytes(enc.slice(headEnd + NONCE_LEN))),
+    )
+  } catch {
+    return { status: 'unreadable', reason: 'badTag' }
+  }
+  let parsed: { fields: DocFields; recipients: Uint8Array[] }
+  try {
+    parsed = parseLetterTlv(pt, doc.type)
+  } catch (e) {
+    if (e instanceof MalformedError) return { status: 'malformed' }
+    throw e
+  } finally {
+    pt.fill(0)
+  }
+  const [first] = parsed.recipients
+  if (parsed.recipients.length !== n || first === undefined || !bytesEqual(first, doc.ownerId) || hasDuplicate(parsed.recipients)) return { status: 'malformed' }
+  if (!(await publicRefNamesMatch(doc, parsed.fields))) return { status: 'malformed' }
+  return { status: 'readable', fields: parsed.fields }
 }
 
 // --- sealed artifacts under a specific-people header (DFPK version 0x02) ---------------------

@@ -103,6 +103,41 @@ export function quotedMembersPost(repoId: string, text: string, author: string):
   return null
 }
 
+/**
+ * The first members-only post of `repoId` this tab has opened that `text` quotes, other than the
+ * posts `except.ids` and the posts by `except.authors` (DESIGN §4.6, §12 item 15): what a
+ * maintainer's make-public dialog warns about, over every text it publishes, leaving out the texts
+ * that are themselves in the bundle and the maintainer's own. Null when it quotes none.
+ */
+export function quotedMembersPostExcept(
+  repoId: string,
+  text: string,
+  except: { readonly ids: ReadonlySet<string>; readonly authors: ReadonlySet<string> },
+): MembersPostMeta | null {
+  const docs = byRepo.get(repoId)
+  const metas = metaByRepo.get(repoId)
+  if (docs === undefined || metas === undefined || text.trim() === '') return null
+  for (const [docId, texts] of docs) {
+    const meta = metas.get(docId)
+    if (meta === undefined || except.ids.has(docId) || except.authors.has(meta.author)) continue
+    if (quotesMembersText(text, texts)) return meta
+  }
+  return null
+}
+
+/**
+ * Forget the members-only texts of `ids` in `repoId`: a maintainer made them public (DESIGN §4.6),
+ * so quoting them is no longer a leak.
+ */
+export function forgetMembersTexts(repoId: string, ids: Iterable<string>): void {
+  let changedAny = false
+  for (const id of ids) {
+    changedAny = byRepo.get(repoId)?.delete(id) === true || changedAny
+    metaByRepo.get(repoId)?.delete(id)
+  }
+  if (changedAny) changed(repoId)
+}
+
 /** Every members-only text of `repoId` this tab has opened (the same list until one is added). */
 export function openedMembersTexts(repoId: string): readonly string[] {
   const hit = lists.get(repoId)

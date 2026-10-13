@@ -55,7 +55,8 @@ import { prefetchDpnsNames } from './dpns'
 import { withLongBodies, withLongBody, type LongBodyState } from './long-body'
 import type { Membership } from '../rules/v2'
 import type { RerunRequest } from '../rules/ci-rerun'
-import { HiddenTally, admitAll, admittedAudience, gateFor, placeholderShown, type HiddenCounts, type MembersOnlyItem } from '../repo/private-content'
+import { contentGate } from '../repo/made-public'
+import { HiddenTally, admitAll, admittedAudience, placeholderShown, publicationMarks, type BundleAlert, type PublicationMarks, type HiddenCounts, type MembersOnlyItem } from '../repo/private-content'
 import { queryAllDocuments, type PlainDocument } from '../sdk'
 import { compareKey, type Event } from '../rules'
 import { foldThreadMetaV2, type ThreadMeta } from '../rules/parity'
@@ -67,7 +68,7 @@ import { anchorOf, countApprovals, foldPrReviewV2, groupReviewComments, meetsPol
 import { reviewerRows, sinceYourReview, summarizeReviews, type ReviewerCardRow, type ReviewSummary, type SinceYourReview } from './review-fold'
 
 /** One comment on an issue/PR. */
-export interface CommentView {
+export interface CommentView extends PublicationMarks {
   readonly id: string
   /** Who it was written for (a public repo's members-only comment reads as `members`). Absent: public. */
   readonly audience?: 'members'
@@ -138,6 +139,7 @@ export function toCommentView(d: PlainDocument): CommentView {
   return {
     id: str(d, '$id'),
     ...(admittedAudience(d) === 'members' ? { audience: 'members' as const } : {}),
+    ...publicationMarks(d),
     author: str(d, '$ownerId'),
     body: str(d, 'body'),
     createdAt: num(d, '$createdAt'),
@@ -248,7 +250,7 @@ export async function readComments(
   // keys, a public repo's plaintext ones and the members-only ones the reader's members key opens
   // (decrypted, §8). Anything else (malformed, a stranger's ciphertext, members-only without the
   // key) is counted, never shown as a blank comment.
-  const { docs } = await admitAll(gateFor(repo), 'comment', documents, tally)
+  const { docs } = await admitAll(contentGate(sdk, repo), 'comment', documents, tally)
   return docs.map(toCommentView)
 }
 
@@ -348,6 +350,8 @@ export interface IssueThread {
   readonly hidden: HiddenCounts
   /** Members-only comments this reader cannot open, shown as placeholders (D14). */
   readonly membersOnly: readonly MembersOnlyEntry[]
+  /** Maintainers' make-public entries that don't match the post they name: ignored, said once (`made-public.ts`). */
+  readonly bundleAlerts?: readonly BundleAlert[]
   /** The repo's label definitions (newest per name). */
   readonly labels: readonly LabelDef[]
   /** The repo's current members (the assignee picker's choices). */
@@ -486,8 +490,9 @@ export async function loadIssueOrMembersOnly(sdk: EvoSDK, repo: RepoRef, number:
   )
   const raw = res.page[0]
   if (raw === undefined) return null
-  // A private repo's issue opens with the reader's session keys (the gate decrypts it).
-  const gate = gateFor(repo)
+  // A private repo's issue opens with the reader's session keys (the gate decrypts it); a public
+  // repo's members-only one a maintainer made public opens for everyone (`made-public.ts`).
+  const gate = contentGate(sdk, repo, { history: true })
   const admitted = await gate.admit('issue', raw)
   if (!admitted.ok) {
     // A public repo's members-only issue this reader cannot open: its public facts (D14, D19).
@@ -534,6 +539,7 @@ export async function loadIssueOrMembersOnly(sdk: EvoSDK, repo: RepoRef, number:
 
   // Private repo: only comments that open with the reader's keys (§8); the rest are counted.
   const tally = new HiddenTally()
+  tally.alert(admitted.alerts)
   const admittedComments = (await admitAll(gate, 'comment', [...commentDocs].sort(byTime), tally)).docs.map(toCommentView)
   // Long bodies (forge-v2.md §6.3): each full text read beside the rest; none read nothing.
   const [issue, comments] = await Promise.all([
@@ -563,6 +569,7 @@ export async function loadIssueOrMembersOnly(sdk: EvoSDK, repo: RepoRef, number:
     timeline: mergeTimeline(comments, log.events, log.authorEvents, [], tally.total > 0, transitions),
     hidden: tally.value,
     membersOnly: membersOnlyEntries(tally, []),
+    ...(tally.alerts.length > 0 ? { bundleAlerts: tally.alerts } : {}),
     eventValues: eventValues(log),
     labels,
     members,
@@ -582,7 +589,7 @@ export async function readDuplicateTargets(
   numbers: readonly number[],
 ): Promise<Map<number, { readonly number: number; readonly title: string }>> {
   const out = new Map<number, { readonly number: number; readonly title: string }>()
-  const gate = gateFor(repo)
+  const gate = contentGate(sdk, repo)
   await Promise.all(
     [...new Set(numbers)].map(async (n) => {
       const [doc] = await queryAllDocuments(sdk, repoSource(repo).repoQuery(DOC.issue, { where: [['number', '==', n]] }))
@@ -637,7 +644,7 @@ export async function readDuplicatesOf(sdk: EvoSDK, repo: RepoRef, number: numbe
   }
   const marking = [...newest.values()].filter((c) => c.targetNumber !== number && closeReasonOf(c, c.targetNumber)?.duplicateOf === number)
   if (marking.length === 0) return []
-  const gate = gateFor(repo)
+  const gate = contentGate(sdk, repo)
   const out = await Promise.all(
     marking.map(async (c): Promise<DuplicateOf | null> => {
       const [doc] = await queryAllDocuments(sdk, repoSource(repo).repoQuery(DOC.issue, { where: [['number', '==', c.targetNumber]] }))
@@ -698,6 +705,8 @@ export interface PullThread {
   readonly hidden: HiddenCounts
   /** Members-only comments and reviews this reader cannot open, shown as placeholders (D14). */
   readonly membersOnly: readonly MembersOnlyEntry[]
+  /** Maintainers' make-public entries that don't match the post they name: ignored, said once (`made-public.ts`). */
+  readonly bundleAlerts?: readonly BundleAlert[]
   /** Private repos: the PR's event values not readable here, and those not encrypted. */
   readonly eventValues: EventValueCounts
   /** The PR's CI re-run requests (event kind 26), oldest first, counted or not (`rerunCounts` judges). */
@@ -771,7 +780,7 @@ export async function loadPullOrMembersOnly(
   )
   const raw = res.page[0]
   if (raw === undefined) return null
-  const gate = gateFor(repo)
+  const gate = contentGate(sdk, repo)
   const admitted = await gate.admit('patch', raw)
   if (!admitted.ok) {
     // A public repo's members-only PR this reader cannot open: its public facts (D14, D19).
@@ -866,6 +875,7 @@ export async function loadPullOrMembersOnly(
     // a review shown with its made-public text is not hidden any more
     hidden: { ...tally.value, membersOnly: Math.max(0, tally.value.membersOnly - readReviews.counted.filter((r) => r.membersOnly === true && shown.carried.has(r.id)).length) },
     membersOnly: membersOnlyEntries(tally, readReviews.counted).filter((e) => !shown.carried.has(e.item.id)),
+    ...(tally.alerts.length > 0 ? { bundleAlerts: tally.alerts } : {}),
     eventValues: eventValues(log),
     ciReruns: log.ciReruns ?? [],
     locked: isLocked(transitions),

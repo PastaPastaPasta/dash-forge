@@ -101,7 +101,9 @@ import { moderationBlocked } from '@/lib/repo/moderation-fold'
 import { isHiddenByHide } from '@/lib/view/issues-view'
 import type { HideReason } from '@/lib/rules/moderation'
 import { AuthorRolesProvider } from '@/components/repo/author-roles'
-import { MakePublicButton, makePublicWords, useQuotedMembersPost } from '@/components/repo/make-public'
+import { MakeOthersPublicButton, MakePublicBundleDialog, MakePublicButton, makePublicWords, useQuotedMembersPost } from '@/components/repo/make-public'
+import { BundleAlertsNote, EarlierVersions, EditedAfterPublicNote, MadePublicBy, PublicEditHint, editIsPublic } from '@/components/repo/made-public'
+import type { BundleRequest } from '@/lib/repo/make-public-bundle'
 import { makePostPublic, provenanceOf } from '@/lib/repo/make-public-writes'
 
 /** The write the confirm dialog is about to sign. */
@@ -216,6 +218,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const [posting, setPosting] = useState(false)
   const [commentError, setCommentError] = useState<string | null>(null)
   const [pending, setPendingState] = useState<Pending>(null)
+  // A maintainer's make-public dialog (DESIGN §4.6): one post of someone else's, or the thread.
+  const [bundleAsk, setBundleAsk] = useState<readonly BundleRequest[] | null>(null)
   // One confirm at a time: a write asked for while one is open (a picker applying on the same
   // click that opens another action) never silently replaces it.
   const setPending = useCallback((p: SetStateAction<Pending>) => setPendingState((cur) => (typeof p === 'function' ? p(cur) : p === null ? null : cur ?? p)), [])
@@ -309,10 +313,22 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const postContext = { isMember, locked: meta.locked }
   const isAuthor = identity !== null && identity === issue.author
   const canToggle = identity !== null && (isAuthor || caps.canCloseReopen)
+  // Making other people's members-only posts public (DESIGN §4.6): a maintainer's bundle. The
+  // thread's members-only posts this reader opened (the issue, its comments; the maintainer's own
+  // go in the same write); offered when one of them is someone else's.
+  const publicRepo = home.repo.visibility === 'public'
+  const threadPosts: BundleRequest[] = publicRepo
+    ? [
+        ...(issue.audience === 'members' ? [{ type: 'issue' as const, id: issue.id }] : []),
+        ...timeline.flatMap((t) => (t.kind === 'comment' && t.comment.audience === 'members' ? [{ type: 'comment' as const, id: t.comment.id }] : [])),
+      ]
+    : []
+  const othersInThread = threadPosts.some((p) => (p.type === 'issue' ? issue.author : timelineAuthor(timeline, p.id)) !== identity)
   // A private repo is written sealed (issues, comments and edits: `private-writes.ts`); only a
   // member holding the current key can, so everyone else sees why not instead of a composer.
   // An archived repo takes no writes (client-side gate: consensus cannot enforce it).
   const archived = home.config?.archived === true
+  const canBundle = identity !== null && !archived && guard.disabledReason === null
   // Locked to members: the banner speaks to this viewer, and replaces a non-member's composer (an
   // archived repo's own note wins: nobody can comment there).
   const lockApplies = meta.locked && !archived
@@ -564,7 +580,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                   onClick={() => {
                     const edit = { kind: 'editIssue' as const, title: editing.title.trim(), body: editing.body }
                     // A public issue's edit is public text: it asks first when it repeats members-only text.
-                    quoteGate.check(publicTextOf(`${edit.title}\n${edit.body}`, issue.audience), membersTexts, () => setPending(edit), { before: `${issue.title}\n${issue.body}` })
+                    quoteGate.check(publicTextOf(`${edit.title}\n${edit.body}`, editIsPublic(issue) ? undefined : issue.audience), membersTexts, () => setPending(edit), { before: `${issue.title}\n${issue.body}` })
                   }}
                 >
                   Save
@@ -595,6 +611,12 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                   title={longEditBlock(issue.long) ?? undefined}
                 />
               ) : null}
+              {canBundle && !isAuthor && issue.audience === 'members' && publicRepo ? (
+                <MakeOthersPublicButton onClick={() => setBundleAsk([{ type: 'issue', id: issue.id }])} />
+              ) : null}
+              {canBundle && isMaintainer && othersInThread && (threadPosts.length > 1 || issue.audience !== 'members') ? (
+                <MakeOthersPublicButton thread onClick={() => setBundleAsk(threadPosts)} />
+              ) : null}
             </div>
           )}
           <div className="mt-2 flex flex-wrap items-center gap-2 text-dense">
@@ -623,7 +645,9 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
             <Byline author={issue.author} createdAt={issue.createdAt} origin={origin} verb="authored" />
             {issue.audience === 'members' ? <VisibleToMembers /> : null}
             <EditedMarker createdAt={issue.createdAt} updatedAt={issue.updatedAt} />
+            <MadePublicBy marks={issue} />
           </div>
+          <EditedAfterPublicNote marks={issue} kind="issue" />
           <div className="px-4 py-3">
             {discarded.boxNote !== null && editing === null && editingComment === null ? (
                     <p role="status" className="mb-2 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="edit-draft-dropped">
@@ -634,6 +658,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
               <>
                 <MarkdownEditor id="edit-body" label="Description" value={editing.body} onChange={(body) => setEditing({ ...editing, body })} links={links} />
                 <BodyCounter repo={home.repo} text={editing.body} field="description" long={editLong} />
+                <PublicEditHint marks={issue} />
               </>
             ) : issue.body ? (
               <>
@@ -643,6 +668,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
             ) : (
               <p className="italic text-anvil-500 dark:text-anvil-400">No description.</p>
             )}
+            {editing ? null : <EarlierVersions versions={issue.publishedEarlier} />}
           </div>
         </div>
         )}
@@ -686,13 +712,17 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                 deleteDisabled: archived || guard.disabledReason !== null,
                 onEdit: setEditingComment,
                 // A public comment's edit is public text: it asks first when it repeats members-only text.
-                onSave: (id, body) => quoteGate.check(publicTextOf(body, item.comment.audience, issue.audience), membersTexts, () => setPending({ kind: 'editComment', id, body }), { before: item.comment.body }),
+                onSave: (id, body) =>
+                  quoteGate.check(publicTextOf(body, editIsPublic(item.comment) ? undefined : item.comment.audience, issue.audience), membersTexts, () => setPending({ kind: 'editComment', id, body }), { before: item.comment.body }),
                 onDelete: (id) => setPending({ kind: 'deleteComment', id }),
                 // DESIGN §4.6: the author's own members-only comment, on a public repo.
                 onMakePublic:
                   item.comment.audience === 'members' && home.repo.visibility === 'public'
                     ? (id) => setPending({ kind: 'makePublic', id, quoted: quotedPost(item.comment.body, item.comment.author, 'comment') })
                     : undefined,
+                // Someone else's members-only comment: a maintainer's bundle (DESIGN §4.6).
+                onMakeOthersPublic:
+                  canBundle && item.comment.audience === 'members' && publicRepo ? (id) => setBundleAsk([{ type: 'comment', id }]) : undefined,
                 links,
               })
               const header = item.comment.id === discarded.atComment && editingComment === null ? withDiscardedEdit(slots.header) : slots.header
@@ -713,6 +743,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         ) : null}
 
         <HiddenNote hidden={totalHidden(hidden)} what="comment" home={home} by={hidden} shown={data.membersOnly.length} />
+        <BundleAlertsNote alerts={data.bundleAlerts} />
         <EventValuesNote counts={eventValues} />
         </div>
 
@@ -845,6 +876,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
       </aside>
 
       {quoteGate.dialog}
+      <MakePublicBundleDialog repo={home.repo} requests={bundleAsk} maintainer={isMaintainer} onClose={() => setBundleAsk(null)} onDone={() => refresh()} />
       <ConfirmDialog
         open={pending !== null}
         onClose={() => setPending(null)}
@@ -969,6 +1001,7 @@ function commentSlots({
   onSave,
   onDelete,
   onMakePublic,
+  onMakeOthersPublic,
   links,
 }: {
   item: Extract<TimelineItem, { kind: 'comment' }>
@@ -985,6 +1018,8 @@ function commentSlots({
   onDelete: (id: string) => void
   /** Make the author's own members-only comment public (absent: not offered). */
   onMakePublic?: (id: string) => void
+  /** Someone else's members-only comment: "Make public…" (a maintainer's bundle; absent: not offered). */
+  onMakeOthersPublic?: (id: string) => void
   links?: MarkdownLinks
 }): CommentSlots {
   const c = item.comment
@@ -993,6 +1028,7 @@ function commentSlots({
       <div className="space-y-2 px-4 py-3">
         <MarkdownEditor id={`edit-comment-${c.id}`} label="Edit comment" value={editing.body} onChange={(body) => onEdit({ id: c.id, body })} links={links} autoFocus />
         <BodyCounter repo={repo} text={editing.body} field="comment" long={editLong} />
+        <PublicEditHint marks={c} />
         <div className="flex gap-2">
           <Button variant="primary" size="sm" disabled={editing.body.trim() === '' || editing.body === c.body || (editLong.long ? editLong.problem !== null : utf8Length(editing.body) > BODY_MAX)} onClick={() => onSave(c.id, editing.body)}>
             Save
@@ -1002,7 +1038,10 @@ function commentSlots({
       </div>
     ) }
   }
-  if (viewer === null || viewer !== c.author) return {}
+  if (viewer === null) return {}
+  if (viewer !== c.author) {
+    return onMakeOthersPublic === undefined ? {} : { header: <span className="ml-auto"><MakeOthersPublicButton onClick={() => onMakeOthersPublic(c.id)} /></span> }
+  }
   // A long comment whose rest could not be read is not edited here: the edit would drop the rest.
   const editBlock = longEditBlock(c.long)
   return {
@@ -1038,6 +1077,12 @@ function commentEditDropsOf(items: readonly TimelineItem[], id: string, opts: { 
   const comments = items.flatMap((it) => (it.kind === 'comment' ? [it.comment] : []))
   const c = comments.find((x) => x.id === id)
   return c === undefined ? {} : commentEditDrops(c, comments, opts)
+}
+
+/** The author of comment `id` on the timeline ('' when it is not there). */
+function timelineAuthor(items: readonly TimelineItem[], id: string): string {
+  for (const it of items) if (it.kind === 'comment' && it.comment.id === id) return it.comment.author
+  return ''
 }
 
 /** A comment of the timeline by id (the text an edit re-seals from). */

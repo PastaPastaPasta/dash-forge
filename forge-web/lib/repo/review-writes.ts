@@ -46,7 +46,10 @@ import { bypassValue } from '../view/pull-actions'
 import { repoSource } from './source'
 import { contractHasProperty } from './contract-shape'
 import { refuseIfBanned } from './bans'
-import { admitAll, gateFor } from './private-content'
+import { bundleCovers, contentGate } from './made-public'
+import { provenanceOf } from './make-public-writes'
+import { audienceEdit, makePublicChanges } from '../rules/make-public'
+import { admitAll } from './private-content'
 import { privateWriterWithSession, type PrivateWriter } from './private-writes'
 import type { PrivateSession } from './private-session'
 import {
@@ -449,7 +452,7 @@ export function chainReads(sdk: EvoSDK, repo: RepoRef, prId: string): SubmitRead
         }),
       )
       // A private repo's comments are compared decrypted (the gate opens them with the reader's keys).
-      const { docs } = await admitAll(gateFor(repo), 'comment', raw)
+      const { docs } = await admitAll(contentGate(sdk, repo), 'comment', raw)
       return docs.map((d) => ({
         id: str(d, '$id'),
         owner: str(d, '$ownerId'),
@@ -846,6 +849,16 @@ const PLAINTEXT_OF: Readonly<Record<'issue' | 'patch' | 'comment', readonly stri
 interface EditAudience {
   readonly audience: Audience
   readonly doc: PlainDocument | null
+  /**
+   * A maintainer's bundle covers the members-only document (DESIGN §4.6, "after a bundle"): that
+   * maintainer (base58). Its author's edit is then written as Public, never re-sealed.
+   */
+  readonly madePublicBy?: string
+}
+
+/** The audience an edit's text is written for: public once a maintainer made the document public. */
+function editTextAudience(read: EditAudience): Audience {
+  return read.madePublicBy !== undefined ? 'public' : read.audience
 }
 
 /**
@@ -857,7 +870,10 @@ interface EditAudience {
 async function editAudience(sdk: EvoSDK, repo: RepoRef, documentType: string, id: string): Promise<EditAudience> {
   if (repo.visibility === 'private') return { audience: 'members', doc: null }
   if (!(await repoHasMembersKey(sdk, repo))) return { audience: 'public', doc: null }
-  return storedAudience(sdk, repo, documentType, id)
+  const read = await storedAudience(sdk, repo, documentType, id)
+  if (read.audience === 'public' || (documentType !== DOC.issue && documentType !== DOC.comment)) return read
+  const by = await bundleCovers(sdk, repo, documentType, read.doc)
+  return by === null ? read : { ...read, madePublicBy: by }
 }
 
 /**
@@ -880,7 +896,14 @@ async function replace(
   // A public repo's document keeps the audience it was written for (DESIGN §2.4): a members-only
   // one is re-sealed as a whole under the members key, never replaced with plaintext; a public
   // one stays plaintext. Read from the stored document, failing closed ({@link editAudience}).
-  if (repo.visibility === 'public' && read.doc !== null) {
+  if (repo.visibility === 'public' && read.doc !== null && read.madePublicBy !== undefined && read.audience !== 'public') {
+    // A maintainer made it public: the author's edit is public too (the author's Make public
+    // replace, DESIGN §4.6), so the public and members never see different current text.
+    replaced = editAsPublic(documentType, read.doc, changes, seal, read.madePublicBy, auth.identityId, repo)
+    if (expectedRevision !== undefined) {
+      await precheckEdit(sdk, auth, { contractId: contractFor(repo, documentType), documentType, documentId, expectRepoId: repo.repoId, expectedRevision })
+    }
+  } else if (repo.visibility === 'public' && read.doc !== null) {
     const { audience, doc: stored } = read
     if (audience !== 'public') {
       if (seal === undefined) throw new PrivateWriteError(`this ${documentType} is members-only, and an edit keeps who can read it; nothing was written`)
@@ -925,6 +948,39 @@ async function replace(
 }
 
 /**
+ * The replace that writes the author's edit `changes` of their members-only `documentType` post
+ * `stored`, which maintainer `by` made public, as Public (forge-core `Collab::bundled_edit`): the
+ * text as it reads now (`seal.current`) with `changes` applied, then the author's edit to Public
+ * (`makePublicChanges`: the text set in plaintext, `enc` and `epoch` removed). Refused before
+ * signing when that edit would not be the author's make-public replace.
+ */
+function editAsPublic(
+  documentType: 'issue' | 'patch' | 'comment',
+  stored: PlainDocument,
+  changes: Record<string, unknown>,
+  seal: SealContext | undefined,
+  by: string,
+  signer: string,
+  repo: RepoRef,
+): Record<string, unknown> {
+  const current = seal?.current ?? {}
+  const text = (k: 'title' | 'body'): string | undefined => {
+    const v = k in changes ? changes[k] : current[k]
+    return typeof v === 'string' ? v : undefined
+  }
+  const opened = { ...(text('title') !== undefined ? { title: text('title') } : {}), ...(text('body') !== undefined ? { body: text('body') } : {}), ...provenanceOf(seal?.imported) }
+  const plan = makePublicChanges(documentType, opened)
+  const refused = (): PrivateWriteError =>
+    new PrivateWriteError(`@${by} made this ${documentType === 'patch' ? 'pull request' : documentType} public, so an edit of it is public too, and this one can't be; nothing was written`)
+  if ('error' in plan) throw refused()
+  const drops = Object.fromEntries(Object.entries(changes).filter(([k, v]) => v === undefined && REFERENCE_FIELDS.includes(k)))
+  const replaced: Record<string, unknown> = { ...plan.set, ...Object.fromEntries(plan.remove.map((f) => [f, undefined])), ...drops }
+  const author = asIdentifierString(stored['$ownerId'])
+  if (audienceEdit(repo.visibility, contentDocOf(documentType, stored), contentDocOf(documentType, { ...stored, ...replaced }), author, signer) !== 'makesPublic') throw refused()
+  return replaced
+}
+
+/**
  * Edit an issue's or PR's title and/or body (its author only; `number` and the PR's head, refs and
  * draft flag are immutable). A body longer than its field has its full text stored first
  * (forge-v2.md §6.3); in a private repo `seal.current` holds the stored fields (a long body's
@@ -946,7 +1002,8 @@ export async function updateTarget(
   // go to a plaintext artifact (an artifact stored is public for good).
   const read = await editAudience(sdk, repo, input.type, input.id)
   if (input.body !== undefined && input.body !== '') {
-    changes['body'] = await longBodyField(sdk, auth, repo, input.type, input.body, others, input.intent, read.audience, { type: input.type, id: input.id })
+    // Made public by a maintainer, the edit is public text: no stored members-only document to guard.
+    changes['body'] = await longBodyField(sdk, auth, repo, input.type, input.body, others, input.intent, editTextAudience(read), read.madePublicBy === undefined ? { type: input.type, id: input.id } : undefined)
   } else if (input.body !== undefined) changes['body'] = undefined
   else if (repo.visibility === 'private' && typeof input.seal?.current['body'] === 'string') {
     // A longer title leaves a private long body less room: its prefix is cut again (same artifact).
@@ -978,7 +1035,7 @@ export async function updateComment(
   const read = await editAudience(sdk, repo, 'comment', input.id)
   // A body longer than its field: its full text stored first (forge-v2.md §6.3); an inline
   // comment's path shares a private comment's room.
-  const body = await longBodyField(sdk, auth, repo, 'comment', input.body, input.seal?.current ?? {}, input.intent, read.audience, { type: 'comment', id: input.id })
+  const body = await longBodyField(sdk, auth, repo, 'comment', input.body, input.seal?.current ?? {}, input.intent, editTextAudience(read), read.madePublicBy === undefined ? { type: 'comment', id: input.id } : undefined)
   const changes: Record<string, unknown> = { body }
   if (input.dropReviewId) changes['reviewId'] = undefined
   if (input.dropReplyTo) changes['replyTo'] = undefined

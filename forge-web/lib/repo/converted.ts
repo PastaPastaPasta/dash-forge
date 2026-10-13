@@ -71,28 +71,31 @@ export async function withPublishedKeys(
 }
 
 /**
- * Every make-public bundle (kind 7) the owner of public `repo` recorded, each copy's bytes checked
- * against its `packHash` as any stored artifact's are. A bundle no copy of which can be read is
- * left out: it publishes nothing.
+ * Every make-public bundle (kind 7) of public `repo` recorded by one of `uploaders` (base58; by
+ * default the repo's owner alone, whose 0x06 entries {@link withPublishedKeys} reads), each copy's
+ * bytes checked against its `packHash` as any stored artifact's are, with its uploader as the
+ * bundle's author. A maintainer's bundle of documents (`made-public.ts`) passes the current
+ * maintainers and the owner: anyone else's is never downloaded. A bundle no copy of which can be
+ * read is left out: it publishes nothing.
  */
-export async function readMakePublicBundles(sdk: EvoSDK, repo: RepoRef): Promise<PublishedBundle[]> {
+export async function readMakePublicBundles(sdk: EvoSDK, repo: RepoRef, uploaders: ReadonlySet<string> = new Set([repo.ownerId])): Promise<PublishedBundle[]> {
   if (repo.visibility !== 'public') return []
-  const manifests = (await readManifestsOfKind(sdk, repo, PACK_KIND.MAKE_PUBLIC)).filter((m) => m.uploader === repo.ownerId)
+  const manifests = (await readManifestsOfKind(sdk, repo, PACK_KIND.MAKE_PUBLIC)).filter((m) => uploaders.has(m.uploader))
   if (manifests.length === 0) return []
-  const byHash = new Map<string, PackManifest[]>()
+  // One bundle per (author, bytes): the same bytes recorded by two maintainers are two bundles.
+  const byAuthorHash = new Map<string, PackManifest[]>()
   for (const m of manifests) {
-    const h = m.packHash.toLowerCase()
-    byHash.set(h, [...(byHash.get(h) ?? []), m])
+    const k = `${m.uploader}:${m.packHash.toLowerCase()}`
+    byAuthorHash.set(k, [...(byAuthorHash.get(k) ?? []), m])
   }
   // Loaded on demand: the browse plane reads through the session module this one feeds.
   const { loadStoredArtifactBytes } = await import('../view/browse-source')
   const plain = withoutSessions(repo)
-  const owner = decodeIdentifier(repo.ownerId)
   const out: PublishedBundle[] = []
-  for (const copies of byHash.values()) {
+  for (const copies of byAuthorHash.values()) {
     const first = copies[0] as PackManifest
     try {
-      out.push({ owner, bytes: await loadStoredArtifactBytes(sdk, plain, { ...first, copies }) })
+      out.push({ owner: decodeIdentifier(first.uploader), bytes: await loadStoredArtifactBytes(sdk, plain, { ...first, copies }) })
     } catch {
       // unreadable: it publishes nothing
     }

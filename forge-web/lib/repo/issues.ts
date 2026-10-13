@@ -47,7 +47,8 @@ import {
 import { repoChromeTimelines, type ChromeTimelines } from './chrome'
 import { configBundleOf, readConfigHistory } from './config'
 import { publicRefKey, readRefUpdates, refUpdatesFromRows } from './refs'
-import { HiddenTally, LETTER_TITLE, MEMBERS_ONLY_ROW, SEALED_EPOCH, admittedAudience, gateFor, isSealedDoc, readableEvents, type ContentGate } from './private-content'
+import { contentGate } from './made-public'
+import { HiddenTally, LETTER_TITLE, MEMBERS_ONLY_ROW, SEALED_EPOCH, admittedAudience, isSealedDoc, publicationMarks, publishedEarlierOf, readableEvents, type ContentGate, type PublicationMarks, type PublishedVersion } from './private-content'
 import { onPrivateSessionEnded } from './private-session'
 import { repoSource } from './source'
 import { base64ToHex, hexToBase64 } from '../sdk'
@@ -71,7 +72,7 @@ export function titleOf(doc: PlainDocument, type: 'issue' | 'patch' = 'issue'): 
 }
 
 /** An issue with its folded state. */
-export interface IssueView {
+export interface IssueView extends PublicationMarks {
   readonly id: string
   /** Who it was written for (a public repo's members-only issue reads as `members`). Absent: public. */
   readonly audience?: 'members'
@@ -119,6 +120,8 @@ export interface IssueView {
    * an error (the list indexes, `./issue-index`, `./pull-index`).
    */
   readonly stateComplete: boolean
+  /** Earlier versions a maintainer made public, oldest first (a thread page reads them; DESIGN §4.6). */
+  readonly publishedEarlier?: readonly PublishedVersion[]
 }
 
 /** A document's `$updatedAt` (its `$createdAt` when never edited or not recorded). */
@@ -148,6 +151,8 @@ export function issueViewOf(issueDoc: PlainDocument, log: TargetLog, code: numbe
   return {
     id: str(issueDoc, '$id'),
     ...audienceOf(issueDoc),
+    ...publicationMarks(issueDoc),
+    ...(publishedEarlierOf(issueDoc).length > 0 ? { publishedEarlier: publishedEarlierOf(issueDoc) } : {}),
     number: num(issueDoc, 'number'),
     title: titleOf(issueDoc),
     body: str(issueDoc, 'body'),
@@ -299,7 +304,7 @@ export function verdictFromCode(code: number): { verdict: VerdictName; code: num
 }
 
 /** A `review` document, flattened. */
-export interface ReviewView {
+export interface ReviewView extends PublicationMarks {
   readonly id: string
   readonly reviewer: string
   readonly verdict: VerdictName
@@ -677,7 +682,7 @@ export async function readReviews(
   // The reviews this reader can read. A private review whose `enc` does not open is left out
   // entirely (`private-repos.md` §8.1); a public repo's members-only review that does not open is
   // a placeholder here, and its verdict still counts ({@link readableReviews}, DESIGN D15).
-  return (await readableReviews(gateFor(repo), repo.visibility, raw, tally)).shown
+  return (await readableReviews(contentGate(sdk, repo), repo.visibility, raw, tally)).shown
 }
 
 /**
@@ -700,10 +705,12 @@ export async function readableReviews(
   const rows: ReadReview[] = []
   const views = new Map<string, ReviewView>()
   for (const { d, a } of read) {
+    tally.alert(a.alerts)
     if (!a.ok) tally.add(a.reason, a.placeholder)
     // Only a well-formed sealed review has a placeholder: a malformed one never counts.
     if (!a.ok && a.placeholder === undefined) continue
-    const view = a.ok ? reviewViewOf(a.doc) : { ...reviewViewOf(d), body: '', membersOnly: true as const }
+    const after = !a.ok && a.placeholder?.editedAfterBy !== undefined ? { editedAfterPublicBy: a.placeholder.editedAfterBy } : {}
+    const view = a.ok ? reviewViewOf(a.doc) : { ...reviewViewOf(d), body: '', membersOnly: true as const, ...after }
     if (a.ok) shown.push(view)
     views.set(view.id, view)
     rows.push({
@@ -727,6 +734,7 @@ export function reviewViewOf(d: PlainDocument): ReviewView {
   return {
     id: str(d, '$id'),
     ...(admittedAudience(d) === 'members' ? { audience: 'members' as const } : {}),
+    ...publicationMarks(d),
     reviewer: str(d, '$ownerId'),
     verdict,
     verdictCode: code,

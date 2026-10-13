@@ -642,6 +642,11 @@ export function MembersOnlyRow({ entry }: { entry: MembersOnlyEntry }): JSX.Elem
         {membersOnlyTitle(item.type, isLetter(item) ? 'specificPeople' : 'members')} · <Author identityId={item.author} link={false} className="align-middle" />
         {did !== null ? ` ${did}` : ''} · <span className={MUTED}>{timeAgo(item.createdAt)}</span>
       </span>
+      {item.editedAfterBy !== undefined ? (
+        <span className={`basis-full ${MUTED}`} data-testid="edited-after-public">
+          Edited after <Author identityId={item.editedAfterBy} link={false} className="align-middle" /> made it public; the new text is members-only.
+        </span>
+      ) : null}
     </div>
   )
 }

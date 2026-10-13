@@ -43,6 +43,20 @@ import { refHistory } from './refHistory'
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
 import { encodeTlv, type DocFields } from '../private/tlv'
 import { audienceEdit, makePublicChanges, reviewTextCarriers, type CarrierComment, type CarrierReview } from './make-public'
+import {
+  EpochKeys,
+  docEntries,
+  encodeDocBundle,
+  letterObjKey,
+  membersObjKey,
+  openLetterWithKey,
+  openMembersWithKey,
+  privateId,
+  readRevision,
+  type OpenResult,
+  type PrivateDoc,
+  type PrivateDocType,
+} from '../private'
 import { anchorContent } from '../repo/members-anchor'
 import { longBodyStoredText, needsLongBodyArtifact, openPublicLongBody, parseLongBody } from './long-body'
 import { rerunCounts, rerunFields, rerunRequest, type RerunEvent } from './ci-rerun'
@@ -919,6 +933,123 @@ function stateOf(v: Vector, inp: StateInput): [number, string | null] {
   return [inp.sum as number, inp.mergeOid ?? null]
 }
 
+/** The maintainer's make-public bundle ops of the `make_public` case (WebCrypto: asynchronous). */
+const BUNDLE_OPS: ReadonlySet<string> = new Set(['bundleKey', 'bundleOpen', 'bundleRead', 'bundleEncode'])
+
+/** The private-doc header of a bundle vector (the `doc` of the other private vectors). */
+const BUNDLE_DOC_KEYS = ['type', 'vis', 'ownerId', 'epoch', 'number', 'targetId', 'patchId', 'baseRefNameHash', 'sourceRefNameHash', 'id']
+
+interface BundleDocIn {
+  readonly type: PrivateDocType
+  readonly vis?: 'public' | 'private'
+  readonly ownerId: string
+  readonly epoch: number
+  readonly number?: number
+  readonly targetId?: string
+  readonly patchId?: string
+  readonly baseRefNameHash?: string
+  readonly sourceRefNameHash?: string
+  readonly id?: string
+}
+
+function bundleDoc(d: BundleDocIn): PrivateDoc & { readonly id?: Uint8Array } {
+  const opt = (h: string | undefined): Uint8Array | undefined => (h === undefined ? undefined : hexToBytes(h))
+  return {
+    type: d.type,
+    ...(d.vis !== undefined ? { vis: d.vis } : {}),
+    ownerId: privateId(d.ownerId),
+    epoch: d.epoch,
+    ...(d.number !== undefined ? { number: d.number } : {}),
+    ...(d.targetId !== undefined ? { targetId: hexToBytes(d.targetId) } : {}),
+    ...(d.patchId !== undefined ? { patchId: hexToBytes(d.patchId) } : {}),
+    ...(d.baseRefNameHash !== undefined ? { baseRefNameHash: opt(d.baseRefNameHash) } : {}),
+    ...(d.sourceRefNameHash !== undefined ? { sourceRefNameHash: opt(d.sourceRefNameHash) } : {}),
+    ...(d.id !== undefined ? { id: hexToBytes(d.id) } : {}),
+  }
+}
+
+function openedJson(r: OpenResult): unknown {
+  if (r.status === 'readable') return { status: 'readable', fields: r.fields }
+  return r.status === 'unreadable' ? { status: 'unreadable', reason: r.reason } : { status: 'malformed' }
+}
+
+/** The `make_public__bundle_*` ops (DESIGN §4.6, a maintainer's bundle; forge-core `run_make_public_bundle`). */
+async function runBundleVector(v: Vector): Promise<void> {
+  const op = (v.input as { readonly op: string }).op
+  const docShape = { doc: BUNDLE_DOC_KEYS }
+  if (op === 'bundleKey') {
+    onlyKeys(v, ['op', 'repoId', 'doc', 'enc', 'epochKey', 'epoch', 'ownerKeys', 'reader'], { ...docShape, ownerKeys: ['id', 'purpose', 'keyType', 'data'], reader: ['identityId', 'keys'] })
+    const inp = v.input as {
+      readonly repoId: string
+      readonly doc: BundleDocIn
+      readonly enc: string
+      readonly epochKey?: string
+      readonly epoch?: number
+      readonly ownerKeys?: readonly { readonly id: number; readonly purpose: number; readonly keyType: number; readonly data: string }[]
+      readonly reader?: { readonly identityId: string; readonly keys: readonly string[] }
+    }
+    const repoId = hexToBytes(inp.repoId)
+    const doc = bundleDoc(inp.doc)
+    const enc = hexToBytes(inp.enc)
+    let got: Uint8Array | null
+    if (inp.epochKey !== undefined && inp.epoch !== undefined) {
+      got = await membersObjKey(await EpochKeys.import(repoId, inp.epoch, hexToBytes(inp.epochKey)), doc, enc)
+    } else {
+      expect(inp.reader, `vector ${v.name}: a letter vector names its reader`).toBeDefined()
+      const reader = inp.reader as NonNullable<typeof inp.reader>
+      got = await letterObjKey(
+        repoId,
+        { ...doc, enc },
+        (inp.ownerKeys ?? []).map((k) => ({ id: k.id, purpose: k.purpose, keyType: k.keyType, data: hexToBytes(k.data) })),
+        { identityId: hexToBytes(reader.identityId), secrets: reader.keys.map((k) => hexToBytes(k)) },
+      )
+    }
+    expect({ kObj: got === null ? null : bytesToHex(got) }).toEqual(v.expected)
+  } else if (op === 'bundleOpen') {
+    onlyKeys(v, ['op', 'repoId', 'doc', 'enc', 'key'], docShape)
+    const inp = v.input as { readonly repoId: string; readonly doc: BundleDocIn; readonly enc: string; readonly key: string }
+    const [repoId, enc, key] = [hexToBytes(inp.repoId), hexToBytes(inp.enc), hexToBytes(inp.key)]
+    const doc = bundleDoc(inp.doc)
+    const got = enc[0] === 0x04 ? await openLetterWithKey(repoId, doc, enc, key) : await openMembersWithKey(repoId, doc, enc, key)
+    expect(openedJson(got)).toEqual(v.expected)
+  } else if (op === 'bundleRead') {
+    onlyKeys(v, ['op', 'repoId', 'visibility', 'maintainers', 'bundles', 'docs'], { bundles: ['owner', 'bytes'], docs: ['doc', 'enc', 'revision'] })
+    const inp = v.input as {
+      readonly repoId: string
+      readonly visibility: v2.Visibility
+      readonly maintainers: readonly string[]
+      readonly bundles: readonly { readonly owner: string; readonly bytes: string }[]
+      readonly docs: readonly { readonly doc: BundleDocIn; readonly enc: string; readonly revision: number }[]
+    }
+    const repoId = hexToBytes(inp.repoId)
+    const entries = docEntries(
+      inp.visibility === 'public',
+      inp.maintainers.map((m) => hexToBytes(m)),
+      inp.bundles.map((b) => ({ owner: hexToBytes(b.owner), bytes: hexToBytes(b.bytes) })),
+    )
+    const reads: unknown[] = []
+    const alerts: unknown[] = []
+    for (const d of inp.docs) {
+      for (const k of Object.keys(d.doc)) expect(BUNDLE_DOC_KEYS, `vector ${v.name}: unknown doc key`).toContain(k)
+      const doc = bundleDoc(d.doc)
+      const id = doc.id as Uint8Array
+      const { read, alerts: found } = await readRevision(repoId, doc, d.revision, hexToBytes(d.enc), entries.ofDoc(doc.type, id))
+      const idHex = bytesToHex(id)
+      alerts.push(...found.map((m) => ({ id: idHex, revision: m.revision, by: bytesToHex(m.by) })))
+      if (read.state === 'public') reads.push({ id: idHex, revision: d.revision, state: 'public', by: bytesToHex(read.by), fields: read.fields })
+      else if (read.state === 'editedAfter') reads.push({ id: idHex, revision: d.revision, state: 'editedAfter', by: bytesToHex(read.by), publishedRevision: read.publishedRevision })
+      else reads.push({ id: idHex, revision: d.revision, state: 'none' })
+    }
+    expect({ reads, alerts }).toEqual(v.expected)
+  } else {
+    expect(op).toBe('bundleEncode')
+    onlyKeys(v, ['op', 'entries'], { entries: ['kind', 'target', 'revision', 'key'] })
+    const inp = v.input as { readonly entries: readonly { readonly kind: number; readonly target: string; readonly revision: number; readonly key: string }[] }
+    const bytes = encodeDocBundle(inp.entries.map((e) => ({ kind: e.kind, target: hexToBytes(e.target), revision: e.revision, key: hexToBytes(e.key) })))
+    expect({ bytes: bytesToHex(bytes) }).toEqual(v.expected)
+  }
+}
+
 /** The signature cases (`./signature`): asynchronous, since OpenPGP.js is. */
 const SIGNATURE_CASES: ReadonlySet<string> = new Set(['pubkey_entry', 'commit_signature', 'tag_signature'])
 
@@ -1024,6 +1155,7 @@ describe('FORGE_RULES conformance vectors', () => {
     it(`v2 ${v.case} :: ${v.name}`, async () => {
       if (SIGNATURE_CASES.has(v.case)) await runSignatureVector(v)
       else if (HANDOFF_CASES.has(v.case)) await runHandoffVector(v)
+      else if (v.case === 'make_public' && BUNDLE_OPS.has((v.input as { readonly op: string }).op)) await runBundleVector(v)
       else runVector(v)
     })
   }

@@ -4,8 +4,12 @@
  * `K_e` is imported once as a non-extractable WebCrypto HKDF key with `salt = repoId`, which
  * makes WebCrypto's HKDF (Extract then Expand) equal to the spec's
  * `HKDF-Expand(PRK_e = HMAC(repoId, K_e), info)`. Every subkey is derived from it with
- * `deriveKey` as a non-extractable AES-GCM or HMAC key; only `KCV_e` and `COMMIT_e`, which are
- * compared as bytes, go through `deriveBits`.
+ * `deriveKey` as a non-extractable AES-GCM or HMAC key. The `deriveBits` exceptions: `KCV_e` and
+ * `COMMIT_e`, which are compared as bytes; and a members-only document's per-object key `K_obj`
+ * ({@link EpochKeys.objKey}), which is re-imported for its own subkeys and, raw, is what a
+ * maintainer's make-public bundle publishes for that one document revision (DESIGN §4.6;
+ * `doc.ts` `membersObjKey`). `K_obj` is bound to the document's nonce and AD, so it opens that
+ * revision and nothing else; callers wipe it as soon as the seal, the open or the bundle is done.
  */
 
 import { bytes, concat, isU32, randomBytes, sha256, utf8, u32, wipe, type Bytes } from './bytes'

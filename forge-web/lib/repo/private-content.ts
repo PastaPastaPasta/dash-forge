@@ -86,6 +86,25 @@ export interface MembersOnlyItem {
   readonly replyTo: string | null
   readonly audience: Exclude<Audience, 'public'>
   readonly why: Unopened
+  /**
+   * A maintainer (base58) made an earlier version of it public, and its author sealed it again
+   * afterwards (DESIGN §4.6): "Edited after @m made it public; the new text is members-only."
+   */
+  readonly editedAfterBy?: string
+}
+
+/**
+ * A maintainer's make-public entry whose key does not match the post it names (a lying entry,
+ * `lib/private/bundle.ts`): ignored, and said once per page. All base58.
+ */
+export interface BundleAlert {
+  /** The post's `$id`. */
+  readonly id: string
+  readonly revision: number
+  /** The maintainer whose entry it is. */
+  readonly by: string
+  /** The post's author. */
+  readonly author: string
 }
 
 /**
@@ -100,10 +119,21 @@ export function placeholderShown(p: MembersOnlyItem): boolean {
 export class HiddenTally {
   private counts: Record<HiddenReason, number> = { ...NO_HIDDEN }
   private items: MembersOnlyItem[] = []
+  private lying = new Map<string, BundleAlert>()
 
   add(reason: HiddenReason, placeholder?: MembersOnlyItem): void {
     this.counts[reason] += 1
     if (placeholder !== undefined) this.items.push(placeholder)
+  }
+
+  /** Keep the lying make-public entries a read met (each once). */
+  alert(alerts: readonly BundleAlert[] | undefined): void {
+    for (const a of alerts ?? []) this.lying.set(`${a.id}:${a.revision}:${a.by}`, a)
+  }
+
+  /** The lying make-public entries met, in read order. */
+  get alerts(): readonly BundleAlert[] {
+    return [...this.lying.values()]
   }
 
   get value(): HiddenCounts {
@@ -120,9 +150,13 @@ export class HiddenTally {
   }
 }
 
-export type Admission =
+export type Admission = (
   | { readonly ok: true; readonly doc: PlainDocument }
   | { readonly ok: false; readonly reason: HiddenReason; readonly placeholder?: MembersOnlyItem }
+) & {
+  /** Lying make-public entries met on the way (`made-public.ts`): the post reads as if they were not there. */
+  readonly alerts?: readonly BundleAlert[]
+}
 
 /** Admits a repo's content documents (see the module doc). */
 export interface ContentGate {
@@ -142,7 +176,7 @@ const KIND_OF: Readonly<Record<Exclude<PrivateDocType, 'event'>, ContentKind>> =
 }
 
 /** Whether `doc` is well formed for `repo` as a `type` (an event's shape is checked by its reader). */
-function wellFormedAs(repo: RepoRef, type: PrivateDocType, doc: PlainDocument): boolean {
+export function wellFormedAs(repo: RepoRef, type: PrivateDocType, doc: PlainDocument): boolean {
   return type === 'event' || wellFormed(repo, KIND_OF[type], doc)
 }
 
@@ -262,7 +296,7 @@ export function blockHeightOf(doc: PlainDocument, field: '$createdAtBlockHeight'
  * `converted`, keeps its earlier documents private). Null when a field the AD needs cannot be
  * decoded, or the stamp cannot be this repo's (the caller treats that as malformed).
  */
-function storedPrivateDoc(type: PrivateDocType, doc: PlainDocument, repository: Visibility, converted = false): StoredPrivateDoc | null {
+export function storedPrivateDoc(type: PrivateDocType, doc: PlainDocument, repository: Visibility, converted = false): StoredPrivateDoc | null {
   const ownerId = idField(doc, '$ownerId')
   const id = idField(doc, '$id')
   const enc = bytesField(doc, 'enc')
@@ -341,8 +375,69 @@ export function admittedAudience(doc: PlainDocument): Audience {
   return a === 'members' || a === 'specificPeople' ? a : 'public'
 }
 
+/**
+ * Where an admitted members-only document a maintainer made public names that maintainer
+ * (base58; DESIGN §4.6, `made-public.ts`): it reads as public for everyone, members included, and
+ * carries no {@link AUDIENCE_FIELD}. "Made public by @m".
+ */
+export const MADE_PUBLIC_BY = '$madePublicBy'
+
+/**
+ * Where an admitted document says its author sealed it again after a maintainer made an earlier
+ * version public: the maintainer (base58). An issue is then shown as that version (Platform keeps
+ * an issue's history); a comment or review keeps its members-only text.
+ */
+export const EDITED_AFTER_PUBLIC = '$editedAfterPublic'
+
+/** Where an admitted issue keeps its earlier versions maintainers made public ({@link PublishedVersion}), oldest first. */
+export const PUBLISHED_EARLIER = '$publishedEarlier'
+
+/** An earlier version of an issue a maintainer made public. */
+export interface PublishedVersion {
+  readonly revision: number
+  readonly title: string
+  readonly body: string
+  /** When that version was saved (ms). */
+  readonly at: number
+  /** The maintainer (base58). */
+  readonly by: string
+}
+
+/** The maintainer who made an admitted document public, or null. */
+export function madePublicBy(doc: PlainDocument): string | null {
+  const v = doc[MADE_PUBLIC_BY]
+  return typeof v === 'string' && v !== '' ? v : null
+}
+
+/** The maintainer after whose making it public the author sealed an admitted document again, or null. */
+export function editedAfterPublicBy(doc: PlainDocument): string | null {
+  const v = doc[EDITED_AFTER_PUBLIC]
+  return typeof v === 'string' && v !== '' ? v : null
+}
+
+/** What a view of an admitted post says about a maintainer having made it public (absent: nothing). */
+export interface PublicationMarks {
+  /** "Made public by @m": the maintainer (base58). */
+  readonly madePublicBy?: string
+  /** Its author sealed it again after @m made it public: the maintainer (base58). */
+  readonly editedAfterPublicBy?: string
+}
+
+/** The {@link PublicationMarks} of an admitted document. */
+export function publicationMarks(doc: PlainDocument): PublicationMarks {
+  const by = madePublicBy(doc)
+  const after = editedAfterPublicBy(doc)
+  return { ...(by !== null ? { madePublicBy: by } : {}), ...(after !== null ? { editedAfterPublicBy: after } : {}) }
+}
+
+/** The earlier versions of an admitted issue maintainers made public. */
+export function publishedEarlierOf(doc: PlainDocument): readonly PublishedVersion[] {
+  const v = doc[PUBLISHED_EARLIER]
+  return Array.isArray(v) ? (v as PublishedVersion[]) : []
+}
+
 /** The plaintext-shaped copy of an opened document: `enc` and `epoch` dropped, fields set. */
-function asPlaintext(doc: PlainDocument, fields: DocFields): PlainDocument {
+export function asPlaintext(doc: PlainDocument, fields: DocFields): PlainDocument {
   const out: PlainDocument = { ...doc }
   delete out['enc']
   delete out['epoch']
@@ -493,6 +588,7 @@ export async function admitAll(
   const out: PlainDocument[] = []
   for (const d of docs) {
     const a = await gate.admit(type, d)
+    tally.alert(a.alerts)
     if (a.ok) out.push(a.doc)
     else tally.add(a.reason, a.placeholder)
   }

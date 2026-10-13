@@ -22,6 +22,7 @@ import { queryAllDocuments } from '../sdk'
 import { DOC, asIdentifierString, type RepoRef } from './contract'
 import { onRepoInvalidated } from './issues'
 import { repoHasMembersKey } from './members-writes'
+import { withBundles } from './made-public'
 import { defaultGate, placeholderShown } from './private-content'
 import { repoSource } from './source'
 
@@ -72,7 +73,8 @@ export async function membersOnlyCommentCounts(sdk: EvoSDK, repo: RepoRef, threa
   )
   // Per thread: the comments read, and how many of them are members-only.
   const read = new Map<string, { all: number; sealed: number }>()
-  const gate = defaultGate(repo)
+  // A post a maintainer made public is public for everyone: not in the label.
+  const gate = withBundles(sdk, repo, defaultGate(repo))
   for (const d of docs) {
     const target = asIdentifierString(d['targetId'])
     const t = read.get(target) ?? { all: 0, sealed: 0 }
