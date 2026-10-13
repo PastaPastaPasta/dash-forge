@@ -208,11 +208,9 @@ pub struct MembersPatch {
 struct Members {
     /// Sealed for members or specific people (a seal error reads as such).
     sealed: bool,
-    /// A patch's base named by its public sha256.
-    base_public: bool,
-    /// A patch's source named by its public sha256.
-    source_public: bool,
-    /// The real head behind a patch's `headOid` or a head update's `oid`.
+    /// A members-only pull request: how it names its branches and its head.
+    patch: Option<MembersPatch>,
+    /// The real head behind a head update's `oid`.
     head: Option<HeadBlind>,
 }
 
@@ -261,8 +259,9 @@ pub fn seal_members_head_update_props(
     )
 }
 
-/// [`seal_members_patch_props`] / [`seal_members_head_update_props`] under the epoch keys `keys`
-/// with a caller-chosen nonce: the conformance vectors only.
+/// [`seal_members_patch_props`] (a `patch`) / [`seal_members_head_update_props`] (an `event`,
+/// whose head is `patch.head`) under the epoch keys `keys` with a caller-chosen nonce: the
+/// conformance vectors only.
 #[cfg(any(test, feature = "vectors"))]
 pub fn seal_members_props_with_nonce(
     keys: &EpochKeys,
@@ -277,7 +276,15 @@ pub fn seal_members_props_with_nonce(
         kind,
         owner,
         props,
-        &Members::patch(patch),
+        &if kind == DocKind::Event {
+            Members {
+                sealed: true,
+                patch: None,
+                head: patch.head.clone(),
+            }
+        } else {
+            Members::patch(patch)
+        },
         |h, f| {
             let mut h = h.clone();
             h.vis = crate::rules::v2::Visibility::Public;
@@ -290,9 +297,8 @@ impl Members {
     fn patch(p: &MembersPatch) -> Self {
         Self {
             sealed: true,
-            base_public: p.base_public,
-            source_public: p.source_public,
-            head: p.head.clone(),
+            patch: Some(p.clone()),
+            head: None,
         }
     }
 }
@@ -442,13 +448,18 @@ fn seal_props_inner(
                         }
                     })
                 };
-                header.base_ref_name_hash = hash(&fields.base_ref_name, extra.base_public);
-                header.source_ref_name_hash = hash(&fields.source_ref_name, extra.source_public);
-                if extra.source_public && extra.head.is_some() {
+                let patch = extra.patch.as_ref();
+                let (base_public, source_public) =
+                    patch.map_or((false, false), |p| (p.base_public, p.source_public));
+                let head = patch.and_then(|p| p.head.as_ref());
+                header.base_ref_name_hash = hash(&fields.base_ref_name, base_public);
+                header.source_ref_name_hash = hash(&fields.source_ref_name, source_public);
+                // a public source has a plain head; a members-only one never does
+                if patch.is_some() && source_public == head.is_some() {
                     return Err(sealing_error(kind, members, PrivateError::Malformed));
                 }
                 let plain = props.get("headOid").and_then(FieldValue::as_bytes);
-                seal_head(extra.head.as_ref(), plain.as_deref(), &mut fields)
+                seal_head(head, plain.as_deref(), &mut fields)
                     .map_err(|e| sealing_error(kind, members, e))?;
                 for (name, h) in [
                     ("baseRefNameHash", header.base_ref_name_hash),
@@ -913,6 +924,23 @@ mod members_pr_tests {
             salt: p2.salt,
         };
         assert!(seal_members_head_update_props(&lane(0), OWNER, props.clone(), &wrong).is_err());
+        // a members-only source without its blind would put the real head in plaintext
+        let mut patch = BTreeMap::new();
+        for (k, v) in [
+            ("number", FieldValue::integer(1)),
+            ("title", FieldValue::text("t")),
+            ("baseRefName", FieldValue::text("refs/heads/main")),
+            ("sourceRefName", FieldValue::text("refs/heads/sec/fix")),
+            ("headOid", FieldValue::bytes(vec![2; 20])),
+        ] {
+            patch.insert(k.to_string(), v);
+        }
+        let unblinded = MembersPatch {
+            base_public: true,
+            source_public: false,
+            head: None,
+        };
+        assert!(seal_members_patch_props(&lane(0), OWNER, patch, &unblinded).is_err());
         // another client writes it anyway: readers keep it, fold the blind, alert, trust nothing
         let mut header = crate::private::doc::DocHeader::new(DocKind::Event, OWNER, 0);
         header.vis = crate::rules::v2::Visibility::Public;

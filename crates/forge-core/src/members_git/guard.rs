@@ -23,8 +23,9 @@
 //! members-only parent. Commits re-made with new ids are out of scope (an opt-in `patch-id`
 //! warning, S4).
 //!
-//! **Fail closed.** In a repository with members-only content, no key at hand and no readable
-//! ledger, the guard cannot run: [`Verdict::Unavailable`] (E806). An empty ledger and no key lets
+//! **Fail closed.** In a repository with members-only content, the guard cannot run
+//! ([`Verdict::Unavailable`], E806) with no key at hand and no ledger, or with a ledger this client
+//! cannot read (a later version may record what no key here opens). An empty ledger and no key lets
 //! the push through with a note. A gitlink to a members-only commit is allowed (an oracle only)
 //! and left to the helper's notes.
 

@@ -65,7 +65,7 @@ async fn members_only_branch_and_pr_round_trip_on_the_live_contracts() {
         .await
         .unwrap();
 
-    let load = |var: &str| BridgeIdentity::load_from_file(&std::env::var(var).expect(var)).unwrap();
+    let load = |var: &str| BridgeIdentity::load_from_file(std::env::var(var).expect(var)).unwrap();
     let writer = load("P3_WRITER");
     let reader = load("P3_READER");
     let writer_identity = client.fetch_identity(&writer.identity_id).await.unwrap();
