@@ -1,5 +1,5 @@
 //! Offline validation of the forge-v2 data contracts against Dash Platform protocol 14
-//! (rs-dpp v5.0.0-beta.3, the tag Cargo.toml pins).
+//! (rs-dpp v5.0.0-beta.6, the tag Cargo.toml pins).
 //!
 //!   cargo run --manifest-path tools/contract-validate/Cargo.toml -- \
 //!       --vectors forge-contracts/vectors/rc1 \
@@ -699,7 +699,9 @@ fn check_leaf(
     // the parse already ran the referenced side of same-contract lookups and lists
     if is_foreign {
         if let Some(lookup) = decl.lookup {
-            if let Some(reason) = lookup.referenced_side_error(declaring, referenced) {
+            if let Some(reason) =
+                lookup.referenced_side_error(declaring, reference_property, referenced)
+            {
                 bail!(
                     "{at}: findBy {{{}}} invalid (40137): {reason}",
                     lookup.find_by_names()

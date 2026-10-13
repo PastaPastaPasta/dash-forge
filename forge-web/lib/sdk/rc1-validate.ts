@@ -287,7 +287,8 @@ export type Rc1Verdict = { ok: true } | { ok: false; errors: string[] }
  * Judges `doc` as a create of document type `type` by `opts.owner` (base58; default
  * {@link RC1_VECTOR_OWNER}): the JSON schema first (every failure, each naming its keyword and
  * path, e.g. `pattern at /refName: ...`), else `maxBytes`, else the first broken
- * `propertyConstraints` rule (`propertyConstraints <rule> (<violation>): ...`). Rules reading a
+ * `propertyConstraints` rule (`propertyConstraints <rule> (<violation>): ...`; a create has no stored
+ * document, so `storedDocument` is `null` and every `$old.` read is absent). Rules reading a
  * total or a block height are not judged (the live suite covers them); rules reading
  * `$createdAt` / `$updatedAt` use the device clock, as the wasm pre-check does.
  */
@@ -311,7 +312,7 @@ export async function validateRc1(type: string, doc: Record<string, unknown>, op
     ownerId: opts?.owner ?? RC1_VECTOR_OWNER,
     properties: doc,
   })
-  const broken = contracts[name].checkDocumentPropertyConstraints(document)
+  const broken = contracts[name].checkDocumentPropertyConstraints(document, null)
   return broken ? { ok: false, errors: [`propertyConstraints ${broken.rule} (${broken.violation}): ${broken.message}`] } : { ok: true }
 }
 
