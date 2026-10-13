@@ -1,0 +1,36 @@
+{
+  "name": "open_null_create",
+  "description": "an update naming no commit (a null newOid and no prevOid): no writer seals one, so malformed.",
+  "case": "sealed_ref",
+  "rules": "v2",
+  "input": {
+    "op": "open",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        }
+      },
+      "members": []
+    },
+    "doc": {
+      "type": "refUpdate",
+      "vis": "public",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "refNameHash": "f9337f26a53b55ef8817947cb1554159ae4637a5565e5f88b01eed029b69ccfb",
+      "newOid": "0000000000000000000000000000000000000000",
+      "force": false,
+      "enc": "03000102030405060708090a0b483ca5105dab1906b2cda593d3bd18d8a3961600518b9041eb3b53630a197041539a34b7951d39d7ca2700320344565b86b5b96e5501a275e507247518b1deb19d757891e6",
+      "createdAtBlockHeight": 50
+    }
+  },
+  "expected": {
+    "status": "malformed"
+  }
+}

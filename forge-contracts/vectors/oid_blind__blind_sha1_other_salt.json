@@ -1,0 +1,14 @@
+{
+  "name": "blind_sha1_other_salt",
+  "description": "the same commit under another salt: unlinkable.",
+  "case": "oid_blind",
+  "rules": "v2",
+  "input": {
+    "op": "blind",
+    "salt": "597ba02cf9d744d6981e3f0761b175a5231589631f036ce095d70207fd871d60",
+    "oid": "de8ed34d0343cb7015311aca01897865e6907bbd"
+  },
+  "expected": {
+    "blind": "68e5cde0aed4d05cc5521a343d377f78bff71f25"
+  }
+}

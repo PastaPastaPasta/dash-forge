@@ -1,0 +1,151 @@
+{
+  "name": "union_v1c_public_then_members",
+  "description": "S5 V1c: a public branch P1, P2, deleted (\"stop publishing\"), then members-only X and Y under the same name: members fold the union (Y), the public reads it deleted.",
+  "case": "sealed_ref",
+  "rules": "v2",
+  "input": {
+    "op": "union",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        }
+      },
+      "members": []
+    },
+    "rows": [
+      {
+        "id": "cd80ded9fd5495fdae40773a3ca05cda567115f83781fc9a3f36068449d85ed6",
+        "createdAt": 900,
+        "createdAtBlockHeight": 90,
+        "protected": false,
+        "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+        "refName": "refs/heads/sec/fix",
+        "refNameHash": "116379e6eb5c24f696981e8ab284fe1a781d8cd4992e3d920c975d94717f59d7",
+        "newOid": "092436d426298dcd3e68bce625fa28a15e95ac45",
+        "force": false
+      },
+      {
+        "id": "7ae9f137a4eb1bb8b6def6a948d47ad461526022608a7fb0473fd639bab130c8",
+        "createdAt": 901,
+        "createdAtBlockHeight": 90,
+        "protected": false,
+        "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+        "refName": "refs/heads/sec/fix",
+        "refNameHash": "116379e6eb5c24f696981e8ab284fe1a781d8cd4992e3d920c975d94717f59d7",
+        "newOid": "58c550fa24fefd5bef4714be287fd60b5186efe8",
+        "force": false,
+        "prevOid": "092436d426298dcd3e68bce625fa28a15e95ac45"
+      },
+      {
+        "id": "9a8f12655efbfde6b0b9785c6ee54bf1f5ec59ff10f60d61f2fdcd32656228e9",
+        "createdAt": 902,
+        "createdAtBlockHeight": 90,
+        "protected": false,
+        "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+        "refName": "refs/heads/sec/fix",
+        "refNameHash": "116379e6eb5c24f696981e8ab284fe1a781d8cd4992e3d920c975d94717f59d7",
+        "newOid": "0000000000000000000000000000000000000000",
+        "force": false,
+        "prevOid": "58c550fa24fefd5bef4714be287fd60b5186efe8"
+      },
+      {
+        "id": "26ab2a3c78a760022b38c3a65a70ee1848cc803ff7d3b1f3dba505ee586a821e",
+        "createdAt": 950,
+        "createdAtBlockHeight": 95,
+        "protected": false,
+        "vis": "public",
+        "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+        "epoch": 0,
+        "refNameHash": "f9337f26a53b55ef8817947cb1554159ae4637a5565e5f88b01eed029b69ccfb",
+        "newOid": "fec1c78e51c8ea96ec7433ea9e54bd0a858adfda",
+        "force": false,
+        "enc": "03000102030405060708090a0b084bc741c55b18a884091ff625891f92773e39723a2b8a153162c3ec93f5a422728a3c4de2e41c657ad95517cd71d18d7c79fdf0b798230a2772e2890c43d32d54089bb366c822825ebff2b2d75ce4066cb13ba3d1613038a7fe89af6882a18de960fa1de9182b33001d10831beee8ce1a8d1993f2440271b6562329a985df"
+      },
+      {
+        "id": "26ee0586ad729f3847e6f16f596805b263d284ea683a70dadad1b8be7a8262ba",
+        "createdAt": 960,
+        "createdAtBlockHeight": 96,
+        "protected": false,
+        "vis": "public",
+        "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+        "epoch": 0,
+        "refNameHash": "f9337f26a53b55ef8817947cb1554159ae4637a5565e5f88b01eed029b69ccfb",
+        "newOid": "0635c9f9c85cf4376189d89d4e4da68f91829768",
+        "force": false,
+        "prevOid": "63d06d33249e7be540afb2f1f429ea01fdf3d5f4",
+        "enc": "03000102030405060708090a0b8cfa8cb8345b64498f0cb4947f9d3d5b17236ff604f30b49d938d3bcae90cdb0d6bd6b766c2926b9c82d79747aad6e1bb6952c614d0f85197bb468944ada5106b010f3cdbe6ebc5b0aec24cda5d04d054f6346dc034229fb7349116d046740be29171240b68fa35bedbb2cb8324143bbf3557c6929983c67b4bd4d2fcdc9c3b6684e247b41f184561873ae8bba6741545b4bfc698a40"
+      }
+    ]
+  },
+  "expected": {
+    "refs": {
+      "refs/heads/sec/fix": [
+        {
+          "id": "cd80ded9fd5495fdae40773a3ca05cda567115f83781fc9a3f36068449d85ed6",
+          "newOid": "092436d426298dcd3e68bce625fa28a15e95ac45",
+          "force": false,
+          "protected": false
+        },
+        {
+          "id": "7ae9f137a4eb1bb8b6def6a948d47ad461526022608a7fb0473fd639bab130c8",
+          "newOid": "58c550fa24fefd5bef4714be287fd60b5186efe8",
+          "force": false,
+          "protected": false,
+          "prevOid": "092436d426298dcd3e68bce625fa28a15e95ac45"
+        },
+        {
+          "id": "9a8f12655efbfde6b0b9785c6ee54bf1f5ec59ff10f60d61f2fdcd32656228e9",
+          "newOid": "0000000000000000000000000000000000000000",
+          "force": false,
+          "protected": false,
+          "prevOid": "58c550fa24fefd5bef4714be287fd60b5186efe8"
+        },
+        {
+          "id": "26ab2a3c78a760022b38c3a65a70ee1848cc803ff7d3b1f3dba505ee586a821e",
+          "newOid": "c31c4142c78199a6a0a3b708cfdab576b3bfcddb",
+          "force": false,
+          "protected": false
+        },
+        {
+          "id": "26ee0586ad729f3847e6f16f596805b263d284ea683a70dadad1b8be7a8262ba",
+          "newOid": "92dc7c2b5c9fc7032e9152bb0dfc7d42403f1f65",
+          "force": false,
+          "protected": false,
+          "prevOid": "c31c4142c78199a6a0a3b708cfdab576b3bfcddb"
+        }
+      ]
+    },
+    "publicRefs": {
+      "refs/heads/sec/fix": [
+        {
+          "id": "cd80ded9fd5495fdae40773a3ca05cda567115f83781fc9a3f36068449d85ed6",
+          "newOid": "092436d426298dcd3e68bce625fa28a15e95ac45",
+          "force": false,
+          "protected": false
+        },
+        {
+          "id": "7ae9f137a4eb1bb8b6def6a948d47ad461526022608a7fb0473fd639bab130c8",
+          "newOid": "58c550fa24fefd5bef4714be287fd60b5186efe8",
+          "force": false,
+          "protected": false,
+          "prevOid": "092436d426298dcd3e68bce625fa28a15e95ac45"
+        },
+        {
+          "id": "9a8f12655efbfde6b0b9785c6ee54bf1f5ec59ff10f60d61f2fdcd32656228e9",
+          "newOid": "0000000000000000000000000000000000000000",
+          "force": false,
+          "protected": false,
+          "prevOid": "58c550fa24fefd5bef4714be287fd60b5186efe8"
+        }
+      ]
+    },
+    "alerts": [],
+    "unreadable": 0
+  }
+}

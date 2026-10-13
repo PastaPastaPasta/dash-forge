@@ -1,0 +1,127 @@
+/**
+ * {@link membersUpdatesOf} beyond the shared `sealed_ref` union vectors: production seals, the
+ * unreadable count, and that an opened members-only document never puts a real OID into a
+ * plaintext field ({@link asPlaintext}, rule C).
+ */
+
+import { sha256 } from '@noble/hashes/sha2.js'
+import { describe, expect, it } from 'vitest'
+
+import { base58Encode } from '../auth/base58'
+import { EpochKeys, IdSet, bytesToHex, openContent, sealMembersRef, type OpenContext, type SealedRefUpdate } from '../private'
+import { bytesToBase64, type PlainDocument } from '../sdk'
+import { membersUpdatesOf } from './members-refs'
+import { asPlaintext } from './private-content'
+
+const REPO_ID = new Uint8Array(32).fill(0x11)
+const OWNER = new Uint8Array(32).fill(0x22)
+const A = new Uint8Array(20).fill(1)
+const B = new Uint8Array(20).fill(2)
+const NAME = 'refs/heads/sec/fix'
+
+const id = (n: number) => base58Encode(new Uint8Array(32).fill(n))
+const b64 = (b: Uint8Array) => bytesToBase64(b)
+
+function sealedRow(n: number, createdAt: number, s: SealedRefUpdate): PlainDocument {
+  return {
+    $id: id(n),
+    $ownerId: base58Encode(OWNER),
+    $createdAt: createdAt,
+    $createdAtBlockHeight: 100,
+    vis: 'public',
+    epoch: s.epoch,
+    refNameHash: b64(s.refNameHash),
+    newOid: b64(s.newOid),
+    ...(s.prevOid !== undefined ? { prevOid: b64(s.prevOid) } : {}),
+    force: s.force,
+    enc: b64(s.enc),
+  }
+}
+
+const CTX = async (k0: EpochKeys): Promise<OpenContext> => ({
+  keys: new Map([[0, k0]]),
+  anchors: new Map([[0, { id: new Uint8Array(32).fill(0xc0), height: 10, statedHeight: 10 }]]),
+  members: new IdSet(),
+})
+
+function publicRow(n: number, createdAt: number, newOid: Uint8Array, prevOid?: Uint8Array): PlainDocument {
+  return {
+    $id: id(n),
+    $ownerId: base58Encode(OWNER),
+    $createdAt: createdAt,
+    refName: NAME,
+    refNameHash: b64(sha256(new TextEncoder().encode(NAME))),
+    newOid: b64(newOid),
+    ...(prevOid !== undefined ? { prevOid: b64(prevOid) } : {}),
+    force: false,
+  }
+}
+
+const update = (n: number, createdAt: number, newOid: Uint8Array, prevOid = new Uint8Array(0)) => ({
+  id: id(n),
+  refNameHash: bytesToHex(sha256(new TextEncoder().encode(NAME))),
+  refName: NAME,
+  prevOid: bytesToHex(prevOid),
+  newOid: bytesToHex(newOid),
+  force: false,
+  protected: false,
+  author: base58Encode(OWNER),
+  createdAt,
+})
+
+describe('membersUpdatesOf', () => {
+  it('folds a deleted public branch and its members-only successor on real values, and counts what it cannot open', async () => {
+    const k0 = await EpochKeys.import(REPO_ID, 0, new Uint8Array(32).fill(3))
+    const k1 = await EpochKeys.import(REPO_ID, 1, new Uint8Array(32).fill(4))
+    const ctx = await CTX(k0)
+    const members = await sealMembersRef(k0, OWNER, { type: 'refUpdate', name: NAME, newOid: B, force: false })
+    // under an epoch this reader holds no key for: counted, never folded
+    const later = await sealMembersRef(k1, OWNER, { type: 'refUpdate', name: NAME, newOid: A, prevOid: B, force: true })
+    const rows = {
+      refUpdate: [
+        sealedRow(3, 1000, members),
+        publicRow(1, 900, A),
+        publicRow(2, 901, new Uint8Array(20), A),
+        // a commitment that does not open; a plaintext refName beside enc; a later enc version; no
+        // newOid at all: members-only, never folded, counted
+        { ...sealedRow(5, 1003, members), enc: b64(new Uint8Array([3, ...new Uint8Array(70)])) },
+        { ...sealedRow(6, 1004, members), refName: NAME },
+        { ...sealedRow(7, 1005, members), enc: b64(new Uint8Array([6, ...members.enc.subarray(1)])) },
+        { ...sealedRow(8, 1006, members), newOid: undefined },
+        // a converted repository's private-era row: not members-only content, skipped uncounted
+        { ...sealedRow(9, 1007, members), vis: 'private' },
+      ],
+      protectedRefUpdate: [sealedRow(4, 1001, later)],
+    }
+    const got = await membersUpdatesOf(rows, (d) => openContent(d, ctx))
+    expect(got.unreadable).toBe(5)
+    expect(got.alerts).toEqual([])
+    expect([...got.byName.keys()]).toEqual([NAME])
+    expect(got.byName.get(NAME)).toEqual([update(1, 900, A), update(2, 901, new Uint8Array(20), A), update(3, 1000, B)])
+  })
+
+  it('lets a live public name win (D29): its members-only updates are left out, with an alert each', async () => {
+    const k0 = await EpochKeys.import(REPO_ID, 0, new Uint8Array(32).fill(3))
+    const ctx = await CTX(k0)
+    const members = await sealMembersRef(k0, OWNER, { type: 'refUpdate', name: NAME, newOid: B, force: false })
+    const other = await sealMembersRef(k0, OWNER, { type: 'refUpdate', name: 'refs/heads/sec/other', newOid: B, force: false })
+    // a bigint epoch (how the SDK may return an integer) is an epoch too
+    const rows = { refUpdate: [publicRow(1, 900, A), { ...sealedRow(3, 1000, members), epoch: 0n }, sealedRow(2, 950, members), sealedRow(4, 960, other)], protectedRefUpdate: [] }
+    const got = await membersUpdatesOf(rows, (d) => openContent(d, ctx))
+    expect(got.unreadable).toBe(0)
+    expect([...got.byName.keys()]).toEqual([NAME, 'refs/heads/sec/other'])
+    expect(got.byName.get(NAME)).toEqual([update(1, 900, A)])
+    expect(got.alerts).toEqual([
+      { id: id(2), kind: 'publicName' },
+      { id: id(3), kind: 'publicName' },
+    ])
+  })
+})
+
+describe('asPlaintext keeps the blinds as written', () => {
+  it('never copies a real OID or its salt into a plaintext field', () => {
+    const doc: PlainDocument = { headOid: 'blind', oid: 'blind', newOid: 'blind', enc: 'x', epoch: 0 }
+    const out = asPlaintext(doc, { title: 'Fix', headOid: A, newOid: B, prevOid: A, oidSalt: new Uint8Array(32) })
+    expect(out).toEqual({ headOid: 'blind', oid: 'blind', newOid: 'blind', title: 'Fix', $sealedEpoch: 0 })
+  })
+})

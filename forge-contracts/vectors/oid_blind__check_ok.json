@@ -1,0 +1,15 @@
+{
+  "name": "check_ok",
+  "description": "the blind of the real value under the salt.",
+  "case": "oid_blind",
+  "rules": "v2",
+  "input": {
+    "op": "check",
+    "plain": "c1e747501a81cce7aaed1a1739060a3149b4c340",
+    "real": "de8ed34d0343cb7015311aca01897865e6907bbd",
+    "salt": "c593c3811de01bebe941c9a10da7688ddbce11616faeb6b3928e3f17fb2e9987"
+  },
+  "expected": {
+    "status": "ok"
+  }
+}

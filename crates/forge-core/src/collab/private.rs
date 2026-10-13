@@ -81,9 +81,14 @@ pub fn seal_props(
     owner: [u8; 32],
     props: BTreeMap<String, FieldValue>,
 ) -> Result<BTreeMap<String, FieldValue>> {
-    seal_props_inner(epoch_hashing(keys), kind, owner, props, false, |h, f| {
-        crate::private::doc::seal(keys, h, f)
-    })
+    seal_props_inner(
+        epoch_hashing(keys),
+        kind,
+        owner,
+        props,
+        &Members::default(),
+        |h, f| crate::private::doc::seal(keys, h, f),
+    )
 }
 
 /// An epoch's number and its ref-name hash (`HMAC(K_ref,e, name)`, §4.5), for
@@ -109,9 +114,14 @@ pub fn seal_letter_props(
     props: BTreeMap<String, FieldValue>,
 ) -> Result<BTreeMap<String, FieldValue>> {
     let public_hash = |n: &str| crate::private::keys::sha256(n.as_bytes());
-    seal_props_inner((0, public_hash), kind, owner, props, true, |h, f| {
-        crate::private::named::seal(repo_id, sender, sender_key_id, h, f, recipients, group)
-    })
+    seal_props_inner(
+        (0, public_hash),
+        kind,
+        owner,
+        props,
+        &Members::sealed(),
+        |h, f| crate::private::named::seal(repo_id, sender, sender_key_id, h, f, recipients, group),
+    )
     .map_err(|e| match e {
         Error::User(u) if u.message.contains(TOO_LARGE_MARK) => {
             letter_too_large(kind, recipients.len())
@@ -139,22 +149,260 @@ fn letter_too_large(kind: DocKind, n: usize) -> Error {
 /// [`seal_props`] for a **members-only** document of a public repository
 /// (`docs/security/private-repos.md` §17): the same transform, sealed in `enc` v0x03 (a
 /// per-object key under the members key's epoch `keys`, its commitment, the padding) by
-/// [`crate::private::doc::seal_members`]. A patch is refused by the caller (members-only pull
-/// requests come with members-only branches).
+/// [`crate::private::doc::seal_members`]. A pull request or a head update goes through
+/// [`seal_members_patch_props`] / [`seal_members_head_update_props`], which say how it names its
+/// branches and head.
 pub fn seal_members_props(
     lane: &crate::private::Lane,
     kind: DocKind,
     owner: [u8; 32],
     props: BTreeMap<String, FieldValue>,
 ) -> Result<BTreeMap<String, FieldValue>> {
+    // a pull request and a head update carry commit ids this transform knows nothing about:
+    // only their own writers put a blind there, never the real commit
+    if kind == DocKind::Patch || (kind == DocKind::Event && props.contains_key("oid")) {
+        return Err(Error::Config(format!(
+            "a members-only {} goes through its own writer (seal_members_patch_props, \
+             seal_members_head_update_props)",
+            kind.type_name()
+        )));
+    }
     seal_props_inner(
         epoch_hashing(lane.write_keys()),
         kind,
         owner,
         props,
-        true,
+        &Members::sealed(),
         |h, f| lane.seal_doc(h, f),
     )
+}
+
+/// The blind a members-only PR's `headOid`, or a head update's `oid`, carries (rule C,
+/// `private-repos.md` §19): the caller copies the plaintext from the document that introduced
+/// the commit (the source branch's ref update), and seals its real value and that document's salt
+/// beside it (TLV 24, 27).
+#[derive(Clone, PartialEq, Eq)]
+pub struct HeadBlind {
+    /// The real head commit.
+    pub real: Vec<u8>,
+    /// The salt of the document that introduced its blind.
+    pub salt: crate::private::blind::Salt,
+}
+
+impl std::fmt::Debug for HeadBlind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HeadBlind").finish_non_exhaustive()
+    }
+}
+
+/// How a members-only pull request names its branches and its head (mixed-visibility DESIGN §4.4):
+/// a **public** base or source is named by its public `sha256` (the public can then find the base
+/// a merge landed on), a members-only one by its keyed hash; a members-only source's head is a
+/// blind ([`HeadBlind`]), a public source's the plain commit.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MembersPatch {
+    /// The base branch is public.
+    pub base_public: bool,
+    /// The source branch is public (then `head` is `None`).
+    pub source_public: bool,
+    /// The blinded head of a members-only source.
+    pub head: Option<HeadBlind>,
+}
+
+/// What a sealing call adds to the public writer's transform.
+#[derive(Debug, Clone, Default)]
+struct Members {
+    /// Sealed for members or specific people (a seal error reads as such).
+    sealed: bool,
+    /// A members-only pull request: how it names its branches and its head.
+    patch: Option<MembersPatch>,
+    /// The real head behind a head update's `oid`.
+    head: Option<HeadBlind>,
+}
+
+impl Members {
+    fn sealed() -> Self {
+        Self {
+            sealed: true,
+            ..Self::default()
+        }
+    }
+
+    fn patch(p: &MembersPatch) -> Self {
+        Self {
+            patch: Some(p.clone()),
+            ..Self::sealed()
+        }
+    }
+
+    fn head_update(head: Option<HeadBlind>) -> Self {
+        Self {
+            head,
+            ..Self::sealed()
+        }
+    }
+}
+
+/// [`seal_members_props`] for a members-only **pull request** (`patch`): its text and branch names
+/// in `enc` v0x03, `baseRefNameHash` / `sourceRefNameHash` by [`MembersPatch`], and, for a
+/// members-only source, the copied blind `headOid` with the real head and its salt sealed beside
+/// it. Refused, before anything is signed, when `headOid` is not the blind of `patch.head`.
+pub fn seal_members_patch_props(
+    lane: &crate::private::Lane,
+    owner: [u8; 32],
+    props: BTreeMap<String, FieldValue>,
+    patch: &MembersPatch,
+) -> Result<BTreeMap<String, FieldValue>> {
+    seal_props_inner(
+        epoch_hashing(lane.write_keys()),
+        DocKind::Patch,
+        owner,
+        props,
+        &Members::patch(patch),
+        |h, f| lane.seal_doc(h, f),
+    )
+}
+
+/// [`seal_members_props`] for the **head update** (`event` kind 16) of a members-only pull request
+/// whose source is members-only: `oid` is the blind copied from the ref update that moved the
+/// branch, and the real head and that update's salt are sealed in `enc` (TLV 24, 27) under the
+/// current epoch, with no value. Refused when `oid` is not the blind of `head`.
+pub fn seal_members_head_update_props(
+    lane: &crate::private::Lane,
+    owner: [u8; 32],
+    props: BTreeMap<String, FieldValue>,
+    head: &HeadBlind,
+) -> Result<BTreeMap<String, FieldValue>> {
+    seal_props_inner(
+        epoch_hashing(lane.write_keys()),
+        DocKind::Event,
+        owner,
+        props,
+        &Members::head_update(Some(head.clone())),
+        |h, f| lane.seal_doc(h, f),
+    )
+}
+
+/// [`reseal_members_edit`] for a members-only **pull request**: its whole content re-sealed in
+/// `enc` v0x03 under `keys`, the keys of the PR's **own** epoch (its name hashes are keyed under
+/// it, `private-repos.md` §4.5), with its head carried over: the stored blind `headOid`, and the
+/// real head and salt the opened `fields` hold (TLV 24, 27), so an edit never drops them. How it
+/// names its branches is read back from the stored hashes (a public name is its `sha256`).
+pub fn reseal_members_patch_edit(
+    keys: &EpochKeys,
+    owner: [u8; 32],
+    opened: &FetchedDocument,
+    fields: &Fields,
+    changes: &BTreeMap<String, Option<String>>,
+) -> Result<BTreeMap<String, Option<FieldValue>>> {
+    reseal_members_patch_inner(keys, owner, opened, fields, changes, |h, f| {
+        crate::private::doc::seal_members(keys, h, f)
+    })
+}
+
+/// [`reseal_members_patch_edit`] with a caller-chosen nonce: tests only.
+#[cfg(any(test, feature = "vectors"))]
+pub fn reseal_members_patch_edit_with_nonce(
+    keys: &EpochKeys,
+    owner: [u8; 32],
+    opened: &FetchedDocument,
+    fields: &Fields,
+    changes: &BTreeMap<String, Option<String>>,
+    nonce: [u8; 12],
+) -> Result<BTreeMap<String, Option<FieldValue>>> {
+    reseal_members_patch_inner(keys, owner, opened, fields, changes, |h, f| {
+        crate::private::doc::seal_members_with_nonce(keys, h, f, nonce)
+    })
+}
+
+fn reseal_members_patch_inner(
+    keys: &EpochKeys,
+    owner: [u8; 32],
+    opened: &FetchedDocument,
+    fields: &Fields,
+    changes: &BTreeMap<String, Option<String>>,
+    seal: impl FnOnce(&DocHeader, &Fields) -> std::result::Result<Vec<u8>, PrivateError>,
+) -> Result<BTreeMap<String, Option<FieldValue>>> {
+    let public = |hash: &str, name: &str| {
+        opened
+            .field_bytes32(hash)
+            .zip(opened.field_str(name))
+            .is_some_and(|(h, n)| h == crate::private::keys::sha256(n.as_bytes()))
+    };
+    let patch = MembersPatch {
+        base_public: public("baseRefNameHash", "baseRefName"),
+        source_public: public("sourceRefNameHash", "sourceRefName"),
+        head: fields
+            .head_oid
+            .clone()
+            .zip(fields.oid_salt)
+            .map(|(real, salt)| HeadBlind { real, salt }),
+    };
+    let props = edited_props(opened, changes);
+    let sealed = seal_props_inner(
+        epoch_hashing(keys),
+        DocKind::Patch,
+        owner,
+        props,
+        &Members::patch(&patch),
+        |h, f| {
+            let mut h = h.clone();
+            h.vis = crate::rules::v2::Visibility::Public;
+            seal(&h, f)
+        },
+    )?;
+    Ok(enc_and_epoch(&sealed))
+}
+
+/// [`seal_members_patch_props`] (a `patch`) / [`seal_members_head_update_props`] (an `event`,
+/// whose head is `patch.head`) under the epoch keys `keys` with a caller-chosen nonce: the
+/// conformance vectors only.
+#[cfg(any(test, feature = "vectors"))]
+pub fn seal_members_props_with_nonce(
+    keys: &EpochKeys,
+    kind: DocKind,
+    owner: [u8; 32],
+    props: BTreeMap<String, FieldValue>,
+    patch: &MembersPatch,
+    nonce: [u8; 12],
+) -> Result<BTreeMap<String, FieldValue>> {
+    seal_props_inner(
+        epoch_hashing(keys),
+        kind,
+        owner,
+        props,
+        &if kind == DocKind::Event {
+            Members::head_update(patch.head.clone())
+        } else {
+            Members::patch(patch)
+        },
+        |h, f| {
+            let mut h = h.clone();
+            h.vis = crate::rules::v2::Visibility::Public;
+            crate::private::doc::seal_members_with_nonce(keys, &h, f, nonce)
+        },
+    )
+}
+
+/// Seal `head`'s real value and salt into `fields` after checking that `plain` (the document's
+/// plaintext `headOid` / `oid`) is its blind: a writer never writes what readers alert on.
+fn seal_head(
+    head: Option<&HeadBlind>,
+    plain: Option<&[u8]>,
+    fields: &mut Fields,
+) -> std::result::Result<(), PrivateError> {
+    let Some(h) = head else {
+        return Ok(());
+    };
+    let plain = plain.ok_or(PrivateError::Malformed)?;
+    if crate::private::blind::check(plain, Some(&h.real), Some(&h.salt))
+        != crate::private::blind::Check::Ok
+    {
+        return Err(PrivateError::Malformed);
+    }
+    fields.head_oid = Some(h.real.clone());
+    fields.oid_salt = Some(h.salt);
+    Ok(())
 }
 
 /// [`reseal_edit`] for a members-only issue or comment of a public repository: the whole
@@ -239,9 +487,14 @@ pub fn seal_props_with_nonce(
     props: BTreeMap<String, FieldValue>,
     nonce: [u8; 12],
 ) -> Result<BTreeMap<String, FieldValue>> {
-    seal_props_inner(epoch_hashing(keys), kind, owner, props, false, |h, f| {
-        crate::private::doc::seal_with_nonce(keys, h, f, false, nonce)
-    })
+    seal_props_inner(
+        epoch_hashing(keys),
+        kind,
+        owner,
+        props,
+        &Members::default(),
+        |h, f| crate::private::doc::seal_with_nonce(keys, h, f, false, nonce),
+    )
 }
 
 fn seal_props_inner(
@@ -249,9 +502,11 @@ fn seal_props_inner(
     kind: DocKind,
     owner: [u8; 32],
     mut props: BTreeMap<String, FieldValue>,
-    members: bool,
+    extra: &Members,
     seal: impl FnOnce(&DocHeader, &Fields) -> std::result::Result<Vec<u8>, PrivateError>,
 ) -> Result<BTreeMap<String, FieldValue>> {
+    let members = extra.sealed;
+    let public_hash = |n: &str| crate::private::keys::sha256(n.as_bytes());
     let mut header = DocHeader::new(kind, owner, epoch);
     let mut fields = Fields::default();
     match kind {
@@ -265,9 +520,28 @@ fn seal_props_inner(
             if kind == DocKind::Patch {
                 fields.base_ref_name = take_text(&mut props, "baseRefName");
                 fields.source_ref_name = take_text(&mut props, "sourceRefName");
-                let hash = |name: &Option<String>| name.as_deref().map(&ref_name_hash);
-                header.base_ref_name_hash = hash(&fields.base_ref_name);
-                header.source_ref_name_hash = hash(&fields.source_ref_name);
+                let hash = |name: &Option<String>, public: bool| {
+                    name.as_deref().map(|n| {
+                        if public {
+                            public_hash(n)
+                        } else {
+                            ref_name_hash(n)
+                        }
+                    })
+                };
+                let patch = extra.patch.as_ref();
+                let (base_public, source_public) =
+                    patch.map_or((false, false), |p| (p.base_public, p.source_public));
+                let head = patch.and_then(|p| p.head.as_ref());
+                header.base_ref_name_hash = hash(&fields.base_ref_name, base_public);
+                header.source_ref_name_hash = hash(&fields.source_ref_name, source_public);
+                // a public source has a plain head; a members-only one never does
+                if patch.is_some() && source_public == head.is_some() {
+                    return Err(sealing_error(kind, members, PrivateError::Malformed));
+                }
+                let plain = props.get("headOid").and_then(FieldValue::as_bytes);
+                seal_head(head, plain.as_deref(), &mut fields)
+                    .map_err(|e| sealing_error(kind, members, e))?;
                 for (name, h) in [
                     ("baseRefNameHash", header.base_ref_name_hash),
                     ("sourceRefNameHash", header.source_ref_name_hash),
@@ -291,6 +565,18 @@ fn seal_props_inner(
         DocKind::Event => {
             header.target_id = id32(&props, "targetId");
             fields.event_value = take_text(&mut props, "value");
+            // a head blind goes only on a head update (kind 16)
+            if extra.head.is_some()
+                && props.get("kind").and_then(FieldValue::as_u64)
+                    != Some(super::event_kind_to_u64(
+                        crate::rules::EventKind::HeadUpdate,
+                    ))
+            {
+                return Err(sealing_error(kind, members, PrivateError::Malformed));
+            }
+            let plain = props.get("oid").and_then(FieldValue::as_bytes);
+            seal_head(extra.head.as_ref(), plain.as_deref(), &mut fields)
+                .map_err(|e| sealing_error(kind, members, e))?;
         }
         DocKind::RefUpdate | DocKind::ProtectedRefUpdate | DocKind::Config | DocKind::Release => {
             return Err(Error::Config(format!(
@@ -461,6 +747,409 @@ fn restore(f: Fields, mut d: FetchedDocument) -> FetchedDocument {
         }
     }
     d
+}
+
+#[cfg(test)]
+mod members_pr_tests {
+    //! The PR folds on blinds (DESIGN §4.4, S5 V2, V2b, V4): everyone folds the head, the
+    //! approvals and the checks on the blinds as written (rule C); members learn the real head of
+    //! verified blinds only, and never compare it with a folded field.
+    use super::*;
+    use crate::private::blind::{self, BlindMap, Head, OidField};
+    use crate::private::doc::{open_content, AnchorRef, OpenContext};
+    use crate::private::members_ref::{self, RefUpdateIn};
+    use crate::private::{EpochKey, EpochResolution, Lane, Opened};
+    use crate::rules::parity::{checks_state, CheckRunRow, ChecksPolicy};
+    use crate::rules::review::fold_pr_review_v2;
+    use crate::rules::v2::{count_approvals, Membership, Review, Role, RoleOracle};
+    use crate::rules::{Event, EventKind};
+    use std::collections::BTreeSet;
+
+    const REPO: [u8; 32] = [0x11; 32];
+    const OWNER: [u8; 32] = [0x22; 32];
+
+    fn lane(epoch: u32) -> Lane {
+        let mut res = EpochResolution::default();
+        res.keys.insert(0, EpochKey::from_bytes([3; 32]));
+        res.keys.insert(1, EpochKey::from_bytes([4; 32]));
+        res.write_epoch = Some(epoch);
+        Lane::from_resolution(&REPO, &res).unwrap()
+    }
+
+    fn ctx() -> OpenContext {
+        let anchor = |h| AnchorRef {
+            id: [u8::try_from(h).unwrap(); 32],
+            height: h,
+            stated_height: h,
+        };
+        OpenContext {
+            keys: [
+                (0, lane(0).write_keys().clone()),
+                (1, lane(1).write_keys().clone()),
+            ]
+            .into(),
+            anchors: [(0, anchor(1)), (1, anchor(2))].into(),
+            ..OpenContext::default()
+        }
+    }
+
+    /// A push of `real` to the members-only source branch under `epoch`: the introducing
+    /// document, whose blind and salt everything downstream copies.
+    fn push(epoch: u32, real: [u8; 20]) -> members_ref::SealedRefUpdate {
+        let l = lane(epoch);
+        members_ref::seal(
+            l.write_keys(),
+            OWNER,
+            &RefUpdateIn {
+                kind: DocKind::RefUpdate,
+                name: "refs/heads/sec/fix",
+                new_oid: &real,
+                prev_oid: None,
+                force: false,
+            },
+        )
+        .unwrap()
+    }
+
+    /// The document as a reader fetches it.
+    fn fetched(fields: BTreeMap<String, FieldValue>) -> FetchedDocument {
+        FetchedDocument {
+            id: crate::platform::encode_identifier([0x5a; 32]),
+            owner_id: crate::platform::encode_identifier(OWNER),
+            created_at: Some(1),
+            created_at_block_height: Some(5),
+            updated_at_block_height: None,
+            updated_at: None,
+            fields,
+            revision: Some(1),
+        }
+    }
+
+    fn opened_head(kind: DocKind, props: &BTreeMap<String, FieldValue>, plain: &str) -> Head {
+        let d = fetched(props.clone());
+        let mut header = crate::keyring::header_of(kind, &d).unwrap();
+        header.vis = crate::rules::v2::Visibility::Public;
+        let Opened::Readable(f) = open_content(&ctx(), &header, &d.field_bytes("enc").unwrap())
+        else {
+            panic!("opens");
+        };
+        blind::head_of(
+            &d.field_bytes(plain).unwrap(),
+            f.head_oid.as_deref(),
+            f.oid_salt.as_ref(),
+        )
+        .unwrap()
+    }
+
+    fn head_update(
+        epoch: u32,
+        push: &members_ref::SealedRefUpdate,
+        real: [u8; 20],
+    ) -> BTreeMap<String, FieldValue> {
+        let mut p = BTreeMap::new();
+        p.insert("targetId".into(), FieldValue::bytes(vec![0x33; 32]));
+        p.insert("kind".into(), FieldValue::integer(16));
+        p.insert("oid".into(), FieldValue::bytes(push.new_oid.clone()));
+        let head = HeadBlind {
+            real: real.to_vec(),
+            salt: push.salt,
+        };
+        seal_members_head_update_props(&lane(epoch), OWNER, p, &head).unwrap()
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn approvals_and_checks_fold_on_blinds_across_a_rotation() {
+        let (h1, h2, h3) = ([1u8; 20], [2u8; 20], [3u8; 20]);
+        let (p1, p2) = (push(0, h1), push(0, h2));
+        // a rotation: the branch moves on under epoch 1, the PR keeps its epoch 0
+        let p3 = push(1, h3);
+        let mut props = BTreeMap::new();
+        for (k, v) in [
+            ("number", FieldValue::integer(12)),
+            ("title", FieldValue::text("Fix the leak")),
+            ("baseRefName", FieldValue::text("refs/heads/main")),
+            ("sourceRefName", FieldValue::text("refs/heads/sec/fix")),
+            ("sourceRepoId", FieldValue::bytes(REPO.to_vec())),
+            ("headOid", FieldValue::bytes(p1.new_oid.clone())),
+        ] {
+            props.insert(k.to_string(), v);
+        }
+        let members = MembersPatch {
+            base_public: true,
+            source_public: false,
+            head: Some(HeadBlind {
+                real: h1.to_vec(),
+                salt: p1.salt,
+            }),
+        };
+        let patch = seal_members_patch_props(&lane(0), OWNER, props.clone(), &members).unwrap();
+        // the public can find the public base; the source is keyed
+        assert_eq!(
+            patch["baseRefNameHash"].as_bytes().unwrap(),
+            crate::backends::sha256(b"refs/heads/main")
+        );
+        assert_ne!(
+            patch["sourceRefNameHash"].as_bytes().unwrap(),
+            crate::backends::sha256(b"refs/heads/sec/fix")
+        );
+        let hu2 = head_update(0, &p2, h2);
+        let hu3 = head_update(1, &p3, h3);
+        // members: a verified blind -> real map from the PR and its head updates
+        let mut map = BlindMap::new();
+        for (kind, d, plain) in [
+            (DocKind::Patch, &patch, "headOid"),
+            (DocKind::Event, &hu2, "oid"),
+            (DocKind::Event, &hu3, "oid"),
+        ] {
+            let Head::Real { real, salt } = opened_head(kind, d, plain) else {
+                panic!("verified");
+            };
+            assert!(map
+                .learn(
+                    OidField::HeadOid,
+                    &d.field_bytes_of(plain),
+                    Some(&real),
+                    Some(&salt)
+                )
+                .is_none());
+        }
+        // everyone folds the head on the blinds as written
+        let hex = |b: &[u8]| hex::encode(b);
+        let ev = |id: &str, oid: &[u8], at| Event {
+            id: id.into(),
+            target_id: "pr".into(),
+            kind: EventKind::HeadUpdate,
+            actor: "alice".into(),
+            value: None,
+            oid: Some(hex(oid)),
+            ref_id: None,
+            created_at: at,
+        };
+        let state = fold_pr_review_v2(
+            &[ev("e2", &p2.new_oid, 20), ev("e3", &p3.new_oid, 40)],
+            &[],
+            "alice",
+            &hex(&p1.new_oid),
+            &BTreeSet::new(),
+        );
+        assert_eq!(state.head, hex(&p3.new_oid));
+        assert_eq!(map.real_of(&state.head), Some(hex(&h3).as_str()));
+        // rule C: carol copies the folded head; dave writes the real head (the S5 V2 bug a
+        // member would make by putting the real head in the folded field)
+        let oracle = RoleOracle::new(
+            ["bob", "carol", "dave"]
+                .into_iter()
+                .map(|w| Membership {
+                    identity: w.into(),
+                    role: Role::Maintainer,
+                    created_at: 0,
+                })
+                .collect(),
+        );
+        let review = |id: &str, who: &str, commit: String, at| Review {
+            id: id.into(),
+            reviewer: who.into(),
+            verdict: 1,
+            commit_oid: commit,
+            created_at: at,
+        };
+        let approvals = count_approvals(
+            &[
+                review("r1", "bob", hex(&p2.new_oid), 30),
+                review("r2", "carol", state.head.clone(), 50),
+                review("r3", "dave", hex(&h3), 51),
+            ],
+            &oracle,
+            &state.head,
+            &BTreeSet::new(),
+            "alice",
+        );
+        assert_eq!(
+            approvals.approvers.into_iter().collect::<Vec<_>>(),
+            ["carol"]
+        );
+        let run = |id: &str, head: String| CheckRunRow {
+            id: id.into(),
+            head_oid: head,
+            name: "build".into(),
+            status: "completed".into(),
+            conclusion: Some("success".into()),
+            reporter: "bob".into(),
+            created_at: 60,
+            updated_at: None,
+        };
+        let policy = ChecksPolicy {
+            required_checks: vec!["build".into()],
+            ..ChecksPolicy::default()
+        };
+        let runners = BTreeSet::new();
+        assert!(
+            checks_state(
+                &[run("c1", state.head.clone())],
+                &state.head,
+                &oracle,
+                &runners,
+                &policy
+            )
+            .met
+        );
+        assert!(
+            !checks_state(
+                &[run("c2", hex(&h3))],
+                &state.head,
+                &oracle,
+                &runners,
+                &policy
+            )
+            .met,
+            "a run on the real head never attaches"
+        );
+    }
+
+    #[test]
+    fn a_mismatched_head_is_refused_by_writers_and_kept_with_an_alert_by_readers() {
+        let p2 = push(0, [2; 20]);
+        let mut props = BTreeMap::new();
+        props.insert("targetId".into(), FieldValue::bytes(vec![0x33; 32]));
+        props.insert("kind".into(), FieldValue::integer(16));
+        props.insert("oid".into(), FieldValue::bytes(p2.new_oid.clone()));
+        let wrong = HeadBlind {
+            real: vec![9; 20],
+            salt: p2.salt,
+        };
+        assert!(seal_members_head_update_props(&lane(0), OWNER, props.clone(), &wrong).is_err());
+        // a members-only source without its blind would put the real head in plaintext
+        let mut patch = BTreeMap::new();
+        for (k, v) in [
+            ("number", FieldValue::integer(1)),
+            ("title", FieldValue::text("t")),
+            ("baseRefName", FieldValue::text("refs/heads/main")),
+            ("sourceRefName", FieldValue::text("refs/heads/sec/fix")),
+            ("headOid", FieldValue::bytes(vec![2; 20])),
+        ] {
+            patch.insert(k.to_string(), v);
+        }
+        let unblinded = MembersPatch {
+            base_public: true,
+            source_public: false,
+            head: None,
+        };
+        assert!(seal_members_patch_props(&lane(0), OWNER, patch, &unblinded).is_err());
+        // another client writes it anyway: readers keep it, fold the blind, alert, trust nothing
+        let mut header = crate::private::doc::DocHeader::new(DocKind::Event, OWNER, 0);
+        header.vis = crate::rules::v2::Visibility::Public;
+        header.target_id = Some([0x33; 32]);
+        let fields = Fields {
+            head_oid: Some(vec![9; 20]),
+            oid_salt: Some(p2.salt),
+            ..Fields::default()
+        };
+        let enc = lane(0).seal_doc(&header, &fields).unwrap();
+        props.insert("enc".into(), FieldValue::bytes(enc));
+        props.insert("epoch".into(), FieldValue::integer(0));
+        let Head::Alert(a) = opened_head(DocKind::Event, &props, "oid") else {
+            panic!("alert");
+        };
+        assert_eq!(a.field, OidField::HeadOid);
+        let mut map = BlindMap::new();
+        assert!(map
+            .learn(
+                OidField::HeadOid,
+                &p2.new_oid,
+                Some(&[9; 20]),
+                Some(&p2.salt)
+            )
+            .is_some());
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn a_members_only_pr_edit_keeps_its_head_and_the_generic_writer_refuses_prs() {
+        let p1 = push(0, [1; 20]);
+        let mut props = BTreeMap::new();
+        for (k, v) in [
+            ("number", FieldValue::integer(3)),
+            ("title", FieldValue::text("Fix it")),
+            ("baseRefName", FieldValue::text("refs/heads/main")),
+            ("sourceRefName", FieldValue::text("refs/heads/sec/fix")),
+            ("headOid", FieldValue::bytes(p1.new_oid.clone())),
+        ] {
+            props.insert(k.to_string(), v);
+        }
+        let members = MembersPatch {
+            base_public: true,
+            source_public: false,
+            head: Some(HeadBlind {
+                real: vec![1; 20],
+                salt: p1.salt,
+            }),
+        };
+        let keys = lane(0).write_keys().clone();
+        let nonce = [7; 12];
+        let sealed = seal_members_props_with_nonce(
+            &keys,
+            DocKind::Patch,
+            OWNER,
+            props.clone(),
+            &members,
+            nonce,
+        )
+        .unwrap();
+        // the stored document, opened as a member reads it
+        let d = fetched(sealed.clone());
+        let mut header = crate::keyring::header_of(DocKind::Patch, &d).unwrap();
+        header.vis = crate::rules::v2::Visibility::Public;
+        let Opened::Readable(fields) =
+            open_content(&ctx(), &header, &d.field_bytes("enc").unwrap())
+        else {
+            panic!("opens");
+        };
+        let opened = open_doc(Opened::Readable(fields.clone()), d).unwrap();
+        // an edit that keeps the text re-seals to the very same bytes: head, salt and names kept
+        let same: BTreeMap<String, Option<String>> = [("title", "Fix it")]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), Some(v.to_string())))
+            .collect();
+        let edit =
+            reseal_members_patch_edit_with_nonce(&keys, OWNER, &opened, &fields, &same, nonce)
+                .unwrap();
+        assert_eq!(edit["enc"], sealed.get("enc").cloned());
+        // a new title keeps the real head and salt sealed beside the blind
+        let retitled: BTreeMap<String, Option<String>> =
+            [("title".to_string(), Some("Fix it, take 2".to_string()))].into();
+        let edit = reseal_members_patch_edit(&keys, OWNER, &opened, &fields, &retitled).unwrap();
+        let mut stored = sealed.clone();
+        stored.insert("enc".into(), edit["enc"].clone().unwrap());
+        assert!(matches!(
+            opened_head(DocKind::Patch, &stored, "headOid"),
+            Head::Real { .. }
+        ));
+        // the generic members writer takes no PR and no head update
+        assert!(seal_members_props(&lane(0), DocKind::Patch, OWNER, props).is_err());
+        let mut hu = BTreeMap::new();
+        hu.insert("targetId".into(), FieldValue::bytes(vec![0x33; 32]));
+        hu.insert("kind".into(), FieldValue::integer(16));
+        hu.insert("oid".into(), FieldValue::bytes(p1.new_oid.clone()));
+        assert!(seal_members_props(&lane(0), DocKind::Event, OWNER, hu.clone()).is_err());
+        // and a head blind goes on a head update only
+        hu.insert("kind".into(), FieldValue::integer(4));
+        let head = HeadBlind {
+            real: vec![1; 20],
+            salt: p1.salt,
+        };
+        assert!(seal_members_head_update_props(&lane(0), OWNER, hu, &head).is_err());
+    }
+
+    trait BytesOf {
+        fn field_bytes_of(&self, name: &str) -> Vec<u8>;
+    }
+
+    impl BytesOf for BTreeMap<String, FieldValue> {
+        fn field_bytes_of(&self, name: &str) -> Vec<u8> {
+            self[name].as_bytes().unwrap().clone()
+        }
+    }
 }
 
 #[cfg(test)]

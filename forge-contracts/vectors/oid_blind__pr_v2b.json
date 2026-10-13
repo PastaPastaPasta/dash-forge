@@ -1,0 +1,52 @@
+{
+  "name": "pr_v2b",
+  "description": "S5 V2b: the head update's blind is not that of its TLV 24: members fold the blind as the public does (carol counts for both), raise an alert, and have no trusted real head.",
+  "case": "oid_blind",
+  "rules": "v2",
+  "input": {
+    "op": "prFold",
+    "author": "author",
+    "patch": {
+      "headOid": "7eede9362a48efb9e4e4e1e63eacc998c525c4da",
+      "real": "e6d7f353ee2800b1093c04b07ee9fd7cfa324881",
+      "salt": "adc02a522db7fe8d31e951c6333b188cd96b14b4e8a5a98262878a856389e763"
+    },
+    "headUpdates": [
+      {
+        "id": "hu1",
+        "createdAt": 20,
+        "oid": "304f93e2333b387e7146a49ddf9b8152b2169417",
+        "real": "7153e158863efe49ee17b9fdefe0c8e5f5ec345b",
+        "salt": "708967df4c8282561a6401ce68b4beee0b7012f6d92a775dc578ab7eb74c3f3f"
+      }
+    ],
+    "reviews": [
+      {
+        "id": "r1",
+        "reviewer": "bob",
+        "verdict": 1,
+        "commitOid": "7eede9362a48efb9e4e4e1e63eacc998c525c4da",
+        "createdAt": 10
+      },
+      {
+        "id": "r2",
+        "reviewer": "carol",
+        "verdict": 1,
+        "commitOid": "304f93e2333b387e7146a49ddf9b8152b2169417",
+        "createdAt": 30
+      }
+    ]
+  },
+  "expected": {
+    "head": "304f93e2333b387e7146a49ddf9b8152b2169417",
+    "approvers": [
+      "carol"
+    ],
+    "alerts": [
+      {
+        "at": "hu1",
+        "kind": "mismatch"
+      }
+    ]
+  }
+}

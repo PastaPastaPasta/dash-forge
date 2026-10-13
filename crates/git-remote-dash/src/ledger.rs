@@ -20,56 +20,10 @@
 //! Never merely because the file is missing: an older clone gets one from `dg doctor`, after the
 //! user confirms it never fetched members-only branches.
 //!
-//! # Format, version 1
-//!
-//! UTF-8 text, `\n`-terminated lines, append-only:
-//!
-//! ```text
-//! # dash sealed-object ledger v1
-//! commit <40 or 64 hex>     a members-only commit this clone fetched or pushed
-//! pack <64 hex>             a members-only pack this clone indexed
-//! ```
-//!
-//! - The first line is exactly [`HEADER`]. A reader that finds any other first line (a newer
-//!   version, or a file it does not know) must treat the ledger as unknown and fail closed;
-//!   it must never read such a file as empty.
-//! - Later lines starting with `#` are comments. Entry lines are a keyword, one space and a
-//!   lower-case hex id; a reader skips keywords it does not know, so entries can be added
-//!   without a version bump.
-//! - A file holding only the header records no members-only object.
+//! The format, its reader and its appender are [`forge_core::members_git::ledger`] (shared with
+//! `dg doctor`); this module only decides when a clone creates it.
 
-use std::io::Write as _;
-use std::path::{Path, PathBuf};
-
-/// The first line of a version-1 ledger.
-pub const HEADER: &str = "# dash sealed-object ledger v1";
-
-/// `<common dir>/dash/sealed-ledger`.
-pub fn path(common_dir: &Path) -> PathBuf {
-    common_dir.join("dash").join("sealed-ledger")
-}
-
-/// Create the empty ledger in `common_dir` unless one exists. `Ok(true)` when it was created.
-/// Never truncates: the file is opened with `create_new`.
-pub fn create_empty(common_dir: &Path) -> std::io::Result<bool> {
-    let p = path(common_dir);
-    if let Some(dir) = p.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&p)
-    {
-        Ok(mut f) => {
-            f.write_all(HEADER.as_bytes())?;
-            f.write_all(b"\n")?;
-            Ok(true)
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
-        Err(e) => Err(e),
-    }
-}
+use forge_core::members_git::ledger::{create_empty, path};
 
 /// Create the ledger of the repository git spawned the helper for, when it cannot have held
 /// anything yet: a clone (`cloning`) or a repository with no refs. A failure is logged, never
@@ -90,6 +44,7 @@ pub fn ensure_for_new_clone(cloning: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use forge_core::members_git::ledger::HEADER;
 
     #[test]
     fn created_once_with_the_header_and_never_truncated() {

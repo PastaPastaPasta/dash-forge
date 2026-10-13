@@ -21,7 +21,9 @@
 //! * [`bundle`]: make-public bundles (kind 7), and [`convert`]: what readers derive about a
 //!   repository made public, and the epoch keys its owner published (§18);
 //! * [`epoch`]: anchors, the current epoch, the chain walk, alerts and the repair check, as one
-//!   pure function over flattened rows (§5.3–§5.6).
+//!   pure function over flattened rows (§5.3–§5.6);
+//! * [`blind`] and [`members_ref`]: members-only branches and pull requests of a public
+//!   repository: salted OID blinds, sealed ref updates and their real values (§19).
 //!
 //! The seams the data plane routes through ([`RefNameHasher`], [`RepoCodec`], [`PackCipher`],
 //! [`RepoKeyReader`]) have their private implementations in [`Private`], built from the
@@ -33,11 +35,13 @@
 #[cfg(all(feature = "vectors", not(debug_assertions)))]
 compile_error!("the `vectors` feature (deterministic nonces and file ids) is for tests only; never enable it in a release build");
 
+pub mod blind;
 pub mod bundle;
 pub mod convert;
 pub mod doc;
 pub mod epoch;
 pub mod keys;
+pub mod members_ref;
 pub mod named;
 pub mod pack;
 pub mod release;

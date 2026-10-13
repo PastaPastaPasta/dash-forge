@@ -1,0 +1,15 @@
+{
+  "name": "check_width",
+  "description": "a 32-byte blind of a 20-byte commit: width (alert, keep).",
+  "case": "oid_blind",
+  "rules": "v2",
+  "input": {
+    "op": "check",
+    "plain": "6a68e76e86d2c207aaa5395fdf4270342ec507ff10b3ba5e079f10dab7ce460d",
+    "real": "de8ed34d0343cb7015311aca01897865e6907bbd",
+    "salt": "c593c3811de01bebe941c9a10da7688ddbce11616faeb6b3928e3f17fb2e9987"
+  },
+  "expected": {
+    "status": "width"
+  }
+}

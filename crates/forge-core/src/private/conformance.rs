@@ -20,14 +20,14 @@ use crate::platform::FieldValue;
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Vector {
-    name: String,
+pub(crate) struct Vector {
+    pub(crate) name: String,
     #[allow(dead_code)]
     description: String,
-    case: String,
-    rules: String,
-    input: Value,
-    expected: Value,
+    pub(crate) case: String,
+    pub(crate) rules: String,
+    pub(crate) input: Value,
+    pub(crate) expected: Value,
 }
 
 /// The fields of a `private_epoch` vector that hold 32-byte identities or ids.
@@ -60,15 +60,15 @@ fn recode_ids(value: &Value, key: Option<&str>, f: &dyn Fn(&str) -> String) -> V
     }
 }
 
-fn h32(s: &str) -> [u8; 32] {
+pub(crate) fn h32(s: &str) -> [u8; 32] {
     hex::decode(s).unwrap().try_into().unwrap()
 }
 
-fn nonce12(s: &str) -> [u8; 12] {
+pub(crate) fn nonce12(s: &str) -> [u8; 12] {
     hex::decode(s).unwrap().try_into().unwrap()
 }
 
-fn key(s: &str) -> EpochKey {
+pub(crate) fn key(s: &str) -> EpochKey {
     EpochKey::from_bytes(h32(s))
 }
 
@@ -93,7 +93,7 @@ fn assert_no_unknown_keys(given: &Value, parsed: &Value, at: &str) {
     }
 }
 
-fn input<T: DeserializeOwned + Serialize>(v: &Vector) -> T {
+pub(crate) fn input<T: DeserializeOwned + Serialize>(v: &Vector) -> T {
     let parsed: T = serde_json::from_value(v.input.clone())
         .unwrap_or_else(|e| panic!("vector `{}`: {} input: {e}", v.name, v.case));
     let again = serde_json::to_value(&parsed).expect("re-serialize input");
@@ -155,10 +155,11 @@ const COLLAB_BYTES: &[&str] = &[
     "baseRefNameHash",
     "sourceRefNameHash",
     "refId",
+    "oid",
     "enc",
 ];
 
-fn collab_field(name: &str, v: &Value) -> FieldValue {
+pub(crate) fn collab_field(name: &str, v: &Value) -> FieldValue {
     match v {
         Value::String(h) if COLLAB_BYTES.contains(&name) => {
             FieldValue::bytes(hex::decode(h).expect("hex"))
@@ -177,7 +178,7 @@ fn collab_field(name: &str, v: &Value) -> FieldValue {
     }
 }
 
-fn collab_json(v: &FieldValue) -> Value {
+pub(crate) fn collab_json(v: &FieldValue) -> Value {
     match v {
         FieldValue::Bytes(b) => json!(hex::encode(b)),
         FieldValue::Bytes32(b) | FieldValue::Identifier(b) => json!(hex::encode(b)),
@@ -206,7 +207,7 @@ struct DocSealIn {
 
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct OpenCtxIn {
+pub(crate) struct OpenCtxIn {
     keys: BTreeMap<String, String>,
     anchors: BTreeMap<String, AnchorIn>,
     members: Vec<String>,
@@ -236,10 +237,10 @@ struct DocOpenIn {
 /// `DocHeader` plus `enc`; `flatten` does not combine with `deny_unknown_fields`, so `enc` is
 /// split off and the rest parsed as a `DocHeader`, which refuses unknown keys itself.
 #[derive(Deserialize, Serialize)]
-struct StoredDocIn(BTreeMap<String, Value>);
+pub(crate) struct StoredDocIn(BTreeMap<String, Value>);
 
 impl StoredDocIn {
-    fn split(&self) -> (DocHeader, Vec<u8>) {
+    pub(crate) fn split(&self) -> (DocHeader, Vec<u8>) {
         let mut m = self.0.clone();
         let enc = m
             .remove("enc")
@@ -666,7 +667,7 @@ struct ReleaseOpenIn {
     manifest: Option<ManifestIn>,
 }
 
-fn open_context(repo_id: &[u8; 32], c: &OpenCtxIn) -> OpenContext {
+pub(crate) fn open_context(repo_id: &[u8; 32], c: &OpenCtxIn) -> OpenContext {
     OpenContext {
         keys: keyring(repo_id, &c.keys),
         anchors: c
@@ -833,7 +834,7 @@ fn run_release(v: &Vector) -> Value {
 
 // --- cases ------------------------------------------------------------------------------------
 
-fn opened_json(o: &Opened) -> Value {
+pub(crate) fn opened_json(o: &Opened) -> Value {
     match o {
         Opened::Readable(f) => json!({ "status": "readable", "fields": f }),
         Opened::Unreadable(r) => json!({ "status": "unreadable", "reason": r }),
@@ -841,7 +842,7 @@ fn opened_json(o: &Opened) -> Value {
     }
 }
 
-fn error_json(e: &PrivateError) -> Value {
+pub(crate) fn error_json(e: &PrivateError) -> Value {
     let code = match e {
         PrivateError::Malformed => "malformed",
         PrivateError::TooLarge(..) => "tooLarge",

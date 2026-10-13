@@ -1,6 +1,6 @@
 {
   "name": "reserved_tag_24",
-  "description": "tag 24 (a head update's real head) stays reserved: malformed.",
+  "description": "tag 24 (a members-only PR's real head, §19) is not an issue field: malformed.",
   "case": "mixed_doc_open",
   "rules": "v2",
   "input": {

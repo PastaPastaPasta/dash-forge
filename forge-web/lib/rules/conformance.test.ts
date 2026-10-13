@@ -1126,7 +1126,14 @@ describe('FORGE_RULES conformance vectors', () => {
   // (`mixed_doc_*`, `named_envelope*`, `named_artifact*`) and a repository made public's readers
   // (`converted_repo_*`) run in `lib/private/conformance.test.ts`;
   // the environment snapshots (`env_snapshot*`) in `lib/env/conformance.test.ts`.
+  // The members-only branch and PR cases (private-repos.md §19): `oid_blind`, `sealed_ref` and
+  // `sealed_patch` run in `lib/private/members-git.conformance.test.ts`; `members_pack_plan` and
+  // `publish_guard` pin the git remote helper's push planning and publish guard, which only the
+  // Rust helper implements (forge-core `members_git`), so no web harness runs them.
+  const MEMBERS_GIT_CASES = ['oid_blind', 'sealed_ref', 'sealed_patch', 'members_pack_plan', 'publish_guard']
+  const isMembersGit = (v: Vector) => MEMBERS_GIT_CASES.includes(v.case)
   const isPrivate = (v: Vector) =>
+    isMembersGit(v) ||
     ['private_', 'mixed_doc_', 'named_envelope', 'named_artifact', 'converted_repo_', 'env_snapshot'].some((p) => v.case.startsWith(p))
   const v2Vectors = vectors.filter((v) => v.rules === 'v2' && !isPrivate(v))
   const privateVectors = vectors.filter(isPrivate)
@@ -1136,6 +1143,9 @@ describe('FORGE_RULES conformance vectors', () => {
     expect(v2Vectors.length).toBeGreaterThanOrEqual(110)
     expect(privateVectors.length).toBeGreaterThanOrEqual(138)
     expect(base.length + v2Vectors.length + privateVectors.length).toBe(vectors.length)
+    // every members-git case is present (forge-core `members_git::conformance` runs all five)
+    for (const c of MEMBERS_GIT_CASES) expect(vectors.filter((v) => v.case === c).length, c).toBeGreaterThanOrEqual(5)
+    expect(vectors.filter(isMembersGit).length).toBeGreaterThanOrEqual(98)
     // the members-only content cases (private-repos.md §17) run byte for byte with forge-core
     const mixed = ['content_well_formed', 'git_plane_well_formed', 'approval_count', 'mixed_edit', 'mixed_anchor']
     expect(v2Vectors.filter((v) => mixed.includes(v.case)).length).toBeGreaterThanOrEqual(30)

@@ -1,0 +1,75 @@
+{
+  "name": "mixed_batch",
+  "description": "public first (against P only, never a members tip), then one pack per members branch against P, the batch's new public tips and that branch's previous tip.",
+  "case": "members_pack_plan",
+  "rules": "v2",
+  "input": {
+    "publicTips": [
+      "cfff9697be9e8a78416dde4cb4f9cba34929127e",
+      "a52eea110b44deca2464264f16153e35bd3ec119"
+    ],
+    "membersTips": {
+      "refs/heads/sec/a": "500d251a54e54de695d738cd4c4000d4910824f6",
+      "refs/heads/sec/b": "146cce829594982d36e2fae8e1cb9b6ef144a61f"
+    },
+    "batch": [
+      {
+        "dst": "refs/heads/sec/b",
+        "new": "43e77101b1ddd79ffeae44ece17bde2ee60edac0",
+        "audience": "members"
+      },
+      {
+        "dst": "refs/heads/main",
+        "new": "8f24fefa6975fe1f9b6a5c47d33c5ca681560e4c",
+        "audience": "public"
+      },
+      {
+        "dst": "refs/heads/sec/a",
+        "new": "c73a1981639bd2096ab37c529113729d480ec4de",
+        "audience": "members"
+      },
+      {
+        "dst": "refs/tags/v2",
+        "new": "8f24fefa6975fe1f9b6a5c47d33c5ca681560e4c",
+        "audience": "public"
+      }
+    ]
+  },
+  "expected": {
+    "public": {
+      "want": [
+        "8f24fefa6975fe1f9b6a5c47d33c5ca681560e4c"
+      ],
+      "have": [
+        "a52eea110b44deca2464264f16153e35bd3ec119",
+        "cfff9697be9e8a78416dde4cb4f9cba34929127e"
+      ]
+    },
+    "members": [
+      {
+        "ref": "refs/heads/sec/a",
+        "want": [
+          "c73a1981639bd2096ab37c529113729d480ec4de"
+        ],
+        "have": [
+          "500d251a54e54de695d738cd4c4000d4910824f6",
+          "8f24fefa6975fe1f9b6a5c47d33c5ca681560e4c",
+          "a52eea110b44deca2464264f16153e35bd3ec119",
+          "cfff9697be9e8a78416dde4cb4f9cba34929127e"
+        ]
+      },
+      {
+        "ref": "refs/heads/sec/b",
+        "want": [
+          "43e77101b1ddd79ffeae44ece17bde2ee60edac0"
+        ],
+        "have": [
+          "146cce829594982d36e2fae8e1cb9b6ef144a61f",
+          "8f24fefa6975fe1f9b6a5c47d33c5ca681560e4c",
+          "a52eea110b44deca2464264f16153e35bd3ec119",
+          "cfff9697be9e8a78416dde4cb4f9cba34929127e"
+        ]
+      }
+    ]
+  }
+}

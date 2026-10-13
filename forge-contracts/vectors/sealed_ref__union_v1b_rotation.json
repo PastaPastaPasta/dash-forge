@@ -1,0 +1,120 @@
+{
+  "name": "union_v1b_rotation",
+  "description": "S5 V1b: the same branch with a rotation between B and C: the name hashes differ per epoch, the real values chain across it.",
+  "case": "sealed_ref",
+  "rules": "v2",
+  "input": {
+    "op": "union",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        "1": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        },
+        "1": {
+          "id": "723e4415b140d11aae49ab4d7cbf0e3f418bb90092a5ab040d47602af4ba5a86",
+          "height": 20
+        }
+      },
+      "members": []
+    },
+    "rows": [
+      {
+        "id": "a2991f66b58d42417a4987fa57fdf5be2d7f20f48ac14c5258c747e011eb176e",
+        "createdAt": 1000,
+        "createdAtBlockHeight": 100,
+        "protected": false,
+        "vis": "public",
+        "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+        "epoch": 0,
+        "refNameHash": "f9337f26a53b55ef8817947cb1554159ae4637a5565e5f88b01eed029b69ccfb",
+        "newOid": "75bfd0c6b51242df8b18da5db3fac3e6d672ab4c",
+        "force": false,
+        "enc": "03000102030405060708090a0b90ddf05947fd4d47855bd3fe53c5e868dbc5e9cf36d9ce78464bfdf1ce31316530a112a5991fc7a6d74d0684aac21d8d30b59a1e6e72aebfd9b27b14d314e6a927417dcd0889db5340aacdc0a95d877949c20b17476e155e1f27af0cdc8e65f7d4cc14ba134d20fbb71a1e80a68458fd14f672758f1138c5c750df8af056e6"
+      },
+      {
+        "id": "4c231c9f20794748e125480b6d45f4fc1ff27ab32786c2108e8ad5710fb63a4f",
+        "createdAt": 1001,
+        "createdAtBlockHeight": 100,
+        "protected": false,
+        "vis": "public",
+        "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+        "epoch": 0,
+        "refNameHash": "f9337f26a53b55ef8817947cb1554159ae4637a5565e5f88b01eed029b69ccfb",
+        "newOid": "a75b9413970671ba3822bf31a0e0a58058b8813f",
+        "force": false,
+        "prevOid": "45aca9d2ae3d28a6d2a3629d74d1fe88b92c8c48",
+        "enc": "03000102030405060708090a0b74c1b697190fbc10220bf86612cda5e1e8329ab735eb594142ae2dd75f58cddfa77ca27f107cac46163c1c7063cab6ecb0c12aa07e3f195790c1b6fcae113ace427a754edf3128f3ac1a005c9ce7841abe2edc2c3de719b30fb753649c1629e3327e02ef9dc36ae5af30f2666b5f56a3b8c851866ae08a628568a0c3bc5848bcc9da0ef6ffb995b55f7e9c98e1aa460fe1691ef0d706"
+      },
+      {
+        "id": "d9903facff88e2f67c7e5eeaf903f4df7aa7377f1a2e06446d36ea07b60ff55a",
+        "createdAt": 1002,
+        "createdAtBlockHeight": 100,
+        "protected": false,
+        "vis": "public",
+        "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+        "epoch": 1,
+        "refNameHash": "fa421c081068d0c946f33c20741589b9762f7a645c2604e458e9e4ed30c7856f",
+        "newOid": "6dd964e5382d81b238c29de5a97b7b36f538becf",
+        "force": false,
+        "prevOid": "701408442c4fc41da9a84cd8095f19224c33a67b",
+        "enc": "03000102030405060708090a0b7b076cd896e97621b6a7b817a055733557d0523b3ce5d2ea3328e5e50f2c3daf276adf03f62f54f5105b0d75da94385eb9c81e768ef4d68c09559433102f77c294eb4f7fea00ea6f9d6ac58cd3c5f3b7d70041f621bda23360040952a07f462f71a2eb60e0ce90c429cfebd3c7d0dbdf38ebc5dc04dc8d388d16f019aab3bcf8af1d391b6b90975cf63673e32a12af123885ba2a7973"
+      },
+      {
+        "id": "579ab769e17ed110bf5882374f4b4bf1693ca1d79edf6b3b69c389b24d62aa4b",
+        "createdAt": 1003,
+        "createdAtBlockHeight": 100,
+        "protected": false,
+        "vis": "public",
+        "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+        "epoch": 1,
+        "refNameHash": "fa421c081068d0c946f33c20741589b9762f7a645c2604e458e9e4ed30c7856f",
+        "newOid": "faac76d63bee58f01d813732840e8d2727ba17b1",
+        "force": true,
+        "prevOid": "9ea172280d57181a986f111c92f8d8b957ab5f10",
+        "enc": "03000102030405060708090a0b7458e7c7d2efd00c53e137bf8981b63b2b580b04811ac8f60b3124f91635a27dd5d6ae646865d21b8a66d0add97fd86e7011974c405e1a30ebac4253f0fe20d00919f8d95b6ee5ee014dce83e584d5a8cb92e5549ae410b88ec95918763349b0878e1d2a7ae6a16fcaeb208e38b57b63a4e087432e917200493063487e92a913053908d51c9a097bcf1c430cd08b8b9bc463847ac0db"
+      }
+    ]
+  },
+  "expected": {
+    "refs": {
+      "refs/heads/sec/fix": [
+        {
+          "id": "a2991f66b58d42417a4987fa57fdf5be2d7f20f48ac14c5258c747e011eb176e",
+          "newOid": "de8ed34d0343cb7015311aca01897865e6907bbd",
+          "force": false,
+          "protected": false
+        },
+        {
+          "id": "4c231c9f20794748e125480b6d45f4fc1ff27ab32786c2108e8ad5710fb63a4f",
+          "newOid": "ac57952b296a19e0255ee8ff9b20adcfab2a599c",
+          "force": false,
+          "protected": false,
+          "prevOid": "de8ed34d0343cb7015311aca01897865e6907bbd"
+        },
+        {
+          "id": "d9903facff88e2f67c7e5eeaf903f4df7aa7377f1a2e06446d36ea07b60ff55a",
+          "newOid": "da31d9d1006fc4633d1b3bbc71b0143c188395ac",
+          "force": false,
+          "protected": false,
+          "prevOid": "ac57952b296a19e0255ee8ff9b20adcfab2a599c"
+        },
+        {
+          "id": "579ab769e17ed110bf5882374f4b4bf1693ca1d79edf6b3b69c389b24d62aa4b",
+          "newOid": "c059c84cebb3d64e39a1547b6597fc826920af4e",
+          "force": true,
+          "protected": false,
+          "prevOid": "da31d9d1006fc4633d1b3bbc71b0143c188395ac"
+        }
+      ]
+    },
+    "publicRefs": {},
+    "alerts": [],
+    "unreadable": 0
+  }
+}

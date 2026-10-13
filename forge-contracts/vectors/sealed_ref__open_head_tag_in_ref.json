@@ -1,0 +1,37 @@
+{
+  "name": "open_head_tag_in_ref",
+  "description": "tag 24 is not a ref update's: malformed.",
+  "case": "sealed_ref",
+  "rules": "v2",
+  "input": {
+    "op": "open",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        }
+      },
+      "members": []
+    },
+    "doc": {
+      "type": "refUpdate",
+      "vis": "public",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "refNameHash": "f9337f26a53b55ef8817947cb1554159ae4637a5565e5f88b01eed029b69ccfb",
+      "newOid": "d44bbeca9b14ce937bf8bb4078892d1680df8238",
+      "force": false,
+      "prevOid": "c6de995d59e0bb9b55de67c69e57069c96a74a99",
+      "enc": "03000102030405060708090a0b9548e9926c729ffd6791739e9d7926b3252639552acc32acd3835d7c5506a343cceec02cd479649a2c795ea8c0762aae2549476b22b2ddc4e739fc9bfa046b9265b9e09f5240c7290b246e7207c8264ac5228c1b5143df4d689b19703be899bed8df899724b44eb947236ffb607f876f3cf98088cb141b64d20e5117f0770a2879c0a3003108e369dfbcaf1fd3dc095e5176afc008e1b5215cbdaadb816e77fc9a65f387b0c938b438cc19f8e8",
+      "createdAtBlockHeight": 50
+    }
+  },
+  "expected": {
+    "status": "malformed"
+  }
+}

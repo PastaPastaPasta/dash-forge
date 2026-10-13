@@ -1,0 +1,32 @@
+{
+  "name": "public_only",
+  "description": "a public push: one public pack against P only.",
+  "case": "members_pack_plan",
+  "rules": "v2",
+  "input": {
+    "publicTips": [
+      "cfff9697be9e8a78416dde4cb4f9cba34929127e",
+      "a52eea110b44deca2464264f16153e35bd3ec119"
+    ],
+    "membersTips": {},
+    "batch": [
+      {
+        "dst": "refs/heads/main",
+        "new": "8f24fefa6975fe1f9b6a5c47d33c5ca681560e4c",
+        "audience": "public"
+      }
+    ]
+  },
+  "expected": {
+    "public": {
+      "want": [
+        "8f24fefa6975fe1f9b6a5c47d33c5ca681560e4c"
+      ],
+      "have": [
+        "a52eea110b44deca2464264f16153e35bd3ec119",
+        "cfff9697be9e8a78416dde4cb4f9cba34929127e"
+      ]
+    },
+    "members": []
+  }
+}

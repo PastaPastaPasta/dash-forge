@@ -1,0 +1,37 @@
+{
+  "name": "open_name_hash_mismatch",
+  "description": "refNameHash is the keyed hash of another name than TLV 3's: malformed (§4.5).",
+  "case": "sealed_ref",
+  "rules": "v2",
+  "input": {
+    "op": "open",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        }
+      },
+      "members": []
+    },
+    "doc": {
+      "type": "refUpdate",
+      "vis": "public",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "refNameHash": "f9337f26a53b55ef8817947cb1554159ae4637a5565e5f88b01eed029b69ccfb",
+      "newOid": "d44bbeca9b14ce937bf8bb4078892d1680df8238",
+      "force": false,
+      "prevOid": "c6de995d59e0bb9b55de67c69e57069c96a74a99",
+      "enc": "03000102030405060708090a0b9548e9926c729ffd6791739e9d7926b3252639552acc32acd3835d7c5506a343cceec22cd479649a2c795ea8c07636bf2e0353145ab07187de4540daca8e572ca818934064afc1ccf99220ee0416bc4706f282d3629d9e4293805a09d7766c23f5bf34af275306e980bae034b2bbcbd9e99aa5d8377a8d7917dcbc8b3f1484b0035b3c04bc850cebbf05c928af8cf520c9448b20",
+      "createdAtBlockHeight": 50
+    }
+  },
+  "expected": {
+    "status": "malformed"
+  }
+}
