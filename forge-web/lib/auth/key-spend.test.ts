@@ -18,6 +18,7 @@ import type { SpendEvent } from '../sdk/write'
 import { AuthController, KEY_SPEND_ESTIMATES } from './controller'
 import { encodeWif } from './wif'
 import { lockVault } from './vault'
+import { cachedDpnsName, clearDpnsCache } from '../view/dpns'
 
 const ID = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
 const NET = 'devnet' as const
@@ -26,6 +27,8 @@ const PASS = { passphrase: 'correct horse battery' }
 
 // What each fake update costs, and the chain's balance (credits).
 const chain = vi.hoisted(() => ({ balance: 0n, cost: { register: 0n, topup: 0n, revoke: 0n }, fail: false, revoked: false, nextKeyId: 5, registered: [] as Record<string, unknown>[] }))
+/** #452: the DPNS names this fake chain holds (normalized label -> identity), and what a registration does. */
+const dpns = vi.hoisted(() => ({ holders: new Map<string, string>(), cost: 72_600_000n, lostAnswer: false, winner: null as string | null, sent: [] as { label: string; wifs: readonly string[] }[] }))
 
 vi.mock('../sdk/write', async (orig) => {
   const real = await orig<typeof import('../sdk/write')>()
@@ -72,6 +75,22 @@ vi.mock('./limited-key', async (orig) => {
 vi.mock('./identity-file', async (orig) => {
   const real = await orig<typeof import('./identity-file')>()
   return { ...real, masterMaterialFromFile: () => ({ identityId: ID, networkKey: 'devnet-moutai', masterWif: 'MASTER', mnemonic: null }) }
+})
+vi.mock('./username-register', async (orig) => {
+  const real = await orig<typeof import('./username-register')>()
+  return {
+    ...real,
+    registerUsername: async (_sdk: unknown, p: { identityId: string; label: string; wifs: readonly string[] }) => {
+      dpns.sent.push({ label: p.label, wifs: p.wifs })
+      chain.balance -= dpns.cost
+      dpns.holders.set(p.label.toLowerCase(), dpns.winner ?? p.identityId)
+      if (dpns.lostAnswer) throw new Error('timed out waiting for the domain document result')
+    },
+  }
+})
+vi.mock('../view/dpns', async (orig) => {
+  const real = await orig<typeof import('../view/dpns')>()
+  return { ...real, dpnsLabelHolder: async (_sdk: unknown, label: string) => dpns.holders.get(label.toLowerCase()) ?? null }
 })
 vi.mock('./key-registration', async (orig) => {
   const real = await orig<typeof import('./key-registration')>()
@@ -212,6 +231,71 @@ describe('key spends reach the ledger (D-044)', () => {
     const s = summarize(rows)
     expect(s.byRepo).toEqual([{ repo: NO_REPO, credits: 47_111_680 + 2_267_600, writes: 2 }])
     expect(reconcile(s.allTime, baseline!.credits, chain.balance)).toEqual({ balanceChange: -(47_111_680 + 2_267_600), unexplained: 0 })
+  }, 30_000)
+})
+
+describe('registering a username (#452)', () => {
+  const file = JSON.stringify({
+    network: 'devnet-moutai',
+    identityId: ID,
+    identityKeys: [
+      { purpose: 'AUTHENTICATION', securityLevel: 'MASTER', keyType: 'ECDSA_SECP256K1', privateKeyWif: wifOf(1) },
+      { purpose: 'AUTHENTICATION', securityLevel: 'CRITICAL', keyType: 'ECDSA_SECP256K1', privateKeyWif: wifOf(3) },
+    ],
+  })
+  let controller: AuthController
+  let events: SpendEvent[]
+  beforeEach(async () => {
+    resetMemoryStores()
+    lockVault()
+    clearDpnsCache()
+    chain.balance = 100_000_000_000n
+    chain.cost = { register: 47_111_680n, topup: 2_267_600n, revoke: 12_000_000n }
+    chain.fail = false
+    chain.nextKeyId = 5
+    dpns.holders = new Map()
+    dpns.lostAnswer = false
+    dpns.winner = null
+    dpns.sent = []
+    events = []
+    const sdk = {
+      identities: {
+        fetch: async () => ({ balance: chain.balance, publicKeys: [{ keyId: 5, wif: wifOf(5), purposeNumber: 0, securityLevelNumber: 2 }] }),
+        keysRemainingBudgets: async () => new Map(),
+      },
+    } as unknown as EvoSDK
+    controller = new AuthController(async () => sdk, NET)
+    await controller.importIdentity({ fileText: '{}' }, PASS)
+    controller.setSpendListener((e) => events.push(e))
+  })
+
+  it('signs with the file’s CRITICAL key (never MASTER), records the charge and knows the name', async () => {
+    expect(await controller.registerUsername({ fileText: file }, 'Alice-7')).toBe('Alice-7.dash')
+    expect(dpns.sent).toEqual([{ label: 'Alice-7', wifs: [wifOf(3)] }])
+    const e = events[0] ?? (await vi.waitFor(() => events[0]!))
+    expect(e).toMatchObject({ kind: 'identity:name', documentId: 'identity', actualCredits: 72_600_000, estimateCredits: KEY_SPEND_ESTIMATES['identity:name'] })
+    expect(cachedDpnsName(NET, ID)).toBe('Alice-7.dash')
+  }, 30_000)
+
+  it('refuses a contested or invalid name before anything is sent', async () => {
+    await expect(controller.registerUsername({ fileText: file }, 'alice')).rejects.toThrow(/contested/)
+    await expect(controller.registerUsername({ fileText: file }, 'a_b')).rejects.toThrow(/only letters/i)
+    expect(dpns.sent).toEqual([])
+  }, 30_000)
+
+  it('refuses another identity’s file', async () => {
+    const other = file.replace(ID, '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD')
+    await expect(controller.registerUsername({ fileText: other }, 'alice-7')).rejects.toThrow(/9r27eDs/)
+    expect(dpns.sent).toEqual([])
+  }, 30_000)
+
+  it('a lost answer is a success when the name is now this identity’s', async () => {
+    dpns.lostAnswer = true
+    expect(await controller.registerUsername({ fileText: file }, 'alice-7')).toBe('alice-7.dash')
+    // Someone else's after all: the error stands, and the tab does not believe the name is ours.
+    dpns.winner = '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD'
+    await expect(controller.registerUsername({ fileText: file }, 'bob-7')).rejects.toThrow(/timed out/)
+    expect(cachedDpnsName(NET, ID)).toBe('alice-7.dash')
   }, 30_000)
 })
 

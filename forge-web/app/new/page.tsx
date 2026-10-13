@@ -168,7 +168,7 @@ export default function NewRepoPage(): JSX.Element {
         : ops.error !== null
           ? `Couldn't read your encryption key: ${ops.error}`
           : noKey
-            ? 'Add your encryption key to this browser first (Settings → Private repos).'
+            ? 'Add your encryption key to this browser first (Settings → Members-only and private content).'
             : ops.data == null
               ? 'Checking your encryption key…'
               : null
@@ -433,7 +433,7 @@ export default function NewRepoPage(): JSX.Element {
                 <p className="mt-2 text-caution-700 dark:text-caution-400" data-testid="private-no-key">
                   cannot create a private repository: your identity has no encryption key in this browser. Add it in{' '}
                   <Link href="/settings/" className="text-forge-700 underline dark:text-forge-400">
-                    Settings → Private repos
+                    Settings → Members-only and private content
                   </Link>
                   .
                 </p>

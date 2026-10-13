@@ -60,7 +60,7 @@ async function signedInAs(browser: Browser, name: string, encryption: boolean): 
   return page
 }
 
-/** Settings → Private repos: this browser holds the identity's encryption key (added from its file once). */
+/** Settings → Members-only and private content: this browser holds the identity's encryption key (added from its file once). */
 async function ensureEncryptionKey(page: Page, name: string): Promise<void> {
   await page.goto('/settings/', { waitUntil: 'domcontentloaded' })
   await unlock(page)

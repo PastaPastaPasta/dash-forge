@@ -45,6 +45,7 @@ export {
   resolveAnyRepoWith,
   isIdentifier,
   resolveOwner,
+  seedOwner,
   toRepoDoc,
   repoRefOf,
   type RepoAddressParams,
@@ -60,6 +61,7 @@ export {
   readMemberRepoIds,
   readMemberships,
   readMembershipsCached,
+  readMembershipsFresh,
   memberDocOf,
   readProvenanceTrust,
   readRoleOracle,
@@ -188,6 +190,7 @@ export {
   type IssueSelection,
   type RowFilters,
 } from './issue-index'
+export { coveredPushes, type BranchPush } from './branch-pulls'
 export {
   openPullsOnBranch,
   pullMilestoneItems,

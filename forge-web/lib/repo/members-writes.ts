@@ -253,7 +253,7 @@ export interface MembersWriter {
 export async function membersWriter(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef): Promise<MembersWriter> {
   if (repo.visibility !== 'public') throw new Error('members-only content is written in public repos')
   const ops = await encryptionOps(sdk, auth.network, auth.identityId, repo.forge.collab)
-  if (ops === null) throw refused('add your encryption key to this browser (Settings → Private repos) to write members-only content', 'E306')
+  if (ops === null) throw refused('add your encryption key to this browser (Settings → Members-only and private content) to write members-only content', 'E306')
   const s = await loadPrivateSessionUncached(sdk, withoutSessions(repo), auth.network, auth.identityId, sessionUnwrapper(ops))
   try {
     if (!s.members.some((m) => m.identity === auth.identityId)) throw refused('only members of this repo can write what only members can read')

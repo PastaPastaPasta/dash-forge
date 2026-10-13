@@ -212,6 +212,7 @@ const KIND_LABELS: Readonly<Record<string, string>> = {
   'key:encryption': 'Register encryption key',
   'key:runner': 'Register a CI runner key',
   'identity:create': 'Create identity',
+  'identity:name': 'Register a username',
   [TOP_UP_KIND]: 'Top up identity',
   'create:repo': 'Create repo',
 }

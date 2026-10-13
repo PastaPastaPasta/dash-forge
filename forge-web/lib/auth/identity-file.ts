@@ -174,6 +174,45 @@ export function masterMaterialFromFile(text: string): MasterMaterial {
   return { identityId, networkKey, masterWif, mnemonic }
 }
 
+/** What registering a username needs from an identity file (#452): its id, network and auth keys. */
+export interface AuthKeyMaterial {
+  readonly identityId: string
+  readonly networkKey: string | null
+  /**
+   * The file's CRITICAL, then HIGH, AUTHENTICATION private keys (WIF), in that order: a DPNS
+   * document is signed at CRITICAL or HIGH and never by MASTER (platform v5.0.0-beta.3
+   * `rs-drive/src/state_transition_action/batch/mod.rs` `combined_security_level_requirement`).
+   * Which of them is a live, unbound key of the identity is for the chain to say.
+   */
+  readonly wifs: readonly string[]
+  /** The file's mnemonic, when it carries one (the canonical keys can be derived from it). */
+  readonly mnemonic: string | null
+}
+
+/**
+ * Extract the CRITICAL and HIGH authentication keys (or a mnemonic to derive them) from a
+ * bridge-format identity file, for one username registration. The MASTER key is not taken.
+ */
+export function authKeysFromFile(text: string): AuthKeyMaterial {
+  const { obj, identityId, networkKey, rawKeys } = fileHeader(parseJson(text))
+  const ranked: { wif: string; rank: number }[] = []
+  if (Array.isArray(rawKeys)) {
+    for (const raw of rawKeys as RawKey[]) {
+      if (asString(raw.purpose)?.toUpperCase() !== 'AUTHENTICATION') continue
+      const keyType = asString(raw.keyType)
+      if (keyType !== null && !WIF_SIGNABLE_KEY_TYPES.has(keyType.toUpperCase())) continue
+      const rank = levelRank(asString(raw.securityLevel) ?? '')
+      const wif = asString(raw.privateKeyWif) ?? asString(raw.privateKey)
+      if (rank <= 1 && wif !== null && isLikelyWif(wif)) ranked.push({ wif, rank })
+    }
+  }
+  const mnemonic = asString(obj['mnemonic'])
+  if (ranked.length === 0 && mnemonic === null) {
+    throw new Error("This identity file holds no CRITICAL or HIGH authentication key and no recovery phrase, so it can't sign a username. Use the file `dg auth new` or the Dash bridge saved, or the recovery phrase.")
+  }
+  return { identityId, networkKey, wifs: ranked.sort((a, b) => a.rank - b.rank).map((k) => k.wif), mnemonic }
+}
+
 /** Parse identity-file text (JSON string) with a friendly error on malformed JSON. */
 export function parseIdentityFileText(text: string): ParsedIdentityFile {
   return parseIdentityFile(parseJson(text))

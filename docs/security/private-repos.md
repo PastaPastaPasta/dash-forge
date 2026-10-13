@@ -288,7 +288,7 @@ Keys: the **sender** is the wrapping maintainer's identity key with purpose `ENC
 
 ### 5.2 Encryption keys: derivation, custody, blast radius, rekey
 
-Most identities have no `ENCRYPTION` key. Adding one is an `IdentityUpdate` signed by the master key: `dg auth keys add --encryption`, or the web app's Settings → Private repos → "Enable private repos" ("Register a new key").
+Most identities have no `ENCRYPTION` key. Adding one is an `IdentityUpdate` signed by the master key: `dg auth keys add --encryption`, or the web app's Settings → Members-only and private content ("Register a new key").
 
 **Derivation.** Where the identity comes from a seed, the encryption private key is derived under a hardened Forge-specific branch of the identity's key tree whose last element is a hardened **key index** `k'`: the exact path constants are fixed when `dg auth keys add --encryption` is implemented, but the invariant is normative: `k` starts at 0, every rekey uses `k+1`, and the path is hardened at every level, so a leaked key `k` gives no information about key `k+1` and a mnemonic restore can re-derive every key it ever had by walking `k` upward until it finds no matching public key on the identity. An identity created from a raw key gets a random encryption key and is told to back it up. Contract bounds on the key are a hint only; writers use the highest-id **enabled** `ENCRYPTION` key of the recipient and record the id they used.
 
@@ -296,7 +296,7 @@ Most identities have no `ENCRYPTION` key. Adding one is an `IdentityUpdate` sign
 
 **Blast radius, stated plainly.** ECDH is symmetric, so an identity's encryption private key decrypts **every wrap it received and every wrap it sent**. For a plain member that is every epoch of every private repo they belong to. For a maintainer it is additionally every epoch key they ever wrapped for anyone: a compromised maintainer encryption key exposes every repo they maintain. The UI says: "This key can read every private repo you're a member of, and every key you've handed out as a maintainer."
 
-**Rekey flow** (`dg auth keys rotate --encryption`; the web app's Settings → Devices & keys → "Lost a device?" gives that command, and Settings → Private repos adds the new key to a browser). Order matters:
+**Rekey flow** (`dg auth keys rotate --encryption`; the web app's Settings → Devices & keys → "Lost a device?" gives that command, and Settings → Members-only and private content adds the new key to a browser). Order matters:
 
 1. Add the new encryption key `k+1` (master-key `IdentityUpdate`). Do **not** disable the old key yet.
 2. For every repo where the identity is a **current maintainer** (its `maintainer` documents, via the `memberId` index): run the rotation of §5.5 with the new key as the self-wrap recipient (the new epoch key is wrapped to every member's highest enabled encryption key, the rotator's included).
