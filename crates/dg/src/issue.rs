@@ -842,7 +842,14 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<(
             println!("#{number} [{mark}] {}", safe(&title));
             println!("author: {}", who(&author));
             if let Some(l) = &issue_letter {
-                println!("to: {} (as listed by {})", to(l), who(&author));
+                println!(
+                    "to: {} ({}as listed by {})",
+                    crate::audience::letter_to(&l.recipients, None, s.viewer(), &names),
+                    l.group
+                        .map(|g| format!("{}; ", g.when_sent()))
+                        .unwrap_or_default(),
+                    who(&author)
+                );
             } else if crate::audience::marked(&s.repo, issue_audience) {
                 println!("members-only: visible to members of {}", s.repo.display());
             }
