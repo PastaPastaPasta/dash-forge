@@ -26,7 +26,7 @@
 import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { expect, test, type Browser, type Page, type TestInfo } from '@playwright/test'
+import { devices, expect, test, type Browser, type Page, type TestInfo } from '@playwright/test'
 import { PASSPHRASE, idFile, runAxe, stateFile, unlock, waitForRepoResolved } from './helpers'
 
 const OWNER = process.env['E2E_LETTERS_OWNER'] ?? ''
@@ -149,13 +149,13 @@ test('recipient: reads both, with who they went to', async ({ browser }, info) =
   await unlockLetters(page, comment)
   await expect(comment).toHaveAttribute('data-audience', 'specificPeople')
   const label = comment.getByTestId('visible-to-people')
-  await expect(label).toHaveText(/^Visible to .+ \(maintainers when sent\)( and .+)?$/)
+  await expect(label).toHaveText(/^\s*Visible to .+ \(maintainers when sent\)( and .+)?$/)
   await expect(label).toHaveAttribute('title', 'as listed by the sender')
   await snap(page, info, 'recipient-letter-comment')
   await openIssue(page, issueUrl(LETTER))
   const body = page.getByTestId('thread-conversation')
   await expect(body).toContainText(MARKER, { timeout: 120_000 })
-  await expect(body.getByTestId('visible-to-people').first()).toHaveText(/^Visible to .*you$/)
+  await expect(body.getByTestId('visible-to-people').first()).toHaveText(/^\s*Visible to .*you$/)
   // a reply in it goes to the same people: only Specific people is offered
   const chip = page.getByTestId('issue-composer').getByTestId('audience-chip')
   await expect(chip).toBeVisible()
@@ -198,6 +198,32 @@ test('the picker offers the §10 options', async ({ browser }, info) => {
   await page.getByTestId('audience-option-maintainers').locator('input').check()
   await expect(chip).toContainText(/Maintainers \(\d+\)/)
   await page.context().close()
+})
+
+test('phone: the count for everyone, the text and names for a recipient', async ({ browser }, info) => {
+  const phone = { ...devices['iPhone 13'], defaultBrowserType: undefined }
+  const anon = await browser.newContext(phone)
+  const page = await anon.newPage()
+  await openIssue(page, issueUrl(ISSUE))
+  await expect(page.locator('[data-testid="members-only-placeholder"][data-audience="specificPeople"]').first()).toContainText(to('Comment', COMMENT_TO), { timeout: 120_000 })
+  expect(await page.content()).not.toContain(MARKER)
+  await snap(page, info, 'phone-anon-letter-comment')
+  await openIssue(page, issueUrl(LETTER))
+  await expect(page.getByTestId('members-only-target')).toContainText(to('Issue', ISSUE_TO))
+  await snap(page, info, 'phone-anon-letter-issue')
+  await anon.close()
+  const saved = stateFile(RECIPIENT)
+  test.skip(!existsSync(saved), 'the recipient signs in on desktop first (the tests above)')
+  const signed = await browser.newContext({ ...phone, storageState: saved })
+  const p2 = await signed.newPage()
+  await p2.goto('/', { waitUntil: 'domcontentloaded' })
+  await unlock(p2)
+  await openIssue(p2, issueUrl(ISSUE))
+  const comment = p2.getByTestId('timeline-comment').filter({ hasText: MARKER })
+  await unlockLetters(p2, comment)
+  await expect(comment.getByTestId('visible-to-people')).toHaveText(/\(maintainers when sent\)/)
+  await snap(p2, info, 'phone-recipient-letter-comment')
+  await signed.close()
 })
 
 test('a repo with more than 16 writers: Writers and maintainers is disabled with its size', async ({ browser }, info) => {
