@@ -623,7 +623,14 @@ fn decrypt_members(keys: &EpochKeys, header: &DocHeader, enc: &[u8]) -> Opened {
         return Opened::Unreadable(Unreadable::BadTag);
     };
     let pt = zeroize::Zeroizing::new(pt);
-    let Some(fields) = tlv::parse_members(&pt, header.kind) else {
+    // only a public repository's members-only documents carry blinds (§19); in a private
+    // document (v0x03 is admitted there, D38) the blind tags stay reserved
+    let parsed = if header.vis == Visibility::Public {
+        tlv::parse_members(&pt, header.kind)
+    } else {
+        tlv::parse(&pt, header.kind, false)
+    };
+    let Some(fields) = parsed else {
         return Opened::Malformed;
     };
     if !ref_names_match(header, &fields, keys, V3) {

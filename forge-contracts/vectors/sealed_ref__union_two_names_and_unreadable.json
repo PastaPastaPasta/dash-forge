@@ -1,6 +1,6 @@
 {
   "name": "union_two_names_and_unreadable",
-  "description": "two names; a protected update keeps its flag; an update under an epoch the reader does not hold is left out (it is counted, not folded).",
+  "description": "two names; a protected update keeps its flag; an update under an epoch the reader does not hold and a sealed update carrying a plaintext refName are left out (counted, not folded).",
   "case": "sealed_ref",
   "rules": "v2",
   "input": {
@@ -72,6 +72,21 @@
         "force": false,
         "prevOid": "5e142af5d918e945d30d164001387e798cb82b37",
         "enc": "03000102030405060708090a0b8d0db8183ae2cd35d2fae75bd7245242d0e30ed3e0ea9e76c0db099d4070c6dae1feb2557a3a115fa3dd4655871cce31e9955fa24bbaec92ac7bb801e4eec0a511d82a7c255a3258c880a5c9f415c50b9b97fecae5fbf3e37c2369ac13d163aab0f69e01f6542245158d6d27126098314d2a03c9047a70f7064e23634d36267588b184be822b054111ab17bf756df9a5c93c6b8905b0"
+      },
+      {
+        "id": "6acbc7a74558b900bae9ab124a78141e80351433ad3736be66b5346372eed279",
+        "createdAt": 1004,
+        "createdAtBlockHeight": 100,
+        "protected": false,
+        "vis": "public",
+        "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+        "epoch": 0,
+        "refNameHash": "f9337f26a53b55ef8817947cb1554159ae4637a5565e5f88b01eed029b69ccfb",
+        "newOid": "4ff0d98f7c8c3676b5850835c37d7ae92dcf4c5f",
+        "force": false,
+        "prevOid": "d1cfe9a5fbf7681d7c99aa6a3e9b94a886c48b1d",
+        "enc": "03000102030405060708090a0b0230a02ead7ad7869e7409f2be94c8acbb9c260bcee21814d2aa274ec9d8587ee7026d8286ba3a357dbe7e71e879cde7525bba1899aed5feb12e4a268ed95d13641f60ae4f1c6c61987623327d2d8dce93633d4ffcdb7eba8b0056afb8b2a12a9b38a71b608f76df2f1bc0c6c556daf383bd1364acf5e86c21d6b591dea19ad82e853be8481345f12e8414b312c8c60caef2ca5700e0",
+        "refName": "refs/heads/sec/fix"
       }
     ]
   },
@@ -102,6 +117,7 @@
       ]
     },
     "publicRefs": {},
-    "alerts": []
+    "alerts": [],
+    "unreadable": 2
   }
 }

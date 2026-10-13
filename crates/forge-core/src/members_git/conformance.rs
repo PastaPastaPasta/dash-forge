@@ -381,7 +381,7 @@ fn run_sealed_ref(v: &Vector) -> Value {
                     state.ref_updates.push(d);
                 }
             }
-            let got = crate::refs::members_updates_of(&state, |kind, d| {
+            let got = crate::refs::members_updates_of(&state, &[], |kind, d| {
                 let header = crate::keyring::header_of(kind, d).unwrap();
                 doc::open_content(&ctx, &header, &d.field_bytes("enc").unwrap())
             });
@@ -408,11 +408,18 @@ fn run_sealed_ref(v: &Vector) -> Value {
             json!({
                 "refs": by_name(&got.by_name),
                 "publicRefs": by_name(&public),
-                "alerts": got.alerts.iter().map(|a| json!({
-                    "id": hex::encode(crate::platform::decode_identifier(&a.id).unwrap()),
-                    "field": a.alert.field,
-                    "kind": a.alert.kind,
-                })).collect::<Vec<_>>(),
+            "alerts": got.alerts.iter().map(|a| {
+                    let id = hex::encode(crate::platform::decode_identifier(&a.id).unwrap());
+                    match a.kind {
+                        crate::refs::RefAlertKind::Blind(b) => {
+                            json!({ "id": id, "field": b.field, "kind": b.kind })
+                        }
+                        crate::refs::RefAlertKind::PublicName => {
+                            json!({ "id": id, "kind": "publicName" })
+                        }
+                    }
+                }).collect::<Vec<_>>(),
+                "unreadable": got.unreadable,
             })
         }
         other => panic!("vector `{}`: sealed_ref op `{other}`", v.name),
@@ -678,6 +685,10 @@ fn run_guard(v: &Vector) -> Value {
                     .audience
                     .as_deref()
                     .map_or(EntryAudience::Members, |t| EntryAudience::parse(t).unwrap());
+                let a = match l.commits.remove(&e.oid) {
+                    Some(prev) => prev.narrowest(a),
+                    None => a,
+                };
                 l.commits.insert(e.oid.clone(), a);
             }
             ledger::State::Present(l)

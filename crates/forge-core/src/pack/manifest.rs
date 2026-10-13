@@ -225,11 +225,11 @@ pub fn plan_supersedes(
 ) -> Vec<String> {
     // An incremental (non-repack) git pack makes nothing redundant; an environment snapshot
     // names what it replaces itself (an older snapshot of another environment stays live).
-    // A members-only git pack (kind 64) is one branch's (D22): no push or repack of one branch
-    // makes another's packs redundant.
+    // A members-only artifact is one branch's or one document's (D22): no push, repack or
+    // republish makes another's redundant, so none supersedes by kind.
     if (new.kind == KIND_GIT_PACK && !is_full_repack)
         || new.kind == KIND_ENV_SNAPSHOT
-        || new.kind == KIND_MEMBERS_GIT_PACK
+        || is_members_kind(new.kind)
     {
         return Vec::new();
     }

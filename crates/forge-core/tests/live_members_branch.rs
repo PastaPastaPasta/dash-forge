@@ -326,7 +326,9 @@ async fn members_only_branch_and_pr_round_trip_on_the_live_contracts() {
         .filter_map(|us| us.first().map(|u| u.ref_name.clone()))
         .collect();
     assert!(!public_names.iter().any(|n| n.starts_with(BRANCH_PREFIX)));
-    let outsider = forge_core::refs::members_updates_of(&state, |k, d| anon.open(k, d));
+    let outsider = forge_core::refs::members_updates_of(&state, &state.config_history(), |k, d| {
+        anon.open(k, d)
+    });
     assert!(!outsider.by_name.contains_key(&branch));
     let (sealed_updates, names) = forge_core::refs::members_only_ref_count(&state);
     assert!(sealed_updates >= 2);

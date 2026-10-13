@@ -217,9 +217,18 @@ pub fn head_of(plain: &[u8], real: Option<&[u8]>, salt: Option<&Salt>) -> Option
 /// lookups): every write path that copies the folded head (a review's `commitOid`, a check run's
 /// `headOid`, `pr_sync`'s head update) must copy the blind. The real value is for git: diff,
 /// fetch, checkout, merge and display.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct BlindMap {
     real: BTreeMap<String, String>,
+}
+
+/// The map holds real commit ids: `Debug` shows only how many.
+impl std::fmt::Debug for BlindMap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BlindMap")
+            .field("len", &self.real.len())
+            .finish()
+    }
 }
 
 impl BlindMap {

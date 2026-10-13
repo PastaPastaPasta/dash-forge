@@ -19,15 +19,18 @@
 //!
 //! ```text
 //! # dash sealed-object ledger v1
-//! commit <40 or 64 hex> [<audience>]   a members-only commit this clone fetched or pushed
+//! commit <40 or 64 hex> [<audience>]   a members-only commit this clone fetched or pushed, or
+//!                                      the tag object a members-only tag names (every
+//!                                      members-only ref's newOid is recorded, whatever its type)
 //! pack <64 hex> [<audience>]           a members-only pack this clone indexed
 //! ```
 //!
 //! - The first line is exactly [`HEADER`]. Any other first line (a newer version, or a file this
 //!   reader does not know) makes the ledger **unknown**, never empty: the guard fails closed.
-//! - Later lines starting with `#` are comments, and blank lines are skipped. A line whose keyword
-//!   this reader does not know is skipped, so entries can be added without a version bump; a known
-//!   keyword with an id that is not lower-case hex of the right length makes the ledger unknown.
+//! - Later lines starting with `#` are comments, and blank lines are skipped. Every other line is
+//!   an entry, a keyword, one space and a lower-case hex id of the keyword's length, then
+//!   optionally one space and an audience; anything else (another keyword, a tab, upper case)
+//!   makes the ledger unknown. A new entry type is a new version, never an entry a reader skips.
 //! - The optional third column is the entry's **audience**: absent or `members` for the members
 //!   key; any other token (`[a-z0-9:._-]`, e.g. a narrower branch's, phase 3F) is narrower than
 //!   Members and opaque here. The guard refuses publishing a commit to any ref wider than its
@@ -184,7 +187,7 @@ pub fn parse(text: &str) -> Option<Ledger> {
         let (kind, map) = match parts.next() {
             Some("commit") => (EntryKind::Commit, &mut out.commits),
             Some("pack") => (EntryKind::Pack, &mut out.packs),
-            _ => continue, // a keyword added later: skipped
+            _ => return None, // a later entry type is a later version: fail closed
         };
         let id = parts.next()?;
         if !valid_id(kind, id) {
@@ -217,23 +220,35 @@ pub fn read(common_dir: &Path) -> std::io::Result<State> {
 }
 
 /// Create the empty ledger in `common_dir` unless one exists. `Ok(true)` when it was created.
-/// Never truncates: the file is opened with `create_new`.
+/// Never truncates or replaces a ledger: the header is written to a temporary file and linked into
+/// place, which fails when one exists, so a crash never leaves a ledger without its header.
 pub fn create_empty(common_dir: &Path) -> std::io::Result<bool> {
     let p = path(common_dir);
-    if let Some(dir) = p.parent() {
-        std::fs::create_dir_all(dir)?;
+    let dir = p.parent().expect("the ledger path has a directory");
+    std::fs::create_dir_all(dir)?;
+    if p.exists() {
+        return Ok(false);
     }
-    match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&p)
-    {
-        Ok(mut f) => {
-            f.write_all(HEADER.as_bytes())?;
-            f.write_all(b"\n")?;
-            f.sync_all()?;
-            Ok(true)
-        }
+    let tmp = dir.join(format!(
+        "sealed-ledger.tmp-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos())
+    ));
+    let written = (|| {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        f.write_all(HEADER.as_bytes())?;
+        f.write_all(b"\n")?;
+        f.sync_all()?;
+        std::fs::hard_link(&tmp, &p)
+    })();
+    let _ = std::fs::remove_file(&tmp);
+    match written {
+        Ok(()) => Ok(true),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
         Err(e) => Err(e),
     }
@@ -326,9 +341,13 @@ mod tests {
         assert_eq!(parse(&format!("{h}commit xyz\n")), None);
         assert_eq!(parse(&format!("{h}commit {} BAD\n", "a".repeat(40))), None);
         assert_eq!(parse(&format!("{h}pack {}\n", "a".repeat(40))), None);
-        // a keyword added later, a comment and a blank line are skipped
-        let l = parse(&format!("{h}# note\n\ntree {}\n", "a".repeat(40))).unwrap();
+        // a comment and a blank line are skipped; an entry type this version does not know, a
+        // tab or upper case is a later version or damage: unknown
+        let l = parse(&format!("{h}# note\n\n")).unwrap();
         assert!(l.is_empty());
+        assert_eq!(parse(&format!("{h}tree {}\n", "a".repeat(40))), None);
+        assert_eq!(parse(&format!("{h}commit\t{}\n", "a".repeat(40))), None);
+        assert_eq!(parse(&format!("{h}Commit {}\n", "a".repeat(40))), None);
         let d = tempfile::TempDir::new().unwrap();
         std::fs::create_dir_all(d.path().join("dash")).unwrap();
         std::fs::write(path(d.path()), "# dash sealed-object ledger v2\n").unwrap();

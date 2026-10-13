@@ -213,6 +213,9 @@ def sealed_ref_vectors():
     doc, _, _, enc = seal_ref("refs/heads/sec/fix", bytes(20), None, s2,
                               records=[(3, b"refs/heads/sec/fix"), (OID_SALT, s2)])
     ov("salt_alone", "a salt with nothing blinded: malformed.", doc, enc, gen.MALFORMED)
+    doc, _, _, enc = seal_ref("refs/heads/sec/fix", bytes(20), None, s2, records=[(3, b"refs/heads/sec/fix")])
+    ov("null_create", "an update naming no commit (a null newOid and no prevOid): no writer seals one, so malformed.",
+       doc, enc, gen.MALFORMED)
     # the name hash check still runs: another name inside enc
     doc, _, _, enc = seal_ref("refs/heads/sec/fix", B_, A_, s2,
                               records=ref_records("refs/heads/other", B_, A_, s2))
@@ -223,6 +226,13 @@ def sealed_ref_vectors():
                 force=False)
     pt = tlv((3, b"refs/heads/main"), (NEW_OID, b"\xaa" * 20), (OID_SALT, s1))
     _, penc = gen.seal_doc(pdoc, K0, pt)
+    doc, _, _, enc = seal_ref("refs/heads/sec/fix", B_, A_, s2)
+    vector("sealed_ref", "open_v03_private_blind_tags_reserved", "a private repository's document never carries blinds, "
+           "v0x03 included (DESIGN D38): tags 22-24 and 27 are reserved there, so the same bytes stamped private are "
+           "malformed (the AD does not bind vis).",
+           dict(op="open", repoId=H(repoId), context=ctx_json(),
+                doc=dict({k: v for k, v in doc.items() if k != "vis"}, enc=H(enc), createdAtBlockHeight=50)),
+           gen.MALFORMED)
     vector("sealed_ref", "open_v01_blind_tags_reserved", "a private repository's ref update (v0x01) is not blinded: "
            "tags 22-24 and 27 stay reserved there, malformed.",
            dict(op="open", repoId=H(repoId), context=ctx_json(), doc=dict(pdoc, enc=H(penc), createdAtBlockHeight=50)),
@@ -259,7 +269,7 @@ def sealed_ref_vectors():
     vector("sealed_ref", "union_v1_chain", "S5 V1: create A, A to B, B to C, force C to D', all members-only: members "
            "fold the real values (the public reader folds nothing: no plaintext update of the name).",
            dict(op="union", repoId=H(repoId), context=ctx_json(), rows=rows),
-           dict(refs={name: expect}, publicRefs={}, alerts=[]))
+           dict(refs={name: expect}, publicRefs={}, alerts=[], unreadable=0))
     rows, expect = [], []
     for i, (rid, new, prev, force) in enumerate(v1):
         K, e = (K0, 0) if i < 2 else (K1, 1)
@@ -269,7 +279,7 @@ def sealed_ref_vectors():
     vector("sealed_ref", "union_v1b_rotation", "S5 V1b: the same branch with a rotation between B and C: the name "
            "hashes differ per epoch, the real values chain across it.",
            dict(op="union", repoId=H(repoId), context=ctx_json({0: K0, 1: K1}, {0: ("c0", 10), 1: ("c1", 20)}),
-                rows=rows), dict(refs={name: expect}, publicRefs={}, alerts=[]))
+                rows=rows), dict(refs={name: expect}, publicRefs={}, alerts=[], unreadable=0))
     P1, P2, X_, Y_ = oid("P1"), oid("P2"), oid("X"), oid("Y")
     rows = [row("p1", 900, public=(name, P1, None)), row("p2", 901, public=(name, P2, P1)),
             row("p3", 902, public=(name, bytes(20), P2))]
@@ -281,23 +291,37 @@ def sealed_ref_vectors():
     vector("sealed_ref", "union_v1c_public_then_members", "S5 V1c: a public branch P1, P2, deleted (\"stop publishing\"), "
            "then members-only X and Y under the same name: members fold the union (Y), the public reads it deleted.",
            dict(op="union", repoId=H(repoId), context=ctx_json(), rows=rows),
-           dict(refs={name: pub + [upd("x", X_, None), upd("y", Y_, X_)]}, publicRefs={name: pub}, alerts=[]))
+           dict(refs={name: pub + [upd("x", X_, None), upd("y", Y_, X_)]}, publicRefs={name: pub}, alerts=[],
+                unreadable=0))
+    rows = [row("p1", 900, public=(name, P1, None))]
+    doc, _, _, enc = seal_ref(name, X_, None, salt("x"))
+    rows.append(row("x", 950, doc, enc))
+    vector("sealed_ref", "union_public_name_wins", "a members-only update naming a branch that is live in public (any "
+           "member could seal one naming main): public names win (D29), so members fold the public branch, leave the "
+           "members-only update out and raise an alert, and both audiences read the same public branch.",
+           dict(op="union", repoId=H(repoId), context=ctx_json(), rows=rows),
+           dict(refs={name: [upd("p1", P1, None)]}, publicRefs={name: [upd("p1", P1, None)]},
+                alerts=[dict(id=H(gen.cid("x")), kind="publicName")], unreadable=0))
     rows = [row("m", 1000, *seal_ref(name, B_, A_, s2, plain_new=blind(salt("z"), B_))[::3])]
     vector("sealed_ref", "union_mismatch_kept", "a blind that does not match its real value: kept in the fold on the "
            "real values, with an alert naming the document.",
            dict(op="union", repoId=H(repoId), context=ctx_json(), rows=rows),
            dict(refs={name: [upd("m", B_, A_)]}, publicRefs={},
-                alerts=[dict(id=H(gen.cid("m")), field="newOid", kind="mismatch")]))
+                alerts=[dict(id=H(gen.cid("m")), field="newOid", kind="mismatch")], unreadable=0))
     other = "refs/heads/sec/other"
     rows = [row("n1", 1000, *seal_ref(other, A_, None, s1)[::3]),
             row("n2", 1001, *seal_ref(other, B_, A_, s2, kind="protectedRefUpdate")[::3], protected=True),
             row("n3", 1002, *seal_ref(name, C_, None, s1)[::3]),
             row("hidden", 1003, *seal_ref(name, D_, C_, s2, K=K1, e=1)[::3])]
+    named = row("named", 1004, *seal_ref(name, D_, C_, s1)[::3])
+    named["refName"] = name  # a sealed update that also names its branch in plaintext: no honest writer's
+    rows.append(named)
     vector("sealed_ref", "union_two_names_and_unreadable", "two names; a protected update keeps its flag; an update "
-           "under an epoch the reader does not hold is left out (it is counted, not folded).",
+           "under an epoch the reader does not hold and a sealed update carrying a plaintext refName are left out "
+           "(counted, not folded).",
            dict(op="union", repoId=H(repoId), context=ctx_json(), rows=rows),
            dict(refs={other: [upd("n1", A_, None), upd("n2", B_, A_, protected=True)], name: [upd("n3", C_, None)]},
-                publicRefs={}, alerts=[]))
+                publicRefs={}, alerts=[], unreadable=2))
 
 
 # --- sealed pull requests ---------------------------------------------------------------------------
@@ -617,19 +641,23 @@ def guard(inp):
     P = inp["publicTips"]
     ledger = inp["ledger"]
     dec = inp.get("decryptable")
-    # a ledger this reader cannot read ("unknown") may hold what no key here opens: fail closed
-    if inp["membersKey"] and (ledger == "unknown" or (dec is None and ledger is None)):
+    # a ledger this reader cannot read ("unknown") may hold what no key here opens, for this
+    # repository or another dash remote of the clone: fail closed
+    if ledger == "unknown" or (inp["membersKey"] and dec is None and ledger is None):
         return dict(verdict="unavailable", findings=[], notes=[], published=[])
     if ledger == "unknown":
         ledger = None
     notes = []
     if dec is None and ledger is not None and not ledger:
         notes.append("noKeyEmptyLedger")
-    S = {}  # oid -> audience
+    S = {}  # oid -> narrowest audience
     for e in ledger or []:
-        S[e["oid"]] = e.get("audience", "members")
+        a = e.get("audience", "members")
+        S[e["oid"]] = a if S.get(e["oid"], "members") == "members" else S[e["oid"]]
     for x in dec or []:
         S.setdefault(x, "members")
+    # what is already members-only (recorded or decryptable), before this batch adds its own tips
+    established = [x for x, a in S.items() if a == "members"]
     for u in inp["batch"]:
         if u["audience"] == "members" and u.get("new"):
             S.setdefault(u["new"], "members")
@@ -645,7 +673,8 @@ def guard(inp):
         found = []
         if u["audience"] == "members":
             if narrow:
-                leak = g.commits([T], P) & g.commits(narrow, P)
+                only_narrow = g.commits(narrow, P) - (g.commits(established, P) if established else set())
+                leak = g.commits([T], P) & only_narrow
                 if leak:
                     found.append(dict(dst=u["dst"], kind="commits", oids=sorted(leak)))
         else:
@@ -709,6 +738,7 @@ def guard_vectors():
     commit("on-mpub", ["mpub"], "t-pub")
     commit("narrow1", ["main3"], "t-pub")  # a narrower branch's commit (3F audience)
     commit("merge-narrow", ["m3", "narrow1"], "t-pub")
+    commit("narrow2", ["m3"], "t-pub")  # a narrower branch built on the members-only m3
     objs[o("tag-m3")] = dict(type="tag", target=o("m3"))
     objs[o("tag-main4")] = dict(type="tag", target=o("main4"))
     objs[o("sealed-tag")] = dict(type="tag", target=o("main4"))  # a members-only annotated tag on a public commit
@@ -743,6 +773,21 @@ def guard_vectors():
         ("ledger_unknown", "a ledger of another version fails closed even with the key at hand (E806).",
          dict(ledger="unknown", decryptable=[m3],
               batch=[dict(dst="refs/heads/main", new=o("ff5"), audience="public")])),
+        ("ledger_unknown_no_members_key", "an unreadable ledger fails closed even in a repository without members-only "
+         "content: the ledger is the clone's, shared by every dash remote it pushes to.",
+         dict(ledger="unknown", decryptable=None, membersKey=False,
+              batch=[dict(dst="refs/heads/main", new=o("ff5"), audience="public")])),
+        ("ledger_sealed_tag_no_key", "no key: a members-only tag object recorded in the ledger (the helper records every "
+         "members-only ref's newOid, tag objects included) is refused though it peels to a public commit.",
+         dict(ledger=[dict(oid=m3), dict(oid=o("sealed-tag"))], decryptable=None,
+              batch=[dict(dst="refs/tags/sec", new=o("sealed-tag"), audience="public")])),
+        ("ledger_duplicates_keep_narrowest", "an id recorded twice keeps its narrowest audience.",
+         dict(ledger=[dict(oid=o("narrow1"), audience="branch:" + "ab" * 8), dict(oid=o("narrow1"))],
+              decryptable=[m3], batch=[dict(dst="refs/heads/sec/fix", new=o("merge-narrow"), audience="members")])),
+        ("narrow_shared_ancestor_passes", "a members-only commit a narrower branch builds on stays members-only: pushing "
+         "it to a members-only branch is no narrowing.", dict(
+             ledger=[dict(oid=o("narrow2"), audience="branch:" + "ab" * 8), dict(oid=m3)], decryptable=[m3],
+             batch=[dict(dst="refs/heads/sec/other", new=m3, audience="members")])),
         ("empty_ledger_no_key", "an empty ledger and no key: the push passes with a note.",
          dict(ledger=[], decryptable=None, batch=[dict(dst="refs/heads/main", new=o("ff5"), audience="public")])),
         ("no_members_key", "a repository without members-only content and no ledger: nothing to check.",

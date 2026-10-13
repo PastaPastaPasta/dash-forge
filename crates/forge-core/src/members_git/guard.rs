@@ -166,9 +166,10 @@ pub fn guard(g: &impl ObjectGraph, input: &GuardInput<'_>) -> Result<Outcome> {
         ledger::State::Absent | ledger::State::Unknown => None,
     };
     // a ledger this reader cannot read may record what no key here opens (a later client's
-    // narrower branches): fail closed even with the key at hand
+    // narrower branches, or another dash remote's members-only commits: the ledger is the
+    // clone's): fail closed even with the key at hand, in any repository
     let unknown = *input.ledger == ledger::State::Unknown;
-    if input.members_key && (unknown || (input.decryptable.is_none() && ledger.is_none())) {
+    if unknown || (input.members_key && input.decryptable.is_none() && ledger.is_none()) {
         return Ok(Outcome {
             verdict: Verdict::Unavailable,
             findings: Vec::new(),
@@ -185,19 +186,24 @@ pub fn guard(g: &impl ObjectGraph, input: &GuardInput<'_>) -> Result<Outcome> {
     for (oid, a) in ledger.map(|l| &l.commits).into_iter().flatten() {
         s.insert(oid.clone(), a.clone());
     }
-    let members_tips = input
+    for oid in input.decryptable.into_iter().flatten() {
+        s.entry(oid.clone()).or_insert(EntryAudience::Members);
+    }
+    // what is already members-only (recorded or decryptable), before the batch adds its tips:
+    // a narrower branch's commits that are also members-only are not narrower
+    let established: Vec<String> = s
+        .iter()
+        .filter(|(_, a)| **a == EntryAudience::Members)
+        .map(|(o, _)| o.clone())
+        .collect();
+    for u in input
         .batch
         .iter()
         .filter(|u| u.audience == Audience::Members)
-        .filter_map(|u| u.new.clone());
-    for oid in input
-        .decryptable
-        .into_iter()
-        .flatten()
-        .cloned()
-        .chain(members_tips)
     {
-        s.entry(oid).or_insert(EntryAudience::Members);
+        if let Some(t) = &u.new {
+            s.entry(t.clone()).or_insert(EntryAudience::Members);
+        }
     }
     let all: Vec<String> = s.keys().cloned().collect();
     let narrow: Vec<String> = s
@@ -238,7 +244,11 @@ pub fn guard(g: &impl ObjectGraph, input: &GuardInput<'_>) -> Result<Outcome> {
         if u.audience == Audience::Members {
             if !narrow.is_empty() {
                 let adds = g.commits(&[t.to_owned()], p)?;
-                let narrower = g.commits(&narrow, p)?;
+                let mut narrower = g.commits(&narrow, p)?;
+                if !established.is_empty() {
+                    let members = g.commits(&established, p)?;
+                    narrower.retain(|c| !members.contains(c));
+                }
                 finding(
                     FindingKind::Commits,
                     adds.intersection(&narrower).cloned().collect(),

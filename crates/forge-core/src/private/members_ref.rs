@@ -228,6 +228,16 @@ pub fn real_values(header: &DocHeader, fields: &Fields) -> Option<RealRefUpdate>
         None if fields.prev_oid.is_some() => return None,
         None => None,
     };
+    // one repository, one object format: a writer never mixes widths; and an update names a
+    // commit (a create that is also a delete is no writer's)
+    if let (Some(n), Some(p)) = (&fields.new_oid, &fields.prev_oid) {
+        if n.len() != p.len() {
+            return None;
+        }
+    }
+    if blind::is_null(&new_oid) && prev_oid.as_deref().is_none_or(blind::is_null) {
+        return None;
+    }
     Some(RealRefUpdate {
         name,
         new_oid,

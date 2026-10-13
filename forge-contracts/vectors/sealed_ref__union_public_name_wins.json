@@ -1,0 +1,77 @@
+{
+  "name": "union_public_name_wins",
+  "description": "a members-only update naming a branch that is live in public (any member could seal one naming main): public names win (D29), so members fold the public branch, leave the members-only update out and raise an alert, and both audiences read the same public branch.",
+  "case": "sealed_ref",
+  "rules": "v2",
+  "input": {
+    "op": "union",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        }
+      },
+      "members": []
+    },
+    "rows": [
+      {
+        "id": "cd80ded9fd5495fdae40773a3ca05cda567115f83781fc9a3f36068449d85ed6",
+        "createdAt": 900,
+        "createdAtBlockHeight": 90,
+        "protected": false,
+        "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+        "refName": "refs/heads/sec/fix",
+        "refNameHash": "116379e6eb5c24f696981e8ab284fe1a781d8cd4992e3d920c975d94717f59d7",
+        "newOid": "092436d426298dcd3e68bce625fa28a15e95ac45",
+        "force": false
+      },
+      {
+        "id": "26ab2a3c78a760022b38c3a65a70ee1848cc803ff7d3b1f3dba505ee586a821e",
+        "createdAt": 950,
+        "createdAtBlockHeight": 95,
+        "protected": false,
+        "vis": "public",
+        "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+        "epoch": 0,
+        "refNameHash": "f9337f26a53b55ef8817947cb1554159ae4637a5565e5f88b01eed029b69ccfb",
+        "newOid": "fec1c78e51c8ea96ec7433ea9e54bd0a858adfda",
+        "force": false,
+        "enc": "03000102030405060708090a0b084bc741c55b18a884091ff625891f92773e39723a2b8a153162c3ec93f5a422728a3c4de2e41c657ad95517cd71d18d7c79fdf0b798230a2772e2890c43d32d54089bb366c822825ebff2b2d75ce4066cb13ba3d1613038a7fe89af6882a18de960fa1de9182b33001d10831beee8ce1a8d1993f2440271b6562329a985df"
+      }
+    ]
+  },
+  "expected": {
+    "refs": {
+      "refs/heads/sec/fix": [
+        {
+          "id": "cd80ded9fd5495fdae40773a3ca05cda567115f83781fc9a3f36068449d85ed6",
+          "newOid": "092436d426298dcd3e68bce625fa28a15e95ac45",
+          "force": false,
+          "protected": false
+        }
+      ]
+    },
+    "publicRefs": {
+      "refs/heads/sec/fix": [
+        {
+          "id": "cd80ded9fd5495fdae40773a3ca05cda567115f83781fc9a3f36068449d85ed6",
+          "newOid": "092436d426298dcd3e68bce625fa28a15e95ac45",
+          "force": false,
+          "protected": false
+        }
+      ]
+    },
+    "alerts": [
+      {
+        "id": "26ab2a3c78a760022b38c3a65a70ee1848cc803ff7d3b1f3dba505ee586a821e",
+        "kind": "publicName"
+      }
+    ],
+    "unreadable": 0
+  }
+}
