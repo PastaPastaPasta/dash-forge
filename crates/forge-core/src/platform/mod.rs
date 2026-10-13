@@ -1781,12 +1781,13 @@ fn split_sums(entries: Vec<SplitSumEntry>) -> BTreeMap<Vec<u8>, i64> {
     out
 }
 
-/// The value of a `u8` property from its tree key (one byte, sign bit flipped: rs-dpp
-/// `DocumentPropertyType::encode_u8`). `None` for a key of another width.
+/// The value of a `u8` property from its tree key (one byte, plain big-endian from protocol 14:
+/// rs-dpp `DocumentPropertyType::encode_value_for_tree_keys_v1`, platform#5350; generation 0
+/// flipped the top bit). `None` for a key of another width.
 #[must_use]
 pub fn decode_u8_key(key: &[u8]) -> Option<u8> {
     match key {
-        [b] => Some(b ^ 0x80),
+        [b] => Some(*b),
         _ => None,
     }
 }
@@ -4865,18 +4866,21 @@ mod tests {
     use std::collections::BTreeMap;
 
     /// The grouped-count keys of `transition.kind` (a `u8` under sized integer types) and the
-    /// grouped-sum keys of `targetId` (an identifier), as Drive serializes them
-    /// (`encode_value_for_tree_keys`): checked against rs-dpp's own encoder.
+    /// grouped-sum keys of `targetId` (an identifier), as Drive serializes them from protocol 14
+    /// (`encode_value_for_tree_keys_v1`: an unsigned integer is plain big-endian): checked
+    /// against rs-dpp's own encoder.
     #[test]
     fn grouped_aggregate_keys_decode_as_drive_encodes_them() {
         use dash_sdk::dpp::data_contract::document_type::DocumentPropertyType;
         use dash_sdk::dpp::platform_value::Value;
         for kind in [1u8, 2, 11, 12, 13, 14, 15, 16, 17, 0, 255] {
             let key = DocumentPropertyType::U8
-                .encode_value_for_tree_keys(&Value::U8(kind))
+                .encode_value_for_tree_keys_v1(&Value::U8(kind))
                 .unwrap();
-            assert_eq!(key, DocumentPropertyType::encode_u8(kind));
+            assert_eq!(key, vec![kind]);
             assert_eq!(super::decode_u8_key(&key), Some(kind), "kind {kind}");
+            // Generation 0 (protocol 13) flipped the top bit; no node writes those keys now.
+            assert_eq!(DocumentPropertyType::encode_u8(kind), vec![kind ^ 0x80]);
         }
         assert_eq!(super::decode_u8_key(&[1, 2]), None);
         let id = [7u8; 32];
