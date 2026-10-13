@@ -747,6 +747,7 @@ mod tests {
     /// skips is not served.
     #[test]
     fn the_manifest_lists_only_git_packs() {
+        use forge_core::pack::{KIND_GIT_PACK, KIND_MAKE_PUBLIC, KIND_OBJECT_LOCATOR};
         let m = |hash: u8, kind: u8, size: u64| forge_core::repo::PackManifestInfo {
             document_id: format!("d{hash}{kind}{size}"),
             created_at: 0,
@@ -762,7 +763,6 @@ mod tests {
             tips: Vec::new(),
             created_at_block_height: 0,
         };
-        use forge_core::pack::{KIND_GIT_PACK, KIND_MAKE_PUBLIC, KIND_OBJECT_LOCATOR};
         let manifests = [
             m(1, KIND_GIT_PACK, 100),
             m(1, KIND_GIT_PACK, 100),
