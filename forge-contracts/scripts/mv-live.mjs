@@ -39,7 +39,13 @@
 //   m4      M4 an event's value on a members-only target is sealed (row 16)
 //   m3      M3 an author's retarget of a members-only PR is sealed (row 19)
 //   b1      B1 bot push grants (rows 42-45): grants, refusals, packs, expiry, the granter's
-//           removal, renewal, a removed and re-added bot
+//           removal, renewal, a removed and re-added bot; M-A2's slimmer form (R-06): the grant's
+//           until a `where` ordering, its role a literal, its prefix read from the grant
+//   ma2     the Platform beta.6 items (phase M-A2; dash-forge-qa design/v5/PLATFORM-OPPORTUNITIES-
+//           5.0.0-beta.6.md X3, X5, X8): R-03 a PR author's own verdict, R-04 enc framing, R-05
+//           $revision in dense and lockGate (with a same-block create and edit), R-08 the owner's
+//           maintainer row, R-09 approvals, R-11 public-only webhook / topic / packMirror, R-12
+//           public-only stars and watches (self-stars allowed)
 //   layout  D44 the seven moved types written and read back in forge-meta, and a key bound to
 //           the contract group signing a forge-meta write (row 49)
 //   convert the R6 live case, Code only (DESIGN §4.10 steps 2-5, driven as raw documents: the
@@ -52,6 +58,9 @@
 //   fees    the M-C fee probes: L3 (comment, review) and C4 (ref update, config) against the live
 //           set, a bot push against a writer push, label/topic/packMirror in forge-meta against
 //           the live forge-core (n rounds each after a warm-up write)
+//   fees2   the M-A2 fee probes (R-03, R-04, R-06): an approval, a comment and a bot push on this
+//           set against the same on --baseline <record>, a scratch registration of the rev 4.1
+//           set (`build.py --mainnet` before M-A2); written to a repo of its own there
 //
 // Documents are synthetic: `enc` is random bytes behind a real version byte (0x03 members, 0x04
 // letter, 0x05 bot post), since consensus never reads inside it; an exact grant's scope is a
@@ -74,6 +83,8 @@ import { loadEvoSdk } from './deploy-v2.mjs';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = Object.fromEntries(process.argv.slice(2).reduce((acc, t, i, a) => (t.startsWith('--') ? [...acc, [t.slice(2), a[i + 1] && !a[i + 1].startsWith('--') ? a[i + 1] : true]] : acc), []));
 const devnetName = args['devnet-name'] || 'sakura';
+// fees2's comparison set: another scratch record (the rev 4.1 build), written to like this one
+const baselineFile = args.baseline ? realpathSync(String(args.baseline)) : null;
 const only = args.only ? new Set(String(args.only).split(',')) : null;
 const N = Number(args.n ?? 4);
 const log = (m) => console.error(`${new Date().toISOString().slice(11, 19)} ${m}`);
@@ -243,7 +254,6 @@ const ROLE_GATED = new Set(['refUpdate', 'packManifest', 'chunk', 'transition', 
 const CONTRACT = { repo: CORE, maintainer: CORE, writer: CORE, consent: CORE, refUpdate: CORE, protectedRefUpdate: CORE, config: CORE, release: CORE, packManifest: CORE, chunk: CORE, pushGrant: CORE, issue: COLLAB, patch: COLLAB, comment: COLLAB, review: COLLAB, transition: COLLAB, event: COMM, authorEvent: COMM, checkRun: COMM, runner: COMM, policy: COMM, milestone: COMM, star: COMM, watch: COMM, webhook: COMM, repoKey: META, ban: META, label: META, topic: META, packMirror: META, profile: META, follow: META };
 function withDefaults(type, data) {
   if (type === 'writer' && data.role === undefined) return { ...data, role: 1 };
-  if (type === 'pushGrant' && data.br === undefined) return { ...data, br: 4 };
   if (ROLE_GATED.has(type) && data.r === undefined) return { ...data, r: 1 };
   return data;
 }
@@ -436,6 +446,18 @@ async function deleteOk(item, label, who, doc) {
     return false;
   }
 }
+/** A delete that must be refused with one of `codes` (and, when given, naming `rule`). */
+async function deleteNo(item, label, who, doc, codes, rule) {
+  if (!doc) return skipped(item, label, refusal(codes, rule));
+  await sleep(A_BLOCK);
+  try {
+    await mutate('delete', who, doc, () => false);
+    record({ item, label, expect: refusal(codes, rule), got: 'ACCEPTED (deleted)', pass: false });
+  } catch (e) {
+    if (e instanceof InfraError) return noVerdict(item, label, e);
+    judge(item, label, e, codes, rule);
+  }
+}
 /** A proved read by id in `contract`: the case passes when the document is there. */
 async function readBack(item, label, contract, type, doc) {
   if (!doc) return record({ item, label, expect: 'read back', got: 'SKIPPED: not written', pass: false });
@@ -452,7 +474,7 @@ async function readBack(item, label, contract, type, doc) {
   }
 }
 // fees writes to the live set, and convert/everything are steps of one case: each runs only when named
-const EXPLICIT = new Set(['fees', 'convert', 'everything']);
+const EXPLICIT = new Set(['fees', 'fees2', 'convert', 'everything']);
 const want = (group) => (only === null ? !EXPLICIT.has(group) : only.has(group));
 // A setup write that failed stops the run (with its report): the cases after it would mean nothing
 const need = (doc, what) => {
@@ -465,8 +487,7 @@ async function makeRepo(item, name, visibility, members = []) {
   const repo = need(await ok(item, `${visibility} repo ${name}`, O, 'repo', { name, visibility, ...(visibility === 'public' ? { defaultBranch: 'main' } : {}) }), `repo ${name}`);
   const R = docRef(repo);
   const vis = visibility;
-  await ok(item, `${name}: the owner's maintainer row`, O, 'maintainer', { repoId: R, memberId: id(O.id), vis });
-  const rows = {};
+  const rows = { owner: await ok(item, `${name}: the owner's maintainer row`, O, 'maintainer', { repoId: R, memberId: id(O.id), vis }) };
   for (const [who, role] of members) {
     await ok(item, `${name}: ${who.name} consents`, who, 'consent', { repoId: R });
     rows[who.name] = need(
@@ -488,6 +509,8 @@ async function numbered(r, item, label, who, type, data, codes, rule) {
 }
 const prData = (r, extra = {}) => ({ baseRefNameHash: refHash('refs/heads/main'), sourceRepoId: r.R, sourceRefNameHash: refHash(`refs/heads/f-${randomBytes(3).toString('hex')}`), headOid: bytes(20, 2), ...extra });
 const member = (who, mRole) => clean({ asMember: id(who.id), mRole });
+// R-11: a webhook names a public repo by its reference alone (no vis stamp)
+const hook = (repoId) => ({ repoId, hookId: bytes(32), url: 'https://hooks.example.com/mv', events: ['push'], relayIdentityId: id(W.id), relayKeyId: W.encKeyId, senderKeyId: O.encKeyId, secret: bytes(48) });
 
 let stopped = null;
 try {
@@ -606,7 +629,7 @@ try {
     const oldIssue = need(await numbered(cv, I, 'an old sealed issue (private era)', W, 'issue', { vis: 'private', aud: 1, enc: sealed(), epoch: 0, ...member(W, 1) }), 'the old issue');
     const oldPr = need(await numbered(cv, I, 'an old sealed PR (private era)', W, 'patch', { vis: 'private', aud: 1, enc: sealed(), epoch: 0, ...member(W, 1), ...prData(cv) }), 'the old PR');
     const oldComment = await ok(I, 'an old sealed comment', W, 'comment', { repoId: C, targetId: docRef(oldIssue), vis: 'private', aud: 1, enc: sealed(), epoch: 0, ...member(W, 1) });
-    await ok(I, 'an old sealed config', O, 'config', { repoId: C, vis: 'private', enc: sealed(1), epoch: 0 });
+    await ok(I, 'an old sealed config (an anchor, framed 0x02)', O, 'config', { repoId: C, vis: 'private', enc: sealed(2), epoch: 0 });
     await ok(I, 'an old sealed ref update by the writer', W, 'refUpdate', { repoId: C, refNameHash: bytes(32, 3), newOid: bytes(20, 3), vis: 'private', enc: sealed(1), epoch: 0 });
     // before the flip, the public writes are refused (the repo proves vis)
     await no(I, "before the flip: a stranger's public comment on the old issue", S, 'comment', { repoId: C, targetId: docRef(oldIssue), vis: 'public', body: 'hi' }, [40127]);
@@ -633,7 +656,7 @@ try {
       await ok(I, "the owner's plaintext config (maintainer row stamped private)", O, 'config', { repoId: C, defaultBranch: 'main', vis: 'public' });
       await ok(I, "the second maintainer's protected ref update", M2, 'protectedRefUpdate', { repoId: C, refNameHash: refHash('refs/heads/main'), refName: 'refs/heads/main', newOid: bytes(20, 7), vis: 'public' });
       await ok(I, "the owner's public release", O, 'release', { repoId: C, tagName: 'v1', name: 'one', vis: 'public', delta: 1, targetOid: bytes(20, 7) });
-      await ok(I, "the owner's webhook", O, 'webhook', { repoId: C, hookId: bytes(32), url: 'https://hooks.example.com/mv', events: ['push'], relayIdentityId: id(W.id), relayKeyId: W.encKeyId, senderKeyId: O.encKeyId, secret: bytes(48), vis: 'public' });
+      await ok(I, "the owner's webhook", O, 'webhook', hook(C));
       await ok(I, "a reader's public comment as a member (row stamped private)", RD, 'comment', { repoId: C, targetId: docRef(oldIssue), vis: 'public', body: 'reader here', ...member(RD, 3) });
     }
     // C1 on a public repo from the start
@@ -774,8 +797,9 @@ try {
     const grant = (bot, extra) => ({ repoId: R, botId: id(bot.id), until: Date.now() + 30 * DAY, ...extra });
     const pGrant = need(await ok(I, 'the owner grants the bot a public prefix', O, 'pushGrant', grant(B, { prefix: PREFIX })), 'the prefix grant');
     const pUntil = Number(pGrant.toObject().until);
-    const botRef = (name, g, until, extra = {}) => ({ repoId: R, refNameHash: refHash(name), refName: name, newOid: bytes(20, 9), vis: 'public', r: 4, pp: docRef(g), grantor: id(O.id), gp: PREFIX, gu: until, ...extra });
-    await ok(I, 'the bot pushes refs/heads/bot/ci-bot/x under the prefix grant', B, 'refUpdate', botRef(`${PREFIX}x`, pGrant, pUntil));
+    // R-06: the push names the grant and its granter; the grant's until and prefix are read from it
+    const botRef = (name, g, extra = {}) => ({ repoId: R, refNameHash: refHash(name), refName: name, newOid: bytes(20, 9), vis: 'public', r: 4, pp: docRef(g), grantor: id(O.id), ...extra });
+    await ok(I, 'the bot pushes refs/heads/bot/ci-bot/x under the prefix grant', B, 'refUpdate', botRef(`${PREFIX}x`, pGrant));
     // its kind-0 pack, kind-1 browse index and kind-6 long body (Platform chunks, r 4)
     for (const [kind, label] of [[0, 'pack'], [1, 'browse index'], [6, 'long body']]) {
       const ph = bytes(32);
@@ -788,12 +812,14 @@ try {
     await no(I, "the bot's chunk claiming r 1", B, 'chunk', { repoId: R, packHash: bytes(32), seq: 0, d0: bytes(10), r: 1 }, [40127]);
     // refusals
     await no(I, 'a bot ref update with no grant (r 4)', B, 'refUpdate', { repoId: R, refNameHash: refHash(`${PREFIX}y`), refName: `${PREFIX}y`, newOid: bytes(20, 1), vis: 'public', r: 4 }, [10422], 'botGrant');
-    await no(I, 'a bot ref update outside its prefix (refs/heads/main)', B, 'refUpdate', botRef('refs/heads/main', pGrant, pUntil), [10422], 'botGrant');
+    await no(I, 'a bot ref update outside its prefix (refs/heads/main; R-06 grantPrefix)', B, 'refUpdate', botRef('refs/heads/main', pGrant), [10422], 'grantPrefix');
+    await no(I, 'a bot ref update beside its prefix (no separator)', B, 'refUpdate', botRef('refs/heads/bot/ci-bot2', pGrant), [10422], 'grantPrefix');
+    await no(I, "a bot ref update copying the grant's until (gu: no such property since R-06)", B, 'refUpdate', botRef(`${PREFIX}x`, pGrant, { gu: pUntil }), SCHEMA);
+    await no(I, "a bot ref update copying the grant's prefix (gp: no such property since R-06)", B, 'refUpdate', botRef(`${PREFIX}x`, pGrant, { gp: PREFIX }), SCHEMA);
     await no(I, 'a bot ref update claiming r 1 (its row is role 4)', B, 'refUpdate', { repoId: R, refNameHash: refHash(`${PREFIX}z`), refName: `${PREFIX}z`, newOid: bytes(20, 1), vis: 'public', r: 1 }, [40127]);
-    await no(I, 'a bot ref update naming a different until (gu)', B, 'refUpdate', botRef(`${PREFIX}x`, pGrant, pUntil + 1), [40127]);
-    await no(I, "another bot pushes under the bot's grant", B2, 'refUpdate', botRef(`${PREFIX}x`, pGrant, pUntil), [40127]);
-    await no(I, 'triage sends r 4 under the grant', T, 'refUpdate', botRef(`${PREFIX}x`, pGrant, pUntil), WHERE_ANYOF);
-    await no(I, 'the reader sends r 4 under the grant', RD, 'refUpdate', botRef(`${PREFIX}x`, pGrant, pUntil), WHERE_ANYOF);
+    await no(I, "another bot pushes under the bot's grant", B2, 'refUpdate', botRef(`${PREFIX}x`, pGrant), [40127]);
+    await no(I, 'triage sends r 4 under the grant', T, 'refUpdate', botRef(`${PREFIX}x`, pGrant), WHERE_ANYOF);
+    await no(I, 'the reader sends r 4 under the grant', RD, 'refUpdate', botRef(`${PREFIX}x`, pGrant), WHERE_ANYOF);
     await no(I, 'triage uploads a chunk with r 4', T, 'chunk', { repoId: R, packHash: bytes(32), seq: 0, d0: bytes(10), r: 4 }, [40127]);
     await no(I, 'triage uploads a chunk with its own r 2 (botChunk: r 1 or 4)', T, 'chunk', { repoId: R, packHash: bytes(32), seq: 0, d0: bytes(10), r: 2 }, [10422], 'botChunk');
     await no(I, 'a bot protected ref update', B, 'protectedRefUpdate', { repoId: R, refNameHash: refHash('refs/heads/main'), refName: 'refs/heads/main', newOid: bytes(20, 1), vis: 'public' }, [40120]);
@@ -814,43 +840,39 @@ try {
     await no(I, 'a grant with until in the past', O, 'pushGrant', grant(B, { prefix: PREFIX, until: Date.now() - 120000 }), [10422], 'ttl90');
     await no(I, 'a grant with both scope and prefix', O, 'pushGrant', grant(B, { prefix: PREFIX, scope: bytes(32) }), [10422], 'oneScope');
     await no(I, 'a grant with neither scope nor prefix', O, 'pushGrant', grant(B, {}), [10422], 'oneScope');
-    await no(I, 'a grant with br 1', O, 'pushGrant', grant(B, { prefix: PREFIX, br: 1 }), SCHEMA);
+    await no(I, "a grant naming the bot row's role (br: no such property since R-06)", O, 'pushGrant', grant(B, { prefix: PREFIX, br: 4 }), SCHEMA);
     // an exact members-only grant (a synthetic branch-key HMAC until phase 3F)
     const scope = bytes(32);
     const xGrant = need(await ok(I, 'the owner grants the bot one exact members-only ref', O, 'pushGrant', grant(B, { scope })), 'the exact grant');
-    const xUntil = Number(xGrant.toObject().until);
-    const exact = (extra) => ({ repoId: R, refNameHash: scope, newOid: bytes(20, 8), vis: 'public', r: 4, pg: docRef(xGrant), grantor: id(O.id), gu: xUntil, ...extra });
+    const exact = (extra) => ({ repoId: R, refNameHash: scope, newOid: bytes(20, 8), vis: 'public', r: 4, pg: docRef(xGrant), grantor: id(O.id), ...extra });
     await ok(I, 'the bot pushes the exact members-only ref (sealed)', B, 'refUpdate', exact({ enc: sealed(1), epoch: 0 }));
     await no(I, 'a public update through the exact grant', B, 'refUpdate', exact({ refName: 'refs/heads/secret' }), [10422], 'botGrant');
     await no(I, 'an exact grant used for another ref', B, 'refUpdate', exact({ refNameHash: bytes(32), enc: sealed(1), epoch: 0 }), [40127]);
-    await no(I, 'pp naming the exact grant (no gp)', B, 'refUpdate', { repoId: R, refNameHash: refHash(`${PREFIX}e`), refName: `${PREFIX}e`, newOid: bytes(20, 1), vis: 'public', r: 4, pp: docRef(xGrant), grantor: id(O.id), gu: xUntil }, [10422], 'botGrant');
-    await no(I, 'pp naming the exact grant (with gp)', B, 'refUpdate', { repoId: R, refNameHash: refHash(`${PREFIX}e`), refName: `${PREFIX}e`, newOid: bytes(20, 1), vis: 'public', r: 4, pp: docRef(xGrant), grantor: id(O.id), gp: PREFIX, gu: xUntil }, [40127]);
-    await no(I, 'pg naming the prefix grant', B, 'refUpdate', { repoId: R, refNameHash: refHash(`${PREFIX}x`), newOid: bytes(20, 1), vis: 'public', r: 4, pg: docRef(pGrant), grantor: id(O.id), gu: pUntil, enc: sealed(1), epoch: 0 }, [40127]);
+    await no(I, 'pp naming the exact grant (it has no prefix: grantPrefix)', B, 'refUpdate', botRef(`${PREFIX}e`, xGrant), [10422], 'grantPrefix');
+    await no(I, 'pg naming the prefix grant', B, 'refUpdate', { repoId: R, refNameHash: refHash(`${PREFIX}x`), newOid: bytes(20, 1), vis: 'public', r: 4, pg: docRef(pGrant), grantor: id(O.id), enc: sealed(1), epoch: 0 }, [40127]);
     // a renewal: a new grant, then a push under it
     const renewed = await ok(I, 'the owner renews the prefix grant (a new grant, later until)', O, 'pushGrant', grant(B, { prefix: PREFIX, until: Date.now() + 60 * DAY }));
-    if (renewed) await ok(I, 'the bot pushes under the renewal', B, 'refUpdate', botRef(`${PREFIX}x`, renewed, Number(renewed.toObject().until)));
+    if (renewed) await ok(I, 'the bot pushes under the renewal', B, 'refUpdate', botRef(`${PREFIX}x`, renewed));
     // the human push is unchanged and reads no grant
     await ok(I, "a writer's push (r 1, no grant)", W, 'refUpdate', { repoId: R, refNameHash: refHash('refs/heads/w'), refName: 'refs/heads/w', newOid: bytes(20, 3), vis: 'public' });
-    await no(I, "a writer's push naming a grant (r 1)", W, 'refUpdate', { repoId: R, refNameHash: refHash(`${PREFIX}x`), refName: `${PREFIX}x`, newOid: bytes(20, 3), vis: 'public', pp: docRef(pGrant), grantor: id(O.id), gp: PREFIX, gu: pUntil }, [40127]);
+    await no(I, "a writer's push naming a grant (r 1)", W, 'refUpdate', { repoId: R, refNameHash: refHash(`${PREFIX}x`), refName: `${PREFIX}x`, newOid: bytes(20, 3), vis: 'public', pp: docRef(pGrant), grantor: id(O.id) }, [40127]);
     // client rules: consensus admits these (DESIGN §8.2 row 47)
-    await ok(I, "consensus admits a bot's public update whose hash is not sha256(refName) (readers drop it)", B, 'refUpdate', botRef(`${PREFIX}x`, pGrant, pUntil, { refNameHash: bytes(32) }));
+    await ok(I, "consensus admits a bot's public update whose hash is not sha256(refName) (readers drop it)", B, 'refUpdate', botRef(`${PREFIX}x`, pGrant, { refNameHash: bytes(32) }));
     // the granter removed: a grant by the second maintainer, then its row deleted
     const m2Grant = await ok(I, 'the second maintainer grants the bot the prefix', M2, 'pushGrant', grant(B, { prefix: PREFIX }));
     if (m2Grant) {
-      const mU = Number(m2Grant.toObject().until);
-      await ok(I, "the bot pushes under the second maintainer's grant", B, 'refUpdate', botRef(`${PREFIX}m`, m2Grant, mU, { grantor: id(M2.id) }));
-      await no(I, "the bot names the owner as the second maintainer's grantor", B, 'refUpdate', botRef(`${PREFIX}m`, m2Grant, mU), [40127]);
+      await ok(I, "the bot pushes under the second maintainer's grant", B, 'refUpdate', botRef(`${PREFIX}m`, m2Grant, { grantor: id(M2.id) }));
+      await no(I, "the bot names the owner as the second maintainer's grantor", B, 'refUpdate', botRef(`${PREFIX}m`, m2Grant), [40127]);
       if (await deleteOk(I, "the owner removes the second maintainer's row", O, pub.rows.maint2)) {
         await sleep(A_BLOCK);
-        await no(I, "the bot pushes under the removed granter's grant", B, 'refUpdate', botRef(`${PREFIX}m`, m2Grant, mU, { grantor: id(M2.id) }), [40120]);
+        await no(I, "the bot pushes under the removed granter's grant", B, 'refUpdate', botRef(`${PREFIX}m`, m2Grant, { grantor: id(M2.id) }), [40120]);
       }
     }
     // a removed and re-added bot: consensus accepts its old grant (the runner and readers ignore it)
     const b2Prefix = 'refs/heads/bot/b2/';
     const b2Grant = await ok(I, 'the owner grants bot2 a prefix', O, 'pushGrant', grant(B2, { prefix: b2Prefix }));
     if (b2Grant) {
-      const u = Number(b2Grant.toObject().until);
-      const b2Ref = { repoId: R, refNameHash: refHash(`${b2Prefix}a`), refName: `${b2Prefix}a`, newOid: bytes(20, 4), vis: 'public', r: 4, pp: docRef(b2Grant), grantor: id(O.id), gp: b2Prefix, gu: u };
+      const b2Ref = { repoId: R, refNameHash: refHash(`${b2Prefix}a`), refName: `${b2Prefix}a`, newOid: bytes(20, 4), vis: 'public', r: 4, pp: docRef(b2Grant), grantor: id(O.id) };
       await ok(I, 'bot2 pushes under its grant', B2, 'refUpdate', b2Ref);
       if (await deleteOk(I, "the owner removes bot2's row", O, pub.rows.bot2)) {
         await sleep(A_BLOCK);
@@ -872,11 +894,12 @@ try {
     const short = await ok(I, 'the owner grants the bot a prefix for 2 minutes', O, 'pushGrant', grant(B, { prefix: PREFIX, until: Date.now() + 120000 }));
     if (short) {
       const su = Number(short.toObject().until);
-      await ok(I, 'the bot pushes before the short grant ends', B, 'refUpdate', botRef(`${PREFIX}s`, short, su));
+      await ok(I, 'the bot pushes before the short grant ends', B, 'refUpdate', botRef(`${PREFIX}s`, short));
       const wait = su + 45000 - Date.now();
       log(`waiting ${Math.round(wait / 1000)} s for the short grant to end`);
       if (wait > 0) await sleep(wait);
-      await no(I, 'the bot pushes after until', B, 'refUpdate', botRef(`${PREFIX}s`, short, su), [10422], 'grantLive');
+      // R-06: the grant's `where {until: {greaterThanOrEqual: $createdAt}}` no longer holds
+      await no(I, 'the bot pushes after until (the where ordering)', B, 'refUpdate', botRef(`${PREFIX}s`, short), [40127]);
     }
   }
 
@@ -888,14 +911,15 @@ try {
     await ok(I, "triage's label (r 2)", T, 'label', { repoId: R, name: `t-${tag}`, r: 2 });
     await no(I, "a stranger's label", S, 'label', { repoId: R, name: `s-${tag}`, r: 1 }, [40120]);
     await no(I, "the reader's label (r 2)", RD, 'label', { repoId: R, name: `r-${tag}`, r: 2 }, [40127]);
-    const topic = await ok(I, 'a topic (forge-meta)', O, 'topic', { repoId: R, name: `mv-${tag}`, vis: 'public' });
+    const topic = await ok(I, 'a topic (forge-meta, no vis stamp: R-11)', O, 'topic', { repoId: R, name: `mv-${tag}` });
     await readBack(I, 'the topic read back', META, 'topic', topic);
-    await no(I, 'a topic on a private repo', O, 'topic', { repoId: P, name: 'x', vis: 'public' }, [40127]);
-    await no(I, "a topic by someone other than the repo's owner", M2, 'topic', { repoId: R, name: 'y', vis: 'public' }, [40127]);
-    const mirror = await ok(I, "a stranger's pack mirror (forge-meta, vis public)", S, 'packMirror', { repoId: R, packHash: bytes(32), kind: 1, uris: ['https://mirror.example.com/p.pack'], vis: 'public' });
+    await no(I, 'a topic on a private repo (R-11 where const)', O, 'topic', { repoId: P, name: 'x' }, [40127]);
+    await no(I, "a topic by someone other than the repo's owner", M2, 'topic', { repoId: R, name: 'y' }, [40127]);
+    await no(I, 'a topic carrying a vis stamp (no such property since R-11)', O, 'topic', { repoId: R, name: 'z', vis: 'public' }, SCHEMA);
+    const mirror = await ok(I, "a stranger's pack mirror (forge-meta)", S, 'packMirror', { repoId: R, packHash: bytes(32), kind: 1, uris: ['https://mirror.example.com/p.pack'] });
     await readBack(I, 'the pack mirror read back', META, 'packMirror', mirror);
-    await no(I, 'a pack mirror of a private repo (mainnet_mirror_public)', S, 'packMirror', { repoId: P, packHash: bytes(32), kind: 1, uris: ['https://mirror.example.com/q.pack'], vis: 'public' }, [40127]);
-    await no(I, 'a pack mirror of a repo that does not exist', S, 'packMirror', { repoId: bytes(32, 12), packHash: bytes(32), kind: 1, uris: ['https://mirror.example.com/r.pack'], vis: 'public' }, [40120]);
+    await no(I, 'a pack mirror of a private repo (R-11 where const)', S, 'packMirror', { repoId: P, packHash: bytes(32), kind: 1, uris: ['https://mirror.example.com/q.pack'] }, [40127]);
+    await no(I, 'a pack mirror of a repo that does not exist', S, 'packMirror', { repoId: bytes(32, 12), packHash: bytes(32), kind: 1, uris: ['https://mirror.example.com/r.pack'] }, [40120]);
     const ban = await ok(I, 'a ban (forge-meta)', O, 'ban', { repoId: R, identityId: id(S.id), reason: 1 });
     await readBack(I, 'the ban read back', META, 'ban', ban);
     await no(I, "the writer's ban (maintainer only)", W, 'ban', { repoId: R, identityId: id(S.id) }, [40120]);
@@ -937,16 +961,211 @@ try {
     }
   }
 
+  // ---------------- M-A2: the Platform beta.6 items ----------------
+  if (want('ma2')) await platformBeta6();
+
   // ---------------- R6 live: a private repo made public (Code only, then Everything) ----------------
   if (want('convert')) await convertRepo();
   if (want('everything')) await publishEverything();
 
   // ---------------- fees ----------------
   if (want('fees')) await feeProbes();
+  if (want('fees2')) await feeProbes2();
 } catch (e) {
   if (!(e instanceof InfraError)) throw e;
   stopped = e.message;
   log(`STOPPED: ${stopped}`);
+}
+
+/**
+ * The M-A2 cases (dash-forge-qa design/v5/PLATFORM-OPPORTUNITIES-5.0.0-beta.6.md §2, experiments X3,
+ * X5, X6 (in b1) and X8), each refusal with its positive control, on two repos of their own.
+ */
+async function platformBeta6() {
+  const m = await makeRepo('ma2', `mva-${tag}`, 'public', [[M2, 'maintainer'], [W, 1], [T, 2]]);
+  const pv = await makeRepo('ma2', `mvap-${tag}`, 'private', [[W, 1]]);
+  const A = m.R;
+  const PV = pv.R;
+
+  // R-03 (row 29, X3): a PR's author never approves or requests changes on it; no import exemption
+  let I = 'R-03';
+  const wPr = need(await numbered(m, I, "the writer's PR", W, 'patch', { vis: 'public', title: 'mine', ...member(W, 1), ...prData(m) }), 'the R-03 PR');
+  const oPr = need(await numbered(m, I, "the owner's PR", O, 'patch', { vis: 'public', title: 'owner', ...prData(m) }), "the owner's PR");
+  const rv = (pr, verdict, extra = {}) => ({ repoId: A, patchId: docRef(pr), verdict, commitOid: bytes(20, 2), vis: 'public', ...extra });
+  await no(I, "the PR's author approves it (verdict 1, mRole 1)", W, 'review', rv(wPr, 1, member(W, 1)), [10422], 'authorNoVerdict');
+  await no(I, "the PR's author requests changes on it (verdict 2)", W, 'review', rv(wPr, 2, member(W, 1)), [10422], 'authorNoVerdict');
+  await no(I, "the author's approval marked imported (no import exemption)", W, 'review', rv(wPr, 1, { body: 'imported', imported: { url: 'https://github.com/x/y/pull/1#r9' }, ...member(W, 1) }), [10422], 'authorNoVerdict');
+  await no(I, "the owner approves its own PR (a maintainer author)", O, 'review', rv(oPr, 1, { asMember: id(O.id) }), [10422], 'authorNoVerdict');
+  const selfNote = await ok(I, "the PR's author comments on it (verdict 3)", W, 'review', rv(wPr, 3, { body: 'note to self', ...member(W, 1) }));
+  await ok(I, "the owner approves the writer's PR", O, 'review', rv(wPr, 1, { asMember: id(O.id) }));
+  const approval = await ok(I, "the writer approves the owner's PR (mRole 1)", W, 'review', rv(oPr, 1, member(W, 1)));
+  const changes = await ok(I, "the second maintainer requests changes on the writer's PR", M2, 'review', rv(wPr, 2, { asMember: id(M2.id) }));
+  const outside = await ok(I, "a stranger's outside approval (verdict 4)", S, 'review', rv(oPr, 4, { body: 'lgtm' }));
+
+  // R-09: approvals and change requests outlive their merge; comment and outside verdicts stay deletable
+  I = 'R-09';
+  await deleteNo(I, 'the writer deletes its approval', W, approval, [40147], 'keepVerdicts');
+  await deleteNo(I, 'the second maintainer deletes its change request', M2, changes, [40147], 'keepVerdicts');
+  await deleteOk(I, "the author deletes its comment verdict (3)", W, selfNote);
+  await deleteOk(I, "the stranger deletes its outside verdict (4)", S, outside);
+
+  // R-04 (row 26, X5): enc's framing version fits vis and aud (a deny form)
+  I = 'R-04';
+  const mem = (v, extra = {}) => ({ vis: 'public', aud: 1, enc: sealed(v), epoch: 0, ...member(W, 1), ...extra });
+  await numbered(m, I, 'a members-only issue framed 0x01 (private framing on a public repo)', W, 'issue', mem(1), [10422], 'encFraming');
+  await numbered(m, I, 'a members-only issue framed 0x02 (config framing)', W, 'issue', mem(2), [10422], 'encFraming');
+  await numbered(m, I, 'a members-only (aud 1) issue framed 0x04 (letter framing)', W, 'issue', mem(4), [10422], 'encFraming');
+  await numbered(m, I, 'a members-only issue framed 0x05 (a version defined later)', W, 'issue', mem(5));
+  await numbered(m, I, "a stranger's letter (aud 2) framed 0x04", S, 'issue', { vis: 'public', aud: 2, enc: sealed(4), epoch: 0 });
+  await numbered(m, I, "a stranger's letter framed 0x01", S, 'issue', { vis: 'public', aud: 2, enc: sealed(1), epoch: 0 }, [10422], 'encFraming');
+  const priv = (v, aud = 1) => ({ vis: 'private', aud, enc: sealed(v), epoch: 0, ...member(W, 1) });
+  await numbered(pv, I, 'a private issue framed 0x01', W, 'issue', priv(1));
+  await numbered(pv, I, 'a private issue framed 0x02', W, 'issue', priv(2), [10422], 'encFraming');
+  await numbered(pv, I, 'a private aud-1 issue framed 0x04', W, 'issue', priv(4), [10422], 'encFraming');
+  await numbered(pv, I, "a member's private letter (aud 2) framed 0x04", W, 'issue', priv(4, 2));
+  await numbered(m, I, 'a members-only PR framed 0x01', W, 'patch', { ...mem(1), ...prData(m) }, [10422], 'encFraming');
+  const mPr = await numbered(m, I, 'a members-only PR framed 0x03', W, 'patch', { ...mem(3), ...prData(m) });
+  const pubIss = need(await numbered(m, I, 'a public issue to reply on', W, 'issue', { title: 'framing', vis: 'public' }), 'the R-04 issue');
+  const cm = (v) => ({ repoId: A, targetId: docRef(pubIss), ...mem(v) });
+  await no(I, 'a members-only comment framed 0x02', W, 'comment', cm(2), [10422], 'encFraming');
+  const mc = await ok(I, 'a members-only comment framed 0x03', W, 'comment', cm(3));
+  await replaceNo(I, 'that comment re-sealed framed 0x01 (judged on every replace)', W, mc, { enc: sealed(1) }, [], [10422], 'encFraming');
+  await replaceOk(I, 'that comment re-sealed framed 0x03', W, mc, { enc: sealed(3) });
+  if (mPr) {
+    const mr = (v) => ({ repoId: A, patchId: docRef(mPr), verdict: 3, commitOid: bytes(20, 2), vis: 'public', aud: 1, enc: sealed(v), epoch: 0, ...member(T, 2) });
+    await no(I, "triage's members-only review framed 0x04", T, 'review', mr(4), [10422], 'encFraming');
+    await ok(I, "triage's members-only review framed 0x03", T, 'review', mr(3));
+  }
+  await no(I, 'a sealed config framed 0x01', O, 'config', { repoId: PV, vis: 'private', enc: sealed(1), epoch: 0 }, [10422], 'encV2');
+  await no(I, 'a sealed config framed 0x03', O, 'config', { repoId: PV, vis: 'private', enc: sealed(3), epoch: 0 }, [10422], 'encV2');
+  await ok(I, 'a sealed config framed 0x02 (an anchor)', O, 'config', { repoId: PV, vis: 'private', enc: sealed(2), epoch: 0 });
+
+  // R-05 (row 23, X5): dense and lockGate tell a create by $revision
+  I = 'R-05';
+  const lockIss = need(await numbered(m, I, 'an issue to lock', W, 'issue', { title: 'lock me', vis: 'public' }), 'the issue to lock');
+  const ln = m.n;
+  const before = await ok(I, "a stranger's comment before the lock", S, 'comment', { repoId: A, targetId: docRef(lockIss), vis: 'public', body: 'before' });
+  await ok(I, 'triage locks the issue (kind 3, delta 16, r 2)', T, 'transition', { repoId: A, targetId: docRef(lockIss), targetNumber: ln, targetKind: 0, kind: 3, delta: 16, asAuthor: 0, r: 2 });
+  await no(I, "a stranger's new comment on the locked thread", S, 'comment', { repoId: A, targetId: docRef(lockIss), vis: 'public', body: 'after' }, [10422], 'lockGate');
+  await replaceOk(I, "the stranger edits its comment from before the lock ($revision 2)", S, before, { body: 'edited after the lock' });
+  await ok(I, "a member's comment on the locked thread", W, 'comment', { repoId: A, targetId: docRef(lockIss), vis: 'public', body: 'member', ...member(W, 1) });
+  const older = need(await numbered(m, I, 'an issue, then a newer one', W, 'issue', { title: 'older', vis: 'public' }), 'the older issue');
+  await numbered(m, I, 'the newer issue', W, 'issue', { title: 'newer', vis: 'public' });
+  await replaceOk(I, 'an edit of the older issue ($revision 2: dense does not renumber it)', W, older, { title: 'older, edited' });
+  await sameBlockEdit(I, m);
+
+  // R-08: the owner's own maintainer row stays; another maintainer's row goes
+  I = 'R-08';
+  await deleteNo(I, 'the owner deletes its own maintainer row', O, m.rows.owner, [40147], 'ownerRowStays');
+  await deleteOk(I, "the owner removes the second maintainer's row", O, m.rows.maint2);
+  await ok(I, 'the owner, its row kept, still writes a config', O, 'config', { repoId: A, defaultBranch: 'main', vis: 'public' });
+
+  // R-11: webhook, topic and packMirror name a public repo by their reference's literal
+  I = 'R-11';
+  await no(I, 'a webhook on a private repo', O, 'webhook', hook(PV), [40127]);
+  await ok(I, 'a webhook on a public repo (no vis stamp)', O, 'webhook', hook(A));
+  await no(I, 'a webhook carrying a vis stamp', O, 'webhook', { ...hook(A), vis: 'public' }, SCHEMA);
+  await no(I, 'a topic on a private repo', O, 'topic', { repoId: PV, name: `p-${tag}` }, [40127]);
+  await ok(I, 'a topic on a public repo', O, 'topic', { repoId: A, name: `a-${tag}` });
+  await no(I, 'a pack mirror of a private repo', S, 'packMirror', { repoId: PV, packHash: bytes(32), kind: 1, uris: ['https://mirror.example.com/p.pack'] }, [40127]);
+  await ok(I, 'a pack mirror of a public repo', S, 'packMirror', { repoId: A, packHash: bytes(32), kind: 1, uris: ['https://mirror.example.com/a.pack'] });
+
+  // R-12 (X8; owner: public only, self-stars allowed)
+  I = 'R-12';
+  const star = await ok(I, 'a stranger stars a public repo', S, 'star', { repoId: A });
+  await ok(I, 'the owner stars its own public repo (self-stars allowed)', O, 'star', { repoId: A });
+  await no(I, 'a member stars a private repo', W, 'star', { repoId: PV }, [40127]);
+  await no(I, 'the owner stars its own private repo', O, 'star', { repoId: PV }, [40127]);
+  await ok(I, 'a stranger watches a public repo', S, 'watch', { repoId: A });
+  await no(I, 'a member watches a private repo', W, 'watch', { repoId: PV }, [40127]);
+  await deleteOk(I, 'the stranger unstars (an indexOnly delete checks no reference)', S, star);
+}
+
+/**
+ * R-05's case: an issue created and edited in the same block, which the rev 4.1 rule (equal
+ * creation and update heights) judged as a create. The edit is sent right after the create,
+ * without waiting for it (the SDK numbers the two transitions by the identity's contract nonce),
+ * so a block may take both. Whether one did is read from the stored heights: a node that refuses
+ * a replace of a document it has not committed yet (40101) keeps the two in separate blocks.
+ */
+async function sameBlockEdit(I, r) {
+  await sleep(A_BLOCK);
+  const data = { repoId: r.R, number: r.n + 1, tk: 0, title: 'same block', vis: 'public' };
+  const base = new Document({ properties: {}, documentTypeName: 'issue', dataContractId: COLLAB, ownerId: W.id });
+  const document = Document.fromObject({ ...base.toObject(), ...clean(data) }, version);
+  const nonce = BigInt(await sdk.identities.contractNonce(W.id, COLLAB));
+  const docIdentifier = Document.generateId('issue', W.id, COLLAB, document.entropy, (nonce & ((1n << 40n) - 1n)) + 1n);
+  const edited = Document.fromObject({ ...document.toObject(), $id: docIdentifier, title: 'edited in the same block', $revision: 2n }, version);
+  const created = sdk.documents.create({ document, identityKey: W.identityKey, signer: W.signer });
+  await sleep(400);
+  const replaced = sdk.documents.replace({ document: edited, identityKey: W.identityKey, signer: W.signer });
+  const [c, e] = await Promise.allSettled([created, replaced]);
+  if (c.status === 'fulfilled') r.n += 1;
+  const label = 'an issue created and edited right after, without waiting ($revision 2 is no create)';
+  if (c.status !== 'fulfilled') return failed(I, `${label}: the create`, c.reason);
+  let stored = null;
+  for (let i = 0; i < 6 && !stored; i++) {
+    if (i) await sleep(2000);
+    stored = await sdk.documents.get(COLLAB, 'issue', docIdentifier).catch(() => null);
+  }
+  const o = stored?.toObject?.() ?? {};
+  const heights = `created at ${o.$createdAtBlockHeight ?? '?'}, updated at ${o.$updatedAtBlockHeight ?? '?'}, revision ${o.$revision ?? '?'}`;
+  if (e.status === 'fulfilled') {
+    const same = o.$createdAtBlockHeight !== undefined && String(o.$createdAtBlockHeight) === String(o.$updatedAtBlockHeight);
+    return record({ item: I, label, expect: 'the edit accepted', got: `ok (${same ? 'SAME block' : 'adjacent blocks'}: ${heights})`, pass: String(o.$revision) === '2' });
+  }
+  const code = codeOf(e.reason);
+  // a node keeps a replace out of the create's block: note it and edit in the next
+  record({ item: I, label: `${label}: the immediate edit`, expect: 'accepted, or refused before the create committed', got: `refused ${code} (${heights})`, note: msgOf(e.reason).slice(0, 200), pass: code === 40101 || /not found|does not exist/i.test(msgOf(e.reason)) });
+  if (stored) await replaceOk(I, 'the same edit one block later ($revision 2)', W, stored, { title: 'edited a block later' });
+}
+
+/**
+ * The M-A2 fee probes (R-03, R-04, R-06): the same writes on this set and on --baseline, a scratch
+ * registration of the rev 4.1 set, after one unpriced warm-up write each, in alternating rounds.
+ */
+async function feeProbes2() {
+  const I = 'FEE2';
+  if (!baselineFile) throw new Error('--only fees2 needs --baseline <scratch record of the rev 4.1 set>');
+  if (baselineFile.toLowerCase().startsWith(realpathSync(join(ROOT, 'deployments')).toLowerCase())) throw new Error('--baseline must be a scratch record');
+  const bl = JSON.parse(readFileSync(baselineFile, 'utf8')).v2 ?? {};
+  const BL = { [CORE]: bl.forgeCore?.contractId, [COLLAB]: bl.forgeCollab?.contractId, [COMM]: bl.forgeCommunity?.contractId, [META]: bl.forgeMeta?.contractId };
+  if (Object.values(BL).some((v) => !v) || BL[CORE] === CORE || BL[CORE] === LIVE.core) throw new Error(`${baselineFile} is no other four-contract scratch set`);
+  const onBase = (type) => ({ contract: BL[CONTRACT[type]] });
+  const setUp = async (where, opts) => {
+    const repo = need(await ok(I, `${where}: fee repo`, O, 'repo', { name: `mvg-${tag}`, visibility: 'public', defaultBranch: 'main' }, opts('repo')), `${where} fee repo`);
+    const Rf = docRef(repo);
+    await ok(I, `${where}: maintainer row`, O, 'maintainer', { repoId: Rf, memberId: id(O.id), vis: 'public' }, opts('maintainer'));
+    for (const [who, role] of [[W, 1], [B, 4]]) {
+      await ok(I, `${where}: ${who.name} consents`, who, 'consent', { repoId: Rf }, opts('consent'));
+      await ok(I, `${where}: ${who.name} row (role ${role})`, O, 'writer', { repoId: Rf, memberId: id(who.id), vis: 'public', consentBy: id(who.id), role }, opts('writer'));
+    }
+    await sleep(A_BLOCK);
+    const iss = need(await ok(I, `${where}: issue #1`, O, 'issue', { repoId: Rf, number: 1, tk: 0, title: 'fees', vis: 'public' }, opts('issue')), `${where} issue`);
+    const pr = need(await ok(I, `${where}: PR #2`, O, 'patch', { repoId: Rf, number: 2, tk: 1, title: 'fees', vis: 'public', baseRefNameHash: refHash('refs/heads/main'), sourceRepoId: Rf, headOid: bytes(20, 2) }, opts('patch')), `${where} PR`);
+    const g = need(await ok(I, `${where}: a prefix grant`, O, 'pushGrant', { repoId: Rf, botId: id(B.id), prefix: 'refs/heads/bot/ci-bot/', until: Date.now() + 30 * DAY, ...(where === 'baseline' ? { br: 4 } : {}) }, opts('pushGrant')), `${where} grant`);
+    return { Rf, iss, pr, g };
+  };
+  const mine = await setUp('m-a2', () => ({}));
+  const base = await setUp('baseline', onBase);
+  const PREFIX = 'refs/heads/bot/ci-bot/';
+  const docs = {
+    // R-03 (and R-04's encFraming, judged on every review)
+    approval: (s) => ({ type: 'review', who: W, data: { repoId: s.Rf, patchId: docRef(s.pr), verdict: 1, commitOid: bytes(20, 2), vis: 'public', ...member(W, 1) } }),
+    // R-04 on a members-only comment
+    comment: (s) => ({ type: 'comment', who: W, data: { repoId: s.Rf, targetId: docRef(s.iss), vis: 'public', aud: 1, enc: sealed(3, 200), epoch: 0, ...member(W, 1) } }),
+    // R-06: the rev 4.1 push copies the grant's until and prefix
+    'bot push': (s, i, isBase) => ({ type: 'refUpdate', who: B, data: { repoId: s.Rf, refNameHash: refHash(`${PREFIX}${i}`), refName: `${PREFIX}${i}`, newOid: bytes(20), vis: 'public', r: 4, pp: docRef(s.g), grantor: id(O.id), ...(isBase ? { gp: PREFIX, gu: Number(s.g.toObject().until) } : {}) } }),
+  };
+  for (const [what, make] of Object.entries(docs)) {
+    for (let i = 0; i <= N; i++) {
+      for (const isBase of i % 2 ? [true, false] : [false, true]) {
+        const s = isBase ? base : mine;
+        const { type, who, data } = make(s, i, isBase);
+        await ok(I, `${what} on the ${isBase ? 'rev 4.1 baseline' : 'M-A2'} set, round ${i}`, who, type, data, { ...(isBase ? onBase(type) : {}), ...(i ? { fee: `${what}: ${isBase ? 'rev 4.1' : 'm-a2'}` } : {}) });
+      }
+    }
+  }
 }
 
 /**
@@ -1125,9 +1344,9 @@ async function feeProbes() {
     refUpdate: (s) => ({ who: W, data: { repoId: s.Rf, refNameHash: refHash('refs/heads/main'), refName: 'refs/heads/main', newOid: bytes(20), vis: 'public', r: 1 } }),
     config: (s) => ({ who: O, data: { repoId: s.Rf, defaultBranch: 'main', vis: 'public' } }),
     label: (s, i) => ({ who: O, data: { repoId: s.Rf, name: `fee-${i}-${tag}`, color: '#123456', r: 1 } }),
-    topic: (s, i) => ({ who: O, data: { repoId: s.Rf, name: `fee-${i}-${tag}`, vis: 'public' } }),
-    // the live packMirror has no `vis` (mainnet_mirror_public is a mainnet item)
-    packMirror: (s, i, isLive) => ({ who: S, data: { repoId: s.Rf, packHash: bytes(32), kind: 1, uris: [`https://mirror.example.com/${i}.pack`], ...(isLive ? {} : { vis: 'public' }) } }),
+    // the live topic carries its vis stamp; the scratch one does not (R-11)
+    topic: (s, i, isLive) => ({ who: O, data: { repoId: s.Rf, name: `fee-${i}-${tag}`, ...(isLive ? { vis: 'public' } : {}) } }),
+    packMirror: (s, i) => ({ who: S, data: { repoId: s.Rf, packHash: bytes(32), kind: 1, uris: [`https://mirror.example.com/${i}.pack`] } }),
   };
   for (const [type, make] of Object.entries(docs)) {
     for (let i = 0; i <= N; i++) {
@@ -1145,13 +1364,12 @@ async function feeProbes() {
   await sleep(A_BLOCK);
   const PREFIX = 'refs/heads/bot/ci-bot/';
   const g = need(await ok(I, 'scratch: a prefix grant', O, 'pushGrant', { repoId: scratch.Rf, botId: id(B.id), prefix: PREFIX, until: Date.now() + 30 * DAY }), 'the fee grant');
-  const gu = Number(g.toObject().until);
   // the same ref-name length for both (refs/heads/bot/ci-bot/main vs refs/heads/aaaaaaaaaaaaaaaa)
   const botName = `${PREFIX}main`;
   const humanName = `refs/heads/${'a'.repeat(botName.length - 'refs/heads/'.length)}`;
   for (let i = 0; i <= N; i++) {
     const pairs = [
-      ['bot push', B, { repoId: scratch.Rf, refNameHash: refHash(botName), refName: botName, newOid: bytes(20), vis: 'public', r: 4, pp: docRef(g), grantor: id(O.id), gp: PREFIX, gu }],
+      ['bot push', B, { repoId: scratch.Rf, refNameHash: refHash(botName), refName: botName, newOid: bytes(20), vis: 'public', r: 4, pp: docRef(g), grantor: id(O.id) }],
       ['writer push', W, { repoId: scratch.Rf, refNameHash: refHash(humanName), refName: humanName, newOid: bytes(20), vis: 'public', r: 1 }],
     ];
     for (const [what, who, data] of i % 2 ? pairs.reverse() : pairs) await ok(I, `${what}, round ${i}`, who, 'refUpdate', data, i ? { fee: `refUpdate: ${what} (scratch)` } : {});
@@ -1166,7 +1384,10 @@ const stats = (v) => {
 };
 const feeSummary = Object.fromEntries(Object.entries(fees).map(([k, v]) => [k, stats(v)]));
 const delta = (a, b) => (feeSummary[a] && feeSummary[b] ? Math.round(((feeSummary[a].mean - feeSummary[b].mean) / feeSummary[b].mean) * 10000) / 100 : null);
-const feeDeltas = Object.fromEntries(['comment', 'review', 'refUpdate', 'config', 'label', 'topic', 'packMirror'].map((t) => [`${t}: scratch vs live (%)`, delta(`${t}: scratch`, `${t}: live`)]).concat([['refUpdate: bot push vs writer push (%)', delta('refUpdate: bot push (scratch)', 'refUpdate: writer push (scratch)')]]).filter(([, v]) => v !== null));
+const feeDeltas = Object.fromEntries(['comment', 'review', 'refUpdate', 'config', 'label', 'topic', 'packMirror'].map((t) => [`${t}: scratch vs live (%)`, delta(`${t}: scratch`, `${t}: live`)])
+  .concat([['refUpdate: bot push vs writer push (%)', delta('refUpdate: bot push (scratch)', 'refUpdate: writer push (scratch)')]])
+  .concat(['approval', 'comment', 'bot push'].map((t) => [`${t}: M-A2 vs rev 4.1 (%)`, delta(`${t}: m-a2`, `${t}: rev 4.1`)]))
+  .filter(([, v]) => v !== null));
 const report = { network: `devnet-${devnetName}`, scratch: { core: CORE, collab: COLLAB, community: COMM, meta: META, group: GROUP }, live: LIVE, run: tag, passed, total: results.length, infra, fees: feeSummary, feeDeltas, results };
 if (args.report) writeFileSync(String(args.report), `${JSON.stringify(report, null, 2)}\n`);
 console.log(JSON.stringify({ passed, total: results.length, infra, fees: feeSummary, feeDeltas, failed: results.filter((r) => !r.pass) }, null, 2));
