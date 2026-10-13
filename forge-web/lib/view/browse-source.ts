@@ -31,6 +31,7 @@ import {
   MissingObjectError,
   ObjectLocator,
   RangedLocator,
+  indexOf,
   type ObjectIndex,
   type PackSource,
 } from '../browse'
@@ -47,6 +48,7 @@ import {
   readManifestsOfKind,
   staleRepoTimelines,
   onRepoContentWritten,
+  membersLane,
   repoKey,
   repoSource,
   type PackManifest,
@@ -73,6 +75,7 @@ import { onPrivateSessionEnded, type PrivateSession } from '../repo/private-sess
 import { knownConversion } from '../repo/converted'
 import { HEADER_LEN, PackError, maybeSealed, skipReason, sniff, type Conversion, type SkipReason } from '../private'
 import { mirrorCopy, mirrorUrisOf, resetMirrorUris } from '../repo/pack-mirrors'
+import { MembersIndex, loadMembersPacks, membersGitPacks, membersPackSource } from './members-browse'
 
 /** Chunk queries in flight at once when one range spans more than a single query. */
 const CHUNK_QUERY_POOL = 6
@@ -1421,7 +1424,8 @@ export async function loadArtifactBytesProgress(
   // then decrypted; the plaintext is what the caller gets. `stored`: the bytes as uploaded,
   // checked against `packHash` and never opened, nor recorded in the repo's content-check ledger
   // (not git content; {@link loadStoredArtifactBytes}).
-  const session = stored ? undefined : repo.session
+  // A public repo's members-only pack (kind 64) opens with the reader's members-key session.
+  const session = stored ? undefined : (repo.session ?? (manifest.kind === PACK_KIND.MEMBERS_GIT_PACK ? membersLane(repo) : undefined))
   // A repository made public (§18.2): a pack recorded while it may have been private is checked
   // by its first bytes before it is downloaded, and every pack by its bytes after.
   const reads = stored ? null : convertedReads(repo)
@@ -1829,12 +1833,14 @@ export async function loadBrowseContext(
   )
   const livePacks = locatorPackSpace(manifests)
   if (livePacks.length === 0) return { kind: 'no-packs' }
-  const totalSizeBytes = livePacks.reduce((s, m) => s + m.sizeBytes, 0)
+  // A member's in-browser clone indexes the members-only packs too (opened with their members key).
+  const clonePacks = membersLane(repo) === undefined ? livePacks : [...livePacks, ...membersGitPacks(manifests)]
+  const totalSizeBytes = clonePacks.reduce((s, m) => s + m.sizeBytes, 0)
   const ids: ReadonlySet<string> = new Set(manifests.map((m) => m.documentId))
   const behind = (reason: UnindexedReason): BrowseState => ({
     kind: 'unindexed',
     reason,
-    livePacks,
+    livePacks: clonePacks,
     totalSizeBytes,
     manifests: ids,
   })
@@ -1864,9 +1870,44 @@ export async function loadBrowseContext(
   // was built over a prefix of it (a parent's remapped into it), so every row's packRef means
   // the same pack here.
   const packs = buildPackSource(sdk, repo, manifests)
+  const members = await membersOverlay(sdk, repo, manifests, livePacks, locator, packs)
+  if (members !== null) {
+    const reader = repoReader(sdk, repo, members.index, members.packs, members.space)
+    attachRepoHistory(sdk, repo, reader, manifests, lineage)
+    return { kind: 'ready', context: { locator: members.index, packs: members.packs, reader }, manifests: ids }
+  }
   const reader = repoReader(sdk, repo, locator, packs, livePacks)
   attachRepoHistory(sdk, repo, reader, manifests, lineage)
   return { kind: 'ready', context: { locator, packs, reader }, manifests: ids }
+}
+
+/**
+ * A member's overlay of the members-only packs their members-key session opens
+ * (`members-browse.ts`) over a public context's index and packs, or null (no members-key session,
+ * no members-only pack, or none that opens).
+ */
+async function membersOverlay(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  manifests: readonly PackManifest[],
+  space: readonly PackManifest[],
+  locator: ObjectLocator | ObjectIndex,
+  packs: PackSource,
+): Promise<{ readonly index: ObjectIndex; readonly packs: PackSource; readonly space: readonly PackManifest[] } | null> {
+  const lane = membersLane(repo)
+  if (lane === undefined || membersGitPacks(manifests).length === 0) return null
+  // The public objects a thin members-only pack's deltas name: read with no re-resolve on a miss
+  // (this very resolve is the one a miss would wait for).
+  const pub = repoReader(null, repo, locator, packs, space)
+  const members = await loadMembersPacks(
+    lane,
+    manifests,
+    space.length,
+    (m) => loadStoredArtifactBytes(sdk, repo, m),
+    (oid) => pub.readObject(oid).catch(() => null),
+  )
+  if (members === null) return null
+  return { index: new MembersIndex(indexOf(locator), members), packs: membersPackSource(packs, members), space: [...space, ...members.manifests] }
 }
 
 /**

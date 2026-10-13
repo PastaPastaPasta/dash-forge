@@ -96,6 +96,11 @@ export interface ResolvedRef {
    * what a mirror's older snapshot can legitimately serve (`lib/gateway.ts`).
    */
   readonly tipsEver?: readonly string[]
+  /**
+   * A members-only branch or tag of a public repo, folded by a member from the updates they open
+   * (`members-branches.ts`); its tip is a real commit. Absent: a public ref, as everyone reads it.
+   */
+  readonly audience?: 'members'
 }
 
 /** The row's `refNameHash` as lowercase hex — hex order is byte order; base64 order is not. */
@@ -491,7 +496,7 @@ export async function readRefUpdates(
  * would have re-opened the same cross-client divergence one level up: one client listing a
  * nameless row, the other listing nothing.
  */
-function toResolvedRef(
+export function toResolvedRef(
   updates: readonly RefUpdate[],
   configHistory: readonly ConfigDoc[],
   refNameHashHex: string,

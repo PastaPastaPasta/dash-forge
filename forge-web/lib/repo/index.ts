@@ -20,6 +20,7 @@ export {
   repoContractIds,
   contentKey,
   repoKey,
+  membersLane,
   toEvent,
   toRefUpdate,
   wellFormed,

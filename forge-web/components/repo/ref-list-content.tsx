@@ -9,11 +9,17 @@
  * The branches list adds GitHub's branch administration for maintainers and writers (P1-4,
  * `branch-admin.tsx`): "New branch", a delete button per branch, and "Restore" for a branch
  * deleted from this page.
+ *
+ * A public repo with members-only branches (mixed-visibility DESIGN §10 "Branches"): a member sees
+ * two groups, "Public" and "Members only", the second with each branch's real tip and Publish; the
+ * web never writes to a members-only ref (no delete or restore there: push with git). Everyone
+ * else sees the public list and one line, "This repo also has members-only branches.", never a
+ * number.
  */
 
 import { useCallback, useMemo, useState } from 'react'
 import Link from 'next/link'
-import { Activity, GitBranch, Search, Tag } from 'lucide-react'
+import { Activity, GitBranch, Lock, Search, Tag } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { isDiverged, isLive, matchesRefQuery, plural, refParamFor, tipOidOf } from '@/lib/view'
 import { compareRefNames, compareTagNames, repoKey, type ResolvedRef } from '@/lib/repo'
@@ -57,17 +63,27 @@ function ActivityLink({ addr, kind, name }: { addr: RepoAddress; kind: keyof typ
   )
 }
 
+/** How many people can read a members-only branch: the repo's members who hold the members key (never bots). */
+function membersKeyHolders(home: RepoHome): number {
+  const session = home.lane !== undefined && 'session' in home.lane ? home.lane.session : null
+  if (session === null) return 0
+  return new Set(session.members.filter((m) => m.role !== 'bot').map((m) => m.identity)).size
+}
+
 export function RefListContent({
   home,
   addr,
   kind,
   reload,
+  membersPublish,
 }: {
   home: RepoHome
   addr: RepoAddress
   kind: keyof typeof KIND
   /** Re-read the repo home (after a branch is created, deleted or restored here). */
   reload?: () => void
+  /** A members-only branch row's Publish action (absent: none offered). */
+  membersPublish?: (ref: ResolvedRef, tip: string) => JSX.Element | null
 }): JSX.Element {
   const { prefix, icon: Icon, empty, noun, single } = KIND[kind]
   const admin = useBranchAdmin(home)
@@ -102,7 +118,7 @@ export function RefListContent({
 
   // The default branch always leads, so it never scrolls out of view. After it: name order
   // (alphabetical), or version order (L-13/L-53: a name with a parseable version, newest first).
-  const { live, deleted } = useMemo(() => {
+  const { live, deleted, membersLive } = useMemo(() => {
     // Natural order (digit runs as numbers), not localeCompare: "branch-9" belongs before
     // "branch-10", and it matches the tags page's Version mode closely enough that switching
     // between the two sort modes doesn't reshuffle unrelated names. compareRefNames, not bare
@@ -114,10 +130,25 @@ export function RefListContent({
       return compareNames(short(a), short(b))
     }
     const shown = refs.filter((r) => matchesRefQuery(short(r), query)).sort(comparator)
-    return { live: shown.filter(isLive), deleted: shown.filter((r) => !isLive(r)) }
+    // Members-only refs are listed live only (`members-branches.ts`): a deleted one has no row.
+    const members = shown.filter((r) => r.audience === 'members' && isLive(r))
+    const plain = shown.filter((r) => r.audience !== 'members')
+    return { live: plain.filter(isLive), deleted: plain.filter((r) => !isLive(r)), membersLive: members }
   }, [refs, query, sort, defaultRefName, short])
+  // Whether this list has members-only refs to speak of: a member's own, or the public fact.
+  const membersGroup = refs.some((r) => r.audience === 'members')
+  const membersVisibleTo = home.lane?.access === 'member' || home.lane?.access === 'former' ? membersKeyHolders(home) : null
+
+  const outsiderLine = !membersGroup && home.membersOnlyRefs === true && home.repo.visibility === 'public' ? (
+    <p className="flex items-center gap-1.5 text-dense text-anvil-600 dark:text-anvil-300" data-testid="members-only-refs-note">
+      <Lock className="h-3.5 w-3.5 shrink-0" aria-hidden />
+      {kind === 'branches' ? 'This repo also has members-only branches.' : 'This repo also has members-only tags.'}
+      {home.lane?.access === 'locked' ? ' Unlock to see them.' : null}
+    </p>
+  ) : null
 
   if (refs.length === 0) {
+    if (outsiderLine !== null) return outsiderLine
     return (
       <EmptyState
         icon={Icon}
@@ -154,6 +185,11 @@ export function RefListContent({
         {branchAdmin ? <NewBranchButton home={home} admin={admin} onCreated={changed} /> : null}
       </div>
 
+      {membersGroup ? (
+        <h2 className="text-dense font-semibold text-anvil-800 dark:text-anvil-100" data-testid="refs-group-public">
+          Public
+        </h2>
+      ) : null}
       {live.length > 0 ? (
         <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
           {live.map((ref) => {
@@ -225,6 +261,63 @@ export function RefListContent({
           title={`No active ${kind}`}
           body={`Every pushed ${single} here has since been deleted. Push ${noun} with the git-remote-dash helper and it appears here.`}
         />
+      )}
+
+      {membersGroup ? (
+        <section className="space-y-2" data-testid="refs-group-members" aria-labelledby={`${kind}-members-heading`}>
+          <h2 id={`${kind}-members-heading`} className="flex items-center gap-1.5 text-dense font-semibold text-anvil-800 dark:text-anvil-100">
+            Members only <Lock className="h-3.5 w-3.5" aria-hidden />
+          </h2>
+          {membersVisibleTo !== null ? (
+            <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Visible to {plural(membersVisibleTo, 'member', 'members')}.</p>
+          ) : null}
+          {membersLive.length > 0 ? (
+            <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
+              {membersLive.map((ref) => {
+                const shortName = short(ref)
+                const tip = tipOidOf(ref)
+                const browseRef = refParamFor(shortName, kind === 'tags', home.defaultBranch)
+                return (
+                  <div
+                    key={ref.refName}
+                    className="flex items-center gap-3 border-b border-anvil-100 px-4 py-2.5 last:border-b-0 coarse:py-0 dark:border-anvil-850"
+                    data-testid="members-ref-row"
+                    data-ref={shortName}
+                  >
+                    <Lock className="h-3.5 w-3.5 shrink-0 text-anvil-500 dark:text-anvil-400" aria-label="Members only" />
+                    <Link
+                      href={repoHref('/repo', addr, browseRef ? { ref: browseRef } : {})}
+                      className="min-w-0 flex-1 truncate font-mono text-dense font-medium text-anvil-900 hover:text-forge-800 coarse:py-3 dark:text-anvil-50 dark:hover:text-forge-400"
+                    >
+                      {shortName}
+                    </Link>
+                    {isDiverged(ref) ? (
+                      <span className="rounded-full border border-caution/40 bg-caution/5 px-2 py-0.5 text-[11px] text-caution-700 dark:text-caution-400">
+                        diverged
+                      </span>
+                    ) : null}
+                    {tip ? <RefDate key={`date:${tip}`} peeler={peeler} tip={tip} pushedAt={refUpdatedAt(ref)} /> : null}
+                    {tip && kind === 'branches' ? (
+                      <Link
+                        href={repoHref('/repo/compare', addr, { base: home.defaultBranch, head: browseRef || shortName })}
+                        className="hit-area shrink-0 text-[12px] text-anvil-500 hover:text-forge-800 dark:text-anvil-400 dark:hover:text-forge-400"
+                        aria-label={`Compare ${shortName} with ${home.defaultBranch}`}
+                      >
+                        Compare
+                      </Link>
+                    ) : null}
+                    {tip ? tipChip(tip) : null}
+                    {tip && kind === 'branches' && membersPublish !== undefined ? membersPublish(ref, tip) : null}
+                  </div>
+                )
+              })}
+            </div>
+          ) : (
+            <p className="text-dense text-anvil-500 dark:text-anvil-400">No members-only {single} matches "{query}".</p>
+          )}
+        </section>
+      ) : (
+        outsiderLine
       )}
 
       {deleted.length > 0 ? (

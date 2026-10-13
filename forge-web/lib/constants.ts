@@ -310,6 +310,13 @@ export const PACK_KIND = {
    * for Maintainers or Members, naming the snapshots it replaces in `supersedes`.
    */
   ENV_SNAPSHOT: 8,
+  /**
+   * A members-only git pack of a public repo (mixed-visibility DESIGN §4.3, `private-repos.md`
+   * §19.5): one members-only branch's new objects, DFPK-sealed under the members key, thin against
+   * the public packs, with no `tips` and never superseding. Kinds 64 + k are the members-only
+   * forms of plain kind k; only members read them (`lib/view/members-browse.ts`).
+   */
+  MEMBERS_GIT_PACK: 64,
 } as const
 export type PackKind = (typeof PACK_KIND)[keyof typeof PACK_KIND]
 

@@ -241,8 +241,8 @@ describe("a member's members-key session leaves the public config, branches and 
     const plainRefs = await readRefUpdates(sdk, PUBLIC, key)
     expect(plainRefs).toHaveLength(1)
     expect(await readRefUpdates(sdk, withLane, key)).toEqual(plainRefs)
-    // the git plane's cache identity is unchanged; only discussion caches follow the session
-    expect(repoKey(withLane)).toBe(repoKey(PUBLIC))
+    // phase 3: the git plane's caches follow the session too (members-only branches and packs)
+    expect(repoKey(withLane)).toBe(`${PUBLIC.repoId}#${s.id}`)
     expect(contentKey(withLane)).toBe(`${PUBLIC.repoId}#${s.id}`)
     s.close()
   })

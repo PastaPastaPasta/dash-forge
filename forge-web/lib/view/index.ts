@@ -141,6 +141,7 @@ export {
   loadPrivateHome,
   withLetterReader,
   withMembersSession,
+  withMembersRefs,
   loadRepoHome,
   type BackendInfo,
   type PrivateAccess,
