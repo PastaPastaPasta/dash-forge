@@ -1269,7 +1269,8 @@ writes each bot whose current notice is live and lists `ciMembersBranches` a `br
 branch as it is now, sealed to the pusher and the bot (`Collab::letter_ci_bots`; the pack choice is
 `members_git::share`, shared with `dg branch share`). Only a maintainer's or a Write member's helper writes one (only
 theirs count); a bot without an encryption key gets none. It never fails the push: the refs already landed, and
-the helper names what it could not share. A private-only repository's branches are not members-only branches: its
+the helper names what it could not share. The pusher pays for each letter (one Platform chunk, about 0.002 DASH) and
+waits for them (at most two minutes); a branch whose push the repository does not show yet is tried once more. A private-only repository's branches are not members-only branches: its
 runner stays a member with the Read role (§19.9).
 
 The bot's runner reads the shared branches as git lists them with its key: `dg ci refs` adds them, as `members`, for
@@ -1292,10 +1293,13 @@ only at the head that letter names. Nothing pushed later is readable to it until
 - **Taint**: a job that read a members-only task, post or pack posts only members-only replies. A public post the
   agent asks for is refused before `dg` runs. A bot outside the members (sakura's live contracts) cannot post
   members-only, so a tainted job there posts nothing.
-- **Egress**: the agent's container is on an internal Docker network with no outside DNS; a relay is its only way
-  out, to the runner's `CONNECT` proxy, which lets through the `host:port` endpoints the runner's configuration gives
-  for the notice's `processor` and logs every attempt (`<state>/agents/<repo>/<job>.egress.log`). A notice whose
-  `processor` the runner does not know is not worked on; one with none gives the agent no endpoint.
+- **Egress**: the agent's container is on an internal Docker network whose gateway does not reach the host
+  (`gateway_mode_ipv4=isolated`, Docker Engine 28 or newer, which the runner checks) and with no outside DNS; a relay
+  on a network of its own is its only way out, to the runner's `CONNECT` proxy, which lets through the `host:port`
+  endpoints the runner's configuration gives for the notice's `processor` and logs every attempt as it is decided
+  (`<state>/agents/<repo>/<job>.egress.log`). A notice whose `processor` the runner does not know is not worked on;
+  one with none gives the agent no endpoint. Residual: the allowed endpoint itself is a channel (an agent steered by
+  the thread could use credentials of its own at the same service), as DESIGN §4.9's threat model says.
 - **Output**: a reply cut to `max_reply_bytes` (at most 4,800, so a bot's members-only post fits one document) and at
   most `max_suggestions` suggested changes on a pull request's lines. Never an edit to public, never a push (4E).
 

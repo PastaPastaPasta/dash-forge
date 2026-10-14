@@ -1037,6 +1037,7 @@ async fn shared_target(
         .into());
     };
     let head = &b.letter_head;
+    let oid = oid.to_ascii_lowercase();
     if hex::encode(&head.oid) != oid && hex::encode(&head.blind) != oid {
         return Err(UserError::new(
             codes::USAGE,
@@ -1846,11 +1847,14 @@ async fn refs(ctx: &Ctx, repo: &str) -> Result<()> {
     // members-only branches) reads the branches shared with it, by their real names and heads,
     // as git lists them with the same key. A failed read fails: the runner must not take a
     // shared branch git lists for a public one.
+    // (`None`: no identity read them, so a runner that needs them waits and tries again)
     let shared = if members.is_none() && !private {
         Box::pin(r.shared_branches()).await?
     } else {
-        Vec::new()
+        None
     };
+    let shared_view = shared.is_some();
+    let shared = shared.unwrap_or_default();
     let mut rows: Vec<(String, String, &str)> = match &members {
         Some(m) => m
             .refs
@@ -1884,7 +1888,7 @@ async fn refs(ctx: &Ctx, repo: &str) -> Result<()> {
             "repo": r.repo.display(),
             "visibility": if private { "private" } else { "public" },
             "membersView": members.is_some(),
-            "sharedView": members.is_none() && !private,
+            "sharedView": shared_view,
             "shared": shared.iter().map(|b| &b.name).collect::<Vec<_>>(),
             "refs": rows.iter().map(|(n, t, a)| json!({ "ref": n, "tip": t, "audience": a })).collect::<Vec<_>>(),
         }),

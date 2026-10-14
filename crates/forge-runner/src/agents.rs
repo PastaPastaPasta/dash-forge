@@ -62,6 +62,8 @@ pub struct JobRow {
     pub asker: String,
     /// When (ms).
     pub at: u64,
+    /// Whether the asker shared the thread's members-only content with the bot for it.
+    pub letter: bool,
 }
 
 /// The bot and its requests since `since` (`dg bot jobs <repo> --since <ms>`), oldest first.
@@ -144,13 +146,13 @@ pub struct Thread {
     /// The task, when it could be read.
     #[serde(default)]
     pub task: Option<String>,
-    /// The task is members-only.
-    #[serde(default)]
+    /// The task is members-only. Required: a `dg` too old to say must not be taken as "no".
     pub task_members_only: bool,
     /// Whether its access allowed it when it was written.
     pub allowed: bool,
     /// A pull request from a fork or from someone outside the members (`None`: an issue).
-    #[serde(default)]
+    /// Required, as `task_members_only` is.
+    #[serde(deserialize_with = "required_nullable")]
     pub foreign_pull: Option<bool>,
     /// The `read` letter it was read with.
     #[serde(default)]
@@ -168,6 +170,11 @@ pub struct Thread {
     pub posts: Vec<Post>,
 }
 
+/// A field that must be present and may be `null`.
+fn required_nullable<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Option<bool>, D::Error> {
+    Option::deserialize(d)
+}
+
 impl Thread {
     fn is_pull(&self) -> bool {
         self.posts.first().is_some_and(|p| p.kind == "pull request")
@@ -183,9 +190,10 @@ pub enum Mode {
     Public,
 }
 
-/// Whether and how a request is worked on (DESIGN §4.9 "Run only proper requests"): `Err` says
-/// why it is not.
-pub fn decide(access: Option<&Access>, t: &Thread) -> std::result::Result<Mode, String> {
+/// Whether and how a request is worked on (DESIGN §4.9 "Run only proper requests"), from the
+/// thread as everyone reads it (`t`, no letter opened) and whether the asker wrote the bot a
+/// letter for it (`letter`): `Err` says why it is not.
+pub fn decide(access: Option<&Access>, t: &Thread, letter: bool) -> std::result::Result<Mode, String> {
     let Some(a) = access.filter(|a| a.live) else {
         return Err("the bot has no access in this repository now".into());
     };
@@ -198,7 +206,9 @@ pub fn decide(access: Option<&Access>, t: &Thread) -> std::result::Result<Mode, 
     if !a.may(MAY_POST) && !a.may(MAY_POST_MEMBERS_ONLY) {
         return Err("the bot's access doesn't let it post here".into());
     }
-    let proper = a.may(MAY_READ_ON_REQUEST) && t.letter.is_some() && t.foreign_pull != Some(true);
+    // a pull request whose origin is not known (`foreignPull` null) is taken for a fork's
+    let from_members = !t.is_pull() || t.foreign_pull == Some(false);
+    let proper = a.may(MAY_READ_ON_REQUEST) && letter && from_members;
     Ok(if proper { Mode::Members } else { Mode::Public })
 }
 
@@ -413,8 +423,9 @@ pub fn work(cfg: &Config, repo: &RepoConfig, bot: &str, row: &JobRow, dir: &Path
     };
     let access = access_of(cfg, repo, bot)?;
     let packs_dir = dir.join("packs");
-    let full = read_thread(cfg, repo, &row.id, None)?;
-    let mode = match decide(access.as_ref(), &full) {
+    // decided on what everyone reads: the letter is opened only for a proper request
+    let public = read_thread(cfg, repo, &row.id, Read::Public)?;
+    let mut mode = match decide(access.as_ref(), &public, row.letter) {
         Ok(m) => m,
         Err(why) => {
             out.refused = Some(why);
@@ -422,11 +433,18 @@ pub fn work(cfg: &Config, repo: &RepoConfig, bot: &str, row: &JobRow, dir: &Path
         }
     };
     let access = access.unwrap_or_default();
-    let thread = match mode {
-        Mode::Members if full.packs > 0 => read_thread(cfg, repo, &row.id, Some(&packs_dir))?,
-        Mode::Members => full,
-        // re-read without the letter: public mode never opens it
-        Mode::Public => match public_input(read_public(cfg, repo, &row.id)?) {
+    let mut thread = None;
+    if mode == Mode::Members {
+        let full = read_thread(cfg, repo, &row.id, Read::Letter(&packs_dir))?;
+        if full.letter.is_some() {
+            thread = Some(full);
+        } else {
+            mode = Mode::Public;
+        }
+    }
+    let thread = match thread {
+        Some(t) => t,
+        None => match public_input(public) {
             Ok(t) => t,
             Err(why) => {
                 out.refused = Some(why);
@@ -447,11 +465,16 @@ pub fn work(cfg: &Config, repo: &RepoConfig, bot: &str, row: &JobRow, dir: &Path
         }
     };
 
-    let (work, input, outdir) = (dir.join("work"), dir.join("in"), dir.join("out"));
-    for d in [&work, &input, &outdir] {
+    let (work, input, outdir, anon) = (
+        dir.join("work"),
+        dir.join("in"),
+        dir.join("out"),
+        dir.join("anon"),
+    );
+    for d in [&work, &input, &outdir, &anon] {
         std::fs::create_dir_all(d)?;
     }
-    let head = match prepare_code(cfg, repo, mode, &thread, &packs_dir, &work) {
+    let head = match prepare_code(cfg, repo, mode, &thread, &packs_dir, &work, &anon) {
         Ok(h) => h,
         Err(e) => {
             eprintln!(
@@ -542,25 +565,33 @@ pub fn work(cfg: &Config, repo: &RepoConfig, bot: &str, row: &JobRow, dir: &Path
     Ok(out)
 }
 
-/// `dg bot read --json` of `job`, writing the members-only code it hands on into `code`.
-fn read_thread(cfg: &Config, repo: &RepoConfig, job: &str, code: Option<&Path>) -> Result<Thread> {
-    let mut args = vec!["bot".to_string(), "read".into(), repo.repo.clone(), job.into()];
-    if let Some(dir) = code {
-        args.extend(["--code".into(), dir.display().to_string()]);
-    }
-    let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    serde_json::from_value(run::dg_read_keyed(cfg, true, &args)?)
-        .context("dg bot read: unexpected JSON")
+/// How a job's thread is read.
+#[derive(Clone, Copy)]
+enum Read<'a> {
+    /// What everyone reads (`--public`): no letter is opened.
+    Public,
+    /// With the asker's letter, its members-only code written into the directory (`--code`).
+    Letter(&'a Path),
 }
 
-/// `dg bot read --public --json` of `job`: what everyone reads, no letter opened.
-fn read_public(cfg: &Config, repo: &RepoConfig, job: &str) -> Result<Thread> {
-    serde_json::from_value(run::dg_read_keyed(
-        cfg,
-        true,
-        &["bot", "read", &repo.repo, job, "--public"],
-    )?)
-    .context("dg bot read --public: unexpected JSON")
+/// `dg bot read --json` of `job`. A `dg` that does not say whether the task is members-only or
+/// where a pull request comes from is refused: the runner would take the missing answers for
+/// "public" and "not a fork".
+fn read_thread(cfg: &Config, repo: &RepoConfig, job: &str, how: Read<'_>) -> Result<Thread> {
+    let mut args = vec!["bot".to_string(), "read".into(), repo.repo.clone(), job.into()];
+    match how {
+        Read::Public => args.push("--public".into()),
+        Read::Letter(dir) => args.extend(["--code".into(), dir.display().to_string()]),
+    }
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    thread_of(run::dg_read_keyed(cfg, true, &args)?)
+}
+
+fn thread_of(v: serde_json::Value) -> Result<Thread> {
+    serde_json::from_value(v).context(
+        "dg bot read: unexpected JSON (the runner needs taskMembersOnly and foreignPull: dg too \
+         old for this runner? upgrade dg)",
+    )
 }
 
 /// The endpoints the agent may reach: those of the AI service the access names. `Err` when it
@@ -576,14 +607,35 @@ pub fn endpoints_for(a: &Agents, processor: Option<&str>) -> std::result::Result
     Ok(s.endpoints.iter().filter_map(|e| Endpoint::parse(e)).collect())
 }
 
-/// `git` in `dir` without the runner's key (public reads only), `DASH_FORGE_*` network kept.
-fn git_in(cfg: &Config, dir: &Path, args: &[&str], keyless: bool) -> Result<String> {
+/// `git` in `dir` as nobody: without the runner's key, and with a home of its own (`anon`), so
+/// git-remote-dash cannot fall back to an identity recorded on the runner host either. The
+/// network and the storage read settings are kept.
+fn git_anon(cfg: &Config, dir: &Path, anon: &Path, args: &[&str]) -> Result<String> {
     let mut c = run::with_network(Command::new(&cfg.bin.git), cfg);
-    if keyless {
-        c.env_remove("DASH_FORGE_KEY");
+    if let Some(storage) = storage_config() {
+        c.env("DASH_FORGE_STORAGE_CONFIG", storage);
     }
-    c.current_dir(dir).args(args);
+    c.env_remove("DASH_FORGE_KEY")
+        .env_remove("DASH_FORGE_PASSPHRASE")
+        .env("HOME", anon)
+        .env("XDG_CONFIG_HOME", anon.join("config"))
+        .env("XDG_STATE_HOME", anon.join("state"))
+        .env("DASH_FORGE_NO_KEYCHAIN", "1")
+        .current_dir(dir)
+        .args(args);
     run::output(&mut c, &format!("git {}", args.first().unwrap_or(&"")))
+}
+
+/// The storage profiles file dg and git-remote-dash read where pack copies are (its read
+/// gateways), as the runner's environment names it.
+fn storage_config() -> Option<PathBuf> {
+    if let Some(p) = std::env::var_os("DASH_FORGE_STORAGE_CONFIG") {
+        return Some(PathBuf::from(p));
+    }
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+    Some(base.join("dash-forge").join("storage.toml")).filter(|p| p.exists())
 }
 
 /// Check the job's code out in `work`, returning its head: a pull request's members-only head
@@ -597,15 +649,16 @@ fn prepare_code(
     t: &Thread,
     packs: &Path,
     work: &Path,
+    anon: &Path,
 ) -> Result<Option<String>> {
-    git_in(cfg, work, &["init", "-q"], true)?;
+    git_anon(cfg, work, anon, &["init", "-q"])?;
     if mode == Mode::Members && !t.pack_files.is_empty() {
         let head = t.head.clone().context("the letter hands on code but names no head")?;
-        git_in(
+        git_anon(
             cfg,
             work,
+            anon,
             &["fetch", "-q", "--no-tags", &repo.url(), "+refs/heads/*:refs/public/*"],
-            true,
         )?;
         for p in &t.pack_files {
             let p = Path::new(p);
@@ -618,7 +671,7 @@ fn prepare_code(
             let st = c.status()?;
             anyhow::ensure!(st.success(), "git index-pack of a shared pack failed");
         }
-        git_in(cfg, work, &["checkout", "-q", "--detach", &head], true)?;
+        git_anon(cfg, work, anon, &["checkout", "-q", "--detach", &head])?;
         return Ok(Some(head));
     }
     if t.is_pull() {
@@ -628,19 +681,19 @@ fn prepare_code(
         };
         let url = repo.pull_source_url(&pr);
         let spec = format!("+refs/heads/{src}:refs/forge-runner/pr");
-        git_in(cfg, work, &["fetch", "-q", "--no-tags", &url, &spec], true)?;
-        let tip = git_in(cfg, work, &["rev-parse", "refs/forge-runner/pr"], true)?;
+        git_anon(cfg, work, anon, &["fetch", "-q", "--no-tags", &url, &spec])?;
+        let tip = git_anon(cfg, work, anon, &["rev-parse", "refs/forge-runner/pr"])?;
         let head = pr.head_oid.to_ascii_lowercase();
         anyhow::ensure!(tip.trim() == head, "{src} moved past the pull request's head");
-        git_in(cfg, work, &["checkout", "-q", "--detach", &head], true)?;
+        git_anon(cfg, work, anon, &["checkout", "-q", "--detach", &head])?;
         return Ok(Some(head));
     }
     let branch = run::default_branch_name(cfg, repo)?;
     let spec = format!("+refs/heads/{branch}:refs/forge-runner/head");
-    git_in(cfg, work, &["fetch", "-q", "--no-tags", &repo.url(), &spec], true)?;
-    git_in(cfg, work, &["checkout", "-q", "--detach", "refs/forge-runner/head"], true)?;
+    git_anon(cfg, work, anon, &["fetch", "-q", "--no-tags", &repo.url(), &spec])?;
+    git_anon(cfg, work, anon, &["checkout", "-q", "--detach", "refs/forge-runner/head"])?;
     Ok(Some(
-        git_in(cfg, work, &["rev-parse", "HEAD"], true)?.trim().to_string(),
+        git_anon(cfg, work, anon, &["rev-parse", "HEAD"])?.trim().to_string(),
     ))
 }
 
@@ -684,15 +737,20 @@ fn agent_args(
         name.into(),
         "--network".into(),
         net.into(),
-        // container names resolve (the relay); nothing outside does
+        // container names resolve (the relay); nothing outside does: the embedded resolver's
+        // upstream is an address that answers nobody (TEST-NET-1)
         "--dns".into(),
-        "127.0.0.1".into(),
+        "192.0.2.1".into(),
         "--cap-drop".into(),
         "ALL".into(),
         "--security-opt".into(),
         "no-new-privileges".into(),
         "--pids-limit".into(),
         "512".into(),
+        "--memory".into(),
+        a.memory.clone(),
+        "--cpus".into(),
+        a.cpus.clone(),
         "--tmpfs".into(),
         "/tmp".into(),
         "-e".into(),
@@ -722,19 +780,75 @@ fn agent_args(
     v
 }
 
-/// The runner's own user and group for the agent (`uid:gid` of the job directory), so it can
-/// write `/out` on a Linux host; `None` elsewhere.
+/// Who the agent runs as: the runner's own user and group (`uid:gid` of the job directory), so
+/// it can write `/out` on a Linux host; never root: a runner running as root gives the agent
+/// `nobody`, with `/work` and `/out` opened up to it. `None` where there are no such ids.
 fn job_user(dir: &Path) -> Option<String> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::MetadataExt as _;
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
         let m = std::fs::metadata(dir).ok()?;
-        Some(format!("{}:{}", m.uid(), m.gid()))
+        if m.uid() != 0 {
+            return Some(format!("{}:{}", m.uid(), m.gid()));
+        }
+        for sub in ["work", "out"] {
+            let _ = Command::new("chmod")
+                .args(["-R", "a+rwX"])
+                .arg(dir.join(sub))
+                .status();
+        }
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o711));
+        Some("65534:65534".into())
     }
     #[cfg(not(unix))]
     {
         let _ = dir;
         None
+    }
+}
+
+/// The oldest Docker Engine agents run on: 28.0 gives an internal network a gateway the
+/// containers cannot reach the host through (`gateway_mode_ipv4=isolated`), and is past
+/// CVE-2024-29018 (an internal network's resolver forwarding outside).
+const MIN_DOCKER_MAJOR: u32 = 28;
+
+/// Refuse a Docker Engine older than [`MIN_DOCKER_MAJOR`].
+fn check_docker(a: &Agents) -> Result<()> {
+    let v = docker(a, &["version", "--format", "{{.Server.Version}}"])?;
+    let major: u32 = v
+        .trim()
+        .split('.')
+        .next()
+        .and_then(|m| m.parse().ok())
+        .with_context(|| format!("docker version said {:?}", v.trim()))?;
+    if major < MIN_DOCKER_MAJOR {
+        bail!(
+            "agents need Docker Engine {MIN_DOCKER_MAJOR} or newer (this daemon is {}): older \
+             engines let a container on an internal network reach the host",
+            v.trim()
+        );
+    }
+    Ok(())
+}
+
+/// The prefix of everything a job starts on the Docker daemon.
+const DOCKER_PREFIX: &str = "forge-agent-";
+
+/// Remove every container and network a job left behind (a runner that crashed mid-job). Only
+/// with `sweep_after_timeout`, on a daemon the runner owns: it removes everything named
+/// `forge-agent-*`.
+pub fn sweep(a: &Agents) {
+    let list = |args: &[&str]| -> Vec<String> {
+        docker(a, args)
+            .map(|s| s.split_whitespace().map(str::to_string).collect())
+            .unwrap_or_default()
+    };
+    let filter = format!("name=^{DOCKER_PREFIX}");
+    for c in list(&["ps", "-aq", "--filter", &filter]) {
+        let _ = docker(a, &["rm", "-f", &c]);
+    }
+    for n in list(&["network", "ls", "-q", "--filter", &filter]) {
+        let _ = docker(a, &["network", "rm", &n]);
     }
 }
 
@@ -748,21 +862,37 @@ fn run_agent(
     endpoints: Vec<Endpoint>,
     env_file: Option<&Path>,
 ) -> Result<AgentRun> {
+    check_docker(a)?;
     let short: String = job.chars().filter(char::is_ascii_alphanumeric).take(12).collect();
     let tag = format!("{}-{}", short.to_ascii_lowercase(), std::process::id());
-    let (net, relay, agent) = (
-        format!("forge-agent-{tag}"),
-        format!("forge-agent-relay-{tag}"),
-        format!("forge-agent-{tag}-run"),
+    // the agent's network has no way out and no gateway into the host; the relay's own uplink
+    // is a network of its own, so no other container (a CI job) reaches the relay
+    let (net, uplink, relay, agent) = (
+        format!("{DOCKER_PREFIX}{tag}"),
+        format!("{DOCKER_PREFIX}{tag}-up"),
+        format!("{DOCKER_PREFIX}{tag}-relay"),
+        format!("{DOCKER_PREFIX}{tag}-run"),
     );
     let proxy = Proxy::start(&a.proxy_listen, endpoints, &dir.join("egress.log"))?;
     let cleanup = || {
         let _ = docker(a, &["rm", "-f", &agent]);
         let _ = docker(a, &["rm", "-f", &relay]);
         let _ = docker(a, &["network", "rm", &net]);
+        let _ = docker(a, &["network", "rm", &uplink]);
     };
     let started = (|| -> Result<()> {
-        docker(a, &["network", "create", "--internal", &net])?;
+        docker(
+            a,
+            &[
+                "network",
+                "create",
+                "--internal",
+                "-o",
+                "com.docker.network.bridge.gateway_mode_ipv4=isolated",
+                &net,
+            ],
+        )?;
+        docker(a, &["network", "create", &uplink])?;
         docker(
             a,
             &[
@@ -772,7 +902,7 @@ fn run_agent(
                 "--name",
                 &relay,
                 "--network",
-                "bridge",
+                &uplink,
                 "--add-host",
                 "host.docker.internal:host-gateway",
                 "--cap-drop",
@@ -829,8 +959,55 @@ fn run_agent(
     })
 }
 
-/// Post the reply and the suggestions as `audience` (the audience was checked against the taint
-/// and the access by [`post_audience`]; this checks it again right before `dg` runs).
+/// The `dg` argument lists that post `output` on `thread` for `audience`: the reply, then each
+/// suggested change on its lines. `Err` when nothing may be posted: a public post after
+/// members-only input (checked again here, right before `dg`), or nothing to post.
+pub fn post_args(
+    repo: &str,
+    thread: &Thread,
+    tainted: bool,
+    audience: Audience,
+    output: &Output,
+) -> std::result::Result<Vec<Vec<String>>, String> {
+    if tainted && audience == Audience::Public {
+        return Err("refused a public post after members-only input".into());
+    }
+    let number = thread.number.to_string();
+    let kind = if thread.is_pull() { "pr" } else { "issue" };
+    let head = || vec![kind.to_string(), "comment".into(), repo.to_string(), number.clone()];
+    let mut posts: Vec<Vec<String>> = Vec::new();
+    // `--flag=value`: the agent's text may start with `-`
+    if !output.reply.is_empty() {
+        let mut a = head();
+        a.push(format!("--body={}", output.reply));
+        posts.push(a);
+    }
+    for s in &output.suggestions {
+        let mut a = head();
+        a.extend([
+            format!("--file={}", s.path),
+            format!("--line={}", s.line),
+            format!("--suggest={}", s.text),
+            "--body=Suggested change.".into(),
+        ]);
+        if let Some(f) = s.start_line {
+            a.push(format!("--start-line={f}"));
+        }
+        posts.push(a);
+    }
+    if posts.is_empty() {
+        return Err("the agent gave no reply and no suggestion; nothing was posted".into());
+    }
+    if audience == Audience::Members {
+        for a in &mut posts {
+            a.push("--members".into());
+        }
+    }
+    Ok(posts)
+}
+
+/// Post `output` as `audience` ([`post_args`]; the audience was checked against the taint and the
+/// access by [`post_audience`]).
 fn post(
     cfg: &Config,
     repo: &RepoConfig,
@@ -839,50 +1016,17 @@ fn post(
     output: &Output,
     out: &mut Outcome,
 ) {
-    if out.tainted && audience == Audience::Public {
-        out.refused = Some("refused a public post after members-only input".into());
-        return;
-    }
-    let number = thread.number.to_string();
-    let kind = if thread.is_pull() { "pr" } else { "issue" };
-    let members = audience == Audience::Members;
-    let mut posts: Vec<Vec<String>> = Vec::new();
-    // `--flag=value`: the agent's text may start with `-`
-    if !output.reply.is_empty() {
-        posts.push(vec![
-            "comment".into(),
-            repo.repo.clone(),
-            number.clone(),
-            format!("--body={}", output.reply),
-        ]);
-    }
-    for s in &output.suggestions {
-        let mut a = vec![
-            "comment".into(),
-            repo.repo.clone(),
-            number.clone(),
-            format!("--file={}", s.path),
-            format!("--line={}", s.line),
-            format!("--suggest={}", s.text),
-            "--body=Suggested change.".into(),
-        ];
-        if let Some(f) = s.start_line {
-            a.push(format!("--start-line={f}"));
+    let posts = match post_args(&repo.repo, thread, out.tainted, audience, output) {
+        Ok(p) => p,
+        Err(why) => {
+            out.refused = Some(why);
+            return;
         }
-        posts.push(a);
-    }
-    if posts.is_empty() {
-        out.refused = Some("the agent gave no reply and no suggestion; nothing was posted".into());
-        return;
-    }
-    for mut args in posts {
-        args.insert(0, kind.into());
-        if members {
-            args.push("--members".into());
-        }
+    };
+    for args in posts {
         let mut cmd = run::with_network(Command::new(&cfg.bin.dg), cfg);
         cmd.args(["--yes", "--json"]).args(&args);
-        match run::output(&mut cmd, &format!("dg {kind} comment")) {
+        match run::output(&mut cmd, &format!("dg {} comment", args[0])) {
             Ok(said) => {
                 let v: serde_json::Value = serde_json::from_str(&said).unwrap_or_default();
                 let id = v["commentId"].as_str().unwrap_or("posted");
@@ -991,25 +1135,30 @@ mod tests {
     fn only_a_proper_request_reads_what_the_letter_hands_on() {
         let all = access(&["post", "postMembersOnly", "readOnRequest"]);
         let pr = vec![post("public", "pull request"), post("membersOnly", "comment")];
-        let t = thread(true, Some(false), pr.clone());
-        assert_eq!(decide(Some(&all), &t), Ok(Mode::Members));
-        // a fork's or an outsider's pull request: public mode, whatever the letter says
-        assert_eq!(decide(Some(&all), &thread(true, Some(true), pr.clone())), Ok(Mode::Public));
+        let t = thread(false, Some(false), pr.clone());
+        assert_eq!(decide(Some(&all), &t, true), Ok(Mode::Members));
+        // a fork's or an outsider's pull request, or one whose origin dg did not say: public
+        // mode, whatever the letter says
+        assert_eq!(decide(Some(&all), &thread(false, Some(true), pr.clone()), true), Ok(Mode::Public));
+        assert_eq!(decide(Some(&all), &thread(false, None, pr.clone()), true), Ok(Mode::Public));
+        // an issue has no origin to check
+        let issue = thread(false, None, vec![post("public", "issue")]);
+        assert_eq!(decide(Some(&all), &issue, true), Ok(Mode::Members));
         // no letter, or an access without reading on request: public mode
-        assert_eq!(decide(Some(&all), &thread(false, Some(false), pr.clone())), Ok(Mode::Public));
+        assert_eq!(decide(Some(&all), &t, false), Ok(Mode::Public));
         assert_eq!(
-            decide(Some(&access(&["post", "postMembersOnly"])), &t),
+            decide(Some(&access(&["post", "postMembersOnly"])), &t, true),
             Ok(Mode::Public)
         );
         // no access now, an ended one, or a request outside it: not worked on
-        assert!(decide(None, &t).is_err());
+        assert!(decide(None, &t, true).is_err());
         let mut ended = all.clone();
         ended.live = false;
-        assert!(decide(Some(&ended), &t).is_err());
+        assert!(decide(Some(&ended), &t, true).is_err());
         let mut outside = t.clone();
         outside.allowed = false;
-        assert!(decide(Some(&all), &outside).is_err());
-        assert!(decide(Some(&access(&["readOnRequest"])), &t).is_err());
+        assert!(decide(Some(&all), &outside, true).is_err());
+        assert!(decide(Some(&access(&["readOnRequest"])), &t, true).is_err());
     }
 
     #[test]
@@ -1120,11 +1269,51 @@ mod tests {
         let a = agents();
         let args = agent_args(&a, "n", "net", Path::new("/j"), None, Some("1:2".into()));
         let s = args.join(" ");
-        assert!(s.contains("--network net --dns 127.0.0.1 --cap-drop ALL"), "{s}");
+        assert!(s.contains("--network net --dns 192.0.2.1 --cap-drop ALL"), "{s}");
+        assert!(s.contains("--memory 2g --cpus 2"), "{s}");
         assert!(s.contains("HTTPS_PROXY=http://egress:3128"), "{s}");
         assert!(s.contains("source=/j/in,target=/in,readonly"), "{s}");
         assert!(!s.contains("DASH_FORGE"), "{s}");
         assert!(!args.iter().any(|x| x == "--env"), "{s}");
+    }
+
+    #[test]
+    fn a_dg_that_does_not_say_where_a_pull_request_comes_from_is_refused() {
+        let new = serde_json::json!({
+            "request": "j", "allowed": true, "number": 4, "asker": "A", "task": "t",
+            "taskMembersOnly": false, "foreignPull": null, "at": 1, "letter": null, "asOf": null,
+            "head": null, "packs": 0, "packFiles": [], "posts": [],
+        });
+        assert!(thread_of(new.clone()).is_ok());
+        for missing in ["taskMembersOnly", "foreignPull"] {
+            let mut old = new.clone();
+            old.as_object_mut().unwrap().remove(missing);
+            let e = format!("{:#}", thread_of(old).unwrap_err());
+            assert!(e.contains("too old"), "{e}");
+        }
+    }
+
+    #[test]
+    fn posts_are_built_for_their_audience_and_never_public_after_members_only_input() {
+        let a = agents();
+        let pr = thread(true, Some(false), vec![post("public", "pull request")]);
+        let out = read_output(
+            br#"{"reply":"-r","suggestions":[{"path":"a.rs","line":3,"startLine":2,"text":"x"}]}"#,
+            &a,
+            true,
+        )
+        .unwrap();
+        let p = post_args("o/r", &pr, false, Audience::Public, &out).unwrap();
+        assert_eq!(p[0], ["pr", "comment", "o/r", "42", "--body=-r"]);
+        assert!(p[1].contains(&"--suggest=x".to_string()) && p[1].contains(&"--start-line=2".to_string()));
+        assert!(p.iter().all(|a| !a.contains(&"--members".to_string())));
+        let m = post_args("o/r", &pr, true, Audience::Members, &out).unwrap();
+        assert!(m.iter().all(|a| a.last().map(String::as_str) == Some("--members")));
+        assert!(post_args("o/r", &pr, true, Audience::Public, &out).is_err());
+        let issue = thread(true, None, vec![post("public", "issue")]);
+        let p = post_args("o/r", &issue, false, Audience::Public, &read_output(br#"{"reply":"r"}"#, &a, false).unwrap()).unwrap();
+        assert_eq!(p[0][0], "issue");
+        assert!(post_args("o/r", &issue, false, Audience::Public, &read_output(b"{}", &a, false).unwrap()).is_err());
     }
 
     #[test]

@@ -72,6 +72,9 @@ pub struct CiLetters {
     pub written: Vec<CiLetter>,
     /// What was not written, and why.
     pub failed: Vec<(Option<String>, Option<String>, String)>,
+    /// Branches (and the tip pushed) whose push the repository did not show yet: nothing was
+    /// written for them, and asking again a little later may.
+    pub lagging: Vec<(String, String)>,
 }
 
 /// Why a members-only post of the thread is not in a `read` letter.
@@ -596,7 +599,8 @@ impl Collab<'_> {
     }
 
     /// After a members-only push of `branches` (full names of members-key branches of public
-    /// `repo`), a `branch` letter of each branch as it is now to every runner bot whose access
+    /// `repo`, each with the tip pushed), a `branch` letter of each branch as it is now (at that
+    /// tip, else it is `lagging`) to every runner bot whose access
     /// lets it run checks on members-only branches (DESIGN §4.9, `private-repos.md` §22.4): the
     /// snapshot `dg branch share` hands on ([`crate::members_git::share::snapshot`]), read in the
     /// clone at `cwd` with the members key `kr`, sealed to the signer and the bot. Only a
@@ -607,7 +611,7 @@ impl Collab<'_> {
         repo: &RepoRef,
         kr: &std::sync::Arc<crate::keyring::Keyring>,
         cwd: &std::path::Path,
-        branches: &[String],
+        branches: &[(String, String)],
         progress: &dyn Fn(&str),
     ) -> CiLetters {
         let mut out = CiLetters::default();
@@ -648,14 +652,26 @@ impl Collab<'_> {
                 Err(e) => out.failed.push((None, Some(bot), e.to_string())),
             }
         }
+        if keys.is_empty() {
+            return out;
+        }
         let Ok(svc) = self.repo_service() else {
             return out;
         };
-        for branch in branches {
+        for (branch, pushed) in branches {
+            progress(&format!(
+                "Sharing {} with {} runner bot(s) for their checks…",
+                crate::repo::short_branch_name(branch),
+                keys.len()
+            ));
             let snap =
                 match crate::members_git::share::snapshot(&svc, repo, kr, cwd, branch, progress)
                     .await
                 {
+                    Ok(s) if !s.tip.eq_ignore_ascii_case(pushed) => {
+                        out.lagging.push((branch.clone(), pushed.clone()));
+                        continue;
+                    }
                     Ok(s) => s,
                     Err(e) => {
                         out.failed.push((Some(branch.clone()), None, e.to_string()));

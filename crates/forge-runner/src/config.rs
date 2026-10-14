@@ -165,6 +165,12 @@ pub struct Agents {
     /// `docker`.
     #[serde(default = "default_docker")]
     pub docker: String,
+    /// The agent container's memory limit (`docker run --memory`).
+    #[serde(default = "default_agent_memory")]
+    pub memory: String,
+    /// Its CPU limit (`docker run --cpus`).
+    #[serde(default = "default_agent_cpus")]
+    pub cpus: String,
 }
 
 /// One AI service an agent may reach (`[agents.services."<name>"]`).
@@ -339,6 +345,12 @@ fn default_relay_image() -> String {
 fn default_docker() -> String {
     "docker".into()
 }
+fn default_agent_memory() -> String {
+    "2g".into()
+}
+fn default_agent_cpus() -> String {
+    "2".into()
+}
 fn default_dg() -> String {
     "dg".into()
 }
@@ -395,6 +407,10 @@ impl Config {
         }
         if let Some(a) = &c.agents {
             check_agents(a)?;
+            // job directories are bind-mounted by path, where a comma would end the option
+            if c.state_dir.to_string_lossy().contains(',') {
+                bail!("state_dir must not contain a comma when [agents] is set");
+            }
         }
         for (label, image) in &c.platforms {
             // `-self-hosted` makes act run the job directly on the runner's host, outside
@@ -483,9 +499,9 @@ fn check_agents(a: &Agents) -> Result<()> {
     if a.image.trim().is_empty() {
         bail!("agents.image is empty");
     }
-    if !(1..=crate::agents::MAX_REPLY_BYTES).contains(&a.max_reply_bytes) {
+    if !(64..=crate::agents::MAX_REPLY_BYTES).contains(&a.max_reply_bytes) {
         bail!(
-            "agents.max_reply_bytes must be 1 to {}",
+            "agents.max_reply_bytes must be 64 to {}",
             crate::agents::MAX_REPLY_BYTES
         );
     }

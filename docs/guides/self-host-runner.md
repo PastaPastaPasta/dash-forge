@@ -131,7 +131,8 @@ With `agents = true` on a repository and an `[agents]` section, the runner's ide
 - **What it reads.** With `--read` in its access (`dg bot allow`), the asker hands the bot the thread's members-only comments, and in a clone the members-only branch's code, as they were when they asked; the bot reads them then. A pull request from a fork or from someone outside the members never gets them, and neither does anything else: those requests run on what everyone can read, and one whose task or thread is members-only is not worked on.
 - **Keys stay in the runner.** The runner opens what it was given with its own key. The agent gets the request and the thread as text in `/in/job.json`, the code checked out in `/work`, and nothing else: no key, no Forge credential, no environment values.
 - **Members-only in, members-only out.** A job that read anything members-only posts only members-only replies; a public reply it asks for is refused and nothing is posted. A bot that is not a member (a repository on contracts without the Bot role) cannot post members-only at all, so such a job posts nothing.
-- **Network.** The agent runs in a container on its own Docker network with no route out. Its one way out is the runner's proxy, which lets it reach the endpoints you list for the AI service the bot's access names and nothing else, and logs every attempt. A request whose access names a service you have not listed is not worked on.
+- **Network.** The agent runs in a container on its own Docker network with no route out and no way into the runner's host (this needs Docker Engine 28 or newer; the runner refuses older ones). Its one way out is the runner's proxy, which lets it reach the endpoints you list for the AI service the bot's access names and nothing else, and logs every attempt. A request whose access names a service you have not listed is not worked on. The AI service itself still sees what the agent sends it, and an agent misled by the thread could use other credentials at that same service: choose the service, and its endpoints, as you would for any data you send it.
+- **Limits.** The container gets no capabilities, 2 GB of memory and 2 CPUs by default (`memory`, `cpus`), and runs as the runner's own user, never root.
 - **What it posts.** A reply, cut to `max_reply_bytes`, and on a pull request up to `max_suggestions` suggested changes on its lines, which a member applies with `dg pr suggestion apply`. The agent never pushes and never edits anything.
 
 The agent is any image that reads `/in/job.json` and writes `/out/result.json`:
@@ -151,7 +152,9 @@ image = "ghcr.io/example/forge-agent:1"
 # max_suggestions = 5
 # proxy_listen = "127.0.0.1:0"      # Docker Desktop / OrbStack; on Linux the bridge's gateway, "172.17.0.1:0"
 # proxy_host = "host.docker.internal"
-# relay_image = "alpine/socat:latest"
+# relay_image = "alpine/socat:latest"   # pin it by digest in production
+# memory = "2g"
+# cpus = "2"
 
 [agents.services."Example AI"]      # the name the bot's access gives as its AI service
 endpoints = ["api.example.com:443"]
@@ -162,7 +165,7 @@ repo = "alice/project"
 agents = true
 ```
 
-Each job's outcome (what it read, what it posted, the egress summary, never the content) is kept in `<state_dir>/agents/<owner>__<name>/<job>.json`, with its egress log beside it.
+Each job's outcome (what it read, what it posted, the egress summary, never the content) is kept in `<state_dir>/agents/<owner>__<name>/<job>.json`, with its egress log beside it. Each job's directory, which holds what it read, is readable by the runner's user only and removed when the job ends; with `sweep_after_timeout = true` the runner also removes, when it starts, every container and network named `forge-agent-*` that a crashed job left on its daemon. On Linux, set `proxy_listen` to the Docker bridge's gateway (`172.17.0.1:0`): the relay reaches the proxy there.
 
 ## Environments
 

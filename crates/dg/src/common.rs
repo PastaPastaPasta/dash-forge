@@ -409,27 +409,32 @@ impl Reader {
     }
 
     /// The members-only branches of this public repository shared with the reader (`branch`
-    /// key letters, `private-repos.md` §20.2, as `git fetch` lists them), when an identity was
-    /// loaded; none otherwise.
-    pub async fn shared_branches(&self) -> Result<Vec<forge_core::key_letters::SharedBranch>> {
+    /// key letters, `private-repos.md` §20.2, as `git fetch` lists them); `None` when no identity
+    /// was loaded (nothing could be shared with an anonymous reader) or the repository is
+    /// private.
+    pub async fn shared_branches(
+        &self,
+    ) -> Result<Option<Vec<forge_core::key_letters::SharedBranch>>> {
         let Some((bridge, identity)) = &self.signer else {
-            return Ok(Vec::new());
+            return Ok(None);
         };
         if self.repo.visibility != Visibility::Public {
-            return Ok(Vec::new());
+            return Ok(None);
         }
         let signer = forge_core::keyring::PrivateSigner {
             client: &self.client,
             identity,
             bridge,
         };
-        Ok(forge_core::key_letters::shared_with_signer(
-            &self.service(),
-            &self.client,
-            &self.repo,
-            &signer,
-        )
-        .await?)
+        Ok(Some(
+            forge_core::key_letters::shared_with_signer(
+                &self.service(),
+                &self.client,
+                &self.repo,
+                &signer,
+            )
+            .await?,
+        ))
     }
 
     /// The git data-plane service, keyed like [`Self::collab`].

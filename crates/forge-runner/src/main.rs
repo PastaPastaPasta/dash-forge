@@ -223,6 +223,12 @@ impl Schedule {
 /// as soon as the relay says ([`Schedule`]). Without a relay, or while it is unreachable, the
 /// interval alone drives the runner.
 fn watch(cfg: &Config, once: bool) -> Result<()> {
+    // what a crashed run left on a daemon the runner owns
+    if let (Some(a), true) = (&cfg.agents, cfg.sweep_after_timeout) {
+        if cfg.repos.iter().any(|r| r.agents) {
+            agents::sweep(a);
+        }
+    }
     let mut wakes = match (&cfg.relay, once) {
         (Some(r), false) => {
             let secret = relay::read_secret(&r.secret_file)?;

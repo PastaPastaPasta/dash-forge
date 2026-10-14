@@ -57,10 +57,13 @@ impl std::fmt::Display for Endpoint {
     }
 }
 
+/// How many connections the proxy serves at once; more are refused (and logged).
+const MAX_CONNECTIONS: usize = 64;
+
 /// What the proxy did with one attempt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
-    /// Let through to an allowed endpoint.
+    /// Let through to an allowed endpoint (logged when the tunnel opens, not when it closes).
     Allowed,
     /// Refused: not on the list.
     Denied,
@@ -68,6 +71,8 @@ pub enum Verdict {
     NotConnect,
     /// Allowed, but the endpoint could not be reached.
     Unreachable,
+    /// Refused: too many connections at once.
+    Busy,
 }
 
 impl Verdict {
@@ -77,6 +82,7 @@ impl Verdict {
             Self::Denied => "deny",
             Self::NotConnect => "deny-not-connect",
             Self::Unreachable => "allow-unreachable",
+            Self::Busy => "deny-busy",
         }
     }
 }
@@ -92,12 +98,45 @@ pub struct Attempt {
     pub verdict: Verdict,
 }
 
-/// A running proxy. Dropping it stops it.
+/// What the proxy's threads share.
+struct Shared {
+    allowed: Vec<Endpoint>,
+    log: Mutex<Vec<Attempt>>,
+    log_path: std::path::PathBuf,
+    /// The open connections (client and upstream ends), shut down when the proxy stops.
+    live: Mutex<Vec<TcpStream>>,
+    active: std::sync::atomic::AtomicUsize,
+}
+
+impl Shared {
+    /// Append `a` to the log and its file (`<ms> <verdict> <target>`), one whole line at a time
+    /// (connections are served on their own threads).
+    fn record(&self, a: Attempt) {
+        let Ok(mut l) = self.log.lock() else { return };
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&self.log_path)
+        {
+            let line = format!("{} {} {}\n", a.at, a.verdict.word(), a.target);
+            let _ = f.write_all(line.as_bytes());
+        }
+        l.push(a);
+    }
+
+    /// Keep a clone of `s` to shut down when the proxy stops.
+    fn hold(&self, s: &TcpStream) {
+        if let (Ok(c), Ok(mut live)) = (s.try_clone(), self.live.lock()) {
+            live.push(c);
+        }
+    }
+}
+
+/// A running proxy. Dropping it stops it and closes every tunnel it opened.
 pub struct Proxy {
     port: u16,
     stop: Arc<AtomicBool>,
     addr: std::net::SocketAddr,
-    log: Arc<Mutex<Vec<Attempt>>>,
+    shared: Arc<Shared>,
 }
 
 impl Proxy {
@@ -108,22 +147,36 @@ impl Proxy {
             TcpListener::bind(listen).with_context(|| format!("egress proxy: binding {listen}"))?;
         let addr = listener.local_addr()?;
         let stop = Arc::new(AtomicBool::new(false));
-        let log = Arc::new(Mutex::new(Vec::new()));
         std::fs::write(log_path, b"").with_context(|| format!("writing {}", log_path.display()))?;
-        let allowed = Arc::new(allowed);
+        let shared = Arc::new(Shared {
+            allowed,
+            log: Mutex::new(Vec::new()),
+            log_path: log_path.to_owned(),
+            live: Mutex::new(Vec::new()),
+            active: std::sync::atomic::AtomicUsize::new(0),
+        });
         {
-            let (stop, log, log_path) = (Arc::clone(&stop), Arc::clone(&log), log_path.to_owned());
+            let (stop, shared) = (Arc::clone(&stop), Arc::clone(&shared));
             std::thread::spawn(move || {
                 for conn in listener.incoming() {
                     if stop.load(Ordering::SeqCst) {
                         break;
                     }
                     let Ok(conn) = conn else { continue };
-                    let (allowed, log, log_path) =
-                        (Arc::clone(&allowed), Arc::clone(&log), log_path.clone());
+                    if shared.active.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
+                        shared.active.fetch_sub(1, Ordering::SeqCst);
+                        let _ = conn.shutdown(Shutdown::Both);
+                        shared.record(Attempt {
+                            at: crate::run::now_ms(),
+                            target: "-".into(),
+                            verdict: Verdict::Busy,
+                        });
+                        continue;
+                    }
+                    let shared = Arc::clone(&shared);
                     std::thread::spawn(move || {
-                        let attempt = serve(conn, &allowed);
-                        record(&log, &log_path, attempt);
+                        serve(conn, &shared);
+                        shared.active.fetch_sub(1, Ordering::SeqCst);
                     });
                 }
             });
@@ -132,7 +185,7 @@ impl Proxy {
             port: addr.port(),
             stop,
             addr,
-            log,
+            shared,
         })
     }
 
@@ -143,58 +196,59 @@ impl Proxy {
 
     /// Every attempt so far.
     pub fn attempts(&self) -> Vec<Attempt> {
-        self.log.lock().map(|l| l.clone()).unwrap_or_default()
+        self.shared
+            .log
+            .lock()
+            .map(|l| l.clone())
+            .unwrap_or_default()
     }
 }
 
 impl Drop for Proxy {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
-        // wake the accept loop so it sees the flag
+        // wake the accept loop so it sees the flag, and end every tunnel still open
         let _ = TcpStream::connect_timeout(&self.addr, Duration::from_millis(200));
+        if let Ok(live) = self.shared.live.lock() {
+            for s in live.iter() {
+                let _ = s.shutdown(Shutdown::Both);
+            }
+        }
     }
 }
 
-/// Append `attempt` to the log and its file (`<ms> <verdict> <target>`), one whole line at a time
-/// (connections are served on their own threads).
-fn record(log: &Mutex<Vec<Attempt>>, path: &Path, attempt: Option<Attempt>) {
-    let Some(a) = attempt else { return };
-    let Ok(mut l) = log.lock() else { return };
-    if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(path) {
-        let line = format!("{} {} {}\n", a.at, a.verdict.word(), a.target);
-        let _ = f.write_all(line.as_bytes());
-    }
-    l.push(a);
-}
-
-/// Serve one connection: read its request head, judge it, and either tunnel it or refuse it.
-/// `None` for a connection that sent nothing (the proxy's own wake-up, a port scan).
-fn serve(mut client: TcpStream, allowed: &[Endpoint]) -> Option<Attempt> {
+/// Serve one connection: read its request head, judge it, log it, and either tunnel it or refuse
+/// it. A connection that sends nothing (the proxy's own wake-up, a port scan) is not logged.
+fn serve(mut client: TcpStream, shared: &Shared) {
     let _ = client.set_read_timeout(Some(HEAD_TIMEOUT));
-    let head = read_head(&client)?;
+    let Some(head) = read_head(&client) else {
+        return;
+    };
     let at = crate::run::now_ms();
     let target = match connect_target(&head) {
         Request::Connect(t) => t,
         Request::Other => {
             let _ = client
                 .write_all(b"HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\n\r\n");
-            return Some(Attempt {
+            shared.record(Attempt {
                 at,
                 target: first_line_target(&head),
                 verdict: Verdict::NotConnect,
             });
+            return;
         }
     };
     let shown = target
         .as_ref()
         .map_or_else(|| first_line_target(&head), ToString::to_string);
-    let Some(endpoint) = target.filter(|t| allowed.contains(t)) else {
+    let Some(endpoint) = target.filter(|t| shared.allowed.contains(t)) else {
         let _ = client.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n");
-        return Some(Attempt {
+        shared.record(Attempt {
             at,
             target: shown,
             verdict: Verdict::Denied,
         });
+        return;
     };
     let upstream = (endpoint.host.as_str(), endpoint.port)
         .to_socket_addrs()
@@ -204,25 +258,28 @@ fn serve(mut client: TcpStream, allowed: &[Endpoint]) -> Option<Attempt> {
         });
     let Some(upstream) = upstream else {
         let _ = client.write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n");
-        return Some(Attempt {
+        shared.record(Attempt {
             at,
             target: shown,
             verdict: Verdict::Unreachable,
         });
+        return;
     };
+    shared.record(Attempt {
+        at,
+        target: shown,
+        verdict: Verdict::Allowed,
+    });
     if client
         .write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
         .is_err()
     {
-        return None;
+        return;
     }
     let _ = client.set_read_timeout(None);
+    shared.hold(&client);
+    shared.hold(&upstream);
     tunnel(client, upstream);
-    Some(Attempt {
-        at,
-        target: shown,
-        verdict: Verdict::Allowed,
-    })
 }
 
 /// The request head (up to the blank line), or `None` when nothing came.
