@@ -1392,7 +1392,8 @@ describe('R-07: the contract rules are judged before anything is signed', () => 
     expect((err as ConsensusRefusal).code).toBe(10422)
     expect((err as ConsensusRefusal).message).toContain('rule "audMember"')
     expect((err as ConsensusRefusal).feeCharged).toBe(false)
-    expect(stored).toEqual([null])
+    // judged twice: a refusal is judged again with the contract fetched afresh (an in-place update)
+    expect(stored).toEqual([null, null])
     expect(signed).toEqual([])
     expect(spends).toEqual([])
   })
@@ -1413,7 +1414,7 @@ describe('R-07: the contract rules are judged before anything is signed', () => 
     const sdk = judging(sdkOf(script, []), { rule: 'keepAud', message: 'it does not hold' }, stored)
     const err = await replaceDocumentIdempotent(sdk, auth([]), { contractId: 'R7b', documentType: 'issue', documentId: 'D', changes: { title: 'new' }, confirmTimeoutMs: 0 }).catch((e: unknown) => e)
     expect((err as ConsensusRefusal).code).toBe(10422)
-    expect(stored).toEqual([old])
+    expect(stored).toEqual([old, old])
     expect(replaced).toBe(0)
   })
 

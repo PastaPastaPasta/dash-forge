@@ -73,16 +73,20 @@ export function isMemberGateRefusal(e: unknown): boolean {
   return e instanceof ConsensusRefusal && (e.code === GATE_REFUSED_CODE || e.code === WHERE_MISMATCH_CODE)
 }
 
+/** The types whose `asMember` proof restates a role in `mRole` (mainnet L2). */
+const MEMBER_ROLE_TYPES: ReadonlySet<string> = new Set([DOC.issue, DOC.patch, DOC.comment, DOC.review])
+
 /**
- * Run the create of a `documentType` write; when the gate refuses a role-gated write
- * ({@link isMemberGateRefusal}), drop the repo's cached membership, so the next claim reads the
- * signer's role afresh instead of repeating a stale one until the cache expires.
+ * Run the create or replace of a `documentType` write; when the gate refuses a role-gated write
+ * or a post's membership proof and its `mRole` ({@link isMemberGateRefusal}), drop the repo's
+ * cached membership, so the next claim reads the signer's role afresh instead of repeating a
+ * stale one until the cache expires.
  */
 export async function refreshRoleOnRefusal<T>(repo: RepoRef, auth: Pick<WriteAuth, 'network'>, documentType: string, write: () => Promise<T>): Promise<T> {
   try {
     return await write()
   } catch (e) {
-    if (isRoleGated(documentType) && isMemberGateRefusal(e)) invalidateMembers(repo, auth.network)
+    if ((isRoleGated(documentType) || MEMBER_ROLE_TYPES.has(documentType)) && isMemberGateRefusal(e)) invalidateMembers(repo, auth.network)
     throw e
   }
 }

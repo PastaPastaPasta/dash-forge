@@ -20,7 +20,7 @@ import { idbDelete, idbGet, idbPut } from '../idb'
 import { isLegalRefName, isRc1OidHex } from '../rules'
 import { RoleRefusedError } from '../rules/roles'
 import { rerunFields } from '../rules/ci-rerun'
-import { isMemberGateRefusal } from './role-claim'
+import { isMemberGateRefusal, refreshRoleOnRefusal } from './role-claim'
 import { anchorOf, editKeepsAudience, groupReviewComments, isAuthorKind, issueStateV2, type AnchorFields, type Audience, type Policy } from '../rules/v2'
 import type { EventKind } from '../rules'
 import {
@@ -1028,15 +1028,17 @@ async function finishReplace(
 ): Promise<ReplaceResult> {
   const changes = await restateContentFields(sdk, auth, repo, documentType, replaced, async () => stored ?? (await storedOnce(sdk, repo, documentType, documentId)))
   try {
-    return await replaceDocumentIdempotent(sdk, auth, {
-      contractId: contractFor(repo, documentType),
-      documentType,
-      documentId,
-      changes,
-      repo: repo.repoId,
-      expectRepoId: repo.repoId,
-      expectedRevision,
-    })
+    return await refreshRoleOnRefusal(repo, auth, documentType, () =>
+      replaceDocumentIdempotent(sdk, auth, {
+        contractId: contractFor(repo, documentType),
+        documentType,
+        documentId,
+        changes,
+        repo: repo.repoId,
+        expectRepoId: repo.repoId,
+        expectedRevision,
+      }),
+    )
   } finally {
     // An edited title or body changes list rows and the index's text search, not open counts.
     invalidateRepoFeed(repo, { counts: false })

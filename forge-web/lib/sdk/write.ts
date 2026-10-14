@@ -1662,14 +1662,23 @@ export function resetRulePrecheck(): void {
  * leave every rule reading `$old.` or `$revision` unjudged). A broken rule is refused as consensus
  * would refuse it (10422, naming the rule, nothing charged); rules reading a total, a referenced
  * document or a block height are left to consensus. A pre-check that cannot run (no contract, an
- * SDK without it) judges nothing: consensus still does.
+ * SDK without it) judges nothing: consensus still does. A refusal is judged again once with the
+ * contract fetched afresh, so a contract updated in place since the tab cached it never refuses a
+ * write its new version admits.
  */
 async function precheckRules(sdk: EvoSDK, contractId: string, documentType: string, document: unknown, stored: unknown): Promise<void> {
+  const judge = async (): Promise<{ readonly rule: string; readonly message: string } | undefined> => {
+    const contract = await ruleContract(sdk, contractId)
+    if (contract === null || typeof contract.checkDocumentPropertyConstraints !== 'function') return undefined
+    return contract.checkDocumentPropertyConstraints(document, stored)
+  }
   let broken: { readonly rule: string; readonly message: string } | undefined
   try {
-    const contract = await ruleContract(sdk, contractId)
-    if (contract === null || typeof contract.checkDocumentPropertyConstraints !== 'function') return
-    broken = contract.checkDocumentPropertyConstraints(document, stored)
+    broken = await judge()
+    if (broken !== undefined) {
+      ruleContracts.delete(contractId)
+      broken = await judge()
+    }
   } catch {
     return
   }

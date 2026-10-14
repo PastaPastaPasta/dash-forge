@@ -46,8 +46,8 @@ describe('long bodies, written (forge-v2.md §6.3)', () => {
 
   it('a field holds 5,120 bytes in public, what the sealed limit leaves beside the other text in private', () => {
     expect(bodyRoom(pub, 'issue', { title: 'A title' })).toBe(5120)
-    expect(bodyRoom(priv, 'issue', { title: 'A title' })).toBe(5085 - 7)
-    expect(bodyRoom(priv, 'patch', { title: 'T', baseRefName: 'refs/heads/main', sourceRefName: 'refs/heads/x' })).toBe(5079 - 1 - 15 - 12)
+    expect(bodyRoom(priv, 'issue', { title: 'A title' })).toBe(5085 - 32 - 7)
+    expect(bodyRoom(priv, 'patch', { title: 'T', baseRefName: 'refs/heads/main', sourceRefName: 'refs/heads/x' })).toBe(5079 - 32 - 1 - 15 - 12)
     // release notes: 5,120 either way (a sealed release continues them in its asset list)
     expect(bodyRoom(priv, 'release')).toBe(5120)
     expect(isLongBody(pub, 'comment', 'x'.repeat(5120))).toBe(false)
@@ -55,7 +55,7 @@ describe('long bodies, written (forge-v2.md §6.3)', () => {
   })
 
   it("an imported document's provenance takes room beside a private body", () => {
-    expect(bodyRoom(priv, 'issue', { title: 'A title', imported: { author: 'octocat', url: 'https://x' } })).toBe(5085 - 7 - (3 + 7) - (3 + 9))
+    expect(bodyRoom(priv, 'issue', { title: 'A title', imported: { author: 'octocat', url: 'https://x' } })).toBe(5085 - 32 - 7 - (3 + 7) - (3 + 9))
     expect(bodyRoom(pub, 'issue', { imported: { author: 'octocat', url: 'https://x' } })).toBe(5120)
   })
 

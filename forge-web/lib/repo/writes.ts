@@ -519,7 +519,7 @@ export async function eventWrite(sdk: EvoSDK, repo: RepoRef, documentType: strin
       // A value on a message to specific people is refused (decided for 2A): never sealed under
       // the members key, never written in plaintext.
       if (target.aud === AUD_LETTER || target.enc === ENC_SPECIFIC_PEOPLE) throw new LetterRefusedError(LETTER_EVENT_VALUE_TEXT)
-      throw new PrivateWriteError("this is members-only, and an author's change with a value can't be sealed yet; ask a member to make it; nothing was written")
+      throw new PrivateWriteError('this is members-only, so its author can change its base only with write access; ask a member with write access to change it; nothing was written')
   }
 }
 
