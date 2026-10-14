@@ -14,7 +14,8 @@ import { RoleRefusedError, claimedRole, isRoleGated } from '../rules/roles'
 import { MAINTAINER_KINDS, manifestR } from '../rules/aud'
 import { ConsensusRefusal, GATE_REFUSED_CODE, WHERE_MISMATCH_CODE, type WriteAuth } from '../sdk'
 import { DOC, type RepoRef } from './contract'
-import { contractHasProperty, contractPropertyMinimum } from './contract-shape'
+import { contractHasProperty } from './contract-shape'
+import { CONTENT_TYPES, manifestMaintKinds } from './mainnet-fields'
 import { invalidateMembers, readRoleOracle } from './members'
 import { contractOf } from './source'
 
@@ -61,8 +62,7 @@ export async function roleClaim(
 async function manifestClaim(sdk: EvoSDK, repo: RepoRef, documentType: string, data: Readonly<Record<string, unknown>>, r: number): Promise<number> {
   const kind = data['kind']
   if (documentType !== DOC.packManifest || typeof kind !== 'number' || !MAINTAINER_KINDS.includes(kind)) return r
-  const maintKinds = (await contractPropertyMinimum(sdk, contractOf(repo.forge, documentType), documentType, ROLE_CLAIM)) === 0
-  return manifestR({ maintKinds }, kind, r)
+  return manifestR({ maintKinds: await manifestMaintKinds(sdk, repo) }, kind, r)
 }
 
 /**
@@ -72,9 +72,6 @@ async function manifestClaim(sdk: EvoSDK, repo: RepoRef, documentType: string, d
 export function isMemberGateRefusal(e: unknown): boolean {
   return e instanceof ConsensusRefusal && (e.code === GATE_REFUSED_CODE || e.code === WHERE_MISMATCH_CODE)
 }
-
-/** The types whose `asMember` proof restates a role in `mRole` (mainnet L2). */
-const MEMBER_ROLE_TYPES: ReadonlySet<string> = new Set([DOC.issue, DOC.patch, DOC.comment, DOC.review])
 
 /**
  * Run the create or replace of a `documentType` write; when the gate refuses a role-gated write
@@ -86,7 +83,7 @@ export async function refreshRoleOnRefusal<T>(repo: RepoRef, auth: Pick<WriteAut
   try {
     return await write()
   } catch (e) {
-    if ((isRoleGated(documentType) || MEMBER_ROLE_TYPES.has(documentType)) && isMemberGateRefusal(e)) invalidateMembers(repo, auth.network)
+    if ((isRoleGated(documentType) || CONTENT_TYPES.has(documentType)) && isMemberGateRefusal(e)) invalidateMembers(repo, auth.network)
     throw e
   }
 }

@@ -58,7 +58,7 @@ import type { PrivateDocType } from '../private'
 import { isSealedKind, privateWriter, sealForRepo, sealPrivatePerObject, sealedIntent, sealedTextUse, PrivateWriteError, type MembersPatch, type PrivateWriter } from './private-writes'
 import { MEMBERS_TEXT_LIMIT, audienceFor, childAudience, hasMembersKey, keyedContentKey, knownAudience, madePublicByBundle, membersWriter, noteAudience, sealMembersContent, storedOnce, storedTargetOnce, targetAudience, type MembersWriter } from './members-writes'
 import { LetterRefusedError, isLetterWriter, letterContentKey, letterThread, letterWriter, sdkLetterReads, sealLetterContent, type LetterWriter } from './letter-writes'
-import { bytesField, docAudience } from './private-content'
+import { docAudience } from './private-content'
 import { LETTER_EVENT_VALUE_TEXT, type LetterAsk } from '../view/audience'
 import type { ParentLetter } from '../rules/letters'
 import { invalidateRepoFeed } from './issues'
@@ -69,7 +69,7 @@ import { longBodyField } from './long-body'
 import { createSealedRelease, sealedReleaseEnv, type SealedReleaseOptions, type SealedReleaseWritten } from './sealed-release'
 import { noteTargetCreated } from './social'
 import { refreshRoleOnRefusal, roleClaim } from './role-claim'
-import { AUD, EVENT_TARGET_AUD, declares, withContentFields } from './mainnet-fields'
+import { AUD, CONTENT_TYPES, EVENT_TARGET_AUD, declares, encVersion, withContentFields } from './mainnet-fields'
 import { AUD_LETTER, AUD_MEMBERS, eventFields, type EventTarget } from '../rules/aud'
 import { VerdictRefusedError, WRITER_ROLE_CODE, grantableRoles, holdsMembersKey, verdictRefusal } from '../rules/roles'
 import { contractOf, repoSource } from './source'
@@ -240,9 +240,6 @@ function scoped(repo: RepoRef, data: Record<string, unknown>): Record<string, un
 /** The document types whose writes can change an open issue or PR count. */
 const COUNTED_TYPES: ReadonlySet<string> = new Set([DOC.issue, DOC.patch, DOC.transition])
 
-/** The private repo types D38 seals per object on the mainnet contract (never an event). */
-const PER_OBJECT_TYPES: ReadonlySet<string> = new Set([DOC.issue, DOC.patch, DOC.comment, DOC.review])
-
 /**
  * Drop the caches a write of `documentType` to `repo` invalidates, so the next read shows it.
  * Only a write that can change an open count makes the repo header refold its counts; a
@@ -376,7 +373,7 @@ export async function writeRepoDoc(
       contentKey = await keyedContentKey(w.keys, said)
       // D38: on the mainnet contract (forge-collab declares `aud`) new content is v0x03, per object
       // (issues, PRs, comments and reviews: events gain nothing from a key of their own)
-      const perObject = PER_OBJECT_TYPES.has(sealedType) && (await declares(sdk, repo, DOC.issue, AUD))
+      const perObject = CONTENT_TYPES.has(sealedType) && (await declares(sdk, repo, DOC.issue, AUD))
       data = await sealForRepo(sdk, auth, repo, sealedType, data, w, perObject ? sealPrivatePerObject : undefined)
       // D14: every sealed write by a member carries `asMember`.
       if (w.isMember === true) data = withMemberProof(documentType, data, auth.identityId)
@@ -485,6 +482,19 @@ function withMemberProof(documentType: string, data: Record<string, unknown>, si
   return { ...data, asMember: decodeIdentifier(signer) }
 }
 
+/** The identifier `data[field]` holds, as base58 (it may be bytes or text); '' when it holds none. */
+function identifierField(data: Readonly<Record<string, unknown>>, field: string): string {
+  const v = data[field]
+  return v instanceof Uint8Array ? base58Encode(v) : asIdentifierString(v)
+}
+
+/** {@link identifierField}, refused before anything is written when `what` names no `field`: who can read it is unknown. */
+function namedIdentifier(data: Readonly<Record<string, unknown>>, field: string, what: string): string {
+  const id = identifierField(data, field)
+  if (id === '') throw new PrivateWriteError(`this ${what} names no ${field}, so who can read it is unknown; nothing was written`)
+  return id
+}
+
 /** The `version` byte of the `enc` an audience is written with (the target an event's rules read). */
 function encOfAudience(repo: RepoRef, a: Audience): number | null {
   if (a === 'public') return null
@@ -509,9 +519,7 @@ export async function eventWrite(sdk: EvoSDK, repo: RepoRef, documentType: strin
   const [tAud, authorEnc] = await Promise.all([declares(sdk, repo, documentType, EVENT_TARGET_AUD), author && hasValue ? declares(sdk, repo, DOC.authorEvent, 'enc') : false])
   const valueless: Audience = repo.visibility === 'private' ? 'members' : 'public'
   if (!hasValue && !tAud) return { audience: valueless, tAud: null }
-  const v = data['targetId']
-  const targetId = v instanceof Uint8Array ? base58Encode(v) : asIdentifierString(v)
-  if (targetId === '') throw new PrivateWriteError('this event names no targetId, so who can read it is unknown; nothing was written')
+  const targetId = namedIdentifier(data, 'targetId', 'event')
   const target = tAud ? await storedEventTarget(sdk, repo, targetId, hasValue) : await eventTargetAudience(sdk, repo, targetId)
   const f = eventFields({ tAud, authorEnc }, author, target, hasValue)
   switch (f.value) {
@@ -564,13 +572,12 @@ async function storedEventTarget(sdk: EvoSDK, repo: RepoRef, targetId: string, h
   if (found === null) {
     if (known === undefined) throw new PrivateWriteError('the issue or pull request this names was not found, so who can read it is unknown; nothing was written')
     const enc = encOfAudience(repo, known)
-    const aud = enc === null ? null : await declares(sdk, repo, DOC.issue, AUD) ? (enc === ENC_SPECIFIC_PEOPLE ? AUD_LETTER : AUD_MEMBERS) : null
-    return { aud, enc }
+    const stated = enc !== null && (await declares(sdk, repo, DOC.issue, AUD))
+    return { aud: stated ? (enc === ENC_SPECIFIC_PEOPLE ? AUD_LETTER : AUD_MEMBERS) : null, enc }
   }
   const raw = found.doc[AUD]
   const aud = typeof raw === 'number' ? raw : typeof raw === 'bigint' ? Number(raw) : null
-  const encBytes = bytesField(found.doc, 'enc')
-  const enc = encBytes !== undefined && encBytes.length > 0 ? (encBytes[0] as number) : null
+  const enc = encVersion(found.doc['enc'])
   const bundled = hasValue && aud === null && enc !== null && enc !== ENC_SPECIFIC_PEOPLE && repo.visibility === 'public' && (await madePublicByBundle(sdk, repo, found.type, found.doc))
   return { aud, enc, bundled }
 }
@@ -590,23 +597,14 @@ async function writeAudience(
   data: Readonly<Record<string, unknown>>,
   requested: Audience | undefined,
 ): Promise<Audience> {
-  const idOf = (field: string): string => {
-    const v = data[field]
-    return v instanceof Uint8Array ? base58Encode(v) : asIdentifierString(v)
-  }
-  const named = (field: string, what: string): string => {
-    const id = idOf(field)
-    if (id === '') throw new PrivateWriteError(`this ${what} names no ${field}, so who can read it is unknown; nothing was written`)
-    return id
-  }
   // A comment or review is always checked against its parents, even when the caller asked for
   // an audience: a requested "public" under a members-only parent is refused, never written.
   const asked = requested !== undefined ? { requested } : {}
   if (documentType === DOC.comment) {
-    const replyTo = idOf('replyTo')
-    return childAudience(sdk, repo, { targetId: named('targetId', 'comment'), ...(replyTo !== '' ? { replyTo } : {}), ...asked })
+    const replyTo = identifierField(data, 'replyTo')
+    return childAudience(sdk, repo, { targetId: namedIdentifier(data, 'targetId', 'comment'), ...(replyTo !== '' ? { replyTo } : {}), ...asked })
   }
-  if (documentType === DOC.review) return childAudience(sdk, repo, { targetId: named('patchId', 'review'), ...asked })
+  if (documentType === DOC.review) return childAudience(sdk, repo, { targetId: namedIdentifier(data, 'patchId', 'review'), ...asked })
   return audienceFor(repo, requested, null)
 }
 

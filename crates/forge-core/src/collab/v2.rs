@@ -4532,10 +4532,9 @@ impl<'a> Collab<'a> {
         // fails closed: an event naming no readable target is refused, never public
         let target_id = event_target_id(&props)?;
         let (kind, stored) = self.target_doc_by_id(repo, &target_id).await?;
-        let enc = stored.field_bytes("enc").filter(|e| !e.is_empty());
         let mut target = aud::EventTarget {
             aud: stored.field_u64(AUD),
-            enc: enc.as_ref().and_then(|e| e.first().copied()),
+            enc: stored.field_bytes("enc").and_then(|e| e.first().copied()),
             bundled: false,
         };
         // a bundle matters only where no `tAud` states the target's class (sakura)
@@ -4572,8 +4571,7 @@ impl<'a> Collab<'a> {
                 } else {
                     "issue"
                 };
-                let letter = target.aud == Some(aud::AUD_LETTER)
-                    || target.enc == Some(crate::rules::v2::ENC_SPECIFIC_PEOPLE);
+                let letter = target.is_letter();
                 let e = if letter && !author {
                     UserError::new(
                         codes::USAGE,

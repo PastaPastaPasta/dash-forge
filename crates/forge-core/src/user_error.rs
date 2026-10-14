@@ -1371,13 +1371,19 @@ fn rule_refused(
 /// `(document type, rule)` of a 10422 message: `A document of type "issue" breaks its
 /// propertyConstraints rule "dense": …`, quotes plain or escaped (a `Debug`-printed error).
 fn violated_rule(msg: &str) -> Option<(String, String)> {
+    violated_in(msg, "propertyConstraints", "document of type \"")
+}
+
+/// `(document type, rule)` of a message that "breaks its `constraints` rule", the type quoted
+/// after `type_marker`; escaped quotes read as plain.
+fn violated_in(msg: &str, constraints: &str, type_marker: &str) -> Option<(String, String)> {
     let msg = msg.replace("\\\"", "\"");
     let quoted = |after: &str| -> Option<String> {
         let rest = &msg[msg.find(after)? + after.len()..];
         Some(rest[..rest.find('"')?].to_string())
     };
-    let rule = quoted("breaks its propertyConstraints rule \"")?;
-    Some((quoted("document of type \"").unwrap_or_default(), rule))
+    let rule = quoted(&format!("breaks its {constraints} rule \""))?;
+    Some((quoted(type_marker).unwrap_or_default(), rule))
 }
 
 /// A 10422 (a `propertyConstraints` rule) or 40147 (a `deleteConstraints` rule, mainnet R-08 and
@@ -1391,26 +1397,20 @@ fn constraint_refused(ctx: &ErrorContext<'_>, msg: &str) -> Option<UserError> {
         codes::REJECTED,
         ctx.headline(&format!("consensus refused it by the rule {rule:?}")),
     );
-    Some(match rule_explanation(&document_type, &rule) {
-        Some(why) => u
-            .cause(format!("{why} (40147: {document_type} rule {rule})"))
+    let cause = match rule_explanation(&document_type, &rule) {
+        Some(why) => format!("{why} (40147: {document_type} rule {rule})"),
+        None => one_line(msg),
+    };
+    Some(
+        u.cause(cause)
             .note("refused before execution: nothing was deleted"),
-        None => u
-            .cause(one_line(msg))
-            .note("refused before execution: nothing was deleted"),
-    })
+    )
 }
 
 /// `(document type, rule)` of a 40147 message: `Document … of type "maintainer" can not be
 /// deleted: it breaks its deleteConstraints rule "ownerRowStays": …`.
 fn violated_delete_rule(msg: &str) -> Option<(String, String)> {
-    let msg = msg.replace("\\\"", "\"");
-    let quoted = |after: &str| -> Option<String> {
-        let rest = &msg[msg.find(after)? + after.len()..];
-        Some(rest[..rest.find('"')?].to_string())
-    };
-    let rule = quoted("breaks its deleteConstraints rule \"")?;
-    Some((quoted(" of type \"").unwrap_or_default(), rule))
+    violated_in(msg, "deleteConstraints", " of type \"")
 }
 
 /// What each RC1 `propertyConstraints` rule asks for, in a user's words, by rule name (the keys

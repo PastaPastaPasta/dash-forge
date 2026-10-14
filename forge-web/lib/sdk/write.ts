@@ -1634,7 +1634,13 @@ async function signCreate(
 
 /** What the rule pre-check needs of a fetched contract (wasm-dpp2 `DataContract`, beta.5 #5373). */
 interface RuleJudge {
-  checkDocumentPropertyConstraints(document: unknown, storedDocument: unknown): { readonly rule: string; readonly message: string } | undefined
+  checkDocumentPropertyConstraints(document: unknown, storedDocument: unknown): RuleBreak | undefined
+}
+
+/** The rule a document breaks, as the contract's judge names it. */
+interface RuleBreak {
+  readonly rule: string
+  readonly message: string
 }
 
 /** The contracts the rule pre-check judges with, by id: fetched once (a failed fetch is retried next write). */
@@ -1667,12 +1673,12 @@ export function resetRulePrecheck(): void {
  * write its new version admits.
  */
 async function precheckRules(sdk: EvoSDK, contractId: string, documentType: string, document: unknown, stored: unknown): Promise<void> {
-  const judge = async (): Promise<{ readonly rule: string; readonly message: string } | undefined> => {
+  const judge = async (): Promise<RuleBreak | undefined> => {
     const contract = await ruleContract(sdk, contractId)
     if (contract === null || typeof contract.checkDocumentPropertyConstraints !== 'function') return undefined
     return contract.checkDocumentPropertyConstraints(document, stored)
   }
-  let broken: { readonly rule: string; readonly message: string } | undefined
+  let broken: RuleBreak | undefined
   try {
     broken = await judge()
     if (broken !== undefined) {

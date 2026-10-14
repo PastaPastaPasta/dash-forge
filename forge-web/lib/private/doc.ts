@@ -386,11 +386,16 @@ async function v3Envelope(keys: EpochKeys, doc: PrivateDoc, fields: DocFields, b
  * `doc.vis` must be `public`; a config is refused (always v0x02). Throws {@link MalformedError}
  * and {@link TooLargeError} like {@link sealDoc}.
  */
-export async function sealMembersDoc(keys: EpochKeys, doc: PrivateDoc, fields: DocFields): Promise<Bytes> {
+export function sealMembersDoc(keys: EpochKeys, doc: PrivateDoc, fields: DocFields): Promise<Bytes> {
+  return sealedHedged(keys, (nonceOf) => sealMembersWith(keys, doc, fields, nonceOf))
+}
+
+/** The `enc` `seal` produces with a hedged random nonce (§3.6), the intermediates it leaves zeroed. */
+async function sealedHedged(keys: EpochKeys, seal: (nonceOf: NonceOf) => Promise<MembersSealed>): Promise<Bytes> {
   const hedged: NonceOf = async (ad, tlv) => hedgeNonce(keys, randomBytes(32), ad, await sha256(tlv))
   let sealed: MembersSealed | undefined
   try {
-    sealed = await sealMembersWith(keys, doc, fields, hedged)
+    sealed = await seal(hedged)
     return sealed.enc
   } finally {
     sealed?.tlv.fill(0)
@@ -418,16 +423,8 @@ async function sealPrivateV3With(keys: EpochKeys, doc: PrivateDoc, fields: DocFi
  * given on its own. Written for new content on the mainnet contract; a private document's TLV (no
  * blind tags) with the members-only padding, AD and commitment. Throws like {@link sealMembersDoc}.
  */
-export async function sealPrivateV3(keys: EpochKeys, doc: PrivateDoc, fields: DocFields): Promise<Bytes> {
-  const hedged: NonceOf = async (ad, tlv) => hedgeNonce(keys, randomBytes(32), ad, await sha256(tlv))
-  let sealed: MembersSealed | undefined
-  try {
-    sealed = await sealPrivateV3With(keys, doc, fields, hedged)
-    return sealed.enc
-  } finally {
-    sealed?.tlv.fill(0)
-    sealed?.kObj.fill(0)
-  }
+export function sealPrivateV3(keys: EpochKeys, doc: PrivateDoc, fields: DocFields): Promise<Bytes> {
+  return sealedHedged(keys, (nonceOf) => sealPrivateV3With(keys, doc, fields, nonceOf))
 }
 
 /** INTERNAL, TEST-ONLY: {@link sealPrivateV3} with a caller-chosen nonce. Only `lib/private/testing.ts` may import it. */

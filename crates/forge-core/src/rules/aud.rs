@@ -128,6 +128,14 @@ pub struct EventTarget {
     pub bundled: bool,
 }
 
+impl EventTarget {
+    /// The target is a letter (a message to specific people): `aud` 2, or an `enc` of v0x04.
+    #[must_use]
+    pub fn is_letter(self) -> bool {
+        self.aud == Some(AUD_LETTER) || self.enc == Some(0x04)
+    }
+}
+
 /// What happens to an event's `value`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -168,12 +176,11 @@ pub fn event_fields(
 ) -> EventFields {
     let t_aud = target.aud.filter(|_| shape.t_aud);
     let sealed_target = target.enc.is_some() || target.aud.is_some();
-    let letter = target.aud == Some(AUD_LETTER) || target.enc == Some(0x04);
     let value = if !has_value {
         EventValue::None
     } else if !sealed_target || (target.bundled && t_aud.is_none()) {
         EventValue::Plain
-    } else if letter || (author && !shape.author_enc) {
+    } else if target.is_letter() || (author && !shape.author_enc) {
         EventValue::Refused
     } else {
         EventValue::Sealed

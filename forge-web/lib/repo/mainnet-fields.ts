@@ -10,7 +10,7 @@
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
-import { contentFields, type AudShape } from '../rules/aud'
+import { contentFields, type AudShape, type ContentFields } from '../rules/aud'
 import type { Role } from '../rules/v2'
 import type { PlainDocument, WriteAuth } from '../sdk'
 import { DOC, asIdentifierString, type RepoRef } from './contract'
@@ -26,8 +26,8 @@ export const MEMBER_ROLE = 'mRole'
 /** `tAud` on an `event` or `authorEvent` (M3, M4): its target's `aud`. */
 export const EVENT_TARGET_AUD = 'tAud'
 
-/** The types that carry `aud` and `mRole`. */
-const CONTENT_TYPES: ReadonlySet<string> = new Set([DOC.issue, DOC.patch, DOC.comment, DOC.review])
+/** The types that carry `aud` and `mRole`: an issue, PR, comment or review. */
+export const CONTENT_TYPES: ReadonlySet<string> = new Set([DOC.issue, DOC.patch, DOC.comment, DOC.review])
 
 /** Whether `documentType` of `repo`'s contract declares `property`. */
 export function declares(sdk: EvoSDK, repo: RepoRef, documentType: string, property: string): Promise<boolean> {
@@ -42,7 +42,7 @@ export async function contentShape(sdk: EvoSDK, repo: RepoRef, documentType: str
 }
 
 /** The version byte of a stored or written `enc` (raw bytes or base64), or null without one. */
-function encVersion(v: unknown): number | null {
+export function encVersion(v: unknown): number | null {
   const enc = bytesField({ enc: v }, 'enc')
   return enc !== undefined && enc.length > 0 ? (enc[0] as number) : null
 }
@@ -58,7 +58,7 @@ function carriesProof(v: unknown): boolean {
  * `asMember` (the repo's membership, as `wrapRoleCode` reads it). Null where the contract declares
  * neither. Throws before signing for an `enc` no content document carries.
  */
-async function fieldsOf(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, documentType: string, shape: AudShape, doc: Readonly<Record<string, unknown>>): Promise<{ aud: number | null; mRole: number | null }> {
+async function fieldsOf(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, documentType: string, shape: AudShape, doc: Readonly<Record<string, unknown>>): Promise<ContentFields> {
   const asMember = carriesProof(doc['asMember'])
   const role: Role | null = asMember && shape.mRole === true ? (await readRoleOracle(sdk, repo, auth.network)).currentRole(auth.identityId) : null
   const got = contentFields(shape, encVersion(doc['enc']), asMember, role)
