@@ -694,7 +694,12 @@ fn prepare_code(
             return Ok(None);
         };
         let url = repo.pull_source_url(&pr);
-        let spec = format!("+refs/heads/{src}:refs/forge-runner/pr");
+        // `sourceRefName` is the full ref (`refs/heads/feature`); a bare name is a branch
+        let spec = if src.starts_with("refs/") {
+            format!("+{src}:refs/forge-runner/pr")
+        } else {
+            format!("+refs/heads/{src}:refs/forge-runner/pr")
+        };
         git_anon(cfg, work, anon, &["fetch", "-q", "--no-tags", &url, &spec])?;
         let tip = git_anon(cfg, work, anon, &["rev-parse", "refs/forge-runner/pr"])?;
         let head = pr.head_oid.to_ascii_lowercase();
