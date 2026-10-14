@@ -449,18 +449,35 @@ impl Helper {
         let shared = if for_push {
             Vec::new()
         } else {
-            self.shared_branches(state, &public).await
+            match self.shared_branches(state, &public).await {
+                Ok(shared) => shared,
+                // fail closed: without the shares, the public view would drop what they gave
+                Err(e) if holds => {
+                    return Err(anyhow::Error::from(e)
+                        .context("reading the branches shared with you (try the fetch again)"))
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "could not read the branches shared with you");
+                    eprintln!("dash: warning: couldn't read the branches shared with you; fetching the public branches only");
+                    Vec::new()
+                }
+            }
         };
         let mut names = live_names(&public);
         names.extend(shared.iter().map(|b| b.name.as_str()));
-        let still_drops =
-            holds && members::public_view_drops_branches(self.remote.as_deref(), &names);
-        if still_drops && !for_push {
-            let why = match keys {
-                MembersKeys::Locked(why) => why.as_str(),
-                _ => "no identity is set up",
-            };
-            return Err(members::cannot_check_fetch(why).into());
+        if holds && !for_push {
+            let dropped = members::dropped_branches(self.remote.as_deref(), &names);
+            if dropped.as_ref().is_none_or(|d| !d.is_empty()) {
+                let given = members::shared_branches_given();
+                return Err(match (dropped, keys, self.remote.as_deref()) {
+                    // every branch it would drop was one shared with this reader
+                    (Some(d), _, Some(remote)) if d.iter().all(|n| given.contains(n)) => {
+                        members::shared_branches_gone(remote, &d).into()
+                    }
+                    (_, MembersKeys::Locked(why), _) => members::cannot_check_fetch(why).into(),
+                    _ => members::cannot_check_fetch("no identity is set up").into(),
+                });
+            }
         }
         if shared.is_empty() {
             if let (MembersKeys::Locked(why), false) = (keys, for_push) {
@@ -476,6 +493,8 @@ impl Helper {
             eprintln!("dash: fetching the public branches only");
             return Ok(public);
         }
+        // the pre-push hook and the guard tell what this clone holds from the public history
+        members::remember_public_tips(&live_tips(&public));
         let mut keys_by_pack = BTreeMap::new();
         for b in &shared {
             keys_by_pack.extend(b.packs.iter().map(|(h, k)| (*h, k.clone())));
@@ -486,13 +505,25 @@ impl Helper {
         });
         // the shared packs come first, so a shared branch whose commits do not arrive is left out
         // with a warning rather than failing the fetch with "bad object"
-        if std::env::var_os("GIT_DIR").is_some() {
-            self.fetch_packs(&[], &OptionState::default(), true, true)
-                .await?;
+        let in_repo = std::env::var_os("GIT_DIR").is_some();
+        if in_repo {
+            if let Err(e) = self
+                .fetch_packs(&[], &OptionState::default(), true, true)
+                .await
+            {
+                if holds {
+                    return Err(e);
+                }
+                tracing::warn!(error = %e, "the shared branches' packs could not be fetched");
+                eprintln!("dash: warning: the branches shared with you couldn't be fetched ({}); fetching the public branches only", brief(&format!("{e:#}")));
+                self.shared_fetch = None;
+                return Ok(public);
+            }
         }
         let mut refs = public;
+        let mut given = Vec::new();
         for b in shared {
-            if std::env::var_os("GIT_DIR").is_some() && !LocalRepo::object_exists(&b.head) {
+            if in_repo && !LocalRepo::object_exists(&b.head) {
                 eprintln!(
                     "dash: warning: {} was shared with you, but its commits didn't arrive; ask whoever shared it to share it again",
                     members::short(&b.name)
@@ -504,6 +535,7 @@ impl Helper {
                 members::short(&b.name),
                 forge_core::env::service::utc(b.as_of)
             );
+            given.push(b.name.clone());
             refs.push((
                 b.name,
                 RefState::Resolved {
@@ -513,65 +545,83 @@ impl Helper {
                 },
             ));
         }
+        if in_repo {
+            members::remember_shared_branches(&given);
+        }
         Ok(refs)
     }
 
     /// The members-only branches shared with this reader (`branch` key letters from a current
     /// maintainer or Write member, checked against `state`; `private-repos.md` §20.2), when its
-    /// identity is loaded. Best effort: a read that fails is logged and shares nothing.
+    /// identity is loaded (none otherwise). Letters this reader already found are not its own are
+    /// remembered and never fetched again (`<common dir>/dash/letters-not-for-<id>`).
     async fn shared_branches(
         &mut self,
         state: &forge_core::refs::GitState,
         public: &[(String, RefState)],
-    ) -> Vec<forge_core::key_letters::SharedBranch> {
+    ) -> forge_core::Result<Vec<forge_core::key_letters::SharedBranch>> {
         let Some(conn) = self.conn.as_ref() else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
         let Some(signer) = conn.signer.as_ref() else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
         let ps = forge_core::keyring::PrivateSigner {
             client: &conn.client,
             identity: &signer.identity,
             bridge: &signer.bridge,
         };
-        let read = async {
-            let (id, keys) = forge_core::key_letters::signer_reader_keys(&ps, &conn.repo)?;
-            let svc = conn.service();
-            let (manifests, roles) = futures::try_join!(
-                svc.read_pack_manifests(&conn.repo),
-                svc.copy_roles(&conn.repo)
-            )?;
-            let reader = forge_core::key_letters::LetterReader {
-                identity_id: id,
-                keys: &keys,
-            };
-            let received = forge_core::key_letters::received(
-                &svc,
-                &conn.client,
-                &conn.repo,
-                &manifests,
-                &roles,
-                &reader,
-            )
-            .await?;
-            let live: BTreeSet<String> =
-                live_names(public).into_iter().map(str::to_owned).collect();
-            let (shared, ignored) = forge_core::key_letters::shared_branches(
-                &received, state, &live, &manifests, &roles,
-            );
-            for (letter, why) in ignored {
-                tracing::info!(%letter, ?why, "a shared branch did not check out against the repository; left out");
-            }
-            forge_core::Result::Ok(shared)
+        let (id, keys) = forge_core::key_letters::signer_reader_keys(&ps, &conn.repo)?;
+        let svc = conn.service();
+        let (manifests, roles) = futures::try_join!(
+            svc.read_pack_manifests(&conn.repo),
+            svc.copy_roles(&conn.repo)
+        )?;
+        let not_mine_path = LocalRepo::common_dir().ok().map(|c| {
+            c.join("dash")
+                .join(format!("letters-not-for-{}", &hex::encode(id)[..16]))
+        });
+        let skip: BTreeSet<[u8; 32]> = not_mine_path
+            .as_deref()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .map(|t| {
+                t.lines()
+                    .filter_map(|l| hex::decode(l.trim()).ok()?.try_into().ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let reader = forge_core::key_letters::LetterReader {
+            identity_id: id,
+            keys: &keys,
         };
-        match read.await {
-            Ok(shared) => shared,
-            Err(e) => {
-                tracing::warn!(error = %e, "could not read what was shared with you; fetching the public branches only");
-                Vec::new()
-            }
+        let inbox = forge_core::key_letters::received(
+            &svc,
+            &conn.client,
+            &conn.repo,
+            &manifests,
+            &roles,
+            &reader,
+            &skip,
+        )
+        .await?;
+        if let (Some(p), false) = (&not_mine_path, inbox.not_mine.is_empty()) {
+            let mut all: BTreeSet<String> = skip.iter().map(hex::encode).collect();
+            all.extend(inbox.not_mine.iter().map(hex::encode));
+            let body: String = all.into_iter().map(|h| h + "\n").collect();
+            forge_core::cache::write(p, body.as_bytes());
         }
+        let live: BTreeSet<String> = live_names(public).into_iter().map(str::to_owned).collect();
+        let (shared, ignored) = forge_core::key_letters::shared_branches(
+            &inbox.letters,
+            state,
+            &live,
+            &manifests,
+            &roles,
+        );
+        for (letter, why) in ignored {
+            tracing::info!(%letter, ?why, "a shared branch did not check out against the repository; left out");
+        }
+        Ok(shared)
     }
 
     /// What a push compares against and checks with (after [`Self::ensure_signer`]): a private
