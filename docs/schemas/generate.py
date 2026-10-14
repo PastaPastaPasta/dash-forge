@@ -408,7 +408,7 @@ cmd('pr view', 'A pull request: its state, head, reviews, threads and comments.'
     'generalComments': A(OBJ), 'comments': A(OBJ), 'hiddenComments': ANY, 'hiddenReviews': ANY, 'moderation': ANY,
     'hiddenEventValues': ANY, 'plaintextEventValues': ANY, 'audience': AUD, 'recipients': nl(I), 'readable': B,
     'why': S, 'membersOnlyComments': A(OBJ), 'membersOnlyHidden': I, 'membersOnlyReviewsHidden': I, 'mergeContent': ANY,
-    'madePublic': D('The comments and reviews maintainers made public with a make-public bundle, by id.', {'type': 'object', 'additionalProperties': MADE_PUBLIC}),
+    'madePublic': D('What maintainers made public with a make-public bundle, by id: the pull request itself (its own id), its comments and its reviews.', {'type': 'object', 'additionalProperties': MADE_PUBLIC}),
     'bundleAlerts': D('Make-public entries whose key does not match the post they name: ignored.', A(OBJ)),
     'policyMet': D('Whether the open PR meets the branch policy; null with no policy, on a PR that is not open, or when only code owner approvals are left (`dg pr merge` checks them).', nl(B)),
     'unmetRules': D('The branch rules left unmet, one line each, as `dg pr merge` names them (code owner approvals are not checked here).', SA),
