@@ -1,0 +1,15 @@
+{
+  "name": "name__unicode",
+  "description": "a name with non-ASCII characters: HMAC over its UTF-8 bytes.",
+  "case": "members_check",
+  "rules": "v2",
+  "input": {
+    "op": "name",
+    "salt": "29835dd7409048627029145073d09dcc4a280b5500f652e4d3c832c4258436dd",
+    "name": "tests / ünïcode ✓"
+  },
+  "expected": {
+    "nameKey": "732302e38bcd45538be5ac9fc564a4eab20a94200c15e6fae99f0ea693221efc",
+    "opaque": "fwjrw6mql4hjngfu"
+  }
+}

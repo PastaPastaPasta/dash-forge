@@ -1,0 +1,16 @@
+{
+  "name": "open__truncated",
+  "description": "shorter than magic, version, nonce and tag: refused.",
+  "case": "members_check",
+  "rules": "v2",
+  "input": {
+    "op": "open",
+    "salt": "29835dd7409048627029145073d09dcc4a280b5500f652e4d3c832c4258436dd",
+    "blind": "cec48c3ca820b73ce7a7c28f15af925afbc348f2",
+    "opaque": "rjlbvkm2zejjtqqt",
+    "sealed": "4446434c01dbbd51417ce499dc4f4929da6620f0483db6ca8eb8139289599355"
+  },
+  "expected": {
+    "error": "malformed"
+  }
+}

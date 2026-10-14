@@ -1,0 +1,15 @@
+{
+  "name": "name__other_salt",
+  "description": "the same check on another pushed commit (another salt): another name, so the public cannot link two pushes of a branch by their checks.",
+  "case": "members_check",
+  "rules": "v2",
+  "input": {
+    "op": "name",
+    "salt": "73c29f582b15eb1df792c79d3158a62169d86ba5c6c154205d4d6bfacc919a83",
+    "name": "ci.yml / build"
+  },
+  "expected": {
+    "nameKey": "1d022c70c9b20b61f6324ba5649aea98ac5cd2a7563fd4f9c44cada6f05ab83a",
+    "opaque": "egedoxkkhndybztl"
+  }
+}

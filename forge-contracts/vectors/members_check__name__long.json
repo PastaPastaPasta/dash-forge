@@ -1,0 +1,15 @@
+{
+  "name": "name__long",
+  "description": "a 100-character name (the most a check name holds).",
+  "case": "members_check",
+  "rules": "v2",
+  "input": {
+    "op": "name",
+    "salt": "29835dd7409048627029145073d09dcc4a280b5500f652e4d3c832c4258436dd",
+    "name": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+  },
+  "expected": {
+    "nameKey": "732302e38bcd45538be5ac9fc564a4eab20a94200c15e6fae99f0ea693221efc",
+    "opaque": "sfqxmxd5sn47sz3s"
+  }
+}
