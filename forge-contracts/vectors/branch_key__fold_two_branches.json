@@ -1,0 +1,110 @@
+{
+  "name": "fold_two_branches",
+  "description": "letters of two branches fold separately.",
+  "case": "branch_key",
+  "rules": "v2",
+  "input": {
+    "op": "fold",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "letters": [
+      {
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "height": 100,
+        "sender": "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
+        "body": {
+          "type": "branchKey",
+          "v": 1,
+          "name": "refs/heads/sec/embargo",
+          "gen": 0,
+          "keys": [
+            "6465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80818283"
+          ],
+          "group": "maintainers",
+          "people": [],
+          "to": [
+            "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+          ]
+        }
+      },
+      {
+        "id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "height": 90,
+        "sender": "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
+        "body": {
+          "type": "branchKey",
+          "v": 1,
+          "name": "refs/heads/sec/other",
+          "gen": 0,
+          "keys": [
+            "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+          ],
+          "group": null,
+          "people": [
+            "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
+            "Bswb3UyeD1pUTaGiE6WvqwFpJZsQSEY1xhJePCDTHdvp"
+          ],
+          "to": [
+            "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+          ]
+        }
+      }
+    ],
+    "groups": {
+      "maintainers": [
+        "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+      ],
+      "writers": [
+        "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+      ],
+      "members": [
+        "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+      ]
+    }
+  },
+  "expected": {
+    "branches": [
+      {
+        "name": "refs/heads/sec/embargo",
+        "group": "maintainers",
+        "people": [],
+        "issuedAt": {
+          "0": 100
+        },
+        "letters": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ],
+        "holders": [
+          "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+        ],
+        "kcvs": [
+          "d02a38c3"
+        ],
+        "gen": 0,
+        "readOnly": []
+      },
+      {
+        "name": "refs/heads/sec/other",
+        "group": null,
+        "people": [
+          "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
+          "Bswb3UyeD1pUTaGiE6WvqwFpJZsQSEY1xhJePCDTHdvp"
+        ],
+        "issuedAt": {
+          "0": 90
+        },
+        "letters": [
+          "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        ],
+        "holders": [
+          "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+        ],
+        "kcvs": [
+          "2e355b6f"
+        ],
+        "gen": 0,
+        "readOnly": []
+      }
+    ],
+    "ignored": []
+  }
+}

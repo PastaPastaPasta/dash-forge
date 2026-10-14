@@ -64,6 +64,7 @@ pub mod logging;
 pub mod members;
 pub mod members_git;
 pub mod mirror;
+pub mod narrow;
 pub mod network;
 pub mod pack;
 pub mod pack_mirror;

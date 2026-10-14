@@ -10,16 +10,22 @@
  * copies its tip's blind and salt). The public folds plaintext updates only (`refs.ts`), so a
  * members-only branch never becomes a public ref; outsiders get {@link membersOnlyRefsExist}, a
  * yes or no, never a number (DESIGN §10: "This repo also has members-only branches.").
+ *
+ * Narrower branches (phase 3F): a member who holds a branch's key (`./branch-ring`) folds its
+ * v0x06 updates the same way, and the branch is listed with who it is for ("Maintainers only ·
+ * visible to 3 people"); one whose key they don't hold is counted per branch, never named
+ * ("A branch you don't have access to"). The ring is read only when there is a v0x06 update.
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { base58Encode } from '../auth/base58'
-import { openContent } from '../private'
+import { V6, openContent, type OpenResult, type StoredPrivateDoc } from '../private'
 import type { ConfigDoc, IsAncestor, RefUpdate } from '../rules'
 import { queryAllDocuments, type PlainDocument } from '../sdk'
 import { repoTimelines } from './chrome'
 import { configBundleOf, readConfigHistory } from './config'
+import { RING_RETRY_MS, branchRingFor, type HeldBranches } from './branch-ring'
 import { DOC, type RepoRef } from './contract'
 import { blindBook, type Introduced } from './members-blinds'
 import { membersUpdatesOf, type RefAlert, type RefRows } from './members-refs'
@@ -40,6 +46,11 @@ export interface MembersRefs {
   readonly alerts: readonly RefAlert[]
   /** Each members-only ref's whole update history (real values), by full name: a PR's base tips. */
   readonly updates: ReadonlyMap<string, readonly RefUpdate[]>
+  /**
+   * Narrower branches this member holds no key for: how many (one per branch, never named);
+   * `null` when their branch keys couldn't be read, so which ones they hold is unknown.
+   */
+  readonly noAccess: number | null
 }
 
 /** Whether `doc` is a members-only ref update: sealed, under its own `vis: "public"` stamp (§19.3). */
@@ -70,43 +81,69 @@ async function readRefRows(sdk: EvoSDK, repo: RepoRef): Promise<{ readonly rows:
   return { rows: { refUpdate, protectedRefUpdate }, configHistory }
 }
 
-/** {@link membersRefsOf} of `repo` (a public repo) read now, through `lane`. */
-export async function readMembersRefs(sdk: EvoSDK, repo: RepoRef, lane: PrivateSession): Promise<MembersRefs> {
-  const { rows, configHistory } = await readRefRows(sdk, repo)
-  return membersRefsOf(rows, lane, configHistory)
+/** Whether `doc` is a narrower branch's ref update (members-only, `enc` v0x06). */
+function isNarrowerRow(doc: PlainDocument): boolean {
+  return isMembersOnlyRefRow(doc) && bytesField(doc, 'enc')?.[0] === V6
 }
 
 /**
- * The members-only refs of `rows`, read through `lane` (a member's members-key session): every
- * name whose union fold resolves through a members-only update, with its real tip. Names live in
- * public keep their public updates (D29) and are not listed here.
+ * {@link membersRefsOf} of `repo` (a public repo) read now, through `lane`, with the narrower
+ * branches this member holds keys for when there are any ({@link branchRingFor}; its failure
+ * leaves them unopened).
+ */
+export async function readMembersRefs(sdk: EvoSDK, repo: RepoRef, lane: PrivateSession): Promise<MembersRefs> {
+  const { rows, configHistory } = await readRefRows(sdk, repo)
+  const narrower = rows.refUpdate.some(isNarrowerRow) || rows.protectedRefUpdate.some(isNarrowerRow)
+  const ring = (fresherThan?: number): Promise<HeldBranches | null> => branchRingFor(sdk, { ...repo, lane }, undefined, fresherThan === undefined ? {} : { fresherThan })
+  let held = narrower ? await ring() : null
+  let refs = await membersRefsOf(rows, lane, configHistory, undefined, held)
+  // an update this member couldn't open: a key letter may have come since the ring was read
+  if (held !== null && (refs.noAccess ?? 0) > 0) {
+    const again = await ring(RING_RETRY_MS)
+    if (again !== null && again !== held) {
+      held = again
+      refs = await membersRefsOf(rows, lane, configHistory, undefined, held)
+    }
+  }
+  // a ring that couldn't be read says nothing about access: never "a branch you don't have access to"
+  return narrower && held === null ? { ...refs, noAccess: null } : refs
+}
+
+/**
+ * The members-only refs of `rows`, read through `lane` (a member's members-key session) and
+ * `held` (the narrower branches this member holds keys for): every name whose union fold resolves
+ * through a members-only update, with its real tip. Names live in public keep their public updates
+ * (D29) and are not listed here. A branch whose tip a narrower update set is listed with
+ * `narrower`.
  */
 export async function membersRefsOf(
   rows: RefRows,
   lane: PrivateSession,
   configHistory: readonly ConfigDoc[],
   isAncestor?: IsAncestor,
+  held: HeldBranches | null = null,
 ): Promise<MembersRefs> {
   const book = blindBook(lane.ctx)
   const members = new Set<string>()
   // Each opened update's verified blind and salt of its new tip, by document id.
   const pushed = new Map<string, Introduced>()
+  const learned = async (stored: StoredPrivateDoc, opened: OpenResult): Promise<OpenResult> => {
+    if (opened.status === 'readable' && stored.newOid !== undefined) {
+      const id = stored.id === undefined ? null : base58Encode(stored.id)
+      if ((await book.learn(stored.newOid, opened.fields.newOid, opened.fields.oidSalt)) && id !== null) {
+        pushed.set(id, { blind: new Uint8Array(stored.newOid), salt: new Uint8Array(opened.fields.oidSalt as Uint8Array) })
+      }
+      if (stored.prevOid !== undefined) await book.learn(stored.prevOid, opened.fields.prevOid, opened.fields.oidSalt)
+      if (id !== null) members.add(id)
+    }
+    return opened
+  }
   const updates = await membersUpdatesOf(
     rows,
-    async (stored) => {
-      const opened = await openContent(stored, lane.ctx)
-      if (opened.status === 'readable' && stored.newOid !== undefined) {
-        const id = stored.id === undefined ? null : base58Encode(stored.id)
-        if ((await book.learn(stored.newOid, opened.fields.newOid, opened.fields.oidSalt)) && id !== null) {
-          pushed.set(id, { blind: new Uint8Array(stored.newOid), salt: new Uint8Array(opened.fields.oidSalt as Uint8Array) })
-        }
-        if (stored.prevOid !== undefined) await book.learn(stored.prevOid, opened.fields.prevOid, opened.fields.oidSalt)
-        if (id !== null) members.add(id)
-      }
-      return opened
-    },
+    async (stored) => learned(stored, await openContent(stored, lane.ctx)),
     configHistory,
     isAncestor,
+    held === null ? undefined : async (stored) => learned(stored, await held.ring.open(stored, stored.enc)),
   )
   const branches: ResolvedRef[] = []
   const tags: ResolvedRef[] = []
@@ -122,12 +159,22 @@ export async function membersRefsOf(
     // rule C: a PR from this branch copies the blind of the newest members-only update that set its tip
     const tip = ref.state.state === 'resolved' ? ref.state.oid : null
     const setter = tip === null ? undefined : [...group].reverse().find((u) => u.newOid === tip && pushed.has(u.id))
-    if (tip !== null && setter !== undefined) book.introduce(name, tip, pushed.get(setter.id) as Introduced)
-    const listed: ResolvedRef = { ...ref, audience: 'members' }
+    // never a narrower branch's: it is neither the head nor the base of a members-only PR
+    if (tip !== null && setter !== undefined && !updates.narrower.has(setter.id)) book.introduce(name, tip, pushed.get(setter.id) as Introduced)
+    // narrower when the update that set its tip was (forge-core `is_narrower`; a diverged ref's
+    // first head, as its `tip_of`)
+    const head = ref.state.state === 'resolved' ? ref.state.oid : ref.state.state === 'diverged' ? (ref.state.heads[0]?.oid ?? null) : null
+    const lastSet = head === null ? undefined : [...group].reverse().find((u) => u.newOid === head)
+    const branch = lastSet !== undefined && updates.narrower.has(lastSet.id) ? held?.ring.get(name) : undefined
+    const listed: ResolvedRef = {
+      ...ref,
+      audience: 'members',
+      ...(branch !== undefined ? { narrower: { audience: branch.audience, people: held?.people.get(name)?.size ?? 0 } } : {}),
+    }
     if (name.startsWith('refs/heads/')) branches.push(listed)
     else if (name.startsWith('refs/tags/')) tags.push(listed)
   }
-  return { branches, tags, unreadable: updates.unreadable, alerts: updates.alerts, updates: histories }
+  return { branches, tags, unreadable: updates.unreadable, alerts: updates.alerts, updates: histories, noAccess: updates.unreadableNarrower.size }
 }
 
 /** The members-only ref names this tab's members-key sessions listed, by repo id (base58). */

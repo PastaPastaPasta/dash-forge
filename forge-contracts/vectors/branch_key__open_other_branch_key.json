@@ -1,0 +1,60 @@
+{
+  "name": "open_other_branch_key",
+  "description": "another branch's key: its KCV does not match, so nothing is tried.",
+  "case": "branch_key",
+  "rules": "v2",
+  "input": {
+    "op": "open",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "letters": [
+        {
+          "id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "height": 90,
+          "sender": "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
+          "body": {
+            "type": "branchKey",
+            "v": 1,
+            "name": "refs/heads/sec/other",
+            "gen": 0,
+            "keys": [
+              "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+            ],
+            "group": "maintainers",
+            "people": [],
+            "to": [
+              "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+            ]
+          }
+        }
+      ],
+      "groups": {
+        "maintainers": [
+          "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+        ],
+        "writers": [
+          "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+        ],
+        "members": [
+          "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+        ]
+      }
+    },
+    "doc": {
+      "type": "refUpdate",
+      "vis": "public",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "refNameHash": "a25cd2a6361488fa7354dc45fd39a1b4227aeeaa58846847ce5b96e803bf1551",
+      "newOid": "433681865d058c77a67224f6e0e1f1f9347643d2",
+      "force": false,
+      "prevOid": "ab3afc62c130b0bba102e896193f6a8b0e3e2e1b",
+      "enc": "06d02a38c3000102030405060708090a0bc4e66816bba6aeff9e383ac112204b58fa966d68a74255b7f0a63d106d9d9c25d3465c6e8660a5e1940a263506c228caa7df3ee32ce9360879bfb00e96955399ccf3da1d133d49e37729562b3607df885f541f4cde02b37707fc1940323bfb710a2c02c39705963e3cd75e63220e3b6e2242ed4f1629ff86f4716456c842a8bdecd166a4441f0abcb10d626ab817399b85b0b26616e13ff625ab",
+      "createdAtBlockHeight": 150
+    }
+  },
+  "expected": {
+    "status": "unreadable",
+    "reason": "noKey"
+  }
+}

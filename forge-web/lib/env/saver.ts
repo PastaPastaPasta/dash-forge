@@ -11,7 +11,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { PACK_KIND, type Network } from '../constants'
 import { fetchIdentityKeys, isUsableEncryptionKey, usableEncryptionKey } from '../auth/encryption-key'
 import { VaultLockedError, storedEncryptionKeyIds, withEncryptionKeys } from '../auth/vault'
-import { bytesToHex, hexToBytes, privateId } from '../private'
+import { bytesToHex, hexToBytes, privateId, sealKeyLetter } from '../private'
 import type { WriteAuth } from '../sdk'
 import type { RepoRef } from '../repo/contract'
 import { readMaintainers } from '../repo/members'
@@ -19,6 +19,7 @@ import { putPlatformChunks, writePackManifest } from '../repo/push'
 import { sha256Hex } from '../storage/sigv4'
 import { mapPooled } from '../view/pool'
 import * as secp from '@noble/secp256k1'
+import { branchLetterSender, type BranchLetterSender } from './branch-letters'
 import { sealLetterSnapshot } from './codec'
 import { EnvSaveError, type EnvSaver, type PersonKey, type Sender } from './write'
 
@@ -72,4 +73,42 @@ export function sdkEnvSaver(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, network
       return { id: written.documentId, packHash }
     },
   }
+}
+
+/**
+ * {@link BranchLetterSender} over the SDK and this browser's vault (forge-core `narrow::write_letter`):
+ * the signer's newest usable encryption key and each person's, as an environment save takes them;
+ * the seal from the vault's key for the call; the store as one Platform chunk and a kind-10
+ * `packManifest`, superseding nothing.
+ */
+export function sdkBranchLetterSender(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, network: Network): BranchLetterSender {
+  const env = sdkEnvSaver(sdk, auth, repo, network)
+  const me = auth.identityId
+  return branchLetterSender({
+    sender: () =>
+      env.sender().catch((e: unknown) => {
+        if (!(e instanceof EnvSaveError)) throw e
+        throw new EnvSaveError("This browser doesn't hold a usable encryption key of yours, so it can't send a branch's key. Add it under Settings → Members-only and private content.")
+      }),
+    keysOf: (ids) => env.keysOf(ids),
+    seal: (slots, letter) =>
+      withEncryptionKeys(network, me, async (keys) => {
+        const want = slots[0] === undefined ? '' : bytesToHex(slots[0].publicKey)
+        const sender = keys.find((k) => bytesToHex(secp.getPublicKey(k.secret, true)) === want)
+        if (sender === undefined) throw new VaultLockedError('this browser no longer holds the encryption key it was about to send with; unlock it again, or add it under Settings → Members-only and private content')
+        return sealKeyLetter(privateId(repo.repoId), sender.secret, sender.keyId, privateId(me), slots, letter)
+      }),
+    store: async (sealed) => {
+      const packHash = await sha256Hex(sealed)
+      const { locator, chunkCount } = await putPlatformChunks(sdk, auth, repo, sealed, packHash)
+      const written = await writePackManifest(
+        sdk,
+        auth,
+        repo,
+        { packHash, kind: PACK_KIND.KEY_LETTER, sizeBytes: sealed.length, objectCount: 0, chunkCount, storage: 0, uris: [locator], supersedes: [] },
+        `keyLetter:${repo.repoId}:${packHash}`,
+      )
+      return written.documentId
+    },
+  })
 }

@@ -12,14 +12,19 @@
  * The members-only browse indexes (kinds 65–69) have no writer yet and are not read (decision
  * recorded with phase 3C). Nothing decrypted is stored: the context lives in the browse cache
  * under the members-key session (`repoKey`), and goes with it.
+ *
+ * A narrower branch's packs (phase 3F) are kind 64 too, under a branch key (DFPK 0x03): each opens
+ * with the branch keys this member holds (`lib/repo/branch-ring.ts`, read only once such a pack
+ * shows up); one whose key they don't hold is skipped, as a pack of another epoch is.
  */
 
 import { ObjectLocator, type GitObject, type ObjectIndex, type PackSource } from '../browse'
 import { offsetKey, type LocatorEntry } from '../browse/locator'
 import { PACK_KIND } from '../constants'
+import { sniffBranchKcv, type BranchRing } from '../private'
 import { packsOfKind, type PackManifest } from '../repo'
 import type { PrivateSession } from '../repo/private-session'
-import { openPrivateArtifact } from './private-packs'
+import { openBranchArtifact, openPrivateArtifact } from './private-packs'
 
 /** What a members-only overlay adds: its index (rows at `packRef >= base`), its packs and their manifests. */
 export interface MembersPacks {
@@ -39,9 +44,10 @@ export function membersGitPacks(manifests: readonly PackManifest[]): PackManifes
 }
 
 /**
- * Open and index the members-only packs of `manifests` that `lane` reads. `load` fetches a pack's
- * stored (sealed) bytes, checked against its `packHash`; `publicObject` reads a REF base from the
- * public context (null: absent). Null when no members-only pack opens.
+ * Open and index the members-only packs of `manifests` that `lane` reads, and the narrower
+ * branches' packs that `ring` opens (asked for once the first one shows up; null: none held).
+ * `load` fetches a pack's stored (sealed) bytes, checked against its `packHash`; `publicObject`
+ * reads a REF base from the public context (null: absent). Null when no members-only pack opens.
  */
 export async function loadMembersPacks(
   lane: PrivateSession,
@@ -50,12 +56,20 @@ export async function loadMembersPacks(
   load: (m: PackManifest) => Promise<Uint8Array>,
   publicObject: (oidHex: string) => Promise<GitObject | null>,
   budget?: number,
+  ring: () => Promise<BranchRing | null> = async () => null,
 ): Promise<MembersPacks | null> {
   const opened: { manifest: PackManifest; bytes: Uint8Array }[] = []
   let skipped = 0
+  let held: Promise<BranchRing | null> | undefined
   for (const m of membersGitPacks(manifests)) {
     try {
       const sealed = await load(m)
+      if (sniffBranchKcv(sealed) !== null) {
+        const r = await (held ??= ring().catch(() => null))
+        if (r === null) throw new Error('no branch key held')
+        opened.push({ manifest: m, bytes: await openBranchArtifact(r, m, sealed) })
+        continue
+      }
       opened.push({ manifest: m, bytes: await openPrivateArtifact(lane, m, sealed, m.copies ?? [m]) })
     } catch {
       // not this member's to open (another epoch, a narrower branch's key) or not served: its

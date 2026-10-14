@@ -4,10 +4,12 @@
  * page names an identity (its DPNS name, else a short id). Pure: vitest pins them.
  */
 
+import { narrowWho } from '../repo/branch-ring'
 import { ROLE_NOUN } from '../rules/roles'
 import { creditsAsDash } from '../view/format'
 import { audienceLabel } from './format'
 import { planPins, type MemberChange, type MemberEnvPlan, type SaveOutcome } from './member-change'
+import type { BranchItem, BranchPlan, LetterOutcome } from './branch-letters'
 import type { NotUpdated, Pin } from './regroup'
 import { changeSummary } from './edit'
 import { count } from './view'
@@ -109,4 +111,49 @@ export function outcomeLine(o: SaveOutcome, name: Name): string {
     case 'unread':
       return `${o.reason}. Save the environments again from Settings → Environments.`
   }
+}
+
+/** A branch's short name and who it is for: "fix-auth (Maintainers only)". */
+function branchTitle(name: string, audience: BranchItem['audience']): string {
+  return `${name.replace(/^refs\/heads\//, '')} (${narrowWho(audience)} only)`
+}
+
+/**
+ * One narrower branch a member change sends its key for (DESIGN §4.3, D34), with its cost:
+ * "fix-auth (Maintainers only): send its key to dana. About 0.0012 DASH." or "fix-auth
+ * (Maintainers only): a new key for the 3 people left. About 0.0012 DASH."
+ */
+export function branchLine(item: BranchItem, name: Name): string {
+  const what = item.action.kind === 'joiners' ? `send its key to ${item.action.people.map(name).join(', ')}` : `a new key for the ${item.now.length === 1 ? '1 person' : `${item.now.length} people`} left`
+  return `${branchTitle(item.name, item.audience)}: ${what}. About ${creditsAsDash(item.credits)} DASH.`
+}
+
+/** The people a branch is for who can't be sent its key: "dana has no encryption key, so can't read fix-auth until they add one." */
+export function branchNoKeyLines(item: BranchItem, name: Name): string[] {
+  const short = item.name.replace(/^refs\/heads\//, '')
+  return item.noKey.map((p) => `${name(p)} has no encryption key, so can't read ${short} until they add one.`)
+}
+
+/** What the plan can't update about narrower branches: those the signer holds no key for, or keys it couldn't read. */
+export function branchesNotUpdatedLines(plan: BranchPlan): string[] {
+  const out: string[] = []
+  if (plan.unread !== null) {
+    out.push(`Branches for fewer people than all members weren't checked: ${plan.unread}. The next person to push each one updates who can read it.`)
+  }
+  if (plan.notHeld > 0) {
+    out.push(
+      plan.notHeld === 1
+        ? "1 branch you don't have access to isn't updated here. The next person to push it updates who can read it."
+        : `${plan.notHeld} branches you don't have access to aren't updated here. The next person to push each one updates who can read it.`,
+    )
+  }
+  return out
+}
+
+/** One line of what sending the branch keys did. */
+export function letterOutcomeLine(o: LetterOutcome): string {
+  const short = o.branch.replace(/^refs\/heads\//, '')
+  if (o.kind === 'sent') return `Sent the key of ${branchTitle(o.branch, o.audience)} to ${o.to === 1 ? '1 person' : `${o.to} people`}.`
+  if (o.kind === 'tooManyKeys') return `${short} can't get a new key: it has had ${o.keys} already. Publish its work and start a new branch for the people it is for now.`
+  return `Couldn't send the key of ${short}: ${o.reason.replace(/\.$/, '')}. The next push of it sends it.`
 }

@@ -1,0 +1,14 @@
+{
+  "name": "sniff_branch",
+  "description": "DFPK 0x03: a branch-key artifact, its KCV prefix.",
+  "case": "branch_key",
+  "rules": "v2",
+  "input": {
+    "op": "sniff",
+    "head": "4446504b030a0000d02a38c3"
+  },
+  "expected": {
+    "kind": "branch",
+    "kcv": "d02a38c3"
+  }
+}

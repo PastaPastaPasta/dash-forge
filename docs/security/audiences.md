@@ -192,6 +192,27 @@ dg publish --pr 42                           # one new public commit on its base
 
 Everyone can still see, for a members-only branch: that a members-only push happened, by whom and when, whether it was forced, that a branch was created or deleted, and which pushes within one key period share a branch; a blinded commit id that links the push to the pull request, its reviews and its checks. For a members-only pull request: as above, and which public branch it targets.
 
+### Branches for fewer people
+
+A branch can also be for fewer people than all members: Maintainers, Writers and maintainers, a list of people, or a group plus people (a CI bot, say). It gets its own key, which only those people receive; other members see "A branch you don't have access to", and everyone else sees what they see for any members-only branch.
+
+```sh
+dg branch new --to maintainers sec/cve-77    # only the owner and maintainers will see it
+git push origin sec/cve-77                   # its key goes to them first, then the push
+dg branch                                    # "sec/cve-77  Maintainers only · visible to 3 people"
+dg branch audience sec/cve-77                # who it is for now
+dg branch audience sec/cve-77 --to writers   # writers too: they get its key and see its whole history
+dg publish sec/cve-77 --onto main            # when it's ready, as for any members-only branch
+```
+
+- `--to` takes `maintainers`, `writers`, people (`@alice,@bob`), or a group plus people (`maintainers,@ci-bot`). You are always one of the people it is for.
+- **Who it is for follows the members.** When someone joins the group (`dg collab add`, a promotion), they get its key and see its whole history. When someone leaves (`dg collab remove`, a demotion), everyone left gets a new key and the next push uses it: the person who left keeps what they could already read, and sees nothing pushed after that. Whoever makes the change does this in the same step when they hold the branch's key; otherwise the next person to push the branch does.
+- People with no encryption key can't read it until they add one (`dg auth keys add --encryption`); the push says who.
+- Its commits never reach a branch more people can read by accident: pushing them to a members-only branch for all members, to a branch with a wider group, or to a public branch is refused ([E805](../errors.md#e805)). A pull request can't come from it or go into it yet; publish its work instead.
+- The default branch and tags can't be for fewer people, and a branch that was already pushed can't be narrowed: start a new one from it (`dg branch new --to maintainers sec/cve-77-2`).
+
+Everyone can still see, for a branch for fewer people: what they see for a members-only branch, and that its key was sent, by whom, when and to how many people.
+
 ## What it costs
 
 Measured on devnet sakura:

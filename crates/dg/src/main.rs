@@ -36,6 +36,7 @@ mod maint;
 mod make_public;
 mod meta;
 mod milestone;
+mod narrow;
 mod pack_mirror;
 mod pin;
 mod pr;

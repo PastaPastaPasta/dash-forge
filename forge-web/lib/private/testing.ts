@@ -5,6 +5,7 @@
  * `no-restricted-imports` bans importing it anywhere but `*.test.ts`.
  */
 
+import { __unsafeSealBranchPackWith, __unsafeSealBranchRefWith, type BranchKeys } from './branch-key'
 import { sha256, utf8, type Bytes } from './bytes'
 import { __unsafeSealDocWithNonce, __unsafeSealMembersDocWithNonce, __unsafeSealPrivateV3WithNonce, type PrivateDoc, type SealDocOptions } from './doc'
 import { hedgeFileId, hedgeNonce, type EpochKeys } from './keys'
@@ -54,6 +55,16 @@ export function sealMembersRefWithNonce(
   nonce: Uint8Array,
 ): Promise<SealedRefUpdate> {
   return __unsafeSealMembersRefWith(keys, ownerId, input, salt, async (doc, fields) => (await __unsafeSealMembersDocWithNonce(keys, doc, fields, nonce)).enc)
+}
+
+/** `sealBranchRef` with a fixed salt and nonce (the `branch_key` vectors). */
+export function sealBranchRefWith(keys: BranchKeys, ownerId: Uint8Array, input: RefUpdateIn, salt: Uint8Array, nonce: Uint8Array): Promise<SealedRefUpdate> {
+  return __unsafeSealBranchRefWith(keys, ownerId, input, salt, nonce)
+}
+
+/** `sealBranchPack` with a fixed `fileId` and segment size (the `branch_key` vectors). */
+export function sealBranchPackWith(keys: BranchKeys, plain: Uint8Array, fileId: Uint8Array, segLog2: number): Promise<Bytes> {
+  return __unsafeSealBranchPackWith(keys, plain, fileId, segLog2)
 }
 
 /** `sealLetter` with a fixed `K_obj`, nonce and slot IVs; returns the commitment, H, AD' and TLV too. */
