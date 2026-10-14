@@ -209,13 +209,11 @@ impl TypedLetter {
             return None;
         }
         let end = pt.iter().rposition(|b| *b != b' ')? + 1;
-        let value: Zeroizing<Vec<u8>> = Zeroizing::new(pt[..end].to_vec());
-        let Value::Object(mut fields) = serde_json::from_slice::<Value>(&value).ok()? else {
+        let Value::Object(mut fields) = serde_json::from_slice::<Value>(&pt[..end]).ok()? else {
             return None;
         };
-        let kind = match fields.remove("type")? {
-            Value::String(s) => s,
-            _ => return None,
+        let Value::String(kind) = fields.remove("type")? else {
+            return None;
         };
         let v = fields.remove("v")?.as_u64()?;
         let letter = Self { kind, v, fields };

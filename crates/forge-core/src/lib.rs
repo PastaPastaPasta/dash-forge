@@ -54,6 +54,7 @@ pub mod fork;
 pub mod funding;
 pub mod history;
 pub mod key_handoff;
+pub mod key_letters;
 pub mod keychain;
 pub mod keyring;
 pub mod keystore;
