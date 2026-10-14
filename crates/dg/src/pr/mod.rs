@@ -479,6 +479,7 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
         handle,
         crate::audience::Ask {
             members,
+            public: false,
             to: &args.to,
         },
         None,
@@ -1240,6 +1241,7 @@ fn pr_line(v: &PatchView, a: &forge_core::rules::v2::Approvals, hid: &str) -> St
 /// A PR's reviews for `dg pr view --json`: stale when not on the current head, dismissed when
 /// a `reviewDismiss` names it, with how many of its announced comments have landed.
 fn reviews_json(
+    repo: &forge_core::scope::RepoRef,
     reviews: &[forge_core::collab::v2::Review],
     comments: &[forge_core::collab::v2::Comment],
     head: &str,
@@ -1281,6 +1283,8 @@ fn reviews_json(
                 "bodyIncomplete": incomplete.get(&r.document_id),
                 "createdAt": r.created_at,
                 "audience": crate::audience::json(r.audience),
+                "writtenWhilePrivate": crate::audience::written_while_private(repo, r.while_private),
+                "readableByEveryone": crate::audience::readable_by_everyone(repo, r.while_private),
                 "letter": r.letter.as_ref().map(crate::audience::letter_json),
                 // a members-only review this reader cannot open: its verdict counts (D15)
                 "readable": !r.members_only,
@@ -1295,6 +1299,7 @@ fn reviews_json(
 /// a general or malformed-anchor comment), and why only the first part of a long body was read
 /// (`incomplete`, by id).
 fn comments_json(
+    repo: &forge_core::scope::RepoRef,
     comments: &[forge_core::collab::v2::Comment],
     incomplete: &std::collections::BTreeMap<String, String>,
 ) -> Vec<serde_json::Value> {
@@ -1311,6 +1316,8 @@ fn comments_json(
                 "anchor": forge_core::rules::v2::anchor_of(&c.anchor),
                 "createdAt": c.created_at,
                 "audience": crate::audience::json(c.audience),
+                "writtenWhilePrivate": crate::audience::written_while_private(repo, c.while_private),
+                "readableByEveryone": crate::audience::readable_by_everyone(repo, c.while_private),
                 "letter": c.letter.as_ref().map(crate::audience::letter_json),
             })
         })
@@ -1369,6 +1376,7 @@ async fn view(
     let hidden_reviews = malformed_reviews + uncounted_reviews.len();
     let (placeholders, _) = crate::audience::shown(handle, &members_only);
     let pr_audience = v.patch.audience;
+    let pr_era = v.patch.while_private;
     // Long bodies (forge-v2.md §6.3): each field's full text, fetched and checked; a text whose
     // rest cannot be read keeps its first part and says why: in `bodyIncomplete` (the
     // description's, and by id each comment's and review's), and in a line under it when printed.
@@ -1418,11 +1426,15 @@ async fn view(
     threads::drop_untrusted_hunks(&mut conv, trusted);
     // The conversations as printed: a hidden comment's body is its one "hidden by" line, and a
     // long body read only in part has the line saying why under it.
-    // members-only comments, marked beside their author when printed
-    let members_ids: std::collections::BTreeSet<&str> = comments
+    // members-only comments (and those written while the repository was private), marked beside
+    // their author when printed
+    let comment_marks: std::collections::BTreeMap<&str, &'static str> = comments
         .iter()
-        .filter(|c| crate::audience::marked(handle, c.audience))
-        .map(|c| c.document_id.as_str())
+        .filter_map(|c| {
+            crate::audience::reading(handle, c.audience, c.while_private)
+                .words()
+                .map(|w| (c.document_id.as_str(), w))
+        })
         .collect();
     // what maintainers made public (DESIGN §4.6): the PR itself, its comments and reviews
     let published = crate::audience::Published::of(
@@ -1530,6 +1542,7 @@ async fn view(
     };
 
     let reviews_json = reviews_json(
+        handle,
         &reviews,
         &comments,
         &v.head,
@@ -1619,7 +1632,7 @@ async fn view(
             "reviews": reviews_json,
             "threads": conv.threads,
             "generalComments": conv.general,
-            "comments": comments_json(&comments, &incomplete),
+            "comments": comments_json(handle, &comments, &incomplete),
             "hiddenComments": hidden_comments,
             "hiddenReviews": hidden_reviews,
             "moderation": moderation,
@@ -1632,6 +1645,8 @@ async fn view(
     let audience = json!({
         "createdAt": v.patch.created_at,
         "audience": crate::audience::json(pr_audience),
+        "writtenWhilePrivate": crate::audience::written_while_private(handle, pr_era),
+        "readableByEveryone": crate::audience::readable_by_everyone(handle, pr_era),
         "readable": true,
         "membersOnlyComments": placeholders.iter().map(|m| crate::audience::placeholder_json(m)).collect::<Vec<_>>(),
         "membersOnlyHidden": members_only.len(),
@@ -1690,7 +1705,7 @@ async fn view(
             " · to {}",
             crate::audience::letter_to(&l.recipients, l.group, Some(me), &names)
         ),
-        None if members_ids.contains(id) => " · members-only".to_string(),
+        None if comment_marks.contains_key(id) => format!(" · {}", comment_marks[id]),
         None => {
             let aud = audience_of
                 .get(id)
@@ -1718,8 +1733,8 @@ async fn view(
                 safe(&v.patch.title)
             );
             println!("author: {}", who(&v.patch.author));
-            if crate::audience::marked(handle, pr_audience) {
-                println!("members-only: visible to members of {}", handle.display());
+            if let Some(line) = crate::audience::reading(handle, pr_audience, pr_era).header(handle) {
+                println!("{line}");
             }
             if let Some(line) = published.line(&v.patch.document_id, pr_audience, &who) {
                 println!("{line}");
@@ -1865,7 +1880,7 @@ async fn view(
                     } else if r.letter.is_some() {
                         mark(&r.document_id)
                     } else {
-                        crate::audience::suffix(handle, r.audience).to_string()
+                        crate::audience::suffix_of(handle, r.audience, r.while_private)
                     }
                 );
                 if r.members_only && r.audience == forge_core::rules::v2::Audience::SpecificPeople {
@@ -4431,6 +4446,7 @@ pub(crate) mod tests {
             upstream_number: None,
             audience: forge_core::rules::v2::Audience::Public,
             letter: None,
+            while_private: None,
             real_head: None,
         };
         PatchView {

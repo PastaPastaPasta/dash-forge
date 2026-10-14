@@ -74,6 +74,11 @@ STEPS = R('steps')
 AUD = R('audience')
 MADE_PUBLIC = nl(O({'by': S, 'state': E('public', 'editedAfter'), 'publishedRevision': I}, ['by', 'state']))
 LETTER = R('letter')
+WHILE_PRIVATE = D('Whether this was written while the repository was private, before its owner made it public. '
+                  'Its `audience` stays `members`; `readableByEveryone` says whether it is public in effect. '
+                  'In a pull request\'s `reviews` and `comments`, each item carries the same two fields.', B)
+READABLE_BY_EVERYONE = D('Whether everyone can read something written while the repository was private, because its '
+                         'owner made the earlier conversations public (Everything), not only its members (Code only).', B)
 OID = R('oid')
 
 # ---------------------------------------------------------------------------------------------
@@ -349,8 +354,10 @@ cmd('issue list', 'A page of issues.', {
 cmd('issue view', 'An issue, its comments, events and state.', {
     'number': I, 'title': nl(S), 'body': nl(S), 'bodyIncomplete': ANY, 'author': S, 'documentId': S, 'id': S,
     'audience': AUD, 'letter': LETTER, 'recipients': nl(I), 'readable': B, 'why': S, 'createdAt': I,
+    'writtenWhilePrivate': WHILE_PRIVATE, 'readableByEveryone': READABLE_BY_EVERYONE,
     'state': E('open', 'closed'), 'open': B, 'labels': SA, 'assignees': SA, 'stateReason': nl(S), 'duplicateOf': nl(I), 'milestone': nl(S), 'pinned': B, 'locked': B,
     'comments': A(O({'id': S, 'author': S, 'body': nl(S), 'bodyIncomplete': ANY, 'audience': AUD, 'letter': LETTER,
+                     'writtenWhilePrivate': WHILE_PRIVATE, 'readableByEveryone': READABLE_BY_EVERYONE,
                      'replyTo': nl(S), 'createdAt': I, 'madePublic': MADE_PUBLIC}, ['id', 'author'])),
     'membersOnlyComments': A(OBJ), 'membersOnlyHidden': I, 'events': A(EVENT), 'transitions': A(TRANSITION),
     'hiddenComments': ANY, 'moderation': ANY, 'hiddenEventValues': ANY, 'plaintextEventValues': ANY,
@@ -425,6 +432,7 @@ cmd('pr view', 'A pull request: its state, head, reviews, threads and comments.'
     'sinceYourReview': ANY, 'policy': R('policy'), 'approvals': ANY, 'reviews': A(OBJ), 'threads': A(OBJ),
     'generalComments': A(OBJ), 'comments': A(OBJ), 'hiddenComments': ANY, 'hiddenReviews': ANY, 'moderation': ANY,
     'hiddenEventValues': ANY, 'plaintextEventValues': ANY, 'audience': AUD, 'recipients': nl(I), 'readable': B,
+    'writtenWhilePrivate': WHILE_PRIVATE, 'readableByEveryone': READABLE_BY_EVERYONE,
     'why': S, 'membersOnlyComments': A(OBJ), 'membersOnlyHidden': I, 'membersOnlyReviewsHidden': I, 'mergeContent': ANY,
     'madePublic': D('What maintainers made public with a make-public bundle, by id: the pull request itself (its own id), its comments and its reviews.', {'type': 'object', 'additionalProperties': MADE_PUBLIC}),
     'bundleAlerts': D('Make-public entries whose key does not match the post they name: ignored.', A(OBJ)),

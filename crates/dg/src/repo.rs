@@ -73,7 +73,7 @@ pub async fn run(ctx: &Ctx, cmd: &RepoCommand) -> Result<()> {
         RepoCommand::Backend(RepoBackendCommand::Set { repo, mode }) => {
             backend_set(ctx, repo, mode.mode(), mode.label()).await
         }
-        RepoCommand::Keys(cmd) => crate::keys::run(ctx, cmd).await,
+        RepoCommand::Keys(cmd) => Box::pin(crate::keys::run(ctx, cmd)).await,
         RepoCommand::Members(cmd) => Box::pin(crate::keys::run_members(ctx, cmd)).await,
         RepoCommand::MakePublic(a) => Box::pin(crate::repo_make_public::run(ctx, a)).await,
         RepoCommand::Edit(args) => crate::repo_settings::edit(ctx, args).await,

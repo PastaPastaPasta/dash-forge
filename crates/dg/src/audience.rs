@@ -5,6 +5,7 @@
 use anyhow::Result;
 use forge_core::collab::v2::{
     Collab, Comment, LetterInfo, MembersOnly, SentLetter, Target, TargetKind, TargetLog, Unopened,
+    WhilePrivate,
 };
 use forge_core::platform::PlatformClient;
 use forge_core::rules::letters::{LetterGroup, LetterRequest};
@@ -15,11 +16,15 @@ use forge_core::user_error::{codes, UserError};
 use crate::common::Reader;
 use crate::context::Ctx;
 
-/// What a write asked for: `--members`, or `--to` (people and role groups).
+/// What a write asked for: `--members`, `--public` (a comment's), or `--to` (people and role
+/// groups).
 #[derive(Debug, Clone, Copy)]
 pub struct Ask<'a> {
     /// `--members`.
     pub members: bool,
+    /// `--public`: a public reply on a thread whose replies are otherwise members-only (clap
+    /// refuses it beside `--members` and `--to`).
+    pub public: bool,
     /// `--to`: `maintainers`, `writers`, DPNS names (`@alice`) or identity ids.
     pub to: &'a [String],
 }
@@ -73,6 +78,9 @@ pub async fn requested(
     target: Option<&str>,
     reply_to: Option<&str>,
 ) -> Result<Requested> {
+    if ask.public {
+        return public_reply(collab, repo, target, reply_to).await;
+    }
     if ask.to.is_empty() {
         collab.request_audience(ask.members.then_some(Audience::Members));
     } else {
@@ -96,10 +104,7 @@ pub async fn requested(
                 collab.new_audience(repo, target, reply_to).await,
                 Ok(Audience::Public)
             ) {
-                eprintln!(
-                    "note: this conversation was written while {} was private; your reply is public: everyone can read it",
-                    repo.display()
-                );
+                eprintln!("{}", public_reply_note(repo));
                 Ok(Requested {
                     audience: Audience::Public,
                     to: String::new(),
@@ -116,6 +121,76 @@ pub async fn requested(
             })
             .map_err(Into::into),
     }
+}
+
+/// `--public`: a public reply, where core admits one: in a public repository, on a public
+/// thread (nothing to do), or on a thread written while the repository was private (DESIGN
+/// §4.10 L3), where a reply that asks for nothing is members-only for a member. Refused, before
+/// anything is signed, in a private repository and under a members-only conversation written
+/// since.
+async fn public_reply(
+    collab: &Collab<'_>,
+    repo: &RepoRef,
+    target: Option<&str>,
+    reply_to: Option<&str>,
+) -> Result<Requested> {
+    collab.request_audience(Some(Audience::Public));
+    let public = collab.new_audience(repo, target, reply_to).await;
+    // what the reply would be without `--public`, for the note and for a refusal's words
+    collab.request_audience(None);
+    let default = collab.new_audience(repo, target, reply_to).await.ok();
+    let audience = match (public, default) {
+        (Ok(audience), _) => audience,
+        (Err(e), Some(default)) => return Err(public_refusal(repo, default, e)),
+        (Err(e), None) => return Err(e.into()),
+    };
+    collab.request_audience(Some(audience));
+    if let Some(default) = default {
+        if let Some(note) = public_note(repo, default, audience) {
+            eprintln!("{note}");
+        }
+    }
+    Ok(Requested {
+        audience,
+        to: String::new(),
+    })
+}
+
+/// The note printed before a reply to a thread written while `repo` was private goes out
+/// public (a non-member's by default, anyone's with `--public`).
+fn public_reply_note(repo: &RepoRef) -> String {
+    format!(
+        "note: this conversation was written while {} was private; your reply is public: everyone can read it",
+        repo.display()
+    )
+}
+
+/// The note for a public reply (`chosen`) where it would otherwise have been `default`: only on
+/// a thread of a public repository that takes public replies though its own are members-only,
+/// which is one written while the repository was private.
+fn public_note(repo: &RepoRef, default: Audience, chosen: Audience) -> Option<String> {
+    (repo.visibility == Visibility::Public
+        && default == Audience::Members
+        && chosen == Audience::Public)
+        .then(|| public_reply_note(repo))
+}
+
+/// Why `--public` was refused (`core`: what the write rule said), given what a reply without it
+/// would be. A members-only conversation written since the repository was made public keeps
+/// its replies members-only; a private repository and a conversation for specific people keep
+/// the rule's own words.
+fn public_refusal(repo: &RepoRef, default: Audience, core: forge_core::Error) -> anyhow::Error {
+    if repo.visibility != Visibility::Public || default != Audience::Members {
+        return core.into();
+    }
+    UserError::new(
+        codes::USAGE,
+        "this conversation is members-only: replies to it stay members-only",
+    )
+    .cause("it was written after the repository was made public, and everyone could read a public reply to text only members can read")
+    .fix("leave out `--public`: your reply is members-only here")
+    .note("checked before anything was signed; nothing was written or paid")
+    .into()
 }
 
 /// What [`requested`] found: the audience, and for a letter who it goes to, for the question
@@ -384,6 +459,86 @@ pub fn suffix(repo: &RepoRef, audience: Audience) -> &'static str {
         _ if marked(repo, audience) => " (members-only)",
         _ => "",
     }
+}
+
+/// How a readable document is marked in a view of a repository (DESIGN §10): what a reader is
+/// told of who can read it, and of the repository's private past.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reading {
+    /// Nothing to say: a public document, a letter (it says who it went to), or anything in a
+    /// private repository.
+    Plain,
+    /// Members-only.
+    Members,
+    /// Members-only, written while the repository was private ("Code only": its earlier
+    /// conversations stay for members).
+    MembersWhilePrivate,
+    /// Written while the repository was private, and the owner made the repository's earlier
+    /// conversations public ("Everything"): everyone can read it.
+    PublicWhilePrivate,
+}
+
+/// What `audience` and `era` (when the document was written while its repository was private)
+/// make of a document of `repo`, as a view marks it. Only a members-only document of a public
+/// repository is ever marked.
+pub fn reading(repo: &RepoRef, audience: Audience, era: Option<WhilePrivate>) -> Reading {
+    if audience != Audience::Members || repo.visibility != Visibility::Public {
+        return Reading::Plain;
+    }
+    match era {
+        None => Reading::Members,
+        Some(w) if w.published => Reading::PublicWhilePrivate,
+        Some(_) => Reading::MembersWhilePrivate,
+    }
+}
+
+impl Reading {
+    /// The words after a comment's author ("— alice (id) · members-only:") or inside the
+    /// brackets after a review ("(members-only)"), or `None` for [`Reading::Plain`].
+    pub fn words(self) -> Option<&'static str> {
+        match self {
+            Reading::Plain => None,
+            Reading::Members => Some("members-only"),
+            Reading::MembersWhilePrivate => Some("members-only · written while private"),
+            Reading::PublicWhilePrivate => Some("Public · written while private"),
+        }
+    }
+
+    /// The line under a view's title naming who can read the issue or pull request, or `None`.
+    pub fn header(self, repo: &RepoRef) -> Option<String> {
+        match self {
+            Reading::Plain => None,
+            Reading::Members => Some(format!(
+                "members-only: visible to members of {}",
+                repo.display()
+            )),
+            Reading::MembersWhilePrivate => Some(format!(
+                "members-only: visible to members of {} · written while private",
+                repo.display()
+            )),
+            Reading::PublicWhilePrivate => self.words().map(str::to_string),
+        }
+    }
+}
+
+/// [`suffix`] of a document that may have been written while its repository was private.
+pub fn suffix_of(repo: &RepoRef, audience: Audience, era: Option<WhilePrivate>) -> String {
+    match reading(repo, audience, era).words() {
+        Some(w) => format!(" ({w})"),
+        None => suffix(repo, audience).to_string(),
+    }
+}
+
+/// `--json`: whether a document of `repo` was written while it was private (its stamp says so,
+/// and the repository has since been made public).
+pub fn written_while_private(repo: &RepoRef, era: Option<WhilePrivate>) -> bool {
+    repo.visibility == Visibility::Public && era.is_some()
+}
+
+/// `--json`: whether everyone can read a document written while `repo` was private, because
+/// the owner made the repository's earlier conversations public.
+pub fn readable_by_everyone(repo: &RepoRef, era: Option<WhilePrivate>) -> bool {
+    repo.visibility == Visibility::Public && era.is_some_and(|w| w.published)
 }
 
 /// An item's audience as `--json` names it: `"public"` or `"members"` (`"specificPeople"` for a
@@ -827,6 +982,136 @@ mod tests {
         assert_eq!(prefix(&private, Audience::Members), "");
         assert_eq!(json(Audience::Members), serde_json::json!("members"));
         assert_eq!(json(Audience::Public), serde_json::json!("public"));
+    }
+
+    /// What a view says of a document written while a repository made public was private:
+    /// everyone can read it when the owner published the old conversations (Everything), else
+    /// only members, and it says so (the label's words are DESIGN §10's).
+    #[test]
+    fn a_document_written_while_private_is_labelled_by_who_can_read_it() {
+        let public = repo(Visibility::Public);
+        let private = repo(Visibility::Private);
+        let sealed = Some(WhilePrivate { published: false });
+        let published = Some(WhilePrivate { published: true });
+
+        assert_eq!(reading(&public, Audience::Members, None), Reading::Members);
+        assert_eq!(
+            reading(&public, Audience::Members, sealed),
+            Reading::MembersWhilePrivate
+        );
+        assert_eq!(
+            reading(&public, Audience::Members, published),
+            Reading::PublicWhilePrivate
+        );
+        // nothing else is marked: public items, letters, and a private repository's
+        for era in [None, sealed, published] {
+            assert_eq!(reading(&public, Audience::Public, era), Reading::Plain);
+            assert_eq!(
+                reading(&public, Audience::SpecificPeople, era),
+                Reading::Plain
+            );
+            assert_eq!(reading(&private, Audience::Members, era), Reading::Plain);
+        }
+
+        assert_eq!(
+            Reading::Members.header(&public).as_deref(),
+            Some("members-only: visible to members of o/n")
+        );
+        assert_eq!(
+            Reading::MembersWhilePrivate.header(&public).as_deref(),
+            Some("members-only: visible to members of o/n · written while private")
+        );
+        assert_eq!(
+            Reading::PublicWhilePrivate.header(&public).as_deref(),
+            Some("Public · written while private")
+        );
+        assert_eq!(Reading::Plain.header(&public), None);
+        assert_eq!(
+            [
+                Reading::Members,
+                Reading::MembersWhilePrivate,
+                Reading::PublicWhilePrivate
+            ]
+            .map(Reading::words),
+            [
+                Some("members-only"),
+                Some("members-only · written while private"),
+                Some("Public · written while private")
+            ]
+        );
+
+        // a review's and a list's mark
+        assert_eq!(
+            suffix_of(&public, Audience::Members, None),
+            " (members-only)"
+        );
+        assert_eq!(
+            suffix_of(&public, Audience::Members, published),
+            " (Public · written while private)"
+        );
+        assert_eq!(
+            suffix_of(&public, Audience::SpecificPeople, None),
+            " (to specific people)"
+        );
+        assert_eq!(suffix_of(&private, Audience::Members, sealed), "");
+
+        // `--json`
+        assert!(written_while_private(&public, sealed));
+        assert!(!readable_by_everyone(&public, sealed));
+        assert!(written_while_private(&public, published));
+        assert!(readable_by_everyone(&public, published));
+        assert!(!written_while_private(&public, None));
+        assert!(!written_while_private(&private, sealed));
+        assert!(!readable_by_everyone(&private, published));
+    }
+
+    /// `--public` says so before signing when it makes a reply public that would have been
+    /// members-only (a thread written while the repository was private), and is refused in words
+    /// of its own under a members-only conversation written since.
+    #[test]
+    fn a_public_reply_says_what_it_changes_and_why_it_is_refused() {
+        let public = repo(Visibility::Public);
+        let private = repo(Visibility::Private);
+        let note = public_note(&public, Audience::Members, Audience::Public).unwrap();
+        assert!(note.contains("written while o/n was private"), "{note}");
+        assert!(note.contains("your reply is public"), "{note}");
+        // already public: nothing to say; members-only stays quiet too
+        assert_eq!(
+            public_note(&public, Audience::Public, Audience::Public),
+            None
+        );
+        assert_eq!(
+            public_note(&public, Audience::Members, Audience::Members),
+            None
+        );
+        assert_eq!(
+            public_note(&private, Audience::Members, Audience::Public),
+            None
+        );
+
+        let core = || -> forge_core::Error {
+            UserError::new(codes::USAGE, "the write rule's words").into()
+        };
+        let refused = public_refusal(&public, Audience::Members, core());
+        let Some(u) = refused.downcast_ref::<UserError>() else {
+            panic!("not a user error: {refused}");
+        };
+        assert_eq!(u.code, codes::USAGE);
+        assert!(
+            u.message.contains("replies to it stay members-only"),
+            "{u:?}"
+        );
+        // a private repository and a conversation for specific people keep the rule's words
+        for (r, default) in [
+            (&private, Audience::Members),
+            (&public, Audience::SpecificPeople),
+        ] {
+            let kept = public_refusal(r, default, core());
+            let Some(forge_core::Error::User(u)) = kept.downcast_ref::<forge_core::Error>() else {
+                panic!("not the rule's error: {kept}");
+            };
+            assert_eq!(u.message, "the write rule's words");
+        }
     }
 
     #[test]

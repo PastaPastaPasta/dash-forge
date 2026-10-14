@@ -967,6 +967,12 @@ pub enum IssueCommand {
         /// content turned on in the repository (`dg repo members enable`).
         #[arg(long, alias = "private")]
         members: bool,
+        /// Public: everyone can read it, in a conversation written while the repository was
+        /// private (a member's reply there is members-only unless you ask for this). A
+        /// conversation written since stays members-only, and a private repository takes no
+        /// public reply.
+        #[arg(long, conflicts_with_all = ["members", "to"])]
+        public: bool,
         /// Send it to specific people only: `@alice,@bob` (DPNS names or identity ids), or a
         /// role group, `maintainers` or `writers` (writers and maintainers), as it is now. You are
         /// always included; up to 16 people. Only they can read it (everyone still sees that
@@ -1693,6 +1699,12 @@ pub struct PrCommentArgs {
     /// members-only thread replies are members-only anyway.
     #[arg(long, alias = "private")]
     pub members: bool,
+    /// Public: everyone can read it, in a conversation written while the repository was
+    /// private (a member's reply there is members-only unless you ask for this). A
+    /// conversation written since stays members-only, and a private repository takes no
+    /// public reply.
+    #[arg(long, conflicts_with_all = ["members", "to"])]
+    pub public: bool,
     /// Send it to specific people only: `@alice,@bob` (DPNS names or identity ids), or a
     /// role group, `maintainers` or `writers` (writers and maintainers), as it is now. You are
     /// always included; up to 16 people. Only they can read it (everyone still sees that
@@ -2716,6 +2728,49 @@ mod tests {
             "--remove-milestone"
         ])
         .is_err());
+    }
+
+    /// `--public` on `dg issue comment` and `dg pr comment` (a public reply on a thread written
+    /// while a repository was private) excludes `--members` and `--to`.
+    #[test]
+    fn public_replies_exclude_the_other_audiences() {
+        let issue = ["dg", "issue", "comment", "o/r", "3", "--body", "x"];
+        let pr = ["dg", "pr", "comment", "o/r", "3", "--body", "x"];
+        for base in [issue, pr] {
+            let with = |flag: &[&str]| {
+                let mut args = base.to_vec();
+                args.extend_from_slice(flag);
+                Cli::try_parse_from(args)
+            };
+            assert!(with(&["--public"]).is_ok(), "{base:?}");
+            assert!(with(&["--members"]).is_ok(), "{base:?}");
+            assert!(with(&["--public", "--members"]).is_err(), "{base:?}");
+            assert!(with(&["--public", "--private"]).is_err(), "{base:?}");
+            assert!(with(&["--public", "--to", "@bob"]).is_err(), "{base:?}");
+        }
+        let cli = Cli::try_parse_from([
+            "dg", "issue", "comment", "o/r", "3", "--body", "x", "--public",
+        ])
+        .unwrap();
+        let Command::Issue(IssueCommand::Comment {
+            public, members, ..
+        }) = cli.command
+        else {
+            panic!("not issue comment");
+        };
+        assert!(public && !members);
+        let cli =
+            Cli::try_parse_from(["dg", "pr", "comment", "o/r", "3", "--body", "x", "--public"])
+                .unwrap();
+        let Command::Pr(PrCommand::Comment(a)) = cli.command else {
+            panic!("not pr comment");
+        };
+        assert!(a.public && !a.members);
+        // no other write takes it
+        assert!(
+            Cli::try_parse_from(["dg", "issue", "create", "o/r", "--title", "t", "--public"])
+                .is_err()
+        );
     }
 
     /// `dg search`: flags after the query are flags, and a leading negation goes after `--`.
