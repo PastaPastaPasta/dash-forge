@@ -2293,12 +2293,27 @@ async fn exposure(ctx: &Ctx, repo: &str, env: &str) -> Result<()> {
     check_env_name(env)?;
     let s = Session::open(ctx, repo).await?;
     let book = book(&s).await?;
-    current(&book, &s, env)?;
+    // Two versions at once are listed together; any other reason the values can't be used
+    // stops here.
+    match book.current(env) {
+        Ok(_) | Err(Blocked::Conflict { .. }) => {}
+        Err(_) => {
+            current(&book, &s, env)?;
+        }
+    }
     let (rows, unopened) = book
         .ledger(env)
         .ok_or_else(|| missing_error(&s.repo, &book, env))?;
+    // Changes by people who aren't maintainers now are never opened, so their people are not
+    // known here (a removed maintainer's versions among them).
+    let ignored = book
+        .resolution
+        .ignored
+        .iter()
+        .filter(|i| i.reason == forge_core::env::chain::IgnoredReason::NotAMaintainer)
+        .count();
     ctx.emit(
-        json!({ "env": env, "entries": rows, "unopened": unopened }),
+        json!({ "env": env, "entries": rows, "unopened": unopened, "ignored": ignored }),
         || {
             println!(
                 "Who could read {env}'s current values in {}:",
@@ -2326,6 +2341,12 @@ async fn exposure(ctx: &Ctx, repo: &str, env: &str) -> Result<()> {
                     count(unopened, "earlier version")
                 );
             }
+            if ignored > 0 {
+                println!(
+                    "Not counted: {} in this repo by people who aren't maintainers now, which aren't opened. If one held a value that is still current, the people it was saved for could read it too.",
+                    count(ignored, "change")
+                );
+            }
             println!("{ACCESS_SENTENCE}");
         },
     );
@@ -2340,7 +2361,33 @@ async fn exposure(ctx: &Ctx, repo: &str, env: &str) -> Result<()> {
 pub async fn ci_values(ctx: &Ctx, repo: &str, env: &str) -> Result<()> {
     check_env_name(env)?;
     let s = Session::open(ctx, repo).await?;
+    // Without an encryption key nothing opens, which would read as "not shared" (E612).
+    if crate::keys::signer(&s).encryption_keys(&s.repo).is_empty() {
+        return Err(forge_core::keyring::no_encryption_key_held(&format!(
+            "read environment {env}"
+        ))
+        .into());
+    }
     let book = book(&s).await?;
+    // A version that couldn't be fetched hides its environment's name: a runner tries again
+    // rather than taking it for "not shared".
+    if matches!(book.current(env), Err(Blocked::Missing { hidden }) if hidden > 0)
+        && book
+            .opened
+            .values()
+            .any(|o| matches!(o, forge_core::env::service::Opened::Unfetched(_)))
+    {
+        return Err(UserError::new(
+            codes::PACKS_UNREADABLE,
+            format!(
+                "some environments of {} couldn't be fetched",
+                s.repo.display()
+            ),
+        )
+        .cause(format!("{env} may be one of them"))
+        .fix("check the connection and storage, then try again")
+        .into());
+    }
     let snap = current(&book, &s, env)?;
     let me = s.identity.id();
     named_for_ci(&s.repo, env, snap, &me)?;

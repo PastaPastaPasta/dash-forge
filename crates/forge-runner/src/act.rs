@@ -377,14 +377,14 @@ level=warning msg= ⚠ Apple M-series ⚠
                 ..inv(None)
             },
         );
-        let named: Vec<&String> = args
+        let given: Vec<&String> = args
             .iter()
             .enumerate()
             .filter(|(i, _)| *i > 0 && args[i - 1] == "-s")
             .map(|(_, a)| a)
             .collect();
         assert_eq!(
-            named,
+            given,
             ["GITHUB_TOKEN=", "FORGE_ENV_AB12_0", "FORGE_ENV_AB12_1"]
         );
         let values = [

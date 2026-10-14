@@ -10,9 +10,10 @@
 //! values: the names are drawn after its commit was written. A job that reads `secrets` other
 //! than by a literal name (`toJSON(secrets)`, `secrets[matrix.name]`) would see them all, so in a
 //! workflow run that carries environment values it is refused, and so is a call to a reusable
-//! workflow, which the runner does not read. Repository secrets (`secrets_file`) keep their
-//! names, so an environment's entry wins over a repository secret of the same name, as on
-//! GitHub.
+//! workflow, which the runner does not read, and an environment job's `outputs` read from
+//! `secrets`. Actions can't reach the map: act (0.2.89) refuses `secrets` in an action's
+//! `action.yml`, as GitHub does. Repository secrets (`secrets_file`) keep their names, so an
+//! environment's entry wins over a repository secret of the same name, as on GitHub.
 //!
 //! The values reach act through its environment (`-s NAME`, [`crate::act::command`]), never a
 //! file or its command line: act's `--secret-file` reader cannot hold every value (one ending in
@@ -32,15 +33,36 @@ use crate::workflow::Workflow;
 pub enum Lookup {
     /// Its entries, `(name, value)`.
     Values(Vec<(String, String)>),
-    /// It can't be given to this runner (why, as dg said it): not shared with it by name, not
-    /// there, two versions at once, or no encryption key to open it.
-    Unavailable(String),
+    /// It can't be given to this runner.
+    Unavailable {
+        /// Why, for the job's check run, which anyone may read: never the environment's
+        /// audience, people or count, which dg's own message may hold.
+        public: &'static str,
+        /// Sharing it with the runner would settle it.
+        share: bool,
+        /// dg's message, for the runner's log only.
+        detail: String,
+    },
 }
 
-/// The `dg` error codes that settle a lookup (anything else, a network failure, is tried again
-/// on the next poll): E102 not found, E306 no encryption key, E307 not openable, E608 two
-/// versions at once, E612 not shared with this identity.
-const SETTLED: [&str; 5] = ["E102", "E306", "E307", "E608", "E612"];
+/// The `dg` error codes that settle a lookup, each with the reason a check run gives (anything
+/// else, a network failure, is tried again on the next poll). Not found, not openable and not
+/// shared read the same: which one it is would tell the public about an environment it can't
+/// see.
+const SETTLED: [(&str, &str); 6] = [
+    ("E102", NOT_SHARED),
+    ("E307", NOT_SHARED),
+    ("E612", NOT_SHARED),
+    (
+        "E608",
+        "two maintainers saved it at once, and one version must be kept first",
+    ),
+    ("E306", "the runner's key holds no encryption key"),
+    ("E201", "the runner's dg has no `dg ci env`; update dg"),
+];
+
+/// The public reason for an environment the runner can't read.
+const NOT_SHARED: &str = "it isn't shared with this runner by name, or doesn't exist";
 
 /// Read `dg --json ci env`'s answer: its entries, a settled refusal, or an error to retry.
 pub fn parse_lookup(ok: bool, stdout: &str, stderr: &str) -> Result<Lookup> {
@@ -59,12 +81,17 @@ pub fn parse_lookup(ok: bool, stdout: &str, stderr: &str) -> Result<Lookup> {
         return Ok(Lookup::Values(out));
     }
     let err = &v["error"];
-    if let Some(code) = err["code"].as_str().filter(|c| SETTLED.contains(c)) {
+    let code = err["code"].as_str().unwrap_or_default();
+    if let Some((_, public)) = SETTLED.iter().find(|(c, _)| *c == code) {
         let msg = err["message"].as_str().unwrap_or("not available");
-        let why = err["cause"]
+        let detail = err["cause"]
             .as_str()
             .map_or_else(|| msg.to_string(), |c| format!("{msg}: {c}"));
-        return Ok(Lookup::Unavailable(format!("{why} [{code}]")));
+        return Ok(Lookup::Unavailable {
+            public,
+            share: *public == NOT_SHARED,
+            detail: format!("{detail} [{code}]"),
+        });
     }
     let said = if stderr.trim().is_empty() {
         stdout.chars().take(600).collect::<String>()
@@ -194,10 +221,17 @@ fn scan_expr(expr: &str, base: usize, out: &mut Reads) {
 }
 
 /// The expressions of a string value: each `${{ … }}`, or the whole string for a bare `if:`.
+/// act reads an `if:` as one expression unless it holds both `${{` and `}}`; such an `if:` is
+/// also scanned whole for a whole read, so text that fools one reading is caught by the other.
 fn scan_text(text: &str, bare: bool, out: &mut Reads) {
-    if bare && !text.contains("${{") {
-        scan_expr(text, 0, out);
-        return;
+    if bare {
+        if !(text.contains("${{") && text.contains("}}")) {
+            scan_expr(text, 0, out);
+            return;
+        }
+        let mut whole = Reads::default();
+        scan_expr(text, 0, &mut whole);
+        out.whole |= whole.whole;
     }
     let mut from = 0;
     while let Some(open) = text[from..].find("${{") {
@@ -246,6 +280,13 @@ fn reads_whole(v: &Value) -> bool {
     let mut r = Reads::default();
     scan_value(v, false, &mut r);
     r.whole
+}
+
+/// Whether `v` reads `secrets` at all.
+fn reads_any(v: &Value) -> bool {
+    let mut r = Reads::default();
+    scan_value(v, false, &mut r);
+    r.whole || !r.names.is_empty()
 }
 
 /// Rewrite every literal read of a name `renamed` holds (by its upper-case form) to the new name.
@@ -348,27 +389,12 @@ pub fn apply(
             continue;
         };
         let job = &wf.doc["jobs"][&j.id];
-        j.refused = if outside_whole {
-            Some(format!("names environment {env}, but the workflow reads `secrets` as a whole outside its jobs, which would hand every job its values"))
-        } else if job.get("uses").is_some() {
-            Some(format!("names environment {env} and calls a reusable workflow, which the runner does not read"))
-        } else if reads_whole(job) {
-            Some(format!("names environment {env} but reads `secrets` as a whole, not by name (`secrets.NAME`), which would hand it other environments' values too"))
-        } else {
-            match looked.get(env) {
-                Some(Lookup::Values(v)) => match unusable(v) {
-                    Some(why) => Some(format!("environment {env} {why}")),
-                    None => {
-                        values.insert(env, v);
-                        None
-                    }
-                },
-                Some(Lookup::Unavailable(why)) => Some(format!(
-                    "environment {env} can't be read by this runner: {why}. A maintainer shares it with the runner's identity: `dg env share --env {env} <runner>`"
-                )),
-                None => Some(format!("environment {env} was not looked up")),
+        match env_values(job, env, outside_whole, looked.get(env)) {
+            Ok(v) => {
+                values.insert(env, v);
             }
-        };
+            Err(why) => j.refused = Some(why),
+        }
     }
     if values.is_empty() {
         return given;
@@ -386,24 +412,7 @@ pub fn apply(
             j.refused = Some("reads `secrets` as a whole, not by name (`secrets.NAME`), in a workflow whose other jobs get an environment's values".into());
         }
     }
-    let mut renamed: BTreeMap<&str, BTreeMap<String, String>> = BTreeMap::new();
-    let mut n = 0usize;
-    for (env, entries) in &values {
-        let mut names = BTreeMap::new();
-        for (name, value) in entries.iter() {
-            // GitHub reserves the GITHUB_ prefix; the runner sets GITHUB_TOKEN itself.
-            if name.to_ascii_uppercase().starts_with("GITHUB_") {
-                continue;
-            }
-            let new = format!("FORGE_ENV_{nonce}_{n}");
-            n += 1;
-            if !value.is_empty() {
-                given.secrets.push((new.clone(), value.clone()));
-            }
-            names.insert(name.to_ascii_uppercase(), new);
-        }
-        renamed.insert(env, names);
-    }
+    let renamed = rename(&values, nonce, &mut given.secrets);
     let jobs = wf.doc.get_mut("jobs").and_then(Value::as_object_mut);
     for (id, job) in jobs.into_iter().flatten() {
         let Some(map) = env_of.get(id).and_then(|e| renamed.get(e.as_str())) else {
@@ -418,6 +427,68 @@ pub fn apply(
     }
     wf.trimmed = true;
     given
+}
+
+/// The values a job naming `env` gets, or why it is refused: a whole read of `secrets` outside
+/// the jobs (`outside_whole`) or in the job, a reusable workflow, `outputs` that read `secrets`
+/// (they would carry a value to jobs without the environment), or an environment the runner
+/// can't give it.
+fn env_values<'l>(
+    job: &Value,
+    env: &str,
+    outside_whole: bool,
+    looked: Option<&'l Lookup>,
+) -> Result<&'l [(String, String)], String> {
+    if outside_whole {
+        return Err(format!("names environment {env}, but the workflow reads `secrets` as a whole outside its jobs, which would hand every job its values"));
+    }
+    if job.get("uses").is_some() {
+        return Err(format!(
+            "names environment {env} and calls a reusable workflow, which the runner does not read"
+        ));
+    }
+    if reads_whole(job) {
+        return Err(format!("names environment {env} but reads `secrets` as a whole, not by name (`secrets.NAME`), which would hand it other environments' values too"));
+    }
+    if job.get("outputs").is_some_and(reads_any) {
+        return Err(format!("names environment {env} and sets `outputs` from `secrets`, which would hand its values to other jobs"));
+    }
+    match looked {
+        Some(Lookup::Values(v)) => unusable(v).map_or(Ok(v), |why| Err(format!("environment {env} {why}"))),
+        Some(Lookup::Unavailable { public, share: true, .. }) => Err(format!("environment {env} can't be read by this runner: {public}. A maintainer shares it with the runner's identity: `dg env share --env {env} <runner>`")),
+        Some(Lookup::Unavailable { public, .. }) => {
+            Err(format!("environment {env} can't be read by this runner: {public}"))
+        }
+        None => Err(format!("environment {env} was not looked up")),
+    }
+}
+
+/// This run's name for each entry of each environment in `values` (by its upper-case name), and
+/// the non-empty values under those names in `secrets`. Names with GitHub's reserved `GITHUB_`
+/// prefix are left out (the runner sets `GITHUB_TOKEN` itself).
+fn rename<'v>(
+    values: &BTreeMap<&'v str, &[(String, String)]>,
+    nonce: &str,
+    secrets: &mut Vec<(String, String)>,
+) -> BTreeMap<&'v str, BTreeMap<String, String>> {
+    let mut n = 0usize;
+    let mut out = BTreeMap::new();
+    for (env, entries) in values {
+        let mut names = BTreeMap::new();
+        for (name, value) in *entries {
+            if name.to_ascii_uppercase().starts_with("GITHUB_") {
+                continue;
+            }
+            let new = format!("FORGE_ENV_{nonce}_{n}");
+            n += 1;
+            if !value.is_empty() {
+                secrets.push((new.clone(), value.clone()));
+            }
+            names.insert(name.to_ascii_uppercase(), new);
+        }
+        out.insert(*env, names);
+    }
+    out
 }
 
 /// Why entries can't be given to act: two names that differ only in letter case (act's and
@@ -499,6 +570,9 @@ mod tests {
             "a bare if:"
         );
         assert!(reads("contains(toJSON(secrets), 'x')", true).whole);
+        // act reads this `if:` whole (no `}}`), so the string after `${{` is no hiding place.
+        assert!(reads("contains(toJSON(secrets), 'a') || '${{' == ''", true).whole);
+        assert!(reads("${{ true }} && contains(toJSON(secrets), 'a')", true).whole);
         assert!(
             reads("toJSON(secrets)", false).names.is_empty()
                 && !reads("toJSON(secrets)", false).whole,
@@ -672,7 +746,12 @@ jobs:
             ("staging", vals(&[("DB_URL", "s")])),
             (
                 "production",
-                Lookup::Unavailable("not shared [E612]".into()),
+                parse_lookup(
+                    false,
+                    r#"{"error":{"code":"E612","message":"m","cause":"Writers and maintainers"}}"#,
+                    "",
+                )
+                .unwrap(),
             ),
         ]);
         let g = apply(&mut w, true, &l, "N");
@@ -746,6 +825,29 @@ jobs:
         );
     }
 
+    /// An environment job's `outputs` would carry a value on to jobs without the environment.
+    #[test]
+    fn outputs_read_from_secrets_are_refused() {
+        let text = WF.replace(
+            "    environment: staging\n",
+            "    environment: staging\n    outputs:\n      leak: ${{ secrets.DB_URL }}\n",
+        );
+        let l = looked(&[
+            ("staging", vals(&[("DB_URL", "s")])),
+            ("production", vals(&[("DB_URL", "p")])),
+        ]);
+        let mut w = wf(&text);
+        apply(&mut w, true, &l, "N");
+        let r = w
+            .jobs
+            .iter()
+            .find(|j| j.id == "staging")
+            .unwrap()
+            .refused
+            .clone();
+        assert!(r.unwrap().contains("`outputs`"));
+    }
+
     #[test]
     fn dg_answers_are_read() {
         let ok = r#"{"env":"p","entries":[{"name":"A","type":"secret","value":"1"}]}"#;
@@ -755,11 +857,25 @@ jobs:
         );
         let refused = r#"{"error":{"code":"E612","message":"x has no environment p shared with this runner","cause":"p reaches it only through its group"}}"#;
         match parse_lookup(false, refused, "").unwrap() {
-            Lookup::Unavailable(why) => {
-                assert!(why.contains("only through its group") && why.ends_with("[E612]"))
+            Lookup::Unavailable {
+                public,
+                share,
+                detail,
+            } => {
+                assert!(detail.contains("only through its group") && detail.ends_with("[E612]"));
+                assert!(
+                    share && !public.contains("group"),
+                    "the public reason says nothing of the audience"
+                );
             }
             other @ Lookup::Values(_) => panic!("{other:?}"),
         }
+        let conflict =
+            r#"{"error":{"code":"E608","message":"2 people changed p at the same time"}}"#;
+        assert!(matches!(
+            parse_lookup(false, conflict, "").unwrap(),
+            Lookup::Unavailable { share: false, .. }
+        ));
         let net = r#"{"error":{"code":"E701","message":"no node answered"}}"#;
         assert!(
             parse_lookup(false, net, "").is_err(),

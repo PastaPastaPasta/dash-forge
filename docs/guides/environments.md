@@ -211,7 +211,7 @@ Who could read production's current values in alice/shop:
 Access is granted, not logged.
 ```
 
-A value counts everyone each version holding it was saved for, so a value someone could read last year is listed with them until it changes. A version saved in the old format adds "anyone who held the members key". Versions you can't open are counted below the list, without their people.
+A value counts everyone each version holding it was saved for, so a value someone could read last year is listed with them until it changes. A version saved in the old format adds "anyone who held the members key". Versions you can't open, and changes by people who aren't maintainers now (a removed maintainer's, for example), are counted below the list, without their people.
 
 ## What is public
 

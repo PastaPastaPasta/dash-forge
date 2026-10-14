@@ -126,10 +126,12 @@ jobs:
 - **A job reads only its own environment.** act gives every job of a workflow file one set of secrets, so the runner renames each environment's entries for this run (random names, drawn after the commit was written) and rewrites `secrets.NAME` and `secrets['NAME']` in the copy of the workflow act reads, for the jobs that name that environment. An entry wins over a `secrets_file` secret of the same name. Entries whose names start with `GITHUB_` are left out, as GitHub reserves them.
 - **Refused, with the reason as the check:**
   - an `environment:` built by an expression (`${{ matrix.env }}`), or a name that isn't an environment name;
-  - on a trusted run, an environment the runner can't read: not shared with it by name, not there, changed by two maintainers at once, or no encryption key;
-  - when a run carries an environment's values, any job of that workflow that reads `secrets` other than by name (`toJSON(secrets)`, `secrets[matrix.name]`) or calls a reusable workflow, and every job naming an environment when the workflow's own `env:` or `run-name` reads `secrets` as a whole.
+  - on a trusted run, an environment the runner can't read: not shared with it by name or not there (the check says the same for both, so it tells the public nothing about environments it can't see), saved by two maintainers at once, or no encryption key in `DASH_FORGE_KEY`. A lookup that fails for another reason (the network, storage) reports nothing, and the push is tried again on the next poll;
+  - when a run carries an environment's values, any job of that workflow that reads `secrets` other than by name (`toJSON(secrets)`, `secrets[matrix.name]`) or calls a reusable workflow, and every job naming an environment when the workflow's own `env:` or `run-name` reads `secrets` as a whole;
+  - a job naming an environment whose `outputs` read `secrets`.
 - **Values stay off disk and off the command line.** They reach act through its environment (a bare `-s NAME` each), never a file, so any value works: quotes, backslashes, several lines.
-- **Masked in logs.** Every value of 4 characters or more, secret or plain setting, is masked in job logs, and each line of a value of several lines too. Summaries say "with its environment's values" without naming them.
+- **Masked in logs.** Every value, secret or plain setting, is masked in job logs by act; before a log is uploaded the runner masks again every value of 4 characters or more, and each line of a value of several lines. Summaries say "with its environment's values" without naming them.
+- **Actions can't reach them.** act refuses `secrets` in an action's own `action.yml`, as GitHub does, so an action gets only what a step passes it. A job naming an environment can't set `outputs` from `secrets`: they would carry a value on to other jobs.
 - **Taking it away.** `dg env unshare --env production <runner>` stops the runner reading later values and lists the ones it could read. A compromised runner host has every value it was ever given: change them where they're used.
 
 ## Set it up

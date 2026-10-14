@@ -1031,7 +1031,7 @@ fn look_up_environments(
         .into_iter()
         .map(|env| {
             let found = read_environment(cfg, repo, &env)?;
-            if let envs::Lookup::Unavailable(why) = &found {
+            if let envs::Lookup::Unavailable { detail: why, .. } = &found {
                 eprintln!(
                     "forge-runner: {}: environment {env} not given: {why}",
                     repo.repo
@@ -1228,6 +1228,7 @@ fn skip_filtered(
 
 /// Run one workflow file with act (its refused jobs reported, not run) and report its jobs.
 /// `given`: what its jobs' environments give ([`envs::apply`]).
+#[allow(clippy::too_many_lines)]
 fn run_workflow(
     c: &RunCtx<'_>,
     wf: &workflow::Workflow,

@@ -41,13 +41,18 @@
     "unopened": {
       "type": "integer",
       "description": "Versions of the environment you can't open; the people they were saved for are not counted."
+    },
+    "ignored": {
+      "type": "integer",
+      "description": "Changes in the repository by people who aren't maintainers now, which are never opened; the people they were saved for are not counted."
     }
   },
   "required": [
     "schemaVersion",
     "env",
     "entries",
-    "unopened"
+    "unopened",
+    "ignored"
   ],
   "additionalProperties": true
 }
