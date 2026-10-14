@@ -239,6 +239,13 @@ A clone or fetch of a **public repository that was private before** stops with E
 
 **What to do:** ask a maintainer to share it: **Repair** on the repo page, or `dg repo keys repair <owner>/<repo>`. Nothing shares it automatically. If your identity has no encryption key yet, add one first: `dg auth keys add --encryption`.
 
+**A bot** never gets the members key, and sees E311 in its own cases:
+
+- *No key for its members-only posts yet*: a maintainer sends a bot its own key whenever the members key changes. **What to do:** a maintainer runs `dg repo keys repair <owner>/<repo>`.
+- *A reply on a members-only issue or pull request nothing in which has been shared with it* ("nothing members-only in pull request #3 of o/r has been shared with you"): a bot reads, and replies on, a members-only conversation only once someone with Write access asks it there, and then reads what was shared with it at that moment. A reply to a members-only comment written or changed after it was asked is refused the same way. **What to do:** someone with Write access asks it there: `dg bot ask <owner>/<repo> @<bot> "<task>" --pr 3` (or `--issue 3`). A runner passes the id of the request it answers: `dg pr comment … --members --job <request id>`.
+
+Nothing was signed in either case.
+
 ## E312
 
 **Members-only content is not turned on.** You asked for members-only content (an issue, comment or review only members can read) in a public repository where no maintainer has turned it on.
@@ -601,7 +608,7 @@ pre-push: E810 refs/heads/main contains members-only commits from dash://o/r; no
           git push --no-verify publishes them
 ```
 
-The hook is installed the first time a clone fetches members-only branches. It reads the clone's record of members-only commits, so it works without your key and for every remote. A `pre-push` hook you already had keeps running after it. The same code also says when members-only branches aren't fetched yet: when `core.hooksPath` points at a hooks directory Forge doesn't change on its own (run `dg doctor --install-hook` to add the hook there), or when another `git-remote-dash` comes first on your `PATH` (git would run that one, which may not check pushes).
+The hook is installed the first time a clone fetches members-only branches (by the fetch itself: `git ls-remote` in a clone that already has refs installs nothing, and a repository that is not a clone of that dash remote, one where you ran `git fetch dash://…` or `git ls-remote dash://…` by URL, never gets it; members-only branches aren't fetched there or pushed from there). It reads the clone's record of members-only commits, so it works without your key and for every remote. A `pre-push` hook you already had keeps running after it. The same code also says when members-only branches aren't fetched yet: when `core.hooksPath` points at a hooks directory Forge doesn't change on its own (run `dg doctor --install-hook` to add the hook there), or when another `git-remote-dash` comes first on your `PATH` (git would run that one, which may not check pushes).
 
 **What to do:** push only branches that don't hold members-only commits, or publish them first with `dg publish`. `git push --no-verify` skips the hook and publishes the commits to that remote. That is a publication, and no check can stop it.
 

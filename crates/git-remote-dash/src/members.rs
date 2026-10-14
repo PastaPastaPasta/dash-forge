@@ -1198,12 +1198,26 @@ pub fn hooks_dir() -> Result<PathBuf> {
     })
 }
 
-/// Why this clone may not hold members-only branches yet (fetch them, or push the first one), or
-/// `None` when it may: the `pre-push` hook is in place (installed now in the repository's own
-/// hooks directory), and git runs this helper.
-pub fn hook_blocked() -> Option<UserError> {
+/// Where this clone stands on the `pre-push` hook, read without writing anything.
+pub enum HookState {
+    /// This helper's hook is in place (current), and git runs this helper.
+    Ready,
+    /// Not in place, and the helper may put it in the repository's own hooks directory.
+    Installable {
+        /// The hooks directory.
+        dir: PathBuf,
+        /// This helper, which the hook runs.
+        me: PathBuf,
+    },
+    /// Members-only branches can't be held here yet: why, and what to do.
+    Blocked(UserError),
+}
+
+/// [`HookState`] of the repository git runs this helper in: another `git-remote-dash` first on
+/// `PATH`, a `core.hooksPath` other repositories may share, or no hooks directory block it.
+pub fn hook_state() -> HookState {
     if let Some((first, me)) = helper_mismatch() {
-        return Some(
+        return HookState::Blocked(
             UserError::new(
                 codes::MEMBERS_ONLY_TO_OTHER_REMOTE,
                 "members-only branches aren't fetched: another git-remote-dash comes first on PATH",
@@ -1219,13 +1233,13 @@ pub fn hook_blocked() -> Option<UserError> {
     let me = this_helper().unwrap_or_else(|| PathBuf::from("git-remote-dash"));
     let dir = match hooks_dir() {
         Ok(d) => d,
-        Err(e) => return Some(hook_error(&format!("{e:#}"))),
+        Err(e) => return HookState::Blocked(hook_error(&format!("{e:#}"))),
     };
     if hook::status(&dir, &me) == (hook::Status::Ours { current: true }) {
-        return None;
+        return HookState::Ready;
     }
     if config_get("core.hooksPath").is_some() {
-        return Some(
+        return HookState::Blocked(
             UserError::new(
                 codes::MEMBERS_ONLY_TO_OTHER_REMOTE,
                 "members-only branches aren't fetched until a pre-push hook protects them",
@@ -1237,13 +1251,40 @@ pub fn hook_blocked() -> Option<UserError> {
             .fix("dg doctor --install-hook     # adds the hook there, keeping any pre-push hook it finds"),
         );
     }
-    match hook::install(&dir, &me) {
-        Ok(done) => {
-            tracing::info!(?done, dir = %dir.display(), "pre-push hook in place");
-            None
-        }
-        Err(e) => Some(hook_error(&e.to_string())),
+    HookState::Installable { dir, me }
+}
+
+/// Why this clone may not hold members-only branches yet (fetch them, or push the first one), or
+/// `None` when it may: the `pre-push` hook is in place (installed now in the repository's own
+/// hooks directory), and git runs this helper. Only for a clone of the dash remote it serves
+/// ([`crate::git::LocalRepo::is_clone_of`]), and only once refs or a push are written: a `list`
+/// alone may be `git ls-remote`.
+pub fn hook_blocked() -> Option<UserError> {
+    match hook_state() {
+        HookState::Ready => None,
+        HookState::Blocked(e) => Some(e),
+        HookState::Installable { dir, me } => match hook::install(&dir, &me) {
+            Ok(done) => {
+                tracing::info!(?done, dir = %dir.display(), "pre-push hook in place");
+                None
+            }
+            Err(e) => Some(hook_error(&e.to_string())),
+        },
     }
+}
+
+/// E810 for a repository that is not a clone of the dash remote it is asked about (a bare
+/// `git fetch dash://…` or `git push dash://…` in another repository): members-only branches
+/// are fetched and pushed only from a clone, where the `pre-push` hook guards them.
+pub fn not_a_clone(url: &str) -> UserError {
+    UserError::new(
+        codes::MEMBERS_ONLY_TO_OTHER_REMOTE,
+        "members-only branches are fetched and pushed only from a clone of this repository",
+    )
+    .cause(format!("no remote of this repository has the URL {url}"))
+    .fix(format!(
+        "git clone {url}     # or: git remote add <name> {url}, then fetch that remote"
+    ))
 }
 
 fn hook_error(why: &str) -> UserError {

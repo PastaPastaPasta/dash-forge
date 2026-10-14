@@ -20,13 +20,15 @@ use anyhow::{Context as _, Result};
 use clap::{Args, Subcommand, ValueEnum};
 use serde_json::json;
 
-use forge_core::collab::v2::{AskPlan, JobContent, NotShared, SharedCode, TargetKind};
+use forge_core::collab::v2::{AskPlan, Collab, JobContent, NotShared, SharedCode, TargetKind};
 use forge_core::private::access_notice::{
     self, AccessNotice, Askers, Threads, MAY_CI_MEMBERS_BRANCHES, MAY_POST, MAY_POST_MEMBERS_ONLY,
     MAY_PUSH, MAY_READ_ON_REQUEST, PUSH_FIELD, PUSH_POLICY_FIELD,
 };
+use forge_core::private::key_letter::ReadTarget;
 use forge_core::private::DocKind;
 use forge_core::rules::v2::{Role, Visibility};
+use forge_core::scope::RepoRef;
 use forge_core::user_error::{codes, UserError};
 
 use crate::common::{resolve_identity, Session};
@@ -1164,6 +1166,74 @@ async fn read(ctx: &Ctx, repo: &str, job: &str, code: Option<&Path>, public: boo
     Ok(())
 }
 
+/// A reply on issue or pull request `target` of `repo` by a signer with the Bot role (§22.3,
+/// §23): its `read` letter for the thread ([`Collab::reply_letter`]: the request `job`'s when
+/// given, else the newest naming the thread) is given to `collab`, so the members-only posts it
+/// lists open and the reply is written under the bot's post key, never needing the members key;
+/// `Ok(true)`. A bot with no letter for the thread is refused before anything is signed (E311).
+/// `Ok(false)` for anyone else, with or without `job`: a member reads with the members key, as
+/// before.
+pub(crate) async fn reply_letter(
+    collab: &Collab<'_>,
+    repo: &RepoRef,
+    target: ReadTarget,
+    job: Option<&str>,
+) -> Result<bool> {
+    if collab.cached_role(repo).await? != Some(Role::Bot) {
+        return Ok(false);
+    }
+    if let Some(j) = job {
+        crate::common::document_id_arg(j, "request id", "`dg bot jobs <owner>/<repo>`")?;
+    }
+    let Some(l) = collab.reply_letter(repo, target, job).await? else {
+        return Err(forge_core::collab::v2::not_asked_here(repo, target, job).into());
+    };
+    collab.use_read_letter(repo, l.letter)?;
+    Ok(true)
+}
+
+/// A bot's `--reply-to` comment `reply` of thread `target` (document `target_id`) of `repo`: it
+/// replies only to what it can read, a public comment or one its `read` letter lists (looked up
+/// now, when `letter` is false and the comment is members-only), else it is refused before
+/// anything is signed ([`comment_not_shared`]). Nothing is read for anyone but a bot.
+pub(crate) async fn require_reply_shared(
+    collab: &Collab<'_>,
+    repo: &RepoRef,
+    target: (ReadTarget, &str),
+    reply: &str,
+    letter: bool,
+) -> Result<()> {
+    if !letter && collab.cached_role(repo).await? != Some(Role::Bot) {
+        return Ok(());
+    }
+    let (thread, target_id) = target;
+    let unopened = || async {
+        let (_, sealed, _) = collab.comments_read(repo, target_id).await?;
+        Ok::<bool, anyhow::Error>(sealed.iter().any(|m| m.document_id == reply))
+    };
+    if !unopened().await? {
+        return Ok(());
+    }
+    if !letter && reply_letter(collab, repo, thread, None).await? && !unopened().await? {
+        return Ok(());
+    }
+    Err(comment_not_shared(reply))
+}
+
+/// A bot's `--reply-to` a members-only comment its `read` letter does not open: written or
+/// edited after it was asked, or not shared with it.
+pub(crate) fn comment_not_shared(comment: &str) -> anyhow::Error {
+    UserError::new(
+        codes::NO_KEY_SHARED,
+        format!("comment {} hasn't been shared with you", safe(comment)),
+    )
+    .cause("it is members-only, and it was written or changed after you were asked, or left out of what was shared")
+    .fix("reply to the conversation itself (without --reply-to)")
+    .fix("or have someone with Write access ask you again: that shares what is there now")
+    .note("checked before anything was signed; nothing was written or paid")
+    .into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1179,5 +1249,28 @@ mod tests {
         assert!(parse_until("2026-04-31").is_err());
         assert!(parse_until("2025-13-01").is_err());
         assert!(parse_until("tomorrow").is_err());
+    }
+
+    /// A bot's reply to a members-only comment its request did not share is refused before
+    /// signing, as E311, in plain words.
+    #[test]
+    fn a_bots_reply_to_a_comment_not_shared_is_refused_in_plain_words() {
+        let e = comment_not_shared("C1");
+        let u = e.downcast_ref::<UserError>().expect("a user error");
+        assert_eq!(u.code, codes::NO_KEY_SHARED);
+        let all = format!("{u} {}", u.fix.join(" ")).to_lowercase();
+        assert!(all.contains("c1") && all.contains("--reply-to"), "{all}");
+        for banned in [
+            "sealed",
+            "lane",
+            "named",
+            "restricted",
+            "reveal",
+            "epoch",
+            "key letter",
+            "disclosure",
+        ] {
+            assert!(!all.contains(banned), "{banned} in {all}");
+        }
     }
 }
