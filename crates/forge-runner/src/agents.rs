@@ -190,6 +190,16 @@ pub enum Mode {
     Public,
 }
 
+impl Mode {
+    /// The word the outcome and the job file give it.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Members => "members",
+            Self::Public => "public",
+        }
+    }
+}
+
 /// Whether and how a request is worked on (DESIGN §4.9 "Run only proper requests"), from the
 /// thread as everyone reads it (`t`, no letter opened) and whether the asker wrote the bot a
 /// letter for it (`letter`): `Err` says why it is not.
@@ -242,6 +252,16 @@ pub enum Audience {
     Public,
     /// The repository's members.
     Members,
+}
+
+impl Audience {
+    /// The word the outcome gives it.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Public => "public",
+            Self::Members => "members",
+        }
+    }
 }
 
 /// Who the job's posts are for (DESIGN §4.9 "Taint"): what the agent asked for (`requested`),
@@ -452,10 +472,7 @@ pub fn work(cfg: &Config, repo: &RepoConfig, bot: &str, row: &JobRow, dir: &Path
             }
         },
     };
-    out.mode = Some(match mode {
-        Mode::Members => "members",
-        Mode::Public => "public",
-    });
+    out.mode = Some(mode.label());
     out.tainted = tainted(mode, &thread);
     let endpoints = match endpoints_for(a, access.processor.as_deref()) {
         Ok(e) => e,
@@ -508,20 +525,17 @@ pub fn work(cfg: &Config, repo: &RepoConfig, bot: &str, row: &JobRow, dir: &Path
         .processor
         .as_deref()
         .and_then(|p| a.services.get(p))
-        .and_then(|s| s.env_file.clone());
-    let ran = run_agent(a, &row.id, dir, endpoints, service_env.as_deref())?;
+        .and_then(|s| s.env_file.as_deref());
+    let ran = run_agent(a, &row.id, dir, endpoints, service_env)?;
     out.exit = ran.exit;
     out.timed_out = ran.timed_out;
     out.egress = egress::summary(&ran.egress);
     if ran.timed_out || ran.exit != Some(0) {
-        out.refused = Some(format!(
-            "the agent {}; nothing was posted",
-            if ran.timed_out {
-                "ran out of time".to_string()
-            } else {
-                format!("exited with {:?}", ran.exit)
-            }
-        ));
+        out.refused = Some(if ran.timed_out {
+            "the agent ran out of time; nothing was posted".into()
+        } else {
+            format!("the agent exited with {:?}; nothing was posted", ran.exit)
+        });
         return Ok(out);
     }
     let result = outdir.join("result.json");
@@ -557,10 +571,7 @@ pub fn work(cfg: &Config, repo: &RepoConfig, bot: &str, row: &JobRow, dir: &Path
             return Ok(out);
         }
     };
-    out.audience = Some(match audience {
-        Audience::Public => "public",
-        Audience::Members => "members",
-    });
+    out.audience = Some(audience.label());
     post(cfg, repo, &thread, audience, &output, &mut out);
     Ok(out)
 }
@@ -578,12 +589,15 @@ enum Read<'a> {
 /// where a pull request comes from is refused: the runner would take the missing answers for
 /// "public" and "not a fork".
 fn read_thread(cfg: &Config, repo: &RepoConfig, job: &str, how: Read<'_>) -> Result<Thread> {
-    let mut args = vec!["bot".to_string(), "read".into(), repo.repo.clone(), job.into()];
+    let code_dir;
+    let mut args = vec!["bot", "read", repo.repo.as_str(), job];
     match how {
-        Read::Public => args.push("--public".into()),
-        Read::Letter(dir) => args.extend(["--code".into(), dir.display().to_string()]),
+        Read::Public => args.push("--public"),
+        Read::Letter(dir) => {
+            code_dir = dir.display().to_string();
+            args.extend(["--code", code_dir.as_str()]);
+        }
     }
-    let args: Vec<&str> = args.iter().map(String::as_str).collect();
     thread_of(run::dg_read_keyed(cfg, true, &args)?)
 }
 
@@ -676,7 +690,7 @@ fn prepare_code(
     }
     if t.is_pull() {
         let pr = run::view_pull_public(cfg, repo, u64::from(t.number))?;
-        let Some(src) = pr.source_ref_name.clone().filter(|_| pr.is_public()) else {
+        let Some(src) = pr.source_ref_name.as_deref().filter(|_| pr.is_public()) else {
             return Ok(None);
         };
         let url = repo.pull_source_url(&pr);
@@ -704,7 +718,7 @@ struct AgentRun {
     egress: Vec<egress::Attempt>,
 }
 
-/// `docker` with `args`, its output ignored; `Err` when it fails.
+/// `docker` with `args`, its stdout; `Err` when it fails.
 fn docker(a: &Agents, args: &[&str]) -> Result<String> {
     let mut c = Command::new(&a.docker);
     c.args(args);
@@ -831,6 +845,11 @@ fn check_docker(a: &Agents) -> Result<()> {
     Ok(())
 }
 
+/// `job` (an event id) as a file or container name part: its alphanumeric characters.
+pub fn safe_id(job: &str) -> String {
+    job.chars().filter(char::is_ascii_alphanumeric).collect()
+}
+
 /// The prefix of everything a job starts on the Docker daemon.
 const DOCKER_PREFIX: &str = "forge-agent-";
 
@@ -863,16 +882,12 @@ fn run_agent(
     env_file: Option<&Path>,
 ) -> Result<AgentRun> {
     check_docker(a)?;
-    let short: String = job.chars().filter(char::is_ascii_alphanumeric).take(12).collect();
+    let short: String = safe_id(job).chars().take(12).collect();
     let tag = format!("{}-{}", short.to_ascii_lowercase(), std::process::id());
     // the agent's network has no way out and no gateway into the host; the relay's own uplink
     // is a network of its own, so no other container (a CI job) reaches the relay
-    let (net, uplink, relay, agent) = (
-        format!("{DOCKER_PREFIX}{tag}"),
-        format!("{DOCKER_PREFIX}{tag}-up"),
-        format!("{DOCKER_PREFIX}{tag}-relay"),
-        format!("{DOCKER_PREFIX}{tag}-run"),
-    );
+    let named = |suffix: &str| format!("{DOCKER_PREFIX}{tag}{suffix}");
+    let (net, uplink, relay, agent) = (named(""), named("-up"), named("-relay"), named("-run"));
     let proxy = Proxy::start(&a.proxy_listen, endpoints, &dir.join("egress.log"))?;
     let cleanup = || {
         let _ = docker(a, &["rm", "-f", &agent]);
@@ -1039,11 +1054,10 @@ fn post(
 
 /// Where a job's outcome is kept: `<state>/agents/<owner>__<name>/<job>.json`.
 pub fn outcome_path(cfg: &Config, repo: &RepoConfig, job: &str) -> PathBuf {
-    let safe: String = job.chars().filter(char::is_ascii_alphanumeric).collect();
     cfg.state_dir
         .join("agents")
         .join(repo.repo.replace('/', "__"))
-        .join(format!("{safe}.json"))
+        .join(format!("{}.json", safe_id(job)))
 }
 
 /// Keep `o` and its egress log (`egress.log` in `dir`) beside it, and say what happened.

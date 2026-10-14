@@ -600,12 +600,12 @@ impl Collab<'_> {
 
     /// After a members-only push of `branches` (full names of members-key branches of public
     /// `repo`, each with the tip pushed), a `branch` letter of each branch as it is now (at that
-    /// tip, else it is `lagging`) to every runner bot whose access
-    /// lets it run checks on members-only branches (DESIGN §4.9, `private-repos.md` §22.4): the
-    /// snapshot `dg branch share` hands on ([`crate::members_git::share::snapshot`]), read in the
-    /// clone at `cwd` with the members key `kr`, sealed to the signer and the bot. Only a
-    /// maintainer's or a Write member's letter counts for its bot, so anyone else writes none.
-    /// It never fails the push it follows: what was written and what was not are returned.
+    /// tip, else it is `lagging`) to every runner bot whose access lets it run checks on
+    /// members-only branches (DESIGN §4.9, `private-repos.md` §22.4): the snapshot
+    /// `dg branch share` hands on ([`crate::members_git::share::snapshot`]), read in the clone at
+    /// `cwd` with the members key `kr`, sealed to the signer and the bot. Only a maintainer's or a
+    /// Write member's letter counts for its bot, so anyone else writes none. It never fails the
+    /// push it follows: what was written and what was not are returned.
     pub async fn letter_ci_bots(
         &self,
         repo: &RepoRef,

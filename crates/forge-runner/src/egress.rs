@@ -10,10 +10,11 @@
 //! Only `CONNECT host:port` is served (TLS end to end; the proxy never sees the content). A
 //! request in the clear (`GET http://…`) is refused: an endpoint is reached over TLS or not at all.
 
+use std::collections::BTreeMap;
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
-use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs as _};
-use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs as _};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -102,10 +103,10 @@ pub struct Attempt {
 struct Shared {
     allowed: Vec<Endpoint>,
     log: Mutex<Vec<Attempt>>,
-    log_path: std::path::PathBuf,
+    log_path: PathBuf,
     /// The open connections (client and upstream ends), shut down when the proxy stops.
     live: Mutex<Vec<TcpStream>>,
-    active: std::sync::atomic::AtomicUsize,
+    active: AtomicUsize,
 }
 
 impl Shared {
@@ -133,9 +134,8 @@ impl Shared {
 
 /// A running proxy. Dropping it stops it and closes every tunnel it opened.
 pub struct Proxy {
-    port: u16,
     stop: Arc<AtomicBool>,
-    addr: std::net::SocketAddr,
+    addr: SocketAddr,
     shared: Arc<Shared>,
 }
 
@@ -153,7 +153,7 @@ impl Proxy {
             log: Mutex::new(Vec::new()),
             log_path: log_path.to_owned(),
             live: Mutex::new(Vec::new()),
-            active: std::sync::atomic::AtomicUsize::new(0),
+            active: AtomicUsize::new(0),
         });
         {
             let (stop, shared) = (Arc::clone(&stop), Arc::clone(&shared));
@@ -182,7 +182,6 @@ impl Proxy {
             });
         }
         Ok(Self {
-            port: addr.port(),
             stop,
             addr,
             shared,
@@ -191,7 +190,7 @@ impl Proxy {
 
     /// The port it listens on.
     pub fn port(&self) -> u16 {
-        self.port
+        self.addr.port()
     }
 
     /// Every attempt so far.
@@ -228,13 +227,16 @@ fn serve(mut client: TcpStream, shared: &Shared) {
     let target = match connect_target(&head) {
         Request::Connect(t) => t,
         Request::Other => {
-            let _ = client
-                .write_all(b"HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\n\r\n");
-            shared.record(Attempt {
-                at,
-                target: first_line_target(&head),
-                verdict: Verdict::NotConnect,
-            });
+            answer(
+                &mut client,
+                shared,
+                b"HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\n\r\n",
+                Attempt {
+                    at,
+                    target: first_line_target(&head),
+                    verdict: Verdict::NotConnect,
+                },
+            );
             return;
         }
     };
@@ -242,12 +244,16 @@ fn serve(mut client: TcpStream, shared: &Shared) {
         .as_ref()
         .map_or_else(|| first_line_target(&head), ToString::to_string);
     let Some(endpoint) = target.filter(|t| shared.allowed.contains(t)) else {
-        let _ = client.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n");
-        shared.record(Attempt {
-            at,
-            target: shown,
-            verdict: Verdict::Denied,
-        });
+        answer(
+            &mut client,
+            shared,
+            b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n",
+            Attempt {
+                at,
+                target: shown,
+                verdict: Verdict::Denied,
+            },
+        );
         return;
     };
     let upstream = (endpoint.host.as_str(), endpoint.port)
@@ -257,12 +263,16 @@ fn serve(mut client: TcpStream, shared: &Shared) {
             addrs.find_map(|a| TcpStream::connect_timeout(&a, HEAD_TIMEOUT).ok())
         });
     let Some(upstream) = upstream else {
-        let _ = client.write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n");
-        shared.record(Attempt {
-            at,
-            target: shown,
-            verdict: Verdict::Unreachable,
-        });
+        answer(
+            &mut client,
+            shared,
+            b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n",
+            Attempt {
+                at,
+                target: shown,
+                verdict: Verdict::Unreachable,
+            },
+        );
         return;
     };
     shared.record(Attempt {
@@ -280,6 +290,12 @@ fn serve(mut client: TcpStream, shared: &Shared) {
     shared.hold(&client);
     shared.hold(&upstream);
     tunnel(client, upstream);
+}
+
+/// Answer `client` with `response` and log `attempt`.
+fn answer(client: &mut TcpStream, shared: &Shared, response: &[u8], attempt: Attempt) {
+    let _ = client.write_all(response);
+    shared.record(attempt);
 }
 
 /// The request head (up to the blank line), or `None` when nothing came.
@@ -335,11 +351,10 @@ fn first_line_target(head: &str) -> String {
 }
 
 /// Copy bytes both ways until either side closes.
-fn tunnel(client: TcpStream, upstream: TcpStream) {
+fn tunnel(mut client: TcpStream, mut upstream: TcpStream) {
     let (Ok(mut c2), Ok(mut u2)) = (client.try_clone(), upstream.try_clone()) else {
         return;
     };
-    let (mut client, mut upstream) = (client, upstream);
     let up = std::thread::spawn(move || {
         let _ = std::io::copy(&mut c2, &mut u2);
         let _ = u2.shutdown(Shutdown::Write);
@@ -351,8 +366,7 @@ fn tunnel(client: TcpStream, upstream: TcpStream) {
 
 /// A summary of `attempts`: each target once, with its verdict and how many times.
 pub fn summary(attempts: &[Attempt]) -> Vec<String> {
-    let mut seen: std::collections::BTreeMap<(String, &'static str), usize> =
-        std::collections::BTreeMap::new();
+    let mut seen: BTreeMap<(String, &'static str), usize> = BTreeMap::new();
     for a in attempts {
         *seen.entry((a.target.clone(), a.verdict.word())).or_default() += 1;
     }

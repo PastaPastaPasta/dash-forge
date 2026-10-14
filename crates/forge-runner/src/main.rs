@@ -463,9 +463,7 @@ fn poll_agents(
     for row in agents::fresh(rows, since, &state.agents_seen) {
         let failed_key = format!("agent/{}", row.id);
         let worked = locked(cfg, repo, |dir| {
-            let job_dir = dir
-                .join("agents")
-                .join(row.id.chars().filter(char::is_ascii_alphanumeric).collect::<String>());
+            let job_dir = dir.join("agents").join(agents::safe_id(&row.id));
             let _ = std::fs::remove_dir_all(&job_dir);
             std::fs::create_dir_all(&job_dir)?;
             restrict(&job_dir);

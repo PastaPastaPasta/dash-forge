@@ -340,8 +340,20 @@ pub(crate) fn output(cmd: &mut Command, what: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// The environment every child gets for the network (dg and git-remote-dash read it).
+/// The environment every child gets for the network (dg and git-remote-dash read it), run from
+/// a directory of the runner's own, `<state_dir>/cwd`, with git kept from looking for a
+/// repository above it: a `git ls-remote` or `dg` run from inside someone's clone would take that
+/// clone for the runner's (git-remote-dash would record what it fetches there and install its
+/// pre-push hook).
 pub(crate) fn with_network(mut cmd: Command, cfg: &Config) -> Command {
+    let neutral = cfg.state_dir.join("cwd");
+    if std::fs::create_dir_all(&neutral).is_ok() {
+        cmd.current_dir(&neutral);
+    }
+    if let Ok(state) = std::fs::canonicalize(&cfg.state_dir) {
+        cmd.env("GIT_CEILING_DIRECTORIES", state);
+    }
+    cmd.env_remove("GIT_DIR").env_remove("GIT_WORK_TREE");
     if let Some(n) = &cfg.network {
         cmd.env("DASH_FORGE_NETWORK", n);
     }
@@ -2030,6 +2042,27 @@ mod tests {
             "state_dir = \"/s\"\n{extra}\n[[repo]]\nrepo = \"a/b\""
         ))
         .unwrap()
+    }
+
+    /// git and dg never run inside whatever repository the runner was started from: a
+    /// git-remote-dash that took it for a clone would record what it fetched there.
+    #[test]
+    fn children_run_in_the_runners_own_directory_and_never_find_a_repository_above_it() {
+        let d = tempfile::tempdir().unwrap();
+        let c = Config::parse(&format!(
+            "state_dir = \"{}\"\n[[repo]]\nrepo = \"a/b\"",
+            d.path().display()
+        ))
+        .unwrap();
+        let cmd = with_network(Command::new("git"), &c);
+        assert_eq!(cmd.get_current_dir(), Some(d.path().join("cwd").as_path()));
+        let envs: Vec<_> = cmd.get_envs().collect();
+        let ceiling = std::fs::canonicalize(d.path()).unwrap();
+        assert!(envs.contains(&(
+            std::ffi::OsStr::new("GIT_CEILING_DIRECTORIES"),
+            Some(ceiling.as_os_str())
+        )));
+        assert!(envs.contains(&(std::ffi::OsStr::new("GIT_DIR"), None)));
     }
 
     fn push() -> Push {
