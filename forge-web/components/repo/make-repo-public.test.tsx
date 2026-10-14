@@ -4,7 +4,9 @@
  * maintainer and a network that can't; the dialog with nothing chosen, the typed words, the
  * secret acknowledgements and E812 blocking Everything only; the step list from the run's
  * progress; an aborted run leaving the interrupted panel; and Finish with and without this
- * browser's record, for the owner and for a maintainer. The engine is mocked.
+ * browser's record, for the owner and for a maintainer; a step still signing after its dialog
+ * closed holding Finish back; and Everything after Code only, the owner's alone. The engine is
+ * mocked.
  */
 
 import { act } from 'react'
@@ -430,3 +432,124 @@ describe('Finish', () => {
     expect(tid('make-public-finish')).toBeNull()
   })
 })
+
+describe('a maintainer without a record (M3)', () => {
+  it("starts with nothing ticked and asks for the owner's branches and tags", async () => {
+    viewer.id = 'maint'
+    converted.value = true
+    readMakePublicStatus.mockResolvedValue(aStatus({ phase: 'made', converted: true, doneCount: 3, steps: { sealOff: 'done', flip: 'done' } }))
+    makePublicCheck.mockResolvedValue(aCheck())
+    await renderRow({ visibility: 'public' })
+    await click(tid('make-public-finish'))
+    expect(tid<HTMLInputElement>('make-public-ref-default')?.checked).toBe(false)
+    expect(tid('make-public-refs-hint')?.textContent).toBe('This browser has no record of the run that made it public: choose the branches and tags the owner chose.')
+    await click(tid('make-public-mode-codeOnly'))
+    type(tid<HTMLInputElement>('make-public-words'), 'make carol/ledger public')
+    expect(confirmButton().disabled).toBe(true)
+    expect(tid('make-public-why')?.textContent).toBe('Choose at least one branch or tag to make public.')
+  })
+
+  it('the owner without a record still starts from the default branch and its tags', async () => {
+    converted.value = true
+    readMakePublicStatus.mockResolvedValue(aStatus({ phase: 'made', converted: true, doneCount: 3, steps: { sealOff: 'done', flip: 'done' } }))
+    makePublicCheck.mockResolvedValue(aCheck())
+    await renderRow({ visibility: 'public' })
+    await click(tid('make-public-finish'))
+    expect(tid<HTMLInputElement>('make-public-ref-default')?.checked).toBe(true)
+    expect(tid('make-public-refs-hint')).toBeNull()
+  })
+})
+
+describe('a step still signing after its dialog closed (M4)', () => {
+  it('holds Finish back, says so, and lets it go once the step settles', async () => {
+    await openDialog(aCheck())
+    await click(tid('make-public-mode-codeOnly'))
+    type(tid<HTMLInputElement>('make-public-words'), 'make carol/ledger public')
+    // the seal-off step keeps signing after the dialog asks it to stop
+    let settle: () => void = () => undefined
+    runMakePublic.mockImplementation((_c: unknown, _choice: unknown, onProgress: (p: MakePublicProgress) => void) => {
+      onProgress({ step: 'sealOff', state: 'running' })
+      return new Promise((_r, reject) => (settle = () => reject(new DOMException('stopped', 'AbortError'))))
+    })
+    await click(confirmButton())
+    readMakePublicStatus.mockResolvedValue(
+      aStatus({ phase: 'private', record: { mode: 'codeOnly', refs: [MAIN], sealOff: 4 }, doneCount: 2, steps: { sealOff: 'done', history: 'skipped' } }),
+    )
+    await click(tid('make-public-close'))
+    expect(tid('make-public-still-working')?.textContent).toBe('Still working on the last step…')
+    expect(tid<HTMLButtonElement>('make-public-finish')?.disabled).toBe(true)
+    await act(async () => settle())
+    await flush()
+    expect(tid('make-public-still-working')).toBeNull()
+    expect(tid<HTMLButtonElement>('make-public-finish')?.disabled).toBe(false)
+    expect(runMakePublic).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('Everything after Code only (M5)', () => {
+  const codeOnlyDone = (): MakePublicStatus => aStatus({ phase: 'public', converted: true, doneCount: 7, steps: { sealOff: 'done', flip: 'done', config: 'done', code: 'done', notify: 'done', history: 'skipped' } })
+
+  it("the owner gets the row and a dialog with Everything fixed; the run publishes everything after the typed words", async () => {
+    converted.value = true
+    readMakePublicStatus.mockResolvedValue(codeOnlyDone())
+    makePublicCheck.mockResolvedValue(aCheck({ oldFormat: [] }))
+    await renderRow({ visibility: 'public' })
+    expect(tid('make-public-everything-row')?.textContent).toContain('Make everything public')
+    await click(tid('make-public-everything-open'))
+    expect(document.querySelector('[role="dialog"] h2')?.textContent).toBe('Make everything in carol/ledger public?')
+    expect(tid('make-public-mode-codeOnly')).toBeNull()
+    expect(tid<HTMLInputElement>('make-public-mode-everything')?.checked).toBe(true)
+    expect(tid('make-public-everything-counts')?.textContent).toBe('That is 3 issues, 1 pull request, 3 live branches and tags, 2 deleted branches.')
+    expect(tid('make-public-stays-private')).not.toBeNull()
+    expect(tid('make-public-cost')?.textContent).toContain('Costs about 0.03 DASH')
+    expect(confirmButton().disabled).toBe(true)
+    type(tid<HTMLInputElement>('make-public-words'), 'make carol/ledger public')
+    runMakePublic.mockResolvedValue({ finished: true, notPublished: [] })
+    await click(confirmButton())
+    const choice = runMakePublic.mock.calls[0]![1] as { mode: string; refs?: string[]; confirmation: string; resume?: boolean }
+    expect(choice).toMatchObject({ mode: 'everything', confirmation: 'make carol/ledger public' })
+    expect(choice.refs).toBeUndefined()
+    expect(choice.resume).toBeUndefined()
+    expect(tid('make-public-done')?.textContent).toContain('carol/ledger is public (Everything).')
+  })
+
+  it('E812 blocks it, as it blocks Everything', async () => {
+    converted.value = true
+    readMakePublicStatus.mockResolvedValue(codeOnlyDone())
+    makePublicCheck.mockResolvedValue(aCheck({ oldFormat: ['production'] }))
+    await renderRow({ visibility: 'public' })
+    await click(tid('make-public-everything-open'))
+    type(tid<HTMLInputElement>('make-public-words'), 'make carol/ledger public')
+    expect(q('[data-testid="make-public-blocker"][data-code="E812"]')).not.toBeNull()
+    expect(confirmButton().disabled).toBe(true)
+  })
+
+  it('nobody else sees it, nor the owner once the history is published', async () => {
+    converted.value = true
+    viewer.id = 'maint'
+    readMakePublicStatus.mockResolvedValue(codeOnlyDone())
+    await renderRow({ visibility: 'public' })
+    expect(tid('make-public-everything-row')).toBeNull()
+    viewer.id = 'owner'
+    readMakePublicStatus.mockResolvedValue({ ...codeOnlyDone(), mode: 'everything', steps: { ...codeOnlyDone().steps, history: 'done' } })
+    await renderRow({ visibility: 'public' })
+    expect(tid('make-public-everything-row')).toBeNull()
+  })
+})
+
+describe('a run that stops says it in plain words (L6)', () => {
+  it('a rotation lost to another maintainer, and a raw error with internal words', async () => {
+    await openDialog(aCheck())
+    await click(tid('make-public-mode-codeOnly'))
+    type(tid<HTMLInputElement>('make-public-words'), 'make carol/ledger public')
+    const lost = Object.assign(new Error('another maintainer rotated to epoch 5 first; their key is the repo\'s key'), { name: 'PrivateMembersError', code: 'E310', outcome: 'lost' })
+    runMakePublic.mockRejectedValueOnce(lost)
+    await click(confirmButton())
+    const said = tid('make-public-run-error')?.textContent ?? ''
+    expect(said).toBe("Another maintainer changed the repo's key at the same time. The repo is still private. Run it again to continue.")
+    runMakePublic.mockRejectedValueOnce(new Error('the anchor of epoch 4 is not visible yet'))
+    await click(confirmButton())
+    expect(tid('make-public-run-error')?.textContent).toBe("That step didn't finish. Try again.")
+  })
+})
+

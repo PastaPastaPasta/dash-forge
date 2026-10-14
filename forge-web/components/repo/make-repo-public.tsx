@@ -6,7 +6,8 @@
  *
  * - **The row**, for a private repo: the owner's "Make public…" (disabled, with the reason, on a
  *   network whose Forge can't make a private repository public), or for a maintainer "Only the
- *   owner (@carol) can make this repo public." Nobody else sees it.
+ *   owner (@carol) can make this repo public." Nobody else sees it. For a repo made public with
+ *   Code only, its owner's "Make everything public…": the same dialog with Everything fixed.
  * - **The dialog**: the check (seconds to minutes; its phases shown, Cancel aborts it), the two
  *   modes with nothing chosen, Code only's branches and tags, what Everything makes public, the
  *   scan with a "Publish anyway" box per finding that needs one, what blocks a mode, what stays
@@ -15,10 +16,11 @@
  *   that stopped before the flip) shows a panel here, at `#danger`, with Finish (any maintainer
  *   after the flip; the history step stays the owner's) and the `dg … --resume` alternative.
  *
- * Closing the dialog mid-run aborts between steps; what landed stays, and the panel offers Finish.
+ * Closing the dialog mid-run aborts between steps; what landed stays, and the panel offers Finish
+ * once the step under way settles (`make-public-inflight.ts`: never two runs side by side).
  */
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { AlertTriangle, Check, CirclePause, Globe, Loader2, Minus, X } from 'lucide-react'
 
 import type { RepoHome } from '@/lib/view'
@@ -43,10 +45,14 @@ import {
   type StepState,
 } from '@/lib/repo/make-public'
 import { makePublicCheck, publicViewOf, type PackCache } from '@/lib/repo/make-public-check'
+import { beginMakePublicRun, makePublicInFlight, subscribeMakePublicRuns } from '@/lib/repo/make-public-inflight'
 import { runMakePublic, type MakePublicOutcome } from '@/lib/repo/make-public-run'
 import { readMakePublicStatus } from '@/lib/repo/make-public-status'
 import {
   CODE_ONLY_STAYS,
+  EVERYTHING_LATER_FIRST_LINE,
+  EVERYTHING_LATER_TEXT,
+  EVERYTHING_LATER_TITLE,
   EVERYTHING_TEXT,
   KEEPS_WORKING,
   MAKE_PUBLIC_FIRST_LINE,
@@ -54,10 +60,12 @@ import {
   NO_REFS_CHOSEN,
   OTHERS_SHOWN,
   STEP_LABEL,
+  STILL_WORKING,
   costLine,
   defaultGroupLabel,
   doneButHistoryLine,
   doneLine,
+  everythingLaterTitle,
   everythingThatIs,
   interruptedLine,
   noSecretsLine,
@@ -71,6 +79,7 @@ import {
   progressLine,
   refChoices,
   resumeCommand,
+  runErrorText,
   secretLine,
   staysPrivateLine,
   unreadLine,
@@ -89,7 +98,8 @@ import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { ScrollRegion } from '@/components/ui/scroll-region'
-import { cn, errorMessage, shortId } from '@/lib/utils'
+import type { Network } from '@/lib/constants'
+import { cn, shortId } from '@/lib/utils'
 
 // ---------------------------------------------------------------------------------------------
 // The Danger zone part
@@ -103,6 +113,13 @@ type Start =
   | { readonly kind: 'choose'; readonly allowed: Readonly<Record<MakePublicMode, boolean>> }
   /** Finish the run this browser recorded: straight to the steps. */
   | { readonly kind: 'resume'; readonly mode: MakePublicMode; readonly steps: Readonly<Record<MakePublicStep, StepState>> }
+  /** The owner publishes the rest of a repo made public with Code only: the check, Everything fixed. */
+  | { readonly kind: 'everything' }
+
+/** Whether a run on the repo is in flight in this tab (its dialog may be closed: the step under way still signs). */
+function useRunInFlight(network: Network, repoId: string): boolean {
+  return useSyncExternalStore(subscribeMakePublicRuns, () => makePublicInFlight(network, repoId), () => false)
+}
 
 /** Whether `s` says a run stopped part way: flipped and unfinished, or recorded here before the flip. */
 function interruptedStatus(s: MakePublicStatus | null): s is MakePublicStatus {
@@ -147,13 +164,30 @@ export function MakeRepoPublic({ home, maintainer, onSaved }: { home: RepoHome; 
   }
   const st = status.data
   const interrupted = interruptedStatus(st)
+  const inFlight = useRunInFlight(network, repo.repoId)
 
   const panel = (() => {
     if (!relevant) return null
     if (interrupted) {
-      return <InterruptedPanel status={st} label={liveLabel} labelReady={labelReady} isOwner={isOwner} onFinish={open} />
+      return <InterruptedPanel status={st} label={liveLabel} labelReady={labelReady} isOwner={isOwner} inFlight={inFlight} onFinish={open} />
     }
-    if (!isPrivate) return null
+    if (!isPrivate) {
+      // made public with Code only and finished: its owner may publish the rest
+      const now = status.data
+      const codeOnlyDone = converted && now !== null && now.converted && now.phase === 'public' && now.mode !== 'everything'
+      if (!isOwner || !codeOnlyDone) return null
+      return (
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-danger/40 p-4" data-testid="make-public-everything-row">
+          <div className="min-w-0 flex-1">
+            <p className="text-dense font-medium">{EVERYTHING_LATER_TITLE}</p>
+            <p className="text-[12px] text-anvil-500 dark:text-anvil-400">{EVERYTHING_LATER_TEXT}</p>
+          </div>
+          <Button variant="danger" disabled={inFlight || !labelReady} onClick={() => open({ kind: 'everything' })} data-testid="make-public-everything-open">
+            Make everything public…
+          </Button>
+        </div>
+      )
+    }
     return (
       <div className="flex flex-wrap items-center gap-3 rounded-lg border border-danger/40 p-4" data-testid="make-public-row">
         <div className="min-w-0 flex-1">
@@ -167,7 +201,12 @@ export function MakeRepoPublic({ home, maintainer, onSaved }: { home: RepoHome; 
           </p>
         </div>
         {isOwner ? (
-          <Button variant="danger" disabled={oneWay.data === false || !oneWay.settled || !status.settled || !labelReady} onClick={() => open({ kind: 'new' })} data-testid="make-public-open">
+          <Button
+            variant="danger"
+            disabled={oneWay.data === false || !oneWay.settled || !status.settled || !labelReady || inFlight}
+            onClick={() => open({ kind: 'new' })}
+            data-testid="make-public-open"
+          >
             Make public…
           </Button>
         ) : null}
@@ -183,6 +222,8 @@ export function MakeRepoPublic({ home, maintainer, onSaved }: { home: RepoHome; 
           home={home}
           label={dialog.label}
           start={dialog.start}
+          isOwner={isOwner}
+          busy={inFlight}
           onClose={() => {
             dialogOpen.current = false
             setDialog(null)
@@ -212,6 +253,7 @@ function InterruptedPanel({
   label,
   labelReady,
   isOwner,
+  inFlight,
   onFinish,
 }: {
   status: MakePublicStatus
@@ -219,6 +261,8 @@ function InterruptedPanel({
   /** The owner's name is read (Finish may ask for words typed against it). */
   labelReady: boolean
   isOwner: boolean
+  /** A step of the last run is still signing: Finish waits for it. */
+  inFlight: boolean
   onFinish: (start: Start) => void
 }): JSX.Element {
   const ref = useRef<HTMLDivElement>(null)
@@ -250,7 +294,13 @@ function InterruptedPanel({
         <div className="min-w-0 flex-1 space-y-1">
           <p className="text-dense font-medium [overflow-wrap:anywhere]">{interruptedLine(label)}</p>
           <p className="text-[12px] text-anvil-600 dark:text-anvil-300">{progressLine(label, status.doneCount)}</p>
-          {stalled && status.lastStepAt !== null ? (
+          {inFlight ? (
+            <p className="flex items-center gap-1.5 text-[12px] text-anvil-600 dark:text-anvil-300" aria-live="polite" data-testid="make-public-still-working">
+              <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" aria-hidden />
+              {STILL_WORKING}
+            </p>
+          ) : null}
+          {stalled && !inFlight && status.lastStepAt !== null ? (
             <p className="text-[12px] text-caution-800 dark:text-caution-300" data-testid="make-public-stalled">
               {stalledText(status.lastStepAt)}
             </p>
@@ -265,7 +315,7 @@ function InterruptedPanel({
       ) : null}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         {canFinish ? (
-          <Button variant="danger" disabled={!labelReady} onClick={finish} data-testid="make-public-finish">
+          <Button variant="danger" disabled={!labelReady || inFlight} onClick={finish} data-testid="make-public-finish">
             Finish
           </Button>
         ) : null}
@@ -386,10 +436,15 @@ function mergeSecrets(a: readonly MakePublicSecret[], b: readonly MakePublicSecr
 
 const sameSet = (a: ReadonlySet<string>, b: readonly string[]): boolean => a.size === b.length && b.every((x) => a.has(x))
 
+/** How a check that stops is said. */
+const CHECK_STOPPED = "The check didn't finish"
+
 function MakePublicDialog({
   home,
   label,
   start,
+  isOwner,
+  busy,
   onClose,
   onLanded,
   onSettled,
@@ -397,6 +452,9 @@ function MakePublicDialog({
   home: RepoHome
   label: string
   start: Start
+  isOwner: boolean
+  /** A run on this repo is in flight in this tab (an earlier dialog's): nothing starts until it settles. */
+  busy: boolean
   onClose: () => void
   /** A step was written (told even after the dialog closed): what the page read of the repo is stale. */
   onLanded: () => void
@@ -417,7 +475,9 @@ function MakePublicDialog({
   const [defaults, setDefaults] = useState<readonly MakePublicRef[] | null>(null)
   const [checking, setChecking] = useState<string | null>(null)
   const [checkError, setCheckError] = useState<unknown>(null)
-  const [mode, setMode] = useState<MakePublicMode | null>(start.kind === 'resume' ? start.mode : null)
+  const [mode, setMode] = useState<MakePublicMode | null>(start.kind === 'resume' ? start.mode : start.kind === 'everything' ? 'everything' : null)
+  // A maintainer finishing a run this browser has no record of chooses the owner's refs: none ticked.
+  const blankRefs = start.kind === 'choose' && !isOwner
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
   const [allowed, setAllowed] = useState<ReadonlySet<string>>(new Set())
   const [extraSecrets, setExtraSecrets] = useState<readonly MakePublicSecret[]>([])
@@ -465,7 +525,7 @@ function MakePublicDialog({
         setCheck(next)
         if (refs === undefined) {
           setDefaults(next.codeRefs)
-          setSelected(new Set(next.codeRefs.map((r) => r.name)))
+          setSelected(new Set(blankRefs ? [] : next.codeRefs.map((r) => r.name)))
         }
       } catch (e) {
         if (ctl.signal.aborted) return
@@ -477,7 +537,7 @@ function MakePublicDialog({
         }
       }
     },
-    [label],
+    [blankRefs, label],
   )
 
   // The check starts once this tab can open the repo's content.
@@ -502,6 +562,12 @@ function MakePublicDialog({
     async (m: MakePublicMode): Promise<void> => {
       const c = contextRef.current
       if (c === null) return
+      // never two runs side by side: one still signing (a closed dialog's) settles first
+      const end = beginMakePublicRun(c.network, home.repo.repoId)
+      if (end === null) {
+        setFormError(new MakePublicError(STILL_WORKING))
+        return
+      }
       runCtl.current?.abort()
       const ctl = new AbortController()
       runCtl.current = ctl
@@ -577,22 +643,23 @@ function MakePublicDialog({
         }
       } finally {
         if (runCtl.current === ctl) runCtl.current = null
+        end()
         onSettled()
       }
     },
-    [allowed, label, onLanded, onSettled, selected, start, words],
+    [allowed, home.repo.repoId, label, onLanded, onSettled, selected, start, words],
   )
 
   // Finish the recorded run as soon as this tab can.
   const uploadReady = mergeUpload.upload !== null
   useEffect(() => {
-    if (start.kind !== 'resume' || !hasContext || !uploadReady || startedResume.current) return
+    if (start.kind !== 'resume' || !hasContext || !uploadReady || busy || startedResume.current) return
     startedResume.current = true
     void go(start.mode)
-  }, [start, hasContext, uploadReady, go])
+  }, [start, hasContext, uploadReady, busy, go])
 
   // --- what the form decides ---
-  const modeAllowed = (m: MakePublicMode): boolean => start.kind !== 'choose' || start.allowed[m]
+  const modeAllowed = (m: MakePublicMode): boolean => (start.kind === 'everything' ? m === 'everything' : start.kind !== 'choose' || start.allowed[m])
   /** What blocks mode `m` besides possible secrets (those take a "Publish anyway"). */
   const blockerOf = (m: MakePublicMode): MakePublicError | null => (check === null ? null : gateMakePublic(check, m, secretsOf(check, m).map((s) => s.fingerprint)))
   const findings = check !== null && mode !== null ? mergeSecrets(secretsOf(check, mode), extraSecrets) : extraSecrets
@@ -601,11 +668,12 @@ function MakePublicDialog({
   /** Why Make public is disabled, or null when it isn't. */
   const why = ((): string | null => {
     if (!hasContext) return 'Unlock this tab to continue.'
-    if (check === null) return checkError !== null ? errorMessage(checkError) : 'The check is still running.'
+    if (busy) return STILL_WORKING
+    if (check === null) return checkError !== null ? runErrorText(checkError, CHECK_STOPPED) : 'The check is still running.'
     if (check.blockers.length > 0) return check.blockers[0]!
     if (mode === null) return COPY.noMode
     if (!modeAllowed(mode)) return COPY.notOwner
-    if (stale && checkError !== null) return errorMessage(checkError)
+    if (stale && checkError !== null) return runErrorText(checkError, CHECK_STOPPED)
     if (checking !== null || stale) return 'The check is still running.'
     if (mode === 'codeOnly' && selected.size === 0) return NO_REFS_CHOSEN
     if (mode === 'codeOnly' && check.codeRefs.length === 0) return COPY.noCode
@@ -640,7 +708,7 @@ function MakePublicDialog({
       return next
     })
 
-  const title = start.kind === 'new' ? `Make ${label} public?` : `Finish making ${label} public`
+  const title = start.kind === 'new' ? `Make ${label} public?` : start.kind === 'everything' ? everythingLaterTitle(label) : `Finish making ${label} public`
   const locked = !hasContext
   // Where the code goes: the storage settings, once read (sealed: the tab's unlock first).
   const storageNote = mergeUpload.storageNeedsUnlock ? (
@@ -680,7 +748,7 @@ function MakePublicDialog({
         />
         {run.error !== null ? (
           <div role="alert" className="space-y-2 rounded-md border border-danger/40 bg-danger/5 px-3 py-2" data-testid="make-public-run-error">
-            <p>{errorMessage(run.error)}</p>
+            <p>{runErrorText(run.error)}</p>
             <SecretAcks findings={findings} allowed={allowed} onAllow={allow} />
             <Button size="sm" variant="outline" disabled={unacked.length > 0 || locked || !uploadReady} onClick={() => void go(run.mode)} data-testid="make-public-retry">
               Try again
@@ -736,7 +804,7 @@ function MakePublicDialog({
   } else {
     body = (
       <div className="space-y-4" data-testid="make-public-dialog" data-checked={check !== null ? 'yes' : 'no'}>
-        <p className="font-medium text-anvil-800 dark:text-anvil-100">{MAKE_PUBLIC_FIRST_LINE}</p>
+        <p className="font-medium text-anvil-800 dark:text-anvil-100">{start.kind === 'everything' ? EVERYTHING_LATER_FIRST_LINE : MAKE_PUBLIC_FIRST_LINE}</p>
         {locked ? (
           write.loading === true ? (
             <p>Reading your encryption key…</p>
@@ -752,7 +820,7 @@ function MakePublicDialog({
         ) : null}
         {checkError !== null ? (
           <div role="alert" className="space-y-2 rounded-md border border-danger/40 bg-danger/5 px-3 py-2 [overflow-wrap:anywhere]" data-testid="make-public-check-error">
-            <p>{errorMessage(checkError)}</p>
+            <p>{runErrorText(checkError, CHECK_STOPPED)}</p>
             <Button size="sm" variant="outline" onClick={recheck} disabled={checking !== null} data-testid="make-public-recheck">
               Run the check again
             </Button>
@@ -766,6 +834,8 @@ function MakePublicDialog({
             mode={mode}
             onMode={setMode}
             modeAllowed={modeAllowed}
+            everythingOnly={start.kind === 'everything'}
+            refsHint={blankRefs ? COPY.sayRefs : null}
             selected={selected}
             onToggle={toggle}
             review={review}
@@ -781,7 +851,7 @@ function MakePublicDialog({
         ) : null}
         {formError !== null ? (
           <p role="alert" className="rounded-md border border-danger/40 bg-danger/5 px-3 py-2 [overflow-wrap:anywhere]" data-testid="make-public-run-error">
-            {errorMessage(formError)}
+            {runErrorText(formError)}
           </p>
         ) : null}
         {check !== null ? storageNote : null}
@@ -838,6 +908,8 @@ function CheckForm({
   mode,
   onMode,
   modeAllowed,
+  everythingOnly,
+  refsHint,
   selected,
   onToggle,
   review,
@@ -856,6 +928,10 @@ function CheckForm({
   mode: MakePublicMode | null
   onMode: (m: MakePublicMode) => void
   modeAllowed: (m: MakePublicMode) => boolean
+  /** Everything after Code only: Code only is not offered. */
+  everythingOnly: boolean
+  /** Said above Code only's boxes (a maintainer choosing the owner's refs). */
+  refsHint: string | null
   selected: ReadonlySet<string>
   onToggle: (names: readonly string[], on: boolean) => void
   review: boolean
@@ -899,61 +975,68 @@ function CheckForm({
         </p>
       ))}
       <fieldset className="space-y-2">
-        <legend className="mb-2 font-medium text-anvil-800 dark:text-anvil-100">What becomes public (choose one)</legend>
+        <legend className="mb-2 font-medium text-anvil-800 dark:text-anvil-100">{everythingOnly ? 'What becomes public' : 'What becomes public (choose one)'}</legend>
 
-        <ModeOption groupName={groupName} mode="codeOnly" chosen={mode} onMode={onMode} disabled={!modeAllowed('codeOnly')}>
-          {defaultGroup.length === 0 && others.length === 0 ? (
-            <p>{COPY.noCode}</p>
-          ) : (
-            <ul className="flex flex-wrap gap-x-4 gap-y-1" aria-label="Branches and tags">
-              {choices.branch !== null ? (
-                <li>
-                  <RefBox
-                    label={defaultGroupLabel(choices.branch, choices.tags.length)}
-                    names={defaultGroup}
-                    selected={selected}
-                    onToggle={onToggle}
-                    disabled={refsOff}
-                    testId="make-public-ref-default"
-                    refName={choices.branch.name}
-                  />
-                </li>
-              ) : null}
-              {!folded
-                ? others.map((r) => (
-                    <li key={r.name}>
-                      <RefBox label={shortRef(r.name)} names={[r.name]} selected={selected} onToggle={onToggle} disabled={refsOff} testId="make-public-ref" refName={r.name} />
-                    </li>
-                  ))
-                : (
-                    <li className="flex flex-wrap items-center gap-2">
-                      <RefBox label={othersLabel(others)} names={otherNames} selected={selected} onToggle={onToggle} disabled={refsOff} testId="make-public-ref-others" />
-                      <Button size="sm" variant="ghost" onClick={onReview} aria-expanded={review} data-testid="make-public-refs-review">
-                        Review
-                      </Button>
-                    </li>
-                  )}
-            </ul>
-          )}
-          {folded && review ? (
-            <ul className="ml-1 max-h-48 space-y-1 overflow-y-auto border-l border-anvil-200 pl-3 dark:border-anvil-800" aria-label={othersLabel(others)}>
-              {others.map((r) => (
-                <li key={r.name}>
-                  <RefBox label={shortRef(r.name)} names={[r.name]} selected={selected} onToggle={onToggle} disabled={refsOff} testId="make-public-ref" refName={r.name} />
-                </li>
-              ))}
-            </ul>
-          ) : null}
-          {selected.size === 0 ? <p className="text-caution-800 dark:text-caution-300">{NO_REFS_CHOSEN}</p> : null}
-          {rechecking ? (
-            <p className="flex items-center gap-2 text-anvil-600 dark:text-anvil-300" aria-live="polite" data-testid="make-public-rechecking">
-              <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" aria-hidden />
-              Checking again…
-            </p>
-          ) : null}
-          <p className="text-anvil-600 dark:text-anvil-300">{CODE_ONLY_STAYS}</p>
-          {codeBlocker !== null ? <Blocker error={codeBlocker} action={recheck} /> : null}
-        </ModeOption>
+        {everythingOnly ? null : (
+          <ModeOption groupName={groupName} mode="codeOnly" chosen={mode} onMode={onMode} disabled={!modeAllowed('codeOnly')}>
+            {refsHint !== null ? (
+              <p className="text-caution-800 dark:text-caution-300" data-testid="make-public-refs-hint">
+                {refsHint}
+              </p>
+            ) : null}
+            {defaultGroup.length === 0 && others.length === 0 ? (
+              <p>{COPY.noCode}</p>
+            ) : (
+              <ul className="flex flex-wrap gap-x-4 gap-y-1" aria-label="Branches and tags">
+                {choices.branch !== null ? (
+                  <li>
+                    <RefBox
+                      label={defaultGroupLabel(choices.branch, choices.tags.length)}
+                      names={defaultGroup}
+                      selected={selected}
+                      onToggle={onToggle}
+                      disabled={refsOff}
+                      testId="make-public-ref-default"
+                      refName={choices.branch.name}
+                    />
+                  </li>
+                ) : null}
+                {!folded
+                  ? others.map((r) => (
+                      <li key={r.name}>
+                        <RefBox label={shortRef(r.name)} names={[r.name]} selected={selected} onToggle={onToggle} disabled={refsOff} testId="make-public-ref" refName={r.name} />
+                      </li>
+                    ))
+                  : (
+                      <li className="flex flex-wrap items-center gap-2">
+                        <RefBox label={othersLabel(others)} names={otherNames} selected={selected} onToggle={onToggle} disabled={refsOff} testId="make-public-ref-others" />
+                        <Button size="sm" variant="ghost" onClick={onReview} aria-expanded={review} data-testid="make-public-refs-review">
+                          Review
+                        </Button>
+                      </li>
+                    )}
+              </ul>
+            )}
+            {folded && review ? (
+              <ul className="ml-1 max-h-48 space-y-1 overflow-y-auto border-l border-anvil-200 pl-3 dark:border-anvil-800" aria-label={othersLabel(others)}>
+                {others.map((r) => (
+                  <li key={r.name}>
+                    <RefBox label={shortRef(r.name)} names={[r.name]} selected={selected} onToggle={onToggle} disabled={refsOff} testId="make-public-ref" refName={r.name} />
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            {selected.size === 0 && refsHint === null ? <p className="text-caution-800 dark:text-caution-300">{NO_REFS_CHOSEN}</p> : null}
+            {rechecking ? (
+              <p className="flex items-center gap-2 text-anvil-600 dark:text-anvil-300" aria-live="polite" data-testid="make-public-rechecking">
+                <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" aria-hidden />
+                Checking again…
+              </p>
+            ) : null}
+            <p className="text-anvil-600 dark:text-anvil-300">{CODE_ONLY_STAYS}</p>
+            {codeBlocker !== null ? <Blocker error={codeBlocker} action={recheck} /> : null}
+          </ModeOption>
+        )}
 
         <ModeOption groupName={groupName} mode="everything" chosen={mode} onMode={onMode} disabled={!modeAllowed('everything')}>
           <p className="text-anvil-600 dark:text-anvil-300">{EVERYTHING_TEXT}</p>

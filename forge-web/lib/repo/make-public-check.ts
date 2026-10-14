@@ -23,7 +23,7 @@ import { sdkEnvSources } from '../env/sources'
 import { CONVERTED_REPO_MIN_CLIENT_VERSION, V4, V6, openContent, sniff, type Conversion } from '../private'
 import { previewCreate, queryAllDocuments, queryDocumentsWithProof, sumPreviews, type PlainDocument } from '../sdk'
 import { scanFile } from '../secrets'
-import { openPrivateArtifact } from '../view/private-packs'
+import { SuspectPackError, openPrivateArtifact } from '../view/private-packs'
 import { readConfigHistory, type RepoConfig } from './config'
 import { DOC, asIdentifierString, toRefUpdate, withoutSessions, type RepoRef } from './contract'
 import { contractVisibilityOneWay } from './contract-shape'
@@ -32,6 +32,7 @@ import {
   COPY,
   MakePublicError,
   byName,
+  cutoffOf,
   defaultCodeRefs,
   estimateMakePublic,
   loadMakePublicRecord,
@@ -93,7 +94,11 @@ export async function readConversion(sdk: EvoSDK, repo: RepoRef): Promise<Conver
   return repoConversion(pub, await readConfigRows(sdk, pub))
 }
 
-/** The `packHash`es (hex) of the make-public bundles (kind 7) the owner recorded, from the manifests alone (dg `owner_bundles`). */
+/**
+ * The `packHash`es (hex) of every make-public bundle (kind 7) the owner recorded, from the manifests
+ * alone (dg `owner_bundles`). Single posts made public (§4.6) are kind 7 too: the history is the
+ * ones among them a run builds itself (`make-public-run.ts`, dg `history_bundles`).
+ */
 export async function readOwnerBundles(sdk: EvoSDK, repo: RepoRef): Promise<Set<string>> {
   const pub = publicViewOf(repo)
   return new Set((await readManifestsOfKind(sdk, pub, PACK_KIND.MAKE_PUBLIC)).filter((m) => m.uploader === repo.ownerId).map((m) => m.packHash.toLowerCase()))
@@ -132,10 +137,12 @@ export type PackCache = Map<string, { readonly plain: Uint8Array; readonly epoch
 
 /**
  * Every git pack of the private view this member opens, oldest first, as plaintext (forge-core
- * `open_git_packs`): a pack no copy of which can be fetched is counted in `unfetched`; a plaintext
- * pack was pushed after the conversion and is left out; one this member can't open (a narrower
- * branch's, another key's) is left out too, and with `below` (the seal-off epoch) so is one
- * sealed under it or later: written during or after the conversion, never published.
+ * `open_git_packs`): a pack no copy of which can be fetched is counted in `unfetched`, and so is
+ * one sealed under a key this member holds that fails to open (it would be published unchecked); a
+ * plaintext pack was pushed after the conversion and is left out; one this member can't open (a
+ * narrower branch's, a key not held) is left out too, as is one uploaded by someone without
+ * standing (no reader reads it), and with `below` (the seal-off epoch) one sealed under it or
+ * later: written during or after the conversion, never published.
  */
 export async function openPrivateEraPacks(
   sdk: EvoSDK,
@@ -178,8 +185,14 @@ export async function openPrivateEraPacks(
       const opened = { plain: await openPrivateArtifact(session, p, sealed, p.copies ?? [p]), epoch: head.epoch }
       cache.set(hash, opened)
       take(opened)
-    } catch {
-      cache.set(hash, 'skipped')
+    } catch (e) {
+      if (e instanceof SuspectPackError || !session.resolution.keys.has(head.epoch)) {
+        cache.set(hash, 'skipped')
+      } else if (below === undefined || head.epoch < below) {
+        // a key this member holds and a pack that would be published: never skipped quietly (not
+        // cached either, so a later check tries again)
+        unfetched++
+      }
     }
   }
   return { packs, unfetched }
@@ -596,12 +609,17 @@ export async function makePublicCheck(
   const visibility = await readVisibility(c.sdk, c.repo)
   const conversion = visibility === 'public' ? await readConversion(c.sdk, c.repo) : null
   if (visibility === 'public' && conversion === null) throw new MakePublicError(COPY.publicAlready, 'E201')
-  const record = await loadMakePublicRecord(c.network, c.repo.repoId)
+  const record = await loadMakePublicRecord(c.network, c.auth.identityId, c.repo.repoId)
   const chosen = record !== null && opts.mode !== undefined && record.mode === opts.mode && (opts.refs ?? []).length === 0 ? refsOfRecord(record) : undefined
   const session = await privateSessionFor(c)
   try {
+    // the run's cutoff (`make-public-run.ts`): the lower of the stated and recorded seal-off epochs
+    // once public; while private, the recorded one while it is still the current epoch
+    const recorded = record?.sealOff ?? null
+    const below = conversion !== null ? cutoffOf(conversion.sealOffEpoch, recorded) : recorded !== null && recorded === session.resolution.currentEpoch ? recorded : undefined
     const { check } = await inspect(c, session, {
       conversion,
+      ...(below !== undefined ? { below } : {}),
       ...(opts.mode !== undefined ? { mode: opts.mode } : {}),
       ...(opts.refs !== undefined ? { refs: opts.refs } : {}),
       ...(chosen !== undefined ? { chosen } : {}),

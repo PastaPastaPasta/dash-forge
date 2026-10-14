@@ -7,11 +7,12 @@
 import { describe, expect, it } from 'vitest'
 
 import { base58Encode } from '../auth/base58'
+import { ENTRY_COMMENT, ENTRY_EPOCH_KEY, encodeBundle } from '../private'
 import type { PlainDocument } from '../sdk'
 import type { RepoRef } from './contract'
 import { repoConversion } from './converted'
 import type { MakePublicRecord } from './make-public'
-import { statusOf, type StatusFacts } from './make-public-status'
+import { historyBundleTimes, statusOf, type StatusFacts } from './make-public-status'
 
 const b58 = (b: number): string => base58Encode(new Uint8Array(32).fill(b))
 const OWNER = b58(0x21)
@@ -40,7 +41,7 @@ function facts(over: Partial<StatusFacts>): StatusFacts {
     markerAt: null,
     publicRefs: new Map(),
     membersOnly: new Set(),
-    ownerBundles: [],
+    historyBundles: [],
     viewer: OWNER,
     owner: OWNER,
     ...over,
@@ -89,8 +90,22 @@ describe('the status of making a repo public', () => {
     expect(pending.steps.history).toBe('owner')
     expect(pending.phase).toBe('made')
     expect(statusOf(facts({ conversion: marked, record: record({ mode: 'everything' }), viewer: OWNER })).steps.history).toBe('todo')
-    const published = statusOf(facts({ conversion: marked, publicRefs: new Map([[MAIN, { oid: 'a', at: 1 }]]), ownerBundles: [40_000] }))
+    const published = statusOf(facts({ conversion: marked, publicRefs: new Map([[MAIN, { oid: 'a', at: 1 }]]), historyBundles: [40_000] }))
     expect(published).toMatchObject({ mode: 'everything', phase: 'public', lastStepAt: 40_000 })
     expect(published.steps.history).toBe('done')
+  })
+
+  it('only a bundle publishing the repo\'s keys is the history: the owner making one comment public is not Everything', () => {
+    const repoId = new Uint8Array(32).fill(0x11)
+    const comment = encodeBundle([{ kind: ENTRY_COMMENT, target: new Uint8Array(32).fill(0x44), revision: 1, key: new Uint8Array(32).fill(3) }], '')
+    const otherRepo = encodeBundle([{ kind: ENTRY_EPOCH_KEY, target: new Uint8Array(32).fill(0x12), revision: 0, key: new Uint8Array(32).fill(4) }], '')
+    const history = encodeBundle([{ kind: ENTRY_EPOCH_KEY, target: repoId, revision: 0, key: new Uint8Array(32).fill(5) }], 'made public')
+    expect(historyBundleTimes(REPO.repoId, [{ at: 10, bytes: comment }, { at: 11, bytes: otherRepo }, { at: 12, bytes: new Uint8Array([1, 2]) }])).toEqual([])
+    expect(historyBundleTimes(REPO.repoId, [{ at: 10, bytes: comment }, { at: 20, bytes: history }])).toEqual([20])
+    // a Code only conversion whose owner then made one comment public: finished, Code only's
+    const marked = repoConversion(REPO, [config('private', 20, 1), config('public', 30)])
+    const s = statusOf(facts({ conversion: marked, publicRefs: new Map([[MAIN, { oid: 'a', at: 1 }]]), historyBundles: historyBundleTimes(REPO.repoId, [{ at: 50_000, bytes: comment }]) }))
+    expect(s).toMatchObject({ phase: 'public', mode: null, lastStepAt: 1 })
+    expect(s.steps.history).toBe('skipped')
   })
 })

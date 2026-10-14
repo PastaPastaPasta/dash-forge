@@ -185,6 +185,7 @@ export const COPY = {
   sayRefs: "This browser has no record of the run that made it public: choose the branches and tags the owner chose.",
   noMode: 'Choose what becomes public: Code only or Everything.',
   keyChanged: "The repo's key changed while this ran: another maintainer changed it. The repo is still private. Run it again to continue.",
+  lagging: "Platform hasn't caught up yet; try again in a minute. The repo is still private.",
   stillPrivate: 'The repo is still private. Fix this, then continue.',
   words: (words: string) => `Type "${words}" to continue.`,
   tooLarge: (label: string) => `This repo is too large to make public in the browser. Use the command line: dg repo make-public ${label}`,
@@ -360,16 +361,17 @@ export interface MakePublicRecord {
   readonly startedAt: number
 }
 
-function recordKey(network: Network, repoId: string): string {
-  return `make-public:${network}:${repoId}`
+/** One record per network, signer and repo: another identity signed in here never continues it (an older key without the signer is ignored). */
+function recordKey(network: Network, signer: string, repoId: string): string {
+  return `make-public:${network}:${signer}:${repoId}`
 }
 
 /**
- * This browser's record of a run on `repoId`, or null. One that can't be read is an error, never
- * "no record": a run that forgot its seal-off rotation would rotate again.
+ * This browser's record of `signer`'s run on `repoId`, or null. One that can't be read is an
+ * error, never "no record": a run that forgot its seal-off rotation would rotate again.
  */
-export async function loadMakePublicRecord(network: Network, repoId: string): Promise<MakePublicRecord | null> {
-  const r = await idbGet<unknown>('journal', recordKey(network, repoId))
+export async function loadMakePublicRecord(network: Network, signer: string, repoId: string): Promise<MakePublicRecord | null> {
+  const r = await idbGet<unknown>('journal', recordKey(network, signer, repoId))
   if (r === undefined || r === null) return null
   const o = r as Partial<MakePublicRecord>
   const okMode = o.mode === 'codeOnly' || o.mode === 'everything'
@@ -381,13 +383,13 @@ export async function loadMakePublicRecord(network: Network, repoId: string): Pr
 }
 
 /** Keep `record` (replacing an earlier one whole). */
-export function saveMakePublicRecord(network: Network, repoId: string, record: MakePublicRecord): Promise<void> {
-  return idbPut('journal', recordKey(network, repoId), { ...record, refs: record.refs.map(([n, o]) => [n, o]) })
+export function saveMakePublicRecord(network: Network, signer: string, repoId: string, record: MakePublicRecord): Promise<void> {
+  return idbPut('journal', recordKey(network, signer, repoId), { ...record, refs: record.refs.map(([n, o]) => [n, o]) })
 }
 
 /** Drop the record (a run that finished). */
-export function deleteMakePublicRecord(network: Network, repoId: string): Promise<void> {
-  return idbDelete('journal', recordKey(network, repoId))
+export function deleteMakePublicRecord(network: Network, signer: string, repoId: string): Promise<void> {
+  return idbDelete('journal', recordKey(network, signer, repoId))
 }
 
 /** `refs` as the record keeps them, and back. */
@@ -396,4 +398,17 @@ export function recordRefs(refs: readonly MakePublicRef[]): [string, string][] {
 }
 export function refsOfRecord(record: Pick<MakePublicRecord, 'refs'>): MakePublicRef[] {
   return record.refs.map(([name, oid]) => ({ name, oid }))
+}
+
+/** Whether `a` and `b` are the same branches and tags at the same tips, in any order. */
+export function sameRefs(a: readonly MakePublicRef[], b: readonly MakePublicRef[]): boolean {
+  const key = (r: MakePublicRef): string => `${r.name}\0${r.oid.toLowerCase()}`
+  const set = new Set(a.map(key))
+  return set.size === new Set(b.map(key)).size && b.every((r) => set.has(key(r)))
+}
+
+/** The lowest of the seal-off epochs known, or undefined when none is: one cutoff for a whole run. */
+export function cutoffOf(...epochs: readonly (number | null | undefined)[]): number | undefined {
+  const known = epochs.filter((e): e is number => typeof e === 'number')
+  return known.length === 0 ? undefined : Math.min(...known)
 }

@@ -4,9 +4,10 @@
  *
  * 1. the typed confirmation, when the run publishes something this browser has no record of;
  * 2. the seal-off rotation while the repo is still private, never twice: a recorded seal-off epoch
- *    that is still current is kept. The key is read again (up to about 10 s for a node behind) and
- *    the run stops if someone else rotated meanwhile; with Everything the check runs again over
- *    what is now final, and the gate stops the run before the flip;
+ *    that is still current is kept, and one a node doesn't show yet stops the run (Platform hasn't
+ *    caught up) rather than rotating again. The key is read again (up to about 10 s for a node
+ *    behind) and the run stops if someone else rotated meanwhile; with Everything the check runs
+ *    again over what is now final, and the gate stops the run before the flip;
  * 3. the flip (the owner): the `repo` with `visibility: "public"` and its default branch;
  * 4. the first public settings, unless they exist (any maintainer);
  * 5. the code: one fresh public pack of the refs not public yet, never a branch members pushed to
@@ -15,6 +16,9 @@
  * 7. with Everything, the owner's history bundles not recorded yet (deterministic, so "recorded"
  *    is an owner kind-7 manifest of the same `packHash`, whichever client wrote it). Any
  *    maintainer finishes the rest of a run the owner started; this step stays the owner's.
+ *
+ * One cutoff holds for the whole run: what was sealed under the seal-off epoch or later (the lower
+ * of the stated and the recorded one) is never read for publishing, by any check nor the history.
  *
  * Each step is told running → done (or `owner`: waits for the owner). `signal` aborted between
  * steps stops the run cleanly; it can be run again. Writes carry intents (idempotency keys), so a
@@ -39,12 +43,14 @@ import {
   COPY,
   MAKE_PUBLIC_WORDS,
   MakePublicError,
+  cutoffOf,
   deleteMakePublicRecord,
   gateMakePublic,
   leftOutRefs,
   loadMakePublicRecord,
   recordRefs,
   refsOfRecord,
+  sameRefs,
   saveMakePublicRecord,
   unpublishedRefs,
   type MakePublicMode,
@@ -119,7 +125,7 @@ export interface MakePublicIo {
   readVisibility(): Promise<'public' | 'private'>
   /** The conversion facts read now (null unless public and once private). */
   readConversion(): Promise<Conversion | null>
-  /** The owner's recorded history bundles' `packHash`es (hex). */
+  /** The `packHash`es (hex) of every make-public bundle (kind 7) the owner recorded, history or not. */
   ownerBundles(): Promise<Set<string>>
   /** The signer's standing on a fresh read of the private view's keys. */
   keys(): Promise<{ readonly maintainer: boolean; readonly currentEpoch: number | null }>
@@ -156,6 +162,37 @@ export function confirms(typed: string, name: string, label?: string): boolean {
   return m !== null && (m[1] as string).endsWith(`/${name}`) && (m[1] as string).length > name.length + 1
 }
 
+/**
+ * The hashes (hex) of the history bundles the owner recorded (dg `history_bundles`): the owner's
+ * kind-7 manifests whose `packHash` is one of the bundles of the keys the signer holds below
+ * `cutoff`, as every run builds them. A bundle making single posts public (§4.6) is kind 7 too and
+ * never counts, so an owner who made one comment public has not started publishing the history.
+ */
+async function recordedHistory(io: MakePublicIo, cutoff: number | undefined): Promise<Set<string>> {
+  if (cutoff === undefined) return new Set()
+  const owner = await io.ownerBundles()
+  if (owner.size === 0) return new Set()
+  const bundles = await io.historyBundles(cutoff)
+  try {
+    return new Set(bundles.map((b) => bytesToHex(sha256(b))).filter((h) => owner.has(h)))
+  } finally {
+    for (const b of bundles) b.fill(0)
+  }
+}
+
+/**
+ * Why the key epoch read now (`current`) is not this run's seal-off epoch: a node behind (lower,
+ * or none yet: never rotate again then), or another maintainer's rotation (higher).
+ */
+function epochMismatch(current: number | null, sealOff: number): MakePublicError {
+  return lagging(current, sealOff) ? new MakePublicError(COPY.lagging, 'E310') : new MakePublicError(COPY.keyChanged, 'E310')
+}
+
+/** Whether a node shows a key epoch below `sealOff` (or none): it hasn't caught up with this run's rotation. */
+function lagging(current: number | null, sealOff: number): boolean {
+  return current === null || current < sealOff
+}
+
 /** The run (dg `run` + `convert`) over `io`. */
 export async function runMakePublicWith(io: MakePublicIo, choice: MakePublicChoice, onProgress: (p: MakePublicProgress) => void, signal?: AbortSignal): Promise<MakePublicOutcome> {
   const stop = (): void => signal?.throwIfAborted()
@@ -169,38 +206,58 @@ export async function runMakePublicWith(io: MakePublicIo, choice: MakePublicChoi
   const conversion = visibility === 'public' ? await io.readConversion() : null
   if (visibility === 'public' && conversion === null) throw new MakePublicError(COPY.publicAlready, 'E201')
   const flipped = conversion !== null
-  const standing = await io.keys()
+  let standing = await io.keys()
   if (!isOwner && !standing.maintainer) throw new MakePublicError(COPY.notOwner, 'E601')
+  const saved = await io.loadRecord()
+  const savedSeal = saved?.sealOff ?? null
+  // A recorded seal-off epoch above the one a node shows: the node hasn't caught up with this
+  // run's own rotation. Wait a little, then stop: rotating again would seal off twice.
+  if (!flipped && savedSeal !== null && lagging(standing.currentEpoch, savedSeal)) {
+    for (let i = 0; i < ROTATION_WAIT.attempts && lagging(standing.currentEpoch, savedSeal); i++) {
+      await io.sleep(ROTATION_WAIT.ms)
+      standing = await io.keys()
+    }
+    if (lagging(standing.currentEpoch, savedSeal)) throw new MakePublicError(COPY.lagging, 'E310')
+  }
+  // One cutoff for the whole run: what was sealed under it or later is never published. Once
+  // public, the lower of the stated and the recorded seal-off epochs; while private, the recorded
+  // one while it is still current (the rotation is kept), else none yet (the rotation makes it).
+  const cutoff = flipped ? cutoffOf(conversion.sealOffEpoch, savedSeal) : savedSeal !== null && savedSeal === standing.currentEpoch ? savedSeal : undefined
   // a run that started Everything (some history published) finishes as Everything
-  const historyStarted = flipped && (await io.ownerBundles()).size > 0
+  const historyNow = flipped ? await recordedHistory(io, cutoff) : new Set<string>()
+  const historyStarted = historyNow.size > 0
   if (historyStarted && mode === 'codeOnly') throw new MakePublicError(COPY.historyStarted, 'E201')
   // only the owner flips, and only the owner chooses Everything
   if (!isOwner && (!flipped || (mode === 'everything' && !historyStarted))) throw new MakePublicError(COPY.notOwner, 'E601')
-  const saved = await io.loadRecord()
-  const savedHere = saved !== null && saved.mode === mode
+  const savedMode = saved !== null && saved.mode === mode
   const named = choice.refs !== undefined && choice.refs.length > 0
-  const chosen = savedHere && !named ? refsOfRecord(saved) : undefined
-  if (flipped && !isOwner && mode === 'codeOnly' && !savedHere && !named) throw new MakePublicError(COPY.sayRefs, 'E201')
+  const chosen = savedMode && !named ? refsOfRecord(saved) : undefined
+  if (flipped && !isOwner && mode === 'codeOnly' && !savedMode && !named) throw new MakePublicError(COPY.sayRefs, 'E201')
   stop()
-  let inspection = await io.inspect({ mode, conversion, ...(named ? { refs: choice.refs } : {}), ...(chosen !== undefined ? { chosen } : {}), ...(signal !== undefined ? { signal } : {}) })
+  const below = cutoff !== undefined ? { below: cutoff } : {}
+  let inspection = await io.inspect({ mode, conversion, ...(named ? { refs: choice.refs } : {}), ...(chosen !== undefined ? { chosen } : {}), ...below, ...(signal !== undefined ? { signal } : {}) })
   if (!flipped) {
     const b = inspection.blockers[0]
     if (b !== undefined) throw b
   }
+  // This browser's record stands for the run only with its own refs: refs named that are not
+  // exactly the record's are a new choice (the typed words and the scan).
+  const savedHere = savedMode && (!named || sameRefs(inspection.check.codeRefs, refsOfRecord(saved)))
   let wanted: readonly MakePublicRef[] = mode === 'codeOnly' ? inspection.check.codeRefs : inspection.check.allRefs
   // what is public already, and what members continued after the flip (never published)
   const before = flipped ? await io.publicState() : { publicRefs: new Map<string, string>(), membersOnly: new Set<string>() }
   const todoNow = unpublishedRefs(wanted, before.publicRefs, before.membersOnly)
   const publishesHistory = mode === 'everything' && isOwner
-  const recorded = flipped && publishesHistory ? await io.ownerBundles() : new Set<string>()
   // a publication this browser has no confirmation of: refs not public yet, or the history
-  const newPublication = !flipped || (todoNow.length > 0 && !savedHere) || (publishesHistory && recorded.size === 0 && !savedHere)
-  if (newPublication || publishesHistory) {
+  const newPublication = !flipped || (todoNow.length > 0 && !savedHere) || (publishesHistory && historyNow.size === 0 && !savedHere)
+  // The scan stands before anything new is published, a recorded run too: nothing scans the code
+  // when it is stored (a push's check runs in `dg`, not here).
+  if (newPublication || publishesHistory || todoNow.length > 0) {
     const refusal = gateMakePublic(inspection.check, mode, choice.allowSecrets)
     if (refusal !== null) throw refusal
   }
   // the words, unless this continues the run this browser recorded, with its refs (dg `--resume`)
-  const resuming = choice.resume === true && savedHere && !named
+  const resuming = choice.resume === true && savedHere
   if (newPublication && !resuming && !confirms(choice.confirmation, io.repoName, choice.repoLabel)) {
     throw new MakePublicError(COPY.words(MAKE_PUBLIC_WORDS(choice.repoLabel ?? `<owner>/${io.repoName}`)), 'E802')
   }
@@ -223,17 +280,18 @@ export async function runMakePublicWith(io: MakePublicIo, choice: MakePublicChoi
       report('sealOff', 'done')
     }
     stop()
+    const sealOff = record.sealOff as number
     // a node a block behind may not show the rotation yet
     let now = await io.keys()
-    for (let i = 0; i < ROTATION_WAIT.attempts && (now.currentEpoch === null || now.currentEpoch < (record.sealOff as number)); i++) {
+    for (let i = 0; i < ROTATION_WAIT.attempts && lagging(now.currentEpoch, sealOff); i++) {
       await io.sleep(ROTATION_WAIT.ms)
       now = await io.keys()
     }
-    if (now.currentEpoch !== record.sealOff) throw new MakePublicError(COPY.keyChanged, 'E310')
+    if (now.currentEpoch !== sealOff) throw epochMismatch(now.currentEpoch, sealOff)
     if (mode === 'everything') {
       // What Everything publishes is final now (everything below the seal-off rotation): check
       // it again, since members may have written or pushed since the first check.
-      inspection = await io.inspect({ mode, conversion: null, chosen: wanted, below: record.sealOff as number, ...(signal !== undefined ? { signal } : {}) })
+      inspection = await io.inspect({ mode, conversion: null, chosen: wanted, below: sealOff, ...(signal !== undefined ? { signal } : {}) })
       const refusal = gateMakePublic(inspection.check, mode, choice.allowSecrets)
       if (refusal !== null) throw new MakePublicError(`${refusal.message} ${COPY.stillPrivate}`, refusal.code, refusal.secrets)
       wanted = inspection.check.allRefs
@@ -243,7 +301,8 @@ export async function runMakePublicWith(io: MakePublicIo, choice: MakePublicChoi
     stop()
     report('flip', 'running')
     // the second check can take minutes: the key is read again right before the point of no return
-    if ((await io.keys()).currentEpoch !== record.sealOff) throw new MakePublicError(COPY.keyChanged, 'E310')
+    const atFlip = (await io.keys()).currentEpoch
+    if (atFlip !== sealOff) throw epochMismatch(atFlip, sealOff)
     if (!(await io.canFlip())) throw new MakePublicError(COPY.frozen, 'E103')
     await io.flip(inspection.check.defaultBranch)
     report('flip', 'done')
@@ -271,9 +330,8 @@ export async function runMakePublicWith(io: MakePublicIo, choice: MakePublicChoi
   // 7. the history
   let finished = true
   if (mode === 'everything') {
-    // never at or above this run's own seal-off epoch, even if a rotation slipped in before the flip
-    const stated = (await io.readConversion())?.sealOffEpoch ?? null
-    const sealOff = stated !== null && record.sealOff !== null ? Math.min(stated, record.sealOff) : (stated ?? record.sealOff ?? 0)
+    // the run's cutoff: never at or above this run's own seal-off epoch, even if a rotation slipped in before the flip
+    const sealOff = cutoffOf((await io.readConversion())?.sealOffEpoch, record.sealOff) ?? 0
     const recordedNow = await io.ownerBundles()
     const bundles = await io.historyBundles(sealOff)
     try {
@@ -504,9 +562,9 @@ export function sdkMakePublicIo(c: PrivateWriteContext, opts: { readonly upload?
         written()
       }
     },
-    loadRecord: () => loadMakePublicRecord(c.network, repo.repoId),
-    saveRecord: (r) => saveMakePublicRecord(c.network, repo.repoId, r),
-    deleteRecord: () => deleteMakePublicRecord(c.network, repo.repoId),
+    loadRecord: () => loadMakePublicRecord(c.network, auth.identityId, repo.repoId),
+    saveRecord: (r) => saveMakePublicRecord(c.network, auth.identityId, repo.repoId, r),
+    deleteRecord: () => deleteMakePublicRecord(c.network, auth.identityId, repo.repoId),
     balance: async () => {
       try {
         return Number(await readIdentityBalance(sdk, auth.identityId))

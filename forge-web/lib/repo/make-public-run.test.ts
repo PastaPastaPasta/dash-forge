@@ -158,16 +158,17 @@ describe('who may run what', () => {
     expect(await codeOf(runMakePublicWith(chain.io(MAINT), choice({ confirmation: '' }), () => undefined))).toBe('E201')
     const out = await runMakePublicWith(chain.io(MAINT), choice({ refs: ['main'], confirmation: WORDS }), () => undefined)
     expect(out.finished).toBe(true)
-    expect(chain.log).toEqual(['inspect:public', 'code:refs/heads/main|have:0'])
+    expect(chain.log).toEqual(['inspect:public:below2', 'code:refs/heads/main|have:0'])
   })
 
   it("after history was published, finishes only as Everything; a maintainer's run leaves the history to the owner", async () => {
     const chain = new FakeChain()
     chain.visibility = 'public'
     chain.conversion = { sealOffEpoch: 2, markerHeight: 50 }
-    chain.bundles.add('00'.repeat(32))
+    // the first of the owner's two history bundles is recorded: the history has started
+    chain.history = [new Uint8Array([1, 2, 3]), new Uint8Array([4, 5, 6])]
+    chain.bundles.add(bytesToHex(sha256(new Uint8Array([1, 2, 3]))))
     expect(await codeOf(runMakePublicWith(chain.io(OWNER), choice(), () => undefined))).toBe('E201')
-    chain.history = [new Uint8Array([1, 2, 3])]
     const s = steps()
     // refs not public yet and no record here: a new publication, so the words are typed
     expect(await codeOf(runMakePublicWith(chain.io(MAINT), choice({ mode: 'everything', confirmation: '' }), () => undefined))).toBe('E802')
@@ -212,7 +213,7 @@ describe('a run from the start (the owner)', () => {
     chain.record = { mode: 'codeOnly', refs: [[MAIN.name, MAIN.oid]], sealOff: 2, startedAt: 1 }
     // an old record alone never stands in for the typed words
     expect(await codeOf(runMakePublicWith(chain.io(OWNER), choice({ confirmation: '' }), () => undefined))).toBe('E802')
-    expect(chain.log).toEqual(['inspect:private:chosen'])
+    expect(chain.log).toEqual(['inspect:private:chosen:below2'])
     await runMakePublicWith(chain.io(OWNER), choice({ confirmation: '', resume: true }), () => undefined)
     expect(chain.log).not.toContain('rotate')
     expect(chain.log).toContain('flip:main')
@@ -272,7 +273,8 @@ describe('a run from the start (the owner)', () => {
     chain.record = { mode: 'everything', refs: [[MAIN.name, MAIN.oid], [DEV.name, DEV.oid]], sealOff: 3, startedAt: 1 }
     chain.history = [new Uint8Array([1])]
     await runMakePublicWith(chain.io(OWNER), choice({ mode: 'everything', confirmation: '', resume: true }), () => undefined)
-    expect(chain.log).toContain('keys-below:3')
+    // one cutoff for the whole run: the check and the history alike
+    expect(chain.log).toEqual(['inspect:public:chosen:below3', 'keys-below:3', 'bundle'])
   })
 
   it('with Everything publishes every live ref, then only the history bundles not recorded yet', async () => {
@@ -309,7 +311,124 @@ describe('a run from the start (the owner)', () => {
     chain.checks = [checkOf({ codeRefs: [MAIN, DEV] })]
     const out = await runMakePublicWith(chain.io(OWNER), choice(), () => undefined)
     expect(out.notPublished).toEqual([DEV.name])
-    expect(chain.log).toEqual(['inspect:public', 'code:refs/heads/main|have:0'])
+    expect(chain.log).toEqual(['inspect:public:below2', 'code:refs/heads/main|have:0'])
+  })
+})
+
+describe('the history counts only as history (H1)', () => {
+  it("an owner who made one comment public has not started Everything: Code only finishes, a maintainer can't choose Everything", async () => {
+    const chain = new FakeChain()
+    chain.visibility = 'public'
+    chain.conversion = { sealOffEpoch: 2, markerHeight: 50 }
+    // a kind-7 bundle of the owner's that is not one of the history bundles (a comment made public)
+    chain.bundles.add(bytesToHex(sha256(new Uint8Array([0xc0]))))
+    chain.history = [new Uint8Array([1, 2, 3])]
+    expect(await codeOf(runMakePublicWith(chain.io(MAINT), choice({ mode: 'everything' }), () => undefined))).toBe('E601')
+    const s = steps()
+    const out = await runMakePublicWith(chain.io(OWNER), choice(), s.on)
+    expect(out.finished).toBe(true)
+    expect(s.events.at(-1)).toEqual({ step: 'history', state: 'skipped' })
+    expect(chain.log).not.toContain('bundle')
+  })
+
+  it("Everything after Code only: the owner's run is new (the words and the scan) and publishes the history", async () => {
+    const chain = new FakeChain()
+    chain.visibility = 'public'
+    chain.conversion = { sealOffEpoch: 2, markerHeight: 50 }
+    chain.publicRefs = new Map([[MAIN.name, MAIN.oid]])
+    chain.bundles.add(bytesToHex(sha256(new Uint8Array([0xc0]))))
+    chain.history = [new Uint8Array([1, 2, 3])]
+    expect(await codeOf(runMakePublicWith(chain.io(OWNER), choice({ mode: 'everything', confirmation: '' }), () => undefined))).toBe('E802')
+    chain.checks = [checkOf({ oldFormat: ['production'] })]
+    expect(await codeOf(runMakePublicWith(chain.io(OWNER), choice({ mode: 'everything' }), () => undefined))).toBe('E812')
+    const out = await runMakePublicWith(chain.io(OWNER), choice({ mode: 'everything' }), () => undefined)
+    expect(out.finished).toBe(true)
+    expect(chain.log.filter((l) => !l.startsWith('inspect') && !l.startsWith('keys-below'))).toEqual(['code:refs/heads/dev|have:1', 'bundle'])
+  })
+})
+
+describe('one cutoff for the whole run (M1)', () => {
+  it('while private, a recorded seal-off epoch that is still current bounds the first check too', async () => {
+    const chain = new FakeChain()
+    chain.record = { mode: 'codeOnly', refs: [[MAIN.name, MAIN.oid]], sealOff: 2, startedAt: 1 }
+    await runMakePublicWith(chain.io(OWNER), choice({ confirmation: '', resume: true }), () => undefined)
+    expect(chain.log[0]).toBe('inspect:private:chosen:below2')
+    // a stale one is not (the run rotates again, and that rotation is the cutoff)
+    const again = new FakeChain()
+    again.record = { mode: 'codeOnly', refs: [[MAIN.name, MAIN.oid]], sealOff: 1, startedAt: 1 }
+    await runMakePublicWith(again.io(OWNER), choice({ confirmation: '', resume: true }), () => undefined)
+    expect(again.log[0]).toBe('inspect:private:chosen')
+  })
+
+  it('once public, the lower of the stated and the recorded seal-off epochs', async () => {
+    const chain = new FakeChain()
+    chain.visibility = 'public'
+    chain.conversion = { sealOffEpoch: 2, markerHeight: 50 }
+    chain.record = { mode: 'codeOnly', refs: [[MAIN.name, MAIN.oid]], sealOff: 4, startedAt: 1 }
+    await runMakePublicWith(chain.io(OWNER), choice({ confirmation: '', resume: true }), () => undefined)
+    expect(chain.log[0]).toBe('inspect:public:chosen:below2')
+  })
+})
+
+describe("the record's refs (M2)", () => {
+  it('refs named that are not the recorded ones are a new choice: the words and the scan', async () => {
+    const chain = new FakeChain()
+    chain.visibility = 'public'
+    chain.conversion = { sealOffEpoch: 2, markerHeight: 50 }
+    chain.record = { mode: 'codeOnly', refs: [[MAIN.name, MAIN.oid]], sealOff: 2, startedAt: 1 }
+    chain.checks = [checkOf({ codeRefs: [DEV] })]
+    expect(await codeOf(runMakePublicWith(chain.io(MAINT), choice({ refs: ['dev'], confirmation: '', resume: true }), () => undefined))).toBe('E802')
+    chain.checks = [checkOf({ codeRefs: [DEV], codeSecrets: [{ place: '.env', rule: 'env_file', fingerprint: 'abc', refuses: true }] })]
+    expect(await codeOf(runMakePublicWith(chain.io(MAINT), choice({ refs: ['dev'], confirmation: '', resume: true }), () => undefined))).toBe('E807')
+    expect(chain.publicRefs.size).toBe(0)
+    // the recorded refs named again continue the run without the words
+    chain.checks = [checkOf({ codeRefs: [MAIN] })]
+    const out = await runMakePublicWith(chain.io(MAINT), choice({ refs: ['main'], confirmation: '', resume: true }), () => undefined)
+    expect(out.finished).toBe(true)
+    expect(chain.publicRefs.get(MAIN.name)).toBe(MAIN.oid)
+  })
+
+  it('code still to publish is scanned even when the run continues its record', async () => {
+    const chain = new FakeChain()
+    chain.visibility = 'public'
+    chain.conversion = { sealOffEpoch: 2, markerHeight: 50 }
+    chain.record = { mode: 'codeOnly', refs: [[MAIN.name, MAIN.oid]], sealOff: 2, startedAt: 1 }
+    chain.checks = [checkOf({ codeSecrets: [{ place: '.env', rule: 'env_file', fingerprint: 'abc', refuses: true }] })]
+    expect(await codeOf(runMakePublicWith(chain.io(OWNER), choice({ confirmation: '', resume: true }), () => undefined))).toBe('E807')
+    expect(chain.log).toEqual(['inspect:public:chosen:below2'])
+    chain.checks = [checkOf({ codeSecrets: [{ place: '.env', rule: 'env_file', fingerprint: 'abc', refuses: true }] })]
+    const out = await runMakePublicWith(chain.io(OWNER), choice({ confirmation: '', resume: true, allowSecrets: ['ABC'] }), () => undefined)
+    expect(out.finished).toBe(true)
+  })
+})
+
+describe('a node behind (L2)', () => {
+  it("never rotates again while a node doesn't show this run's seal-off yet, and says Platform hasn't caught up", async () => {
+    const chain = new FakeChain()
+    // this browser's run rotated to 3; the node still shows 2
+    chain.record = { mode: 'codeOnly', refs: [[MAIN.name, MAIN.oid]], sealOff: 3, startedAt: 1 }
+    const e = await runMakePublicWith(chain.io(OWNER), choice({ confirmation: '', resume: true }), () => undefined).catch((x: unknown) => x as MakePublicError)
+    expect(e).toBeInstanceOf(MakePublicError)
+    expect((e as MakePublicError).message).toContain("Platform hasn't caught up yet")
+    expect(chain.log).toEqual([])
+    // the node catches up: the rotation is kept
+    chain.currentEpoch = 3
+    await runMakePublicWith(chain.io(OWNER), choice({ confirmation: '', resume: true }), () => undefined)
+    expect(chain.log).not.toContain('rotate')
+    expect(chain.log).toContain('flip:main')
+  })
+
+  it("a node that doesn't show the run's own rotation after the wait: Platform hasn't caught up, and the next run doesn't rotate", async () => {
+    const chain = new FakeChain()
+    const io = chain.io(OWNER)
+    // the node keeps showing the epoch before the rotation
+    const behind: MakePublicIo = { ...io, keys: async () => ({ maintainer: true, currentEpoch: 2 }) }
+    const e = await runMakePublicWith(behind, choice(), () => undefined).catch((x: unknown) => x as MakePublicError)
+    expect((e as MakePublicError).message).toContain("Platform hasn't caught up yet")
+    expect((e as MakePublicError).message).not.toContain('another maintainer')
+    expect(chain.record?.sealOff).toBe(3)
+    expect(await codeOf(runMakePublicWith(behind, choice({ confirmation: '', resume: true }), () => undefined))).toBe('E310')
+    expect(chain.log.filter((l) => l === 'rotate')).toHaveLength(1)
   })
 })
 

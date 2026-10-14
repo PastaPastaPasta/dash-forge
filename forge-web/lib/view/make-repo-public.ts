@@ -5,7 +5,8 @@
  * and their order are `dg repo make-public`'s (`print_check`, `everything_counts`, `print_secrets`).
  */
 
-import { MAKE_PUBLIC_TOTAL_STEPS, shortRef, type MakePublicCheck, type MakePublicMode, type MakePublicRef, type MakePublicStep } from '../repo/make-public'
+import { COPY, MAKE_PUBLIC_TOTAL_STEPS, MakePublicError, shortRef, type MakePublicCheck, type MakePublicMode, type MakePublicRef, type MakePublicStep } from '../repo/make-public'
+import { errorMessage } from '../utils'
 import { aboutDash } from './audience'
 import { plural } from './format'
 
@@ -205,4 +206,61 @@ export function notPublishedLine(refs: readonly string[]): string | null {
 /** The owner, as the non-owner row names them: "@carol", else a short id. */
 export function ownerOnlyLine(owner: string): string {
   return `Only the owner (${owner}) can make this repo public.`
+}
+
+/** While a step of an earlier run is still signing (the dialog was closed mid-step). */
+export const STILL_WORKING = 'Still working on the last step…'
+
+// --- Everything, after Code only -------------------------------------------------------------
+
+/** The Danger zone row of a repo made public with Code only: its owner may publish the rest. */
+export const EVERYTHING_LATER_TITLE = 'Make everything public'
+export const EVERYTHING_LATER_TEXT =
+  "Publish everything members could read while this repo was private: issues, pull requests, reviews, every branch and the history. It can't be undone."
+
+/** The dialog's title. */
+export function everythingLaterTitle(label: string): string {
+  return `Make everything in ${label} public?`
+}
+
+/** The dialog's first line. */
+export const EVERYTHING_LATER_FIRST_LINE = "Everyone will be able to see everything written while this repo was private. This can't be undone."
+
+// --- a run that stops ---------------------------------------------------------------------------
+
+/** Words the screen never shows (DESIGN D25, and the internals a raw error may carry). */
+const INTERNAL_WORDS =
+  /\b(epochs?|anchors?|anchored|unanchored|sealed|seal-?off|lanes?|named|restricted|reveal\w*|wraps?|wrapped|key letters?|disclosures?|grants?|documents?|manifests?|bundles?)\b|\bE\d{3}\b/i
+
+/** A raw error's message as one short sentence the screen may show, or null when it can't. */
+function plainReason(raw: string): string | null {
+  const first = (raw.split('\n')[0] ?? '').trim()
+  if (first === '' || INTERNAL_WORDS.test(first)) return null
+  return first.length > 160 ? `${first.slice(0, 157).trimEnd()}…` : first
+}
+
+export const RUN_ERRORS = {
+  keyRace: "Another maintainer changed the repo's key at the same time. The repo is still private. Run it again to continue.",
+  keyUnfinished: "The repo's key change didn't finish. Open Repair on the repo page, then run this again.",
+  noEncryptionKey: 'Your identity has no usable encryption key in this browser. Add your current one in Settings → Members-only and private content, then try again.',
+  membersChanging: 'The member list is still changing on Platform. Try again in a minute.',
+} as const
+
+/**
+ * What the dialog says when a run (or its check, `what`) stops: the refusal's own copy, the
+ * membership errors of the seal-off rotation in plain words, else "That step didn't finish: …"
+ * with the reason only when it holds no internal word (D25).
+ */
+export function runErrorText(e: unknown, what = "That step didn't finish"): string {
+  if (e instanceof MakePublicError) return e.message
+  const o = typeof e === 'object' && e !== null ? (e as { name?: unknown; code?: unknown; outcome?: unknown }) : {}
+  if (o.name === 'MembersUnsettledError') return RUN_ERRORS.membersChanging
+  if (o.name === 'PrivateMembersError') {
+    if (o.outcome === 'lost' || o.outcome === 'preempted') return RUN_ERRORS.keyRace
+    if (o.code === 'E306') return RUN_ERRORS.noEncryptionKey
+    if (o.code === 'E307') return COPY.notKeyHolder
+    if (o.code === 'E310' || o.outcome === 'mismatch') return RUN_ERRORS.keyUnfinished
+  }
+  const reason = plainReason(errorMessage(e, ''))
+  return reason === null ? `${what}. Try again.` : `${what}: ${reason}`
 }

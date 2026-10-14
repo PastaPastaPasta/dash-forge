@@ -2,8 +2,9 @@
 
 import { describe, expect, it } from 'vitest'
 
-import type { MakePublicCensus } from '../repo/make-public'
-import { everythingCounts, notPublishedLine, othersLabel, refChoices, staysPrivateLine, unreadLine, wordsLine } from './make-repo-public'
+import { COPY, MakePublicError, type MakePublicCensus } from '../repo/make-public'
+import { MembersUnsettledError, PrivateMembersError } from '../repo/private-members'
+import { RUN_ERRORS, everythingCounts, notPublishedLine, othersLabel, refChoices, runErrorText, staysPrivateLine, unreadLine, wordsLine } from './make-repo-public'
 
 const census = (c: Partial<MakePublicCensus> = {}): MakePublicCensus => ({
   issues: 0,
@@ -69,3 +70,35 @@ describe('what stays private and the branches offered', () => {
     expect(notPublishedLine(['refs/heads/x', 'refs/heads/y'])).toBe('Not published: x, y: members-only commits were pushed to them after the repo was made public.')
   })
 })
+
+describe('runErrorText (L6)', () => {
+  const BANNED = /\b(epochs?|anchors?|sealed|lanes?|named|restricted|reveal|wraps?|key letters?|disclosures?|grants?)\b/i
+
+  it("says the rotation's membership errors in plain words", () => {
+    expect(runErrorText(new PrivateMembersError('another maintainer rotated to epoch 5 first', 'E310', 'lost'))).toBe(RUN_ERRORS.keyRace)
+    expect(runErrorText(new PrivateMembersError('rotation preempted at epoch 5', 'E310', 'preempted'))).toBe(RUN_ERRORS.keyRace)
+    expect(runErrorText(new PrivateMembersError('the anchor of epoch 4 does not carry the key you wrapped', 'E310', 'mismatch'))).toBe(RUN_ERRORS.keyUnfinished)
+    expect(runErrorText(new PrivateMembersError('the anchor of epoch 4 is not visible yet', 'E310'))).toBe(RUN_ERRORS.keyUnfinished)
+    expect(runErrorText(new PrivateMembersError('your identity has no usable encryption key', 'E306'))).toBe(RUN_ERRORS.noEncryptionKey)
+    expect(runErrorText(new PrivateMembersError("you can't read epoch 3", 'E307'))).toBe(COPY.notKeyHolder)
+    expect(runErrorText(new MembersUnsettledError('the member list is still changing on Platform'))).toBe(RUN_ERRORS.membersChanging)
+  })
+
+  it("keeps the run's own refusals, and a raw reason only without internal words", () => {
+    expect(runErrorText(new MakePublicError(COPY.keyChanged, 'E310'))).toBe(COPY.keyChanged)
+    expect(runErrorText(new Error('a node timed out\nat stack'))).toBe("That step didn't finish: a node timed out")
+    expect(runErrorText(new Error('a node timed out'), "The check didn't finish")).toBe("The check didn't finish: a node timed out")
+    for (const raw of ['key epoch 7 needs burning too', 'the anchor is missing', 'sealed artifact: noKey', 'the lane is closed', 'wrap not found', 'E310 something']) {
+      const said = runErrorText(new Error(raw))
+      expect(said).toBe("That step didn't finish. Try again.")
+      expect(said).not.toMatch(BANNED)
+    }
+    expect(runErrorText(undefined)).toBe("That step didn't finish. Try again.")
+    expect(runErrorText(new Error('x'.repeat(400))).length).toBeLessThan(200)
+  })
+
+  it('every fixed message is free of internal words', () => {
+    for (const m of [...Object.values(RUN_ERRORS), COPY.lagging, COPY.keyChanged, COPY.sayRefs]) expect(m).not.toMatch(BANNED)
+  })
+})
+

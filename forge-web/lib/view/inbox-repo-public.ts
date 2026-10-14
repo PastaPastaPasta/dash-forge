@@ -19,11 +19,9 @@
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
-import { decodeIdentifier } from '../auth/base58'
 import type { ForgeIds } from '../deployments'
-import { ENTRY_EPOCH_KEY, bytesEqual, parseBundle } from '../private'
 import { DOC, asIdentifierString, type RepoRef } from '../repo/contract'
-import { readMakePublicBundles, repoConversion } from '../repo/converted'
+import { publishesHistory, readMakePublicBundles, repoConversion } from '../repo/converted'
 import { blockHeightOf } from '../repo/private-content'
 import { contractOf, repoSource } from '../repo/source'
 import { queryAllDocuments, queryDocumentsWithProof, type PlainDocument } from '../sdk'
@@ -78,17 +76,8 @@ export function conversionAt(repo: RepoRef, configs: readonly PlainDocument[], r
   return configs.filter((c) => c['vis'] === 'private').reduce((m, c) => Math.max(m, createdAt(c) ?? 0), 0)
 }
 
-/** Whether `bundles` (an owner's make-public bundles' bytes) publish epoch keys of `repoId`: "Everything". One that does not parse publishes nothing. */
-export function publishesHistory(repoId: string, bundles: readonly Uint8Array[]): boolean {
-  const id = decodeIdentifier(repoId)
-  return bundles.some((bytes) => {
-    try {
-      return parseBundle(bytes).entries.some((e) => e.kind === ENTRY_EPOCH_KEY && bytesEqual(e.target, id))
-    } catch {
-      return false
-    }
-  })
-}
+/** Whether `bundles` (an owner's make-public bundles' bytes) publish epoch keys of `repoId`: "Everything" (`converted.ts`). */
+export { publishesHistory }
 
 /** Every config of `repo` (its whole timeline). */
 export function readConfigs(sdk: EvoSDK, repo: RepoRef): Promise<PlainDocument[]> {

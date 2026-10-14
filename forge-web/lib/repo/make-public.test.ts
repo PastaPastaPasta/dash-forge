@@ -15,6 +15,7 @@ import {
   MAKE_PUBLIC_WORDS,
   MANIFEST_FIRST_CREDITS,
   MakePublicError,
+  cutoffOf,
   REF_FIRST_CREDITS,
   defaultCodeRefs,
   deleteMakePublicRecord,
@@ -25,6 +26,7 @@ import {
   locatorBytes,
   namedCodeRefs,
   refCandidates,
+  sameRefs,
   saveMakePublicRecord,
   secretsOf,
   shortRef,
@@ -155,15 +157,39 @@ describe('the typed confirmation', () => {
 describe("the run's local record", () => {
   beforeEach(() => resetMemoryStores())
 
-  it('round-trips, is per network and repo, and one that cannot be read is an error, never "none"', async () => {
-    expect(await loadMakePublicRecord('devnet', 'R')).toBeNull()
-    await saveMakePublicRecord('devnet', 'R', { mode: 'codeOnly', refs: [[MAIN.name, MAIN.oid]], sealOff: 3, startedAt: 5 })
-    expect(await loadMakePublicRecord('devnet', 'R')).toEqual({ mode: 'codeOnly', refs: [[MAIN.name, MAIN.oid]], sealOff: 3, startedAt: 5 })
-    expect(await loadMakePublicRecord('devnet', 'X')).toBeNull()
-    expect(await loadMakePublicRecord('testnet', 'R')).toBeNull()
-    await deleteMakePublicRecord('devnet', 'R')
-    expect(await loadMakePublicRecord('devnet', 'R')).toBeNull()
-    await idbPut('journal', 'make-public:devnet:R', { mode: 'all', refs: 'x' })
-    await expect(loadMakePublicRecord('devnet', 'R')).rejects.toThrow(MakePublicError)
+  it('round-trips, is per network, signer and repo, and one that cannot be read is an error, never "none"', async () => {
+    expect(await loadMakePublicRecord('devnet', 'S', 'R')).toBeNull()
+    await saveMakePublicRecord('devnet', 'S', 'R', { mode: 'codeOnly', refs: [[MAIN.name, MAIN.oid]], sealOff: 3, startedAt: 5 })
+    expect(await loadMakePublicRecord('devnet', 'S', 'R')).toEqual({ mode: 'codeOnly', refs: [[MAIN.name, MAIN.oid]], sealOff: 3, startedAt: 5 })
+    expect(await loadMakePublicRecord('devnet', 'S', 'X')).toBeNull()
+    expect(await loadMakePublicRecord('testnet', 'S', 'R')).toBeNull()
+    // another identity signed in on this browser never continues it
+    expect(await loadMakePublicRecord('devnet', 'T', 'R')).toBeNull()
+    await deleteMakePublicRecord('devnet', 'S', 'R')
+    expect(await loadMakePublicRecord('devnet', 'S', 'R')).toBeNull()
+    // a record from before the signer was part of the key is ignored
+    await idbPut('journal', 'make-public:devnet:R', { mode: 'codeOnly', refs: [], sealOff: 3, startedAt: 5 })
+    expect(await loadMakePublicRecord('devnet', 'S', 'R')).toBeNull()
+    await idbPut('journal', 'make-public:devnet:S:R', { mode: 'all', refs: 'x' })
+    await expect(loadMakePublicRecord('devnet', 'S', 'R')).rejects.toThrow(MakePublicError)
   })
 })
+
+describe('one cutoff, and the same refs', () => {
+  it('cutoffOf is the lowest seal-off epoch known, or none', () => {
+    expect(cutoffOf(5, 3)).toBe(3)
+    expect(cutoffOf(null, 4)).toBe(4)
+    expect(cutoffOf(2, undefined)).toBe(2)
+    expect(cutoffOf(null, null)).toBeUndefined()
+    expect(cutoffOf(0, 2)).toBe(0)
+  })
+
+  it('sameRefs compares names and tips, in any order', () => {
+    const DEV = { name: 'refs/heads/dev', oid: 'b'.repeat(40) }
+    expect(sameRefs([MAIN, DEV], [DEV, { ...MAIN, oid: MAIN.oid.toUpperCase() }])).toBe(true)
+    expect(sameRefs([MAIN], [MAIN, DEV])).toBe(false)
+    expect(sameRefs([MAIN], [{ ...MAIN, oid: 'c'.repeat(40) }])).toBe(false)
+    expect(sameRefs([MAIN], [DEV])).toBe(false)
+  })
+})
+
