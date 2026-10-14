@@ -939,7 +939,13 @@ fn open_with_obj_key(
     } else {
         tlv::parse(&pt, header.kind, false)
     };
-    match parsed.and_then(|f| if bundle { bundled_patch(header, f) } else { Some(f) }) {
+    match parsed.and_then(|f| {
+        if bundle {
+            bundled_patch(header, f)
+        } else {
+            Some(f)
+        }
+    }) {
         Some(fields) => Opened::Readable(Box::new(fields)),
         None => Opened::Malformed,
     }
