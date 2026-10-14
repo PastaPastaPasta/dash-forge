@@ -60,7 +60,7 @@ pub async fn writable_source(
             "PR #{number} names no source branch, so there is nothing to {action}"
         )));
     };
-    if super::members_source(view) {
+    if view.patch.from_members_only_branch() {
         return Err(UserError::new(
             codes::USAGE,
             format!("can't {action}: PR #{number} is from a members-only branch"),

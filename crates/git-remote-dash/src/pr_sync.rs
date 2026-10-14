@@ -111,16 +111,19 @@ pub async fn sync_after_push(
         };
         // A members-only branch moves members-only PRs only: a public PR left over from a
         // deleted public branch of the same name must never get its (real) new head in plaintext.
-        let branch_members = match collab.members_refs(source).await {
-            Ok(Some(fold)) => fold.get(&m.ref_name).is_some_and(|r| r.members_only),
-            _ => false,
-        };
+        let branch_members = collab
+            .members_refs(source)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|fold| fold.get(&m.ref_name).is_some_and(|r| r.members_only));
         for (repo, view) in prs {
             // A private PR's documents are sealed; moving its head is `dg pr sync`'s job.
             if repo.visibility == forge_core::rules::v2::Visibility::Private {
                 continue;
             }
-            if branch_members && !members_source(&view) {
+            let members_pr = view.patch.from_members_only_branch();
+            if branch_members && !members_pr {
                 continue;
             }
             let n = view.patch.number;
@@ -144,16 +147,18 @@ pub async fn sync_after_push(
             // A members-only PR from a members-only branch names its head by the blind the
             // branch's ref update carries (rule C): read from the member fold this push just
             // wrote, and sealed beside the real head (DESIGN §4.4).
-            let members_head = if members_source(&view) {
+            let members_head = if members_pr {
                 collab.refs_changed();
-                match collab.members_refs(&repo).await {
-                    Ok(Some(fold)) => fold.updates.blind_of(&m.ref_name, &m.oid).cloned(),
-                    _ => None,
-                }
+                collab
+                    .members_refs(&repo)
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|fold| fold.updates.blind_of(&m.ref_name, &m.oid).cloned())
             } else {
                 None
             };
-            if members_source(&view) && members_head.is_none() {
+            if members_pr && members_head.is_none() {
                 progress.note(&format!(
                     "PR #{n} in {label} follows this branch, but its new head was not found among the members-only branch's updates; run `{sync_line}`"
                 ));
@@ -200,13 +205,4 @@ pub async fn sync_after_push(
         }
     }
     out
-}
-
-/// Whether `view` is a members-only PR from a members-only branch: its head is a blind, whose
-/// real commit it carries sealed ([`forge_core::collab::v2::Patch::real_head`]; a members-only PR
-/// from a public branch has a plain head and none).
-fn members_source(view: &forge_core::collab::v2::PatchView) -> bool {
-    view.patch.audience == forge_core::rules::v2::Audience::Members
-        && view.patch.real_head.is_some()
-        && view.patch.repo_id == view.patch.source_repo_id
 }

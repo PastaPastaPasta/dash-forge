@@ -31,6 +31,7 @@ use anyhow::{Context as _, Result};
 use serde_json::json;
 
 use forge_core::collab::v2::Collab;
+use forge_core::repo::short_branch_name;
 use forge_core::rules::v2::{Audience, Visibility};
 use forge_core::user_error::{codes, UserError};
 
@@ -99,6 +100,18 @@ struct Plan {
     files: Vec<String>,
 }
 
+impl Plan {
+    /// The members-only branch's short name.
+    fn branch_name(&self) -> &str {
+        short_branch_name(&self.branch)
+    }
+
+    /// The public branch's short name.
+    fn base_name(&self) -> &str {
+        short_branch_name(&self.base)
+    }
+}
+
 /// `dg publish`.
 pub async fn run(ctx: &Ctx, a: &PublishArgs) -> Result<()> {
     let cwd = std::env::current_dir().context("reading the current directory")?;
@@ -131,7 +144,7 @@ pub async fn run(ctx: &Ctx, a: &PublishArgs) -> Result<()> {
         Some(n) => {
             let (branch, tip, base, view) =
                 pr_source(ctx, &collab, &s, &cwd, &remote, n, a.history).await?;
-            (branch, tip, base, Some(view))
+            (branch, tip, base, Some((n, view)))
         }
         None => {
             let (branch, tip) = branch_source(&cwd, a.branch.as_deref(), &fold)?;
@@ -152,9 +165,9 @@ pub async fn run(ctx: &Ctx, a: &PublishArgs) -> Result<()> {
     let base_tip = public_base_tip(&fold, &base)?;
     ensure_local(ctx, &cwd, &remote, &base, &base_tip)?;
     // an earlier `dg publish --pr` that published this tip but could not record the merge
-    if let (Some(view), Some(n)) = (&pr, a.pr) {
+    if let Some((n, view)) = &pr {
         if let Some(done) = already_published(&cwd, &tip, &base, &base_tip) {
-            return record_merge_only(ctx, &collab, &s, view, n, &done, &repo).await;
+            return record_merge_only(ctx, &collab, &s, view, *n, &done, &repo).await;
         }
     }
     let plan = plan(&cwd, branch, tip, base, base_tip)?;
@@ -168,15 +181,15 @@ pub async fn run(ctx: &Ctx, a: &PublishArgs) -> Result<()> {
                 codes::USAGE,
                 format!(
                     "can't publish {} with history: {} has commits it doesn't have",
-                    safe(short_name(&plan.branch)),
-                    safe(short_name(&plan.base))
+                    safe(plan.branch_name()),
+                    safe(plan.base_name())
                 ),
             )
             .cause("publishing with history moves the public branch forward to this branch's last commit")
             .fix(format!(
                 "merge {} into {} first, then publish again",
-                safe(short_name(&plan.base)),
-                safe(short_name(&plan.branch))
+                safe(plan.base_name()),
+                safe(plan.branch_name())
             ))
             .fix("or squash it into one commit (leave out --history)")
             .note("nothing was published")
@@ -193,8 +206,8 @@ pub async fn run(ctx: &Ctx, a: &PublishArgs) -> Result<()> {
                     codes::USAGE,
                     format!(
                         "can't publish {}: it conflicts with {}{}",
-                        safe(short_name(&plan.branch)),
-                        safe(short_name(&plan.base)),
+                        safe(plan.branch_name()),
+                        safe(plan.base_name()),
                         if files.is_empty() {
                             String::new()
                         } else {
@@ -204,8 +217,8 @@ pub async fn run(ctx: &Ctx, a: &PublishArgs) -> Result<()> {
                 )
                 .fix(format!(
                     "merge {} into {}, resolve, then publish again",
-                    safe(short_name(&plan.base)),
-                    safe(short_name(&plan.branch))
+                    safe(plan.base_name()),
+                    safe(plan.branch_name())
                 ))
                 .note("nothing was published")
             })?
@@ -230,7 +243,7 @@ pub async fn run(ctx: &Ctx, a: &PublishArgs) -> Result<()> {
             codes::SECRET_IN_PUSH,
             format!(
                 "{} would publish a possible secret in {}",
-                safe(short_name(&plan.base)),
+                safe(plan.base_name()),
                 safe(
                     &findings
                         .iter()
@@ -283,26 +296,25 @@ pub async fn run(ctx: &Ctx, a: &PublishArgs) -> Result<()> {
         },
     )?;
     let repair = repair_local_base(&cwd, &plan, &commit);
-    let remote_name = remote.clone();
     // a pull request is recorded merged at the public commit (DESIGN §4.4)
-    let merged = match (&pr, a.pr) {
-        (Some(view), Some(n)) => {
+    let merged = match &pr {
+        Some((n, view)) => {
             collab.refs_changed();
             Some(
                 crate::pr::post_merge_event(&collab, &s.repo, view, &commit, true, &repo)
                     .await
-                    .map_err(|e| merge_not_recorded(*e, n, &commit))?,
+                    .map_err(|e| merge_not_recorded(*e, *n, &commit))?,
             )
         }
-        _ => None,
+        None => None,
     };
     let spent = s.spent_since(before).await;
     let price = ctx.usd_price();
     ctx.emit(
         json!({
             "status": "published",
-            "branch": short_name(&plan.branch),
-            "onto": short_name(&plan.base),
+            "branch": plan.branch_name(),
+            "onto": plan.base_name(),
             "method": if history { "history" } else { "squash" },
             "commit": commit,
             "membersOnlyTip": plan.tip,
@@ -316,15 +328,15 @@ pub async fn run(ctx: &Ctx, a: &PublishArgs) -> Result<()> {
         || {
             println!(
                 "✓ published {} onto {} as {} · {}",
-                safe(short_name(&plan.branch)),
-                safe(short_name(&plan.base)),
+                safe(plan.branch_name()),
+                safe(plan.base_name()),
                 short(&commit),
                 crate::fmt::cost_line(spent, price)
             );
             if let Some(n) = a.pr {
                 println!("✓ PR #{n} recorded merged at {}", short(&commit));
             }
-            repair.print(&plan, &commit, &remote_name);
+            repair.print(&plan, &commit, &remote);
             println!(
                 "  clean up later with `dg branch cleanup` (deletes local branches whose content is published)"
             );
@@ -420,14 +432,9 @@ fn require_branch_name(full: &str) -> Result<()> {
     } else {
         Err(crate::errors::usage(format!(
             "{} is not a plain branch name",
-            safe(short_name(full))
+            safe(short_branch_name(full))
         )))
     }
-}
-
-/// `refs/heads/x` → `x`.
-fn short_name(r: &str) -> &str {
-    r.strip_prefix("refs/heads/").unwrap_or(r)
 }
 
 /// The branch `dg publish <branch>` publishes and its local tip: a members-only branch on Forge,
@@ -461,7 +468,8 @@ fn branch_source(
     })?;
     let on_forge = fold.get(&full);
     let members = on_forge.is_some_and(|r| r.members_only)
-        || crate::branch::recorded_audience(cwd, short_name(&full)) == Some(Audience::Members);
+        || crate::branch::recorded_audience(cwd, short_branch_name(&full))
+            == Some(Audience::Members);
     if on_forge.is_some_and(|r| !r.members_only && forge_core::rules::tip_of(&r.state).is_some()) {
         return Err(
             UserError::new(codes::USAGE, format!("{} is already public", safe(&name)))
@@ -522,7 +530,7 @@ async fn pr_source(
         )
     })?;
     let view = collab.patch_view(&s.repo, p).await?;
-    if !crate::pr::members_source(&view) {
+    if !view.patch.from_members_only_branch() {
         return Err(UserError::new(
             codes::USAGE,
             format!("PR #{n} isn't from a members-only branch"),
@@ -579,24 +587,24 @@ async fn pr_source(
 /// The public tip of `base`, or a refusal: it must be a live public branch.
 fn public_base_tip(fold: &forge_core::repo::MembersRefs, base: &str) -> Result<String> {
     require_branch_name(base)?;
-    match fold.get(base) {
+    let tip = match fold.get(base) {
         Some(r) if !r.members_only => forge_core::rules::tip_of(&r.state),
         Some(_) => {
             return Err(UserError::new(
                 codes::USAGE,
-                format!("{} is members-only", safe(short_name(base))),
+                format!("{} is members-only", safe(short_branch_name(base))),
             )
             .cause("dg publish publishes onto a public branch")
             .fix("merge into a members-only branch as usual (git merge, git push)")
             .into())
         }
         None => None,
-    }
-    .ok_or_else(|| {
+    };
+    tip.ok_or_else(|| {
         crate::errors::not_found(
             format!(
                 "{} is not a public branch of this repository",
-                safe(short_name(base))
+                safe(short_branch_name(base))
             ),
             "pass --onto <branch> naming one (`dg branch` lists them)",
         )
@@ -613,7 +621,7 @@ fn ensure_local(ctx: &Ctx, cwd: &Path, remote: &str, name: &str, oid: &str) -> R
         &["fetch", "-q", remote, name],
         &git::dash_env_signing(ctx)?,
     )
-    .with_context(|| format!("fetching {} from {remote}", short_name(name)))?;
+    .with_context(|| format!("fetching {} from {remote}", short_branch_name(name)))?;
     if git::has_object(cwd, oid) {
         Ok(())
     } else {
@@ -621,7 +629,7 @@ fn ensure_local(ctx: &Ctx, cwd: &Path, remote: &str, name: &str, oid: &str) -> R
             format!(
                 "{} is not in this clone after fetching {}",
                 short(oid),
-                short_name(name)
+                short_branch_name(name)
             ),
             format!("`git fetch {remote}` and try again"),
         ))
@@ -659,8 +667,8 @@ fn plan(cwd: &Path, branch: String, tip: String, base: String, base_tip: String)
             codes::USAGE,
             format!(
                 "nothing to publish: {} has no commits {} doesn't have",
-                safe(short_name(&branch)),
-                safe(short_name(&base))
+                safe(short_branch_name(&branch)),
+                safe(short_branch_name(&base))
             ),
         )
         .into());
@@ -873,7 +881,7 @@ fn dialog(
             println!("  Possible secret in {}", safe(at));
         }
     }
-    let base = short_name(&plan.base);
+    let base = plan.base_name();
     if a.history {
         println!(
             "  Publish with history: the {} {} published as they are. The last one will be visibly linked to this branch's members-only activity.",
@@ -900,7 +908,7 @@ fn dialog(
             );
         }
     }
-    let branch = short_name(&plan.branch);
+    let branch = plan.branch_name();
     let named = |text: &str| !branch.is_empty() && text.contains(branch);
     if message.is_some_and(named) || (a.history && plan.commits.iter().any(|c| named(&c.subject))) {
         println!(
@@ -919,7 +927,7 @@ fn refuse_unseen_branch_name(
     message: Option<&str>,
     given: bool,
 ) -> Result<()> {
-    let branch = short_name(&plan.branch);
+    let branch = plan.branch_name();
     let named = message.is_some_and(|m| !branch.is_empty() && m.contains(branch));
     if !named || given || ctx.interactive() {
         return Ok(());
@@ -941,8 +949,8 @@ fn refuse_unseen_branch_name(
 fn confirm(ctx: &Ctx, plan: &Plan, history: bool) -> Result<()> {
     let what = format!(
         "Publish {} onto {}?",
-        safe(short_name(&plan.branch)),
-        safe(short_name(&plan.base))
+        safe(plan.branch_name()),
+        safe(plan.base_name())
     );
     if !history || ctx.yes {
         return ctx.confirm_or_cancel(&what);
@@ -988,7 +996,7 @@ impl Repair {
     }
 
     fn print(&self, plan: &Plan, commit: &str, remote: &str) {
-        let base = safe(short_name(&plan.base));
+        let base = safe(plan.base_name());
         match self {
             Self::Untouched => {}
             Self::Moved => println!("✓ moved your local {base} to {}", short(commit)),
@@ -1025,23 +1033,22 @@ fn repair_local_base(cwd: &Path, plan: &Plan, commit: &str) -> Repair {
     )
     .unwrap_or_else(|_| "?".into());
     let tree = |c: &str| git::git(cwd, &["rev-parse", &format!("{c}^{{tree}}")], &[]).ok();
-    if !extra.trim().is_empty() || tree(&local).is_none() || tree(&local) != tree(commit) {
+    let local_tree = tree(&local);
+    if !extra.trim().is_empty() || local_tree.is_none() || local_tree != tree(commit) {
         return Repair::Hint;
     }
     let current = git::current_branch(cwd).map(|b| git::full_ref(&b));
     // a base checked out in another worktree is that worktree's: never moved from here
+    let checked_out_here = current.as_deref() == Some(plan.base.as_str());
+    let marker = format!("branch {}", plan.base);
     let elsewhere = git::git(cwd, &["worktree", "list", "--porcelain"], &[])
-        .map(|o| {
-            o.lines()
-                .filter(|l| *l == format!("branch {}", plan.base))
-                .count()
-        })
+        .map(|o| o.lines().filter(|l| *l == marker).count())
         .unwrap_or(0)
-        > usize::from(current.as_deref() == Some(plan.base.as_str()));
+        > usize::from(checked_out_here);
     if elsewhere {
         return Repair::Hint;
     }
-    let moved = if current.as_deref() == Some(plan.base.as_str()) {
+    let moved = if checked_out_here {
         git::git(cwd, &["reset", "-q", "--keep", commit], &[]).is_ok()
     } else {
         git::git(cwd, &["update-ref", &plan.base, commit, &local], &[]).is_ok()

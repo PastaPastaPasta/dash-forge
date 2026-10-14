@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result};
 use serde_json::json;
 
+use forge_core::repo::short_branch_name;
 use forge_core::rules::v2::{Audience, Visibility};
 use forge_core::user_error::{codes, UserError};
 
@@ -137,7 +138,7 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
         json!({
             "repo": s.repo.display(),
             "branches": live.iter().map(|r| json!({
-                "name": r.name.trim_start_matches("refs/heads/"),
+                "name": short_branch_name(&r.name),
                 "ref": r.name,
                 "tip": r.tip,
                 "audience": audience(r),
@@ -147,7 +148,7 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
         || {
             let width = live
                 .iter()
-                .map(|r| r.name.trim_start_matches("refs/heads/").len())
+                .map(|r| short_branch_name(&r.name).len())
                 .max()
                 .unwrap_or(0);
             let print = |title: &str, members_only: bool| {
@@ -160,7 +161,7 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
                 }
                 println!("{title}");
                 for r in group {
-                    let name = r.name.trim_start_matches("refs/heads/");
+                    let name = short_branch_name(&r.name);
                     let mark = if current.as_deref() == Some(r.name.as_str()) {
                         '*'
                     } else {
@@ -196,7 +197,7 @@ async fn new(
     let cwd = std::env::current_dir().context("reading the current directory")?;
     let full = git::full_ref(name);
     git::require_branch_ref(&full)?;
-    let short_name = full.trim_start_matches("refs/heads/").to_string();
+    let short_name = short_branch_name(&full).to_string();
     let repo = crate::storage::clone_repo();
     let in_clone = repo.is_some();
     // D12: `dg branch new` asks on a terminal when nothing says who can see the branch and
@@ -447,7 +448,7 @@ fn cleanable(cwd: &Path, published: &[Published]) -> Vec<(String, String, Publis
         };
         // the published branch itself, or a branch recorded members-only that holds only
         // commits the publish covered (never a public branch the members-only one grew from)
-        let short = name.trim_start_matches("refs/heads/");
+        let short = short_branch_name(name);
         let members = recorded_audience(cwd, short) == Some(Audience::Members);
         if let Some(p) = published.iter().rev().find(|p| {
             git::has_object(cwd, &p.commit)
@@ -474,7 +475,7 @@ fn cleanup(ctx: &Ctx, dry_run: bool) -> Result<()> {
     if !delete.is_empty() && !dry_run {
         let names: Vec<&str> = delete
             .iter()
-            .map(|(n, _, _)| n.trim_start_matches("refs/heads/"))
+            .map(|(n, _, _)| short_branch_name(n))
             .collect();
         ctx.confirm_or_cancel(&format!(
             "Delete {} (published)? Only this clone's branches; Forge keeps its copy.",
@@ -487,10 +488,10 @@ fn cleanup(ctx: &Ctx, dry_run: bool) -> Result<()> {
     }
     let row = |(name, tip, p): &(String, String, Published)| {
         json!({
-            "branch": name.trim_start_matches("refs/heads/"),
+            "branch": short_branch_name(name),
             "tip": tip,
             "publishedAs": p.commit,
-            "onto": p.base.trim_start_matches("refs/heads/"),
+            "onto": short_branch_name(&p.base),
         })
     };
     ctx.emit(
@@ -504,19 +505,19 @@ fn cleanup(ctx: &Ctx, dry_run: bool) -> Result<()> {
                 println!("no published branches to clean up");
             }
             for (name, _, p) in &delete {
-                let b = name.trim_start_matches("refs/heads/");
+                let b = short_branch_name(name);
                 println!(
                     "{} {} (published as {} on {})",
                     if dry_run { "would delete" } else { "✓ deleted" },
                     safe(b),
                     short(&p.commit),
-                    safe(p.base.trim_start_matches("refs/heads/"))
+                    safe(short_branch_name(&p.base))
                 );
             }
             for (name, _, _) in &kept {
                 println!(
                     "kept {} (checked out; switch away first)",
-                    safe(name.trim_start_matches("refs/heads/"))
+                    safe(short_branch_name(name))
                 );
             }
             if !delete.is_empty() && !dry_run {

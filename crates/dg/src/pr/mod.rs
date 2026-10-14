@@ -45,6 +45,7 @@ use forge_core::collab::v2::{
     approvals_over, Collab, Patch, PatchInput, PatchView, TargetKind, TargetRead,
 };
 use forge_core::create::default_journal_dir;
+use forge_core::repo::short_branch_name;
 use forge_core::rules::v2::{Role, StateAction};
 use forge_core::rules::RefState;
 use forge_core::scope::RepoRef as Repo;
@@ -419,13 +420,14 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
         source.id() == handle.id() && members_ref(&head_ref),
         members_ref(&base),
     );
-    let members = args.members || source_members || base_members;
+    let branch_members = source_members || base_members;
+    let members = args.members || branch_members;
     if members && !args.to.is_empty() {
         return Err(UserError::new(
             codes::USAGE,
             "pull request not created: a pull request for specific people comes from a public branch into a public one",
         )
-        .cause(if source_members || base_members {
+        .cause(if branch_members {
             "its branch is members-only, and the people it would go to may not be members"
         } else {
             "--members and --to ask for two audiences"
@@ -434,7 +436,7 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
         .note("nothing was written")
         .into());
     }
-    if (source_members || base_members) && !args.members && !ctx.json {
+    if branch_members && !args.members && !ctx.json {
         eprintln!(
             "{} is members-only, so this pull request is members-only too",
             safe(short_branch_name(if source_members {
@@ -781,11 +783,6 @@ fn member_ref_states(fold: &forge_core::repo::MembersRefs) -> Vec<(String, RefSt
         .iter()
         .map(|r| (r.name.clone(), r.state.clone()))
         .collect()
-}
-
-/// `main` for `refs/heads/main`.
-fn short_branch_name(r: &str) -> &str {
-    r.strip_prefix("refs/heads/").unwrap_or(r)
 }
 
 /// Where a new PR's head lives ([`resolve_head`]).
@@ -1321,7 +1318,7 @@ async fn view(
     let mut v = collab.patch_view(handle, p).await?;
     // a members-only PR from a members-only branch: the real commit behind its blinded head,
     // for members (git uses it; every fold keeps the blind)
-    let real_head = if members_source(&v) {
+    let real_head = if v.patch.from_members_only_branch() {
         Some(collab.real_head(handle, &v).await)
     } else {
         None
@@ -2627,7 +2624,7 @@ pub(crate) async fn post_merge_event(
 /// into a public base it is published (`dg publish --pr`, a squash by default), never merged
 /// with members-only parents; into a members-only base, `dg` cannot merge it yet.
 fn refuse_members_merge(view: &PatchView, handle: &Repo, number: u64) -> Result<()> {
-    if !members_source(view) {
+    if !view.patch.from_members_only_branch() {
         return Ok(());
     }
     let repo = handle.display();
@@ -3851,7 +3848,7 @@ fn merge_commit_message(view: &PatchView, message: Option<&str>) -> String {
         .patch
         .source_ref_name
         .as_deref()
-        .map_or(view.head.as_str(), forge_core::repo::short_branch_name);
+        .map_or(view.head.as_str(), short_branch_name);
     // A members-only PR's title is for members: the public merge commit names only its number.
     if view.patch.audience != forge_core::rules::v2::Audience::Public {
         return format!("Merge pull request #{} from {}", view.patch.number, source);
@@ -4044,7 +4041,7 @@ async fn locate(ctx: &Ctx, repo: &str, number: u64) -> Result<Located> {
     let view = collab.patch_view(&s.repo, p).await?;
     // A members-only PR from a members-only branch names a blind: git needs the real commit
     // behind it, which only a member reads (DESIGN §4.4), and its fetch needs the key.
-    let members = members_source(&view);
+    let members = view.patch.from_members_only_branch();
     let head = if members {
         let real = collab.real_head(&s.repo, &view).await;
         if real.eq_ignore_ascii_case(&view.head) {
@@ -4071,15 +4068,6 @@ async fn locate(ctx: &Ctx, repo: &str, number: u64) -> Result<Located> {
         private: members || s.repo.visibility == forge_core::rules::v2::Visibility::Private,
         members,
     })
-}
-
-/// Whether `view` is a members-only PR from a members-only branch: its head is a blind, and the
-/// opened PR carries the real commit behind it ([`Patch::real_head`]); one from a public branch
-/// has a plain head.
-pub(crate) fn members_source(view: &PatchView) -> bool {
-    view.patch.audience == forge_core::rules::v2::Audience::Members
-        && view.patch.real_head.is_some()
-        && view.patch.repo_id == view.patch.source_repo_id
 }
 
 /// The refusal for a members-only action this reader cannot take: no members key held (not a

@@ -300,6 +300,16 @@ async fn source_tip(s: &Session, view: &PatchView, number: u64) -> Result<(Repo,
     Ok((source, branch, tip))
 }
 
+/// `--head` as a lowercase commit id.
+fn head_arg(h: &str) -> Result<String> {
+    let h = h.to_ascii_lowercase();
+    if git::is_oid(&h) {
+        Ok(h)
+    } else {
+        Err(crate::errors::usage("--head must be a full hex commit id"))
+    }
+}
+
 /// `dg pr sync`: post a `headUpdate` when the source branch (or `--head`) is not the PR head.
 pub async fn sync(ctx: &Ctx, repo: &str, number: u64, head: Option<&str>) -> Result<()> {
     let pr = open_pr(ctx, repo, number, "pull request head not moved").await?;
@@ -312,15 +322,11 @@ pub async fn sync(ctx: &Ctx, repo: &str, number: u64, head: Option<&str>) -> Res
         .note("nothing was written")
         .into());
     }
-    if super::members_source(&pr.view) {
+    if pr.view.patch.from_members_only_branch() {
         return sync_members(ctx, &pr, number, head).await;
     }
     let (new_head, from) = if let Some(h) = head {
-        let h = h.to_ascii_lowercase();
-        if !git::is_oid(&h) {
-            return Err(crate::errors::usage("--head must be a full hex commit id"));
-        }
-        (h, "--head".to_string())
+        (head_arg(h)?, "--head".to_string())
     } else {
         let (source, branch, tip) = source_tip(&pr.s, &pr.view, number).await?;
         (tip, format!("{} in {}", safe(&branch), source.display()))
@@ -387,13 +393,7 @@ async fn sync_members(ctx: &Ctx, pr: &Pr, number: u64, head: Option<&str>) -> Re
     })?;
     let branch = pr.view.patch.source_ref_name.clone().unwrap_or_default();
     let new_head = match head {
-        Some(h) => {
-            let h = h.to_ascii_lowercase();
-            if !git::is_oid(&h) {
-                return Err(crate::errors::usage("--head must be a full hex commit id"));
-            }
-            h
-        }
+        Some(h) => head_arg(h)?,
         None => fold
             .get(&branch)
             .and_then(|r| forge_core::rules::tip_of(&r.state))

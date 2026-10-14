@@ -195,11 +195,6 @@ fn is_sealed(d: &FetchedDocument) -> bool {
     d.field_bytes("enc").is_some_and(|e| !e.is_empty())
 }
 
-/// Whether `p` is a members-only PR (its head may be a blind).
-fn is_sealed_patch(p: &Patch) -> bool {
-    p.audience == Audience::Members
-}
-
 /// Whether a fetched document is a letter: `enc` v0x04, sealed to the people its writer listed
 /// (DESIGN §4.2), in either kind of repository.
 fn is_letter(d: &FetchedDocument) -> bool {
@@ -654,6 +649,16 @@ impl Patch {
             number: self.number,
             author: self.author.clone(),
         }
+    }
+
+    /// Whether this is a members-only PR from a members-only branch of its own repository: its
+    /// head is a blind, and the opened PR carries the real commit behind it
+    /// ([`Self::real_head`]); one from a public branch has a plain head.
+    #[must_use]
+    pub fn from_members_only_branch(&self) -> bool {
+        self.audience == Audience::Members
+            && self.real_head.is_some()
+            && self.repo_id == self.source_repo_id
     }
 }
 
@@ -3356,7 +3361,7 @@ impl<'a> Collab<'a> {
     /// opened document names.
     pub async fn real_head(&self, repo: &RepoRef, view: &PatchView) -> String {
         let direct = Self::real_head_of(view, None);
-        if !direct.eq_ignore_ascii_case(&view.head) || !is_sealed_patch(&view.patch) {
+        if !direct.eq_ignore_ascii_case(&view.head) || view.patch.audience != Audience::Members {
             return direct;
         }
         match self.members_refs(repo).await {

@@ -496,12 +496,11 @@ impl MembersUpdates {
             let mut out: Vec<String> = updates
                 .iter()
                 .filter(|u| u.new_oid.eq_ignore_ascii_case(oid))
-                .map(|u| match self.sealed.get(&u.id) {
-                    Some(Some(b)) => hex::encode(&b.blind),
-                    Some(None) => String::new(),
-                    None => u.new_oid.to_ascii_lowercase(),
+                .filter_map(|u| match self.sealed.get(&u.id) {
+                    Some(Some(b)) => Some(hex::encode(&b.blind)),
+                    Some(None) => None,
+                    None => Some(u.new_oid.to_ascii_lowercase()),
                 })
-                .filter(|o| !o.is_empty())
                 .collect();
             out.dedup();
             out

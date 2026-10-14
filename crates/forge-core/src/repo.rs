@@ -973,14 +973,6 @@ impl MembersRefs {
     pub fn get(&self, name: &str) -> Option<&MemberRef> {
         self.refs.iter().find(|r| r.name == name)
     }
-
-    /// Whether any members-only branch is live (not deleted).
-    #[must_use]
-    pub fn has_members_only(&self) -> bool {
-        self.refs
-            .iter()
-            .any(|r| r.members_only && rules::tip_of(&r.state).is_some())
-    }
 }
 
 impl<'a> RepoService<'a> {
