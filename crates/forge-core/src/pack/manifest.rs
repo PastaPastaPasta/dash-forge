@@ -57,6 +57,11 @@ pub const KIND_MAKE_PUBLIC: u8 = 7;
 /// a fork it resolves, or none for an environment's first). Unlike kinds 1-6, a newer snapshot
 /// never supersedes every older one of its kind: [`plan_supersedes`] is not for it.
 pub const KIND_ENV_SNAPSHOT: u8 = 8;
+/// `packManifest.kind == 10`: a key letter ([`crate::private::key_letter`], DESIGN D6 rev 4): a
+/// typed letter of keys sealed to specific people (DFPK 0x02), `objectCount` 0, no `tips`, no
+/// `supersedes`. Consensus admits it from a maintainer or a Write member; readers take it only
+/// from a current one.
+pub const KIND_KEY_LETTER: u8 = 10;
 /// `packManifest.kind == 64 + k`: the members-only (sealed) form of plain kind `k` in a public
 /// repository (mixed-visibility DESIGN D6). Shipped readers skip a kind they do not know.
 pub const KIND_SEALED_BASE: u8 = 64;

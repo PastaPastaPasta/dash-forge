@@ -12,7 +12,8 @@
  * members-only (`enc` v0x03) seal of a public repository's lane. `./blind` and `./members-ref` are the blinded OIDs of members-only
  * branches and pull requests (§19; `sealMembersRef`'s fixed-salt twin is test-only). `./bundle` and `./convert` are
  * a repository made public's readers (§18): its conversion facts and the keys its owner published;
- * `./bundle` also reads and writes a maintainer's make-public bundle (DESIGN §4.6), whose entries
+ * `./key-letter` is the kind-10 key letter (§20): typed keys sealed to specific people, and the `branch` letter
+ * that shares one members-only branch as it is now. `./bundle` also reads and writes a maintainer's make-public bundle (DESIGN §4.6), whose entries
  * publish one document revision's per-object key (`membersObjKey`, `letterObjKey`) and open it
  * with no other key (`openMembersWithKey`, `openLetterWithKey`). `./release`'s `sealRelease` and `sealReleaseManifest` are, since the web writes
  * sealed releases (`private-repos.md` §16.8, `lib/repo/sealed-release.ts`): both draw hedged
@@ -116,6 +117,7 @@ export {
   openPack,
   openPackStream,
   packHash,
+  openPackWithFileKey,
   parseHeader,
   planRange,
   readPackRange,
@@ -250,3 +252,17 @@ export {
   type PublishedBundle,
   type SkipReason,
 } from './convert'
+export {
+  KIND_KEY_LETTER,
+  KeyLetterError,
+  branchLetterFromTyped,
+  branchLetterToTyped,
+  checkNameKey,
+  decodeKeyLetter,
+  encodeKeyLetter,
+  openKeyLetter,
+  sealKeyLetter,
+  type BranchLetter,
+  type KeyLetterOpenResult,
+  type TypedLetter,
+} from './key-letter'

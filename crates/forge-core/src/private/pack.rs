@@ -277,11 +277,18 @@ impl PackHeader {
     }
 
     fn cipher(&self, keys: &EpochKeys) -> Result<Aes256Gcm, PrivateError> {
+        let key = self.file_key(keys)?;
+        Ok(Aes256Gcm::new((&*key).into()))
+    }
+
+    /// This one file's key, `K_pack,e,fileId` (§3.3), from the epoch keys `keys` of the header's
+    /// epoch: what a key letter hands on so that someone without the members key opens this file
+    /// and nothing else ([`open_with_file_key`], DESIGN §4.3 "Branch keys").
+    pub fn file_key(&self, keys: &EpochKeys) -> Result<zeroize::Zeroizing<[u8; 32]>, PrivateError> {
         if keys.epoch() != self.epoch {
             return Err(PrivateError::NoKey(self.epoch));
         }
-        let key = keys.pack_key(&self.file_id);
-        Ok(Aes256Gcm::new((&*key).into()))
+        Ok(keys.pack_key(&self.file_id))
     }
 
     fn open_segment(
@@ -450,7 +457,7 @@ pub fn open_streaming<'k, R: Read, W: Write>(
     mut sealed: R,
     size_bytes: u64,
     keys_for: impl Fn(u32) -> Option<&'k EpochKeys>,
-    mut out: W,
+    out: W,
 ) -> Result<u64, PrivateError> {
     let mut head = [0u8; HEADER_LEN];
     sealed.read_exact(&mut head).map_err(|_| {
@@ -463,6 +470,35 @@ pub fn open_streaming<'k, R: Read, W: Write>(
     let h = PackHeader::parse(&head, size_bytes)?;
     let keys = keys_for(h.epoch).ok_or(PrivateError::NoKey(h.epoch))?;
     let cipher = h.cipher(keys)?;
+    open_segments(&h, &cipher, sealed, out)
+}
+
+/// Open a whole sealed artifact (DFPK 0x01) with its file key `key` ([`PackHeader::file_key`])
+/// instead of the epoch keys: `size_bytes` first, then the header, then every tag. A wrong key
+/// fails the first tag (`SealedPackCorrupt`).
+pub fn open_with_file_key(
+    sealed: &[u8],
+    size_bytes: u64,
+    key: &[u8; 32],
+) -> Result<Vec<u8>, PrivateError> {
+    if sealed.len() as u64 != size_bytes {
+        return Err(PrivateError::SizeMismatch);
+    }
+    let h = PackHeader::parse(sealed, size_bytes)?;
+    let cipher = Aes256Gcm::new(key.into());
+    let mut out = Vec::new();
+    open_segments(&h, &cipher, &sealed[HEADER_LEN..], &mut out)?;
+    Ok(out)
+}
+
+/// Every segment after `h` from `sealed`, opened with `cipher` into `out`; nothing may follow
+/// the last one.
+fn open_segments<R: Read, W: Write>(
+    h: &PackHeader,
+    cipher: &Aes256Gcm,
+    mut sealed: R,
+    mut out: W,
+) -> Result<u64, PrivateError> {
     let mut seg = vec![
         0u8;
         usize::try_from(h.seg_size() + TAG_LEN)
@@ -474,7 +510,7 @@ pub fn open_streaming<'k, R: Read, W: Write>(
         sealed
             .read_exact(&mut seg[..len])
             .map_err(|_| PrivateError::SizeMismatch)?;
-        let pt = zeroize::Zeroizing::new(h.open_segment(&cipher, i, &seg[..len])?);
+        let pt = zeroize::Zeroizing::new(h.open_segment(cipher, i, &seg[..len])?);
         out.write_all(&pt)
             .map_err(|_| PrivateError::SealedPackCorrupt)?;
     }

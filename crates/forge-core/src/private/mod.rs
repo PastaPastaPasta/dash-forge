@@ -23,7 +23,9 @@
 //! * [`epoch`]: anchors, the current epoch, the chain walk, alerts and the repair check, as one
 //!   pure function over flattened rows (§5.3–§5.6);
 //! * [`blind`] and [`members_ref`]: members-only branches and pull requests of a public
-//!   repository: salted OID blinds, sealed ref updates and their real values (§19).
+//!   repository: salted OID blinds, sealed ref updates and their real values (§19);
+//! * [`key_letter`]: key letters (kind 10), typed keys sealed to specific people, and the
+//!   `branch` letter that shares one members-only branch as it is now (§20).
 //!
 //! The seams the data plane routes through ([`RefNameHasher`], [`RepoCodec`], [`PackCipher`],
 //! [`RepoKeyReader`]) have their private implementations in [`Private`], built from the
@@ -41,6 +43,7 @@ pub mod bundle;
 pub mod convert;
 pub mod doc;
 pub mod epoch;
+pub mod key_letter;
 pub mod keys;
 pub mod members_ref;
 pub mod named;
