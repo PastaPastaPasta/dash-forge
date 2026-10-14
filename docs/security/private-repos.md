@@ -1261,6 +1261,44 @@ A notice is a typed object in the key letters' canonical form (§20.1), padded t
 - **Opening** (`doc::open_shared_with_key`): a document whose `(id, $revision)` the letter lists opens with its key alone, the commitment compared before GCM. A post edited after the request is read at the listed revision from its history (issues, pull requests and comments keep theirs). A pull request's branch names hashed under the epoch key (members-only branches) cannot be checked without it and are dropped; names hashed as their plain SHA-256 are kept.
 - **Who writes, who reads.** The asker (Write or Maintain, as consensus admits a kind-10 manifest from a maintainer or a role-1 writer) seals it to themself (slot 0) and the bot. The bot takes a letter only from a current maintainer or Write member (§20.1) who is the request's asker, naming the request's job and thread; the newest such letter counts. `dg bot read <job>` shows the thread as the letter opens it: public posts written up to the request, the members-only revisions it covers, and the rest marked "not shared with you".
 
+### 22.4 Runners: `branch` letters for checks, and agents mode
+
+**Checks on members-only branches (`ciMembersBranches`).** After a push moves members-only branches of a public
+repository (members-key branches; not narrower ones, whose audience is their own, §21), the pusher's git helper
+writes each bot whose current notice is live and lists `ciMembersBranches` a `branch` letter (§20.2) of each moved
+branch as it is now, sealed to the pusher and the bot (`Collab::letter_ci_bots`; the pack choice is
+`members_git::share`, shared with `dg branch share`). Only a maintainer's or a Write member's helper writes one (only
+theirs count); a bot without an encryption key gets none. It never fails the push: the refs already landed, and
+the helper names what it could not share. A private-only repository's branches are not members-only branches: its
+runner stays a member with the Read role (§19.9).
+
+The bot's runner reads the shared branches as git lists them with its key: `dg ci refs` adds them, as `members`, for
+a reader outside the members (`"sharedView": true`), and `dg ci report --members-branch` takes the head's blind and
+salt from the newest letter of that branch (the run is reported on the blind, under names keyed by the salt, §19.9),
+only at the head that letter names. Nothing pushed later is readable to it until the next push's letter.
+
+**Agents mode** (forge-runner `agents = true`, DESIGN §4.9 "The runner"; runner conventions, not consensus):
+
+- It works on a request only while the bot's current notice is live and allowed the asker and the thread when the
+  request was written (§22.2); otherwise nothing is done.
+- **Members mode** only for a proper request: the notice lists `readOnRequest`, the asker wrote a `read` letter
+  naming the job (§22.3), and the thread is not a pull request from a fork or from someone outside the members
+  (`dg bot read --json` reports `foreignPull` from the PR's `sourceRepoId` and author, readable on a members-only PR
+  too). Anything else runs in **public mode**: `dg bot read --public` opens no letter, the runner keeps only public
+  posts, and a members-only task or thread leaves nothing to work on.
+- The runner's `dg` opens the letter and the posts; the agent process gets plaintext (`/in/job.json`) and the code
+  (`/work`): a members-only head is indexed from the letter's packs on top of the public branches, fetched without
+  the key; other code is fetched without the key from the repository or the fork.
+- **Taint**: a job that read a members-only task, post or pack posts only members-only replies. A public post the
+  agent asks for is refused before `dg` runs. A bot outside the members (sakura's live contracts) cannot post
+  members-only, so a tainted job there posts nothing.
+- **Egress**: the agent's container is on an internal Docker network with no outside DNS; a relay is its only way
+  out, to the runner's `CONNECT` proxy, which lets through the `host:port` endpoints the runner's configuration gives
+  for the notice's `processor` and logs every attempt (`<state>/agents/<repo>/<job>.egress.log`). A notice whose
+  `processor` the runner does not know is not worked on; one with none gives the agent no endpoint.
+- **Output**: a reply cut to `max_reply_bytes` (at most 4,800, so a bot's members-only post fits one document) and at
+  most `max_suggestions` suggested changes on a pull request's lines. Never an edit to public, never a push (4E).
+
 ## 23. Bots' members-only posts (`enc` v0x05)
 
 A **bot** is a member with the Bot role: a `writer` document with `role` 4 (mixed-visibility DESIGN §4.9, D33; the

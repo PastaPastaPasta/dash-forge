@@ -985,15 +985,9 @@ async fn members_target(s: &Session, branch: &str, oid: &str) -> Result<MembersT
         )));
     }
     let svc = forge_core::repo::RepoService::new(&s.client, &s.identity, &s.bridge);
-    let refs = svc.read_members_refs(&s.repo).await?.ok_or_else(|| {
-        UserError::new(
-            codes::USAGE,
-            format!("can't read {repo}'s members-only branches with this key"),
-        )
-        .cause("a members-only branch's run is reported by a member whose key source holds their encryption key (a runner key alone can't read the branch)")
-        .fix("set DASH_FORGE_KEY to the member's identity file")
-        .note("nothing was uploaded or written")
-    })?;
+    let Some(refs) = svc.read_members_refs(&s.repo).await? else {
+        return shared_target(s, &svc, branch, oid).await;
+    };
     let found = introducing_update(&refs.updates, &branch, oid).ok_or_else(|| {
         UserError::new(
             codes::USAGE,
@@ -1011,6 +1005,56 @@ async fn members_target(s: &Session, branch: &str, oid: &str) -> Result<MembersT
         blind: found.blind.clone(),
         real: found.real.clone(),
         keys: CheckKeys::new(&found.salt),
+    })
+}
+
+/// [`members_target`] for a reporter outside the members: the branch as it was shared with it
+/// (a `branch` key letter, which a runner bot gets on every members-only push when its access
+/// says it runs checks on members-only branches, DESIGN §4.9), at `oid` (its head, or the blind
+/// its push carries).
+async fn shared_target(
+    s: &Session,
+    svc: &forge_core::repo::RepoService<'_>,
+    branch: String,
+    oid: &str,
+) -> Result<MembersTarget> {
+    let repo = s.repo.display();
+    let signer = forge_core::keyring::PrivateSigner {
+        client: &s.client,
+        identity: &s.identity,
+        bridge: &s.bridge,
+    };
+    let shared = forge_core::key_letters::shared_with_signer(svc, &s.client, &s.repo, &signer)
+        .await?;
+    let Some(b) = shared.into_iter().find(|b| b.name == branch) else {
+        return Err(UserError::new(
+            codes::USAGE,
+            format!("can't read {repo}'s members-only branch {} with this key", crate::fmt::safe(short_branch_name(&branch))),
+        )
+        .cause("a members-only branch's run is reported by a member whose key source holds their encryption key, or by a bot the branch is shared with (a runner key alone can't read the branch)")
+        .fix("set DASH_FORGE_KEY to the member's or the bot's identity file")
+        .note("nothing was uploaded or written")
+        .into());
+    };
+    let head = &b.letter_head;
+    if hex::encode(&head.oid) != oid && hex::encode(&head.blind) != oid {
+        return Err(UserError::new(
+            codes::USAGE,
+            format!(
+                "{} is not the head of the members-only branch {} as it was shared with you",
+                &oid[..12.min(oid.len())],
+                crate::fmt::safe(short_branch_name(&branch))
+            ),
+        )
+        .cause("only the head a branch's newest share names can be reported on")
+        .note("nothing was uploaded or written")
+        .into());
+    }
+    Ok(MembersTarget {
+        branch,
+        blind: head.blind.clone(),
+        real: head.oid.clone(),
+        keys: CheckKeys::new(&head.salt),
     })
 }
 
@@ -1798,7 +1842,16 @@ async fn refs(ctx: &Ctx, repo: &str) -> Result<()> {
             }
         }
     }
-    let rows: Vec<(String, String, &str)> = match &members {
+    // Someone outside the members (a runner bot whose access says it runs checks on
+    // members-only branches) reads the branches shared with it, by their real names and heads,
+    // as git lists them with the same key. A failed read fails: the runner must not take a
+    // shared branch git lists for a public one.
+    let shared = if members.is_none() && !private {
+        r.shared_branches().await?
+    } else {
+        Vec::new()
+    };
+    let mut rows: Vec<(String, String, &str)> = match &members {
         Some(m) => m
             .refs
             .iter()
@@ -1821,11 +1874,18 @@ async fn refs(ctx: &Ctx, repo: &str) -> Result<()> {
             })
             .collect(),
     };
+    rows.extend(
+        shared
+            .iter()
+            .map(|b| (b.name.clone(), b.head.clone(), "members")),
+    );
     ctx.emit(
         json!({
             "repo": r.repo.display(),
             "visibility": if private { "private" } else { "public" },
             "membersView": members.is_some(),
+            "sharedView": members.is_none() && !private,
+            "shared": shared.iter().map(|b| &b.name).collect::<Vec<_>>(),
             "refs": rows.iter().map(|(n, t, a)| json!({ "ref": n, "tip": t, "audience": a })).collect::<Vec<_>>(),
         }),
         || {

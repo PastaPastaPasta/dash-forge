@@ -1348,8 +1348,10 @@ impl Helper {
             })
             .map(|m| (m.ref_name.clone(), m.oid.clone()))
             .collect();
-        if !members_moved.is_empty() {
-            members::letter_runner_bots(&members_moved);
+        if !dry_run && !members_moved.is_empty() {
+            if let Some(kr) = fresh_keys.as_ref().or(view.keyring.as_ref()) {
+                self.letter_runner_bots(kr, &members_moved, progress).await;
+            }
         }
         let outcomes = finalize_outcomes(planned, &final_refs, dry_run);
         if !dry_run && !moved.is_empty() {
@@ -1362,6 +1364,58 @@ impl Helper {
         }
         refused.extend(outcomes);
         Ok(refused)
+    }
+
+    /// Hand each members-only branch this push moved (`moved`: full name, new tip) to every
+    /// runner bot whose access says it runs checks on members-only branches (DESIGN §4.9,
+    /// `private-repos.md` §22.4): a `branch` key letter of the branch as it is now, written by
+    /// [`forge_core::collab::v2::Collab::letter_ci_bots`]. Never fails the push: its refs already
+    /// landed, and `dg branch share` hands a branch on by hand.
+    async fn letter_runner_bots(
+        &self,
+        kr: &std::sync::Arc<forge_core::keyring::Keyring>,
+        moved: &[(String, String)],
+        progress: Progress,
+    ) {
+        let conn = self.conn.as_ref().expect("connected");
+        let Some(s) = &conn.signer else {
+            return;
+        };
+        let Ok(cwd) = std::env::current_dir() else {
+            return;
+        };
+        let collab = forge_core::collab::v2::Collab::new(&conn.client, &s.identity, &s.bridge);
+        let branches: Vec<String> = moved.iter().map(|(name, _)| name.clone()).collect();
+        let done = collab
+            .letter_ci_bots(&conn.repo, kr, &cwd, &branches, &|_: &str| {})
+            .await;
+        for l in &done.written {
+            let line = format!(
+                "dash: {} shared with runner bot {} for its checks, as of this push",
+                members::short(&l.branch),
+                l.bot
+            );
+            if progress.enabled {
+                progress.emit(
+                    &line,
+                    &serde_json::json!({ "event": "ciLetter", "ref": l.branch, "bot": l.bot, "letter": l.letter, "head": l.head }),
+                );
+            } else {
+                eprintln!("{line}");
+            }
+        }
+        for (branch, bot, why) in &done.failed {
+            let what = branch.as_deref().map_or_else(
+                || "the pushed members-only branches".to_owned(),
+                |b| members::short(b).to_owned(),
+            );
+            let to = bot
+                .as_deref()
+                .map_or_else(|| "the runner bots".to_owned(), |b| format!("runner bot {b}"));
+            eprintln!(
+                "dash: warning: {what} couldn't be shared with {to} for its checks ({why}); `dg branch share` hands a branch on by hand"
+            );
+        }
     }
 
     /// Post the head updates of the PRs following `moved` ([`crate::pr_sync`]). Never fails
