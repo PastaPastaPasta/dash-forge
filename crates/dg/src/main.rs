@@ -2419,6 +2419,11 @@ pub enum RoleArg {
     /// `maintainer` document).
     #[value(alias = "maintain")]
     Maintainer,
+    /// Bot: an automated account. It can post comments and reviews. It can't approve or merge,
+    /// it pushes only to branches a maintainer allows, and it reads members-only content only
+    /// when someone asks it to. To report checks it also needs to be added as a CI runner (a
+    /// `writer` document, role 4; needs a network whose contracts have the Bot role).
+    Bot,
 }
 
 impl RoleArg {
@@ -2429,6 +2434,7 @@ impl RoleArg {
             RoleArg::Triage => forge_core::rules::v2::Role::Triage,
             RoleArg::Reader => forge_core::rules::v2::Role::Reader,
             RoleArg::Maintainer => forge_core::rules::v2::Role::Maintainer,
+            RoleArg::Bot => forge_core::rules::v2::Role::Bot,
         }
     }
 }
@@ -3067,6 +3073,7 @@ mod tests {
         assert_eq!(role_of(&["--role", "writer"]), RoleArg::Writer);
         assert_eq!(role_of(&["--role", "maintainer"]), RoleArg::Maintainer);
         assert_eq!(role_of(&["--role", "maintain"]), RoleArg::Maintainer);
+        assert_eq!(role_of(&["--role", "bot"]), RoleArg::Bot);
         assert_eq!(
             RoleArg::Triage.to_core(),
             forge_core::rules::v2::Role::Triage

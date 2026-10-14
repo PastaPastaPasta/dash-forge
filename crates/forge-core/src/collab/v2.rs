@@ -195,6 +195,47 @@ fn is_sealed(d: &FetchedDocument) -> bool {
     d.field_bytes("enc").is_some_and(|e| !e.is_empty())
 }
 
+/// E311 for a bot with no post key for `epoch` of `repo` (§23): a maintainer sends one on every
+/// rotation; a rotation by a client that does not, or a failed send, leaves the bot without one.
+fn no_post_key(repo: &RepoRef, epoch: u32) -> Error {
+    UserError::new(
+        codes::NO_KEY_SHARED,
+        format!(
+            "no post key for epoch {epoch} in {}: this bot can't post members-only content yet",
+            repo.display()
+        ),
+    )
+    .cause("a bot never holds the members key; a maintainer gives it a key for its own posts each time the members key changes")
+    .fix(format!(
+        "ask a maintainer to run `dg repo keys repair {}`, which sends it",
+        repo.display()
+    ))
+    .note("checked before anything was signed; nothing was written or paid")
+    .into()
+}
+
+/// Refuse, before signing, a bot's members-only `kind` other than an issue, comment or review
+/// (§23: a PR names its branches by keys a bot never holds).
+fn bot_kind_check(repo: &RepoRef, kind: DocKind) -> Result<()> {
+    if crate::private::bot_post::posts_kind(kind) {
+        return Ok(());
+    }
+    Err(UserError::new(
+        codes::NOT_A_WRITER,
+        format!(
+            "bots can post members-only issues, comments and reviews in {}, not a members-only {}",
+            repo.display(),
+            match kind {
+                DocKind::Patch => "pull request",
+                other => other.type_name(),
+            }
+        ),
+    )
+    .fix("post it publicly, or as an issue or comment")
+    .note("checked before anything was signed; nothing was written or paid")
+    .into())
+}
+
 /// Whether a fetched document is a letter: `enc` v0x04, sealed to the people its writer listed
 /// (DESIGN §4.2), in either kind of repository.
 fn is_letter(d: &FetchedDocument) -> bool {
@@ -3188,7 +3229,13 @@ pub struct Collab<'a> {
     /// A public repository's refs as this member reads them ([`Self::members_refs`]), read once
     /// per `Collab` and keyed by repository id; dropped by [`Self::refs_changed`].
     members_refs: std::sync::Mutex<Option<([u8; 32], MembersFold)>>,
+    /// A bot signer's post keys in a repository, by epoch (§23), read once per `Collab` and
+    /// keyed by repository id ([`Self::bot_post_key`]).
+    post_keys: std::sync::Mutex<Option<([u8; 32], PostKeys)>>,
 }
+
+/// A bot's post keys in one repository, by epoch.
+type PostKeys = Arc<BTreeMap<u32, crate::private::bot_post::PostKey>>;
 
 /// A public repository's refs as one member reads them ([`Collab::members_refs`]); `None` when the
 /// reader holds no members key for it.
@@ -3244,6 +3291,7 @@ impl<'a> Collab<'a> {
             last_letter: std::sync::Mutex::default(),
             members_patch: std::sync::Mutex::default(),
             members_refs: std::sync::Mutex::default(),
+            post_keys: std::sync::Mutex::default(),
         }
     }
 
@@ -3272,6 +3320,7 @@ impl<'a> Collab<'a> {
             last_letter: std::sync::Mutex::default(),
             members_patch: std::sync::Mutex::default(),
             members_refs: std::sync::Mutex::default(),
+            post_keys: std::sync::Mutex::default(),
         }
     }
 
@@ -3627,6 +3676,15 @@ impl<'a> Collab<'a> {
             *crate::history::lock(&self.last_letter) = Some(letter.sent.clone());
             return Ok(sealed);
         }
+        if (repo.visibility == Visibility::Private || audience == Audience::Members)
+            && self.cached_role(repo).await? == Some(Role::Bot)
+        {
+            // a bot never holds the members key: its members-only posts are v0x05 under its
+            // post key (§23)
+            let post = Box::pin(self.bot_post_key(repo, None)).await?;
+            return bot_kind_check(repo, kind)
+                .and_then(|()| private::seal_bot_props(&post, repo.visibility, kind, props));
+        }
         if repo.visibility == Visibility::Private {
             let kr = self.fresh_keyring(repo).await?;
             let w = kr.writer(repo)?;
@@ -3721,7 +3779,69 @@ impl<'a> Collab<'a> {
         {
             return Ok(());
         }
+        if self.cached_role(repo).await? == Some(Role::Bot) {
+            return Box::pin(self.bot_post_key(repo, None)).await.map(|_| ());
+        }
         self.members_writer(repo).await.map(|_| ())
+    }
+
+    /// A bot signer's post key in `repo` (§23) for `epoch`, or for the current epoch when
+    /// `None` (what a new post is sealed under): from a current maintainer's `postKey` letter
+    /// addressed to it, read once per `Collab`. Refused, before anything is signed, when
+    /// members-only content is off, when the bot holds no encryption key, and when no post key
+    /// for the epoch reached it (a maintainer sends one on every rotation; `dg repo keys repair`
+    /// sends a missing one).
+    pub(super) async fn bot_post_key(
+        &self,
+        repo: &RepoRef,
+        epoch: Option<u32>,
+    ) -> Result<crate::private::bot_post::PostKey> {
+        let (identity, bridge) = self.signer()?;
+        let epoch = if let Some(e) = epoch {
+            e
+        } else {
+            let kr = self.fresh_keyring(repo).await?;
+            if !kr.has_members_key() {
+                return Err(crate::keyring::members_only_off_for(repo, false));
+            }
+            kr.resolution()
+                .current_epoch
+                .ok_or_else(|| crate::keyring::members_only_off_for(repo, false))?
+        };
+        let repo_id = repo.scope()?.repo_id;
+        let cached = crate::history::lock(&self.post_keys)
+            .as_ref()
+            .filter(|(id, _)| *id == repo_id)
+            .map(|(_, k)| Arc::clone(k));
+        let keys = match cached {
+            Some(k) if k.contains_key(&epoch) => k,
+            _ => {
+                let signer = crate::keyring::PrivateSigner {
+                    client: self.client,
+                    identity,
+                    bridge,
+                };
+                let (id, private_keys) = crate::key_letters::signer_reader_keys(&signer, repo)?;
+                if private_keys.is_empty() {
+                    return Err(crate::keyring::no_members_encryption_key_held(&format!(
+                        "members-only content of {}",
+                        repo.display()
+                    )));
+                }
+                let reader = crate::key_letters::LetterReader {
+                    identity_id: id,
+                    keys: &private_keys,
+                };
+                let svc = crate::repo::RepoService::new(self.client, identity, bridge);
+                let k =
+                    Arc::new(crate::bot_keys::received(&svc, self.client, repo, &reader).await?);
+                *crate::history::lock(&self.post_keys) = Some((repo_id, Arc::clone(&k)));
+                k
+            }
+        };
+        keys.get(&epoch)
+            .cloned()
+            .ok_or_else(|| no_post_key(repo, epoch))
     }
 
     /// The identity keys of `owner` as the letter reader rule takes them, fetched once per
@@ -6908,6 +7028,11 @@ impl<'a> Collab<'a> {
         if is_letter(stored) {
             return self.letter_edit(repo, kind, stored, changes).await;
         }
+        if stored.field_bytes("enc").and_then(|e| e.first().copied())
+            == Some(crate::private::bot_post::V5)
+        {
+            return Box::pin(self.bot_edit(repo, kind, stored, changes)).await;
+        }
         let members = repo.visibility == Visibility::Public;
         let kr = if members {
             self.members_writer(repo).await?
@@ -6967,6 +7092,73 @@ impl<'a> Collab<'a> {
             writer.write_keys()
         };
         let sealed = private::reseal_edit(keys, kind, owner, &opened, &text)?;
+        Ok(clear_plaintext(kind, stored, sealed))
+    }
+
+    /// The `enc` / `epoch` a replace of the signer's own bot post (`enc` v0x05, §23) sets: opened
+    /// with the post key of its epoch, `changes` applied, and the whole content sealed again
+    /// under the current epoch's post key. Unchanged text keeps the stored `enc`.
+    async fn bot_edit(
+        &self,
+        repo: &RepoRef,
+        kind: DocKind,
+        stored: &FetchedDocument,
+        changes: &BTreeMap<String, Option<FieldValue>>,
+    ) -> Result<BTreeMap<String, Option<FieldValue>>> {
+        let doc_type = kind.type_name();
+        let unreadable = || {
+            Error::from(
+                UserError::new(
+                    codes::NOT_A_KEY_HOLDER,
+                    format!(
+                        "this {doc_type} cannot be read with your keys, so it cannot be edited"
+                    ),
+                )
+                .cause(
+                    "only the bot that wrote it edits a bot's members-only post, with its post key",
+                )
+                .note("nothing was written"),
+            )
+        };
+        let epoch = stored
+            .field_u64("epoch")
+            .and_then(|e| u32::try_from(e).ok())
+            .ok_or_else(unreadable)?;
+        let (Some(header), Some(enc)) = (
+            crate::keyring::header_of(kind, stored),
+            stored.field_bytes("enc"),
+        ) else {
+            return Err(unreadable());
+        };
+        let mut header = header;
+        header.vis = repo.visibility;
+        let old = self.bot_post_key(repo, Some(epoch)).await?;
+        let opened = private::open_doc(
+            crate::private::bot_post::open(&old, &header, &enc),
+            stored.clone(),
+        )
+        .ok_or_else(unreadable)?;
+        let text: BTreeMap<String, Option<String>> = changes
+            .iter()
+            .map(|(k, v)| {
+                let v = v
+                    .as_ref()
+                    .and_then(FieldValue::as_str)
+                    .filter(|s| !s.is_empty());
+                (k.clone(), v.map(str::to_owned))
+            })
+            .collect();
+        if text
+            .iter()
+            .all(|(k, v)| opened.field_str(k).filter(|s| !s.is_empty()) == *v)
+        {
+            return Ok(["enc", "epoch"]
+                .into_iter()
+                .map(|k| (k.to_string(), stored.fields.get(k).cloned()))
+                .collect());
+        }
+        let post = self.bot_post_key(repo, None).await?;
+        let sealed = private::reseal_bot_edit(&post, repo.visibility, kind, &opened, &text)?;
         Ok(clear_plaintext(kind, stored, sealed))
     }
 

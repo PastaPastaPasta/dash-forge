@@ -179,6 +179,11 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
     let member: &str = &resolve_identity(client, member, "member").await?;
     // The owner cannot take triage or reader (as the web refuses it).
     check_grant(handle, member, role)?;
+    // A Bot row needs the contracts' Bot role (C2): on sakura's live set a bot is an identity
+    // outside the members (DESIGN §4.9).
+    if role == Role::Bot && !forge_core::members::bot_role_available(client, handle).await? {
+        return Err(forge_core::members::no_bot_role(handle, member).into());
+    }
     let signer = crate::keys::signer(&s);
     // The member's consent comes first (checked before any cost prompt or key work), unless
     // they already hold the role: re-running an add to finish its key wrap needs none. A
@@ -202,7 +207,22 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
         change_from,
     );
     let (keyed, loses_key) = (plan.wrap, plan.rotate);
-    let can_receive = !keyed || crate::keys::member_can_receive(client, handle, member).await?;
+    // a bot gets its post key instead of the members key (§23), when the repository has one
+    let post_key =
+        role == Role::Bot && forge_core::keyring::has_members_key(client, handle).await?;
+    // with the write pre-check off (DASH_FORGE_SKIP_WRITE_PRECHECK, the e2e suites' switch) a
+    // bot's add also attempts the members-key wrap clients never write, so consensus is seen
+    // refusing it (L4: `repoKey.mr` admits no 4)
+    let keyed = keyed || (post_key && !forge_core::collab::v2::precheck_enabled());
+    let can_receive =
+        !(keyed || post_key) || crate::keys::member_can_receive(client, handle, member).await?;
+    let post_key_epoch = if post_key && can_receive {
+        let kr = signer.keyring(handle).await?;
+        kr.writer(handle)?;
+        kr.resolution().write_epoch
+    } else {
+        None
+    };
     if keyed {
         // Checked before anything is written: in a private repository a member with no
         // encryption key could be granted a role but never read it (§5.5, ux-dx-spec §9). In a
@@ -251,6 +271,14 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
             "a membership document + a key wrap, {}",
             cost_line(
                 crate::quote::MEMBER_GRANT + crate::keys::WRAP_ESTIMATE_CREDITS,
+                ctx.usd_price()
+            )
+        )
+    } else if post_key_epoch.is_some() {
+        format!(
+            "a membership document + the bot's key for its members-only posts, {}",
+            cost_line(
+                crate::quote::MEMBER_GRANT + forge_core::bot_keys::letter_credits(),
                 ctx.usd_price()
             )
         )
@@ -326,18 +354,40 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
     } else {
         None
     };
+    // the bot's post key for the current epoch (a rotation above already sent the new one); a
+    // re-run sends only one this signer has not sent yet
+    let post_keys = match post_key_epoch.filter(|_| rotation.is_none()) {
+        Some(epoch) => {
+            let kr = signer.keyring(handle).await?;
+            let keys = kr
+                .epoch_keys(epoch)
+                .context("the members key changed while adding the bot: run `dg repo keys repair` to send its key")?;
+            let bots = vec![member.to_string()];
+            let bots = if held {
+                Box::pin(forge_core::bot_keys::missing(&signer, handle, keys, &bots)).await?
+            } else {
+                bots
+            };
+            Some(
+                Box::pin(forge_core::bot_keys::issue(&signer, handle, keys, &bots))
+                    .await
+                    .context("sending the bot its key (re-run `dg collab add` to finish: the membership stands)")?,
+            )
+        }
+        None => None,
+    };
     // after the role (and any rotation) landed: the environments whose group it changed
     let (regrouped, regroup_text) = regroup.save(&s, &protected_hashes).await;
     if !regroup_text.is_empty() {
         eprintln!("{}", regroup_text.trim_start());
     }
     // A role already held writes nothing (a keyed repository's wrap may still).
-    let spent = if held && !keyed {
+    let spent = if held && !keyed && post_keys.as_ref().is_none_or(|p| p.sent.is_empty()) {
         0
     } else {
         s.spent_since(before).await
     };
-    let key_pending = keyed && !can_receive;
+    let key_pending = (keyed || post_key) && !can_receive;
     let price = ctx.usd_price();
     ctx.emit(
         json!({
@@ -354,6 +404,7 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
             "cost": cost_json(spent, price),
             "keyShared": keyed && can_receive,
             "keyPending": key_pending,
+            "postKeySent": post_keys.as_ref().is_some_and(|p| !p.sent.is_empty()),
             "rotation": rotation.as_ref().map(crate::keys::rotation_json),
         }),
         || {
@@ -364,11 +415,19 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
                 granted.document_id,
                 cost_line(spent, price)
             );
-            if key_pending {
+            if key_pending && role == Role::Bot {
+                println!(
+                    "  {member} has no encryption key yet, so it can't post members-only content; once it adds one (`dg auth keys add --encryption`), run `dg repo keys repair {}`",
+                    handle.display()
+                );
+            } else if key_pending {
                 println!(
                     "  {member} has no encryption key yet, so they can't read members-only content; once they add one (`dg auth keys add --encryption`), run `dg repo keys repair {}`",
                     handle.display()
                 );
+            }
+            if post_keys.as_ref().is_some_and(|p| !p.sent.is_empty()) {
+                println!("  sent {member} the key for its members-only posts");
             }
             if let Some(r) = &rotation {
                 crate::keys::print_rotation(handle, r);
@@ -607,6 +666,40 @@ pub(crate) fn role_word(
     }
 }
 
+/// The bots of `repo` (its Bot rows, `writer.role` 4), for the " (bot)" mark beside their
+/// posts: read only where the contracts have the Bot role (none on sakura's live set), and empty
+/// when the read fails (the mark is a label, never a check).
+pub(crate) async fn bots_of(
+    client: &forge_core::platform::PlatformClient,
+    repo: &forge_core::scope::RepoRef,
+) -> std::collections::BTreeSet<String> {
+    if !forge_core::members::bot_role_available(client, repo)
+        .await
+        .unwrap_or(false)
+    {
+        return std::collections::BTreeSet::new();
+    }
+    MemberReader::new(client)
+        .list(repo)
+        .await
+        .map(|members| {
+            forge_core::bot_keys::bots_of(&members, &[])
+                .into_iter()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// " (bot)" beside a post by one of `bots` (DESIGN §4.9: the Bot label comes from the role-4
+/// row of this repo, never from a profile name), else nothing.
+pub(crate) fn bot_tag(bots: &std::collections::BTreeSet<String>, id: &str) -> &'static str {
+    if bots.contains(id) {
+        " (bot)"
+    } else {
+        ""
+    }
+}
+
 /// The verbatim §9 warning and the cost of a removal from a repository with a members key:
 /// after it, everyone else (the rotator included) gets a wrap, plus an anchor. A public
 /// repository's warning names only its members-only content.
@@ -624,7 +717,12 @@ fn keyed_remove_prompt(
         .iter()
         .any(|m| m.identity_id == member && doc_type(m.role) != doc_type(role));
     let remaining = crate::keys::distinct_members(members)
-        - usize::from(members.iter().any(|m| m.identity_id == member) && !keeps_other_role);
+        - usize::from(
+            members
+                .iter()
+                .any(|m| m.identity_id == member && forge_core::members::holds_members_key(m.role))
+                && !keeps_other_role,
+        );
     let (est, what) = crate::keys::rotation_cost(kr, remaining);
     // Finishing someone else's burn is the recovery path: say whose it is, don't block it.
     let burned = kr

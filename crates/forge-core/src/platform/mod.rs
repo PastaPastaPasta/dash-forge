@@ -235,6 +235,22 @@ impl LoadedContract {
             .is_ok_and(|t| t.properties().contains_key(property))
     }
 
+    /// The `maximum` a top-level integer `property` of `document_type` declares, if any:
+    /// feature-detects a bound a build flag moves (`writer.role` admits the Bot role, 4, only
+    /// on a contract built with `mainnet_bot_role`). `None` for an unknown type or property.
+    pub fn property_maximum(&self, document_type: &str, property: &str) -> Option<i64> {
+        use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
+        let t = self.0.document_type_for_name(document_type).ok()?;
+        t.schema()
+            .get_optional_value("properties")
+            .ok()??
+            .get_optional_value(property)
+            .ok()??
+            .get_optional_value("maximum")
+            .ok()??
+            .as_integer::<i64>()
+    }
+
     /// The indexes of `document_type`, each as `name (property, property, …)` in the order its
     /// where-clauses must follow (Drive's rule). Empty for an unknown type.
     pub fn index_summaries(&self, document_type: &str) -> Vec<String> {

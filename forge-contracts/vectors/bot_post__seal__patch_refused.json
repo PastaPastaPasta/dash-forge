@@ -1,0 +1,26 @@
+{
+  "name": "seal__patch_refused",
+  "description": "a bot posts issues, comments and reviews members-only, never a pull request (its branch names are keyed by the epoch, which a bot never holds).",
+  "case": "bot_post",
+  "rules": "v2",
+  "input": {
+    "op": "seal",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "w": "f4b4b96d963aee33dbbc796a264260c0ebdcdb467ba3d01a8edd387f5115ed27",
+    "bot": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+    "doc": {
+      "type": "patch",
+      "vis": "public",
+      "ownerId": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+      "epoch": 0,
+      "number": 8
+    },
+    "fields": {
+      "title": "t"
+    },
+    "nonce": "000102030405060708090a0b"
+  },
+  "expected": {
+    "error": "malformed"
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "name": "open__human_author_refused",
+  "description": "a v0x05 post by an identity with no Bot row (here a person holding the members key, who derived their own 'post key'): never opened, Unreadable(NotABot); members write v0x03.",
+  "case": "bot_post",
+  "rules": "v2",
+  "input": {
+    "op": "open",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        }
+      },
+      "members": [],
+      "bots": [
+        "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"
+      ]
+    },
+    "doc": {
+      "type": "comment",
+      "vis": "public",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "targetId": "3333333333333333333333333333333333333333333333333333333333333333",
+      "enc": "05000102030405060708090a0bc69549a3b0af03fe4f2665a0fcb1058c1c0599ea24a4b0918b03b4863b76dd956bdb08d4bdaa8c0f196f0d3c5fbbe4a93f1ce74282f137038d2b300dd3f2029f0db30e1279e68b6b1aa34e03b47b024bac4af5b75b4ccf26a4cf49a6c4d81e8f884ae2fa2707e8c5967c4473d2b5196b",
+      "createdAtBlockHeight": 50
+    }
+  },
+  "expected": {
+    "status": "unreadable",
+    "reason": "notABot"
+  }
+}

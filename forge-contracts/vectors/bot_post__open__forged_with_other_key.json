@@ -1,0 +1,39 @@
+{
+  "name": "open__forged_with_other_key",
+  "description": "a post under bot B's $ownerId sealed with bot B2's post key (B2 cannot sign as B, but the envelope alone must not open): CommitMismatch.",
+  "case": "bot_post",
+  "rules": "v2",
+  "input": {
+    "op": "open",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        }
+      },
+      "members": [],
+      "bots": [
+        "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+        "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1"
+      ]
+    },
+    "doc": {
+      "type": "comment",
+      "vis": "public",
+      "ownerId": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+      "epoch": 0,
+      "targetId": "3333333333333333333333333333333333333333333333333333333333333333",
+      "enc": "05000102030405060708090a0b9b257a6495a96f181b97e55be3f125edf66d0cf4aef26673becdb39f5553ef059edde4418482cf976a05bdc1891347584f63a255ebff2718bd35c4e1cc72b555a2ce564f67138097a337af325d10255860928e37d4f93ebb1049dbf3b12113ecbe17f64934267e304e087565d153c368",
+      "createdAtBlockHeight": 50
+    }
+  },
+  "expected": {
+    "status": "unreadable",
+    "reason": "commitMismatch"
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "name": "open__late_after_rotation",
+  "description": "a bot never holds the members key, so it is not among the key's members: a post under epoch 0 written after the epoch-1 anchor + 240 blocks (the rotation gave it a fresh post key) is late.",
+  "case": "bot_post",
+  "rules": "v2",
+  "input": {
+    "op": "open",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        "1": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        },
+        "1": {
+          "id": "723e4415b140d11aae49ab4d7cbf0e3f418bb90092a5ab040d47602af4ba5a86",
+          "height": 1000
+        }
+      },
+      "members": [],
+      "bots": [
+        "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"
+      ]
+    },
+    "doc": {
+      "type": "comment",
+      "vis": "public",
+      "ownerId": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+      "epoch": 0,
+      "targetId": "3333333333333333333333333333333333333333333333333333333333333333",
+      "enc": "05000102030405060708090a0bd8cba142dd331d95c2967b8082613e21bcc9724f4a5586a6b33a7bf3a39f670c5b4ec1291286482d8a324e65095654e0fe0b76c2b18b8daa4a2ed2a6cca6248ddec68ace3f62d9108e9b9a99d43441ee3a37127df4ae98c9246fd586982dde2476afa004cec4d72405128905c4b9f7bd",
+      "createdAtBlockHeight": 1241
+    }
+  },
+  "expected": {
+    "status": "unreadable",
+    "reason": "late"
+  }
+}

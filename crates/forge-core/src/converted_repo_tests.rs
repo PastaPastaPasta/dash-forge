@@ -79,7 +79,8 @@ struct Converted {
     old_issue: (DocHeader, Vec<u8>),
     /// A members-only comment written after the conversion (vis public, v0x03, epoch 1).
     new_comment: (DocHeader, Vec<u8>),
-    /// A later client's members-only comment (`enc` v0x05).
+    /// A later client's members-only comment (`enc` v0x06, the first version this client does
+    /// not know).
     later_comment: (DocHeader, Vec<u8>),
     /// The owner's make-public bundle (Everything mode only).
     bundle: Option<PublishedBundle>,
@@ -175,7 +176,7 @@ fn build(everything: bool, src: &Path) -> Converted {
     )
     .unwrap();
     let mut later = comment_enc.clone();
-    later[0] = 0x05;
+    later[0] = crate::private::doc::FIRST_UNKNOWN;
 
     let bundle = everything.then(|| PublishedBundle {
         owner: OWNER,

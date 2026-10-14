@@ -1,0 +1,38 @@
+{
+  "name": "open__v05_relabelled_as_v03",
+  "description": "the bot's enc with enc[0] rewritten to 0x03: read as a members' envelope under the epoch key, CommitMismatch.",
+  "case": "bot_post",
+  "rules": "v2",
+  "input": {
+    "op": "open",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        }
+      },
+      "members": [],
+      "bots": [
+        "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"
+      ]
+    },
+    "doc": {
+      "type": "comment",
+      "vis": "public",
+      "ownerId": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+      "epoch": 0,
+      "targetId": "3333333333333333333333333333333333333333333333333333333333333333",
+      "enc": "03000102030405060708090a0bd8cba142dd331d95c2967b8082613e21bcc9724f4a5586a6b33a7bf3a39f670c5b4ec1291286482d8a324e65095654e0fe0b76c2b18b8daa4a2ed2a6cca6248ddec68ace3f62d9108e9b9a99d43441ee3a37127df4ae98c9246fd586982dde2476afa004cec4d72405128905c4b9f7bd",
+      "createdAtBlockHeight": 50
+    }
+  },
+  "expected": {
+    "status": "unreadable",
+    "reason": "commitMismatch"
+  }
+}

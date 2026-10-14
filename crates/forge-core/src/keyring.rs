@@ -585,6 +585,7 @@ impl Keyring {
         self.resolution
             .add_published(&self.repo_id, &self.rows.configs, keys, alerts);
         self.ctx = self.resolution.open_context(&self.repo_id);
+        self.ctx.bots = bot_ids(&self.members);
         self.config = self.decrypt_config();
     }
 
@@ -685,6 +686,7 @@ impl Keyring {
             wraps: rows,
         };
         self.ctx = self.resolution.open_context(&self.repo_id);
+        self.ctx.bots = bot_ids(&self.members);
         self.config = self.decrypt_config();
         unreadable.sort_unstable();
         unreadable.dedup();
@@ -1037,7 +1039,10 @@ impl Keyring {
         // A members-only (v0x03) document's commitment is to its own key: a mismatch is a
         // forged, relabelled or moved document, never an earlier use of the epoch number, so it
         // stays `CommitMismatch` and is counted, never dropped silently (DESIGN §4.1).
-        let members = enc.first() == Some(&crate::private::doc::V3);
+        let members = matches!(
+            enc.first(),
+            Some(&(crate::private::doc::V3 | crate::private::doc::V5))
+        );
         let earlier = !members
             && matches!(
                 opened,
@@ -1370,6 +1375,16 @@ pub fn stored_release(d: &FetchedDocument) -> Option<release::StoredRelease> {
     })
 }
 
+/// The identities among `members` with a Bot row (`writer.role` 4): the only authors whose
+/// posts (`enc` v0x05) open (§23).
+pub fn bot_ids(members: &[Member]) -> BTreeSet<[u8; 32]> {
+    members
+        .iter()
+        .filter(|m| m.role == Role::Bot)
+        .filter_map(|m| platform::decode_identifier(&m.identity_id).ok())
+        .collect()
+}
+
 /// Why a document did not open, in the three buckets the UI and `dg` report (§9 Reading).
 pub fn hidden_bucket(o: &Opened) -> Option<&'static str> {
     match o {
@@ -1389,6 +1404,7 @@ pub fn hidden_bucket(o: &Opened) -> Option<&'static str> {
         Opened::Unreadable(Unreadable::UnknownVersion) => {
             Some("written by a newer version of Forge")
         }
+        Opened::Unreadable(Unreadable::NotABot) => Some("posted by a bot that was removed"),
         Opened::Unreadable(_) => Some("wrong or missing key"),
     }
 }
@@ -1951,6 +1967,8 @@ pub struct Enabled {
     /// Members it could not be shared with yet: no usable encryption key (a repair wraps them
     /// once they add one).
     pub skipped: Vec<String>,
+    /// The bots sent their post key (§23).
+    pub post_keys: crate::bot_keys::Issued,
 }
 
 /// Turn members-only content on in a public repository (DESIGN D1, §4.1): epoch 0 of its members
@@ -2014,9 +2032,11 @@ pub async fn enable_members_key(signer: &PrivateSigner<'_>, repo: &RepoRef) -> R
     let report = repair(signer, repo).await?;
     out.wrapped = report.wrapped;
     out.skipped = report.skipped;
+    out.post_keys = report.post_keys;
     if let Some(r) = report.rotated {
         out.wrapped.extend(r.wrapped.into_iter().skip(1));
         out.skipped.extend(r.skipped);
+        out.post_keys = r.post_keys;
     }
     Ok(out)
 }
@@ -2175,6 +2195,8 @@ pub struct Rotation {
     /// An epoch this rotation anchored burned on the way (§5.3): an earlier run's key for it
     /// may have reached someone outside the remaining members, so it only links the chain.
     pub burned: Option<u32>,
+    /// The bots sent their post key for the new epoch (§23), when this rotation won.
+    pub post_keys: crate::bot_keys::Issued,
 }
 
 /// The private repositories an identity is a current member of (§5.2 rekey), from the
@@ -2483,14 +2505,49 @@ pub async fn rotate(
         let link = next_link(&w.kr, &from, from_burned, false, skip_below.as_ref())?;
         let input = AnchorInput::current(&w.kr, epoch, &key, Some(link));
         let won = anchor_and_confirm(signer, &w, repo, &input).await?;
+        let post_keys = Box::pin(rotation_post_keys(
+            signer,
+            &w,
+            repo,
+            (epoch, &key),
+            exclude,
+            won,
+        ))
+        .await?;
         return Ok(Rotation {
             epoch,
             wrapped,
             skipped,
             won,
             burned,
+            post_keys,
         });
     }
+}
+
+/// The bots' post keys for a rotation's new epoch (`epoch`, its key), sent once its anchor `won`,
+/// in the same run as the wraps (§23): a bot never gets the members key, so a rotation that
+/// sent none would silently stop its members-only posts. Bots in `exclude` (being removed) get
+/// none.
+async fn rotation_post_keys(
+    signer: &PrivateSigner<'_>,
+    w: &WriteCtx,
+    repo: &RepoRef,
+    (epoch, key): (u32, &EpochKey),
+    exclude: &[String],
+    won: bool,
+) -> Result<crate::bot_keys::Issued> {
+    if !won {
+        return Ok(crate::bot_keys::Issued::default());
+    }
+    let keys = EpochKeys::derive(&w.scope.repo_id, epoch, key);
+    crate::bot_keys::issue(
+        signer,
+        repo,
+        &keys,
+        &crate::bot_keys::bots_of(w.kr.members(), exclude),
+    )
+    .await
 }
 
 fn require_rotator(kr: &Keyring, repo: &RepoRef) -> Result<()> {
@@ -2999,15 +3056,23 @@ pub struct RepairReport {
     pub wrapped: Vec<String>,
     /// Members still without a wrap: no usable `ENCRYPTION` key yet.
     pub skipped: Vec<String>,
+    /// The bots sent the current epoch's post key, which none of this signer's letters gave
+    /// them yet (§23).
+    pub post_keys: crate::bot_keys::Issued,
 }
 
 /// The repair check of §5.6, applied: rotate when the current epoch is wrapped to a
 /// non-member or burned (§5.3; `repair.rotate` either way, excluding the non-members, if any),
-/// else wrap each member with no wrap to an enabled key. A maintainer only.
+/// else wrap each member with no wrap to an enabled key, then send each bot the current post
+/// key none of this signer's letters gave it yet (§23). A maintainer only.
 pub async fn repair(signer: &PrivateSigner<'_>, repo: &RepoRef) -> Result<RepairReport> {
     let kr = signer.keyring(repo).await?;
     let Some(r) = kr.resolution.repair.clone() else {
-        return Ok(RepairReport::default());
+        let mut report = RepairReport::default();
+        if require_rotator(&kr, repo).is_ok() {
+            report.post_keys = Box::pin(missing_post_keys(signer, repo, &kr)).await?;
+        }
+        return Ok(report);
     };
     let mut report = RepairReport {
         non_members: r
@@ -3040,7 +3105,28 @@ pub async fn repair(signer: &PrivateSigner<'_>, repo: &RepoRef) -> Result<Repair
             }
         }
     }
+    report.post_keys = Box::pin(missing_post_keys(signer, repo, &w.kr)).await?;
     Ok(report)
+}
+
+/// Send each bot of `kr`'s repository the post key of the write epoch that none of this
+/// signer's letters gave it yet (§23). Nothing when the signer cannot write (no current key).
+async fn missing_post_keys(
+    signer: &PrivateSigner<'_>,
+    repo: &RepoRef,
+    kr: &Keyring,
+) -> Result<crate::bot_keys::Issued> {
+    let bots = crate::bot_keys::bots_of(kr.members(), &[]);
+    let Some(keys) = kr
+        .resolution
+        .write_epoch
+        .and_then(|e| kr.epoch_keys(e))
+        .filter(|_| !bots.is_empty())
+    else {
+        return Ok(crate::bot_keys::Issued::default());
+    };
+    let missing = crate::bot_keys::missing(signer, repo, keys, &bots).await?;
+    crate::bot_keys::issue(signer, repo, keys, &missing).await
 }
 
 #[cfg(test)]
