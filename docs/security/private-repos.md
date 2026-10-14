@@ -963,7 +963,7 @@ An issue, comment (inline ones included) or review may be a **letter** (`enc` v0
 
 ## 18. Repositories made public: what readers do
 
-A private repository's owner can make it public once (mixed-visibility DESIGN §4.10, D36): a **seal-off rotation** to a fresh epoch `E'` while it is still private, the flip of `repo.visibility`, a plaintext `config`, plaintext ref updates over a fresh plaintext pack of the refs the owner picks, and, for "Everything", a make-public bundle publishing the keys of every epoch below `E'`. Writing that is phase 5, and needs the mainnet contract (the live contracts freeze `repo.visibility`). This section is what **readers** do, shipped long before so that a converted repository opens in every client that people already have (phase R6). A repository is **converted** when it is public now and has a `config` stamped `vis: "private"`; a repository can only ever go from private to public, so nothing else produces one. Everything below is derived from the repository's own documents; nothing is configured.
+A private repository's owner can make it public once (mixed-visibility DESIGN §4.10, D36): a **seal-off rotation** to a fresh epoch `E'` while it is still private, the flip of `repo.visibility`, a plaintext `config`, plaintext ref updates over a fresh plaintext pack of the refs the owner picks, and, for "Everything", a make-public bundle publishing the keys of every epoch below `E'`. Writing it is phase 5 (§18.5), and needs the mainnet contract (the live contracts freeze `repo.visibility`). This section is mostly what **readers** do, shipped long before so that a converted repository opens in every client that people already have (phase R6). A repository is **converted** when it is public now and has a `config` stamped `vis: "private"`; a repository can only ever go from private to public, so nothing else produces one. Everything below is derived from the repository's own documents; nothing is configured.
 
 ### 18.1 Documents
 
@@ -1004,6 +1004,20 @@ Each honoured key is added to the keys the reader holds, with every epoch its `p
 ### 18.4 The minimum client version
 
 A converted repository needs a reader with this section: an older one hands a sealed pack to git (the clone fails) and drops old documents as malformed. The first release with it is **0.2.0** (`forge_core::private::convert::CONVERTED_REPO_MIN_CLIENT_VERSION`, and its forge-web twin), which the "Make this repo public" dialog names: "People on Forge older than 0.2.0 can't clone it until they update."
+
+### 18.5 Making one public: `dg repo make-public`
+
+The writer side (phase 5A) needs a contract whose `repo.visibility` is frozen only once public (mainnet C1): `dg` reads the `immutable` entry of the loaded contract and refuses before signing (E103) where it is frozen outright, as on the live sakura contracts. Its steps, each reading the chain first so a run that stops is finished by running it again (`--resume`):
+
+1. **The check**, signing nothing: the signer holds the current epoch key and no repair is pending (E307, E310); the private era's refs (the `vis: "private"` ref updates, opened with the member's own keys through the repository's *private view*) and settings; a work repository holding every private-era git pack the member opens; the refs each mode publishes (Code only: the default branch and the tags reachable from it, or `--ref`; Everything: every live ref); the secret scan (forge-secrets, the push helper's rules) of the objects the mode publishes and, with Everything, of every object of every private-era pack and of every opened issue, pull request, comment, review and event value; Everything's counts (documents stamped `vis: "private"`, their earlier revisions, letters apart, hide and bot-request events written up to the conversion marker, deleted branches and force-pushes, imported authors by host, and the authors who are no longer members); E812 for every environment whose chain holds a DFPK 0x01 snapshot that needs attention (§4.5); and the estimate.
+2. **The seal-off rotation** (§5.5), by the owner while the repository is private. A run records the epoch it created on the signer's computer; a run that finds that epoch still current does not rotate again, since a second rotation would publish whatever was written under the first.
+3. **The flip**: the owner replaces `repo` with `visibility: "public"` and `defaultBranch`.
+4. **The first public `config`**: the private settings as they are, written even when they equal the defaults, since it is also the conversion marker (§18.1).
+5. **The code**: one push with the `public` push option through `git-remote-dash` of the published refs at their private-era tips, from the work repository. The private-era ref updates are `vis: "private"`, so they are not members-only refs of the public repository (§19.3) and no push guard treats their commits as members-only; the push's bases are the public tips (none yet), so its pack holds the whole history of the published refs. A ref that is public already, or that members pushed members-only commits to after the flip, is not pushed.
+6. **Notifications** sign nothing: readers learn of the conversion from the flip, the marker and the bundles.
+7. **The history** (Everything, the owner): make-public bundles (§18.3) of one 0x06 entry per epoch below `E'` the owner holds and readers do not honour yet, at most 198 entries per bundle (one Platform chunk), published last.
+
+Code only becomes Everything by running it again with `--everything`: steps 5 and 7 for what is not public yet.
 
 ## 19. Members-only branches and pull requests
 

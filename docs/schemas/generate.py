@@ -277,6 +277,24 @@ cmd('repo members enable', 'Members-only content turned on. When it is on alread
     ({'status': E('enabled', 'finished', 'already_on')}, ['repo']),
     ({'status': E('repaired', 'nothing_to_do'), 'rotated': nl(R('rotation')), 'nonMembers': ANY}, []),
 ])
+cmd('repo make-public', 'A private repository made public, or (with --check) what would become public. A run that '
+    'stopped part-way (another step is the owner\'s) is `in_progress`; run it again with --resume.', {
+    'status': E('check', 'public', 'in_progress'), 'repo': S, 'owner': S,
+    'mode': D('`codeOnly` or `everything`; null in a check that shows both.', nl(E('codeOnly', 'everything'))),
+    'made': D('The repository was made public already (a check after the flip).', B),
+    'blockers': SA, 'notes': SA,
+    'codeOnly': D('What Code only publishes: the refs and their tips, and the possible secrets in them.', OBJ),
+    'everything': D('What Everything publishes: every live ref, the counts of what becomes readable, the former members '
+                    'whose words become public, environments still holding old-format values (E812) and the possible secrets.', OBJ),
+    'staysPrivate': O({'letters': I, 'environments': I}, ['letters', 'environments']),
+    'minClientVersion': S,
+    'estimates': A(O({'mode': E('codeOnly', 'everything'), 'cost': COST, 'storage': COST}, ['mode', 'cost', 'storage'])),
+    'steps': D('Each step and whether this run wrote it (`written`), found it done (`done`) or left it to the owner (`owner`).',
+               A(O({'step': E('sealOff', 'flip', 'config', 'code', 'notify', 'history'), 'status': E('written', 'done', 'owner'),
+                    'epoch': ANY, 'refs': SA}, ['step', 'status']))),
+    'notPublished': D('Refs left out: members pushed members-only commits to them after the repository was made public.', SA),
+    'cost': COST,
+}, ['status', 'repo'])
 cmd('repo members status', 'Whether members-only content is on, and who has no key yet.', {
     'repo': S, 'on': B, 'epoch': ANY, 'youCanRead': B, 'noKeyYet': ANY,
 }, ['repo', 'on'])

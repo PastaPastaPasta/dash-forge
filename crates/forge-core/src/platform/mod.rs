@@ -5017,6 +5017,10 @@ mod tests {
             assert_eq!(community.has_property("authorEvent", "enc"), mainnet);
             assert_eq!(community.has_property("checkRun", "aud"), mainnet);
             assert_eq!(community.has_property("webhook", "vis"), !mainnet);
+            // C1: a private repository can be made public only where the contract says so
+            assert_eq!(core.immutable_when("repo", "visibility"), Some(!mainnet));
+            assert_eq!(core.immutable_when("repo", "name"), Some(true));
+            assert_eq!(core.immutable_when("repo", "description"), None);
         }
     }
 

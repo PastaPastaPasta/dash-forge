@@ -343,7 +343,7 @@ Forge uses the same words in `dg`, the web app and these pages.
 |---|---|
 | **Publish** | Widen code to everyone: `dg publish`. It can't be undone. |
 | **Make public** | Widen a post, such as a comment, to everyone. The author does it for their own posts; a maintainer for anyone's. It can't be undone. |
-| **Make this repo public** | Widen a whole private repository. It can't be undone: it can never be private again (coming later). |
+| **Make this repo public** | Widen a whole private repository, once, by its owner: `dg repo make-public`. It can't be undone: it can never be private again. |
 
 **Repository kinds:** **Public** and **Private**. "Private" means only a private repository, where everything in it is encrypted. A public repository can hold members-only content, but it is never called private.
 
