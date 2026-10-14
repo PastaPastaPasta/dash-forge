@@ -300,29 +300,36 @@ impl Collab<'_> {
                     continue;
                 }
             };
+            // a copy this reader is not meant to open (the members' copy for a bot, the bot's
+            // letter for a member) is skipped, never counted as unreadable
             let plain: Option<zeroize::Zeroizing<Vec<u8>>> = match sealed_pack::sniff(&bytes) {
                 Head::Plain if !private => Some(zeroize::Zeroizing::new(bytes)),
-                Head::Sealed { .. } if private => keyring
-                    .as_ref()
-                    .and_then(|kr| kr.open_pack(repo, &bytes, m.size_bytes).ok())
-                    .map(zeroize::Zeroizing::new),
-                Head::OtherVersion(named::ARTIFACT_VERSION) if private => match &reader {
-                    Some((id, keys)) => {
-                        let owner_keys = self.owner_keys_of(&m.owner_id).await?;
-                        named::open_artifact(
-                            &repo_id,
-                            &bytes,
-                            m.size_bytes,
-                            &owner_keys,
-                            &named::Reader {
-                                identity_id: *id,
-                                keys,
-                            },
-                        )
-                        .ok()
+                Head::Sealed { .. } if private => {
+                    match keyring.as_ref().filter(|kr| !kr.resolution().keys.is_empty()) {
+                        Some(kr) => kr.open_pack(repo, &bytes, m.size_bytes).ok().map(zeroize::Zeroizing::new),
+                        None => continue,
                     }
-                    None => None,
-                },
+                }
+                Head::OtherVersion(named::ARTIFACT_VERSION) if private => {
+                    let Some((id, keys)) = &reader else {
+                        continue;
+                    };
+                    let owner_keys = self.owner_keys_of(&m.owner_id).await?;
+                    match named::open_artifact(
+                        &repo_id,
+                        &bytes,
+                        m.size_bytes,
+                        &owner_keys,
+                        &named::Reader {
+                            identity_id: *id,
+                            keys,
+                        },
+                    ) {
+                        Ok(p) => Some(p),
+                        Err(named::ArtifactError::NotARecipient) => continue,
+                        Err(_) => None,
+                    }
+                }
                 _ => None,
             };
             let notice = plain
