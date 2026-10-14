@@ -417,7 +417,7 @@ pub struct Snapshot {
 /// the members-only ref update that set its tip (a current member's) and the stored
 /// members-only packs that hold its commits beyond the public branches, indexed in a scratch
 /// repository. The caller has checked the signer's role and that `kr` holds the members key.
-#[allow(clippy::too_many_lines, clippy::many_single_char_names)] // one pass, as share() was
+#[allow(clippy::too_many_lines)] // one pass, as share() was
 pub async fn snapshot(
     ctx: &Ctx,
     s: &Session,
@@ -605,12 +605,12 @@ pub async fn snapshot(
             name: full.to_owned(),
             ref_name_hash,
             head: LetterHead {
-                blind: b.blind.clone(),
-                oid: b.real.clone(),
-                salt: b.salt,
+                blind: head_blind.blind.clone(),
+                oid: head_blind.real.clone(),
+                salt: head_blind.salt,
             },
             packs,
-            as_of: u.created_at,
+            as_of: update.created_at,
         },
         tip,
         commits: needed_commits.len(),
