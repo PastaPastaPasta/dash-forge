@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/ci-log.schema.json",
+  "title": "dg ci log --json",
+  "description": "A check run's log written to a file (`-o`; without it the log is printed as it is).",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "name": {
+      "type": "string"
+    },
+    "bytes": {
+      "type": "integer"
+    },
+    "output": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "name",
+    "bytes",
+    "output"
+  ],
+  "additionalProperties": true
+}

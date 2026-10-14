@@ -1126,7 +1126,11 @@ async fn report(ctx: &Ctx, a: &ReportArgs) -> Result<()> {
     // run may have been created a moment ago.
     let plan = runs.plan(&s.repo, &r).await?;
     r = kept;
-    let supersedes = warn_rerun(&r, &plan, a.external_id.is_none() && !private);
+    let supersedes = warn_rerun(
+        &r,
+        &plan,
+        a.external_id.is_none() && !private && members.is_none(),
+    );
     // The same completion of a run that already completed: its summary, links, log and
     // artifacts are final (RC2 S1) and stay as stored, so nothing is uploaded for them.
     let frozen = plan.evidence_frozen();

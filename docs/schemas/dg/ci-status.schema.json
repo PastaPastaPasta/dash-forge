@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/ci-status.schema.json",
   "title": "dg ci status --json",
-  "description": "The newest check run per name on a commit.",
+  "description": "The newest check run per name on a commit. A member reads a members-only branch's runs too, each with `membersOnly`: its branch and the name members read (null when its log could not be opened here).",
   "type": "object",
   "properties": {
     "schemaVersion": {

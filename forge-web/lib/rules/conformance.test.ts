@@ -1130,7 +1130,7 @@ describe('FORGE_RULES conformance vectors', () => {
   // `sealed_patch` run in `lib/private/members-git.conformance.test.ts`; `members_pack_plan` and
   // `publish_guard` pin the git remote helper's push planning and publish guard, which only the
   // Rust helper implements (forge-core `members_git`), so no web harness runs them. Check runs on
-  // members-only branches (`members_check`, §19.6) run in `lib/private/members-check.conformance.test.ts`.
+  // members-only branches (`members_check`, §19.8) run in `lib/private/members-check.conformance.test.ts`.
   const MEMBERS_GIT_CASES = ['oid_blind', 'sealed_ref', 'sealed_patch', 'members_pack_plan', 'publish_guard']
   const isMembersGit = (v: Vector) => MEMBERS_GIT_CASES.includes(v.case) || v.case === 'members_check'
   const isPrivate = (v: Vector) =>

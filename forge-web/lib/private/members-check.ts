@@ -1,5 +1,5 @@
 /**
- * Check runs on members-only branches (`docs/security/private-repos.md` §19.6, mixed-visibility
+ * Check runs on members-only branches (`docs/security/private-repos.md` §19.8, mixed-visibility
  * DESIGN §4.3 "CI on a members branch").
  *
  * On a members-only branch a runner reports the commit's blind as `headOid`, an opaque check name

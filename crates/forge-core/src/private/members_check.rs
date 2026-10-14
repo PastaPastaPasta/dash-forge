@@ -1,4 +1,4 @@
-//! Check runs on members-only branches (`docs/security/private-repos.md` §19.6, mixed-visibility
+//! Check runs on members-only branches (`docs/security/private-repos.md` §19.8, mixed-visibility
 //! DESIGN §4.3 "CI on a members branch").
 //!
 //! A check run is a public `checkRun` document: its `headOid`, `name`, status, conclusion and

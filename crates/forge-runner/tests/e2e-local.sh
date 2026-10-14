@@ -539,7 +539,7 @@ echo more >"$R/m.txt"; git -C "$R" add -A; git -C "$R" commit -qm "members: more
 HM=$(git -C "$R" rev-parse sec/fix)
 refs_json
 : >"$FAKE_DG_LOG"; poll
-check "members_branches on: the push runs, every report members-only" test "$(q "sorted({(r['sha'], r.get('members-branch')) for r in rs})")" = "[('$HM', 'refs/heads/sec/fix')]"
+check "members_branches on: the push runs, every report members-only" test "$(q "sorted(set((r['sha'], r.get('members-branch')) for r in rs))")" = "[('$HM', 'refs/heads/sec/fix')]"
 check "…queued, in_progress, completed" test "$(q "[r['status'] for r in rs if r['name']=='m / build']")" = "['queued', 'in_progress', 'completed']"
 check "…no summary and no artifacts, ever" test "$(q "any('summary' in r or 'artifact' in r for r in rs)")" = False
 check "…every report names the log storage (a log names the check for members)" test "$(q "{r.get('storage') for r in rs}")" = "{'e2e-logs'}"
@@ -557,7 +557,7 @@ print(json.dumps({"prs": [row(9, "refs/heads/sec/fix", realHeadOid=real), row(10
                            "readable": False, "why": "notAMember"}]}))
 PY
 : >"$FAKE_DG_LOG"; poll
-check "a members-only PR from it runs on the real head, reported on its blinded head" test "$(q "sorted({(r['name'], r['sha'], r.get('members-branch')) for r in rs})")" = "[('m / build (pull_request)', '$BLIND', 'refs/heads/sec/fix')]"
+check "a members-only PR from it runs on the real head, reported on its blinded head" test "$(q "sorted(set((r['name'], r['sha'], r.get('members-branch')) for r in rs))")" = "[('m / build (pull_request)', '$BLIND', 'refs/heads/sec/fix')]"
 check "…the job saw the real commit" test "$(q "['members build at $HM' in r['log_text'] for r in rs if r['status']=='completed']")" = "[True]"
 check "…one from a public branch runs nothing, and says why" grep -q "PR #10 not run: a members-only pull request from a public branch" "$W/runner.log"
 

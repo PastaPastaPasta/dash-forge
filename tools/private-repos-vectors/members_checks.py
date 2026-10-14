@@ -1,5 +1,5 @@
 """Independent Python reference for check runs on members-only branches (mixed-visibility design §4.3
-"CI on a members branch"; docs/security/private-repos.md §19.6).
+"CI on a members branch"; docs/security/private-repos.md §19.8).
 
     python3 tools/private-repos-vectors/members_checks.py                 # check the reference, print counts
     python3 tools/private-repos-vectors/members_checks.py --write-vectors  # (re)write the vector files below
