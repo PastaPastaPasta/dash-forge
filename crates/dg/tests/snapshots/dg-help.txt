@@ -17,6 +17,7 @@ Commands:
   make-public    Make members-only posts public: issues, comments and reviews. Your own posts are edited to Public; a maintainer makes anyone's public, and their authors are told. Everyone can read them from then on. This can't be undone
   branch         Branches and who can see them: list them, start a members-only branch, share one with someone as it is now, and delete the local branches `dg publish` published
   publish        Publish a members-only branch, or a members-only pull request's branch, onto a public branch. This can't be undone
+  embargo        Publication dates for coordinated fixes: list them, withdraw one, and run the release bot that publishes each one when its time comes (`dg publish … --at` sets them)
   cost           Cost estimates and spend audits
   repack         Consolidate a repo's packs into one superseding pack (deletes nothing on Platform)
   reseed         Re-upload packs and record the new copies (maintainers and writers; --from-local writes nothing to Platform)
@@ -24,6 +25,7 @@ Commands:
   webhook        Manage webhooks
   env            Environments: secrets and settings kept out of git
   ci             CI: runner keys and memberships, and check runs on commits
+  bot            Bots: what each may do in a repository, and asking one to work on a pull request or issue
   search         Search issues and pull requests (in one repository) and repositories, with the web search box's qualifiers (`is:open label:bug author:@me -label:wontfix`)
   api            Raw Platform reads: a proved document query, printed as JSON (gh api)
   import         Import or re-sync a GitHub or GitLab repo: code, issues, pull requests, releases

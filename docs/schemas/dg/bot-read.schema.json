@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/bot-read.schema.json",
+  "title": "dg bot read --json",
+  "description": "As a bot: one request's thread as you were given it.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "request": {
+      "type": "string"
+    },
+    "allowed": {
+      "type": "boolean"
+    },
+    "number": {
+      "type": "integer"
+    },
+    "asker": {
+      "type": "string"
+    },
+    "task": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "taskMembersOnly": {
+      "type": "boolean",
+      "description": "Whether the task is members-only (whatever reads it has read members-only content)."
+    },
+    "foreignPull": {
+      "type": [
+        "boolean",
+        "null"
+      ],
+      "description": "For a pull request: whether it comes from a fork or from someone outside the members (a runner works on it in public mode only); null for an issue."
+    },
+    "at": {
+      "type": "integer"
+    },
+    "letter": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "asOf": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "head": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "packs": {
+      "type": "integer"
+    },
+    "packFiles": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "posts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "pull request",
+              "issue",
+              "comment",
+              "review"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "author": {
+            "type": "string"
+          },
+          "at": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "public",
+              "membersOnly",
+              "notShared",
+              "after"
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "body": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "author",
+          "at",
+          "status"
+        ]
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "request",
+    "number",
+    "asker",
+    "at",
+    "packs",
+    "posts"
+  ],
+  "additionalProperties": true
+}

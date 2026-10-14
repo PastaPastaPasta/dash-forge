@@ -633,13 +633,38 @@ cmd('branch audience', 'Who a branch for fewer people is for, or the change `--t
 cmd('branch cleanup', 'The local branches whose content `dg publish` published: deleted, or listed with --dry-run.', {
     'deleted': A(BRANCH_ROW), 'wouldDelete': A(BRANCH_ROW), 'keptCurrent': A(BRANCH_ROW),
 }, ['deleted', 'wouldDelete', 'keptCurrent'])
-cmd('publish', 'A members-only branch (or a members-only pull request\'s branch) published onto a public branch.', {
-    'status': E('published'), 'branch': S, 'onto': S, 'method': E('squash', 'history'), 'commit': S,
-    'membersOnlyTip': S, 'commits': SA, 'files': I, 'pr': nl(I), 'mergeTransitionId': nl(S),
+EMBARGO_PLAN = O({
+    'at': D('The publication date, Unix seconds (UTC).', I), 'pr': I, 'branch': S, 'onto': S, 'tag': S, 'message': S,
+}, ['at'])
+EMBARGO_STEP = O({'step': E('makePublic', 'publish', 'tag', 'release'), 'issue': I, 'tag': S, 'done': B}, ['step', 'done'])
+cmd('publish', 'A members-only branch (or a members-only pull request\'s branch) published onto a public branch, '
+    'checked without writing (`--check`), or given a publication date (`--at`).', {
+    'status': E('published', 'checked', 'scheduled'), 'branch': S, 'onto': S, 'method': E('squash', 'history'),
+    'commit': S, 'membersOnlyTip': S, 'commits': SA, 'files': I, 'pr': nl(I), 'mergeTransitionId': nl(S),
     'localBase': D('What happened to your local copy of the base: `moved` to the published commit, `needs-reset` '
                    '(it holds more; reset it yourself) or `untouched`.', E('moved', 'needs-reset', 'untouched')),
-    'cost': COST,
-}, ['status', 'branch', 'onto', 'method', 'commit'])
+    'number': D('`--at`: the issue or pull request the date is recorded on.', I),
+    'at': D('`--at`: the date, Unix seconds (UTC).', I), 'plan': EMBARGO_PLAN, 'checklist': A(EMBARGO_STEP),
+    'eventId': S, 'cost': COST,
+}, ['status'], one_of=[
+    ({'status': E('published')}, ['branch', 'onto', 'method', 'commit']),
+    ({'status': E('checked')}, ['branch', 'onto', 'method']),
+    ({'status': E('scheduled')}, ['number', 'at', 'plan', 'checklist', 'eventId']),
+])
+EMBARGO_STATE = O({'state': E('scheduled', 'cancelled', 'done'), 'by': S, 'at': I, 'commit': S}, ['state'])
+cmd('embargo list', 'The repository\'s publication dates, where each stands, and its checklist.', {
+    'repo': S, 'count': I, 'embargoes': A(O({
+        'number': I, 'at': I, 'due': B, 'plan': EMBARGO_PLAN, 'setBy': S, 'setAt': I, 'state': EMBARGO_STATE,
+        'checklist': A(EMBARGO_STEP),
+    }, ['number', 'at', 'due', 'plan', 'setBy', 'state', 'checklist'])),
+}, ['repo', 'count', 'embargoes'])
+cmd('embargo cancel', 'A publication date withdrawn.', {
+    'status': E('cancelled'), 'number': I, 'eventId': S, 'cost': COST,
+}, ['status', 'number', 'eventId'])
+cmd('embargo run', 'The release bot: one line per date it published (several JSON documents, one per step, as each '
+    'command prints them).', {
+    'status': E('published'), 'number': I, 'commit': S,
+}, ['status', 'number', 'commit'])
 
 # -- cost, maintenance, storage ---------------------------------------------------------------
 cmd('cost estimate', 'What a first push of the current repository would cost.', {
@@ -739,8 +764,11 @@ cmd('ci log', 'A check run\'s log written to a file (`-o`; without it the log is
 }, ['name', 'bytes', 'output'])
 cmd('ci refs', 'The repository\'s live refs, their commits and who can see each. A member\'s identity reads the '
     'members-only ones too (`membersView`), by their real names and commits; a member whose key cannot read them here '
-    'gets an error, never a list without them.', {
+    'gets an error, never a list without them. Anyone else with an identity (a runner bot) reads the members-only '
+    'branches shared with it (`sharedView`), as git lists them.', {
     'repo': S, 'visibility': E('public', 'private'), 'membersView': B,
+    'sharedView': D('Whether the members-only branches shared with this reader were read (a reader outside the members of a public repository).', B),
+    'shared': D('The members-only branches shared with this reader (full names), listed among the refs as members.', SA),
     'refs': A(O({'ref': S, 'tip': S, 'audience': E('public', 'members', 'private')}, ['ref', 'tip', 'audience'])),
 }, ['repo', 'visibility', 'membersView', 'refs'])
 cmd('ci rerun', 'A re-run of a pull request\'s checks requested.', {
@@ -749,6 +777,52 @@ cmd('ci rerun', 'A re-run of a pull request\'s checks requested.', {
 cmd('ci reruns', 'The re-run requests written since a time.', {
     'since': I, 'count': I, 'requests': A(OBJ),
 }, ['count', 'requests'])
+
+BOT_MAY = D('What the bot may do: post, postMembersOnly, readOnRequest, ciMembersBranches (and abilities a later version adds).', SA)
+BOT_THREADS = D('"all", or the issue and pull request numbers it may be asked about.', {'anyOf': [E('all'), A(I)]})
+BOT_ASKERS = E('writers', 'maintainers')
+cmd('bot allow', 'A bot\'s access written: a new access notice everyone reads.', {
+    'status': E('allowed'), 'bot': S, 'may': BOT_MAY, 'askers': BOT_ASKERS, 'threads': BOT_THREADS,
+    'processor': nl(S), 'until': nl(I), 'line': D('The access as everyone reads it.', S),
+    'notice': D('The notice\'s packManifest document ids (a private repository stores two copies).', SA),
+    'packHash': S, 'cost': COST,
+}, ['status', 'bot', 'may', 'askers', 'threads', 'line', 'notice', 'packHash', 'cost'])
+cmd('bot revoke', 'A bot\'s access taken away: a new access notice allowing nothing.', {
+    'status': E('revoked'), 'bot': S, 'may': BOT_MAY, 'askers': BOT_ASKERS, 'threads': BOT_THREADS,
+    'processor': nl(S), 'until': nl(I), 'line': S, 'notice': SA, 'packHash': S, 'cost': COST,
+}, ['status', 'bot', 'may', 'line', 'notice', 'packHash', 'cost'])
+cmd('bot list', 'Each bot\'s current access to a repository, as everyone reads it.', {
+    'repo': S, 'count': I, 'unreadable': D('Access records this reader could not read.', I),
+    'bots': A(O({'bot': S, 'may': BOT_MAY, 'askers': BOT_ASKERS, 'threads': BOT_THREADS, 'processor': nl(S),
+                 'until': nl(I), 'live': B, 'note': S, 'by': S, 'at': I, 'line': S, 'notice': S},
+                ['bot', 'may', 'askers', 'threads', 'live', 'by', 'at', 'line', 'notice'])),
+}, ['repo', 'count', 'bots'])
+cmd('bot ask', 'A bot asked to work on a pull request or issue: the request, and the letter that hands it the thread\'s members-only content as it is now.', {
+    'status': E('asked'), 'bot': S, 'pr': I, 'issue': I,
+    'request': D('The request\'s event id: the job.', S),
+    'letter': D('The letter\'s packManifest document id, when members-only content was shared.', nl(S)),
+    'documents': D('Members-only posts the letter opens (the request itself included).', I),
+    'code': D('The members-only branch whose code was shared, if any.', nl(S)),
+    'membersOnly': D('Whether the thread is members-only (the task is then members-only too).', B), 'cost': COST,
+}, ['status', 'bot', 'request', 'documents', 'membersOnly', 'cost'])
+cmd('bot jobs', 'The requests to a bot (you, or --bot) in a repository since a time.', {
+    'bot': S, 'since': I, 'count': I,
+    'requests': A(O({'id': S, 'number': I, 'asker': S, 'task': nl(S), 'at': I,
+                     'allowed': D('Whether the bot\'s access allowed the request when it was written (a runner works only on those).', B),
+                     'letter': D('Whether the asker shared the thread\'s members-only content with you.', B)},
+                    ['id', 'number', 'asker', 'at', 'letter'])),
+}, ['bot', 'since', 'count', 'requests'])
+cmd('bot read', 'As a bot: one request\'s thread as you were given it.', {
+    'request': S, 'allowed': B, 'number': I, 'asker': S, 'task': nl(S),
+    'taskMembersOnly': D('Whether the task is members-only (whatever reads it has read members-only content).', B),
+    'foreignPull': D('For a pull request: whether it comes from a fork or from someone outside the members (a runner works on it in public mode only); null for an issue.', nl(B)),
+    'at': I, 'letter': nl(S), 'asOf': nl(I),
+    'head': nl(S),
+    'packs': I, 'packFiles': SA,
+    'posts': A(O({'kind': E('pull request', 'issue', 'comment', 'review'), 'id': S, 'author': S, 'at': I,
+                  'status': E('public', 'membersOnly', 'notShared', 'after'), 'title': nl(S), 'body': nl(S)},
+                 ['kind', 'id', 'author', 'at', 'status'])),
+}, ['request', 'number', 'asker', 'at', 'packs', 'posts'])
 
 # -- search, status, doctor, import -----------------------------------------------------------
 cmd('search issues', 'Issues matching a query.', {

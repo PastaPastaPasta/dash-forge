@@ -1543,11 +1543,5 @@ pub fn write_commit_graph(tips: &[String]) {
     }
 }
 
-/// The hook point for branch key letters to runner bots (DESIGN §4.3 "Branch keys for CI", D33):
-/// the pusher's helper will write a kind-10 `branch` letter to each bot whose access notice says
-/// it runs checks on members-only branches. Access notices and key letters arrive in phase 4
-/// (4B, 4C), so this writes nothing yet.
-pub fn letter_runner_bots(_moved: &[(String, String)]) {}
-
 #[cfg(test)]
 mod tests;

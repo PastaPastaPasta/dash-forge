@@ -112,7 +112,8 @@ In a public repository, members can push branches only members can see (`dg bran
 
 With `members_branches = true` the runner runs them as it runs other pushes and pull requests, and reports so that the public learns only how each check went:
 
-- **The runner's identity must be a member** that holds its encryption key, with the Read role at least (`dg collab add alice/project <runner> --role reader`, accepted by the runner identity) and a runner row (`dg ci runner add alice/project <runner>`). `DASH_FORGE_KEY` is then that identity's file (sealed with `DASH_FORGE_PASSPHRASE`), not a `dfk1:` runner key, which cannot read members-only content. The repository's member list shows the runner like any reader. A runner that reads branch by branch, without the members key, comes later.
+- **The runner's identity must be a member** that holds its encryption key, with the Read role at least (`dg collab add alice/project <runner> --role reader`, accepted by the runner identity) and a runner row (`dg ci runner add alice/project <runner>`). `DASH_FORGE_KEY` is then that identity's file (sealed with `DASH_FORGE_PASSPHRASE`), not a `dfk1:` runner key, which cannot read members-only content. The repository's member list shows the runner like any reader.
+- **Or a bot the branches are shared with.** In a public repository the runner's identity can instead stay outside the members, as a bot: a maintainer runs `dg bot allow alice/project @ci-bot --members-branches` (and `dg ci runner add alice/project @ci-bot` for its check runs), and from then on each member's push to a members-only branch shares that branch, as it is at that push, with the bot. The runner reads only those branches (`dg ci refs` lists them), each as of its newest push, and nothing else members-only; `DASH_FORGE_KEY` is the bot identity's file. Taking the ability away (a newer `dg bot allow` without it, or `dg bot revoke`) stops the shares from the next push; what was shared stays with the bot. Branches for fewer people (`dg branch new --to`) are not shared this way.
 - **It finds them with `dg ci refs`**, which lists every ref with who can see it, as `git` reads them with the same key: a push to a members-only branch is run on its real commit, and a ref the members view no longer lists is not run.
 - **Members-only code stays apart.** It is fetched into a cache of its own (`members.git`), with the public branches it builds on, so a public run's checkout, whose log anyone reads, never holds a members-only commit. In a public repository, public runs fetch without the key, so a member's git brings nothing members-only into their cache either; don't record a default `dg` identity on the runner host (`dg auth` on that machine), which git would fall back to.
 - **When it can't tell.** A run waits (it is tried again on the next polls, up to `attempts`) when `dg ci refs` fails or, with `members_branches = true`, returns no members-only branches because the identity could not read them; a ref it does not list is not run.
@@ -121,6 +122,50 @@ With `members_branches = true` the runner runs them as it runs other pushes and 
 - **Members-only pull requests** from a members-only branch run on their real head and report on the head the pull request shows (its blind), so its Checks count them. One from a public branch, or for specific people, is not run: the branch's own runs test that commit, and its members-only title must not reach a public log. A re-run request for one check of a members-only pull request re-runs every check of its head, because the runner cannot tell the coded names apart.
 - **Refused combinations.** An identity that reads members-only content never runs a stranger's code or hands a job the Docker daemon: the runner does not start with `members_branches = true` together with `pull_requests = "all"`, `allow_container_options = true` or `mount_docker_socket = true`.
 - **What the runner still sees.** The runner reads everything members-only in the repository, as any reader does, and so does a job's workflow code from a member's branch: whoever can push a members-only branch decides what its jobs print to their (members-only) logs.
+
+## Agents
+
+With `agents = true` on a repository and an `[agents]` section, the runner's identity is a bot that people ask to work on an issue or pull request: `dg bot ask alice/project @ci-bot --pr 42 "fix the flaky test"`. A maintainer first gives the bot its access with `dg bot allow` (who may ask, which threads, which AI service processes what it is given; everyone can read it). Each poll reads the requests written since the last one and works on each, oldest first:
+
+- **What it works on.** Only a request the bot's access allows, while that access lasts. A request outside it, or one written after the access was taken away, is logged and left.
+- **What it reads.** With `--read` in its access (`dg bot allow`), the asker hands the bot the thread's members-only comments, and in a clone the members-only branch's code, as they were when they asked; the bot reads them then. A pull request from a fork or from someone outside the members never gets them, and neither does anything else: those requests run on what everyone can read, and one whose task or thread is members-only is not worked on.
+- **Keys stay in the runner.** The runner opens what it was given with its own key. The agent gets the request and the thread as text in `/in/job.json`, the code checked out in `/work`, and nothing else: no key, no Forge credential, no environment values.
+- **Members-only in, members-only out.** A job that read anything members-only posts only members-only replies; a public reply it asks for is refused and nothing is posted. A bot that is not a member (a repository on contracts without the Bot role) cannot post members-only at all, so such a job posts nothing.
+- **Network.** The agent runs in a container on its own Docker network with no route out and no way into the runner's host (this needs Docker Engine 28 or newer; the runner refuses older ones). Its one way out is the runner's proxy, which lets it reach the endpoints you list for the AI service the bot's access names and nothing else, and logs every attempt. A request whose access names a service you have not listed is not worked on. The AI service itself still sees what the agent sends it, and an agent misled by the thread could use other credentials at that same service: choose the service, and its endpoints, as you would for any data you send it.
+- **Limits.** The container gets no capabilities, 2 GB of memory and 2 CPUs by default (`memory`, `cpus`), and runs as the runner's own user, never root.
+- **What it posts.** A reply, cut to `max_reply_bytes`, and on a pull request up to `max_suggestions` suggested changes on its lines, which a member applies with `dg pr suggestion apply`. The agent never pushes and never edits anything.
+
+The agent is any image that reads `/in/job.json` and writes `/out/result.json`:
+
+```json
+{"reply": "Markdown text", "suggestions": [{"path": "src/a.rs", "line": 12, "startLine": 10, "text": "replacement"}], "audience": "public"}
+```
+
+`suggestions` and `audience` (`public` or `members`) are optional; without `audience` the reply is public, or members-only after members-only input. `/in/job.json` has the repository, the number and whether it is a pull request, the task, the mode (`members` or `public`), whether the job read members-only content, the thread's posts (author, time, title, text, and whether each is members-only), `/work`'s head when there is code, and the caps.
+
+```toml
+[agents]
+image = "ghcr.io/example/forge-agent:1"
+# command = ["/agent/run"]          # default: the image's own
+# timeout_secs = 900
+# max_reply_bytes = 4000            # at most 4800
+# max_suggestions = 5
+# proxy_listen = "127.0.0.1:0"      # Docker Desktop / OrbStack; on Linux the bridge's gateway, "172.17.0.1:0"
+# proxy_host = "host.docker.internal"
+# relay_image = "alpine/socat:latest"   # pin it by digest in production
+# memory = "2g"
+# cpus = "2"
+
+[agents.services."Example AI"]      # the name the bot's access gives as its AI service
+endpoints = ["api.example.com:443"]
+env_file = "/etc/forge-runner/example-ai.env"   # its API key, as KEY=value lines
+
+[[repo]]
+repo = "alice/project"
+agents = true
+```
+
+Each job's outcome (what it read, what it posted, the egress summary, never the content) is kept in `<state_dir>/agents/<owner>__<name>/<job>.json`, with its egress log beside it. Each job's directory, which holds what it read, is readable by the runner's user only and removed when the job ends; with `sweep_after_timeout = true` the runner also removes, when it starts, every container and network named `forge-agent-*` that a crashed job left on its daemon. On Linux, set `proxy_listen` to the Docker bridge's gateway (`172.17.0.1:0`): the relay reaches the proxy there.
 
 ## Environments
 
@@ -182,6 +227,7 @@ secrets_file = "/etc/forge-runner/project.secrets"   # KEY=value lines, as act r
 # schedule = false                  # run on.schedule crons on the default branch (see Schedules)
 # allow_container_options = false   # see Security before turning it on
 # members_branches = false          # run members-only branches (see Members-only branches)
+# agents = false                    # work on requests to the runner's identity (see Agents)
 ```
 
 5. **Run it.**

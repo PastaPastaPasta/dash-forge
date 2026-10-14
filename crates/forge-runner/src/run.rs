@@ -320,7 +320,7 @@ pub fn pull_event_json(
 
 /// Runs a command, returning stdout. A failure says what the command said: its stderr, else
 /// (`dg --json` reports errors on stdout) the start of its stdout.
-fn output(cmd: &mut Command, what: &str) -> Result<String> {
+pub(crate) fn output(cmd: &mut Command, what: &str) -> Result<String> {
     let out = cmd
         .stdin(Stdio::null())
         .output()
@@ -340,8 +340,20 @@ fn output(cmd: &mut Command, what: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// The environment every child gets for the network (dg and git-remote-dash read it).
-fn with_network(mut cmd: Command, cfg: &Config) -> Command {
+/// The environment every child gets for the network (dg and git-remote-dash read it), run from
+/// a directory of the runner's own, `<state_dir>/cwd`, with git kept from looking for a
+/// repository above it: a `git ls-remote` or `dg` run from inside someone's clone would take that
+/// clone for the runner's (git-remote-dash would record what it fetches there and install its
+/// pre-push hook).
+pub(crate) fn with_network(mut cmd: Command, cfg: &Config) -> Command {
+    let neutral = cfg.state_dir.join("cwd");
+    if std::fs::create_dir_all(&neutral).is_ok() {
+        cmd.current_dir(&neutral);
+    }
+    if let Ok(state) = std::fs::canonicalize(&cfg.state_dir) {
+        cmd.env("GIT_CEILING_DIRECTORIES", state);
+    }
+    cmd.env_remove("GIT_DIR").env_remove("GIT_WORK_TREE");
     if let Some(n) = &cfg.network {
         cmd.env("DASH_FORGE_NETWORK", n);
     }
@@ -366,7 +378,7 @@ fn dg_read(cfg: &Config, repo: &RepoConfig, args: &[&str]) -> Result<serde_json:
 }
 
 /// [`dg_read`], with the key when `keyed`.
-fn dg_read_keyed(cfg: &Config, keyed: bool, args: &[&str]) -> Result<serde_json::Value> {
+pub(crate) fn dg_read_keyed(cfg: &Config, keyed: bool, args: &[&str]) -> Result<serde_json::Value> {
     let mut cmd = with_network(Command::new(&cfg.bin.dg), cfg);
     if !keyed {
         cmd.env_remove("DASH_FORGE_KEY");
@@ -436,6 +448,16 @@ pub fn view_pull(cfg: &Config, repo: &RepoConfig, number: u64) -> Result<PullRow
     serde_json::from_value(v).with_context(|| format!("dg pr view {number}: unexpected JSON"))
 }
 
+/// [`view_pull`] as everyone reads it (no key): a members-only pull request is
+/// [`UnreadablePull`] whatever the runner's identity could open.
+pub fn view_pull_public(cfg: &Config, repo: &RepoConfig, number: u64) -> Result<PullRow> {
+    let v = dg_read_keyed(cfg, false, &["pr", "view", &repo.repo, &number.to_string()])?;
+    if v["readable"].as_bool() == Some(false) {
+        return Err(UnreadablePull(number).into());
+    }
+    serde_json::from_value(v).with_context(|| format!("dg pr view {number}: unexpected JSON"))
+}
+
 /// The repository's current members by identity id: its maintainers and the owner as
 /// [`Author::Maintainer`], its writers as [`Author::Writer`] (`dg collab list`).
 pub fn list_members(cfg: &Config, repo: &RepoConfig) -> Result<Members> {
@@ -454,6 +476,10 @@ pub struct RefAudiences {
     pub refs: BTreeMap<String, (String, bool)>,
     /// Whether the identity read the members-only refs (it holds the members key).
     pub members_view: bool,
+    /// Whether the identity, outside the members, read the members-only branches shared with
+    /// it (a runner bot whose access says it runs checks on members-only branches gets a
+    /// `branch` key letter on every members-only push, DESIGN §4.9).
+    pub shared_view: bool,
     /// A private repository: every run reads with the key.
     pub private: bool,
 }
@@ -487,6 +513,7 @@ pub fn ref_audiences_of(v: &serde_json::Value) -> Result<RefAudiences> {
     let rows = v["refs"].as_array().context("dg ci refs: no refs")?;
     let mut out = RefAudiences {
         members_view: v["membersView"].as_bool().unwrap_or(false),
+        shared_view: v["sharedView"].as_bool().unwrap_or(false),
         private: v["visibility"].as_str() == Some("private"),
         ..RefAudiences::default()
     };
@@ -550,10 +577,11 @@ pub fn members_run(repo: &RepoConfig, trig: &Trigger, refs: &RefAudiences) -> Me
     };
     match trig {
         Trigger::Push(p) | Trigger::Schedule { push: p, .. } => {
-            if repo.members_branches && !refs.members_view && !refs.private {
+            if repo.members_branches && !refs.members_view && !refs.shared_view && !refs.private {
                 return MembersRun::Unknown(
                     "the runner's identity did not read the members-only branches (members_branches \
-                     needs a member's identity with its encryption key)"
+                     needs a member's identity with its encryption key, or a bot's the branches are \
+                     shared with)"
                         .into(),
                 );
             }
@@ -2009,6 +2037,27 @@ mod tests {
             "state_dir = \"/s\"\n{extra}\n[[repo]]\nrepo = \"a/b\""
         ))
         .unwrap()
+    }
+
+    /// git and dg never run inside whatever repository the runner was started from: a
+    /// git-remote-dash that took it for a clone would record what it fetched there.
+    #[test]
+    fn children_run_in_the_runners_own_directory_and_never_find_a_repository_above_it() {
+        let d = tempfile::tempdir().unwrap();
+        let c = Config::parse(&format!(
+            "state_dir = \"{}\"\n[[repo]]\nrepo = \"a/b\"",
+            d.path().display()
+        ))
+        .unwrap();
+        let cmd = with_network(Command::new("git"), &c);
+        assert_eq!(cmd.get_current_dir(), Some(d.path().join("cwd").as_path()));
+        let envs: Vec<_> = cmd.get_envs().collect();
+        let ceiling = std::fs::canonicalize(d.path()).unwrap();
+        assert!(envs.contains(&(
+            std::ffi::OsStr::new("GIT_CEILING_DIRECTORIES"),
+            Some(ceiling.as_os_str())
+        )));
+        assert!(envs.contains(&(std::ffi::OsStr::new("GIT_DIR"), None)));
     }
 
     fn push() -> Push {

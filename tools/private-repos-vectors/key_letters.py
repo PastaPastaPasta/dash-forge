@@ -429,7 +429,8 @@ def build():
 def write_vectors(out_dir):
     build()
     for old in glob.glob(os.path.join(out_dir, CASE + "__*.json")):
-        os.remove(old)
+        if not os.path.basename(old).startswith(CASE + "__read_"):  # access.py writes the `read` type's
+            os.remove(old)
     names = set()
     for v in VECTORS:
         fname = f"{v['case']}__{v['name']}.json"

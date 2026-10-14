@@ -1,0 +1,244 @@
+{
+  "name": "withdrawal_counts_from_any_writer",
+  "description": "A withdrawal or completion counts whoever wrote it (consensus admitted its writer as a member when it was written; it only stops a publication): a triage member's withdrawal ends the date, and one by someone no longer a member (their membership document deleted) still does, so a withdrawn date never comes back.",
+  "case": "embargo",
+  "rules": "v2",
+  "input": {
+    "repoId": "Repo111111111111111111111111111111111111111",
+    "owner": "own",
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "wri",
+        "role": "writer",
+        "createdAt": 10
+      },
+      {
+        "identity": "tri",
+        "role": "triage",
+        "createdAt": 10
+      },
+      {
+        "identity": "rdr",
+        "role": "reader",
+        "createdAt": 10
+      },
+      {
+        "identity": "late",
+        "role": "writer",
+        "createdAt": 500
+      }
+    ],
+    "now": 1792504810,
+    "targets": [
+      {
+        "targetId": "iss12",
+        "isIssue": true
+      },
+      {
+        "targetId": "iss14",
+        "isIssue": true
+      }
+    ],
+    "events": [
+      {
+        "id": "a",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "iss12",
+        "targetNumber": 12,
+        "kind": 28,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "value": "{\"v\":1,\"at\":1792504800,\"b\":\"sec/cve-77\",\"o\":\"main\",\"t\":\"v1.2.3\"}",
+        "actor": "maint",
+        "createdAt": 100
+      },
+      {
+        "id": "b",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "iss12",
+        "targetNumber": 12,
+        "kind": 28,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "value": "{\"v\":1,\"cancel\":true}",
+        "actor": "tri",
+        "createdAt": 200
+      },
+      {
+        "id": "x",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "iss14",
+        "targetNumber": 14,
+        "kind": 28,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "value": "{\"v\":1,\"at\":1792504800,\"b\":\"sec/cve-77\",\"o\":\"main\",\"t\":\"v1.2.3\"}",
+        "actor": "maint",
+        "createdAt": 100
+      },
+      {
+        "id": "y",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "iss14",
+        "targetNumber": 14,
+        "kind": 28,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "value": "{\"v\":1,\"cancel\":true}",
+        "actor": "gone",
+        "createdAt": 200
+      }
+    ]
+  },
+  "expected": {
+    "records": [
+      {
+        "record": {
+          "id": "a",
+          "targetId": "iss12",
+          "number": 12,
+          "value": {
+            "type": "schedule",
+            "at": 1792504800,
+            "branch": "sec/cve-77",
+            "onto": "main",
+            "tag": "v1.2.3"
+          },
+          "actor": "maint",
+          "createdAt": 100
+        },
+        "counts": true
+      },
+      {
+        "record": {
+          "id": "b",
+          "targetId": "iss12",
+          "number": 12,
+          "value": {
+            "type": "cancel"
+          },
+          "actor": "tri",
+          "createdAt": 200
+        },
+        "counts": true
+      },
+      {
+        "record": {
+          "id": "x",
+          "targetId": "iss14",
+          "number": 14,
+          "value": {
+            "type": "schedule",
+            "at": 1792504800,
+            "branch": "sec/cve-77",
+            "onto": "main",
+            "tag": "v1.2.3"
+          },
+          "actor": "maint",
+          "createdAt": 100
+        },
+        "counts": true
+      },
+      {
+        "record": {
+          "id": "y",
+          "targetId": "iss14",
+          "number": 14,
+          "value": {
+            "type": "cancel"
+          },
+          "actor": "gone",
+          "createdAt": 200
+        },
+        "counts": true
+      }
+    ],
+    "targets": [
+      {
+        "embargo": {
+          "targetId": "iss12",
+          "number": 12,
+          "plan": {
+            "at": 1792504800,
+            "branch": "sec/cve-77",
+            "onto": "main",
+            "tag": "v1.2.3"
+          },
+          "setBy": "maint",
+          "setAt": 100,
+          "id": "a",
+          "state": {
+            "state": "cancelled",
+            "by": "tri",
+            "at": 200
+          }
+        },
+        "due": false,
+        "checklist": [
+          {
+            "step": "makePublic",
+            "issue": 12,
+            "done": false
+          },
+          {
+            "step": "publish",
+            "done": false
+          },
+          {
+            "step": "tag",
+            "tag": "v1.2.3",
+            "done": false
+          },
+          {
+            "step": "release",
+            "tag": "v1.2.3",
+            "done": false
+          }
+        ]
+      },
+      {
+        "embargo": {
+          "targetId": "iss14",
+          "number": 14,
+          "plan": {
+            "at": 1792504800,
+            "branch": "sec/cve-77",
+            "onto": "main",
+            "tag": "v1.2.3"
+          },
+          "setBy": "maint",
+          "setAt": 100,
+          "id": "x",
+          "state": {
+            "state": "cancelled",
+            "by": "gone",
+            "at": 200
+          }
+        },
+        "due": false,
+        "checklist": [
+          {
+            "step": "makePublic",
+            "issue": 14,
+            "done": false
+          },
+          {
+            "step": "publish",
+            "done": false
+          },
+          {
+            "step": "tag",
+            "tag": "v1.2.3",
+            "done": false
+          },
+          {
+            "step": "release",
+            "tag": "v1.2.3",
+            "done": false
+          }
+        ]
+      }
+    ]
+  }
+}

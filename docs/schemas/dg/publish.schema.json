@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/publish.schema.json",
   "title": "dg publish --json",
-  "description": "A members-only branch (or a members-only pull request's branch) published onto a public branch.",
+  "description": "A members-only branch (or a members-only pull request's branch) published onto a public branch, checked without writing (`--check`), or given a publication date (`--at`).",
   "type": "object",
   "properties": {
     "schemaVersion": {
@@ -11,7 +11,9 @@
     "status": {
       "type": "string",
       "enum": [
-        "published"
+        "published",
+        "checked",
+        "scheduled"
       ]
     },
     "branch": {
@@ -63,17 +65,134 @@
       ],
       "description": "What happened to your local copy of the base: `moved` to the published commit, `needs-reset` (it holds more; reset it yourself) or `untouched`."
     },
+    "number": {
+      "type": "integer",
+      "description": "`--at`: the issue or pull request the date is recorded on."
+    },
+    "at": {
+      "type": "integer",
+      "description": "`--at`: the date, Unix seconds (UTC)."
+    },
+    "plan": {
+      "type": "object",
+      "properties": {
+        "at": {
+          "type": "integer",
+          "description": "The publication date, Unix seconds (UTC)."
+        },
+        "pr": {
+          "type": "integer"
+        },
+        "branch": {
+          "type": "string"
+        },
+        "onto": {
+          "type": "string"
+        },
+        "tag": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "at"
+      ]
+    },
+    "checklist": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "step": {
+            "type": "string",
+            "enum": [
+              "makePublic",
+              "publish",
+              "tag",
+              "release"
+            ]
+          },
+          "issue": {
+            "type": "integer"
+          },
+          "tag": {
+            "type": "string"
+          },
+          "done": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "step",
+          "done"
+        ]
+      }
+    },
+    "eventId": {
+      "type": "string"
+    },
     "cost": {
       "$ref": "common.schema.json#/$defs/cost"
     }
   },
   "required": [
     "schemaVersion",
-    "status",
-    "branch",
-    "onto",
-    "method",
-    "commit"
+    "status"
   ],
-  "additionalProperties": true
+  "additionalProperties": true,
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "published"
+          ]
+        }
+      },
+      "required": [
+        "branch",
+        "onto",
+        "method",
+        "commit"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "checked"
+          ]
+        }
+      },
+      "required": [
+        "branch",
+        "onto",
+        "method"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "scheduled"
+          ]
+        }
+      },
+      "required": [
+        "number",
+        "at",
+        "plan",
+        "checklist",
+        "eventId"
+      ]
+    }
+  ]
 }

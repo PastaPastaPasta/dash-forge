@@ -273,6 +273,15 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
             cmd: Some(crate::branch::BranchCommand::Audience { repo, .. }),
         } => ("who can see the branch didn't change", repo.as_ref()),
         Command::Publish(_) => ("nothing was published", None),
+        Command::Embargo(crate::embargo::EmbargoCommand::List { repo }) => {
+            ("could not list publication dates", repo.as_ref())
+        }
+        Command::Embargo(crate::embargo::EmbargoCommand::Cancel { repo, .. }) => {
+            ("publication date not withdrawn", repo.as_ref())
+        }
+        Command::Embargo(crate::embargo::EmbargoCommand::Run { .. }) => {
+            ("nothing more was published", None)
+        }
         Command::Cost(CostCommand::Estimate { .. }) => ("no estimate", None),
         Command::Cost(CostCommand::Audit { repo, .. }) => ("audit failed", repo.as_ref()),
         Command::Cost(CostCommand::Prices) => ("no price reference", None),
@@ -300,6 +309,7 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
             ("could not read the status", Some(repo))
         }
         Command::Ci(c) => c.context(),
+        Command::Bot(b) => b.context(),
         Command::Import(a) => ("import failed", a.repo.as_ref()),
         Command::Profile(crate::ProfileCommand::Show { .. }) => {
             ("could not read the profile", None)

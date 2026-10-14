@@ -1225,6 +1225,84 @@ The person making a role change does it in the same flow when they hold the key 
 - **The guard over audiences** (§19.6 generalised, D21 rev 4): S's commits are grouped by audience (members, or a narrower token); a sealed ref update (members-only or narrower) is refused the commits it adds that only audiences it is not **within** hold, minus what an audience it is within already held before the batch. An audience is within another when its group is no wider (Maintainers ⊂ Writers and maintainers ⊂ All members) and it lists no one the other does not; a narrower audience the push does not know is within itself only. So a Maintainers branch's commits are refused on an All-members branch or a Writers branch, and members-only commits on an "All members + @ci-bot" branch (the bot never holds the members key). Public refs are refused anything in S, as before.
 - A narrower branch is never the source or base of an All-members pull request (`dg pr create` and the web refuse it; publishing it works as for a members-only branch, squash by default).
 
+## 22. Bot access: notices, requests and `read` letters
+
+A bot reads nothing members-only by default (DESIGN §4.9, D33). What a maintainer lets it do is public; what it is given for one request is a snapshot. The pure formats are `forge_core::private::access_notice`, `private::key_letter::ReadLetter` and `rules::agent_request` (web: `lib/private/access-notice.ts`, `lib/private/read-letter.ts`, `lib/rules/agent-request.ts`); the service is `collab::v2::bots`; vectors `access_notice__*` and `key_letter__read_*` from `tools/private-repos-vectors/access.py`.
+
+### 22.1 Access notices (kind 11)
+
+A notice is a typed object in the key letters' canonical form (§20.1), padded to 512 bytes:
+
+```
+{"askers":"writers"|"maintainers","bot":hex32,"may":["ciMembersBranches","post","postMembersOnly","readOnRequest"],
+ "note":TEXT,"processor":TEXT|null,"revokes":[packHash,…],"threads":"all"|[n,…],"type":"accessNotice","until":ms|null,"v":1}
+```
+
+- `may`, sorted, each once, ASCII letters and digits: `post` (comments and reviews), `postMembersOnly` (members-only replies on threads it is asked about, phase 4A), `readOnRequest` (a `read` letter per request), `ciMembersBranches` (a `branch` letter on every members push, phase 4C). An ability a reader does not know is kept and grants nothing; so are fields a later version adds (phase 4E's `push`, `pushPolicy`). A notice allowing nothing (`may` empty) takes the bot's access away (`dg bot revoke`).
+- `askers`: who may ask it (writers: Write, Maintain and the owner; maintainers: Maintain and the owner). `threads`: `"all"` or 1–100 issue and pull request numbers, sorted. `processor`: the AI service that processes what the bot is given (1–100 characters, not blank, no control character). `until`: when it ends (ms); a notice past it allows nothing. `note`: at most 500 characters, newlines allowed. `revokes`: the `packHash`es of the notices it replaces (a record only).
+- **Storage.** A `packManifest` of kind 11 on Platform chunks (`objectCount` 0, no `tips`, no `supersedes`). In a public repository the bytes are stored as they are. In a private one, twice: sealed under the members key (DFPK `0x01`) for members, and a DFPK `0x02` artifact to the bot and the writer, since a bot never holds the members key. The first bytes say which (`pack::sniff`).
+- **Reader rule.** The bytes must hash to `packHash`. Per bot, the notice that counts is the newest (by `$createdAt`, then manifest id) whose writer is a **current** maintainer or the owner; anyone else's is ignored, and on the mainnet set consensus refuses it (C3, `r = 0`). Clients write `r = 0` where `packManifest.r` admits 0.
+- **Public line** (`access_notice::public_line`, DESIGN §10): "@ci-bot can post here and read pull requests and issues it's asked about. Asked by writers and maintainers. Processed by <service>. Until 30 Nov 2026."
+- A notice for the owner or a current human member is refused before signing (members already read members-only content); on the live set a bot is a non-member identity, on the mainnet set a role-4 row (phase 4A).
+
+### 22.2 Requests (event kind 27)
+
+`forge-v2.md` §3.4: `refId` the bot, `value` the task (1–120 characters), sealed on a members-only thread. Before anything is signed the asker's client checks the bot's current notice (`check_ask`), in this order, each refusal E813: there is one and it allows something; it has not ended; the asker's role is among its askers (the owner counts as a maintainer); it covers the thread; and, on a members-only thread, it allows `readOnRequest`. It also refuses (E813) a thread that is a message to specific people, a members-only pull request from a fork or from someone outside the members (§4.9: such a pull request's members-only content is never handed to a bot; a public one is asked about with no letter), and, in a private repository whose contract has no members-only envelope of its own (sakura's: no `aud`), any request the bot may read for (its posts and the task itself are under the older envelope, which no letter hands on). On the mainnet contract a private repository's request is sealed per object (v0x03, as D38 seals its posts), so the bot gets the task's key in its letter. A letter too large to write (64 KiB) is refused before signing too. Readers and runners apply the same check to the notice that counted when the request was written (the newest by a current maintainer before its `$createdAt`) and the asker's role then (`request_allowed`); `dg bot jobs` and `dg bot read` mark a request outside it. Everyone sees that someone asked; only members, and the bot through its letter, see a members-only task.
+
+### 22.3 `read` letters (kind 10, `type` "read", v 1)
+
+```
+{"asOf":ms,"checkNameKey":hex32|null,"docs":[[id,revision,kObj],…],"heads":[[blind,oid,salt],…],"job":hex32,
+ "packs":[[packHash,key],…],"target":{"pr":n}|{"issue":n}|{"branch":hex32},"type":"read","v":1}
+```
+
+- `job` is the request's event id; `target` its thread. `docs`, sorted by (id, revision), each once, revisions ≥ 1: every members-only revision of the thread the asker opens when asking (v0x03, and a bot's own v0x05 posts by their per-object key under that bot's post key) (the issue or pull request itself, its comments and reviews) and the request event itself, each with its per-object key `K_obj` (`doc::read_obj_key`, checked against the commitment it carries). A key opens that one revision only (§4.1: the AD and the nonce are bound into it), so a comment written or a post edited after the request is under a key the bot never had. Messages to specific people (v0x04) are never included, nor are posts under the older envelope (v0x01, no key of its own: "Older items in this repo can't be shared one at a time").
+- `packs` and `heads`: a members-only pull request's code, as `dg branch share` would share its branch (§20.2): the head as blind, commit and salt, the kind-64 packs holding its commits beyond the public branches with their file keys (the asker is told when they also carry commits that are not on the branch). Only `dg bot ask` run in a clone holding the branch writes them; `checkNameKey` is the first head's check-name key (§19.9), null with no head. `packs` also carries the members-only long bodies (kind 70, §17.6) of the listed documents, by their trailer's SHA-256 (their `packHash`) and file key; the bot reads such a body whole only when the bytes open with that key and match the trailer's hash and length.
+- **Opening** (`doc::open_shared_with_key`): a document whose `(id, $revision)` the letter lists opens with its key alone, the commitment compared before GCM. A post edited after the request is read at the listed revision from its history (issues, pull requests and comments keep theirs). A pull request's branch names hashed under the epoch key (members-only branches) cannot be checked without it and are dropped; names hashed as their plain SHA-256 are kept.
+- **Who writes, who reads.** The asker (Write or Maintain, as consensus admits a kind-10 manifest from a maintainer or a role-1 writer) seals it to themself (slot 0) and the bot. The bot takes a letter only from a current maintainer or Write member (§20.1) who is the request's asker, naming the request's job and thread; the newest such letter counts. `dg bot read <job>` shows the thread as the letter opens it: public posts written up to the request, the members-only revisions it covers, and the rest marked "not shared with you".
+
+### 22.4 Runners: `branch` letters for checks, and agents mode
+
+**Checks on members-only branches (`ciMembersBranches`).** After a push moves members-only branches of a public
+repository (members-key branches; not narrower ones, whose audience is their own, §21), the pusher's git helper
+writes each bot whose current notice is live and lists `ciMembersBranches` a `branch` letter (§20.2) of each moved
+branch as it is now, sealed to the pusher and the bot (`Collab::letter_ci_bots`; the pack choice is
+`members_git::share`, shared with `dg branch share`). Only a maintainer's or a Write member's helper writes one (only
+theirs count); a bot without an encryption key gets none. It never fails the push: the refs already landed, and
+the helper names what it could not share. The pusher pays for each letter (one Platform chunk, about 0.002 DASH) and
+waits for them (at most two minutes); a branch whose push the repository does not show yet is tried once more. A private-only repository's branches are not members-only branches: its
+runner stays a member with the Read role (§19.9).
+
+The bot's runner reads the shared branches as git lists them with its key: `dg ci refs` adds them, as `members`, for
+a reader outside the members (`"sharedView": true`), and `dg ci report --members-branch` takes the head's blind and
+salt from the newest letter of that branch (the run is reported on the blind, under names keyed by the salt, §19.9),
+only at the head that letter names. Nothing pushed later is readable to it until the next push's letter.
+
+**Agents mode** (forge-runner `agents = true`, DESIGN §4.9 "The runner"; runner conventions, not consensus):
+
+- It works on a request only while the bot's current notice is live and allowed the asker and the thread when the
+  request was written (§22.2); otherwise nothing is done.
+- **Members mode** only for a proper request: the notice lists `readOnRequest`, the asker wrote a `read` letter
+  naming the job (§22.3), and the thread is not a pull request from a fork or from someone outside the members
+  (`dg bot read --json` reports `foreignPull` from the PR's `sourceRepoId` and author, readable on a members-only PR
+  too). Anything else runs in **public mode**: `dg bot read --public` opens no letter, the runner keeps only public
+  posts, and a members-only task or thread leaves nothing to work on.
+- The runner's `dg` opens the letter and the posts; the agent process gets plaintext (`/in/job.json`) and the code
+  (`/work`): a members-only head is indexed from the letter's packs on top of the public branches, fetched without
+  the key; other code is fetched without the key from the repository or the fork.
+- **Taint**: a job that read a members-only task, post or pack posts only members-only replies. A public post the
+  agent asks for is refused before `dg` runs. A bot outside the members (sakura's live contracts) cannot post
+  members-only, so a tainted job there posts nothing.
+- **Egress**: the agent's container is on an internal Docker network whose gateway does not reach the host
+  (`gateway_mode_ipv4=isolated`, Docker Engine 28 or newer, which the runner checks) and with no outside DNS; a relay
+  on a network of its own is its only way out, to the runner's `CONNECT` proxy, which lets through the `host:port`
+  endpoints the runner's configuration gives for the notice's `processor` and logs every attempt as it is decided
+  (`<state>/agents/<repo>/<job>.egress.log`). A notice whose `processor` the runner does not know is not worked on;
+  one with none gives the agent no endpoint. Residual: the allowed endpoint itself is a channel (an agent steered by
+  the thread could use credentials of its own at the same service), as DESIGN §4.9's threat model says.
+- **Output**: a reply cut to `max_reply_bytes` (at most 4,800, so a bot's members-only post fits one document) and at
+  most `max_suggestions` suggested changes on a pull request's lines. Never an edit to public, never a push (4E).
+
 ## 23. Bots' members-only posts (`enc` v0x05)
 
 A **bot** is a member with the Bot role: a `writer` document with `role` 4 (mixed-visibility DESIGN §4.9, D33; the
@@ -1282,5 +1360,7 @@ bot (each bot's key differs) whenever the key a bot needs changes, in the same r
 A bot takes a `postKey` letter only from a **current maintainer** (only maintainers change the key) and uses the
 newest one per epoch; with none for the current epoch it is refused before signing with E311 ("no post key for epoch
 N"). A bot without a usable encryption key is skipped and reported, and sent its key by a repair once it has one.
-Until phase 4B's access notices land every Bot row is sent a post key; with them, only bots whose newest notice allows
-members-only posts.
+Only a Bot row whose current access notice (§22.1) is live and allows `postMembersOnly` is sent a post key, on every
+path above (`bot_keys::with_post_access`; web `withPostAccess`); `dg bot allow --members-only-replies` sends it at once
+(the web's repair banner offers it). A bot whose notice stops allowing it, is revoked or ends gets none at the next
+rotation, so its members-only posting stops there.

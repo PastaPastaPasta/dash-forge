@@ -373,8 +373,14 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
         let keys = kr
             .write_epoch_keys()
             .context("the members key changed while adding the bot: run `dg repo keys repair` to send its key")?;
-        let bots = vec![member.to_string()];
-        let bots = if held || rotation.is_some() {
+        // only a bot whose access notice allows members-only replies gets one (§22.1)
+        let bots = Box::pin(forge_core::bot_keys::with_post_access(
+            &signer,
+            handle,
+            vec![member.to_string()],
+        ))
+        .await?;
+        let bots = if bots.is_empty() || held || rotation.is_some() {
             Box::pin(forge_core::bot_keys::missing(&signer, handle, keys, &bots)).await?
         } else {
             bots

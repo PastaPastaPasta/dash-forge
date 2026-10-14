@@ -246,6 +246,9 @@ fn key_letter_conformance_vectors() {
             "seal" => run_seal(i),
             "open" => run_open(i),
             "fileKey" => run_file_key(i),
+            "readFormat" | "readDecode" | "readOpenDoc" => {
+                crate::private::access_conformance::run_read(i)
+            }
             other => panic!("{}: unknown op {other}", path.display()),
         };
         assert_eq!(got, v["expected"], "vector {}", path.display());

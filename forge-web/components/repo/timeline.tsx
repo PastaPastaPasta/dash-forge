@@ -12,7 +12,7 @@ import { MakePublicButton } from '@/components/repo/make-public'
 import { EditedAfterPublicNote, MadePublicBy } from '@/components/repo/made-public'
 import { Byline, Time } from '@/components/repo/byline'
 import { importedVerdictOf, searchableBody, trustedOrigin, type Origin } from '@/lib/repo/provenance'
-import { Check, CheckCircle2, CircleDot, CircleSlash, Eye, EyeOff, GitBranch, GitCommit, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, Lock, LockOpen, Milestone, MessageSquare, Pencil, Pin, ShieldAlert, Tag, Trash2, UserPlus, X } from 'lucide-react'
+import { Bot, Check, CheckCircle2, CircleDot, CircleSlash, Eye, EyeOff, GitBranch, GitCommit, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, Lock, LockOpen, Milestone, MessageSquare, Pencil, Pin, ShieldAlert, Tag, Trash2, UserPlus, X } from 'lucide-react'
 import { STATE_TEXT } from '@/lib/design/state'
 import type { CommentView, MembersOnlyEntry, TimelineItem } from '@/lib/view'
 import type { MembersAccess } from '@/lib/view/repo-view'
@@ -22,9 +22,11 @@ import { branchName, plural, timeAgo } from '@/lib/view'
 import { anchorLabel } from '@/lib/view/inline-threads'
 import { VERDICT_LABEL, type VerdictName } from '@/lib/repo'
 import type { Event } from '@/lib/rules'
+import type { AgentRequest } from '@/lib/rules/agent-request'
 import { ISSUE_CLOSE, ISSUE_LOCK, ISSUE_REOPEN, ISSUE_UNLOCK, PR_CLOSE, PR_DRAFT, PR_DRAFT_CLOSE, PR_DRAFT_REOPEN, PR_LOCK, PR_MERGE, PR_READY, PR_REOPEN, PR_UNLOCK, transitionPhrase } from '@/lib/rules/transition'
 import type { ReviewView, TransitionView } from '@/lib/repo'
 import { Author } from '@/components/author'
+import { useHandle } from '@/components/repo/bot-handle'
 import Link from 'next/link'
 import { useState, type ReactNode } from 'react'
 import { isEmptyMirroredReview, mirroredCommentText } from '@/lib/view/mirror-review-fold'
@@ -272,13 +274,48 @@ export interface BranchEventItem {
   readonly branch: string
 }
 
-/** A row placed among the items by time: a mention, a duplicate's back-reference, a branch event. */
+/**
+ * One request to a bot (DESIGN §10 "Thread line"): "@alice asked @ci-bot to work on this · 2 hours
+ * ago", and the task below it when this reader can read it. Everyone sees that someone asked; a
+ * members-only task is shown to members only (an outsider's read has no task to show).
+ */
+export function AgentRequestRow({ request, outside = false }: { request: AgentRequest; outside?: boolean }): JSX.Element {
+  const bot = useHandle(request.bot)
+  return (
+    <div className={EVENT_ROW} data-testid="timeline-event" data-kind="agent-request">
+      <span className={EVENT_ICON}>
+        <Bot className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />
+      </span>
+      <div className={EVENT_TEXT}>
+        <p>
+          <Author identityId={request.asker} link={false} className="align-middle" /> asked <Author identityId={request.bot} link={false} className="align-middle" /> to work on this
+          <span className="whitespace-nowrap"> · {timeAgo(request.createdAt)}</span>
+          {outside ? (
+            <span className="text-caution-700 dark:text-caution-400" data-testid="agent-request-outside">
+              {' '}
+              · outside {bot}&apos;s access
+            </span>
+          ) : null}
+        </p>
+        {request.task !== null ? (
+          <p className="mt-0.5 whitespace-pre-wrap break-words text-anvil-700 dark:text-anvil-200" data-testid="agent-request-task">
+            {request.task}
+          </p>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
+/** A row placed among the items by time: a mention, a duplicate's back-reference, a branch event, a request to a bot. */
 type ExtraRow =
   | { readonly kind: 'ref'; readonly at: number; readonly ref: CrossRefItem }
   | { readonly kind: 'dup'; readonly at: number; readonly dup: DuplicateRefItem }
   | { readonly kind: 'branch'; readonly at: number; readonly branch: BranchEventItem }
   /** A members-only comment or review this reader cannot open (D14); `all`: a locked member's one line for every one. */
   | { readonly kind: 'members'; readonly at: number; readonly entry: MembersOnlyEntry; readonly all?: readonly MembersOnlyEntry[] }
+  /** Someone asked a bot to work on this thread (event kind 27). */
+  | { readonly kind: 'ask'; readonly at: number; readonly request: AgentRequest }
 
 function crossRefIcon(state: CrossRefItem['state']): JSX.Element {
   switch (state) {
@@ -477,6 +514,8 @@ export function Timeline({
   membersOnly = [],
   lane,
   reviewActions,
+  agentRequests = [],
+  outsideAccess,
 }: {
   items: readonly TimelineItem[]
   /** Where `#n` / `@name` in bodies link (omit: plain text). Keep it referentially stable. */
@@ -520,6 +559,13 @@ export function Timeline({
   lane?: MembersAccess
   /** A review's author's own actions in its header (Make public on their members-only review). */
   reviewActions?: (review: ReviewView) => ReactNode
+  /**
+   * Requests to bots on this thread (DESIGN §4.9), placed by time: "@alice asked @ci-bot to work on
+   * this". The task shows only when this reader can read it (a members-only task stays hidden).
+   */
+  agentRequests?: readonly AgentRequest[]
+  /** The requests (by id) that were outside their bot's access when written: flagged on their line. */
+  outsideAccess?: ReadonlySet<string>
 }): JSX.Element {
   // A hide or unhide the reader rule did not count (a writer's without the contract's proof, a
   // refId of another thread) is noise anyone could write, not the moderation record: left out.
@@ -555,6 +601,7 @@ export function Timeline({
     ...duplicateRefs.map((dup): ExtraRow => ({ kind: 'dup', at: dup.at, dup })),
     ...branchEvents.map((branch): ExtraRow => ({ kind: 'branch', at: branch.at, branch })),
     ...membersOnlyRows(membersOnly, summarizesMembersOnly(lane)),
+    ...agentRequests.map((request): ExtraRow => ({ kind: 'ask', at: request.createdAt, request })),
   ].sort((a, b) => a.at - b.at)
   const merged: ({ kind: 'item'; item: TimelineItem; i: number; at: number } | ExtraRow)[] = items.map((item, i) => ({ kind: 'item', item, i, at: item.at }))
   for (const extra of extras) {
@@ -621,6 +668,8 @@ export function Timeline({
           </p>
         </div>,
       )
+    } else if (row.kind === 'ask') {
+      rows.push(<AgentRequestRow key={`a-${row.request.id}`} request={row.request} outside={outsideAccess?.has(row.request.id) === true} />)
     } else if (row.kind === 'members') {
       rows.push(
         row.all !== undefined ? (
