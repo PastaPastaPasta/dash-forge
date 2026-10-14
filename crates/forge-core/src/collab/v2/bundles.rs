@@ -522,7 +522,8 @@ impl Collab<'_> {
                 _ => {}
             }
         }
-        let made = crate::rules::v2::make_public_changes(ck, &opened).map_err(|_| {
+        let settable_once = self.settable_once(repo, kind).await?;
+        let made = crate::rules::v2::make_public_changes(ck, &opened, settable_once).map_err(|_| {
             Error::from(
                 UserError::new(
                     codes::USAGE,

@@ -1,0 +1,25 @@
+{
+  "name": "v03_private_d38_public_header_refused",
+  "description": "the D38 writer seals private documents only: a public header is refused.",
+  "case": "mixed_doc_seal",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "doc": {
+      "type": "comment",
+      "vis": "public",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "targetId": "3333333333333333333333333333333333333333333333333333333333333333"
+    },
+    "fields": {
+      "body": "members-only: the fix is in sec/cve-1"
+    },
+    "nonce": "000102030405060708090a0b",
+    "d38": true
+  },
+  "expected": {
+    "error": "malformed"
+  }
+}

@@ -91,6 +91,26 @@ pub fn seal_props(
     )
 }
 
+/// [`seal_props`] for a private repository on the mainnet contract (DESIGN D38): the same
+/// transform, sealed `enc` v0x03 (a per-object key under the epoch, `vis: "private"` in the AD),
+/// so one document's key can later be given on its own (a bot's per-PR key letter). Readers open
+/// v0x01 and v0x03 in a private repository alike.
+pub fn seal_private_members_props(
+    keys: &EpochKeys,
+    kind: DocKind,
+    owner: [u8; 32],
+    props: BTreeMap<String, FieldValue>,
+) -> Result<BTreeMap<String, FieldValue>> {
+    seal_props_inner(
+        epoch_hashing(keys),
+        kind,
+        owner,
+        props,
+        &Members::default(),
+        |h, f| crate::private::doc::seal_private_v3(keys, h, f),
+    )
+}
+
 /// An epoch's number and its ref-name hash (`HMAC(K_ref,e, name)`, §4.5), for
 /// [`seal_props_inner`].
 fn epoch_hashing(keys: &EpochKeys) -> (u32, impl Fn(&str) -> [u8; 32] + '_) {
@@ -577,6 +597,14 @@ fn seal_props_inner(
             let plain = props.get("oid").and_then(FieldValue::as_bytes);
             seal_head(extra.head.as_ref(), plain.as_deref(), &mut fields)
                 .map_err(|e| sealing_error(kind, members, e))?;
+        }
+        DocKind::AuthorEvent => {
+            // an author's retarget base (mainnet M3); an author event never carries a sealed head
+            header.target_id = id32(&props, "targetId");
+            fields.event_value = take_text(&mut props, "value");
+            if extra.head.is_some() {
+                return Err(sealing_error(kind, members, PrivateError::Malformed));
+            }
         }
         DocKind::RefUpdate | DocKind::ProtectedRefUpdate | DocKind::Config | DocKind::Release => {
             return Err(Error::Config(format!(

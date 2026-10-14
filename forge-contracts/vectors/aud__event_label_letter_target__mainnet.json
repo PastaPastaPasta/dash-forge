@@ -1,0 +1,23 @@
+{
+  "name": "event_label_letter_target__mainnet",
+  "description": "A value on a letter is refused: an event names no recipients. (mainnet contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "event",
+    "type": "event",
+    "shape": {
+      "tAud": true,
+      "authorEnc": true
+    },
+    "target": {
+      "enc": "0400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "aud": 2
+    },
+    "value": true
+  },
+  "expected": {
+    "tAud": 2,
+    "value": "refused"
+  }
+}

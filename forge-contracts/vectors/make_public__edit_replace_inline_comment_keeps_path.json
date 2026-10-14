@@ -1,0 +1,26 @@
+{
+  "name": "edit_replace_inline_comment_keeps_path",
+  "description": "Where comment.path is settable once (mainnet L1), the made-public inline comment keeps its file name.",
+  "case": "make_public",
+  "rules": "v2",
+  "input": {
+    "op": "replace",
+    "kind": "comment",
+    "opened": {
+      "body": "nit: rename",
+      "path": "src/lib.rs"
+    },
+    "settableOnce": true
+  },
+  "expected": {
+    "set": {
+      "body": "nit: rename",
+      "path": "src/lib.rs"
+    },
+    "remove": [
+      "enc",
+      "epoch"
+    ],
+    "lost": []
+  }
+}

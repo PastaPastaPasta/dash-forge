@@ -572,6 +572,8 @@ export const GATE_REFUSED_CODE = 40120
 export const WHERE_MISMATCH_CODE = 40127
 /** A document breaks one of its type's `propertyConstraints` rules (the message names the rule). */
 export const RULE_REFUSED_CODE = 10422
+/** `DocumentDeleteConstraintViolatedError`: a delete a `deleteConstraints` rule keeps (mainnet R-08, R-09). */
+export const DELETE_RULE_REFUSED_CODE = 40147
 
 /** A replace named a revision other than the stored one + 1 (`InvalidDocumentRevisionError`). */
 export const INVALID_REVISION_CODE = 40106
@@ -1604,6 +1606,8 @@ async function signCreate(
   const documentId = base58Encode(idBytes)
 
   const document = documentForCreate(Document, { data, documentType, contractId, ownerId, documentId, entropy, platformVersion })
+  // R-07: the contract's rules, judged before anything is signed (a create has no stored version)
+  await precheckRules(sdk, contractId, documentType, document, null)
 
   // `platformVersion` is load-bearing: without it the transition re-derives the id at the
   // SDK's latest compiled version (14), which on a protocol-13 network is an id Drive does not
@@ -1626,6 +1630,68 @@ async function signCreate(
   st.setIdentityContractNonce(nonce)
   st.sign(PrivateKey.fromWIF(p.wif), p.publicKey as Parameters<StateTransition['sign']>[1])
   return { st, bytes: st.toBytes(), documentId, nonce }
+}
+
+/** What the rule pre-check needs of a fetched contract (wasm-dpp2 `DataContract`, beta.5 #5373). */
+interface RuleJudge {
+  checkDocumentPropertyConstraints(document: unknown, storedDocument: unknown): RuleBreak | undefined
+}
+
+/** The rule a document breaks, as the contract's judge names it. */
+interface RuleBreak {
+  readonly rule: string
+  readonly message: string
+}
+
+/** The contracts the rule pre-check judges with, by id: fetched once (a failed fetch is retried next write). */
+const ruleContracts = new Map<string, Promise<RuleJudge | null>>()
+
+function ruleContract(sdk: EvoSDK, contractId: string): Promise<RuleJudge | null> {
+  let c = ruleContracts.get(contractId)
+  if (c === undefined) {
+    c = (async () => ((await sdk.contracts.fetch(contractId)) as unknown as RuleJudge | undefined) ?? null)()
+    ruleContracts.set(contractId, c)
+    c.catch(() => ruleContracts.delete(contractId))
+  }
+  return c
+}
+
+/** Forget the pre-check's contracts (tests). */
+export function resetRulePrecheck(): void {
+  ruleContracts.clear()
+}
+
+/**
+ * R-07 (Platform beta.5 #5373, `DataContract.checkDocumentPropertyConstraints`): the
+ * `propertyConstraints` rules of `contractId` judged on `document` before anything is signed, with
+ * `stored` the version a replace replaces (`null` for a create, never `undefined`, which would
+ * leave every rule reading `$old.` or `$revision` unjudged). A broken rule is refused as consensus
+ * would refuse it (10422, naming the rule, nothing charged); rules reading a total, a referenced
+ * document or a block height are left to consensus. A pre-check that cannot run (no contract, an
+ * SDK without it) judges nothing: consensus still does. A refusal is judged again once with the
+ * contract fetched afresh, so a contract updated in place since the tab cached it never refuses a
+ * write its new version admits.
+ */
+async function precheckRules(sdk: EvoSDK, contractId: string, documentType: string, document: unknown, stored: unknown): Promise<void> {
+  const judge = async (): Promise<RuleBreak | undefined> => {
+    const contract = await ruleContract(sdk, contractId)
+    if (contract === null || typeof contract.checkDocumentPropertyConstraints !== 'function') return undefined
+    return contract.checkDocumentPropertyConstraints(document, stored)
+  }
+  let broken: RuleBreak | undefined
+  try {
+    broken = await judge()
+    if (broken !== undefined) {
+      ruleContracts.delete(contractId)
+      broken = await judge()
+    }
+  } catch {
+    return
+  }
+  if (broken !== undefined) {
+    // copy-lint-ignore: the consensus refusal's own words, read by `refusedRule`; never shown as is
+    throw new ConsensusRefusal(RULE_REFUSED_CODE, `Document of type "${documentType}" breaks its propertyConstraints rule "${broken.rule}": ${broken.message} (checked before signing)`, {}, false)
+  }
 }
 
 /** The outcome of a delete. A delete that did not confirm throws {@link UnconfirmedWriteError}. */
@@ -1910,6 +1976,8 @@ async function replaceDocumentUnlocked(
     else merged[k] = v
   }
   const document = Document.fromObject(merged as Parameters<typeof Document.fromObject>[0], sdk.version())
+  // R-07: the contract's rules, judged before anything is signed, against the version it replaces
+  await precheckRules(sdk, contractId, documentType, document, current)
   const signer = new IdentitySigner()
   signer.addKeyFromWif(wif)
   const landed = async (): Promise<boolean> => {

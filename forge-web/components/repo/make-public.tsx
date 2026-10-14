@@ -58,7 +58,7 @@ export interface MakePublicWords {
 /**
  * The confirmation for making one's own `kind` post public (DESIGN §10). `quoted`: the quote
  * check's finding, from {@link useQuotedMembersPost}. `losesFile`: an inline comment, whose file
- * name can't be made public on this network.
+ * name can't be made public on this network (the mainnet contract keeps it: the caller passes false).
  */
 export function makePublicWords(kind: MembersPostKind, quoted: string | null, losesFile = false): MakePublicWords {
   const description =

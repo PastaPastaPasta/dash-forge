@@ -28,6 +28,9 @@ export function WatchButton({ repo }: { repo: RepoRef }): JSX.Element | null {
   })
   if (identity === null || signer === null) return null
   const watching = watch.on === true
+  // Watching is public, for public repos only: a private repo offers none, but one watched before
+  // can still be unwatched.
+  if (repo.visibility === 'private' && !watching) return null
   const cost = previewCreate('watch', {})
   const refund = previewDelete('watch')
   const price = watching ? `Unwatch · refunds at least ${creditsAsDash(-refund.credits)} DASH` : `Watch · ~${creditsAsDash(cost.credits)} DASH`

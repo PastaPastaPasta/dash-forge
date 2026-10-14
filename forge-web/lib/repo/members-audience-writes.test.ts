@@ -10,6 +10,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 let stored: Record<string, Record<string, unknown>> = {}
 const writes: { documentType: string; data: Record<string, unknown> }[] = []
 
+// sakura's contracts: none of the mainnet fields (`mainnet-fields.ts`), `vis` where it was
+vi.mock('./contract-shape', async (orig) => {
+  const real = await orig<typeof import('./contract-shape')>()
+  const mainnet = new Set(['aud', 'mRole', 'tAud', 'enc', 'asMaintainer'])
+  return {
+    ...real,
+    contractHasProperty: async (...a: Parameters<typeof real.contractHasProperty>) => (mainnet.has(a[3]) ? false : a[3] === 'vis' ? true : real.contractHasProperty(...a)),
+    contractPropertyMinimum: async () => null,
+  }
+})
 vi.mock('../view/retry', () => ({ retryWhileMissing: vi.fn(async (f: () => Promise<unknown>) => f()) }))
 vi.mock('./role-claim', async (orig) => ({ ...(await orig<typeof import('./role-claim')>()), roleClaim: async () => ({}) }))
 vi.mock('../sdk', async (importOriginal) => {

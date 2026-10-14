@@ -1,0 +1,23 @@
+{
+  "name": "content_members_comment_triage__mainnet",
+  "description": "Triage's members-only comment: mRole 2. (mainnet contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "content",
+    "type": "comment",
+    "shape": {
+      "aud": true,
+      "mRole": true
+    },
+    "doc": {
+      "enc": "030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "asMember": true
+    },
+    "role": "triage"
+  },
+  "expected": {
+    "aud": 1,
+    "mRole": 2
+  }
+}

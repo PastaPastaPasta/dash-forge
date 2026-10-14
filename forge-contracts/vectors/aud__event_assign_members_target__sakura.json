@@ -1,0 +1,22 @@
+{
+  "name": "event_assign_members_target__sakura",
+  "description": "An event without a value on a members-only issue. (sakura contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "event",
+    "type": "event",
+    "shape": {
+      "tAud": false,
+      "authorEnc": false
+    },
+    "target": {
+      "enc": "030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "value": false
+  },
+  "expected": {
+    "tAud": null,
+    "value": "none"
+  }
+}

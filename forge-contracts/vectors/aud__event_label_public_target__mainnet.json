@@ -1,0 +1,20 @@
+{
+  "name": "event_label_public_target__mainnet",
+  "description": "A label on a public issue: plaintext, no tAud. (mainnet contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "event",
+    "type": "event",
+    "shape": {
+      "tAud": true,
+      "authorEnc": true
+    },
+    "target": {},
+    "value": true
+  },
+  "expected": {
+    "tAud": null,
+    "value": "plain"
+  }
+}

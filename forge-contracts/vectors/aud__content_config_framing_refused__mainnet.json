@@ -1,0 +1,22 @@
+{
+  "name": "content_config_framing_refused__mainnet",
+  "description": "A content document never carries a config's v0x02 envelope. (mainnet contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "content",
+    "type": "comment",
+    "shape": {
+      "aud": true,
+      "mRole": true
+    },
+    "doc": {
+      "enc": "02000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "asMember": true
+    },
+    "role": "writer"
+  },
+  "expected": {
+    "error": "unknownEnc"
+  }
+}

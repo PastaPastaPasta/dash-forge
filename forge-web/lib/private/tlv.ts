@@ -17,6 +17,7 @@ export type PrivateDocType =
   | 'protectedRefUpdate'
   | 'config'
   | 'event'
+  | 'authorEvent'
 
 /** The decrypted content of a private document; only present fields are set. */
 export interface DocFields {
@@ -161,6 +162,8 @@ const TAGS_OF: Readonly<Record<PrivateDocType, readonly number[]>> = {
   protectedRefUpdate: [3],
   config: [6, 7, 8, 9, 11, 12],
   event: [15],
+  // an author's retarget base (mainnet M3); an author event never carries a head
+  authorEvent: [15],
 }
 
 /**
@@ -390,6 +393,9 @@ function requireFields(f: DocFields, ctx: TlvContext, anchorWithPrev: boolean): 
       return
     case 'event':
       if (f.eventValue === undefined && f.headOid === undefined) throw new MalformedError('event without a value')
+      return
+    case 'authorEvent':
+      if (f.eventValue === undefined) throw new MalformedError('author event without a value')
       return
     case 'review':
       return

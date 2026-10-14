@@ -1,0 +1,15 @@
+{
+  "name": "manifest_r_key_letter_writer__sakura",
+  "description": "A writer's key letter (kind 10) keeps r 1. (sakura contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "manifestR",
+    "shape": {
+      "maintKinds": false
+    },
+    "kind": 10,
+    "claimed": 1
+  },
+  "expected": 1
+}

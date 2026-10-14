@@ -172,7 +172,16 @@ function parentOf(doc: PlainDocument): ParentAudience {
 async function parentWithBundles(sdk: EvoSDK, repo: RepoRef, type: string, doc: PlainDocument): Promise<ParentAudience> {
   const own = parentOf(doc)
   if (own.default === 'public' || (type !== DOC.issue && type !== DOC.comment)) return own
-  return (await bundledFields(sdk, repo, type as PrivateDocType, doc).catch(() => null)) !== null ? sameParent('public') : own
+  return (await madePublicByBundle(sdk, repo, type, doc)) ? sameParent('public') : own
+}
+
+/**
+ * Whether a maintainer's bundle made `repo`'s stored members-only `type` document `doc` public
+ * (its current revision, DESIGN §4.6): an issue or comment only, and a failed read is "no".
+ */
+export async function madePublicByBundle(sdk: EvoSDK, repo: RepoRef, type: string, doc: PlainDocument): Promise<boolean> {
+  if (type !== DOC.issue && type !== DOC.comment) return false
+  return (await bundledFields(sdk, repo, type as PrivateDocType, doc).catch(() => null)) !== null
 }
 
 /** The narrower of two parents' audiences: specific people over members over public (a letter thread takes only letters). */
@@ -360,8 +369,11 @@ const HEAD_UPDATE_KIND = 16
 /** The v0x03 sealer of members-only content (`sealMembersDoc` with `vis: "public"`). */
 const sealMembers: DocSealer = (k, doc, f) => sealMembersDoc(k, { ...doc, vis: 'public' }, f)
 
-/** The sealed types members-only content takes through the generic writer (a PR takes its `patch`). */
-const MEMBERS_TYPES: ReadonlySet<PrivateDocType> = new Set(['issue', 'comment', 'review', 'event'])
+/**
+ * The sealed types members-only content takes through the generic writer (a PR takes its `patch`);
+ * an author's event only where `authorEvent` declares `enc` (mainnet M3: its writer checks first).
+ */
+const MEMBERS_TYPES: ReadonlySet<PrivateDocType> = new Set(['issue', 'comment', 'review', 'event', 'authorEvent'])
 
 /**
  * Seal `data` (the plaintext document a public writer would post) as members-only content of
@@ -381,7 +393,7 @@ export async function sealMembersContent(
   // nowhere and the real commit left in plaintext
   if (type === 'patch' && patch === undefined) throw refused('a members-only pull request needs its branches named')
   if (type !== 'patch' && !MEMBERS_TYPES.has(type)) throw refused(`a members-only ${type} is not supported yet`)
-  if (type === 'event' && data['oid'] !== undefined && data['oid'] !== null) throw refused('a members-only event that names a commit is written as a head update')
+  if ((type === 'event' || type === 'authorEvent') && data['oid'] !== undefined && data['oid'] !== null) throw refused('a members-only event that names a commit is written as a head update')
   if (isSealedKind(type)) {
     const { used } = sealedTextUse(type, data)
     const limit = MEMBERS_TEXT_LIMIT[type]
@@ -395,8 +407,8 @@ export async function sealMembersContent(
   const member = verdict === 4 ? { ...data, verdict: 1 } : verdict === 5 ? { ...data, verdict: 2 } : data
   try {
     const sealed = type === 'patch' ? await sealMembersPatch(writer.keys, owner, member, patch as MembersPatch) : await sealContent(writer.keys, type, owner, member, sealMembers)
-    // An event carries no proof field (its gate is the member event type itself).
-    return type === 'event' ? sealed : { ...sealed, asMember: owner }
+    // An event carries no proof field (its gate is the member event type itself, or the author).
+    return type === 'event' || type === 'authorEvent' ? sealed : { ...sealed, asMember: owner }
   } catch (e) {
     if (e instanceof TooLargeError) throw refused(`the text is too long for a members-only ${type}`)
     if (e instanceof MalformedError) throw refused(`this ${type} can't be written members-only: ${e.message}`)

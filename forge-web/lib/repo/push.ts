@@ -198,8 +198,9 @@ export async function writePackManifest(
 ): Promise<WriteResult> {
   const problem = manifestUrisProblem(input.uris) ?? manifestShapeProblem(input)
   if (problem) throw new Error(problem)
-  // Refused before anything is read or signed when the signer's role cannot push.
-  const claim = await roleClaim(sdk, auth, repo, DOC.packManifest, {})
+  // Refused before anything is read or signed when the signer's role cannot push; a
+  // maintainer-only kind claims `r = 0` where the contract admits it (mainnet C3).
+  const claim = await roleClaim(sdk, auth, repo, DOC.packManifest, { kind: input.kind })
   const existing = await findOwnManifest(sdk, repo, auth.identityId, input.packHash)
   if (existing !== null) return alreadyRecorded(existing)
   const data: Record<string, unknown> = {

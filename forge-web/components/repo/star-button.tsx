@@ -43,7 +43,7 @@ export function StarButton({
   lookalikes?: readonly (Subject | null)[]
   /** The public star count; `null` when it could not be read. */
   count: number | null
-}): JSX.Element {
+}): JSX.Element | null {
   const { sdk, ready, network } = useSdk()
   const { identity, signer } = useAuth()
   const guard = useWriteGuard()
@@ -85,6 +85,9 @@ export function StarButton({
   }
 
   const signedIn = identity !== null && signer !== null
+  // Stars are public signals, for public repos only: a private repo offers none, but one starred
+  // before can still be unstarred.
+  if (repo.visibility === 'private' && !starred) return null
   // Signed in but the current state is not known yet (or could not be read): no action to offer.
   const unknown = signedIn && star.on === null
   const price = starred

@@ -26,6 +26,16 @@ const types: (string | undefined)[] = []
 const datas: (Record<string, unknown> | undefined)[] = []
 
 // RC2 member roles: the claimed role (`r`) is role-claim.test.ts's and rc1-writers.test.ts's.
+// sakura's contracts: none of the mainnet fields (`mainnet-fields.ts`), `vis` where it was
+vi.mock('./contract-shape', async (orig) => {
+  const real = await orig<typeof import('./contract-shape')>()
+  const mainnet = new Set(['aud', 'mRole', 'tAud', 'enc', 'asMaintainer'])
+  return {
+    ...real,
+    contractHasProperty: async (...a: Parameters<typeof real.contractHasProperty>) => (mainnet.has(a[3]) ? false : a[3] === 'vis' ? true : real.contractHasProperty(...a)),
+    contractPropertyMinimum: async () => null,
+  }
+})
 vi.mock('./role-claim', async (orig) => ({ ...(await orig<typeof import('./role-claim')>()), roleClaim: async () => ({}) }))
 vi.mock('../sdk/write', async (orig) => {
   const real = await orig<typeof import('../sdk/write')>()

@@ -1,0 +1,23 @@
+{
+  "name": "event_resolve_members_target__mainnet",
+  "description": "An author's valueless event on a members-only PR. (mainnet contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "event",
+    "type": "authorEvent",
+    "shape": {
+      "tAud": true,
+      "authorEnc": true
+    },
+    "target": {
+      "enc": "030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "aud": 1
+    },
+    "value": false
+  },
+  "expected": {
+    "tAud": 1,
+    "value": "none"
+  }
+}
