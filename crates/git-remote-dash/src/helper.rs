@@ -1075,6 +1075,34 @@ impl Helper {
         } else {
             specs
         };
+        // A bot pushes only under its push grants (phase 4E): the grant each ref is written
+        // under, and the refs none covers refused (E814), before anything is built.
+        let bot_kept;
+        let (svc, specs, bot) = match bot_plan(conn, &svc, &view, specs).await? {
+            None => (svc, specs, false),
+            Some(plan) => {
+                if let Some(e) = &plan.error {
+                    e.eprint("dash: ");
+                    let mut event = e.to_json();
+                    event["event"] = serde_json::json!("error");
+                    progress::report(&event);
+                }
+                bot_kept = specs
+                    .iter()
+                    .filter(|s| !plan.refused.iter().any(|(d, _)| *d == s.dst))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                refused.extend(
+                    plan.refused
+                        .into_iter()
+                        .map(|(dst, wire)| PushOutcome::Error(dst, wire)),
+                );
+                if bot_kept.is_empty() {
+                    return Ok(refused);
+                }
+                (svc.as_bot(std::sync::Arc::new(plan.push)), &bot_kept[..], true)
+            }
+        };
 
         let mut planned = plan_pushes(specs, &remote_refs, options);
         let mut new_branches = BTreeMap::new();
@@ -1187,7 +1215,8 @@ impl Helper {
         let mut history_paid = HistoryTarget::None;
         let mut stored: Option<StoredWith> = None;
         // Computed before anything is priced, so the push's estimate and cost guard include it.
-        let history = if !want_tips.is_empty() && (dry_run || publishes_browse_index()) {
+        // a bot writes no history index (kinds 3 and 5 are not among a bot's pack kinds)
+        let history = if !want_tips.is_empty() && !bot && (dry_run || publishes_browse_index()) {
             prepare_push_history(&svc, &conn.repo, &planned, &git_dir, progress).await
         } else {
             None
@@ -5397,6 +5426,60 @@ fn skip_write_precheck() -> bool {
 /// and the specs still to push. A non-member is refused everything; so is every push to an
 /// archived repo unless pushed with `-o allow-archived`; a writer is refused
 /// the protected refs.
+/// A bot's push plan ([`crate::bot_push::plan`]): `None` when the signer is not a Bot member of
+/// the repository. A private repository refuses every ref (a bot never holds the members key).
+/// The role read is advisory, as [`write_access_denied`]'s: when it fails, the push goes on as a
+/// person's and consensus decides.
+async fn bot_plan(
+    conn: &Conn,
+    svc: &RepoService<'_>,
+    view: &PushView,
+    specs: &[PushSpec],
+) -> Result<Option<crate::bot_push::BotPlan>> {
+    let me = conn.identity().id();
+    let Ok(Some(forge_core::rules::v2::Role::Bot)) =
+        MemberReader::new(&conn.client).best_role(&conn.repo, &me).await
+    else {
+        return Ok(None);
+    };
+    let label = conn.repo.display();
+    let enforce = !skip_write_precheck();
+    if conn.repo.visibility == forge_core::rules::v2::Visibility::Private {
+        let mut plan = crate::bot_push::BotPlan::default();
+        if enforce {
+            plan.refused = specs
+                .iter()
+                .map(|s| (s.dst.clone(), "bots can't push to a private repository".to_owned()))
+                .collect();
+            plan.error = Some(
+                UserError::new(
+                    codes::BOT_PUSH_NOT_ALLOWED,
+                    format!("push rejected: bots can't push to {label}, a private repository"),
+                )
+                .cause("a bot never holds a private repository's key")
+                .note(NOTE_PRECHECK),
+            );
+        }
+        return Ok(Some(plan));
+    }
+    let s = conn.signer.as_ref().expect("signer loaded for a push");
+    let collab = forge_core::collab::v2::Collab::new(&conn.client, &s.identity, &s.bridge);
+    let access = collab.bot_push_access(&conn.repo, &me).await?;
+    let patterns = svc.protected_patterns(&conn.repo).await.unwrap_or_default();
+    let ring = view.ring.as_deref();
+    Ok(Some(crate::bot_push::plan(
+        &access,
+        specs,
+        &label,
+        |dst| {
+            ring.and_then(|r| r.write_keys(dst))
+                .map(|k| hex::encode(k.ref_name_hash(dst)))
+        },
+        |dst| forge_core::rules::matches_protected(dst, &patterns),
+        enforce,
+    )))
+}
+
 async fn precheck(
     conn: &Conn,
     svc: &RepoService<'_>,
@@ -5546,6 +5629,8 @@ async fn write_access_denied(
         .ok()?;
     match role {
         None => return Some(write_denied(&conn.repo.display(), &me)),
+        // a bot pushes under its grants: `bot_plan` judges each ref
+        Some(forge_core::rules::v2::Role::Bot) => return None,
         // RC2 member roles: a triage member or reader cannot push (every push document claims
         // `r` 1, and their writer document's role is 2 or 3).
         Some(role) if !role.is_approver() => return Some(role_denied(&conn.repo, &me, role)),

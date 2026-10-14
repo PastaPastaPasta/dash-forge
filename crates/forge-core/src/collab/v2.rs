@@ -59,10 +59,12 @@ use crate::rules::{self, aud, Event, EventKind, IssueState, PrState};
 use crate::scope::RepoRef;
 use crate::user_error::{codes, UserError};
 
+mod bot_push;
 mod bots;
 mod bundles;
 mod census;
 mod make_public;
+pub use bot_push::{BotPushAccess, GrantRequest, GrantableBranch};
 pub use bots::{
     ask_refused, AskPlan, Asked, JobContent, JobPost, JobRead, LetterPlan, NotShared, Notices,
     ReceivedRead, SharedCode,

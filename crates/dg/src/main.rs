@@ -10,6 +10,7 @@ mod audience;
 mod auth;
 mod bans;
 mod bot;
+mod bot_push;
 mod branch;
 mod branch_share;
 mod ci;

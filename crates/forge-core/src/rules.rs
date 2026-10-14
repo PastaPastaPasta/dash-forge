@@ -63,6 +63,7 @@ pub mod pack_mirror;
 pub mod parity;
 pub mod profile;
 pub mod provenance;
+pub mod push_grant;
 pub mod ref_collision;
 pub mod ref_history;
 pub mod review;

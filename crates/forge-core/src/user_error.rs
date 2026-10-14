@@ -210,6 +210,7 @@ pub const CATALOGUE: &[(&str, &str)] = &[
     ),
     (codes::MAKE_PUBLIC_BLOCKED, "can't make everything public"),
     (codes::AGENT_NOT_ALLOWED, "bot can't be asked"),
+    (codes::BOT_PUSH_NOT_ALLOWED, "bot can't push here"),
 ];
 
 /// The stable codes. The first digit is the exit code.
@@ -351,8 +352,9 @@ pub mod codes {
     pub const BRANCH_IN_USE: &str = "E808";
     // E805, E806 and E810 below are the members-only branch guard's (git-remote-dash, phase
     // 3A), E809 and E811 a new branch's audience (3A); E812 is reserved for a repository's
-    // going public (5A) and E813 for a bot's access (4B). Never reuse a number for another
-    // meaning: E808 is `BRANCH_IN_USE`, not the new-branch refusal (that is E811).
+    // going public (5A), E813 for a bot's access (4B) and E814 for a bot's push (4E). Never
+    // reuse a number for another meaning: E808 is `BRANCH_IN_USE`, not the new-branch refusal
+    // (that is E811).
     /// A push to a public ref would publish commits from a members-only branch (or `-o public`
     /// names a members-only one).
     pub const PUBLISHES_MEMBERS_ONLY: &str = "E805";
@@ -376,6 +378,9 @@ pub mod codes {
     pub const MAKE_PUBLIC_BLOCKED: &str = "E812";
     /// A request to a bot is outside the access its maintainers gave it (reserved).
     pub const AGENT_NOT_ALLOWED: &str = "E813";
+    /// A bot's push is outside the push access its maintainers gave it (phase 4E): no grant
+    /// covers the branch, the grant ended or no longer counts, or its pushes are suspended.
+    pub const BOT_PUSH_NOT_ALLOWED: &str = "E814";
 }
 
 /// An error a person can act on.

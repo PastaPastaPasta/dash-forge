@@ -35,6 +35,10 @@ use crate::platform::{
     PlatformClient, PushJournal, QueryOrder, WriteEngine, WriteIntent,
 };
 pub use crate::private::convert::SkipReason;
+pub use push_grants::GrantScope;
+
+#[path = "push_grants.rs"]
+mod push_grants;
 use crate::private::{DocHeader, DocKind, Fields, Private, PrivateError, RefNameHasher};
 use crate::rules::v2::{CopyKey, PackCopy, PackCopyRow, Role, V2Pack, Visibility};
 use crate::rules::{self, ConfigDoc, RefState};
@@ -45,7 +49,7 @@ use crate::user_error::{codes, UserError};
 // Document type names (the git data plane in forge-core).
 use crate::refs::DOC_CONFIG;
 use crate::refs::{DOC_PROTECTED_REF_UPDATE, DOC_REF_UPDATE};
-const DOC_PACK_MANIFEST: &str = "packManifest";
+pub(crate) const DOC_PACK_MANIFEST: &str = "packManifest";
 
 /// What [`RepoService::open_git_packs`] read: packs opened, packs whose stored copies could not be
 /// fetched (a retry may read them), and packs this signer cannot open (late, or under a key it
@@ -900,6 +904,51 @@ pub struct RepoService<'a> {
     /// identity: the only keys a public repository's artifacts are opened with
     /// ([`Self::public_keys`]). Never the signer's keys, which [`Self::keyring`] holds.
     published: KeyringCache,
+    /// Set when the signer pushes as a bot ([`Self::as_bot`]): its push documents claim `r` 4 and
+    /// each ref update names the grant it is written under (phase 4E, D42).
+    bot_push: Option<std::sync::Arc<BotPush>>,
+}
+
+/// How a bot's push is written (phase 4E, D42; `docs/security/private-repos.md` §24): every
+/// `refUpdate`, `packManifest` and `chunk` claims `r` 4 (consensus proves it from the bot's
+/// writer row), and each ref update names the grant it is written under, `pp` for a prefix
+/// grant or `pg` for an exact one, with the grant's granter as `grantor`. A bot's manifests never
+/// supersede others' (`botPack`), so its push folds no browse index.
+#[derive(Debug, Clone, Default)]
+pub struct BotPush {
+    /// The grant each ref of the push is written under, by full ref name.
+    pub grants: BTreeMap<String, crate::rules::push_grant::PushGrant>,
+}
+
+impl BotPush {
+    /// Stamp a ref update of `ref_name`: `r` 4 and the grant it names (none when the ref has
+    /// none, which consensus then refuses: the helper checks first).
+    fn stamp_ref(
+        &self,
+        contract: &LoadedContract,
+        doc_type: &str,
+        ref_name: &str,
+        props: &mut BTreeMap<String, FieldValue>,
+    ) -> Result<()> {
+        use crate::rules::push_grant::{BOT_PUSH_ROLE, EXACT_GRANT, GRANTOR, PREFIX_GRANT};
+        crate::members::stamp_claimed_role(contract, doc_type, props, BOT_PUSH_ROLE);
+        if let Some(g) = self.grants.get(ref_name) {
+            let key = if g.is_exact() {
+                EXACT_GRANT
+            } else {
+                PREFIX_GRANT
+            };
+            props.insert(
+                key.into(),
+                FieldValue::identifier(platform::decode_identifier(&g.id)?),
+            );
+            props.insert(
+                GRANTOR.into(),
+                FieldValue::identifier(platform::decode_identifier(&g.granter)?),
+            );
+        }
+        Ok(())
+    }
 }
 
 /// A private repository's keys as one or more [`RepoService`]s share them: every write-time
@@ -1016,6 +1065,7 @@ impl<'a> RepoService<'a> {
             signer: Some((identity, bridge)),
             keyring: KeyringCache::default(),
             published: KeyringCache::default(),
+            bot_push: None,
         }
     }
 
@@ -1027,6 +1077,7 @@ impl<'a> RepoService<'a> {
             signer: None,
             keyring: KeyringCache::default(),
             published: KeyringCache::default(),
+            bot_push: None,
         }
     }
 
@@ -1060,6 +1111,42 @@ impl<'a> RepoService<'a> {
             signer: Some((identity, bridge)),
             keyring: cache,
             published: KeyringCache::default(),
+            bot_push: None,
+        }
+    }
+
+    /// This service writing a bot's push ([`BotPush`]): push documents claim `r` 4 and ref
+    /// updates name their grants.
+    #[must_use]
+    pub fn as_bot(mut self, push: std::sync::Arc<BotPush>) -> Self {
+        self.bot_push = Some(push);
+        self
+    }
+
+    /// The `r` this service's push documents (`packManifest`, `chunk`) claim: 4 for a bot, else
+    /// the writer's 1.
+    fn push_r(&self) -> u64 {
+        if self.bot_push.is_some() {
+            crate::rules::push_grant::BOT_PUSH_ROLE
+        } else {
+            1
+        }
+    }
+
+    /// Stamp a ref update's claimed role (and, for a bot, its grant).
+    fn stamp_ref_role(
+        &self,
+        contract: &LoadedContract,
+        doc_type: &str,
+        ref_name: &str,
+        props: &mut BTreeMap<String, FieldValue>,
+    ) -> Result<()> {
+        match &self.bot_push {
+            Some(b) => b.stamp_ref(contract, doc_type, ref_name, props),
+            None => {
+                crate::members::stamp_claimed_role(contract, doc_type, props, 1);
+                Ok(())
+            }
         }
     }
 
@@ -1620,7 +1707,7 @@ impl<'a> RepoService<'a> {
         let owner = self.identity_id()? == repo.owner_id();
         let doc_type = ref_doc_type(ref_name, &configs, owner);
         let mut props = public_ref_props(&scope, ref_name, new_oid, prev_oid, force)?;
-        crate::members::stamp_claimed_role(&contract, doc_type, &mut props, 1);
+        self.stamp_ref_role(&contract, doc_type, ref_name, &mut props)?;
         self.doc_engine()?
             .create_document(&contract, doc_type, props)
             .await
@@ -1682,7 +1769,7 @@ impl<'a> RepoService<'a> {
                 u.force,
             )?;
             let doc_type = ref_doc_type(&u.ref_name, configs, owner);
-            crate::members::stamp_claimed_role(contract, doc_type, &mut props, 1);
+            self.stamp_ref_role(contract, doc_type, &u.ref_name, &mut props)?;
             engine.create_document(contract, doc_type, props).await
         }))
         .buffered(crate::backends::platform::pipeline_window());
@@ -1809,7 +1896,7 @@ impl<'a> RepoService<'a> {
             )
             .map_err(|e| sealed_error(&e))?;
             let mut props = scope.scoped(sealed.props());
-            crate::members::stamp_claimed_role(contract, doc_type, &mut props, 1);
+            self.stamp_ref_role(contract, doc_type, &u.ref_name, &mut props)?;
             engine.create_document(contract, doc_type, props).await
         }))
         .buffered(crate::backends::platform::pipeline_window());
@@ -2348,7 +2435,17 @@ impl<'a> RepoService<'a> {
                 == Some(0),
             ..crate::rules::aud::Shape::default()
         };
-        let r = crate::rules::aud::manifest_r(shape, manifest.kind, 1);
+        let r = if self.bot_push.is_some() {
+            // a bot writes the push and long-body kinds only, superseding nothing (`botPack`)
+            if !manifest.supersedes.is_empty() {
+                return Err(Error::Config(
+                    "a bot's push never replaces other people's stored packs".into(),
+                ));
+            }
+            self.push_r()
+        } else {
+            crate::rules::aud::manifest_r(shape, manifest.kind, 1)
+        };
         crate::members::stamp_claimed_role(&contract, DOC_PACK_MANIFEST, &mut props, r);
         match self
             .doc_engine()?
@@ -2444,6 +2541,7 @@ impl<'a> RepoService<'a> {
         let (scope, contract) = self.writable(repo).await?;
         let engine = self.doc_engine()?;
         PlatformBackend::new(&engine, &contract, &scope, self.identity_id()?)
+            .claiming(self.push_r())
             .put(bytes, meta)
             .await
     }
@@ -2496,9 +2594,10 @@ impl<'a> RepoService<'a> {
             );
         }
         let (engine, contract, scope) = (&engine, &contract, &scope);
+        let push_r = self.push_r();
         let mut landed = futures::stream::iter(todo.into_iter().map(|(seq, props)| async move {
             let mut props = scope.scoped(props);
-            crate::members::stamp_claimed_role(contract, CHUNK_DOC_TYPE, &mut props, 1);
+            crate::members::stamp_claimed_role(contract, CHUNK_DOC_TYPE, &mut props, push_r);
             engine
                 .create_landed(contract, CHUNK_DOC_TYPE, props)
                 .await
@@ -3374,6 +3473,13 @@ impl<'a> RepoService<'a> {
                 )))
             }
             PushIndexPlan::Skip(why) => return Ok(PushIndexOutcome::Skipped(why)),
+            // a bot's manifest never supersedes (`botPack`): the fold waits for a member's push
+            PushIndexPlan::Publish { fold: true, .. } if self.bot_push.is_some() => {
+                return Ok(PushIndexOutcome::Skipped(IndexSkip::new(
+                    "a bot's push doesn't combine the browse index; the next member's push does",
+                    IndexRemedy::Reindex,
+                )))
+            }
             PushIndexPlan::Publish {
                 pack_ref,
                 live_locators,
