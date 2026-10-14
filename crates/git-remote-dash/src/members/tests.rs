@@ -796,3 +796,16 @@ fn only_a_merge_with_a_parent_here_is_grafted_never_lost_history() {
             .is_empty()
     );
 }
+
+#[test]
+fn the_branches_shared_with_this_clone_read_back_by_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("shared-branches");
+    std::fs::write(
+        &p,
+        "refs/heads/sec/fix\nnot a branch\nrefs/tags/v1\nrefs/heads/a..b\nrefs/heads/a\n",
+    )
+    .unwrap();
+    let got: Vec<String> = read_branch_lines(&p).into_iter().collect();
+    assert_eq!(got, ["refs/heads/a", "refs/heads/sec/fix"]);
+}

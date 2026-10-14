@@ -837,19 +837,88 @@ fn holds_members_only(state: &ledger::State) -> bool {
 /// fetched before, which `git fetch --prune` would delete). Without a remote name (a URL fetch)
 /// it cannot tell, so it says yes (fail closed).
 pub fn public_view_drops_branches(remote: Option<&str>, public_live: &BTreeSet<&str>) -> bool {
-    let Some(remote) = remote.filter(|r| !r.is_empty() && !r.contains("://")) else {
-        return true;
-    };
+    dropped_branches(remote, public_live).is_none_or(|d| !d.is_empty())
+}
+
+/// The branches (`refs/heads/<b>`) under `refs/remotes/<remote>/` that `live` lacks, or `None`
+/// when it cannot tell (a URL fetch, git failing).
+pub fn dropped_branches(remote: Option<&str>, live: &BTreeSet<&str>) -> Option<Vec<String>> {
+    let remote = remote.filter(|r| !r.is_empty() && !r.contains("://"))?;
     let prefix = format!("refs/remotes/{remote}/");
     let out = std::process::Command::new("git")
         .args(["for-each-ref", "--format=%(refname)", &prefix])
-        .output();
-    let Ok(out) = out else { return true };
-    String::from_utf8_lossy(&out.stdout)
+        .output()
+        .ok()?;
+    Some(
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|r| r.strip_prefix(&prefix))
+            .filter(|b| *b != "HEAD")
+            .map(|b| format!("refs/heads/{b}"))
+            .filter(|b| !live.contains(b.as_str()))
+            .collect(),
+    )
+}
+
+/// `<common dir>/dash/shared-branches`: the members-only branches this clone fetched because
+/// someone shared them with its reader (`dg branch share`), one full ref name per line.
+fn shared_branches_path(common: &Path) -> PathBuf {
+    common.join("dash").join("shared-branches")
+}
+
+/// The branch names in `path`, one per line (a line that is not one is skipped).
+fn read_branch_lines(path: &Path) -> BTreeSet<String> {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
         .lines()
-        .filter_map(|r| r.strip_prefix(&prefix))
-        .filter(|b| *b != "HEAD")
-        .any(|b| !public_live.contains(format!("refs/heads/{b}").as_str()))
+        .map(str::trim)
+        .filter(|l| l.starts_with("refs/heads/") && forge_core::rules::is_git_ref_name(l))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Add `names` to the branches this clone was given ([`shared_branches_path`]). Best effort.
+pub fn remember_shared_branches(names: &[String]) {
+    let Ok(common) = LocalRepo::common_dir() else {
+        return;
+    };
+    let p = shared_branches_path(&common);
+    let mut all = read_branch_lines(&p);
+    let before = all.len();
+    all.extend(names.iter().cloned());
+    if all.len() != before {
+        forge_core::cache::write(&p, lines(&all).as_bytes());
+    }
+}
+
+/// The branches this clone was given ([`remember_shared_branches`]).
+pub fn shared_branches_given() -> BTreeSet<String> {
+    LocalRepo::common_dir()
+        .map(|c| read_branch_lines(&shared_branches_path(&c)))
+        .unwrap_or_default()
+}
+
+/// E806 when branches someone shared with this reader are no longer shared (the share's writer
+/// lost Write access, or its push was by someone since removed): the public view would drop them.
+pub fn shared_branches_gone(remote: &str, names: &[String]) -> UserError {
+    let list = names
+        .iter()
+        .map(|n| short(n))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut e = UserError::new(
+        codes::CANNOT_CHECK_MEMBERS_ONLY,
+        format!("can't fetch: {list} isn't shared with you anymore"),
+    )
+    .cause("whoever shared it can no longer share this repository's members-only branches, so fetching would drop it from this clone");
+    for n in names {
+        e = e.fix(format!(
+            "git branch -dr {remote}/{}     # forget it here, then fetch again",
+            short(n)
+        ));
+    }
+    e.fix("or ask a member with Write access to share it again (`dg branch share`)")
+        .note("nothing was fetched")
 }
 
 /// Append `commits` and `packs` (members-only, the members key's audience) to the clone's ledger,

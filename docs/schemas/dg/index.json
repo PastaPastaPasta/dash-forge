@@ -16,6 +16,7 @@
     "branch cleanup": "branch-cleanup.schema.json",
     "branch list": "branch-list.schema.json",
     "branch new": "branch-new.schema.json",
+    "branch share": "branch-share.schema.json",
     "ci env": "ci-env.schema.json",
     "ci log": "ci-log.schema.json",
     "ci refs": "ci-refs.schema.json",

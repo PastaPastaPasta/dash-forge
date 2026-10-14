@@ -14,6 +14,8 @@
 //!   someone taken off means a new key for everyone left).
 //! * `dg branch cleanup` deletes the local branches whose content `dg publish` published (the
 //!   mapping in `<git common dir>/dash/published`).
+//! * `dg branch share <b> --to @x` gives people outside the members one members-only branch as
+//!   it is now ([`crate::branch_share`]).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -78,6 +80,15 @@ pub enum BranchCommand {
         #[arg(long)]
         repo: Option<String>,
     },
+    /// Share a members-only branch, as it is now, with people who aren't members. They get it
+    /// with `git fetch`; anything pushed to it later isn't shared unless you share it again.
+    Share {
+        /// The branch name (`fix-auth`).
+        name: String,
+        /// Who to share it with: DPNS names (`@rae`) or identity ids. Repeat or comma-separate.
+        #[arg(long, required = true, value_delimiter = ',')]
+        to: Vec<String>,
+    },
     /// Delete the local branches whose content `dg publish` already published.
     Cleanup {
         /// List what would be deleted, and delete nothing.
@@ -111,6 +122,7 @@ pub async fn run(ctx: &Ctx, cmd: Option<&BranchCommand>) -> Result<()> {
             public,
             to: None,
         }) => new(ctx, name, start.as_deref(), *members, *public).await,
+        Some(BranchCommand::Share { name, to }) => crate::branch_share::share(ctx, name, to).await,
         Some(BranchCommand::Audience { name, to, repo }) => {
             audience_cmd(ctx, name, to.as_deref(), repo.as_deref()).await
         }
