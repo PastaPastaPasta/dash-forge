@@ -540,6 +540,7 @@ cmd('verify-commit', 'Each commit\'s signature checked against the keys members 
 }, ['repo', 'commits'])
 cmd('verify-mirror', 'A plain-git mirror checked against Platform.', {
     'url': S, 'repo': S, 'verdict': S, 'refs': ANY, 'manifest': nl(OBJ), 'manifestError': ANY, 'manifestProblems': ANY,
+    'membersOnly': O({'onPlatform': I, 'notServedClaimed': nl(I)}, ['onPlatform', 'notServedClaimed']),
 }, ['url', 'verdict'])
 cmd('verify-app', 'A deployed copy of the web app checked against a published build.', {
     'url': S, 'manifest': ANY, 'source': ANY, 'commit': ANY, 'network': ANY, 'variant': ANY, 'servedManifestAgrees': ANY,

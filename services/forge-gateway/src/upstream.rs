@@ -35,8 +35,11 @@ pub struct RepoInfo {
 /// A proof-verified snapshot of a repository's refs: what one refresh serves.
 #[derive(Debug, Clone)]
 pub struct Snapshot {
-    /// Every ref ([`RepoService::read_ref_records`]).
+    /// Every public ref ([`RepoService::read_ref_records`]).
     pub records: Vec<RefRecord>,
+    /// How many members-only refs the repository has that this anonymous reader cannot name or
+    /// serve ([`forge_core::repo::PublicRefs::members_only_refs`]).
+    pub members_only_refs: usize,
     /// The default branch the newest `config` names.
     pub default_branch: Option<String>,
     /// "As of": every ref update up to this time is reflected.
@@ -328,8 +331,8 @@ impl PlatformUpstream {
             return Ok(None);
         }
         let svc = RepoService::reader(&self.client);
-        let (records, default_branch, manifests) = futures::try_join!(
-            svc.read_ref_records(r),
+        let (public, default_branch, manifests) = futures::try_join!(
+            svc.read_public_refs(r),
             svc.read_default_branch(r),
             svc.read_pack_manifests(r),
         )?;
@@ -340,7 +343,8 @@ impl PlatformUpstream {
         let skipped = sealed_packs(&svc, r, &manifests).await;
         let packs = git_packs(&manifests, &skipped);
         Ok(Some(Snapshot {
-            records,
+            records: public.records,
+            members_only_refs: public.members_only_refs,
             default_branch,
             tip: ChainTip {
                 height: tip.height,
@@ -530,6 +534,10 @@ impl Upstream for PlatformUpstream {
         env.push(("XDG_CONFIG_HOME".into(), format!("{home}/.config")));
         env.push(("GIT_TERMINAL_PROMPT".into(), "0".into()));
         env.push(("GIT_CONFIG_NOSYSTEM".into(), "1".into()));
+        // No key from any source: the gateway serves the public lane only, so a members key
+        // found by accident (a keychain entry on a developer's machine) must not put
+        // members-only objects on its disk.
+        env.push((forge_core::keychain::DISABLE_ENV.into(), "1".into()));
         if let Some(dir) = &self.helper_dir {
             let path = std::env::var("PATH").unwrap_or_default();
             env.push(("PATH".into(), format!("{}:{path}", dir.display())));
@@ -542,6 +550,8 @@ impl Upstream for PlatformUpstream {
                 "DASH_FORGE_KEY",
                 "DASH_FORGE_IDENTITY",
                 "DASH_FORGE_PASSPHRASE",
+                forge_core::key_handoff::KEY_FD_ENV,
+                forge_core::sealed::RUNNER_PASSPHRASE_ENV,
             ]
             .map(String::from)
             .to_vec(),

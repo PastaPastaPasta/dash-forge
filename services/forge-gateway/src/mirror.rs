@@ -725,6 +725,7 @@ impl Mirrors {
                 .filter_map(|r| r.tip.clone())
                 .filter(|t| served.get(&t.name) == Some(&t.oid))
                 .collect(),
+            members_only_refs_not_served: snap.members_only_refs as u64,
             packs: snap.packs.clone(),
         }
     }
