@@ -765,11 +765,11 @@ pub fn remade_lines(g: &GitGraph, remade: &[Remade]) -> Vec<String> {
         return Vec::new();
     }
     let mut out = vec![format!(
-        "dash: warning: {} {} this push makes public {} the same changes as members-only {}:",
+        "dash: warning: {} {} this push makes public {} the same changes as {}:",
         remade.len(),
         plural(remade.len(), "commit", "commits"),
         plural(remade.len(), "has", "have"),
-        plural(remade.len(), "commit", "commits"),
+        plural(remade.len(), "a members-only commit", "members-only commits"),
     )];
     for r in remade {
         let public = g.describe(std::slice::from_ref(&r.commit)).concat();
