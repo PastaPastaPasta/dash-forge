@@ -265,7 +265,9 @@ pub async fn run(ctx: &Ctx, a: &MakePublicArgs) -> Result<()> {
     }
     // a run that started Everything (some history published) finishes as Everything
     let history_started = match &conversion {
-        Some(_) => !owner_bundles(&s, &public_view(&s.repo)).await?.is_empty(),
+        Some(c) => !history_bundles(&s, &public_view(&s.repo), &kr, c.seal_off_epoch)
+            .await?
+            .is_empty(),
         None => false,
     };
     if history_started && flag_mode == Some(Mode::CodeOnly) {
@@ -401,6 +403,31 @@ async fn owner_bundles(s: &Session, public: &RepoRef) -> Result<BTreeSet<[u8; 32
         .into_iter()
         .filter(|m| m.kind == kind && m.owner_id == public.owner_id)
         .map(|m| m.pack_hash)
+        .collect())
+}
+
+/// The history bundles (DESIGN §4.10 step 7) the owner of `public` recorded: those of its kind-7
+/// manifests whose `packHash` is one of the bundles of the keys `kr` holds below `seal_off`, as
+/// every run builds them. A bundle making single posts public (§4.6) is kind 7 too and never
+/// counts, so an owner who made one comment public has not started publishing the history.
+async fn history_bundles(
+    s: &Session,
+    public: &RepoRef,
+    kr: &Keyring,
+    seal_off: Option<u32>,
+) -> Result<BTreeSet<[u8; 32]>> {
+    let Some(seal_off) = seal_off else {
+        return Ok(BTreeSet::new());
+    };
+    let repo_id = forge_core::platform::decode_identifier(&public.repo_id)?;
+    let mut expected = BTreeSet::new();
+    for b in epoch_key_bundles(&repo_id, &kr.epoch_keys_below(seal_off))? {
+        expected.insert(forge_core::backends::PackMeta::for_bytes(&b).pack_hash_bytes()?);
+    }
+    Ok(owner_bundles(s, public)
+        .await?
+        .intersection(&expected)
+        .copied()
         .collect())
 }
 
@@ -1357,7 +1384,13 @@ async fn convert(r: Run<'_>, mut check: Check) -> Result<()> {
         .collect();
     let publishes_history = mode == Mode::Everything && is_owner;
     let recorded = if flipped && publishes_history {
-        owner_bundles(s, &public).await?
+        history_bundles(
+            s,
+            &public,
+            kr,
+            conversion.as_ref().and_then(|c| c.seal_off_epoch),
+        )
+        .await?
     } else {
         BTreeSet::new()
     };
