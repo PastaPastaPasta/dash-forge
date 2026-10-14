@@ -17,11 +17,13 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { base58Encode, decodeIdentifier } from '../auth/base58'
 import { encryptionOps } from '../auth/encryption-key'
 import { EpochKeys, MalformedError, TooLargeError, bytesToHex, refNameHash, sealMembersDoc, type PrivateDocType } from '../private'
+import { isBotOnly } from '../rules/roles'
 import { binding, fitsUnder, narrower, type Audience } from '../rules/v2'
 import { queryAllDocuments, queryDocumentsWithProof, type PlainDocument, type WriteAuth } from '../sdk'
 import { retryWhileMissing } from '../view/retry'
 import { DOC, asIdentifierString, withoutSessions, type RepoRef } from './contract'
 import { bundledFields } from './made-public'
+import { readMembershipsCached } from './members'
 import { docAudience } from './private-content'
 import { loadPrivateSessionUncached, sessionUnwrapper } from './private-session'
 import { PrivateWriteError, editFields, isSealedKind, sealContent, sealedTextUse, writeBlockReason, type DocSealer, type HeadBlind, type MembersPatch } from './private-writes'
@@ -34,6 +36,12 @@ import { knownMembersKey, noteMembersKey as noteKey, recordMembersKey } from './
  * (the repo banner and the write refusal show this text).
  */
 export const NO_KEY_SHARED_TEXT = "You're a member, but no key has been shared with you yet. Ask a maintainer to share it: Repair on the repo page, or dg repo keys repair."
+
+/** A signed-in bot is told this where the web would refuse it a members-only write (it never holds the key; `dg` or a CI runner posts for it). */
+export const BOT_WRITE_TEXT = "Bots post members-only content with their own key, from dg or a CI runner, not from the web."
+
+/** A signed-in bot is told this where the web would read a repo's key for it (it is never given the key). */
+export const BOT_READ_TEXT = "Bots never get this repo's key; they read only what a member shares with them for one job."
 
 /**
  * The combined text cap of a members-only document: the private-repo cap less the 32 bytes the
@@ -328,10 +336,16 @@ export interface MembersWriter {
 export async function membersWriter(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef): Promise<MembersWriter> {
   if (repo.visibility !== 'public') throw new Error('members-only content is written in public repos')
   const ops = await encryptionOps(sdk, auth.network, auth.identityId, contractOf(repo.forge, DOC.repoKey))
-  if (ops === null) throw refused('add your encryption key to this browser (Settings → Members-only and private content) to write members-only content', 'E306')
+  if (ops === null) {
+    // a bot is not asked for an encryption key it would never be given a use for
+    const rows = await readMembershipsCached(sdk, repo, auth.network).catch(() => [])
+    if (isBotOnly(rows, auth.identityId)) throw refused(BOT_WRITE_TEXT)
+    throw refused('add your encryption key to this browser (Settings → Members-only and private content) to write members-only content', 'E306')
+  }
   const s = await loadPrivateSessionUncached(sdk, withoutSessions(repo), auth.network, auth.identityId, sessionUnwrapper(ops))
   try {
     if (!s.members.some((m) => m.identity === auth.identityId)) throw refused('only members of this repo can write what only members can read')
+    if (isBotOnly(s.members, auth.identityId)) throw refused(BOT_WRITE_TEXT)
     if (s.configRows.length === 0) throw refused("members-only content isn't turned on in this repo; a maintainer can turn it on", 'E312')
     const r = s.resolution
     const mine = s.wraps.some((w) => base58Encode(w.row.memberId) === auth.identityId)

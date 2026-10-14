@@ -60,7 +60,7 @@ export function EnvironmentsContent({ home, addr }: { home: RepoHome; addr: Repo
   // A private repo's environments are its members' (as its settings are): anyone else sees what
   // every other tab shows them.
   const access = home.private?.access ?? 'outsider'
-  if (home.repo.visibility === 'private' && (access === 'signed-out' || access === 'outsider')) {
+  if (home.repo.visibility === 'private' && (access === 'signed-out' || access === 'outsider' || access === 'bot')) {
     return <PrivateRepoState repo={home.repo} addr={addr} access={access} />
   }
   return <Environments home={home} addr={addr} />

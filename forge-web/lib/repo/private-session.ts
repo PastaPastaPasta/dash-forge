@@ -42,7 +42,7 @@ import { queryAllDocuments, type PlainDocument } from '../sdk'
 import { DOC, asIdentifierString, num, str, stringArray, withoutSessions, type RepoRef } from './contract'
 import type { RepoConfig } from './config'
 import { readMemberships } from './members'
-import { holdsMembersKey } from '../rules/roles'
+import { botsOf, holdsMembersKey } from '../rules/roles'
 import {
   admitAll,
   blockHeightOf,
@@ -396,7 +396,9 @@ export async function loadPrivateSession(input: {
   const bundles =
     conversion?.sealOffEpoch != null && source.makePublicBundles !== undefined ? await source.makePublicBundles().catch(() => [] as PublishedBundle[]) : []
   const resolution = conversion === null ? resolved : await withPublishedKeys(resolved, repoId, repo, conversion, bundles)
-  const ctx = openContextOf(resolution)
+  // A bot's members-only posts (`enc` v0x05) open only from a current Bot row (§23); a bot is
+  // never a key holder, so the resolution does not know it.
+  const ctx = { ...openContextOf(resolution), bots: new IdSet(botsOf(members).map(decodeIdentifier)) }
   const gate = sessionGate(repo, ctx, { converted: conversion !== null, published: input.published === true })
 
   // The config timeline: every config that opens (§4.2 commitment first), as plaintext. Configs

@@ -1,0 +1,16 @@
+{
+  "name": "post_key__w_other_bot",
+  "description": "another bot's post key under the same epoch differs: each bot gets its own.",
+  "case": "bot_post",
+  "rules": "v2",
+  "input": {
+    "op": "postKey",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "epoch": 0,
+    "bot": "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1"
+  },
+  "expected": {
+    "w": "56deaa0eb99776838ff42731e1e7e6b9247dfc4fd4e59c1cfdeaa09c1d8b5d21"
+  }
+}

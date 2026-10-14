@@ -213,6 +213,8 @@ pub(crate) struct OpenCtxIn {
     members: Vec<String>,
     #[serde(default)]
     burned: Vec<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    bots: Vec<String>,
 }
 
 /// A context anchor: `statedHeight` (stated(e), §5.3) defaults to `height`, an anchor that is
@@ -687,6 +689,7 @@ pub(crate) fn open_context(repo_id: &[u8; 32], c: &OpenCtxIn) -> OpenContext {
             .collect(),
         members: c.members.iter().map(|m| h32(m)).collect(),
         burned: c.burned.iter().copied().collect(),
+        bots: c.bots.iter().map(|b| h32(b)).collect(),
     }
 }
 

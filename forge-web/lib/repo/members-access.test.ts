@@ -91,6 +91,15 @@ describe('an outsider', () => {
   })
 })
 
+describe('a bot', () => {
+  it('is told it is never given the key, whatever its browser holds, once members-only content is on', async () => {
+    const bot = (over: Partial<MembersAccessSource<object>> = {}): MembersAccessSource<object> => source({ isMember: true, isBot: true, ...over })
+    expect(await membersAccessOf(bot())).toEqual({ access: 'bot' })
+    expect(await membersAccessOf(bot({ ops: async () => null, locked: () => true }))).toEqual({ access: 'bot' })
+    expect(await membersAccessOf(bot({ hasMembersKey: async () => false }))).toEqual({ access: 'none' })
+  })
+})
+
 describe('a current member (unchanged)', () => {
   const member = (over: Partial<MembersAccessSource<object>> = {}): MembersAccessSource<object> => source({ isMember: true, ...over })
   it('reads with their session, or is told why not', async () => {

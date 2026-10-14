@@ -312,8 +312,9 @@ export const PACK_KIND = {
   ENV_SNAPSHOT: 8,
   /**
    * A key letter (`lib/private/key-letter.ts`, DESIGN §4.3, §4.9): keys sealed to specific people,
-   * a narrower branch's `branchKey` letters among them (`lib/repo/branch-ring.ts`). Never
-   * superseding; each reader opens the ones addressed to them.
+   * a narrower branch's `branchKey` letters (`lib/repo/branch-ring.ts`) and a bot's key for its
+   * members-only posts (`postKey`, `lib/repo/bot-keys.ts`) among them. Never superseding; each
+   * reader opens the ones addressed to them.
    */
   KEY_LETTER: 10,
   /**

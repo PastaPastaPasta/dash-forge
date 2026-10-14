@@ -240,6 +240,14 @@ impl EpochKeys {
         Zeroizing::new(self.expand("obj", &extra))
     }
 
+    /// `W_{e,b} = HKDF-Expand(PRK_e, "dash-forge/v2/bot-post" ‖ 0x00 ‖ u32(e) ‖ botId, 32)`: the
+    /// post key of the bot `bot` for this epoch (mixed-visibility DESIGN §4.9, `private-repos.md`
+    /// §23). Members derive it to open the bot's posts; a maintainer sends it to the bot in a
+    /// `postKey` letter. It opens nothing but that bot's posts under this epoch.
+    pub(crate) fn bot_post_key(&self, bot: &[u8; 32]) -> Zeroizing<[u8; 32]> {
+        Zeroizing::new(self.expand("bot-post", bot))
+    }
+
     /// The raw subkeys, for the conformance vectors only.
     #[cfg(any(test, feature = "vectors"))]
     #[must_use]

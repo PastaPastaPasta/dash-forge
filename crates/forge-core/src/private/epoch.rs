@@ -258,6 +258,9 @@ impl EpochResolution {
             anchors: self.anchor_refs(),
             members: self.members.clone(),
             burned: self.burned.clone(),
+            // the roles are the keyring's (`crate::keyring::bot_ids`): a resolution knows only
+            // who holds the key
+            bots: BTreeSet::new(),
         }
     }
 

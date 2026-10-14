@@ -14,7 +14,7 @@
  * writes none of these as a member. forge-core's writers claim `r` by the same rule.
  */
 
-import { isApprover, type Role } from './v2'
+import { isApprover, type Membership, type Role } from './v2'
 
 /**
  * The `writer` document's `role` integer per role (a maintainer has a document type of its own).
@@ -59,14 +59,35 @@ export function holdsMembersKey(role: Role): boolean {
 }
 
 /**
- * The roles the owner may grant on a repo of `visibility`, in picker order (GitHub's: Read,
- * Triage, Write, Maintain). Every human role is offered on every repo: a reader of a public repo
- * reads its members-only content (DESIGN §3.5), or what everyone reads when it has none. Bot is
- * not offered yet (it needs the mainnet registration).
+ * Whether `identity` holds a Bot row here and no human one: a bot, which never holds a repo's key
+ * and writes members-only content with its own post key, not from a browser (DESIGN §3.5, §23).
  */
-export function grantableRoles(visibility: 'public' | 'private'): readonly Role[] {
+export function isBotOnly(members: readonly Membership[], identity: string): boolean {
+  const rows = members.filter((m) => m.identity === identity)
+  return rows.length > 0 && rows.every((m) => m.role === 'bot')
+}
+
+/**
+ * The bots among `members` (a Bot row, `writer.role` 4): each once, in member order, but those in
+ * `exclude`. Readers open a bot's members-only posts only from these (§23); maintainers send them
+ * their post keys. Parity: forge-core `bot_keys::bots_of`, `keyring::bot_ids`.
+ */
+export function botsOf(members: readonly Membership[], exclude: readonly string[] = []): string[] {
+  const out: string[] = []
+  for (const m of members) if (m.role === 'bot' && !exclude.includes(m.identity) && !out.includes(m.identity)) out.push(m.identity)
+  return out
+}
+
+/**
+ * The roles the owner may grant on a repo of `visibility`, in picker order (GitHub's: Read,
+ * Triage, Write, Maintain, then Bot). Every human role is offered on every repo: a reader of a
+ * public repo reads its members-only content (DESIGN §3.5), or what everyone reads when it has
+ * none. Bot only where the registered forge-core admits it (`bots`: `writer.role` up to 4, the
+ * mainnet registration; `lib/repo/contract-shape.ts` `contractAdmitsBots`), never on sakura's.
+ */
+export function grantableRoles(visibility: 'public' | 'private', options: { readonly bots?: boolean } = {}): readonly Role[] {
   void visibility
-  return ['reader', 'triage', 'writer', 'maintainer']
+  return options.bots === true ? ['reader', 'triage', 'writer', 'maintainer', 'bot'] : ['reader', 'triage', 'writer', 'maintainer']
 }
 
 /** How a role is named to users, as on GitHub (DESIGN §10); the repo's owner is {@link OWNER_LABEL}. */
@@ -76,6 +97,11 @@ export const ROLE_LABEL: Readonly<Record<Role, string>> = {
   triage: 'Triage',
   reader: 'Read',
   bot: 'Bot',
+}
+
+/** The Add dialog's text for a bot (DESIGN §10 "Bots and runners"); `name` is how the bot is shown. */
+export function addBotText(name: string): string {
+  return `Add ${name} as a bot? It will be able to post comments and reviews in this repo. It can't approve or merge, push unless a maintainer allows it, or read members-only content on its own. ${name} must accept.`
 }
 
 /** The repo owner's word in copy (their own maintainer document shows as this). */
@@ -110,14 +136,16 @@ export function membershipTitle(kind: 'grant' | 'revoke' | 'change', role: Role)
 
 /**
  * One line on what a role may do (the role picker's help and the badges' tooltips), DESIGN §10.
- * Each line adds to the one before (Read, Triage, Write, Maintain).
+ * Each human role's line adds to the one before (Read, Triage, Write, Maintain); Bot's stands on
+ * its own.
  */
 export const ROLE_SUMMARY: Readonly<Record<Role, string>> = {
   reader: "Can read members-only content and comment. Can't push or approve.",
   triage: 'Can also close, label and assign.',
   writer: 'Can also push, approve and merge.',
   maintainer: 'Can also change settings, protected branches, releases and environments.',
-  bot: "Can comment and open issues and pull requests. Can't read members-only content or approve.",
+  // copy-lint-ignore: DESIGN §10's Bot help line, verbatim; a bot's whole role in one place
+  bot: "An automated account. It can post comments and reviews. It can't approve or merge, it pushes only to branches a maintainer allows, and it reads members-only content only when someone asks it to. To report checks it also needs to be added as a CI runner.",
 }
 
 /**

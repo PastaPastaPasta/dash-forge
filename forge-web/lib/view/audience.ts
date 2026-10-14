@@ -9,11 +9,12 @@
  */
 
 import { creditsToDash } from '../sdk/cost'
+import { postKeyLetterCredits } from '../env/write'
 import { holdsMembersKey } from '../rules/roles'
 import { MAX_LETTER_RECIPIENTS, inGroup, letterGroupLabel, letterGroupWhenSent, type LetterGroup, type LetterRefusal } from '../rules/letters'
 import type { Membership, Role } from '../rules/v2'
 import { LETTER_TITLE, type LetterFacts, type MembersOnlyItem } from '../repo/private-content'
-import { NO_KEY_SHARED_TEXT } from '../repo/members-writes'
+import { BOT_WRITE_TEXT, NO_KEY_SHARED_TEXT } from '../repo/members-writes'
 import type { MembersAccess } from './repo-view'
 import { plural } from './format'
 import { splitRefs } from './markdown'
@@ -95,7 +96,7 @@ export function membersSentence(c: MembersCount): string {
 }
 
 /** Why the Members option cannot be picked right now, or `ok`. */
-export type MembersOption = 'ok' | 'turn-on' | 'ask-maintainer' | 'no-key' | 'locked' | 'no-key-shared' | 'former'
+export type MembersOption = 'ok' | 'turn-on' | 'ask-maintainer' | 'no-key' | 'locked' | 'no-key-shared' | 'former' | 'bot'
 
 /**
  * Why the specific-people options (Maintainers, Writers and maintainers, Specific people…)
@@ -188,6 +189,8 @@ function optionOf(lane: MembersAccess | undefined, maintainer: boolean): Members
       return 'no-key-shared'
     case 'former':
       return 'former'
+    case 'bot':
+      return 'bot'
     default:
       return maintainer ? 'turn-on' : 'ask-maintainer'
   }
@@ -208,7 +211,11 @@ export const MEMBERS_OPTION_TEXT: Readonly<Record<Exclude<MembersOption, 'ok'>, 
   // E311 (DESIGN §10): the one copy of it, as the repo banner and the write refusal say it.
   'no-key-shared': NO_KEY_SHARED_TEXT,
   former: FORMER_MEMBER_TEXT,
+  bot: BOT_WRITE_TEXT,
 }
+
+/** The line under a placeholder of a bot's post whose author is no bot here now, for a member who holds the key. */
+export const NOT_A_BOT_TEXT = "Posted as a bot by someone who isn't a bot here now."
 
 /** What the picker says under the specific-people options when they cannot be picked. */
 export const LETTER_OPTION_TEXT: Readonly<Record<Exclude<LetterOption, 'ok'>, string>> = {
@@ -226,12 +233,13 @@ export const TURN_ON = 'Turn on members-only content'
 /**
  * The measured cost of turning members-only content on for `holders` members, the signer
  * included: one settings-free anchor and one key wrap each (dg `keys::enable_estimate`, measured
- * on devnet sakura; about 0.00185 DASH for two members).
+ * on devnet sakura; about 0.00185 DASH for two members), and each of `bots` sent its key for
+ * members-only posts (one letter each, §23).
  */
 export const ENABLE_ANCHOR_CREDITS = 37_000_000
 export const ENABLE_WRAP_CREDITS = 74_000_000
-export function enableEstimate(holders: number): number {
-  return ENABLE_ANCHOR_CREDITS + ENABLE_WRAP_CREDITS * Math.max(1, holders)
+export function enableEstimate(holders: number, bots = 0): number {
+  return ENABLE_ANCHOR_CREDITS + ENABLE_WRAP_CREDITS * Math.max(1, holders) + postKeyLetterCredits() * Math.max(0, bots)
 }
 
 /** A DASH amount for copy: two significant figures, as "about 0.0019 DASH" reads (style guide rule 6). */
@@ -242,13 +250,15 @@ export function aboutDash(credits: number): string {
 }
 
 /** The "Turn on members-only content?" sheet's paragraphs (DESIGN §10, one idea per sentence). */
-export function turnOnText(holders: number): readonly string[] {
+export function turnOnText(holders: number, bots = 0): readonly string[] {
+  // Bots get no members key, only a key for their own members-only posts.
+  const withBots = bots > 0 ? `, and a key for members-only posts for ${plural(bots, 'bot')},` : ''
   return [
     'Members of this repo will be able to post comments, reviews and issues only members can read. Everyone can still see that something was posted, by whom and when.',
     // Only the maintainer turning it on holds the key so far: say so, rather than "1 member".
     holders <= 1
-      ? `You're the only member so far. Setting up your key costs about ${aboutDash(enableEstimate(1))}.`
-      : `Setting up keys for ${plural(holders, 'member')} costs about ${aboutDash(enableEstimate(holders))}. Each later removal costs about the same again.`,
+      ? `You're the only member so far. Setting up your key${withBots} costs about ${aboutDash(enableEstimate(1, bots))}.`
+      : `Setting up keys for ${plural(holders, 'member')}${withBots} costs about ${aboutDash(enableEstimate(holders, bots))}. Each later removal costs about the same again.`,
     'People using older Forge builds will see fewer things until they update.',
   ]
 }
