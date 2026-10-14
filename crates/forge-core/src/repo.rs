@@ -47,6 +47,19 @@ use crate::refs::DOC_CONFIG;
 use crate::refs::{DOC_PROTECTED_REF_UPDATE, DOC_REF_UPDATE};
 const DOC_PACK_MANIFEST: &str = "packManifest";
 
+/// What [`RepoService::open_git_packs`] read: packs opened, packs whose stored copies could not be
+/// fetched (a retry may read them), and packs this signer cannot open (late, or under a key it
+/// does not hold; no reader opens them with keys this signer could publish either).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PacksRead {
+    /// Opened and handed on.
+    pub opened: usize,
+    /// No copy could be fetched.
+    pub unfetched: usize,
+    /// Fetched, but not opened.
+    pub unopened: usize,
+}
+
 /// A `packManifest` document read back from a repository.
 #[derive(Debug, Clone)]
 pub struct PackManifestInfo {
@@ -2828,54 +2841,61 @@ impl<'a> RepoService<'a> {
         Ok((pack_blobs, blob_hashes))
     }
 
-    /// Every git pack of `repo` this signer opens, as plaintext bytes, oldest first, and how many
-    /// it could not open. With `repo` the private view of a repository being made public
-    /// ([`RepoRef::private_view`]), these are its private-era packs opened with the member's own
-    /// keys: what making it public builds its fresh public pack from and scans for secrets
-    /// (mixed-visibility DESIGN §4.10). A pack it cannot open (late, or under an epoch it holds
-    /// no key for) is counted, never fatal; a plaintext one, pushed after the conversion, is
-    /// public already and left out.
-    pub async fn open_git_packs(&self, repo: &RepoRef) -> Result<(Vec<Vec<u8>>, usize)> {
+    /// Every git pack of `repo` this signer opens, handed to `each` as plaintext bytes one at a
+    /// time, oldest first (a pack that deltas against an earlier one meets its bases first). With
+    /// `repo` the private view of a repository being made public ([`RepoRef::private_view`]),
+    /// these are its private-era packs opened with the member's own keys: what making it public
+    /// builds its fresh public pack from and scans for secrets (mixed-visibility DESIGN §4.10).
+    /// A plaintext pack seen through the private view was pushed after the conversion: public
+    /// already, and left out. What it could not read is counted, never fatal.
+    pub async fn open_git_packs(
+        &self,
+        repo: &RepoRef,
+        mut each: impl FnMut(&[u8]) -> Result<()>,
+    ) -> Result<PacksRead> {
         let contract = self.repo_contract(repo).await?;
         let manifests = self.read_pack_manifests(repo).await?;
         let git = git_pack_manifests(&manifests);
         let roles = self.copy_roles(repo).await?;
         let reader = self.repo_reader(repo, &manifests, &roles).await;
-        let (mut packs, mut skipped) = (Vec::new(), 0);
-        // oldest first, so a pack that deltas against an earlier one meets its bases first
+        let mut out = PacksRead::default();
         let mut groups = group_by_hash(&git);
         groups.sort_by_key(|(_, copies)| copies.iter().map(|m| m.created_at).min());
         for (hash, copies) in groups {
-            let opened = match self
+            let (bytes, m) = match self
                 .fetch_best_copy_or_mirror(repo, &contract, &copies, &roles, &reader)
                 .await
             {
-                // a plaintext pack seen through the private view was pushed after the
-                // conversion: public already, and not the private era's
-                Ok((bytes, _))
-                    if repo.visibility == Visibility::Private
-                        && matches!(
-                            crate::private::sniff(&bytes),
-                            crate::private::Head::Plain | crate::private::Head::Short
-                        ) =>
-                {
+                Ok(found) => found,
+                Err(e) => {
+                    tracing::warn!(pack = %hex::encode(hash), error = %e, "a pack could not be fetched");
+                    out.unfetched += 1;
                     continue;
                 }
-                Ok((sealed, m)) => {
-                    self.open_artifact_of(repo, &copies, m.size_bytes, sealed)
-                        .await
-                }
-                Err(e) => Err(e),
             };
-            match opened {
-                Ok(plain) => packs.push(plain),
+            if repo.visibility == Visibility::Private
+                && matches!(
+                    crate::private::sniff(&bytes),
+                    crate::private::Head::Plain | crate::private::Head::Short
+                )
+            {
+                continue;
+            }
+            match self
+                .open_artifact_of(repo, &copies, m.size_bytes, bytes)
+                .await
+            {
+                Ok(plain) => {
+                    each(&plain)?;
+                    out.opened += 1;
+                }
                 Err(e) => {
-                    tracing::warn!(pack = %hex::encode(hash), error = %e, "a pack this identity cannot open is left out");
-                    skipped += 1;
+                    tracing::debug!(pack = %hex::encode(hash), error = %e, "a pack this identity cannot open is left out");
+                    out.unopened += 1;
                 }
             }
         }
-        Ok((packs, skipped))
+        Ok(out)
     }
 
     /// Consolidate a repo's live packs into **one** optimized pack and publish it with a

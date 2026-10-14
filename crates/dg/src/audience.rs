@@ -93,6 +93,10 @@ pub async fn requested(
         Err(e) if !ask.members && refused_non_member(&e) => {
             collab.request_audience(Some(Audience::Public));
             if let Ok(Audience::Public) = collab.new_audience(repo, target, reply_to).await {
+                eprintln!(
+                    "note: this conversation was written while {} was private; your reply is public: everyone can read it",
+                    repo.display()
+                );
                 Ok(Requested {
                     audience: Audience::Public,
                     to: String::new(),
@@ -544,23 +548,43 @@ pub async fn target_view(
 ) -> Result<()> {
     let log = s.collab().target_log(&s.repo, &m.document_id).await?;
     let state = state_word(kind, &log);
-    let names = if ctx.json {
-        std::collections::BTreeMap::new()
-    } else {
-        s.client.dpns_first_names([m.author.as_str()]).await
-    };
     let m = &s.placeholders(vec![m.clone()])[0];
     let hint = why_hint(&s.repo, m.why);
     let repo = s.repo.display();
     // A thread written before its repository was made public takes public replies (DESIGN §4.10
     // L3): the ones this reader can read are shown under its row.
     let replies = if s.repo.visibility == Visibility::Public {
-        s.collab()
-            .comments(&s.repo, &m.document_id)
-            .await
-            .unwrap_or_default()
+        let collab = s.collab();
+        let all = collab.comments(&s.repo, &m.document_id).await?;
+        // what maintainers hid stays collapsed here too (`dg issue view --show-hidden` on a
+        // thread one can read shows it)
+        let target = forge_core::collab::v2::Target {
+            kind,
+            id: m.document_id.clone(),
+            number,
+            author: m.author.clone(),
+        };
+        let hidden = collab
+            .hidden_items(&s.repo, &target, &log, &all, &[])
+            .await?;
+        if hidden.thread.is_some() {
+            Vec::new()
+        } else {
+            all.into_iter()
+                .filter(|c| hidden.item(&c.document_id).is_none())
+                .collect()
+        }
     } else {
         Vec::new()
+    };
+    let names = if ctx.json {
+        std::collections::BTreeMap::new()
+    } else {
+        s.client
+            .dpns_first_names(
+                std::iter::once(m.author.as_str()).chain(replies.iter().map(|c| c.author.as_str())),
+            )
+            .await
     };
     // The shape `dg issue view --json` / `dg pr view --json` gives a readable one, with what is
     // not readable here null or empty, and `readable` false.
@@ -613,7 +637,11 @@ pub async fn target_view(
         }
         for c in &replies {
             println!();
-            println!("{}{}:", c.author, suffix(&s.repo, c.audience));
+            println!(
+                "{}{}:",
+                at_name(&c.author, &names),
+                suffix(&s.repo, c.audience)
+            );
             println!("{}", crate::fmt::safe(&c.body));
         }
     });
