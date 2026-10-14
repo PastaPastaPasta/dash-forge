@@ -901,6 +901,38 @@ The shorthands alone save 1,729 / 1,192 / 1,248 / 850 B (experiment X1, dash-for
 
 **Client prerequisites** (phase M-B): every Forge SDK and parser at ≥ the network's tag (the shorthands need protocol 14 at beta.4 or later); readers of `webhook`, `topic` and `packMirror` default `vis` to public and writers stop sending it; the composer hides approve and request changes for a PR's author (an identity that imported a PR is its author, so it can never approve it); `dg collab remove` and the web's member removal refuse the owner's own maintainer row before any write (today `dg` re-anchors the epochs first, then the delete fails with 40147); the star and watch toggles are hidden on a private repo (40127); the write-error copy for 40147 (`ownerRowStays`, `keepVerdicts`); a converted repo's new members-only content is framed 0x03, never 0x01; `forge-web/lib/sdk/rc1-validate.ts`'s schema interpreter learns the shorthands before it reads the mainnet set.
 
+**Live on a scratch registration (M-C re-run, 2026-10-13/14).** The M-A2 `--mainnet` set was registered on devnet sakura (Platform 5.0.0-beta.6, protocol 14) as a scratch set by a scratch deployer. The live contracts, their record and the snapshot were untouched (sha256 checked before and after). The four signed create transitions were 16,355 / 17,213 / 15,425 / 6,890 B, and cost 0.597 + 0.396 + 0.506 + 0.364 = **1.863 DASH**: the shorthands save storage, not the per-type and per-index fee. (`contract-validate` sizes the three dependent contracts' transitions 9, 15 and 8 B larger than evo-sdk 5.0.0-beta.6 signs them, and a dry run of the rev 4.1 set shows the same gaps; both serialize every contract to the same bytes, so its room figures err on the safe side.)
+
+The full suite passed **394 of 394** in one run with no infrastructure retries left without a verdict: every rev 4.1 case above, on the M-A2 set, plus the `ma2` group. The R6 conversion documents (`convert`, `everything`; with a sealed config now framed 0x02) passed 29 of 29. The new cases:
+
+| Item | What was refused | What was accepted |
+|---|---|---|
+| R-03 | a PR author's own approve and request changes, the owner's approve of its own PR, and an author's approve marked `imported` (10422 `authorNoVerdict`) | the author's comment verdict; another maintainer's approve and request changes; a writer's approve of the owner's PR; a stranger's outside verdict |
+| R-04 | members-only documents framed 0x01, 0x02 or (with `aud 1`) 0x04, on a public and on a private repo; a letter framed 0x01; a comment re-sealed 0x01 (judged on every replace); a review framed 0x04 (10422 `encFraming`); sealed configs framed 0x01 or 0x03 (10422 `encV2`) | 0x03 and 0x05 members-only documents, 0x04 letters, a private repo's 0x01 issue and 0x04 letter, and a config framed 0x02 |
+| R-05 | a stranger's new comment on a locked thread (10422 `lockGate`) | the stranger's edit, after the lock, of its comment from before it (`$revision` 2); an edit of an older issue after a newer one; an issue edited right after its create, without waiting for it (it landed one block later: no client reached the same block) |
+| R-06 (in `b1`) | a push outside or beside the prefix, a sealed push through a prefix grant, `pp` naming an exact grant (10422 `grantPrefix`); a push after `until` through a prefix or an exact grant (40127, the `where` ordering); `gp`, `gu` or `br` written (10101) | every rev 4.1 accepted push, the push naming only its grant and granter |
+| R-08 | the owner's delete of its own maintainer row (40147 `ownerRowStays`) | the delete of the second maintainer's row; the owner's later config |
+| R-09 | a writer's delete of its approval and a maintainer's of its change request (40147 `keepVerdicts`) | the deletes of a comment verdict and an outside verdict |
+| R-11 | a webhook, a topic and a pack mirror of a private repo (40127); a webhook or topic carrying `vis` (10101) | each on a public repo without `vis` |
+| R-12 | a member's star and watch of a private repo, and the owner's star of its own private repo (40127) | a stranger's star and watch of a public repo; the owner's star of its own public repo; an unstar |
+
+**Fees** (credits, the mean of 5 rounds after one unpriced warm-up write, alternating sets):
+
+| Write | Baseline | M-A2 set | Change | Other run |
+|---|---|---|---|---|
+| a writer's approve (R-03, R-04), vs the rev 4.1 scratch set | 39,891,052 | 40,454,588 | +1.41 % | +2.16 % |
+| a members-only comment (R-04), vs rev 4.1 | 55,762,640 | 56,656,916 | +1.60 % | +1.93 % |
+| control: a stranger's comment verdict, vs rev 4.1 | 44,715,648 | 44,930,660 | +0.48 % | — |
+| control: a stranger's public comment, vs rev 4.1 | 54,986,392 | 55,078,988 | +0.17 % | — |
+| a bot push under a prefix grant (R-06), vs rev 4.1 | 68,115,976 | 67,631,952 | **−0.71 %** | −0.58 % |
+| comment create, vs the live set | 54,811,712 | 55,007,092 | +0.36 % | (M-C +0.37 %) |
+| review create, vs the live set | 43,990,632 | 44,881,764 | +2.03 % | (M-C +2.09 %) |
+| ref update / config, vs the live set | 57,033,260 / 26,859,188 | 57,302,716 / 26,743,608 | +0.47 % / −0.43 % | |
+| label / topic / packMirror (forge-meta, no `vis` on the last two), vs live forge-core | 33,733,436 / 62,162,768 / 46,257,332 | 34,102,116 / 61,965,948 / 46,898,636 | +1.09 % / −0.32 % / +1.39 % | |
+| a bot push vs a writer push (scratch) | 58,088,556 | 59,874,188 | +3.07 % | (M-C +4.57 %) |
+
+R-06 takes about 0.5 M credits off a bot push, the grant's copied fields. A member's write (one that names `asMember`) costs about 0.6–0.9 M credits more on the M-A2 set than on the rev 4.1 set, while a stranger's costs the same within noise. These runs cannot separate R-03 from R-04 and the shorthands. Research1 expected R-03 and R-04 to cost nothing, which this does not confirm, but the extra cost is well inside the +5 % bound M-C applied to L3.
+
 ## 10. Rules that changed from the brief
 
 - **The author path is a `findBy` on a second unique index.** A permanent `findBy` needs a unique index that includes the writer. `issue` and `patch` therefore carry `author($ownerId, repoId, number)` next to `number(repoId, number)`, and `authorEvent`, `transition` (and `event`, for the target agreement) carry `targetNumber` so the key can be assembled. The id reference `targetId` is tied to it with `where {"$id": "targetId"}`.
