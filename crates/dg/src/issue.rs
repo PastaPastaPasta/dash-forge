@@ -477,7 +477,7 @@ async fn list(ctx: &Ctx, args: &IssueListArgs) -> Result<()> {
                 let hid = h.map(|h| crate::fmt::hidden_row_mark(h, &who));
                 match r {
                     ListRow::Issue(v) => {
-                        let mark = crate::audience::suffix(&s.repo, v.issue.audience);
+                        let mark = crate::audience::suffix_of(&s.repo, v.issue.audience, v.issue.while_private);
                         println!("{}{mark}", issue_line(v, *pinned, &hid.unwrap_or_default()));
                     }
                     ListRow::Sealed(x) => println!(

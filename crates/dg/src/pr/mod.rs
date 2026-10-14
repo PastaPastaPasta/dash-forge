@@ -1115,7 +1115,7 @@ async fn list(
                     .unwrap_or_default();
                 match r {
                     PrRow::Pr((v, a)) => {
-                        let mark = crate::audience::suffix(handle, v.patch.audience);
+                        let mark = crate::audience::suffix_of(handle, v.patch.audience, v.patch.while_private);
                         println!("{}{mark}", pr_line(v, a, &hid));
                     }
                     PrRow::Sealed(x) => println!(
