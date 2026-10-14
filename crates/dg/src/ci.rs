@@ -1832,7 +1832,10 @@ async fn refs(ctx: &Ctx, repo: &str) -> Result<()> {
             let role = forge_core::members::MemberReader::new(&r.client)
                 .best_role(&r.repo, &me)
                 .await?;
-            if role.is_some() && svc.members_only_ref_count(&r.repo).await?.0 > 0 {
+            // a Bot member holds no members key: it reads what is shared with it, as anyone
+            if role.is_some_and(forge_core::members::holds_members_key)
+                && svc.members_only_ref_count(&r.repo).await?.0 > 0
+            {
                 return Err(
                     forge_core::keyring::no_members_encryption_key_held(&format!(
                         "reading {}'s members-only branches",
