@@ -424,13 +424,20 @@ pub fn rotation_json(r: &Rotation) -> Value {
 
 /// The bots' post keys a key change sent (§23), as JSON.
 pub fn post_keys_json(p: &forge_core::bot_keys::Issued) -> Value {
-    json!({ "epoch": p.epoch, "sent": p.sent, "skipped": p.skipped })
+    json!({ "epoch": p.epoch, "sent": p.sent, "skipped": p.skipped, "failed": p.failed })
 }
 
 /// The lines the bots' post keys a key change sent print (nothing with no bots).
 pub fn print_post_keys(repo: &RepoRef, p: &forge_core::bot_keys::Issued) {
     for b in &p.sent {
         println!("  sent {b} its key for members-only posts");
+    }
+    if let Some(why) = &p.failed {
+        println!(
+            "  sending the bots their keys stopped ({why}); `dg repo keys repair {}` finishes it",
+            repo.display()
+        );
+        return;
     }
     for b in &p.skipped {
         println!(

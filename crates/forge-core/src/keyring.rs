@@ -2542,13 +2542,20 @@ async fn rotation_post_keys(
         return Ok(crate::bot_keys::Issued::default());
     }
     let keys = EpochKeys::derive(&w.scope.repo_id, epoch, key);
-    crate::bot_keys::issue(
-        signer,
-        repo,
-        &keys,
-        &crate::bot_keys::bots_of(w.kr.members(), exclude),
+    let bots = crate::bot_keys::bots_of(w.kr.members(), exclude);
+    // the rotation stands whatever happens here: a failed send is reported, and a repair
+    // finishes it
+    Ok(
+        match crate::bot_keys::issue(signer, repo, &keys, &bots).await {
+            Ok(issued) => issued,
+            Err(e) => crate::bot_keys::Issued {
+                epoch,
+                sent: Vec::new(),
+                skipped: bots,
+                failed: Some(e.to_string()),
+            },
+        },
     )
-    .await
 }
 
 fn require_rotator(kr: &Keyring, repo: &RepoRef) -> Result<()> {

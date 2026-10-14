@@ -56,6 +56,9 @@ pub struct Issued {
     /// Bots that could not be sent one: no usable encryption key (or their identity could not
     /// be read). A repair sends it once they have one.
     pub skipped: Vec<String>,
+    /// Why sending stopped before every bot got one, when it did (a key change that already
+    /// landed never fails for it: a repair finishes the send).
+    pub failed: Option<String>,
 }
 
 /// Send the post key of `keys`'s epoch to each of `bots` (base58 ids): one `postKey` letter per

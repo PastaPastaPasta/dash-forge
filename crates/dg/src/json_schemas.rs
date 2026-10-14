@@ -451,6 +451,7 @@ fn reindex_and_key_repairs_match() {
             epoch: 3,
             sent: vec!["D".into()],
             skipped: Vec::new(),
+            failed: None,
         },
     });
     let repaired = json!({ "status": "repaired", "rotated": rotation, "nonMembers": ["C"], "wrapped": [], "skipped": [], "cost": crate::fmt::cost_json(1, None) });
