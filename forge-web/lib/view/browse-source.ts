@@ -1886,7 +1886,7 @@ export async function loadBrowseContext(
     // Coverage: every pack in the space that HOLDS anything must be indexed by some fragment.
     // A gap means objects that exist on-chain are unreachable through the index — the honest
     // answer is the fallback clone, not a reader that throws on the first uncovered object.
-    if (!coversSpace(whole, livePacks)) return behind('index-behind')
+    if (!(await coversReadable(sdk, repo, whole, livePacks))) return behind('index-behind')
     locator = whole
   }
 
@@ -1958,6 +1958,22 @@ async function membersOverlay(
 function coversSpace(locator: ObjectLocator, space: readonly PackManifest[]): boolean {
   const covered = locator.packRefsCovered()
   return space.every((m, i) => m.objectCount === 0 || covered.has(i))
+}
+
+/**
+ * {@link coversSpace}, except that in a repository made public a pack this reader skips (sealed
+ * while the repo was private, under a key nobody published: §18.2) needs no row. Nothing reads it
+ * on any path, the fallback clone included, so leaving it unindexed hides nothing; the published
+ * refs' history is in the plaintext pack the conversion stored. Only the packs left uncovered are
+ * head-read ({@link skipBeforeDownload}), and only for such a repo.
+ */
+async function coversReadable(sdk: EvoSDK, repo: RepoRef, locator: ObjectLocator, space: readonly PackManifest[]): Promise<boolean> {
+  if (coversSpace(locator, space)) return true
+  if (convertedReads(repo) === null) return false
+  const covered = locator.packRefsCovered()
+  const gaps = space.filter((m, i) => m.objectCount !== 0 && !covered.has(i))
+  const skipped = await Promise.all(gaps.map((m) => skipBeforeDownload(sdk, repo, m.copies ?? [m])))
+  return skipped.every((s) => s !== null)
 }
 
 /**
@@ -2154,17 +2170,27 @@ async function publishedLocator(
   // because that hides a repo the reader could perfectly well have served. Up to
   // MAX_LOCATOR_FRAGMENTS artifacts are fetched per resolve, so one transient `chunk`
   // query failure is enough to reach this.
+  // A repository made public keeps its private era's fragments, sealed under keys the owner may
+  // not have published (Code only): such a fragment is skipped (§18.2), set aside as if it had
+  // never been published. The packs it indexed are sealed alike, and `coversReadable` lets the
+  // ones this reader skips go unindexed; any other gap still sends the repo to the fallback clone.
   let locator: ObjectLocator
   try {
-    let parts = await Promise.all(
+    const loaded = await Promise.all(
       ordered.map((m) =>
-        ranged && m.storage === 0 && m.sizeBytes >= RANGED_INDEX_MIN_BYTES ? openFragment(sdk, repo, m) : wholeFragment(sdk, repo, m, progressKey),
+        (ranged && m.storage === 0 && m.sizeBytes >= RANGED_INDEX_MIN_BYTES ? openFragment(sdk, repo, m) : wholeFragment(sdk, repo, m, progressKey)).catch((e: unknown) => {
+          if (e instanceof PackSkippedError) return null
+          throw e
+        }),
       ),
     )
+    const kept = ordered.filter((_, i) => loaded[i] !== null)
+    let parts = loaded.filter((p): p is ObjectLocator | RangedLocator => p !== null)
+    if (parts.length === 0) return null
     if (parts.some((p) => p instanceof RangedLocator)) {
       // Answered a chunk at a time. A ranged row naming a pack past the space fails its read
       // (`buildPackSource`); the whole parts' bounds are checked by `rangedCoverage`.
-      const coverage = rangedCoverage(parts, ordered.map((f) => reachOf.get(f) ?? 0), space)
+      const coverage = rangedCoverage(parts, kept.map((f) => reachOf.get(f) ?? 0), space)
       if (coverage === 'covered') return new FragmentedIndex(parts)
       if (coverage === 'uncovered') return 'behind'
       parts = await Promise.all(parts.map((p) => (p instanceof RangedLocator ? p.loadWhole() : p)))

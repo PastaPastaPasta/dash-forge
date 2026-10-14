@@ -170,9 +170,9 @@ function SealedNote({ command }: { command: string }): JSX.Element {
   return (
     <div role="note" className="mt-3 flex gap-2 rounded-md border border-anvil-200 bg-anvil-50 px-3 py-2 text-dense dark:border-anvil-800 dark:bg-anvil-900">
       <Lock className="mt-0.5 h-4 w-4 shrink-0 text-anvil-400" aria-hidden />
-      <span>
+      <span className="min-w-0">
         This repo is private, so its config is encrypted, and this browser can&apos;t encrypt it yet. Use the CLI, which does:{' '}
-        <code className="font-mono text-[12px]">{command}</code>
+        <code className="font-mono text-[12px] [overflow-wrap:anywhere]">{command}</code>
         {/* TODO(private-web): write sealed configs once the web holds epoch keys (PR #51's private session). */}
       </span>
     </div>
