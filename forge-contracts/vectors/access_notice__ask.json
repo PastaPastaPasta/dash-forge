@@ -1,0 +1,311 @@
+{
+  "name": "ask",
+  "description": "before signing a request (event kind 27) a client checks the bot's current notice, in this order: there is one and it allows something (else noAccess), it has not ended, the asker's role is among its askers (writers: Write, Maintain or the owner; maintainers: Maintain or the owner), it covers the thread, and on a members-only thread it lets the bot read on request. Each refusal is E813, before anything is signed.",
+  "case": "access_notice",
+  "rules": "v2",
+  "input": {
+    "op": "ask",
+    "cases": [
+      {
+        "name": "writer_ok",
+        "notice": {
+          "bot": "15dff5cb07aa7a797a030faa6b7820fcc46640b49242eb447374120dbd816725",
+          "may": [
+            "post",
+            "postMembersOnly",
+            "readOnRequest"
+          ],
+          "askers": "writers",
+          "threads": "all",
+          "processor": "Example AI",
+          "until": 1767225600000,
+          "revokes": [],
+          "note": "Reviews pull requests when asked.",
+          "extra": {}
+        },
+        "role": "writer",
+        "number": 42,
+        "membersOnly": true,
+        "now": 1000
+      },
+      {
+        "name": "no_notice",
+        "notice": null,
+        "role": "writer",
+        "number": 42,
+        "membersOnly": false,
+        "now": 1000
+      },
+      {
+        "name": "revoked",
+        "notice": {
+          "bot": "15dff5cb07aa7a797a030faa6b7820fcc46640b49242eb447374120dbd816725",
+          "may": [],
+          "askers": "writers",
+          "threads": "all",
+          "processor": "Example AI",
+          "until": 1767225600000,
+          "revokes": [],
+          "note": "Reviews pull requests when asked.",
+          "extra": {}
+        },
+        "role": "maintainer",
+        "number": 42,
+        "membersOnly": false,
+        "now": 1000
+      },
+      {
+        "name": "ended",
+        "notice": {
+          "bot": "15dff5cb07aa7a797a030faa6b7820fcc46640b49242eb447374120dbd816725",
+          "may": [
+            "post",
+            "postMembersOnly",
+            "readOnRequest"
+          ],
+          "askers": "writers",
+          "threads": "all",
+          "processor": "Example AI",
+          "until": 1767225600000,
+          "revokes": [],
+          "note": "Reviews pull requests when asked.",
+          "extra": {}
+        },
+        "role": "writer",
+        "number": 42,
+        "membersOnly": false,
+        "now": 1767225600000
+      },
+      {
+        "name": "triage",
+        "notice": {
+          "bot": "15dff5cb07aa7a797a030faa6b7820fcc46640b49242eb447374120dbd816725",
+          "may": [
+            "post",
+            "postMembersOnly",
+            "readOnRequest"
+          ],
+          "askers": "writers",
+          "threads": "all",
+          "processor": "Example AI",
+          "until": 1767225600000,
+          "revokes": [],
+          "note": "Reviews pull requests when asked.",
+          "extra": {}
+        },
+        "role": "triage",
+        "number": 42,
+        "membersOnly": false,
+        "now": 1000
+      },
+      {
+        "name": "reader",
+        "notice": {
+          "bot": "15dff5cb07aa7a797a030faa6b7820fcc46640b49242eb447374120dbd816725",
+          "may": [
+            "post",
+            "postMembersOnly",
+            "readOnRequest"
+          ],
+          "askers": "writers",
+          "threads": "all",
+          "processor": "Example AI",
+          "until": 1767225600000,
+          "revokes": [],
+          "note": "Reviews pull requests when asked.",
+          "extra": {}
+        },
+        "role": "reader",
+        "number": 42,
+        "membersOnly": false,
+        "now": 1000
+      },
+      {
+        "name": "outsider",
+        "notice": {
+          "bot": "15dff5cb07aa7a797a030faa6b7820fcc46640b49242eb447374120dbd816725",
+          "may": [
+            "post",
+            "postMembersOnly",
+            "readOnRequest"
+          ],
+          "askers": "writers",
+          "threads": "all",
+          "processor": "Example AI",
+          "until": 1767225600000,
+          "revokes": [],
+          "note": "Reviews pull requests when asked.",
+          "extra": {}
+        },
+        "role": null,
+        "number": 42,
+        "membersOnly": false,
+        "now": 1000
+      },
+      {
+        "name": "writer_maintainers_only",
+        "notice": {
+          "bot": "15dff5cb07aa7a797a030faa6b7820fcc46640b49242eb447374120dbd816725",
+          "may": [
+            "post"
+          ],
+          "askers": "maintainers",
+          "threads": [
+            42
+          ],
+          "processor": "Example AI",
+          "until": null,
+          "revokes": [],
+          "note": "Reviews pull requests when asked.",
+          "extra": {}
+        },
+        "role": "writer",
+        "number": 42,
+        "membersOnly": false,
+        "now": 1000
+      },
+      {
+        "name": "thread_not_listed",
+        "notice": {
+          "bot": "15dff5cb07aa7a797a030faa6b7820fcc46640b49242eb447374120dbd816725",
+          "may": [
+            "post"
+          ],
+          "askers": "maintainers",
+          "threads": [
+            42
+          ],
+          "processor": "Example AI",
+          "until": null,
+          "revokes": [],
+          "note": "Reviews pull requests when asked.",
+          "extra": {}
+        },
+        "role": "maintainer",
+        "number": 7,
+        "membersOnly": false,
+        "now": 1000
+      },
+      {
+        "name": "members_only_no_read",
+        "notice": {
+          "bot": "15dff5cb07aa7a797a030faa6b7820fcc46640b49242eb447374120dbd816725",
+          "may": [
+            "post"
+          ],
+          "askers": "maintainers",
+          "threads": [
+            42
+          ],
+          "processor": "Example AI",
+          "until": null,
+          "revokes": [],
+          "note": "Reviews pull requests when asked.",
+          "extra": {}
+        },
+        "role": "maintainer",
+        "number": 42,
+        "membersOnly": true,
+        "now": 1000
+      },
+      {
+        "name": "public_thread_post_only",
+        "notice": {
+          "bot": "15dff5cb07aa7a797a030faa6b7820fcc46640b49242eb447374120dbd816725",
+          "may": [
+            "post"
+          ],
+          "askers": "maintainers",
+          "threads": [
+            42
+          ],
+          "processor": "Example AI",
+          "until": null,
+          "revokes": [],
+          "note": "Reviews pull requests when asked.",
+          "extra": {}
+        },
+        "role": "maintainer",
+        "number": 42,
+        "membersOnly": false,
+        "now": 1000
+      }
+    ]
+  },
+  "expected": {
+    "results": [
+      {
+        "name": "writer_ok",
+        "refusal": null
+      },
+      {
+        "name": "no_notice",
+        "refusal": {
+          "why": "noAccess"
+        }
+      },
+      {
+        "name": "revoked",
+        "refusal": {
+          "why": "noAccess"
+        }
+      },
+      {
+        "name": "ended",
+        "refusal": {
+          "why": "ended",
+          "until": 1767225600000
+        }
+      },
+      {
+        "name": "triage",
+        "refusal": {
+          "why": "askers",
+          "askers": "writers",
+          "role": "triage"
+        }
+      },
+      {
+        "name": "reader",
+        "refusal": {
+          "why": "askers",
+          "askers": "writers",
+          "role": "reader"
+        }
+      },
+      {
+        "name": "outsider",
+        "refusal": {
+          "why": "askers",
+          "askers": "writers",
+          "role": null
+        }
+      },
+      {
+        "name": "writer_maintainers_only",
+        "refusal": {
+          "why": "askers",
+          "askers": "maintainers",
+          "role": "writer"
+        }
+      },
+      {
+        "name": "thread_not_listed",
+        "refusal": {
+          "why": "thread",
+          "number": 7
+        }
+      },
+      {
+        "name": "members_only_no_read",
+        "refusal": {
+          "why": "noRead"
+        }
+      },
+      {
+        "name": "public_thread_post_only",
+        "refusal": null
+      }
+    ]
+  }
+}

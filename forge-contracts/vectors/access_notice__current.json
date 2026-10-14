@@ -1,0 +1,92 @@
+{
+  "name": "current",
+  "description": "the notice that counts for a bot is the newest (by $createdAt, then manifest id) from a current maintainer or the owner; a notice from anyone else (here a removed maintainer's newer one) is ignored.",
+  "case": "access_notice",
+  "rules": "v2",
+  "input": {
+    "op": "noticeCurrent",
+    "entries": [
+      {
+        "id": "m1",
+        "writer": "alice",
+        "createdAt": 100,
+        "notice": {
+          "bot": "15dff5cb07aa7a797a030faa6b7820fcc46640b49242eb447374120dbd816725",
+          "may": [
+            "post"
+          ],
+          "askers": "writers",
+          "threads": "all",
+          "processor": "Example AI",
+          "until": 1767225600000,
+          "revokes": [],
+          "note": "Reviews pull requests when asked.",
+          "extra": {}
+        }
+      },
+      {
+        "id": "m2",
+        "writer": "bob",
+        "createdAt": 200,
+        "notice": {
+          "bot": "15dff5cb07aa7a797a030faa6b7820fcc46640b49242eb447374120dbd816725",
+          "may": [
+            "post",
+            "readOnRequest"
+          ],
+          "askers": "writers",
+          "threads": "all",
+          "processor": "Example AI",
+          "until": 1767225600000,
+          "revokes": [],
+          "note": "Reviews pull requests when asked.",
+          "extra": {}
+        }
+      },
+      {
+        "id": "m3",
+        "writer": "mallory",
+        "createdAt": 300,
+        "notice": {
+          "bot": "15dff5cb07aa7a797a030faa6b7820fcc46640b49242eb447374120dbd816725",
+          "may": [],
+          "askers": "writers",
+          "threads": "all",
+          "processor": "Example AI",
+          "until": 1767225600000,
+          "revokes": [],
+          "note": "Reviews pull requests when asked.",
+          "extra": {}
+        }
+      },
+      {
+        "id": "m4",
+        "writer": "carol",
+        "createdAt": 200,
+        "notice": {
+          "bot": "15dff5cb07aa7a797a030faa6b7820fcc46640b49242eb447374120dbd816725",
+          "may": [
+            "post"
+          ],
+          "askers": "writers",
+          "threads": "all",
+          "processor": "Example AI",
+          "until": 1767225600000,
+          "revokes": [],
+          "note": "Reviews pull requests when asked.",
+          "extra": {}
+        }
+      }
+    ],
+    "maintainers": [
+      "alice",
+      "bob",
+      "carol"
+    ]
+  },
+  "expected": {
+    "current": {
+      "15dff5cb07aa7a797a030faa6b7820fcc46640b49242eb447374120dbd816725": "m4"
+    }
+  }
+}

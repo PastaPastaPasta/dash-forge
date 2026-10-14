@@ -656,6 +656,15 @@ pub fn bundles_kind(kind: DocKind) -> bool {
     matches!(kind, DocKind::Issue | DocKind::Comment | DocKind::Review)
 }
 
+/// The kinds a `read` key letter hands on by their per-object key (DESIGN §4.9): what bundles
+/// publish, and also a pull request's own text and a member `event` (a request's task). A
+/// pull request opened with its key alone shows only the branch names whose hash is their
+/// plain SHA-256 ([`open_shared_with_key`]).
+#[must_use]
+pub fn shares_kind(kind: DocKind) -> bool {
+    bundles_kind(kind) || matches!(kind, DocKind::Patch | DocKind::Event)
+}
+
 /// `K_obj` of the members-only (`enc` v0x03) document `header`, derived under `keys` (its epoch)
 /// and checked against the commitment it carries: what a member publishes in a make-public
 /// bundle (DESIGN §4.6). `None` when it is not a well-framed v0x03 document of a kind bundles
@@ -666,8 +675,27 @@ pub fn members_obj_key(
     header: &DocHeader,
     enc: &[u8],
 ) -> Option<zeroize::Zeroizing<[u8; 32]>> {
+    obj_key_of(keys, header, enc, bundles_kind)
+}
+
+/// [`members_obj_key`] for the kinds a `read` key letter hands on ([`shares_kind`]).
+#[must_use]
+pub fn read_obj_key(
+    keys: &EpochKeys,
+    header: &DocHeader,
+    enc: &[u8],
+) -> Option<zeroize::Zeroizing<[u8; 32]>> {
+    obj_key_of(keys, header, enc, shares_kind)
+}
+
+fn obj_key_of(
+    keys: &EpochKeys,
+    header: &DocHeader,
+    enc: &[u8],
+    kind_ok: fn(DocKind) -> bool,
+) -> Option<zeroize::Zeroizing<[u8; 32]>> {
     if enc.first() != Some(&V3)
-        || !bundles_kind(header.kind)
+        || !kind_ok(header.kind)
         || !well_framed(header, enc)
         || keys.epoch() != header.epoch
     {
@@ -694,7 +722,50 @@ pub fn open_members_with_key(
     enc: &[u8],
     k_obj: &[u8; 32],
 ) -> Opened {
-    if enc.first() != Some(&V3) || !bundles_kind(header.kind) || !well_framed(header, enc) {
+    if !bundles_kind(header.kind) {
+        return Opened::Malformed;
+    }
+    open_with_obj_key(repo_id, header, enc, k_obj)
+}
+
+/// [`open_members_with_key`] for the kinds a `read` key letter hands on ([`shares_kind`]). A
+/// pull request's branch names are keyed by its epoch, which the key's holder does not have:
+/// a name whose hash is not its plain SHA-256 cannot be checked, so it is dropped from what is
+/// shown (a name with no hash, or a hash with no name, is refused as ever).
+#[must_use]
+pub fn open_shared_with_key(
+    repo_id: &[u8; 32],
+    header: &DocHeader,
+    enc: &[u8],
+    k_obj: &[u8; 32],
+) -> Opened {
+    if !shares_kind(header.kind) {
+        return Opened::Malformed;
+    }
+    match open_with_obj_key(repo_id, header, enc, k_obj) {
+        Opened::Readable(mut f) if header.kind == DocKind::Patch => {
+            let public = |hash: Option<[u8; 32]>, name: &mut Option<String>| match (hash, &*name) {
+                (Some(h), Some(n)) if !ct_eq(&h, &sha256(n.as_bytes())) => {
+                    *name = None;
+                    true
+                }
+                (Some(_), None) => false,
+                _ => true,
+            };
+            if public(header.base_ref_name_hash, &mut f.base_ref_name)
+                && public(header.source_ref_name_hash, &mut f.source_ref_name)
+            {
+                Opened::Readable(f)
+            } else {
+                Opened::Malformed
+            }
+        }
+        other => other,
+    }
+}
+
+fn open_with_obj_key(repo_id: &[u8; 32], header: &DocHeader, enc: &[u8], k_obj: &[u8; 32]) -> Opened {
+    if enc.first() != Some(&V3) || !well_framed(header, enc) {
         return Opened::Malformed;
     }
     let Some(ad) = header.ad_in(repo_id, V3) else {

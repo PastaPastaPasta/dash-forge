@@ -46,6 +46,7 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
+pub mod agent_request;
 pub mod asset_name;
 pub mod bans;
 pub mod ci_rerun;
@@ -3643,6 +3644,7 @@ mod tests {
                 .any(|p| v.case.starts_with(p))
                 || v.case.starts_with(crate::env::conformance::CASE_PREFIX)
                 || v.case == crate::private::key_letter::VECTOR_CASE
+                || v.case == crate::private::access_notice::VECTOR_CASE
                 || crate::members_git::conformance::CASES.contains(&v.case.as_str())
                 || v.case == crate::private::members_check::CASE
             {

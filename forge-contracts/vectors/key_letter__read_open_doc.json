@@ -1,0 +1,90 @@
+{
+  "name": "read_open_doc",
+  "description": "what a bot reads with a `read` letter: each members-only document (a pull request's own text, a comment, a member event's value) opens with its per-object key K_obj alone, which a member derives under the epoch key and checks against the commitment; the pull request's base branch (hashed as its plain SHA-256) is kept and its members-only source branch (hashed under the epoch key, which the bot does not hold) is dropped. Another key fails the commitment before GCM.",
+  "case": "key_letter",
+  "rules": "v2",
+  "input": {
+    "op": "readOpenDoc",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "epoch": 0,
+    "epochKey": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "docs": [
+      {
+        "name": "patch",
+        "header": {
+          "type": "patch",
+          "vis": "public",
+          "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+          "epoch": 0,
+          "number": 42,
+          "baseRefNameHash": "f921bd05e68b03740c450e565e0e6173e546193170b2dd404ddb6f153e9b5bf3",
+          "sourceRefNameHash": "9db66b961be129602ba51d733395d7d371f9baa5516312fd993f4731fce4f1c9"
+        },
+        "encHex": "030f5700f9e6f6f03848cf8e8dd92ec78dc6ad60b7aaa3c3b13f95b82bf3af82bd10f4f9d13ae74742929e53c672df93817d8da965d50bdc403134f142a088dfe6462a7bf0d4adf2c98b9b54e87df258258a4bc0173c85aac2fe83eaf29ee2d72270696f2e165d44bdd502a05373028c53ff3b9b87ba226a0d1615db96041b26f7951eda91bbe396933f334f2d9dfa1bb158fa549155c4406c37ff954af4c68f3c48fd5fbb5a743844a3ec396040892972ca635cec32097f28fffc8b81"
+      },
+      {
+        "name": "comment",
+        "header": {
+          "type": "comment",
+          "vis": "public",
+          "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+          "epoch": 0,
+          "targetId": "4242424242424242424242424242424242424242424242424242424242424242"
+        },
+        "encHex": "03c97752e2d32569b6046e500765390486acf2d5e562f7c43195547878adacb23fb81150b1f908d23a57900cb8d2629198b34beec4611777b4f1e0d8bb10e30c39a2580a11866499fe3f389fd63710c0b8f6e9ef4a94bc379d44bf83d61ff2bd3fe237abcf64ba38bde0b2d492a4a6476f068bf9593c4ce89f02a19838"
+      },
+      {
+        "name": "event",
+        "header": {
+          "type": "event",
+          "vis": "public",
+          "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+          "epoch": 0,
+          "targetId": "4242424242424242424242424242424242424242424242424242424242424242"
+        },
+        "encHex": "034b97e835688092e86ce79a063ad132f1e0cadd2cb340384cc3c7798e900e5598c88e566102dae83f086953cbbd5ae7ed018e7eb62a81bfbecfb92a46bb9efb32888af80852c567322c2702eb1085b57e30282b"
+      }
+    ],
+    "wrongKey": "08ba6fc26d15c1e5b4841b510ffc10404ad3c87fb3c99968645d2d10253dee6d"
+  },
+  "expected": {
+    "results": [
+      {
+        "name": "patch",
+        "objKey": "29e96cbd6a8b312fc79aab66642f3d91d2c6ed91f8f8aeb0cb2e82b3a08a4c40",
+        "opened": {
+          "status": "readable",
+          "fields": {
+            "title": "Fix the auth bypass",
+            "body": "Members-only until the release.",
+            "baseRefName": "refs/heads/main"
+          }
+        }
+      },
+      {
+        "name": "comment",
+        "objKey": "46dec42848529f462c2626c75afb21a9016a1e166165fc1272ff0a14e89f01de",
+        "opened": {
+          "status": "readable",
+          "fields": {
+            "body": "The token is logged in auth.rs"
+          }
+        }
+      },
+      {
+        "name": "event",
+        "objKey": "85e72bb0aaf6a0a0266a277f0c9ab84dce80de88a551ed668cea1a429f810071",
+        "opened": {
+          "status": "readable",
+          "fields": {
+            "eventValue": "fix the failing test"
+          }
+        }
+      }
+    ],
+    "wrongKey": {
+      "status": "unreadable",
+      "reason": "commitMismatch"
+    }
+  }
+}

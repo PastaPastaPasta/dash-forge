@@ -37,6 +37,9 @@
 #[cfg(all(feature = "vectors", not(debug_assertions)))]
 compile_error!("the `vectors` feature (deterministic nonces and file ids) is for tests only; never enable it in a release build");
 
+pub mod access_notice;
+#[cfg(test)]
+mod access_conformance;
 pub mod blind;
 pub mod bundle;
 pub mod convert;

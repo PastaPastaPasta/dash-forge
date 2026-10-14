@@ -1069,6 +1069,23 @@ impl Keyring {
         crate::private::doc::members_obj_key(self.ctx.keys.get(&header.epoch)?, &header, &enc)
     }
 
+    /// [`Self::obj_key`] for the kinds a `read` key letter hands on (a pull request's own text
+    /// and member events too, [`crate::private::doc::shares_kind`]), under the same conditions:
+    /// only what this reader opens.
+    #[must_use]
+    pub fn read_obj_key(
+        &self,
+        kind: DocKind,
+        d: &FetchedDocument,
+    ) -> Option<zeroize::Zeroizing<[u8; 32]>> {
+        if !matches!(self.open(kind, d), Opened::Readable(_)) {
+            return None;
+        }
+        let enc = d.field_bytes("enc")?;
+        let header = header_of(kind, d)?;
+        crate::private::doc::read_obj_key(self.ctx.keys.get(&header.epoch)?, &header, &enc)
+    }
+
     /// [`release::open`] (§16.4) for a fetched `release` document. A `BadTag` revision created
     /// before the block time of stated(e) is `EarlierUse`: a release has no block height, so
     /// this is judged by its client-set `$createdAt`, best-effort (§16.3).
