@@ -101,8 +101,8 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
     } else {
         None
     };
-    let (rows, hidden_members): (Vec<Row>, bool) = match &members {
-        Some(m) => (
+    let (rows, hidden_members): (Vec<Row>, bool) = if let Some(m) = &members {
+        (
             m.refs
                 .iter()
                 .filter(|r| r.name.starts_with("refs/heads/"))
@@ -113,23 +113,22 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
                 })
                 .collect(),
             false,
-        ),
-        None => {
-            let refs = svc.read_refs(&s.repo).await?;
-            let others = s.repo.visibility == Visibility::Public
-                && svc.members_only_ref_count(&s.repo).await?.0 > 0;
-            (
-                refs.iter()
-                    .filter(|(n, _)| n.starts_with("refs/heads/"))
-                    .map(|(n, st)| Row {
-                        name: n.clone(),
-                        tip: forge_core::rules::tip_of(st),
-                        members_only: false,
-                    })
-                    .collect(),
-                others,
-            )
-        }
+        )
+    } else {
+        let refs = svc.read_refs(&s.repo).await?;
+        let others = s.repo.visibility == Visibility::Public
+            && svc.members_only_ref_count(&s.repo).await?.0 > 0;
+        (
+            refs.iter()
+                .filter(|(n, _)| n.starts_with("refs/heads/"))
+                .map(|(n, st)| Row {
+                    name: n.clone(),
+                    tip: forge_core::rules::tip_of(st),
+                    members_only: false,
+                })
+                .collect(),
+            others,
+        )
     };
     let live: Vec<&Row> = rows.iter().filter(|r| r.tip.is_some()).collect();
     let current = git::current_branch(Path::new(".")).map(|b| git::full_ref(&b));

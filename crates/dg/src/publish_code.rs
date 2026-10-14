@@ -25,6 +25,7 @@
 //! request merged at the public commit. `--make-public` also makes its comments and reviews
 //! public (a maintainer's bundle; its own title and description stay members-only for now).
 
+use std::fmt::Write as _;
 use std::path::Path;
 
 use anyhow::{Context as _, Result};
@@ -43,6 +44,7 @@ use crate::git;
 
 /// `dg publish` arguments.
 #[derive(Debug, clap::Args)]
+#[allow(clippy::struct_excessive_bools)] // independent flags, as clap takes them
 pub struct PublishArgs {
     /// The members-only branch to publish (default: the current branch).
     #[arg(conflicts_with = "pr")]
@@ -113,6 +115,7 @@ impl Plan {
 }
 
 /// `dg publish`.
+#[allow(clippy::too_many_lines)] // one publish's steps, in the order they happen
 pub async fn run(ctx: &Ctx, a: &PublishArgs) -> Result<()> {
     let cwd = std::env::current_dir().context("reading the current directory")?;
     let repo = crate::storage::clone_repo().ok_or_else(|| {
@@ -140,27 +143,23 @@ pub async fn run(ctx: &Ctx, a: &PublishArgs) -> Result<()> {
         .await?
         .ok_or_else(|| crate::pr::members_key_needed(&s.repo, "publish a members-only branch"))?;
     // what is published, and from where
-    let (branch, tip, base, pr) = match a.pr {
-        Some(n) => {
-            let (branch, tip, base, view) =
-                pr_source(ctx, &collab, &s, &cwd, &remote, n, a.history).await?;
-            (branch, tip, base, Some((n, view)))
-        }
-        None => {
-            let (branch, tip) = branch_source(&cwd, a.branch.as_deref(), &fold)?;
-            let base = match &a.onto {
-                Some(b) => git::full_ref(b),
-                None => {
-                    let svc = forge_core::repo::RepoService::new(&s.client, &s.identity, &s.bridge);
-                    git::full_ref(
-                        &svc.read_default_branch(&s.repo)
-                            .await?
-                            .unwrap_or_else(|| "main".into()),
-                    )
-                }
-            };
-            (branch, tip, base, None)
-        }
+    let (branch, tip, base, pr) = if let Some(n) = a.pr {
+        let (branch, tip, base, view) =
+            pr_source(ctx, &collab, &s, &cwd, &remote, n, a.history).await?;
+        (branch, tip, base, Some((n, view)))
+    } else {
+        let (branch, tip) = branch_source(&cwd, a.branch.as_deref(), &fold)?;
+        let base = if let Some(b) = &a.onto {
+            git::full_ref(b)
+        } else {
+            let svc = forge_core::repo::RepoService::new(&s.client, &s.identity, &s.bridge);
+            git::full_ref(
+                &svc.read_default_branch(&s.repo)
+                    .await?
+                    .unwrap_or_else(|| "main".into()),
+            )
+        };
+        (branch, tip, base, None)
     };
     let base_tip = public_base_tip(&fold, &base)?;
     ensure_local(ctx, &cwd, &remote, &base, &base_tip)?;
@@ -236,7 +235,7 @@ pub async fn run(ctx: &Ctx, a: &PublishArgs) -> Result<()> {
         &findings,
         a,
         &author,
-    )?;
+    );
     refuse_unseen_branch_name(ctx, &plan, message.as_deref(), a.message.is_some())?;
     if findings.iter().any(|f| f.1) {
         return Err(UserError::new(
@@ -559,8 +558,9 @@ async fn pr_source(
     } else {
         crate::pr::METHOD_SQUASH
     };
-    let rights =
-        crate::pr::require_merge_rights(ctx, s, &s.repo, &view, Some(method), false).await?;
+    let rights = crate::pr::require_merge_rights(ctx, s, &s.repo, &view, Some(method), false)
+        .await
+        .map_err(|e| as_publish(e, n))?;
     let not_passing =
         crate::pr::head_checks_not_passing(collab, &s.repo, &view, rights.policy.as_ref()).await;
     if !not_passing.is_empty() && !ctx.json {
@@ -582,6 +582,23 @@ async fn pr_source(
     let base = view.merge_base.ref_name.clone();
     git::require_branch_ref(&base)?;
     Ok((branch, tip, base, view))
+}
+
+/// A refusal `dg pr merge`'s checks gave, worded for `dg publish --pr n`.
+fn as_publish(e: anyhow::Error, n: u64) -> anyhow::Error {
+    match e.downcast::<UserError>() {
+        Ok(mut u) => {
+            u.message = u.message.replacen("merge failed", "not published", 1);
+            for f in &mut u.fix {
+                *f = f.replace("`dg pr merge`", &format!("`dg publish --pr {n}`"));
+            }
+            if let Some(note) = &mut u.note {
+                *note = note.replace("no merge event was posted", "nothing was published");
+            }
+            u.into()
+        }
+        Err(e) => e,
+    }
 }
 
 /// The public tip of `base`, or a refusal: it must be a live public branch.
@@ -743,7 +760,7 @@ fn squash_message(plan: &Plan, message: Option<&str>, co: bool, me: &[(String, S
             let mut m = (*last).to_string();
             m.push_str("\n\n");
             for subject in &subjects {
-                m.push_str(&format!("* {subject}\n"));
+                let _ = writeln!(m, "* {subject}");
             }
             m.trim_end().to_string()
         }
@@ -752,7 +769,7 @@ fn squash_message(plan: &Plan, message: Option<&str>, co: bool, me: &[(String, S
     if !trailers.is_empty() {
         m.push_str("\n\n");
         for t in trailers {
-            m.push_str(&format!("Co-authored-by: {t}\n"));
+            let _ = writeln!(m, "Co-authored-by: {t}");
         }
         m = m.trim_end().to_string();
     }
@@ -846,9 +863,9 @@ fn dialog(
     findings: &[(String, bool)],
     a: &PublishArgs,
     me: &[(String, String)],
-) -> Result<()> {
+) {
     if ctx.json {
-        return Ok(());
+        return;
     }
     // with history the commits' author emails become public too
     let names: Vec<String> = if a.history {
@@ -883,11 +900,16 @@ fn dialog(
     }
     let base = plan.base_name();
     if a.history {
-        println!(
-            "  Publish with history: the {} {} published as they are. The last one will be visibly linked to this branch's members-only activity.",
-            plural(plan.commits.len(), "commit"),
-            if plan.commits.len() == 1 { "is" } else { "are" }
-        );
+        if plan.commits.len() == 1 {
+            println!(
+                "  Publish with history: the commit is published as it is. It will be visibly linked to this branch's members-only activity."
+            );
+        } else {
+            println!(
+                "  Publish with history: the {} are published as they are. The last one will be visibly linked to this branch's members-only activity.",
+                plural(plan.commits.len(), "commit")
+            );
+        }
     } else {
         println!(
             "  Squash into one commit: one new commit on {} ({}); the members-only history stays members-only.",
@@ -909,14 +931,15 @@ fn dialog(
         }
     }
     let branch = plan.branch_name();
-    let named = |text: &str| !branch.is_empty() && text.contains(branch);
-    if message.is_some_and(named) || (a.history && plan.commits.iter().any(|c| named(&c.subject))) {
+    let names_branch = |text: &str| !branch.is_empty() && text.contains(branch);
+    if message.is_some_and(names_branch)
+        || (a.history && plan.commits.iter().any(|c| names_branch(&c.subject)))
+    {
         println!(
             "  Warning: the message names the members-only branch {}; that name becomes public",
             safe(branch)
         );
     }
-    Ok(())
 }
 
 /// A squash message that names the members-only branch, chosen by nobody (no `-m`) and with
@@ -1042,8 +1065,7 @@ fn repair_local_base(cwd: &Path, plan: &Plan, commit: &str) -> Repair {
     let checked_out_here = current.as_deref() == Some(plan.base.as_str());
     let marker = format!("branch {}", plan.base);
     let elsewhere = git::git(cwd, &["worktree", "list", "--porcelain"], &[])
-        .map(|o| o.lines().filter(|l| *l == marker).count())
-        .unwrap_or(0)
+        .map_or(0, |o| o.lines().filter(|l| *l == marker).count())
         > usize::from(checked_out_here);
     if elsewhere {
         return Repair::Hint;

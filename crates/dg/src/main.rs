@@ -2587,7 +2587,7 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
             history,
         } => make_public::run(ctx, repo, posts, *thread, *history).await,
         Command::Branch { cmd } => branch::run(ctx, cmd.as_ref()).await,
-        Command::Publish(args) => publish_code::run(ctx, args).await,
+        Command::Publish(args) => Box::pin(publish_code::run(ctx, args)).await,
         Command::Cost(cmd) => cost::run(ctx, cmd).await,
         Command::Storage(cmd) => storage::run(ctx, cmd).await,
         Command::Webhook(cmd) => webhook::run(ctx, cmd).await,

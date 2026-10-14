@@ -529,6 +529,7 @@ impl std::fmt::Debug for MembersUpdates {
             .field("names", &self.by_name.len())
             .field("alerts", &self.alerts.len())
             .field("unreadable", &self.unreadable)
+            .field("sealed", &self.sealed.len())
             .finish()
     }
 }

@@ -1204,7 +1204,8 @@ fn pr_line(v: &PatchView, a: &forge_core::rules::v2::Approvals, hid: &str) -> St
         v.patch.number,
         state_label(v),
         safe(&v.patch.title),
-        short(&v.head),
+        // the commit itself for a member, behind a members-only PR's blind when it is known
+        short(&Collab::real_head_of(v, None)),
         safe(hid)
     )
 }
@@ -1683,7 +1684,8 @@ async fn view(
                 "{} {} ({}) → {}",
                 source,
                 safe(v.patch.source_ref_name.as_deref().unwrap_or("(no branch)")),
-                short(&v.head),
+                // a member reads the commit behind a members-only PR's blinded head
+                short(real_head.as_deref().unwrap_or(&v.head)),
                 safe(&v.merge_base.ref_name)
             );
             if v.merge_base.ref_name != v.patch.base_ref_name {

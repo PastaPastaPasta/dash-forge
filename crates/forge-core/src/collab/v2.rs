@@ -3187,8 +3187,15 @@ pub struct Collab<'a> {
     members_patch: std::sync::Mutex<Option<private::MembersPatch>>,
     /// A public repository's refs as this member reads them ([`Self::members_refs`]), read once
     /// per `Collab` and keyed by repository id; dropped by [`Self::refs_changed`].
-    members_refs: std::sync::Mutex<Option<([u8; 32], Option<Arc<crate::repo::MembersRefs>>)>>,
+    members_refs: std::sync::Mutex<Option<([u8; 32], MembersFold)>>,
 }
+
+/// A public repository's refs as one member reads them ([`Collab::members_refs`]); `None` when the
+/// reader holds no members key for it.
+type MembersFold = Option<Arc<crate::repo::MembersRefs>>;
+
+/// How a PR's base folds for a merge's verification, given its audience ([`Collab::list_patch_views`]).
+type BaseOf = Box<dyn Fn(&rules::v2::MergeBase, Audience) -> rules::MergeBaseTips + Send + Sync>;
 
 /// Who a letter went to, as its writer resolved it when it was posted.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -5390,6 +5397,7 @@ impl<'a> Collab<'a> {
     /// [`Self::list_patch_views`] with, for each members-only PR of the page this reader cannot
     /// open, its placeholder and its log (transitions and events: open, merged or closed, and
     /// what moderation needs), so a list can filter and order it like the others.
+    #[allow(clippy::too_many_lines)] // the reads, then one fold per row
     pub async fn list_patch_views_read(
         &self,
         repo: &RepoRef,
@@ -5439,9 +5447,7 @@ impl<'a> Collab<'a> {
         let (reviews, _) = self.readable_reviews(repo, reviews).await?;
         let mut reviews = per_target(reviews, "patchId");
         // The base branch of every row folds against one read of the ref history.
-        let base_of: Box<
-            dyn Fn(&rules::v2::MergeBase, Audience) -> rules::MergeBaseTips + Send + Sync,
-        > = if repo.visibility == Visibility::Private {
+        let base_of: BaseOf = if repo.visibility == Visibility::Private {
             let kr = self.keyring(repo).await?;
             let updates = crate::refs::private_updates_of(&state, &kr);
             Box::new(move |b: &rules::v2::MergeBase, _| {
@@ -5822,9 +5828,7 @@ impl<'a> Collab<'a> {
     /// `source_repo_id` resolved, when it is a public repository and this `Collab` signs (only a
     /// member opens a members-only PR); `None` otherwise or when it cannot be read.
     async fn members_source(&self, source_repo_id: &str) -> Option<RepoRef> {
-        if self.signer.is_none() {
-            return None;
-        }
+        self.signer?;
         crate::resolve::resolve_id(self.client, source_repo_id)
             .await
             .ok()
@@ -7771,8 +7775,7 @@ impl<'a> Collab<'a> {
                 target,
                 EventKind::HeadUpdate,
                 format!("move the head of pull request #{}", target.number),
-            )
-            .into());
+            ));
         }
         let kr = self.members_writer(repo).await?;
         let lane = kr.lane(repo)?;
