@@ -108,11 +108,14 @@ pub const WRITER_ONLY_EVENT_KINDS: [u64; 6] = [8, 15, 16, 19, 20, 23];
 
 /// The `event` kinds a client convention keeps from triage though consensus admits them (the
 /// kind is not on `t_triageKinds`): a CI re-run request (26, `rules::ci_rerun`), which, as on
-/// GitHub, needs write access, and a publication date (28, `rules::embargo`). Readers ignore a
-/// triage member's (`ci_rerun::rerun_counts`, `embargo::record_counts`), so clients refuse it
-/// before signing.
-pub const CLIENT_WRITER_EVENT_KINDS: [u64; 2] = [
+/// GitHub, needs write access, a request to a bot (27, `rules::agent_request`), whose askers are
+/// writers or maintainers (the registered set's triage allow-list leaves 27 out), and a
+/// publication date (28, `rules::embargo`). Readers ignore a triage member's
+/// (`ci_rerun::rerun_counts`, `agent_request::request_allowed`, `embargo::record_counts`), so
+/// clients refuse it before signing.
+pub const CLIENT_WRITER_EVENT_KINDS: [u64; 3] = [
     crate::rules::ci_rerun::CI_RERUN_KIND,
+    crate::rules::agent_request::AGENT_REQUEST_KIND,
     crate::rules::embargo::EMBARGO_KIND,
 ];
 
@@ -1061,9 +1064,9 @@ mod tests {
         }
         // Every code outside the deny-list is open to triage, unknown ones included, but for
         // the client conventions a reader never counts from triage (26, a CI re-run request;
-        // 28, a publication date).
+        // 27, a request to a bot; 28, a publication date).
         for code in 0..64u64 {
-            let want = if matches!(code, 8 | 15 | 16 | 19 | 20 | 23 | 26 | 28) {
+            let want = if matches!(code, 8 | 15 | 16 | 19 | 20 | 23 | 26 | 27 | 28) {
                 Role::Writer
             } else {
                 Role::Triage

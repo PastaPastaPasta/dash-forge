@@ -186,6 +186,8 @@ import type { CloseIssuesOption } from '@/components/repo/merge-panel'
 import { LINKED_ISSUES_MAX, linkedIssueTargets } from '@/lib/view/jump'
 import { EventValuesNote, HiddenNote } from '@/components/repo/hidden-note'
 import { EditedMarker, MarkdownEditor, withDiscardedEdit } from '@/components/repo/issue-bits'
+import { AgentsSection, useRequestsOutsideAccess } from '@/components/repo/agents-section'
+import type { AgentRequest } from '@/lib/rules/agent-request'
 import { AssigneePicker, LabelPicker, MilestonePicker, SidebarSection, applySetChange, assigneesConfirm, labelsConfirm, setChangeShows, stateToggleLabel, type SetChange } from '@/components/repo/target-rail'
 import { readMilestones } from '@/lib/repo/milestones'
 import { ReviewersCard } from '@/components/repo/reviewers-card'
@@ -194,6 +196,9 @@ import { ChecksTab, CommitsTab } from '@/components/repo/pull-tabs'
 import { cn, errorMessage, shortId } from '@/lib/utils'
 import { useDpnsName } from '@/hooks/use-dpns-name'
 import { threadAuthorIds } from '@/lib/repo/bots'
+
+/** No requests to bots (a stable empty list for the request flags). */
+const NO_REQUESTS: readonly AgentRequest[] = []
 
 /** No pending review comments (a stable empty list). */
 const NO_DRAFTS: readonly DraftComment[] = []
@@ -507,6 +512,8 @@ function PullPage({
   // CI re-run requests no newer run answers yet: the owner's, maintainers' and writers' only (a
   // triage member's is not counted, so runners ignore it).
   const roleOracle = useMemo(() => new RoleOracle(thread.members), [thread.members])
+  // Requests to bots that were outside the bot's access when written: flagged on their line.
+  const outsideAccess = useRequestsOutsideAccess(home, thread.agentRequests ?? NO_REQUESTS, thread.members, repo.visibility === 'private' || notPublic(pull.audience))
   const rerunPending = useMemo(() => {
     const counted = thread.ciReruns.filter((r) => rerunCounts(r, repo.ownerId, roleOracle))
     return pendingReruns(counted, checks.data?.runs ?? [], pull.headOid)
@@ -1797,10 +1804,11 @@ function PullPage({
                 </div>
               </div>
 
-              {timeline.length > 0 || thread.membersOnly.length > 0 ? (
+              {timeline.length > 0 || thread.membersOnly.length > 0 || (thread.agentRequests?.length ?? 0) > 0 ? (
                 <Timeline
                   items={conversation}
                   membersOnly={thread.membersOnly}
+                  {...(thread.agentRequests ? { agentRequests: thread.agentRequests, outsideAccess } : {})}
                   {...(home.lane ? { lane: home.lane } : {})}
                   links={links}
                   trust={trust}
@@ -2419,6 +2427,15 @@ function PullPage({
                 </ul>
               )}
             </SidebarSection>
+            {/* Bots this PR can be handed to (DESIGN §4.9): shown when a bot's access covers it. */}
+            <AgentsSection
+              home={home}
+              target={{ kind: 'pr', id: pull.id, number: pull.number }}
+              membersOnly={repo.visibility === 'private' || notPublic(pull.audience)}
+              membersSource={membersSource}
+              specificPeople={pull.audience === 'specificPeople'}
+              onAsked={(event) => refresh((t) => (t.agentRequests ?? []).some((r) => r.id === event))}
+            />
             {open && canAuthorOrMember && !pull.state.draft ? (
               <button
                 type="button"

@@ -1,7 +1,9 @@
 //! Bots' post keys on Platform (mixed-visibility DESIGN §4.9, `docs/security/private-repos.md`
 //! §23): a maintainer sends each bot of a repository its post key `W_{e,b}` for the current
 //! epoch in a `postKey` key letter (kind 10) when members-only content is turned on, when the
-//! bot is added, on every rotation (in the same run as the wraps) and on a repair; a bot reads
+//! bot is added, when its access notice starts allowing members-only replies, on every rotation
+//! (in the same run as the wraps) and on a repair, but only while its newest access notice allows
+//! members-only replies ([`with_post_access`]); a bot reads
 //! the post keys addressed to it to write members-only posts (`enc` v0x05).
 //!
 //! A bot never holds the members key (L4) and is never wrapped to, so adding or removing one
@@ -44,6 +46,35 @@ pub fn bots_of(members: &[Member], exclude: &[String]) -> Vec<String> {
         }
     }
     out
+}
+
+/// The bots among `bots` (base58 ids) whose current access notice (kind 11, `private-repos.md`
+/// §22.1) is live and lets them post members-only replies (`postMembersOnly`): the only ones a
+/// maintainer sends a post key (DESIGN §4.9: "the rotating maintainer's client issues a fresh
+/// post key to each bot whose notice allows members-only posts"). A bot with no notice, a
+/// revoked or ended one, or one without that ability gets none, so its members-only posting
+/// stops at the next rotation.
+pub async fn with_post_access(
+    signer: &PrivateSigner<'_>,
+    repo: &RepoRef,
+    bots: Vec<String>,
+) -> Result<Vec<String>> {
+    if bots.is_empty() {
+        return Ok(bots);
+    }
+    let collab = crate::collab::v2::Collab::new(signer.client, signer.identity, signer.bridge);
+    let notices = collab.access_notices(repo).await?;
+    let now = crate::cache::now_ms();
+    Ok(bots
+        .into_iter()
+        .filter(|b| {
+            notices.for_bot(b).is_some_and(|e| {
+                e.notice.live_at(now)
+                    && e.notice
+                        .may(crate::private::access_notice::MAY_POST_MEMBERS_ONLY)
+            })
+        })
+        .collect())
 }
 
 /// What [`issue`] did.

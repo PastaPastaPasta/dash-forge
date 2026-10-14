@@ -89,6 +89,10 @@ import { Field, Input } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { EditedMarker, MarkdownEditor, withDiscardedEdit } from '@/components/repo/issue-bits'
+import { AgentsSection, useRequestsOutsideAccess } from '@/components/repo/agents-section'
+import type { AgentRequest } from '@/lib/rules/agent-request'
+import type { Membership } from '@/lib/rules/v2'
+
 import { AssigneePicker, LabelPicker, MilestonePicker, SidebarSection, applySetChange, assigneesConfirm, labelsConfirm, setChangeShows, stateToggleLabel, type SetChange } from '@/components/repo/target-rail'
 import { readMilestones } from '@/lib/repo/milestones'
 import { EventValuesNote, HiddenNote } from '@/components/repo/hidden-note'
@@ -108,6 +112,10 @@ import { BundleAlertsNote, EarlierVersions, EditedAfterPublicNote, MadePublicBy,
 import type { BundleRequest } from '@/lib/repo/make-public-bundle'
 import { makePostPublic, provenanceOf } from '@/lib/repo/make-public-writes'
 import { EmbargoPanel } from '@/components/repo/embargo-panel'
+
+/** No requests or members yet (stable empty inputs for the request flags). */
+const NO_REQUESTS: readonly AgentRequest[] = []
+const NO_MEMBERS: readonly Membership[] = []
 
 /** The write the confirm dialog is about to sign. */
 type Pending =
@@ -308,6 +316,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const commentTooLong = commentLong.long ? commentLong.problem !== null : utf8Length(comment) > BODY_MAX
 
   const moderation = useThreadModeration(sdk, ready, home.repo, data?.moderationInput, data?.moderation)
+  // Requests to bots that were outside the bot's access when written: flagged on their line.
+  const outsideAccess = useRequestsOutsideAccess(home, data?.agentRequests ?? NO_REQUESTS, data?.members ?? NO_MEMBERS, home.repo.visibility === 'private' || notPublic(data?.issue.audience))
 
   if (!Number.isFinite(number)) return <EmptyState icon={CircleDot} title="No issue addressed" body="Add &number= to the URL." />
   if (loading && !data) return <LoadingBlock label="Loading issue" />
@@ -710,10 +720,11 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         )}
 
         {/* Timeline */}
-        {!threadCollapsed && (timeline.length > 0 || data.membersOnly.length > 0 || (backlinks.linking.data?.mentioning.length ?? 0) > 0 || (duplicatesOf.data?.length ?? 0) > 0) ? (
+        {!threadCollapsed && (timeline.length > 0 || data.membersOnly.length > 0 || (data.agentRequests?.length ?? 0) > 0 || (backlinks.linking.data?.mentioning.length ?? 0) > 0 || (duplicatesOf.data?.length ?? 0) > 0) ? (
           <Timeline
             items={timeline}
             membersOnly={data.membersOnly}
+            {...(data.agentRequests ? { agentRequests: data.agentRequests, outsideAccess } : {})}
             {...(home.lane ? { lane: home.lane } : {})}
             links={links}
             trust={trust}
@@ -913,6 +924,14 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         <SidebarSection title="Development" icon={GitPullRequest}>
           <LinkedPulls addr={addr} number={issue.number} backlinks={backlinks.linking} />
         </SidebarSection>
+        {/* Bots this issue can be handed to (DESIGN §4.9): shown when a bot's access covers it. */}
+        <AgentsSection
+          home={home}
+          target={{ kind: 'issue', id: issue.id, number: issue.number }}
+          membersOnly={home.repo.visibility === 'private' || notPublic(issue.audience)}
+          specificPeople={issue.audience === 'specificPeople'}
+          onAsked={(event) => refresh((t) => (t.agentRequests ?? []).some((r) => r.id === event))}
+        />
         {publicRepo ? (
           <EmbargoPanel
             repo={home.repo}

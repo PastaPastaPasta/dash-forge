@@ -767,6 +767,49 @@ cmd('ci reruns', 'The re-run requests written since a time.', {
     'since': I, 'count': I, 'requests': A(OBJ),
 }, ['count', 'requests'])
 
+BOT_MAY = D('What the bot may do: post, postMembersOnly, readOnRequest, ciMembersBranches (and abilities a later version adds).', SA)
+BOT_THREADS = D('"all", or the issue and pull request numbers it may be asked about.', {'anyOf': [E('all'), A(I)]})
+BOT_ASKERS = E('writers', 'maintainers')
+cmd('bot allow', 'A bot\'s access written: a new access notice everyone reads.', {
+    'status': E('allowed'), 'bot': S, 'may': BOT_MAY, 'askers': BOT_ASKERS, 'threads': BOT_THREADS,
+    'processor': nl(S), 'until': nl(I), 'line': D('The access as everyone reads it.', S),
+    'notice': D('The notice\'s packManifest document ids (a private repository stores two copies).', SA),
+    'packHash': S, 'cost': COST,
+}, ['status', 'bot', 'may', 'askers', 'threads', 'line', 'notice', 'packHash', 'cost'])
+cmd('bot revoke', 'A bot\'s access taken away: a new access notice allowing nothing.', {
+    'status': E('revoked'), 'bot': S, 'may': BOT_MAY, 'askers': BOT_ASKERS, 'threads': BOT_THREADS,
+    'processor': nl(S), 'until': nl(I), 'line': S, 'notice': SA, 'packHash': S, 'cost': COST,
+}, ['status', 'bot', 'may', 'line', 'notice', 'packHash', 'cost'])
+cmd('bot list', 'Each bot\'s current access to a repository, as everyone reads it.', {
+    'repo': S, 'count': I, 'unreadable': D('Access records this reader could not read.', I),
+    'bots': A(O({'bot': S, 'may': BOT_MAY, 'askers': BOT_ASKERS, 'threads': BOT_THREADS, 'processor': nl(S),
+                 'until': nl(I), 'live': B, 'note': S, 'by': S, 'at': I, 'line': S, 'notice': S},
+                ['bot', 'may', 'askers', 'threads', 'live', 'by', 'at', 'line', 'notice'])),
+}, ['repo', 'count', 'bots'])
+cmd('bot ask', 'A bot asked to work on a pull request or issue: the request, and the letter that hands it the thread\'s members-only content as it is now.', {
+    'status': E('asked'), 'bot': S, 'pr': I, 'issue': I,
+    'request': D('The request\'s event id: the job.', S),
+    'letter': D('The letter\'s packManifest document id, when members-only content was shared.', nl(S)),
+    'documents': D('Members-only posts the letter opens (the request itself included).', I),
+    'code': D('The members-only branch whose code was shared, if any.', nl(S)),
+    'membersOnly': D('Whether the thread is members-only (the task is then members-only too).', B), 'cost': COST,
+}, ['status', 'bot', 'request', 'documents', 'membersOnly', 'cost'])
+cmd('bot jobs', 'The requests to a bot (you, or --bot) in a repository since a time.', {
+    'bot': S, 'since': I, 'count': I,
+    'requests': A(O({'id': S, 'number': I, 'asker': S, 'task': nl(S), 'at': I,
+                     'allowed': D('Whether the bot\'s access allowed the request when it was written (a runner works only on those).', B),
+                     'letter': D('Whether the asker shared the thread\'s members-only content with you.', B)},
+                    ['id', 'number', 'asker', 'at', 'letter'])),
+}, ['bot', 'since', 'count', 'requests'])
+cmd('bot read', 'As a bot: one request\'s thread as you were given it.', {
+    'request': S, 'allowed': B, 'number': I, 'asker': S, 'task': nl(S), 'at': I, 'letter': nl(S), 'asOf': nl(I),
+    'head': nl(S),
+    'packs': I, 'packFiles': SA,
+    'posts': A(O({'kind': E('pull request', 'issue', 'comment', 'review'), 'id': S, 'author': S, 'at': I,
+                  'status': E('public', 'membersOnly', 'notShared', 'after'), 'title': nl(S), 'body': nl(S)},
+                 ['kind', 'id', 'author', 'at', 'status'])),
+}, ['request', 'number', 'asker', 'at', 'packs', 'posts'])
+
 # -- search, status, doctor, import -----------------------------------------------------------
 cmd('search issues', 'Issues matching a query.', {
     'repo': S, 'query': R('issueQuery'), 'notApplied': SA, 'total': I, 'count': I, 'hidden': I, 'membersOnly': I,

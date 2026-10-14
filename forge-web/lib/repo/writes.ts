@@ -55,6 +55,7 @@ import { invalidateMembers, memberDocOf, readMemberships, roleOfMemberDoc } from
 import { contractAdmitsBots, contractHasProperty } from './contract-shape'
 import { refNameHash, repoContentWritten } from './push'
 import type { PrivateDocType } from '../private'
+import { AGENT_REQUEST_KIND } from '../rules/agent-request'
 import { isSealedKind, privateWriter, sealForRepo, sealPrivatePerObject, sealedIntent, sealedTextUse, PrivateWriteError, type MembersPatch, type PrivateWriter } from './private-writes'
 import { MEMBERS_TEXT_LIMIT, audienceFor, childAudience, hasMembersKey, keyedContentKey, knownAudience, madePublicByBundle, membersWriter, noteAudience, sealMembersContent, storedOnce, storedTargetOnce, targetAudience, type MembersWriter } from './members-writes'
 import { LetterRefusedError, isLetterWriter, letterContentKey, letterThread, letterWriter, sdkLetterReads, sealLetterContent, type LetterWriter } from './letter-writes'
@@ -372,8 +373,10 @@ export async function writeRepoDoc(
       const w = writer ?? (await privateWriter(sdk, auth, repo))
       contentKey = await keyedContentKey(w.keys, said)
       // D38: on the mainnet contract (forge-collab declares `aud`) new content is v0x03, per object
-      // (issues, PRs, comments and reviews: events gain nothing from a key of their own)
-      const perObject = CONTENT_TYPES.has(sealedType) && (await declares(sdk, repo, DOC.issue, AUD))
+      // (issues, PRs, comments and reviews; of the events only a request to a bot, kind 27, whose
+      // `read` letter hands the bot the task's own key: other events gain nothing from one)
+      const request = sealedType === 'event' && data['kind'] === AGENT_REQUEST_KIND
+      const perObject = (CONTENT_TYPES.has(sealedType) || request) && (await declares(sdk, repo, DOC.issue, AUD))
       data = await sealForRepo(sdk, auth, repo, sealedType, data, w, perObject ? sealPrivatePerObject : undefined)
       // D14: every sealed write by a member carries `asMember`.
       if (w.isMember === true) data = withMemberProof(documentType, data, auth.identityId)

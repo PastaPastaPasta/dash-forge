@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/bot-ask.schema.json",
+  "title": "dg bot ask --json",
+  "description": "A bot asked to work on a pull request or issue: the request, and the letter that hands it the thread's members-only content as it is now.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "asked"
+      ]
+    },
+    "bot": {
+      "type": "string"
+    },
+    "pr": {
+      "type": "integer"
+    },
+    "issue": {
+      "type": "integer"
+    },
+    "request": {
+      "type": "string",
+      "description": "The request's event id: the job."
+    },
+    "letter": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "The letter's packManifest document id, when members-only content was shared."
+    },
+    "documents": {
+      "type": "integer",
+      "description": "Members-only posts the letter opens (the request itself included)."
+    },
+    "code": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "The members-only branch whose code was shared, if any."
+    },
+    "membersOnly": {
+      "type": "boolean",
+      "description": "Whether the thread is members-only (the task is then members-only too)."
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "bot",
+    "request",
+    "documents",
+    "membersOnly",
+    "cost"
+  ],
+  "additionalProperties": true
+}

@@ -56,6 +56,7 @@ import { prefetchDpnsNames } from './dpns'
 import { withLongBodies, withLongBody, type LongBodyState } from './long-body'
 import type { Membership } from '../rules/v2'
 import type { RerunRequest } from '../rules/ci-rerun'
+import type { AgentRequest } from '../rules/agent-request'
 import { embargoCounts, embargoOf, type Embargo } from '../rules/embargo'
 import { contentGate } from '../repo/made-public'
 import { HiddenTally, admitAll, placeholderShown, publicationMarks, viewAudience, type BundleAlert, type PublicationMarks, type HiddenCounts, type LetterFacts, type MembersOnlyItem } from '../repo/private-content'
@@ -365,6 +366,8 @@ export interface IssueThread {
   readonly members: readonly Membership[]
   /** Private repos: the target's event values not readable here, and those not encrypted. */
   readonly eventValues: EventValueCounts
+  /** Requests to bots on this issue (event kind 27), oldest first: each a timeline line. */
+  readonly agentRequests?: readonly AgentRequest[]
   /**
    * Milestone and pinned (the member events, folded: kinds 17-20), and locked: the lock bit of the
    * issue's transitions (RC1 R-15; sum ≥ 16), which consensus enforces on every comment.
@@ -580,6 +583,7 @@ export async function loadIssueOrMembersOnly(sdk: EvoSDK, repo: RepoRef, number:
     membersOnly: membersOnlyEntries(tally, []),
     ...(tally.alerts.length > 0 ? { bundleAlerts: tally.alerts } : {}),
     eventValues: eventValues(log),
+    ...(log.agentRequests !== undefined ? { agentRequests: log.agentRequests } : {}),
     labels,
     members,
     embargo: embargoOfLog(repo, id, log, members),
@@ -721,6 +725,8 @@ export interface PullThread {
   readonly eventValues: EventValueCounts
   /** The PR's CI re-run requests (event kind 26), oldest first, counted or not (`rerunCounts` judges). */
   readonly ciReruns: readonly RerunRequest[]
+  /** Requests to bots on this PR (event kind 27), oldest first: each a timeline line. */
+  readonly agentRequests?: readonly AgentRequest[]
   /** Its publication date (event kind 28), when members set one this reader can open (DESIGN §4.7). */
   readonly embargo?: Embargo | null
   /**
@@ -895,6 +901,7 @@ export async function loadPullOrMembersOnly(
     ...(tally.alerts.length > 0 ? { bundleAlerts: tally.alerts } : {}),
     eventValues: eventValues(log),
     ciReruns: log.ciReruns ?? [],
+    ...(log.agentRequests !== undefined ? { agentRequests: log.agentRequests } : {}),
     // unknown (not "none") when the members could not be read: the panel then offers nothing
     ...(members === null ? {} : { embargo: embargoOfLog(repo, id, log, members) }),
     locked: isLocked(transitions),
