@@ -45,7 +45,7 @@ pub async fn run(ctx: &Ctx, cmd: &CollabCommand) -> Result<()> {
             member,
             role,
             wait,
-        } => add(ctx, repo, member, *role, *wait).await,
+        } => Box::pin(add(ctx, repo, member, *role, *wait)).await,
         CollabCommand::Accept { repo, withdraw } => accept(ctx, repo, *withdraw).await,
         CollabCommand::Remove {
             repo,
