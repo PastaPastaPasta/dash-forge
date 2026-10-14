@@ -320,6 +320,9 @@ struct MixedSealIn {
     doc: DocHeader,
     fields: Fields,
     nonce: String,
+    /// Sealed by D38's private writer (`seal_private_v3`), not the members lane's.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    d38: bool,
 }
 
 /// A party of a letter vector: an identity and its ENCRYPTION key pair.
@@ -942,7 +945,12 @@ fn run(v: &Vector) -> Value {
             let i: MixedSealIn = input(v);
             let keys = EpochKeys::derive(&h32(&i.repo_id), i.doc.epoch, &key(&i.key));
             let nonce = nonce12(&i.nonce);
-            match doc::seal_members_with_nonce(&keys, &i.doc, &i.fields, nonce) {
+            let sealed = if i.d38 {
+                doc::seal_private_v3_with_nonce(&keys, &i.doc, &i.fields, nonce)
+            } else {
+                doc::seal_members_with_nonce(&keys, &i.doc, &i.fields, nonce)
+            };
+            match sealed {
                 Ok(enc) => {
                     let ad = i.doc.ad(&keys, doc::V3).unwrap();
                     let k_obj = keys.obj_key(&nonce, &ad);

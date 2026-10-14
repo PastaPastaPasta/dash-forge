@@ -107,7 +107,7 @@ pub fn seal_private_members_props(
         owner,
         props,
         &Members::default(),
-        |h, f| crate::private::doc::seal_members(keys, h, f),
+        |h, f| crate::private::doc::seal_private_v3(keys, h, f),
     )
 }
 

@@ -1946,9 +1946,21 @@ def mixed_vectors():
         vector("mixed_doc_seal", name, desc,
                dict(repoId=H(repoId), key=H(K0), doc=doc, fields=fields, nonce=H(NONCE)),
                dict(ad=H(A), kObj=H(ko), commit=H(C), tlv=H(pt), enc=H(e)))
+    # D38's writer half (mainnet): a private repository's new content is v0x03 by its own writer
+    # (`seal_private_v3`); the AD does not bind vis, so the bytes are the members-only seal's
+    A, ko, C, pt, e = seal_members(private_vis(MDOC), K0, tlv((2, MBODY.encode())))
+    vector("mixed_doc_seal", "v03_private_d38",
+           "a private repository's comment sealed v0x03 by the D38 writer on the mainnet contract (input.d38): a "
+           "private header, a private document's TLV (no blind tags), the members-only envelope and AD.",
+           dict(repoId=H(repoId), key=H(K0), doc=private_vis(MDOC), fields={"body": MBODY}, nonce=H(NONCE), d38=True),
+           dict(ad=H(A), kObj=H(ko), commit=H(C), tlv=H(pt), enc=H(e)))
+    vector("mixed_doc_seal", "v03_private_d38_public_header_refused",
+           "the D38 writer seals private documents only: a public header is refused.",
+           dict(repoId=H(repoId), key=H(K0), doc=MDOC, fields={"body": MBODY}, nonce=H(NONCE), d38=True),
+           dict(error="malformed"))
     for name, doc, fields, err, desc in [
         ("v03_private_header_refused", private_vis(MDOC), {"body": MBODY}, "malformed",
-         "a writer never seals v0x03 for a private repository's document (v0x01 there)."),
+         "the members lane's writer never seals v0x03 for a private repository's document (D38 has its own)."),
         ("v03_config_refused", dict(CONFIG0, vis="public"), {"defaultBranch": "refs/heads/main"}, "malformed",
          "a config is always v0x02, members lane or not."),
         ("v03_body_over_cap", MDOC, {"body": "b" * (MAX_ENC["comment"] - MIN_V3 - 2)}, "tooLarge",

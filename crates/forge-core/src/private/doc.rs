@@ -358,6 +358,48 @@ pub fn seal_members_with_nonce(
     seal_members_inner(keys, header, fields, |_, _| nonce)
 }
 
+/// Seal a **private** repository's document as `enc` v0x03 (mixed-visibility DESIGN D38, the
+/// writer half, on the mainnet contract): the members-only envelope with a per-object key, so
+/// one document's key can later be given on its own. The header must be private, and its TLV is
+/// a private document's (no blind tags); the AD does not bind `vis`, so readers open it as they
+/// open a v0x03 document anywhere (`mixed_doc_open__v03_in_private_member`). [`seal_members`]
+/// keeps refusing a private header: the members lane never writes into a private repository.
+pub fn seal_private_v3(
+    keys: &EpochKeys,
+    header: &DocHeader,
+    fields: &Fields,
+) -> Result<Vec<u8>, PrivateError> {
+    let rnd = rnd32()?;
+    seal_private_v3_inner(keys, header, fields, |ad, pt| {
+        keys.hedged_nonce(&rnd, ad, pt)
+    })
+}
+
+/// [`seal_private_v3`] with a caller-chosen nonce: the conformance vectors only.
+#[cfg(any(test, feature = "vectors"))]
+pub fn seal_private_v3_with_nonce(
+    keys: &EpochKeys,
+    header: &DocHeader,
+    fields: &Fields,
+    nonce: [u8; 12],
+) -> Result<Vec<u8>, PrivateError> {
+    seal_private_v3_inner(keys, header, fields, |_, _| nonce)
+}
+
+fn seal_private_v3_inner(
+    keys: &EpochKeys,
+    header: &DocHeader,
+    fields: &Fields,
+    nonce: impl FnOnce(&[u8], &[u8]) -> [u8; 12],
+) -> Result<Vec<u8>, PrivateError> {
+    if header.vis != Visibility::Private {
+        return Err(PrivateError::Malformed);
+    }
+    let records = tlv::encode(fields);
+    let parsed = tlv::parse(&records, header.kind, false).ok_or(PrivateError::Malformed)?;
+    v3_envelope(keys, header, &records, &parsed, nonce)
+}
+
 /// The TLV a members or specific-people document of `kind` seals: `records` (already parsed
 /// back by the writer), then the padding record when the kind pads and it fits `max`.
 pub(crate) fn padded(kind: DocKind, records: &[u8], max: usize) -> zeroize::Zeroizing<Vec<u8>> {
@@ -375,22 +417,34 @@ fn seal_members_inner(
     fields: &Fields,
     nonce: impl FnOnce(&[u8], &[u8]) -> [u8; 12],
 ) -> Result<Vec<u8>, PrivateError> {
-    if header.epoch != keys.epoch()
-        || header.vis != Visibility::Public
-        || matches!(header.kind, DocKind::Config | DocKind::Release)
-    {
+    if header.vis != Visibility::Public {
         return Err(PrivateError::Malformed);
     }
     let records = tlv::encode(fields);
     let parsed = tlv::parse_members(&records, header.kind).ok_or(PrivateError::Malformed)?;
-    if !ref_names_match(header, &parsed, keys, V3) {
+    v3_envelope(keys, header, &records, &parsed, nonce)
+}
+
+/// The v0x03 envelope of `records` (already parsed back as `parsed`) under `header`, for
+/// [`seal_members_inner`] and [`seal_private_v3_inner`].
+fn v3_envelope(
+    keys: &EpochKeys,
+    header: &DocHeader,
+    records: &[u8],
+    parsed: &Fields,
+    nonce: impl FnOnce(&[u8], &[u8]) -> [u8; 12],
+) -> Result<Vec<u8>, PrivateError> {
+    if header.epoch != keys.epoch() || matches!(header.kind, DocKind::Config | DocKind::Release) {
+        return Err(PrivateError::Malformed);
+    }
+    if !ref_names_match(header, parsed, keys, V3) {
         return Err(PrivateError::Malformed);
     }
     let max = header.kind.max_enc() - MIN_V3;
     if records.len() > max {
         return Err(PrivateError::TooLarge(header.kind.type_name(), max));
     }
-    let pt = padded(header.kind, &records, max);
+    let pt = padded(header.kind, records, max);
     let ad = header.ad(keys, V3).ok_or(PrivateError::Malformed)?;
     let n = nonce(&ad, &pt);
     let obj = ObjKeys::derive(keys.repo_id(), &keys.obj_key(&n, &ad));
