@@ -597,6 +597,18 @@ async fn pr_code(ctx: &Ctx, s: &Session, number: u32) -> Result<Option<SharedCod
     let snap = crate::branch_share::snapshot(ctx, s, &svc, &kr, &cwd, &full)
         .await
         .map_err(|e| format!("its code isn't included: {e:#}"))?;
+    // the code handed on is the pull request's head, never a newer push to its branch
+    if patch
+        .real_head
+        .as_deref()
+        .is_none_or(|h| !h.eq_ignore_ascii_case(&snap.tip))
+    {
+        return Err(format!(
+            "its code isn't included: {} has moved past the pull request's head; run `dg pr sync {} {number}` first",
+            safe(&short),
+            s.repo.display()
+        ));
+    }
     Ok(Some(SharedCode {
         branch: short,
         head: snap.letter.head,

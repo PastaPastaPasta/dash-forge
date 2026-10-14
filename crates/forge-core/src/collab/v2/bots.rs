@@ -1243,8 +1243,9 @@ struct LongBodies {
 
 impl LongBodies {
     /// The whole text of a members-only `body` whose trailer names a long body (kind 70) the
-    /// letter hands on: fetched, opened with its file key alone, and checked against the
-    /// trailer's SHA-256 and length. `None` keeps the prefix (any reader who cannot fetch it
+    /// letter hands on: fetched and checked against the trailer's SHA-256 (the stored
+    /// artifact's `packHash`), opened with its file key alone, and checked against the
+    /// trailer's length. `None` keeps the prefix (any reader who cannot fetch it
     /// reads the same).
     async fn read(
         &self,
@@ -1269,15 +1270,20 @@ impl LongBodies {
             .iter()
             .filter(|m| m.kind == kind && m.pack_hash == sha256)
         {
+            // the trailer names the stored (sealed) artifact by its packHash; the text inside
+            // is checked by its length, as members read it (`long_body::open_text`)
             let Ok(sealed) = svc.fetch_artifact(repo, m, &store).await else {
                 continue;
             };
+            if crate::private::keys::sha256(&sealed) != sha256 {
+                continue;
+            }
             let Ok(plain) = crate::private::pack::open_with_file_key(&sealed, m.size_bytes, key)
             else {
                 continue;
             };
-            if plain.len() as u64 == bytes && crate::private::keys::sha256(&plain) == sha256 {
-                return String::from_utf8(plain).ok();
+            if let Ok(text) = long_body::open_text(bytes, &plain) {
+                return Some(text);
             }
         }
         None
