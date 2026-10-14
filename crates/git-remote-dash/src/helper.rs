@@ -1555,12 +1555,25 @@ async fn fetch_one(
                     svc.open_members_pack(repo, kr, copies, m.size_bytes, sealed)
                         .await
                 }
-                // a shared pack opens with its own file key alone
-                (None, Some(key)) => {
-                    forge_core::private::pack::open_with_file_key(&sealed, m.size_bytes, key)
-                        .map(forge_core::repo::ArtifactRead::Bytes)
-                        .map_err(forge_core::Error::from)
-                }
+                // a shared pack opens with its own file key alone; a key that does not open it
+                // (a bad share) sets the pack aside, and the branch is left out with a warning
+                (None, Some(key)) => Ok(
+                    match forge_core::private::pack::open_with_file_key(&sealed, m.size_bytes, key)
+                    {
+                        Ok(b) => forge_core::repo::ArtifactRead::Bytes(b),
+                        Err(e) => {
+                            tracing::warn!(pack = %hash, error = %e, "a shared pack did not open with the key it was shared with");
+                            let epoch = match forge_core::private::sniff(&sealed) {
+                                forge_core::private::Head::Sealed { epoch } => epoch,
+                                _ => 0,
+                            };
+                            forge_core::repo::ArtifactRead::Skipped(forge_core::repo::Skipped {
+                                pack: *h,
+                                why: forge_core::private::convert::SkipReason::NoKey { epoch },
+                            })
+                        }
+                    },
+                ),
                 (None, None) => svc.open_or_skip(repo, copies, m.size_bytes, sealed).await,
             };
             match opened {

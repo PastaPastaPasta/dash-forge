@@ -442,12 +442,17 @@ pub async fn share(ctx: &Ctx, name: &str, to: &[String]) -> Result<()> {
             continue;
         };
         let key = header.file_key(keys)?;
+        // a pack this key does not open, or one a removed member wrote late (§8.2), is left out
         let plain = match svc
             .open_members_pack(&s.repo, &kr, copies, m.size_bytes, sealed)
-            .await?
+            .await
         {
-            ArtifactRead::Bytes(b) => b,
-            ArtifactRead::Skipped(_) => continue,
+            Ok(ArtifactRead::Bytes(b)) => b,
+            Ok(ArtifactRead::Skipped(_)) => continue,
+            Err(e) => {
+                tracing::info!(pack = %hex::encode(hash), error = %e, "a members-only pack did not open; left out");
+                continue;
+            }
         };
         let (own, commits, bases) = scratch.contents(&plain)?;
         candidates.push(Candidate {
