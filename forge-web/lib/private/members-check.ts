@@ -6,11 +6,11 @@
  * and its log sealed at `logUrl` (`logSha256` covers the sealed bytes):
  *
  *     K_name = HMAC-SHA256(salt, "dash-forge/v2/check-name")
- *     name'  = base32(HMAC-SHA256(K_name, name))[0..16]                (RFC 4648, lower case)
- *     K_log  = HMAC-SHA256(K_name, "dash-forge/v2/check-log" ‖ 0x00 ‖ nonce)
+ *     name'  = base32(HMAC-SHA256(K_name, 0x01 ‖ name))[0..16]         (RFC 4648, lower case)
+ *     K_log  = HMAC-SHA256(K_name, 0x02 ‖ nonce)
  *     AD     = "DFCL" ‖ 0x01 ‖ u8(len(blind)) ‖ blind ‖ name'
  *     P      = u32(len(H)) ‖ H ‖ u64(len(log)) ‖ log ‖ 0x00 … (to a multiple of 4,096 bytes)
- *     H      = {"head":"<real commit hex>","name":"<check name>","v":1}
+ *     H      = {"head":"<real commit hex>","name":"<check name>","v":1}   (exactly this form)
  *     sealed = "DFCL" ‖ 0x01 ‖ nonce(12) ‖ AES-256-GCM(K_log, nonce, P, AD)
  *
  * `salt` is the blind's salt (TLV 27), which members hold. A member resolves a run's name by
@@ -27,7 +27,9 @@ const VERSION = 0x01
 const PAD = 4096
 const OVERHEAD = 4 + 1 + 12 + 16
 const NAME_LABEL = utf8('dash-forge/v2/check-name')
-const LOG_LABEL = concat(utf8('dash-forge/v2/check-log'), new Uint8Array([0]))
+/** `K_name`'s two uses, kept apart: an opaque name, a log key. */
+const NAME_DOMAIN = new Uint8Array([0x01])
+const LOG_DOMAIN = new Uint8Array([0x02])
 const BASE32 = 'abcdefghijklmnopqrstuvwxyz234567'
 /** The opaque name's length in base32 characters (80 bits). */
 export const OPAQUE_NAME_LEN = 16
@@ -102,11 +104,11 @@ export class CheckKeys {
 
   /** The opaque name of check `name` on this commit. */
   async opaqueName(name: string): Promise<string> {
-    return base32((await hmac(this.nameKey, utf8(name))).slice(0, 10))
+    return base32((await hmac(this.nameKey, concat(NAME_DOMAIN, utf8(name)))).slice(0, 10))
   }
 
   private logKey(nonce: Uint8Array): Promise<Bytes> {
-    return hmac(this.nameKey, concat(LOG_LABEL, nonce))
+    return hmac(this.nameKey, concat(LOG_DOMAIN, nonce))
   }
 
   /** Seal `log` of check `name`, run on the real commit `head` reported as `blind`. */
@@ -159,22 +161,25 @@ export class CheckKeys {
     const end = at + 8 + Number(llen)
     const rest = p.subarray(end)
     if (rest.length >= PAD || rest.some((b) => b !== 0)) throw new CheckLogError('malformed')
+    let raw: string
     let h: unknown
     try {
-      h = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(p.subarray(4, at)))
+      raw = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(p.subarray(4, at))
+      h = JSON.parse(raw)
     } catch {
       throw new CheckLogError('malformed')
     }
     const header = h as { head?: unknown; name?: unknown; v?: unknown }
+    // the one canonical form: no duplicate key, other spacing, order, escape, number form or hex case
     if (
       typeof h !== 'object' ||
       h === null ||
       Array.isArray(h) ||
-      Object.keys(h).sort().join(',') !== 'head,name,v' ||
-      header.v !== 1 ||
       typeof header.head !== 'string' ||
       typeof header.name !== 'string' ||
-      header.head !== header.head.toLowerCase()
+      header.v !== 1 ||
+      JSON.stringify({ head: header.head, name: header.name, v: 1 }) !== raw ||
+      !/^(?:[0-9a-f]{2})*$/.test(header.head)
     ) {
       throw new CheckLogError('malformed')
     }

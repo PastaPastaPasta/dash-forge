@@ -690,10 +690,11 @@ cmd('ci log', 'A check run\'s log written to a file (`-o`; without it the log is
     'name': S, 'bytes': I, 'output': S,
 }, ['name', 'bytes', 'output'])
 cmd('ci refs', 'The repository\'s live refs, their commits and who can see each. A member\'s identity reads the '
-    'members-only ones too (`membersView`), by their real names and commits.', {
-    'repo': S, 'membersView': B,
+    'members-only ones too (`membersView`), by their real names and commits; a member whose key cannot read them here '
+    'gets an error, never a list without them.', {
+    'repo': S, 'visibility': E('public', 'private'), 'membersView': B,
     'refs': A(O({'ref': S, 'tip': S, 'audience': E('public', 'members', 'private')}, ['ref', 'tip', 'audience'])),
-}, ['repo', 'membersView', 'refs'])
+}, ['repo', 'visibility', 'membersView', 'refs'])
 cmd('ci rerun', 'A re-run of a pull request\'s checks requested.', {
     'status': E('requested'), 'pr': I, 'sha': S, 'check': nl(S), 'eventId': S, 'cost': COST,
 }, ['status', 'pr', 'sha'])

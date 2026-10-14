@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/ci-refs.schema.json",
   "title": "dg ci refs --json",
-  "description": "The repository's live refs, their commits and who can see each. A member's identity reads the members-only ones too (`membersView`), by their real names and commits.",
+  "description": "The repository's live refs, their commits and who can see each. A member's identity reads the members-only ones too (`membersView`), by their real names and commits; a member whose key cannot read them here gets an error, never a list without them.",
   "type": "object",
   "properties": {
     "schemaVersion": {
@@ -10,6 +10,13 @@
     },
     "repo": {
       "type": "string"
+    },
+    "visibility": {
+      "type": "string",
+      "enum": [
+        "public",
+        "private"
+      ]
     },
     "membersView": {
       "type": "boolean"
@@ -45,6 +52,7 @@
   "required": [
     "schemaVersion",
     "repo",
+    "visibility",
     "membersView",
     "refs"
   ],

@@ -25,25 +25,30 @@ const FILES = readdirSync(VECTORS_DIR)
   .sort()
 
 async function run(v: Vector): Promise<Record<string, unknown>> {
-  const i = v.input
-  const keys = await CheckKeys.of(hexToBytes(i.salt))
-  switch (i.op) {
+  const at = (k: string): string => {
+    const x = v.input[k]
+    if (x === undefined) throw new Error(`${v.name}: no input ${k}`)
+    return x
+  }
+  const hex = (k: string) => hexToBytes(at(k))
+  const keys = await CheckKeys.of(hex('salt'))
+  switch (at('op')) {
     case 'name':
-      return { nameKey: bytesToHex(keys.nameKeyForVectors()), opaque: await keys.opaqueName(i.name) }
+      return { nameKey: bytesToHex(keys.nameKeyForVectors()), opaque: await keys.opaqueName(at('name')) }
     case 'seal': {
-      const sealed = await keys.sealLog(hexToBytes(i.blind), i.name, hexToBytes(i.head), hexToBytes(i.log), hexToBytes(i.nonce))
-      return { opaque: await keys.opaqueName(i.name), sealed: bytesToHex(sealed), sha256: bytesToHex(await sha256(sealed)) }
+      const sealed = await keys.sealLog(hex('blind'), at('name'), hex('head'), hex('log'), hex('nonce'))
+      return { opaque: await keys.opaqueName(at('name')), sealed: bytesToHex(sealed), sha256: bytesToHex(await sha256(sealed)) }
     }
     case 'open':
       try {
-        const l = await keys.openLog(hexToBytes(i.blind), i.opaque, hexToBytes(i.sealed))
+        const l = await keys.openLog(hex('blind'), at('opaque'), hex('sealed'))
         return { name: l.name, head: l.head, log: bytesToHex(l.log) }
       } catch (e) {
         if (!(e instanceof CheckLogError)) throw e
         return e.kind === 'unknownVersion' ? { error: 'unknownVersion', version: e.version } : { error: 'malformed' }
       }
     default:
-      throw new Error(`unknown op ${i.op}`)
+      throw new Error(`unknown op ${at('op')}`)
   }
 }
 

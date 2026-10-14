@@ -76,7 +76,13 @@ case " $* " in
   *" pr view "*) [[ -e "$FAKE_VIEW_FAILS" ]] && { echo "fake dg: the node did not answer" >&2; exit 1; }
                 python3 -c "import json,sys; print(json.dumps([p for p in json.load(open(sys.argv[1]))['prs'] if p['number']==int(sys.argv[2])][0]))" "$FAKE_PRS" "${@: -1}"; exit 0 ;;
   *" ci reruns "*) cat "$FAKE_RERUNS" 2>/dev/null || echo '{"requests":[]}'; exit 0 ;;
-  *" ci refs "*) cat "$FAKE_REFS" 2>/dev/null || echo '{"refs":[],"membersView":false}'; exit 0 ;;
+  *" ci refs "*) [[ -e "$FAKE_REFS" ]] && { cat "$FAKE_REFS"; exit 0; }
+                # every ref of the stand-in remote, public (what `dg ci refs` says for a public repository)
+                git -C "$FAKE_REMOTE" for-each-ref --format='%(refname) %(objectname)' refs/heads refs/tags | python3 -c '
+import json, sys
+print(json.dumps(dict(visibility="public", membersView=False, refs=[dict(ref=r, tip=t, audience="public")
+                                                             for r, t in (l.split() for l in sys.stdin)])))'
+                exit 0 ;;
   *" repo view "*) cat "$FAKE_REPO" 2>/dev/null || echo '{"defaultBranch":"main"}'; exit 0 ;;
   *" repo policy show "*) [[ -e "$FAKE_POLICY_FAILS" ]] && { echo "fake dg: the node did not answer" >&2; exit 1; }
                          cat "$FAKE_POLICY" 2>/dev/null || echo '{"policy":null}'; exit 0 ;;
@@ -111,6 +117,7 @@ export FAKE_REPO="$W/repo.json"
 export FAKE_POLICY="$W/policy.json"
 export FAKE_POLICY_FAILS="$W/policy-fails"
 export FAKE_REFS="$W/refs.json"
+export FAKE_REMOTE="$R"
 export DASH_FORGE_KEY="dfk1:devnet:fake:9:fake"
 printf 'E2E_SECRET=hunter2-%s\n' "$RANDOM" >"$W/secrets"
 
@@ -511,7 +518,7 @@ refs_json() { git -C "$R" for-each-ref --format='%(refname) %(objectname)' refs/
 import json, sys
 rows = [dict(ref=r, tip=t, audience="members" if r.startswith("refs/heads/sec/") else "public")
         for r, t in (l.split() for l in sys.stdin)]
-print(json.dumps(dict(membersView=True, refs=rows)))' >"$FAKE_REFS"; }
+print(json.dumps(dict(visibility="public", membersView=True, refs=rows)))' >"$FAKE_REFS"; }
 git -C "$R" switch -q -c sec/fix main
 git -C "$R" rm -rq --ignore-unmatch .forge
 mkdir -p "$R/.forge/workflows"

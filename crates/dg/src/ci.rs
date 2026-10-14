@@ -1113,6 +1113,8 @@ async fn report(ctx: &Ctx, a: &ReportArgs) -> Result<()> {
         check_log_storage(a.storage.as_deref())?;
     }
     if members.is_some() {
+        // a CI's run id only ties its reports together here; it is never recorded, unremarked
+        left_out.retain(|f| *f != "externalId");
         warn_members(&left_out);
     } else {
         warn_private(a, &s, &left_out);
@@ -1704,10 +1706,12 @@ async fn log(
 ) -> Result<()> {
     let sha = sha.to_ascii_lowercase();
     let read = CommitRuns::read(ctx, repo, &sha).await?;
+    // the newest run of that name (a public run on the commit and a members-only one may share it)
     let run = read
         .runs
         .iter()
-        .find(|c| read.name_of(c) == name)
+        .filter(|c| read.name_of(c) == name)
+        .max_by_key(|c| c.created_at)
         .ok_or_else(|| {
             UserError::new(
                 codes::USAGE,
@@ -1766,6 +1770,23 @@ async fn refs(ctx: &Ctx, repo: &str) -> Result<()> {
         None
     };
     let private = r.repo.visibility == Visibility::Private;
+    // A member whose members view could not be read here (a locked key, a key without the
+    // members key) would list the members-only branches as absent while git, with the same
+    // key, may still see them: refused, so forge-runner never takes one for a public branch.
+    if members.is_none() && !private {
+        if let Some(me) = ctx.identity_id_hint() {
+            let role = forge_core::members::MemberReader::new(&r.client)
+                .best_role(&r.repo, &me)
+                .await?;
+            if role.is_some() && svc.members_only_ref_count(&r.repo).await?.0 > 0 {
+                return Err(forge_core::keyring::no_members_encryption_key_held(&format!(
+                    "reading {}'s members-only branches",
+                    r.repo.display()
+                ))
+                .into());
+            }
+        }
+    }
     let rows: Vec<(String, String, &str)> = match &members {
         Some(m) => m
             .refs
@@ -1788,6 +1809,7 @@ async fn refs(ctx: &Ctx, repo: &str) -> Result<()> {
     ctx.emit(
         json!({
             "repo": r.repo.display(),
+            "visibility": if private { "private" } else { "public" },
             "membersView": members.is_some(),
             "refs": rows.iter().map(|(n, t, a)| json!({ "ref": n, "tip": t, "audience": a })).collect::<Vec<_>>(),
         }),

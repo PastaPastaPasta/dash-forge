@@ -1094,20 +1094,20 @@ A `checkRun` is a public document in the forge-community contract: its `headOid`
 
 ```
 K_name  = HMAC-SHA256(salt, "dash-forge/v2/check-name")
-name'   = base32(HMAC-SHA256(K_name, name))[0..16]                       (RFC 4648 alphabet, lower case, 80 bits)
+name'   = base32(HMAC-SHA256(K_name, 0x01 ‖ name))[0..16]                (RFC 4648 alphabet, lower case, 80 bits)
 ```
 
 - **No text.** No `summary`, `detailsUrl`, `externalId` or `artifacts` (`CheckReport::members_only`; where forge-community declares `checkRun.aud` (M1) the run is created with `aud: 1`, so consensus refuses that text). Without an external id, a report continues the reporter's open run of that (opaque) name on that blind, as on a private repository.
 - **The log is sealed** and named by `logUrl` (`https://` or `ipfs://`) with `logSha256` over the sealed bytes, which anyone may fetch and none but members open. Its header names the check, so members resolve the opaque name by opening it; a runner attaches a log to every report, even a queued one (the header alone), so a member reads the name before the run finishes:
 
 ```
-K_log   = HMAC-SHA256(K_name, "dash-forge/v2/check-log" ‖ 0x00 ‖ nonce)
+K_log   = HMAC-SHA256(K_name, 0x02 ‖ nonce)                               (0x01 and 0x02 keep K_name's two uses apart)
 AD      = "DFCL" ‖ 0x01 ‖ u8(len(blind)) ‖ blind ‖ name'
 P       = u32(len(H)) ‖ H ‖ u64(len(log)) ‖ log ‖ 0x00 … (to a multiple of 4,096 bytes)
-H       = {"head":"<real commit, lower-case hex>","name":"<check name>","v":1}  (these three keys, sorted, no spaces)
+H       = {"head":"<real commit, lower-case hex>","name":"<check name>","v":1}  (exactly this form)
 log URL → "DFCL" ‖ 0x01 ‖ nonce(12) ‖ AES-256-GCM(K_log, nonce, P, AD)
 ```
 
-  A reader refuses a sealed log that does not open, whose padding is not zeros, whose header has any other key, or whose header names a check that does not hash to the run's opaque name or a commit whose blind is not the run's `headOid`: a log moved to another run, or another commit, does not open there. A later version byte is skipped, not treated as corruption. Vectors `members_check__*` (name, seal, open and its refusals).
+  `H` is read only in its one canonical form: these three keys in this order, no spaces, JSON's shortest escapes, lower-case hex (a header a reader would re-serialise differently, such as a key written twice, `1.0`, an escaped `/` or a byte-order mark, is refused), so every reader reads the same name. A reader refuses a sealed log that does not open, whose padding is not zeros, whose header is not that form, or whose header names a check that does not hash to the run's opaque name or a commit whose blind is not the run's `headOid`: a log moved to another run, or another commit, does not open there. A later version byte is skipped, not treated as corruption. Vectors `members_check__*` (name, seal, open and its refusals).
 - **Who reports.** Until branch key letters (phase 4: a kind-10 `branch` letter carries the head, the salt and so `K_name`), the reporter is a member: `forge-runner` with `members_branches` runs as a member identity holding its encryption key, and `dg ci report --members-branch <b>` looks the commit's blind and salt up in the member fold (`MembersUpdates::sealed`), real commit or blind given.
 - **Reading.** `dg ci status` and `dg ci log` read a member's commit on every blind the member fold maps it to and open each run's log for its name; the public sees each check's outcome under a 16-character name and never the branch, the commit or the log's text.

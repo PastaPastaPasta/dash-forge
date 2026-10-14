@@ -7,8 +7,8 @@
     "op": "open",
     "salt": "29835dd7409048627029145073d09dcc4a280b5500f652e4d3c832c4258436dd",
     "blind": "cec48c3ca820b73ce7a7c28f15af925afbc348f2",
-    "opaque": "rjlbvkm2zejjtqqt",
-    "sealed": "4446434c01dbbd51417ce499dc4f4929da6620f0483db6ca8eb8139289599355"
+    "opaque": "voqsbhc3cd6wzfh6",
+    "sealed": "4446434c01dbbd51417ce499dc4f4929daacf4fda3ed82ab2ebaf6ee848d0ca8"
   },
   "expected": {
     "error": "malformed"

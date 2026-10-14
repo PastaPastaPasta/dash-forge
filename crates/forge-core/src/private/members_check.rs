@@ -9,11 +9,11 @@
 //!
 //! ```text
 //! K_name  = HMAC-SHA256(salt, "dash-forge/v2/check-name")
-//! name'   = base32(HMAC-SHA256(K_name, name))[0..16]                      (RFC 4648, lower case)
-//! K_log   = HMAC-SHA256(K_name, "dash-forge/v2/check-log" ‖ 0x00 ‖ nonce)
+//! name'   = base32(HMAC-SHA256(K_name, 0x01 ‖ name))[0..16]               (RFC 4648, lower case)
+//! K_log   = HMAC-SHA256(K_name, 0x02 ‖ nonce)
 //! AD      = "DFCL" ‖ 0x01 ‖ u8(len(blind)) ‖ blind ‖ name'
 //! P       = u32(len(H)) ‖ H ‖ u64(len(log)) ‖ log ‖ 0x00 … (to a multiple of 4,096 bytes)
-//! H       = {"head":"<real commit hex>","name":"<check name>","v":1}       (keys sorted, no spaces)
+//! H       = {"head":"<real commit hex>","name":"<check name>","v":1}       (exactly this form)
 //! sealed  = "DFCL" ‖ 0x01 ‖ nonce(12) ‖ AES-256-GCM(K_log, nonce, P, AD)
 //! ```
 //!
@@ -22,7 +22,8 @@
 //! cannot link their blinds (DESIGN D4). Members hold the salt (they open the update) and so
 //! resolve a name by opening the run's log, whose header names the check; the header's name must
 //! hash to the run's opaque name and its commit to the run's blind, so a log moved to another run
-//! does not open there. A runner outside the members gets the salt in a branch key letter (phase 4).
+//! does not open there. `H` is read only in its one canonical form (these keys in this order, no
+//! spaces, JSON's shortest escapes, lower-case hex), so every reader reads the same header. A runner outside the members gets the salt in a branch key letter (phase 4).
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
@@ -47,7 +48,9 @@ pub const OPAQUE_NAME_LEN: usize = 16;
 pub const PAD: usize = 4096;
 
 const NAME_LABEL: &[u8] = b"dash-forge/v2/check-name";
-const LOG_LABEL: &[u8] = b"dash-forge/v2/check-log\0";
+/// `K_name`'s two uses, kept apart: an opaque name, a log key.
+const NAME_DOMAIN: u8 = 0x01;
+const LOG_DOMAIN: u8 = 0x02;
 const BASE32: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
 /// magic, version, nonce, GCM tag.
 const OVERHEAD: usize = 4 + 1 + 12 + 16;
@@ -149,12 +152,12 @@ impl CheckKeys {
     /// The opaque name of check `name` on this commit.
     #[must_use]
     pub fn opaque_name(&self, name: &str) -> String {
-        let mac = hmac(&*self.name_key, &[name.as_bytes()]);
+        let mac = hmac(&*self.name_key, &[&[NAME_DOMAIN], name.as_bytes()]);
         base32(&mac[..10])
     }
 
     fn log_key(&self, nonce: &[u8; 12]) -> Zeroizing<[u8; 32]> {
-        Zeroizing::new(hmac(&*self.name_key, &[LOG_LABEL, nonce]))
+        Zeroizing::new(hmac(&*self.name_key, &[&[LOG_DOMAIN], nonce]))
     }
 
     fn ad(blind: &[u8], opaque: &str) -> Vec<u8> {
@@ -252,12 +255,15 @@ impl CheckKeys {
                 )
                 .map_err(|_| PrivateError::Malformed)?,
         );
-        let (header, log) = split_plaintext(&p).ok_or(PrivateError::Malformed)?;
-        let header: Header = serde_json::from_slice(header).map_err(|_| PrivateError::Malformed)?;
+        let (raw, log) = split_plaintext(&p).ok_or(PrivateError::Malformed)?;
+        let header: Header = serde_json::from_slice(raw).map_err(|_| PrivateError::Malformed)?;
         let head = hex::decode(&header.head).map_err(|_| PrivateError::Malformed)?;
         let blinded = blind::blind(&self.salt, &head);
+        // the one canonical form: no other spacing, order, escape, number form or hex case
+        let canonical = serde_json::to_vec(&header).map_err(|_| PrivateError::Malformed)?;
         if header.v != 1
-            || header.head != header.head.to_ascii_lowercase()
+            || canonical != raw
+            || header.head != hex::encode(&head)
             || blinded.as_deref().is_none_or(|b| !ct_eq(b, blind))
             || !ct_eq(self.opaque_name(&header.name).as_bytes(), opaque.as_bytes())
         {
@@ -278,11 +284,13 @@ fn split_plaintext(p: &[u8]) -> Option<(&[u8], &[u8])> {
         return None;
     }
     let hlen = usize::try_from(u32::from_be_bytes(p.get(..4)?.try_into().ok()?)).ok()?;
-    let header = p.get(4..4 + hlen)?;
-    let at = 4 + hlen;
-    let llen = usize::try_from(u64::from_be_bytes(p.get(at..at + 8)?.try_into().ok()?)).ok()?;
-    let log = p.get(at + 8..at.checked_add(8)?.checked_add(llen)?)?;
-    let rest = &p[at + 8 + llen..];
+    let at = hlen.checked_add(4)?;
+    let header = p.get(4..at)?;
+    let start = at.checked_add(8)?;
+    let llen = usize::try_from(u64::from_be_bytes(p.get(at..start)?.try_into().ok()?)).ok()?;
+    let end = start.checked_add(llen)?;
+    let log = p.get(start..end)?;
+    let rest = p.get(end..)?;
     (rest.len() < PAD && rest.iter().all(|&b| b == 0)).then_some((header, log))
 }
 

@@ -7,13 +7,14 @@
 Cases it writes (forge-contracts/vectors/members_check__<name>.json):
 
 - `op: name`: the check-name key `K_name = HMAC-SHA256(salt, "dash-forge/v2/check-name")` of a blinded
-  commit (the blind's salt, TLV 27) and a check's opaque name `base32(HMAC-SHA256(K_name, name))[0..16]`
+  commit (the blind's salt, TLV 27) and a check's opaque name `base32(HMAC-SHA256(K_name, 0x01 ‖ name))[0..16]`
   (RFC 4648, lower case).
 - `op: seal`: a run's sealed log, `"DFCL" ‖ 0x01 ‖ nonce ‖ AES-256-GCM(K_log, nonce, P, AD)` with
-  `K_log = HMAC-SHA256(K_name, "dash-forge/v2/check-log" ‖ 0x00 ‖ nonce)`,
+  `K_log = HMAC-SHA256(K_name, 0x02 ‖ nonce)`,
   `AD = "DFCL" ‖ 0x01 ‖ u8(len(blind)) ‖ blind ‖ opaque name` and
   `P = u32(len(H)) ‖ H ‖ u64(len(log)) ‖ log ‖ zeros to a multiple of 4,096`, `H` the JSON header
-  `{"head": <real commit hex>, "name": <check name>, "v": 1}` (keys sorted, no spaces).
+  `{"head": <real commit hex>, "name": <check name>, "v": 1}`, read only in that one canonical form (keys in
+  that order, no spaces, JSON's shortest escapes, lower-case hex).
 - `op: open`: what a member reads from a sealed log, or why it refuses it.
 
 The Rust harness (`forge-core` `private::members_check`) runs every file.
@@ -36,7 +37,6 @@ CASE = "members_check"
 VECTORS = []
 MAGIC, VERSION, PAD = b"DFCL", 1, 4096
 NAME_LABEL = b"dash-forge/v2/check-name"
-LOG_LABEL = b"dash-forge/v2/check-log\x00"
 B32 = "abcdefghijklmnopqrstuvwxyz234567"
 
 
@@ -59,7 +59,7 @@ def name_key(s):
 
 
 def opaque(s, name):
-    return base32(mac(name_key(s), name.encode())[:10])
+    return base32(mac(name_key(s), b"\x01", name.encode())[:10])
 
 
 def header(head, name):
@@ -79,7 +79,7 @@ def ad(b, op):
 
 
 def seal_raw(s, b, op, p, nonce, version=VERSION):
-    k = mac(name_key(s), LOG_LABEL, nonce)
+    k = mac(name_key(s), b"\x02", nonce)
     return MAGIC + bytes([version]) + nonce + AESGCM(k).encrypt(nonce, p, ad(b, op))
 
 
@@ -96,7 +96,7 @@ def open_log(s, b, op, sealed):
         return dict(error="unknownVersion", version=sealed[4])
     nonce = sealed[5:17]
     try:
-        p = AESGCM(mac(name_key(s), LOG_LABEL, nonce)).decrypt(nonce, sealed[17:], ad(b, op))
+        p = AESGCM(mac(name_key(s), b"\x02", nonce)).decrypt(nonce, sealed[17:], ad(b, op))
     except Exception:
         return dict(error="malformed")
     if not p or len(p) % PAD:
@@ -111,13 +111,16 @@ def open_log(s, b, op, sealed):
     log, rest = p[at + 8:at + 8 + ll], p[at + 8 + ll:]
     if len(rest) >= PAD or any(rest):
         return dict(error="malformed")
+    # only the one canonical form (header() writes it): no duplicate keys, other spacing or order,
+    # other escapes, number forms or hex case
     try:
-        hd = json.loads(h)
-    except ValueError:
+        hd = json.loads(h.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
         return dict(error="malformed")
-    if not isinstance(hd, dict) or set(hd) != {"head", "name", "v"} or hd["v"] != 1 \
+    if not isinstance(hd, dict) or set(hd) != {"head", "name", "v"} or type(hd["v"]) is not int or hd["v"] != 1 \
             or not isinstance(hd["head"], str) or not isinstance(hd["name"], str) \
-            or not re.fullmatch("(?:[0-9a-f]{2})*", hd["head"]):
+            or not re.fullmatch("(?:[0-9a-f]{2})*", hd["head"]) \
+            or json.dumps(hd, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode() != h:
         return dict(error="malformed")
     try:
         head = bytes.fromhex(hd["head"])
@@ -202,6 +205,26 @@ def vectors():
                        separators=(",", ":")).encode()
     open_vector("upper_case_head", "a header whose commit is not lower-case hex: refused (one form).", s1, b, op,
                 seal_raw(s1, b, op, plaintext(upper, b""), n))
+    canon = lambda d: json.dumps(d, separators=(",", ":"), ensure_ascii=False).encode()
+    hx = h20.hex()
+    for vname, raw, desc in [
+        ("duplicate_key", b'{"head":"' + hx.encode() + b'","name":"ci.yml / test","name":"ci.yml / build","v":1}',
+         "a header with a key twice (a reader keeping the last would read another name): refused"),
+        ("float_version", b'{"head":"' + hx.encode() + b'","name":"ci.yml / build","v":1.0}',
+         "a version written 1.0: refused (one form)"),
+        ("spaced", b'{"head": "' + hx.encode() + b'", "name": "ci.yml / build", "v": 1}',
+         "a header with spaces: refused (one form)"),
+        ("keys_reordered", canon(dict(name="ci.yml / build", head=hx, v=1)),
+         "a header with its keys in another order: refused (one form)"),
+        ("escaped_slash", b'{"head":"' + hx.encode() + b'","name":"ci.yml \\/ build","v":1}',
+         "a header escaping a character JSON need not escape: refused (one form)"),
+        ("bom", b"\xef\xbb\xbf" + header(h20, "ci.yml / build"), "a header after a byte-order mark: refused"),
+    ]:
+        open_vector(vname, desc + ".", s1, b, op, seal_raw(s1, b, op, plaintext(raw, b""), n))
+    ctl = "tests / tab\there"
+    open_vector("escaped_control", "a name with a control character, written with JSON's short escape (\\t): "
+                "the one form opens.", s1, b, opaque(s1, ctl),
+                seal_raw(s1, b, opaque(s1, ctl), plaintext(header(h20, ctl), b"x"), n))
     open_vector("log_length_past_end", "a log length past the plaintext: refused.", s1, b, op,
                 seal_raw(s1, b, op, (struct.pack(">I", len(hdr)) + hdr + struct.pack(">Q", 1 << 20)).ljust(PAD, b"\0"), n))
 

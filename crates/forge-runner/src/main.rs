@@ -586,14 +586,22 @@ fn poll_pulls(
         let author = run::author_of(members, &ev.pr.author);
         let mut done = true;
         let mut ev = ev;
-        if repo.members_branches && !ev.pr.is_public() {
-            // a members-only PR's real head: the listing names only the blind
-            match run::view_pull(cfg, repo, n) {
-                Ok(v) => ev.pr.real_head_oid = v.real_head_oid,
-                Err(e) => eprintln!("forge-runner: {} PR #{n}: {e:#}", repo.repo),
-            }
-        }
-        if let Some(why) = skip_reason(repo.pull_requests, &ev.pr, author) {
+        // a members-only PR's real head: the listing names only the blind
+        let real = if repo.members_branches && !ev.pr.is_public() {
+            run::view_pull(cfg, repo, n).map(|v| ev.pr.real_head_oid = v.real_head_oid)
+        } else {
+            Ok(())
+        };
+        if let Err(e) = real {
+            // tried again on the next polls, as a run that could not start
+            let tries = state.failed.entry(key.clone()).or_insert(0);
+            *tries += 1;
+            eprintln!(
+                "forge-runner: {} PR #{n} (attempt {tries} of {}): its real head not read: {e:#}",
+                repo.repo, cfg.attempts
+            );
+            done = *tries >= cfg.attempts;
+        } else if let Some(why) = skip_reason(repo.pull_requests, &ev.pr, author) {
             eprintln!(
                 "forge-runner: {} PR #{n} by {} not run: {why}",
                 repo.repo, ev.pr.author
@@ -755,7 +763,14 @@ fn rerun_triggers(
     members: &mut Option<run::Members>,
 ) -> Result<std::result::Result<(Vec<run::Trigger>, Option<String>), String>> {
     let sha = req.sha.to_ascii_lowercase();
-    let mut pr = run::view_pull(cfg, repo, req.number)?;
+    let mut pr = match run::view_pull(cfg, repo, req.number) {
+        Ok(pr) => pr,
+        // a members-only PR this identity cannot read: it never runs here, so nothing waits on it
+        Err(e) if e.downcast_ref::<run::UnreadablePull>().is_some() => {
+            return Ok(Err(format!("{e}")));
+        }
+        Err(e) => return Err(e),
+    };
     pr.head_oid = pr.head_oid.to_ascii_lowercase();
     if pr.state != "open" {
         return Ok(Err(format!("the pull request is {}", pr.state)));

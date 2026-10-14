@@ -409,11 +409,28 @@ fn list_pulls_args<'a>(repo: &'a str, limit: &'a str) -> [&'a str; 8] {
     ]
 }
 
+/// A members-only pull request this runner's identity cannot read ([`view_pull`]): it never runs
+/// here, so it is not a read to try again.
+#[derive(Debug)]
+pub struct UnreadablePull(pub u64);
+
+impl std::fmt::Display for UnreadablePull {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "PR #{} is members-only, and this runner's identity cannot read it",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for UnreadablePull {}
+
 /// One pull request, read by number (`dg pr view`), whatever its age.
 pub fn view_pull(cfg: &Config, repo: &RepoConfig, number: u64) -> Result<PullRow> {
     let v = dg_read(cfg, repo, &["pr", "view", &repo.repo, &number.to_string()])?;
     if v["readable"].as_bool() == Some(false) {
-        bail!("PR #{number} is members-only, and this runner's identity cannot read it");
+        return Err(UnreadablePull(number).into());
     }
     serde_json::from_value(v).with_context(|| format!("dg pr view {number}: unexpected JSON"))
 }
@@ -436,6 +453,8 @@ pub struct RefAudiences {
     pub refs: BTreeMap<String, (String, bool)>,
     /// Whether the identity read the members-only refs (it holds the members key).
     pub members_view: bool,
+    /// A private repository: every run reads with the key.
+    pub private: bool,
 }
 
 impl RefAudiences {
@@ -452,6 +471,14 @@ impl RefAudiences {
     pub fn is_members_only(&self, refname: &str) -> bool {
         self.refs.get(refname).is_some_and(|(_, m)| *m)
     }
+
+    /// The public branches (full names).
+    pub fn public_branches(&self) -> impl Iterator<Item = &str> {
+        self.refs
+            .iter()
+            .filter(|(r, (_, m))| !*m && r.starts_with("refs/heads/"))
+            .map(|(r, _)| r.as_str())
+    }
 }
 
 /// [`RefAudiences`] from `dg --json ci refs` (`{"refs": [{"ref", "tip", "audience"}], "membersView"}`).
@@ -459,6 +486,7 @@ pub fn ref_audiences_of(v: &serde_json::Value) -> Result<RefAudiences> {
     let rows = v["refs"].as_array().context("dg ci refs: no refs")?;
     let mut out = RefAudiences {
         members_view: v["membersView"].as_bool().unwrap_or(false),
+        private: v["visibility"].as_str() == Some("private"),
         ..RefAudiences::default()
     };
     for r in rows {
@@ -494,13 +522,17 @@ pub enum MembersRun {
     Branch { branch: String, commit: String },
     /// Not run here, and why.
     Skip(String),
+    /// Who can see it could not be told: not run now, tried again (an error).
+    Unknown(String),
 }
 
 /// How `trig` runs given who can see what it names (mixed-visibility DESIGN §4.3):
 ///
-/// * a push (or schedule) of a members-only ref runs as [`MembersRun::Branch`] when the
-///   repository runs members-only branches (`members_branches`), else is skipped; a ref the
-///   members view does not list (deleted since) is skipped;
+/// * a push (or schedule) runs as public only when `refs` lists its ref as public (or private):
+///   a members-only ref runs as [`MembersRun::Branch`] when the repository runs members-only
+///   branches (`members_branches`), else is skipped, and a ref `refs` does not list (deleted
+///   since) is skipped. With `members_branches`, a list read without the members view is
+///   [`MembersRun::Unknown`]: the runner's identity must read them to tell them apart;
 /// * a members-only pull request runs as [`MembersRun::Branch`] when its source is a members-only
 ///   branch of this repository (its real head from `dg pr view`), else is skipped: one from a
 ///   public branch is tested by that branch's push runs, and its members-only text must not
@@ -514,19 +546,24 @@ pub fn members_run(repo: &RepoConfig, trig: &Trigger, refs: &RefAudiences) -> Me
     };
     match trig {
         Trigger::Push(p) | Trigger::Schedule { push: p, .. } => {
-            if refs.is_members_only(&p.refname) {
-                if repo.members_branches {
-                    MembersRun::Branch {
-                        branch: p.refname.clone(),
-                        commit: p.oid.clone(),
-                    }
-                } else {
-                    off("a members-only branch")
-                }
-            } else if refs.members_view && !refs.refs.contains_key(&p.refname) {
-                MembersRun::Skip(format!("{} is gone (deleted since it moved)", p.refname))
-            } else {
-                MembersRun::Public
+            if repo.members_branches && !refs.members_view && !refs.private {
+                return MembersRun::Unknown(
+                    "the runner's identity did not read the members-only branches (members_branches \
+                     needs a member's identity with its encryption key)"
+                        .into(),
+                );
+            }
+            match refs.refs.get(&p.refname) {
+                Some((_, true)) if repo.members_branches => MembersRun::Branch {
+                    branch: p.refname.clone(),
+                    commit: p.oid.clone(),
+                },
+                Some((_, true)) => off("a members-only branch"),
+                Some((_, false)) => MembersRun::Public,
+                None => MembersRun::Skip(format!(
+                    "{} is not listed by `dg ci refs` (deleted since it moved)",
+                    p.refname
+                )),
             }
         }
         Trigger::Pull { event, .. } => {
@@ -658,6 +695,9 @@ pub fn repo_dir(cfg: &Config, repo: &RepoConfig) -> PathBuf {
 fn fetch(cfg: &Config, src: &Source<'_>, refname: &str, dest: &str) -> Result<String> {
     let git = |args: &[&str]| {
         let mut c = with_network(Command::new(&cfg.bin.git), cfg);
+        if !src.keyed {
+            c.env_remove("DASH_FORGE_KEY");
+        }
         c.arg("--git-dir").arg(src.cache).args(args);
         output(&mut c, &format!("git {}", args.first().unwrap_or(&"")))
     };
@@ -682,6 +722,10 @@ struct Source<'a> {
     url: &'a str,
     /// The bare cache it fetches into.
     cache: &'a Path,
+    /// Whether git reads with the runner's key: a private repository's runs and a members-only
+    /// branch's. A public run of a public repository reads without it, so a member identity's
+    /// git never brings members-only objects or tags into the cache public runs check out from.
+    keyed: bool,
     /// Whether tags pointing into the fetched history come along (the repository's own only).
     tags: bool,
 }
@@ -694,6 +738,41 @@ fn fetch_at(cfg: &Config, src: &Source<'_>, refname: &str, oid: &str) -> Result<
             "{refname} is at {tip}, not {oid} (it moved, or the PR names another commit); the \
              next poll tries again"
         );
+    }
+    Ok(())
+}
+
+/// Fetch members-only branch `refname` at `oid` into the members cache, with every public branch
+/// beside it: a members-only branch's packs hold only what its public bases lack (DESIGN D22), so
+/// a cache without those bases could not take it ("did not send all necessary objects").
+fn fetch_members(
+    cfg: &Config,
+    src: &Source<'_>,
+    refname: &str,
+    oid: &str,
+    audiences: &RefAudiences,
+) -> Result<()> {
+    let git = |args: &[&str]| {
+        let mut c = with_network(Command::new(&cfg.bin.git), cfg);
+        c.arg("--git-dir").arg(src.cache).args(args);
+        output(&mut c, &format!("git {}", args.first().unwrap_or(&"")))
+    };
+    if !src.cache.join("HEAD").exists() {
+        std::fs::create_dir_all(src.cache)?;
+        git(&["init", "-q", "--bare"])?;
+    }
+    let mut specs = vec![format!("+{refname}:refs/forge-runner/fetched")];
+    specs.extend(
+        audiences
+            .public_branches()
+            .map(|r| format!("+{r}:refs/forge-runner/public/{}", r.trim_start_matches("refs/heads/"))),
+    );
+    let mut args = vec!["fetch", "-q", "--no-tags", src.url];
+    args.extend(specs.iter().map(String::as_str));
+    git(&args)?;
+    let tip = git(&["rev-parse", "refs/forge-runner/fetched"])?.trim().to_string();
+    if tip != oid {
+        bail!("{refname} is at {tip}, not {oid} (it moved); the next poll tries again");
     }
     Ok(())
 }
@@ -799,10 +878,13 @@ pub fn scheduled_crons(
 ) -> Result<Vec<(String, String)>> {
     let cache = repo_dir(cfg, repo).join("cache.git");
     let url = repo.url();
+    // a public repository's default branch is read without the key ([`Source::keyed`])
+    let keyed = ref_audiences(cfg, repo).is_ok_and(|a| a.private);
     let own = Source {
         url: &url,
         cache: &cache,
         tags: true,
+        keyed,
     };
     fetch_at(cfg, &own, refname, oid)?;
     let git = |args: &[&str]| {
@@ -1031,6 +1113,7 @@ fn fetch_run(
     run_dir: &Path,
     trusted: bool,
     members_commit: Option<&str>,
+    audiences: &RefAudiences,
 ) -> Result<Fetched> {
     let fork = matches!(trig, Trigger::Pull { event, .. } if event.pr.is_fork());
     let cache = if fork {
@@ -1041,12 +1124,23 @@ fn fetch_run(
         repo_dir(cfg, repo).join("cache.git")
     };
     let repo_url = repo.url();
+    let keyed = audiences.private || members_commit.is_some();
     let own = Source {
         url: &repo_url,
         cache: &cache,
-        tags: !fork,
+        // a members-only branch's run brings no tags: one could be members-only, another's
+        tags: !fork && members_commit.is_none(),
+        keyed,
     };
     let (changed, base, event) = match trig {
+        Trigger::Push(p) if members_commit.is_some() => {
+            fetch_members(cfg, &own, &p.refname, &p.oid, audiences)?;
+            let changed = p
+                .before
+                .as_deref()
+                .and_then(|b| changed_paths(cfg, &cache, b, &p.oid, false));
+            (changed, None, event_json(&repo.repo, p))
+        }
         Trigger::Push(p) => {
             fetch_at(cfg, &own, &p.refname, &p.oid)?;
             let changed = p
@@ -1075,10 +1169,15 @@ fn fetch_run(
                 url: &url,
                 cache: &cache,
                 tags: false,
+                keyed,
             };
             // a members-only PR's head is a blind: git has the real commit behind it
             let commit = members_commit.unwrap_or(&pr.head_oid);
-            fetch_at(cfg, &head, source, commit)?;
+            if members_commit.is_some() {
+                fetch_members(cfg, &head, source, commit, audiences)?;
+            } else {
+                fetch_at(cfg, &head, source, commit)?;
+            }
             // The base, for `base.sha` and the PR's changed paths (`base...head`).
             let base = fetch(cfg, &own, pr.base(), "refs/forge-runner/base")
                 .map_err(|e| eprintln!("forge-runner: {}: base not fetched: {e:#}", repo.repo))
@@ -1134,6 +1233,7 @@ pub fn run(
             eprintln!("forge-runner: {} {} not run: {why}", repo.repo, trig.label());
             return Ok(ran);
         }
+        MembersRun::Unknown(why) => bail!("{why}"),
     };
     let mut f = fetch_run(
         cfg,
@@ -1142,6 +1242,7 @@ pub fn run(
         run_dir,
         trusted,
         members.as_ref().map(|_| commit.as_str()),
+        &audiences,
     )?;
     if let Some(who) = &opts.requested_by {
         f.event["forge"]["rerun_requested_by"] = json!(who);
@@ -2470,6 +2571,8 @@ mod tests {
             [("refs/heads/sec/fix".to_string(), "bb".repeat(20))]
         );
         assert!(ref_audiences_of(&json!({})).is_err());
+        assert!(!a.private);
+        assert_eq!(a.public_branches().collect::<Vec<_>>(), ["refs/heads/main"]);
     }
 
     #[test]
@@ -2497,16 +2600,34 @@ mod tests {
             MembersRun::Skip(w) if w.contains("members_branches = false")
         ));
         assert_eq!(members_run(off, &push("refs/heads/main"), &a), MembersRun::Public);
-        // a ref the members view no longer lists: never run as public
+        // a ref `dg ci refs` does not list: never run as public, with or without a members view
         assert!(matches!(
             members_run(on, &push("refs/heads/gone"), &a),
             MembersRun::Skip(_)
         ));
-        // without a members view (no members key), what git lists is public
-        assert_eq!(
-            members_run(off, &push("refs/heads/other"), &RefAudiences::default()),
-            MembersRun::Public
-        );
+        let public_only = ref_audiences_of(&json!({
+            "membersView": false, "visibility": "public",
+            "refs": [{ "ref": "refs/heads/main", "tip": "aa".repeat(20), "audience": "public" }],
+        }))
+        .unwrap();
+        assert!(matches!(
+            members_run(off, &push("refs/heads/sec/fix"), &public_only),
+            MembersRun::Skip(_)
+        ));
+        assert_eq!(members_run(off, &push("refs/heads/main"), &public_only), MembersRun::Public);
+        // members_branches with no members view: the identity can't tell them apart, so nothing runs
+        assert!(matches!(
+            members_run(on, &push("refs/heads/main"), &public_only),
+            MembersRun::Unknown(_)
+        ));
+        // a private repository has no members-only branches to tell apart
+        let private = ref_audiences_of(&json!({
+            "membersView": false, "visibility": "private",
+            "refs": [{ "ref": "refs/heads/main", "tip": "aa".repeat(20), "audience": "private" }],
+        }))
+        .unwrap();
+        assert!(private.private);
+        assert_eq!(members_run(off, &push("refs/heads/main"), &private), MembersRun::Public);
     }
 
     #[test]
