@@ -1,0 +1,39 @@
+{
+  "name": "pr_v4_recomputed_blind",
+  "description": "a writer that re-blinds H3 under a fresh salt instead of copying it writes a commitOid nobody folds: the review does not count, for members or the public alike.",
+  "case": "oid_blind",
+  "rules": "v2",
+  "input": {
+    "op": "prFold",
+    "author": "author",
+    "patch": {
+      "headOid": "7eede9362a48efb9e4e4e1e63eacc998c525c4da",
+      "real": "e6d7f353ee2800b1093c04b07ee9fd7cfa324881",
+      "salt": "adc02a522db7fe8d31e951c6333b188cd96b14b4e8a5a98262878a856389e763"
+    },
+    "headUpdates": [
+      {
+        "id": "hu1",
+        "createdAt": 40,
+        "oid": "42bf403ba584d715d9a60c17eee583b979fe1eff",
+        "real": "7153e158863efe49ee17b9fdefe0c8e5f5ec345b",
+        "salt": "293fc9ff7a257be5642f0d484d54b56404f4433557e1d049e9af3bac97c3993f"
+      }
+    ],
+    "reviews": [
+      {
+        "id": "r2",
+        "reviewer": "carol",
+        "verdict": 1,
+        "commitOid": "734216d309fcf615711087a4d033e244ea6c9377",
+        "createdAt": 50
+      }
+    ]
+  },
+  "expected": {
+    "head": "42bf403ba584d715d9a60c17eee583b979fe1eff",
+    "approvers": [],
+    "alerts": [],
+    "realHead": "7153e158863efe49ee17b9fdefe0c8e5f5ec345b"
+  }
+}

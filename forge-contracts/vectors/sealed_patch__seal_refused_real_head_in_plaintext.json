@@ -1,0 +1,36 @@
+{
+  "name": "seal_refused_real_head_in_plaintext",
+  "description": "the writer refuses a members source whose real head would be the plaintext headOid.",
+  "case": "sealed_patch",
+  "rules": "v2",
+  "input": {
+    "op": "seal",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "epoch": 0,
+    "type": "patch",
+    "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+    "props": {
+      "number": 12,
+      "title": "Fix the token leak",
+      "body": "Members-only until the release.",
+      "baseRefName": "refs/heads/main",
+      "sourceRefName": "refs/heads/sec/fix",
+      "draft": false,
+      "sourceRepoId": "1111111111111111111111111111111111111111111111111111111111111111",
+      "asMember": true,
+      "vis": "public",
+      "headOid": "e6d7f353ee2800b1093c04b07ee9fd7cfa324881"
+    },
+    "basePublic": true,
+    "sourcePublic": false,
+    "head": {
+      "real": "e6d7f353ee2800b1093c04b07ee9fd7cfa324881",
+      "salt": "adc02a522db7fe8d31e951c6333b188cd96b14b4e8a5a98262878a856389e763"
+    },
+    "nonce": "000102030405060708090a0b"
+  },
+  "expected": {
+    "error": "malformed"
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "name": "open_real_width_21",
+  "description": "a real OID of 21 bytes: malformed (exactly 20 or 32).",
+  "case": "sealed_ref",
+  "rules": "v2",
+  "input": {
+    "op": "open",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        }
+      },
+      "members": []
+    },
+    "doc": {
+      "type": "refUpdate",
+      "vis": "public",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "refNameHash": "f9337f26a53b55ef8817947cb1554159ae4637a5565e5f88b01eed029b69ccfb",
+      "newOid": "d44bbeca9b14ce937bf8bb4078892d1680df8238",
+      "force": false,
+      "prevOid": "c6de995d59e0bb9b55de67c69e57069c96a74a99",
+      "enc": "03000102030405060708090a0b9548e9926c729ffd6791739e9d7926b3252639552acc32acd3835d7c5506a343cceec02cd479649a2c795ea8c0762aae2549476b22b2ddc5e739fc9bfa046b9265b9e09f5240c7290b246e7210df3280957f125511cb64284cb0c9bbb319843dae344f323fa0c2ed21ec41c3cb3907faf06ff395fa65c01f2aaf7d8b9e8265231eef6ddb5dee6590e75f1b2dfc2d252586f8f4a108471f",
+      "createdAtBlockHeight": 50
+    }
+  },
+  "expected": {
+    "status": "malformed"
+  }
+}

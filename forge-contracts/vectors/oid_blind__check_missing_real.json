@@ -1,0 +1,14 @@
+{
+  "name": "check_missing_real",
+  "description": "a blind without its real value: malformed.",
+  "case": "oid_blind",
+  "rules": "v2",
+  "input": {
+    "op": "check",
+    "plain": "c1e747501a81cce7aaed1a1739060a3149b4c340",
+    "salt": "c593c3811de01bebe941c9a10da7688ddbce11616faeb6b3928e3f17fb2e9987"
+  },
+  "expected": {
+    "status": "malformed"
+  }
+}

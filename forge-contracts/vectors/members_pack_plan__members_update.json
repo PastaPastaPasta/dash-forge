@@ -1,0 +1,38 @@
+{
+  "name": "members_update",
+  "description": "a members-only branch moves: its previous tip joins the bases.",
+  "case": "members_pack_plan",
+  "rules": "v2",
+  "input": {
+    "publicTips": [
+      "cfff9697be9e8a78416dde4cb4f9cba34929127e",
+      "a52eea110b44deca2464264f16153e35bd3ec119"
+    ],
+    "membersTips": {
+      "refs/heads/sec/fix": "d20acff6664a5850461cede5fabbba31b66af10d"
+    },
+    "batch": [
+      {
+        "dst": "refs/heads/sec/fix",
+        "new": "449b9bad45011a4a26b1c9c3a894a1f5dd81f144",
+        "audience": "members"
+      }
+    ]
+  },
+  "expected": {
+    "public": null,
+    "members": [
+      {
+        "ref": "refs/heads/sec/fix",
+        "want": [
+          "449b9bad45011a4a26b1c9c3a894a1f5dd81f144"
+        ],
+        "have": [
+          "a52eea110b44deca2464264f16153e35bd3ec119",
+          "cfff9697be9e8a78416dde4cb4f9cba34929127e",
+          "d20acff6664a5850461cede5fabbba31b66af10d"
+        ]
+      }
+    ]
+  }
+}

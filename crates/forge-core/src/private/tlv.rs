@@ -23,6 +23,16 @@ const SKIP_EPOCH_KEY: u8 = 12;
 const IMPORTED_AUTHOR: u8 = 13;
 const IMPORTED_URL: u8 = 14;
 const EVENT_VALUE: u8 = 15;
+/// Tag 22 (`enc` v0x03 ref updates): the real `newOid` behind the plaintext blind (§19).
+pub const NEW_OID: u8 = 22;
+/// Tag 23 (`enc` v0x03 ref updates): the real `prevOid` behind the plaintext blind (§19).
+pub const PREV_OID: u8 = 23;
+/// Tag 24 (`enc` v0x03 patches and kind-16 head updates): the real head behind the plaintext
+/// blind `headOid` / `oid` (§19).
+pub const HEAD_OID: u8 = 24;
+/// Tag 27 (`enc` v0x03, with 22, 23 or 24): the salt of the document's blinds
+/// ([`super::blind`]).
+pub const OID_SALT: u8 = 27;
 /// Tag 25 (`enc` v0x04 only, repeatable): a specific-people letter's recipient identity ids, 32
 /// bytes each, in slot order. In every other envelope it stays reserved, so malformed.
 pub const RECIPIENT: u8 = 25;
@@ -105,6 +115,34 @@ pub struct Fields {
     /// retarget base), sealed in a private repo (§7).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_value: Option<String>,
+    /// Tag 22 (members-only ref update, `enc` v0x03): the real `newOid` (20 or 32 bytes).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "super::doc::opt_hex"
+    )]
+    pub new_oid: Option<Vec<u8>>,
+    /// Tag 23 (members-only ref update, `enc` v0x03): the real `prevOid` (20 or 32 bytes).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "super::doc::opt_hex"
+    )]
+    pub prev_oid: Option<Vec<u8>>,
+    /// Tag 24 (members-only PR or head update, `enc` v0x03): the real head (20 or 32 bytes).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "super::doc::opt_hex"
+    )]
+    pub head_oid: Option<Vec<u8>>,
+    /// Tag 27 (`enc` v0x03, beside 22, 23 or 24): the salt of the plaintext blinds.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "super::doc::opt_hex32"
+    )]
+    pub oid_salt: Option<[u8; 32]>,
 }
 
 /// Decrypted content is private: `Debug` shows only which fields are present and their byte
@@ -128,6 +166,10 @@ impl std::fmt::Debug for Fields {
             .field("imported_author_len", &len(&self.imported_author))
             .field("imported_url_len", &len(&self.imported_url))
             .field("event_value_len", &len(&self.event_value))
+            .field("new_oid", &self.new_oid.is_some())
+            .field("prev_oid", &self.prev_oid.is_some())
+            .field("head_oid", &self.head_oid.is_some())
+            .field("oid_salt", &self.oid_salt.is_some())
             .finish()
     }
 }
@@ -144,6 +186,8 @@ enum Cap {
     },
     /// Exactly `n` raw bytes.
     Fixed(usize),
+    /// A git OID: exactly 20 (SHA-1) or 32 (SHA-256) bytes.
+    Oid,
 }
 
 fn cap(tag: u8) -> Cap {
@@ -169,7 +213,8 @@ fn cap(tag: u8) -> Cap {
             bytes: 400,
         },
         PREV_EPOCH => Cap::Fixed(4),
-        PREV_EPOCH_KEY | SKIP_EPOCH_KEY => Cap::Fixed(32),
+        PREV_EPOCH_KEY | SKIP_EPOCH_KEY | OID_SALT => Cap::Fixed(32),
+        NEW_OID | PREV_OID | HEAD_OID => Cap::Oid,
         BURNED => Cap::Fixed(1),
         PATH => Cap::Text {
             min: 0,
@@ -192,16 +237,24 @@ fn cap(tag: u8) -> Cap {
 }
 
 /// The tags a kind may carry. `anchor_with_prev` is whether a config is for an epoch `e ≥ 1`
-/// (only such a config carries tags 8, 9, 11 and 12).
-fn allowed(kind: DocKind, tag: u8, anchor_with_prev: bool) -> bool {
+/// (only such a config carries tags 8, 9, 11 and 12); `blinds` whether the envelope is a
+/// members-only one (`enc` v0x03), the only one whose ref updates, patches and head updates carry
+/// real OIDs and their salt (tags 22-24 and 27, §19). Everywhere else those tags stay reserved, so
+/// a reader that does not fold them refuses the document instead of reading it without them.
+fn allowed(kind: DocKind, tag: u8, anchor_with_prev: bool, blinds: bool) -> bool {
     let imported = matches!(tag, IMPORTED_AUTHOR | IMPORTED_URL);
+    let head = blinds && matches!(tag, HEAD_OID | OID_SALT);
     match kind {
         DocKind::Issue => matches!(tag, TITLE | BODY) || imported,
-        DocKind::Patch => matches!(tag, TITLE | BODY | BASE_REF_NAME | SOURCE_REF_NAME) || imported,
+        DocKind::Patch => {
+            matches!(tag, TITLE | BODY | BASE_REF_NAME | SOURCE_REF_NAME) || imported || head
+        }
         DocKind::Comment => matches!(tag, BODY | PATH) || imported,
         DocKind::Review => tag == BODY || imported,
-        DocKind::RefUpdate | DocKind::ProtectedRefUpdate => tag == REF_NAME,
-        DocKind::Event => tag == EVENT_VALUE,
+        DocKind::RefUpdate | DocKind::ProtectedRefUpdate => {
+            tag == REF_NAME || (blinds && matches!(tag, NEW_OID | PREV_OID | OID_SALT))
+        }
+        DocKind::Event => tag == EVENT_VALUE || head,
         // a release's TLV is `private::release`'s (§16.2): none of these tags
         DocKind::Release => false,
         DocKind::Config => {
@@ -219,7 +272,16 @@ fn allowed(kind: DocKind, tag: u8, anchor_with_prev: bool) -> bool {
 /// ([`parse_letter`]).
 #[must_use]
 pub fn parse(pt: &[u8], kind: DocKind, anchor_with_prev: bool) -> Option<Fields> {
-    parse_inner(pt, kind, anchor_with_prev, None)
+    parse_inner(pt, kind, anchor_with_prev, None, false)
+}
+
+/// Parse the TLV of a members-only document (`enc` v0x03): [`parse`], where a ref update may
+/// also carry its real `newOid` / `prevOid` (tags 22, 23), a patch or an event its real head (tag
+/// 24), each with the salt of their blinds (tag 27): the salt is present exactly when one of them
+/// is (§19). An event then carries a value (15), a head (24), or both.
+#[must_use]
+pub fn parse_members(pt: &[u8], kind: DocKind) -> Option<Fields> {
+    parse_inner(pt, kind, false, None, true)
 }
 
 /// The role group a letter was sent to (tag 29): its people when it was posted, resolved from
@@ -271,7 +333,7 @@ pub struct LetterTlv {
 #[must_use]
 pub fn parse_letter(pt: &[u8], kind: DocKind) -> Option<LetterTlv> {
     let mut letter = LetterParts::default();
-    let fields = parse_inner(pt, kind, false, Some(&mut letter))?;
+    let fields = parse_inner(pt, kind, false, Some(&mut letter), false)?;
     Some(LetterTlv {
         fields,
         recipients: letter.recipients,
@@ -286,11 +348,13 @@ struct LetterParts {
     group: Option<LetterGroup>,
 }
 
+#[allow(clippy::too_many_lines)] // the §4.3 strictness rules, in the table's order
 fn parse_inner(
     pt: &[u8],
     kind: DocKind,
     anchor_with_prev: bool,
     mut letter: Option<&mut LetterParts>,
+    blinds: bool,
 ) -> Option<Fields> {
     let mut f = Fields::default();
     let mut last: Option<u8> = None;
@@ -331,7 +395,7 @@ fn parse_inner(
             }
             continue;
         }
-        if !allowed(kind, tag, anchor_with_prev) {
+        if !allowed(kind, tag, anchor_with_prev, blinds) {
             return None; // reserved 16..=63, tag 0, or not a field of this kind
         }
         if tag == PROTECTED_PATTERN {
@@ -348,10 +412,23 @@ fn parse_inner(
                 match tag {
                     PREV_EPOCH => f.prev_epoch = Some(u32::from_be_bytes(value.try_into().ok()?)),
                     PREV_EPOCH_KEY => f.prev_epoch_key = EpochKey::from_slice(value),
+                    OID_SALT => f.oid_salt = Some(value.try_into().ok()?),
                     SKIP_EPOCH_KEY => f.skip_epoch_key = EpochKey::from_slice(value),
                     // the flag has one value; any other byte is malformed
                     BURNED if value == [0x01] => f.burned = true,
                     _ => return None,
+                }
+            }
+            Cap::Oid => {
+                if !super::blind::is_oid_width(value.len()) {
+                    return None;
+                }
+                let v = Some(value.to_vec());
+                match tag {
+                    NEW_OID => f.new_oid = v,
+                    PREV_OID => f.prev_oid = v,
+                    HEAD_OID => f.head_oid = v,
+                    _ => unreachable!(),
                 }
             }
             Cap::Text { min, chars, bytes } => {
@@ -394,10 +471,12 @@ fn parse_inner(
                     })
         }
         DocKind::Review => true,
-        DocKind::Event => f.event_value.is_some(),
+        DocKind::Event => f.event_value.is_some() || f.head_oid.is_some(),
         DocKind::Release => false,
     };
-    required.then_some(f)
+    // the salt is sealed exactly when something is blinded with it
+    let blinded = f.new_oid.is_some() || f.prev_oid.is_some() || f.head_oid.is_some();
+    (required && blinded == f.oid_salt.is_some()).then_some(f)
 }
 
 /// The kinds a specific-people letter (`enc` v0x04) may carry: the discussion types and an
@@ -492,6 +571,18 @@ pub fn encode(f: &Fields) -> Zeroizing<Vec<u8>> {
     }
     if let Some(v) = &f.event_value {
         rec(EVENT_VALUE, v.as_bytes());
+    }
+    for (tag, v) in [
+        (NEW_OID, &f.new_oid),
+        (PREV_OID, &f.prev_oid),
+        (HEAD_OID, &f.head_oid),
+    ] {
+        if let Some(v) = v {
+            rec(tag, v);
+        }
+    }
+    if let Some(s) = &f.oid_salt {
+        rec(OID_SALT, s);
     }
     out
 }

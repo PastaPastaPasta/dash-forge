@@ -1,0 +1,41 @@
+{
+  "name": "open_protected",
+  "description": "a member opens the protected vector: the real values from TLV 22 and 23, each blind checked.",
+  "case": "sealed_ref",
+  "rules": "v2",
+  "input": {
+    "op": "open",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        }
+      },
+      "members": []
+    },
+    "doc": {
+      "type": "protectedRefUpdate",
+      "vis": "public",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "refNameHash": "83bfba85e20acc1871dbcf1c8de35fcdc5cbde51c1e5391340fb60cf0992fc5d",
+      "newOid": "9ddf202777ad198fcb0d8705069cf96cb307d841",
+      "force": false,
+      "enc": "03000102030405060708090a0b3e661617c37af3190e8f74fffa6b0ef502451cef4f598182477168601dbe490ae50cf06077f77631ba73007d49f24a086c95f23b3998f1bafd30de8defeb7b581e8d953763888808c6498768e6edce587aff0397de15f89197119caec78025513ad0d642efdf6b89b185a353dbd32c714b076b2ae824a7022833f489d0fcd0e3b56ead",
+      "createdAtBlockHeight": 50
+    }
+  },
+  "expected": {
+    "status": "readable",
+    "ref": {
+      "name": "refs/heads/sec/release",
+      "newOid": "de8ed34d0343cb7015311aca01897865e6907bbd"
+    },
+    "alerts": []
+  }
+}

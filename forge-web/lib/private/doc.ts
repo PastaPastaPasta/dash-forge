@@ -9,7 +9,7 @@
 import { bytes, concat, constantTimeEqual, isU32, randomBytes, sha256, u32, utf8, type Bytes } from './bytes'
 import { bytesEqual, type PrivateId } from './ids'
 import { hedgeNonce, objKeys, refNameHash, type EpochKeyring, type EpochKeys } from './keys'
-import { MalformedError, buildTlv, letterKind, padRecord, parseTlv, type DocFields, type PrivateDocType } from './tlv'
+import { MalformedError, buildTlv, letterKind, padRecord, parseMembersTlv, parseTlv, type DocFields, type PrivateDocType } from './tlv'
 
 /** Blocks after the next epoch's key was first stated (stated(e), §5.3) during which late content is still shown (§8.2). */
 export const GRACE_BLOCKS = 240
@@ -340,7 +340,8 @@ interface MembersSealed {
 }
 
 /**
- * The v0x03 seal pipeline (§4.1): parse the records as a reader would, the cap, the ref-name
+ * The v0x03 seal pipeline (§4.1): parse the records as a reader would (the members-only parser,
+ * which admits the blind tags 22-24 and 27, §19), the cap, the ref-name
  * hashes, the padding, then `K_obj` from the AD and nonce, the commitment and AES-GCM under
  * `K_doc,obj` with `AD' = AD ‖ COMMIT_obj`.
  */
@@ -348,7 +349,7 @@ async function sealMembersWith(keys: EpochKeys, doc: PrivateDoc, fields: DocFiel
   if (doc.vis !== 'public') throw new MalformedError('members-only content exists only in a public repository')
   if (doc.type === 'config') throw new MalformedError('a config is always v0x02')
   const ad = docAd(doc, keys, V3)
-  const records = buildTlv(fields, { type: doc.type, epoch: doc.epoch })
+  const records = buildTlv(fields, { type: doc.type, epoch: doc.epoch, blinds: true })
   const room = maxMembersPlaintext(doc.type)
   if (records.length > room) throw new TooLargeError(room)
   if (!(await refHashesMatch(doc, fields, keys, V3))) throw new MalformedError('a ref name does not match its hash')
@@ -572,7 +573,9 @@ async function openMembers(doc: StoredPrivateDoc, keys: EpochKeys): Promise<Open
   }
   let fields: DocFields
   try {
-    fields = parseTlv(pt, { type: doc.type, epoch: doc.epoch })
+    // the blind tags (22-24, 27) are a public repository's members-only content's only: a v0x03
+    // document stamped private parses with them reserved (DESIGN D38; the AD does not bind `vis`)
+    fields = doc.vis === 'public' ? parseMembersTlv(pt, doc.type) : parseTlv(pt, { type: doc.type, epoch: doc.epoch })
   } catch (e) {
     if (e instanceof MalformedError) return MALFORMED
     throw e

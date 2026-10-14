@@ -65,6 +65,25 @@ pub const KIND_SEALED_BASE: u8 = 64;
 /// 0x01, `docs/security/private-repos.md` §3). Never a public artifact: a members-only text is
 /// stored only in this form. `objectCount` 0, no `tips`, no `supersedes`.
 pub const KIND_MEMBERS_LONG_BODY: u8 = KIND_SEALED_BASE + KIND_LONG_BODY;
+/// `packManifest.kind == 64`: a members-only git pack of one members-only branch (DESIGN §4.3,
+/// D22): DFPK 0x01 under the members key, deltas against public objects and that branch only.
+pub const KIND_MEMBERS_GIT_PACK: u8 = KIND_SEALED_BASE + KIND_GIT_PACK;
+/// `packManifest.kind == 65..=69`: the members-only browse indexes (object locator, flat index,
+/// history index, release assets, history version lists).
+pub const KIND_MEMBERS_OBJECT_LOCATOR: u8 = KIND_SEALED_BASE + KIND_OBJECT_LOCATOR;
+
+/// The members-only kind of the plain artifact kind `plain` (64 + k), for the kinds a public
+/// repository seals for its members: git packs, browse indexes, release assets and long bodies.
+#[must_use]
+pub fn members_kind(plain: u8) -> Option<u8> {
+    (plain <= KIND_LONG_BODY).then_some(KIND_SEALED_BASE + plain)
+}
+
+/// Whether `kind` is a members-only (sealed) kind of a public repository.
+#[must_use]
+pub fn is_members_kind(kind: u8) -> bool {
+    (KIND_SEALED_BASE..KIND_SEALED_BASE + 64).contains(&kind)
+}
 
 /// The `packManifest` document fields (data-contracts §2.3). List fields serialize as
 /// JSON-in-string / packed byteArray at the platform layer, not native arrays.
@@ -158,6 +177,30 @@ impl PackManifest {
             supersedes,
         }
     }
+
+    /// Manifest for a members-only artifact (`members_kind(plain_kind)`) of `sealed` bytes: DFPK
+    /// 0x01 under the members key. It **never carries `tips`**: a sealed kind's tips would be the
+    /// real commits its blinds hide (DESIGN §4.3, review M3 (a)), so a members-only index names its
+    /// tip inside the sealed artifact only. `None` for a kind with no members-only form.
+    #[must_use]
+    pub fn for_members(
+        plain_kind: u8,
+        sealed: &[u8],
+        object_count: u64,
+        chunk_count: u64,
+    ) -> Option<Self> {
+        Some(Self {
+            pack_hash: hex::encode(sha256(sealed)),
+            kind: members_kind(plain_kind)?,
+            size_bytes: sealed.len() as u64,
+            object_count,
+            chunk_count,
+            storage: 0,
+            uris: Vec::new(),
+            tips: Vec::new(),
+            supersedes: Vec::new(),
+        })
+    }
 }
 
 /// Plan which prior manifests a freshly published artifact makes redundant.
@@ -180,7 +223,12 @@ pub fn plan_supersedes(
 ) -> Vec<String> {
     // An incremental (non-repack) git pack makes nothing redundant; an environment snapshot
     // names what it replaces itself (an older snapshot of another environment stays live).
-    if (new.kind == KIND_GIT_PACK && !is_full_repack) || new.kind == KIND_ENV_SNAPSHOT {
+    // A members-only artifact is one branch's or one document's (D22): no push, repack or
+    // republish makes another's redundant, so none supersedes by kind.
+    if (new.kind == KIND_GIT_PACK && !is_full_repack)
+        || new.kind == KIND_ENV_SNAPSHOT
+        || is_members_kind(new.kind)
+    {
         return Vec::new();
     }
     existing
@@ -213,6 +261,22 @@ mod tests {
             tips: vec![],
             supersedes: vec![],
         }
+    }
+
+    #[test]
+    fn members_manifests_carry_no_tips_and_one_branch_never_supersedes_another() {
+        let m = PackManifest::for_members(KIND_FLAT_INDEX, b"sealed", 3, 1).unwrap();
+        assert_eq!((m.kind, m.tips.len()), (66, 0));
+        assert_eq!(
+            PackManifest::for_members(KIND_GIT_PACK, b"x", 1, 1).map(|m| m.kind),
+            Some(KIND_MEMBERS_GIT_PACK)
+        );
+        assert!(PackManifest::for_members(KIND_ENV_SNAPSHOT, b"x", 0, 1).is_none());
+        assert!(is_members_kind(KIND_MEMBERS_LONG_BODY) && !is_members_kind(KIND_ENV_SNAPSHOT));
+        let existing = vec![manifest(KIND_MEMBERS_GIT_PACK, "aa")];
+        let new = manifest(KIND_MEMBERS_GIT_PACK, "zz");
+        assert!(plan_supersedes(&existing, &new, true).is_empty());
+        assert!(plan_supersedes(&existing, &new, false).is_empty());
     }
 
     #[test]

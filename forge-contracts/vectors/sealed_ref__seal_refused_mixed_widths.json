@@ -1,0 +1,23 @@
+{
+  "name": "seal_refused_mixed_widths",
+  "description": "a writer refuses a 20-byte newOid beside a 32-byte prevOid.",
+  "case": "sealed_ref",
+  "rules": "v2",
+  "input": {
+    "op": "seal",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "epoch": 0,
+    "type": "refUpdate",
+    "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+    "refName": "refs/heads/sec/fix",
+    "newOid": "ac57952b296a19e0255ee8ff9b20adcfab2a599c",
+    "prevOid": "de8ed34d0343cb7015311aca01897865e6907bbd67d59ce0e2ec3a02f495b207",
+    "force": false,
+    "salt": "426f0f48b50167a1eef74179137e9eb5f29d26686d3e09706f1e66f434a6d644",
+    "nonce": "000102030405060708090a0b"
+  },
+  "expected": {
+    "error": "malformed"
+  }
+}

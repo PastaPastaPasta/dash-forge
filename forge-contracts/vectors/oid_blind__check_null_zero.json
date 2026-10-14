@@ -1,0 +1,13 @@
+{
+  "name": "check_null_zero",
+  "description": "an all-zero OID (a delete) is never blinded: null.",
+  "case": "oid_blind",
+  "rules": "v2",
+  "input": {
+    "op": "check",
+    "plain": "0000000000000000000000000000000000000000"
+  },
+  "expected": {
+    "status": "null"
+  }
+}

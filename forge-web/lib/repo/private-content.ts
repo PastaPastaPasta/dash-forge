@@ -343,14 +343,19 @@ export function storedPrivateDoc(type: PrivateDocType, doc: PlainDocument, repos
       return patchId === undefined ? null : { ...base, patchId }
     }
     case 'refUpdate':
-    case 'protectedRefUpdate':
+    case 'protectedRefUpdate': {
+      // a ref update always names its new tip: a missing one is malformed, never an empty OID a
+      // reader could take for a delete (forge-core `header_of`)
+      const newOid = bytesField(doc, 'newOid')
+      if (newOid === undefined) return null
       return {
         ...base,
         refNameHash: bytesField(doc, 'refNameHash'),
-        newOid: bytesField(doc, 'newOid') ?? new Uint8Array(0),
+        newOid,
         prevOid: bytesField(doc, 'prevOid'),
         force: doc['force'] === true,
       }
+    }
     case 'config':
       return base
   }
@@ -504,6 +509,9 @@ export function asPlaintext(doc: PlainDocument, fields: DocFields): PlainDocumen
   for (const [k, v] of Object.entries(fields) as [string, unknown][]) {
     // A config's chain link carries raw keys of other epochs: never part of the plaintext view.
     if (v === undefined || k === 'prevEpochKey' || k === 'skipEpochKey' || k === 'prevEpoch') continue
+    // A members-only document's blinds stay as written (§19, rule C: every fold compares the
+    // blind); their real values and salt (TLV 22-24, 27) never overwrite a plaintext field.
+    if (k === 'newOid' || k === 'prevOid' || k === 'headOid' || k === 'oidSalt') continue
     // An importer's sealed provenance (TLV 13, 14) goes back into its `imported` object.
     if (k === 'importedAuthor' || k === 'importedUrl') continue
     out[propOf(k as keyof DocFields)] = v

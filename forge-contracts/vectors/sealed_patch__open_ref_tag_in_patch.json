@@ -1,0 +1,37 @@
+{
+  "name": "open_ref_tag_in_patch",
+  "description": "tag 22 is a ref update's, not a PR's: malformed.",
+  "case": "sealed_patch",
+  "rules": "v2",
+  "input": {
+    "op": "open",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        }
+      },
+      "members": []
+    },
+    "doc": {
+      "type": "patch",
+      "vis": "public",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "number": 12,
+      "baseRefNameHash": "f921bd05e68b03740c450e565e0e6173e546193170b2dd404ddb6f153e9b5bf3",
+      "sourceRefNameHash": "f9337f26a53b55ef8817947cb1554159ae4637a5565e5f88b01eed029b69ccfb",
+      "enc": "03000102030405060708090a0ba356be5eeb40790d82c00c39a168e2608321a201ac1203d81291d9c0b27fb45d5663ae37d93aab3bbcd7782c721316e39e1dc780c1fb9f53389fc00d4e2c5672697c6830d1acf3d5d364a1ca6f005e75a6cc07ed97d44afe7f536806b9f971601deda69c742409dc596bd11aba35ef013410db4b70356ad66e18b98f20bb2718178262c32c7f30f4ffc8a5a16e89ff1a0f095904fa3b7a490e1a40c4f6a457962edb8aef8a56f4bab0a0b25466a08c749fda9e57e204af90b40ad277ad3328c188a236b6a495ea7df14de100aeed4fe4a151f3314ead8eff9ff13f5917807939d4582cac9d542facaf18245fffd7fa83",
+      "createdAtBlockHeight": 50
+    },
+    "plainHead": "7eede9362a48efb9e4e4e1e63eacc998c525c4da"
+  },
+  "expected": {
+    "status": "malformed"
+  }
+}

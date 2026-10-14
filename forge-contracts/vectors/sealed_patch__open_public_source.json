@@ -1,0 +1,44 @@
+{
+  "name": "open_public_source",
+  "description": "a PR from a public branch has no sealed head: headOid is plain.",
+  "case": "sealed_patch",
+  "rules": "v2",
+  "input": {
+    "op": "open",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        }
+      },
+      "members": []
+    },
+    "doc": {
+      "type": "patch",
+      "vis": "public",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "number": 12,
+      "baseRefNameHash": "f921bd05e68b03740c450e565e0e6173e546193170b2dd404ddb6f153e9b5bf3",
+      "sourceRefNameHash": "116379e6eb5c24f696981e8ab284fe1a781d8cd4992e3d920c975d94717f59d7",
+      "enc": "03000102030405060708090a0ba356be5eeb40790d82c00c39a168e2608321a201ac1203d81291d9c0b27fb45d5663ae37d93aab3bbcd7782c721316e39e1dc780c1fb9f53389fc00d4e2c5672697c6830d1acf3d5d364a1ca6f005e75a6cc07ed97d44afe7f536806b9f971601deda69c742409dc596bd11aba35ef013410db4b70356ad66e18b98f20bb7f181c64b5307f9118f44ec199a5def716e773f36b4c7b207a69a3da6a96db13a91b692b1c3dc2706991b9c9732e247b575b",
+      "createdAtBlockHeight": 50
+    },
+    "plainHead": "3cb137b1d9cf13766fd264d37da90e34e6c0e0d5"
+  },
+  "expected": {
+    "status": "readable",
+    "fields": {
+      "title": "Fix the token leak",
+      "body": "Members-only until the release.",
+      "baseRefName": "refs/heads/main",
+      "sourceRefName": "refs/heads/sec/fix"
+    },
+    "alerts": []
+  }
+}

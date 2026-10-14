@@ -1,0 +1,60 @@
+{
+  "name": "union_mismatch_kept",
+  "description": "a blind that does not match its real value: kept in the fold on the real values, with an alert naming the document.",
+  "case": "sealed_ref",
+  "rules": "v2",
+  "input": {
+    "op": "union",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        }
+      },
+      "members": []
+    },
+    "rows": [
+      {
+        "id": "9e0e7d79d8922ae882a75b1f1e900bc30c94a52cc1577b442400e6fa290fd007",
+        "createdAt": 1000,
+        "createdAtBlockHeight": 100,
+        "protected": false,
+        "vis": "public",
+        "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+        "epoch": 0,
+        "refNameHash": "f9337f26a53b55ef8817947cb1554159ae4637a5565e5f88b01eed029b69ccfb",
+        "newOid": "55e600ee6d662af52a980155e05a6ccd44c967e6",
+        "force": false,
+        "prevOid": "c6de995d59e0bb9b55de67c69e57069c96a74a99",
+        "enc": "03000102030405060708090a0bd788dd0681126a35c79597f963ca97226bcf7cb64cf1eb945722b5f2a9df9c39cfc597c0cd935c8331626c048590f6a88fdac4a0bc7c993bfd64eb02fde65f9319961fc56d2ceaa27a5f74eebf9275437339d12fc19489c0ff1312d9a21bd39eb82d9f07be0b144b575c5b46a33d11171dc74f5f6e3611410db00da8013b0c510554c85f697e540acaee178be6bc5219969943bcc606"
+      }
+    ]
+  },
+  "expected": {
+    "refs": {
+      "refs/heads/sec/fix": [
+        {
+          "id": "9e0e7d79d8922ae882a75b1f1e900bc30c94a52cc1577b442400e6fa290fd007",
+          "newOid": "ac57952b296a19e0255ee8ff9b20adcfab2a599c",
+          "force": false,
+          "protected": false,
+          "prevOid": "de8ed34d0343cb7015311aca01897865e6907bbd"
+        }
+      ]
+    },
+    "publicRefs": {},
+    "alerts": [
+      {
+        "id": "9e0e7d79d8922ae882a75b1f1e900bc30c94a52cc1577b442400e6fa290fd007",
+        "field": "newOid",
+        "kind": "mismatch"
+      }
+    ],
+    "unreadable": 0
+  }
+}

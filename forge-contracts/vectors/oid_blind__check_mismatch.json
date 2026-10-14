@@ -1,0 +1,15 @@
+{
+  "name": "check_mismatch",
+  "description": "another salt's blind: mismatch (alert, keep).",
+  "case": "oid_blind",
+  "rules": "v2",
+  "input": {
+    "op": "check",
+    "plain": "68e5cde0aed4d05cc5521a343d377f78bff71f25",
+    "real": "de8ed34d0343cb7015311aca01897865e6907bbd",
+    "salt": "c593c3811de01bebe941c9a10da7688ddbce11616faeb6b3928e3f17fb2e9987"
+  },
+  "expected": {
+    "status": "mismatch"
+  }
+}

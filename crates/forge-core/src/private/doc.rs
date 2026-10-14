@@ -382,7 +382,7 @@ fn seal_members_inner(
         return Err(PrivateError::Malformed);
     }
     let records = tlv::encode(fields);
-    let parsed = tlv::parse(&records, header.kind, false).ok_or(PrivateError::Malformed)?;
+    let parsed = tlv::parse_members(&records, header.kind).ok_or(PrivateError::Malformed)?;
     if !ref_names_match(header, &parsed, keys, V3) {
         return Err(PrivateError::Malformed);
     }
@@ -632,7 +632,14 @@ fn decrypt_members(keys: &EpochKeys, header: &DocHeader, enc: &[u8]) -> Opened {
         return Opened::Unreadable(Unreadable::BadTag);
     };
     let pt = zeroize::Zeroizing::new(pt);
-    let Some(fields) = tlv::parse(&pt, header.kind, false) else {
+    // only a public repository's members-only documents carry blinds (§19); in a private
+    // document (v0x03 is admitted there, D38) the blind tags stay reserved
+    let parsed = if header.vis == Visibility::Public {
+        tlv::parse_members(&pt, header.kind)
+    } else {
+        tlv::parse(&pt, header.kind, false)
+    };
+    let Some(fields) = parsed else {
         return Opened::Malformed;
     };
     if !ref_names_match(header, &fields, keys, V3) {

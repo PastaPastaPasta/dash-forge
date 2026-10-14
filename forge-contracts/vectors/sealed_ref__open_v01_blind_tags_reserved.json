@@ -1,0 +1,35 @@
+{
+  "name": "open_v01_blind_tags_reserved",
+  "description": "a private repository's ref update (v0x01) is not blinded: tags 22-24 and 27 stay reserved there, malformed.",
+  "case": "sealed_ref",
+  "rules": "v2",
+  "input": {
+    "op": "open",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        }
+      },
+      "members": []
+    },
+    "doc": {
+      "type": "refUpdate",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "refNameHash": "e729d18b929db396450159dfc6256e24302b94c9c3c9eb40643f5ae0be3fe579",
+      "newOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "force": false,
+      "enc": "01000102030405060708090a0b1d702080a6549f56371975d7b304906fd07369c67158a52df33c28f633376f5bbbca9a2178eb89bda45a5aca4305ce5b73bdb58cc671fa6498b49eea293cfe5e942709d9b7cb22a095d47c5810e34898ef30735e4f0e23c989c35312",
+      "createdAtBlockHeight": 50
+    }
+  },
+  "expected": {
+    "status": "malformed"
+  }
+}

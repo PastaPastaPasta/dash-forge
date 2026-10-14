@@ -1,6 +1,6 @@
 {
   "name": "reserved_tag_27",
-  "description": "tag 27 (an OID blind's salt) stays reserved: malformed.",
+  "description": "tag 27 (an OID blind's salt, §19) is not an issue field: malformed.",
   "case": "mixed_doc_open",
   "rules": "v2",
   "input": {

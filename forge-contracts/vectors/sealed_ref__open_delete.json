@@ -1,0 +1,43 @@
+{
+  "name": "open_delete",
+  "description": "a member opens the delete vector: the real values from TLV 22 and 23, each blind checked.",
+  "case": "sealed_ref",
+  "rules": "v2",
+  "input": {
+    "op": "open",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        }
+      },
+      "members": []
+    },
+    "doc": {
+      "type": "refUpdate",
+      "vis": "public",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "refNameHash": "f9337f26a53b55ef8817947cb1554159ae4637a5565e5f88b01eed029b69ccfb",
+      "newOid": "0000000000000000000000000000000000000000",
+      "force": false,
+      "prevOid": "5e142af5d918e945d30d164001387e798cb82b37",
+      "enc": "03000102030405060708090a0b7431c3585d07042584d06069320f0fcf8cb1a040c4d5f6469107e65f10733364cf12c1dda4bbbb3fe4c1f9be9d8a6f4deb09fb75c224b849f1bdb9cc568d5a74527e86e5cb0dc9b4d82dd499f908314b2975898df98ec4fb3b839df09344facfe3ada0e11dbe81f3f472db1c822e5802f1130ccf35a423f1a166785bcde123",
+      "createdAtBlockHeight": 50
+    }
+  },
+  "expected": {
+    "status": "readable",
+    "ref": {
+      "name": "refs/heads/sec/fix",
+      "newOid": "0000000000000000000000000000000000000000",
+      "prevOid": "da31d9d1006fc4633d1b3bbc71b0143c188395ac"
+    },
+    "alerts": []
+  }
+}

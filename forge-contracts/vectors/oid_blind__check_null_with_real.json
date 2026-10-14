@@ -1,0 +1,15 @@
+{
+  "name": "check_null_with_real",
+  "description": "a real value for an all-zero OID: malformed.",
+  "case": "oid_blind",
+  "rules": "v2",
+  "input": {
+    "op": "check",
+    "plain": "0000000000000000000000000000000000000000",
+    "real": "de8ed34d0343cb7015311aca01897865e6907bbd",
+    "salt": "c593c3811de01bebe941c9a10da7688ddbce11616faeb6b3928e3f17fb2e9987"
+  },
+  "expected": {
+    "status": "malformed"
+  }
+}

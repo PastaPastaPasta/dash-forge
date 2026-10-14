@@ -1,0 +1,37 @@
+{
+  "name": "members_only_new_branch",
+  "description": "a new members-only branch: its own pack against P (no other members branch's objects as bases, D22).",
+  "case": "members_pack_plan",
+  "rules": "v2",
+  "input": {
+    "publicTips": [
+      "cfff9697be9e8a78416dde4cb4f9cba34929127e",
+      "a52eea110b44deca2464264f16153e35bd3ec119"
+    ],
+    "membersTips": {
+      "refs/heads/sec/other": "5a537ce7fbecd21ab505f1596f4be0740f2d73b0"
+    },
+    "batch": [
+      {
+        "dst": "refs/heads/sec/fix",
+        "new": "d20acff6664a5850461cede5fabbba31b66af10d",
+        "audience": "members"
+      }
+    ]
+  },
+  "expected": {
+    "public": null,
+    "members": [
+      {
+        "ref": "refs/heads/sec/fix",
+        "want": [
+          "d20acff6664a5850461cede5fabbba31b66af10d"
+        ],
+        "have": [
+          "a52eea110b44deca2464264f16153e35bd3ec119",
+          "cfff9697be9e8a78416dde4cb4f9cba34929127e"
+        ]
+      }
+    ]
+  }
+}

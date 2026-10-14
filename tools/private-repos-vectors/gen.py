@@ -2023,13 +2023,13 @@ def mixed_vectors():
          ISSUE_TLV + rec(25, bytes(32)), MALFORMED),
         ("group_tag_refused", "tag 29 (a letter's role group) is reserved outside enc v0x04: malformed.",
          ISSUE_TLV + rec(29, bytes([1])), MALFORMED),
-        ("blind_tags_reserved", "tags 22-24 and 27 (sealed ref values, defined for later clients) stay reserved: "
-         "malformed.", ISSUE_TLV + rec(22, bytes(20)), MALFORMED),
-        ("reserved_tag_23", "tag 23 (a sealed ref update's real prevOid) stays reserved: malformed.",
+        ("blind_tags_reserved", "tags 22-24 and 27 (the real OIDs and salt of members-only ref updates, PRs and "
+         "head updates, §19) are not issue fields: malformed.", ISSUE_TLV + rec(22, bytes(20)), MALFORMED),
+        ("reserved_tag_23", "tag 23 (a members-only ref update's real prevOid, §19) is not an issue field: malformed.",
          ISSUE_TLV + rec(23, bytes(20)), MALFORMED),
-        ("reserved_tag_24", "tag 24 (a head update's real head) stays reserved: malformed.",
+        ("reserved_tag_24", "tag 24 (a members-only PR's real head, §19) is not an issue field: malformed.",
          ISSUE_TLV + rec(24, bytes(20)), MALFORMED),
-        ("reserved_tag_27", "tag 27 (an OID blind's salt) stays reserved: malformed.", ISSUE_TLV + rec(27, bytes(32)),
+        ("reserved_tag_27", "tag 27 (an OID blind's salt, §19) is not an issue field: malformed.", ISSUE_TLV + rec(27, bytes(32)),
          MALFORMED),
     ]:
         _, _, _, _, e = seal_members(MISSUE, K0, b"", pt=pt)
