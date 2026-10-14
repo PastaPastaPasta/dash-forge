@@ -1097,6 +1097,33 @@ What the clients do with §19.1–19.4 (DESIGN §4.3, §4.4; `forge_core::refs::
 
 Not done here: a note for a gitlink naming a members-only commit (allowed, an oracle only), the opt-in `patch-id` warning, and members-only browse indexes (kinds 65–69). Pack building (`pack::build_pack`) ignores replace refs and a legacy graft file, as the guard does.
 
+### 19.9 Check runs on members-only branches
+
+A `checkRun` is a public document in the forge-community contract: its `headOid`, `name`, status, conclusion and times are plaintext, and the live contracts cannot tell a blind from a commit id. A run on a members-only branch therefore carries only what may be public (DESIGN §4.3 "CI on a members branch"; `private::members_check`, `forge-web/lib/private/members-check.ts`):
+
+- **`headOid` is the commit's blind** as the ref update that introduced it carries it (rule C), or a members-only PR's `headOid` as written, so the PR's `checks_state` counts it. The run is found and keyed by that blind; the real commit never appears.
+- **The name is opaque**, keyed per pushed commit by the blind's salt (TLV 27), which members hold and nobody else does, so the public cannot link two pushes of one branch by their check names, as it cannot link their blinds:
+
+```
+K_name  = HMAC-SHA256(salt, "dash-forge/v2/check-name")
+name'   = base32(HMAC-SHA256(K_name, 0x01 ‖ name))[0..16]                (RFC 4648 alphabet, lower case, 80 bits)
+```
+
+- **No text.** No `summary`, `detailsUrl`, `externalId` or `artifacts` (`CheckReport::members_only`; where forge-community declares `checkRun.aud` (M1) the run is created with `aud: 1`, so consensus refuses that text). Without an external id, a report continues the reporter's open run of that (opaque) name on that blind, as on a private repository.
+- **The log is sealed** and named by `logUrl` (`https://` or `ipfs://`) with `logSha256` over the sealed bytes, which anyone may fetch and none but members open. Its header names the check, so members resolve the opaque name by opening it; a runner attaches a log to every report, even a queued one (the header alone), so a member reads the name before the run finishes:
+
+```
+K_log   = HMAC-SHA256(K_name, 0x02 ‖ nonce)                               (0x01 and 0x02 keep K_name's two uses apart)
+AD      = "DFCL" ‖ 0x01 ‖ u8(len(blind)) ‖ blind ‖ name'
+P       = u32(len(H)) ‖ H ‖ u64(len(log)) ‖ log ‖ 0x00 … (to a multiple of 4,096 bytes)
+H       = {"head":"<real commit, lower-case hex>","name":"<check name>","v":1}  (exactly this form)
+log URL → "DFCL" ‖ 0x01 ‖ nonce(12) ‖ AES-256-GCM(K_log, nonce, P, AD)
+```
+
+  `H` is read only in its one canonical form: these three keys in this order, no spaces, JSON's shortest escapes, lower-case hex (a header a reader would re-serialise differently, such as a key written twice, `1.0`, an escaped `/` or a byte-order mark, is refused), so every reader reads the same name. A reader refuses a sealed log that does not open, whose padding is not zeros, whose header is not that form, or whose header names a check that does not hash to the run's opaque name or a commit whose blind is not the run's `headOid`: a log moved to another run, or another commit, does not open there. A later version byte is skipped, not treated as corruption. Vectors `members_check__*` (name, seal, open and its refusals).
+- **Who reports.** Until branch key letters (phase 4: a kind-10 `branch` letter carries the head, the salt and so `K_name`), the reporter is a member: `forge-runner` with `members_branches` runs as a member identity holding its encryption key, and `dg ci report --members-branch <b>` looks the commit's blind and salt up in the member fold (`MembersUpdates::sealed`), real commit or blind given.
+- **Reading.** `dg ci status` and `dg ci log` read a member's commit on every blind the member fold maps it to and open each run's log for its name; the public sees each check's outcome under a 16-character name and never the branch, the commit or the log's text.
+
 ## 20. Key letters (kind 10)
 
 A **key letter** hands keys to specific people without the members key (DESIGN §4.3 "Branch keys for CI and people", §4.9 "Key letters"; `forge_core::private::key_letter`, web `lib/private/key-letter.ts`; vectors `key_letter__*` from `tools/private-repos-vectors/key_letters.py`).
