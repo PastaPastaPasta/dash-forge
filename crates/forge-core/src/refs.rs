@@ -613,6 +613,8 @@ pub fn members_updates_of(
     use crate::private::DocKind;
     let mut out = MembersUpdates::default();
     let mut members: BTreeMap<String, Vec<RefUpdate>> = BTreeMap::new();
+    // narrower updates this reader cannot open: (created at, id, name hash, a delete)
+    let mut unopened: Vec<(u64, String, [u8; 32], bool)> = Vec::new();
     for (rows, protected, kind) in [
         (&state.ref_updates, false, DocKind::RefUpdate),
         (
@@ -652,12 +654,7 @@ pub fn members_updates_of(
                         let deleted = d
                             .field_bytes("newOid")
                             .is_some_and(|o| crate::private::blind::is_null(&o));
-                        // rows come oldest first: the newest update of a name decides
-                        if deleted {
-                            out.unreadable_narrower.remove(&h);
-                        } else {
-                            out.unreadable_narrower.insert(h);
-                        }
+                        unopened.push((d.created_at.unwrap_or(0), d.id.clone(), h, deleted));
                     }
                 }
                 continue;
@@ -701,6 +698,15 @@ pub fn members_updates_of(
                 });
             out.sealed.insert(d.id.clone(), blind);
             members.entry(real.name).or_default().push(u);
+        }
+    }
+    // over both tables in ($createdAt, $id) order, the newest update of a name hash decides
+    unopened.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    for (_, _, h, deleted) in unopened {
+        if deleted {
+            out.unreadable_narrower.remove(&h);
+        } else {
+            out.unreadable_narrower.insert(h);
         }
     }
     let by_order = |a: &RefUpdate, b: &RefUpdate| {

@@ -112,9 +112,10 @@ pub async fn read_ring(
 ) -> Result<BranchRing> {
     let repo_id = repo.scope()?.repo_id;
     let manifests = svc.read_pack_manifests(repo).await?;
+    // a letter with no block height cannot be ordered against the others (nor judged late)
     let letters: Vec<&PackManifestInfo> = manifests
         .iter()
-        .filter(|m| m.kind == u64::from(crate::pack::KIND_KEY_LETTER))
+        .filter(|m| m.kind == u64::from(crate::pack::KIND_KEY_LETTER) && m.created_at_block_height > 0)
         .collect();
     let signer = svc.signer()?;
     let reader_keys = signer.encryption_keys(repo).private_keys();
