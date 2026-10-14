@@ -171,7 +171,9 @@ pub struct Thread {
 }
 
 /// A field that must be present and may be `null`.
-fn required_nullable<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Option<bool>, D::Error> {
+fn required_nullable<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Option<bool>, D::Error> {
     Option::deserialize(d)
 }
 
@@ -203,7 +205,11 @@ impl Mode {
 /// Whether and how a request is worked on (DESIGN §4.9 "Run only proper requests"), from the
 /// thread as everyone reads it (`t`, no letter opened) and whether the asker wrote the bot a
 /// letter for it (`letter`): `Err` says why it is not.
-pub fn decide(access: Option<&Access>, t: &Thread, letter: bool) -> std::result::Result<Mode, String> {
+pub fn decide(
+    access: Option<&Access>,
+    t: &Thread,
+    letter: bool,
+) -> std::result::Result<Mode, String> {
     let Some(a) = access.filter(|a| a.live) else {
         return Err("the bot has no access in this repository now".into());
     };
@@ -338,8 +344,8 @@ pub struct Output {
 
 /// Read and check what the agent wrote ([`RawResult`]), capped by `a`.
 pub fn read_output(bytes: &[u8], a: &Agents, pull: bool) -> Result<Output> {
-    let raw: RawResult =
-        serde_json::from_slice(bytes).context("the agent's result.json is not what it should be")?;
+    let raw: RawResult = serde_json::from_slice(bytes)
+        .context("the agent's result.json is not what it should be")?;
     let audience = match raw.audience.as_deref() {
         None => None,
         Some("public") => Some(Audience::Public),
@@ -364,7 +370,11 @@ pub fn read_output(bytes: &[u8], a: &Agents, pull: bool) -> Result<Output> {
             None
         };
         match why {
-            Some(w) => dropped.push(format!("{}:{} ({w})", s.path.chars().take(80).collect::<String>(), s.line)),
+            Some(w) => dropped.push(format!(
+                "{}:{} ({w})",
+                s.path.chars().take(80).collect::<String>(),
+                s.line
+            )),
             None => suggestions.push(s),
         }
     }
@@ -394,7 +404,8 @@ fn safe_path(p: &str) -> bool {
     !p.is_empty()
         && p.len() <= 256
         && !p.starts_with('/')
-        && p.split('/').all(|seg| !seg.is_empty() && seg != "." && seg != "..")
+        && p.split('/')
+            .all(|seg| !seg.is_empty() && seg != "." && seg != "..")
         && !p.chars().any(char::is_control)
 }
 
@@ -434,8 +445,17 @@ pub struct Outcome {
 /// Work on job `row` of `repo` (the job directory is `dir`, removed by the caller). `Err`: it
 /// could not be read (tried again on the next poll); everything after that is an [`Outcome`].
 #[allow(clippy::too_many_lines)] // one job, read to posted, each refusal where it is decided
-pub fn work(cfg: &Config, repo: &RepoConfig, bot: &str, row: &JobRow, dir: &Path) -> Result<Outcome> {
-    let a = cfg.agents.as_ref().context("agents = true needs [agents]")?;
+pub fn work(
+    cfg: &Config,
+    repo: &RepoConfig,
+    bot: &str,
+    row: &JobRow,
+    dir: &Path,
+) -> Result<Outcome> {
+    let a = cfg
+        .agents
+        .as_ref()
+        .context("agents = true needs [agents]")?;
     let mut out = Outcome {
         job: row.id.clone(),
         number: row.number,
@@ -611,14 +631,20 @@ fn thread_of(v: serde_json::Value) -> Result<Thread> {
 /// The endpoints the agent may reach: those of the AI service the access names. `Err` when it
 /// names one this runner does not know (the job would send content somewhere the maintainers did
 /// not say). No service named: no endpoint at all.
-pub fn endpoints_for(a: &Agents, processor: Option<&str>) -> std::result::Result<Vec<Endpoint>, String> {
+pub fn endpoints_for(
+    a: &Agents,
+    processor: Option<&str>,
+) -> std::result::Result<Vec<Endpoint>, String> {
     let Some(name) = processor else {
         return Ok(Vec::new());
     };
     let s = a.services.get(name).ok_or_else(|| {
         format!("the bot's access names {name:?} as its AI service, which this runner has no [agents.services] entry for")
     })?;
-    Ok(s.endpoints.iter().filter_map(|e| Endpoint::parse(e)).collect())
+    Ok(s.endpoints
+        .iter()
+        .filter_map(|e| Endpoint::parse(e))
+        .collect())
 }
 
 /// `git` in `dir` as nobody: without the runner's key, and with a home of its own (`anon`), so
@@ -667,23 +693,39 @@ fn prepare_code(
 ) -> Result<Option<String>> {
     git_anon(cfg, work, anon, &["init", "-q"])?;
     if mode == Mode::Members && !t.pack_files.is_empty() {
-        let head = t.head.clone().context("the letter hands on code but names no head")?;
+        let head = t
+            .head
+            .clone()
+            .context("the letter hands on code but names no head")?;
         git_anon(
             cfg,
             work,
             anon,
-            &["fetch", "-q", "--no-tags", &repo.url(), "+refs/heads/*:refs/public/*"],
+            &[
+                "fetch",
+                "-q",
+                "--no-tags",
+                &repo.url(),
+                "+refs/heads/*:refs/public/*",
+            ],
         )?;
-        for p in &t.pack_files {
-            let p = Path::new(p);
-            anyhow::ensure!(p.starts_with(packs), "dg wrote a pack outside {}", packs.display());
-            let mut c = Command::new(&cfg.bin.git);
-            c.current_dir(work)
-                .args(["index-pack", "-q", "--stdin", "--fix-thin"])
-                .stdin(std::fs::File::open(p)?)
-                .stdout(Stdio::null());
-            let st = c.status()?;
-            anyhow::ensure!(st.success(), "git index-pack of a shared pack failed");
+        // each pack is thin against the public branches and the packs before it on the branch,
+        // so they are indexed in rounds until every one took
+        let mut left: Vec<&Path> = t.pack_files.iter().map(Path::new).collect();
+        for p in &left {
+            anyhow::ensure!(
+                p.starts_with(packs),
+                "dg wrote a pack outside {}",
+                packs.display()
+            );
+        }
+        while !left.is_empty() {
+            let before = left.len();
+            left.retain(|p| !index_pack(cfg, work, p));
+            anyhow::ensure!(
+                left.len() < before,
+                "git index-pack of a shared pack failed"
+            );
         }
         git_anon(cfg, work, anon, &["checkout", "-q", "--detach", &head])?;
         return Ok(Some(head));
@@ -703,17 +745,48 @@ fn prepare_code(
         git_anon(cfg, work, anon, &["fetch", "-q", "--no-tags", &url, &spec])?;
         let tip = git_anon(cfg, work, anon, &["rev-parse", "refs/forge-runner/pr"])?;
         let head = pr.head_oid.to_ascii_lowercase();
-        anyhow::ensure!(tip.trim() == head, "{src} moved past the pull request's head");
+        anyhow::ensure!(
+            tip.trim() == head,
+            "{src} moved past the pull request's head"
+        );
         git_anon(cfg, work, anon, &["checkout", "-q", "--detach", &head])?;
         return Ok(Some(head));
     }
     let branch = run::default_branch_name(cfg, repo)?;
     let spec = format!("+refs/heads/{branch}:refs/forge-runner/head");
-    git_anon(cfg, work, anon, &["fetch", "-q", "--no-tags", &repo.url(), &spec])?;
-    git_anon(cfg, work, anon, &["checkout", "-q", "--detach", "refs/forge-runner/head"])?;
+    git_anon(
+        cfg,
+        work,
+        anon,
+        &["fetch", "-q", "--no-tags", &repo.url(), &spec],
+    )?;
+    git_anon(
+        cfg,
+        work,
+        anon,
+        &["checkout", "-q", "--detach", "refs/forge-runner/head"],
+    )?;
     Ok(Some(
-        git_anon(cfg, work, anon, &["rev-parse", "HEAD"])?.trim().to_string(),
+        git_anon(cfg, work, anon, &["rev-parse", "HEAD"])?
+            .trim()
+            .to_string(),
     ))
+}
+
+/// `git index-pack --stdin --fix-thin` of the pack file `pack` in the repository `work`:
+/// whether it took.
+fn index_pack(cfg: &Config, work: &Path, pack: &Path) -> bool {
+    let Ok(f) = std::fs::File::open(pack) else {
+        return false;
+    };
+    Command::new(&cfg.bin.git)
+        .current_dir(work)
+        .args(["index-pack", "--stdin", "--fix-thin"])
+        .stdin(f)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
 }
 
 /// What the agent's run came to.
@@ -932,7 +1005,10 @@ fn run_agent(
                 &format!("TCP:{}:{}", a.proxy_host, proxy.port()),
             ],
         )?;
-        docker(a, &["network", "connect", "--alias", "egress", &net, &relay])?;
+        docker(
+            a,
+            &["network", "connect", "--alias", "egress", &net, &relay],
+        )?;
         Ok(())
     })();
     if let Err(e) = started {
@@ -994,7 +1070,14 @@ pub fn post_args(
     }
     let number = thread.number.to_string();
     let kind = if thread.is_pull() { "pr" } else { "issue" };
-    let head = || vec![kind.to_string(), "comment".into(), repo.to_string(), number.clone()];
+    let head = || {
+        vec![
+            kind.to_string(),
+            "comment".into(),
+            repo.to_string(),
+            number.clone(),
+        ]
+    };
     let mut posts: Vec<Vec<String>> = Vec::new();
     // `--flag=value`: the agent's text may start with `-`
     if !output.reply.is_empty() {
@@ -1084,7 +1167,11 @@ pub fn record(cfg: &Config, repo: &RepoConfig, row: &JobRow, dir: &Path, o: &Out
         (None, false) => eprintln!(
             "{what}: {} mode{}: posted {} ({})",
             o.mode.unwrap_or("?"),
-            if o.tainted { ", members-only input" } else { "" },
+            if o.tainted {
+                ", members-only input"
+            } else {
+                ""
+            },
             o.posted.join(", "),
             o.audience.unwrap_or("?")
         ),
@@ -1153,13 +1240,22 @@ mod tests {
     #[test]
     fn only_a_proper_request_reads_what_the_letter_hands_on() {
         let all = access(&["post", "postMembersOnly", "readOnRequest"]);
-        let pr = vec![post("public", "pull request"), post("membersOnly", "comment")];
+        let pr = vec![
+            post("public", "pull request"),
+            post("membersOnly", "comment"),
+        ];
         let t = thread(false, Some(false), pr.clone());
         assert_eq!(decide(Some(&all), &t, true), Ok(Mode::Members));
         // a fork's or an outsider's pull request, or one whose origin dg did not say: public
         // mode, whatever the letter says
-        assert_eq!(decide(Some(&all), &thread(false, Some(true), pr.clone()), true), Ok(Mode::Public));
-        assert_eq!(decide(Some(&all), &thread(false, None, pr.clone()), true), Ok(Mode::Public));
+        assert_eq!(
+            decide(Some(&all), &thread(false, Some(true), pr.clone()), true),
+            Ok(Mode::Public)
+        );
+        assert_eq!(
+            decide(Some(&all), &thread(false, None, pr.clone()), true),
+            Ok(Mode::Public)
+        );
         // an issue has no origin to check
         let issue = thread(false, None, vec![post("public", "issue")]);
         assert_eq!(decide(Some(&all), &issue, true), Ok(Mode::Members));
@@ -1218,7 +1314,10 @@ mod tests {
         let posts = thread(
             true,
             Some(false),
-            vec![post("public", "pull request"), post("membersOnly", "comment")],
+            vec![
+                post("public", "pull request"),
+                post("membersOnly", "comment"),
+            ],
         );
         assert!(tainted(Mode::Members, &posts));
     }
@@ -1266,7 +1365,12 @@ mod tests {
         assert_eq!(o.dropped.len(), 3);
         assert_eq!(o.audience, Some(Audience::Members));
         // suggestions go on pull requests only; an unknown audience or field is refused
-        let o = read_output(br#"{"reply":"r","suggestions":[{"path":"a","line":1,"text":"x"}]}"#, &a, false).unwrap();
+        let o = read_output(
+            br#"{"reply":"r","suggestions":[{"path":"a","line":1,"text":"x"}]}"#,
+            &a,
+            false,
+        )
+        .unwrap();
         assert!(o.suggestions.is_empty());
         assert!(read_output(br#"{"reply":"r","audience":"everyone"}"#, &a, true).is_err());
         assert!(read_output(br#"{"reply":"r","push":"main"}"#, &a, true).is_err());
@@ -1288,7 +1392,10 @@ mod tests {
         let a = agents();
         let args = agent_args(&a, "n", "net", Path::new("/j"), None, Some("1:2".into()));
         let s = args.join(" ");
-        assert!(s.contains("--network net --dns 192.0.2.1 --cap-drop ALL"), "{s}");
+        assert!(
+            s.contains("--network net --dns 192.0.2.1 --cap-drop ALL"),
+            "{s}"
+        );
         assert!(s.contains("--memory 2g --cpus 2"), "{s}");
         assert!(s.contains("HTTPS_PROXY=http://egress:3128"), "{s}");
         assert!(s.contains("source=/j/in,target=/in,readonly"), "{s}");
@@ -1324,15 +1431,34 @@ mod tests {
         .unwrap();
         let p = post_args("o/r", &pr, false, Audience::Public, &out).unwrap();
         assert_eq!(p[0], ["pr", "comment", "o/r", "42", "--body=-r"]);
-        assert!(p[1].contains(&"--suggest=x".to_string()) && p[1].contains(&"--start-line=2".to_string()));
+        assert!(
+            p[1].contains(&"--suggest=x".to_string())
+                && p[1].contains(&"--start-line=2".to_string())
+        );
         assert!(p.iter().all(|a| !a.contains(&"--members".to_string())));
         let m = post_args("o/r", &pr, true, Audience::Members, &out).unwrap();
-        assert!(m.iter().all(|a| a.last().map(String::as_str) == Some("--members")));
+        assert!(m
+            .iter()
+            .all(|a| a.last().map(String::as_str) == Some("--members")));
         assert!(post_args("o/r", &pr, true, Audience::Public, &out).is_err());
         let issue = thread(true, None, vec![post("public", "issue")]);
-        let p = post_args("o/r", &issue, false, Audience::Public, &read_output(br#"{"reply":"r"}"#, &a, false).unwrap()).unwrap();
+        let p = post_args(
+            "o/r",
+            &issue,
+            false,
+            Audience::Public,
+            &read_output(br#"{"reply":"r"}"#, &a, false).unwrap(),
+        )
+        .unwrap();
         assert_eq!(p[0][0], "issue");
-        assert!(post_args("o/r", &issue, false, Audience::Public, &read_output(b"{}", &a, false).unwrap()).is_err());
+        assert!(post_args(
+            "o/r",
+            &issue,
+            false,
+            Audience::Public,
+            &read_output(b"{}", &a, false).unwrap()
+        )
+        .is_err());
     }
 
     #[test]

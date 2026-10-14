@@ -250,8 +250,8 @@ impl Scratch {
             .prefix("share-")
             .tempdir_in(&parent)
             .map_err(io_error)?;
-        let format = git(cwd, &["rev-parse", "--show-object-format"])
-            .unwrap_or_else(|_| "sha1".to_owned());
+        let format =
+            git(cwd, &["rev-parse", "--show-object-format"]).unwrap_or_else(|_| "sha1".to_owned());
         git(
             cwd,
             &[
@@ -452,7 +452,9 @@ pub async fn snapshot(
         .find(|d| d.id == update.id)
         .and_then(|d| Some((d, d.field_bytes32("refNameHash")?)))
     else {
-        return Err(git_error(format!("the push that set {short} could not be read again")));
+        return Err(git_error(format!(
+            "the push that set {short} could not be read again"
+        )));
     };
     // a share counts for its recipient only when the push it names is a current member's
     let roles = svc.copy_roles(repo).await?;
@@ -528,8 +530,7 @@ pub async fn snapshot(
                 continue;
             }
         };
-        let Ok(header) = crate::private::PackHeader::parse(&sealed, sealed.len() as u64)
-        else {
+        let Ok(header) = crate::private::PackHeader::parse(&sealed, sealed.len() as u64) else {
             continue;
         };
         let Some(keys) = kr.epoch_keys(header.epoch()) else {

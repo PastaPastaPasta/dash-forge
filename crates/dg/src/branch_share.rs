@@ -257,4 +257,3 @@ pub async fn share(ctx: &Ctx, name: &str, to: &[String]) -> Result<()> {
     );
     Ok(())
 }
-

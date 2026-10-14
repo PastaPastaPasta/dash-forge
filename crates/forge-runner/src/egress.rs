@@ -181,11 +181,7 @@ impl Proxy {
                 }
             });
         }
-        Ok(Self {
-            stop,
-            addr,
-            shared,
-        })
+        Ok(Self { stop, addr, shared })
     }
 
     /// The port it listens on.
@@ -344,10 +340,7 @@ fn connect_target(head: &str) -> Request {
 fn first_line_target(head: &str) -> String {
     let line = head.lines().next().unwrap_or_default();
     let t = line.split_whitespace().nth(1).unwrap_or(line);
-    t.chars()
-        .filter(char::is_ascii_graphic)
-        .take(120)
-        .collect()
+    t.chars().filter(char::is_ascii_graphic).take(120).collect()
 }
 
 /// Copy bytes both ways until either side closes.
@@ -368,7 +361,9 @@ fn tunnel(mut client: TcpStream, mut upstream: TcpStream) {
 pub fn summary(attempts: &[Attempt]) -> Vec<String> {
     let mut seen: BTreeMap<(String, &'static str), usize> = BTreeMap::new();
     for a in attempts {
-        *seen.entry((a.target.clone(), a.verdict.word())).or_default() += 1;
+        *seen
+            .entry((a.target.clone(), a.verdict.word()))
+            .or_default() += 1;
     }
     seen.into_iter()
         .map(|((t, v), n)| format!("{v} {t} ×{n}"))
@@ -444,7 +439,10 @@ mod tests {
         assert!(got.starts_with("HTTP/1.1 200"), "{got}");
         let got = ask(p.port(), "CONNECT example.com:443 HTTP/1.1\r\n\r\n");
         assert!(got.starts_with("HTTP/1.1 403"), "{got}");
-        let got = ask(p.port(), "GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\n\r\n");
+        let got = ask(
+            p.port(),
+            "GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\n\r\n",
+        );
         assert!(got.starts_with("HTTP/1.1 405"), "{got}");
 
         let attempts = wait_for(&p, 3);

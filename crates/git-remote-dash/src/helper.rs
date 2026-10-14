@@ -1438,9 +1438,10 @@ impl Helper {
                 || "the pushed members-only branches".to_owned(),
                 |b| members::short(b).to_owned(),
             );
-            let to = bot
-                .as_deref()
-                .map_or_else(|| "the runner bots".to_owned(), |b| format!("runner bot {b}"));
+            let to = bot.as_deref().map_or_else(
+                || "the runner bots".to_owned(),
+                |b| format!("runner bot {b}"),
+            );
             eprintln!(
                 "dash: warning: {what} couldn't be shared with {to} for its checks ({why}); `dg branch share` hands a branch on by hand"
             );

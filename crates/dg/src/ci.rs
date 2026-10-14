@@ -1024,8 +1024,8 @@ async fn shared_target(
         identity: &s.identity,
         bridge: &s.bridge,
     };
-    let shared = forge_core::key_letters::shared_with_signer(svc, &s.client, &s.repo, &signer)
-        .await?;
+    let shared =
+        forge_core::key_letters::shared_with_signer(svc, &s.client, &s.repo, &signer).await?;
     let Some(b) = shared.into_iter().find(|b| b.name == branch) else {
         return Err(UserError::new(
             codes::USAGE,

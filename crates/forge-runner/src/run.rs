@@ -378,11 +378,7 @@ fn dg_read(cfg: &Config, repo: &RepoConfig, args: &[&str]) -> Result<serde_json:
 }
 
 /// [`dg_read`], with the key when `keyed`.
-pub(crate) fn dg_read_keyed(
-    cfg: &Config,
-    keyed: bool,
-    args: &[&str],
-) -> Result<serde_json::Value> {
+pub(crate) fn dg_read_keyed(cfg: &Config, keyed: bool, args: &[&str]) -> Result<serde_json::Value> {
     let mut cmd = with_network(Command::new(&cfg.bin.dg), cfg);
     if !keyed {
         cmd.env_remove("DASH_FORGE_KEY");
@@ -581,8 +577,7 @@ pub fn members_run(repo: &RepoConfig, trig: &Trigger, refs: &RefAudiences) -> Me
     };
     match trig {
         Trigger::Push(p) | Trigger::Schedule { push: p, .. } => {
-            if repo.members_branches && !refs.members_view && !refs.shared_view && !refs.private
-            {
+            if repo.members_branches && !refs.members_view && !refs.shared_view && !refs.private {
                 return MembersRun::Unknown(
                     "the runner's identity did not read the members-only branches (members_branches \
                      needs a member's identity with its encryption key, or a bot's the branches are \

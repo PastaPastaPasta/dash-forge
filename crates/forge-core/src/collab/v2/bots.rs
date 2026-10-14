@@ -679,11 +679,8 @@ impl Collab<'_> {
                     }
                 };
             let Some(typed) = snap.letter.to_typed() else {
-                out.failed.push((
-                    Some(branch.clone()),
-                    None,
-                    "its head did not check".into(),
-                ));
+                out.failed
+                    .push((Some(branch.clone()), None, "its head did not check".into()));
                 continue;
             };
             let plain = match typed.encode() {
@@ -705,9 +702,10 @@ impl Collab<'_> {
                         letter,
                         head: snap.tip.clone(),
                     }),
-                    Err(e) => out
-                        .failed
-                        .push((Some(branch.clone()), Some(bot.clone()), e.to_string())),
+                    Err(e) => {
+                        out.failed
+                            .push((Some(branch.clone()), Some(bot.clone()), e.to_string()));
+                    }
                 }
             }
         }
