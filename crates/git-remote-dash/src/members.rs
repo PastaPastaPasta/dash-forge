@@ -314,8 +314,10 @@ pub fn decide(
 ) -> Result<std::result::Result<Audience, Refusal>> {
     use Audience::{Members, Public};
     match s.existing {
-        Some(Members) if s.option == Some(Public) => return Ok(Err(Refusal::MembersBranchPublic)),
-        Some(Members) => return Ok(Ok(Members)),
+        Some(Members | Audience::Narrower(_)) if s.option == Some(Public) => {
+            return Ok(Err(Refusal::MembersBranchPublic))
+        }
+        Some(ref a @ (Members | Audience::Narrower(_))) => return Ok(Ok(a.clone())),
         Some(Public) if s.option == Some(Members) || s.intent == Some(Members) => {
             return Ok(Err(Refusal::AlreadyPublic))
         }
@@ -462,6 +464,49 @@ pub fn refusal_error(r: &Refusal, dst: &str, repo: &str) -> (UserError, &'static
             "members-only branch",
         ),
     }
+}
+
+/// The refusal of a branch asked for narrower (`dg branch new --to`, phase 3F) that cannot be:
+/// it exists already (public or for all members), it is the default branch or not a branch, or
+/// the repository has members-only content off.
+pub fn narrow_refusal(r: &Refusal, dst: &str, repo: &str) -> (UserError, &'static str) {
+    let name = short(dst);
+    match r {
+        Refusal::AlreadyPublic => (
+            UserError::new(
+                codes::BRANCH_ALREADY_PUBLIC,
+                format!("{name} already exists on {repo}; nothing already pushed can be shared with fewer people"),
+            )
+            .cause(format!("{name} is a public or members-only branch, readable by everyone it was pushed for"))
+            .fix(format!("start a branch for fewer people from here under another name: `dg branch new --to maintainers {name}-2`"))
+            .note(NOTE_NOTHING_SIGNED),
+            "already exists for more people",
+        ),
+        Refusal::DefaultBranch => (
+            UserError::new(
+                codes::BRANCH_ALREADY_PUBLIC,
+                format!("{name} can't be for fewer people"),
+            )
+            .cause(if dst.starts_with("refs/heads/") {
+                "the default branch is always public"
+            } else {
+                "only branches can be shared with fewer people"
+            })
+            .fix(format!("unset it: `git config --unset branch.{name}.dashAudience`"))
+            .note(NOTE_NOTHING_SIGNED),
+            "can't be for fewer people",
+        ),
+        other => refusal_error(other, dst, repo),
+    }
+}
+
+/// A narrower audience asked for the branch a push names (`branch.<b>.dashAudience`, which `dg
+/// branch new --to` sets; phase 3F): its local source branch, else the destination's name.
+pub fn narrow_intent(src: &str, dst: &str) -> Option<forge_core::env::Audience> {
+    let b = src
+        .strip_prefix("refs/heads/")
+        .or_else(|| dst.strip_prefix("refs/heads/"))?;
+    config_get(&format!("branch.{b}.dashAudience")).and_then(|v| forge_core::narrow::parse_spec(&v))
 }
 
 const NOTE_NOTHING_SIGNED: &str = "checked before anything was signed or stored";
@@ -677,6 +722,16 @@ pub fn publish_private(values: &[String]) -> Option<String> {
     Some(v)
 }
 
+/// What the guard knows about narrower branches (phase 3F): who each is for, by ledger token,
+/// and every one of their commits the pusher decrypts, with its token.
+#[derive(Debug, Default, Clone)]
+pub struct Narrower {
+    /// Audiences by ledger token.
+    pub audiences: guard::NarrowAudiences,
+    /// `(newOid, token)` of every narrower branch's update the pusher opened.
+    pub decryptable: Vec<(String, String)>,
+}
+
 /// Run the guard over this clone. A ledger that cannot be read at all is unknown (fail closed).
 pub fn run_guard(
     members_key: bool,
@@ -684,6 +739,7 @@ pub fn run_guard(
     public_tips: &[String],
     batch: &[BatchRef],
     publish_private: Option<&str>,
+    narrower: &Narrower,
 ) -> Result<Outcome> {
     let ledger = read_ledger();
     let g = GitGraph::here();
@@ -696,6 +752,8 @@ pub fn run_guard(
             public_tips,
             batch,
             publish_private,
+            audiences: &narrower.audiences,
+            decryptable_narrower: &narrower.decryptable,
         },
     )?)
 }
@@ -747,6 +805,12 @@ pub fn public_view_drops_branches(remote: Option<&str>, public_live: &BTreeSet<&
 /// records everything members-only it fetches or pushes from here on, and before members-only
 /// branches no helper could hold any. A ledger of another version is never written to (E806).
 pub fn record(commits: &[String], packs: &[[u8; 32]]) -> Result<()> {
+    record_as(&EntryAudience::Members, commits, packs)
+}
+
+/// [`record`] for `audience`: a narrower branch's commits and packs carry its ledger token
+/// (phase 3F).
+pub fn record_as(audience: &EntryAudience, commits: &[String], packs: &[[u8; 32]]) -> Result<()> {
     if commits.is_empty() && packs.is_empty() {
         return Ok(());
     }
@@ -774,7 +838,7 @@ pub fn record(commits: &[String], packs: &[[u8; 32]]) -> Result<()> {
         .map(|(kind, id)| Entry {
             kind,
             id,
-            audience: EntryAudience::Members,
+            audience: audience.clone(),
         })
         .collect();
     ledger::append(&dir, &new).map_err(|e| {
@@ -1008,6 +1072,8 @@ pub fn pre_push(args: &[String], input: &mut dyn std::io::Read) -> Result<i32> {
             public_tips: &known,
             batch: &batch,
             publish_private: None,
+            audiences: &Default::default(),
+            decryptable_narrower: &[],
         },
     )?;
     let grafts = written_grafts();

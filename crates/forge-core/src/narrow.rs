@@ -36,6 +36,70 @@ pub fn resolve_now(audience: &Audience, owner: &str, members: &[Member]) -> BTre
     crate::env::service::resolve_people(audience, owner, members)
 }
 
+/// Parse the spelling of a narrower audience (`git config branch.<b>.dashAudience`, `dg branch
+/// new --to`): a comma list of at most one group (`maintainers`, `writers`, `members`) and
+/// identity ids (base58). `None` for anything else, and for `members` or `public` alone (All
+/// members and Public are not narrower: they have no branch key).
+#[must_use]
+pub fn parse_spec(s: &str) -> Option<Audience> {
+    let mut group = None;
+    let mut people = BTreeSet::new();
+    for item in s.split(',').map(str::trim) {
+        match crate::env::Group::parse(item) {
+            Some(g) if group.is_none() => group = Some(g),
+            Some(_) => return None,
+            None => {
+                let id = platform::decode_identifier(item).ok()?;
+                people.insert(platform::encode_identifier(id));
+            }
+        }
+    }
+    if people.is_empty() && matches!(group, None | Some(crate::env::Group::Members)) {
+        return None;
+    }
+    Some(Audience {
+        group,
+        also: people.into_iter().collect(),
+    })
+}
+
+/// The spelling [`parse_spec`] reads.
+#[must_use]
+pub fn spec(a: &Audience) -> String {
+    a.group
+        .map(|g| g.as_str().to_owned())
+        .into_iter()
+        .chain(a.also.iter().cloned())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// How the product names a narrower audience (DESIGN §10): "Maintainers", "Writers and
+/// maintainers", "All members + 1 person", "2 people".
+#[must_use]
+pub fn label(a: &Audience) -> String {
+    let people = |n: usize| if n == 1 { "1 person".to_owned() } else { format!("{n} people") };
+    match (a.group, a.also.len()) {
+        (Some(g), 0) => g.label().to_owned(),
+        (Some(g), n) => format!("{} + {}", g.label(), people(n)),
+        (None, n) => people(n),
+    }
+}
+
+/// `audience` with `me` among its people when it does not resolve to include them: whoever sets
+/// a narrower branch's audience is always in it (as for an environment's Specific people).
+#[must_use]
+pub fn with_me(audience: &Audience, me: &str, owner: &str, members: &[Member]) -> Audience {
+    if resolve_now(audience, owner, members).contains(me) {
+        return audience.clone();
+    }
+    let mut a = audience.clone();
+    a.also.push(me.to_owned());
+    a.also.sort();
+    a.also.dedup();
+    a
+}
+
 /// Every `branchKey` letter of public `repo` addressed to the signer, opened and folded into a
 /// ring (each branch's audience resolved now against `members`). Letters are taken from any
 /// sender consensus admitted (a maintainer or Write member when written): a removed creator's
@@ -382,6 +446,21 @@ mod tests {
 
     fn set(xs: &[&str]) -> BTreeSet<String> {
         xs.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn specs_round_trip_and_members_alone_is_not_narrower() {
+        let id = platform::encode_identifier([7; 32]);
+        let a = parse_spec(&format!("maintainers, {id}")).unwrap();
+        assert_eq!(a.group, Some(Group::Maintainers));
+        assert_eq!(a.also, vec![id.clone()]);
+        assert_eq!(parse_spec(&spec(&a)), Some(a.clone()));
+        assert_eq!(label(&a), "Maintainers + 1 person");
+        assert!(parse_spec("members").is_none() && parse_spec("public").is_none());
+        assert!(parse_spec("maintainers,writers").is_none());
+        assert!(parse_spec("maintainers,not-an-id").is_none());
+        assert_eq!(parse_spec(&format!("members,{id}")).unwrap().group, Some(Group::Members));
+        assert_eq!(label(&parse_spec("writers").unwrap()), "Writers and maintainers");
     }
 
     #[test]
