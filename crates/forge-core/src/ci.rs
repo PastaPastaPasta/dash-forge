@@ -94,6 +94,10 @@ pub const MS_EPOCH: u64 = 1_000_000_000_000;
 pub const PRIVATE_TEXT_FIELDS: [&str; 5] =
     ["summary", "detailsUrl", "logUrl", "artifacts", "externalId"];
 
+/// The fields a members-only branch's run leaves out (DESIGN §4.3): everything [`PRIVATE_TEXT_FIELDS`]
+/// names but the log, which it carries sealed.
+pub const MEMBERS_TEXT_FIELDS: [&str; 4] = ["summary", "detailsUrl", "artifacts", "externalId"];
+
 /// A run's set-once fields, by property name: forge-community freezes each once it is set
 /// (`immutableAllowSetting` on RC1, `"when": {"present": "$old.<field>"}` on RC2), and
 /// [`check_run_write`] only ever sets them on a run that does not hold them yet.
@@ -335,6 +339,11 @@ pub struct CheckReport {
     pub log: Option<(String, [u8; 32])>,
     /// `[{name, url, sha256, size}]` JSON (≤ 4096 bytes).
     pub artifacts: Option<String>,
+    /// A run on a members-only branch (mixed-visibility DESIGN §4.3): `head_oid` is the commit's
+    /// blind and `name` an opaque name ([`crate::private::members_check`]), and the run carries no
+    /// summary, details link, run id or artifacts ([`MEMBERS_TEXT_FIELDS`]), only its sealed log.
+    /// Where forge-community declares `checkRun.aud` (M1), the run is created with `aud: 1`.
+    pub members_only: bool,
 }
 
 fn check_text(field: &str, value: &str, (chars, bytes): (usize, usize)) -> Result<()> {
@@ -440,15 +449,19 @@ impl CheckReport {
     /// [`PRIVATE_TEXT_FIELDS`]) rather than refused, so a CI that reports the same way
     /// everywhere still records its status and conclusion, and the caller warns. A public
     /// repository's report is unchanged.
+    ///
+    /// A [`Self::members_only`] run drops the same text but keeps its (sealed) log
+    /// ([`MEMBERS_TEXT_FIELDS`]), in a repository of any visibility.
     #[must_use]
     pub fn for_visibility(&self, visibility: Visibility) -> (CheckReport, Vec<&'static str>) {
         let mut r = self.clone();
         let mut dropped = Vec::new();
-        if visibility == Visibility::Private {
+        let private = visibility == Visibility::Private;
+        if private || r.members_only {
             for (name, present) in [
                 ("summary", r.summary.take().is_some()),
                 ("detailsUrl", r.details_url.take().is_some()),
-                ("logUrl", r.log.take().is_some()),
+                ("logUrl", private && r.log.take().is_some()),
                 ("artifacts", r.artifacts.take().is_some()),
                 ("externalId", r.external_id.take().is_some()),
             ] {
@@ -802,6 +815,10 @@ impl<'a> CheckRuns<'a> {
         // RC2 member roles: a check run claims `r` 1 (runners and maintainers send 1; a
         // writer's leaf proves its role is 1).
         crate::members::stamp_claimed_role(&plan.community, DOC_CHECK_RUN, &mut props, 1);
+        // M1: the runner declares a members-only run, so consensus refuses its text
+        if report.members_only && plan.community.has_property(DOC_CHECK_RUN, "aud") {
+            props.insert("aud".into(), FieldValue::integer(1));
+        }
         let document_id = engine
             .create_document(&plan.community, DOC_CHECK_RUN, props)
             .await?;
@@ -1336,6 +1353,7 @@ mod tests {
                 (u, h.try_into().unwrap())
             }),
             artifacts: text("artifacts"),
+            members_only: false,
         }
     }
 

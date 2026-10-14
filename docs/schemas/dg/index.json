@@ -15,6 +15,8 @@
     "branch cleanup": "branch-cleanup.schema.json",
     "branch list": "branch-list.schema.json",
     "branch new": "branch-new.schema.json",
+    "ci log": "ci-log.schema.json",
+    "ci refs": "ci-refs.schema.json",
     "ci report": "ci-report.schema.json",
     "ci rerun": "ci-rerun.schema.json",
     "ci reruns": "ci-reruns.schema.json",
