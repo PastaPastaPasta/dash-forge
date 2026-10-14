@@ -243,6 +243,20 @@ export function whilePrivateNote(member: boolean): string {
 }
 
 /**
+ * Whether a reader who cannot open a thread of a repo whose visibility is `visibility` may reply
+ * to it from its members-only page (DESIGN §4.10, L3): only a members-only thread written while
+ * the repo (made public since) was private takes public replies, and the reply is public ("Public"
+ * only, with {@link whilePrivateNote}). A thread written since takes members-only replies alone,
+ * one to specific people only theirs, and a private repo none from a reader without its key.
+ */
+export function publicReplyOffered(
+  visibility: 'public' | 'private',
+  target: { readonly placeholder: { readonly audience: 'members' | 'specificPeople' }; readonly writtenWhilePrivate?: true },
+): boolean {
+  return visibility === 'public' && target.writtenWhilePrivate === true && target.placeholder.audience === 'members'
+}
+
+/**
  * A member removed since, who still reads what was written while they were one (DESIGN §12 item
  * 6): why they can't write members-only content, or reply in a members-only thread.
  */

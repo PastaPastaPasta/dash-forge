@@ -1078,9 +1078,10 @@ export const MEMBERS_CARD_HEADER = 'bg-anvil-100 dark:bg-anvil-850'
 
 /**
  * The page of an issue or PR this reader cannot open (DESIGN D14, D19): "#3 · members-only",
- * who opened it, when, its state and how many comments it has; never "not found".
+ * who opened it, when, its state and how many comments it has; never "not found". `children`:
+ * what follows under it (its replies and a reply composer, `members-only-thread.tsx`).
  */
-export function MembersOnlyTargetPage({ home, target }: { home: RepoHome; target: MembersOnlyTarget }): JSX.Element {
+export function MembersOnlyTargetPage({ home, target, children }: { home: RepoHome; target: MembersOnlyTarget; children?: ReactNode }): JSX.Element {
   const kind = target.placeholder.type === 'patch' ? 'pull' : 'issue'
   const Icon = kind === 'pull' ? GitPullRequest : CircleDot
   const state = target.merged ? 'merged' : target.open ? 'open' : 'closed'
@@ -1146,6 +1147,7 @@ export function MembersOnlyTargetPage({ home, target }: { home: RepoHome; target
           <p>Only members of this repo can read this {noun}. Everyone can see that it exists, who opened it and when.</p>
         )}
       </div>
+      {children}
     </div>
   )
 }

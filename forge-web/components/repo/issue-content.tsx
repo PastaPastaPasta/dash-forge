@@ -30,11 +30,12 @@ import { readDuplicatesOf } from '@/lib/view/issues-view'
 import type { LinkingPulls, RepoRef, TransitionView } from '@/lib/repo'
 import type { RepoHome, IssueThread, MembersOnlyTarget, TimelineItem } from '@/lib/view'
 import { commentDraftKey, commentEditDraftKey, discardedEdits, editDraftKey, useDraftText, useEditDraft } from '@/lib/view/draft-text'
-import { ACL_NAME, ARCHIVED_REASON, isMembersOnlyTarget, issueWriteShows, loadIssueOrMembersOnly } from '@/lib/view'
+import { ACL_NAME, ARCHIVED_REASON, isMembersOnlyTarget, issueWriteShows, loadIssueOrMembersOnly, readTargetUntil, repliesNotShown } from '@/lib/view'
 import { NO_LETTER_ASK, forwardText, notPublic, publicTextOf, quotesMembersText } from '@/lib/view/audience'
 import { cn } from '@/lib/utils'
-import { AudienceChip, AudienceMark, AudienceWarnings, MEMBERS_CARD, MEMBERS_CARD_HEADER, MembersOnlyTargetPage, closeWithComment, letterThreadOf, useAudienceWarnings, useComposerAudience, useMembersTexts, useQuoteGate, warningName } from '@/components/repo/audience'
+import { AudienceChip, AudienceMark, AudienceWarnings, MEMBERS_CARD, MEMBERS_CARD_HEADER, closeWithComment, letterThreadOf, useAudienceWarnings, useComposerAudience, useMembersTexts, useQuoteGate, warningName } from '@/components/repo/audience'
 import { ForwardButton } from '@/components/repo/letter-picker'
+import { MembersOnlyThread } from '@/components/repo/members-only-thread'
 import { readDuplicateTargets } from '@/lib/view/issues-view'
 import { closeWhyOf, closedAsWords, closedSkipped } from '@/lib/view/close-reason'
 import type { ClosedAs } from '@/lib/rules/transition'
@@ -158,6 +159,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   // satisfies them all; a newer read aborts the older one's polling.
   const expectations = useRef<((t: IssueThread) => boolean)[]>([])
   const current = useRef<{ aborted: boolean }>({ aborted: false })
+  // Replies posted from the members-only page (a thread this reader cannot open), waited for alike.
+  const replies = useRef<string[]>([])
   const { data: read, loading, error, reload } = useAsync<IssueThread | MembersOnlyTarget | null>(
     async (stop) => {
       current.current.aborted = true
@@ -168,8 +171,13 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
       const want = [...expectations.current]
       const load = (): Promise<IssueThread | MembersOnlyTarget | null> => loadIssueOrMembersOnly(sdk!, home.repo, number, network)
       const first = await retryWhileMissing(load, justCreated ? 8 : 0, undefined, signal)
-      // A members-only issue this reader cannot open has nothing to re-read for.
-      if (first === null || isMembersOnlyTarget(first) || want.length === 0) return first
+      // A members-only issue this reader cannot open: re-read only for a reply posted from it.
+      if (first !== null && isMembersOnlyTarget(first)) {
+        const t = await readTargetUntil(first, load, replies.current, signal)
+        if (!signal.aborted) replies.current = repliesNotShown(t, replies.current)
+        return t
+      }
+      if (first === null || want.length === 0) return first
       // A re-read that fails keeps the thread just read rather than replacing the page with an error.
       const reread = (): Promise<IssueThread | null> => load().then((t) => (isMembersOnlyTarget(t) ? first : t)).catch(() => first)
       const t = await readUntil(reread, want, { signal, first })
@@ -326,9 +334,16 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const outsideAccess = useRequestsOutsideAccess(home, data?.agentRequests ?? NO_REQUESTS, data?.members ?? NO_MEMBERS, home.repo.visibility === 'private' || notPublic(data?.issue.audience))
 
   if (!Number.isFinite(number)) return <EmptyState icon={CircleDot} title="No issue addressed" body="Add &number= to the URL." />
-  if (loading && !data) return <LoadingBlock label="Loading issue" />
+  // A members-only page re-reading for a reply it posted stays up meanwhile.
+  if (loading && !data && !isMembersOnlyTarget(read)) return <LoadingBlock label="Loading issue" />
   if (error) return <ErrorState message={error} onRetry={reload} />
-  if (isMembersOnlyTarget(read)) return <MembersOnlyTargetPage home={home} target={read} />
+  if (isMembersOnlyTarget(read)) {
+    const posted = (id: string): void => {
+      replies.current.push(id)
+      reload()
+    }
+    return <MembersOnlyThread home={home} addr={addr} target={read} onPosted={posted} />
+  }
   if (!data) return <TargetNotFound home={home} addr={addr} number={number} kind="issue" icon={CircleDot} title={`Issue #${number} not found`} body="No issue or pull request with that number in this repo." />
 
   const { issue, timeline, labels, members, hidden, eventValues, meta } = data

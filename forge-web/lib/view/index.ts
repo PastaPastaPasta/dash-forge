@@ -198,6 +198,9 @@ export {
 } from './blob-view'
 export {
   isMembersOnlyTarget,
+  readTargetUntil,
+  repliesNotShown,
+  targetShowsComment,
   issueWriteShows,
   loadIssueOrMembersOnly,
   loadIssueThread,
