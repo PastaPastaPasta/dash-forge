@@ -2570,7 +2570,11 @@ mod tests {
     /// `{"type": "done", "commit": …}`).
     fn embargo_value_of(v: &serde_json::Value) -> embargo::EmbargoValue {
         let mut o = v.as_object().expect("a value object").clone();
-        match o.remove("type").and_then(|t| t.as_str().map(str::to_string)).as_deref() {
+        match o
+            .remove("type")
+            .and_then(|t| t.as_str().map(str::to_string))
+            .as_deref()
+        {
             Some("schedule") => embargo::EmbargoValue::Schedule(
                 serde_json::from_value(serde_json::Value::Object(o)).expect("a plan"),
             ),

@@ -149,7 +149,7 @@ impl Plan {
 
 /// `dg publish`.
 pub async fn run(ctx: &Ctx, a: &PublishArgs) -> Result<()> {
-    publish(ctx, a).await.map(|_| ())
+    Box::pin(publish(ctx, a)).await.map(|_| ())
 }
 
 /// `dg publish`, and the release bot's publish step.
@@ -991,6 +991,7 @@ fn scan_blob(cwd: &Path, commit: &str, path: &str) -> Vec<(String, bool)> {
 
 /// The publish dialog in CLI form (§10): the exact list, the scan line, the method, the
 /// co-author line, and a branch-name warning.
+#[allow(clippy::too_many_arguments)] // what the dialog shows, each from its own step
 fn dialog(
     ctx: &Ctx,
     plan: &Plan,

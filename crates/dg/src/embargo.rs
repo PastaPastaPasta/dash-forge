@@ -72,7 +72,7 @@ pub async fn run(ctx: &Ctx, cmd: &EmbargoCommand) -> Result<()> {
         EmbargoCommand::Cancel { number, repo } => {
             cancel(ctx, &repo_arg(repo.as_deref())?, *number).await
         }
-        EmbargoCommand::Run { wait, poll } => release_bot(ctx, *wait, *poll).await,
+        EmbargoCommand::Run { wait, poll } => Box::pin(release_bot(ctx, *wait, *poll)).await,
     }
 }
 
@@ -143,41 +143,50 @@ pub(crate) fn parse_at(text: &str, now: u64) -> Result<u64> {
 }
 
 /// `YYYY-MM-DD[T ]HH:MM[:SS]` followed by `Z`, ` UTC` or `±HH:MM`, in Unix seconds.
-fn absolute(t: &str) -> Option<u64> {
-    let num = |s: &str| -> Option<i64> {
-        (!s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
-            .then(|| s.parse().ok())
+fn absolute(text: &str) -> Option<u64> {
+    let num = |part: &str| -> Option<i64> {
+        (!part.is_empty() && part.bytes().all(|c| c.is_ascii_digit()))
+            .then(|| part.parse().ok())
             .flatten()
     };
-    let b = t.as_bytes();
-    if b.len() < 16
-        || b[4] != b'-'
-        || b[7] != b'-'
-        || !matches!(b[10], b'T' | b' ')
-        || b[13] != b':'
+    let bytes = text.as_bytes();
+    if bytes.len() < 16
+        || bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || !matches!(bytes[10], b'T' | b' ')
+        || bytes[13] != b':'
     {
         return None;
     }
-    let (y, mo, d) = (num(&t[0..4])?, num(&t[5..7])?, num(&t[8..10])?);
-    let (h, mi) = (num(&t[11..13])?, num(&t[14..16])?);
-    let mut rest = &t[16..];
-    let mut s = 0;
-    if let Some(r) = rest.strip_prefix(':') {
-        s = num(r.get(0..2)?)?;
-        rest = &r[2..];
+    let (year, month, day) = (num(&text[0..4])?, num(&text[5..7])?, num(&text[8..10])?);
+    let (hour, minute) = (num(&text[11..13])?, num(&text[14..16])?);
+    let mut rest = &text[16..];
+    let mut second = 0;
+    if let Some(after) = rest.strip_prefix(':') {
+        second = num(after.get(0..2)?)?;
+        rest = &after[2..];
     }
     let offset = match rest.trim_start() {
         "Z" | "UTC" => 0,
-        z if (z.starts_with('+') || z.starts_with('-')) && z.len() == 6 && &z[3..4] == ":" => {
-            let sign = if z.starts_with('-') { -1 } else { 1 };
-            sign * (num(&z[1..3])? * 3600 + num(&z[4..6])? * 60)
+        zone if (zone.starts_with('+') || zone.starts_with('-'))
+            && zone.len() == 6
+            && &zone[3..4] == ":" =>
+        {
+            let sign = if zone.starts_with('-') { -1 } else { 1 };
+            sign * (num(&zone[1..3])? * 3600 + num(&zone[4..6])? * 60)
         }
         _ => return None,
     };
-    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || s > 59 {
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 59
+    {
         return None;
     }
-    let secs = days_from_civil(y, mo, d) * 86_400 + h * 3600 + mi * 60 + s - offset;
+    let secs =
+        days_from_civil(year, month, day) * 86_400 + hour * 3600 + minute * 60 + second - offset;
     u64::try_from(secs).ok()
 }
 
@@ -296,6 +305,7 @@ fn bot_needs(e: &Embargo) -> &'static str {
 /// `dg publish … --at`: record the date and the plan (`names`: the branch and base the checks
 /// just ran on; `view`: the pull request with `--pr`) on the tracking issue or the pull request,
 /// after the publish's own checks passed. Nothing is published.
+#[allow(clippy::too_many_lines)] // the target, the plan, the refusals, the confirm, the checklist
 pub(crate) async fn schedule(
     ctx: &Ctx,
     s: &Session,
@@ -644,7 +654,7 @@ async fn release_bot(ctx: &Ctx, wait: bool, poll: u64) -> Result<()> {
             if !ctx.json {
                 println!("#{} is due ({}): publishing", e.number, when(e.plan.at));
             }
-            match publish_one(ctx, &repo, &cwd, &remote, e).await {
+            match Box::pin(publish_one(ctx, &repo, &cwd, &remote, e)).await {
                 Ok(commit) => ctx.emit(
                     json!({"status": "published", "number": e.number, "commit": commit}),
                     || println!("✓ #{} published as {}", e.number, short(&commit)),
@@ -717,6 +727,7 @@ fn fetch_branch(ctx: &Ctx, cwd: &Path, remote: &str, branch: &str) -> Result<()>
 }
 
 /// Publish one due embargo `e` from the clone `cwd`; the public commit.
+#[allow(clippy::too_many_lines)] // the checks, then the four steps in their order
 async fn publish_one(
     ctx: &Ctx,
     repo: &str,
@@ -772,40 +783,41 @@ async fn publish_one(
         check: true,
         release_bot: true,
     };
-    let merged = match e.plan.pr {
-        Some(n) => {
-            let p = collab.patch(&s.repo, n).await?.ok_or_else(|| {
-                crate::errors::not_found(format!("pull request #{n} not found"), "")
-            })?;
-            let view = collab.patch_view(&s.repo, p).await?;
-            view.state.merged.then(|| view.merge_oid()).flatten()
+    let merged = if let Some(n) = e.plan.pr {
+        let p = collab
+            .patch(&s.repo, n)
+            .await?
+            .ok_or_else(|| crate::errors::not_found(format!("pull request #{n} not found"), ""))?;
+        let view = collab.patch_view(&s.repo, p).await?;
+        view.state.merged.then(|| view.merge_oid()).flatten()
+    } else {
+        if let Some(b) = &e.plan.branch {
+            fetch_branch(ctx, cwd, remote, b)?;
         }
-        None => {
-            if let Some(b) = &e.plan.branch {
-                fetch_branch(ctx, cwd, remote, b)?;
-            }
-            None
-        }
+        None
     };
     // the publish's own checks (and, for a branch, whether a run before this one published it)
     let published = match merged {
         Some(c) => Some(c),
-        None => crate::publish_code::publish(ctx, &args).await?.commit,
+        None => {
+            Box::pin(crate::publish_code::publish(ctx, &args))
+                .await?
+                .commit
+        }
     };
     // 1. the tracking issue
     if !issue_public {
         crate::make_public::run(ctx, repo, &[e.number.to_string()], false, false).await?;
     }
     // 2. the code: a squash made now, on the base as it is now
-    let commit = match published {
-        Some(c) => c,
-        None => {
-            args.check = false;
-            crate::publish_code::publish(ctx, &args)
-                .await?
-                .commit
-                .ok_or_else(|| anyhow::anyhow!("the publish named no commit"))?
-        }
+    let commit = if let Some(c) = published {
+        c
+    } else {
+        args.check = false;
+        Box::pin(crate::publish_code::publish(ctx, &args))
+            .await?
+            .commit
+            .ok_or_else(|| anyhow::anyhow!("the publish named no commit"))?
     };
     // 3. and 4. the tag and its release
     if let Some(t) = tag {
