@@ -420,7 +420,7 @@ function PullPage({
   const postContext = { isMember, locked: thread.locked, role: viewerRole }
   // Why the viewer's approve or request changes was refused (DESIGN §10), with "Post as a comment".
   const [verdictRefused, setVerdictRefused] = useState<string | null>(null)
-  const composeBlock = archived ? ARCHIVED_REASON : lockedOut(postContext) ? LOCKED_REASON : privateComposeBlock(home, pull.audience ?? 'public')
+  const composeBlock = archived ? ARCHIVED_REASON : lockedOut(postContext) ? LOCKED_REASON : privateComposeBlock(home, pull.audience ?? 'public', pull.writtenWhilePrivate === true)
   const writeBlocked = composeBlock !== null
   // Who the composer's lock banner speaks to (a member keeps the composer).
   const lockViewer = lockViewerOf(viewer, holdings)
@@ -747,7 +747,13 @@ function PullPage({
     const t = letterThreadOf([pull])
     return forwarded === null ? t : { ...t, parents: [...t.parents, forwarded] }
   }, [pull, forwarded])
-  const audience = useComposerAudience(home, { parent: pull.audience ?? 'public', members: thread.members, maintainer: holdings.data?.maintain === true, thread: letterThread })
+  const audience = useComposerAudience(home, {
+    parent: pull.audience ?? 'public',
+    members: thread.members,
+    maintainer: holdings.data?.maintain === true,
+    thread: letterThread,
+    writtenWhilePrivate: pull.writtenWhilePrivate === true,
+  })
   const letterAsk = audience.audience === 'specificPeople' ? { letter: audience.letter, ...(forwarded !== null ? { letterParents: [forwarded] } : {}) } : {}
   // Members-only text on this page, and all this tab has opened in the repo: a public post that
   // repeats it asks first (product H8), and a draft that quotes it is never kept on disk.
@@ -1769,7 +1775,7 @@ function PullPage({
               <div className={cn('overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800', notPublic(pull.audience) && MEMBERS_CARD)}>
                 <div className={cn('flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 dark:border-anvil-800 dark:bg-anvil-900', notPublic(pull.audience) && MEMBERS_CARD_HEADER)}>
                   <Byline author={pull.author} createdAt={pull.createdAt} origin={origin} verb="opened this" />
-                  <AudienceMark audience={pull.audience} letter={pull.letter} />
+                  <AudienceMark audience={pull.audience} letter={pull.letter} writtenWhilePrivate={pull.writtenWhilePrivate} />
                   <EditedMarker createdAt={pull.createdAt} updatedAt={pull.updatedAt} />
                   <MadePublicBy marks={pull} />
                 </div>

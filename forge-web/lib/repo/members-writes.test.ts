@@ -166,6 +166,10 @@ describe('who a new document is for', () => {
     expect(await childAudience(sdk, REPO, { targetId: ISSUE_PUBLIC, replyTo: OLD_REPLY, requested: 'public' })).toBe('public')
     // a members-only reply written since still binds
     await expect(childAudience(sdk, REPO, { targetId: OLD_ISSUE, replyTo: NEW_REPLY, requested: 'public' })).rejects.toThrow(/can't be public/)
+    // the public reply the composer offers there is written in plain text, stamped public (5B)
+    await writeRepoDoc(sdk, auth, REPO, 'comment', { targetId: decodeIdentifier(OLD_ISSUE), body: 'a public reply' }, 'i-old', undefined, undefined, { audience: 'public' })
+    expect(writes.at(-1)?.data).toMatchObject({ body: 'a public reply', vis: 'public' })
+    expect(writes.at(-1)?.data['enc']).toBeUndefined()
   })
 
   it('a private repo is members-only whatever is asked', async () => {

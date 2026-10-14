@@ -13,6 +13,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 let maintainers: string[] = []
 let posts: Record<string, Record<string, unknown>> = {}
+let configs: Record<string, unknown>[] = []
 const artifacts = new Map<string, Uint8Array>()
 
 vi.mock('../repo/members', async (orig) => ({ ...(await orig<typeof import('../repo/members')>()), readMaintainers: vi.fn(async () => maintainers) }))
@@ -34,10 +35,11 @@ vi.mock('../sdk', async (orig) => ({
     const doc = typeof id === 'string' ? posts[id] : undefined
     return { documents: doc === undefined ? [] : [doc] }
   }),
+  queryAllDocuments: vi.fn(async () => configs),
 }))
 
 import { base58Encode } from '../auth/base58'
-import { ENTRY_COMMENT, encodeDocBundle, parseBundle, type BundleEntry } from '../private'
+import { ENTRY_COMMENT, ENTRY_EPOCH_KEY, encodeBundle, encodeDocBundle, parseBundle, type BundleEntry } from '../private'
 import { madePublicItems } from './inbox-made-public'
 
 const vector = JSON.parse(readFileSync(join(__dirname, '..', '..', '..', 'forge-contracts', 'vectors', 'make_public__bundle_read_thread.json'), 'utf8')) as {
@@ -76,6 +78,7 @@ function manifest(n: number, uploader: string, bytes: Uint8Array): Record<string
 const only = (e: BundleEntry, key = e.key): Uint8Array => encodeDocBundle([{ kind: e.kind, target: e.target, revision: e.revision, key }])
 
 beforeEach(() => {
+  configs = []
   maintainers = [OWNER, MAINT]
   artifacts.clear()
   posts = {}
@@ -119,6 +122,18 @@ describe('the inbox item when a maintainer makes my posts public', () => {
     const doc = manifest(7, OWNER, only(commentEntry()))
     expect(await madePublicItems(sdk, FORGE, REPO, [doc], ME)).toHaveLength(1)
     expect(await madePublicItems(sdk, FORGE, { ...REPO, private: true }, [doc], ME)).toEqual([])
+  })
+
+  it('the owner publishing what was written while the repo was private: said once, to everyone else', async () => {
+    const history = encodeBundle([{ kind: ENTRY_EPOCH_KEY, target: hex(vector.input.repoId), revision: 0, key: new Uint8Array(32).fill(5) }], 'made public')
+    // a repo never private: an owner's entry there publishes nothing (readers ignore it)
+    configs = [{ $id: base58Encode(new Uint8Array(32).fill(0x90)), $createdAt: 10, $createdAtBlockHeight: 1, vis: 'public' }]
+    expect(await madePublicItems(sdk, FORGE, REPO, [manifest(9, OWNER, history)], OTHER)).toEqual([])
+    configs = [{ $id: base58Encode(new Uint8Array(32).fill(0x91)), $createdAt: 5, $createdAtBlockHeight: 1, epoch: 0, enc: 'AQ==', vis: 'private' }, ...configs]
+    const items = await madePublicItems(sdk, FORGE, REPO, [manifest(10, OWNER, history), manifest(11, OWNER, history)], OTHER)
+    expect(items).toEqual([{ id: `repoPublic:${REPO.id}:everything`, kind: 'repoPublic', repo: REPO, what: 'made everything written while private public', actor: OWNER, at: 1_010, read: false }])
+    // the owner's own bundle is no news to them
+    expect(await madePublicItems(sdk, FORGE, REPO, [manifest(12, OWNER, history)], OWNER)).toEqual([])
   })
 
   it('a bundle that cannot be read fails the page, so the feed reads it again', async () => {

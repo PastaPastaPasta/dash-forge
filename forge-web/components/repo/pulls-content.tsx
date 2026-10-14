@@ -266,7 +266,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
                   <span className={cn('mt-0.5 shrink-0', st.klass)}>{st.icon}</span>
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-1.5">
-                      <RowLink href={repoHref('/repo/pull', addr, { number: String(p.number) })} title={p.title} type="patch" {...(p.audience ? { audience: p.audience } : {})} {...(p.membersOnly ? { membersOnly: true } : {})} />
+                      <RowLink href={repoHref('/repo/pull', addr, { number: String(p.number) })} title={p.title} type="patch" {...(p.audience ? { audience: p.audience } : {})} {...(p.membersOnly ? { membersOnly: true } : {})} writtenWhilePrivate={p.writtenWhilePrivate === true} />
                       <CheckDot counts={outcomes.get(p.headOid)} />
                       {p.state.labels.map((l) => (
                         <LabelChipFilter key={l} name={l} def={labelDefs.get(l)} selected={query.labels} onChange={(labels) => change({ labels })} />

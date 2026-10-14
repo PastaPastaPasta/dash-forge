@@ -58,10 +58,13 @@ const ICON: Readonly<Record<InboxItem['kind'], typeof Bell>> = {
   review: ShieldCheck,
   push: GitCommit,
   madePublic: Globe,
+  repoPublic: Globe,
 }
 
 function hrefOf(item: InboxItem): string {
   const addr = { owner: item.repo.ownerId, name: item.repo.name, repoId: item.repo.id }
+  // A repo made public: its home, where its code now shows.
+  if (item.kind === 'repoPublic') return repoHref('/repo', addr)
   if (!item.target) return repoHref('/repo/commits', addr)
   return repoHref(item.target.kind === 'issue' ? '/repo/issue' : '/repo/pull', addr, { number: String(item.target.number) })
 }
@@ -312,7 +315,7 @@ function ThreadRow({ thread, reason, onRead }: { thread: InboxThread; reason: Th
         </p>
       </div>
       {unread ? (
-        <Button variant="ghost" size="sm" onClick={onRead} aria-label={`Mark read: ${thread.target ? `#${thread.target.number} ${thread.target.title}` : `pushes to ${thread.repo.name}`}`}>
+        <Button variant="ghost" size="sm" onClick={onRead} aria-label={`Mark read: ${thread.target ? `#${thread.target.number} ${thread.target.title}` : latest.kind === 'repoPublic' ? `${thread.repo.name} made public` : `pushes to ${thread.repo.name}`}`}>
           <CheckCheck className="h-3.5 w-3.5" aria-hidden /> <span className="hidden sm:inline">Read</span>
         </Button>
       ) : null}

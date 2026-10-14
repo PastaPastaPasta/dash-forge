@@ -99,6 +99,13 @@ export interface EpochResolution {
    * sealed under one is late unless its author is a current member.
    */
   readonly burned: ReadonlySet<number>
+  /**
+   * The epochs whose keys the owner of a repository made public published, with every epoch
+   * their chains reach (§18.3; forge-core `EpochResolution::published`): readable by everyone,
+   * so a document sealed under one is public in effect. Independent of the keys this reader
+   * holds itself. Absent (none) otherwise.
+   */
+  readonly published?: ReadonlySet<number>
 }
 
 const MIN_CONFIG_ENC = 61
@@ -400,12 +407,22 @@ export async function addPublished(
   if (published.size === 0 && publishedAlerts.length === 0) return r
   const keys = new Map(r.keys)
   const alerts = [...r.alerts, ...publishedAlerts]
-  for (const [e, raw] of [...published].sort(([a], [b]) => a - b)) {
+  // What the published keys reach alone, whatever the reader holds: a member's own keys open
+  // the same epochs, but what is sealed under them is public all the same.
+  const reached = new Map<number, EpochKeys>()
+  const ordered = [...published].sort(([a], [b]) => a - b)
+  for (const [e, raw] of ordered) {
+    if (reached.has(e) || !r.anchors.has(e)) continue
+    reached.set(e, await EpochKeys.import(repoId, e, raw))
+    await walkChains(repoId, r.anchors, reached, [e], [])
+  }
+  for (const [e, raw] of ordered) {
     if (keys.has(e) || !r.anchors.has(e)) continue
     keys.set(e, await EpochKeys.import(repoId, e, raw))
     await walkChains(repoId, r.anchors, keys, [e], alerts)
   }
-  return { ...r, keys, alerts: sortAlerts(alerts), burned: await burnedEpochs(r.anchors, keys) }
+  const reach = new Set([...(r.published ?? []), ...reached.keys()])
+  return { ...r, keys, alerts: sortAlerts(alerts), burned: await burnedEpochs(r.anchors, keys), published: reach }
 }
 
 /** The {@link OpenContext} of a resolution, for `openContent` and pack reads. */

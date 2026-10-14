@@ -56,6 +56,7 @@ import { pinnedHref, usePermalinkKey } from '@/components/repo/permalink'
 import { ForkSyncBar } from '@/components/repo/fork-sync'
 import { RecentPushBanner } from '@/components/repo/recent-push-banner'
 import { ownerLabel } from '@/lib/page-title'
+import { BeingMadePublicState } from '@/components/repo/conversion-status'
 
 /** The ref bar counts at most this many commits (one read each), then shows `100+`. */
 const HOME_COMMIT_COUNT_CAP = 100
@@ -107,7 +108,9 @@ export function RepoHomeContent({
     return <RefDeletedState addr={addr} name={selected.name} defaultBranch={home.defaultBranch} />
   }
 
-  if (!tipOid) return <EmptyRepoState home={home} addr={addr} branch={selected.name} />
+  // A repo being made public has no public branch until its code is published: say so to everyone
+  // rather than invite them to push to an empty repo (DESIGN §4.10).
+  if (!tipOid) return <BeingMadePublicState home={home} empty={<EmptyRepoState home={home} addr={addr} branch={selected.name} />} loading={<LoadingBlock label="Reading this repo" />} />
 
   return (
     <BrowseBoundary repo={home.repo} addr={addr}>

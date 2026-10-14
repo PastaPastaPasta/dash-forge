@@ -9,3 +9,6 @@ export const PRIVATE_REPOS_ANCHOR = 'private-repos'
 
 /** Settings → Members-only and private content. */
 export const PRIVATE_REPOS_SETTINGS = `/settings/#${PRIVATE_REPOS_ANCHOR}`
+
+/** A repo's Settings → Danger zone section id (`repo-settings-sections.tsx`): "Make this repo public…" lives there. */
+export const REPO_DANGER_ANCHOR = 'danger'

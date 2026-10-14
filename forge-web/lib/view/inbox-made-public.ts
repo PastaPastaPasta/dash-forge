@@ -11,6 +11,10 @@
  * it: a lying entry tells nobody). One item per bundle: "made your comment public", "made 3 of
  * your posts public", linking to the thread of the first. A read that fails fails the page, so
  * the feed's cursor stays and the bundle is read again on the next poll.
+ *
+ * The owner's bundle that publishes the repo's epoch keys ("Everything", the last step of making a
+ * private repo public, DESIGN §4.10) is said to every member: "made everything written while
+ * private public" (`./inbox-repo-public`), once per repo, when the repo really was made public.
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
@@ -18,7 +22,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { base58Encode, decodeIdentifier } from '../auth/base58'
 import type { ForgeIds } from '../deployments'
 import { ENTRY_COMMENT, ENTRY_ISSUE, ENTRY_PATCH, ENTRY_REVIEW, parseBundle, readRevision, type Bundle, type BundleEntry } from '../private'
-import { DOC, asIdentifierString, type RepoRef } from '../repo/contract'
+import { DOC, asIdentifierString } from '../repo/contract'
 import { revisionOf } from '../repo/made-public'
 import { readMaintainers } from '../repo/members'
 import { toManifest } from '../repo/packs'
@@ -27,14 +31,11 @@ import { contractOf } from '../repo/source'
 import { queryDocumentsWithProof, type PlainDocument } from '../sdk'
 import { readTargetsByIds, type RepoLite } from './mine'
 import type { InboxItem } from './inbox'
+import { everythingItem, publishesHistory, readConfigs, repoRefOf } from './inbox-repo-public'
+import { repoConversion } from '../repo/converted'
 
 /** The most posts of one bundle read to find mine (a whole thread is rarely more). */
 export const MAX_TARGETS = 100
-
-/** The repo of a feed as the readers take it. */
-function repoOf(forge: ForgeIds, repo: RepoLite): RepoRef {
-  return { forge, repoId: repo.id, ownerId: repo.ownerId, name: repo.name, visibility: repo.private ? 'private' : 'public' }
-}
 
 const NOUN: Readonly<Record<number, { readonly type: 'comment' | 'issue' | 'review' | 'patch'; readonly noun: string }>> = {
   [ENTRY_COMMENT]: { type: DOC.comment, noun: 'comment' },
@@ -82,16 +83,21 @@ async function openedPost(sdk: EvoSDK, forge: ForgeIds, repo: RepoLite, e: Bundl
 export async function madePublicItems(sdk: EvoSDK, forge: ForgeIds, repo: RepoLite, docs: readonly PlainDocument[], me: string): Promise<InboxItem[]> {
   const theirs = docs.map(toManifest).filter((m) => m.uploader !== me && m.documentId !== '')
   if (theirs.length === 0 || repo.private) return []
-  const honoured = new Set([...(await readMaintainers(sdk, repoOf(forge, repo))), repo.ownerId])
+  const ref = repoRefOf(forge, repo)
+  const honoured = new Set([...(await readMaintainers(sdk, ref)), repo.ownerId])
   const { loadStoredArtifactBytes } = await import('./browse-source')
   const out: InboxItem[] = []
   for (const m of theirs.filter((x) => honoured.has(x.uploader))) {
-    const bytes = await loadStoredArtifactBytes(sdk, repoOf(forge, repo), m)
+    const bytes = await loadStoredArtifactBytes(sdk, ref, m)
     let bundle: Bundle
     try {
       bundle = parseBundle(bytes)
     } catch {
       continue // not a bundle: it makes nothing public
+    }
+    // The owner published the repo's earlier history: said once, if it really was made public.
+    if (m.uploader === repo.ownerId && !out.some((i) => i.kind === 'repoPublic') && publishesHistory(repo.id, [bytes])) {
+      if (repoConversion(ref, await readConfigs(sdk, ref)) !== null) out.push(everythingItem(repo, m.createdAt))
     }
     // Each post's newest entry in the bundle (its current revision is the one published).
     const named = new Map<string, BundleEntry>()

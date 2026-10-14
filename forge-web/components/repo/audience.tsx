@@ -82,6 +82,8 @@ import {
   type MembersTexts,
   removalReads,
   turnOnText,
+  whilePrivateNote,
+  writtenWhilePrivateLabel,
   type AudienceChoice,
   type ComposerAudience,
   type MembersCount,
@@ -178,8 +180,14 @@ export function useComposerAudience(
     startLetter,
     letters = true,
     thread = NO_THREAD,
+    writtenWhilePrivate = false,
   }: {
     parent?: ComposerAudience
+    /**
+     * The thread was written while the repo (made public since) was private: a members-only one
+     * takes public replies too (DESIGN §4.10).
+     */
+    writtenWhilePrivate?: boolean
     members?: readonly Membership[] | null
     maintainer?: boolean
     /**
@@ -207,7 +215,7 @@ export function useComposerAudience(
   }
   // A thread of messages to specific people takes only those (DESIGN §3.3).
   const threadParent: ComposerAudience = thread.parents.length > 0 || thread.unreadable === true ? 'specificPeople' : parent
-  const choice = home === null ? null : audienceChoice({ visibility: home.repo.visibility, parent: threadParent, lane: home.lane, maintainer, letters: offer })
+  const choice = home === null ? null : audienceChoice({ visibility: home.repo.visibility, parent: threadParent, lane: home.lane, maintainer, letters: offer, writtenWhilePrivate })
   // Only a member's chip shows a count, so only a member reads the members for it (and anyone
   // who may send to a role group or to people, for the groups and the plan).
   const wants = repo !== null && members === null && choice !== null && (choice.members !== null || choice.letters !== null)
@@ -679,6 +687,8 @@ export function useAudienceWarnings(state: ComposerAudienceState, text: string, 
     }
     return out
   }
+  // A public reply to a members-only thread written while the repo was private (DESIGN §4.10).
+  if (state.audience === 'public' && state.choice.whilePrivate !== undefined) return [whilePrivateNote(state.choice.whilePrivate.member)]
   if (state.audience !== 'members' || state.count === null) return []
   const holderNames = new Set<string>()
   for (const id of state.holders) {
@@ -1030,14 +1040,36 @@ export function AudienceMark({
   audience,
   letter,
   what,
+  writtenWhilePrivate,
 }: {
   audience: 'members' | 'specificPeople' | undefined
   letter?: LetterFacts | undefined
   what?: 'review'
+  /** Written while the repo (made public since) was private: "Public · written while private". */
+  writtenWhilePrivate?: boolean | undefined
 }): JSX.Element | null {
+  if (writtenWhilePrivate === true && audience !== 'specificPeople') return <WrittenWhilePrivate members={audience === 'members'} />
   if (audience === 'members') return <VisibleToMembers {...(what ? { what } : {})} />
   if (audience === 'specificPeople' && letter !== undefined) return <VisibleToPeople letter={letter} {...(what ? { what } : {})} />
   return null
+}
+
+/**
+ * The label of a post written while the repo (made public since) was private (DESIGN §4.10, §10):
+ * "Public · written while private" when the owner made everything written then public, else
+ * "Members-only · written while private" (a member reading it).
+ */
+export function WrittenWhilePrivate({ members }: { members: boolean }): JSX.Element {
+  const Icon = members ? Lock : Globe
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded-full bg-anvil-100 px-2 py-0.5 text-[11px] font-medium text-anvil-700 dark:bg-anvil-800 dark:text-anvil-200"
+      data-testid="written-while-private"
+      data-audience={members ? 'members' : 'public'}
+    >
+      <Icon className="h-3 w-3" aria-hidden /> {writtenWhilePrivateLabel(members)}
+    </span>
+  )
 }
 
 /** A members-only card's tint (its border and header), for a card this reader opened. */

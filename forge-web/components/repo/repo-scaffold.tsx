@@ -31,6 +31,7 @@ import { repoHref, useExpiredLink, type RepoAddress } from '@/hooks/use-query-pa
 import { SignedOutView } from '@/contexts/auth-context'
 import { usePublicView } from '@/hooks/use-public-view'
 import { MembersOnlyCreateNotice, PublicViewBanner, ViewAsPublicButton } from '@/components/repo/audience'
+import { ConversionStalledBanner } from '@/components/repo/conversion-status'
 
 export function RepoScaffold({
   addr,
@@ -216,6 +217,7 @@ function ScaffoldBody({
       <RepoHeader home={home} addr={addr} />
       <InviteBanner repo={home.repo} />
       <PrivateBanner home={home} />
+      <ConversionStalledBanner home={home} addr={addr} />
       <MembersOnlyCreateNotice home={home} />
       <ViewAsPublicButton home={home} />
       {rail ? (

@@ -418,7 +418,7 @@ function ReviewComment({
       <div className={cn('flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-anvil-200 bg-anvil-50 px-3 py-1.5 text-[12px] dark:border-anvil-800 dark:bg-anvil-900', c.audience !== undefined && MEMBERS_CARD_HEADER)}>
         {file !== null ? <span className="break-all font-mono text-anvil-700 dark:text-anvil-300">{file}</span> : null}
         {origin !== null ? <Byline author={c.author} createdAt={c.createdAt} origin={origin} link={false} /> : null}
-        <AudienceMark audience={c.audience} letter={c.letter} />
+        <AudienceMark audience={c.audience} letter={c.letter} writtenWhilePrivate={c.writtenWhilePrivate} />
         <MadePublicBy marks={c} />
         {slot.header}
       </div>
@@ -655,7 +655,7 @@ export function Timeline({
                   verb={commentVerb(item)}
                 />
                 <EditedMarker createdAt={item.comment.createdAt} updatedAt={item.comment.updatedAt} />
-                <AudienceMark audience={item.comment.audience} letter={item.comment.letter} />
+                <AudienceMark audience={item.comment.audience} letter={item.comment.letter} writtenWhilePrivate={item.comment.writtenWhilePrivate} />
                 <MadePublicBy marks={item.comment} />
                 {slot.header}
                 {actions ? <span className={slot.header ? '' : 'ml-auto'}>{actions}</span> : null}
@@ -726,7 +726,7 @@ export function Timeline({
                 {review.commitOid ? (
                   <span className="flex items-center gap-1 text-anvil-500 dark:text-anvil-400">on <Oid value={review.commitOid} chars={9} /></span>
                 ) : null}
-                <AudienceMark audience={review.audience} letter={review.letter} what="review" />
+                <AudienceMark audience={review.audience} letter={review.letter} what="review" writtenWhilePrivate={review.writtenWhilePrivate} />
                 <MadePublicBy marks={review} />
                 {review.madePublic ? (
                   <span className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="review-text-made-public">

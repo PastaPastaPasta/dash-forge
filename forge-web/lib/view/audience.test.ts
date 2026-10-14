@@ -25,6 +25,8 @@ import {
   removalReads,
   submitSummary,
   turnOnText,
+  whilePrivateNote,
+  writtenWhilePrivateLabel,
 } from './audience'
 import { draftAudienceCounts } from './pending-review'
 import { BOT_READ_TEXT, NO_KEY_SHARED_TEXT } from '../repo/members-writes'
@@ -84,6 +86,48 @@ describe('what a composer offers', () => {
 
   it('has no chip in a private repo (everything there is members-only)', () => {
     expect(audienceChoice({ visibility: 'private', parent: 'members', lane: undefined, maintainer: true })).toBeNull()
+  })
+})
+
+describe('a composer in a repo made public (DESIGN §4.10, L3)', () => {
+  const session = {} as never
+  const MEMBER = { access: 'member', session } as const
+  const choice = (lane: Parameters<typeof audienceChoice>[0]['lane'], parent: 'public' | 'members', writtenWhilePrivate: boolean) =>
+    audienceChoice({ visibility: 'public', parent, lane, maintainer: false, writtenWhilePrivate })
+
+  it('member × old members-only thread: Members by default, Public offered and said', () => {
+    expect(choice(MEMBER, 'members', true)).toEqual({ initial: 'members', members: 'ok', publicAllowed: true, letters: null, lettersOnly: false, whilePrivate: { member: true } })
+    expect(whilePrivateNote(true)).toBe('Your reply is public: everyone can read it. This conversation stays members-only.')
+  })
+
+  it('non-member × old members-only thread: Public by default, with the note; no Members', () => {
+    expect(choice(undefined, 'members', true)).toEqual({ initial: 'public', members: null, publicAllowed: true, letters: null, lettersOnly: false, whilePrivate: { member: false } })
+    // a member removed since, who still reads it: Public, Members greyed with why
+    expect(choice({ access: 'former', session }, 'members', true)).toMatchObject({ initial: 'public', members: 'former', publicAllowed: true, whilePrivate: { member: false } })
+    // a member who can't write members-only content here yet replies in public too
+    expect(choice({ access: 'locked' }, 'members', true)).toMatchObject({ initial: 'public', members: 'locked', publicAllowed: true })
+    expect(whilePrivateNote(false)).toBe('This conversation was written while this repo was private. Your reply is public: everyone can read it.')
+  })
+
+  it('a thread Everything made public is a public thread for everyone', () => {
+    // its view carries no audience: the composer is a public thread's
+    expect(choice(MEMBER, 'public', true)).toEqual({ initial: 'public', members: 'ok', publicAllowed: true, letters: null, lettersOnly: false })
+    expect(choice(undefined, 'public', true)).toEqual({ initial: 'public', members: null, publicAllowed: true, letters: null, lettersOnly: false })
+  })
+
+  it('a members-only thread written since the conversion is unchanged: no Public', () => {
+    expect(choice(MEMBER, 'members', false)).toEqual({ initial: 'members', members: 'ok', publicAllowed: false, letters: null, lettersOnly: false })
+    expect(choice(undefined, 'members', false)).toMatchObject({ initial: 'members', publicAllowed: false })
+  })
+
+  it('a public thread is unchanged', () => {
+    expect(choice(MEMBER, 'public', false)).toEqual({ initial: 'public', members: 'ok', publicAllowed: true, letters: null, lettersOnly: false })
+    expect(choice(undefined, 'public', false)).toEqual({ initial: 'public', members: null, publicAllowed: true, letters: null, lettersOnly: false })
+  })
+
+  it('labels old content by who can read it now', () => {
+    expect(writtenWhilePrivateLabel(false)).toBe('Public · written while private')
+    expect(writtenWhilePrivateLabel(true)).toBe('Members-only · written while private')
   })
 })
 

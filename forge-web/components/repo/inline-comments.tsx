@@ -510,7 +510,7 @@ function CommentBlock({
       <div className="flex flex-wrap items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400">
         <Byline author={c.author} createdAt={c.createdAt} origin={origin} link={false} />
         <EditedMarker createdAt={c.createdAt} updatedAt={c.updatedAt} />
-        <AudienceMark audience={c.audience} letter={c.letter} />
+        <AudienceMark audience={c.audience} letter={c.letter} writtenWhilePrivate={c.writtenWhilePrivate} />
         <MadePublicBy marks={c} />
         {!own && bundleable(c.audience) && actions?.onMakeOthersPublic !== undefined && actions.viewer !== null ? (
           <span className="ml-auto">
