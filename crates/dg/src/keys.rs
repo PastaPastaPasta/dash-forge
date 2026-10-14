@@ -324,6 +324,12 @@ async fn repair(ctx: &Ctx, repo: &str) -> Result<()> {
     require_maintainer(&kr, &s.repo, "repair the key")?;
     // the bots this signer has sent no post key for the current epoch (§23)
     let bots = forge_core::bot_keys::bots_of(kr.members(), &[]);
+    let bots = Box::pin(forge_core::bot_keys::with_post_access(
+        &signer(&s),
+        &s.repo,
+        bots,
+    ))
+    .await?;
     let missing_posts = match kr.write_epoch_keys() {
         Some(keys) if !bots.is_empty() => Box::pin(forge_core::bot_keys::missing(
             &signer(&s),

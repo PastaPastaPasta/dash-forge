@@ -32,12 +32,14 @@ const m = vi.hoisted(() => ({
   readObjKey: vi.fn(),
   sealLetterArtifact: vi.fn(),
   sealPack: vi.fn(),
+  contractHasProperty: vi.fn(),
   /** Copies of what each letter sealed (the service wipes its own plaintext). */
   sealed: [] as Uint8Array[],
 }))
 
 vi.mock('../sdk', async (orig) => ({ ...(await orig<typeof import('../sdk')>()), queryDocuments: m.queryDocuments, queryAllDocuments: m.queryAllDocuments }))
 vi.mock('./packs', () => ({ readManifestsOfKind: m.readManifestsOfKind }))
+vi.mock('./contract-shape', () => ({ contractHasProperty: m.contractHasProperty }))
 vi.mock('./members', () => ({ readMaintainers: m.readMaintainers, readViewerPermissions: m.readViewerPermissions }))
 vi.mock('./push', () => ({ putPlatformChunks: m.putPlatformChunks, writePackManifest: m.writePackManifest }))
 vi.mock('./writes', () => ({ writeRepoDoc: m.writeRepoDoc }))
@@ -88,7 +90,7 @@ const STRANGER = id(17)
 const ME_KEY = { keyId: 1, data: bytesToHex(secp.getPublicKey(SECRET, true)) }
 const BOT_KEY = { keyId: 1, data: bytesToHex(secp.getPublicKey(new Uint8Array(32).fill(2), true)) }
 
-const { AskRefusedError, planAsk, readAccessNotices, writeAccessNotice, writeAsk } = await import('./bot-access')
+const { AskRefusedError, planAsk, readAccessNotices, withPostAccess, writeAccessNotice, writeAsk } = await import('./bot-access')
 
 const session = {
   id: 's1',
@@ -149,6 +151,8 @@ function setWorld(over: Partial<World> = {}): void {
 beforeEach(() => {
   vi.clearAllMocks()
   setWorld()
+  // sakura's contracts: no members-only envelope of a private repository's own (D38)
+  m.contractHasProperty.mockResolvedValue(false)
   m.readManifestsOfKind.mockImplementation(async (_s: unknown, _r: unknown, kind: number) =>
     kind === 11 ? world.notices.map((n, i) => manifest(n.id, n.writer, 100 + i)) : kind === 70 ? world.longs.map((h, i) => ({ ...manifest(`L${i}`, WRITER, 1), kind: 70, packHash: h })) : [],
   )
@@ -213,6 +217,12 @@ describe('asking a bot: refusals before anything is written', () => {
 
   it("refuses to hand a private repository's posts to a bot that reads on request", async () => {
     await refused(() => writeAsk(sdk, auth, privateRepo, ask), "@ci-bot can't be given this private repository's posts yet: older items in this repo can't be shared one at a time")
+  })
+
+  it("asks about a private repository's thread on the mainnet contract, whose posts have keys of their own", async () => {
+    m.contractHasProperty.mockResolvedValue(true)
+    await expect(writeAsk(sdk, auth, privateRepo, ask)).resolves.toBeDefined()
+    expect(m.writeRepoDoc).toHaveBeenCalled()
   })
 
   it("refuses a fork's members-only pull request", async () => {
@@ -348,3 +358,14 @@ describe('reading notices', () => {
   })
 })
 
+describe("bots' post keys follow their access", () => {
+  it('sends one only to a bot whose live notice allows members-only replies', async () => {
+    expect(await withPostAccess(sdk, publicRepo, [BOT])).toEqual([])
+    setWorld({ notices: [{ id: 'N1', writer: MAINT, notice: notice({ may: ['post', 'postMembersOnly'] }) }] })
+    expect(await withPostAccess(sdk, publicRepo, [BOT])).toEqual([BOT])
+    setWorld({ notices: [{ id: 'N1', writer: MAINT, notice: notice({ may: ['post', 'postMembersOnly'], until: 1 }) }] })
+    expect(await withPostAccess(sdk, publicRepo, [BOT])).toEqual([])
+    setWorld({ notices: [{ id: 'N1', writer: WRITER, notice: notice({ may: ['post', 'postMembersOnly'] }) }] })
+    expect(await withPostAccess(sdk, publicRepo, [BOT])).toEqual([])
+  })
+})

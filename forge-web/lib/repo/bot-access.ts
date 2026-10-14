@@ -49,6 +49,8 @@ import {
   encodeNotice,
   hexToBytes,
   noticeMay,
+  MAY_POST_MEMBERS_ONLY,
+  noticeLiveAt,
   openContent,
   openPack,
   parseHeader,
@@ -82,6 +84,7 @@ import type { PrivateSession } from './private-session'
 import { readManifestsOfKind } from './packs'
 import { putPlatformChunks, writePackManifest } from './push'
 import { repoSource, contractOf } from './source'
+import { contractHasProperty } from './contract-shape'
 import { writeRepoDoc } from './writes'
 
 /** A refusal before anything was signed, or a step that could not finish: what the person reads. */
@@ -306,6 +309,22 @@ async function requireNotAMember(sdk: EvoSDK, repo: RepoRef, bot: string, name: 
   if (bot === repo.ownerId) throw new BotAccessError(`${name} owns ${display}: access is for bots. Nothing was written.`)
   const role = await askerRole(sdk, repo, bot, network)
   if (role !== null && role !== 'bot') throw new BotAccessError(`${name} is a member of ${display} with ${roleWords(role)}: access is for bots. Nothing was written.`)
+}
+
+/**
+ * The bots among `bots` whose current access notice is live and lets them post members-only replies
+ * (`postMembersOnly`): the only ones a maintainer sends a post key (DESIGN §4.9; forge-core
+ * `bot_keys::with_post_access`). A bot with no notice, a revoked or ended one, or one without that
+ * ability gets none, so its members-only posting stops at the next rotation.
+ */
+export async function withPostAccess(sdk: EvoSDK, repo: RepoRef, bots: readonly string[]): Promise<string[]> {
+  if (bots.length === 0) return []
+  const notices = await readAccessNotices(sdk, repo)
+  const now = Date.now()
+  return bots.filter((b) => {
+    const e = notices.current.get(b)
+    return e !== undefined && noticeLiveAt(e.notice, now) && noticeMay(e.notice, MAY_POST_MEMBERS_ONLY)
+  })
 }
 
 /** What {@link writeAccessNotice} wrote. */
@@ -566,9 +585,10 @@ async function plan(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, input: AskAbout
   const refusal = checkAsk(notice, role, n, membersOnly, Date.now())
   if (refusal !== null) throw askRefused(refusal, name, input.display)
   const reads = notice !== null && noticeMay(notice, MAY_READ_ON_REQUEST)
-  // A private repository's posts here are under its older envelope, which no letter can hand on:
-  // the bot could not even read the task.
-  if (reads && repo.visibility === 'private') {
+  // A private repository's posts are under its older envelope, which no letter can hand on,
+  // unless the contract has its own members-only envelope (D38: it declares `aud`, and new posts
+  // and requests are per object): without it the bot could not even read the task.
+  if (reads && repo.visibility === 'private' && !(await contractHasProperty(sdk, contractOf(repo.forge, DOC.issue), DOC.issue, 'aud'))) {
     throw new BotAccessError(`${name} can't be given this private repository's posts yet: older items in this repo can't be shared one at a time.${NOTHING_SIGNED}`)
   }
   // The asking client never hands a fork's or an outsider's pull request to a bot (DESIGN §4.9).

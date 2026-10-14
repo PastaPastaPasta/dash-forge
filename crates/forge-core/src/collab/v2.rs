@@ -3767,17 +3767,23 @@ impl<'a> Collab<'a> {
             let w = kr.writer(repo)?;
             let owner = platform::decode_identifier(&self.signer_id()?)?;
             // D38: on the mainnet contract (it declares `aud`) a private repository's new
-            // issues, PRs, comments and reviews are v0x03, per object (events gain nothing from
-            // a key of their own); sakura's stay v0x01. A text that fits v0x01's room but not
+            // issues, PRs, comments and reviews are v0x03, per object (other events gain nothing
+            // from a key of their own); sakura's stay v0x01. A text that fits v0x01's room but not
             // v0x03's, 32 bytes smaller, is v0x01 there too: both are well framed in a private
             // repository, so the long-body room stays the same on every network.
-            let per_object = matches!(
+            // A request to a bot (event kind 27) is per object too: its `read` letter hands
+            // the bot the task's own key (§22.3).
+            let request = kind == DocKind::Event
+                && props.get("kind").and_then(FieldValue::as_u64)
+                    == Some(crate::rules::agent_request::AGENT_REQUEST_KIND);
+            let per_object = (matches!(
                 kind,
                 DocKind::Issue | DocKind::Patch | DocKind::Comment | DocKind::Review
-            ) && self
-                .collab_contract(repo)
-                .await?
-                .has_property(DOC_ISSUE, AUD);
+            ) || request)
+                && self
+                    .collab_contract(repo)
+                    .await?
+                    .has_property(DOC_ISSUE, AUD);
             if per_object {
                 match private::seal_private_members_props(
                     w.write_keys(),

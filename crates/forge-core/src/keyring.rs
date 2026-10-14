@@ -2623,7 +2623,8 @@ pub async fn rotate(
 
 /// The bots' post keys for a rotation's new epoch (`epoch`, its key), sent once its anchor `won`,
 /// in the same run as the wraps (§23): a bot never gets the members key, so a rotation that
-/// sent none would silently stop its members-only posts. Every current Bot row gets one, also a
+/// sent none would silently stop its members-only posts. Every current Bot row whose access
+/// notice allows members-only replies gets one ([`crate::bot_keys::with_post_access`]), also a
 /// maintainer who keeps a Bot row while the rotation takes the members key away from them
 /// (removing a Bot row never rotates).
 async fn rotation_post_keys(
@@ -2638,8 +2639,19 @@ async fn rotation_post_keys(
     }
     let keys = EpochKeys::derive(&w.scope.repo_id, epoch, key);
     let bots = crate::bot_keys::bots_of(w.kr.members(), &[]);
-    // the rotation stands whatever happens here: a failed send is reported, and a repair
-    // finishes it
+    // the rotation stands whatever happens here: a failed send (or an unreadable notice) is
+    // reported, and a repair finishes it
+    let bots = match crate::bot_keys::with_post_access(signer, repo, bots.clone()).await {
+        Ok(allowed) => allowed,
+        Err(e) => {
+            return Ok(crate::bot_keys::Issued {
+                epoch,
+                sent: Vec::new(),
+                skipped: bots,
+                failed: Some(e.to_string()),
+            })
+        }
+    };
     Ok(
         match crate::bot_keys::issue(signer, repo, &keys, &bots).await {
             Ok(issued) => issued,
@@ -3223,6 +3235,10 @@ async fn missing_post_keys(
     let Some(keys) = kr.write_epoch_keys().filter(|_| !bots.is_empty()) else {
         return Ok(crate::bot_keys::Issued::default());
     };
+    let bots = crate::bot_keys::with_post_access(signer, repo, bots).await?;
+    if bots.is_empty() {
+        return Ok(crate::bot_keys::Issued::default());
+    }
     let missing = crate::bot_keys::missing(signer, repo, keys, &bots).await?;
     crate::bot_keys::issue(signer, repo, keys, &missing).await
 }

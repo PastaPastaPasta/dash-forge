@@ -440,7 +440,42 @@ async fn allow(ctx: &Ctx, a: &AllowArgs) -> Result<()> {
         );
     }
     let prompt = format!("Give {} this access to {}?", safe(&name), s.repo.display());
-    write_notice(ctx, &s, &notice, &name, "allowed", &prompt).await
+    write_notice(ctx, &s, &notice, &name, "allowed", &prompt).await?;
+    if notice.may(MAY_POST_MEMBERS_ONLY) {
+        send_post_key(ctx, &s, &bot).await?;
+    }
+    Ok(())
+}
+
+/// Send `bot` the post key of the current members key once its access allows members-only
+/// replies (§23): only to a Bot row of a repository with members-only content, and only when
+/// this signer has not sent it one for the current epoch already. Rotations and repairs keep
+/// sending it while the access allows it.
+async fn send_post_key(ctx: &Ctx, s: &Session, bot: &str) -> Result<()> {
+    let signer = crate::keys::signer(s);
+    let kr = signer.keyring(&s.repo).await?;
+    let is_bot = forge_core::bot_keys::bots_of(kr.members(), &[])
+        .iter()
+        .any(|b| b == bot);
+    let Some(keys) = kr.write_epoch_keys().filter(|_| is_bot) else {
+        return Ok(());
+    };
+    let bots = vec![bot.to_owned()];
+    let missing = Box::pin(forge_core::bot_keys::missing(&signer, &s.repo, keys, &bots)).await?;
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let issued = Box::pin(forge_core::bot_keys::issue(
+        &signer, &s.repo, keys, &missing,
+    ))
+    .await
+    .context(
+        "sending the bot its key for members-only replies (`dg repo keys repair` finishes it)",
+    )?;
+    if !ctx.json {
+        crate::keys::print_post_keys(&s.repo, &issued);
+    }
+    Ok(())
 }
 
 async fn revoke(ctx: &Ctx, repo: &str, bot: &str) -> Result<()> {
