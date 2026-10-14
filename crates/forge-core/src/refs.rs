@@ -402,8 +402,15 @@ pub struct MembersUpdates {
     /// The members-only updates folded into [`Self::by_name`], by document `$id`, each with the
     /// blind its `newOid` carries and that blind's salt when the blind checked (rule C copies
     /// both into a PR head or head update naming the same commit); `None` for a delete or an
-    /// update whose `newOid` raised an alert.
+    /// update whose `newOid` raised an alert. Narrower branches' updates (phase 3F) are among them.
     pub sealed: BTreeMap<String, Option<UpdateBlind>>,
+    /// The folded updates of narrower branches (`enc` v0x06, phase 3F), by document `$id`: a
+    /// subset of [`Self::sealed`].
+    pub narrower: BTreeSet<String>,
+    /// The real non-null `newOid` of every narrower branch's update this reader opened, with the
+    /// branch's name: the guard's decryptable S for narrower audiences (never in
+    /// [`Self::opened_new_oids`], which is the members key's).
+    pub opened_narrower: BTreeMap<String, String>,
 }
 
 /// The blind a members-only ref update's `newOid` carries, with its salt: what a members-only PR
@@ -434,9 +441,25 @@ impl MembersUpdates {
 
     /// Whether ref `name`, resolved to `state` over [`Self::by_name`], is a members-only branch
     /// now: the update that set its tip is a members-only one. A name no update resolves (unborn)
-    /// is members-only when every update of it is.
+    /// is members-only when every update of it is. Narrower branches are members-only too.
     #[must_use]
     pub fn is_members_only(&self, name: &str, state: &crate::rules::RefState) -> bool {
+        self.tip_is(name, state, |id| self.is_sealed(id))
+    }
+
+    /// Whether ref `name`, resolved to `state`, is a narrower branch now (phase 3F): the update
+    /// that set its tip was sealed under a branch key.
+    #[must_use]
+    pub fn is_narrower(&self, name: &str, state: &crate::rules::RefState) -> bool {
+        self.tip_is(name, state, |id| self.narrower.contains(id))
+    }
+
+    fn tip_is(
+        &self,
+        name: &str,
+        state: &crate::rules::RefState,
+        pred: impl Fn(&str) -> bool,
+    ) -> bool {
         let Some(updates) = self.by_name.get(name) else {
             return false;
         };
@@ -445,8 +468,8 @@ impl MembersUpdates {
                 .iter()
                 .rev()
                 .find(|u| u.new_oid.eq_ignore_ascii_case(&tip))
-                .is_some_and(|u| self.is_sealed(&u.id)),
-            None => !updates.is_empty() && updates.iter().all(|u| self.is_sealed(&u.id)),
+                .is_some_and(|u| pred(&u.id)),
+            None => !updates.is_empty() && updates.iter().all(|u| pred(&u.id)),
         }
     }
 
@@ -535,6 +558,7 @@ impl std::fmt::Debug for MembersUpdates {
             .field("unreadable", &self.unreadable)
             .field("opened_new_oids", &self.opened_new_oids.len())
             .field("sealed", &self.sealed.len())
+            .field("narrower", &self.narrower.len())
             .finish()
     }
 }
@@ -589,9 +613,11 @@ pub fn members_updates_of(
             if !is_members_only_ref(d) {
                 continue;
             }
-            // opened only as `enc` v0x03 with its name only inside `enc`
-            let opens = d.field_bytes("enc").and_then(|e| e.first().copied())
-                == Some(crate::private::doc::V3)
+            // opened only as `enc` v0x03 (the members key) or v0x06 (a narrower branch's key,
+            // phase 3F) with its name only inside `enc`
+            let version = d.field_bytes("enc").and_then(|e| e.first().copied());
+            let narrower = version == Some(crate::private::branch_key::V6);
+            let opens = (version == Some(crate::private::doc::V3) || narrower)
                 && d.field_u64("epoch").is_some()
                 && d.field_str("refName").is_none();
             let header = crate::keyring::header_of(kind, d).filter(|_| opens);
@@ -605,7 +631,15 @@ pub fn members_updates_of(
             u.ref_name.clone_from(&real.name);
             u.new_oid = hex::encode(&real.new_oid);
             if !crate::private::blind::is_null(&real.new_oid) {
-                out.opened_new_oids.insert(u.new_oid.clone());
+                if narrower {
+                    out.opened_narrower
+                        .insert(u.new_oid.clone(), real.name.clone());
+                } else {
+                    out.opened_new_oids.insert(u.new_oid.clone());
+                }
+            }
+            if narrower {
+                out.narrower.insert(d.id.clone());
             }
             u.prev_oid = real
                 .prev_oid
@@ -648,6 +682,7 @@ pub fn members_updates_of(
         if live {
             for u in sealed {
                 out.sealed.remove(&u.id);
+                out.narrower.remove(&u.id);
                 out.alerts.push(RefAlert {
                     id: u.id,
                     kind: RefAlertKind::PublicName,
@@ -735,6 +770,11 @@ pub struct MembersView {
     /// fold history (sorted, deduplicated): the publication guard's decryptable S, so a branch
     /// force-pushed away or a tip this clone never fetched still counts (S4 §1b).
     pub decryptable: Vec<String>,
+    /// The names that are live as narrower branches (phase 3F), a subset of `members_only`.
+    pub narrower: BTreeSet<String>,
+    /// Every non-null real `newOid` of a narrower branch's update this reader opened, with the
+    /// branch's name: S for narrower audiences.
+    pub decryptable_narrower: Vec<(String, String)>,
     /// Blinds that did not check, and updates a public name won over.
     pub alerts: Vec<RefAlert>,
     /// Members-only updates this reader could not open.
@@ -759,6 +799,7 @@ impl std::fmt::Debug for MembersView {
             .field("refs", &self.refs.len())
             .field("members_only", &self.members_only.len())
             .field("decryptable", &self.decryptable.len())
+            .field("narrower", &self.narrower.len())
             .field("alerts", &self.alerts.len())
             .field("unreadable", &self.unreadable)
             .finish()
@@ -786,9 +827,17 @@ pub fn refs_view(state: &GitState, open: Option<DocOpener<'_>>) -> RefsView {
             .filter(|r| r.members_only && live(&r.state))
             .map(|r| r.name.clone())
             .collect();
+        let narrower = m
+            .refs
+            .iter()
+            .filter(|r| r.narrower && live(&r.state))
+            .map(|r| r.name.clone())
+            .collect();
         MembersView {
             refs: m.refs.into_iter().map(|r| (r.name, r.state)).collect(),
             members_only,
+            narrower,
+            decryptable_narrower: m.updates.opened_narrower.into_iter().collect(),
             decryptable: m.updates.opened_new_oids.into_iter().collect(),
             alerts: m.updates.alerts,
             unreadable: m.updates.unreadable,

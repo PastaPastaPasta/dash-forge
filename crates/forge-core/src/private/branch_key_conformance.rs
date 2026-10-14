@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 
 use super::{
     fold, open_pack, real_values, seal_pack_with, seal_ref_with, sniff_kcv, BranchKey,
-    BranchKeys, BranchLetter, BranchRing, Ignored, LetterIn,
+    BranchKeys, BranchKeyLetter, BranchRing, Ignored, LetterIn,
 };
 use crate::private::conformance::{error_json, h32, input, nonce12, StoredDocIn, Vector};
 use crate::private::doc::Opened;
@@ -100,7 +100,7 @@ fn parse_letters(letters: &[LetterJson]) -> (Vec<LetterIn>, Vec<(String, Ignored
     let mut ok = Vec::new();
     let mut bad = Vec::new();
     for l in letters {
-        match BranchLetter::parse(&l.body) {
+        match BranchKeyLetter::parse(&l.body) {
             Ok(Some(letter)) => ok.push(LetterIn {
                 id: l.id.clone(),
                 height: l.height,
@@ -146,6 +146,7 @@ fn fold_json(repo_id: &[u8; 32], letters: &[LetterJson]) -> Value {
                 "people": b.audience.also,
                 "issuedAt": issued,
                 "letters": b.letters,
+                "holders": b.holders,
                 "kcvs": kcvs,
                 "gen": b.gen(),
             })

@@ -37,6 +37,7 @@ use aes_gcm::{Aes256Gcm, Nonce};
 use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::Sha256;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
@@ -45,6 +46,7 @@ use super::doc::{DocHeader, Opened, Unreadable, NONCE_LEN, TAG_LEN};
 use super::keys::{ct_eq, rnd32, sha256, ObjKeys};
 use super::members_ref::{self, RefUpdateIn, SealedRefUpdate};
 use super::pack::{HEADER_LEN, MAGIC, WRITE_SEG_LOG2};
+use super::key_letter::TypedLetter;
 use super::{tlv, DocKind, Fields, PrivateError, GRACE_BLOCKS};
 use crate::env::{Audience, Group};
 use crate::rules::v2::Visibility;
@@ -483,20 +485,24 @@ pub fn open_pack<'k>(
 
 // --- the branchKey letter --------------------------------------------------------------------------
 
-/// A `branchKey` letter's body: every generation of one branch's key, and its audience.
+/// A `branchKey` letter's body: every generation of one branch's key, its audience, and who the
+/// writer sealed it to.
 #[derive(Clone, PartialEq, Eq)]
-pub struct BranchLetter {
+pub struct BranchKeyLetter {
     /// The full ref name (`refs/heads/sec/embargo`).
     pub name: String,
     /// `K_br,0 … K_br,g`.
     pub keys: Vec<BranchKey>,
     /// Who the branch is for (a group, a group plus people, or people; base58).
     pub audience: Audience,
+    /// Every recipient (the writer among them; base58, ascending): what the next re-lettering
+    /// compares with the audience as it is then (D34).
+    pub to: Vec<String>,
 }
 
-impl std::fmt::Debug for BranchLetter {
+impl std::fmt::Debug for BranchKeyLetter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BranchLetter")
+        f.debug_struct("BranchKeyLetter")
             .field("gen", &self.gen())
             .field("audience", &self.audience)
             .finish_non_exhaustive()
@@ -525,38 +531,74 @@ struct BodyIn {
     keys: Vec<String>,
     group: Option<String>,
     people: Vec<String>,
+    to: Vec<String>,
 }
 
-impl BranchLetter {
+/// Whether `ids` are canonical base58 identity ids in ascending order, none twice, at most `max`.
+fn ids_ok(ids: &[String], max: usize) -> bool {
+    ids.len() <= max
+        && ids.windows(2).all(|w| w[0] < w[1])
+        && ids.iter().all(|p| {
+            crate::platform::decode_identifier(p)
+                .is_ok_and(|id| crate::platform::encode_identifier(id) == *p)
+        })
+}
+
+impl BranchKeyLetter {
     /// The generation it carries the key of (`keys.len() − 1`).
     #[must_use]
     pub fn gen(&self) -> u32 {
         u32::try_from(self.keys.len().saturating_sub(1)).unwrap_or(u32::MAX)
     }
 
-    /// The body as JSON, in the letter's field order.
+    /// The typed letter (kind 10) carrying it.
     #[must_use]
-    pub fn to_json(&self) -> Zeroizing<String> {
-        let keys: Vec<String> = self.keys.iter().map(|k| k.to_hex().to_string()).collect();
-        let v = serde_json::json!({
-            "type": LETTER_TYPE,
-            "v": 1,
-            "name": self.name,
-            "gen": self.gen(),
-            "keys": keys,
-            "group": self.audience.group.map(Group::as_str),
-            "people": self.audience.also,
-        });
-        Zeroizing::new(v.to_string())
+    pub fn to_typed(&self) -> TypedLetter {
+        let mut t = TypedLetter::new(LETTER_TYPE, 1);
+        let f = &mut t.fields;
+        f.insert("name".into(), Value::String(self.name.clone()));
+        f.insert("gen".into(), Value::from(self.gen()));
+        f.insert(
+            "keys".into(),
+            Value::Array(
+                self.keys
+                    .iter()
+                    .map(|k| Value::String(k.to_hex().to_string()))
+                    .collect(),
+            ),
+        );
+        f.insert(
+            "group".into(),
+            self.audience
+                .group
+                .map_or(Value::Null, |g| Value::String(g.as_str().into())),
+        );
+        f.insert(
+            "people".into(),
+            Value::Array(self.audience.also.iter().cloned().map(Value::String).collect()),
+        );
+        f.insert(
+            "to".into(),
+            Value::Array(self.to.iter().cloned().map(Value::String).collect()),
+        );
+        t
+    }
+
+    /// [`Self::parse`] of a typed letter.
+    pub fn from_typed(t: &TypedLetter) -> Result<Option<Self>, Ignored> {
+        let mut body = t.fields.clone();
+        body.insert("type".into(), Value::String(t.kind.clone()));
+        body.insert("v".into(), Value::from(t.v));
+        Self::parse(&Value::Object(body))
     }
 
     /// Parse a body: `Ok(None)` for another letter type or version (skipped, never fatal),
     /// `Err(Malformed)` for a `branchKey` v1 body that breaks a rule: a name outside
     /// `refs/heads/`, `gen` not the last index of 1..=256 distinct lower-case hex keys, an
     /// unknown group, people that are not canonical base58 identity ids in ascending order, none
-    /// twice and fewer than 64, no audience at all, or any other field.
-    pub fn parse(body: &serde_json::Value) -> Result<Option<Self>, Ignored> {
-        let is = |k: &str, v: serde_json::Value| body.get(k) == Some(&v);
+    /// twice and fewer than 64, no audience at all, `to` not 1..=64 such ids, or any other field.
+    pub fn parse(body: &Value) -> Result<Option<Self>, Ignored> {
+        let is = |k: &str, v: Value| body.get(k) == Some(&v);
         if !is("type", LETTER_TYPE.into()) || !is("v", 1.into()) {
             return Ok(None);
         }
@@ -576,12 +618,9 @@ impl BranchLetter {
             None => None,
             Some(g) => Some(Group::parse(g).ok_or(Ignored::Malformed)?),
         };
-        let people_ok = b
-            .people
-            .iter()
-            .all(|p| crate::platform::decode_identifier(p).is_ok_and(|id| crate::platform::encode_identifier(id) == *p))
-            && b.people.windows(2).all(|w| w[0] < w[1])
-            && b.people.len() <= MAX_PEOPLE;
+        let people_ok = ids_ok(&b.people, MAX_PEOPLE)
+            && !b.to.is_empty()
+            && ids_ok(&b.to, crate::private::named::MAX_ARTIFACT_RECIPIENTS);
         if !is_branch_name(&b.name)
             || keys.is_empty()
             || keys.len() > MAX_GENERATIONS
@@ -599,6 +638,7 @@ impl BranchLetter {
                 group,
                 also: b.people,
             },
+            to: b.to,
         }))
     }
 }
@@ -611,7 +651,7 @@ pub struct LetterIn {
     /// Its `$createdAtBlockHeight`.
     pub height: u64,
     /// The opened body.
-    pub letter: BranchLetter,
+    pub letter: BranchKeyLetter,
 }
 
 /// One branch a reader holds keys for.
@@ -625,6 +665,8 @@ pub struct Branch {
     pub audience: Audience,
     /// The height of the first letter carrying each generation.
     pub issued_at: Vec<u64>,
+    /// Who holds the current generation: every recipient of the letters carrying it.
+    pub holders: BTreeSet<String>,
     /// The letters counted, in fold order.
     pub letters: Vec<String>,
 }
@@ -652,25 +694,34 @@ impl Branch {
         &self.keys
     }
 
-    /// The letter that adds generation `gen() + 1` with `next` as its key, for `audience`.
+    /// The letter that adds generation `gen() + 1` with `next` as its key, for `audience`, sealed
+    /// to `to`.
     #[must_use]
-    pub fn next_generation(&self, next: BranchKey, audience: Audience) -> BranchLetter {
+    pub fn next_generation(
+        &self,
+        next: BranchKey,
+        audience: Audience,
+        to: Vec<String>,
+    ) -> BranchKeyLetter {
         let mut keys = self.keys.clone();
         keys.push(next);
-        BranchLetter {
+        BranchKeyLetter {
             name: self.name.clone(),
             keys,
             audience,
+            to,
         }
     }
 
-    /// The letter of the current generation, for `audience` (a joiner's, or a re-send).
+    /// The letter of the current generation, for `audience`, sealed to `to` (joiners, or a
+    /// re-send).
     #[must_use]
-    pub fn current_letter(&self, audience: Audience) -> BranchLetter {
-        BranchLetter {
+    pub fn current_letter(&self, audience: Audience, to: Vec<String>) -> BranchKeyLetter {
+        BranchKeyLetter {
             name: self.name.clone(),
             keys: self.keys.clone(),
             audience,
+            to,
         }
     }
 
@@ -685,7 +736,7 @@ impl Branch {
 /// per name the first letter starts the chain and a later one counts only when it agrees on every
 /// generation both carry, extending the chain when it carries more. Each generation is issued at
 /// the height of the first letter carrying it; the audience is the newest counted letter's at the
-/// highest generation.
+/// highest generation, and the current generation's holders the union of its letters' `to`.
 #[must_use]
 pub fn fold(mut letters: Vec<LetterIn>) -> (BTreeMap<String, Branch>, Vec<(String, Ignored)>) {
     letters.sort_by(|a, b| a.height.cmp(&b.height).then_with(|| a.id.cmp(&b.id)));
@@ -699,6 +750,7 @@ pub fn fold(mut letters: Vec<LetterIn>) -> (BTreeMap<String, Branch>, Vec<(Strin
                 Branch {
                     name: letter.name,
                     issued_at: vec![height; letter.keys.len()],
+                    holders: letter.to.into_iter().collect(),
                     keys: letter.keys,
                     audience: letter.audience,
                     letters: vec![id],
@@ -712,6 +764,11 @@ pub fn fold(mut letters: Vec<LetterIn>) -> (BTreeMap<String, Branch>, Vec<(Strin
             continue;
         }
         let have = cur.keys.len();
+        if letter.keys.len() > have {
+            cur.holders = letter.to.into_iter().collect();
+        } else if letter.keys.len() == have {
+            cur.holders.extend(letter.to);
+        }
         if letter.keys.len() >= have {
             cur.issued_at
                 .extend(std::iter::repeat_n(height, letter.keys.len() - have));
