@@ -2833,7 +2833,8 @@ impl<'a> RepoService<'a> {
     /// ([`RepoRef::private_view`]), these are its private-era packs opened with the member's own
     /// keys: what making it public builds its fresh public pack from and scans for secrets
     /// (mixed-visibility DESIGN §4.10). A pack it cannot open (late, or under an epoch it holds
-    /// no key for, or a plaintext pack pushed after the conversion) is counted, never fatal.
+    /// no key for) is counted, never fatal; a plaintext one, pushed after the conversion, is
+    /// public already and left out.
     pub async fn open_git_packs(&self, repo: &RepoRef) -> Result<(Vec<Vec<u8>>, usize)> {
         let contract = self.repo_contract(repo).await?;
         let manifests = self.read_pack_manifests(repo).await?;
@@ -2849,6 +2850,17 @@ impl<'a> RepoService<'a> {
                 .fetch_best_copy_or_mirror(repo, &contract, &copies, &roles, &reader)
                 .await
             {
+                // a plaintext pack seen through the private view was pushed after the
+                // conversion: public already, and not the private era's
+                Ok((bytes, _))
+                    if repo.visibility == Visibility::Private
+                        && matches!(
+                            crate::private::sniff(&bytes),
+                            crate::private::Head::Plain | crate::private::Head::Short
+                        ) =>
+                {
+                    continue;
+                }
                 Ok((sealed, m)) => {
                     self.open_artifact_of(repo, &copies, m.size_bytes, sealed)
                         .await
