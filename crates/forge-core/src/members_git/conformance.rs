@@ -26,12 +26,13 @@ use crate::private::{tlv, DocKind, EpochKeys, Fields};
 use crate::rules::v2::{self, Visibility};
 
 /// The vector cases this harness runs; the rules and private harnesses skip them.
-pub(crate) const CASES: [&str; 5] = [
+pub(crate) const CASES: [&str; 6] = [
     "oid_blind",
     "sealed_ref",
     "sealed_patch",
     "members_pack_plan",
     "publish_guard",
+    "members_index",
 ];
 
 fn bytes(s: &str) -> Vec<u8> {
@@ -564,6 +565,10 @@ struct ObjectIn {
     target: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     entries: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    gitlinks: Option<BTreeMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    patch_id: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -593,6 +598,8 @@ struct GuardIn {
     batch: Vec<BatchRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     publish_private: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    patch_ids: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     audiences: guard::NarrowAudiences,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -684,6 +691,44 @@ impl ObjectGraph for MemGraph<'_> {
     fn note_targets(&self, oid: &str) -> crate::error::Result<Vec<String>> {
         Ok(self.0.notes.get(oid).cloned().unwrap_or_default())
     }
+    fn patch_ids(&self, commits: &[String]) -> crate::error::Result<BTreeMap<String, String>> {
+        Ok(commits
+            .iter()
+            .filter_map(|c| Some((c.clone(), self.0.objects[c].patch_id.clone()?)))
+            .collect())
+    }
+    fn gitlinks(
+        &self,
+        include: &[String],
+        exclude: &[String],
+    ) -> crate::error::Result<Vec<guard::Gitlink>> {
+        let links = |commit: &str| -> BTreeMap<String, String> {
+            self.0.objects[commit]
+                .tree
+                .as_ref()
+                .and_then(|t| self.0.objects[t].gitlinks.clone())
+                .unwrap_or_default()
+        };
+        let mut out = Vec::new();
+        for c in self.commits(include, exclude)? {
+            let theirs: Vec<BTreeMap<String, String>> = self.0.objects[&c]
+                .parents
+                .iter()
+                .flatten()
+                .map(|q| links(q))
+                .collect();
+            for (path, target) in links(&c) {
+                if theirs.is_empty() || theirs.iter().any(|t| t.get(&path) != Some(&target)) {
+                    out.push(guard::Gitlink {
+                        commit: c.clone(),
+                        path,
+                        target,
+                    });
+                }
+            }
+        }
+        Ok(out)
+    }
 }
 
 fn run_guard(v: &Vector) -> Value {
@@ -722,6 +767,7 @@ fn run_guard(v: &Vector) -> Value {
             public_tips: &i.public_tips,
             batch: &i.batch,
             publish_private: i.publish_private.as_deref(),
+            patch_ids: i.patch_ids,
             audiences: &i.audiences,
             decryptable_narrower: &narrower,
         },
@@ -730,8 +776,46 @@ fn run_guard(v: &Vector) -> Value {
     serde_json::to_value(out).unwrap()
 }
 
+// --- members_index -------------------------------------------------------------------------------
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct MembersIndexIn {
+    op: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pack_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    locator: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    bytes: Option<String>,
+}
+
+fn run_members_index(v: &Vector) -> Value {
+    use crate::pack::{members_index, ObjectLocator};
+    let i: MembersIndexIn = input(v);
+    match i.op.as_str() {
+        "encode" => {
+            let loc = ObjectLocator::parse(&bytes(i.locator.as_deref().unwrap())).unwrap();
+            match members_index::encode(h32(i.pack_hash.as_deref().unwrap()), &loc) {
+                Ok(b) => json!({ "bytes": hex::encode(b) }),
+                Err(_) => json!({ "error": "malformed" }),
+            }
+        }
+        "parse" => match members_index::parse(&bytes(i.bytes.as_deref().unwrap())) {
+            Ok(Some(m)) => json!({
+                "packHash": hex::encode(m.pack_hash),
+                "objectCount": m.locator.object_count(),
+            }),
+            Ok(None) => json!({ "skip": true }),
+            Err(_) => json!({ "error": "malformed" }),
+        },
+        other => panic!("vector `{}`: op {other}", v.name),
+    }
+}
+
 fn run(v: &Vector) -> Value {
     match v.case.as_str() {
+        "members_index" => run_members_index(v),
         "oid_blind" => run_oid_blind(v),
         "sealed_ref" => run_sealed_ref(v),
         "sealed_patch" => run_sealed_patch(v),
@@ -768,5 +852,5 @@ fn members_git_conformance_vectors() {
     for c in CASES {
         assert!(ran.get(c).copied().unwrap_or(0) >= 5, "ran {ran:?}");
     }
-    assert!(ran.values().sum::<usize>() >= 98, "ran {ran:?}");
+    assert!(ran.values().sum::<usize>() >= 116, "ran {ran:?}");
 }

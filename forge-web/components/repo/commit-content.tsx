@@ -6,15 +6,16 @@
  * every file as added. Each changed path links to its blob at this commit (L-28). An annotated
  * tag's id (the tags list's chips) shows the commit it names, and says which tag it came through.
  * Below the header, the commit's check runs (CI results, `checkRun`): what `dg ci report` and the
- * GitHub Action link to.
+ * GitHub Action link to; for a member, a members-only branch's runs on this commit too.
  */
 
 import Link from 'next/link'
 import { useMemo, useState, type ReactNode } from 'react'
 import { GitCommit, Tag } from 'lucide-react'
 import type { BrowseReader } from '@/lib/browse'
-import { readMembershipsCached, repoContractIds, repoKey, type RepoRef } from '@/lib/repo'
+import { membersLane, readMembershipsCached, repoContractIds, repoKey, type RepoRef } from '@/lib/repo'
 import { readCheckRuns, summarizeChecks } from '@/lib/repo/checks'
+import { blindBook } from '@/lib/repo/members-blinds'
 import { isApprover } from '@/lib/rules/v2'
 import type { DiffSides, RepoHome } from '@/lib/view'
 import { commitSubject, loadCommitChanges, PackUnavailableError, type CommitObject } from '@/lib/view'
@@ -162,10 +163,14 @@ function Body({ reader, retry, oid, addr, repo, description }: { reader: BrowseR
 /**
  * The newest check run per name on this commit, trusted when its reporter is a current
  * maintainer, role-1 writer or runner. Private repositories' check runs are plaintext on chain too
- * (private-repos.md §7), so they read the same way.
+ * (private-repos.md §7), so they read the same way. A member also reads the runs a members-only
+ * branch reported on this commit's blinds that their session verified (§19.9; `dg ci status`), each
+ * by its real name once its log opens.
  */
 function CommitChecks({ repo, oid }: { repo: RepoRef; oid: string }): JSX.Element {
   const { sdk, ready, network } = useSdk(repoContractIds(repo))
+  const lane = membersLane(repo)
+  const blinds = lane === undefined ? [] : blindBook(lane.ctx).blindsOf(oid)
   const checks = useAsync(
     async () => {
       const members = await readMembershipsCached(sdk!, repo, network).then(
@@ -173,10 +178,11 @@ function CommitChecks({ repo, oid }: { repo: RepoRef; oid: string }): JSX.Elemen
         (ms) => ({ known: true, ids: new Set(ms.filter((m) => isApprover(m.role)).map((m) => m.identity)) }),
         () => ({ known: false, ids: new Set<string>() }),
       )
-      const { runs } = await readCheckRuns(sdk!, repo, oid, members.ids)
+      const read = await Promise.all([oid, ...blinds].map((head) => readCheckRuns(sdk!, repo, head, members.ids)))
+      const runs = read.flatMap((r) => r.runs)
       return { runs, summary: summarizeChecks(runs, members.known) }
     },
-    [ready, repoKey(repo), oid, network],
+    [ready, repoKey(repo), oid, network, blinds.join(',')],
     { enabled: ready && sdk !== null && oid !== '' },
   )
   return (
@@ -189,6 +195,7 @@ function CommitChecks({ repo, oid }: { repo: RepoRef; oid: string }): JSX.Elemen
         error={checks.error}
         onRetry={checks.reload}
         subject="commit"
+        members={lane}
       />
     </section>
   )

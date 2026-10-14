@@ -244,7 +244,7 @@
           }
         ]
       },
-      "description": "The comments and reviews maintainers made public with a make-public bundle, by id."
+      "description": "What maintainers made public with a make-public bundle, by id: the pull request itself (its own id), its comments and its reviews."
     },
     "bundleAlerts": {
       "type": "array",

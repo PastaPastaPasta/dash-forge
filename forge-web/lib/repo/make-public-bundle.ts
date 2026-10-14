@@ -11,7 +11,10 @@
  * Everything is checked before anything is signed: the repo is public, the signer a current
  * maintainer or the owner (read now), and each post is left out, with the reason, when it is
  * public already, unreadable to the signer, a message not sent to them, continued in a separate
- * members-only long-body artifact (decision P2B-D4), or a pull request's own text (phase 3).
+ * members-only long-body artifact (decision P2B-D4), or a pull request of a members-only branch:
+ * its key opens its whole text, that branch's name and newest commit included
+ * (`bundleWouldPublishMembersOnly`; its author can make its title and description public). A
+ * members-only PR between public branches is bundled.
  *
  * Keys: {@link planMakePublicBundle} derives each key only to check it and wipes it at once; the
  * write ({@link writeMakePublicBundle}) derives them again, encodes the bundle, stores it and
@@ -28,6 +31,7 @@ import {
   MAX_DOC_ENTRIES,
   V3,
   V4,
+  bundleWouldPublishMembersOnly,
   V5,
   encodeDocBundle,
   entryKind,
@@ -63,10 +67,10 @@ export interface BundleRequest {
 }
 
 /** The kinds a bundle publishes. */
-export type BundledKind = 'issue' | 'comment' | 'review'
+export type BundledKind = BundleRequest['type']
 
 /** Why a post asked for is left out of a bundle (forge-core `LeftOutWhy`). */
-export type LeftOutWhy = 'alreadyPublic' | 'unreadable' | 'notSent' | 'longBody' | 'pullRequest'
+export type LeftOutWhy = 'alreadyPublic' | 'unreadable' | 'notSent' | 'longBody' | 'membersOnlyBranch'
 
 /** A post left out, and why. */
 export interface LeftOutPost {
@@ -177,6 +181,7 @@ async function postKey(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, session: Pri
     const opened = await openContent(stored, session.ctx)
     if (opened.status !== 'readable') return { why: 'unreadable' }
     if (continued(opened.fields)) return { why: 'longBody' }
+    if (await bundleWouldPublishMembersOnly(stored, opened.fields)) return { why: 'membersOnlyBranch' }
     const key = await membersKeyOf(session, stored)
     return key === null ? { why: 'unreadable' } : { key, fields: opened.fields, recipients: null }
   }
@@ -230,11 +235,6 @@ async function plan(
       }
       if (!isSealedDoc(doc)) {
         leave('alreadyPublic')
-        continue
-      }
-      // A pull request's own text is phase 3 (its comments and reviews are bundled).
-      if (r.type === 'patch') {
-        leave('pullRequest')
         continue
       }
       const kind = entryKind(r.type) as number

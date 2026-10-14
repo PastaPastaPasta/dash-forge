@@ -1,0 +1,29 @@
+{
+  "name": "bundle_open_pr_members_base",
+  "description": "Into a members-only base: neither name is shown.",
+  "case": "make_public",
+  "rules": "v2",
+  "input": {
+    "op": "bundleOpen",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "doc": {
+      "type": "patch",
+      "vis": "public",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "number": 12,
+      "baseRefNameHash": "e729d18b929db396450159dfc6256e24302b94c9c3c9eb40643f5ae0be3fe579",
+      "sourceRefNameHash": "f9337f26a53b55ef8817947cb1554159ae4637a5565e5f88b01eed029b69ccfb",
+      "id": "998f684c378c00074a6e9ba0c4166d8e0b70490eaf898555673f6b7780aae8c2"
+    },
+    "enc": "03000102030405060708090a0ba356be5eeb40790d82c00c39a168e2608321a201ac1203d81291d9c0b27fb45d5663a837d93aab3bbcd7783a720d1de9cd51c189cf9af44e75e5f9074e7e502f7677766993b6e8cfde28f6df74451161a58000f5c4de0a9f51581a6cadef387b57e4a78e3f3a47d85607bf0dc842fb177d0b9142712721d62408f38a66a556601b64a1d6a8624b1a66c128ace2f3a6999a0e17b64968fb72a3fac756f14184ace1bfeac0e8abdf0d71477f8b9ab1cd5354df76550b082b7a4569869159c07b2fa0a287bf98915a0318b09dfa9ca5cea4a15ff3314ead8eff9ff13f5917807939f9c052714f7fbb31de2f4cecd4a372fb",
+    "key": "108a1119696198045797b92d7d8beceaa899f38c418e3c00023ac7d710b3354d"
+  },
+  "expected": {
+    "status": "readable",
+    "fields": {
+      "title": "Fix the bounds check",
+      "body": "The upper bound was off by one."
+    }
+  }
+}

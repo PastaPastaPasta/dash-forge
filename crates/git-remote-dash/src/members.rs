@@ -19,7 +19,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context as _, Result};
 use forge_core::members_git::guard::{self, Finding, FindingKind, GuardInput, ObjectGraph};
-use forge_core::members_git::guard::{ObjectType, Outcome, Peeled, Verdict};
+use forge_core::members_git::guard::{
+    Gitlink, GitlinkNote, ObjectType, Outcome, Peeled, Remade, Verdict,
+};
 use forge_core::members_git::ledger::{self, Entry, EntryAudience, EntryKind};
 use forge_core::members_git::plan::BatchRef;
 use forge_core::members_git::{hook, Audience};
@@ -91,21 +93,9 @@ impl GitGraph {
         include: &[String],
         exclude: &[String],
     ) -> Result<BTreeSet<String>> {
-        let include = self.present(include)?;
-        if include.is_empty() {
+        let Some(input) = self.range(include, exclude)? else {
             return Ok(BTreeSet::new());
-        }
-        let exclude = self.present(exclude)?;
-        let mut input = String::new();
-        for o in &include {
-            input.push_str(o);
-            input.push('\n');
-        }
-        for o in &exclude {
-            input.push('^');
-            input.push_str(o);
-            input.push('\n');
-        }
+        };
         let mut args = vec!["rev-list"];
         if objects {
             args.push("--objects");
@@ -118,6 +108,23 @@ impl GitGraph {
             .filter(|o| !o.is_empty())
             .map(str::to_owned)
             .collect())
+    }
+
+    /// `rev-list` input naming `include ^exclude`, over the objects this repository holds; `None`
+    /// when nothing of `include` is here.
+    fn range(&self, include: &[String], exclude: &[String]) -> Result<Option<String>> {
+        let include = self.present(include)?;
+        if include.is_empty() {
+            return Ok(None);
+        }
+        let exclude = self.present(exclude)?;
+        let mut input = lines(&include);
+        for o in &exclude {
+            input.push('^');
+            input.push_str(o);
+            input.push('\n');
+        }
+        Ok(Some(input))
     }
 
     /// `git log --no-walk` lines (`%h %s`) of `oids`, in the given order.
@@ -209,6 +216,87 @@ impl ObjectGraph for GitGraph {
             tags.push(std::mem::replace(&mut at, target));
         }
         Err(graph_error(anyhow!("the tag chain of {oid} does not end")))
+    }
+
+    fn gitlinks(&self, include: &[String], exclude: &[String]) -> forge_core::Result<Vec<Gitlink>> {
+        let Some(input) = self.range(include, exclude).map_err(graph_error)? else {
+            return Ok(Vec::new());
+        };
+        // every entry a commit changes against each parent (`-m`), a root commit's included; a
+        // gitlink is mode 160000
+        let out = self
+            .git(
+                &[
+                    "log",
+                    "--stdin",
+                    "--raw",
+                    "-m",
+                    "--root",
+                    "--no-abbrev",
+                    "--no-renames",
+                    "--ignore-submodules=none",
+                    "--format=%x01%H",
+                ],
+                Some(input.as_bytes()),
+            )
+            .map_err(graph_error)?;
+        let mut found = BTreeSet::new();
+        let mut commit = String::new();
+        for l in String::from_utf8_lossy(&out).lines() {
+            if let Some(c) = l.strip_prefix('\u{1}') {
+                c.clone_into(&mut commit);
+                continue;
+            }
+            let Some((meta, path)) = l.strip_prefix(':').and_then(|l| l.split_once('\t')) else {
+                continue;
+            };
+            let f: Vec<&str> = meta.split(' ').collect();
+            if let [_, "160000", _, new, status] = f[..] {
+                if status != "D" && is_hex_oid(new) {
+                    found.insert(Gitlink {
+                        commit: commit.clone(),
+                        path: path.to_owned(),
+                        target: new.to_owned(),
+                    });
+                }
+            }
+        }
+        Ok(found.into_iter().collect())
+    }
+
+    fn patch_ids(&self, commits: &[String]) -> forge_core::Result<BTreeMap<String, String>> {
+        let wanted = hex_oids(commits);
+        if wanted.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        // each commit's diff against its first parent (merges have none), then `patch-id`
+        let patches = self
+            .git(
+                &[
+                    "log",
+                    "--no-walk=unsorted",
+                    "--stdin",
+                    "--no-merges",
+                    "-p",
+                    "--root",
+                    "--no-renames",
+                    "--no-color",
+                    "--no-ext-diff",
+                    "--format=commit %H",
+                ],
+                Some(lines(&wanted).as_bytes()),
+            )
+            .map_err(graph_error)?;
+        let ids = self
+            .git(&["patch-id", "--stable"], Some(&patches))
+            .map_err(graph_error)?;
+        Ok(String::from_utf8_lossy(&ids)
+            .lines()
+            .filter_map(|l| {
+                let (pid, commit) = l.split_once(' ')?;
+                Some((commit.to_owned(), pid.to_owned()))
+            })
+            .collect())
     }
 
     fn note_targets(&self, oid: &str) -> forge_core::Result<Vec<String>> {
@@ -750,6 +838,54 @@ pub fn publication_lines(g: &GitGraph, published: &[Finding]) -> Vec<String> {
     out
 }
 
+/// The notes for gitlinks (submodule entries) naming members-only commits that a push publishes:
+/// allowed, since a gitlink carries a commit's id and none of its content (DESIGN §4.3, guard
+/// step 5), but the id itself becomes public.
+pub fn gitlink_lines(notes: &[GitlinkNote]) -> Vec<String> {
+    notes
+        .iter()
+        .map(|n| {
+            format!(
+                "dash: note: {} in {} (on {}) points to the members-only commit {}: everyone can see that commit's id, not its content",
+                n.path,
+                &n.commit[..n.commit.len().min(9)],
+                short(&n.dst),
+                &n.target[..n.target.len().min(9)],
+            )
+        })
+        .collect()
+}
+
+/// The warning for public commits that carry a members-only commit's changes under a new id
+/// (the opt-in `patch-id` check): the guard follows ids, so a cherry-pick or a rebase of a
+/// members-only commit passes it.
+pub fn remade_lines(g: &GitGraph, remade: &[Remade]) -> Vec<String> {
+    if remade.is_empty() {
+        return Vec::new();
+    }
+    let mut out = vec![format!(
+        "dash: warning: {} {} this push makes public {} the same changes as {}:",
+        remade.len(),
+        plural(remade.len(), "commit", "commits"),
+        plural(remade.len(), "has", "have"),
+        plural(
+            remade.len(),
+            "a members-only commit",
+            "members-only commits"
+        ),
+    )];
+    for r in remade {
+        let public = g.describe(std::slice::from_ref(&r.commit)).concat();
+        let members = g.describe(std::slice::from_ref(&r.like)).concat();
+        out.push(format!(
+            "dash:   {public} (on {}) is like {members}",
+            short(&r.dst)
+        ));
+    }
+    out.push("dash: this check only warns: the push goes on (git config dash.patchIdCheck)".into());
+    out
+}
+
 /// The `-o publish-private=<oid>` of this push, unless `push.pushOption` sets it: the override is
 /// bound to one push (security L6), so a permanent one is ignored with a warning.
 pub fn publish_private(values: &[String]) -> Option<String> {
@@ -804,10 +940,20 @@ pub fn run_guard(
             public_tips,
             batch,
             publish_private,
+            patch_ids: patch_id_check(),
             audiences: &narrower.audiences,
             decryptable_narrower: &narrower.decryptable,
         },
     )?)
+}
+
+/// The opt-in `patch-id` comparison of re-made commits (DESIGN §4.3 guard): `git config
+/// dash.patchIdCheck true`.
+pub fn patch_id_check() -> bool {
+    std::process::Command::new("git")
+        .args(["config", "--type=bool", "--get", "dash.patchIdCheck"])
+        .output()
+        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "true")
 }
 
 /// The clone's ledger as the guard reads it; an I/O failure other than "not there" is unknown.
@@ -1193,6 +1339,7 @@ pub fn pre_push(args: &[String], input: &mut dyn std::io::Read) -> Result<i32> {
             public_tips: &known,
             batch: &batch,
             publish_private: None,
+            patch_ids: false,
             audiences: &BTreeMap::default(),
             decryptable_narrower: &[],
         },

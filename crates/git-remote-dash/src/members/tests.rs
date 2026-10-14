@@ -77,13 +77,19 @@ fn realize(
         let o = &objects[id];
         let mut d: Vec<String> = Vec::new();
         match o["type"].as_str().unwrap() {
-            "tree" => d.extend(
-                o["entries"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|e| e.as_str().unwrap().to_owned()),
-            ),
+            "tree" => {
+                d.extend(
+                    o["entries"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|e| e.as_str().unwrap().to_owned()),
+                );
+                // a gitlink names a commit, which must exist first to have its real id
+                if let Some(links) = o.get("gitlinks").and_then(Value::as_object) {
+                    d.extend(links.values().map(|t| t.as_str().unwrap().to_owned()));
+                }
+            }
             "commit" => {
                 d.extend(
                     o["parents"]
@@ -133,6 +139,11 @@ fn realize(
                             format!("{mode} {kind} {}\t{e}", real[e])
                         })
                         .collect();
+                    if let Some(links) = o.get("gitlinks").and_then(Value::as_object) {
+                        entries.extend(links.iter().map(|(path, t)| {
+                            format!("160000 commit {}\t{path}", real[t.as_str().unwrap()])
+                        }));
+                    }
                     entries.sort_by(|a, b| a.split('\t').nth(1).cmp(&b.split('\t').nth(1)));
                     git_in(&path, &["mktree"], Some(&(entries.join("\n") + "\n")))
                 }
@@ -339,6 +350,7 @@ fn every_publish_guard_vector_holds_over_real_git() {
                 public_tips: &public_tips,
                 batch: &batch,
                 publish_private: publish.as_deref(),
+                patch_ids: inp["patchIds"].as_bool().unwrap_or(false),
                 audiences: &audiences,
                 decryptable_narrower: &narrower,
             },
@@ -404,6 +416,7 @@ fn check(
             members_key,
             ledger,
             decryptable,
+            patch_ids: false,
             public_tips: std::slice::from_ref(&f.b),
             batch: &[BatchRef {
                 dst: "refs/heads/main".into(),

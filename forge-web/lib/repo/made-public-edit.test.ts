@@ -1,7 +1,8 @@
 /**
- * After a maintainer's bundle covers a members-only post, its author's edits are written as
- * Public (DESIGN §4.6, "after a bundle"): the R5 replace (plaintext set, `enc` and `epoch`
- * removed), never a re-seal, so the public and members never see different current text.
+ * After a maintainer's bundle covers a members-only issue or comment, its author's edits are
+ * written as Public (DESIGN §4.6, "after a bundle"): the R5 replace (plaintext set, `enc` and
+ * `epoch` removed), never a re-seal, so the public and members never see different current text.
+ * A pull request's edit stays sealed: a public edit cannot keep its sealed branch names.
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
@@ -55,6 +56,7 @@ const SEALED = Uint8Array.from([0x03, ...new Uint8Array(60)])
 const ISSUE_PUBLIC = id(0x51)
 const COMMENT = id(0x61)
 const ISSUE = id(0x62)
+const PR = id(0x63)
 
 beforeEach(() => {
   configs = [{ $id: 'c1', defaultBranch: 'main' }, { $id: 'c2', enc: Uint8Array.from([0x02, ...new Uint8Array(84)]), epoch: 0 }]
@@ -65,6 +67,7 @@ beforeEach(() => {
     [ISSUE_PUBLIC]: { $id: ISSUE_PUBLIC, repoId: REPO.repoId, $ownerId: id(0x43), title: 'public', vis: 'public' },
     [COMMENT]: { $id: COMMENT, ...sealed, targetId: ISSUE_PUBLIC },
     [ISSUE]: { $id: ISSUE, ...sealed, number: 4 },
+    [PR]: { $id: PR, ...sealed, number: 5, baseRefNameHash: new Uint8Array(32).fill(1), sourceRefNameHash: new Uint8Array(32).fill(2), headOid: new Uint8Array(20).fill(3) },
   }
 })
 
@@ -92,6 +95,13 @@ describe('an author’s edit of a post a maintainer made public', () => {
     expect(c['title']).toBe('A new title')
     expect(c['body']).toBe('The published body.')
     expect('enc' in c && c['enc'] === undefined).toBe(true)
+  })
+
+  it('a pull request’s edit stays members-only (H1): a public edit would lose its sealed branch names and real head', async () => {
+    coveredBy = MAINT
+    // without its sealing context it is refused, never replaced with plaintext
+    await expect(updateTarget(sdk, auth, REPO, { type: 'patch', id: PR, body: 'An edited description.', expectedRevision: 2n })).rejects.toThrow(/members-only, and an edit keeps who can read it/)
+    expect(replaces).toEqual([])
   })
 
   it('not covered: the members-only comment is never replaced with plaintext', async () => {

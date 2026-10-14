@@ -324,6 +324,11 @@ export const PACK_KIND = {
    * forms of plain kind k; only members read them (`lib/view/members-browse.ts`).
    */
   MEMBERS_GIT_PACK: 64,
+  /**
+   * The browse index of one members-only pack (`lib/browse/members-index.ts`): its objectLocator
+   * under a header naming the kind-64 pack, sealed like it, with no `tips`; `objectCount` = rows.
+   */
+  MEMBERS_OBJECT_LOCATOR: 65,
 } as const
 export type PackKind = (typeof PACK_KIND)[keyof typeof PACK_KIND]
 

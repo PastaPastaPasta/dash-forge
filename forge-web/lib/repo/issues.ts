@@ -186,7 +186,7 @@ export function issueViewOf(issueDoc: PlainDocument, log: TargetLog, code: numbe
 }
 
 /** A PR (patch) with its folded state. */
-export interface PullView {
+export interface PullView extends PublicationMarks {
   readonly id: string
   /** Who it was written for: see {@link IssueView.audience}. Absent: public. */
   readonly audience?: 'members' | 'specificPeople'
@@ -937,9 +937,11 @@ export async function readPull(
   // (opened) text, keyed the same way.
   let baseKeyHex = byteFieldToHex(patchDoc, 'baseRefNameHash')
   // A members-only PR opened by a member names a members-only base by a keyed hash: its base is
-  // keyed by name, as every opened ref is (`members-branches.ts`).
+  // keyed by name, as every opened ref is (`members-branches.ts`). One a maintainer made public
+  // shows a base's name only when it is public (`made-public.ts`): a withheld base is read nowhere.
   const opened = patchDoc[AUDIENCE_FIELD] === 'members'
-  if (repo.visibility === 'private' || base.retargeted || opened) baseKeyHex = base.refName === '' ? '' : publicRefKey(base.refName)
+  const marks = publicationMarks(patchDoc)
+  if (repo.visibility === 'private' || base.retargeted || opened || marks.madePublicBy !== undefined) baseKeyHex = base.refName === '' ? '' : publicRefKey(base.refName)
   const baseRefNameHashRaw = /^[0-9a-f]{64}$/.test(baseKeyHex) ? hexToBase64(baseKeyHex) : ''
   // A members-only base: its history is the member's fold of its members-only updates. It is never
   // read by its public hash, which would hand the nodes `sha256(name)` to guess the name from.
@@ -982,7 +984,9 @@ export async function readPull(
 
   return {
     id,
-    ...audienceOf(patchDoc),
+    // Made public by a maintainer, it reads as public, also to a member who opened it with their keys.
+    ...(marks.madePublicBy !== undefined ? {} : audienceOf(patchDoc)),
+    ...marks,
     number: num(patchDoc, 'number'),
     title: titleOf(patchDoc, 'patch'),
     body: str(patchDoc, 'body'),
@@ -1093,9 +1097,11 @@ export function incompletePullView(doc: PlainDocument, code: number): PullView {
       headOid = raw
     }
   }
+  const marks = publicationMarks(doc)
   return {
     id: str(doc, '$id'),
-    ...audienceOf(doc),
+    ...(marks.madePublicBy !== undefined ? {} : audienceOf(doc)),
+    ...marks,
     number: num(doc, 'number'),
     title: titleOf(doc, 'patch'),
     body: str(doc, 'body'),

@@ -1,7 +1,9 @@
 /**
  * A maintainer's make-public bundle (`./make-public-bundle`, DESIGN §4.6, §3.5): who may write
  * one, what is left out and why before anything is signed, and the bundle a write stores (the
- * `make_public__bundle_key_members_comment` vector's comment and key; every key wiped after).
+ * `make_public__bundle_key_members_comment` vector's comment and key; the
+ * `make_public__bundle_*_pr_*` vectors' pull requests: one between public branches is bundled with
+ * its key, one of a members-only branch is left out; every key wiped after).
  */
 
 import { readFileSync } from 'node:fs'
@@ -13,6 +15,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 let stored: Record<string, Record<string, unknown>> = {}
 let maintainers: string[] = []
 let openedBody = 'Rotate the key on Friday.'
+/** What a members-only PR opens to for this maintainer (its real branch names; both PRs here name the same branches). */
+const PR_FIELDS = { title: 'Fix the bounds check', body: 'The upper bound was off by one.', baseRefName: 'refs/heads/main', sourceRefName: 'refs/heads/sec/fix' }
 let epochKeys: unknown = null
 const artifacts: Uint8Array[] = []
 const manifests: { kind: number; objectCount: number }[] = []
@@ -44,7 +48,7 @@ vi.mock('./private-session', async (orig) => ({
 vi.mock('../private', async (orig) => ({
   ...(await orig<typeof import('../private')>()),
   // The members-only post opens for this maintainer (the anchor and late rules are `doc.ts`'s own tests').
-  openContent: vi.fn(async () => ({ status: 'readable', fields: { body: openedBody } })),
+  openContent: vi.fn(async (d: { type: string }) => ({ status: 'readable', fields: d.type === 'patch' ? PR_FIELDS : { body: openedBody } })),
 }))
 vi.mock('./made-public', async (orig) => ({
   ...(await orig<typeof import('./made-public')>()),
@@ -68,16 +72,23 @@ vi.mock('./push', async (orig) => ({
 
 import { base58Encode } from '../auth/base58'
 import { PACK_KIND } from '../constants'
-import { EpochKeys, parseBundle } from '../private'
-import type { WriteAuth } from '../sdk'
+import { EpochKeys, bundleWouldPublishMembersOnly, parseBundle, type StoredPrivateDoc } from '../private'
+import type { PlainDocument, WriteAuth } from '../sdk'
 import type { RepoRef } from './contract'
+import { storedPrivateDoc } from './private-content'
 import { MakePublicRefusedError } from './make-public-writes'
 import { canMakeOthersPublic, planMakePublicBundle, writeMakePublicBundle } from './make-public-bundle'
 
-const vector = JSON.parse(readFileSync(join(__dirname, '..', '..', '..', 'forge-contracts', 'vectors', 'make_public__bundle_key_members_comment.json'), 'utf8')) as {
+const readVector = <T,>(name: string): T => JSON.parse(readFileSync(join(__dirname, '..', '..', '..', 'forge-contracts', 'vectors', `${name}.json`), 'utf8')) as T
+const vector = readVector<{
   input: { repoId: string; doc: { ownerId: string; targetId: string; id: string }; enc: string; epochKey: string }
   expected: { kObj: string }
-}
+}>('make_public__bundle_key_members_comment')
+type PrDoc = { number: number; baseRefNameHash: string; sourceRefNameHash: string; id: string }
+/** A members-only PR from a members-only branch into public main (the same repo, epoch key and author). */
+const prVector = readVector<{ input: { doc: PrDoc; enc: string } }>('make_public__bundle_key_pr_members')
+/** A members-only PR between public branches, and the K_obj its entry publishes. */
+const publicPrVector = readVector<{ input: { doc: PrDoc; enc: string; key: string } }>('make_public__bundle_open_pr_public_branches')
 const hex = (h: string): Uint8Array => Uint8Array.from(h.match(/../g) ?? [], (b) => parseInt(b, 16))
 const toHex = (u: Uint8Array): string => Array.from(u, (b) => b.toString(16).padStart(2, '0')).join('')
 const b58 = (h: string): string => base58Encode(hex(h))
@@ -94,7 +105,8 @@ const as = (identityId: string): WriteAuth => ({ identityId, network: 'devnet', 
 
 const COMMENT = b58(vector.input.doc.id)
 const PUBLIC_COMMENT = id(0x51)
-const SEALED_PR = id(0x52)
+const SEALED_PR = b58(prVector.input.doc.id)
+const PUBLIC_PR = b58(publicPrVector.input.doc.id)
 const LETTER = id(0x53)
 
 beforeEach(async () => {
@@ -105,10 +117,20 @@ beforeEach(async () => {
   manifests.length = 0
   lastArtifact = null
   const base = { repoId: REPO.repoId, $revision: 1, $createdAtBlockHeight: 10, vis: 'public', epoch: 0 }
+  const pr = (v: { input: { doc: PrDoc; enc: string } }): Record<string, unknown> => ({
+    ...base,
+    $id: b58(v.input.doc.id),
+    $ownerId: ALICE,
+    number: v.input.doc.number,
+    baseRefNameHash: hex(v.input.doc.baseRefNameHash),
+    sourceRefNameHash: hex(v.input.doc.sourceRefNameHash),
+    enc: hex(v.input.enc),
+  })
   stored = {
     [COMMENT]: { ...base, $id: COMMENT, $ownerId: ALICE, targetId: b58(vector.input.doc.targetId), enc: hex(vector.input.enc) },
     [PUBLIC_COMMENT]: { ...base, $id: PUBLIC_COMMENT, $ownerId: ALICE, targetId: b58(vector.input.doc.targetId), body: 'public already', epoch: undefined },
-    [SEALED_PR]: { ...base, $id: SEALED_PR, $ownerId: ALICE, number: 2, enc: hex(vector.input.enc) },
+    [SEALED_PR]: pr(prVector),
+    [PUBLIC_PR]: pr(publicPrVector),
     [LETTER]: { ...base, $id: LETTER, $ownerId: ALICE, targetId: b58(vector.input.doc.targetId), enc: Uint8Array.from([0x04, ...new Uint8Array(200)]) },
   }
 })
@@ -133,7 +155,7 @@ describe('who may make other people’s posts public', () => {
 })
 
 describe('what a bundle leaves out, before signing', () => {
-  it('a public post, a pull request’s own text and a message not sent to the maintainer are left out with the reason', async () => {
+  it('a public post, a message not sent to the maintainer and a pull request of a members-only branch are left out with the reason', async () => {
     const plan = await planMakePublicBundle(sdk, as(MAINT), REPO, [
       { type: 'comment', id: PUBLIC_COMMENT },
       { type: 'patch', id: SEALED_PR },
@@ -142,11 +164,30 @@ describe('what a bundle leaves out, before signing', () => {
     ])
     expect(plan.leftOut.map((l) => [l.id, l.why])).toEqual([
       [PUBLIC_COMMENT, 'alreadyPublic'],
-      [SEALED_PR, 'pullRequest'],
+      [SEALED_PR, 'membersOnlyBranch'],
       [LETTER, 'notSent'],
     ])
     expect(plan.posts.map((p) => [p.id, p.author, p.text])).toEqual([[COMMENT, ALICE, 'Rotate the key on Friday.']])
     expect(plan.entries).toBe(1)
+  })
+
+  it('a members-only pull request between public branches is planned, its title and description quoted', async () => {
+    const plan = await planMakePublicBundle(sdk, as(MAINT), REPO, [{ type: 'patch', id: PUBLIC_PR }])
+    expect(plan.posts.map((p) => [p.type, p.id, p.number, p.text])).toEqual([['patch', PUBLIC_PR, publicPrVector.input.doc.number, 'Fix the bounds check\nThe upper bound was off by one.']])
+    expect(plan.leftOut).toEqual([])
+  })
+
+  it('a pull request whose key would open a members-only branch name or real head (C1)', async () => {
+    const doc = storedPrivateDoc('patch', stored[PUBLIC_PR] as PlainDocument, 'public') as StoredPrivateDoc
+    expect(await bundleWouldPublishMembersOnly(doc, PR_FIELDS)).toBe(false)
+    // the real head or its salt (TLV 24, 27)
+    expect(await bundleWouldPublishMembersOnly(doc, { ...PR_FIELDS, headOid: new Uint8Array(20) })).toBe(true)
+    expect(await bundleWouldPublishMembersOnly(doc, { ...PR_FIELDS, oidSalt: new Uint8Array(32) })).toBe(true)
+    // a hash whose name is missing, or is not sha256(name): a keyed, members-only branch
+    expect(await bundleWouldPublishMembersOnly(doc, { title: 'x', baseRefName: 'refs/heads/main' })).toBe(true)
+    expect(await bundleWouldPublishMembersOnly(doc, { ...PR_FIELDS, sourceRefName: 'refs/heads/other' })).toBe(true)
+    // only a pull request is checked
+    expect(await bundleWouldPublishMembersOnly({ ...doc, type: 'issue' }, { title: 'x', headOid: new Uint8Array(20) })).toBe(false)
   })
 
   it('a post whose text continues in a separate members-only artifact is left out', async () => {
@@ -182,5 +223,18 @@ describe('the bundle a maintainer writes', () => {
     expect(toHex(e?.key ?? new Uint8Array())).toBe(vector.expected.kObj)
     // the encoded bytes this tab held are zero now
     expect(lastArtifact?.every((b) => b === 0)).toBe(true)
+  })
+
+  it('a pull request’s entry is type 0x04 with the K_obj the members key derives for it', async () => {
+    const { plan } = await writeMakePublicBundle(sdk, as(MAINT), REPO, [{ type: 'patch', id: PUBLIC_PR }])
+    expect(plan.posts.map((p) => p.revisions)).toEqual([[1]])
+    const [e, ...rest] = parseBundle(artifacts[0] as Uint8Array).entries
+    expect(rest).toEqual([])
+    expect([e?.kind, toHex(e?.target ?? new Uint8Array()), e?.revision, toHex(e?.key ?? new Uint8Array())]).toEqual([0x04, publicPrVector.input.doc.id, 1, publicPrVector.input.key])
+  })
+
+  it('a pull request of a members-only branch alone: nothing to make public, nothing stored', async () => {
+    await expect(writeMakePublicBundle(sdk, as(MAINT), REPO, [{ type: 'patch', id: SEALED_PR }])).rejects.toThrow(/nothing to make public/)
+    expect(artifacts).toHaveLength(0)
   })
 })
