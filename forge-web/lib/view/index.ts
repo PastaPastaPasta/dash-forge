@@ -164,6 +164,7 @@ export {
   findBranch,
   isDiverged,
   isLive,
+  isPublicRef,
   matchesRefQuery,
   pinnedAt,
   refParamFor,

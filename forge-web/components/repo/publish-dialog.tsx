@@ -76,8 +76,9 @@ export function PublishDialog({
   const base = branchName(facts.base)
   const source = branchName(facts.source)
   const list = publishListText(facts.commits, facts.authors, facts.files, facts.filesPartial === true, facts.commitsPartial === true)
-  const ready = scan !== null && (!refuses || anyway) && (!history || typed.trim().toLowerCase() === PUBLISH_WORD)
-  const blockedWhy = scan === null ? 'Checking for secrets…' : refuses && !anyway ? 'Confirm the possible secret first' : history && typed.trim().toLowerCase() !== PUBLISH_WORD ? `Type ${PUBLISH_WORD} to continue` : undefined
+  const wordTyped = typed.trim().toLowerCase() === PUBLISH_WORD
+  const ready = scan !== null && (!refuses || anyway) && (!history || wordTyped)
+  const blockedWhy = scan === null ? 'Checking for secrets…' : refuses && !anyway ? 'Confirm the possible secret first' : history && !wordTyped ? `Type ${PUBLISH_WORD} to continue` : undefined
   return (
     <Dialog
       open={open}

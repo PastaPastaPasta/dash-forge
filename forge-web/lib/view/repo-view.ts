@@ -35,6 +35,7 @@ import {
 } from '../repo'
 import { normalizeRepoName } from '../rules/v2'
 import { seedFromDomains } from './dpns'
+import { isPublicRef } from './refs'
 import { noteRepoGateways } from './storage-status'
 import type { PrivateSession } from '../repo/private-session'
 import type { LetterReading } from '../repo/private-content'
@@ -153,8 +154,8 @@ export async function withMembersRefs(sdk: EvoSDK, home: RepoHome): Promise<Repo
   const refs = await readMembersRefs(sdk, home.repo, lane)
   return {
     ...home,
-    branches: [...home.branches.filter((b) => b.audience === undefined), ...refs.branches],
-    tags: [...home.tags.filter((t) => t.audience === undefined), ...refs.tags],
+    branches: [...home.branches.filter(isPublicRef), ...refs.branches],
+    tags: [...home.tags.filter(isPublicRef), ...refs.tags],
     membersOnlyRefs: home.membersOnlyRefs === true || refs.branches.length + refs.tags.length + refs.unreadable > 0,
     membersRefs: { unreadable: refs.unreadable },
   }

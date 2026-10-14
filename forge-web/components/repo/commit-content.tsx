@@ -93,6 +93,7 @@ function Body({ reader, retry, oid, addr, repo, description }: { reader: BrowseR
 
   const { commit, changes, truncated, tags } = data
   const missing = new Set(data.missingParents ?? [])
+  const firstParentMissing = commit.parents[0] !== undefined && missing.has(commit.parents[0])
   const full = data.oid
   const tagNames = tags.map((t) => t.tag).filter((t) => t !== '')
   const body = commit.message.split('\n').slice(1).join('\n').trim()
@@ -130,7 +131,7 @@ function Body({ reader, retry, oid, addr, repo, description }: { reader: BrowseR
         {missing.size > 0 ? (
           <p className="mt-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-[12px] text-anvil-700 dark:text-anvil-200" data-testid="history-incomplete">
             History incomplete: {missing.size === 1 ? 'a parent of this commit isn\'t' : 'parents of this commit aren\'t'} public here (members-only, or never stored).
-            {commit.parents[0] !== undefined && missing.has(commit.parents[0]) ? ' What it changed can\'t be shown.' : ''}
+            {firstParentMissing ? ' What it changed can\'t be shown.' : ''}
           </p>
         ) : null}
         {commit.parents.length > 1 ? (
@@ -142,7 +143,7 @@ function Body({ reader, retry, oid, addr, repo, description }: { reader: BrowseR
 
       <CommitChecks repo={repo} oid={full} />
 
-      {changes.length === 0 && !truncated && !(commit.parents[0] !== undefined && missing.has(commit.parents[0])) ? (
+      {changes.length === 0 && !truncated && !firstParentMissing ? (
         <EmptyState title="No file changes" body="This commit touches no tree paths (e.g. a merge with no diff to its first parent)." />
       ) : (
         <DiffView

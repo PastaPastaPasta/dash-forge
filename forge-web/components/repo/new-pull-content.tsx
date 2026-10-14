@@ -206,7 +206,8 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
     const opt = (r: RepoRef, b: ResolvedRef, label: string): HeadOption | null => {
       const oid = tipOidOf(b)
       if (oid === null) return null
-      return { key: `${r.repoId}:${b.refName}`, repo: r, refName: b.refName, oid, label: b.audience === 'members' ? `${label} (members only)` : label, ...(b.audience === 'members' ? { audience: 'members' as const } : {}) }
+      const membersOnly = b.audience === 'members'
+      return { key: `${r.repoId}:${b.refName}`, repo: r, refName: b.refName, oid, label: membersOnly ? `${label} (members only)` : label, ...(membersOnly ? { audience: 'members' as const } : {}) }
     }
     const own = branches.map((b) => opt(repo, b, short(b.refName)))
     const fromForks = (forks.data ?? []).flatMap(({ fork, refs }) => refs.map((b) => opt(fork, b, `${forkSourcePrefix({ ownerId: fork.ownerId, ownerLabel: shortId(fork.ownerId), name: fork.name }, repo)}${short(b.refName)}`)))

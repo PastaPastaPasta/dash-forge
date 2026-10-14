@@ -42,11 +42,6 @@ export class BlindBook {
     return this.real.get(hex.toLowerCase())
   }
 
-  /** {@link realOf}, or `hex` itself (a public source's plain head). */
-  realOrPlain(hex: string): string {
-    return this.realOf(hex) ?? hex.toLowerCase()
-  }
-
   /** The blind and salt of the members-only ref update that pushed branch `name`'s tip, the real commit `hex`. */
   introduced(name: string, hex: string): Introduced | undefined {
     return this.intro.get(`${name}\0${hex.toLowerCase()}`)

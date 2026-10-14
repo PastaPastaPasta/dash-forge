@@ -682,24 +682,23 @@ export function MergePanel({
                       Publish with history
                     </option>
                   </>
-                ) : null}
-                {publish !== undefined ? null : <option value="merge" disabled={!policyAllows(button.kind === 'fast-forward' ? 1 : 2)}>
-                  {button.kind === 'fast-forward' ? button.label : MERGE_COMMIT_OPTION}
-                </option>}
-                {ffPossible && publish === undefined ? (
-                  <option value="no-ff" disabled={!policyAllows(2)}>
-                    {MERGE_COMMIT_OPTION}
-                  </option>
-                ) : null}
-                {publish !== undefined ? null : (
-                  <option value="squash" disabled={!policyAllows(4)}>
-                    Squash and merge
-                  </option>
-                )}
-                {publish !== undefined ? null : (
-                  <option value="rebase" disabled={!policyAllows(8)}>
-                    Rebase and merge
-                  </option>
+                ) : (
+                  <>
+                    <option value="merge" disabled={!policyAllows(button.kind === 'fast-forward' ? 1 : 2)}>
+                      {button.kind === 'fast-forward' ? button.label : MERGE_COMMIT_OPTION}
+                    </option>
+                    {ffPossible ? (
+                      <option value="no-ff" disabled={!policyAllows(2)}>
+                        {MERGE_COMMIT_OPTION}
+                      </option>
+                    ) : null}
+                    <option value="squash" disabled={!policyAllows(4)}>
+                      Squash and merge
+                    </option>
+                    <option value="rebase" disabled={!policyAllows(8)}>
+                      Rebase and merge
+                    </option>
+                  </>
                 )}
               </select>
               <Button

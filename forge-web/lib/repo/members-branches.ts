@@ -57,7 +57,7 @@ export function membersOnlyRefsExist(rows: RefRows): boolean {
  * Both ref-update types' complete rows of a public repo and its config timeline: the repo chrome
  * store's timelines (the home's own read of a moment ago), else each read here.
  */
-export async function readRefRows(sdk: EvoSDK, repo: RepoRef): Promise<{ readonly rows: RefRows; readonly configHistory: readonly ConfigDoc[] }> {
+async function readRefRows(sdk: EvoSDK, repo: RepoRef): Promise<{ readonly rows: RefRows; readonly configHistory: readonly ConfigDoc[] }> {
   const timelines = await repoTimelines(sdk, repo).catch(() => null)
   if (timelines !== null) {
     return {
@@ -96,9 +96,9 @@ export async function membersRefsOf(
     async (stored) => {
       const opened = await openContent(stored, lane.ctx)
       if (opened.status === 'readable' && stored.newOid !== undefined) {
-        const id = stored.id === undefined ? null : idKey(stored.id)
-        if (await book.learn(stored.newOid, opened.fields.newOid, opened.fields.oidSalt)) {
-          if (id !== null) pushed.set(id, { blind: new Uint8Array(stored.newOid), salt: new Uint8Array(opened.fields.oidSalt as Uint8Array) })
+        const id = stored.id === undefined ? null : base58Encode(stored.id)
+        if ((await book.learn(stored.newOid, opened.fields.newOid, opened.fields.oidSalt)) && id !== null) {
+          pushed.set(id, { blind: new Uint8Array(stored.newOid), salt: new Uint8Array(opened.fields.oidSalt as Uint8Array) })
         }
         if (stored.prevOid !== undefined) await book.learn(stored.prevOid, opened.fields.prevOid, opened.fields.oidSalt)
         if (id !== null) members.add(id)
@@ -152,9 +152,4 @@ function knownNames(repoId: Uint8Array): Set<string> {
  */
 export function isListedMembersRef(repoId: string, refName: string): boolean {
   return listedNames.get(repoId)?.has(refName) === true
-}
-
-/** A document id as `RefUpdate.id` carries it (base58). */
-function idKey(id: Uint8Array): string {
-  return base58Encode(id)
 }

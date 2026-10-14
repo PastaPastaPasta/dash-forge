@@ -14,7 +14,7 @@ import { useCallback, useMemo, useState } from 'react'
 import { GitBranchPlus, RotateCcw, Trash2 } from 'lucide-react'
 
 import type { RepoHome } from '@/lib/view'
-import { ARCHIVED_REASON, isLive, tipOidOf } from '@/lib/view'
+import { ARCHIVED_REASON, isLive, isPublicRef, tipOidOf } from '@/lib/view'
 import { compareRefNames, openPullsOnBranch, repoContractIds, type ResolvedRef } from '@/lib/repo'
 import { deleteNeedsForce, dependentsWarning, type Dependents } from '@/lib/view/branch-dependents'
 import { errorMessage } from '@/lib/utils'
@@ -81,7 +81,7 @@ export function sourceBranches(home: Pick<RepoHome, 'branches' | 'defaultBranch'
   const def = `${BRANCH_PREFIX}${home.defaultBranch}`
   // A public branch never starts at a members-only branch's commit (it would publish it).
   return home.branches
-    .filter((b) => isLive(b) && b.audience === undefined)
+    .filter((b) => isLive(b) && isPublicRef(b))
     .sort((a, b) => (a.refName === def ? -1 : b.refName === def ? 1 : compareRefNames(shortRef(a.refName), shortRef(b.refName))))
 }
 

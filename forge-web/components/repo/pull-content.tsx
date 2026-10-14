@@ -60,7 +60,7 @@ import {
 import { STATE_FILL, STATE_TEXT } from '@/lib/design/state'
 
 import type { PullThread, RepoHome, TimelineItem } from '@/lib/view'
-import { ACL_NAME, ARCHIVED_REASON, forkSourcePrefix, isLive, isMembersOnlyTarget, loadPullOrMembersOnly, loadPullThread, plural, policyOf, pullActions, type CommentView, type MembersOnlyTarget } from '@/lib/view'
+import { ACL_NAME, ARCHIVED_REASON, forkSourcePrefix, isLive, isMembersOnlyTarget, isPublicRef, loadPullOrMembersOnly, loadPullThread, plural, policyOf, pullActions, type CommentView, type MembersOnlyTarget } from '@/lib/view'
 import { NO_LETTER_ASK, QUOTE_CONFIRM, forwardText, notPublic, publicLineQuestion, publicTextOf, quotesMembersText, type ComposerAudience, type LetterAsk } from '@/lib/view/audience'
 import { AudienceChip, AudienceMark, AudienceWarnings, MEMBERS_CARD, MEMBERS_CARD_HEADER, MembersOnlyTargetPage, closeWithComment, letterThreadOf, useAudienceWarnings, useComposerAudience, useMembersTexts, useQuoteGate, warningName } from '@/components/repo/audience'
 import { commentDraftKey, commentEditDraftKey, discardedEdits, editDraftKey, useDraftText, useEditDraft } from '@/lib/view/draft-text'
@@ -1576,7 +1576,7 @@ function PullPage({
             <span className="font-mono" data-testid="pr-base">{shortBranch(pull.mergeBaseRefName) || '?'}</span>
             {open && canMember && caps.canRetarget ? (
               <EditBase
-                branches={home.branches.filter((b) => isLive(b) && b.audience === undefined).map((b) => b.refName)}
+                branches={home.branches.filter((b) => isLive(b) && isPublicRef(b)).map((b) => b.refName)}
                 current={pull.mergeBaseRefName}
                 source={crossRepo ? null : pull.sourceRefName}
                 defaultBranch={home.defaultBranch}

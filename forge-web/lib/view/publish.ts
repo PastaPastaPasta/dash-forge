@@ -38,10 +38,10 @@ export interface PublishScan {
 }
 
 /** Files one publish scan reads at most. */
-export const SCAN_FILES_MAX = 500
+const SCAN_FILES_MAX = 500
 
 /** Published commits whose changes the history scan walks at most. */
-export const SCAN_COMMITS_MAX = 250
+const SCAN_COMMITS_MAX = 250
 
 /** Git file modes whose blob is a file's content (a symlink's target and a gitlink are not scanned). */
 function isFile(mode: number | null): boolean {
