@@ -1172,11 +1172,13 @@ fn print_check(
                 if c.unread > 0 {
                     println!("    {} you can't read yourself aren't counted.", plural(c.unread, "post"));
                 }
+                if !c.authors.is_empty() {
                 println!(
                     "    Words by {}{} become public.",
                     people(c.authors.len()),
                     if check.former.is_empty() { String::new() } else { format!(", including {}", plural(check.former.len(), "former member")) }
                 );
+                }
                 print_secrets(&secrets_of(check, Mode::Everything), true);
                 for env in &check.old_format {
                     println!("    Blocked (E812): environment {} has values saved in the old format, which would become public. Fix: dg env resave --env {env}, change every listed value where it's used, then dg env mark-changed --env {env}", safe(env));
@@ -1601,5 +1603,102 @@ fn typed_confirmation(ctx: &Ctx, repo: &str) -> Result<()> {
         Ok(())
     } else {
         Err(crate::errors::cancelled())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@example.invalid")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@example.invalid")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}");
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    }
+
+    /// Everything's widened scan reads an object no live branch holds (a branch deleted while
+    /// private), under the path its own commit gives it, so path rules (`.env`) still fire; the
+    /// scan of the published tips alone does not see it.
+    #[test]
+    fn the_widened_scan_reads_deleted_history_by_its_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        git(d, &["init", "-q", "-b", "main"]);
+        std::fs::write(d.join("README.md"), "hello\n").unwrap();
+        git(d, &["add", "README.md"]);
+        git(d, &["commit", "-q", "-m", "main"]);
+        let main = git(d, &["rev-parse", "HEAD"]);
+        git(d, &["checkout", "-q", "-b", "gone"]);
+        std::fs::write(d.join(".env"), "API_TOKEN=s3cr3t-value-here\n").unwrap();
+        git(d, &["add", ".env"]);
+        git(d, &["commit", "-q", "-m", "a secret"]);
+        git(d, &["checkout", "-q", "main"]);
+        git(d, &["branch", "-q", "-D", "gone"]);
+
+        let tips = vec![main];
+        assert!(scan_objects(d, &tips, false).unwrap().is_empty());
+        let every = scan_objects(d, &tips, true).unwrap();
+        assert!(
+            every
+                .iter()
+                .any(|s| s.place.starts_with(".env") && s.refuses),
+            "{every:?}"
+        );
+        // a pack-size estimate of the published tips counts their objects
+        let (bytes, objects) = pack_size(d, &tips).unwrap();
+        assert!(bytes > 0);
+        assert_eq!(objects, 3); // the commit, its tree and README.md
+    }
+
+    #[test]
+    fn a_short_ref_name_means_the_branch_then_the_tag() {
+        assert_eq!(
+            candidates("v1"),
+            vec!["refs/heads/v1".to_string(), "refs/tags/v1".to_string()]
+        );
+        assert_eq!(candidates("refs/tags/v1"), vec!["refs/tags/v1".to_string()]);
+        assert_eq!(short_ref("refs/heads/a/b"), "a/b");
+        assert_eq!(short_ref("refs/tags/v1"), "v1");
+        assert_eq!(people(1), "1 person");
+        assert_eq!(people(3), "3 people");
+    }
+
+    #[test]
+    fn a_record_that_cant_be_read_is_an_error_not_no_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = RepoRef {
+            forge: forge_core::network::ForgeIds::test_forge_meta(),
+            repo_id: "R".into(),
+            owner_id: "O".into(),
+            name: "n".into(),
+            visibility: Visibility::Private,
+        };
+        assert!(Saved::load(dir.path(), &repo).unwrap().is_none());
+        std::fs::write(dir.path().join("state.json"), "{not json").unwrap();
+        assert!(Saved::load(dir.path(), &repo).is_err());
+        let saved = Saved {
+            repo_id: "R".into(),
+            mode: Mode::CodeOnly,
+            refs: vec![("refs/heads/main".into(), "ab".repeat(20))],
+            seal_off: Some(3),
+        };
+        saved.save(dir.path()).unwrap();
+        let back = Saved::load(dir.path(), &repo).unwrap().unwrap();
+        assert_eq!((back.mode, back.seal_off), (Mode::CodeOnly, Some(3)));
+        // another repository's record is not this one's
+        let other = RepoRef {
+            repo_id: "X".into(),
+            ..repo
+        };
+        assert!(Saved::load(dir.path(), &other).unwrap().is_none());
     }
 }
