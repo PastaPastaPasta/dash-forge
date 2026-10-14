@@ -611,6 +611,30 @@ pub fn publish_refusal(
         }
     }
     let branch = from.unwrap_or_else(|| "<members-only branch>".to_owned());
+    // into a members-only or narrower branch (D21 rev 4, phase 3F): more people would read them
+    let sealed_dst = batch
+        .iter()
+        .find(|b| b.dst == first.dst)
+        .is_some_and(|b| b.audience.is_sealed());
+    if sealed_dst {
+        let e = UserError::new(
+            codes::PUBLISHES_MEMBERS_ONLY,
+            format!(
+                "pushing {} would show {what} from branch {branch} to people who can't read them now",
+                first.dst
+            ),
+        )
+        .cause(format!(
+            "{} is read by people {branch} isn't for, so nothing in this push was sent",
+            short(&first.dst)
+        ))
+        .fix("push them to a branch for the same people, or start one: `dg branch new --to <who> <name>`")
+        .fix(format!(
+            "when the work is ready, make one new public commit: `dg publish {branch} --onto <public branch>`"
+        ))
+        .note(NOTE_NOTHING_SIGNED);
+        return (e, lines);
+    }
     let e = UserError::new(
         codes::PUBLISHES_MEMBERS_ONLY,
         format!("pushing {} would publish {what} from {origin}", first.dst),

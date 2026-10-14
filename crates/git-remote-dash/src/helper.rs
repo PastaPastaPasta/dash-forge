@@ -353,7 +353,7 @@ impl Helper {
         state: &forge_core::refs::GitState,
         always: bool,
     ) -> Option<std::sync::Arc<forge_core::private::branch_key::BranchRing>> {
-        if !always && !has_narrower_updates(state) {
+        if !always && !forge_core::refs::has_narrower_updates(state) {
             return None;
         }
         let conn = self.conn.as_ref()?;
@@ -2558,18 +2558,6 @@ fn plan_pushes(
     }
     reject_collisions(&mut planned, remote_refs);
     planned
-}
-
-/// Whether a repository's ref history has narrower branches' updates (`enc` v0x06, phase 3F).
-fn has_narrower_updates(state: &forge_core::refs::GitState) -> bool {
-    state
-        .ref_updates
-        .iter()
-        .chain(&state.protected_ref_updates)
-        .any(|d| {
-            d.field_bytes("enc").and_then(|e| e.first().copied())
-                == Some(forge_core::private::branch_key::V6)
-        })
 }
 
 /// What a member view says about narrower branches, by ledger token ([`narrower_facts`]).

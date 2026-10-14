@@ -1917,6 +1917,11 @@ impl<'a> RepoService<'a> {
             crate::history::Freshness::Now,
         )
         .await?;
+        // narrower branches (phase 3F) open with the branch keys this signer holds
+        if crate::refs::has_narrower_updates(&state) && kr.branch_ring().is_none() {
+            let ring = crate::narrow::read_ring(self, repo, kr.members()).await?;
+            kr.set_branch_ring(std::sync::Arc::new(ring));
+        }
         Ok(Some(MembersRefs::of(&state, |k, d| kr.open(k, d))))
     }
 

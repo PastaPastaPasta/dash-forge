@@ -411,6 +411,10 @@ pub struct MembersUpdates {
     /// branch's name: the guard's decryptable S for narrower audiences (never in
     /// [`Self::opened_new_oids`], which is the members key's).
     pub opened_narrower: BTreeMap<String, String>,
+    /// Narrower branches this reader does not hold the key of (phase 3F): the name hash of each
+    /// whose newest update it could not open is not a delete ("a branch you don't have access
+    /// to"). One per branch key generation: the public cannot link a branch's generations.
+    pub unreadable_narrower: BTreeSet<[u8; 32]>,
 }
 
 /// The blind a members-only ref update's `newOid` carries, with its salt: what a members-only PR
@@ -563,6 +567,20 @@ impl std::fmt::Debug for MembersUpdates {
     }
 }
 
+/// Whether a repository's ref history has narrower branches' updates (`enc` v0x06, phase 3F):
+/// whether a member's fold needs the branch keys its letters hold.
+#[must_use]
+pub fn has_narrower_updates(state: &GitState) -> bool {
+    state
+        .ref_updates
+        .iter()
+        .chain(&state.protected_ref_updates)
+        .any(|d| {
+            d.field_bytes("enc").and_then(|e| e.first().copied())
+                == Some(crate::private::branch_key::V6)
+        })
+}
+
 /// Whether `d` is a members-only ref update: `enc` present and stamped `vis: "public"` (a
 /// repository made public keeps its private-era updates stamped private; they are not members-only
 /// branches).
@@ -624,6 +642,19 @@ pub fn members_updates_of(
             let real = header.map(|h| RefOpened::from_opened(&h, open(kind, d)));
             let Some(RefOpened::Readable(real)) = real else {
                 out.unreadable += 1;
+                if narrower {
+                    if let Some(h) = d.field_bytes32("refNameHash") {
+                        let deleted = d
+                            .field_bytes("newOid")
+                            .is_some_and(|o| crate::private::blind::is_null(&o));
+                        // rows come oldest first: the newest update of a name decides
+                        if deleted {
+                            out.unreadable_narrower.remove(&h);
+                        } else {
+                            out.unreadable_narrower.insert(h);
+                        }
+                    }
+                }
                 continue;
             };
             let hash_hex = hex::encode(crate::backends::sha256(real.name.as_bytes()));

@@ -3354,6 +3354,15 @@ impl<'a> Collab<'a> {
                     crate::history::Freshness::Now,
                 )
                 .await?;
+                // narrower branches (phase 3F) open with the branch keys this signer holds: a
+                // name they use is then never taken for a public branch's
+                if crate::refs::has_narrower_updates(&state) && kr.branch_ring().is_none() {
+                    if let Some((identity, bridge)) = self.signer {
+                        let svc = crate::repo::RepoService::new(self.client, identity, bridge);
+                        let ring = crate::narrow::read_ring(&svc, repo, kr.members()).await?;
+                        kr.set_branch_ring(Arc::new(ring));
+                    }
+                }
                 Some(Arc::new(crate::repo::MembersRefs::of(&state, |k, d| {
                     kr.open(k, d)
                 })))

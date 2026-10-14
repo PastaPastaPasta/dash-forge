@@ -8,6 +8,10 @@
 //!   records the intent `git-remote-dash` reads first (`branch.<b>.dashAudience`, D12) and
 //!   describes the branch as members-only. It is refused for a name that is already public
 //!   (E809: nothing already pushed can be hidden).
+//! * `dg branch new --to maintainers|writers|@a,@b <b>` starts a branch for fewer people than all
+//!   members (phase 3F): its first push gives it its own key, sent to those people; `dg branch
+//!   audience <b> [--to …]` shows who it is for and changes it (someone added gets the key,
+//!   someone taken off means a new key for everyone left).
 //! * `dg branch cleanup` deletes the local branches whose content `dg publish` published (the
 //!   mapping in `<git common dir>/dash/published`).
 
@@ -55,6 +59,23 @@ pub enum BranchCommand {
         /// otherwise).
         #[arg(long, conflicts_with = "members")]
         public: bool,
+        /// For fewer people than all members: `maintainers`, `writers` (Writers and
+        /// maintainers), people (`@alice,@bob`), or a group plus people (`maintainers,@ci-bot`).
+        /// Only they get its key when you push it.
+        #[arg(long, value_name = "WHO", conflicts_with_all = ["members", "public"])]
+        to: Option<String>,
+    },
+    /// Show who a branch for fewer people is for, or change it with --to (someone added gets
+    /// its key; someone taken off means a new key for everyone left).
+    Audience {
+        /// The branch name.
+        name: String,
+        /// The new audience (as for `dg branch new --to`).
+        #[arg(long, value_name = "WHO")]
+        to: Option<String>,
+        /// The repository (`owner/name`; inside a clone, the clone's).
+        #[arg(long)]
+        repo: Option<String>,
     },
     /// Delete the local branches whose content `dg publish` already published.
     Cleanup {
@@ -79,9 +100,19 @@ pub async fn run(ctx: &Ctx, cmd: Option<&BranchCommand>) -> Result<()> {
         Some(BranchCommand::New {
             name,
             start,
+            to: Some(to),
+            ..
+        }) => new_narrower(ctx, name, start.as_deref(), to).await,
+        Some(BranchCommand::New {
+            name,
+            start,
             members,
             public,
+            to: None,
         }) => new(ctx, name, start.as_deref(), *members, *public).await,
+        Some(BranchCommand::Audience { name, to, repo }) => {
+            audience_cmd(ctx, name, to.as_deref(), repo.as_deref()).await
+        }
         Some(BranchCommand::Cleanup { dry_run }) => cleanup(ctx, *dry_run),
     }
 }
@@ -91,17 +122,36 @@ struct Row {
     name: String,
     tip: Option<String>,
     members_only: bool,
+    /// A branch for fewer people (phase 3F): its label and how many people it is for now.
+    narrower: Option<(String, usize)>,
 }
 
 async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
     let s = Reader::open_discussion(ctx, repo).await?;
     let svc = s.service();
+    // the branches for fewer people this reader holds keys for (best effort: unopened otherwise)
+    let ring = if s.repo.visibility == Visibility::Public {
+        branch_ring(&svc, &s.repo).await
+    } else {
+        None
+    };
     let members = if s.repo.visibility == Visibility::Public {
         svc.read_members_refs(&s.repo).await?
     } else {
         None
     };
+    let no_access = members
+        .as_ref()
+        .map_or(0, |m| m.updates.unreadable_narrower.len());
     let (rows, hidden_members): (Vec<Row>, bool) = if let Some(m) = &members {
+        let narrower = |name: &str| {
+            let (ring, people) = ring.as_ref()?;
+            let b = ring.get(name)?;
+            Some((
+                forge_core::narrow::label(&b.audience),
+                forge_core::narrow::resolve_now(&b.audience, s.repo.owner_id(), people).len(),
+            ))
+        };
         (
             m.refs
                 .iter()
@@ -110,6 +160,7 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
                     name: r.name.clone(),
                     tip: forge_core::rules::tip_of(&r.state),
                     members_only: r.members_only,
+                    narrower: if r.narrower { narrower(&r.name) } else { None },
                 })
                 .collect(),
             false,
@@ -125,6 +176,7 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
                     name: n.clone(),
                     tip: forge_core::rules::tip_of(st),
                     members_only: false,
+                    narrower: None,
                 })
                 .collect(),
             others,
@@ -132,17 +184,29 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
     };
     let live: Vec<&Row> = rows.iter().filter(|r| r.tip.is_some()).collect();
     let current = git::current_branch(Path::new(".")).map(|b| git::full_ref(&b));
-    let audience = |r: &Row| if r.members_only { "members" } else { "public" };
+    let audience = |r: &Row| match (&r.narrower, r.members_only) {
+        (Some(_), _) => "narrower",
+        (None, true) => "members",
+        (None, false) => "public",
+    };
     ctx.emit(
         json!({
             "repo": s.repo.display(),
-            "branches": live.iter().map(|r| json!({
-                "name": short_branch_name(&r.name),
-                "ref": r.name,
-                "tip": r.tip,
-                "audience": audience(r),
-            })).collect::<Vec<_>>(),
+            "branches": live.iter().map(|r| {
+                let mut b = json!({
+                    "name": short_branch_name(&r.name),
+                    "ref": r.name,
+                    "tip": r.tip,
+                    "audience": audience(r),
+                });
+                if let Some((label, n)) = &r.narrower {
+                    b["audienceLabel"] = json!(label);
+                    b["visibleTo"] = json!(n);
+                }
+                b
+            }).collect::<Vec<_>>(),
             "alsoMembersOnly": hidden_members,
+            "noAccessBranches": no_access,
         }),
         || {
             let width = live
@@ -166,8 +230,14 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
                     } else {
                         ' '
                     };
+                    let who = r.narrower.as_ref().map_or(String::new(), |(label, n)| {
+                        format!(
+                            "  {label} only · visible to {n} {}",
+                            if *n == 1 { "person" } else { "people" }
+                        )
+                    });
                     println!(
-                        "{mark} {:<width$}  {}",
+                        "{mark} {:<width$}  {}{who}",
                         safe(name),
                         short(r.tip.as_deref().unwrap_or_default())
                     );
@@ -178,6 +248,9 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
             }
             print("Public", false);
             print("Members only 🔒", true);
+            for _ in 0..no_access {
+                println!("  A branch you don't have access to");
+            }
             if hidden_members {
                 println!("This repo also has members-only branches.");
             }
@@ -254,6 +327,300 @@ async fn new(
         },
     );
     Ok(())
+}
+
+/// The signer's branches for fewer people (phase 3F), attached to the service's keyring so its
+/// member fold opens them, with the member documents they resolve against; `None` without a
+/// signer, a members key or any such branch.
+async fn branch_ring(
+    svc: &forge_core::repo::RepoService<'_>,
+    repo: &forge_core::scope::RepoRef,
+) -> Option<(
+    std::sync::Arc<forge_core::private::branch_key::BranchRing>,
+    Vec<forge_core::members::Member>,
+)> {
+    let kr = svc.keyring(repo).await.ok()?;
+    if !kr.has_members_key() {
+        return None;
+    }
+    let members = kr.members().to_vec();
+    let ring = std::sync::Arc::new(
+        forge_core::narrow::read_ring(svc, repo, &members)
+            .await
+            .ok()?,
+    );
+    kr.set_branch_ring(std::sync::Arc::clone(&ring));
+    Some((ring, members))
+}
+
+/// Parse `--to` (`maintainers`, `writers`, `members`, `@name` or an identity id, comma-separated;
+/// at most one group): names resolved to identity ids. Refused when it is no narrower than All
+/// members.
+async fn parse_to(
+    client: &forge_core::platform::PlatformClient,
+    to: &str,
+) -> Result<forge_core::env::Audience> {
+    let mut items = Vec::new();
+    for item in to.split(',').map(str::trim).filter(|i| !i.is_empty()) {
+        if forge_core::env::Group::parse(item).is_some() {
+            items.push(item.to_owned());
+        } else {
+            items.push(crate::common::resolve_identity(client, item, "person").await?);
+        }
+    }
+    forge_core::narrow::parse_spec(&items.join(",")).ok_or_else(|| {
+        UserError::new(
+            codes::USAGE,
+            format!("--to {}: choose fewer people than all members", safe(to)),
+        )
+        .fix("`--to maintainers`, `--to writers`, `--to @alice,@bob`, or a group plus people: `--to maintainers,@ci-bot`")
+        .fix("for all members: `dg branch new --members <branch>`")
+        .into()
+    })
+}
+
+/// `dg branch new --to …`: a branch for fewer people. Checked as a members-only branch is (a
+/// public repository with members-only content, a member who can push, a name not already
+/// pushed), then recorded as the local intent the helper reads on the first push.
+async fn new_narrower(ctx: &Ctx, name: &str, start: Option<&str>, to: &str) -> Result<()> {
+    let cwd = std::env::current_dir().context("reading the current directory")?;
+    let full = git::full_ref(name);
+    git::require_branch_ref(&full)?;
+    let short_name = short_branch_name(&full).to_string();
+    let repo = crate::storage::clone_repo().ok_or_else(|| {
+        crate::errors::usage(
+            "not in a clone of a Forge repository: a branch for fewer people is pushed to one",
+        )
+    })?;
+    require_members_branch(ctx, &repo, &full, &short_name).await?;
+    let s = Session::open(ctx, &repo).await?;
+    let audience = parse_to(&s.client, to).await?;
+    let members = forge_core::members::MemberReader::new(&s.client)
+        .list(&s.repo)
+        .await?;
+    let me = s.identity.id();
+    let audience = forge_core::narrow::with_me(&audience, &me, s.repo.owner_id(), &members);
+    let people = forge_core::narrow::resolve_now(&audience, s.repo.owner_id(), &members);
+    let mut args = vec!["switch", "-c", short_name.as_str()];
+    if let Some(st) = start {
+        args.push(st);
+    }
+    git::git(&cwd, &args, &[]).with_context(|| format!("creating branch {short_name}"))?;
+    set_narrower(&cwd, &short_name, &audience)?;
+    let label = forge_core::narrow::label(&audience);
+    let n = people.len();
+    ctx.emit(
+        json!({
+            "status": "created",
+            "branch": short_name,
+            "audience": "narrower",
+            "audienceLabel": label,
+            "to": forge_core::narrow::spec(&audience),
+            "people": people,
+        }),
+        || {
+            println!("✓ switched to a new branch {}", safe(&short_name));
+            println!(
+                "  {label} only: once you push it, only these {n} {} its name and commits",
+                if n == 1 { "person sees" } else { "people see" }
+            );
+        },
+    );
+    Ok(())
+}
+
+/// Record a narrower audience for branch `b` (the helper's `branch.<b>.dashAudience`).
+fn set_narrower(cwd: &Path, b: &str, audience: &forge_core::env::Audience) -> Result<()> {
+    git::git(
+        cwd,
+        &[
+            "config",
+            &format!("branch.{b}.{AUDIENCE_KEY}"),
+            &forge_core::narrow::spec(audience),
+        ],
+        &[],
+    )?;
+    git::git(
+        cwd,
+        &[
+            "config",
+            &format!("branch.{b}.description"),
+            MEMBERS_DESCRIPTION,
+        ],
+        &[],
+    )?;
+    Ok(())
+}
+
+fn people_word(n: usize) -> &'static str {
+    if n == 1 {
+        "person"
+    } else {
+        "people"
+    }
+}
+
+/// `dg branch audience <b> [--to …]`: who a branch for fewer people is for; with `--to`, change
+/// it. Someone added gets its key now; someone taken off means a new key for everyone left (the
+/// next push uses it). A branch not pushed yet only changes this clone's setting.
+#[allow(clippy::too_many_lines)] // show, or plan, confirm, write and report one change
+async fn audience_cmd(ctx: &Ctx, name: &str, to: Option<&str>, repo: Option<&str>) -> Result<()> {
+    use forge_core::narrow::Reletter;
+    let repo = match repo {
+        Some(r) => r.to_owned(),
+        None => crate::storage::clone_repo().ok_or_else(|| {
+            crate::errors::usage(
+                "not in a clone of a Forge repository: pass one, `--repo <owner/name>`",
+            )
+        })?,
+    };
+    let full = git::full_ref(name);
+    let short_name = short_branch_name(&full).to_string();
+    let s = Session::open(ctx, &repo).await?;
+    let members = forge_core::members::MemberReader::new(&s.client)
+        .list(&s.repo)
+        .await?;
+    let owner = s.repo.owner_id().to_owned();
+    let held = crate::narrow::held(&s, &full).await?;
+    let Some(to) = to else {
+        let Some((_, b)) = held else {
+            return Err(no_access(&short_name).into());
+        };
+        let people = crate::narrow::people_of(&b.audience, &owner, &members);
+        let label = forge_core::narrow::label(&b.audience);
+        let mut out = crate::narrow::describe(&b, &people);
+        out["branch"] = json!(short_name);
+        ctx.emit(out, || {
+            println!(
+                "{} is for {label} · visible to {} {}",
+                safe(&short_name),
+                people.len(),
+                people_word(people.len())
+            );
+            for p in &people {
+                println!("  {p}");
+            }
+        });
+        return Ok(());
+    };
+    let audience = parse_to(&s.client, to).await?;
+    let me = s.identity.id();
+    let audience = forge_core::narrow::with_me(&audience, &me, &owner, &members);
+    let cwd = std::env::current_dir().ok();
+    let local_key = format!("branch.{short_name}.{AUDIENCE_KEY}");
+    let Some((_, b)) = held else {
+        // not pushed yet: this clone's setting only
+        let Some(c) = cwd
+            .as_deref()
+            .filter(|c| git::config_get(c, &local_key).is_some())
+        else {
+            return Err(no_access(&short_name).into());
+        };
+        set_narrower(c, &short_name, &audience)?;
+        let label = forge_core::narrow::label(&audience);
+        ctx.emit(
+            json!({
+                "branch": short_name,
+                "status": "local",
+                "audienceLabel": label,
+                "to": forge_core::narrow::spec(&audience),
+            }),
+            || println!("{} will be for {label} when you push it", safe(&short_name)),
+        );
+        return Ok(());
+    };
+    let svc = forge_core::repo::RepoService::new(&s.client, &s.identity, &s.bridge);
+    let people = forge_core::narrow::resolve_now(&audience, &owner, &members);
+    let (now, no_key) = forge_core::narrow::with_keys(&svc, &s.repo, &people).await?;
+    let action = forge_core::narrow::plan(&b, &now);
+    let label = forge_core::narrow::label(&audience);
+    let list = |xs: &std::collections::BTreeSet<String>| xs.iter().cloned().collect::<Vec<_>>().join(", ");
+    let question = match &action {
+        Reletter::NewGeneration(left) => format!(
+            "Make {} for {label}? {} won't see anything pushed to it from now on (they keep what they could read). A new key goes to {} {}.",
+            safe(&short_name),
+            list(left),
+            now.len(),
+            people_word(now.len())
+        ),
+        Reletter::Joiners(j) => format!(
+            "Make {} for {label}? {} will see its whole history.",
+            safe(&short_name),
+            list(j)
+        ),
+        Reletter::Nothing => format!(
+            "Make {} for {label}? Nobody gains or loses access.",
+            safe(&short_name)
+        ),
+    };
+    for p in &no_key {
+        eprintln!(
+            "  {p} has no encryption key, so can't read {} until they add one",
+            safe(&short_name)
+        );
+    }
+    if !ctx.confirm(&question)? {
+        return Err(crate::errors::cancelled());
+    }
+    let before = s.balance().await;
+    let written = match action {
+        // the audience changes, the people do not: a letter of the current generation to the
+        // signer records it
+        Reletter::Nothing => {
+            let mine: std::collections::BTreeSet<String> = [me.clone()].into();
+            forge_core::narrow::write_letter(
+                &svc,
+                &s.repo,
+                &full,
+                b.keys().to_vec(),
+                audience.clone(),
+                &mine,
+            )
+            .await?
+        }
+        _ => forge_core::narrow::reletter(&svc, &s.repo, &b, &audience, &now)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("nothing was sent"))?,
+    };
+    if let Some(c) = cwd
+        .as_deref()
+        .filter(|c| git::config_get(c, &local_key).is_some())
+    {
+        set_narrower(c, &short_name, &audience)?;
+    }
+    let spent = s.spent_since(before).await;
+    let price = ctx.usd_price();
+    ctx.emit(
+        json!({
+            "branch": short_name,
+            "status": "changed",
+            "audienceLabel": label,
+            "to": forge_core::narrow::spec(&audience),
+            "sentTo": written.to,
+            "noKey": written.skipped,
+            "cost": crate::fmt::cost_json(spent, price),
+        }),
+        || {
+            println!(
+                "{} is for {label} · its key went to {} {} · {}",
+                safe(&short_name),
+                written.to.len(),
+                people_word(written.to.len()),
+                crate::fmt::cost_line(spent, price)
+            );
+        },
+    );
+    Ok(())
+}
+
+/// A branch for fewer people the signer does not hold the key of (or no such branch).
+fn no_access(name: &str) -> UserError {
+    UserError::new(
+        codes::USAGE,
+        format!("{}: no branch you have access to has this name", safe(name)),
+    )
+    .cause("it doesn't exist, or it is for fewer people and you are not one of them")
+    .fix("`dg branch` lists the branches you can see")
 }
 
 /// Record `audience` for branch `b` in the clone at `cwd` (D12's local intent).
