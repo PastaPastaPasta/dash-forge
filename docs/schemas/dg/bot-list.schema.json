@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/bot-list.schema.json",
   "title": "dg bot list --json",
-  "description": "Each bot's current access to a repository, as everyone reads it.",
+  "description": "Each bot's current access to a repository, as everyone reads it, with its push access.",
   "type": "object",
   "properties": {
     "schemaVersion": {
@@ -34,28 +34,42 @@
             "description": "What the bot may do: post, postMembersOnly, readOnRequest, ciMembersBranches (and abilities a later version adds)."
           },
           "askers": {
-            "type": "string",
-            "enum": [
-              "writers",
-              "maintainers"
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "writers",
+                  "maintainers"
+                ]
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "threads": {
             "anyOf": [
               {
-                "type": "string",
-                "enum": [
-                  "all"
-                ]
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "all"
+                    ]
+                  },
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "integer"
+                    }
+                  }
+                ],
+                "description": "\"all\", or the issue and pull request numbers it may be asked about."
               },
               {
-                "type": "array",
-                "items": {
-                  "type": "integer"
-                }
+                "type": "null"
               }
-            ],
-            "description": "\"all\", or the issue and pull request numbers it may be asked about."
+            ]
           },
           "processor": {
             "type": [
@@ -73,31 +87,159 @@
             "type": "boolean"
           },
           "note": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "by": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "at": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "line": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "notice": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "push": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "suspended": {
+                    "type": "boolean"
+                  },
+                  "policy": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "fastForwardOnly": {
+                            "type": "boolean"
+                          },
+                          "deleteOwnOnly": {
+                            "type": "boolean"
+                          },
+                          "openPrNotPush": {
+                            "type": "boolean"
+                          }
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "The notice's push rules."
+                  },
+                  "grants": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "grant": {
+                          "type": "string"
+                        },
+                        "prefix": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "scope": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "until": {
+                          "type": "integer"
+                        },
+                        "by": {
+                          "type": "string"
+                        },
+                        "at": {
+                          "type": "integer"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "usable",
+                            "stale",
+                            "expired",
+                            "granterGone",
+                            "notABot",
+                            "olderThanBotRow"
+                          ]
+                        },
+                        "inNotice": {
+                          "type": "boolean"
+                        },
+                        "renewDue": {
+                          "type": "boolean"
+                        },
+                        "branchRef": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "description": "An exact grant's branch, when this reader holds its key and the grant names its current key."
+                        },
+                        "people": {
+                          "anyOf": [
+                            {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "Who that branch is for now, bots left out."
+                        }
+                      },
+                      "required": [
+                        "grant",
+                        "until",
+                        "by",
+                        "at",
+                        "status"
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "suspended",
+                  "grants"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The bot's push access (null where the contract has no push grants)."
           }
         },
         "required": [
           "bot",
           "may",
-          "askers",
-          "threads",
-          "live",
-          "by",
-          "at",
-          "line",
-          "notice"
+          "live"
         ]
       }
     }

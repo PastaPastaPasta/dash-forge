@@ -27,7 +27,10 @@ The exit code says which schema applies: 0, the command's own; anything else, th
 | `dg bot jobs` | [`bot-jobs.schema.json`](dg/bot-jobs.schema.json) |
 | `dg bot list` | [`bot-list.schema.json`](dg/bot-list.schema.json) |
 | `dg bot read` | [`bot-read.schema.json`](dg/bot-read.schema.json) |
+| `dg bot renew` | [`bot-renew.schema.json`](dg/bot-renew.schema.json) |
+| `dg bot resume` | [`bot-resume.schema.json`](dg/bot-resume.schema.json) |
 | `dg bot revoke` | [`bot-revoke.schema.json`](dg/bot-revoke.schema.json) |
+| `dg bot suspend` | [`bot-suspend.schema.json`](dg/bot-suspend.schema.json) |
 | `dg branch audience` | [`branch-audience.schema.json`](dg/branch-audience.schema.json) |
 | `dg branch cleanup` | [`branch-cleanup.schema.json`](dg/branch-cleanup.schema.json) |
 | `dg branch list` | [`branch-list.schema.json`](dg/branch-list.schema.json) |
