@@ -387,8 +387,8 @@ async fn preflight(
     } else {
         let mut picked = Vec::new();
         for r in &a.refs {
-            let full = full_ref_any(r);
-            match out.all_refs.iter().find(|(n, _)| *n == full) {
+            let names = candidates(r);
+            match out.all_refs.iter().find(|(n, _)| names.contains(n)) {
                 Some(found) => picked.push(found.clone()),
                 None => {
                     return Err(crate::errors::not_found(
@@ -481,12 +481,12 @@ async fn forced_updates(s: &Session, psvc: &RepoService<'_>, private: &RepoRef) 
     Ok(n)
 }
 
-/// `refs/heads/x` for `x`, a tag's full name for `refs/tags/x` or `v1` when only a tag has it.
-fn full_ref_any(r: &str) -> String {
+/// The full names `r` may mean: itself when it is one, else the branch, then the tag.
+fn candidates(r: &str) -> Vec<String> {
     if r.starts_with("refs/") {
-        r.to_string()
+        vec![r.to_string()]
     } else {
-        git::full_ref(r)
+        vec![git::full_ref(r), format!("refs/tags/{r}")]
     }
 }
 
