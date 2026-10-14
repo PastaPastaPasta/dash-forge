@@ -25,7 +25,25 @@
       ]
     },
     "manifestError": {},
-    "manifestProblems": {}
+    "manifestProblems": {},
+    "membersOnly": {
+      "type": "object",
+      "properties": {
+        "onPlatform": {
+          "type": "integer"
+        },
+        "notServedClaimed": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "onPlatform",
+        "notServedClaimed"
+      ]
+    }
   },
   "required": [
     "schemaVersion",

@@ -1638,6 +1638,12 @@ impl<'a> RepoService<'a> {
     /// `heads[0]`, as `git-remote-dash` lists it). A private repository is refused (E207): its
     /// ref names are sealed, and a mirror of one would need a member's key.
     pub async fn read_ref_records(&self, repo: &RepoRef) -> Result<Vec<RefRecord>> {
+        Ok(self.read_public_refs(repo).await?.records)
+    }
+
+    /// [`Self::read_ref_records`] with how many members-only branches the same read shows:
+    /// what a mirror serves and what it says it leaves out (mixed-visibility DESIGN §7).
+    pub async fn read_public_refs(&self, repo: &RepoRef) -> Result<PublicRefs> {
         repo.require_public("serving a mirror")?;
         let (scope, contract) = self.readable(repo).await?;
         let state = crate::refs::read_git_state(
@@ -1647,7 +1653,7 @@ impl<'a> RepoService<'a> {
             crate::history::Freshness::Now,
         )
         .await?;
-        Ok(ref_records(&state.ref_histories(), &state.config_history()))
+        Ok(public_refs_of(&state))
     }
 
     /// The live refs of [`Self::read_ref_records`], by name.
@@ -4052,6 +4058,27 @@ pub struct RefRecord {
     /// `$createdAt` (ms) of the newest valid update, a deletion included: when the ref last
     /// changed.
     pub changed_at: u64,
+}
+
+/// A public repository's public refs and how many members-only ones it leaves out
+/// ([`RepoService::read_public_refs`]).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PublicRefs {
+    /// Every public ref ([`ref_records`]): the plaintext updates alone.
+    pub records: Vec<RefRecord>,
+    /// How many members-only ref names the history shows (distinct name hashes of its sealed
+    /// ref updates, [`crate::refs::members_only_ref_count`]): an upper bound, since one branch
+    /// has one hash per key epoch and a deleted one still counts. Names are never known here.
+    pub members_only_refs: usize,
+}
+
+/// [`PublicRefs`] of `state`.
+#[must_use]
+pub fn public_refs_of(state: &crate::refs::GitState) -> PublicRefs {
+    PublicRefs {
+        records: ref_records(&state.ref_histories(), &state.config_history()),
+        members_only_refs: crate::refs::members_only_ref_count(state).1,
+    }
 }
 
 /// Fold every ref's history into [`RefRecord`]s, by name. A ref with no valid update (only
