@@ -1,0 +1,23 @@
+{
+  "name": "content_bot_post__sakura",
+  "description": "A bot's members-only post (v0x05): aud 1 and mRole 4. (sakura contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "content",
+    "type": "comment",
+    "shape": {
+      "aud": false,
+      "mRole": false
+    },
+    "doc": {
+      "enc": "050000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "asMember": true
+    },
+    "role": "bot"
+  },
+  "expected": {
+    "aud": null,
+    "mRole": null
+  }
+}

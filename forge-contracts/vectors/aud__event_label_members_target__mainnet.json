@@ -1,0 +1,23 @@
+{
+  "name": "event_label_members_target__mainnet",
+  "description": "A label on a members-only issue: sealed. (mainnet contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "event",
+    "type": "event",
+    "shape": {
+      "tAud": true,
+      "authorEnc": true
+    },
+    "target": {
+      "enc": "030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "aud": 1
+    },
+    "value": true
+  },
+  "expected": {
+    "tAud": 1,
+    "value": "sealed"
+  }
+}

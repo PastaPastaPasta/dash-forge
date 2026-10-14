@@ -1,0 +1,22 @@
+{
+  "name": "event_resolve_members_target__sakura",
+  "description": "An author's valueless event on a members-only PR. (sakura contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "event",
+    "type": "authorEvent",
+    "shape": {
+      "tAud": false,
+      "authorEnc": false
+    },
+    "target": {
+      "enc": "030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "value": false
+  },
+  "expected": {
+    "tAud": null,
+    "value": "none"
+  }
+}

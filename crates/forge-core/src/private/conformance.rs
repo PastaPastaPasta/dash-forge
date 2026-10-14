@@ -1514,7 +1514,10 @@ fn a_reseal_edit_is_the_create_transform() {
             continue; // tooLarge: nothing sealed
         };
         let i: CollabSealIn = input(&v);
-        if i.doc_type == super::DocKind::Event {
+        if matches!(
+            i.doc_type,
+            super::DocKind::Event | super::DocKind::AuthorEvent
+        ) {
             continue; // events are never edited
         }
         let repo_id = h32(&i.repo_id);

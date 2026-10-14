@@ -1,0 +1,23 @@
+{
+  "name": "content_members_issue_maintainer__sakura",
+  "description": "A maintainer's members-only issue: aud 1, no mRole. (sakura contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "content",
+    "type": "issue",
+    "shape": {
+      "aud": false,
+      "mRole": false
+    },
+    "doc": {
+      "enc": "030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "asMember": true
+    },
+    "role": "maintainer"
+  },
+  "expected": {
+    "aud": null,
+    "mRole": null
+  }
+}

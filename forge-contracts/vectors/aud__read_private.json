@@ -1,0 +1,15 @@
+{
+  "name": "read_private",
+  "description": "A private repo's v0x01 with aud 1.",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "read",
+    "type": "comment",
+    "doc": {
+      "enc": "0100000000000000000000000000000000000000000000000000000000",
+      "aud": 1
+    }
+  },
+  "expected": "ok"
+}

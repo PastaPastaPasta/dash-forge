@@ -2051,7 +2051,15 @@ impl<'a> RepoService<'a> {
     ) -> Result<String> {
         let (scope, contract) = self.writable(repo).await?;
         let mut props = manifest.props(&scope)?;
-        crate::members::stamp_claimed_role(&contract, DOC_PACK_MANIFEST, &mut props, 1);
+        // a maintainer-only kind claims `r = 0` where the contract admits it (mainnet C3: only
+        // the maintainer operand passes it); everything else the writer's 1
+        let shape = crate::rules::aud::Shape {
+            maint_kinds: contract.property_minimum(DOC_PACK_MANIFEST, crate::members::CLAIMED_ROLE)
+                == Some(0),
+            ..crate::rules::aud::Shape::default()
+        };
+        let r = crate::rules::aud::manifest_r(shape, manifest.kind, 1);
+        crate::members::stamp_claimed_role(&contract, DOC_PACK_MANIFEST, &mut props, r);
         match self
             .doc_engine()?
             .create_document(&contract, DOC_PACK_MANIFEST, props)

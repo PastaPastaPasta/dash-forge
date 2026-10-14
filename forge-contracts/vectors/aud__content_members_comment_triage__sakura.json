@@ -1,0 +1,23 @@
+{
+  "name": "content_members_comment_triage__sakura",
+  "description": "Triage's members-only comment: mRole 2. (sakura contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "content",
+    "type": "comment",
+    "shape": {
+      "aud": false,
+      "mRole": false
+    },
+    "doc": {
+      "enc": "030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "asMember": true
+    },
+    "role": "triage"
+  },
+  "expected": {
+    "aud": null,
+    "mRole": null
+  }
+}

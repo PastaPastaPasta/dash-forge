@@ -140,7 +140,7 @@ impl Collab<'_> {
             );
         }
         let opened = self.open_own(repo, kind, &stored).await?;
-        let changes = planned_changes(kind, opened)?;
+        let changes = planned_changes(kind, opened, self.settable_once(repo, kind).await?)?;
         let review_patch = if kind == DocKind::Review {
             id_field(&stored, "patchId")
         } else {
@@ -217,6 +217,16 @@ impl Collab<'_> {
         ))
     }
 
+    /// Whether the contract lets the replace that makes a `kind` post public set the sealed
+    /// fields a public one cannot otherwise gain (`comment.path`, a PR's branch names: mainnet
+    /// L1, which declares `aud`), so they are kept rather than lost.
+    pub(super) async fn settable_once(&self, repo: &RepoRef, kind: DocKind) -> Result<bool> {
+        Ok(self
+            .collab_contract(repo)
+            .await?
+            .has_property(kind.type_name(), super::AUD))
+    }
+
     /// Make the planned post public, with `body` as the text its body field takes (a long
     /// text's public field from `long_body`, or the planned text). An issue, PR or comment is
     /// replaced, guarded by the revision the plan read; a review gets its attached public
@@ -243,6 +253,8 @@ impl Collab<'_> {
         for field in self.dead_references(repo, &collab, &plan.stored).await? {
             changes.insert(field.to_string(), None);
         }
+        self.restate_content_fields(repo, plan.kind.type_name(), &plan.stored, &mut changes)
+            .await?;
         self.engine()?
             .replace_document_guarded(
                 &collab,
@@ -399,7 +411,7 @@ impl Collab<'_> {
 
 /// The replace (for a review, the text its attached comment carries) that makes the opened
 /// `kind` post public, or why it cannot be.
-fn planned_changes(kind: DocKind, opened: Fields) -> Result<MadePublic> {
+fn planned_changes(kind: DocKind, opened: Fields, settable_once: bool) -> Result<MadePublic> {
     if kind == DocKind::Review {
         let body = opened
             .body
@@ -417,7 +429,7 @@ fn planned_changes(kind: DocKind, opened: Fields) -> Result<MadePublic> {
     }
     let ck = content_kind_of(kind)
         .ok_or_else(|| refused("this can't be made public", "it is not a post"))?;
-    make_public_changes(ck, &opened).map_err(|e| match e {
+    make_public_changes(ck, &opened, settable_once).map_err(|e| match e {
         MakePublicRefusal::Imported => refused(
             "this post was imported, and its original author's name can't be made public",
             "published without it, the words would read as yours",

@@ -1,0 +1,30 @@
+{
+  "name": "edit_replace_patch_keeps_branch_names",
+  "description": "Where the branch names are settable once (mainnet L1), a made-public PR keeps them.",
+  "case": "make_public",
+  "rules": "v2",
+  "input": {
+    "op": "replace",
+    "kind": "patch",
+    "opened": {
+      "title": "Fix",
+      "body": "b",
+      "baseRefName": "main",
+      "sourceRefName": "fix"
+    },
+    "settableOnce": true
+  },
+  "expected": {
+    "set": {
+      "baseRefName": "main",
+      "body": "b",
+      "sourceRefName": "fix",
+      "title": "Fix"
+    },
+    "remove": [
+      "enc",
+      "epoch"
+    ],
+    "lost": []
+  }
+}

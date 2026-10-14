@@ -404,6 +404,9 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, no_resave: b
     // holds only the other document type is refused before anything is written, naming their
     // access and the `--role` that removes it (the default `--role writer` never removes a
     // maintainer).
+    if let Some(e) = forge_core::members::owner_row_refusal(handle, member, role) {
+        return Err(e.into());
+    }
     let held = MemberReader::new(client).roles_of(handle, member).await?;
     let held_roles: Vec<Role> = held.iter().map(|m| m.role).collect();
     if let Some(e) = wrong_role_refusal(&handle.display(), member, role, &held_roles) {

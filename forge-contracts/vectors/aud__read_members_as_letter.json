@@ -1,0 +1,15 @@
+{
+  "name": "read_members_as_letter",
+  "description": "aud 2 on members-only content is malformed.",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "read",
+    "type": "comment",
+    "doc": {
+      "enc": "030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "aud": 2
+    }
+  },
+  "expected": "malformed"
+}

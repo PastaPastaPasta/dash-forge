@@ -1076,6 +1076,21 @@ fn from_platform_text(msg: &str, ctx: &ErrorContext<'_>) -> Option<UserError> {
     if let Some((document_type, rule)) = violated_rule(msg) {
         return Some(rule_refused(ctx, &document_type, &rule, &one_line(msg)));
     }
+    // 40147 DocumentDeleteConstraintViolated (mainnet R-08, R-09): a delete a rule keeps.
+    if let Some((document_type, rule)) = violated_delete_rule(msg) {
+        let u = UserError::new(
+            codes::REJECTED,
+            ctx.headline(&format!("consensus refused it by the rule {rule:?}")),
+        );
+        return Some(match rule_explanation(&document_type, &rule) {
+            Some(why) => u
+                .cause(format!("{why} (40147: {document_type} rule {rule})"))
+                .note("refused before execution: nothing was deleted"),
+            None => u
+                .cause(one_line(msg))
+                .note("refused before execution: nothing was deleted"),
+        });
+    }
     // Before the network rule: Drive's refusal of a read travels as a gRPC status ("transport
     // error"), but it is an answer. Here the clauses are dg's own (`dg api query` words its own
     // E201), so it is not the user's to fix.
@@ -1378,6 +1393,18 @@ fn violated_rule(msg: &str) -> Option<(String, String)> {
     Some((quoted("document of type \"").unwrap_or_default(), rule))
 }
 
+/// `(document type, rule)` of a 40147 message: `Document … of type "maintainer" can not be
+/// deleted: it breaks its deleteConstraints rule "ownerRowStays": …`.
+fn violated_delete_rule(msg: &str) -> Option<(String, String)> {
+    let msg = msg.replace("\\\"", "\"");
+    let quoted = |after: &str| -> Option<String> {
+        let rest = &msg[msg.find(after)? + after.len()..];
+        Some(rest[..rest.find('"')?].to_string())
+    };
+    let rule = quoted("breaks its deleteConstraints rule \"")?;
+    Some((quoted(" of type \"").unwrap_or_default(), rule))
+}
+
 /// What each RC1 `propertyConstraints` rule asks for, in a user's words, by rule name (the keys
 /// of the generated contracts; the tests keep this table and the contracts equal). Where a rule
 /// of the same name asks something else on one type, [`RULE_EXPLANATIONS_BY_TYPE`] says it.
@@ -1449,6 +1476,28 @@ const RULE_EXPLANATIONS: &[(&str, &str)] = &[
     ),
 ];
 
+/// The rules only the mainnet registration has (`build.py --mainnet`, DESIGN rev 4.2 §8.3), in
+/// a user's words: a client on a devnet re-registered with them meets them first.
+const MAINNET_RULE_EXPLANATIONS: &[(&str, &str)] = &[
+    ("audMember", "members-only content (aud 1) is a member's: it needs asMember"),
+    ("encFraming", "the encryption format does not fit who the post is for (members-only, a message to specific people, or a public repository)"),
+    ("authorNoVerdict", "you can't approve or request changes on your own pull request; post a comment instead"),
+    ("tAudSealed", "an event on members-only content carries its value encrypted"),
+    ("retargetValue", "a retarget names its new base (in plaintext, or encrypted on members-only content), and only a retarget carries a value"),
+    ("sealedNoText", "a members-only or private check run carries no summary, links, artifacts or external id"),
+    ("maintKinds", "make-public bundles, environment snapshots and access notices are written by a maintainer (r 0)"),
+    ("botPack", "a bot writes only packs, browse indexes and long texts, and never replaces others' packs"),
+    ("botChunk", "a chunk is written by a maintainer, a writer or a bot with push access"),
+    ("botGrant", "a bot pushes only under a maintainer's push grant (an exact members-only branch, or a public branch prefix)"),
+    ("grantPrefix", "the branch is outside the prefix the push grant allows"),
+    ("ttl90", "a push grant ends after now and at most 90 days from now"),
+    ("oneScope", "a push grant names one members-only branch or one public prefix, not both"),
+    ("targetOnPublish", "a public release names the commit its tag points at, and an encrypted one names none"),
+    // deleteConstraints (40147)
+    ("ownerRowStays", "the owner's own Maintain access can't be removed"),
+    ("keepVerdicts", "an approval or a change request stays on record; dismiss it instead"),
+];
+
 /// The rules whose meaning on one document type differs from [`RULE_EXPLANATIONS`]' entry.
 const RULE_EXPLANATIONS_BY_TYPE: &[(&str, &str, &str)] = &[
     (
@@ -1469,7 +1518,7 @@ const RULE_EXPLANATIONS_BY_TYPE: &[(&str, &str, &str)] = &[
 ];
 
 /// What `rule` asks of a `document_type`: its entry in [`RULE_EXPLANATIONS_BY_TYPE`], else in
-/// [`RULE_EXPLANATIONS`].
+/// [`RULE_EXPLANATIONS`], else in [`MAINNET_RULE_EXPLANATIONS`].
 fn rule_explanation(document_type: &str, rule: &str) -> Option<&'static str> {
     RULE_EXPLANATIONS_BY_TYPE
         .iter()
@@ -1477,6 +1526,7 @@ fn rule_explanation(document_type: &str, rule: &str) -> Option<&'static str> {
         .or_else(|| {
             RULE_EXPLANATIONS
                 .iter()
+                .chain(MAINNET_RULE_EXPLANATIONS)
                 .find_map(|(name, why)| (*name == rule).then_some(*why))
         })
 }
@@ -3062,6 +3112,65 @@ mod tests {
                 "{ty} has no rule {rule}"
             );
         }
+    }
+
+    /// Every rule of the mainnet build (`build.py --mainnet`: `propertyConstraints` and
+    /// `deleteConstraints`) has an explanation, and every mainnet-only entry names one of its
+    /// rules.
+    #[test]
+    fn every_mainnet_rule_has_an_explanation() {
+        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../forge-contracts");
+        let dir = tempfile::tempdir().expect("temp dir");
+        let out = std::process::Command::new("python3")
+            .arg(format!("{root}/schema/build.py"))
+            .args(["--mainnet", "--out"])
+            .arg(dir.path())
+            .output()
+            .expect("python3 runs build.py");
+        assert!(
+            out.status.success(),
+            "build.py --mainnet: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let mut names = std::collections::BTreeSet::new();
+        for name in [
+            "forge-core",
+            "forge-collab",
+            "forge-community",
+            "forge-meta",
+        ] {
+            let text = std::fs::read_to_string(dir.path().join(format!("{name}.json"))).unwrap();
+            let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+            let schemas = json.get("documentSchemas").unwrap_or(&json);
+            for (ty, schema) in schemas.as_object().unwrap() {
+                for key in ["propertyConstraints", "deleteConstraints"] {
+                    for rule in schema[key]
+                        .as_object()
+                        .into_iter()
+                        .flat_map(serde_json::Map::keys)
+                    {
+                        assert!(
+                            rule_explanation(ty, rule).is_some(),
+                            "{ty}: mainnet rule {rule} has no explanation"
+                        );
+                        names.insert(rule.clone());
+                    }
+                }
+            }
+        }
+        for (rule, _) in MAINNET_RULE_EXPLANATIONS {
+            assert!(names.contains(*rule), "no mainnet rule {rule}");
+        }
+    }
+
+    #[test]
+    fn a_delete_rule_refusal_names_its_rule() {
+        let msg = "Document 9x of type \"maintainer\" can not be deleted: it breaks its \
+                   deleteConstraints rule \"ownerRowStays\": it does not hold";
+        assert_eq!(
+            violated_delete_rule(msg),
+            Some(("maintainer".into(), "ownerRowStays".into()))
+        );
     }
 
     #[test]

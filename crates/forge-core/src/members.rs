@@ -251,6 +251,23 @@ pub fn verdict_refusal(
     )
 }
 
+/// Refuse removing the repo owner's own maintainer document: the owner always keeps Maintain
+/// access (mainnet R-08 refuses the delete at consensus, 40147 `ownerRowStays`). Checked before
+/// any write.
+pub fn owner_row_refusal(repo: &RepoRef, member: &str, role: Role) -> Option<UserError> {
+    (role == Role::Maintainer && member == repo.owner_id()).then(|| {
+        UserError::new(
+            codes::USAGE,
+            "The owner's own Maintain access can't be removed.",
+        )
+        .cause(format!(
+            "{} is owned by {member}, who always keeps it",
+            repo.display()
+        ))
+        .note("checked before anything was signed; nothing was written or paid")
+    })
+}
+
 /// Refuse a grant of `role` to `member` the clients do not make: the repo owner giving itself a
 /// triage or reader `writer` document (the owner already holds every right through its
 /// ownership and its maintainer document; forge-web refuses it too). A reader is allowed on a
@@ -716,6 +733,9 @@ impl<'a> MemberService<'a> {
     /// revoking any of them deletes it, whichever it grants.
     pub async fn revoke(&self, repo: &RepoRef, member: &str, role: Role) -> Result<Option<Role>> {
         self.require_owner(repo)?;
+        if let Some(e) = owner_row_refusal(repo, member, role) {
+            return Err(e.into());
+        }
         let Some(existing) = MemberReader::new(self.client)
             .role_doc(repo, member, role)
             .await?

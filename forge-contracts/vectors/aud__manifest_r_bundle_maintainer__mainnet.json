@@ -1,0 +1,15 @@
+{
+  "name": "manifest_r_bundle_maintainer__mainnet",
+  "description": "A maintainer's make-public bundle (kind 7). (mainnet contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "manifestR",
+    "shape": {
+      "maintKinds": true
+    },
+    "kind": 7,
+    "claimed": 1
+  },
+  "expected": 0
+}

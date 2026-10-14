@@ -1,0 +1,22 @@
+{
+  "name": "content_unknown_version_refused__sakura",
+  "description": "An envelope version this client does not write is refused. (sakura contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "content",
+    "type": "comment",
+    "shape": {
+      "aud": false,
+      "mRole": false
+    },
+    "doc": {
+      "enc": "06000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "asMember": true
+    },
+    "role": "writer"
+  },
+  "expected": {
+    "error": "unknownEnc"
+  }
+}

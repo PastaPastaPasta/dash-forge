@@ -1,0 +1,23 @@
+{
+  "name": "content_private_review_bodyless_maintainer__sakura",
+  "description": "A private repo's bodyless approval is sealed too (L1): aud 1. (sakura contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "content",
+    "type": "review",
+    "shape": {
+      "aud": false,
+      "mRole": false
+    },
+    "doc": {
+      "enc": "0100000000000000000000000000000000000000000000000000000000",
+      "asMember": true
+    },
+    "role": "maintainer"
+  },
+  "expected": {
+    "aud": null,
+    "mRole": null
+  }
+}

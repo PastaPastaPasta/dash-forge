@@ -11,8 +11,10 @@ Every vector it writes has case `make_public` and an `input.op` naming what it c
   and refuse every other before signing.
 - `replace`: the replace that makes a sealed document public, from its opened content: the plaintext
   fields set, `enc` and `epoch` removed, and the sealed fields the live contracts cannot take
-  (`comment.path` is immutable, so an inline comment loses its file name). Sealed import provenance
-  is refused (`imported` is immutable: the words would read as the importer's).
+  (`comment.path` is immutable, so an inline comment loses its file name). Where the contract makes
+  them settable once, in the replace that drops `aud` (`input.settableOnce`, mainnet L1: §4.11), the
+  path and a PR's branch names are set instead of lost. Sealed import provenance is refused
+  (`imported` is immutable: the words would read as the importer's).
 - `reviewText`: which public comment carries each sealed review's text (a review is immutable, so
   its author attaches a public comment: `reviewId`, no path, line, reply or commit; the review's
   author only; the newest wins).
@@ -91,14 +93,19 @@ def blank(s):
     return all(c in WHITE_SPACE for c in s)
 
 
-def make_public_changes(kind, opened):
+def make_public_changes(kind, opened, settable_once=False):
     if "importedAuthor" in opened or "importedUrl" in opened:
         return dict(error="imported")
     text = lambda f: opened[f] if isinstance(opened.get(f), str) and not blank(opened[f]) else None
     out = dict(set={}, remove=["enc", "epoch"], lost=[])
     if kind in ("issue", "patch"):
         if kind == "patch":
-            out["lost"] += [f for f in ("baseRefName", "sourceRefName") if f in opened]
+            for f in ("baseRefName", "sourceRefName"):
+                if f in opened:
+                    if settable_once:
+                        out["set"][f] = opened[f]
+                    else:
+                        out["lost"].append(f)
         if text("title") is None:
             return dict(error="empty")
         out["set"]["title"] = text("title")
@@ -106,7 +113,10 @@ def make_public_changes(kind, opened):
             out["set"]["body"] = text("body")
     elif kind == "comment":
         if "path" in opened:
-            out["lost"].append("path")
+            if settable_once:
+                out["set"]["path"] = opened["path"]
+            else:
+                out["lost"].append("path")
         if text("body") is None:
             return dict(error="empty")
         out["set"]["body"] = text("body")
@@ -206,6 +216,18 @@ def replace_vectors():
     ]
     for name, kind, opened, desc in cases:
         vector(name, desc, dict(op="replace", kind=kind, opened=opened), make_public_changes(kind, opened))
+    settable = [
+        ("edit_replace_inline_comment_keeps_path", "comment", dict(body="nit: rename", path="src/lib.rs"),
+         "Where comment.path is settable once (mainnet L1), the made-public inline comment keeps its file name."),
+        ("edit_replace_patch_keeps_branch_names", "patch",
+         dict(title="Fix", body="b", baseRefName="main", sourceRefName="fix"),
+         "Where the branch names are settable once (mainnet L1), a made-public PR keeps them."),
+        ("edit_replace_comment_settable_once_nothing_to_set", "comment", dict(body="general"),
+         "A general comment has no path to set: the same replace on either contract."),
+    ]
+    for name, kind, opened, desc in settable:
+        vector(name, desc, dict(op="replace", kind=kind, opened=opened, settableOnce=True),
+               make_public_changes(kind, opened, True))
 
 
 def review_text_vectors():
