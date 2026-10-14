@@ -33,9 +33,10 @@ use forge_core::ci::{
     commit_web_url, is_log_url, CheckReport, CheckRuns, Reported, RunnerReader, RunnerService,
 };
 use forge_core::collab::ReleaseAsset;
-use forge_core::private::members_check::CheckKeys;
 use forge_core::keystore::{self, BridgeIdentity};
 use forge_core::platform::identity::{DocTypeKeySpec, FreshKey, KeySpec};
+use forge_core::private::members_check::CheckKeys;
+use forge_core::repo::short_branch_name;
 use forge_core::rules::v2::Visibility;
 use forge_core::storage::policy::git_config_scoped;
 use forge_core::storage::{Profile, StoragePolicy, StorageProfiles};
@@ -935,17 +936,10 @@ struct MembersTarget {
     keys: CheckKeys,
 }
 
-/// `refs/heads/<b>` for a short branch name.
-fn full_branch(b: &str) -> String {
-    if b.starts_with("refs/") {
-        b.to_string()
-    } else {
-        format!("refs/heads/{b}")
-    }
-}
-
-fn short_branch(b: &str) -> &str {
-    b.strip_prefix("refs/heads/").unwrap_or(b)
+/// Whether the checked members-only update `b` introduced `oid`: its real commit, or the blind it
+/// carries (as a PR's head copies it).
+fn introduces(b: &forge_core::refs::UpdateBlind, oid: &str) -> bool {
+    hex::encode(&b.blind) == oid || hex::encode(&b.real) == oid
 }
 
 /// The members-only update of `branch` that introduced `oid` (its real commit, or the blind that
@@ -960,7 +954,7 @@ fn introducing_update<'u>(
             .sealed
             .get(&u.id)?
             .as_ref()
-            .filter(|b| hex::encode(&b.blind) == oid || hex::encode(&b.real) == oid)
+            .filter(|b| introduces(b, oid))
     })
 }
 
@@ -969,7 +963,7 @@ fn introducing_update<'u>(
 /// (its runs carry no text anyway), without a members key, or for a commit no members-only
 /// update of the branch introduced.
 async fn members_target(s: &Session, branch: &str, oid: &str) -> Result<MembersTarget> {
-    let branch = full_branch(branch);
+    let branch = crate::git::full_ref(branch);
     let repo = s.repo.display();
     if s.repo.visibility == Visibility::Private {
         return Err(crate::errors::usage(format!(
@@ -992,7 +986,7 @@ async fn members_target(s: &Session, branch: &str, oid: &str) -> Result<MembersT
             format!(
                 "{} is not a commit pushed to the members-only branch {} of {repo}",
                 &oid[..12.min(oid.len())],
-                crate::fmt::safe(short_branch(&branch))
+                crate::fmt::safe(short_branch_name(&branch))
             ),
         )
         .fix("pass the branch the commit was pushed to, or report a public branch's run without --members-branch")
@@ -1043,6 +1037,7 @@ fn warn_private(a: &ReportArgs, s: &Session, fields: &[&str]) {
     }
 }
 
+#[allow(clippy::too_many_lines)] // one linear flow: checks, members-only target, quote, uploads, write
 async fn report(ctx: &Ctx, a: &ReportArgs) -> Result<()> {
     let summary = match &a.summary_file {
         Some(p) => Some(
@@ -1359,7 +1354,7 @@ fn emit_report(ctx: &Ctx, r: &CheckReport, done: &Reported, o: &Outcome<'_>) {
             if let Some((_, m)) = members {
                 println!(
                     "  members-only ({}): the public sees its status and conclusion only, as {}",
-                    crate::fmt::safe(short_branch(&m.branch)),
+                    crate::fmt::safe(short_branch_name(&m.branch)),
                     r.name
                 );
             }
@@ -1597,9 +1592,7 @@ fn members_commits(updates: &forge_core::refs::MembersUpdates, sha: &str) -> Vec
                 continue;
             };
             let blind = hex::encode(&b.blind);
-            if (blind == sha || hex::encode(&b.real) == sha)
-                && !out.iter().any(|m| m.blind == blind)
-            {
+            if introduces(b, sha) && !out.iter().any(|m| m.blind == blind) {
                 out.push(MembersCommit {
                     branch: branch.clone(),
                     blind,
@@ -1636,10 +1629,15 @@ async fn members_run_log(
 struct CommitRuns {
     reader: Reader,
     runs: Vec<forge_core::collab::v2::CheckRun>,
-    /// Run document id -> (branch, its log opened when it has one this reader could open).
+    /// Run document id -> (branch, the blind it is reported on, its log opened when it has one
+    /// this reader could open).
     members: std::collections::BTreeMap<
         String,
-        (String, Option<forge_core::private::members_check::CheckLog>),
+        (
+            String,
+            String,
+            Option<forge_core::private::members_check::CheckLog>,
+        ),
     >,
 }
 
@@ -1671,7 +1669,10 @@ impl CommitRuns {
                 };
                 for c in theirs {
                     let log = members_run_log(&packs, m, &c).await;
-                    members.insert(c.document_id.clone(), (m.branch.clone(), log));
+                    members.insert(
+                        c.document_id.clone(),
+                        (m.branch.clone(), m.blind.clone(), log),
+                    );
                     if !runs.iter().any(|x| x.document_id == c.document_id) {
                         runs.push(c);
                     }
@@ -1687,23 +1688,17 @@ impl CommitRuns {
     }
 
     /// The name this reader reads for `c`: a members-only run's real name when its log opened.
-    fn name_of(&self, c: &forge_core::collab::v2::CheckRun) -> String {
-        self.members
-            .get(&c.document_id)
-            .and_then(|(_, l)| l.as_ref().map(|l| l.name.clone()))
-            .unwrap_or_else(|| c.name.clone())
+    fn name_of<'a>(&'a self, c: &'a forge_core::collab::v2::CheckRun) -> &'a str {
+        match self.members.get(&c.document_id) {
+            Some((_, _, Some(l))) => &l.name,
+            _ => &c.name,
+        }
     }
 }
 
 /// `dg ci log`: the log of the newest run named `name` on `sha` (by the name this reader reads),
 /// printed or written to `output`.
-async fn log(
-    ctx: &Ctx,
-    repo: &str,
-    sha: &str,
-    name: &str,
-    output: Option<&Path>,
-) -> Result<()> {
+async fn log(ctx: &Ctx, repo: &str, sha: &str, name: &str, output: Option<&Path>) -> Result<()> {
     let sha = sha.to_ascii_lowercase();
     let read = CommitRuns::read(ctx, repo, &sha).await?;
     // the newest run of that name (a public run on the commit and a members-only one may share it)
@@ -1721,40 +1716,40 @@ async fn log(
                     &sha[..12.min(sha.len())]
                 ),
             )
-            .fix(format!("`dg ci status {repo} {sha}` lists the checks reported there"))
+            .fix(format!(
+                "`dg ci status {repo} {sha}` lists the checks reported there"
+            ))
         })?;
-    let bytes = match read.members.get(&run.document_id) {
-        Some((_, Some(l))) => l.log.clone(),
-        Some((_, None)) => {
-            return Err(UserError::new(
+    let bytes =
+        match read.members.get(&run.document_id) {
+            Some((_, _, Some(l))) => l.log.clone(),
+            Some((_, _, None)) => return Err(UserError::new(
                 codes::USAGE,
                 "this members-only run's log could not be downloaded or opened here",
             )
-            .cause("it has no log, its copies are unreachable, or it was not written for this commit")
-            .into())
-        }
-        None => {
-            let (Some(url), Some(want)) = (&run.log_url, &run.log_sha256) else {
-                return Err(UserError::new(codes::USAGE, "this run has no log").into());
-            };
-            forge_core::storage::read::PackReader::from_user_config()
-                .fetch_verified(std::slice::from_ref(url), want, None, None)
-                .await
-                .context("downloading and checking the log")?
-        }
-    };
-    match output {
-        Some(p) => {
-            std::fs::write(p, &bytes).with_context(|| format!("writing {}", p.display()))?;
-            ctx.emit(
-                json!({ "name": name, "bytes": bytes.len(), "output": p.display().to_string() }),
-                || println!("✓ {} bytes written to {}", bytes.len(), p.display()),
-            );
-        }
-        None => {
-            use std::io::Write as _;
-            std::io::stdout().write_all(&bytes)?;
-        }
+            .cause(
+                "it has no log, its copies are unreachable, or it was not written for this commit",
+            )
+            .into()),
+            None => {
+                let (Some(url), Some(want)) = (&run.log_url, &run.log_sha256) else {
+                    return Err(UserError::new(codes::USAGE, "this run has no log").into());
+                };
+                forge_core::storage::read::PackReader::from_user_config()
+                    .fetch_verified(std::slice::from_ref(url), want, None, None)
+                    .await
+                    .context("downloading and checking the log")?
+            }
+        };
+    if let Some(p) = output {
+        std::fs::write(p, &bytes).with_context(|| format!("writing {}", p.display()))?;
+        ctx.emit(
+            json!({ "name": name, "bytes": bytes.len(), "output": p.display().to_string() }),
+            || println!("✓ {} bytes written to {}", bytes.len(), p.display()),
+        );
+    } else {
+        use std::io::Write as _;
+        std::io::stdout().write_all(&bytes)?;
     }
     Ok(())
 }
@@ -1779,11 +1774,13 @@ async fn refs(ctx: &Ctx, repo: &str) -> Result<()> {
                 .best_role(&r.repo, &me)
                 .await?;
             if role.is_some() && svc.members_only_ref_count(&r.repo).await?.0 > 0 {
-                return Err(forge_core::keyring::no_members_encryption_key_held(&format!(
-                    "reading {}'s members-only branches",
-                    r.repo.display()
-                ))
-                .into());
+                return Err(
+                    forge_core::keyring::no_members_encryption_key_held(&format!(
+                        "reading {}'s members-only branches",
+                        r.repo.display()
+                    ))
+                    .into(),
+                );
             }
         }
     }
@@ -1793,7 +1790,11 @@ async fn refs(ctx: &Ctx, repo: &str) -> Result<()> {
             .iter()
             .filter_map(|x| {
                 let tip = forge_core::rules::tip_of(&x.state)?;
-                Some((x.name.clone(), tip, if x.members_only { "members" } else { "public" }))
+                Some((
+                    x.name.clone(),
+                    tip,
+                    if x.members_only { "members" } else { "public" },
+                ))
             })
             .collect(),
         None => svc
@@ -1827,7 +1828,6 @@ async fn status(ctx: &Ctx, repo: &str, sha: &str) -> Result<()> {
     let read = CommitRuns::read(ctx, repo, &sha).await?;
     let (r, runs) = (&read.reader, &read.runs);
     let members_runs = &read.members;
-    let shown = |c: &forge_core::collab::v2::CheckRun| read.name_of(c);
     let url = commit_web_url(&r.repo, &sha);
     // The newest run per name is listed; when the branch policy pins that check to another
     // source, the run is shown but not counted (the merge judges only the pinned source's).
@@ -1850,14 +1850,18 @@ async fn status(ctx: &Ctx, repo: &str, sha: &str) -> Result<()> {
             if let (Some(o), Some(to)) = (v.as_object_mut(), pinned_to(c)) {
                 o.insert("notCountedPinnedTo".into(), json!(to));
             }
-            // a members-only branch's run: what members read (`name` and `headOid` are what
-            // the public sees)
-            if let (Some(o), Some((branch, log))) =
+            // a members-only branch's run: what members read (`name` is what the public sees, on
+            // the blind `headOid` here)
+            if let (Some(o), Some((branch, blind, log))) =
                 (v.as_object_mut(), members_runs.get(&c.document_id))
             {
                 o.insert(
                     "membersOnly".into(),
-                    json!({ "branch": branch, "name": log.as_ref().map(|l| &l.name) }),
+                    json!({
+                        "branch": branch,
+                        "name": log.as_ref().map(|l| &l.name),
+                        "headOid": blind,
+                    }),
                 );
             }
             v
@@ -1884,20 +1888,20 @@ async fn status(ctx: &Ctx, repo: &str, sha: &str) -> Result<()> {
                     String::new()
                 };
                 let members_note = match members_runs.get(&c.document_id) {
-                    Some((branch, Some(_))) => format!(
+                    Some((branch, _, Some(_))) => format!(
                         "  (members-only, {}; the public sees it as {})",
-                        crate::fmt::safe(short_branch(branch)),
+                        crate::fmt::safe(short_branch_name(branch)),
                         c.name
                     ),
-                    Some((branch, None)) => format!(
+                    Some((branch, _, None)) => format!(
                         "  (members-only, {}; its name is in a log this computer couldn't read)",
-                        crate::fmt::safe(short_branch(branch))
+                        crate::fmt::safe(short_branch_name(branch))
                     ),
                     None => String::new(),
                 };
                 println!(
                     "  {:<24} {state}{note}{members_note}",
-                    crate::fmt::safe(&shown(c))
+                    crate::fmt::safe(read.name_of(c))
                 );
                 for x in &c.artifacts {
                     println!(

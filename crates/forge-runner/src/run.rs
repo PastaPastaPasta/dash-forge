@@ -495,7 +495,10 @@ pub fn ref_audiences_of(v: &serde_json::Value) -> Result<RefAudiences> {
         };
         out.refs.insert(
             name.to_string(),
-            (tip.to_ascii_lowercase(), r["audience"].as_str() == Some("members")),
+            (
+                tip.to_ascii_lowercase(),
+                r["audience"].as_str() == Some("members"),
+            ),
         );
     }
     Ok(out)
@@ -554,6 +557,10 @@ pub fn members_run(repo: &RepoConfig, trig: &Trigger, refs: &RefAudiences) -> Me
                 );
             }
             match refs.refs.get(&p.refname) {
+                // schedules run the default branch, which is never members-only (E809)
+                Some((_, true)) if matches!(trig, Trigger::Schedule { .. }) => {
+                    MembersRun::Skip("a schedule on a members-only branch".into())
+                }
                 Some((_, true)) if repo.members_branches => MembersRun::Branch {
                     branch: p.refname.clone(),
                     commit: p.oid.clone(),
@@ -693,18 +700,7 @@ pub fn repo_dir(cfg: &Config, repo: &RepoConfig) -> PathBuf {
 /// partial fetches, not shallow ones: E205), so each run fetches only what is new. Returns the
 /// fetched tip.
 fn fetch(cfg: &Config, src: &Source<'_>, refname: &str, dest: &str) -> Result<String> {
-    let git = |args: &[&str]| {
-        let mut c = with_network(Command::new(&cfg.bin.git), cfg);
-        if !src.keyed {
-            c.env_remove("DASH_FORGE_KEY");
-        }
-        c.arg("--git-dir").arg(src.cache).args(args);
-        output(&mut c, &format!("git {}", args.first().unwrap_or(&"")))
-    };
-    if !src.cache.join("HEAD").exists() {
-        std::fs::create_dir_all(src.cache)?;
-        git(&["init", "-q", "--bare"])?;
-    }
+    init_cache(cfg, src)?;
     let spec = format!("+{refname}:{dest}");
     // git follows the tags that point into what it fetched; a fork's tags must never reach a
     // checkout, where they would shadow the repository's own.
@@ -713,8 +709,29 @@ fn fetch(cfg: &Config, src: &Source<'_>, refname: &str, dest: &str) -> Result<St
         args.push("--no-tags");
     }
     args.extend([src.url, spec.as_str()]);
-    git(&args)?;
-    Ok(git(&["rev-parse", dest])?.trim().to_string())
+    cache_git(cfg, src, &args)?;
+    Ok(cache_git(cfg, src, &["rev-parse", dest])?
+        .trim()
+        .to_string())
+}
+
+/// `git` on `src`'s bare cache, with the runner's key only when `src` is [`Source::keyed`].
+fn cache_git(cfg: &Config, src: &Source<'_>, args: &[&str]) -> Result<String> {
+    let mut c = with_network(Command::new(&cfg.bin.git), cfg);
+    if !src.keyed {
+        c.env_remove("DASH_FORGE_KEY");
+    }
+    c.arg("--git-dir").arg(src.cache).args(args);
+    output(&mut c, &format!("git {}", args.first().unwrap_or(&"")))
+}
+
+/// Create `src`'s bare cache when it does not exist yet.
+fn init_cache(cfg: &Config, src: &Source<'_>) -> Result<()> {
+    if !src.cache.join("HEAD").exists() {
+        std::fs::create_dir_all(src.cache)?;
+        cache_git(cfg, src, &["init", "-q", "--bare"])?;
+    }
+    Ok(())
 }
 
 /// Where a fetch reads from and into.
@@ -752,25 +769,20 @@ fn fetch_members(
     oid: &str,
     audiences: &RefAudiences,
 ) -> Result<()> {
-    let git = |args: &[&str]| {
-        let mut c = with_network(Command::new(&cfg.bin.git), cfg);
-        c.arg("--git-dir").arg(src.cache).args(args);
-        output(&mut c, &format!("git {}", args.first().unwrap_or(&"")))
-    };
-    if !src.cache.join("HEAD").exists() {
-        std::fs::create_dir_all(src.cache)?;
-        git(&["init", "-q", "--bare"])?;
-    }
+    init_cache(cfg, src)?;
     let mut specs = vec![format!("+{refname}:refs/forge-runner/fetched")];
-    specs.extend(
-        audiences
-            .public_branches()
-            .map(|r| format!("+{r}:refs/forge-runner/public/{}", r.trim_start_matches("refs/heads/"))),
-    );
+    specs.extend(audiences.public_branches().map(|r| {
+        format!(
+            "+{r}:refs/forge-runner/public/{}",
+            r.trim_start_matches("refs/heads/")
+        )
+    }));
     let mut args = vec!["fetch", "-q", "--no-tags", src.url];
     args.extend(specs.iter().map(String::as_str));
-    git(&args)?;
-    let tip = git(&["rev-parse", "refs/forge-runner/fetched"])?.trim().to_string();
+    cache_git(cfg, src, &args)?;
+    let tip = cache_git(cfg, src, &["rev-parse", "refs/forge-runner/fetched"])?
+        .trim()
+        .to_string();
     if tip != oid {
         bail!("{refname} is at {tip}, not {oid} (it moved); the next poll tries again");
     }
@@ -938,7 +950,11 @@ pub fn scheduled_crons(
 
 /// The repository's default branch (`dg repo view`), short (`main`).
 pub fn default_branch_name(cfg: &Config, repo: &RepoConfig) -> Result<String> {
-    let v = dg_read(cfg, repo, &["repo", "view", &repo.repo, "--skip-security-policy"])?;
+    let v = dg_read(
+        cfg,
+        repo,
+        &["repo", "view", &repo.repo, "--skip-security-policy"],
+    )?;
     v["defaultBranch"]
         .as_str()
         .map(str::to_string)
@@ -1116,33 +1132,30 @@ fn fetch_run(
     audiences: &RefAudiences,
 ) -> Result<Fetched> {
     let fork = matches!(trig, Trigger::Pull { event, .. } if event.pr.is_fork());
+    let members = members_commit.is_some();
     let cache = if fork {
         run_dir.join("fork.git")
-    } else if members_commit.is_some() {
+    } else if members {
         repo_dir(cfg, repo).join("members.git")
     } else {
         repo_dir(cfg, repo).join("cache.git")
     };
     let repo_url = repo.url();
-    let keyed = audiences.private || members_commit.is_some();
+    let keyed = audiences.private || members;
     let own = Source {
         url: &repo_url,
         cache: &cache,
         // a members-only branch's run brings no tags: one could be members-only, another's
-        tags: !fork && members_commit.is_none(),
+        tags: !fork && !members,
         keyed,
     };
     let (changed, base, event) = match trig {
-        Trigger::Push(p) if members_commit.is_some() => {
-            fetch_members(cfg, &own, &p.refname, &p.oid, audiences)?;
-            let changed = p
-                .before
-                .as_deref()
-                .and_then(|b| changed_paths(cfg, &cache, b, &p.oid, false));
-            (changed, None, event_json(&repo.repo, p))
-        }
         Trigger::Push(p) => {
-            fetch_at(cfg, &own, &p.refname, &p.oid)?;
+            if members {
+                fetch_members(cfg, &own, &p.refname, &p.oid, audiences)?;
+            } else {
+                fetch_at(cfg, &own, &p.refname, &p.oid)?;
+            }
             let changed = p
                 .before
                 .as_deref()
@@ -1173,7 +1186,7 @@ fn fetch_run(
             };
             // a members-only PR's head is a blind: git has the real commit behind it
             let commit = members_commit.unwrap_or(&pr.head_oid);
-            if members_commit.is_some() {
+            if members {
                 fetch_members(cfg, &head, source, commit, audiences)?;
             } else {
                 fetch_at(cfg, &head, source, commit)?;
@@ -1186,7 +1199,7 @@ fn fetch_run(
                 .as_deref()
                 .and_then(|b| changed_paths(cfg, &cache, b, commit, true));
             let mut event = pull_event_json(&repo.repo, ev, base.as_deref(), &url, trusted);
-            if members_commit.is_some() {
+            if members {
                 // what the job checks out and reads: the real commit, never the blind
                 event["pull_request"]["head"]["sha"] = json!(commit);
                 if event.get("after").is_some() {
@@ -1230,7 +1243,11 @@ pub fn run(
         MembersRun::Public => (None, key.oid.clone()),
         MembersRun::Branch { branch, commit } => (Some(branch), commit),
         MembersRun::Skip(why) => {
-            eprintln!("forge-runner: {} {} not run: {why}", repo.repo, trig.label());
+            eprintln!(
+                "forge-runner: {} {} not run: {why}",
+                repo.repo,
+                trig.label()
+            );
             return Ok(ran);
         }
         MembersRun::Unknown(why) => bail!("{why}"),
@@ -2599,7 +2616,10 @@ mod tests {
             members_run(off, &push("refs/heads/sec/fix"), &a),
             MembersRun::Skip(w) if w.contains("members_branches = false")
         ));
-        assert_eq!(members_run(off, &push("refs/heads/main"), &a), MembersRun::Public);
+        assert_eq!(
+            members_run(off, &push("refs/heads/main"), &a),
+            MembersRun::Public
+        );
         // a ref `dg ci refs` does not list: never run as public, with or without a members view
         assert!(matches!(
             members_run(on, &push("refs/heads/gone"), &a),
@@ -2614,7 +2634,10 @@ mod tests {
             members_run(off, &push("refs/heads/sec/fix"), &public_only),
             MembersRun::Skip(_)
         ));
-        assert_eq!(members_run(off, &push("refs/heads/main"), &public_only), MembersRun::Public);
+        assert_eq!(
+            members_run(off, &push("refs/heads/main"), &public_only),
+            MembersRun::Public
+        );
         // members_branches with no members view: the identity can't tell them apart, so nothing runs
         assert!(matches!(
             members_run(on, &push("refs/heads/main"), &public_only),
@@ -2627,7 +2650,10 @@ mod tests {
         }))
         .unwrap();
         assert!(private.private);
-        assert_eq!(members_run(off, &push("refs/heads/main"), &private), MembersRun::Public);
+        assert_eq!(
+            members_run(off, &push("refs/heads/main"), &private),
+            MembersRun::Public
+        );
     }
 
     #[test]
@@ -2662,15 +2688,32 @@ mod tests {
         assert!(matches!(members_run(on, &t, &a), MembersRun::Skip(_)));
         // from a public branch, or a fork: its members-only text never reaches a run
         let t = pr("refs/heads/main", Some("members"), None, false);
-        assert!(matches!(members_run(on, &t, &a), MembersRun::Skip(w) if w.contains("public branch")));
-        let t = pr("refs/heads/sec/fix", Some("specificPeople"), Some(&real), true);
+        assert!(
+            matches!(members_run(on, &t, &a), MembersRun::Skip(w) if w.contains("public branch"))
+        );
+        let t = pr(
+            "refs/heads/sec/fix",
+            Some("specificPeople"),
+            Some(&real),
+            true,
+        );
         assert!(matches!(members_run(on, &t, &a), MembersRun::Skip(_)));
         // a public PR is public, and an old dg names no audience
-        assert_eq!(members_run(off, &pr("refs/heads/main", Some("public"), None, false), &a), MembersRun::Public);
-        assert_eq!(members_run(off, &pr("refs/heads/main", None, None, false), &a), MembersRun::Public);
+        assert_eq!(
+            members_run(off, &pr("refs/heads/main", Some("public"), None, false), &a),
+            MembersRun::Public
+        );
+        assert_eq!(
+            members_run(off, &pr("refs/heads/main", None, None, false), &a),
+            MembersRun::Public
+        );
         // a "public" PR whose source is members-only is treated as members-only
         assert!(matches!(
-            members_run(off, &pr("refs/heads/sec/fix", Some("public"), Some(&real), false), &a),
+            members_run(
+                off,
+                &pr("refs/heads/sec/fix", Some("public"), Some(&real), false),
+                &a
+            ),
             MembersRun::Skip(_)
         ));
     }
@@ -2691,10 +2734,20 @@ mod tests {
             members_branch: Some("refs/heads/sec/fix"),
         };
         let a = report_args(&c, &r);
-        assert!(a.windows(2).any(|w| w == ["--members-branch", "refs/heads/sec/fix"]));
+        assert!(a
+            .windows(2)
+            .any(|w| w == ["--members-branch", "refs/heads/sec/fix"]));
         assert!(a.windows(2).any(|w| w == ["--storage", "logs"]), "{a:?}");
-        assert!(!a.iter().any(|x| x == "--summary" || x == "--artifact" || x == "--log"));
-        let a = report_args(&c, &Report { log: Some("/l/b.log".into()), ..r });
+        assert!(!a
+            .iter()
+            .any(|x| x == "--summary" || x == "--artifact" || x == "--log"));
+        let a = report_args(
+            &c,
+            &Report {
+                log: Some("/l/b.log".into()),
+                ..r
+            },
+        );
         assert!(a.windows(2).any(|w| w == ["--log", "/l/b.log"]));
     }
 

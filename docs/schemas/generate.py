@@ -683,7 +683,8 @@ cmd('ci report', 'A check run reported on a commit.', {
                      nl(O({'branch': S, 'name': S, 'commit': S}, ['branch', 'name', 'commit']))),
 }, ['status', 'documentId', 'name'])
 cmd('ci status', 'The newest check run per name on a commit. A member reads a members-only branch\'s runs too, '
-    'each with `membersOnly`: its branch and the name members read (null when its log could not be opened here).', {
+    'each with `membersOnly`: its branch, the name members read (null when its log could not be opened here) and '
+    'the blind `headOid` it is reported on.', {
     'headOid': S, 'checks': A(OBJ), 'url': nl(S),
 }, ['headOid', 'checks'])
 cmd('ci log', 'A check run\'s log written to a file (`-o`; without it the log is printed as it is).', {

@@ -535,6 +535,7 @@ const SCHEDULE_MIN_MS: u64 = 5 * 60 * 1000;
 /// The list is the newest PRs by creation, open or closed, and anyone may open PRs: members'
 /// open ones that fall out of it are kept and read one by one, in turn, up to
 /// [`FOLLOW_BEYOND`], so a burst of newer PRs cannot push them out of CI.
+#[allow(clippy::too_many_lines)] // one pass over the listing: read, judge, run, record
 fn poll_pulls(
     cfg: &Config,
     repo: &config::RepoConfig,
@@ -576,7 +577,7 @@ fn poll_pulls(
     let mut members: Option<run::Members> = None;
     let pull_key = |n: u64, head: &str| format!("pull/{n} {}", head.to_ascii_lowercase());
     let mut pending = Vec::new();
-    for ev in pull_events(&state.pulls, &rows) {
+    for mut ev in pull_events(&state.pulls, &rows) {
         let n = ev.pr.number;
         let key = pull_key(n, &ev.pr.head_oid);
         let members = match &members {
@@ -585,7 +586,6 @@ fn poll_pulls(
         };
         let author = run::author_of(members, &ev.pr.author);
         let mut done = true;
-        let mut ev = ev;
         // a members-only PR's real head: the listing names only the blind
         let real = if repo.members_branches && !ev.pr.is_public() {
             run::view_pull(cfg, repo, n).map(|v| ev.pr.real_head_oid = v.real_head_oid)
@@ -745,10 +745,14 @@ fn poll_reruns(
 /// carries Platform's block time, and a host clock running ahead must not hide the first ones.
 const RERUN_SLACK_MS: u64 = 300_000;
 
+/// What a counted re-run request runs: the triggers, and the one check to re-run if the request
+/// names one ([`rerun_triggers`]).
+type RerunPlan = (Vec<run::Trigger>, Option<String>);
+
 /// What a counted re-run request runs (`Ok(Ok)`: the triggers, and the one check to re-run if the
-/// request names one), or why it runs nothing (`Ok(Err)`); `Err` when
-/// the pull request or the members could not be read (tried again). Only the PR's current head
-/// runs, and only what a poll would run for it:
+/// request names one), or why it runs nothing (`Ok(Err)`); `Err` when the pull request or the
+/// members could not be read (tried again). Only the PR's current head runs, and only what a poll
+/// would run for it:
 ///
 /// * a check of the PR's own runs (` (pull_request)` or ` (pull_request, non-member)`): the PR as
 ///   `pull_request`, under the repository's `pull_requests` policy ([`skip_reason`]);
@@ -761,7 +765,7 @@ fn rerun_triggers(
     state: &RepoState,
     req: &run::RerunRow,
     members: &mut Option<run::Members>,
-) -> Result<std::result::Result<(Vec<run::Trigger>, Option<String>), String>> {
+) -> Result<std::result::Result<RerunPlan, String>> {
     let sha = req.sha.to_ascii_lowercase();
     let mut pr = match run::view_pull(cfg, repo, req.number) {
         Ok(pr) => pr,
@@ -789,7 +793,7 @@ fn rerun_triggers(
     // A members-only branch's PR: its head is a blind, and its checks have opaque names, which
     // this runner cannot tell apart, so a request for one re-runs every check of the head (its
     // push runs on the branch's real commit and its PR runs).
-    let real = pr.real_head_oid.clone().map(|r| r.to_ascii_lowercase());
+    let real = pr.real_head_oid.as_deref().map(str::to_ascii_lowercase);
     let check = if real.is_some() {
         if req.check.is_some() {
             eprintln!(

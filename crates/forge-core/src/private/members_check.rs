@@ -23,7 +23,8 @@
 //! resolve a name by opening the run's log, whose header names the check; the header's name must
 //! hash to the run's opaque name and its commit to the run's blind, so a log moved to another run
 //! does not open there. `H` is read only in its one canonical form (these keys in this order, no
-//! spaces, JSON's shortest escapes, lower-case hex), so every reader reads the same header. A runner outside the members gets the salt in a branch key letter (phase 4).
+//! spaces, JSON's shortest escapes, lower-case hex), so every reader reads the same header. A
+//! runner outside the members gets the salt in a branch key letter (phase 4).
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
@@ -280,7 +281,7 @@ impl CheckKeys {
 /// `P`'s header and log, when its lengths fit, it is a whole number of [`PAD`] blocks and the
 /// rest is zeros.
 fn split_plaintext(p: &[u8]) -> Option<(&[u8], &[u8])> {
-    if p.is_empty() || p.len() % PAD != 0 {
+    if p.is_empty() || !p.len().is_multiple_of(PAD) {
         return None;
     }
     let hlen = usize::try_from(u32::from_be_bytes(p.get(..4)?.try_into().ok()?)).ok()?;
@@ -379,12 +380,22 @@ mod tests {
             .filter(|p| {
                 p.file_name()
                     .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.starts_with(&format!("{CASE}__")) && n.ends_with(".json"))
+                    .is_some_and(|n| n.starts_with(&format!("{CASE}__")))
+                    && p.extension().is_some_and(|e| e == "json")
             })
             .collect();
         files.sort();
-        assert!(files.len() >= 24, "expected 24+ vectors, found {}", files.len());
-        let hex32 = |v: &Value| -> [u8; 32] { hex::decode(v.as_str().unwrap()).unwrap().try_into().unwrap() };
+        assert!(
+            files.len() >= 24,
+            "expected 24+ vectors, found {}",
+            files.len()
+        );
+        let hex32 = |v: &Value| -> [u8; 32] {
+            hex::decode(v.as_str().unwrap())
+                .unwrap()
+                .try_into()
+                .unwrap()
+        };
         let bytes = |v: &Value| hex::decode(v.as_str().unwrap()).unwrap();
         for path in files {
             let v: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
