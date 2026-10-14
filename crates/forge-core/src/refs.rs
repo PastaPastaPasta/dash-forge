@@ -688,6 +688,18 @@ mod members_tests {
     }
 
     fn sealed(id: u8, at: u64, e: u32, new: u8, prev: Option<u8>, force: bool) -> FetchedDocument {
+        sealed_as(NAME, id, at, e, new, prev, force)
+    }
+
+    fn sealed_as(
+        name: &str,
+        id: u8,
+        at: u64,
+        e: u32,
+        new: u8,
+        prev: Option<u8>,
+        force: bool,
+    ) -> FetchedDocument {
         let new = if new == 0 { [0; 20] } else { [new; 20] };
         let prev = prev.map(|p| [p; 20]);
         let s = members_ref::seal(
@@ -695,7 +707,7 @@ mod members_tests {
             [0x22; 32],
             &RefUpdateIn {
                 kind: DocKind::RefUpdate,
-                name: NAME,
+                name,
                 new_oid: &new,
                 prev_oid: prev.as_ref().map(|p| &p[..]),
                 force,
@@ -758,21 +770,35 @@ mod members_tests {
 
     #[test]
     fn a_mirror_reads_the_public_refs_and_counts_the_members_only_ones() {
-        // A mirror (the gateway, `dg verify-mirror`) holds no key: it folds the public ref and
-        // learns only how many members-only names the sealed updates carry.
+        // A mirror (the gateway, `dg verify-mirror`) holds no key: it folds the public refs
+        // and learns only how many members-only names the sealed updates carry.
+        let mut private_era = sealed_as("refs/heads/old-private", 5, 13, 0, 0xe, None, false);
+        private_era
+            .fields
+            .insert("vis".into(), FieldValue::text("private"));
         let state = GitState {
             ref_updates: vec![
                 public(1, 10, 0x1, None),
-                sealed(2, 11, 0, 0xa, None, false),
-                sealed(3, 12, 1, 0xb, None, false),
+                sealed_as("refs/heads/embargo-a", 2, 11, 0, 0xa, None, false),
+                sealed_as("refs/heads/embargo-a", 3, 12, 0, 0xb, Some(0xa), false),
+                sealed_as("refs/heads/embargo-b", 4, 12, 1, 0xc, None, false),
+                // a repository made public keeps its private-era updates stamped private: not
+                // members-only branches
+                private_era,
             ],
             ..GitState::default()
         };
         let got = crate::repo::public_refs_of(&state);
-        assert_eq!(got.records.len(), 1);
+        assert_eq!(got.records.len(), 1, "only the public branch is a ref");
         assert_eq!(got.records[0].name, NAME);
-        assert_eq!(got.records[0].tip.as_ref().unwrap().oid, hex::encode([1; 20]));
-        assert_eq!(got.members_only_refs, 2, "one name, a hash per epoch");
+        assert_eq!(
+            got.records[0].tip.as_ref().unwrap().oid,
+            hex::encode([1; 20])
+        );
+        assert_eq!(
+            got.members_only_refs, 2,
+            "two names (a hash per name and epoch)"
+        );
         // Only sealed updates: no ref at all, and the count.
         let state = GitState {
             ref_updates: vec![sealed(2, 11, 0, 0xa, None, false)],
@@ -781,6 +807,12 @@ mod members_tests {
         let got = crate::repo::public_refs_of(&state);
         assert!(got.records.is_empty());
         assert_eq!(got.members_only_refs, 1);
+        // Nothing sealed: nothing counted.
+        let state = GitState {
+            ref_updates: vec![public(1, 10, 0x1, None)],
+            ..GitState::default()
+        };
+        assert_eq!(crate::repo::public_refs_of(&state).members_only_refs, 0);
     }
 
     #[test]

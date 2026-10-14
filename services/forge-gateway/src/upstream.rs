@@ -534,6 +534,10 @@ impl Upstream for PlatformUpstream {
         env.push(("XDG_CONFIG_HOME".into(), format!("{home}/.config")));
         env.push(("GIT_TERMINAL_PROMPT".into(), "0".into()));
         env.push(("GIT_CONFIG_NOSYSTEM".into(), "1".into()));
+        // No key from any source: the gateway serves the public lane only, so a members key
+        // found by accident (a keychain entry on a developer's machine) must not put
+        // members-only objects on its disk.
+        env.push((forge_core::keychain::DISABLE_ENV.into(), "1".into()));
         if let Some(dir) = &self.helper_dir {
             let path = std::env::var("PATH").unwrap_or_default();
             env.push(("PATH".into(), format!("{}:{path}", dir.display())));
@@ -546,6 +550,8 @@ impl Upstream for PlatformUpstream {
                 "DASH_FORGE_KEY",
                 "DASH_FORGE_IDENTITY",
                 "DASH_FORGE_PASSPHRASE",
+                forge_core::key_handoff::KEY_FD_ENV,
+                forge_core::sealed::RUNNER_PASSPHRASE_ENV,
             ]
             .map(String::from)
             .to_vec(),

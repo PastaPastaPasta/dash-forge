@@ -67,6 +67,8 @@ pub struct Manifest {
     pub packs: Vec<ManifestPack>,
 }
 
+// serde's `skip_serializing_if` hands the field by reference.
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_zero(n: &u64) -> bool {
     *n == 0
 }

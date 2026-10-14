@@ -725,10 +725,16 @@ async fn members_only_branches_are_counted_and_never_served() {
     git_out(&src, &["checkout", "-q", "-b", "embargo-fix"]);
     std::fs::write(src.join("exploit.txt"), "SEALED-BRANCH-CONTENT\n").unwrap();
     git_out(&src, &["add", "exploit.txt"]);
-    git_out(&src, &["commit", "-q", "-m", "fix the SEALED-COMMIT-SUBJECT hole"]);
+    git_out(
+        &src,
+        &["commit", "-q", "-m", "fix the SEALED-COMMIT-SUBJECT hole"],
+    );
     let sealed_oid = git_out(&src, &["rev-parse", "HEAD"]).trim().to_string();
     git_out(&src, &["checkout", "-q", "main"]);
-    git_out(&src, &["config", "uploadpack.hideRefs", "refs/heads/embargo-fix"]);
+    git_out(
+        &src,
+        &["config", "uploadpack.hideRefs", "refs/heads/embargo-fix"],
+    );
     let info = gw.stub.add("alice", "proj", true, &src);
     gw.stub.world().sealed = vec!["refs/heads/embargo-fix".into()];
 
@@ -751,10 +757,14 @@ async fn members_only_branches_are_counted_and_never_served() {
 
     // The mirror holds no object of the members-only branch.
     let mirror = gw.mirrors.slot(&info).dir.clone();
-    assert!(!git(&mirror, &["cat-file", "-e", &sealed_oid]).status.success());
-    assert!(!git(&gw.tmp.join("clone"), &["cat-file", "-e", &sealed_oid])
+    assert!(!git(&mirror, &["cat-file", "-e", &sealed_oid])
         .status
         .success());
+    assert!(
+        !git(&gw.tmp.join("clone"), &["cat-file", "-e", &sealed_oid])
+            .status
+            .success()
+    );
 
     // The manifest says how many it leaves out, and checks out against the public refs.
     let (s, _, raw) = gw.get("/alice/proj.git/forge-manifest.json").await;
@@ -801,10 +811,18 @@ async fn members_only_branches_are_counted_and_never_served() {
 
     // More members-only branches move the count with the next refresh; none, and the manifest
     // goes back to saying nothing of them.
-    gw.stub.world().sealed.push("refs/heads/other-embargo".into());
+    gw.stub
+        .world()
+        .sealed
+        .push("refs/heads/other-embargo".into());
     gw.stub.world().time_ms = 9_000;
     assert_eq!(gw.refresh(&info).await, None);
-    assert_eq!(gw.manifest("/alice/proj.git").await.members_only_refs_not_served, 2);
+    assert_eq!(
+        gw.manifest("/alice/proj.git")
+            .await
+            .members_only_refs_not_served,
+        2
+    );
     git_out(&src, &["branch", "-D", "embargo-fix"]);
     gw.stub.world().sealed.clear();
     gw.stub.world().time_ms = 12_000;
