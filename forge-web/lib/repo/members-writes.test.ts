@@ -63,7 +63,7 @@ vi.mock('../sdk', async (importOriginal) => {
 
 import { base58Encode, decodeIdentifier } from '../auth/base58'
 import { idbEntries, resetMemoryStores } from '../idb'
-import { EpochKeys, type OpenContext } from '../private'
+import { EpochKeys, bytesToHex, type OpenContext } from '../private'
 import type { WriteAuth } from '../sdk'
 import type { RepoRef } from './contract'
 import { LongBodyRefusedError, longBodyField } from './long-body'
@@ -71,7 +71,9 @@ import { MEMBERS_TEXT_LIMIT, audienceFor, childAudience, sealMembersContent, sea
 import { admitAll, laneGate } from './private-content'
 import { SEALED_TEXT_LIMIT } from './private-writes'
 import { saveReviewDraft, loadReviewDraft, updateComment, type ReviewDraft } from './review-writes'
-import { assertNoPlaintext, writeRepoDoc } from './writes'
+import { assertNoPlaintext, patchData, writeRepoDoc } from './writes'
+import { blind as blindOf } from '../private'
+import { sha256 } from '@noble/hashes/sha2.js'
 import { postComment, updateTarget } from './review-writes'
 import { contentHash } from '../sdk'
 import { readComments } from '../view/issues-view'
@@ -194,6 +196,36 @@ describe('the members-only seal', () => {
     expect(docs[0]?.['body']).toBe('MEMBERS-TEXT')
   })
 
+  it('a members-only PR from a members-only branch: keyed source, public base, the copied blind head with its real value sealed', async () => {
+    const writer = { keys: await EpochKeys.import(REPO_ID, 0, new Uint8Array(K0)) }
+    const real = new Uint8Array(20).fill(0xab)
+    const salt = new Uint8Array(32).fill(0x5a)
+    const blind = await blindOf(salt, real)
+    const data = patchData({ title: 'Fix the bounds check', body: 'MEMBERS-TEXT', baseRefName: 'refs/heads/main', sourceRepoId: REPO.repoId, sourceRefName: 'refs/heads/sec/fix', headOid: bytesToHex(blind as Uint8Array) })
+    await writeRepoDoc(sdk, auth, REPO, 'patch', { number: 7, tk: 1, ...data }, 'p1', undefined, undefined, {
+      audience: 'members',
+      membersWriter: writer,
+      membersPatch: { basePublic: true, sourcePublic: false, head: { real, salt } },
+    })
+    const w = writes[0]!.data
+    expect(['title', 'body', 'baseRefName', 'sourceRefName'].map((f) => w[f])).toEqual([undefined, undefined, undefined, undefined])
+    expect((w['enc'] as Uint8Array)[0]).toBe(0x03)
+    expect(bytesToHex(w['headOid'] as Uint8Array)).toBe(bytesToHex(blind as Uint8Array))
+    // the public base by its public hash (anyone can verify the merge on it); the source keyed
+    expect(bytesToHex(w['baseRefNameHash'] as Uint8Array)).toBe(bytesToHex(sha256(new TextEncoder().encode('refs/heads/main'))))
+    expect(bytesToHex(w['sourceRefNameHash'] as Uint8Array)).not.toBe(bytesToHex(sha256(new TextEncoder().encode('refs/heads/sec/fix'))))
+    expect(base58Encode(w['asMember'] as Uint8Array)).toBe(auth.identityId)
+    // a member opens it: the names and the verified real head, the blind kept in headOid
+    const doc = { ...w, $id: b58(id(0x82)), $ownerId: auth.identityId, $createdAt: 5, $createdAtBlockHeight: 20, number: 7 }
+    const { docs } = await admitAll(laneGate(REPO, await ctx()), 'patch', [doc])
+    expect([docs[0]?.['title'], docs[0]?.['sourceRefName'], docs[0]?.['$realHead']]).toEqual(['Fix the bounds check', 'refs/heads/sec/fix', bytesToHex(real)])
+    expect(bytesToHex(docs[0]?.['headOid'] as Uint8Array)).toBe(bytesToHex(blind as Uint8Array))
+    // a plaintext head that is not the blind of the real head is refused before signing
+    await expect(
+      writeRepoDoc(sdk, auth, REPO, 'patch', { number: 8, tk: 1, ...data, headOid: real }, 'p2', undefined, undefined, { audience: 'members', membersWriter: writer, membersPatch: { basePublic: true, sourcePublic: false, head: { real, salt } } }),
+    ).rejects.toThrow(/blind/)
+  })
+
   it('an event value follows its members-only target, read from the stored document', async () => {
     const writer = { keys: await EpochKeys.import(REPO_ID, 0, new Uint8Array(K0)) }
     await writeRepoDoc(sdk, auth, REPO, 'event', { targetId: decodeIdentifier(ISSUE_MEMBERS), targetNumber: 3, kind: 1, value: 'secret-label' }, 'i2', undefined, undefined, { membersWriter: writer })
@@ -214,11 +246,12 @@ describe('the members-only seal', () => {
     expect(writes).toEqual([])
   })
 
-  it('a members-only pull request or ref update is not written in this release', async () => {
+  it('a members-only pull request is written only with its branches named, and never a ref update here', async () => {
     const writer = { keys: await EpochKeys.import(REPO_ID, 0, new Uint8Array(K0)) }
-    await expect(sealMembersContent(auth, 'patch', { title: 't', number: 1 }, writer)).rejects.toThrow(/not supported yet/)
-    // nor a PR edit (its TLV 24 / 27 would be dropped: members-only PR edits come with phase 3C)
-    await expect(sealMembersEdit(sdk, auth, REPO, 'patch', { number: 1 }, { title: 't' }, { title: 'u' })).rejects.toThrow(/not supported yet/)
+    await expect(sealMembersContent(auth, 'patch', { title: 't', number: 1 }, writer)).rejects.toThrow(/branches named/)
+    await expect(sealMembersContent(auth, 'refUpdate', { refName: 'refs/heads/x' }, writer)).rejects.toThrow(/not supported yet/)
+    // nor a PR edit without its epoch and head (its TLV 24 / 27 would be dropped)
+    await expect(sealMembersEdit(sdk, auth, REPO, 'patch', { number: 1 }, { title: 't' }, { title: 'u' })).rejects.toThrow(/read whole/)
     // a members-only event naming a commit is a head update: it never goes through here, where
     // its `oid` would stay the real commit in plaintext
     const head = { targetId: decodeIdentifier(ISSUE_MEMBERS), targetNumber: 1, kind: 16, oid: new Uint8Array(20).fill(1) }

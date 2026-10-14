@@ -43,13 +43,16 @@ import {
   toRerunEvent,
   type RepoRef,
   contentKey,
+  membersLane,
 } from './contract'
 import { repoChromeTimelines, type ChromeTimelines } from './chrome'
 import { configBundleOf, readConfigHistory } from './config'
 import { publicRefKey, readRefUpdates, refUpdatesFromRows } from './refs'
 import { contentGate } from './made-public'
-import { HiddenTally, LETTER_TITLE, MEMBERS_ONLY_ROW, SEALED_EPOCH, bytesField, docAudience, isSealedDoc, publicationMarks, publishedEarlierOf, readableEvents, viewAudience, type ContentGate, type LetterFacts, type PublicationMarks, type PublishedVersion } from './private-content'
+import { AUDIENCE_FIELD, HEAD_SALT, REAL_HEAD, HiddenTally, LETTER_TITLE, MEMBERS_ONLY_ROW, SEALED_EPOCH, bytesField, docAudience, isSealedDoc, publicationMarks, publishedEarlierOf, readableEvents, viewAudience, type ContentGate, type LetterFacts, type PublicationMarks, type PublishedVersion } from './private-content'
 import { onPrivateSessionEnded } from './private-session'
+import { blindBook } from './members-blinds'
+import { isListedMembersRef, readMembersRefs } from './members-branches'
 import { repoSource } from './source'
 import { base64ToHex, hexToBase64 } from '../sdk'
 import { readRepoCounts, readStateCodes, readTransitions, transitionOf, type TransitionView } from './transitions'
@@ -243,6 +246,18 @@ export interface PullView {
    * {@link initialHeadOid}. Approvals, staleness, the diff and merges use this.
    */
   readonly headOid: string
+  /**
+   * A members-only PR from a members-only branch, read by a member: the real commit its blinded
+   * {@link headOid} hides (`private-repos.md` §19.4), for git reads and display only. Folds,
+   * check-run lookups and every write keep {@link headOid}.
+   */
+  readonly realHeadOid?: string
+  /**
+   * A members-only PR a member opened: how it names its branches (public ones by `sha256`), and
+   * the real head and salt its own blinded `headOid` carries (TLV 24, 27; absent for a public
+   * source), hex. An edit re-seals them as they are.
+   */
+  readonly membersPatch?: { readonly basePublic: boolean; readonly sourcePublic: boolean; readonly head?: { readonly real: string; readonly salt: string } }
   /** The head the PR was opened with (`patch.headOid`, immutable). */
   readonly initialHeadOid: string
   /**
@@ -920,15 +935,27 @@ export async function readPull(
   // decrypted ref, by `sha256(baseRefName)` (`refs.ts`). A retarget names its base in plain
   // (opened) text, keyed the same way.
   let baseKeyHex = byteFieldToHex(patchDoc, 'baseRefNameHash')
-  if (repo.visibility === 'private' || base.retargeted) baseKeyHex = base.refName === '' ? '' : publicRefKey(base.refName)
+  // A members-only PR opened by a member names a members-only base by a keyed hash: its base is
+  // keyed by name, as every opened ref is (`members-branches.ts`).
+  const opened = patchDoc[AUDIENCE_FIELD] === 'members'
+  if (repo.visibility === 'private' || base.retargeted || opened) baseKeyHex = base.refName === '' ? '' : publicRefKey(base.refName)
   const baseRefNameHashRaw = /^[0-9a-f]{64}$/.test(baseKeyHex) ? hexToBase64(baseKeyHex) : ''
+  // A members-only base: its history is the member's fold of its members-only updates. It is never
+  // read by its public hash, which would hand the nodes `sha256(name)` to guess the name from.
+  const lane = membersLane(repo)
+  const keyedBase = opened && !base.retargeted && base.refName !== '' && byteFieldToHex(patchDoc, 'baseRefNameHash') !== publicRefKey(base.refName)
+  const membersBase = lane !== undefined && base.refName !== '' && (keyedBase || isListedMembersRef(repo.repoId, base.refName))
 
   // Build the base ref's historical-tips set for the merge-reachability predicate.
   let isAncestor: IsAncestor = () => false
   let tips: BaseRefTips = { historical: [], tip: undefined, atOpen: undefined }
-  if (baseRefNameHashRaw.length > 0) {
+  if (baseRefNameHashRaw.length > 0 && (membersBase || !keyedBase)) {
     const [updates, configs] = await Promise.all([
-      refUpdates ? refUpdates(baseRefNameHashRaw) : readRefUpdates(sdk, repo, baseRefNameHashRaw),
+      membersBase
+        ? readMembersRefs(sdk, repo, lane).then((m) => [...(m.updates.get(base.refName) ?? [])])
+        : refUpdates
+          ? refUpdates(baseRefNameHashRaw)
+          : readRefUpdates(sdk, repo, baseRefNameHashRaw),
       configHistory ? configHistory() : readConfigHistory(sdk, repo),
     ])
     tips = baseRefTips(updates, configs, baseKeyHex, base.since)
@@ -947,6 +974,10 @@ export async function readPull(
   // The PR follows its branch through `headUpdate` events (review-parity spec §4.6).
   const review = foldPrReviewV2(l.events, l.authorEvents, author, initialHeadOid, new Set())
   const headOid = review.head
+  // A members-only PR from a members-only branch folds on blinds; a member's git reads the commit
+  // each blind hides, as their session verified it (rule C: nothing real goes into a fold). Only a
+  // members-only PR's own head: a public document copying a blind maps to nothing.
+  const realHeadOid = lane === undefined || !opened ? undefined : blindBook(lane.ctx).realOf(headOid)
 
   return {
     id,
@@ -964,6 +995,8 @@ export async function readPull(
     baseTipPrev: baseTip === undefined ? '' : tipBeforeMerge(tips.historical, baseTip),
     ...(merge !== null && mergeOid !== null ? { mergeOid: mergeOid.toLowerCase(), mergedAt: merge.createdAt } : {}),
     headOid,
+    ...(realHeadOid !== undefined ? { realHeadOid } : {}),
+    ...(opened ? { membersPatch: membersPatchOf(patchDoc) } : {}),
     initialHeadOid,
     review,
     sourceId: sourceIdOf(patchDoc),
@@ -973,6 +1006,18 @@ export async function readPull(
     state: prState,
     stateComplete: true,
     ...editMeta(patchDoc),
+  }
+}
+
+/** How an opened members-only PR names its branches and its own head ({@link PullView.membersPatch}). */
+function membersPatchOf(doc: PlainDocument): NonNullable<PullView['membersPatch']> {
+  const isPublic = (name: string, hash: string): boolean => name !== '' && hash === publicRefKey(name)
+  const real = doc[REAL_HEAD]
+  const salt = doc[HEAD_SALT]
+  return {
+    basePublic: isPublic(str(doc, 'baseRefName'), byteFieldToHex(doc, 'baseRefNameHash')),
+    sourcePublic: isPublic(str(doc, 'sourceRefName'), byteFieldToHex(doc, 'sourceRefNameHash')),
+    ...(typeof real === 'string' && typeof salt === 'string' ? { head: { real, salt } } : {}),
   }
 }
 

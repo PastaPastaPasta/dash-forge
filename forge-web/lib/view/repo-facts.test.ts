@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 /** The session-end listeners repo-facts registers, so a test can end a session. */
 const sessionEnded = vi.hoisted((): ((id: string) => void)[] => [])
-vi.mock('../repo/private-session', () => ({ onPrivateSessionEnded: (l: (id: string) => void) => (sessionEnded.push(l), () => undefined) }))
+vi.mock('../repo/private-session', () => ({ onPrivateSessionEnded: (l: (id: string) => void) => (sessionEnded.push(l), () => undefined), onPrivateSessionsClosed: () => () => undefined }))
 
 import { Store } from './diff-fixtures'
 import { readTree } from './tree-nav'

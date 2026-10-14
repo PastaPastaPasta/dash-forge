@@ -6,8 +6,9 @@
  *
  * - Public repo: the home as it is, at once. For a signed-in member of one with members-only
  *   content, its members-key session is loaded beside it and the home re-rendered with it on
- *   `repo.lane` / `home.lane` ({@link withMembersSession}): only the content gate reads it, so the
- *   public config, branches and packs stay exactly what everyone sees (DESIGN §4.1). A repository
+ *   `repo.lane` / `home.lane` ({@link withMembersSession}): the content gate opens members-only
+ *   discussion through it, and their members-only branches and tags join the public ones
+ *   ({@link withMembersRefs}, phase 3); the public config and refs stay exactly what everyone sees. A repository
  *   made public whose owner published keys of its earlier history (`private-repos.md` §18): every
  *   reader, signed in or not, gets those keys on `repo.published` (its packs) and, without a
  *   members-key session of their own, on `repo.lane` (its earlier discussion). Such a repo's
@@ -50,7 +51,7 @@ import { DOC } from '@/lib/repo/contract'
 import { contractOf, repoSource } from '@/lib/repo/source'
 import { letterSessionFor } from '@/lib/repo/letter-session'
 import { queryDocuments } from '@/lib/sdk'
-import { loadPrivateHome, withLetterReader, withMembersSession, type RepoHome } from '@/lib/view'
+import { loadPrivateHome, withLetterReader, withMembersRefs, withMembersSession, type RepoHome } from '@/lib/view'
 import { forgetPrivateNav, sealRepoUrls } from '@/lib/view/private-nav'
 import type { RepoAddress } from '@/hooks/use-query-param'
 
@@ -194,7 +195,9 @@ export function usePrivateHome(home: RepoHome | null, addr: RepoAddress): Privat
     })
     if (lane === null) return outsider
     if (lane.access !== 'member' && lane.access !== 'former') return { ...outsider, lane }
-    const out = withMembersSession(base, lane.session, lane.access)
+    // Members-only branches and tags join the public ones (phase 3); a failed read leaves the public refs.
+    const session = withMembersSession(base, lane.session, lane.access)
+    const out = await withMembersRefs(sdk!, session).catch(() => session)
     warm.set(key, out)
     return out
   }

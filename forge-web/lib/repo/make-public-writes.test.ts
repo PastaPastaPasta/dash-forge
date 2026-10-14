@@ -161,7 +161,8 @@ describe('every other audience change is refused before signing', () => {
     await expect(makePostPublic(sdk, auth, { ...REPO, visibility: 'private' }, { type: 'comment', id: MINE, opened: { body: 'x' } })).rejects.toThrow(/private/)
     await expect(makePostPublic(sdk, auth, REPO, { type: 'issue', id: MY_ISSUE, opened: { title: 't', importedAuthor: 'octocat' } })).rejects.toThrow(/imported/)
     await expect(makePostPublic(sdk, auth, REPO, { type: 'comment', id: ON_MEMBERS_ISSUE, opened: { body: 'x' } })).rejects.toThrow(/conversation is members-only/)
-    await expect(makePostPublic(sdk, auth, REPO, { type: 'patch', id: PR, opened: { title: 't' } })).rejects.toThrow(/pull request can't be made public/)
+    // a pull request goes the way of an issue (phase 3): this one is someone else's
+    await expect(makePostPublic(sdk, auth, REPO, { type: 'patch', id: PR, opened: { title: 't' } })).rejects.toThrow(/Only its author/)
     await expect(makeReviewTextPublic(sdk, auth, REPO, { reviewId: MY_REVIEW, patchId: ISSUE_PUBLIC, text: 'x' })).rejects.toThrow(/not on this pull request/)
     expect(replaces).toEqual([])
   })
