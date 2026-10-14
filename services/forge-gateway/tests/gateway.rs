@@ -39,6 +39,9 @@ struct World {
     items: BTreeMap<(&'static str, u32), (Item, bool)>,
     /// Item reads.
     item_reads: usize,
+    /// Members-only branches of the stub's source repository: Platform shows only their count,
+    /// and `git-remote-dash` (as an anonymous reader) never lists or fetches them.
+    sealed: Vec<String>,
 }
 
 #[derive(Clone, Default)]
@@ -118,10 +121,15 @@ impl Upstream for Stub {
             w.snapshots += 1;
             (w.time_ms, w.pack_bytes)
         };
+        let (sealed, members_only_refs) = {
+            let w = self.world();
+            (w.sealed.clone(), w.sealed.len())
+        };
         let refs = git_out(&src, &["for-each-ref", "--format=%(objectname) %(refname)"]);
         let records = refs
             .lines()
             .filter_map(|l| l.split_once(' '))
+            .filter(|(_, name)| !sealed.iter().any(|s| s == name))
             .map(|(oid, name)| RefRecord {
                 name: name.into(),
                 tip: Some(RefTip {
@@ -138,6 +146,7 @@ impl Upstream for Stub {
             .collect();
         Ok(Some(Snapshot {
             records,
+            members_only_refs,
             default_branch: Some("main".into()),
             tip: ChainTip {
                 height: 7,
@@ -703,6 +712,105 @@ async fn badges_feeds_and_previews() {
     assert_eq!(r.status().as_u16(), 200);
     assert_eq!(r.headers()["content-type"], "image/png");
     assert_eq!(&r.bytes().await.unwrap()[..4], b"\x89PNG");
+}
+
+/// A repository with members-only branches (mixed-visibility DESIGN §7): the gateway serves the
+/// public lane only, says how many refs it leaves out, and nothing it renders names or leaks one.
+#[tokio::test(flavor = "multi_thread")]
+async fn members_only_branches_are_counted_and_never_served() {
+    let gw = start(|_| {}).await;
+    let src = source(&gw.tmp);
+    // A members-only branch with content of its own; `git-remote-dash` as an anonymous reader
+    // never lists it (the stub's source hides it from the fetch).
+    git_out(&src, &["checkout", "-q", "-b", "embargo-fix"]);
+    std::fs::write(src.join("exploit.txt"), "SEALED-BRANCH-CONTENT\n").unwrap();
+    git_out(&src, &["add", "exploit.txt"]);
+    git_out(&src, &["commit", "-q", "-m", "fix the SEALED-COMMIT-SUBJECT hole"]);
+    let sealed_oid = git_out(&src, &["rev-parse", "HEAD"]).trim().to_string();
+    git_out(&src, &["checkout", "-q", "main"]);
+    git_out(&src, &["config", "uploadpack.hideRefs", "refs/heads/embargo-fix"]);
+    let info = gw.stub.add("alice", "proj", true, &src);
+    gw.stub.world().sealed = vec!["refs/heads/embargo-fix".into()];
+
+    let out = gw.clone("/alice/proj.git", "clone").await;
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let ls = gw
+        .git(
+            gw.tmp.clone(),
+            vec!["ls-remote".into(), format!("{}/alice/proj.git", gw.base)],
+        )
+        .await;
+    let ls = String::from_utf8(ls.stdout).unwrap();
+    let served = parse_ls_remote(&ls);
+    assert_eq!(served.len(), 3, "main, feature and the tag only: {ls}");
+    assert!(!ls.contains("embargo") && !ls.contains(&sealed_oid), "{ls}");
+
+    // The mirror holds no object of the members-only branch.
+    let mirror = gw.mirrors.slot(&info).dir.clone();
+    assert!(!git(&mirror, &["cat-file", "-e", &sealed_oid]).status.success());
+    assert!(!git(&gw.tmp.join("clone"), &["cat-file", "-e", &sealed_oid])
+        .status
+        .success());
+
+    // The manifest says how many it leaves out, and checks out against the public refs.
+    let (s, _, raw) = gw.get("/alice/proj.git/forge-manifest.json").await;
+    assert_eq!(s, 200);
+    let m: Manifest = serde_json::from_str(&raw).unwrap();
+    assert_eq!(m.members_only_refs_not_served, 1);
+    assert!(raw.contains("\"membersOnlyRefsNotServed\": 1"), "{raw}");
+    assert_eq!(m.refs.len(), 3);
+    let snap = gw.stub.snapshot(&info).await.unwrap().unwrap();
+    assert_eq!(snap.members_only_refs, 1);
+    let c = compare(&served, &snap.records, Some(m.platform_time_ms));
+    assert_eq!(c.verdict, Verdict::Match, "{c:?}");
+
+    // Nothing the gateway renders names the branch, its commit or its content.
+    let mut seen = vec![raw];
+    for path in [
+        "/alice/proj.git/info/refs?service=git-upload-pack",
+        "/feed/alice/proj/commits.atom",
+        "/feed/alice/proj/releases.atom",
+        "/feed/alice/proj/issues.atom",
+        "/badge/alice/proj/ci.json",
+        "/badge/alice/proj/ci.json?branch=embargo-fix",
+        "/badge/alice/proj/issues.svg",
+        "/og/alice/proj",
+        "/",
+    ] {
+        let (_, _, body) = gw.get(path).await;
+        seen.push(body);
+    }
+    for body in &seen {
+        for secret in [
+            "embargo",
+            "SEALED-COMMIT-SUBJECT",
+            "SEALED-BRANCH-CONTENT",
+            sealed_oid.as_str(),
+        ] {
+            assert!(!body.contains(secret), "{secret} in {body}");
+        }
+    }
+    // A badge for the branch answers as for a branch that does not exist.
+    let (_, _, hidden) = gw.get("/badge/alice/proj/ci.json?branch=embargo-fix").await;
+    let (_, _, absent) = gw.get("/badge/alice/proj/ci.json?branch=nope").await;
+    assert_eq!(hidden, absent);
+
+    // More members-only branches move the count with the next refresh; none, and the manifest
+    // goes back to saying nothing of them.
+    gw.stub.world().sealed.push("refs/heads/other-embargo".into());
+    gw.stub.world().time_ms = 9_000;
+    assert_eq!(gw.refresh(&info).await, None);
+    assert_eq!(gw.manifest("/alice/proj.git").await.members_only_refs_not_served, 2);
+    git_out(&src, &["branch", "-D", "embargo-fix"]);
+    gw.stub.world().sealed.clear();
+    gw.stub.world().time_ms = 12_000;
+    assert_eq!(gw.refresh(&info).await, None);
+    let (_, _, raw) = gw.get("/alice/proj.git/forge-manifest.json").await;
+    assert!(!raw.contains("membersOnly"), "{raw}");
 }
 
 /// The `content` of the `<meta>` tag `prop` names in `html`.

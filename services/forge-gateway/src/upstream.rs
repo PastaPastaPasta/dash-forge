@@ -35,8 +35,11 @@ pub struct RepoInfo {
 /// A proof-verified snapshot of a repository's refs: what one refresh serves.
 #[derive(Debug, Clone)]
 pub struct Snapshot {
-    /// Every ref ([`RepoService::read_ref_records`]).
+    /// Every public ref ([`RepoService::read_ref_records`]).
     pub records: Vec<RefRecord>,
+    /// How many members-only refs the repository has that this anonymous reader cannot name or
+    /// serve ([`forge_core::repo::PublicRefs::members_only_refs`]).
+    pub members_only_refs: usize,
     /// The default branch the newest `config` names.
     pub default_branch: Option<String>,
     /// "As of": every ref update up to this time is reflected.
@@ -328,8 +331,8 @@ impl PlatformUpstream {
             return Ok(None);
         }
         let svc = RepoService::reader(&self.client);
-        let (records, default_branch, manifests) = futures::try_join!(
-            svc.read_ref_records(r),
+        let (public, default_branch, manifests) = futures::try_join!(
+            svc.read_public_refs(r),
             svc.read_default_branch(r),
             svc.read_pack_manifests(r),
         )?;
@@ -340,7 +343,8 @@ impl PlatformUpstream {
         let skipped = sealed_packs(&svc, r, &manifests).await;
         let packs = git_packs(&manifests, &skipped);
         Ok(Some(Snapshot {
-            records,
+            records: public.records,
+            members_only_refs: public.members_only_refs,
             default_branch,
             tip: ChainTip {
                 height: tip.height,

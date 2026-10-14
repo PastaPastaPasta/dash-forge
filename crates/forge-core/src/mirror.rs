@@ -55,9 +55,20 @@ pub struct Manifest {
     pub fetched_at_ms: u64,
     /// Every live ref the mirror serves.
     pub refs: Vec<RefTip>,
+    /// How many members-only refs the repository has that a mirror never serves: it holds no
+    /// key, so it serves the public lane only (mixed-visibility DESIGN §7). Distinct name
+    /// hashes of the sealed ref updates Platform shows, an upper bound (see
+    /// [`crate::repo::PublicRefs::members_only_refs`]); absent when none. The names stay
+    /// sealed.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub members_only_refs_not_served: u64,
     /// The repository's git packs and how many recorded copies each has.
     #[serde(default)]
     pub packs: Vec<ManifestPack>,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// One git pack of a [`Manifest`].
@@ -357,6 +368,7 @@ mod tests {
                 .tip
                 .into_iter()
                 .collect(),
+            members_only_refs_not_served: 0,
             packs: vec![ManifestPack {
                 pack_hash: "00".into(),
                 copies: 2,
@@ -370,6 +382,18 @@ mod tests {
             !json.contains("diverged"),
             "a resolved ref omits the flag: {json}"
         );
+        assert!(
+            !json.contains("membersOnly"),
+            "a repository without members-only refs says nothing of them: {json}"
+        );
         assert_eq!(serde_json::from_str::<Manifest>(&json).unwrap(), m);
+        // With some, the count is named and survives; a manifest from before it reads as none.
+        let with = Manifest {
+            members_only_refs_not_served: 3,
+            ..m.clone()
+        };
+        let json = serde_json::to_string(&with).unwrap();
+        assert!(json.contains("\"membersOnlyRefsNotServed\":3"), "{json}");
+        assert_eq!(serde_json::from_str::<Manifest>(&json).unwrap(), with);
     }
 }

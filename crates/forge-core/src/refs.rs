@@ -757,6 +757,33 @@ mod members_tests {
     }
 
     #[test]
+    fn a_mirror_reads_the_public_refs_and_counts_the_members_only_ones() {
+        // A mirror (the gateway, `dg verify-mirror`) holds no key: it folds the public ref and
+        // learns only how many members-only names the sealed updates carry.
+        let state = GitState {
+            ref_updates: vec![
+                public(1, 10, 0x1, None),
+                sealed(2, 11, 0, 0xa, None, false),
+                sealed(3, 12, 1, 0xb, None, false),
+            ],
+            ..GitState::default()
+        };
+        let got = crate::repo::public_refs_of(&state);
+        assert_eq!(got.records.len(), 1);
+        assert_eq!(got.records[0].name, NAME);
+        assert_eq!(got.records[0].tip.as_ref().unwrap().oid, hex::encode([1; 20]));
+        assert_eq!(got.members_only_refs, 2, "one name, a hash per epoch");
+        // Only sealed updates: no ref at all, and the count.
+        let state = GitState {
+            ref_updates: vec![sealed(2, 11, 0, 0xa, None, false)],
+            ..GitState::default()
+        };
+        let got = crate::repo::public_refs_of(&state);
+        assert!(got.records.is_empty());
+        assert_eq!(got.members_only_refs, 1);
+    }
+
+    #[test]
     fn v1b_the_chain_holds_across_a_rotation() {
         let state = GitState {
             ref_updates: vec![

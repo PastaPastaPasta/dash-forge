@@ -7,6 +7,12 @@
 //! **match**, **stale** (an earlier tip of the ref, which moved after the mirror's snapshot) or a
 //! **MISMATCH** (a tip the ref never had, a ref Platform does not have, or a claim the manifest
 //! cannot back). Only a mismatch fails the command, unless `--strict`.
+//!
+//! A mirror serves the public lane only: a repository's members-only branches are never in its
+//! refs, and are not a mismatch. The check folds Platform's refs the same way (plaintext
+//! updates only), so an omitted members-only branch cannot be told from a public one, and the
+//! report says only that the repository has some. The manifest's count of them is checked
+//! against Platform's sealed updates: it may lag, but it cannot name more than exist.
 
 use std::collections::BTreeMap;
 use std::process::Command;
@@ -16,7 +22,7 @@ use anyhow::{bail, Context as _, Result};
 use forge_core::mirror::{
     compare, parse_ls_remote, Comparison, Manifest, Verdict, MANIFEST_FILE, MANIFEST_SCHEMA,
 };
-use forge_core::repo::RefRecord;
+use forge_core::repo::PublicRefs;
 use forge_core::user_error::{codes, UserError};
 use serde_json::json;
 
@@ -66,10 +72,11 @@ fn git_url(url: &str) -> String {
 pub fn manifest_problems(
     m: &Manifest,
     served: &BTreeMap<String, String>,
-    records: &[RefRecord],
+    public: &PublicRefs,
     repo_id: &str,
     network: &str,
 ) -> Vec<String> {
+    let records = &public.records;
     let mut out = Vec::new();
     if m.schema != MANIFEST_SCHEMA {
         out.push(format!("unknown manifest schema {:?}", m.schema));
@@ -99,6 +106,14 @@ pub fn manifest_problems(
                 ));
             }
         }
+    }
+    // Fewer than Platform shows is a snapshot from before a members-only branch was made;
+    // more is a claim nothing backs.
+    if m.members_only_refs_not_served > public.members_only_refs as u64 {
+        out.push(format!(
+            "says it leaves out {} members-only refs, but Platform shows {}",
+            m.members_only_refs_not_served, public.members_only_refs
+        ));
     }
     out
 }
@@ -170,6 +185,17 @@ struct Look {
     cmp: Comparison,
     problems: Vec<String>,
     verdict: Verdict,
+    /// Members-only refs Platform shows, and how many the manifest says it leaves out.
+    members_only: MembersOnly,
+}
+
+/// What the check knows of the repository's members-only branches.
+#[derive(Clone, Copy)]
+struct MembersOnly {
+    /// Distinct sealed ref names on Platform ([`PublicRefs::members_only_refs`]).
+    on_platform: usize,
+    /// What the manifest says it leaves out (`None`: no manifest).
+    claimed: Option<u64>,
 }
 
 async fn look(r: &Reader, url: &str, network: &str) -> Result<Look> {
@@ -180,20 +206,24 @@ async fn look(r: &Reader, url: &str, network: &str) -> Result<Look> {
         Ok(m) => (m, None),
         Err(e) => (None, Some(e)),
     };
-    let records = r.service().read_ref_records(&r.repo).await?;
+    let public = r.service().read_public_refs(&r.repo).await?;
     let cmp = compare(
         &served,
-        &records,
+        &public.records,
         manifest.as_ref().map(|m| m.platform_time_ms),
     );
     let problems = manifest
         .as_ref()
-        .map(|m| manifest_problems(m, &served, &records, r.repo.id(), network))
+        .map(|m| manifest_problems(m, &served, &public, r.repo.id(), network))
         .unwrap_or_default();
     let verdict = if problems.is_empty() {
         cmp.verdict
     } else {
         Verdict::Mismatch
+    };
+    let members_only = MembersOnly {
+        on_platform: public.members_only_refs,
+        claimed: manifest.as_ref().map(|m| m.members_only_refs_not_served),
     };
     Ok(Look {
         manifest,
@@ -201,6 +231,7 @@ async fn look(r: &Reader, url: &str, network: &str) -> Result<Look> {
         cmp,
         problems,
         verdict,
+        members_only,
     })
 }
 
@@ -232,6 +263,7 @@ pub async fn run(ctx: &Ctx, url: &str, strict: bool) -> Result<()> {
         l.manifest_error.as_deref(),
         &l.problems,
         behind,
+        l.members_only,
     );
     match l.verdict {
         Verdict::Mismatch => bail!(UserError::new(
@@ -263,6 +295,7 @@ fn report(
     manifest_error: Option<&str>,
     problems: &[String],
     blocks_behind: Option<u64>,
+    members_only: MembersOnly,
 ) {
     ctx.emit(
         json!({
@@ -278,6 +311,10 @@ fn report(
             })),
             "manifestError": manifest_error,
             "manifestProblems": problems,
+            "membersOnly": {
+                "onPlatform": members_only.on_platform,
+                "notServedClaimed": members_only.claimed,
+            },
         }),
         || {
             println!("{}  {}", safe(url), repo);
@@ -311,6 +348,11 @@ fn report(
             for p in problems {
                 println!("  MISMATCH  the manifest {}", safe(p));
             }
+            if members_only.on_platform > 0 || members_only.claimed.is_some_and(|n| n > 0) {
+                println!(
+                    "  members-only branches: this repository also has some; a mirror serves public branches only"
+                );
+            }
             let (m, s, x) = (
                 cmp.count(Verdict::Match),
                 cmp.count(Verdict::Stale),
@@ -340,7 +382,7 @@ mod tests {
         assert_eq!(short("aaaaaaaaaaaéééé"), "aaaaaaaaaaaé");
     }
     use forge_core::mirror::MANIFEST_SCHEMA;
-    use forge_core::repo::RefTip;
+    use forge_core::repo::{RefRecord, RefTip};
 
     /// A one-route server answering `head` and then `body_len` bytes of `{`, then closing.
     fn serve_manifest(head: &'static str, body_len: usize) -> String {
@@ -430,12 +472,15 @@ mod tests {
     #[test]
     fn a_manifest_must_back_what_it_claims() {
         let a = "a".repeat(40);
-        let records = vec![RefRecord {
-            name: "refs/heads/main".into(),
-            tip: Some(tip("refs/heads/main", &a, "U1")),
-            tips_ever: [a.clone()].into(),
-            changed_at: 1,
-        }];
+        let mut public = PublicRefs {
+            members_only_refs: 0,
+            records: vec![RefRecord {
+                name: "refs/heads/main".into(),
+                tip: Some(tip("refs/heads/main", &a, "U1")),
+                tips_ever: [a.clone()].into(),
+                changed_at: 1,
+            }],
+        };
         let served: BTreeMap<String, String> = [("refs/heads/main".to_string(), a.clone())].into();
         let mut m = Manifest {
             schema: MANIFEST_SCHEMA.into(),
@@ -449,22 +494,34 @@ mod tests {
             platform_time_ms: 2,
             fetched_at_ms: 3,
             refs: vec![tip("refs/heads/main", &a, "U1")],
+            members_only_refs_not_served: 0,
             packs: vec![],
         };
-        assert!(manifest_problems(&m, &served, &records, "R", "devnet-sakura").is_empty());
+        assert!(manifest_problems(&m, &served, &public, "R", "devnet-sakura").is_empty());
         m.refs[0].ref_update_id = "FORGED".into();
         assert_eq!(
-            manifest_problems(&m, &served, &records, "R", "devnet-sakura").len(),
+            manifest_problems(&m, &served, &public, "R", "devnet-sakura").len(),
             1
         );
         m.refs[0] = tip("refs/heads/other", &a, "U2");
         assert_eq!(
-            manifest_problems(&m, &served, &records, "R", "devnet-sakura").len(),
+            manifest_problems(&m, &served, &public, "R", "devnet-sakura").len(),
             1
         );
         assert_eq!(
-            manifest_problems(&m, &served, &records, "X", "testnet").len(),
+            manifest_problems(&m, &served, &public, "X", "testnet").len(),
             3
         );
+
+        // Members-only refs: a manifest may count fewer than Platform shows (it predates a
+        // branch), never more.
+        m.refs[0] = tip("refs/heads/main", &a, "U1");
+        public.members_only_refs = 2;
+        m.members_only_refs_not_served = 1;
+        assert!(manifest_problems(&m, &served, &public, "R", "devnet-sakura").is_empty());
+        m.members_only_refs_not_served = 3;
+        let problems = manifest_problems(&m, &served, &public, "R", "devnet-sakura");
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("members-only"), "{problems:?}");
     }
 }
