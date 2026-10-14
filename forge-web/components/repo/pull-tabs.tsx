@@ -39,6 +39,7 @@ import {
   type ExpectedCheck,
   type VerifiedLog,
 } from '@/lib/repo/checks'
+import { isSealedCheckLog } from '@/lib/private/members-check'
 import { isMembersRun, resolveMembersRuns, type OpenedRun } from '@/lib/repo/members-checks'
 import { blindBook } from '@/lib/repo/members-blinds'
 import type { PrivateSession } from '@/lib/repo/private-session'
@@ -205,11 +206,6 @@ function RunLog({ run, members, label }: { run: CheckRun; members: OpenedRun | n
       ) : null}
     </div>
   )
-}
-
-/** Whether `raw` is a members-only run's sealed log (`DFCL`, `private-repos.md` §19.9): unreadable text to anyone else. */
-function isSealedCheckLog(raw: Uint8Array): boolean {
-  return raw.length >= 5 && raw[0] === 0x44 && raw[1] === 0x46 && raw[2] === 0x43 && raw[3] === 0x4c
 }
 
 /** A members-only run's opened log: its bytes hashed to `logSha256` and opened as this run's. */

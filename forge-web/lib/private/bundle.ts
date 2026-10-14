@@ -11,9 +11,9 @@
  * Integers are big-endian. Entry types: **0x01 comment, 0x02 issue, 0x03 review** (a document
  * revision's per-object key `K_obj` at `revision`: a maintainer's bundle, DESIGN §4.6), **0x04 a
  * pull request** (its `K_obj`, shown as `bundledPatch` says: title, body and public branch names,
- * never a members-only branch's name or the real head), **0x06 an epoch key** (`target` = the repository id,
- * `revision` = the epoch, `key` = `K_e`, written by the owner of a repository made public), and
- * 0x40 a sealed artifact (`target` = its `packHash`, `revision` 0). Readers skip entry types they
+ * never a members-only branch's name or the real head), **0x06 an epoch key** (`target` = the
+ * repository id, `revision` = the epoch, `key` = `K_e`, written by the owner of a repository made
+ * public), and 0x40 a sealed artifact (`target` = its `packHash`, `revision` 0). Readers skip entry types they
  * do not know.
  *
  * **Maintainer bundles** ({@link docEntries}, {@link readRevision}): readers honour a document
@@ -160,7 +160,8 @@ export interface DocEntries {
 /**
  * The honoured document entries of `bundles` (forge-core `DocEntries::of`): none in a private
  * repository (`isPublic` false); else every entry of a comment, issue, review or pull request in a
- * bundle that parses, written by one of `maintainers` (the repository's owner and its current maintainers).
+ * bundle that parses, written by one of `maintainers` (the repository's owner and its current
+ * maintainers).
  */
 export function docEntries(isPublic: boolean, maintainers: Iterable<PrivateId>, bundles: readonly PublishedBundle[]): DocEntries {
   const byTarget = new Map<string, DocEntry[]>()

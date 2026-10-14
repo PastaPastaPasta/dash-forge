@@ -466,7 +466,6 @@ export async function openLetterWithKey(repoId: Uint8Array, doc: PrivateDoc, enc
   if (parsed.recipients.length !== n || first === undefined || !bytesEqual(first, doc.ownerId) || hasDuplicate(parsed.recipients)) return { status: 'malformed' }
   if (!(await publicRefNamesMatch(doc, parsed.fields))) return { status: 'malformed' }
   // a letter's branch names are public hashes, checked above; a PR shows what a bundle shows
-  if (doc.type !== 'patch') return { status: 'readable', fields: parsed.fields }
   const shown = await bundledPatch(doc, parsed.fields)
   return shown === null ? { status: 'malformed' } : { status: 'readable', fields: shown }
 }

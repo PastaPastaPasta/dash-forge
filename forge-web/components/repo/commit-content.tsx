@@ -178,8 +178,8 @@ function CommitChecks({ repo, oid }: { repo: RepoRef; oid: string }): JSX.Elemen
         (ms) => ({ known: true, ids: new Set(ms.filter((m) => isApprover(m.role)).map((m) => m.identity)) }),
         () => ({ known: false, ids: new Set<string>() }),
       )
-      const heads = await Promise.all([oid, ...blinds].map((head) => readCheckRuns(sdk!, repo, head, members.ids)))
-      const runs = heads.flatMap((h) => h.runs)
+      const read = await Promise.all([oid, ...blinds].map((head) => readCheckRuns(sdk!, repo, head, members.ids)))
+      const runs = read.flatMap((r) => r.runs)
       return { runs, summary: summarizeChecks(runs, members.known) }
     },
     [ready, repoKey(repo), oid, network, blinds.join(',')],

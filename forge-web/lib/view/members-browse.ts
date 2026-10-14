@@ -154,7 +154,7 @@ async function overlay(
   const place = (order: number): number => at.get(order) as number
   const parts = ranged.map((r) => r.rows.remapPacks(new Map([[0, place(r.order)]])))
   if (found.length > 0) {
-    const { serializeLocator } = await import('../browse/indexer')
+    const { serializeLocator } = await indexer()
     parts.push(ObjectLocator.parse(serializeLocator(found.map((o) => ({ ...o, packRef: place((whole[o.packRef] as Whole).order) })))))
   }
   return {

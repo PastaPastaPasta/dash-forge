@@ -6,8 +6,8 @@
  * the owner is never read (readers ignore it), and my own bundles never become items.
  *
  * For each bundle: its bytes (hash-checked, as any stored artifact's), its comment, issue, review
- * and pull request entries (at most {@link MAX_TARGETS} posts read per bundle), and the posts among them that
- * are mine and that the entry's key really opens (its current revision, as every reader checks
+ * and pull request entries (at most {@link MAX_TARGETS} posts read per bundle), and the posts
+ * among them that are mine and that the entry's key really opens (its current revision, as every reader checks
  * it: a lying entry tells nobody). One item per bundle: "made your comment public", "made 3 of
  * your posts public", linking to the thread of the first. A read that fails fails the page, so
  * the feed's cursor stays and the bundle is read again on the next poll.
@@ -69,8 +69,9 @@ async function openedPost(sdk: EvoSDK, forge: ForgeIds, repo: RepoLite, e: Bundl
   if (stored === null) return null
   const { read } = await readRevision(decodeIdentifier(repo.id), stored, revisionOf(d), stored.enc, [{ by, revision: e.revision, key: e.key }])
   if (read.state !== 'public') return null
-  const thread = n.type === DOC.issue || n.type === DOC.patch ? id : asIdentifierString(d[n.type === DOC.review ? 'patchId' : 'targetId'])
-  const title = n.type === DOC.issue || n.type === DOC.patch ? read.fields.title : undefined
+  const isThread = n.type === DOC.issue || n.type === DOC.patch
+  const thread = isThread ? id : asIdentifierString(d[n.type === DOC.review ? 'patchId' : 'targetId'])
+  const title = isThread ? read.fields.title : undefined
   return { noun: n.noun, author, thread, ...(title !== undefined ? { title } : {}) }
 }
 

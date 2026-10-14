@@ -78,6 +78,11 @@ export function isOpaqueName(name: string): boolean {
   return name.length === OPAQUE_NAME_LEN && [...name].every((c) => BASE32.includes(c))
 }
 
+/** Whether `raw` is a members-only run's sealed log (`DFCL`): unreadable text to anyone else. */
+export function isSealedCheckLog(raw: Uint8Array): boolean {
+  return raw.length >= 5 && constantTimeEqual(raw.subarray(0, 4), MAGIC)
+}
+
 function ad(blind: Uint8Array, opaque: string): Bytes {
   return concat(MAGIC, new Uint8Array([VERSION, blind.length]), blind, utf8(opaque))
 }

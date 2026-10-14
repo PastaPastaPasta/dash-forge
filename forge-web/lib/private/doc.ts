@@ -618,9 +618,11 @@ export async function bundleWouldPublishMembersOnly(doc: PrivateDoc, fields: Doc
  * hash is keyed under an epoch's ref key (a members-only branch), which a published key cannot
  * check and whose name stays members-only, so the name is left out (the document is not malformed
  * for it; a hash whose name is missing still is). The real head and its salt (TLV 24, 27) are never
- * shown: the head stays the blind as written. Null when the document is malformed.
+ * shown: the head stays the blind as written. Null when the document is malformed. Any other type
+ * is shown as it is.
  */
 export async function bundledPatch(doc: PrivateDoc, fields: DocFields): Promise<DocFields | null> {
+  if (doc.type !== 'patch') return fields
   const out: { -readonly [K in keyof DocFields]: DocFields[K] } = { ...fields }
   const pairs: [Uint8Array | undefined, 'baseRefName' | 'sourceRefName'][] = [
     [doc.baseRefNameHash, 'baseRefName'],
@@ -706,7 +708,6 @@ export async function openMembersWithKey(repoId: Uint8Array, doc: PrivateDoc, en
   } finally {
     pt.fill(0)
   }
-  if (doc.type !== 'patch') return { status: 'readable', fields }
   const shown = await bundledPatch(doc, fields)
   return shown === null ? MALFORMED : { status: 'readable', fields: shown }
 }

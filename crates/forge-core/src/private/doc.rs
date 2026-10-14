@@ -683,9 +683,12 @@ pub fn bundle_would_publish_members_only(header: &DocHeader, fields: &Fields) ->
 /// epoch's ref key (a members-only branch), which a published key cannot check and whose name stays
 /// members-only, so the name is left out (the document is not malformed for it; a hash whose name
 /// is missing still is). The real head and its salt (TLV 24, 27) are never shown: the head stays
-/// the blind as written. `None` when the document is malformed.
+/// the blind as written. `None` when the document is malformed. Any other kind is shown as it is.
 #[must_use]
 pub fn bundled_patch(header: &DocHeader, mut fields: Fields) -> Option<Fields> {
+    if header.kind != DocKind::Patch {
+        return Some(fields);
+    }
     let public = |hash: Option<[u8; 32]>, name: &mut Option<String>| -> bool {
         match (hash, name.as_deref()) {
             (Some(h), Some(n)) => {
@@ -772,11 +775,7 @@ pub fn open_members_with_key(
     } else {
         tlv::parse(&pt, header.kind, false)
     };
-    let fields = parsed.and_then(|f| match header.kind {
-        DocKind::Patch => bundled_patch(header, f),
-        _ => Some(f),
-    });
-    match fields {
+    match parsed.and_then(|f| bundled_patch(header, f)) {
         Some(fields) => Opened::Readable(Box::new(fields)),
         None => Opened::Malformed,
     }

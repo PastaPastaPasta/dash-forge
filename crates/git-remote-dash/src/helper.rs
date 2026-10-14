@@ -2870,33 +2870,40 @@ async fn publish_members_index(
     if !publishes_browse_index() {
         return;
     }
-    let sealed = forge_core::pack::ObjectLocator::build(pack, 0)
-        .and_then(|l| {
-            let plain = forge_core::pack::members_index::encode(pack_hash, &l)?;
-            Ok((l.object_count() as u64, plain))
-        })
-        .map_err(|e| anyhow!("{e}"))
-        .and_then(|(rows, plain)| {
-            lane.seal_artifact(&plain)
-                .map(|sealed| (rows, sealed))
-                .map_err(|_| anyhow!("it could not be encrypted"))
-        });
-    let chain = stored.platform_target(ctx);
-    let targets = stored.targets(chain.as_ref());
-    let required = ctx.policy.resolved.replicas.min(targets.len()).max(1);
-    let outcome = match sealed {
-        Ok((rows, sealed)) => ctx
-            .svc
-            .store_members_index(ctx.repo, sealed, rows, &targets, required)
-            .await
-            .map_err(|e| anyhow!("{e}")),
-        Err(e) => Err(e),
-    };
-    if let Err(e) = outcome {
+    if let Err(e) = try_publish_members_index(ctx, lane, pack, pack_hash, stored).await {
         eprintln!(
             "dash: warning: the members-only branch's browse index was not published ({e:#}); members' browsers read its pack whole instead"
         );
     }
+}
+
+async fn try_publish_members_index(
+    ctx: &PushContext<'_>,
+    lane: &forge_core::private::Lane,
+    pack: &forge_core::pack::ParsedPack,
+    pack_hash: [u8; 32],
+    stored: &StoredWith,
+) -> Result<()> {
+    let locator = forge_core::pack::ObjectLocator::build(pack, 0).map_err(|e| anyhow!("{e}"))?;
+    let plain =
+        forge_core::pack::members_index::encode(pack_hash, &locator).map_err(|e| anyhow!("{e}"))?;
+    let sealed = lane
+        .seal_artifact(&plain)
+        .map_err(|_| anyhow!("it could not be encrypted"))?;
+    let chain = stored.platform_target(ctx);
+    let targets = stored.targets(chain.as_ref());
+    let required = ctx.policy.resolved.replicas.min(targets.len()).max(1);
+    ctx.svc
+        .store_members_index(
+            ctx.repo,
+            sealed,
+            locator.object_count() as u64,
+            &targets,
+            required,
+        )
+        .await
+        .map_err(|e| anyhow!("{e}"))?;
+    Ok(())
 }
 
 /// The on-chain cost of storing one members-only pack (sealed, with its browse index; no refs).
