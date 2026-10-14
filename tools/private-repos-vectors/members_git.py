@@ -18,10 +18,12 @@ Cases it writes (forge-contracts/vectors/<case>__<name>.json):
   `op: open`.
 - `members_pack_plan`: the push's pack jobs by audience (D22).
 - `publish_guard`: the publication guard over an abstract object graph (D21, S4's scenarios that do not
-  need git).
+  need git), with the gitlink notes and the opt-in patch-id warning.
+- `members_index`: the plaintext of a members-only object locator (kind 65): `"DFML" ‖ 0x01 ‖ packHash ‖
+  objectLocator` with every row at packRef 0 (`op: encode`, `op: parse`).
 
 The Rust harness (`forge-core`) runs every file. The TypeScript harness (`forge-web/lib/private`) runs
-`oid_blind`, `sealed_ref` and `sealed_patch`; the pack plan and the guard are the git helper's, which the
+`oid_blind`, `sealed_ref`, `sealed_patch` and `members_index`; the pack plan and the guard are the git helper's, which the
 browser never runs.
 """
 import glob
@@ -35,7 +37,7 @@ import gen  # noqa: E402
 from gen import H, K0, K1, NONCE, ownerId, repoId, rec, ref_hash, sha256, tlv  # noqa: E402
 
 VECTORS = []
-CASES = ("oid_blind", "sealed_ref", "sealed_patch", "members_pack_plan", "publish_guard")
+CASES = ("oid_blind", "sealed_ref", "sealed_patch", "members_pack_plan", "publish_guard", "members_index")
 
 
 def vector(case, name, description, inp, expected):
@@ -625,6 +627,25 @@ class Graph:
     def objects(self, include, exclude):
         return self.reach(include, True) - self.reach(exclude, True)
 
+    def gitlinks(self, include, exclude):
+        """The gitlinks (submodule entries, never walked into) the commits of `include ^exclude` introduce: an
+        entry of the commit's tree that differs from at least one parent's at its path (every entry of a root
+        commit), as `git log --raw -m` lists them."""
+        out = set()
+        for c in self.commits(include, exclude):
+            ob = self.o[c]
+            mine = self.o[ob["tree"]].get("gitlinks", {}) if ob.get("tree") else {}
+            parents = [self.o[q].get("tree") for q in ob.get("parents", [])]
+            theirs = [self.o[t].get("gitlinks", {}) if t else {} for t in parents]
+            for path, target in mine.items():
+                if not theirs or any(t.get(path) != target for t in theirs):
+                    out.add((c, path, target))
+        return out
+
+    def patch_ids(self, commits):
+        """`git patch-id --stable` of each commit that has one (a merge, or a commit changing nothing, has none)."""
+        return {c: self.o[c]["patchId"] for c in commits if self.o[c].get("patchId")}
+
     def peel(self, x):
         tags = []
         while self.o[x]["type"] == "tag":
@@ -665,7 +686,11 @@ def guard(inp):
     all_s = list(S)
     sealed_objects = g.objects(all_s, P) if all_s else set()
     sealed_commits = g.commits(all_s, P) if all_s else set()
-    findings, published = [], []
+    findings, published, gitlinks, remade = [], [], [], []
+    by_patch = {}
+    if inp.get("patchIds") and sealed_commits:
+        for c, pid in sorted(g.patch_ids(sealed_commits).items()):
+            by_patch.setdefault(pid, c)
     for u in inp["batch"]:
         T = u.get("new")
         if not T:
@@ -686,6 +711,14 @@ def guard(inp):
                 leak = g.commits([peeled], P) - g.commits([peeled], P + all_s)
                 if leak:
                     found.append(dict(dst=u["dst"], kind="commits", oids=sorted(leak)))
+                # a gitlink naming a members-only commit is allowed (it publishes an id, no content): noted
+                gitlinks += [dict(dst=u["dst"], commit=c, path=p, target=t)
+                             for c, p, t in sorted(g.gitlinks([peeled], P)) if t in sealed_commits]
+                # opt-in: public commits carrying a members-only commit's changes under a new id
+                if by_patch:
+                    fresh = g.commits([peeled], P + all_s)
+                    remade += [dict(dst=u["dst"], commit=c, like=by_patch[pid])
+                               for c, pid in sorted(g.patch_ids(fresh).items()) if pid in by_patch]
             elif peeled in sealed_objects:
                 found.append(dict(dst=u["dst"], kind="object", oids=[peeled]))
             if u["dst"].startswith("refs/notes/") and kind == "commit":
@@ -700,7 +733,12 @@ def guard(inp):
             published.extend(found)
         else:
             findings.extend(found)
-    return dict(verdict="refuse" if findings else "pass", findings=findings, notes=notes, published=published)
+    out = dict(verdict="refuse" if findings else "pass", findings=findings, notes=notes, published=published)
+    if gitlinks:
+        out["gitlinks"] = gitlinks
+    if remade:
+        out["remade"] = remade
+    return out
 
 
 def guard_vectors():
@@ -708,13 +746,17 @@ def guard_vectors():
     o = lambda x: H(oid(x))
     objs = {}
 
-    def commit(name, parents, tree=None):
+    def commit(name, parents, tree=None, patch=None):
         objs[o(name)] = dict(type="commit", parents=[o(p) for p in parents], tree=o(tree) if tree else None)
+        if patch:
+            objs[o(name)]["patchId"] = H(sha256(patch.encode()))
         if tree and o(tree) not in objs:
             objs[o(tree)] = dict(type="tree", entries=[])
 
-    def tree(name, entries):
+    def tree(name, entries, gitlinks=None):
         objs[o(name)] = dict(type="tree", entries=[o(e) for e in entries])
+        if gitlinks:
+            objs[o(name)]["gitlinks"] = {p: o(t) for p, t in gitlinks.items()}
 
     def blob(name):
         objs[o(name)] = dict(type="blob")
@@ -742,6 +784,21 @@ def guard_vectors():
     objs[o("tag-m3")] = dict(type="tag", target=o("m3"))
     objs[o("tag-main4")] = dict(type="tag", target=o("main4"))
     objs[o("sealed-tag")] = dict(type="tag", target=o("main4"))  # a members-only annotated tag on a public commit
+    # gitlinks (submodule entries): to a members-only commit, to a public one, and one kept unchanged
+    tree("t-link-sec", ["pub.txt"], {"sub-fix": "m2"})
+    tree("t-link-pub", ["pub.txt"], {"sub-lib": "main2"})
+    tree("t-link-both", ["pub.txt"], {"sub-fix": "m2", "sub-lib": "main2"})
+    commit("link-sec", ["main4"], "t-link-sec")
+    commit("link-pub", ["main4"], "t-link-pub")
+    commit("link-kept", ["link-sec"], "t-link-both")
+    # a members-only fix (m1 adds secret.txt) re-made on main by a cherry-pick (the same change, so the same
+    # patch id over real git), then an unrelated public change; commits whose tree equals their parent's have
+    # no patch id
+    objs[o("m1")]["patchId"] = H(sha256(b"adds secret.txt"))
+    commit("picked", ["main4"], "t-sec", patch="adds secret.txt")
+    blob("docs.txt")
+    tree("t-docs", ["pub.txt", "secret.txt", "docs.txt"])
+    commit("picked-other", ["picked"], "t-docs", patch="adds docs.txt")
     commit("notes-pub", [], "t-pub")
     commit("notes-sec", [], "t-pub")
     notes = {o("notes-pub"): [o("main3")], o("notes-sec"): [o("m2")]}
@@ -831,6 +888,28 @@ def guard_vectors():
         ("narrow_into_members", "D21 rev 4: a members-only ref may not take a commit recorded with a narrower "
          "audience.", dict(ledger=[dict(oid=o("narrow1"), audience="branch:" + "ab" * 8)], decryptable=[m3],
                            batch=[dict(dst="refs/heads/sec/fix", new=o("merge-narrow"), audience="members")])),
+        ("gitlink_to_members_noted", "a public commit whose tree has a gitlink (a submodule entry) naming a "
+         "members-only commit passes: it publishes the commit's id, not its content (an oracle only), and the "
+         "helper notes it.", dict(ledger=[], decryptable=[m3],
+                                  batch=[dict(dst="refs/heads/main", new=o("link-sec"), audience="public")])),
+        ("gitlink_to_public_passes", "a gitlink naming a public commit is not noted.",
+         dict(ledger=[], decryptable=[m3], batch=[dict(dst="refs/heads/main", new=o("link-pub"), audience="public")])),
+        ("gitlink_noted_once", "a gitlink is noted where a commit introduces it, not again in a later commit that "
+         "keeps it unchanged.", dict(ledger=[], decryptable=[m3],
+                                    batch=[dict(dst="refs/heads/main", new=o("link-kept"), audience="public")])),
+        ("gitlink_ledger_without_key", "no key: the ledger's members-only commits are noted alike.",
+         dict(ledger=[dict(oid=m3)], decryptable=None,
+              batch=[dict(dst="refs/heads/main", new=o("link-sec"), audience="public")])),
+        ("patch_id_off_by_default", "a members-only commit re-made on main with a new id (a cherry-pick): the "
+         "guard does not see it, and without the opt-in nothing is said.", dict(ledger=[], decryptable=[m3],
+         batch=[dict(dst="refs/heads/main", new=o("picked-other"), audience="public")])),
+        ("patch_id_warns", "with the opt-in (git config dash.patchIdCheck true) the re-made commit is named beside the "
+         "members-only commit with the same changes; the push still passes (a warning).", dict(
+             ledger=[], decryptable=[m3], patchIds=True,
+             batch=[dict(dst="refs/heads/main", new=o("picked-other"), audience="public")])),
+        ("patch_id_no_match", "the opt-in with no re-made commit says nothing.", dict(
+            ledger=[], decryptable=[m3], patchIds=True,
+            batch=[dict(dst="refs/heads/main", new=o("ff5"), audience="public")])),
         ("members_into_members", "members-only commits into another members-only branch pass.",
          dict(ledger=[dict(oid=m3)], decryptable=[m3], batch=[dict(dst="refs/heads/sec/other", new=m3,
                                                                      audience="members")])),
@@ -839,9 +918,84 @@ def guard_vectors():
         inp = dict(base, **extra)
         vector("publish_guard", name, desc, inp, guard(inp))
     assert guard(dict(base, **cases[2][2]))["findings"][0]["oids"] == sealed_m
+    noted = {name: guard(dict(base, **extra)).get("gitlinks", []) for name, _, extra in cases}
+    assert [g["path"] for g in noted["gitlink_to_members_noted"]] == ["sub-fix"]
+    assert noted["gitlink_to_public_passes"] == [] and noted["gitlink_ledger_without_key"]
+    assert [(g["commit"], g["path"]) for g in noted["gitlink_noted_once"]] == [(o("link-sec"), "sub-fix")]
+    warned = {name: guard(dict(base, **extra)).get("remade", []) for name, _, extra in cases}
+    assert warned["patch_id_warns"] == [dict(dst="refs/heads/main", commit=o("picked"), like=o("m1"))]
+    assert warned["patch_id_off_by_default"] == [] and warned["patch_id_no_match"] == []
+
+
+# --- the members-only object locator (kind 65) --------------------------------------------------------------
+
+MI_MAGIC, MI_VERSION = b"DFML", 0x01
+
+
+def locator(rows):
+    """An objectLocator: fanout (256 cumulative u32 counts) ‖ rows sorted by (oid, packRef); a row is oid(20) ‖
+    packRef(u16) ‖ offset(5) ‖ length(u32) ‖ span(u32) ‖ depth(u8)."""
+    rows = sorted(rows)
+    raw = [o + pr.to_bytes(2, "big") + off.to_bytes(5, "big") + ln.to_bytes(4, "big") + sp.to_bytes(4, "big")
+           + bytes([d]) for o, pr, off, ln, sp, d in rows]
+    fan, n = [], 0
+    for b in range(256):
+        n += sum(1 for r in raw if r[0] == b)
+        fan.append(n.to_bytes(4, "big"))
+    return b"".join(fan) + b"".join(raw)
+
+
+def members_index(pack_hash, loc):
+    return MI_MAGIC + bytes([MI_VERSION]) + pack_hash + loc
+
+
+def parse_members_index(b):
+    if len(b) < 37 or b[:4] != MI_MAGIC:
+        return dict(error="malformed")
+    if b[4] != MI_VERSION:
+        return dict(skip=True)
+    loc = b[37:]
+    if len(loc) < 1024:
+        return dict(error="malformed")
+    count = int.from_bytes(loc[1020:1024], "big")
+    if len(loc) != 1024 + 36 * count:
+        return dict(error="malformed")
+    rows = [loc[1024 + 36 * i:1024 + 36 * (i + 1)] for i in range(count)]
+    if any(r[20:22] != b"\0\0" for r in rows):
+        return dict(error="malformed")
+    return dict(packHash=H(b[5:37]), objectCount=count)
+
+
+def members_index_vectors():
+    pack_hash = sha256(b"a members-only pack")
+    rows = [(oid("blob"), 0, 12, 40, 40, 0), (oid("commit"), 0, 52, 160, 160, 0), (oid("tree"), 0, 212, 70, 282, 1)]
+    loc = locator(rows)
+    good = members_index(pack_hash, loc)
+    vector("members_index", "encode", "The plaintext of a members-only pack's index: DFML, version 1, the kind-64 "
+           "pack's packHash, then its objectLocator with every row at packRef 0 (sealed afterwards as DFPK 0x01 under "
+           "the members key).", dict(op="encode", packHash=H(pack_hash), locator=H(loc)), dict(bytes=H(good)))
+    vector("members_index", "encode_refused_other_pack_ref", "A row at another packRef: an index of one pack has "
+           "none.", dict(op="encode", packHash=H(pack_hash), locator=H(locator(rows[:2] + [(oid("tree"), 1, 0, 9, 9,
+                                                                                            0)]))),
+           dict(error="malformed"))
+
+    def pv(name, desc, b):
+        vector("members_index", "parse_" + name, desc, dict(op="parse", bytes=H(b)), parse_members_index(b))
+
+    pv("ok", "It names the pack it indexes and every row of it.", good)
+    pv("empty_pack", "A pack of no objects has an index of no rows.", members_index(pack_hash, locator([])))
+    pv("later_version", "A later layout is skipped (the browser indexes the pack itself), never fatal.",
+       good[:4] + bytes([0x02]) + good[5:])
+    pv("other_magic", "Not a members-only index.", b"DFMX" + good[4:])
+    pv("short_header", "Shorter than its header.", good[:36])
+    pv("bad_locator", "A locator whose fanout does not describe its rows.", good[:-1])
+    pv("other_pack_ref", "A row at packRef 1.", members_index(pack_hash, locator(rows[:2] + [(oid("tree"), 1, 0, 9, 9,
+                                                                                            0)])))
+    assert parse_members_index(good) == dict(packHash=H(pack_hash), objectCount=3)
 
 
 def write_vectors(out_dir):
+    members_index_vectors()
     oid_blind_vectors()
     sealed_ref_vectors()
     sealed_patch_vectors()
@@ -877,6 +1031,7 @@ if __name__ == "__main__":
     if "--write-vectors" in sys.argv:
         write_vectors(out_dir)
     else:
+        members_index_vectors()
         oid_blind_vectors()
         sealed_ref_vectors()
         sealed_patch_vectors()

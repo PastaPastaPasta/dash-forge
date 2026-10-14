@@ -1,0 +1,25 @@
+{
+  "name": "bundle_open_pr_hash_without_name_malformed",
+  "description": "A source hash whose name the PR does not seal: malformed (the reader disagreement the name check exists to prevent).",
+  "case": "make_public",
+  "rules": "v2",
+  "input": {
+    "op": "bundleOpen",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "doc": {
+      "type": "patch",
+      "vis": "public",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "number": 12,
+      "baseRefNameHash": "f921bd05e68b03740c450e565e0e6173e546193170b2dd404ddb6f153e9b5bf3",
+      "sourceRefNameHash": "f9337f26a53b55ef8817947cb1554159ae4637a5565e5f88b01eed029b69ccfb",
+      "id": "0b869fee4db27765ebf277de18e6fdf474d303a330ac8c3355e05a5a8dd1eaf2"
+    },
+    "enc": "03000102030405060708090a0ba356be5eeb40790d82c00c39a168e2608321a201ac1203d81291d9c0b27fb45d5663a837d93aab3bbcd7783a720d1de9cd51c189cf9af44875f5df0a4d2d0a376373603adeb4fcc8d44881aa07657e07c3a0628ce4b164fa7f5c1a63df8a5e0821ad825137325da7fc11a400b894bce6",
+    "key": "108a1119696198045797b92d7d8beceaa899f38c418e3c00023ac7d710b3354d"
+  },
+  "expected": {
+    "status": "malformed"
+  }
+}

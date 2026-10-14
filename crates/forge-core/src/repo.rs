@@ -3555,6 +3555,52 @@ impl<'a> RepoService<'a> {
             .await
     }
 
+    /// Store `sealed`, the members-only index of one members-only pack
+    /// ([`crate::pack::members_index`], already sealed under the members key by the caller), as a
+    /// kind-65 artifact of `rows` objects on `targets` (`required` of them must confirm), and
+    /// record its `packManifest` (no `tips`, no `supersedes`). Returns its `packHash`.
+    pub async fn store_members_index(
+        &self,
+        repo: &RepoRef,
+        sealed: Vec<u8>,
+        rows: u64,
+        targets: &[&dyn StorageTarget],
+        required: usize,
+    ) -> Result<[u8; 32]> {
+        if repo.visibility != Visibility::Public {
+            return Err(Error::Config(
+                "a members-only index belongs to a public repository".into(),
+            ));
+        }
+        let meta = PackMeta::for_bytes(&sealed);
+        let pack_hash = meta.pack_hash_bytes()?;
+        let rep = crate::storage::replicate(
+            targets,
+            &sealed,
+            &meta,
+            required.clamp(1, targets.len().max(1)),
+        )
+        .await
+        .map_err(|e| Error::Io(format!("members-only index: {e}")))?;
+        let stored = StoredArtifact::from_replication(&rep, &sealed)?;
+        self.write_pack_manifest(
+            repo,
+            &PackManifestInput {
+                pack_hash,
+                kind: u64::from(crate::pack::KIND_MEMBERS_OBJECT_LOCATOR),
+                size_bytes: sealed.len() as u64,
+                object_count: rows,
+                chunk_count: stored.chunk_count,
+                storage: stored.storage,
+                uris: stored.uris,
+                supersedes: Vec::new(),
+                tips: Vec::new(),
+            },
+        )
+        .await?;
+        Ok(pack_hash)
+    }
+
     /// Store a long body's stored form `bytes` (plaintext, or sealed) as a `kind` artifact and
     /// record its `packManifest`. Returns its `packHash`.
     async fn store_long_body_bytes(

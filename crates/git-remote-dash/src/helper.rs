@@ -2669,6 +2669,8 @@ fn guard_push(planned: &mut [Planned], view: &PushView, options: &OptionState) -
         }
         Verdict::Pass => {
             eprint_lines(members::publication_lines(&g, &outcome.published));
+            eprint_lines(members::gitlink_lines(&outcome.gitlinks));
+            eprint_lines(members::remade_lines(&g, &outcome.remade));
             if members_only_exists && outcome.notes.contains(&Note::NoKeyEmptyLedger) {
                 eprintln!(
                     "dash: note: your encryption key isn't available; this clone's record says it never held members-only commits, so the push was checked against that"
@@ -2725,7 +2727,11 @@ fn guard_private_push(
     let outcome = members::run_guard(false, None, &known, &batch, publish.as_deref())?;
     let g = members::GitGraph::here();
     match outcome.verdict {
-        Verdict::Pass => eprint_lines(members::publication_lines(&g, &outcome.published)),
+        Verdict::Pass => {
+            eprint_lines(members::publication_lines(&g, &outcome.published));
+            eprint_lines(members::gitlink_lines(&outcome.gitlinks));
+            eprint_lines(members::remade_lines(&g, &outcome.remade));
+        }
         Verdict::Unavailable => {
             say_refusal(&members::ledger_unreadable());
             reject_accepted(planned, "can't check for members-only commits");
@@ -2763,10 +2769,10 @@ fn members_pack_jobs(
 
 /// Build, seal under the members key's write epoch, store and record (kind 64) one members-only
 /// pack (DESIGN §4.3 "Packs"), as [`upload_push_pack`] stores a public one: priced and guarded
-/// first, stored per the policy, its manifest written before any ref names it. No browse index
-/// is written for it (kinds 65–69 come with members-only browsing). `Some((packHash, credits))`
-/// when a pack was stored (or an earlier push's is reused); `None` when it adds no objects or in
-/// a dry run.
+/// first, stored per the policy, its manifest written before any ref names it. Its browse index
+/// (kind 65, [`publish_members_index`]) follows it to the same places. `Some((packHash,
+/// credits))` when a pack was stored (or an earlier push's is reused); `None` when it adds no
+/// objects or in a dry run.
 async fn upload_members_pack(
     ctx: &PushContext<'_>,
     lane: Option<&forge_core::private::Lane>,
@@ -2835,10 +2841,60 @@ async fn upload_members_pack(
     crate::fetched::FetchedPacks::record(ctx.git_dir, ctx.repo.id(), job.pack_hash);
     retire_journal(ctx, &jpath, &replication);
     let actual = members_pack_estimate(ctx, plain_bytes, objects, replication.has_platform());
+    let stored = StoredWith {
+        replication,
+        externals,
+    };
+    publish_members_index(ctx, lane, &pack.parsed, job.pack_hash, &stored).await;
     Ok(Some((job.pack_hash, actual.total())))
 }
 
-/// The on-chain cost of storing one members-only pack (sealed; no browse index, no refs).
+/// Publish the browse index of the members-only pack `pack_hash` just stored (kind 65,
+/// [`forge_core::pack::members_index`]): its locator at `packRef` 0 under a header naming the
+/// pack, sealed under the members key's write epoch, to the places the pack went. A member's
+/// browser then reads the pack's objects by range instead of downloading and indexing it whole.
+/// Best-effort: the pack is stored and readable without it (the web indexes it in the browser),
+/// so a failure is a warning.
+async fn publish_members_index(
+    ctx: &PushContext<'_>,
+    lane: &forge_core::private::Lane,
+    pack: &forge_core::pack::ParsedPack,
+    pack_hash: [u8; 32],
+    stored: &StoredWith,
+) {
+    if !publishes_browse_index() {
+        return;
+    }
+    let sealed = forge_core::pack::ObjectLocator::build(pack, 0)
+        .and_then(|l| {
+            let plain = forge_core::pack::members_index::encode(pack_hash, &l)?;
+            Ok((l.object_count() as u64, plain))
+        })
+        .map_err(|e| anyhow!("{e}"))
+        .and_then(|(rows, plain)| {
+            lane.seal_artifact(&plain)
+                .map(|sealed| (rows, sealed))
+                .map_err(|_| anyhow!("it could not be encrypted"))
+        });
+    let chain = stored.platform_target(ctx);
+    let targets = stored.targets(chain.as_ref());
+    let required = ctx.policy.resolved.replicas.min(targets.len()).max(1);
+    let outcome = match sealed {
+        Ok((rows, sealed)) => ctx
+            .svc
+            .store_members_index(ctx.repo, sealed, rows, &targets, required)
+            .await
+            .map_err(|e| anyhow!("{e}")),
+        Err(e) => Err(e),
+    };
+    if let Err(e) = outcome {
+        eprintln!(
+            "dash: warning: the members-only branch's browse index was not published ({e:#}); members' browsers read its pack whole instead"
+        );
+    }
+}
+
+/// The on-chain cost of storing one members-only pack (sealed, with its browse index; no refs).
 fn members_pack_estimate(
     ctx: &PushContext<'_>,
     plain_bytes: u64,
@@ -2848,7 +2904,7 @@ fn members_pack_estimate(
     push_fees::estimate_push(&push_fees::PushShape {
         pack_bytes: plain_bytes,
         objects,
-        index_objects: 0,
+        index_objects: if publishes_browse_index() { objects } else { 0 },
         refs: 0,
         external_targets: ctx.policy.resolved.external.len() as u64,
         platform_bytes,

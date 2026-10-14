@@ -85,9 +85,6 @@ pub enum LeftOutWhy {
     NotSent,
     /// Its text continues in a separate members-only artifact, which a bundle does not publish.
     LongBody,
-    /// A pull request's own text (members-only PRs come with phase 3; its comments and reviews
-    /// are bundled).
-    PullRequest,
 }
 
 impl LeftOutWhy {
@@ -99,7 +96,6 @@ impl LeftOutWhy {
             Self::Unreadable => "you can't read it with your keys",
             Self::NotSent => "it's a message that wasn't sent to you",
             Self::LongBody => "it's too long to make public this way",
-            Self::PullRequest => "a pull request's own text can't be made public yet",
         }
     }
 }
@@ -317,7 +313,11 @@ impl Collab<'_> {
 
     /// A document of public `repo` as the public codecs read it, per document (the public form
     /// of [`open_with`]): a maintainer's bundle first (a bundled post is public for everyone,
-    /// members included), then the reader's own keys, else its placeholder.
+    /// members included), then the reader's own keys, else its placeholder. A bundled pull
+    /// request is the exception: a member who opens it with their own keys reads it so (the same
+    /// title and body, plus its members-only branch names and the real head their git needs),
+    /// and it is still noted as made public; everyone else reads what the bundle shows
+    /// ([`crate::private::doc::bundled_patch`]).
     pub(super) fn open_read(
         &self,
         repo_id: &[u8; 32],
@@ -339,6 +339,11 @@ impl Collab<'_> {
                         state: PublicationState::Public,
                     },
                 );
+                if doc_kind(kind) == DocKind::Patch {
+                    if let Ok(own) = open_with(keys, letters, kind, d) {
+                        return Ok(own);
+                    }
+                }
                 Ok(doc)
             }
             Outcome::EditedAfter(by, published_revision) => {
@@ -631,7 +636,7 @@ impl Collab<'_> {
                 continue;
             }
             let Some(entry_kind) = bundle::entry_kind(kind) else {
-                plan.left_out.push(leave(LeftOutWhy::PullRequest));
+                plan.left_out.push(leave(LeftOutWhy::Unreadable));
                 continue;
             };
             let target = platform::decode_identifier(&d.id)?;

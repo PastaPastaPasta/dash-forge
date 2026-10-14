@@ -648,12 +648,45 @@ fn decrypt_members(keys: &EpochKeys, header: &DocHeader, enc: &[u8]) -> Opened {
     Opened::Readable(Box::new(fields))
 }
 
-/// The kinds a maintainer's bundle publishes by their per-object key: issues, comments and
-/// reviews (a PR's sealed branch names are keyed by its epoch, which a bundle does not publish:
-/// members-only PRs and their bundles come with phase 3).
+/// The kinds a maintainer's bundle publishes by their per-object key: issues, comments, reviews
+/// and pull requests (a PR as [`bundled_patch`] shows it).
 #[must_use]
 pub fn bundles_kind(kind: DocKind) -> bool {
-    matches!(kind, DocKind::Issue | DocKind::Comment | DocKind::Review)
+    matches!(
+        kind,
+        DocKind::Issue | DocKind::Comment | DocKind::Review | DocKind::Patch
+    )
+}
+
+/// What a published key shows of an opened pull request (mixed-visibility DESIGN §4.4, §4.6;
+/// `private-repos.md` §17.5): its title, body and the names of its **public** branches. A branch
+/// name is shown only when its hash field is `sha256(name)`; any other hash is keyed under an
+/// epoch's ref key (a members-only branch), which a published key cannot check and whose name stays
+/// members-only, so the name is left out (the document is not malformed for it; a hash whose name
+/// is missing still is). The real head and its salt (TLV 24, 27) are never shown: the head stays
+/// the blind as written. `None` when the document is malformed.
+#[must_use]
+pub fn bundled_patch(header: &DocHeader, mut fields: Fields) -> Option<Fields> {
+    let public = |hash: Option<[u8; 32]>, name: &mut Option<String>| -> bool {
+        match (hash, name.as_deref()) {
+            (Some(h), Some(n)) => {
+                if !ct_eq(&h, &sha256(n.as_bytes())) {
+                    *name = None;
+                }
+                true
+            }
+            (Some(_), None) => false,
+            (None, _) => true,
+        }
+    };
+    if !public(header.base_ref_name_hash, &mut fields.base_ref_name)
+        || !public(header.source_ref_name_hash, &mut fields.source_ref_name)
+    {
+        return None;
+    }
+    fields.head_oid = None;
+    fields.oid_salt = None;
+    Some(fields)
 }
 
 /// `K_obj` of the members-only (`enc` v0x03) document `header`, derived under `keys` (its epoch)
@@ -714,7 +747,17 @@ pub fn open_members_with_key(
         return Opened::Unreadable(Unreadable::BadTag);
     };
     let pt = zeroize::Zeroizing::new(pt);
-    match tlv::parse(&pt, header.kind, false) {
+    // a public members-only PR carries its real head and salt (§19), which `bundled_patch` drops
+    let parsed = if header.vis == Visibility::Public {
+        tlv::parse_members(&pt, header.kind)
+    } else {
+        tlv::parse(&pt, header.kind, false)
+    };
+    let fields = parsed.and_then(|f| match header.kind {
+        DocKind::Patch => bundled_patch(header, f),
+        _ => Some(f),
+    });
+    match fields {
         Some(fields) => Opened::Readable(Box::new(fields)),
         None => Opened::Malformed,
     }

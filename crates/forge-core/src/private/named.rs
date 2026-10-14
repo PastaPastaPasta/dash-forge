@@ -547,7 +547,14 @@ pub fn open_with_key(
     {
         return doc::Opened::Malformed;
     }
-    doc::Opened::Readable(Box::new(fields))
+    // a letter's branch names are public hashes, checked above; a PR shows what a bundle shows
+    let fields = match header.kind {
+        super::DocKind::Patch => doc::bundled_patch(header, fields),
+        _ => Some(fields),
+    };
+    fields.map_or(doc::Opened::Malformed, |f| {
+        doc::Opened::Readable(Box::new(f))
+    })
 }
 
 // --- sealed artifacts under a specific-people header (DFPK version 0x02) ---------------------

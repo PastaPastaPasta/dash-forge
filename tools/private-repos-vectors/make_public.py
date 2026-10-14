@@ -32,6 +32,7 @@ The Rust harness (`forge_core::rules`, `rules::make_public`) and the TypeScript 
 reproduce it exactly.
 """
 import glob
+import hashlib
 import json
 import os
 import sys
@@ -239,7 +240,25 @@ def review_text_vectors():
 # --- maintainer bundles (phase 2B) ------------------------------------------------------------
 
 ENTRY_COMMENT, ENTRY_ISSUE, ENTRY_REVIEW, ENTRY_PATCH, ENTRY_EPOCH = 0x01, 0x02, 0x03, 0x04, 0x06
-ENTRY_OF = {"comment": ENTRY_COMMENT, "issue": ENTRY_ISSUE, "review": ENTRY_REVIEW}
+ENTRY_OF = {"comment": ENTRY_COMMENT, "issue": ENTRY_ISSUE, "review": ENTRY_REVIEW, "patch": ENTRY_PATCH}
+
+
+def bundled_patch(doc, fields):
+    """What a published key shows of an opened PR: a branch name only where its hash is sha256(name) (a public
+    branch); a keyed hash (a members-only branch, which the key cannot check) leaves the name out; a hash with no
+    name is malformed. The real head and salt (24, 27) are never shown. None: malformed."""
+    out = dict(fields)
+    for f in ("baseRefName", "sourceRefName"):
+        h = doc.get(f + "Hash")
+        if h is None:
+            continue
+        if f not in out:
+            return None
+        if bytes.fromhex(h) != hashlib.sha256(out[f].encode()).digest():
+            del out[f]
+    for f in ("headOid", "oidSalt"):
+        out.pop(f, None)
+    return out
 
 
 def bundle_vectors():
@@ -250,8 +269,8 @@ def bundle_vectors():
     repo = G.repoId
 
     def members_key(doc, K, enc):
-        """The K_obj a member derives for a v0x03 doc (None unless it commits; bundles publish issues, comments
-        and reviews only)."""
+        """The K_obj a member derives for a v0x03 doc (None unless it commits; bundles publish issues, comments,
+        reviews and pull requests)."""
         if enc[0] != G.V3 or doc["type"] not in ENTRY_OF:
             return None
         A = G.ad(doc, K, G.V3)
@@ -259,7 +278,8 @@ def bundle_vectors():
         return ko if G.obj_keys(ko)[1] == enc[13:45] else None
 
     def open_with_key(doc, enc, ko):
-        """The reference reader of a published key: (status, raw TLV or reason)."""
+        """The reference reader of a published key: (status, raw TLV or reason). A PR's fields are then shown as
+        bundled_patch says."""
         if doc["type"] not in ENTRY_OF:
             return "malformed", None
         kd, C2 = G.obj_keys(ko)
@@ -277,6 +297,30 @@ def bundle_vectors():
             return "readable", AESGCM(kd).decrypt(nonce, ct, A)
         except Exception:
             return "badTag", None
+
+    def open_fields(doc, enc, ko, fields):
+        """open_with_key, then what a bundle shows of a PR (`fields`: the TLV as the vector states it)."""
+        status, raw = open_with_key(doc, enc, ko)
+        if status == "readable" and doc["type"] == "patch":
+            shown = bundled_patch(doc, fields)
+            return ("readable", shown) if shown is not None else ("malformed", None)
+        return status, fields
+
+    TAG_NAMES = {1: "title", 2: "body", 4: "baseRefName", 5: "sourceRefName", 24: "headOid", 27: "oidSalt"}
+
+    def raw_fields(doc, raw):
+        """The content records of an opened PR's TLV (type, u16 length, value), the padding and a letter's
+        recipients ignored."""
+        out, i = {}, 0
+        while i + 3 <= len(raw):
+            t, n = raw[i], int.from_bytes(raw[i + 1:i + 3], "big")
+            if t == 0:
+                break
+            v = raw[i + 3:i + 3 + n]
+            if t in TAG_NAMES:
+                out[TAG_NAMES[t]] = v.decode() if t in (1, 2, 4, 5) else v.hex()
+            i += 3 + n
+        return out
 
     def opened(status, fields=None):
         if status == "readable":
@@ -309,9 +353,36 @@ def bundle_vectors():
     _, _, _, _, _, enc_l = G.seal_named(letter, G.NAMED_SENDER, 4, G.NAMED_N3, G.tlv((2, lbody.encode())), k_obj_l,
                                         nonce_l, ivs_l)
     owner_keys = [G.owner_key(G.NAMED_SENDER)]
-    # a members-only PR: bundles do not publish it (its branch names are keyed by its epoch; phase 3)
-    patch = dict(G.PATCH, vis="public", id=H(G.cid("bundle patch")))
-    _, ko_p, _, _, enc_p = G.seal_members(patch, G.K0, G.PATCH_TLV)
+    # members-only PRs (mixed-visibility §4.4): from a members-only branch into public main (keyed source, public
+    # base, the blind head with its real value and salt in 24 and 27), from a public branch (both names public),
+    # and into a members-only base (both keyed)
+    import members_git as M
+    pr_props = dict(M.MPATCH_PROPS, title="Fix the bounds check", body="The upper bound was off by one.")
+    real, s_ = M.oid("H1"), M.salt("push-H1")
+    pr_docs = {}
+    for label, base_public, source_public, head in (("members_branch", True, False, True),
+                                                    ("public_branches", True, True, False),
+                                                    ("members_base", False, False, True)):
+        plain = M.blind(s_, real) if head else M.oid("H2")
+        d, _, _, enc, _ = M.seal_patch(pr_props, base_public, source_public, real if head else None, plain,
+                                       s_ if head else None)
+        d = dict(d, id=H(G.cid("bundle pr " + label)))
+        pr_docs[label] = (d, enc, members_key(d, G.K0, enc))
+    patch, enc_p, ko_p = pr_docs["members_branch"]
+    pr_fields = {"title": pr_props["title"], "body": pr_props["body"]}
+    # a PR whose source hash names no sealed name: malformed whatever the key
+    d, _, _, enc_nohash, _ = M.seal_patch(pr_props, True, False, None, M.oid("H2"), None,
+                                          records=[(1, pr_props["title"].encode()), (4, b"refs/heads/main")])
+    pr_nameless = (dict(d, id=H(G.cid("bundle pr nameless"))), enc_nohash)
+    pr_nameless = pr_nameless + (members_key(pr_nameless[0], G.K0, enc_nohash),)
+    # a PR sent to specific people (enc v0x04): its branch names are public hashes
+    k_obj_lp, nonce_lp, ivs_lp = G.named_inputs(3)
+    letter_pr = dict(type="patch", vis="public", ownerId=H(G.NAMED_SENDER["id"]), epoch=0, number=9,
+                     baseRefNameHash=H(G.sha256(b"refs/heads/main")),
+                     sourceRefNameHash=H(G.sha256(b"refs/heads/fix-for-rae")), id=H(G.cid("bundle letter pr")))
+    _, _, _, _, _, enc_lp = G.seal_named(letter_pr, G.NAMED_SENDER, 4, G.NAMED_N3,
+                                         G.tlv((1, b"A fix for Rae"), (4, b"refs/heads/main"),
+                                               (5, b"refs/heads/fix-for-rae")), k_obj_lp, nonce_lp, ivs_lp)
 
     # --- bundleKey ---
     def key_vector(name, desc, doc, enc, expected, **inp):
@@ -325,8 +396,8 @@ def bundle_vectors():
     key_vector("bundle_key_members_review", "A review's K_obj.", review, enc_r, ko_r, epochKey=H(G.K0), epoch=0)
     key_vector("bundle_key_other_epoch_none", "The epoch key held is not the document's epoch's: no key.",
                dict(comment, epoch=1), enc_c, None, epochKey=H(G.K0), epoch=0)
-    key_vector("bundle_key_patch_none", "A members-only PR is not bundled (its branch names are keyed by its epoch, "
-               "which a bundle does not publish): no key.", patch, enc_p, None, epochKey=H(G.K0), epoch=0)
+    key_vector("bundle_key_pr_members", "A members-only PR revision's K_obj (entry type 0x04): derived and checked "
+               "like any document's.", patch, enc_p, ko_p, epochKey=H(G.K0), epoch=0)
     key_vector("bundle_key_letter_recipient", "A maintainer the letter was sent to (r1) unwraps K_obj from their own "
                "slot, after the whole letter reader rule: the key a bundle entry publishes.", letter, enc_l, k_obj_l,
                ownerKeys=owner_keys, reader=G.reader_json(G.NAMED_N3[1]))
@@ -335,9 +406,13 @@ def bundle_vectors():
                reader=G.reader_json(G.NAMED_OUTSIDER))
 
     # --- bundleOpen ---
-    def open_vector(name, desc, doc, enc, ko, expected_status, fields=None):
+    def open_vector(name, desc, doc, enc, ko, expected_status, fields=None, sealed=None):
         got, raw = open_with_key(doc, enc, ko)
+        if got == "readable" and doc["type"] == "patch":
+            got = "readable" if bundled_patch(doc, sealed or raw_fields(doc, raw)) is not None else "malformed"
         assert got == expected_status, (name, got)
+        if got == "readable" and doc["type"] == "patch":
+            assert bundled_patch(doc, raw_fields(doc, raw)) == fields, (name, raw_fields(doc, raw))
         vector(name, desc, dict(op="bundleOpen", repoId=H(repo), doc=doc, enc=H(enc), key=H(ko)),
                opened(expected_status, fields))
         return raw
@@ -374,8 +449,24 @@ def bundle_vectors():
     tampered[-1] ^= 0x01
     open_vector("bundle_open_body_tampered_badtag", "The right key, a tampered tag: BadTag.", comment, bytes(tampered),
                 ko_c, "badTag")
-    open_vector("bundle_open_patch_malformed", "A PR is not opened by a bundle (phase 3).", patch, enc_p, ko_p,
-                "malformed")
+    open_vector("bundle_open_pr_members_branch", "A members-only PR from a members-only branch into public main, "
+                "opened with its published key: the title, the body and the public base's name (its hash is "
+                "sha256(name)). The source branch's hash is keyed under the epoch's ref key, which the key cannot "
+                "check and whose name stays members-only: left out. The real head and salt (24, 27) are never shown.",
+                patch, enc_p, ko_p, "readable", dict(pr_fields, baseRefName="refs/heads/main"))
+    d, enc, ko = pr_docs["public_branches"]
+    open_vector("bundle_open_pr_public_branches", "A members-only PR between public branches: both names shown.",
+                d, enc, ko, "readable", dict(pr_fields, baseRefName="refs/heads/main",
+                                              sourceRefName=M.MPATCH_PROPS["sourceRefName"]))
+    d, enc, ko = pr_docs["members_base"]
+    open_vector("bundle_open_pr_members_base", "Into a members-only base: neither name is shown.", d, enc, ko,
+                "readable", pr_fields)
+    d, enc, ko = pr_nameless
+    open_vector("bundle_open_pr_hash_without_name_malformed", "A source hash whose name the PR does not seal: "
+                "malformed (the reader disagreement the name check exists to prevent).", d, enc, ko, "malformed")
+    open_vector("bundle_open_pr_letter", "A PR sent to specific people: its names are public hashes, checked, "
+                "shown.", letter_pr, enc_lp, k_obj_lp, "readable",
+                {"title": "A fix for Rae", "baseRefName": "refs/heads/main", "sourceRefName": "refs/heads/fix-for-rae"})
 
     # --- bundleRead ---
     def bundle(owner, entries):
@@ -395,7 +486,7 @@ def bundle_vectors():
                 if parsed is None:
                     continue
                 honoured += [(k, t, r, key, b["owner"]) for k, t, r, key in parsed
-                             if k in (ENTRY_COMMENT, ENTRY_ISSUE, ENTRY_REVIEW)]
+                             if k in (ENTRY_COMMENT, ENTRY_ISSUE, ENTRY_REVIEW, ENTRY_PATCH)]
         reads, alerts = [], []
         for it in items:
             doc, enc, rev = it["doc"], bytes.fromhex(it["enc"]), it["revision"]
@@ -472,9 +563,18 @@ def bundle_vectors():
                 fields=[{"body": lbody}])
     read_vector("bundle_read_other_type_ignored", "An entry of type issue naming a comment's id does not apply to "
                 "the comment.", [bundle(MAINT, [(ENTRY_ISSUE, cid_c, 1, ko_c)])], [item(comment, enc_c, 1)], ["none"])
-    read_vector("bundle_read_epoch_and_patch_entries_ignored", "Epoch-key (0x06) and PR (0x04) entries are not "
-                "document entries here.", [bundle(MAINT, [(ENTRY_EPOCH, repo, 0, G.K0), (ENTRY_PATCH, cid_c, 1, ko_c)])],
+    read_vector("bundle_read_epoch_and_pr_entry_on_comment_ignored", "An epoch-key (0x06) entry is not a document "
+                "entry here, and a PR (0x04) entry naming a comment's id does not apply to the comment.",
+                [bundle(MAINT, [(ENTRY_EPOCH, repo, 0, G.K0), (ENTRY_PATCH, cid_c, 1, ko_c)])],
                 [item(comment, enc_c, 1)], ["none"])
+    cid_p = bytes.fromhex(patch["id"])
+    read_vector("bundle_read_pr_public", "A maintainer's bundle naming a members-only PR's current revision (entry "
+                "0x04): public for everyone, shown as a published key shows a PR (title, body, the public base's "
+                "name; not the members-only branch's name or the real head).",
+                [bundle(MAINT, [(ENTRY_PATCH, cid_p, 1, ko_p)])], [item(patch, enc_p, 1)], ["public"],
+                fields=[dict(pr_fields, baseRefName="refs/heads/main")])
+    read_vector("bundle_read_pr_issue_entry_ignored", "An issue (0x02) entry naming the PR's id does not apply to it.",
+                [bundle(MAINT, [(ENTRY_ISSUE, cid_p, 1, ko_p)])], [item(patch, enc_p, 1)], ["none"])
     mallory_doc = dict(mallory, id=H(G.cid("bundle forged copy")))
     read_vector("bundle_read_forged_copy_not_covered", "Mallory's comment minted under the published key has its "
                 "own $id: no entry names it, so it stays members-only (and members refuse it).",
