@@ -80,12 +80,15 @@ export function sealedRefProps(s: SealedRefUpdate): Record<string, unknown> {
 export type MembersRefSealer = (doc: PrivateDoc, fields: DocFields) => Promise<Uint8Array>
 
 /**
- * The header and TLV fields of `input` under `keys` with `salt`: refused ({@link MalformedError})
- * for a type that is not a ref update, an OID that is not 20 or 32 bytes, a `prevOid` of another
- * width than `newOid`, and an update that names no commit at all (a null create).
+ * The plaintext header and TLV fields of `input` with `salt`, its name hashed to `nameHash` under
+ * key epoch (or branch generation) `epoch`: refused ({@link MalformedError}) for a type that is not
+ * a ref update, an OID that is not 20 or 32 bytes, a `prevOid` of another width than `newOid`, and
+ * an update that names no commit at all (a null create). forge-core `members_ref::header_and_fields`;
+ * `./branch-key` seals a narrower branch's update (`enc` v0x06) from the same two.
  */
-async function docAndFields(
-  keys: EpochKeys,
+export async function refDocAndFields(
+  nameHash: Uint8Array,
+  epoch: number,
   ownerId: PrivateId,
   input: RefUpdateIn,
   salt: Uint8Array,
@@ -109,8 +112,8 @@ async function docAndFields(
     type,
     vis: 'public',
     ownerId,
-    epoch: keys.epoch,
-    refNameHash: await refNameHash(keys, name),
+    epoch,
+    refNameHash: new Uint8Array(nameHash),
     newOid: plainNew,
     ...(plainPrev !== undefined ? { prevOid: plainPrev } : {}),
     force,
@@ -118,19 +121,23 @@ async function docAndFields(
   return { doc, fields }
 }
 
-async function sealRefWith(keys: EpochKeys, ownerId: PrivateId, input: RefUpdateIn, salt: Uint8Array, seal: MembersRefSealer): Promise<SealedRefUpdate> {
-  const { doc, fields } = await docAndFields(keys, ownerId, input, salt)
-  const enc = new Uint8Array(await seal(doc, fields))
+/** The sealed update of the header `doc` (from {@link refDocAndFields}), its `salt` and its `enc`. */
+export function sealedRefOf(doc: PrivateDoc, salt: Uint8Array, enc: Uint8Array): SealedRefUpdate {
   return {
-    type: input.type,
+    type: doc.type as RefUpdateType,
     refNameHash: doc.refNameHash as Bytes,
     newOid: doc.newOid as Bytes,
     ...(doc.prevOid !== undefined ? { prevOid: doc.prevOid as Bytes } : {}),
-    force: input.force,
-    epoch: keys.epoch,
-    enc,
+    force: doc.force === true,
+    epoch: doc.epoch,
+    enc: new Uint8Array(enc),
     salt: new Uint8Array(salt),
   }
+}
+
+async function sealRefWith(keys: EpochKeys, ownerId: PrivateId, input: RefUpdateIn, salt: Uint8Array, seal: MembersRefSealer): Promise<SealedRefUpdate> {
+  const { doc, fields } = await refDocAndFields(await refNameHash(keys, input.name), keys.epoch, ownerId, input, salt)
+  return sealedRefOf(doc, salt, await seal(doc, fields))
 }
 
 /**

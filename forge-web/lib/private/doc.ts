@@ -61,6 +61,11 @@ const MAX_ENC: Readonly<Record<PrivateDocType, number>> = {
   event: 5120,
 }
 
+/** The `enc` `maxItems` of `type` in its contract. */
+export function maxEnc(type: PrivateDocType): number {
+  return MAX_ENC[type]
+}
+
 /** The largest TLV plaintext a document of `type` can carry. */
 export function maxPlaintext(type: PrivateDocType): number {
   return MAX_ENC[type] - (type === 'config' ? MIN_CONFIG_ENC : MIN_ENC)

@@ -7,12 +7,14 @@ import { bytes, concat, isU32, randomBytes, sha256, u32, u64, type Bytes } from 
 import { PACK_VERSION, hedgeFileId, type EpochKeyring, type EpochKeys } from './keys'
 
 export const HEADER_LEN = 36
-const MAGIC = [0x44, 0x46, 0x50, 0x4b] // "DFPK"
+/** `"DFPK"`, the first bytes of every sealed artifact (§3.2). */
+export const MAGIC = [0x44, 0x46, 0x50, 0x4b]
 const TAG_LEN = 16
 /** The segment size writers use: `L = 14`, 16 KiB. */
 export const WRITER_SEG_LOG2 = 14
-const MIN_SEG_LOG2 = 10
-const MAX_SEG_LOG2 = 20
+/** The smallest and largest segment size a header may carry (`L`, §3.2). */
+export const MIN_SEG_LOG2 = 10
+export const MAX_SEG_LOG2 = 20
 
 /**
  * Why a sealed artifact cannot be read (§3.5). `unknownVersion`: a `DFPK` header of a version
@@ -121,7 +123,8 @@ export function parseHeader(sealed: Uint8Array): PackHeader {
   return { segLog2, epoch: view.getUint32(8), plaintextLen: Number(len), fileId: raw.slice(20, 36), raw }
 }
 
-function segmentNonce(i: number, final: boolean): Bytes {
+/** Segment `i`'s nonce: `u64(i) ‖ 00 00 00 ‖ final` (§3.3). */
+export function segmentNonce(i: number, final: boolean): Bytes {
   return concat(u64(i), new Uint8Array([0, 0, 0, final ? 1 : 0]))
 }
 
