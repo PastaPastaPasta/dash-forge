@@ -1090,6 +1090,54 @@ impl<'a> RepoService<'a> {
             .map(ArtifactRead::Bytes)
     }
 
+    /// The bytes of a members-only git pack (kind 64, DESIGN §4.3) of PUBLIC `repo`, opened with
+    /// `kr`, the reader's own members key, under the late-content rule (§8.2) as a private
+    /// repository's packs are; or why it is skipped: a header this client does not open, an epoch
+    /// it does not hold, or bytes that are not sealed at all (a members-only pack is never read
+    /// as public bytes).
+    pub async fn open_members_pack(
+        &self,
+        repo: &RepoRef,
+        kr: &std::sync::Arc<Keyring>,
+        copies: &[&PackManifestInfo],
+        size_bytes: u64,
+        sealed: Vec<u8>,
+    ) -> Result<ArtifactRead> {
+        use crate::private::Head;
+        let Some(manifest) = copies.first() else {
+            return Err(Error::NotFound);
+        };
+        let skipped = |why| {
+            Ok(ArtifactRead::Skipped(Skipped {
+                pack: manifest.pack_hash,
+                why,
+            }))
+        };
+        match crate::private::sniff(&sealed) {
+            Head::OtherVersion(version) => skipped(SkipReason::OtherFormat { version }),
+            Head::Plain | Head::Short => skipped(SkipReason::OtherFormat { version: 0 }),
+            Head::Sealed { epoch } if kr.epoch_keys(epoch).is_none() => {
+                skipped(SkipReason::NoKey { epoch })
+            }
+            Head::Sealed { .. } => self
+                .open_sealed(repo, kr, copies, size_bytes, sealed)
+                .await
+                .map(ArtifactRead::Bytes),
+        }
+    }
+
+    /// The members key of PUBLIC `repo` to write members-only git data with, from keys read NOW
+    /// (§5.3: anchors re-read before every write); the reload also replaces the cached keyring.
+    pub async fn members_lane(
+        &self,
+        repo: &RepoRef,
+    ) -> Result<(crate::private::Lane, std::sync::Arc<Keyring>)> {
+        let kr = std::sync::Arc::new(self.signer()?.keyring(repo).await?);
+        *self.cache() = Some(std::sync::Arc::clone(&kr));
+        let lane = kr.lane(repo)?;
+        Ok((lane, kr))
+    }
+
     /// The keys PUBLIC `repo`'s sealed artifacts are opened with, which only a repository made
     /// public has (§18.2): the epoch keys its owner published, and never a member's own. A
     /// public repository's artifacts feed public data (a clone, a mirror, a browse index a push
@@ -1534,6 +1582,66 @@ impl<'a> RepoService<'a> {
         Ok(results)
     }
 
+    /// Write members-only ref updates of PUBLIC `repo` (DESIGN §4.3,
+    /// `docs/security/private-repos.md` §19.2) sealed under `lane`'s write epoch (read by the
+    /// caller just before, [`Self::members_lane`]): `refName` only inside `enc`, a keyed name
+    /// hash, and the real OIDs blinded under a fresh salt per update. Routed to
+    /// `protectedRefUpdate` by the public config's patterns, as a public update of the same name
+    /// is. The writes go in parallel, each reported through `on_landed(i)` as it lands; returns
+    /// each update's result in order, `Err` only when nothing was written.
+    pub async fn write_members_ref_updates(
+        &self,
+        repo: &RepoRef,
+        lane: &crate::private::Lane,
+        updates: &[RefWrite],
+        mut on_landed: impl FnMut(usize),
+    ) -> Result<Vec<Result<String>>> {
+        repo.require_public("writing a members-only branch")?;
+        for u in updates {
+            check_ref_write(&u.ref_name, &u.new_oid, u.prev_oid.as_deref())?;
+        }
+        let (scope, contract) = self.writable(repo).await?;
+        let configs = crate::refs::read_config_history(self.client, &contract, &scope).await?;
+        let engine = self.doc_engine()?;
+        let me = self.identity_id()?;
+        let owner_bytes = platform::decode_identifier(&me)?;
+        let owner = me == repo.owner_id();
+        let keys = lane.write_keys();
+        let (scope, contract, configs, engine) = (&scope, &contract, &configs, &engine);
+        let mut landed = futures::stream::iter(updates.iter().map(|u| async move {
+            let doc_type = ref_doc_type(&u.ref_name, configs, owner);
+            let kind = if doc_type == DOC_PROTECTED_REF_UPDATE {
+                DocKind::ProtectedRefUpdate
+            } else {
+                DocKind::RefUpdate
+            };
+            let sealed = crate::private::members_ref::seal(
+                keys,
+                owner_bytes,
+                &crate::private::members_ref::RefUpdateIn {
+                    kind,
+                    name: &u.ref_name,
+                    new_oid: &u.new_oid,
+                    prev_oid: u.prev_oid.as_deref(),
+                    force: u.force,
+                },
+            )
+            .map_err(|e| sealed_error(&e))?;
+            let mut props = scope.scoped(sealed.props());
+            crate::members::stamp_claimed_role(contract, doc_type, &mut props, 1);
+            engine.create_document(contract, doc_type, props).await
+        }))
+        .buffered(crate::backends::platform::pipeline_window());
+        let mut results = Vec::with_capacity(updates.len());
+        while let Some(r) = landed.next().await {
+            if r.is_ok() {
+                on_landed(results.len());
+            }
+            results.push(r);
+        }
+        Ok(results)
+    }
+
     /// A private ref update (§4.5): `refNameHash = HMAC(K_ref,e, refName)` under the write
     /// epoch re-resolved now, `refName` only inside `enc`, bound (AD) to the hash, the oids and
     /// `force`. Protected routing uses the decrypted config timeline.
@@ -1613,22 +1721,35 @@ impl<'a> RepoService<'a> {
             crate::history::Freshness::Now,
         )
         .await?;
-        let configs = state.config_history();
-        let by_hash = state.ref_histories();
+        Ok(crate::refs::public_refs(&state))
+    }
 
-        let mut out = Vec::with_capacity(by_hash.len());
-        for (hash, updates) in &by_hash {
-            let hash_hex = hex::encode(hash);
-            // Shared naming rule (forge-web applies the same one) — never the raw newest
-            // update, which may carry a name that does not hash to this key.
-            let Some(ref_name) = rules::display_ref_name(updates, &hash_hex).map(str::to_owned)
-            else {
-                continue;
-            };
-            let state = rules::resolve_ref(updates, &configs, &hash_hex, |a, b| a == b);
-            out.push((ref_name, state));
-        }
-        Ok(out)
+    /// PUBLIC `repo`'s git-data history read now ([`crate::refs::read_git_state`]): what
+    /// [`crate::refs::refs_view`] folds, once for the public and once for a member.
+    pub async fn git_state(&self, repo: &RepoRef) -> Result<crate::refs::GitState> {
+        repo.require_public("reading members-only branches")?;
+        let (scope, contract) = self.readable(repo).await?;
+        crate::refs::read_git_state(
+            self.client,
+            &contract,
+            &scope,
+            crate::history::Freshness::Now,
+        )
+        .await
+    }
+
+    /// PUBLIC `repo`'s refs as the git helper reads them, from one read of its history
+    /// ([`crate::refs::RefsView`]): the public fold, whether members-only content is on, how
+    /// many members-only ref updates exist, and with `keyring` (the reader's members key) the
+    /// member view on real values.
+    pub async fn read_refs_view(
+        &self,
+        repo: &RepoRef,
+        keyring: Option<&Keyring>,
+    ) -> Result<crate::refs::RefsView> {
+        repo.require_public("reading members-only branches")?;
+        let (scope, contract) = self.readable(repo).await?;
+        crate::refs::read_refs_view(self.client, &contract, &scope, keyring).await
     }
 
     /// Every ref of a **public** repository with its live tip (if any), the Platform document
