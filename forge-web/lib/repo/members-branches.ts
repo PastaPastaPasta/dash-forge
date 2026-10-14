@@ -16,7 +16,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { base58Encode } from '../auth/base58'
 import { openContent } from '../private'
-import type { ConfigDoc, IsAncestor } from '../rules'
+import type { ConfigDoc, IsAncestor, RefUpdate } from '../rules'
 import { queryAllDocuments, type PlainDocument } from '../sdk'
 import { repoTimelines } from './chrome'
 import { configBundleOf, readConfigHistory } from './config'
@@ -38,6 +38,8 @@ export interface MembersRefs {
   readonly unreadable: number
   /** Blinds that did not check, and members-only updates naming a live public branch (left out, D29). */
   readonly alerts: readonly RefAlert[]
+  /** Each members-only ref's whole update history (real values), by full name: a PR's base tips. */
+  readonly updates: ReadonlyMap<string, readonly RefUpdate[]>
 }
 
 /** Whether `doc` is a members-only ref update: sealed, under its own `vis: "public"` stamp (§19.3). */
@@ -104,6 +106,7 @@ export async function membersRefsOf(
   )
   const branches: ResolvedRef[] = []
   const tags: ResolvedRef[] = []
+  const histories = new Map<string, readonly RefUpdate[]>()
   const names = knownNames(lane.repoId)
   for (const [name, group] of updates.byName) {
     // only a name whose fold holds a members-only update (public names win, D29: theirs were dropped)
@@ -111,11 +114,12 @@ export async function membersRefsOf(
     const ref = toResolvedRef(group, configHistory, publicRefKey(name), isAncestor ?? (() => false))
     if (ref === null || ref.state.state === 'unborn') continue
     names.add(name)
+    histories.set(name, group)
     const listed: ResolvedRef = { ...ref, audience: 'members' }
     if (name.startsWith('refs/heads/')) branches.push(listed)
     else if (name.startsWith('refs/tags/')) tags.push(listed)
   }
-  return { branches, tags, unreadable: updates.unreadable, alerts: updates.alerts }
+  return { branches, tags, unreadable: updates.unreadable, alerts: updates.alerts, updates: histories }
 }
 
 /** The members-only ref names this tab's members-key sessions listed, by repo id (base58). */

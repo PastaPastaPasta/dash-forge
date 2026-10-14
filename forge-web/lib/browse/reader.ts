@@ -369,6 +369,13 @@ export interface BrowseReaderOptions {
    * which places served a page (L-18).
    */
   readonly onRead?: (packRef: number, copy: number | undefined, view: string) => void
+  /**
+   * The real commit behind an OID the index does not hold, when there is one: a members-only
+   * document's blind (`private-repos.md` §19.1), which a member's reader resolves through the blinds
+   * their session verified (`lib/repo/members-blinds.ts`). The real object is read and verified
+   * against its own OID; the blind is never memoized as an object id.
+   */
+  readonly alias?: (oidHex: string) => string | undefined
 }
 
 /** The memos a reader and its {@link BrowseReader.forView} siblings share. */
@@ -854,6 +861,8 @@ export class BrowseReader {
 
     const entry = await this.locate(oidHex, commit)
     if (entry === null) {
+      const real = this.opts.alias?.(oidKey)
+      if (real !== undefined && real !== oidKey) return this.readBounded(real, limits, commit)
       const fresher = await this.opts.onMiss?.(oidHex)
       // The retry keeps this read's limits (a README image stays capped on the fresher reader).
       // The fresher reader reads for this reader's view (its places still count for the page).

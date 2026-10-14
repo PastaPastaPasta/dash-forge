@@ -76,6 +76,7 @@ import { knownConversion } from '../repo/converted'
 import { HEADER_LEN, PackError, maybeSealed, skipReason, sniff, type Conversion, type SkipReason } from '../private'
 import { mirrorCopy, mirrorUrisOf, resetMirrorUris } from '../repo/pack-mirrors'
 import { MembersIndex, loadMembersPacks, membersGitPacks, membersPackSource } from './members-browse'
+import { blindBook } from '../repo/members-blinds'
 
 /** Chunk queries in flight at once when one range spans more than a single query. */
 const CHUNK_QUERY_POOL = 6
@@ -2290,7 +2291,11 @@ export function repoReader(
   unavailable: readonly UnavailablePack[] = [],
 ): BrowseReader {
   const key = repoKey(repo)
+  // A member reads a members-only document's blinded commit id as the commit it hides.
+  const lane = membersLane(repo)
+  const book = lane === undefined ? null : blindBook(lane.ctx)
   const reader: BrowseReader = new BrowseReader(locator, packs, {
+    ...(book !== null ? { alias: (oid: string) => book.realOf(oid) } : {}),
     onObject: objectObserver(key),
     // Bytes that never arrived: the views re-read once the connection is back (L-10).
     onUnreachable: () => noteReadOutage(key),

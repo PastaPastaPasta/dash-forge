@@ -27,6 +27,13 @@
  * waiting for the rules to be met (bypass rules)", confirm a dialog naming each rule bypassed,
  * and the merge really runs, then records the bypass on the PR as a policy-bypass event (`bypassValue`; the
  * merge transition has no field for it). The same rule as `dg pr merge --override-policy`.
+ *
+ * Publishing (mixed-visibility DESIGN §4.3, §4.4; `publish`): a members-only PR from a members-only
+ * branch into a public base is merged by publishing it. Two methods only, Squash and publish (the
+ * default) and Publish with history, never a merge commit with members-only parents; the publish
+ * dialog comes first (`publish-dialog.tsx`); the merge reads the real head its blind hides, the
+ * pack holds everything the public lacks (the head's objects are never taken as held), and it is
+ * checked against what the public can read.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -50,7 +57,11 @@ import { UnlockMore } from '@/components/auth/unlock-more'
 import { mergeIdentityValid } from '@/lib/view/prefs'
 import { MERGE_UNCONFIRMED } from '@/lib/view/merge-recheck'
 import { CommitIdentityPrompt } from '@/components/repo/branch-commit-panel'
-import { branchName, tipOidOf, type DiffSides, type ObjectReader } from '@/lib/view'
+import { PublishDialog } from '@/components/repo/publish-dialog'
+import { authorName, historyChanges, namesBranch, readAllowList, scanChanges, withCoAuthors, type PublishScan } from '@/lib/view/publish'
+import type { FileChange } from '@/lib/view/commit-log'
+import { useAsync } from '@/hooks/use-async'
+import { branchName, readCommit, tipOidOf, type DiffSides, type ObjectReader } from '@/lib/view'
 import { useSdk } from '@/hooks/use-sdk'
 import { useMinWidth, usePrefs } from '@/hooks/use-prefs'
 import { useAuth } from '@/contexts/auth-context'
@@ -64,6 +75,40 @@ import { Textarea } from '@/components/ui/input'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 import { spendAction } from '@/lib/spend-toast'
+
+/**
+ * A members-only PR from a members-only branch into a public base: the merge box publishes it
+ * (DESIGN §4.3). Everything the dialog lists and scans, and the reader the pack is checked against.
+ */
+export interface PublishContext {
+  /** The real head the PR's blinded head hides (`PullView.realHeadOid`). */
+  readonly realHead: string
+  /** The members-only source branch, full name. */
+  readonly source: string
+  /** The commits the branch adds (the PR's commit list), newest first; null while unread. */
+  readonly commits: readonly string[] | null
+  /** Their authors, `Name <email>`, oldest first, each once. */
+  readonly authors: readonly string[]
+  /** The files the squash changes on the base (the comparison's); null while unread. */
+  readonly changes: readonly FileChange[] | null
+  readonly changesPartial: boolean
+  /** A reader of what the public reads (no members key): the pack must complete it. Null while it loads. */
+  readonly publicReader: ObjectReader | null
+}
+
+/** The publish dialog's verdict for a publish method, read once the dialog opens. */
+async function publishScan(reader: ObjectReader, sides: DiffSides, publish: PublishContext, method: Method): Promise<PublishScan> {
+  const head = await readCommit(reader, publish.realHead)
+  const allow = await readAllowList(reader, head.tree)
+  if (method === 'squash') {
+    const changes = publish.changes ?? []
+    const scan = await scanChanges(reader, changes, allow)
+    return publish.changesPartial ? { ...scan, partial: true } : scan
+  }
+  const { changes, partial } = await historyChanges(sides, publish.commits ?? [publish.realHead])
+  const scan = await scanChanges(reader, changes, allow)
+  return partial ? { ...scan, partial: true } : scan
+}
 
 /** "Delete the branch after merging": runnable, or shown disabled with why. */
 export type DeleteBranchOption = { readonly label: string; readonly run: () => Promise<void> } | { readonly label: string; readonly disabled: string }
@@ -131,6 +176,7 @@ export function MergePanel({
   checkSourceBranch,
   recheckMembers,
   onBranchDeleted,
+  publish,
 }: {
   repo: RepoRef
   pull: PullView
@@ -182,6 +228,8 @@ export function MergePanel({
   recheckMembers: (bypass: readonly string[]) => Promise<string | null>
   /** Told once "Delete the branch after merging" deleted it (the page shows it deleted at once). */
   onBranchDeleted?: () => void
+  /** Publish a members-only branch's PR instead of merging it ({@link PublishContext}). */
+  publish?: PublishContext
 }): JSX.Element | null {
   const { sdk } = useSdk()
   const { signer, locked: sessionLocked } = useAuth()
@@ -206,12 +254,15 @@ export function MergePanel({
   const [allowTouched, setAllowTouched] = useState<boolean | null>(null)
   const baseRefName = pull.mergeBaseRefName
   const baseProtected = matchesProtected(baseRefName, protectedPatterns)
-  const refProblem = mergeRefProblem(baseRefName, baseTipOid, pull.headOid)
+  // A published PR's git reads take the real head its blind hides; every fold keeps the blind.
+  const head = publish?.realHead ?? pull.headOid
+  const refProblem = mergeRefProblem(baseRefName, baseTipOid, head)
   // Merge reads prefer the head's repo and fall back to the base repo's own reader; they never
   // run until that base reader exists, so nothing about the base is taken from the fork.
   const readers = useMemo(() => mergeReaders(baseOnly, sides?.head ?? null), [sides, baseOnly])
   const reader = readers?.merge ?? null
-  const sameRepo = pull.sourceId === '' || pull.sourceId === repo.repoId
+  // A members-only head is never something the public "has": its objects all go in the pack.
+  const sameRepo = publish === undefined && (pull.sourceId === '' || pull.sourceId === repo.repoId)
 
   const policyAllows = (bit: number): boolean => allowedMethods === 0 || (allowedMethods & bit) !== 0
   const [check, setCheck] = useState<MergeCheck | { error: string } | null>(null)
@@ -220,7 +271,11 @@ export function MergePanel({
   const ffPossible = check === 'fast-forward'
   const [picked, setMethod] = useState<Method | null>(null)
   // Until the merger picks, the method follows the policy (which may load after the panel).
-  const preferred: Method = ffPossible
+  const preferred: Method = publish !== undefined
+    ? policyAllows(4) || !policyAllows(1 | 2)
+      ? 'squash'
+      : 'merge'
+    : ffPossible
     ? policyAllows(1)
       ? 'merge'
       : policyAllows(2)
@@ -234,16 +289,27 @@ export function MergePanel({
         ? 'squash'
         : 'rebase'
   // --no-ff where no fast-forward is possible is the plain merge commit.
-  const method: Method = picked === 'no-ff' && !ffPossible ? 'merge' : picked ?? preferred
+  // Publishing offers Squash and publish, or Publish with history (the plan's merge): no other.
+  const pickedHere = publish !== undefined && (picked === 'no-ff' || picked === 'rebase') ? null : picked
+  const method: Method = pickedHere === 'no-ff' && !ffPossible ? 'merge' : pickedHere ?? preferred
   const committer = `${prefs.mergeName.trim()} <${prefs.mergeEmail.trim()}>`
   const [squashText, setSquashText] = useState<string | null>(null)
   const squash = squashDraft(pull, squashAuthors, committer, squashText)
-  const squashMsg = squash.message
+  // Publishing: no co-author lines unless the publisher opts in (their emails become public).
+  const [coAuthorsOn, setCoAuthorsOn] = useState(false)
+  const coAuthors = useMemo(() => {
+    if (publish === undefined) return []
+    const own = squash.author === null ? committer : `${squash.author.name} <${squash.author.email}>`
+    return publish.authors.filter((a) => a !== own)
+  }, [publish, squash.author, committer])
+  const squashBase = publish !== undefined && squashText === null ? withCoAuthors(squash.message, []) : squash.message
+  const squashMsg = publish !== undefined && coAuthorsOn ? withCoAuthors(squashBase, coAuthors) : squashBase
   // The squash commit's author, as strings (the merge input below is memoized on them).
   const squashByName = squash.author?.name ?? null
   const squashByEmail = squash.author?.email ?? null
   // The merge commit's message (review-parity M2): the default until the merger edits it.
-  const sourceLabel = mergeSourceLabel(pull.sourceRefName, pull.headOid)
+  // A members-only branch is never named in a public commit's default message.
+  const sourceLabel = publish !== undefined ? 'a members-only branch' : mergeSourceLabel(pull.sourceRefName, pull.headOid)
   const [mergeText, setMergeText] = useState<string | null>(null)
   // A members-only PR's title is for members: the public merge commit names only its number.
   const publicTitle = pull.audience === 'members' || pull.audience === 'specificPeople' ? '' : pull.title
@@ -259,7 +325,7 @@ export function MergePanel({
   const input = useMemo<MergeInput>(
     () => ({
       baseTip: baseTipOid,
-      headOid: pull.headOid,
+      headOid: head,
       prNumber: pull.number,
       sourceLabel,
       title: publicTitle,
@@ -272,7 +338,7 @@ export function MergePanel({
       ...(method === 'no-ff' ? { noFastForward: true as const } : {}),
       ...(method === 'rebase' ? { rebase: true as const } : {}),
     }),
-    [baseTipOid, pull.headOid, pull.number, sourceLabel, publicTitle, mergeText, writesMergeCommit, prefs.mergeName, prefs.mergeEmail, sameRepo, method, squashMsg, squashByName, squashByEmail],
+    [baseTipOid, head, pull.number, sourceLabel, publicTitle, mergeText, writesMergeCommit, prefs.mergeName, prefs.mergeEmail, sameRepo, method, squashMsg, squashByName, squashByEmail],
   )
   // Widened for the real commit's identity (author and committer) and the squash message as it
   // is now: the check used a placeholder identity and the message of the moment.
@@ -316,7 +382,7 @@ export function MergePanel({
       },
     )
     return () => abort.abort()
-  }, [checkable, reader, sidesKey, baseTipOid, pull.headOid])
+  }, [checkable, reader, sidesKey, baseTipOid, head])
   // A method switch re-sizes the pack only: the verdict and the controls stay (the menu keeps
   // focus); the Storage row shows no price until the size for this method is in.
   const sizedMethod = sized?.method ?? null
@@ -370,7 +436,7 @@ export function MergePanel({
   const [bypassTicked, setBypassTicked] = useState(false)
   const [confirmingBypass, setConfirmingBypass] = useState(false)
   const [bypassed, setBypassed] = useState<readonly string[] | null>(null)
-  const gate = mergeGate({ unmet: unmetRules, canBypass, bypassTicked, storageLocked: storageNeedsUnlock, branchAhead: branchAhead === null ? null : { ...branchAhead, head: pull.headOid } })
+  const gate = mergeGate({ unmet: unmetRules, canBypass, bypassTicked, storageLocked: storageNeedsUnlock, branchAhead: branchAhead === null ? null : { ...branchAhead, head } })
   // The branch deletion's outcome, with the label it was run for: the page stops offering the
   // option once the PR reads merged, which is exactly when this is shown.
   const [deleted, setDeleted] = useState<{ label: string; error: string | null } | null>(null)
@@ -446,7 +512,7 @@ export function MergePanel({
     setBypassed(bypass)
     begin(preAgreedCredits)
     const digest = (text: string): string => bytesToHex(sha256(new TextEncoder().encode(text))).slice(0, 16)
-    const intent = `merge:${repo.repoId}:${pull.number}:${pull.headOid}:${baseTipOid}${input.squash ? `:squash:${digest(input.squash.message)}` : input.rebase ? ':rebase' : input.noFastForward ? ':no-ff' : ''}${input.message !== undefined ? `:msg:${digest(input.message)}` : ''}`
+    const intent = `merge:${repo.repoId}:${pull.number}:${head}:${baseTipOid}${input.squash ? `:squash:${digest(input.squash.message)}` : input.rebase ? ':rebase' : input.noFastForward ? ':no-ff' : ''}${input.message !== undefined ? `:msg:${digest(input.message)}` : ''}`
     try {
       // The merge's writes are one action: one toast with their total (QW3-039). The merge panel is
       // not modal, so its own signer marks them; a branch delete or issue close after it is its own.
@@ -465,7 +531,8 @@ export function MergePanel({
               const r = await publishMergeIndex(sdk, auth, repo, pack, packHash, upload, `${intent}:index`)
               return r.kind === 'published' ? `fragment at packRef ${r.packRef}` : `skipped: ${r.reason}`
             },
-            verifyPack: (pack, tip) => missingFromClosure(pack, tip, input.baseTip, (readers ?? { base: baseOnly }).base),
+            // Published: complete for the public (no members key), never for this member's reader.
+            verifyPack: (pack, tip) => missingFromClosure(pack, tip, input.baseTip, publish?.publicReader ?? (readers ?? { base: baseOnly }).base),
             readBaseTip: async () => {
               // The same rule the page's tip came from (resolveRef, then the provisional tip).
               const ref = await resolveRefByHash(sdk, repo, bytesToBase64(refNameHash(baseRefName)), await readConfigHistory(sdk, repo))
@@ -526,7 +593,18 @@ export function MergePanel({
       setBusy(false)
       starting.current = false
     }
-  }, [sdk, signer, reader, readers, baseOnly, refProblem, busy, guard, cost, repo, pull.id, pull.number, pull.headOid, pull.baseRefName, pull.createdAt, pull.author, baseRefName, input, run, baseTipOid, onMerged, upload, begin, storageNeedsUnlock, preAgreedCredits, deletable, alsoDelete, closeIssues, closing, checkSourceBranch, recheckMembers, onBranchDeleted])
+  }, [sdk, signer, reader, readers, baseOnly, refProblem, busy, guard, cost, repo, pull.id, pull.number, head, publish, pull.baseRefName, pull.createdAt, pull.author, baseRefName, input, run, baseTipOid, onMerged, upload, begin, storageNeedsUnlock, preAgreedCredits, deletable, alsoDelete, closeIssues, closing, checkSourceBranch, recheckMembers, onBranchDeleted])
+  // Publishing: the dialog's choices land in `input` first, then the run starts (the next render).
+  const [publishing, setPublishing] = useState(false)
+  const [publishGo, setPublishGo] = useState(0)
+  useEffect(() => {
+    if (publishGo > 0) void start(null)
+  }, [publishGo]) // eslint-disable-line react-hooks/exhaustive-deps
+  const scan = useAsync<PublishScan>(
+    () => publishScan(reader!, sides!, publish!, method),
+    [publishing, method, head, sidesKey, publish?.changes?.length ?? -1, publish?.commits?.length ?? -1],
+    { enabled: publishing && publish !== undefined && reader !== null && sides !== null },
+  )
   const onMergeClick = (): void => {
     // Locked: the click opens Unlock (the guard); merging is the next click, once unlocked.
     if (unlockFirst) {
@@ -535,8 +613,15 @@ export function MergePanel({
     }
     // A retry resumes the merge it started with (and its bypass, already confirmed).
     if (failure !== null) void start(bypassed)
+    else if (publish !== undefined) setPublishing(true)
     else if (gate.bypassing) setConfirmingBypass(true)
     else void start(null)
+  }
+  const onPublish = (choice: { readonly coAuthors: boolean }): void => {
+    setPublishing(false)
+    setCoAuthorsOn(choice.coAuthors)
+    if (gate.bypassing) setConfirmingBypass(true)
+    else setPublishGo((n) => n + 1)
   }
 
   // A run in this panel keeps it on screen to the end (the PR reads Merged meanwhile).
@@ -579,31 +664,45 @@ export function MergePanel({
                 className="h-9 rounded-md border border-anvil-300 bg-white px-2 text-dense text-anvil-900 coarse:h-11 dark:border-anvil-700 dark:bg-anvil-950 dark:text-anvil-100"
               >
                 {/* One name per method, whether or not a fast-forward is possible (QW2-051); the
-                    button says the action ("Create merge commit and merge"). */}
-                <option value="merge" disabled={!policyAllows(button.kind === 'fast-forward' ? 1 : 2)}>
+                    button says the action ("Create merge commit and merge"). Publishing offers two. */}
+                {publish !== undefined ? (
+                  <>
+                    <option value="squash" disabled={!policyAllows(4)}>
+                      Squash and publish
+                    </option>
+                    <option value="merge" disabled={!policyAllows(button.kind === 'fast-forward' ? 1 : 2)}>
+                      Publish with history
+                    </option>
+                  </>
+                ) : null}
+                {publish !== undefined ? null : <option value="merge" disabled={!policyAllows(button.kind === 'fast-forward' ? 1 : 2)}>
                   {button.kind === 'fast-forward' ? button.label : MERGE_COMMIT_OPTION}
-                </option>
-                {ffPossible ? (
+                </option>}
+                {ffPossible && publish === undefined ? (
                   <option value="no-ff" disabled={!policyAllows(2)}>
                     {MERGE_COMMIT_OPTION}
                   </option>
                 ) : null}
-                <option value="squash" disabled={!policyAllows(4)}>
-                  Squash and merge
-                </option>
-                <option value="rebase" disabled={!policyAllows(8)}>
-                  Rebase and merge
-                </option>
+                {publish !== undefined ? null : (
+                  <option value="squash" disabled={!policyAllows(4)}>
+                    Squash and merge
+                  </option>
+                )}
+                {publish !== undefined ? null : (
+                  <option value="rebase" disabled={!policyAllows(8)}>
+                    Rebase and merge
+                  </option>
+                )}
               </select>
               <Button
                 variant={gate.bypassing && failure === null ? 'danger' : 'primary'}
                 onClick={onMergeClick}
                 loading={busy}
-                disabled={!unlockFirst && ((!gate.enabled && failure === null) || !identityOk || !methodAllowed || busy || newTip !== null || guard.disabledReason !== null)}
+                disabled={!unlockFirst && ((!gate.enabled && failure === null) || !identityOk || !methodAllowed || busy || newTip !== null || guard.disabledReason !== null || (publish !== undefined && publish.publicReader === null))}
                 aria-describedby={gate.reason !== null ? 'merge-gate-reason' : undefined}
                 data-testid="merge-submit"
               >
-                {unlockFirst ? 'Unlock to merge' : failure ? retryLabel(failure.step) : gate.bypassing ? (method === 'squash' ? 'Bypass rules and squash' : method === 'rebase' ? 'Bypass rules and rebase' : 'Bypass rules and merge') : method === 'squash' ? 'Squash and merge' : method === 'rebase' ? 'Rebase and merge' : method === 'no-ff' ? 'Create merge commit and merge' : button.label}
+                {unlockFirst ? 'Unlock to merge' : failure ? retryLabel(failure.step) : publish !== undefined ? (gate.bypassing ? 'Bypass rules and publish' : method === 'squash' ? 'Squash and publish…' : 'Publish with history…') : gate.bypassing ? (method === 'squash' ? 'Bypass rules and squash' : method === 'rebase' ? 'Bypass rules and rebase' : 'Bypass rules and merge') : method === 'squash' ? 'Squash and merge' : method === 'rebase' ? 'Rebase and merge' : method === 'no-ff' ? 'Create merge commit and merge' : button.label}
               </Button>
             </>
           ) : button.kind === 'unavailable' ? (
@@ -806,9 +905,28 @@ export function MergePanel({
         </p>
       ) : null}
       {newTip ? (
-        <p className="mt-2 text-dense text-anvil-700 dark:text-anvil-200">
-          Merged. The base branch is now at <Oid value={newTip} chars={9} />, and the PR will show as merged in a few seconds.
+        <p className="mt-2 text-dense text-anvil-700 dark:text-anvil-200" data-testid="merge-result">
+          {publish !== undefined ? 'Published' : 'Merged'}. The base branch is now at <Oid value={newTip} chars={9} />, and the PR will show as merged in a few seconds.
         </p>
+      ) : null}
+      {publish !== undefined ? (
+        <PublishDialog
+          open={publishing}
+          onCancel={() => setPublishing(false)}
+          onPublish={onPublish}
+          facts={{
+            method: method === 'squash' ? 'squash' : 'history',
+            base: baseRefName,
+            source: publish.source,
+            commits: publish.commits?.length ?? null,
+            authors: publish.authors.map(authorName),
+            files: publish.changes?.length ?? null,
+            filesPartial: publish.changesPartial,
+            scan: scan.error !== null ? scan.error : scan.data,
+            coAuthors: method === 'squash' ? coAuthors : [],
+            messageNamesBranch: namesBranch(method === 'squash' ? squashBase : writesMergeCommit ? mergeMsg : '', publish.source),
+          }}
+        />
       ) : null}
       <Dialog
         open={confirmingBypass}

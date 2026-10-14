@@ -53,8 +53,8 @@ export interface MakePublicInput {
  */
 export async function makePostPublic(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, input: MakePublicInput): Promise<ReplaceResult> {
   if (repo.visibility !== 'public') throw new MakePublicRefusedError(PRIVATE_REPO)
-  // A members-only PR's branch names are sealed and immutable: phase 3 builds it.
-  if (input.type === 'patch') throw new MakePublicRefusedError("A pull request can't be made public this way yet")
+  // A members-only PR (phase 3): its title and description become public; its branch names are
+  // immutable on the live contracts, so they stay unset (`lost`) and its head stays a blind.
   const { audience, doc: stored } = await storedAudience(sdk, repo, input.type, input.id)
   const author = asIdentifierString(stored['$ownerId'])
   if (author !== auth.identityId) throw new MakePublicRefusedError(NOT_AUTHOR)
