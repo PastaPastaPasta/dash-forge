@@ -160,6 +160,8 @@ export function branchLetterSender(io: LetterIO): BranchLetterSender {
 export type LetterOutcome =
   | { readonly kind: 'sent'; readonly branch: string; readonly audience: Audience; readonly to: number }
   | { readonly kind: 'failed'; readonly branch: string; readonly reason: string }
+  /** It has had {@link MAX_BRANCH_GENERATIONS} keys: no new one is made, nothing was sent. */
+  | { readonly kind: 'tooManyKeys'; readonly branch: string; readonly keys: number }
 
 /**
  * Send `plan`'s letters, after the role change landed (forge-core `narrow::reletter`), each to
@@ -173,7 +175,8 @@ export async function sendBranchLetters(plan: BranchPlan, sender: BranchLetterSe
     const b = item.branch
     try {
       if (item.action.kind === 'newGeneration' && b.keys.length >= MAX_BRANCH_GENERATIONS) {
-        throw new EnvSaveError(`it has had ${b.keys.length} keys already, so it can't get a new one; publish its work, then start a new branch for the people it is for now`)
+        out.push({ kind: 'tooManyKeys', branch: item.name, keys: b.keys.length })
+        continue
       }
       const keys = item.action.kind === 'joiners' ? [...b.keys] : [...b.keys, BranchKey.generate()]
       const sent = await sender.send({ name: b.name, keys, audience: item.audience }, new Set(item.now))

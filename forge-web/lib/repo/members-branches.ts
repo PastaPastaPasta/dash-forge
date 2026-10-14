@@ -25,7 +25,7 @@ import type { ConfigDoc, IsAncestor, RefUpdate } from '../rules'
 import { queryAllDocuments, type PlainDocument } from '../sdk'
 import { repoTimelines } from './chrome'
 import { configBundleOf, readConfigHistory } from './config'
-import { branchRingFor, type HeldBranches } from './branch-ring'
+import { RING_RETRY_MS, branchRingFor, type HeldBranches } from './branch-ring'
 import { DOC, type RepoRef } from './contract'
 import { blindBook, type Introduced } from './members-blinds'
 import { membersUpdatesOf, type RefAlert, type RefRows } from './members-refs'
@@ -94,8 +94,17 @@ function isNarrowerRow(doc: PlainDocument): boolean {
 export async function readMembersRefs(sdk: EvoSDK, repo: RepoRef, lane: PrivateSession): Promise<MembersRefs> {
   const { rows, configHistory } = await readRefRows(sdk, repo)
   const narrower = rows.refUpdate.some(isNarrowerRow) || rows.protectedRefUpdate.some(isNarrowerRow)
-  const held = narrower ? await branchRingFor(sdk, { ...repo, lane }) : null
-  const refs = await membersRefsOf(rows, lane, configHistory, undefined, held)
+  const ring = (fresherThan?: number): Promise<HeldBranches | null> => branchRingFor(sdk, { ...repo, lane }, undefined, fresherThan === undefined ? {} : { fresherThan })
+  let held = narrower ? await ring() : null
+  let refs = await membersRefsOf(rows, lane, configHistory, undefined, held)
+  // an update this member couldn't open: a key letter may have come since the ring was read
+  if (held !== null && (refs.noAccess ?? 0) > 0) {
+    const again = await ring(RING_RETRY_MS)
+    if (again !== null && again !== held) {
+      held = again
+      refs = await membersRefsOf(rows, lane, configHistory, undefined, held)
+    }
+  }
   // a ring that couldn't be read says nothing about access: never "a branch you don't have access to"
   return narrower && held === null ? { ...refs, noAccess: null } : refs
 }

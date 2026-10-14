@@ -10,9 +10,10 @@
  * fold keeps a branch on its first chain, the keys of letters that do not count stay read-only, and
  * a letter that does not open is skipped.
  *
- * One read per members-key session ({@link branchRingFor}), ended with it; a read that fails is
- * `null` (narrower branches stay unopened, the page goes on) and is tried again after a short
- * while. Nothing it opens is stored.
+ * One read per members-key session ({@link branchRingFor}), dropped when the session ends; a read
+ * that fails is `null` (narrower branches stay unopened, the page goes on), and one that fails or
+ * misses a letter is read again after a short while, as is one a page asks to be fresher (a branch
+ * update it could not open: a letter may have come since). Nothing it opens is stored.
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
@@ -37,11 +38,11 @@ import type { Membership } from '../rules/v2'
 import { mapPooled } from '../view/pool'
 import { membersLane, type RepoRef } from './contract'
 import { readManifestsOfKind, type PackManifest } from './packs'
-import { onPrivateSessionsClosed, type PrivateSession } from './private-session'
+import { onPrivateSessionEnded, onPrivateSessionsClosed, type PrivateSession } from './private-session'
 
 /** Letters fetched at once (forge-core `narrow::FETCH_WINDOW`). */
 const FETCH_WINDOW = 8
-/** How long a failed read stays `null` before a page may try again. */
+/** How long a failed or incomplete read stands before a page may read again. */
 export const RING_RETRY_MS = 15_000
 
 /** What a ring read makes (bound to the SDK in {@link sdkRingSources}). */
@@ -61,6 +62,8 @@ export interface HeldBranches {
   readonly ring: BranchRing
   /** Each held branch's audience resolved now (base58), by full name. */
   readonly people: ReadonlyMap<string, ReadonlySet<string>>
+  /** A letter could not be fetched: the ring may miss a branch, and is read again sooner. */
+  readonly partial: boolean
 }
 
 /**
@@ -98,19 +101,22 @@ export function resolveNow(audience: Audience, owner: string, members: readonly 
 /**
  * Every `branchKey` letter of repo `repoId` (base58) addressed to the reader, opened and folded
  * into a ring, each branch's audience resolved now against `members` (the repo owned by `owner`).
- * A letter that can't be fetched, doesn't open or isn't a `branchKey` v1 body is skipped; an
- * owner whose keys can't be read fails the read (as forge-core's).
+ * A letter that can't be fetched (the read is then `partial`), has no block height, doesn't open
+ * or isn't a `branchKey` v1 body is skipped; an owner whose keys can't be read fails the read (as
+ * forge-core's).
  */
 export async function readBranchRing(repoId: string, owner: string, members: readonly Membership[], src: RingSources): Promise<HeldBranches> {
   const id = decodeIdentifier(repoId)
   const manifests = await src.manifests()
-  const fetched = await mapPooled(manifests, FETCH_WINDOW, async (m) => src.fetch(m).catch(() => null))
-  const owners = [...new Set(manifests.filter((_, i) => fetched[i] !== null).map((m) => m.uploader))]
+  // a letter with no block height can't be ordered: never fetched, never counted (forge-core skips height 0)
+  const dated = manifests.filter((m) => m.createdAtBlockHeight !== undefined && m.createdAtBlockHeight > 0)
+  const fetched = await mapPooled(dated, FETCH_WINDOW, async (m) => src.fetch(m).catch(() => null))
+  const owners = [...new Set(dated.filter((_, i) => fetched[i] !== null).map((m) => m.uploader))]
   const ownerKeys = new Map<string, readonly OwnerKey[]>(await Promise.all(owners.map(async (o) => [o, await src.ownerKeys(o)] as const)))
   const opened: BranchLetterIn[] = []
   if (owners.length > 0) {
     await src.withReader(async (reader) => {
-      for (const [i, m] of manifests.entries()) {
+      for (const [i, m] of dated.entries()) {
         const sealed = fetched[i]
         if (sealed === null || sealed === undefined) continue
         const got = await openKeyLetter(id, { packHash: hexToBytes(m.packHash.toLowerCase()), sizeBytes: m.sizeBytes }, sealed, ownerKeys.get(m.uploader) ?? [], reader)
@@ -119,7 +125,7 @@ export async function readBranchRing(repoId: string, owner: string, members: rea
         if (letter === null || letter === 'malformed') continue
         // `to` must list exactly the letter's recipients, the reader among them (forge-core `narrow::read_ring`)
         if (letter.to.length !== got.recipients || !letter.to.includes(base58Encode(reader.identityId))) continue
-        opened.push({ id: m.documentId, height: m.createdAtBlockHeight ?? 0, sender: m.uploader, letter })
+        opened.push({ id: m.documentId, height: m.createdAtBlockHeight as number, sender: m.uploader, letter })
       }
     })
   }
@@ -127,7 +133,7 @@ export async function readBranchRing(repoId: string, owner: string, members: rea
   const people = new Map<string, ReadonlySet<string>>()
   for (const [name, b] of fold.branches) people.set(name, resolveNow(b.audience, owner, members))
   const ring = await BranchRing.create(id, fold, (b) => [...(people.get(b.name) ?? [])].map((p) => privateId(p)))
-  return { ring, people }
+  return { ring, people, partial: fetched.some((b) => b === null) }
 }
 
 /** {@link RingSources} of `repo` for the reader of members-key session `lane` (its network and identity). */
@@ -154,26 +160,54 @@ export async function readHeldBranches(sdk: EvoSDK, repo: RepoRef): Promise<Held
   return readBranchRing(repo.repoId, repo.ownerId, lane.members, sdkRingSources(sdk, repo, lane))
 }
 
+/** One ring read: when it started, and whether it is read again once {@link RING_RETRY_MS} passed (it failed or missed a letter). */
+interface RingRead {
+  readonly read: Promise<HeldBranches | null>
+  readonly at: number
+  retry: boolean
+}
+
 /** Ring reads of this tab, by members-key session id: a session's reader, members and lifetime. */
-const rings = new Map<string, { readonly read: Promise<HeldBranches | null>; failedAt?: number }>()
-// Decrypted keys go with the sessions that read them (the vault locked, the key changed).
+const rings = new Map<string, RingRead>()
+// Decrypted keys go with the sessions that read them: one session ending (its key changed, its time
+// ran out) or every one (the vault locked).
+onPrivateSessionEnded((id) => rings.delete(id))
 onPrivateSessionsClosed(() => rings.clear())
+
+/** Forget the ring read for members-key session `laneId` (after this tab sent branch keys: the next read sees them). */
+export function forgetBranchRing(laneId: string): void {
+  rings.delete(laneId)
+}
 
 /**
  * The narrower branches the member reading `repo` holds (a public repo read through its
  * members-key session, {@link membersLane}), read once per session; `null` without a session, or
- * when the read failed (the letters stay unopened until a later try). Never rejects.
+ * when the read failed. A read that failed or missed a letter is read again once
+ * {@link RING_RETRY_MS} passed, and so is any read older than `fresherThan` ms (a page that met a
+ * branch update it could not open). Never rejects.
  */
-export function branchRingFor(sdk: EvoSDK, repo: RepoRef, src: (lane: PrivateSession) => RingSources = (lane) => sdkRingSources(sdk, repo, lane)): Promise<HeldBranches | null> {
+export function branchRingFor(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  src: (lane: PrivateSession) => RingSources = (lane) => sdkRingSources(sdk, repo, lane),
+  { fresherThan }: { readonly fresherThan?: number } = {},
+): Promise<HeldBranches | null> {
   const lane = membersLane(repo)
   if (lane === undefined || lane.closed) return Promise.resolve(null)
   const hit = rings.get(lane.id)
-  if (hit !== undefined && (hit.failedAt === undefined || Date.now() - hit.failedAt < RING_RETRY_MS)) return hit.read
-  const entry: { read: Promise<HeldBranches | null>; failedAt?: number } = { read: Promise.resolve(null) }
-  entry.read = readBranchRing(repo.repoId, repo.ownerId, lane.members, src(lane)).catch(() => {
-    entry.failedAt = Date.now()
-    return null
-  })
+  const age = hit === undefined ? Infinity : Date.now() - hit.at
+  if (hit !== undefined && !(hit.retry && age >= RING_RETRY_MS) && !(fresherThan !== undefined && age >= fresherThan)) return hit.read
+  const entry: RingRead = { read: Promise.resolve(null), at: Date.now(), retry: false }
+  entry.read = readBranchRing(repo.repoId, repo.ownerId, lane.members, src(lane)).then(
+    (held) => {
+      entry.retry = held.partial
+      return held
+    },
+    () => {
+      entry.retry = true
+      return null
+    },
+  )
   rings.set(lane.id, entry)
   return entry.read
 }

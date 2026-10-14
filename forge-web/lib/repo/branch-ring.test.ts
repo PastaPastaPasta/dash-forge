@@ -12,10 +12,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { base58Encode } from '../auth/base58'
 import { BranchKey, branchKeyLetterToTyped, bytesToHex, sealKeyLetter, type BranchKeyLetter, type LetterReader, type OwnerKey, type TypedLetter } from '../private'
 import type { Membership } from '../rules/v2'
-import { NO_ACCESS_TEXT, RING_RETRY_MS, branchRingFor, narrowLabel, narrowerText, readBranchRing, type RingSources } from './branch-ring'
+import { NO_ACCESS_TEXT, RING_RETRY_MS, branchRingFor, forgetBranchRing, narrowLabel, narrowerText, readBranchRing, type RingSources } from './branch-ring'
 import type { RepoRef } from './contract'
 import type { PackManifest } from './packs'
-import type { PrivateSession } from './private-session'
+import { trackReaderSession, type PrivateSession } from './private-session'
 
 const REPO = new Uint8Array(32).fill(0x11)
 const REPO_ID = base58Encode(REPO)
@@ -85,6 +85,20 @@ describe('readBranchRing', () => {
     // Maintainers now: the owner and the maintainers, never a writer or a bot
     expect([...(held.people.get(FIX) ?? [])].sort()).toEqual(ids(owner, mara))
     expect(held.ring.writeKeys(FIX)?.gen).toBe(0)
+    // a letter that could not be fetched leaves the read incomplete
+    expect(held.partial).toBe(true)
+    expect((await readBranchRing(REPO_ID, owner.id, MEMBERS, sources([good], mara))).partial).toBe(false)
+  })
+
+  it('never counts a letter with no block height', async () => {
+    const k0 = BranchKey.fromBytes(new Uint8Array(32).fill(7))
+    const undated = await letter(1, owner, [mara], branchKeyLetterToTyped(maintainersLetter([k0], ids(owner, mara))))
+    undated.m = { ...undated.m, createdAtBlockHeight: undefined } as unknown as PackManifest
+    const zero = await letter(2, owner, [mara], branchKeyLetterToTyped({ ...maintainersLetter([k0], ids(owner, mara)), name: 'refs/heads/zero' }))
+    zero.m = { ...zero.m, createdAtBlockHeight: 0 } as unknown as PackManifest
+    const held = await readBranchRing(REPO_ID, owner.id, MEMBERS, sources([undated, zero], mara))
+    expect(held.ring.isEmpty).toBe(true)
+    expect(held.partial).toBe(false)
   })
 
   it('a reader with no letter holds nothing', async () => {
@@ -172,6 +186,51 @@ describe('branchRingFor', () => {
     expect(await branchRingFor({} as never, repo, src)).toBeNull()
     vi.setSystemTime(Date.now() + RING_RETRY_MS + 1)
     expect((await branchRingFor({} as never, repo, src))?.ring.isEmpty).toBe(true)
+  })
+
+  it('an incomplete read is read again after a while; a page may ask for a fresher one; a forgotten one is read again', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const k0 = BranchKey.fromBytes(new Uint8Array(32).fill(7))
+    const good = await letter(1, owner, [mara], branchKeyLetterToTyped(maintainersLetter([k0], ids(owner, mara))))
+    let reads = 0
+    let failFetch: string | undefined = 'l1'
+    const src = (): RingSources => {
+      reads++
+      return sources([good], mara, failFetch === undefined ? {} : { failFetch })
+    }
+    const repo = repoWith('lane-c')
+    expect((await branchRingFor({} as never, repo, src))?.partial).toBe(true)
+    failFetch = undefined
+    await branchRingFor({} as never, repo, src)
+    expect(reads).toBe(1)
+    vi.setSystemTime(Date.now() + RING_RETRY_MS + 1)
+    const complete = await branchRingFor({} as never, repo, src)
+    expect(complete?.ring.get(FIX)).toBeDefined()
+    expect(reads).toBe(2)
+    // complete: kept, unless a page asks for one fresher than its age
+    vi.setSystemTime(Date.now() + 5_000)
+    expect(await branchRingFor({} as never, repo, src)).toBe(complete)
+    expect(await branchRingFor({} as never, repo, src, { fresherThan: 10_000 })).toBe(complete)
+    await branchRingFor({} as never, repo, src, { fresherThan: 1_000 })
+    expect(reads).toBe(3)
+    forgetBranchRing('lane-c')
+    await branchRingFor({} as never, repo, src)
+    expect(reads).toBe(4)
+  })
+
+  it('goes with its members-key session when that session ends', async () => {
+    let reads = 0
+    const src = (): RingSources => {
+      reads++
+      return sources([], mara)
+    }
+    const repo = repoWith('lane-d')
+    await branchRingFor({} as never, repo, src)
+    await branchRingFor({} as never, repo, src)
+    expect(reads).toBe(1)
+    trackReaderSession('lane-d', () => undefined)()
+    await branchRingFor({} as never, repo, src)
+    expect(reads).toBe(2)
   })
 })
 

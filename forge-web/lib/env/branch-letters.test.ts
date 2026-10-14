@@ -197,7 +197,8 @@ describe('reletterOf (forge-core narrow::plan)', () => {
     }
     const item = { name: NAME, audience: MAINTAINERS, branch: full, action: { kind: 'newGeneration' as const, left: ['b'] }, now: ['a'], noKey: [], credits: 0 }
     const out = await sendBranchLetters({ items: [item], notHeld: 0, unread: null }, counting)
-    expect(out).toEqual([{ kind: 'failed', branch: NAME, reason: expect.stringMatching(/has had 256 keys already/) }])
+    expect(out).toEqual([{ kind: 'tooManyKeys', branch: NAME, keys: 256 }])
+    expect(out.map(letterOutcomeLine)).toEqual(["sec/embargo can't get a new key: it has had 256 already. Publish its work and start a new branch for the people it is for now."])
     expect(sent).toBe(0)
   })
 

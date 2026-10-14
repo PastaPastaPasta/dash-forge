@@ -85,7 +85,11 @@ export function sdkBranchLetterSender(sdk: EvoSDK, auth: WriteAuth, repo: RepoRe
   const env = sdkEnvSaver(sdk, auth, repo, network)
   const me = auth.identityId
   return branchLetterSender({
-    sender: () => env.sender(),
+    sender: () =>
+      env.sender().catch((e: unknown) => {
+        if (!(e instanceof EnvSaveError)) throw e
+        throw new EnvSaveError("This browser doesn't hold a usable encryption key of yours, so it can't send a branch's key. Add it under Settings → Members-only and private content.")
+      }),
     keysOf: (ids) => env.keysOf(ids),
     seal: (slots, letter) =>
       withEncryptionKeys(network, me, async (keys) => {

@@ -152,6 +152,8 @@ export function branchesNotUpdatedLines(plan: BranchPlan): string[] {
 
 /** One line of what sending the branch keys did. */
 export function letterOutcomeLine(o: LetterOutcome): string {
+  const short = o.branch.replace(/^refs\/heads\//, '')
   if (o.kind === 'sent') return `Sent the key of ${branchTitle(o.branch, o.audience)} to ${o.to === 1 ? '1 person' : `${o.to} people`}.`
-  return `Couldn't send the key of ${o.branch.replace(/^refs\/heads\//, '')}: ${o.reason}. The next push of it sends it.`
+  if (o.kind === 'tooManyKeys') return `${short} can't get a new key: it has had ${o.keys} already. Publish its work and start a new branch for the people it is for now.`
+  return `Couldn't send the key of ${short}: ${o.reason.replace(/\.$/, '')}. The next push of it sends it.`
 }

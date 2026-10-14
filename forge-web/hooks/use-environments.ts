@@ -18,7 +18,7 @@ import { encryptionKeyState, withLetterReader } from '@/lib/auth/encryption-key'
 import { readEnvironments, type EnvBook, type EnvKeys } from '@/lib/env/loader'
 import type { MemberEnvIO } from '@/lib/env/member-change'
 import { sdkBranchLetterSender, sdkEnvSaver } from '@/lib/env/saver'
-import { readHeldBranches } from '@/lib/repo/branch-ring'
+import { forgetBranchRing, readHeldBranches } from '@/lib/repo/branch-ring'
 import { membersLane } from '@/lib/repo/contract'
 import type { EnvSaver } from '@/lib/env/write'
 import type { Network } from '@/lib/constants'
@@ -98,6 +98,24 @@ export function useEnvWriter(home: RepoHome): { readonly saver: EnvSaver; readon
   return useMemo(() => {
     if (!ready || sdk === null || signer === null || identity === null) return null
     const saver = sdkEnvSaver(sdk, signer, repo, network)
+    const lane = membersLane(repo)
+    const letters = sdkBranchLetterSender(sdk, signer, repo, network)
+    const branches: MemberEnvIO['branches'] =
+      lane === undefined
+        ? undefined
+        : {
+            held: () => readHeldBranches(sdk, repo),
+            // counted when the page folded the refs: those whose newest update this member couldn't open
+            notHeld: () => home.membersRefs?.noAccess ?? 0,
+            send: async (letter, people) => {
+              try {
+                return await letters.send(letter, people)
+              } finally {
+                // the page's ring read is stale once this tab sent a key: the next read sees it
+                forgetBranchRing(lane.id)
+              }
+            },
+          }
     const io: MemberEnvIO = {
       read: async (asMaintainer) => {
         const sources = sdkEnvSources(sdk, repo)
@@ -109,16 +127,7 @@ export function useEnvWriter(home: RepoHome): { readonly saver: EnvSaver; readon
         const got = await saver.keysOf(ids)
         return new Map([...got].map(([id, k]) => [id, k === null ? null : k.keyId]))
       },
-      ...(membersLane(repo) !== undefined
-        ? {
-            branches: {
-              held: () => readHeldBranches(sdk, repo),
-              // counted when the page folded the refs: those whose newest update this member couldn't open
-              notHeld: () => home.membersRefs?.noAccess ?? 0,
-              ...sdkBranchLetterSender(sdk, signer, repo, network),
-            },
-          }
-        : {}),
+      ...(branches !== undefined ? { branches } : {}),
     }
     return { saver, io }
     // `home` changes identity on every repo read; what the writer uses of it is the repo and its key session
