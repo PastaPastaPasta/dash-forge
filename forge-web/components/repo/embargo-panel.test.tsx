@@ -123,6 +123,15 @@ describe('EmbargoPanel', () => {
     expect(text('embargo-withdraw')).toBe('Withdraw')
   })
 
+  it('shows a member the publication on the issue it made public (the issue reads public, its date stays members-only)', () => {
+    show({ embargo: embargo({ state: 'done', commit: 'ab'.repeat(20), by: 'bot', at: 2 }), membersOnly: false, open: true, facts: { issuePublic: true } })
+    expect(text('embargo-state')).toContain('Published as abababa')
+    expect([...el.querySelectorAll('[data-testid="embargo-checklist"] li')].map((li) => li.textContent?.slice(0, 1))).toEqual(['✓', '✓', '✓', '✓'])
+    expect(el.textContent).toContain('Only members can see this date.')
+    expect(el.querySelector('[data-testid="embargo-set"]')).toBeNull()
+    expect(el.querySelector('[data-testid="embargo-withdraw"]')).toBeNull()
+  })
+
   it('sets a date from the form, in UTC', async () => {
     show({})
     act(() => (el.querySelector('[data-testid="embargo-set"]') as HTMLButtonElement).click())

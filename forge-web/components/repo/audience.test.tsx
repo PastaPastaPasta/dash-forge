@@ -47,7 +47,7 @@ vi.mock('@/lib/repo', async (orig) => ({
 }))
 
 import { AudienceChip, MembersOnlyCreateNotice, MembersOnlyRow, MembersOnlySummary, MembersOnlyTargetPage, useComposerAudience } from './audience'
-import { HiddenNote } from './hidden-note'
+import { EventValuesNote, HiddenNote } from './hidden-note'
 import { useUiStore } from '@/hooks/use-ui-store'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -213,6 +213,30 @@ describe('the hidden-items note of a public repo', () => {
   it('names other unreadable items plainly', () => {
     act(() => root.render(<HiddenNote hidden={1} what="issue" home={homeWith()} by={by({ notEncrypted: 1 })} />))
     expect(q('hidden-note')?.textContent).toBe("1 issue isn't shown: not readable in this repo.")
+  })
+})
+
+describe('the members-only events of a thread (a thread made public by a maintainer reads public; its events stay members-only)', () => {
+  it('a locked member is offered the unlock, which re-reads them (and the publication date)', () => {
+    act(() => root.render(<EventValuesNote counts={{ hidden: 3, plaintext: 0 }} lane={{ access: 'locked' } as MembersAccess} />))
+    expect(q('event-values-locked')?.textContent).toBe('3 label, assignee or milestone changes are members-only · Unlock to read')
+    expect(q('event-values-note')).toBeNull()
+    act(() => q('members-only-unlock')!.click())
+    expect(q('members-only-unlock-panel')?.textContent).toBe('Unlock to read members-only content')
+  })
+
+  it('a member with no key in this browser is told how to set one up', () => {
+    act(() => root.render(<EventValuesNote counts={{ hidden: 1, plaintext: 0 }} lane={{ access: 'no-key' } as MembersAccess} />))
+    expect(q('event-values-locked')?.textContent).toContain('1 label, assignee or milestone change is members-only')
+    expect(q('members-only-unlock')).toBeNull()
+  })
+
+  it('an outsider, and a member who read them all, are offered nothing', () => {
+    act(() => root.render(<EventValuesNote counts={{ hidden: 3, plaintext: 0 }} />))
+    expect(q('event-values-note')?.textContent).toBe('3 label, assignee or milestone changes are not readable with your keys.')
+    expect(q('members-only-unlock')).toBeNull()
+    act(() => root.render(<EventValuesNote counts={{ hidden: 0, plaintext: 0 }} lane={{ access: 'locked' } as MembersAccess} />))
+    expect(host.textContent).toBe('')
   })
 })
 

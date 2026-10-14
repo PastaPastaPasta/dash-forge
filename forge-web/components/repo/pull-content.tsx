@@ -1887,7 +1887,8 @@ function PullPage({
               )}
               <HiddenNote hidden={totalHidden(thread.hidden)} what="comment or review" many="comments and reviews" home={home} by={thread.hidden} shown={thread.membersOnly.length} />
               <BundleAlertsNote alerts={thread.bundleAlerts} />
-              <EventValuesNote counts={thread.eventValues} />
+              {/* the timeline's members-only placeholders already offer a locked member the unlock */}
+              <EventValuesNote counts={thread.eventValues} lane={thread.membersOnly.length === 0 ? home.lane : undefined} />
 
               {closedBranch !== null && guard.disabledReason === null && !archived && !mergeBusy ? (
                 <section aria-label="Source branch" className="flex flex-wrap items-center gap-3 rounded-lg border border-anvil-200 px-4 py-3 dark:border-anvil-800" data-testid="closed-branch-box">

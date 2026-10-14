@@ -6,15 +6,32 @@ import { plural } from '@/lib/view/format'
 import { HIDDEN_REASON_TEXT, totalHidden, type HiddenCounts, type HiddenReason } from '@/lib/repo/private-content'
 import { isMaintainer } from '@/lib/repo/private-session'
 import type { EventValueCounts } from '@/lib/view/issues-view'
+import type { MembersAccess } from '@/lib/view/repo-view'
+import { MembersLockedLine, summarizesMembersOnly } from '@/components/repo/audience'
 
 /**
  * A private repo's event values (labels, assignees, milestones) that could not be shown, or
  * that an older client wrote unencrypted (`private-repos.md` §8.1): every reader sees it, since
  * the missing or exposed values are on the page they are reading.
+ *
+ * A public repo's members-only ones, to a member whose tab can't read them yet (`lane`): the
+ * unlock, or how to set up their key. A thread made public by a maintainer's bundle reads
+ * public, but its events stay members-only (the bundle opens posts only; forge-core
+ * `Collab::readable_events_of` reads them with the members key alone), so after a reload this is
+ * the page's only way to them, and to the publication date.
  */
-export function EventValuesNote({ counts }: { counts: EventValueCounts }): JSX.Element | null {
+export function EventValuesNote({ counts, lane }: { counts: EventValueCounts; lane?: MembersAccess | undefined }): JSX.Element | null {
+  const changes = `${plural(counts.hidden, 'label, assignee or milestone change')} ${counts.hidden === 1 ? 'is' : 'are'}`
+  // (only a public repo has `lane`, and a public repo reports no plaintext values)
+  if (counts.hidden > 0 && summarizesMembersOnly(lane)) {
+    return (
+      <div className="mt-2">
+        <MembersLockedLine what={`${changes} members-only`} lane={lane} testId="event-values-locked" />
+      </div>
+    )
+  }
   const parts: string[] = []
-  if (counts.hidden > 0) parts.push(`${plural(counts.hidden, 'label, assignee or milestone change')} ${counts.hidden === 1 ? 'is' : 'are'} not readable with your keys`)
+  if (counts.hidden > 0) parts.push(`${changes} not readable with your keys`)
   if (counts.plaintext > 0) parts.push(`${counts.plaintext} ${counts.plaintext === 1 ? 'was' : 'were'} written by an older client and ${counts.plaintext === 1 ? 'is' : 'are'} not encrypted`)
   if (parts.length === 0) return null
   return (
