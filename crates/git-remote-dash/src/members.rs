@@ -756,13 +756,24 @@ fn shared_branches_path(common: &Path) -> PathBuf {
     common.join("dash").join("shared-branches")
 }
 
+/// The branch names in `path`, one per line (a line that is not one is skipped).
+fn read_branch_lines(path: &Path) -> BTreeSet<String> {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("refs/heads/") && forge_core::rules::is_git_ref_name(l))
+        .map(str::to_owned)
+        .collect()
+}
+
 /// Add `names` to the branches this clone was given ([`shared_branches_path`]). Best effort.
 pub fn remember_shared_branches(names: &[String]) {
     let Ok(common) = LocalRepo::common_dir() else {
         return;
     };
     let p = shared_branches_path(&common);
-    let mut all = read_lines(&p);
+    let mut all = read_branch_lines(&p);
     let before = all.len();
     all.extend(names.iter().cloned());
     if all.len() != before {
@@ -773,7 +784,7 @@ pub fn remember_shared_branches(names: &[String]) {
 /// The branches this clone was given ([`remember_shared_branches`]).
 pub fn shared_branches_given() -> BTreeSet<String> {
     LocalRepo::common_dir()
-        .map(|c| read_lines(&shared_branches_path(&c)))
+        .map(|c| read_branch_lines(&shared_branches_path(&c)))
         .unwrap_or_default()
 }
 
