@@ -26,6 +26,7 @@ import { bytesToHex } from '@noble/hashes/utils.js'
 
 import { ObjectLocator } from '../browse'
 import { PACK_KIND } from '../constants'
+import { BRANCH_PACK_VERSION } from '../private'
 import { membersLane, repoKey, type PackManifest, type RepoRef } from '../repo'
 import { onPrivateSessionEnded } from '../repo/private-session'
 import {
@@ -291,8 +292,11 @@ async function downloadPacks(
       try {
         bytes = await loadArtifactBytesProgress(sdk, repo, manifest, (done) => report(base + done))
       } catch (e) {
-        // A members-only pack this member cannot open (another epoch, a narrower branch's key):
-        // its objects stay unreadable here, never fatal by itself.
+        // A narrower branch's pack this member holds no key for (phase 3F): left out without a
+        // word, as the branch itself is ("A branch you don't have access to").
+        if (manifest.kind === PACK_KIND.MEMBERS_GIT_PACK && e instanceof PackSkippedError && e.why.reason === 'otherFormat' && e.why.version === BRANCH_PACK_VERSION) continue
+        // A members-only pack this member cannot open (another epoch): its objects stay
+        // unreadable here, never fatal by itself.
         if (manifest.kind === PACK_KIND.MEMBERS_GIT_PACK) {
           outcomes.push({ manifest, unavailable: { packHash: manifest.packHash, hosts: [], reason: 'a members-only pack your key does not open', corrupt: false, skipped: 'noKey' } })
           continue

@@ -1,0 +1,108 @@
+{
+  "name": "open_read_only_by_audience_member",
+  "description": "an audience member's update under the leaver's generation opens at any time: legit work pushed under it is never lost.",
+  "case": "branch_key",
+  "rules": "v2",
+  "input": {
+    "op": "open",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "letters": [
+        {
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "height": 100,
+          "sender": "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
+          "body": {
+            "type": "branchKey",
+            "v": 1,
+            "name": "refs/heads/sec/embargo",
+            "gen": 0,
+            "keys": [
+              "6465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80818283"
+            ],
+            "group": "maintainers",
+            "people": [],
+            "to": [
+              "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+            ]
+          }
+        },
+        {
+          "id": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "height": 200,
+          "sender": "7tj9biW3KRJ7EEWmVUGigHiouCTXhV2dzcyvwma7Cyu7",
+          "body": {
+            "type": "branchKey",
+            "v": 1,
+            "name": "refs/heads/sec/embargo",
+            "gen": 1,
+            "keys": [
+              "6465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80818283",
+              "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+            ],
+            "group": "maintainers",
+            "people": [],
+            "to": [
+              "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
+              "7tj9biW3KRJ7EEWmVUGigHiouCTXhV2dzcyvwma7Cyu7"
+            ]
+          }
+        },
+        {
+          "id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "height": 300,
+          "sender": "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
+          "body": {
+            "type": "branchKey",
+            "v": 1,
+            "name": "refs/heads/sec/embargo",
+            "gen": 1,
+            "keys": [
+              "6465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80818283",
+              "8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaab"
+            ],
+            "group": "maintainers",
+            "people": [],
+            "to": [
+              "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+            ]
+          }
+        }
+      ],
+      "groups": {
+        "maintainers": [
+          "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+        ],
+        "writers": [
+          "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+        ],
+        "members": [
+          "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+        ]
+      }
+    },
+    "doc": {
+      "type": "refUpdate",
+      "vis": "public",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 1,
+      "refNameHash": "75581eb873d54ad6c0d3dd3b69fba029bfaf5eefdfd4c9a3bf2785654fd220f0",
+      "newOid": "2be4e9b00e8eb5457ab223c92713980b25978bcc",
+      "force": false,
+      "prevOid": "433681865d058c77a67224f6e0e1f1f9347643d2",
+      "enc": "062e355b6f000102030405060708090a0bdabf2450649e7535c5d8b8bb8e00416e2dbd0bb60719b2f4747f0aa9df061cdcaf6b160632dba4e83e37413492cef6bb8f5c30ec885b866bc9b9d5e03e51a2ea8cb561af44501c33533b4c9e9190c8b2cd5f87bfdfbd7130cd3aba7cb9b4259a900c8283a8fc6fb59d31dae609d2e4659a381ef56214a3409d752e4e1a45fad18ca7815c801089535525eda2dc171318c5e8bbac34a672b3fc7d",
+      "createdAtBlockHeight": 900
+    }
+  },
+  "expected": {
+    "status": "readable",
+    "ref": {
+      "name": "refs/heads/sec/embargo",
+      "newOid": "da31d9d1006fc4633d1b3bbc71b0143c188395ac",
+      "prevOid": "ac57952b296a19e0255ee8ff9b20adcfab2a599c"
+    },
+    "alerts": [],
+    "branch": "refs/heads/sec/embargo",
+    "gen": 1
+  }
+}

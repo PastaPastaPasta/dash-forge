@@ -939,7 +939,7 @@ A members-only review's plaintext `verdict` counts for **every reader** when it 
 | 7 | **make-public bundle**: plaintext keys that make sealed content readable to everyone (§18.3 has the layout); with 8, 9 and 11 written with `r = 0` where `packManifest.r` admits 0 (mainnet C3: only the maintainer operand passes it) | used: a maintainer's document entries (0x01–0x03, §17.5) and the epoch keys (entry 0x06) the owner of a repository made public published (§18.3) |
 | 8 | **environment snapshot**: one environment's canonical JSON, padded to 512-byte buckets, sealed as DFPK `0x02` to the people its audience covers when it is saved, the writer first, at most 64 (§3.7): a group (Maintainers, Writers and maintainers, All members; resolved from the member documents at write time, never bots), a group plus people, or specific people. Never under the members key: phase-1 snapshots in DFPK `0x01` under the members key (audience Members, the "old format") are read only. `supersedes` names earlier counted snapshots of the same environment. Readers check the bytes against the owner-signed `packHash` before decrypting, and count a snapshot only when its `$ownerId` is a current maintainer (DESIGN D24); vectors `env_snapshot__*` (`env_snapshot__v2_*` for the current artifact) | used |
 | 9 | environment registry | reserved (phase 4) |
-| 10 | key letter (a branch's keys for one recipient, a bot's post key, one job's keys; DESIGN §4.9) | reserved (phases 3G and 4) |
+| 10 | **key letter** (§20): a typed letter of keys sealed as DFPK `0x02` to its recipients, the writer first, at most 64: a branch as it is now (`branch`), a narrower branch's key generations (`branchKey`, phase 3F), a bot's post key and one job's keys (phase 4). Consensus admits it from a maintainer or a Write member; readers take it only from a current one, after checking the bytes against the owner-signed `packHash`; vectors `key_letter__*` | used: `branch` (phase 3G) |
 | 64 + k | the members-only (sealed) form of plain kind k in a public repository: 64 git pack (one members-only branch's, D22), 65 object locator, 66 flat index, 67 history index, 68 release assets, 69 history version lists. DFPK `0x01` under the members key; **never `tips`** (a sealed kind's tips would be the real commits its blinds hide), and a kind-64 pack never supersedes another (§19.4) | defined (§19); written by the git helper from phase 3A |
 | 70 | **members-only long body** (64 + 6): the full text of a members-only issue, comment or review longer than its field, sealed as DFPK `0x01` under the members key at the write epoch, re-read before the write. A members-only field's trailer resolves only to a kind-70 copy, a public field's only to kind 6. The reader checks `packHash`, then the late-content rule on the copy's `$ownerId` and height, then opens it with any epoch it holds | used by `dg`; the web refuses members-only long text for now |
 
@@ -1124,3 +1124,83 @@ log URL → "DFCL" ‖ 0x01 ‖ nonce(12) ‖ AES-256-GCM(K_log, nonce, P, AD)
   `H` is read only in its one canonical form: these three keys in this order, no spaces, JSON's shortest escapes, lower-case hex (a header a reader would re-serialise differently, such as a key written twice, `1.0`, an escaped `/` or a byte-order mark, is refused), so every reader reads the same name. A reader refuses a sealed log that does not open, whose padding is not zeros, whose header is not that form, or whose header names a check that does not hash to the run's opaque name or a commit whose blind is not the run's `headOid`: a log moved to another run, or another commit, does not open there. A later version byte is skipped, not treated as corruption. Vectors `members_check__*` (name, seal, open and its refusals).
 - **Who reports.** Until branch key letters (phase 4: a kind-10 `branch` letter carries the head, the salt and so `K_name`), the reporter is a member: `forge-runner` with `members_branches` runs as a member identity holding its encryption key, and `dg ci report --members-branch <b>` looks the commit's blind and salt up in the member fold (`MembersUpdates::sealed`), real commit or blind given.
 - **Reading.** `dg ci status` and `dg ci log` read a member's commit on every blind the member fold maps it to and open each run's log for its name; the public sees each check's outcome under a 16-character name and never the branch, the commit or the log's text.
+
+## 20. Key letters (kind 10)
+
+A **key letter** hands keys to specific people without the members key (DESIGN §4.3 "Branch keys for CI and people", §4.9 "Key letters"; `forge_core::private::key_letter`, web `lib/private/key-letter.ts`; vectors `key_letter__*` from `tools/private-repos-vectors/key_letters.py`).
+
+### 20.1 The letter
+
+The artifact is a DFPK `0x02` file (§3.7) to its recipients, the writer in slot 0, at most 64, stored on Platform chunks as a kind-10 `packManifest` (`objectCount` 0, no `tips`, no `supersedes`). Its plaintext is a JSON object in an environment snapshot's canonical form: keys sorted by code point, no whitespace, strings with exactly the escapes `\"` `\\` `\b` `\f` `\n` `\r` `\t` and a lowercase `\u00xx` for every other C0 control (everything else raw UTF-8, no lone surrogate), integers `0 ..= 2^53 − 1` only, `true`, `false`, `null`; padded with spaces to a multiple of 512 bytes, at most 64 KiB. A reader takes only those exact bytes (re-encoding must reproduce them). `type` (a string) and `v` (an integer) are always present; every type has its own fields and version, and a reader skips a type or version it does not know.
+
+**Reader rule.** A letter counts only when its manifest's `$ownerId` is a **current** maintainer or Write member of the repository (as consensus admits the manifest; a letter from someone since removed or demoted is ignored), its bytes hash to the manifest's `packHash` and match `sizeBytes` before anything is decrypted, the sender key is that owner's ENCRYPTION key named in the header, and a slot opens to the reader's ENCRYPTION key (the letter reader rule of §3.7).
+
+### 20.2 `branch` (v 1): one members-only branch as it is now
+
+```
+{"asOf":ms,"checkNameKey":hex32,"head":[blind,oid,salt],"name":"refs/heads/…",
+ "packs":[[packHash,K_pack],…],"refNameHash":hex32,"type":"branch","v":1}
+```
+
+- `name`, `refNameHash`, `head` and `asOf` come from the members-only ref update that set the branch's tip (§19.2): its real name, its keyed `refNameHash`, its blind `newOid` with the real commit and the salt, and its `$createdAt`. `head` must check (§19.1) and must not be null.
+- `packs` are the members-only packs (kind 64) the writer chose to cover `rev-list(head ^P)`, P the public tips (D22 keeps them per branch, §19.5), each with its own file key `K_pack,e,fileId` (§3.3, read from the pack's header under the members key). A file key opens that one file and nothing else; the members key is never in a letter. Sorted by `packHash`, each once, at least one.
+- `checkNameKey` = `HMAC-SHA256(salt, "dash-forge/v2/check-name")` of the head's salt: the key that names the head's check runs (phase 3D), so the recipient can read which checks ran on it. A letter whose `checkNameKey` is not its salt's is malformed.
+
+**Writing** (`dg branch share <b> --to @x`): a member with Write or more who holds the members key, from a clone holding the branch's tip, picks the packs that hold the commits of `rev-list(head ^P)`, preferring packs that hold nothing else (a pack another members-only branch also pushed into is taken only when no other pack holds those commits, and the writer is told), checks that the chosen packs and P together hold every object of `rev-list --objects head ^P`, and writes one letter to the recipients and itself. It is a snapshot: a later push to the branch is under the members key, which the recipient does not hold; sharing again writes a new letter.
+
+**Reading** (`git-remote-dash`, a reader with an identity whose members key does not open the branch): `list` adds each shared branch at its `head` when a letter from a current maintainer or Write member names a members-only ref update of this repository with that `refNameHash` and that blind as `newOid`, written by a current member, and its packs are kind-64 manifests of this repository. The newest such letter per name wins; a public branch of the same name wins over it. The fetch downloads those packs, checks each against its `packHash` and opens it with the file key alone (`pack::open_with_file_key`); the clone's ledger records the head and the packs first (they are members-only commits, §19.5), and the `pre-push` hook must be in place, as for any members-only fetch (§19.8). A shared branch whose commits do not arrive is left out with a warning. The recipient sees nothing pushed to the branch later.
+
+## 21. Narrower branches (phase 3F)
+
+A branch can be for fewer people than all members: Maintainers, Writers and maintainers, a group plus people (`maintainers,@ci-bot`), or people. It has its own **branch key** in generations, which only its audience receives (mixed-visibility DESIGN §4.3 "Narrower branches", D34, D39; `forge_core::private::branch_key`, `forge_core::narrow`, web `lib/private/branch-key.ts`; vectors `branch_key__*` from `tools/private-repos-vectors/branch_key.py`, and the narrower `publish_guard__*` cases).
+
+### 21.1 Keys, ref updates and packs
+
+```
+K_br,g      = 32 random bytes, generation g = 0, 1, …
+PRK_br,g    = HKDF-Extract(salt = repoId, IKM = K_br,g)
+KCV_br,g    = HKDF-Expand(PRK_br,g, "dash-forge/v2/br-kcv" ‖ 0x00, 14)
+refNameHash = HMAC-SHA256(HKDF-Expand(PRK_br,g, "dash-forge/v2/br-ref" ‖ 0x00, 32), name)
+enc v0x06   = 0x06 ‖ KCV_br,g[0..4] ‖ nonce(12) ‖ COMMIT_obj(32) ‖ AES-256-GCM(K_doc,obj, nonce, TLV, AD ‖ COMMIT_obj) ‖ tag(16)
+K_obj       = HKDF-Expand(PRK_br,g, "dash-forge/v2/obj" ‖ 0x00 ‖ u32(g) ‖ nonce ‖ SHA-256(AD), 32)
+DFPK 0x03   = "DFPK" ‖ 0x03 ‖ L ‖ 00 00 ‖ KCV_br,g[0..4] ‖ u64(plaintextLen) ‖ fileId(16)
+K_pack      = HKDF-Expand(PRK_br,g, "dash-forge/v2/pack" ‖ 0x00 ‖ 0x03 ‖ fileId, 32)
+```
+
+- A narrower branch's ref update is a `refUpdate` / `protectedRefUpdate` of a public repository exactly as a members-only one (§19.2: `refName` absent, blinded OIDs under the update's own salt, TLV 3, 22, 23, 27, never padded), with the branch key's name hash, `enc` v0x06 and **`epoch` = the generation** (the AD binds it, version byte `0x06`). Only branches (`refs/heads/…`) can be narrower.
+- Its packs are kind-64 manifests whose artifact is DFPK `0x03` (segments as `0x01`, the header the AD), one per branch per push (§19.5's plan treats a narrower branch as a members-only one). A reader selects a key by the KCV prefix and the generation, then checks it the usual way (the commitment before GCM for v0x06, every segment tag for a pack); four bytes select, they never authorize.
+- **Readers without the key** (members outside the audience) count a v0x06 update as unreadable and skip a DFPK 0x03 pack (§18's rule for versions they do not open); the member fold shows each name hash whose newest unreadable v0x06 update is not a delete as "A branch you don't have access to" (one per key generation: generations cannot be linked from outside). Outsiders see what they see for any members-only branch, plus that letters exist and to how many people.
+
+### 21.2 `branchKey` (v 1) letters
+
+```
+{"gen":g,"group":"maintainers"|"writers"|"members"|null,"keys":[K_br,0 … K_br,g],
+ "name":"refs/heads/…","people":[base58,…],"to":[base58,…],"type":"branchKey","v":1}
+```
+
+A kind-10 key letter (§20.1's format) carrying **every generation's key**: a joiner never received the earlier letters, and no on-chain anchor per generation exists to walk. `group` and `people` are the audience (people ascending, at most 63, a group or at least one person); `to` lists every recipient (the writer among them, ascending, at most 64), which the next re-lettering compares with the audience. Any other field, a repeated key, `gen` not `len(keys) − 1`, or a name outside `refs/heads/` makes the letter malformed (ignored, never fatal).
+
+**The fold** (`branch_key::fold`): the letters a reader opens (§20.1's packHash, size and slot checks; its "current sender" rule is replaced by the one below), whose `to` lists exactly the letter's recipients with the reader among them, in (height, id) order. A letter **counts** only when its sender (the manifest's `$ownerId`) is in the audience as it resolves now: a branch's first letter, its own audience (nobody outside an audience can start a branch for it, so a name cannot be front-run); a later letter, the branch's audience so far. Per name the first counted letter starts the chain; a later one counts only when it also agrees with the chain on every generation both carry (it may extend it), otherwise it is ignored (`otherChain`, `sender`). So a holder who leaves the audience cannot keep the branch on a generation they made (their letters stop counting, and the next counted generation replaces theirs), cannot fill it to the generation cap, and a writer outside it cannot redirect it. Each generation is issued at the height of the first counted letter carrying it; the audience is the newest counted letter's at the highest generation; the current generation's holders are the union of its counted letters' `to`. The keys of letters that do not count are kept **read-only**: they open what was written under them, never what is written next.
+
+**Late across generations.** A ref update under generation g written after generation g+1 was issued plus `GRACE_BLOCKS`, by someone who is not in the branch's audience as it resolves now, is late: never folded (a removed recipient keeps the old key, like an ex-member). Under a read-only key the cut-off is the first counted generation at or after g, so a leaver's own updates under a key they made stop counting once a counted generation replaces it, while audience members' work under it is kept.
+
+### 21.3 Who gets a letter, and when
+
+The audience resolves against the member documents now, as an environment's does (the owner in every group; groups never include bots; plus the people), and only people with a usable encryption key can receive one; whoever sets an audience is always in it. With `holders` the current generation's and `now` the audience resolved:
+
+- someone in `holders` is not in `now` (the audience shrank): a **new generation** (a fresh key appended, every earlier key carried; at most 256, then the branch is re-made) to everyone in `now`; the next push uses it;
+- otherwise someone in `now` is not in `holders` (it grew): a letter of the **current generation**, so the joiners read the whole history;
+- otherwise nothing (an audience change that moves nobody still writes a letter, recording it).
+
+Every letter goes to **everyone in `now`**, so every holder's record of who holds the key stays complete (a letter to the joiners alone would hide them from the next person to re-letter, who could then miss their removal). After writing, the writer reads the letters back and seals only when its ring is on the generation the letter carried.
+
+The person making a role change does it in the same flow when they hold the key (`dg collab add` / `remove`, the web's member-change plan), after the role lands; `dg branch audience <b> --to …` does it for an audience change; and the helper does it on every push of the branch, so a change its maker could not complete is completed by the next pusher. A branch the actor does not hold is listed as such and left to its next pusher.
+
+### 21.4 The helper and the guard
+
+- `dg branch new --to <who> <b>` records `branch.<b>.dashAudience` as a comma list (`maintainers`, `writers`, `members`, identity ids); a value other than `public` or `members` alone is a narrower audience. On the first push the helper makes generation 0, sends its letter, reads the letters back and pushes only when readers keep its chain for the name; then it stores the pack and writes the ref update. A name whose branch was deleted keeps its key: the pusher re-letters it for the audience asked for now when they are in its audience, and a name with a key from anyone else is refused (E809). Asked for the default branch, a tag, a name that already exists (public or for all members) or in a repository without members-only content, the push is refused before anything is signed (E809, E312). An existing narrower branch keeps its audience; `-o public` on it is E805.
+- A name that has a narrower update the reader opens keeps only its narrower updates: a members-key update of the same name is left out with an alert (`narrowerName`), as public names win over members-only ones (D29), so a member outside the audience cannot move the branch or turn it into an all-members branch.
+- A fetch of a repository with narrower branches whose letters cannot be read fails closed (E806) in a clone whose ledger records commits of a narrower branch, as §19.8's fetch does for members-only ones.
+- The clone's ledger records a narrower branch's commits with the token `branch:<16 hex of SHA-256("dash-forge/v2/br-id" ‖ 0x00 ‖ repoId ‖ K_br,0)>`, so a branch made again under the same name is another audience and the name is never written.
+- **The guard over audiences** (§19.6 generalised, D21 rev 4): S's commits are grouped by audience (members, or a narrower token); a sealed ref update (members-only or narrower) is refused the commits it adds that only audiences it is not **within** hold, minus what an audience it is within already held before the batch. An audience is within another when its group is no wider (Maintainers ⊂ Writers and maintainers ⊂ All members) and it lists no one the other does not; a narrower audience the push does not know is within itself only. So a Maintainers branch's commits are refused on an All-members branch or a Writers branch, and members-only commits on an "All members + @ci-bot" branch (the bot never holds the members key). Public refs are refused anything in S, as before.
+- A narrower branch is never the source or base of an All-members pull request (`dg pr create` and the web refuse it; publishing it works as for a members-only branch, squash by default).

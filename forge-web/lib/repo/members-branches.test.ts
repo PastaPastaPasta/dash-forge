@@ -8,7 +8,7 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { describe, expect, it } from 'vitest'
 
 import { base58Encode } from '../auth/base58'
-import { EpochKeys, IdSet, bytesToHex, sealMembersRef, type OpenContext, type SealedRefUpdate } from '../private'
+import { BranchKey, BranchKeys, BranchRing, EpochKeys, IdSet, bytesToHex, foldBranchLetters, sealBranchRef, sealMembersRef, type OpenContext, type SealedRefUpdate } from '../private'
 import { bytesToBase64, type PlainDocument } from '../sdk'
 import { blindBook } from './members-blinds'
 import { isListedMembersRef, isMembersOnlyRefRow, membersOnlyRefsExist, membersRefsOf } from './members-branches'
@@ -97,6 +97,32 @@ describe('membersRefsOf', () => {
     const got = await membersRefsOf(rows, session, [])
     expect(got.branches).toEqual([])
     expect(got.alerts).toEqual([{ id: id(2), kind: 'publicName' }])
+  })
+})
+
+describe('narrower branches in the list', () => {
+  const SEC = 'refs/heads/sec/embargo'
+  const letter = { name: SEC, keys: [BranchKey.fromBytes(new Uint8Array(32).fill(9))], audience: { group: 'maintainers' as const, also: [] }, to: [base58Encode(OWNER)] }
+
+  it('lists a branch the member holds the key of with who it is for, and counts the others unnamed', async () => {
+    const { session, keys } = await lane()
+    const ring = await BranchRing.create(REPO_ID, foldBranchLetters([{ id: 'l', height: 1, sender: 'owner', letter }], () => true), () => [OWNER])
+    const held = { ring, people: new Map([[SEC, new Set(['o', 'm', 'n'])]]), partial: false }
+    const narrow = await sealBranchRef(ring.writeKeys(SEC) as BranchKeys, OWNER, { type: 'refUpdate', name: SEC, newOid: A, force: false })
+    const theirs = await sealBranchRef(await BranchKeys.derive(REPO_ID, 0, BranchKey.fromBytes(new Uint8Array(32).fill(4))), OWNER, { type: 'refUpdate', name: 'refs/heads/sec/x', newOid: B, force: false })
+    const members = await sealMembersRef(keys, OWNER, { type: 'refUpdate', name: FIX, newOid: C, force: false })
+    const rows = { refUpdate: [sealedRow(2, 1000, narrow), sealedRow(3, 1001, theirs), sealedRow(4, 1002, members)], protectedRefUpdate: [] }
+    const got = await membersRefsOf(rows, session, [], undefined, held)
+    expect(got.branches.map((b) => [b.refName, b.audience, b.narrower])).toEqual([
+      [SEC, 'members', { audience: { group: 'maintainers', also: [] }, people: 3 }],
+      [FIX, 'members', undefined],
+    ])
+    expect(got.noAccess).toBe(1)
+    expect(got.unreadable).toBe(1)
+    // without the ring: both narrower branches are unopened, the members-only one still listed
+    const without = await membersRefsOf(rows, session, [])
+    expect(without.branches.map((b) => b.refName)).toEqual([FIX])
+    expect(without.noAccess).toBe(2)
   })
 })
 

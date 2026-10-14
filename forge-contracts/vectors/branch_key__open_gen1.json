@@ -1,0 +1,87 @@
+{
+  "name": "open_gen1",
+  "description": "generation 1 opens with K_br,1 (its letter carries K_br,0 and K_br,1).",
+  "case": "branch_key",
+  "rules": "v2",
+  "input": {
+    "op": "open",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "letters": [
+        {
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "height": 100,
+          "sender": "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
+          "body": {
+            "type": "branchKey",
+            "v": 1,
+            "name": "refs/heads/sec/embargo",
+            "gen": 0,
+            "keys": [
+              "6465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80818283"
+            ],
+            "group": "maintainers",
+            "people": [],
+            "to": [
+              "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+            ]
+          }
+        },
+        {
+          "id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "height": 300,
+          "sender": "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
+          "body": {
+            "type": "branchKey",
+            "v": 1,
+            "name": "refs/heads/sec/embargo",
+            "gen": 1,
+            "keys": [
+              "6465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80818283",
+              "8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaab"
+            ],
+            "group": "maintainers",
+            "people": [],
+            "to": [
+              "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+            ]
+          }
+        }
+      ],
+      "groups": {
+        "maintainers": [
+          "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+        ],
+        "writers": [
+          "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+        ],
+        "members": [
+          "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+        ]
+      }
+    },
+    "doc": {
+      "type": "refUpdate",
+      "vis": "public",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 1,
+      "refNameHash": "46a7a40d871716cd8ba4222baf3cfb62dad54f4a392e90ae7273efae32e99237",
+      "newOid": "2be4e9b00e8eb5457ab223c92713980b25978bcc",
+      "force": true,
+      "prevOid": "433681865d058c77a67224f6e0e1f1f9347643d2",
+      "enc": "0672ad7619000102030405060708090a0b3964b4a49a754c76451948e6c4b99e888930b5188c96ee1b959635e628db82e9fbc196f4f35e791259ca609868189873e3acf0231d4bb59a3aade0bb399475a2ca62f17f932d5a629dd8312fe84cc7c5fa12fff3cef24e583d4c216d676ad0bd66b0f9fa2ee859eac965c1595354b11b0b83306278537291e9b14d2685c207b4466a93811ea897043604da747397fbc904823f58e8e4929ca83e",
+      "createdAtBlockHeight": 320
+    }
+  },
+  "expected": {
+    "status": "readable",
+    "ref": {
+      "name": "refs/heads/sec/embargo",
+      "newOid": "da31d9d1006fc4633d1b3bbc71b0143c188395ac",
+      "prevOid": "ac57952b296a19e0255ee8ff9b20adcfab2a599c"
+    },
+    "alerts": [],
+    "branch": "refs/heads/sec/embargo",
+    "gen": 1
+  }
+}
