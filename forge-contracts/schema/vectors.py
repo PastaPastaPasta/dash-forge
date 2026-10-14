@@ -142,6 +142,11 @@ if F['mainnet_release_target']:
     BASE['release']['targetOid'] = {"$b": [1, 20]}   # a public publish names its commit
 # ...and a sealed revision never does (targetOnPublish)
 NO_TARGET = dict(targetOid=DROP) if F['mainnet_release_target'] else {}
+# R-11: webhook, topic and packMirror carry no vis stamp; the repo reference holds the repo public
+PUBLIC_CONST = F['mainnet_public_const']
+if PUBLIC_CONST:
+    for _t in ('topic', 'webhook'):
+        del BASE[_t]['vis']
 
 CASES = []
 REPLACES = []   # (contract) <contract>.replace.json: a replace of `stored` by `doc`
@@ -209,6 +214,14 @@ def index(item, label, t, name, present, /, properties=None, **has):
 
 SEALED = dict(enc=b(5, 61), epoch=0)
 
+
+def framed(v):
+    return dict(enc=b(v, 61), epoch=0)
+
+
+# R-04: a sealed config is an epoch anchor, framed 0x02
+CSEALED = framed(2) if F['mainnet_enc_framing'] else SEALED
+
 # ---------------- base shapes ----------------
 for t in BASE:
     ok('base', f'{t} ok', t)
@@ -249,7 +262,7 @@ no('R-02', 'ref without vis', 'refUpdate', 'required', vis=DROP)
 no('R-02', 'ref vis internal', 'refUpdate', 'enum', vis='internal')
 ok('R-02', 'sealed private protected ref', 'protectedRefUpdate', refName=DROP, vis='private', **SEALED)
 no('R-02', 'private protected ref with plaintext name', 'protectedRefUpdate', 'noPlain', vis='private')
-ok('R-02', 'sealed private config with plaintext backend', 'config', defaultBranch=DROP, protectedPatterns=DROP, vis='private', archived=True, **SEALED)
+ok('R-02', 'sealed private config with plaintext backend', 'config', defaultBranch=DROP, protectedPatterns=DROP, vis='private', archived=True, **CSEALED)
 no('R-02', 'private config with plaintext branch', 'config', 'noPlain', vis='private')
 ok('R-02', 'sealed private release', 'release', tagName='-Ab3_x9QkZ', name=DROP, notes=DROP, assets=DROP, vis='private', delta=0,
    **SEALED, **NO_TARGET)
@@ -344,8 +357,11 @@ for n in ('rust', 'c', 'web-dev', 'a1-b2'):
 for n in ('rust-', 'a--b', '-x', 'Rust'):
     no('R-20', f'topic {n}', 'topic', 'pattern', name=n)
 no('R-20', 'topic name of 31', 'topic', 'maxLength', name='a' * 31)
-no('R-20', 'topic on a private repo stamp', 'topic', 'enum', vis='private')
-no('R-20', 'topic without vis', 'topic', 'required', vis=DROP)
+if PUBLIC_CONST:   # R-11: the repo reference's `where` literal holds it (on chain)
+    no('R-11', 'a topic carrying a vis stamp', 'topic', 'additionalProperties', vis='public')
+else:
+    no('R-20', 'topic on a private repo stamp', 'topic', 'enum', vis='private')
+    no('R-20', 'topic without vis', 'topic', 'required', vis=DROP)
 ok('R-20', 'repo with 20 topics', 'repo', topics=[f't{n}' for n in range(20)])
 no('R-20', 'repo with 21 topics', 'repo', 'maxItems', topics=[f't{n}' for n in range(21)])
 no('R-20', 'repo topic rust-', 'repo', 'pattern', topics=['rust-'])
@@ -364,7 +380,7 @@ no('O-05', 'negative size', 'packManifest', 'sizeNonNeg', sizeBytes=-1)
 no('O-05', 'size over 1 TiB', 'packManifest', 'sizeNonNeg', storage=1, chunkCount=0, sizeBytes=1099511627777)
 
 # ---------------- INV-11 free tightenings ----------------
-ok('INV-11', 'config enc of 61 B', 'config', defaultBranch=DROP, protectedPatterns=DROP, vis='private', **SEALED)
+ok('INV-11', 'config enc of 61 B', 'config', defaultBranch=DROP, protectedPatterns=DROP, vis='private', **CSEALED)
 no('INV-11', 'config enc of 60 B (v1 envelope)', 'config', 'encV2', defaultBranch=DROP, protectedPatterns=DROP, vis='private', enc=b(5, 60), epoch=0)
 no('INV-11', 'enc of 28 B', 'issue', 'minItems', title=DROP, body=DROP, vis='private', enc=b(5, 28), epoch=0, **MS)
 ok('INV-11', 'enc of 29 B', 'issue', title=DROP, body=DROP, vis='private', enc=b(5, 29), epoch=0, **MS)
@@ -544,8 +560,11 @@ no('R-18', 'run without vis', 'checkRun', 'required', vis=DROP)
 no('R-18', 'run vis internal', 'checkRun', 'enum', vis='internal')
 
 # ---------------- R-19 public hooks ----------------
-no('R-19', 'webhook on a private repo', 'webhook', 'publicOnly', vis='private')
-no('R-19', 'webhook without vis', 'webhook', 'required', vis=DROP)
+if PUBLIC_CONST:
+    no('R-11', 'a webhook carrying a vis stamp', 'webhook', 'additionalProperties', vis='public')
+else:
+    no('R-19', 'webhook on a private repo', 'webhook', 'publicOnly', vis='private')
+    no('R-19', 'webhook without vis', 'webhook', 'required', vis=DROP)
 
 # ---------------- O-08 trending public (gone with C1's fused star) ----------------
 if not F['fused_star']:
@@ -803,7 +822,7 @@ else:
 CONTRACT_OF.update(packMirror='forge-core', ban='forge-collab')
 if F['pack_mirror']:
     BASE['packMirror'] = {"repoId": i(1), "packHash": i(4), "kind": 1, "uris": ["https://mirror.example.com/p/abc.pack"]}
-    if F['mainnet_mirror_public']:
+    if F['mainnet_mirror_public'] and not PUBLIC_CONST:
         BASE['packMirror']['vis'] = 'public'
     ok('base', 'packMirror ok', 'packMirror')
     ok('U1', 'a stranger records an ipfs copy', 'packMirror', signer=9, kind=2, uris=['ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi'])
@@ -877,8 +896,10 @@ if F['mainnet_release_target']:
     ok('MN', 'an unpublish without targetOid', 'release', delta=-1, targetOid=DROP)
 if F['mainnet_moved_to_public']:
     no('MN', 'a sealed config with a plaintext movedTo', 'config', 'noPlain', defaultBranch=DROP, protectedPatterns=DROP,
-       vis='private', movedTo=i(9), **SEALED)
-if F['mainnet_mirror_public']:
+       vis='private', movedTo=i(9), **CSEALED)
+if F['mainnet_mirror_public'] and PUBLIC_CONST:
+    no('R-11', 'a mirror record carrying a vis stamp', 'packMirror', 'additionalProperties', vis='public')
+elif F['mainnet_mirror_public']:
     no('MN', 'a mirror record for a private repo', 'packMirror', 'enum', vis='private')
     no('MN', 'a mirror record without vis', 'packMirror', 'required', vis=DROP)
 
@@ -998,32 +1019,30 @@ if F['mainnet_author_event_enc']:
 
 if F['mainnet_bot_push']:
     # B1. The grant, then a bot's (signer 9, role 4) refUpdate, packManifest and chunk. Whether
-    # the named grant matches (repo, bot, granter, until, scope or prefix), the granter is still a
-    # maintainer and the bot row is live are references, and grantLive and ttl90 read the block
-    # time: all judged on chain (M-C).
+    # the named grant matches (repo, bot, granter, scope, an until at or after the push), the
+    # granter is still a maintainer and the bot row is a live role-4 row are references, the ref
+    # under the grant's prefix (grantPrefix) reads the grant, and ttl90 reads the block time: all
+    # judged on chain (M-C, M-A2).
     CONTRACT_OF['pushGrant'] = 'forge-core'
     UNTIL = 1767776000000
-    BASE['pushGrant'] = {"repoId": i(1), "botId": i(9), "br": 4, "prefix": "refs/heads/bot/ci-bot/", "until": UNTIL}
+    BASE['pushGrant'] = {"repoId": i(1), "botId": i(9), "prefix": "refs/heads/bot/ci-bot/", "until": UNTIL}
     ok('base', 'pushGrant ok', 'pushGrant')
     ok('B1', 'an exact members-only grant', 'pushGrant', prefix=DROP, scope=b(2, 32))
     no('B1', 'a grant with a scope and a prefix', 'pushGrant', 'oneScope', scope=b(2, 32))
     no('B1', 'a grant with neither', 'pushGrant', 'oneScope', prefix=DROP)
-    no('B1', 'a grant to a role-3 row', 'pushGrant', 'minimum', br=3)
+    no('B1', 'a grant naming the bot row role (R-06: a where literal now)', 'pushGrant', 'additionalProperties', br=4)
     no('B1', 'a grant without until', 'pushGrant', 'required', until=DROP)
     no('B1', 'an empty prefix', 'pushGrant', 'minLength', prefix='')
-    BOT_PUSH = dict(signer=9, r=4, refName='refs/heads/bot/ci-bot/fix-1', pp=i(20), grantor=i(OWNER),
-                    gp='refs/heads/bot/ci-bot/', gu=UNTIL)
-    BOT_SEALED = dict(signer=9, r=4, refName=DROP, pg=i(21), grantor=i(OWNER), gu=UNTIL, **SEALED)
+    BOT_PUSH = dict(signer=9, r=4, refName='refs/heads/bot/ci-bot/fix-1', pp=i(20), grantor=i(OWNER))
+    BOT_SEALED = dict(signer=9, r=4, refName=DROP, pg=i(21), grantor=i(OWNER), **SEALED)
     ok('B1', "a bot's push under a prefix grant", 'refUpdate', **BOT_PUSH)
     ok('B1', "a bot's push to one public branch granted by its full name", 'refUpdate',
-       **dict(BOT_PUSH, refName='refs/heads/fix-auth', gp='refs/heads/fix-auth'))
+       **dict(BOT_PUSH, refName='refs/heads/fix-auth'))
     ok('B1', "a bot's sealed push under an exact grant", 'refUpdate', **BOT_SEALED)
     no('B1', 'a bot push naming no grant', 'refUpdate', 'botGrant', **dict(BOT_PUSH, pp=DROP))
-    no('B1', 'a bot push outside its prefix', 'refUpdate', 'botGrant', **dict(BOT_PUSH, refName='refs/heads/main'))
-    no('B1', 'a bot push beside its prefix (no separator)', 'refUpdate', 'botGrant',
-       **dict(BOT_PUSH, refName='refs/heads/bot/ci-bot2', gp='refs/heads/bot/ci-bot/'))
-    no('B1', 'a prefix grant named without its prefix', 'refUpdate', 'botGrant', **dict(BOT_PUSH, gp=DROP))
-    no('B1', 'a sealed bot push through a prefix grant', 'refUpdate', 'botGrant', **dict(BOT_PUSH, refName=DROP), **SEALED)
+    for p, v in (('gp', 'refs/heads/bot/ci-bot/'), ('gu', UNTIL)):
+        no('B1', f'a bot push copying the grant\'s {p} (R-06: read from the grant)', 'refUpdate', 'additionalProperties',
+           **dict(BOT_PUSH, **{p: v}))
     no('B1', 'a public bot push through an exact grant', 'refUpdate', 'botGrant',
        **dict(BOT_SEALED, refName='refs/heads/feature', enc=DROP, epoch=DROP))
     ok('B1', 'a human push names no grant (r 1)', 'refUpdate')
@@ -1038,13 +1057,39 @@ if F['mainnet_bot_push']:
     no('B1', 'chunk claiming a reader (r 3)', 'chunk', 'botChunk', r=3)
     no('B1', 'chunk r 5', 'chunk', 'maximum', r=5)
 
+# ---------------- Platform beta.6 (phase M-A2; design/v5/PLATFORM-OPPORTUNITIES-5.0.0-beta.6.md) ----------------
+# R-02 (shorthands) is judged by every vector above: the shorthand build must agree with each.
+# R-03 reads the patch (on chain); R-05 reads totals (on chain); R-08, R-09 judge deletes, R-11 and
+# R-12 are `where` literals (on chain, mv-live.mjs).
+if F['mainnet_enc_framing']:
+    for t, plain in PLAIN.items():
+        for v in (3, 5, 6, 255):   # members-only, and versions defined later (a deny form)
+            ok('R-04', f'members-only {t} framed 0x{v:02x}', t, **plain, **framed(v), aud=1, **MEMBER)
+        ok('R-04', f'{t} letter framed 0x04 on a public repo', t, **plain, **framed(4), aud=2)
+        ok('R-04', f'{t} letter framed 0x03 (letter framing is not checked: R-13 not taken)', t, **plain, **framed(3), aud=2)
+        ok('R-04', f'private {t} framed 0x01', t, **plain, **framed(1), aud=1, vis='private', **MEMBER)
+        ok('R-04', f'private {t} letter framed 0x04', t, **plain, **framed(4), aud=2, vis='private', **MEMBER)
+        for v, aud, vis, why in ((1, 1, 'public', 'private framing on a public repo'), (1, 2, 'public', 'private framing on a letter'),
+                                 (2, 1, 'public', 'config framing'), (2, 1, 'private', 'config framing'),
+                                 (2, 2, 'private', 'config framing on a letter'), (4, 1, 'public', 'letter framing on aud 1'),
+                                 (4, 1, 'private', 'letter framing on aud 1')):
+            no('R-04', f'{vis} {t} aud {aud} framed 0x{v:02x} ({why})', t, 'encFraming', **plain, **framed(v), aud=aud,
+               vis=vis, **MEMBER)
+    ok('R-04', 'a sealed config framed 0x02', 'config', defaultBranch=DROP, protectedPatterns=DROP, vis='private', **framed(2))
+    for v in (1, 3, 5):
+        no('R-04', f'a sealed config framed 0x{v:02x}', 'config', 'encV2', defaultBranch=DROP, protectedPatterns=DROP, vis='private',
+           **framed(v))
+
 # Rules that read a total, a time or a height: judged on chain only (forge-contracts/scripts/rc1-live.mjs;
 # the mainnet set's in M-C).
 LIVE_ONLY = {('issue', 'dense'), ('patch', 'dense'), ('transition', 'c1_closedAfter'), ('transition', 'c2_openAfter'),
              ('transition', 'c3_mergedAfter'), ('transition', 'c4_draftAfter'), ('transition', 'c5_draftClosedAfter'),
              ('transition', 'c6_lockedAfter'), ('comment', 'lockGate'), ('review', 'lockGate'),
              ('packManifest', 'platformChunks'), ('release', 'oneLive'), ('topic', 'atMost20'), ('checkRun', 'notFuture'),
-             ('refUpdate', 'grantLive'), ('pushGrant', 'ttl90')}
+             ('pushGrant', 'ttl90')}
+# Rules that read a referenced document (property-constraints.md "Values of a referenced document"):
+# no offline judge reads it, so a node is the only one (M-A2's mv-live.mjs cases)
+LIVE_ONLY |= {('refUpdate', 'grantPrefix'), ('review', 'authorNoVerdict')}
 
 
 def uncovered():

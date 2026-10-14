@@ -32,6 +32,11 @@ cannot hold the items (DESIGN §8.3: forge-collab 19,762 B). The mainnet rows pr
 (the full set, each item left out of it, each alone, and the largest contract per position); --all
 prints every row. Combinations run in parallel (--jobs, default the CPU count).
 
+The Platform beta.6 items (build.MA2_FLAGS, phase M-A2: shorthands, R-03, R-04, R-05, R-08, R-09,
+R-11, R-12) ride on top: each mixed-visibility row turns on every one of them whose build.NEEDS it
+meets, and every combination of them is validated with every mixed-visibility item on (the MA2 rows),
+each held to the same room.
+
 A probe variant to register (and measure) is the same build:
   python3 forge-contracts/schema/build.py --off review_to_author --out /tmp/probe-s2
 """
@@ -55,8 +60,11 @@ MV_SHORT = {'layout_meta': 'META', 'mainnet_aud': 'L1', 'mainnet_one_way_visibil
             'mainnet_member_role': 'L2', 'mainnet_bot_role': 'C2L4', 'mainnet_maint_kinds': 'C3', 'mainnet_check_aud': 'M1',
             'mainnet_event_kinds': 'M2', 'mainnet_event_target_aud': 'M4', 'mainnet_author_event_enc': 'M3',
             'mainnet_bot_push': 'B1'}
-# The mainnet flags that are not mixed-visibility items: on in every mainnet row, as --mainnet has them
-MAINNET_OTHERS = [k for k in build.MAINNET_BUILT if k not in build.MV_FLAGS]
+MA2_SHORT = {'mainnet_shorthand': 'SH', 'mainnet_author_no_verdict': 'R03', 'mainnet_enc_framing': 'R04',
+             'mainnet_revision_guards': 'R05', 'mainnet_owner_row_stays': 'R08', 'mainnet_keep_verdicts': 'R09',
+             'mainnet_public_const': 'R11', 'mainnet_public_stars': 'R12'}
+# The mainnet flags that are neither mixed-visibility nor M-A2 items: on in every mainnet row, as --mainnet has them
+MAINNET_OTHERS = [k for k in build.MAINNET_BUILT if k not in build.MV_FLAGS and k not in build.MA2_FLAGS]
 
 
 def combinations():
@@ -85,10 +93,24 @@ def allowed(on):
 
 
 def mv_combinations():
-    """(the mixed-visibility items turned on) for every combination of MV_FLAGS that NEEDS allows."""
+    """(the mixed-visibility items turned on, then every M-A2 item those allow) for every
+    combination of MV_FLAGS that NEEDS allows."""
     for bits in itertools.product((False, True), repeat=len(build.MV_FLAGS)):
         on = [f for f, v in zip(build.MV_FLAGS, bits) if v]
         if allowed(on):
+            ma2 = []   # in MA2_FLAGS order, the shorthands (which R-04 needs) first
+            for f in build.MA2_FLAGS:
+                if allowed(on + ma2 + [f]):
+                    ma2.append(f)
+            yield on, ma2
+
+
+def ma2_combinations():
+    """(the M-A2 items turned on) for every combination of MA2_FLAGS that NEEDS allows, every
+    mixed-visibility item on."""
+    for bits in itertools.product((False, True), repeat=len(build.MA2_FLAGS)):
+        on = [f for f, v in zip(build.MA2_FLAGS, bits) if v]
+        if allowed(list(build.MV_FLAGS) + on):
             yield on
 
 
@@ -157,11 +179,16 @@ def main():
             if len(u1_off) < len(build.UPDATE1_FLAGS):
                 label += '+U1' + ''.join(f'-{f}' for f in u1_off)
             rc2.append(pool.submit(judge, validator, label, ','.join(off_flags), '', False))
-        mv = [pool.submit(judge, validator, 'MN+' + ('+'.join(MV_SHORT[f] for f in on) or 'none'), '', ','.join(MAINNET_OTHERS + on), True)
-              for on in mv_combinations()]
+        mv = [pool.submit(judge, validator, 'MN+' + ('+'.join(MV_SHORT[f] for f in on) or 'none'), '',
+                          ','.join(MAINNET_OTHERS + on + ma2), True)
+              for on, ma2 in mv_combinations()]
+        ma2 = [pool.submit(judge, validator, 'MA2+' + ('+'.join(MA2_SHORT[f] for f in on) or 'none'), '',
+                           ','.join(MAINNET_OTHERS + list(build.MV_FLAGS) + on), True)
+               for on in ma2_combinations()]
         rc2 = [f.result() for f in rc2]
         mv = [f.result() for f in mv]
-    failed = [r for r in rc2 + mv if r.bad]
+        ma2 = [f.result() for f in ma2]
+    failed = [r for r in rc2 + mv + ma2 if r.bad]
     for r in failed:
         print(f'{r.label}: FAILED\n{r.out[-3000:]}', file=sys.stderr)
 
@@ -188,7 +215,22 @@ def main():
             print(f'{"with" if meta else "without"} forge-meta: largest {n} create transition {worst.sizes[n][1]} B '
                   f'({build.TRANSITION_LIMIT - worst.sizes[n][1]} B of room) in {worst.label}')
     print(f'\nmainnet: with forge-meta each contract keeps >= {build.ROOM_MIN} B of room (D44); without it, the transition '
-          f'limit only. {sum(not r.bad for r in mv)}/{len(mv)} mainnet combinations valid.')
+          f'limit only. {sum(not r.bad for r in mv)}/{len(mv)} mainnet combinations valid (each with every M-A2 item it allows).\n')
+
+    # The M-A2 matrix (every mixed-visibility item on): all of it, each item left out, each alone, none
+    every = {r.label: r for r in ma2}
+    pick = ['MA2+' + '+'.join(MA2_SHORT[f] for f in build.MA2_FLAGS)]
+    for f in build.MA2_FLAGS:
+        pick.append('MA2+' + '+'.join(MA2_SHORT[g] for g in build.MA2_FLAGS if g != f))
+        pick.append('MA2+' + MA2_SHORT[f])
+    pick.append('MA2+none')
+    table(ma2 if '--all' in sys.argv else [every[p] for p in dict.fromkeys(pick) if p in every], names, markdown)
+    for n in names:
+        worst = max(ma2, key=lambda r: r.sizes.get(n, (0, 0))[1])
+        if n in worst.sizes:
+            print(f'M-A2: largest {n} create transition {worst.sizes[n][1]} B ({build.TRANSITION_LIMIT - worst.sizes[n][1]} B of room) in {worst.label}')
+    print(f'\nM-A2: every mixed-visibility item on, each contract keeps >= {build.ROOM_MIN} B of room. '
+          f'{sum(not r.bad for r in ma2)}/{len(ma2)} M-A2 combinations valid.')
     sys.exit(1 if failed else 0)
 
 
