@@ -48,7 +48,8 @@ pub struct Workflow {
     pub jobs: Vec<Job>,
     /// The parsed file (for [`Workflow::for_act`]).
     pub doc: Value,
-    /// Some jobs were left out ([`Workflow::only_jobs`]): act gets [`Self::doc`], not the file.
+    /// Act gets [`Self::doc`], not the file: some jobs were left out ([`Workflow::only_jobs`]),
+    /// or environments' entries renamed ([`crate::envs::apply`]).
     pub trimmed: bool,
 }
 
