@@ -1,0 +1,264 @@
+{
+  "name": "fold_malformed_ignored",
+  "description": "letters whose body breaks a rule are ignored with a reason, never fatal: gen_mismatch, tag_ref, unknown_group, repeated_key, no_audience, people_unsorted, people_hex, extra_field, to_empty, to_unsorted.",
+  "case": "branch_key",
+  "rules": "v2",
+  "input": {
+    "op": "fold",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "letters": [
+      {
+        "id": "0101010101010101010101010101010101010101010101010101010101010101",
+        "height": 100,
+        "sender": "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
+        "body": {
+          "type": "branchKey",
+          "v": 1,
+          "name": "refs/heads/sec/embargo",
+          "gen": 3,
+          "keys": [
+            "6465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80818283"
+          ],
+          "group": "maintainers",
+          "people": [],
+          "to": [
+            "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+          ]
+        }
+      },
+      {
+        "id": "0202020202020202020202020202020202020202020202020202020202020202",
+        "height": 101,
+        "sender": "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
+        "body": {
+          "type": "branchKey",
+          "v": 1,
+          "name": "refs/tags/v1",
+          "gen": 0,
+          "keys": [
+            "6465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80818283"
+          ],
+          "group": "maintainers",
+          "people": [],
+          "to": [
+            "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+          ]
+        }
+      },
+      {
+        "id": "0303030303030303030303030303030303030303030303030303030303030303",
+        "height": 102,
+        "sender": "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
+        "body": {
+          "type": "branchKey",
+          "v": 1,
+          "name": "refs/heads/sec/embargo",
+          "gen": 0,
+          "keys": [
+            "6465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80818283"
+          ],
+          "group": "triage",
+          "people": [],
+          "to": [
+            "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+          ]
+        }
+      },
+      {
+        "id": "0404040404040404040404040404040404040404040404040404040404040404",
+        "height": 103,
+        "sender": "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
+        "body": {
+          "type": "branchKey",
+          "v": 1,
+          "name": "refs/heads/sec/embargo",
+          "gen": 1,
+          "keys": [
+            "6465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80818283",
+            "6465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80818283"
+          ],
+          "group": "maintainers",
+          "people": [],
+          "to": [
+            "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+          ]
+        }
+      },
+      {
+        "id": "0505050505050505050505050505050505050505050505050505050505050505",
+        "height": 104,
+        "sender": "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
+        "body": {
+          "type": "branchKey",
+          "v": 1,
+          "name": "refs/heads/sec/embargo",
+          "gen": 0,
+          "keys": [
+            "6465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80818283"
+          ],
+          "group": null,
+          "people": [],
+          "to": [
+            "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+          ]
+        }
+      },
+      {
+        "id": "0606060606060606060606060606060606060606060606060606060606060606",
+        "height": 105,
+        "sender": "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
+        "body": {
+          "type": "branchKey",
+          "v": 1,
+          "name": "refs/heads/sec/embargo",
+          "gen": 0,
+          "keys": [
+            "6465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80818283"
+          ],
+          "group": "maintainers",
+          "people": [
+            "D2ZcUbtpG5sKq7XLeB4YnpNnTGSptKCxTddoNeydzJQq",
+            "Bswb3UyeD1pUTaGiE6WvqwFpJZsQSEY1xhJePCDTHdvp"
+          ],
+          "to": [
+            "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+          ]
+        }
+      },
+      {
+        "id": "0707070707070707070707070707070707070707070707070707070707070707",
+        "height": 106,
+        "sender": "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
+        "body": {
+          "type": "branchKey",
+          "v": 1,
+          "name": "refs/heads/sec/embargo",
+          "gen": 0,
+          "keys": [
+            "6465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80818283"
+          ],
+          "group": "maintainers",
+          "people": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          "to": [
+            "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+          ]
+        }
+      },
+      {
+        "id": "0808080808080808080808080808080808080808080808080808080808080808",
+        "height": 107,
+        "sender": "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
+        "body": {
+          "type": "branchKey",
+          "v": 1,
+          "name": "refs/heads/sec/embargo",
+          "gen": 0,
+          "keys": [
+            "6465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80818283"
+          ],
+          "group": "maintainers",
+          "people": [],
+          "to": [
+            "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+          ],
+          "note": "x"
+        }
+      },
+      {
+        "id": "0909090909090909090909090909090909090909090909090909090909090909",
+        "height": 108,
+        "sender": "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
+        "body": {
+          "type": "branchKey",
+          "v": 1,
+          "name": "refs/heads/sec/embargo",
+          "gen": 0,
+          "keys": [
+            "6465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80818283"
+          ],
+          "group": "maintainers",
+          "people": [],
+          "to": []
+        }
+      },
+      {
+        "id": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+        "height": 109,
+        "sender": "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
+        "body": {
+          "type": "branchKey",
+          "v": 1,
+          "name": "refs/heads/sec/embargo",
+          "gen": 0,
+          "keys": [
+            "6465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80818283"
+          ],
+          "group": "maintainers",
+          "people": [],
+          "to": [
+            "D2ZcUbtpG5sKq7XLeB4YnpNnTGSptKCxTddoNeydzJQq",
+            "Bswb3UyeD1pUTaGiE6WvqwFpJZsQSEY1xhJePCDTHdvp"
+          ]
+        }
+      }
+    ],
+    "groups": {
+      "maintainers": [
+        "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+      ],
+      "writers": [
+        "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+      ],
+      "members": [
+        "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+      ]
+    }
+  },
+  "expected": {
+    "branches": [],
+    "ignored": [
+      {
+        "id": "0101010101010101010101010101010101010101010101010101010101010101",
+        "reason": "malformed"
+      },
+      {
+        "id": "0202020202020202020202020202020202020202020202020202020202020202",
+        "reason": "malformed"
+      },
+      {
+        "id": "0303030303030303030303030303030303030303030303030303030303030303",
+        "reason": "malformed"
+      },
+      {
+        "id": "0404040404040404040404040404040404040404040404040404040404040404",
+        "reason": "malformed"
+      },
+      {
+        "id": "0505050505050505050505050505050505050505050505050505050505050505",
+        "reason": "malformed"
+      },
+      {
+        "id": "0606060606060606060606060606060606060606060606060606060606060606",
+        "reason": "malformed"
+      },
+      {
+        "id": "0707070707070707070707070707070707070707070707070707070707070707",
+        "reason": "malformed"
+      },
+      {
+        "id": "0808080808080808080808080808080808080808080808080808080808080808",
+        "reason": "malformed"
+      },
+      {
+        "id": "0909090909090909090909090909090909090909090909090909090909090909",
+        "reason": "malformed"
+      },
+      {
+        "id": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+        "reason": "malformed"
+      }
+    ]
+  }
+}

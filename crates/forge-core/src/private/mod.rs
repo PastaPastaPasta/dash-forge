@@ -41,6 +41,7 @@ compile_error!("the `vectors` feature (deterministic nonces and file ids) is for
 mod access_conformance;
 pub mod access_notice;
 pub mod blind;
+pub mod branch_key;
 pub mod bundle;
 pub mod convert;
 pub mod doc;

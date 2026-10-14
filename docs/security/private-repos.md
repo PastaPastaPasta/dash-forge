@@ -1150,6 +1150,61 @@ The artifact is a DFPK `0x02` file (§3.7) to its recipients, the writer in slot
 
 **Reading** (`git-remote-dash`, a reader with an identity whose members key does not open the branch): `list` adds each shared branch at its `head` when a letter from a current maintainer or Write member names a members-only ref update of this repository with that `refNameHash` and that blind as `newOid`, written by a current member (not a bot), and its packs are kind-64 manifests of this repository stored by a current member. The newest such letter per name wins; a public branch of the same name wins over it. The fetch downloads those packs, checks each against its `packHash` and opens it with the file key alone (`pack::open_with_file_key`; a key that does not open it sets the pack aside and the branch is left out with a warning); the clone's ledger records the head and the packs first (they are members-only commits, §19.5), the clone's public tips are remembered for the `pre-push` hook (§19.8), and the hook must be in place, as for any members-only fetch. Letters a reader opened that are not addressed to it are remembered per identity (`<common dir>/dash/letters-not-for-<id>`) and not fetched again; the branches it was given are listed in `<common dir>/dash/shared-branches`. **Fail closed:** a clone holding shared commits whose shares can no longer be read fails the fetch (retry), and one whose shared branch is no longer shared (its writer lost Write access, or the push it names was by someone since removed) fails with E806 naming the branch and how to forget it locally, rather than let `git fetch --prune` drop it. The recipient sees nothing pushed to the branch later.
 
+## 21. Narrower branches (phase 3F)
+
+A branch can be for fewer people than all members: Maintainers, Writers and maintainers, a group plus people (`maintainers,@ci-bot`), or people. It has its own **branch key** in generations, which only its audience receives (mixed-visibility DESIGN §4.3 "Narrower branches", D34, D39; `forge_core::private::branch_key`, `forge_core::narrow`, web `lib/private/branch-key.ts`; vectors `branch_key__*` from `tools/private-repos-vectors/branch_key.py`, and the narrower `publish_guard__*` cases).
+
+### 21.1 Keys, ref updates and packs
+
+```
+K_br,g      = 32 random bytes, generation g = 0, 1, …
+PRK_br,g    = HKDF-Extract(salt = repoId, IKM = K_br,g)
+KCV_br,g    = HKDF-Expand(PRK_br,g, "dash-forge/v2/br-kcv" ‖ 0x00, 14)
+refNameHash = HMAC-SHA256(HKDF-Expand(PRK_br,g, "dash-forge/v2/br-ref" ‖ 0x00, 32), name)
+enc v0x06   = 0x06 ‖ KCV_br,g[0..4] ‖ nonce(12) ‖ COMMIT_obj(32) ‖ AES-256-GCM(K_doc,obj, nonce, TLV, AD ‖ COMMIT_obj) ‖ tag(16)
+K_obj       = HKDF-Expand(PRK_br,g, "dash-forge/v2/obj" ‖ 0x00 ‖ u32(g) ‖ nonce ‖ SHA-256(AD), 32)
+DFPK 0x03   = "DFPK" ‖ 0x03 ‖ L ‖ 00 00 ‖ KCV_br,g[0..4] ‖ u64(plaintextLen) ‖ fileId(16)
+K_pack      = HKDF-Expand(PRK_br,g, "dash-forge/v2/pack" ‖ 0x00 ‖ 0x03 ‖ fileId, 32)
+```
+
+- A narrower branch's ref update is a `refUpdate` / `protectedRefUpdate` of a public repository exactly as a members-only one (§19.2: `refName` absent, blinded OIDs under the update's own salt, TLV 3, 22, 23, 27, never padded), with the branch key's name hash, `enc` v0x06 and **`epoch` = the generation** (the AD binds it, version byte `0x06`). Only branches (`refs/heads/…`) can be narrower.
+- Its packs are kind-64 manifests whose artifact is DFPK `0x03` (segments as `0x01`, the header the AD), one per branch per push (§19.5's plan treats a narrower branch as a members-only one). A reader selects a key by the KCV prefix and the generation, then checks it the usual way (the commitment before GCM for v0x06, every segment tag for a pack); four bytes select, they never authorize.
+- **Readers without the key** (members outside the audience) count a v0x06 update as unreadable and skip a DFPK 0x03 pack (§18's rule for versions they do not open); the member fold shows each name hash whose newest unreadable v0x06 update is not a delete as "A branch you don't have access to" (one per key generation: generations cannot be linked from outside). Outsiders see what they see for any members-only branch, plus that letters exist and to how many people.
+
+### 21.2 `branchKey` (v 1) letters
+
+```
+{"gen":g,"group":"maintainers"|"writers"|"members"|null,"keys":[K_br,0 … K_br,g],
+ "name":"refs/heads/…","people":[base58,…],"to":[base58,…],"type":"branchKey","v":1}
+```
+
+A kind-10 key letter (§20.1's format) carrying **every generation's key**: a joiner never received the earlier letters, and no on-chain anchor per generation exists to walk. `group` and `people` are the audience (people ascending, at most 63, a group or at least one person); `to` lists every recipient (the writer among them, ascending, at most 64), which the next re-lettering compares with the audience. Any other field, a repeated key, `gen` not `len(keys) − 1`, or a name outside `refs/heads/` makes the letter malformed (ignored, never fatal).
+
+**The fold** (`branch_key::fold`): the letters a reader opens (§20.1's packHash, size and slot checks; its "current sender" rule is replaced by the one below), whose `to` lists exactly the letter's recipients with the reader among them, in (height, id) order. A letter **counts** only when its sender (the manifest's `$ownerId`) is in the audience as it resolves now: a branch's first letter, its own audience (nobody outside an audience can start a branch for it, so a name cannot be front-run); a later letter, the branch's audience so far. Per name the first counted letter starts the chain; a later one counts only when it also agrees with the chain on every generation both carry (it may extend it), otherwise it is ignored (`otherChain`, `sender`). So a holder who leaves the audience cannot keep the branch on a generation they made (their letters stop counting, and the next counted generation replaces theirs), cannot fill it to the generation cap, and a writer outside it cannot redirect it. Each generation is issued at the height of the first counted letter carrying it; the audience is the newest counted letter's at the highest generation; the current generation's holders are the union of its counted letters' `to`. The keys of letters that do not count are kept **read-only**: they open what was written under them, never what is written next.
+
+**Late across generations.** A ref update under generation g written after generation g+1 was issued plus `GRACE_BLOCKS`, by someone who is not in the branch's audience as it resolves now, is late: never folded (a removed recipient keeps the old key, like an ex-member). Under a read-only key the cut-off is the first counted generation at or after g, so a leaver's own updates under a key they made stop counting once a counted generation replaces it, while audience members' work under it is kept.
+
+### 21.3 Who gets a letter, and when
+
+The audience resolves against the member documents now, as an environment's does (the owner in every group; groups never include bots; plus the people), and only people with a usable encryption key can receive one; whoever sets an audience is always in it. With `holders` the current generation's and `now` the audience resolved:
+
+- someone in `holders` is not in `now` (the audience shrank): a **new generation** (a fresh key appended, every earlier key carried; at most 256, then the branch is re-made) to everyone in `now`; the next push uses it;
+- otherwise someone in `now` is not in `holders` (it grew): a letter of the **current generation**, so the joiners read the whole history;
+- otherwise nothing (an audience change that moves nobody still writes a letter, recording it).
+
+Every letter goes to **everyone in `now`**, so every holder's record of who holds the key stays complete (a letter to the joiners alone would hide them from the next person to re-letter, who could then miss their removal). After writing, the writer reads the letters back and seals only when its ring is on the generation the letter carried.
+
+The person making a role change does it in the same flow when they hold the key (`dg collab add` / `remove`, the web's member-change plan), after the role lands; `dg branch audience <b> --to …` does it for an audience change; and the helper does it on every push of the branch, so a change its maker could not complete is completed by the next pusher. A branch the actor does not hold is listed as such and left to its next pusher.
+
+### 21.4 The helper and the guard
+
+- `dg branch new --to <who> <b>` records `branch.<b>.dashAudience` as a comma list (`maintainers`, `writers`, `members`, identity ids); a value other than `public` or `members` alone is a narrower audience. On the first push the helper makes generation 0, sends its letter, reads the letters back and pushes only when readers keep its chain for the name; then it stores the pack and writes the ref update. A name whose branch was deleted keeps its key: the pusher re-letters it for the audience asked for now when they are in its audience, and a name with a key from anyone else is refused (E809). Asked for the default branch, a tag, a name that already exists (public or for all members) or in a repository without members-only content, the push is refused before anything is signed (E809, E312). An existing narrower branch keeps its audience; `-o public` on it is E805.
+- A name that has a narrower update the reader opens keeps only its narrower updates: a members-key update of the same name is left out with an alert (`narrowerName`), as public names win over members-only ones (D29), so a member outside the audience cannot move the branch or turn it into an all-members branch.
+- A fetch of a repository with narrower branches whose letters cannot be read fails closed (E806) in a clone whose ledger records commits of a narrower branch, as §19.8's fetch does for members-only ones.
+- The clone's ledger records a narrower branch's commits with the token `branch:<16 hex of SHA-256("dash-forge/v2/br-id" ‖ 0x00 ‖ repoId ‖ K_br,0)>`, so a branch made again under the same name is another audience and the name is never written.
+- **The guard over audiences** (§19.6 generalised, D21 rev 4): S's commits are grouped by audience (members, or a narrower token); a sealed ref update (members-only or narrower) is refused the commits it adds that only audiences it is not **within** hold, minus what an audience it is within already held before the batch. An audience is within another when its group is no wider (Maintainers ⊂ Writers and maintainers ⊂ All members) and it lists no one the other does not; a narrower audience the push does not know is within itself only. So a Maintainers branch's commits are refused on an All-members branch or a Writers branch, and members-only commits on an "All members + @ci-bot" branch (the bot never holds the members key). Public refs are refused anything in S, as before.
+- A narrower branch is never the source or base of an All-members pull request (`dg pr create` and the web refuse it; publishing it works as for a members-only branch, squash by default).
+
 ## 22. Bot access: notices, requests and `read` letters
 
 A bot reads nothing members-only by default (DESIGN §4.9, D33). What a maintainer lets it do is public; what it is given for one request is a snapshot. The pure formats are `forge_core::private::access_notice`, `private::key_letter::ReadLetter` and `rules::agent_request` (web: `lib/private/access-notice.ts`, `lib/private/read-letter.ts`, `lib/rules/agent-request.ts`); the service is `collab::v2::bots`; vectors `access_notice__*` and `key_letter__read_*` from `tools/private-repos-vectors/access.py`.

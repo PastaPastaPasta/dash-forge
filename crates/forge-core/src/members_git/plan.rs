@@ -6,8 +6,8 @@
 //!   holds) and nothing else. P-only bases are required for correctness, not tidiness: with
 //!   members tips among the bases, a pusher repository with a reachability bitmap leaked a
 //!   members-only blob into a public pack as a delta base, and omitted a published blob (S4).
-//! * **Members-only, per branch**: `want` = that branch's new tip, `have` = P ∪ the batch's new
-//!   public tips ∪ that branch's previous tip. Never another members-only branch's tips, so
+//! * **Members-only or narrower, per branch**: `want` = that branch's new tip, `have` = P ∪ the
+//!   batch's new public tips ∪ that branch's previous tip. Never another sealed branch's tips, so
 //!   publishing one branch's pack (or a narrower branch's, 3F) can never expose another's objects.
 //!
 //! The public pack goes first. A deletion packs nothing; a members-only branch set to a commit
@@ -74,13 +74,14 @@ pub fn plan(
     batch: &[BatchRef],
 ) -> PackPlan {
     let p: BTreeSet<&str> = public_tips.iter().map(String::as_str).collect();
-    let new_of = |audience: Audience| {
+    // members-only and narrower branches (phase 3F) alike: one pack per sealed branch
+    let new_of = |sealed: bool| {
         batch
             .iter()
-            .filter(move |u| u.audience == audience)
+            .filter(move |u| u.audience.is_sealed() == sealed)
             .filter_map(|u| u.new.as_deref().map(|n| (u, n)))
     };
-    let public_want: BTreeSet<&str> = new_of(Audience::Public)
+    let public_want: BTreeSet<&str> = new_of(false)
         .map(|(_, n)| n)
         .filter(|n| !p.contains(n))
         .collect();
@@ -91,7 +92,7 @@ pub fn plan(
         }),
         members: Vec::new(),
     };
-    let mut members: Vec<(&BatchRef, &str)> = new_of(Audience::Members).collect();
+    let mut members: Vec<(&BatchRef, &str)> = new_of(true).collect();
     members.sort_by(|a, b| a.0.dst.cmp(&b.0.dst));
     for (u, tip) in members {
         let mut have: BTreeSet<&str> = p.union(&public_want).copied().collect();

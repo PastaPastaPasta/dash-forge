@@ -18,6 +18,7 @@
     "bot list": "bot-list.schema.json",
     "bot read": "bot-read.schema.json",
     "bot revoke": "bot-revoke.schema.json",
+    "branch audience": "branch-audience.schema.json",
     "branch cleanup": "branch-cleanup.schema.json",
     "branch list": "branch-list.schema.json",
     "branch new": "branch-new.schema.json",

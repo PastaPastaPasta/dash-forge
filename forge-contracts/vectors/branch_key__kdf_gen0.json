@@ -1,0 +1,24 @@
+{
+  "name": "kdf_gen0",
+  "description": "KCV_br,g and the branch key's name hash (no generation in their HKDF info: a generation is a fresh random key).",
+  "case": "branch_key",
+  "rules": "v2",
+  "input": {
+    "op": "kdf",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "key": "6465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80818283",
+    "names": [
+      "refs/heads/sec/embargo",
+      "refs/heads/main"
+    ]
+  },
+  "expected": {
+    "kcv": "d02a38c31aedd5e55c4afed48734",
+    "prk": "568b5f4ba13db0542b52404ca502d2bd867bb56c127777ebd81f37d4e0302f1f",
+    "refKey": "ac7efb6dda3b4d361f95824895044f1ec9f22efd31dabfdc445f0263cab358e9",
+    "refNameHashes": [
+      "a25cd2a6361488fa7354dc45fd39a1b4227aeeaa58846847ce5b96e803bf1551",
+      "3632831465732ff8878d2605706abd4c22ea666dfc202a9bcedc41887f68e1f8"
+    ]
+  }
+}
