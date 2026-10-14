@@ -144,7 +144,12 @@ fn oid_lines(out: &str) -> BTreeSet<String> {
 
 /// `oids`, one per line, each after `prefix` (`^` excludes it from a `rev-list`).
 fn stdin_lines<'a>(prefix: &str, oids: impl IntoIterator<Item = &'a String>) -> String {
-    oids.into_iter().map(|o| format!("{prefix}{o}\n")).collect()
+    oids.into_iter().fold(String::new(), |mut out, o| {
+        out.push_str(prefix);
+        out.push_str(o);
+        out.push('\n');
+        out
+    })
 }
 
 /// The objects `tips` reach that `public` does not (`rev-list --objects`), or only commits.
@@ -441,7 +446,7 @@ pub async fn share(ctx: &Ctx, name: &str, to: &[String]) -> Result<()> {
                 && view.updates.sealed.get(&u.id).is_some_and(Option::is_some)
         })
     });
-    let (Some(u), Some(b)) = (introducing, view.updates.blind_of(&full, &tip)) else {
+    let (Some(update), Some(head_blind)) = (introducing, view.updates.blind_of(&full, &tip)) else {
         return Err(nobody_refusal(format!(
             "{short}'s newest push didn't check out, so it can't be shared; `dg branch` shows it"
         )));
@@ -450,7 +455,7 @@ pub async fn share(ctx: &Ctx, name: &str, to: &[String]) -> Result<()> {
         .ref_updates
         .iter()
         .chain(&state.protected_ref_updates)
-        .find(|d| d.id == u.id)
+        .find(|d| d.id == update.id)
         .and_then(|d| Some((d, d.field_bytes32("refNameHash")?)))
     else {
         bail!("the push that set {short} could not be read again");
@@ -522,7 +527,7 @@ pub async fn share(ctx: &Ctx, name: &str, to: &[String]) -> Result<()> {
     let mut candidates: Vec<Candidate> = Vec::new();
     let mut contents: Vec<PackContents> = Vec::new();
     for (hash, copies) in &by_hash {
-        let (sealed, m) = match svc
+        let (sealed, copy) = match svc
             .fetch_best_copy_or_mirror(&s.repo, &contract, copies, &roles, &reader)
             .await
         {
@@ -542,7 +547,7 @@ pub async fn share(ctx: &Ctx, name: &str, to: &[String]) -> Result<()> {
         let key = header.file_key(keys)?;
         // a pack this key does not open, or one a removed member wrote late (§8.2), is left out
         let plain = match svc
-            .open_members_pack(&s.repo, &kr, copies, m.size_bytes, sealed)
+            .open_members_pack(&s.repo, &kr, copies, copy.size_bytes, sealed)
             .await
         {
             Ok(ArtifactRead::Bytes(b)) => b,
@@ -625,12 +630,12 @@ pub async fn share(ctx: &Ctx, name: &str, to: &[String]) -> Result<()> {
         name: full.clone(),
         ref_name_hash,
         head: LetterHead {
-            blind: b.blind.clone(),
-            oid: b.real.clone(),
-            salt: b.salt,
+            blind: head_blind.blind.clone(),
+            oid: head_blind.real.clone(),
+            salt: head_blind.salt,
         },
         packs,
-        as_of: u.created_at,
+        as_of: update.created_at,
     };
     let typed = letter
         .to_typed()
