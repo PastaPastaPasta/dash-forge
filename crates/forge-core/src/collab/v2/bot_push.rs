@@ -70,6 +70,59 @@ impl BotPushAccess {
 }
 
 impl Collab<'_> {
+    /// How readers mark each bot push among `updates` (ref update documents; the others are
+    /// left out): [`push_grant::mark`] against the grant it named, the bot's current Bot row and
+    /// the bot's notice in force when it landed (the newest by a current maintainer then).
+    /// Empty, with nothing read, when no update is a bot's.
+    pub async fn bot_push_marks(
+        &self,
+        repo: &RepoRef,
+        updates: &[&crate::platform::FetchedDocument],
+    ) -> Result<std::collections::BTreeMap<String, push_grant::PushMark>> {
+        let bots: Vec<&&crate::platform::FetchedDocument> =
+            updates.iter().filter(|d| push_grant::is_bot_push(d)).collect();
+        let mut out = std::collections::BTreeMap::new();
+        if bots.is_empty() {
+            return Ok(out);
+        }
+        let svc = match self.signer {
+            Some(_) => self.repo_service()?,
+            None => crate::repo::RepoService::reader(self.client),
+        };
+        let grants = svc.read_push_grants(repo, None).await?;
+        let members = MemberReader::new(self.client).list(repo).await?;
+        let maintainers: BTreeSet<&str> = members
+            .iter()
+            .filter(|m| m.role == Role::Maintainer)
+            .map(|m| m.identity_id.as_str())
+            .collect();
+        let notices = self.access_notices(repo).await?;
+        for d in bots {
+            let at = d.created_at.unwrap_or_default();
+            let grant = push_grant::named_grant(d)
+                .and_then(|id| grants.iter().find(|g| g.id == id));
+            let row_at = members
+                .iter()
+                .find(|m| m.identity_id == d.owner_id && m.role == Role::Bot)
+                .map(|m| m.created_at);
+            let bot = crate::platform::decode_identifier(&d.owner_id).ok();
+            let then: Vec<NoticeEntry> = notices
+                .all
+                .iter()
+                .filter(|e| e.created_at <= at && Some(e.notice.bot) == bot)
+                .cloned()
+                .collect();
+            let allows = crate::private::access_notice::current(&then, |w| {
+                w == repo.owner_id() || maintainers.contains(w)
+            })
+            .into_values()
+            .next()
+            .map(|e| e.notice.live_at(at) && e.notice.allows_push());
+            out.insert(d.id.clone(), push_grant::mark(at, grant, row_at, allows));
+        }
+        Ok(out)
+    }
+
     /// Whether the signer writes push-class documents as a bot in `repo`: it holds a Bot row
     /// there and the contract admits a bot's packs (`packManifest.r` up to 4, the mainnet set).
     /// Then its public long bodies (kind 6) and its pushes claim `r` 4.

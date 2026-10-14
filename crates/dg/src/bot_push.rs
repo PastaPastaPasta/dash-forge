@@ -588,6 +588,11 @@ pub(crate) async fn describe(
         .grantable_branches(&s.repo)
         .await
         .unwrap_or_default();
+    let bots: Vec<String> = forge_core::members::MemberReader::new(&s.client)
+        .list(&s.repo)
+        .await
+        .map(|m| forge_core::bot_keys::bots_of(&m, &[]))
+        .unwrap_or_default();
     let listed: Vec<[u8; 32]> = access
         .notice
         .as_ref()
@@ -607,18 +612,17 @@ pub(crate) async fn describe(
             .grants
             .iter()
             .any(|o| o.created_at > g.created_at && o.prefix == g.prefix && o.scope == g.scope);
-        let what = match (&g.prefix, &g.scope) {
+        // an exact grant's branch, when this reader holds its key (the bot does: it is shared
+        // with it)
+        let branch = g.scope.as_ref().and_then(|h| {
+            branches.iter().find(|b| {
+                hex::encode(b.current) == *h || b.earlier.iter().any(|e| hex::encode(e) == *h)
+            })
+        });
+        let what = match (&g.prefix, branch) {
             (Some(p), _) => push_grant::short_prefix(p).to_owned(),
-            (_, Some(h)) => branches
-                .iter()
-                .find(|b| {
-                    hex::encode(b.current) == *h || b.earlier.iter().any(|e| hex::encode(e) == *h)
-                })
-                .map_or_else(
-                    || "a members-only branch".to_owned(),
-                    |b| forge_core::keyring::short_branch(&b.name).to_owned(),
-                ),
-            _ => continue,
+            (None, Some(b)) => forge_core::keyring::short_branch(&b.name).to_owned(),
+            (None, None) => "a members-only branch".to_owned(),
         };
         let granter = handle(s, &g.granter).await;
         let in_notice = decode_identifier(&g.id).is_ok_and(|id| listed.contains(&id));
@@ -632,6 +636,13 @@ pub(crate) async fn describe(
             "status": match status { Ok(()) => json!("usable"), Err(u) => json!(u) },
             "inNotice": in_notice,
             "renewDue": g.renew_due(now),
+            // the runner pushes an exact grant's branch only under its current key
+            "branchRef": branch
+                .filter(|b| g.scope.as_deref() == Some(hex::encode(b.current).as_str()))
+                .map(|b| &b.name),
+            "people": branch.map(|b| {
+                b.audience_now.iter().filter(|p| !bots.contains(p)).collect::<Vec<_>>()
+            }),
         }));
         if superseded {
             continue;

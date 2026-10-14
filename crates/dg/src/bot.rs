@@ -578,7 +578,9 @@ async fn revoke(ctx: &Ctx, repo: &str, bot: &str, push: bool) -> Result<()> {
     write_notice(ctx, &s, &notice, &name, "revoked", Some(&prompt)).await?;
     // the push access this maintainer gave goes too (only its writer can delete a grant; the
     // notice above already stops every push)
-    crate::bot_push::delete_own_grants(ctx, &s, &bot).await.map(drop)
+    crate::bot_push::delete_own_grants(ctx, &s, &bot)
+        .await
+        .map(drop)
 }
 
 async fn list(ctx: &Ctx, repo: &str) -> Result<()> {

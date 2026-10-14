@@ -32,6 +32,7 @@ mod artifacts;
 mod config;
 mod cron;
 mod envs;
+mod push;
 mod relay;
 mod run;
 mod watch;
@@ -88,6 +89,31 @@ enum Cmd {
         /// (`CI / build`, `CI / build (pull_request)`).
         #[arg(long, value_name = "NAME")]
         check: Option<String>,
+    },
+    /// Push a commit to one branch as the bot (`DASH_FORGE_KEY`), as a job's output is pushed:
+    /// only to a branch its push access covers, never to a public branch after reading
+    /// members-only content, fast-forward only unless its access says otherwise.
+    Push {
+        /// The repository (`owner/name`, as configured).
+        repo: String,
+        /// The one branch to push to.
+        #[arg(long)]
+        branch: String,
+        /// The commit.
+        #[arg(long)]
+        commit: String,
+        /// The git directory holding the commit.
+        #[arg(long, default_value = ".git")]
+        git_dir: PathBuf,
+        /// The job read members-only content of the repository (readable by all its members).
+        #[arg(long, conflicts_with = "members_input_people")]
+        members_input: bool,
+        /// The job read members-only content readable only by these people (identity ids).
+        #[arg(long, value_delimiter = ',', value_name = "IDS")]
+        members_input_people: Vec<String>,
+        /// The request came from a fork's pull request or from outside the members.
+        #[arg(long)]
+        not_member: bool,
     },
 }
 
@@ -158,6 +184,48 @@ fn real_main(cli: &Cli) -> Result<()> {
                 println!("{name}\t{conclusion}");
             }
             Ok(())
+        }
+        Cmd::Push {
+            repo,
+            branch,
+            commit,
+            git_dir,
+            members_input,
+            members_input_people,
+            not_member,
+        } => {
+            let r = cfg
+                .repos
+                .iter()
+                .find(|r| &r.repo == repo)
+                .with_context(|| format!("{repo} is not in {}", cli.config.display()))?;
+            let members_input = if *members_input {
+                let mut cmd = std::process::Command::new(&cfg.bin.dg);
+                cmd.args(["--json", "collab", "list", repo]);
+                let out = cmd.output().context("dg collab list: could not start")?;
+                let v: serde_json::Value =
+                    serde_json::from_slice(&out.stdout).context("dg collab list: not JSON")?;
+                Some(push::human_members(&v))
+            } else if members_input_people.is_empty() {
+                None
+            } else {
+                Some(members_input_people.iter().cloned().collect())
+            };
+            let req = push::PushRequest {
+                branch: branch.clone(),
+                commit: commit.to_ascii_lowercase(),
+                members_input,
+                proper: !*not_member,
+            };
+            match push::push(&cfg, r, git_dir, &req)? {
+                push::Pushed::Pushed { branch, commit } => {
+                    println!("pushed {commit} to {branch}");
+                    Ok(())
+                }
+                push::Pushed::Refused(why) => {
+                    anyhow::bail!("not pushed: {why} (nothing was written)")
+                }
+            }
         }
     }
 }

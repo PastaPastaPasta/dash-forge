@@ -299,6 +299,20 @@ pub fn until_for(now: u64, requested: Option<u64>) -> Result<u64, UntilRefusal> 
     }
 }
 
+/// The grant a ref update names (`pp` or `pg`, base58), if any: a bot's push (`r` 4) names one.
+#[must_use]
+pub fn named_grant(d: &FetchedDocument) -> Option<String> {
+    d.field_bytes32(PREFIX_GRANT)
+        .or_else(|| d.field_bytes32(EXACT_GRANT))
+        .map(platform::encode_identifier)
+}
+
+/// Whether a ref update is a bot's push: it claims `r` 4.
+#[must_use]
+pub fn is_bot_push(d: &FetchedDocument) -> bool {
+    d.field_u64(crate::members::CLAIMED_ROLE) == Some(BOT_PUSH_ROLE)
+}
+
 /// How a reader marks a bot's push.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

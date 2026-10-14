@@ -716,6 +716,32 @@ impl Helper {
             out.decryptable = Some(m.decryptable);
             out.keyring = Some(kr);
             members::remember_public_tips(&out.public_tips());
+        } else if forge_core::refs::has_narrower_updates(&state) {
+            // no members key, but branches with keys of their own may be shared with this signer
+            // (a bot's members-only push access, phase 4E): those branches open and push
+            let conn = self.conn.as_ref().expect("conn populated");
+            if let Ok(kr) = conn.service().keyring(&conn.repo).await {
+                if let Some(ring) = self
+                    .attach_branch_ring(&kr, &state, false)
+                    .await?
+                    .filter(|r| !r.is_empty())
+                {
+                    let open = |k, d: &forge_core::platform::FetchedDocument| kr.open(k, d);
+                    if let Some(m) = forge_core::refs::refs_view(&state, Some(&open)).members {
+                        let facts = narrower_facts(Some(&ring), kr.repo_id(), &m);
+                        out.narrower_names = facts.names;
+                        out.narrower = members::Narrower {
+                            audiences: facts.audiences,
+                            decryptable: facts.decryptable,
+                        };
+                        out.ring = Some(ring);
+                        out.remote_refs = m.refs;
+                        out.members_only = m.members_only;
+                        out.decryptable = Some(m.decryptable);
+                        out.keyring = Some(kr);
+                    }
+                }
+            }
         }
         Ok(out)
     }
@@ -2972,6 +2998,11 @@ async fn prepare_narrower(
         if !accepted(planned, dst) {
             continue;
         }
+        // a bot writes no key letters (DESIGN §4.9): it pushes to branches shared with it only
+        if svc.is_bot() {
+            reject_ref(planned, dst, "a bot never starts a branch for fewer people");
+            continue;
+        }
         let audience = forge_core::narrow::with_me(&nb.audience, &me, owner, members);
         let people = forge_core::narrow::resolve_now(&audience, owner, members);
         let held = view.ring.as_ref().and_then(|r| r.get(dst));
@@ -3010,6 +3041,10 @@ async fn prepare_narrower(
                     members::short(&dst)
                 );
                 reject_ref(planned, &dst, "not one of the people this branch is for");
+                continue;
+            }
+            if svc.is_bot() {
+                // its key goes out with a member's next push of it, never a bot's
                 continue;
             }
             let done = match forge_core::narrow::with_keys(svc, repo, &people).await {

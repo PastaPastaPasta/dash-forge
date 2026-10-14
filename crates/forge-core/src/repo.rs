@@ -1123,6 +1123,12 @@ impl<'a> RepoService<'a> {
         self
     }
 
+    /// Whether this service writes a bot's push ([`Self::as_bot`]).
+    #[must_use]
+    pub fn is_bot(&self) -> bool {
+        self.bot_push.is_some()
+    }
+
     /// The `r` this service's push documents (`packManifest`, `chunk`) claim: 4 for a bot, else
     /// the writer's 1.
     fn push_r(&self) -> u64 {
@@ -2018,7 +2024,8 @@ impl<'a> RepoService<'a> {
             return Ok(None);
         }
         let kr = self.keyring(repo).await?;
-        if !kr.has_members_key() || kr.resolution().keys.is_empty() {
+        let members_key = kr.has_members_key() && !kr.resolution().keys.is_empty();
+        if !members_key && !kr.has_members_key() {
             return Ok(None);
         }
         let (scope, contract) = self.readable(repo).await?;
@@ -2029,10 +2036,18 @@ impl<'a> RepoService<'a> {
             crate::history::Freshness::Now,
         )
         .await?;
+        let narrower = crate::refs::has_narrower_updates(&state);
+        if !members_key && !narrower {
+            return Ok(None);
+        }
         // narrower branches (phase 3F) open with the branch keys this signer holds
-        if crate::refs::has_narrower_updates(&state) && kr.branch_ring().is_none() {
+        if narrower && kr.branch_ring().is_none() {
             let ring = crate::narrow::read_ring(self, repo, kr.members()).await?;
             kr.set_branch_ring(std::sync::Arc::new(ring));
+        }
+        // without the members key (a bot, phase 4E), only the branches shared with it open
+        if !members_key && kr.branch_ring().is_none_or(|r| r.is_empty()) {
+            return Ok(None);
         }
         Ok(Some(MembersRefs::of(&state, |k, d| kr.open(k, d))))
     }
