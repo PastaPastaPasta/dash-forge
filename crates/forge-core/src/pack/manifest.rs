@@ -62,6 +62,11 @@ pub const KIND_ENV_SNAPSHOT: u8 = 8;
 /// `supersedes`. Consensus admits it from a maintainer or a Write member; readers take it only
 /// from a current one.
 pub const KIND_KEY_LETTER: u8 = 10;
+/// An access notice (kind 11, mixed-visibility DESIGN §4.9, `private-repos.md` §22.1): what a
+/// maintainer lets a bot do. Plaintext in a public repository; in a private one the members'
+/// sealed copy (DFPK 0x01) and the bot's letter (DFPK 0x02). Maintainer-only on the registered
+/// contract (C3).
+pub const KIND_ACCESS_NOTICE: u8 = 11;
 /// `packManifest.kind == 64 + k`: the members-only (sealed) form of plain kind `k` in a public
 /// repository (mixed-visibility DESIGN D6). Shipped readers skip a kind they do not know.
 pub const KIND_SEALED_BASE: u8 = 64;

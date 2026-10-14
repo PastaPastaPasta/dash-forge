@@ -59,11 +59,16 @@ use crate::rules::{self, Event, EventKind, IssueState, PrState};
 use crate::scope::RepoRef;
 use crate::user_error::{codes, UserError};
 
+mod bots;
 mod bundles;
 mod make_public;
 pub use bundles::{
     noun as bundle_noun, BundleAlert, BundlePlan, BundledPost, LeftOut, LeftOutWhy, Publication,
     PublicationState,
+};
+pub use bots::{
+    ask_refused, AskPlan, Asked, JobContent, JobPost, JobRead, LetterPlan, NotShared, Notices,
+    ReceivedRead, SharedCode,
 };
 pub use make_public::{apply_review_texts, MakePublicPlan};
 
