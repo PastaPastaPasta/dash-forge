@@ -564,17 +564,16 @@ async fn audience_cmd(ctx: &Ctx, name: &str, to: Option<&str>, repo: Option<&str
     }
     let before = s.balance().await;
     let written = match action {
-        // the audience changes, the people do not: a letter of the current generation to the
-        // signer records it
+        // the audience changes, the people do not: a letter of the current generation to all of
+        // them records it, so every holder reads the new audience
         Reletter::Nothing => {
-            let mine: std::collections::BTreeSet<String> = [me.clone()].into();
             forge_core::narrow::write_letter(
                 &svc,
                 &s.repo,
                 &full,
                 b.keys().to_vec(),
                 audience.clone(),
-                &mine,
+                &now,
             )
             .await?
         }

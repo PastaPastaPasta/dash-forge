@@ -8,9 +8,15 @@
     "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
     "context": {
       "letters": [],
-      "audience": {
-        "refs/heads/sec/embargo": [
-          "2222222222222222222222222222222222222222222222222222222222222222"
+      "groups": {
+        "maintainers": [
+          "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+        ],
+        "writers": [
+          "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+        ],
+        "members": [
+          "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
         ]
       }
     },

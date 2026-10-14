@@ -34,7 +34,7 @@ fn bkey(s: &str) -> BranchKey {
 struct LetterJson {
     id: String,
     height: u64,
-    owner: String,
+    sender: String,
     body: Value,
 }
 
@@ -42,7 +42,16 @@ struct LetterJson {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CtxIn {
     letters: Vec<LetterJson>,
-    audience: BTreeMap<String, Vec<String>>,
+    groups: BTreeMap<String, Vec<String>>,
+}
+
+/// Who `audience` is now, with `groups` (group → base58 ids, the owner in each).
+fn resolve(audience: &crate::env::Audience, groups: &BTreeMap<String, Vec<String>>) -> BTreeSet<String> {
+    let mut out: BTreeSet<String> = audience.also.iter().cloned().collect();
+    if let Some(g) = audience.group {
+        out.extend(groups.get(g.as_str()).into_iter().flatten().cloned());
+    }
+    out
 }
 
 #[derive(Deserialize, Serialize)]
@@ -93,6 +102,8 @@ struct BranchIn {
     head: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     letters: Option<Vec<LetterJson>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    groups: Option<BTreeMap<String, Vec<String>>>,
 }
 
 /// The letters as the fold takes them, and the ignored ones the parse refused.
@@ -104,6 +115,7 @@ fn parse_letters(letters: &[LetterJson]) -> (Vec<LetterIn>, Vec<(String, Ignored
             Ok(Some(letter)) => ok.push(LetterIn {
                 id: l.id.clone(),
                 height: l.height,
+                sender: l.sender.clone(),
                 letter,
             }),
             Ok(None) => {}
@@ -113,9 +125,13 @@ fn parse_letters(letters: &[LetterJson]) -> (Vec<LetterIn>, Vec<(String, Ignored
     (ok, bad)
 }
 
-fn fold_json(repo_id: &[u8; 32], letters: &[LetterJson]) -> Value {
+fn fold_json(
+    repo_id: &[u8; 32],
+    letters: &[LetterJson],
+    groups: &BTreeMap<String, Vec<String>>,
+) -> Value {
     let (ok, mut bad) = parse_letters(letters);
-    let (branches, ignored) = fold(ok);
+    let (branches, ignored) = fold(ok, |sender, a| resolve(a, groups).contains(sender));
     bad.extend(ignored);
     // the reference lists ignored letters in fold order, which is the input's height order
     let order: BTreeMap<&str, (u64, &str)> = letters
@@ -149,6 +165,10 @@ fn fold_json(repo_id: &[u8; 32], letters: &[LetterJson]) -> Value {
                 "holders": b.holders,
                 "kcvs": kcvs,
                 "gen": b.gen(),
+                "readOnly": b.read_only.iter().map(|(g, k)| json!({
+                    "gen": g,
+                    "kcv": hex::encode(BranchKeys::derive(repo_id, *g, k).kcv4()),
+                })).collect::<Vec<_>>(),
             })
         })
         .collect();
@@ -226,13 +246,12 @@ fn run(v: &Vector) -> Value {
             let repo_id = repo_id.unwrap();
             let ctx = i.context.unwrap();
             let (ok, _) = parse_letters(&ctx.letters);
-            let audience = ctx.audience;
-            let ring = BranchRing::new(&repo_id, fold(ok), |b| {
-                audience
-                    .get(&b.name)
-                    .into_iter()
-                    .flatten()
-                    .map(|h| h32(h))
+            let groups = ctx.groups;
+            let folded = fold(ok, |sender, a| resolve(a, &groups).contains(sender));
+            let ring = BranchRing::new(&repo_id, folded, |b| {
+                resolve(&b.audience, &groups)
+                    .iter()
+                    .map(|p| crate::platform::decode_identifier(p).unwrap())
                     .collect::<BTreeSet<_>>()
             });
             let (header, enc) = i.doc.unwrap().split();
@@ -306,7 +325,7 @@ fn run(v: &Vector) -> Value {
                 Head::OtherVersion(version) => json!({ "kind": "otherVersion", "version": version }),
             }
         }
-        "fold" => fold_json(&repo_id.unwrap(), &i.letters.unwrap()),
+        "fold" => fold_json(&repo_id.unwrap(), &i.letters.unwrap(), &i.groups.unwrap()),
         other => panic!("vector `{}`: branch_key op `{other}`", v.name),
     }
 }
@@ -332,5 +351,5 @@ fn branch_key_conformance_vectors() {
         assert_eq!(run(&v), v.expected, "vector `{}`", v.name);
         ran += 1;
     }
-    assert!(ran >= 52, "ran {ran} branch_key vectors");
+    assert!(ran >= 59, "ran {ran} branch_key vectors");
 }

@@ -254,10 +254,19 @@ pub fn guard(g: &impl ObjectGraph, input: &GuardInput<'_>) -> Result<Outcome> {
     }
     // what each audience already holds (recorded or decryptable), before the batch adds its tips
     let before = s.clone();
+    // a tip the batch pushes for two audiences counts with the narrower one, whatever the order
+    let mut batch_tips: BTreeMap<String, EntryAudience> = BTreeMap::new();
     for u in input.batch {
         if let (Some(t), Some(a)) = (&u.new, u.audience.entry()) {
-            s.entry(t.clone()).or_insert(a);
+            let merged = match batch_tips.remove(t) {
+                Some(prev) => prev.narrowest(a),
+                None => a,
+            };
+            batch_tips.insert(t.clone(), merged);
         }
+    }
+    for (t, a) in batch_tips {
+        s.entry(t).or_insert(a);
     }
     let all: Vec<String> = s.keys().cloned().collect();
     if all.is_empty() {

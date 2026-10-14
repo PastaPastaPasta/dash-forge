@@ -10,7 +10,7 @@
       {
         "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "height": 100,
-        "owner": "2222222222222222222222222222222222222222222222222222222222222222",
+        "sender": "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
         "body": {
           "type": "branchKey",
           "v": 1,
@@ -29,7 +29,7 @@
       {
         "id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
         "height": 90,
-        "owner": "2222222222222222222222222222222222222222222222222222222222222222",
+        "sender": "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
         "body": {
           "type": "branchKey",
           "v": 1,
@@ -40,6 +40,7 @@
           ],
           "group": null,
           "people": [
+            "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
             "Bswb3UyeD1pUTaGiE6WvqwFpJZsQSEY1xhJePCDTHdvp"
           ],
           "to": [
@@ -47,7 +48,18 @@
           ]
         }
       }
-    ]
+    ],
+    "groups": {
+      "maintainers": [
+        "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+      ],
+      "writers": [
+        "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+      ],
+      "members": [
+        "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+      ]
+    }
   },
   "expected": {
     "branches": [
@@ -67,12 +79,14 @@
         "kcvs": [
           "d02a38c3"
         ],
-        "gen": 0
+        "gen": 0,
+        "readOnly": []
       },
       {
         "name": "refs/heads/sec/other",
         "group": null,
         "people": [
+          "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
           "Bswb3UyeD1pUTaGiE6WvqwFpJZsQSEY1xhJePCDTHdvp"
         ],
         "issuedAt": {
@@ -87,7 +101,8 @@
         "kcvs": [
           "2e355b6f"
         ],
-        "gen": 0
+        "gen": 0,
+        "readOnly": []
       }
     ],
     "ignored": []

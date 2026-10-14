@@ -515,8 +515,11 @@ impl std::fmt::Debug for BranchKeyLetter {
 pub enum Ignored {
     /// A `branchKey` v1 body that breaks a rule.
     Malformed,
-    /// It names a branch already keyed by another chain (its generation 0 differs).
+    /// It names a branch already keyed by another chain (a generation both carry differs).
     OtherChain,
+    /// Its sender is not in the audience as it resolves now (its own, for a branch's first letter;
+    /// the branch's, for a later one).
+    Sender,
 }
 
 #[derive(Deserialize)]
@@ -650,6 +653,8 @@ pub struct LetterIn {
     pub id: String,
     /// Its `$createdAtBlockHeight`.
     pub height: u64,
+    /// Who wrote it: the manifest's `$ownerId` (base58).
+    pub sender: String,
     /// The opened body.
     pub letter: BranchKeyLetter,
 }
@@ -669,6 +674,10 @@ pub struct Branch {
     pub holders: BTreeSet<String>,
     /// The letters counted, in fold order.
     pub letters: Vec<String>,
+    /// Keys of letters that do not count (their sender left the audience, or they fork the chain),
+    /// by generation, each a generation's key other than the chain's: read-only, never written
+    /// under (`BranchRing::open` holds them to the late rule).
+    pub read_only: Vec<(u32, BranchKey)>,
 }
 
 impl std::fmt::Debug for Branch {
@@ -734,17 +743,35 @@ impl Branch {
 
 /// Fold opened `branchKey` letters (see the module documentation): taken in (height, id) order;
 /// per name the first letter starts the chain and a later one counts only when it agrees on every
-/// generation both carry, extending the chain when it carries more. Each generation is issued at
-/// the height of the first letter carrying it; the audience is the newest counted letter's at the
-/// highest generation, and the current generation's holders the union of its letters' `to`.
+/// generation both carry, extending the chain when it carries more. A letter counts only when its
+/// sender is in the audience as it resolves now (`in_audience(sender, audience)`): the first
+/// letter's own audience, a later one's the chain's so far, so someone outside an audience cannot
+/// start a branch for it and a holder who leaves cannot keep the branch on a generation they made.
+/// Each generation is issued at the height of the first letter carrying it; the audience is the
+/// newest counted letter's at the highest generation, and the current generation's holders the
+/// union of its letters' `to`. The keys of letters that do not count are kept read-only.
 #[must_use]
-pub fn fold(mut letters: Vec<LetterIn>) -> (BTreeMap<String, Branch>, Vec<(String, Ignored)>) {
+pub fn fold(
+    mut letters: Vec<LetterIn>,
+    in_audience: impl Fn(&str, &Audience) -> bool,
+) -> (BTreeMap<String, Branch>, Vec<(String, Ignored)>) {
     letters.sort_by(|a, b| a.height.cmp(&b.height).then_with(|| a.id.cmp(&b.id)));
     let mut out: BTreeMap<String, Branch> = BTreeMap::new();
     let mut ignored = Vec::new();
+    let mut uncounted: Vec<BranchKeyLetter> = Vec::new();
     for l in letters {
-        let LetterIn { id, height, letter } = l;
+        let LetterIn {
+            id,
+            height,
+            sender,
+            letter,
+        } = l;
         let Some(cur) = out.get_mut(&letter.name) else {
+            if !in_audience(&sender, &letter.audience) {
+                ignored.push((id, Ignored::Sender));
+                uncounted.push(letter);
+                continue;
+            }
             out.insert(
                 letter.name.clone(),
                 Branch {
@@ -754,6 +781,7 @@ pub fn fold(mut letters: Vec<LetterIn>) -> (BTreeMap<String, Branch>, Vec<(Strin
                     keys: letter.keys,
                     audience: letter.audience,
                     letters: vec![id],
+                    read_only: Vec::new(),
                 },
             );
             continue;
@@ -761,6 +789,12 @@ pub fn fold(mut letters: Vec<LetterIn>) -> (BTreeMap<String, Branch>, Vec<(Strin
         let common = cur.keys.len().min(letter.keys.len());
         if cur.keys[..common] != letter.keys[..common] {
             ignored.push((id, Ignored::OtherChain));
+            uncounted.push(letter);
+            continue;
+        }
+        if !in_audience(&sender, &cur.audience) {
+            ignored.push((id, Ignored::Sender));
+            uncounted.push(letter);
             continue;
         }
         let have = cur.keys.len();
@@ -777,6 +811,19 @@ pub fn fold(mut letters: Vec<LetterIn>) -> (BTreeMap<String, Branch>, Vec<(Strin
         }
         cur.letters.push(id);
     }
+    for b in out.values_mut() {
+        for u in uncounted.iter().filter(|u| u.name == b.name) {
+            for (g, k) in u.keys.iter().enumerate() {
+                let g32 = u32::try_from(g).unwrap_or(u32::MAX);
+                let chain_has = b.keys.get(g) == Some(k);
+                if !chain_has && !b.read_only.iter().any(|(rg, rk)| *rg == g32 && rk == k) {
+                    b.read_only.push((g32, k.clone()));
+                }
+            }
+        }
+        b.read_only
+            .sort_by(|(ga, ka), (gb, kb)| ga.cmp(gb).then_with(|| ka.expose().cmp(kb.expose())));
+    }
     (out, ignored)
 }
 
@@ -787,7 +834,8 @@ pub fn fold(mut letters: Vec<LetterIn>) -> (BTreeMap<String, Branch>, Vec<(Strin
 pub struct BranchRing {
     repo_id: [u8; 32],
     branches: BTreeMap<String, Branch>,
-    derived: Vec<(String, BranchKeys)>,
+    /// Every key held, by branch: `true` for a read-only one.
+    derived: Vec<(String, BranchKeys, bool)>,
     audience_now: BTreeMap<String, BTreeSet<[u8; 32]>>,
     ignored: Vec<(String, Ignored)>,
 }
@@ -814,7 +862,10 @@ impl BranchRing {
         for (name, b) in &branches {
             for (g, k) in b.keys.iter().enumerate() {
                 let g = u32::try_from(g).unwrap_or(u32::MAX);
-                derived.push((name.clone(), BranchKeys::derive(repo_id, g, k)));
+                derived.push((name.clone(), BranchKeys::derive(repo_id, g, k), false));
+            }
+            for (g, k) in &b.read_only {
+                derived.push((name.clone(), BranchKeys::derive(repo_id, *g, k), true));
             }
             now.insert(name.clone(), audience_now(b));
         }
@@ -857,13 +908,13 @@ impl BranchRing {
         let gen = self.branches.get(name)?.gen();
         self.derived
             .iter()
-            .find(|(n, k)| n == name && k.gen == gen)
-            .map(|(_, k)| k)
+            .find(|(n, k, ro)| n == name && k.gen == gen && !ro)
+            .map(|(_, k, _)| k)
     }
 
-    /// Every generation's keys of every branch held (what opens a DFPK 0x03 pack).
+    /// Every key held, read-only ones included (what opens a DFPK 0x03 pack).
     pub fn all_keys(&self) -> impl Iterator<Item = &BranchKeys> {
-        self.derived.iter().map(|(_, k)| k)
+        self.derived.iter().map(|(_, k, _)| k)
     }
 
     /// The branch whose keys open a DFPK 0x03 artifact with this KCV prefix, if any.
@@ -871,8 +922,8 @@ impl BranchRing {
     pub fn branch_of_kcv(&self, kcv4: [u8; 4]) -> Option<&str> {
         self.derived
             .iter()
-            .find(|(_, k)| k.kcv4() == kcv4)
-            .map(|(n, _)| n.as_str())
+            .find(|(_, k, _)| k.kcv4() == kcv4)
+            .map(|(n, _, _)| n.as_str())
     }
 
     /// Open a narrower branch's ref update (`enc` v0x06) of `header` (a public `refUpdate` or
@@ -896,21 +947,21 @@ impl BranchRing {
         let (commit, ct) = enc[17..].split_at(32);
         let mut any = false;
         let mut hit = None;
-        for (name, k) in &self.derived {
+        for (name, k, ro) in &self.derived {
             if k.gen != header.epoch || k.kcv4() != enc[1..5] {
                 continue;
             }
             any = true;
             let obj = ObjKeys::derive(&self.repo_id, &k.obj_key(&nonce, &ad));
             if ct_eq(obj.commit(), commit) {
-                hit = Some((name, k, obj));
+                hit = Some((name, k, *ro, obj));
                 break;
             }
         }
         if !any {
             return Opened::Unreadable(Unreadable::NoKey);
         }
-        let Some((name, k, obj)) = hit else {
+        let Some((name, k, read_only, obj)) = hit else {
             return Opened::Unreadable(Unreadable::CommitMismatch);
         };
         let mut ad2 = ad;
@@ -935,22 +986,25 @@ impl BranchRing {
         if members_ref::real_values(header, &fields).is_none() {
             return Opened::Malformed;
         }
-        if self.is_late(name, header) {
+        if self.is_late(name, header, read_only) {
             return Opened::Unreadable(Unreadable::Late);
         }
         Opened::Readable(Box::new(fields))
     }
 
     /// Written under generation g after generation g+1 was issued plus the grace period, by
-    /// someone outside the branch's current audience.
-    fn is_late(&self, name: &str, header: &DocHeader) -> bool {
+    /// someone outside the branch's current audience. A read-only key is superseded by the first
+    /// counted generation at or after its own.
+    fn is_late(&self, name: &str, header: &DocHeader, read_only: bool) -> bool {
         let Some(b) = self.branches.get(name) else {
             return true;
         };
-        let next = usize::try_from(header.epoch)
-            .ok()
-            .and_then(|g| g.checked_add(1))
-            .and_then(|g| b.issued_at.get(g));
+        let g = usize::try_from(header.epoch).unwrap_or(usize::MAX);
+        let next = if read_only {
+            b.issued_at.iter().skip(g).min()
+        } else {
+            g.checked_add(1).and_then(|n| b.issued_at.get(n))
+        };
         let height = header.created_at_block_height.unwrap_or(u64::MAX);
         let in_audience = self
             .audience_now

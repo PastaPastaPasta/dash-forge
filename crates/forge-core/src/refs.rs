@@ -372,6 +372,10 @@ pub enum RefAlertKind {
     /// It names a branch that is live in public: public names win (DESIGN D29), so it is left out
     /// and both audiences read the public branch.
     PublicName,
+    /// A members-key update of a name this reader opens as a narrower branch (phase 3F): the
+    /// narrower branch wins, so a member outside its audience cannot move it or turn it into an
+    /// all-members branch.
+    NarrowerName,
 }
 
 /// A members-only ref update readers show an alert for.
@@ -704,6 +708,19 @@ pub fn members_updates_of(
             .then_with(|| a.id.cmp(&b.id))
     };
     for (name, mut sealed) in members {
+        // a name with a narrower update keeps only its narrower updates (phase 3F)
+        if sealed.iter().any(|u| out.narrower.contains(&u.id)) {
+            let (keep, drop): (Vec<RefUpdate>, Vec<RefUpdate>) =
+                sealed.into_iter().partition(|u| out.narrower.contains(&u.id));
+            for u in drop {
+                out.sealed.remove(&u.id);
+                out.alerts.push(RefAlert {
+                    id: u.id,
+                    kind: RefAlertKind::NarrowerName,
+                });
+            }
+            sealed = keep;
+        }
         sealed.sort_by(by_order);
         let public = out.by_name.entry(name.clone()).or_default();
         let hash_hex = hex::encode(crate::backends::sha256(name.as_bytes()));

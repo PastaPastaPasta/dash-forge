@@ -500,6 +500,34 @@ pub fn narrow_refusal(r: &Refusal, dst: &str, repo: &str) -> (UserError, &'stati
     }
 }
 
+/// A branch for fewer people whose name already has a key from someone else (phase 3F): never
+/// pushed under.
+pub fn narrow_taken(dst: &str) -> (UserError, &'static str) {
+    let name = short(dst);
+    (
+        UserError::new(
+            codes::BRANCH_ALREADY_PUBLIC,
+            format!("{name} already has a key that isn't yours to use"),
+        )
+        .cause("someone else started a branch of this name for fewer people, or you are not one of the people it is for")
+        .fix(format!("push it under another name: `git branch -m {name} {name}-2`, then push again"))
+        .note(NOTE_NOTHING_SIGNED),
+        "another key exists for this name",
+    )
+}
+
+/// Whether the clone's ledger records commits of a branch for fewer people (phase 3F).
+pub fn ledger_holds_narrower() -> bool {
+    match read_ledger() {
+        ledger::State::Present(l) => l
+            .commits
+            .values()
+            .any(|a| matches!(a, ledger::EntryAudience::Narrower(_))),
+        ledger::State::Unknown => true,
+        ledger::State::Absent => false,
+    }
+}
+
 /// A narrower audience asked for the branch a push names (`branch.<b>.dashAudience`, which `dg
 /// branch new --to` sets; phase 3F): its local source branch, else the destination's name.
 pub fn narrow_intent(src: &str, dst: &str) -> Option<forge_core::env::Audience> {

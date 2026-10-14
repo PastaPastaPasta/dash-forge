@@ -417,6 +417,9 @@ fn run_sealed_ref(v: &Vector) -> Value {
                         crate::refs::RefAlertKind::PublicName => {
                             json!({ "id": id, "kind": "publicName" })
                         }
+                        crate::refs::RefAlertKind::NarrowerName => {
+                            json!({ "id": id, "kind": "narrowerName" })
+                        }
                     }
                 }).collect::<Vec<_>>(),
                 "unreadable": got.unreadable,

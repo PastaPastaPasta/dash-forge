@@ -10,7 +10,7 @@
       {
         "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "height": 100,
-        "owner": "2222222222222222222222222222222222222222222222222222222222222222",
+        "sender": "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
         "body": {
           "type": "branchKey",
           "v": 1,
@@ -28,7 +28,18 @@
           ]
         }
       }
-    ]
+    ],
+    "groups": {
+      "maintainers": [
+        "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+      ],
+      "writers": [
+        "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+      ],
+      "members": [
+        "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+      ]
+    }
   },
   "expected": {
     "branches": [
@@ -50,7 +61,8 @@
         "kcvs": [
           "d02a38c3"
         ],
-        "gen": 0
+        "gen": 0,
+        "readOnly": []
       }
     ],
     "ignored": []

@@ -676,9 +676,14 @@ def guard(inp):
         S[x["oid"]] = x["audience"] if S.get(x["oid"], "members") == "members" else S[x["oid"]]
     # what each audience already holds (recorded or decryptable), before this batch adds its own tips
     before = dict(S)
+    batch_tips = {}
     for u in inp["batch"]:
         if u["audience"] != "public" and u.get("new"):
-            S.setdefault(u["new"], u["audience"])
+            # a tip pushed for two audiences counts with the narrower one, whatever the order
+            prev = batch_tips.get(u["new"], "members")
+            batch_tips[u["new"]] = u["audience"] if prev == "members" else prev
+    for x, a in batch_tips.items():
+        S.setdefault(x, a)
     all_s = list(S)
     sealed_objects = g.objects(all_s, P) if all_s else set()
     sealed_commits = g.commits(all_s, P) if all_s else set()
@@ -906,6 +911,15 @@ def guard_vectors():
              audiences=auds, ledger=[], decryptable=[m3],
              batch=[dict(dst="refs/heads/sec/maint", new=n1, audience=TM),
                     dict(dst="refs/heads/sec/fix", new=mn, audience="members")])),
+        ("batch_tip_two_audiences", "one new commit pushed to a members-only branch and to a Maintainers branch in "
+         "one batch: it counts as the Maintainers branch's, so the members-only ref is refused.", dict(
+             audiences=auds, ledger=[], decryptable=[m3],
+             batch=[dict(dst="refs/heads/sec/fix", new=n1, audience="members"),
+                    dict(dst="refs/heads/sec/maint", new=n1, audience=TM)])),
+        ("batch_tip_two_audiences_reversed", "the same batch in the other order: the same verdict.", dict(
+             audiences=auds, ledger=[], decryptable=[m3],
+             batch=[dict(dst="refs/heads/sec/maint", new=n1, audience=TM),
+                    dict(dst="refs/heads/sec/fix", new=n1, audience="members")])),
         ("new_narrower_on_members", "a new Maintainers branch built on a members-only branch: no audience grows.",
          dict(audiences=auds, ledger=[dict(oid=m3)], decryptable=[m3],
               batch=[dict(dst="refs/heads/sec/maint", new=n2, audience=TM)])),

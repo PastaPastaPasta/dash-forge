@@ -155,8 +155,8 @@ pub async fn read_ring(
                 pack_hash: &m.pack_hash,
                 size_bytes: m.size_bytes,
             };
-            let letter = match key_letter::open(&repo_id, &check, &sealed, &owner_keys[&m.owner_id], &reader) {
-                Ok(o) => o.letter,
+            let (letter, recipients) = match key_letter::open(&repo_id, &check, &sealed, &owner_keys[&m.owner_id], &reader) {
+                Ok(o) => (o.letter, o.recipients),
                 Err(OpenError::NotARecipient) => continue,
                 Err(e) => {
                     tracing::info!(letter = %m.document_id, error = %e, "a key letter did not open; skipped");
@@ -164,9 +164,18 @@ pub async fn read_ring(
                 }
             };
             match BranchKeyLetter::from_typed(&letter) {
+                // `to` must list exactly the letter's recipients, the reader among them: the
+                // next re-lettering trusts it for who holds the key
+                Ok(Some(letter))
+                    if letter.to.len() != recipients
+                        || !letter.to.contains(&platform::encode_identifier(reader_id)) =>
+                {
+                    tracing::info!(letter = %m.document_id, "a branch key letter's recipient list does not match it; ignored");
+                }
                 Ok(Some(letter)) => opened.push(LetterIn {
                     id: m.document_id.clone(),
                     height: m.created_at_block_height,
+                    sender: m.owner_id.clone(),
                     letter,
                 }),
                 Ok(None) => {}
@@ -177,7 +186,10 @@ pub async fn read_ring(
         }
     }
     let owner = repo.owner_id();
-    Ok(BranchRing::new(&repo_id, branch_key::fold(opened), |b| {
+    let folded = branch_key::fold(opened, |sender, a| {
+        resolve_now(a, owner, members).contains(sender)
+    });
+    Ok(BranchRing::new(&repo_id, folded, |b| {
         resolve_now(&b.audience, owner, members)
             .iter()
             .filter_map(|p| platform::decode_identifier(p).ok())
@@ -259,6 +271,9 @@ pub struct Written {
     pub to: Vec<String>,
     /// People of the audience it could not go to: no usable encryption key.
     pub skipped: Vec<String>,
+    /// The KCV prefix of the generation it carries: what the writer's ring must be on once
+    /// the letter is read back.
+    pub top_kcv: [u8; 4],
 }
 
 /// Seal and store a `branchKey` letter of branch `name` (every generation's key in `keys`, the
@@ -284,8 +299,14 @@ pub async fn write_letter(
         to: r.to.clone(),
     };
     let me = r.list[0].identity_id;
+    let repo_id = repo.scope()?.repo_id;
+    let top_kcv = letter
+        .keys
+        .last()
+        .map(|k| branch_key::BranchKeys::derive(&repo_id, letter.gen(), k).kcv4())
+        .unwrap_or_default();
     let sealed = key_letter::seal(
-        &repo.scope()?.repo_id,
+        &repo_id,
         sender,
         sender_key_id,
         &me,
@@ -299,6 +320,7 @@ pub async fn write_letter(
         gen: letter.gen(),
         to: r.to,
         skipped: r.skipped,
+        top_kcv,
     })
 }
 
@@ -336,14 +358,15 @@ async fn store_letter(svc: &RepoService<'_>, repo: &RepoRef, sealed: &[u8]) -> R
     .await
 }
 
-/// What a narrower branch's letters need now that its audience resolves to `now`.
+/// What a narrower branch's letters need now that its audience resolves to `now`. Every letter
+/// goes to everyone in `now`, so every holder's record of who holds the key stays complete.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reletter {
     /// Everyone who should hold the current generation does, and nobody else.
     Nothing,
-    /// The audience grew: a letter of the current generation to these people.
+    /// The audience grew (these people joined): a letter of the current generation.
     Joiners(BTreeSet<String>),
-    /// The audience shrank (these people left): generation g+1 to everyone in `now`.
+    /// The audience shrank (these people left): generation g+1.
     NewGeneration(BTreeSet<String>),
 }
 
@@ -376,20 +399,31 @@ pub async fn reletter(
 ) -> Result<Option<Written>> {
     match plan(branch, now) {
         Reletter::Nothing => Ok(None),
-        Reletter::Joiners(joined) => {
-            write_letter(
-                svc,
-                repo,
-                &branch.name,
-                branch.keys().to_vec(),
-                audience.clone(),
-                &joined,
-            )
-            .await
-            .map(Some)
-        }
+        Reletter::Joiners(_) => write_letter(
+            svc,
+            repo,
+            &branch.name,
+            branch.keys().to_vec(),
+            audience.clone(),
+            now,
+        )
+        .await
+        .map(Some),
         Reletter::NewGeneration(_) => {
             let mut keys = branch.keys().to_vec();
+            if keys.len() >= branch_key::MAX_GENERATIONS {
+                return Err(UserError::new(
+                    codes::USAGE,
+                    format!(
+                        "{} can't get a new key: it has had {} already",
+                        crate::keyring::short_branch(&branch.name),
+                        keys.len()
+                    ),
+                )
+                .fix("publish its work, then start a new branch for the people it is for now")
+                .note("nothing was written")
+                .into());
+            }
             keys.push(BranchKey::generate().map_err(|e| Error::Config(e.to_string()))?);
             write_letter(svc, repo, &branch.name, keys, audience.clone(), now)
                 .await
@@ -436,11 +470,15 @@ mod tests {
             audience: Audience::group(Group::Maintainers),
             to: holders.iter().map(|s| (*s).to_owned()).collect(),
         };
-        let (mut b, _) = fold(vec![LetterIn {
-            id: "a".into(),
-            height: 1,
-            letter,
-        }]);
+        let (mut b, _) = fold(
+            vec![LetterIn {
+                id: "a".into(),
+                height: 1,
+                sender: "a".into(),
+                letter,
+            }],
+            |_, _| true,
+        );
         b.remove("refs/heads/sec/x").unwrap()
     }
 

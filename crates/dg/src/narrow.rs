@@ -101,10 +101,7 @@ impl Plan {
     pub fn credits(&self) -> u64 {
         self.items
             .iter()
-            .map(|i| match &i.action {
-                Reletter::Joiners(j) => letter_credits(j.len() + 1),
-                _ => letter_credits(i.now.len()),
-            })
+            .map(|i| letter_credits(i.now.len()))
             .sum()
     }
 

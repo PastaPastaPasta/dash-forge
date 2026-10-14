@@ -113,26 +113,26 @@ def seal_ref(name, new, prev, s, K=KB0, g=0, force=False, kind="refUpdate", nonc
     return doc, recs, A, enc
 
 
-def open_ref(doc, enc, ring, height, members):
-    """The reference reader: `ring` = folded branches (see `fold`), `members` = the current audience of each
-    branch by name (a set of identity hex ids)."""
+def open_ref(doc, enc, ring, height, groups):
+    """The reference reader: `ring` = folded branches with their keys (see `ring_of`: the counted chain and the
+    read-only keys), `groups` = who each group is now (hex ids), which resolves a branch's audience now."""
     if len(enc) < MIN_V6 or enc[0] != V6:
         return gen.MALFORMED
     g = doc["epoch"]
-    cands = [(b, K) for b in ring for (gg, K) in enumerate(b["keys"]) if gg == g and kcv(K)[:4] == enc[1:5]]
+    cands = [(b, K, ro) for b in ring for (gg, K, ro) in b["keys"] if gg == g and kcv(K)[:4] == enc[1:5]]
     if not cands:
         return dict(status="unreadable", reason="noKey")
     nonce, C, ct = enc[5:17], enc[17:49], enc[49:]
     A = gen.ad(doc, None, V6)
     hit = None
-    for b, K in cands:
+    for b, K, ro in cands:
         kd, C2 = gen.obj_keys(k_obj(K, g, nonce, A))
         if C2 == C:
-            hit = (b, K, kd)
+            hit = (b, K, ro, kd)
             break
     if hit is None:
         return dict(status="unreadable", reason="commitMismatch")
-    b, K, kd = hit
+    b, K, ro, kd = hit
     try:
         pt = AESGCM(kd).decrypt(nonce, ct, A + C)
     except Exception:
@@ -147,9 +147,14 @@ def open_ref(doc, enc, ring, height, members):
     if real is None:
         return gen.MALFORMED
     # the late rule across generations: written under g after generation g+1 was issued (plus the grace period)
-    # by someone outside the branch's current audience
-    nxt = b["issuedAt"].get(str(g + 1))
-    if nxt is not None and height > nxt + GRACE_BLOCKS and doc["ownerId"] not in members.get(name, set()):
+    # by someone outside the branch's current audience. A read-only key (from a letter that does not count: its
+    # sender is not in the audience now, or it forks the chain) is superseded by the first counted generation at
+    # or after its own.
+    issued = {int(k): v for k, v in b["issuedAt"].items()}
+    later = [h for i, h in issued.items() if (i >= g if ro else i == g + 1)]
+    nxt = min(later) if later else None
+    audience = audience_now(b["group"], b["people"], groups)
+    if nxt is not None and height > nxt + GRACE_BLOCKS and gen.b58(bytes.fromhex(doc["ownerId"])) not in audience:
         return dict(status="unreadable", reason="late")
     return dict(status="readable", ref=real[0], alerts=real[1], branch=name, gen=g)
 
@@ -314,14 +319,25 @@ def valid_body(b):
     return None, b
 
 
-def fold(letters):
+def audience_now(group, people, groups):
+    """Who an audience is now: its group's people (`groups`: group -> base58 ids, the owner in each) and its
+    people."""
+    return set(groups.get(group, [])) | set(people) if group else set(people)
+
+
+def fold(letters, groups):
     """Fold the letters a reader opened into branches. Letters are taken in (height, id) order; per name the first
     valid letter starts the chain, and a later one counts only when its keys agree with the chain on every
     generation both hold (it may extend it: a new generation, whose letter carries every earlier key). Each
     generation's `issuedAt` is the height of the first letter carrying it. The audience is the newest counted
     letter's at the highest generation; the holders of the current generation are the union of the `to` lists of the
-    letters carrying it."""
-    branches, ignored = {}, []
+    letters carrying it.
+
+    A letter counts only when its sender is in the audience as it resolves now (`groups`): the first letter's own
+    audience, a later one's the chain's so far. So a holder who leaves cannot keep the branch on a generation they
+    made, and someone outside an audience cannot start a branch for it. The keys of letters that do not count are kept
+    read-only (`readOnly`, by generation): they open what was written under them, under the late rule."""
+    branches, ignored, uncounted = {}, [], []
     for L in sorted(letters, key=lambda x: (x["height"], x["id"])):
         why, b = valid_body(L["body"])
         if why == "skip":
@@ -331,6 +347,10 @@ def fold(letters):
             continue
         cur = branches.get(b["name"])
         if cur is None:
+            if L["sender"] not in audience_now(b["group"], b["people"], groups):
+                ignored.append(dict(id=L["id"], reason="sender"))
+                uncounted.append(b)
+                continue
             branches[b["name"]] = dict(name=b["name"], keys=list(b["keys"]), group=b["group"],
                                        people=list(b["people"]), issuedAt={str(g): L["height"]
                                                                            for g in range(len(b["keys"]))},
@@ -339,6 +359,11 @@ def fold(letters):
         common = min(len(cur["keys"]), len(b["keys"]))
         if cur["keys"][:common] != b["keys"][:common]:
             ignored.append(dict(id=L["id"], reason="otherChain"))
+            uncounted.append(b)
+            continue
+        if L["sender"] not in audience_now(cur["group"], cur["people"], groups):
+            ignored.append(dict(id=L["id"], reason="sender"))
+            uncounted.append(b)
             continue
         for g in range(len(cur["keys"]), len(b["keys"])):
             cur["issuedAt"][str(g)] = L["height"]
@@ -350,25 +375,38 @@ def fold(letters):
             cur["keys"] = list(b["keys"])
             cur["group"], cur["people"] = b["group"], list(b["people"])
         cur["letters"].append(L["id"])
-    out = [dict(b, kcvs=[H(kcv(bytes.fromhex(k))[:4]) for k in b["keys"]], gen=len(b["keys"]) - 1)
+    for b in branches.values():
+        ro = []
+        for u in uncounted:
+            if u["name"] != b["name"]:
+                continue
+            for g, k in enumerate(u["keys"]):
+                if (g >= len(b["keys"]) or b["keys"][g] != k) and (g, k) not in ro:
+                    ro.append((g, k))
+        b["readOnlyKeys"] = sorted(ro)
+    out = [dict(b, kcvs=[H(kcv(bytes.fromhex(k))[:4]) for k in b["keys"]], gen=len(b["keys"]) - 1,
+                readOnly=[dict(gen=g, kcv=H(kcv(bytes.fromhex(k))[:4])) for g, k in b["readOnlyKeys"]])
            for _, b in sorted(branches.items())]
     for b in out:
         del b["keys"]
+        del b["readOnlyKeys"]
     return dict(branches=out, ignored=ignored)
 
 
-def ring_of(letters):
-    """The keyring a reader holding `letters` uses (keys as bytes), for the open vectors."""
-    f = fold(letters)
+def ring_of(letters, groups):
+    """The keyring a reader holding `letters` uses, for the open vectors: per branch every (generation, key,
+    read-only) and the fold's facts."""
+    f = fold(letters, groups)
+    by_kcv = {}
+    for L in letters:
+        for k in L["body"].get("keys", []):
+            if isinstance(k, str) and len(k) == 64:
+                by_kcv[(L["body"].get("name"), H(kcv(bytes.fromhex(k))[:4]))] = bytes.fromhex(k)
     out = []
     for b in f["branches"]:
-        name = b["name"]
-        keys = None
-        for L in sorted(letters, key=lambda x: (x["height"], x["id"])):
-            if L["body"].get("name") == name and L["id"] in b["letters"]:
-                if keys is None or len(L["body"]["keys"]) > len(keys):
-                    keys = L["body"]["keys"]
-        out.append(dict(name=name, keys=[bytes.fromhex(k) for k in keys], issuedAt=b["issuedAt"]))
+        keys = [(g, by_kcv[(b["name"], c)], False) for g, c in enumerate(b["kcvs"])]
+        keys += [(r["gen"], by_kcv[(b["name"], r["kcv"])], True) for r in b["readOnly"]]
+        out.append(dict(b, keys=keys))
     return out
 
 
@@ -386,12 +424,13 @@ def kdf_vectors():
     assert ref_key(KB0) != gen.k_ref(KB0, 0) and kcv(KB0) != gen.kcv(KB0, 0)
 
 
-LET0 = dict(id="aa" * 32, height=100, owner=H(ownerId), body=body())
-LET1 = dict(id="bb" * 32, height=300, owner=H(ownerId), body=body(keys=(KB0, KB1)))
+LET0 = dict(id="aa" * 32, height=100, sender=OWNER58, body=body())
+LET1 = dict(id="bb" * 32, height=300, sender=OWNER58, body=body(keys=(KB0, KB1)))
+GROUPS = {"maintainers": [OWNER58], "writers": [OWNER58], "members": [OWNER58]}
 
 
-def ctx_of(letters, audience=None):
-    return dict(letters=letters, audience=audience or {BRANCH: [H(ownerId)]})
+def ctx_of(letters, groups=None):
+    return dict(letters=letters, groups=groups or GROUPS)
 
 
 def seal_open_vectors():
@@ -430,17 +469,14 @@ def seal_open_vectors():
            dict(error="malformed"))
 
     letters = [LET0, LET1]
-    ring = ring_of(letters)
-    aud = {BRANCH: {H(ownerId)}}
 
-    def ov(name, desc, doc, enc, letters=letters, height=150, audience=None, expected=None):
-        audience = audience if audience is not None else {BRANCH: [H(ownerId)]}
-        r = ring_of(letters)
-        got = open_ref(doc, enc, r, height, {k: set(v) for k, v in audience.items()})
+    def ov(name, desc, doc, enc, letters=letters, height=150, groups=None, expected=None):
+        groups = groups or GROUPS
+        got = open_ref(doc, enc, ring_of(letters, groups), height, groups)
         if expected is not None:
             assert got == expected, (name, got, expected)
         d = dict(doc, enc=H(enc), createdAtBlockHeight=height)
-        vector("open_" + name, desc, dict(op="open", repoId=H(repoId), context=ctx_of(letters, audience), doc=d), got)
+        vector("open_" + name, desc, dict(op="open", repoId=H(repoId), context=ctx_of(letters, groups), doc=d), got)
 
     for name in ("create", "update", "delete", "protected", "sha256_width"):
         doc, enc, ref, new, prev = outs[name]
@@ -455,7 +491,7 @@ def seal_open_vectors():
        expected=dict(status="unreadable", reason="noKey"))
     ov("old_gen_still_opens", "a holder of generation 1 still opens generation 0's history.", doc, enc,
        letters=[LET1])
-    other = dict(id="cc" * 32, height=90, owner=H(ownerId), body=body(name="refs/heads/sec/other", keys=(KX,)))
+    other = dict(id="cc" * 32, height=90, sender=OWNER58, body=body(name="refs/heads/sec/other", keys=(KX,)))
     ov("other_branch_key", "another branch's key: its KCV does not match, so nothing is tried.", doc, enc,
        letters=[other], expected=dict(status="unreadable", reason="noKey"))
     # a late write under generation 0 after generation 1 was issued, by someone outside the audience
@@ -466,9 +502,27 @@ def seal_open_vectors():
        ldoc, lenc, height=300 + GRACE_BLOCKS + 1, expected=dict(status="unreadable", reason="late"))
     ov("late_within_grace", "the same write within the grace period still opens (a push racing the new "
        "generation).", ldoc, lenc, height=300 + GRACE_BLOCKS)
+    late58 = gen.b58(late_owner)
     ov("late_audience_member", "a current member of the audience writing under the old generation late is not "
        "late (their client had not caught up).", ldoc, lenc, height=300 + GRACE_BLOCKS + 1,
-       audience={BRANCH: [H(ownerId), H(late_owner)]})
+       groups=dict(GROUPS, maintainers=[OWNER58, late58]))
+    # a holder (W) who made generation 1 before being removed: their letter no longer counts, the owner's
+    # generation 1 does, and W's key is read-only (it still opens what audience members wrote under it in time)
+    w58 = gen.b58(late_owner)
+    w_letter = dict(id="dd" * 32, height=200, sender=w58, body=body(keys=(KB0, KX), to=[OWNER58, w58]))
+    o_letter = dict(id="ee" * 32, height=300, sender=OWNER58, body=body(keys=(KB0, KB1)))
+    kx_doc, _, _, kx_enc = seal_ref(BRANCH, C_, B_, s2, K=KX, g=1, owner=late_owner)
+    ov("read_only_by_leaver_late", "a removed holder made generation 1 (a key only they chose) before they were "
+       "removed; after the owner's generation 1 was issued and the grace period, their own update under it is late: "
+       "a leaver can't keep moving the branch with a key they made.", kx_doc, kx_enc,
+       letters=[LET0, w_letter, o_letter], height=300 + GRACE_BLOCKS + 1,
+       expected=dict(status="unreadable", reason="late"))
+    ov("read_only_in_time", "the same update written before the owner's generation 1 still opens (read-only key).",
+       kx_doc, kx_enc, letters=[LET0, w_letter, o_letter], height=250)
+    kx_doc2, _, _, kx_enc2 = seal_ref(BRANCH, C_, B_, s2, K=KX, g=1)
+    ov("read_only_by_audience_member", "an audience member's update under the leaver's generation opens at any "
+       "time: legit work pushed under it is never lost.", kx_doc2, kx_enc2, letters=[LET0, w_letter, o_letter],
+       height=900)
     # tampering and malformed
     bad = bytearray(enc)
     bad[20] ^= 1
@@ -537,24 +591,26 @@ def pack_vectors():
 
 
 def fold_vectors():
-    def fv(name, desc, letters):
-        vector("fold_" + name, desc, dict(op="fold", repoId=H(repoId), letters=letters), fold(letters))
+    def fv(name, desc, letters, groups=None):
+        groups = groups or GROUPS
+        vector("fold_" + name, desc, dict(op="fold", repoId=H(repoId), letters=letters, groups=groups),
+               fold(letters, groups))
 
     fv("one", "one letter: a Maintainers branch at generation 0.", [LET0])
     fv("grow_then_shrink", "generation 0, then a joiner's letter of generation 0 (the audience grew: no new "
        "generation; the holders gain the joiner), then generation 1 (it shrank: its `to` alone holds it), which carries "
        "K_br,0 too.",
        [dict(LET0, body=body(to=[OWNER58, P_A, P_B])),
-        dict(id="ab" * 32, height=200, owner=H(ownerId), body=body(group="writers", to=[OWNER58, P_C])),
+        dict(id="ab" * 32, height=200, sender=OWNER58, body=body(group="writers", to=[OWNER58, P_C])),
         dict(LET1, body=body(keys=(KB0, KB1), to=[OWNER58, P_A]))])
     fv("joiner_gets_history", "a joiner after generation 1 receives one letter with both keys: it reads the whole "
        "history; generation 0's issuedAt is that letter's height for them.", [LET1])
     fv("other_chain_ignored", "a later letter for the same name whose generation 0 is another key: ignored (the "
        "first chain stands; a writer outside the audience cannot redirect the branch).",
-       [LET0, dict(id="cd" * 32, height=400, owner=H(ownerId), body=body(keys=(KX, KB1)))])
+       [LET0, dict(id="cd" * 32, height=400, sender=OWNER58, body=body(keys=(KX, KB1)))])
     fv("not_branch_key", "another letter type (a branch share, a read letter) and a later version are skipped.",
-       [LET0, dict(id="de" * 32, height=110, owner=H(ownerId), body=dict(type="branch", v=1)),
-        dict(id="ef" * 32, height=120, owner=H(ownerId), body=dict(body(), v=2))])
+       [LET0, dict(id="de" * 32, height=110, sender=OWNER58, body=dict(type="branch", v=1)),
+        dict(id="ef" * 32, height=120, sender=OWNER58, body=dict(body(), v=2))])
     bad = [
         ("gen_mismatch", dict(body(), gen=3)),
         ("tag_ref", body(name="refs/tags/v1")),
@@ -569,12 +625,30 @@ def fold_vectors():
     ]
     fv("malformed_ignored", "letters whose body breaks a rule are ignored with a reason, never fatal: " +
        ", ".join(n for n, _ in bad) + ".",
-       [dict(id=f"{i + 1:02x}" * 32, height=100 + i, owner=H(ownerId), body=b) for i, (n, b) in enumerate(bad)])
+       [dict(id=f"{i + 1:02x}" * 32, height=100 + i, sender=OWNER58, body=b) for i, (n, b) in enumerate(bad)])
     fv("people_and_group", "a group plus people (Writers and maintainers + one person).",
-       [dict(id="aa" * 32, height=100, owner=H(ownerId), body=body(group="writers", people=(P_C,)))])
+       [dict(id="aa" * 32, height=100, sender=OWNER58, body=body(group="writers", people=(P_C,)))])
     fv("two_branches", "letters of two branches fold separately.",
-       [LET0, dict(id="cc" * 32, height=90, owner=H(ownerId), body=body(name="refs/heads/sec/other", keys=(KX,),
-                                                                          group=None, people=(P_A,)))])
+       [LET0, dict(id="cc" * 32, height=90, sender=OWNER58, body=body(name="refs/heads/sec/other", keys=(KX,),
+                                                                          group=None,
+                                                                          people=tuple(sorted((P_A, OWNER58)))))])
+    fv("sender_outside_audience", "a writer outside Maintainers starts a Maintainers branch of a name before the "
+       "maintainers do: its sender is not in its own audience, so it is ignored (no front-running a name).",
+       [dict(id="ca" * 32, height=90, sender=P_C, body=body(to=[OWNER58, P_C]))])
+    fv("leaver_extension_dropped", "a holder made generation 1 (a key only they chose) and was then removed: their "
+       "letter no longer counts, the owner's generation 1 does, and the leaver's key is kept read-only.",
+       [LET0, dict(id="cb" * 32, height=200, sender=P_A, body=body(keys=(KB0, KX), to=[OWNER58, P_A])),
+        dict(id="cc" * 32, height=300, sender=OWNER58, body=body(keys=(KB0, KB1)))])
+    fv("leaver_fill_dropped", "a holder who added three generations before leaving cannot fill the branch: after "
+       "they leave, the owner's next generation counts.",
+       [LET0, dict(id="cb" * 32, height=200, sender=P_A, body=body(keys=(KB0, KX, KB2, bytes([0x31]) * 32),
+                                                                     to=[OWNER58, P_A])),
+        dict(id="cc" * 32, height=300, sender=OWNER58, body=body(keys=(KB0, KB1)))])
+    fv("member_fork_first_wins", "two audience members each start generation 1: the first counts, the other is a "
+       "fork, kept read-only.",
+       [LET0, dict(id="cb" * 32, height=200, sender=P_A, body=body(keys=(KB0, KX), to=[OWNER58, P_A])),
+        dict(id="cc" * 32, height=300, sender=OWNER58, body=body(keys=(KB0, KB1)))],
+       groups=dict(GROUPS, maintainers=sorted([OWNER58, P_A])))
 
 
 def write_vectors(out_dir):
@@ -597,7 +671,7 @@ def write_vectors(out_dir):
 def self_check():
     doc, recs, A, enc = seal_ref(BRANCH, oid("A"), None, salt("x"))
     assert enc[0] == V6 and len(enc) == MIN_V6 + len(recs)
-    r = open_ref(doc, enc, ring_of([LET0]), 150, {BRANCH: {H(ownerId)}})
+    r = open_ref(doc, enc, ring_of([LET0], GROUPS), 150, GROUPS)
     assert r["status"] == "readable", r
     s = seal_pack(KB0, b"hello")
     assert open_pack(s, len(s), [KB0]) == dict(plain=H(b"hello"))

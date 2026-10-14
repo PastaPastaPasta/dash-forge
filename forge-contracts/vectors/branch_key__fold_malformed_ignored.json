@@ -10,7 +10,7 @@
       {
         "id": "0101010101010101010101010101010101010101010101010101010101010101",
         "height": 100,
-        "owner": "2222222222222222222222222222222222222222222222222222222222222222",
+        "sender": "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
         "body": {
           "type": "branchKey",
           "v": 1,
@@ -29,7 +29,7 @@
       {
         "id": "0202020202020202020202020202020202020202020202020202020202020202",
         "height": 101,
-        "owner": "2222222222222222222222222222222222222222222222222222222222222222",
+        "sender": "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
         "body": {
           "type": "branchKey",
           "v": 1,
@@ -48,7 +48,7 @@
       {
         "id": "0303030303030303030303030303030303030303030303030303030303030303",
         "height": 102,
-        "owner": "2222222222222222222222222222222222222222222222222222222222222222",
+        "sender": "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
         "body": {
           "type": "branchKey",
           "v": 1,
@@ -67,7 +67,7 @@
       {
         "id": "0404040404040404040404040404040404040404040404040404040404040404",
         "height": 103,
-        "owner": "2222222222222222222222222222222222222222222222222222222222222222",
+        "sender": "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
         "body": {
           "type": "branchKey",
           "v": 1,
@@ -87,7 +87,7 @@
       {
         "id": "0505050505050505050505050505050505050505050505050505050505050505",
         "height": 104,
-        "owner": "2222222222222222222222222222222222222222222222222222222222222222",
+        "sender": "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
         "body": {
           "type": "branchKey",
           "v": 1,
@@ -106,7 +106,7 @@
       {
         "id": "0606060606060606060606060606060606060606060606060606060606060606",
         "height": 105,
-        "owner": "2222222222222222222222222222222222222222222222222222222222222222",
+        "sender": "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
         "body": {
           "type": "branchKey",
           "v": 1,
@@ -128,7 +128,7 @@
       {
         "id": "0707070707070707070707070707070707070707070707070707070707070707",
         "height": 106,
-        "owner": "2222222222222222222222222222222222222222222222222222222222222222",
+        "sender": "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
         "body": {
           "type": "branchKey",
           "v": 1,
@@ -149,7 +149,7 @@
       {
         "id": "0808080808080808080808080808080808080808080808080808080808080808",
         "height": 107,
-        "owner": "2222222222222222222222222222222222222222222222222222222222222222",
+        "sender": "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
         "body": {
           "type": "branchKey",
           "v": 1,
@@ -169,7 +169,7 @@
       {
         "id": "0909090909090909090909090909090909090909090909090909090909090909",
         "height": 108,
-        "owner": "2222222222222222222222222222222222222222222222222222222222222222",
+        "sender": "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
         "body": {
           "type": "branchKey",
           "v": 1,
@@ -186,7 +186,7 @@
       {
         "id": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
         "height": 109,
-        "owner": "2222222222222222222222222222222222222222222222222222222222222222",
+        "sender": "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
         "body": {
           "type": "branchKey",
           "v": 1,
@@ -203,7 +203,18 @@
           ]
         }
       }
-    ]
+    ],
+    "groups": {
+      "maintainers": [
+        "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+      ],
+      "writers": [
+        "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+      ],
+      "members": [
+        "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+      ]
+    }
   },
   "expected": {
     "branches": [],

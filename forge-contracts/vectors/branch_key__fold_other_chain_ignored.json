@@ -10,7 +10,7 @@
       {
         "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "height": 100,
-        "owner": "2222222222222222222222222222222222222222222222222222222222222222",
+        "sender": "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
         "body": {
           "type": "branchKey",
           "v": 1,
@@ -29,7 +29,7 @@
       {
         "id": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
         "height": 400,
-        "owner": "2222222222222222222222222222222222222222222222222222222222222222",
+        "sender": "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
         "body": {
           "type": "branchKey",
           "v": 1,
@@ -46,7 +46,18 @@
           ]
         }
       }
-    ]
+    ],
+    "groups": {
+      "maintainers": [
+        "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+      ],
+      "writers": [
+        "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+      ],
+      "members": [
+        "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+      ]
+    }
   },
   "expected": {
     "branches": [
@@ -66,7 +77,17 @@
         "kcvs": [
           "d02a38c3"
         ],
-        "gen": 0
+        "gen": 0,
+        "readOnly": [
+          {
+            "gen": 0,
+            "kcv": "2e355b6f"
+          },
+          {
+            "gen": 1,
+            "kcv": "72ad7619"
+          }
+        ]
       }
     ],
     "ignored": [

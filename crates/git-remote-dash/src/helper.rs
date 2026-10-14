@@ -352,20 +352,26 @@ impl Helper {
         kr: &std::sync::Arc<forge_core::keyring::Keyring>,
         state: &forge_core::refs::GitState,
         always: bool,
-    ) -> Option<std::sync::Arc<forge_core::private::branch_key::BranchRing>> {
-        if !always && !forge_core::refs::has_narrower_updates(state) {
-            return None;
+    ) -> Result<Option<std::sync::Arc<forge_core::private::branch_key::BranchRing>>> {
+        let narrower = forge_core::refs::has_narrower_updates(state);
+        if !always && !narrower {
+            return Ok(None);
         }
-        let conn = self.conn.as_ref()?;
+        let conn = self.conn.as_ref().expect("conn populated");
         match forge_core::narrow::read_ring(&conn.service(), &conn.repo, kr.members()).await {
             Ok(ring) => {
                 let ring = std::sync::Arc::new(ring);
                 kr.set_branch_ring(std::sync::Arc::clone(&ring));
-                Some(ring)
+                Ok(Some(ring))
+            }
+            // fail closed (DESIGN §4.3 "Fetch (C2)"): a clone that holds commits of branches for
+            // fewer people never gets a view without them, which `fetch.prune` would act on
+            Err(e) if narrower && members::ledger_holds_narrower() => {
+                Err(members::cannot_check_fetch(&brief(&format!("{e:#}"))).into())
             }
             Err(e) => {
-                eprintln!("dash: warning: members-only branches shared with fewer people couldn't be read: {}", brief(&format!("{e:#}")));
-                None
+                eprintln!("dash: warning: branches for fewer people couldn't be read: {}", brief(&format!("{e:#}")));
+                Ok(None)
             }
         }
     }
@@ -417,7 +423,7 @@ impl Helper {
                 return Ok(public.public);
             }
         }
-        let ring = self.attach_branch_ring(&kr, &state, false).await;
+        let ring = self.attach_branch_ring(&kr, &state, false).await?;
         let open = |k, d: &forge_core::platform::FetchedDocument| kr.open(k, d);
         let view = forge_core::refs::refs_view(&state, Some(&open));
         let m = view.members.expect("opened with a key");
@@ -493,7 +499,7 @@ impl Helper {
         out.roles = svc.copy_roles(&conn.repo).await.ok();
         out.remote.clone_from(&self.remote);
         if let MembersKeys::Held(kr) = self.members_keys(true).await? {
-            let ring = self.attach_branch_ring(&kr, &state, true).await;
+            let ring = self.attach_branch_ring(&kr, &state, true).await?;
             let open = |k, d: &forge_core::platform::FetchedDocument| kr.open(k, d);
             let m = forge_core::refs::refs_view(&state, Some(&open))
                 .members
@@ -2654,24 +2660,44 @@ async fn prepare_narrower(
             .iter()
             .any(|p| p.reject.is_none() && p.narrower() && p.spec.dst == dst)
     };
+    // the generation each branch must be on once the letters are read back
+    let mut expect: BTreeMap<String, [u8; 4]> = BTreeMap::new();
     for (dst, nb) in new_branches {
         if !accepted(planned, dst) {
             continue;
         }
         let audience = forge_core::narrow::with_me(&nb.audience, &me, owner, members);
         let people = forge_core::narrow::resolve_now(&audience, owner, members);
+        let held = view.ring.as_ref().and_then(|r| r.get(dst));
         let written = match forge_core::narrow::with_keys(svc, repo, &people).await {
-            Ok((with, _)) => {
-                forge_core::narrow::write_letter(svc, repo, dst, vec![nb.key.clone()], audience.clone(), &with)
-                    .await
-            }
+            Ok((with, _)) => match (&nb.key, held) {
+                (Some(key), _) => {
+                    forge_core::narrow::write_letter(svc, repo, dst, vec![key.clone()], audience.clone(), &with)
+                        .await
+                        .map(Some)
+                }
+                // a branch made again under its old key: re-letter it for the audience asked
+                // for now (a new key when anyone who held it is no longer in it)
+                (None, Some(b)) if b.audience == audience => {
+                    forge_core::narrow::reletter(svc, repo, b, &audience, &with).await
+                }
+                (None, Some(b)) => match forge_core::narrow::reletter(svc, repo, b, &audience, &with).await {
+                    Ok(None) => forge_core::narrow::write_letter(svc, repo, dst, b.keys().to_vec(), audience.clone(), &with)
+                        .await
+                        .map(Some),
+                    other => other,
+                },
+                (None, None) => Ok(None),
+            },
             Err(e) => Err(e),
         };
         match written {
-            Ok(w) => {
+            Ok(Some(w)) => {
                 wrote = true;
+                expect.insert(dst.clone(), w.top_kcv);
                 say_letter(dst, &audience, &w);
             }
+            Ok(None) => {}
             Err(e) => {
                 eprintln!("dash: error: {} couldn't be started for {}: {}", members::short(dst), forge_core::narrow::label(&audience), brief(&format!("{e:#}")));
                 if let Some(p) = planned.iter_mut().find(|p| &p.spec.dst == dst) {
@@ -2703,6 +2729,7 @@ async fn prepare_narrower(
             match done {
                 Ok(Some(w)) => {
                     wrote = true;
+                    expect.insert(dst.clone(), w.top_kcv);
                     say_letter(&dst, &b.audience, &w);
                 }
                 Ok(None) => {}
@@ -2722,14 +2749,25 @@ async fn prepare_narrower(
         }
     };
     kr.set_branch_ring(std::sync::Arc::clone(&ring));
-    // a new branch is ours only when the chain readers keep for its name starts with our key
-    for (dst, nb) in new_branches {
-        let ours = ring.get(dst).is_some_and(|b| b.keys().first() == Some(&nb.key));
-        if !ours {
-            if let Some(p) = planned.iter_mut().find(|p| &p.spec.dst == dst && p.reject.is_none()) {
-                eprintln!("dash: error: {} already has a key from someone else; push it under another name", members::short(dst));
-                p.reject = Some("another key exists for this name".into());
-            }
+    // what readers keep must be what was just sent: a new branch's chain starts with our key, and
+    // every branch written to is on the generation its letter carried (a letter that does not
+    // count, or a chain someone else started, refuses the ref instead of sealing under it)
+    for p in planned.iter_mut().filter(|p| p.reject.is_none() && p.narrower()) {
+        let dst = p.spec.dst.clone();
+        let started_by_us = match new_branches.get(&dst).and_then(|nb| nb.key.as_ref()) {
+            Some(key) => ring.get(&dst).is_some_and(|b| b.keys().first() == Some(key)),
+            None => true,
+        };
+        let on_expected = expect
+            .get(&dst)
+            .is_none_or(|kcv| ring.write_keys(&dst).is_some_and(|k| k.kcv4() == *kcv));
+        if !started_by_us {
+            let (e, wire) = members::narrow_taken(&dst);
+            say_refusal(&e);
+            p.reject = Some(wire.to_owned());
+        } else if !on_expected {
+            eprintln!("dash: error: {}'s new key isn't the one readers use yet; push again in a minute", members::short(&dst));
+            p.reject = Some("its key isn't settled yet".into());
         }
     }
     Some(ring)
@@ -2750,9 +2788,11 @@ fn say_letter(dst: &str, audience: &forge_core::env::Audience, w: &forge_core::n
     }
 }
 
-/// A narrower branch this push creates (phase 3F): its generation-0 key and audience.
+/// A narrower branch this push starts (phase 3F): its generation-0 key and audience; or, for a
+/// name this pusher already holds a branch key for (deleted and pushed again), no new key and
+/// the audience asked for now.
 struct NewBranch {
-    key: forge_core::private::branch_key::BranchKey,
+    key: Option<forge_core::private::branch_key::BranchKey>,
     audience: forge_core::env::Audience,
 }
 
@@ -3049,10 +3089,22 @@ fn decide_narrower(
         p.reject = Some(wire.to_owned());
         return Narrow::Decided;
     };
-    // a branch of this name this pusher already holds a key for (deleted and pushed again)
+    // a branch of this name this pusher already holds a key for (deleted and pushed again): it
+    // keeps that key, under the audience asked for now, when the pusher may change it; a key of
+    // this name from anyone else is never written under
     if let Some(b) = view.ring.as_ref().and_then(|r| r.get(dst)) {
+        let me = forge_core::platform::encode_identifier(*kr.reader());
+        if !forge_core::narrow::resolve_now(&b.audience, &view.owner, kr.members()).contains(&me) {
+            let (e, wire) = members::narrow_taken(dst);
+            say_refusal(&e);
+            p.reject = Some(wire.to_owned());
+            return Narrow::Decided;
+        }
         p.audience = Audience::Narrower(b.ledger_token(kr.repo_id()));
-        return Narrow::Decided;
+        return Narrow::New(NewBranch {
+            key: None,
+            audience,
+        });
     }
     match forge_core::private::branch_key::BranchKey::generate() {
         Ok(key) => {
@@ -3060,7 +3112,10 @@ fn decide_narrower(
                 kr.repo_id(),
                 &key,
             ));
-            Narrow::New(NewBranch { key, audience })
+            Narrow::New(NewBranch {
+                key: Some(key),
+                audience,
+            })
         }
         Err(_) => {
             p.reject = Some("no randomness for a new branch key".into());
