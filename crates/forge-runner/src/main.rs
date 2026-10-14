@@ -13,21 +13,25 @@
 //! Docker socket and join the `bridge` network; a job that sets docker options or mounts
 //! (`container.options` / `.volumes`, the same on services) or calls a reusable workflow is
 //! refused unless the repository allows it; secrets and a `GITHUB_TOKEN` go only to
-//! `trusted_refs`; act runs with a cleared environment and never reads the checkout's `.actrc`,
-//! `.env`, `.secrets`, `.vars` or `.input`; no cache server is shared between runs. Pull
+//! `trusted_refs`, and so do the values of an environment a job names, when its audience names
+//! the runner's identity ([`envs`]); act runs with a cleared environment and never reads the
+//! checkout's `.actrc`, `.env`, `.secrets`, `.vars` or `.input`; no cache server is shared
+//! between runs. Pull
 //! requests run as `pull_request` on their head, by default only members' (`pull_requests`), and
 //! with the secrets only from a trusted branch of the repository itself by the owner or a maintainer
 //! ([`run::pull_trusted`]): a fork's or a stranger's head never gets them. It does NOT isolate
 //! jobs from the Docker daemon it drives: give it a daemon of its own.
 //!
 //! Module map: [`config`] (runner.toml), [`watch`] (refs, cursors), [`relay`] (wake-ups),
-//! [`workflow`] (the YAML the runner reads before act), [`act`] (act's CLI and JSON log),
+//! [`workflow`] (the YAML the runner reads before act), [`envs`] (environments' values for the
+//! jobs that name them), [`act`] (act's CLI and JSON log),
 //! [`run`] (one run end to end), [`artifacts`] (upload-artifact's uploads, zipped per artifact).
 
 mod act;
 mod artifacts;
 mod config;
 mod cron;
+mod envs;
 mod relay;
 mod run;
 mod watch;
@@ -360,7 +364,11 @@ fn poll(cfg: &Config, repo: &config::RepoConfig) -> Result<()> {
     let path = state_path(&cfg.state_dir, &repo.repo);
     let mut state = RepoState::load(&path)?;
     let listing = run::ls_remote(cfg, repo)?;
-    let now = parse_ls_remote(&listing);
+    let mut now = parse_ls_remote(&listing);
+    if repo.members_branches {
+        // members-only branches by their real names and commits (the public listing has none)
+        now.extend(run::ref_audiences(cfg, repo)?.members_tips());
+    }
     let head = default_branch(&listing, &now);
     if !state.primed {
         // The first poll records where the repository is; it does not run its history.
@@ -531,6 +539,7 @@ const SCHEDULE_MIN_MS: u64 = 5 * 60 * 1000;
 /// The list is the newest PRs by creation, open or closed, and anyone may open PRs: members'
 /// open ones that fall out of it are kept and read one by one, in turn, up to
 /// [`FOLLOW_BEYOND`], so a burst of newer PRs cannot push them out of CI.
+#[allow(clippy::too_many_lines)] // one pass over the listing: read, judge, run, record
 fn poll_pulls(
     cfg: &Config,
     repo: &config::RepoConfig,
@@ -572,7 +581,7 @@ fn poll_pulls(
     let mut members: Option<run::Members> = None;
     let pull_key = |n: u64, head: &str| format!("pull/{n} {}", head.to_ascii_lowercase());
     let mut pending = Vec::new();
-    for ev in pull_events(&state.pulls, &rows) {
+    for mut ev in pull_events(&state.pulls, &rows) {
         let n = ev.pr.number;
         let key = pull_key(n, &ev.pr.head_oid);
         let members = match &members {
@@ -581,7 +590,22 @@ fn poll_pulls(
         };
         let author = run::author_of(members, &ev.pr.author);
         let mut done = true;
-        if let Some(why) = skip_reason(repo.pull_requests, &ev.pr, author) {
+        // a members-only PR's real head: the listing names only the blind
+        let real = if repo.members_branches && !ev.pr.is_public() {
+            run::view_pull(cfg, repo, n).map(|v| ev.pr.real_head_oid = v.real_head_oid)
+        } else {
+            Ok(())
+        };
+        if let Err(e) = real {
+            // tried again on the next polls, as a run that could not start
+            let tries = state.failed.entry(key.clone()).or_insert(0);
+            *tries += 1;
+            eprintln!(
+                "forge-runner: {} PR #{n} (attempt {tries} of {}): its real head not read: {e:#}",
+                repo.repo, cfg.attempts
+            );
+            done = *tries >= cfg.attempts;
+        } else if let Some(why) = skip_reason(repo.pull_requests, &ev.pr, author) {
             eprintln!(
                 "forge-runner: {} PR #{n} by {} not run: {why}",
                 repo.repo, ev.pr.author
@@ -685,10 +709,10 @@ fn poll_reruns(
             eprintln!("forge-runner: {what}: the same as an earlier request in this poll");
         } else {
             match rerun_triggers(cfg, repo, state, &req, &mut members) {
-                Ok(Ok(triggers)) => {
+                Ok(Ok((triggers, only))) => {
                     eprintln!("forge-runner: {what}");
                     let opts = run::RunOpts {
-                        only: req.check.clone(),
+                        only,
                         requested_by: Some(req.requester.clone()),
                         rerun: true,
                     };
@@ -725,9 +749,14 @@ fn poll_reruns(
 /// carries Platform's block time, and a host clock running ahead must not hide the first ones.
 const RERUN_SLACK_MS: u64 = 300_000;
 
-/// What a counted re-run request runs (`Ok(Ok)`), or why it runs nothing (`Ok(Err)`); `Err` when
-/// the pull request or the members could not be read (tried again). Only the PR's current head
-/// runs, and only what a poll would run for it:
+/// What a counted re-run request runs: the triggers, and the one check to re-run if the request
+/// names one ([`rerun_triggers`]).
+type RerunPlan = (Vec<run::Trigger>, Option<String>);
+
+/// What a counted re-run request runs (`Ok(Ok)`: the triggers, and the one check to re-run if the
+/// request names one), or why it runs nothing (`Ok(Err)`); `Err` when the pull request or the
+/// members could not be read (tried again). Only the PR's current head runs, and only what a poll
+/// would run for it:
 ///
 /// * a check of the PR's own runs (` (pull_request)` or ` (pull_request, non-member)`): the PR as
 ///   `pull_request`, under the repository's `pull_requests` policy ([`skip_reason`]);
@@ -740,9 +769,16 @@ fn rerun_triggers(
     state: &RepoState,
     req: &run::RerunRow,
     members: &mut Option<run::Members>,
-) -> Result<std::result::Result<Vec<run::Trigger>, String>> {
+) -> Result<std::result::Result<RerunPlan, String>> {
     let sha = req.sha.to_ascii_lowercase();
-    let mut pr = run::view_pull(cfg, repo, req.number)?;
+    let mut pr = match run::view_pull(cfg, repo, req.number) {
+        Ok(pr) => pr,
+        // a members-only PR this identity cannot read: it never runs here, so nothing waits on it
+        Err(e) if e.downcast_ref::<run::UnreadablePull>().is_some() => {
+            return Ok(Err(format!("{e}")));
+        }
+        Err(e) => return Err(e),
+    };
     pr.head_oid = pr.head_oid.to_ascii_lowercase();
     if pr.state != "open" {
         return Ok(Err(format!("the pull request is {}", pr.state)));
@@ -758,17 +794,33 @@ fn rerun_triggers(
             "a scheduled check is not re-run on request; it runs again at its next time".into(),
         ));
     }
-    let (pull, push) = match req.check.as_deref() {
+    // A members-only branch's PR: its head is a blind, and its checks have opaque names, which
+    // this runner cannot tell apart, so a request for one re-runs every check of the head (its
+    // push runs on the branch's real commit and its PR runs).
+    let real = pr.real_head_oid.as_deref().map(str::to_ascii_lowercase);
+    let check = if real.is_some() {
+        if req.check.is_some() {
+            eprintln!(
+                "forge-runner: {} PR #{}: a members-only pull request's checks are re-run together",
+                repo.repo, req.number
+            );
+        }
+        None
+    } else {
+        req.check.as_deref()
+    };
+    let at = real.as_deref().unwrap_or(&sha);
+    let (pull, push) = match check {
         None => (true, true),
         Some(c) => (is_pull_check(c), !is_pull_check(c)),
     };
     let mut out = Vec::new();
     let mut why = Vec::new();
     if push {
-        match branch_at(repo, state, &pr, &sha) {
+        match branch_at(repo, state, &pr, at) {
             Ok(refname) => out.push(run::Trigger::Push(watch::Push {
                 refname,
-                oid: sha.clone(),
+                oid: at.to_string(),
                 before: None,
             })),
             Err(e) => why.push(e),
@@ -787,7 +839,7 @@ fn rerun_triggers(
     if out.is_empty() {
         return Ok(Err(why.join("; ")));
     }
-    Ok(Ok(out))
+    Ok(Ok((out, check.map(str::to_string))))
 }
 
 /// The watched branch of the repository a push check on `sha` re-runs as: the PR's own source
@@ -897,6 +949,8 @@ mod tests {
             source_repo_id: if fork { "F" } else { "R" }.into(),
             source_ref_name: Some("refs/heads/x".into()),
             draft: false,
+            audience: None,
+            real_head_oid: None,
         };
         for policy in [PullPolicy::Members, PullPolicy::All] {
             for fork in [false, true] {

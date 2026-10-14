@@ -88,6 +88,15 @@ A request is one `event` on the PR (kind 26, [forge-v2.md §3.3](../contracts/fo
 - **Who can ask.** The owner, maintainers and role-1 writers. Platform also admits a triage member's request (the contract's `t_triageKinds` does not name kind 26), but no reader counts it: `dg` and the web app refuse it before signing, and runners ignore one.
 - **What can be re-run.** An open PR's current head only: runners run nothing for a head that moved. Checks reported from elsewhere (the GitHub Action, a script) are re-run there; the web app offers Re-run only on forge-runner's runs.
 
+## Members-only branches
+
+A check run is public: anyone reads its commit, name, status and conclusion. On a members-only branch (`dg branch new --members`, [private-repos §19](../security/private-repos.md#19-members-only-branches-and-pull-requests)) a run must not show the branch's commit, its check names or its log, so it is reported differently ([private-repos §19.9](../security/private-repos.md#199-check-runs-on-members-only-branches)):
+
+- **Reporting.** `dg ci report alice/project --members-branch sec/fix --sha <commit> --name "ci / build" --status completed --conclusion success --log build.log --storage ci-logs` reports on the commit's blind (the value the branch's update shows the public instead of the commit) under a 16-character name only members can read. The run carries no summary, details link, run id or artifacts. The log, or without `--log` a short one naming the check, is uploaded so that only members can open it; the public can fetch it but reads nothing. You need your encryption key and the members key (a member's identity file, not a runner key). [forge-runner](self-host-runner.md#members-only-branches) does this for you with `members_branches = true`.
+- **Reading, as a member.** `dg ci status alice/project <commit>` lists the runs of a members-only branch's commit by their real names, marked members-only. `dg ci log alice/project <commit> "ci / build"` prints a run's log (`-o <file>` writes it), for any run, public or members-only.
+- **Reading, as anyone else.** The runs show under their 16-character names on the blind, with their outcomes; nothing names the branch or the commit.
+- **Pull requests.** A members-only pull request from a members-only branch shows its runs in its Checks as for any PR (they are reported on the head it shows); members read their names.
+
 ## What it costs
 
 Measured on devnet bonsia (2026-09-30, drive 4.2.0-beta.7; 1 DASH = 10¹¹ credits):
@@ -131,6 +140,7 @@ These are what the protocol and the current forge-collab contract allow. They ar
 - **Refuses workflow options that reach past the container.** A job that sets docker options or mounts (`container.options` / `volumes`, the same on `services`), or calls a reusable workflow, is refused unless the repository allows it.
 - **Keeps the daemon's socket out of jobs,** and puts jobs on the `bridge` network, not the host's.
 - **Hands secrets and a `GITHUB_TOKEN` to trusted refs only.** Other runs get an empty token, and secret values are redacted from logs before upload.
+- **Gives a job its `environment:`'s values** only on a trusted run, only when the environment is shared with the runner's identity by name, and only to the jobs that name it ([Environments](self-host-runner.md#environments)).
 - **Clears act's environment,** so `DASH_FORGE_KEY` never reaches act or a job, and ignores act configuration planted in the checkout.
 - **Follows GitHub's fork-PR model:** a pull request runs with the secrets only when its head is a trusted branch of the repository itself and its author the owner or a maintainer; a fork's or a non-member's PR runs with no secrets and an empty token, and by default a non-member's PR does not run at all ([Pull requests](self-host-runner.md#pull-requests)).
 

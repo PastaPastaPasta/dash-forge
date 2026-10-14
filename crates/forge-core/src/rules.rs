@@ -3645,6 +3645,7 @@ mod tests {
                 || v.case == crate::private::key_letter::VECTOR_CASE
                 || crate::members_git::conformance::CASES.contains(&v.case.as_str())
                 || v.case == crate::private::branch_key::conformance::CASE
+                || v.case == crate::private::members_check::CASE
             {
                 continue;
             }

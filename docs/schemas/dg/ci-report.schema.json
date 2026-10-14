@@ -62,7 +62,34 @@
         "null"
       ]
     },
-    "supersedes": {}
+    "supersedes": {},
+    "membersOnly": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "branch": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "commit": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "branch",
+            "name",
+            "commit"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "A members-only branch's run (`--members-branch`): what members read. `name` and `headOid` above are what the public sees (a name only members can read, and the commit's blind)."
+    }
   },
   "required": [
     "schemaVersion",

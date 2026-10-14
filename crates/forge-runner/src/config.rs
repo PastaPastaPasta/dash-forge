@@ -10,7 +10,7 @@
 //! [[repo]]
 //! repo = "alice/project"        # owner/name, as dg takes it
 //! refs = ["refs/heads/**"]      # which refs run (`*` stays within a path segment, `**` does not)
-//! trusted_refs = ["refs/heads/main"]   # only these get secrets
+//! trusted_refs = ["refs/heads/main"]   # only these get secrets and environments' values
 //! secrets_file = "/etc/forge-runner/alice-project.secrets"   # KEY=value lines (act --secret-file)
 //! schedule = true               # run `on.schedule` crons on the default branch (off by default)
 //!
@@ -156,6 +156,8 @@ pub struct Relay {
 }
 
 /// One watched repository.
+// Its flags are independent operator switches, as runner.toml spells them.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RepoConfig {
@@ -167,7 +169,8 @@ pub struct RepoConfig {
     /// Ref globs that run.
     #[serde(default = "default_refs")]
     pub refs: Vec<String>,
-    /// Ref globs whose runs get the secrets file. Everything else runs without secrets.
+    /// Ref globs whose runs get the secrets file and the values of the environments their jobs
+    /// name (when shared with this runner). Everything else runs without either.
     #[serde(default)]
     pub trusted_refs: Vec<String>,
     /// act secrets (`KEY=value` lines), given only to trusted refs.
@@ -197,6 +200,18 @@ pub struct RepoConfig {
     /// credits however often the expression fires.
     #[serde(default)]
     pub schedule: bool,
+    /// Run members-only branches (mixed-visibility DESIGN §4.3): a push to one, and a members-only
+    /// pull request from one, run as other pushes and PRs do, and are reported so the public sees
+    /// only each check's status and conclusion, under a name only members can read, and members
+    /// alone read its log (`dg ci report --members-branch`). The runner's identity must be a
+    /// member that holds its encryption key (`DASH_FORGE_KEY` an identity file, not a runner
+    /// key). Off by default: members-only branches and pull requests are not run (a log line
+    /// says so). An identity that reads members-only content never runs a stranger's code or
+    /// lets a job reach the Docker daemon, so this needs `pull_requests` other than `"all"`,
+    /// `allow_container_options` and `mount_docker_socket` off, and `log_storage` (where
+    /// members read the names and logs).
+    #[serde(default)]
+    pub members_branches: bool,
 }
 
 /// Which pull requests a repository's runner runs. None ever gets the secrets unless its head
@@ -284,17 +299,12 @@ impl Config {
                     bail!("ref pattern {g:?} must start with refs/");
                 }
             }
-            if !r.trusted_refs.is_empty() && r.secrets_file.is_none() {
-                bail!(
-                    "{}: trusted_refs without a secrets_file gives nothing",
-                    r.repo
-                );
-            }
             // act resolves a relative --secret-file against the checkout (-C), which the pushed
             // repository controls; the runner would read another file from its own directory.
             if r.secrets_file.as_ref().is_some_and(|p| !p.is_absolute()) {
                 bail!("{}: secrets_file must be an absolute path", r.repo);
             }
+            check_members_branches(&c, r)?;
         }
         for (label, image) in &c.platforms {
             // `-self-hosted` makes act run the job directly on the runner's host, outside
@@ -344,6 +354,39 @@ impl Config {
     }
 }
 
+/// `members_branches = true` (DESIGN §4.3): refused with what would let a stranger's code or a job
+/// reach the Docker daemon, since this runner's identity reads members-only content, and without
+/// `log_storage`, where members read the names and logs.
+fn check_members_branches(c: &Config, r: &RepoConfig) -> Result<()> {
+    if r.members_branches {
+        let why = |what: &str| {
+            format!(
+                "{}: members_branches = true with {what}: this runner's identity reads \
+                 the repository's members-only content, so it never runs a stranger's \
+                 code or gives a job the Docker daemon",
+                r.repo
+            )
+        };
+        if r.pull_requests == PullPolicy::All {
+            bail!(why("pull_requests = \"all\""));
+        }
+        if r.allow_container_options {
+            bail!(why("allow_container_options = true"));
+        }
+        if c.mount_docker_socket {
+            bail!(why("mount_docker_socket = true"));
+        }
+        if c.log_storage.is_none() {
+            bail!(
+                "{}: members_branches = true needs log_storage: members read a \
+                 members-only check's name and log there",
+                r.repo
+            );
+        }
+    }
+    Ok(())
+}
+
 impl RepoConfig {
     /// The git URL the runner fetches.
     pub fn url(&self) -> String {
@@ -368,9 +411,10 @@ impl RepoConfig {
         }
     }
 
-    /// Whether a run of `refname` gets the secrets.
+    /// Whether a run of `refname` gets the secrets file (when there is one) and environments'
+    /// values.
     pub fn trusted(&self, refname: &str) -> bool {
-        self.secrets_file.is_some() && self.trusted_refs.iter().any(|g| glob_match(g, refname))
+        self.trusted_refs.iter().any(|g| glob_match(g, refname))
     }
 }
 
@@ -412,6 +456,37 @@ pub fn glob_match(pattern: &str, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn members_branches_refuse_strangers_code_and_the_daemon() {
+        let parse = |top: &str, repo: &str| {
+            Config::parse(&format!(
+                "state_dir = \"/s\"\n{top}\n[[repo]]\nrepo = \"a/b\"\nmembers_branches = true\n{repo}"
+            ))
+        };
+        assert!(parse("log_storage = \"l\"", "").is_ok());
+        for (top, repo, says) in [
+            (
+                "log_storage = \"l\"",
+                "pull_requests = \"all\"",
+                "pull_requests",
+            ),
+            (
+                "log_storage = \"l\"",
+                "allow_container_options = true",
+                "allow_container_options",
+            ),
+            (
+                "log_storage = \"l\"\nmount_docker_socket = true",
+                "",
+                "mount_docker_socket",
+            ),
+            ("", "", "log_storage"),
+        ] {
+            let e = format!("{:#}", parse(top, repo).unwrap_err());
+            assert!(e.contains(says), "{e}");
+        }
+    }
 
     const MIN: &str = r#"
 state_dir = "/tmp/x"
@@ -471,7 +546,6 @@ repo = "alice/project"
         for bad in [
             "state_dir = \"/x\"\ninterval_secs = 5\n[[repo]]\nrepo = \"a/b\"",
             "state_dir = \"/x\"\n[[repo]]\nrepo = \"a/b/c\"",
-            "state_dir = \"/x\"\n[[repo]]\nrepo = \"a/b\"\ntrusted_refs = [\"refs/heads/main\"]",
             "state_dir = \"/x\"\n[[repo]]\nrepo = \"a/b\"\nrefs = [\"main\"]",
             "state_dir = \"/x\"\nnetwork = \"devnet\"\n[[repo]]\nrepo = \"a/b\"",
             "state_dir = \"/x\"\nsocket = true\n[[repo]]\nrepo = \"a/b\"",
@@ -535,6 +609,13 @@ repo = "alice/project"
         assert!(!r.trusted("refs/heads/release-1/hotfix"));
         assert!(!r.trusted("refs/heads/feature"));
         assert!(!r.trusted("refs/heads/mainline"));
+        // Without a secrets file, trusted refs still get environments' values.
+        let c = Config::parse(
+            "state_dir = \"/x\"\n[[repo]]\nrepo = \"a/b\"\ntrusted_refs = [\"refs/heads/main\"]",
+        )
+        .unwrap();
+        assert!(c.repos[0].trusted("refs/heads/main"));
+        assert!(c.repos[0].secrets_file.is_none());
     }
 
     #[test]

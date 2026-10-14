@@ -414,6 +414,53 @@ pub fn exposure(envs: &[EnvHistory<'_>], removed: &str, held_members_key: bool) 
     out
 }
 
+/// Who could read one current value (the exposure ledger, DESIGN §4.5 "Audit and exposure").
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LedgerEntry {
+    /// The entry's name.
+    pub name: String,
+    /// Everyone a snapshot carrying this value was sent to (its `to` list), sorted.
+    pub readers: Vec<String>,
+    /// An old-format Members snapshot carried it too: anyone who held the members key could
+    /// read it, members who joined later included.
+    pub old_format: bool,
+}
+
+/// The exposure ledger of one environment: for each name of its readable heads, everyone who
+/// could read the value it holds now. That is the union of the `to` lists of every snapshot of
+/// it this reader opened that carries the same value (a value set back to an earlier one counts
+/// that earlier version's readers too). A Letters-form snapshot's `to` list is exact; only an
+/// old-format Members snapshot reaches people not listed, which `old_format` says. Snapshots
+/// that did not open here are not counted: the caller says how many.
+#[must_use]
+pub fn ledger(e: &EnvHistory<'_>) -> Vec<LedgerEntry> {
+    let mut out: BTreeMap<&str, LedgerEntry> = BTreeMap::new();
+    for head in e.heads {
+        for (name, v) in &head.vars {
+            let row = out.entry(name).or_insert_with(|| LedgerEntry {
+                name: name.clone(),
+                readers: Vec::new(),
+                old_format: false,
+            });
+            for s in e
+                .snapshots
+                .iter()
+                .filter(|s| s.vars.get(name).is_some_and(|o| o.value == v.value))
+            {
+                row.old_format |= s.members_key();
+                row.readers.extend(s.to.iter().cloned());
+            }
+        }
+    }
+    let mut rows: Vec<LedgerEntry> = out.into_values().collect();
+    for row in &mut rows {
+        row.readers.sort();
+        row.readers.dedup();
+    }
+    rows
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -529,5 +576,63 @@ mod tests {
             (e.state, e.heads.clone()),
             (State::Unreadable, vec!["s2".into()])
         );
+    }
+
+    fn snap(to: &[&str], vars: &[(&str, &str)]) -> Snapshot {
+        use super::super::{format::Var, format::VarType, Audience, Group};
+        let mut s = Snapshot::new(
+            "prod",
+            [1; 16],
+            Audience::group(Group::Maintainers),
+            vars.iter()
+                .map(|(k, v)| {
+                    let var = Var {
+                        value: (*v).into(),
+                        kind: VarType::Secret,
+                        note: String::new(),
+                    };
+                    ((*k).to_owned(), var)
+                })
+                .collect(),
+        );
+        s.to = to.iter().map(|t| (*t).to_owned()).collect();
+        s
+    }
+
+    /// Each current value's readers are the `to` lists of the versions that carried it: a changed
+    /// value starts again from the version that changed it, a value set back to an earlier one
+    /// takes that version's readers back in, and an old-format version is flagged.
+    #[test]
+    fn the_ledger_counts_whoever_was_sent_each_current_value() {
+        let v1 = snap(&["alice", "bob"], &[("DB", "one"), ("KEY", "k")]);
+        let v2 = snap(&["alice", "ci"], &[("DB", "two"), ("KEY", "k")]);
+        let v3 = snap(
+            &["alice", "dana"],
+            &[("DB", "one"), ("KEY", "k"), ("NEW", "n")],
+        );
+        let mut old = snap(&[], &[("KEY", "k")]);
+        old.version = 1;
+        old.audience = super::super::Audience::group(super::super::Group::Members);
+        let heads = [&v3];
+        let all = [&old, &v1, &v2, &v3];
+        let rows = ledger(&EnvHistory {
+            env: "prod",
+            heads: &heads,
+            snapshots: &all,
+        });
+        let row = |n: &str| rows.iter().find(|r| r.name == n).unwrap().clone();
+        assert_eq!(
+            row("DB").readers,
+            ["alice", "bob", "dana"],
+            "v2's value differs"
+        );
+        assert!(!row("DB").old_format);
+        assert_eq!(row("KEY").readers, ["alice", "bob", "ci", "dana"]);
+        assert!(
+            row("KEY").old_format,
+            "the old-format version carried KEY's value"
+        );
+        assert_eq!(row("NEW").readers, ["alice", "dana"]);
+        assert_eq!(rows.len(), 3);
     }
 }
