@@ -75,15 +75,12 @@ export function RefListContent({
   addr,
   kind,
   reload,
-  membersPublish,
 }: {
   home: RepoHome
   addr: RepoAddress
   kind: keyof typeof KIND
   /** Re-read the repo home (after a branch is created, deleted or restored here). */
   reload?: () => void
-  /** A members-only branch row's Publish action (absent: none offered). */
-  membersPublish?: (ref: ResolvedRef, tip: string) => JSX.Element | null
 }): JSX.Element {
   const { prefix, icon: Icon, empty, noun, single } = KIND[kind]
   const admin = useBranchAdmin(home)
@@ -307,13 +304,23 @@ export function RefListContent({
                       </Link>
                     ) : null}
                     {tip ? tipChip(tip) : null}
-                    {tip && kind === 'branches' && membersPublish !== undefined ? membersPublish(ref, tip) : null}
+                    {tip && kind === 'branches' ? (
+                      // Published through a members-only pull request: its merge box squashes or publishes with history.
+                      <Link
+                        href={repoHref('/repo/pulls/new', addr, { head: shortName, base: home.defaultBranch })}
+                        className="hit-area shrink-0 text-[12px] text-anvil-500 hover:text-forge-800 dark:text-anvil-400 dark:hover:text-forge-400"
+                        aria-label={`Publish ${shortName}`}
+                        data-testid="members-ref-publish"
+                      >
+                        Publish…
+                      </Link>
+                    ) : null}
                   </div>
                 )
               })}
             </div>
           ) : (
-            <p className="text-dense text-anvil-500 dark:text-anvil-400">No members-only {single} matches "{query}".</p>
+            <p className="text-dense text-anvil-500 dark:text-anvil-400">No members-only {single} matches &ldquo;{query}&rdquo;.</p>
           )}
         </section>
       ) : (

@@ -14,8 +14,6 @@
  * under the members-key session (`repoKey`), and goes with it.
  */
 
-import type { EvoSDK } from '@dashevo/evo-sdk'
-
 import { ObjectLocator, type GitObject, type ObjectIndex, type PackSource } from '../browse'
 import { offsetKey, type LocatorEntry } from '../browse/locator'
 import { PACK_KIND } from '../constants'
