@@ -182,6 +182,8 @@ stale: 1 match, 1 stale, 0 mismatch
 
 It lists what the gateway serves, folds the refs from Platform with proofs, and checks the gateway's `forge-manifest.json` (the `refUpdate` behind each ref, and the block its snapshot reflects). `stale` is a gateway that has not refreshed yet. `MISMATCH` is a tip the ref never had, a ref Platform does not have, or a claim Platform does not back: the command exits non-zero ([`E504`](../errors.md#e504)), and you should clone with `dash://`. `--strict` fails on `stale` too. The web app's clone box has a **verify** link that runs the same comparison for the branches and tags the page proved.
 
+A gateway serves public branches only. When the repository also has members-only branches, the report adds a line saying so; they are never a mismatch, and no mirror can list them. `--json` carries `membersOnly.onPlatform` (the distinct name hashes of the sealed ref updates Platform shows, an upper bound) and `membersOnly.notServedClaimed` (what the manifest says it leaves out) for you to compare; the command judges neither.
+
 ---
 
 ## The third-party verification script

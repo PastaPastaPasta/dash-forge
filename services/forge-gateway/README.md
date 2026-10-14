@@ -10,7 +10,9 @@ dg verify-mirror https://<gateway>/<owner>/<name>.git   # check it against Dash 
 
 It is a hint, never an authority: every repository's `forge-manifest.json` names the Platform
 `refUpdate` behind each served ref, `dg verify-mirror` and the web clone box's "verify" check
-it, it holds no keys and refuses private repositories, and `dash://` never needs it.
+it, it holds no keys and refuses private repositories, and `dash://` never needs it. It serves the
+public lane only: a repository's members-only branches are never listed, fetched or named, and the
+manifest only counts them (`membersOnlyRefsNotServed`).
 
 Hosting (Docker image, compose file, every setting, DNS and TLS, monitoring, logs, rate limits,
 the privacy notice draft): [docs/hosting/forge-gateway.md](../../docs/hosting/forge-gateway.md).

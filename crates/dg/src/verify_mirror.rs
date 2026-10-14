@@ -7,6 +7,14 @@
 //! **match**, **stale** (an earlier tip of the ref, which moved after the mirror's snapshot) or a
 //! **MISMATCH** (a tip the ref never had, a ref Platform does not have, or a claim the manifest
 //! cannot back). Only a mismatch fails the command, unless `--strict`.
+//!
+//! A mirror serves the public lane only: a repository's members-only branches are never in its
+//! refs, and are not a mismatch. The check folds Platform's refs the same way (plaintext
+//! updates only), so an omitted members-only branch cannot be told from a public one, and the
+//! report says only that the repository has some. The manifest's count of them is shown in
+//! `--json` beside Platform's, for people to compare; it is a hint, never a verdict (a node
+//! a block behind, or a newer reader folding differently, would otherwise fail an honest
+//! gateway).
 
 use std::collections::BTreeMap;
 use std::process::Command;
@@ -170,6 +178,17 @@ struct Look {
     cmp: Comparison,
     problems: Vec<String>,
     verdict: Verdict,
+    /// Members-only refs Platform shows, and how many the manifest says it leaves out.
+    members_only: MembersOnly,
+}
+
+/// What the check knows of the repository's members-only branches.
+#[derive(Clone, Copy)]
+struct MembersOnly {
+    /// Distinct sealed ref names on Platform ([`PublicRefs::members_only_refs`]).
+    on_platform: usize,
+    /// What the manifest says it leaves out (`None`: no manifest).
+    claimed: Option<u64>,
 }
 
 async fn look(r: &Reader, url: &str, network: &str) -> Result<Look> {
@@ -180,20 +199,24 @@ async fn look(r: &Reader, url: &str, network: &str) -> Result<Look> {
         Ok(m) => (m, None),
         Err(e) => (None, Some(e)),
     };
-    let records = r.service().read_ref_records(&r.repo).await?;
+    let public = r.service().read_public_refs(&r.repo).await?;
     let cmp = compare(
         &served,
-        &records,
+        &public.records,
         manifest.as_ref().map(|m| m.platform_time_ms),
     );
     let problems = manifest
         .as_ref()
-        .map(|m| manifest_problems(m, &served, &records, r.repo.id(), network))
+        .map(|m| manifest_problems(m, &served, &public.records, r.repo.id(), network))
         .unwrap_or_default();
     let verdict = if problems.is_empty() {
         cmp.verdict
     } else {
         Verdict::Mismatch
+    };
+    let members_only = MembersOnly {
+        on_platform: public.members_only_refs,
+        claimed: manifest.as_ref().map(|m| m.members_only_refs_not_served),
     };
     Ok(Look {
         manifest,
@@ -201,6 +224,7 @@ async fn look(r: &Reader, url: &str, network: &str) -> Result<Look> {
         cmp,
         problems,
         verdict,
+        members_only,
     })
 }
 
@@ -232,6 +256,7 @@ pub async fn run(ctx: &Ctx, url: &str, strict: bool) -> Result<()> {
         l.manifest_error.as_deref(),
         &l.problems,
         behind,
+        l.members_only,
     );
     match l.verdict {
         Verdict::Mismatch => bail!(UserError::new(
@@ -263,6 +288,7 @@ fn report(
     manifest_error: Option<&str>,
     problems: &[String],
     blocks_behind: Option<u64>,
+    members_only: MembersOnly,
 ) {
     ctx.emit(
         json!({
@@ -278,6 +304,10 @@ fn report(
             })),
             "manifestError": manifest_error,
             "manifestProblems": problems,
+            "membersOnly": {
+                "onPlatform": members_only.on_platform,
+                "notServedClaimed": members_only.claimed,
+            },
         }),
         || {
             println!("{}  {}", safe(url), repo);
@@ -310,6 +340,11 @@ fn report(
             }
             for p in problems {
                 println!("  MISMATCH  the manifest {}", safe(p));
+            }
+            if members_only.on_platform > 0 || members_only.claimed.is_some_and(|n| n > 0) {
+                println!(
+                    "  members-only branches: this repository also has some; a mirror serves public branches only"
+                );
             }
             let (m, s, x) = (
                 cmp.count(Verdict::Match),
@@ -449,6 +484,7 @@ mod tests {
             platform_time_ms: 2,
             fetched_at_ms: 3,
             refs: vec![tip("refs/heads/main", &a, "U1")],
+            members_only_refs_not_served: 0,
             packs: vec![],
         };
         assert!(manifest_problems(&m, &served, &records, "R", "devnet-sakura").is_empty());
