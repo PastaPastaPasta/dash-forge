@@ -1,0 +1,57 @@
+{
+  "name": "fold_joiner_gets_history",
+  "description": "a joiner after generation 1 receives one letter with both keys: it reads the whole history; generation 0's issuedAt is that letter's height for them.",
+  "case": "branch_key",
+  "rules": "v2",
+  "input": {
+    "op": "fold",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "letters": [
+      {
+        "id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "height": 300,
+        "owner": "2222222222222222222222222222222222222222222222222222222222222222",
+        "body": {
+          "type": "branchKey",
+          "v": 1,
+          "name": "refs/heads/sec/embargo",
+          "gen": 1,
+          "keys": [
+            "6465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80818283",
+            "8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaab"
+          ],
+          "group": "maintainers",
+          "people": [],
+          "to": [
+            "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+          ]
+        }
+      }
+    ]
+  },
+  "expected": {
+    "branches": [
+      {
+        "name": "refs/heads/sec/embargo",
+        "group": "maintainers",
+        "people": [],
+        "issuedAt": {
+          "0": 300,
+          "1": 300
+        },
+        "letters": [
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ],
+        "holders": [
+          "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+        ],
+        "kcvs": [
+          "d02a38c3",
+          "72ad7619"
+        ],
+        "gen": 1
+      }
+    ],
+    "ignored": []
+  }
+}

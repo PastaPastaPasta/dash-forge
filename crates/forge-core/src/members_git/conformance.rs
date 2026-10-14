@@ -590,6 +590,17 @@ struct GuardIn {
     batch: Vec<BatchRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     publish_private: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    audiences: guard::NarrowAudiences,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    decryptable_narrower: Vec<NarrowOidIn>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct NarrowOidIn {
+    oid: String,
+    audience: String,
 }
 
 /// An object graph held in memory.
@@ -694,6 +705,11 @@ fn run_guard(v: &Vector) -> Value {
             ledger::State::Present(l)
         }
     };
+    let narrower: Vec<(String, String)> = i
+        .decryptable_narrower
+        .iter()
+        .map(|n| (n.oid.clone(), n.audience.clone()))
+        .collect();
     let out = guard::guard(
         &MemGraph(&i),
         &guard::GuardInput {
@@ -703,6 +719,8 @@ fn run_guard(v: &Vector) -> Value {
             public_tips: &i.public_tips,
             batch: &i.batch,
             publish_private: i.publish_private.as_deref(),
+            audiences: &i.audiences,
+            decryptable_narrower: &narrower,
         },
     )
     .unwrap();

@@ -1,0 +1,73 @@
+{
+  "name": "open_head_tag_in_ref",
+  "description": "tag 24 is not a ref update's: malformed.",
+  "case": "branch_key",
+  "rules": "v2",
+  "input": {
+    "op": "open",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "letters": [
+        {
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "height": 100,
+          "owner": "2222222222222222222222222222222222222222222222222222222222222222",
+          "body": {
+            "type": "branchKey",
+            "v": 1,
+            "name": "refs/heads/sec/embargo",
+            "gen": 0,
+            "keys": [
+              "6465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80818283"
+            ],
+            "group": "maintainers",
+            "people": [],
+            "to": [
+              "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+            ]
+          }
+        },
+        {
+          "id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "height": 300,
+          "owner": "2222222222222222222222222222222222222222222222222222222222222222",
+          "body": {
+            "type": "branchKey",
+            "v": 1,
+            "name": "refs/heads/sec/embargo",
+            "gen": 1,
+            "keys": [
+              "6465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80818283",
+              "8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaab"
+            ],
+            "group": "maintainers",
+            "people": [],
+            "to": [
+              "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+            ]
+          }
+        }
+      ],
+      "audience": {
+        "refs/heads/sec/embargo": [
+          "2222222222222222222222222222222222222222222222222222222222222222"
+        ]
+      }
+    },
+    "doc": {
+      "type": "refUpdate",
+      "vis": "public",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "refNameHash": "a25cd2a6361488fa7354dc45fd39a1b4227aeeaa58846847ce5b96e803bf1551",
+      "newOid": "2792c4013b39c4f9ffaed68f5e88bfbd725c0542",
+      "force": false,
+      "prevOid": "777153af9ca560b3a817359ee1bf82fac6254284",
+      "enc": "06d02a38c3000102030405060708090a0bf4cf22ab8be28b6251ba81076b003b29d38def8b03f45fbad1d5a4451f387adefe4b9761d5c258182acc8f9115303ebe4437240b124acf5cfddc24aec842229ebde380c76cb9ee31e3442c1f43b22e77b1c6ec4ef174a08dd7077475eab1d1933f7775a82f48090fd5a9107db74ff66e75065e1354ee8ff440c593c3098ebb3fcd5d089a522184656261a701c7413c8a8d6a0e167195da16fa14fd9b743afc0b0ff29cff244793dd07cbc7ebea23691106",
+      "createdAtBlockHeight": 150
+    }
+  },
+  "expected": {
+    "status": "malformed"
+  }
+}

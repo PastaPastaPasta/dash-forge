@@ -1,0 +1,58 @@
+{
+  "name": "fold_people_and_group",
+  "description": "a group plus people (Writers and maintainers + one person).",
+  "case": "branch_key",
+  "rules": "v2",
+  "input": {
+    "op": "fold",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "letters": [
+      {
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "height": 100,
+        "owner": "2222222222222222222222222222222222222222222222222222222222222222",
+        "body": {
+          "type": "branchKey",
+          "v": 1,
+          "name": "refs/heads/sec/embargo",
+          "gen": 0,
+          "keys": [
+            "6465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80818283"
+          ],
+          "group": "writers",
+          "people": [
+            "EBBduiozK9vBCemy4FcAjhVkby2FLPstxZxxN7jpgxtr"
+          ],
+          "to": [
+            "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+          ]
+        }
+      }
+    ]
+  },
+  "expected": {
+    "branches": [
+      {
+        "name": "refs/heads/sec/embargo",
+        "group": "writers",
+        "people": [
+          "EBBduiozK9vBCemy4FcAjhVkby2FLPstxZxxN7jpgxtr"
+        ],
+        "issuedAt": {
+          "0": 100
+        },
+        "letters": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ],
+        "holders": [
+          "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+        ],
+        "kcvs": [
+          "d02a38c3"
+        ],
+        "gen": 0
+      }
+    ],
+    "ignored": []
+  }
+}

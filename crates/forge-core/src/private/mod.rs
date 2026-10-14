@@ -36,6 +36,7 @@
 compile_error!("the `vectors` feature (deterministic nonces and file ids) is for tests only; never enable it in a release build");
 
 pub mod blind;
+pub mod branch_key;
 pub mod bundle;
 pub mod convert;
 pub mod doc;

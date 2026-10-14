@@ -1,0 +1,62 @@
+{
+  "name": "open_old_gen_still_opens",
+  "description": "a holder of generation 1 still opens generation 0's history.",
+  "case": "branch_key",
+  "rules": "v2",
+  "input": {
+    "op": "open",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "letters": [
+        {
+          "id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "height": 300,
+          "owner": "2222222222222222222222222222222222222222222222222222222222222222",
+          "body": {
+            "type": "branchKey",
+            "v": 1,
+            "name": "refs/heads/sec/embargo",
+            "gen": 1,
+            "keys": [
+              "6465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80818283",
+              "8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaab"
+            ],
+            "group": "maintainers",
+            "people": [],
+            "to": [
+              "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+            ]
+          }
+        }
+      ],
+      "audience": {
+        "refs/heads/sec/embargo": [
+          "2222222222222222222222222222222222222222222222222222222222222222"
+        ]
+      }
+    },
+    "doc": {
+      "type": "refUpdate",
+      "vis": "public",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "refNameHash": "a25cd2a6361488fa7354dc45fd39a1b4227aeeaa58846847ce5b96e803bf1551",
+      "newOid": "433681865d058c77a67224f6e0e1f1f9347643d2",
+      "force": false,
+      "prevOid": "ab3afc62c130b0bba102e896193f6a8b0e3e2e1b",
+      "enc": "06d02a38c3000102030405060708090a0bc4e66816bba6aeff9e383ac112204b58fa966d68a74255b7f0a63d106d9d9c25d3465c6e8660a5e1940a263506c228caa7df3ee32ce9360879bfb00e96955399ccf3da1d133d49e37729562b3607df885f541f4cde02b37707fc1940323bfb710a2c02c39705963e3cd75e63220e3b6e2242ed4f1629ff86f4716456c842a8bdecd166a4441f0abcb10d626ab817399b85b0b26616e13ff625ab",
+      "createdAtBlockHeight": 150
+    }
+  },
+  "expected": {
+    "status": "readable",
+    "ref": {
+      "name": "refs/heads/sec/embargo",
+      "newOid": "ac57952b296a19e0255ee8ff9b20adcfab2a599c",
+      "prevOid": "de8ed34d0343cb7015311aca01897865e6907bbd"
+    },
+    "alerts": [],
+    "branch": "refs/heads/sec/embargo",
+    "gen": 0
+  }
+}

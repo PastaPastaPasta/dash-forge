@@ -1,0 +1,18 @@
+{
+  "name": "pack_open_no_key",
+  "description": "a reader without the branch key: skipped (no key), never read as corrupt.",
+  "case": "branch_key",
+  "rules": "v2",
+  "input": {
+    "op": "packOpen",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "keys": [
+      "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+    ],
+    "sealed": "4446504b030a0000d02a38c30000000000000064f0e1d2c3b4a5968778695a4b3c2d1e0f171563bc38ac1c4ee4a55224d59237fa1bad29a1d214130f7b0ef54b8c778780c87dc0d5c08b8ece460b662080fb84e2f52cb29543f715f5c039c27167c1a31d7de0cc400d51001abebaf7d526fe5adda3f20688ca42c6b7498d3b3877be94c39e1b01fa78ca80d4c15f23159fde30c9086e2881",
+    "sizeBytes": 152
+  },
+  "expected": {
+    "error": "noKey"
+  }
+}

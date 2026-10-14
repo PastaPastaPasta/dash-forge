@@ -633,7 +633,24 @@ class Graph:
         return tags, x, self.o[x]["type"]
 
 
-NARROW_FIRST = "members"
+GROUP_RANK = {None: 0, "maintainers": 1, "writers": 2, "members": 3}
+
+
+def audience_of(token, audiences):
+    """(group, people) of a sealed audience: `members` is every member; a narrower branch's token names its
+    group and people in `audiences` (phase 3F); an unknown token is None (equal only to itself)."""
+    if token == "members":
+        return ("members", frozenset())
+    a = audiences.get(token)
+    return None if a is None else (a.get("group"), frozenset(a.get("people", [])))
+
+
+def within(dst, src, audiences):
+    """Whether everyone `dst` is for may already read what `src` is for: a group no wider and no extra people."""
+    if dst == src:
+        return True
+    d, s = audience_of(dst, audiences), audience_of(src, audiences)
+    return d is not None and s is not None and GROUP_RANK[d[0]] <= GROUP_RANK[s[0]] and d[1] <= s[1]
 
 
 def guard(inp):
@@ -641,12 +658,11 @@ def guard(inp):
     P = inp["publicTips"]
     ledger = inp["ledger"]
     dec = inp.get("decryptable")
+    auds = inp.get("audiences", {})
     # a ledger this reader cannot read ("unknown") may hold what no key here opens, for this
     # repository or another dash remote of the clone: fail closed
     if ledger == "unknown" or (inp["membersKey"] and dec is None and ledger is None):
         return dict(verdict="unavailable", findings=[], notes=[], published=[])
-    if ledger == "unknown":
-        ledger = None
     notes = []
     if dec is None and ledger is not None and not ledger:
         notes.append("noKeyEmptyLedger")
@@ -656,25 +672,36 @@ def guard(inp):
         S[e["oid"]] = a if S.get(e["oid"], "members") == "members" else S[e["oid"]]
     for x in dec or []:
         S.setdefault(x, "members")
-    # what is already members-only (recorded or decryptable), before this batch adds its own tips
-    established = [x for x, a in S.items() if a == "members"]
+    for x in inp.get("decryptableNarrower", []):
+        S[x["oid"]] = x["audience"] if S.get(x["oid"], "members") == "members" else S[x["oid"]]
+    # what each audience already holds (recorded or decryptable), before this batch adds its own tips
+    before = dict(S)
     for u in inp["batch"]:
-        if u["audience"] == "members" and u.get("new"):
-            S.setdefault(u["new"], "members")
-    narrow = [x for x, a in S.items() if a != "members"]
+        if u["audience"] != "public" and u.get("new"):
+            S.setdefault(u["new"], u["audience"])
     all_s = list(S)
     sealed_objects = g.objects(all_s, P) if all_s else set()
     sealed_commits = g.commits(all_s, P) if all_s else set()
+    by_audience = {}
+    for x, a in S.items():
+        by_audience.setdefault(a, []).append(x)
+    held_before = {}
+    for x, a in before.items():
+        held_before.setdefault(a, []).append(x)
     findings, published = [], []
     for u in inp["batch"]:
         T = u.get("new")
         if not T:
             continue
         found = []
-        if u["audience"] == "members":
-            if narrow:
-                only_narrow = g.commits(narrow, P) - (g.commits(established, P) if established else set())
-                leak = g.commits([T], P) & only_narrow
+        dst = u["audience"]
+        if dst != "public":
+            # D21 rev 4 (§4.3): a sealed ref takes no commit that only audiences it is not within hold: the
+            # commits of those audiences, minus what an audience it is within already held before this batch
+            wider = [x for a, xs in sorted(by_audience.items()) if not within(dst, a, auds) for x in xs]
+            if wider:
+                covered = [x for a, xs in sorted(held_before.items()) if within(dst, a, auds) for x in xs]
+                leak = g.commits([T], P) & (g.commits(wider, P) - (g.commits(covered, P) if covered else set()))
                 if leak:
                     found.append(dict(dst=u["dst"], kind="commits", oids=sorted(leak)))
         else:
@@ -834,6 +861,54 @@ def guard_vectors():
         ("members_into_members", "members-only commits into another members-only branch pass.",
          dict(ledger=[dict(oid=m3)], decryptable=[m3], batch=[dict(dst="refs/heads/sec/other", new=m3,
                                                                      audience="members")])),
+    ]
+    # phase 3F: narrower branches. Each token names a branch key's audience (`audiences`); an unknown token is
+    # equal only to itself.
+    TM, TW, TP, TB, TU, TV = ("branch:" + c * 16 for c in "123456")
+    alice, bot = "aa" * 32, "bb" * 32
+    auds = {TM: dict(group="maintainers", people=[]), TW: dict(group="writers", people=[]),
+            TP: dict(group=None, people=[alice]), TB: dict(group="members", people=[bot])}
+    n1, n2, mn = o("narrow1"), o("narrow2"), o("merge-narrow")
+    cases += [
+        ("narrower_into_wider_narrower", "a Maintainers branch's commit pushed to a Writers and maintainers branch: "
+         "refused (the audience would grow without a key letter).", dict(
+             audiences=auds, ledger=[dict(oid=n1, audience=TM)], decryptable=[m3],
+             batch=[dict(dst="refs/heads/sec/writers", new=mn, audience=TW)])),
+        ("narrower_into_narrower_within", "a Writers and maintainers branch's commit pushed to a Maintainers branch: "
+         "everyone who reads the target already reads it.", dict(
+             audiences=auds, ledger=[dict(oid=n1, audience=TW)], decryptable=[m3],
+             batch=[dict(dst="refs/heads/sec/maint", new=n1, audience=TM)])),
+        ("unknown_token_same_branch", "a commit recorded for a branch whose audience this push does not know goes "
+         "back to that branch only.", dict(
+             audiences=auds, ledger=[dict(oid=n1, audience=TU)], decryptable=[m3],
+             batch=[dict(dst="refs/heads/sec/u", new=n1, audience=TU)])),
+        ("unknown_token_other_branch", "... and to no other narrower branch.", dict(
+             audiences=auds, ledger=[dict(oid=n1, audience=TU)], decryptable=[m3],
+             batch=[dict(dst="refs/heads/sec/v", new=n1, audience=TV)])),
+        ("people_into_group", "a branch for one person's commit into a Maintainers branch: refused (a group is not "
+         "within a list of people).", dict(
+             audiences=auds, ledger=[dict(oid=n1, audience=TP)], decryptable=[m3],
+             batch=[dict(dst="refs/heads/sec/maint", new=n1, audience=TM)])),
+        ("members_into_members_plus_bot", "members-only commits into an All members + @bot branch: refused (the bot "
+         "never holds the members key, so this would share them with it).", dict(
+             audiences=auds, ledger=[], decryptable=[m3],
+             batch=[dict(dst="refs/heads/ci/fix", new=m3, audience=TB)])),
+        ("members_plus_bot_into_members", "an All members + @bot branch's commits into a members-only branch: every "
+         "member reads them already.", dict(
+             audiences=auds, ledger=[dict(oid=n1, audience=TB)], decryptable=[m3],
+             batch=[dict(dst="refs/heads/sec/fix", new=mn, audience="members")])),
+        ("decryptable_narrower_into_public", "a narrower branch's tip the pusher decrypts (no ledger entry yet) is "
+         "never published.", dict(
+             audiences=auds, ledger=[], decryptable=[m3], decryptableNarrower=[dict(oid=n1, audience=TM)],
+             batch=[dict(dst="refs/heads/main", new=mn, audience="public")])),
+        ("batch_narrower_then_members", "a batch creating a Maintainers branch and a members-only branch on top of "
+         "it: the new narrower tip joins S first, so the members-only ref is refused.", dict(
+             audiences=auds, ledger=[], decryptable=[m3],
+             batch=[dict(dst="refs/heads/sec/maint", new=n1, audience=TM),
+                    dict(dst="refs/heads/sec/fix", new=mn, audience="members")])),
+        ("new_narrower_on_members", "a new Maintainers branch built on a members-only branch: no audience grows.",
+         dict(audiences=auds, ledger=[dict(oid=m3)], decryptable=[m3],
+              batch=[dict(dst="refs/heads/sec/maint", new=n2, audience=TM)])),
     ]
     for name, desc, extra in cases:
         inp = dict(base, **extra)
