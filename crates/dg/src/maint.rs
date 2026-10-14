@@ -31,8 +31,19 @@ pub async fn repack(
     repo: Option<&str>,
     backend: Option<Backend>,
     profile: Option<&str>,
+    packs: crate::PacksArg,
 ) -> Result<()> {
     let repo = repo.context("`dg repack` needs a repository: dg repack <owner>/<name>")?;
+    if packs == crate::PacksArg::Members {
+        return Err(UserError::new(
+            codes::USAGE,
+            "members-only packs aren't consolidated",
+        )
+        .cause("each members-only branch keeps its own packs, so publishing one branch never exposes another")
+        .fix(format!("repack the public packs: `dg repack {repo}`"))
+        .note("nothing was repacked")
+        .into());
+    }
     let repo_ref = RepoRef::parse(repo)?;
     // `--profile a,b[,platform]`: the consolidated pack goes to every listed profile, and
     // each must confirm (so older packs gain the copies a new storage policy asks for).
@@ -54,12 +65,21 @@ pub async fn repack(
     let roles = svc.copy_roles(&handle).await.unwrap_or_default();
     let space = forge_core::repo::locator_pack_space(&manifests, &roles, None);
     let live_bytes: u64 = space.iter().map(|m| m.size_bytes).sum();
+    let members_packs = manifests
+        .iter()
+        .filter(|m| u8::try_from(m.kind).is_ok_and(|k| k == forge_core::pack::KIND_SEALED_BASE))
+        .count();
     if !ctx.json {
         println!(
             "Repack {}: {}, {live_bytes} bytes",
             handle.display(),
             crate::fmt::plural(space.len(), "git pack")
         );
+        if members_packs > 0 {
+            println!(
+                "  members-only packs are left as they are ({members_packs}): only the public ones are consolidated"
+            );
+        }
         println!(
             "  writes one consolidated pack + manifest; deletes nothing (Platform packs are \
              permanent, so there is no refund). Superseded packs stay readable as a fallback."

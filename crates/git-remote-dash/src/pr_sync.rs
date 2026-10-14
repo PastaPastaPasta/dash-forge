@@ -109,9 +109,21 @@ pub async fn sync_after_push(
                 continue;
             }
         };
+        // A members-only branch moves members-only PRs only: a public PR left over from a
+        // deleted public branch of the same name must never get its (real) new head in plaintext.
+        let branch_members = collab
+            .members_refs(source)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|fold| fold.get(&m.ref_name).is_some_and(|r| r.members_only));
         for (repo, view) in prs {
             // A private PR's documents are sealed; moving its head is `dg pr sync`'s job.
             if repo.visibility == forge_core::rules::v2::Visibility::Private {
+                continue;
+            }
+            let members_pr = view.patch.from_members_only_branch();
+            if branch_members && !members_pr {
                 continue;
             }
             let n = view.patch.number;
@@ -132,24 +144,29 @@ pub async fn sync_after_push(
             let Ok(oid) = hex::decode(&m.oid) else {
                 continue;
             };
+            // A members-only PR from a members-only branch names its head by the blind the
+            // branch's ref update carries (rule C): read from the member fold this push just
+            // wrote, and sealed beside the real head (DESIGN §4.4).
+            let members_head = if members_pr {
+                members_head(collab, &repo, m).await
+            } else {
+                None
+            };
+            if members_pr && members_head.is_none() {
+                progress.note(&format!(
+                    "PR #{n} in {label} follows this branch, but its new head was not found among the members-only branch's updates; run `{sync_line}`"
+                ));
+                out.push(hint("members-only head not found".into()));
+                continue;
+            }
             progress.note(&format!(
                 "PR #{n} in {label} follows this branch: updating its head to {} (≈ {} DASH)",
                 &m.oid[..m.oid.len().min(12)],
                 forge_core::repo::credits_to_dash(HEAD_UPDATE_CREDITS)
             ));
-            match collab
-                .post_target_event(
-                    &repo,
-                    &view.patch.target(),
-                    EventKind::HeadUpdate,
-                    &EventPayload {
-                        oid: Some(&oid),
-                        ..EventPayload::default()
-                    },
-                )
-                .await
-            {
-                Ok((_, id)) => out.push(Outcome::Synced {
+            let posted = post_head(collab, &repo, &view, &oid, members_head.as_ref()).await;
+            match posted {
+                Ok(id) => out.push(Outcome::Synced {
                     repo: label,
                     number: n,
                     event: id,
@@ -164,4 +181,47 @@ pub async fn sync_after_push(
         }
     }
     out
+}
+
+/// The blind (and its salt) the members-only branch's ref update for `m` carries, read from the
+/// member fold of `repo` after the push.
+async fn members_head(
+    collab: &Collab<'_>,
+    repo: &forge_core::scope::RepoRef,
+    m: &Moved,
+) -> Option<forge_core::refs::UpdateBlind> {
+    collab.refs_changed();
+    collab
+        .members_refs(repo)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|fold| fold.updates.blind_of(&m.ref_name, &m.oid).cloned())
+}
+
+/// Post the head update of `view`: sealed with the copied blind for a members-only branch's PR
+/// (`members_head`), else the plain `oid` through whichever route admits the signer.
+async fn post_head(
+    collab: &Collab<'_>,
+    repo: &forge_core::scope::RepoRef,
+    view: &forge_core::collab::v2::PatchView,
+    oid: &[u8],
+    members_head: Option<&forge_core::refs::UpdateBlind>,
+) -> forge_core::Result<String> {
+    let target = view.patch.target();
+    match members_head {
+        Some(head) => collab.post_members_head_update(repo, &target, head).await,
+        None => collab
+            .post_target_event(
+                repo,
+                &target,
+                EventKind::HeadUpdate,
+                &EventPayload {
+                    oid: Some(oid),
+                    ..EventPayload::default()
+                },
+            )
+            .await
+            .map(|(_, id)| id),
+    }
 }

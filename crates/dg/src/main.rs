@@ -9,6 +9,7 @@ mod api;
 mod audience;
 mod auth;
 mod bans;
+mod branch;
 mod ci;
 mod collab;
 mod common;
@@ -40,6 +41,7 @@ mod pr;
 mod profile;
 mod prompt;
 mod publish;
+mod publish_code;
 mod quote;
 mod ref_activity;
 mod release;
@@ -234,6 +236,22 @@ pub enum Command {
         #[arg(long)]
         history: bool,
     },
+    /// Branches and who can see them: list them, start a members-only branch, and delete the
+    /// local branches `dg publish` published.
+    ///
+    /// `dg branch` alone lists this clone's repository's branches in two groups, Public and
+    /// Members only (members see both; anyone else sees the public ones).
+    Branch {
+        #[command(subcommand)]
+        cmd: Option<branch::BranchCommand>,
+    },
+    /// Publish a members-only branch, or a members-only pull request's branch, onto a public
+    /// branch. This can't be undone.
+    ///
+    /// By default it squashes the branch into one new commit on the base, so the members-only
+    /// history stays members-only (`--history` publishes the commits as they are). It lists
+    /// what becomes public, checks the files for secrets and asks first. Run it in a clone.
+    Publish(Box<publish_code::PublishArgs>),
     /// Cost estimates and spend audits.
     #[command(subcommand)]
     Cost(CostCommand),
@@ -249,6 +267,11 @@ pub enum Command {
         /// pack; a comma-separated list stores it on each, and every one must confirm.
         #[arg(long)]
         profile: Option<String>,
+        /// Which packs: `public` (the default; members-only packs are left as they are) or
+        /// `members`, which is refused: each members-only branch keeps its own packs, so
+        /// publishing one never exposes another.
+        #[arg(long, value_enum, default_value = "public")]
+        packs: PacksArg,
     },
     /// Re-upload packs and record the new copies (maintainers and writers; --from-local
     /// writes nothing to Platform).
@@ -1237,6 +1260,10 @@ pub enum PrCommand {
         /// the rows read in the state asked for; `truncated` says whether older PRs exist.
         #[arg(long)]
         include_hidden: bool,
+        /// Only the pull requests for this audience: `public`, `members` (members-only, listed
+        /// even when you can't read them) or `people` (sent to specific people).
+        #[arg(long, value_enum)]
+        audience: Option<AudienceArg>,
     },
     /// View a pull request: state, reviewers, approvals, reviews, threads.
     View {
@@ -1746,6 +1773,24 @@ pub struct PrCreateArgs {
     /// each owner who is a maintainer or writer is asked, one event each.
     #[arg(long)]
     pub no_code_owners: bool,
+    /// Members-only: only the repository's members can read its title, description and branch
+    /// names (everyone still sees its number, who opened it and when, its state and the
+    /// reviews' verdicts). A pull request from a members-only branch, or into one, is
+    /// members-only without it. Needs your encryption key, and members-only content turned on
+    /// in the repository (`dg repo members enable`).
+    #[arg(long, alias = "private")]
+    pub members: bool,
+    /// Send it to specific people only: `@alice,@bob` (DPNS names or identity ids), or a role
+    /// group, `maintainers` or `writers` (writers and maintainers), as it is now. You are always
+    /// included; up to 16 people. Only they can read its title, description and branch names.
+    /// Its branch must be public. Each person needs an encryption key.
+    #[arg(
+        long,
+        value_name = "WHO",
+        value_delimiter = ',',
+        conflicts_with = "members"
+    )]
+    pub to: Vec<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -2264,6 +2309,39 @@ impl PrStateArg {
     }
 }
 
+/// Which packs `dg repack` consolidates (`--packs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum PacksArg {
+    /// The public packs.
+    Public,
+    /// The members-only packs (refused: they are never consolidated).
+    Members,
+}
+
+/// Who a document is for, as a list filter (`--audience`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum AudienceArg {
+    /// Everyone can read it.
+    Public,
+    /// Members-only.
+    Members,
+    /// Sent to specific people.
+    People,
+}
+
+impl AudienceArg {
+    /// Whether a document for `audience` passes this filter.
+    pub fn matches(self, audience: forge_core::rules::v2::Audience) -> bool {
+        use forge_core::rules::v2::Audience;
+        matches!(
+            (self, audience),
+            (AudienceArg::Public, Audience::Public)
+                | (AudienceArg::Members, Audience::Members)
+                | (AudienceArg::People, Audience::SpecificPeople)
+        )
+    }
+}
+
 /// Issue state filter.
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub enum StateArg {
@@ -2508,6 +2586,8 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
             thread,
             history,
         } => make_public::run(ctx, repo, posts, *thread, *history).await,
+        Command::Branch { cmd } => branch::run(ctx, cmd.as_ref()).await,
+        Command::Publish(args) => Box::pin(publish_code::run(ctx, args)).await,
         Command::Cost(cmd) => cost::run(ctx, cmd).await,
         Command::Storage(cmd) => storage::run(ctx, cmd).await,
         Command::Webhook(cmd) => webhook::run(ctx, cmd).await,
@@ -2519,7 +2599,8 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
             repo,
             backend,
             profile,
-        } => maint::repack(ctx, repo.as_deref(), *backend, profile.as_deref()).await,
+            packs,
+        } => maint::repack(ctx, repo.as_deref(), *backend, profile.as_deref(), *packs).await,
         Command::Reseed {
             repo,
             profile,

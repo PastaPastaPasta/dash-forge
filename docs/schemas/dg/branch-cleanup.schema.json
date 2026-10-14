@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/branch-cleanup.schema.json",
+  "title": "dg branch cleanup --json",
+  "description": "The local branches whose content `dg publish` published: deleted, or listed with --dry-run.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "deleted": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "branch": {
+            "type": "string"
+          },
+          "tip": {
+            "type": "string"
+          },
+          "publishedAs": {
+            "type": "string"
+          },
+          "onto": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "branch",
+          "tip",
+          "publishedAs",
+          "onto"
+        ]
+      }
+    },
+    "wouldDelete": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "branch": {
+            "type": "string"
+          },
+          "tip": {
+            "type": "string"
+          },
+          "publishedAs": {
+            "type": "string"
+          },
+          "onto": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "branch",
+          "tip",
+          "publishedAs",
+          "onto"
+        ]
+      }
+    },
+    "keptCurrent": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "branch": {
+            "type": "string"
+          },
+          "tip": {
+            "type": "string"
+          },
+          "publishedAs": {
+            "type": "string"
+          },
+          "onto": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "branch",
+          "tip",
+          "publishedAs",
+          "onto"
+        ]
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "deleted",
+    "wouldDelete",
+    "keptCurrent"
+  ],
+  "additionalProperties": true
+}

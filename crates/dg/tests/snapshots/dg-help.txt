@@ -15,6 +15,8 @@ Commands:
   verify-mirror  Check a plain-git mirror of a repository (a gateway's https clone URL) against Dash Platform: each ref it serves is a match, stale (behind) or a MISMATCH
   collab         Repository members and their access (Read, Triage, Write, Maintain)
   make-public    Make members-only posts public: issues, comments and reviews. Your own posts are edited to Public; a maintainer makes anyone's public, and their authors are told. Everyone can read them from then on. This can't be undone
+  branch         Branches and who can see them: list them, start a members-only branch, and delete the local branches `dg publish` published
+  publish        Publish a members-only branch, or a members-only pull request's branch, onto a public branch. This can't be undone
   cost           Cost estimates and spend audits
   repack         Consolidate a repo's packs into one superseding pack (deletes nothing on Platform)
   reseed         Re-upload packs and record the new copies (maintainers and writers; --from-local writes nothing to Platform)

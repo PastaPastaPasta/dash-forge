@@ -191,6 +191,9 @@ pub struct RealRefUpdate {
     pub prev_oid: Option<Vec<u8>>,
     /// Blinds that did not check against their real values (the update is kept).
     pub alerts: Vec<Alert>,
+    /// The salt of its blinds (TLV 27): what rule C copies, with the plaintext `newOid`, into a
+    /// PR head or a head update naming the same commit.
+    pub salt: Option<Salt>,
 }
 
 impl std::fmt::Debug for RealRefUpdate {
@@ -243,6 +246,7 @@ pub fn real_values(header: &DocHeader, fields: &Fields) -> Option<RealRefUpdate>
         new_oid,
         prev_oid,
         alerts,
+        salt: fields.oid_salt,
     })
 }
 

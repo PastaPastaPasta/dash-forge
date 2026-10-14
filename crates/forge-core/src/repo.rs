@@ -906,6 +906,75 @@ where
     Ok(fresh)
 }
 
+/// One ref of a public repository as a member reads it ([`RepoService::read_members_refs`]).
+#[derive(Clone, PartialEq, Eq)]
+pub struct MemberRef {
+    /// The full ref name.
+    pub name: String,
+    /// Where it points, folded on real values.
+    pub state: RefState,
+    /// A members-only branch: only members can read its name and commits.
+    pub members_only: bool,
+}
+
+/// A member's view of a public repository's refs: every ref, public and members-only, and the
+/// fold behind it.
+#[derive(Clone, Default)]
+pub struct MembersRefs {
+    /// Every ref with a name, public and members-only, by name.
+    pub refs: Vec<MemberRef>,
+    /// The member fold ([`crate::refs::members_updates_of`]).
+    pub updates: crate::refs::MembersUpdates,
+    /// The config timeline the refs were resolved over.
+    pub configs: Vec<ConfigDoc>,
+}
+
+/// It holds members-only branch names and commits: `Debug` shows only counts.
+impl std::fmt::Debug for MembersRefs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MembersRefs")
+            .field("refs", &self.refs.len())
+            .field("updates", &self.updates)
+            .finish_non_exhaustive()
+    }
+}
+
+impl MembersRefs {
+    /// The member view of a public repository's ref history `state`, members-only updates
+    /// opened with `open`.
+    pub fn of(
+        state: &crate::refs::GitState,
+        open: impl Fn(crate::private::DocKind, &FetchedDocument) -> crate::private::Opened,
+    ) -> Self {
+        let configs = state.config_history();
+        let updates = crate::refs::members_updates_of(state, &configs, open);
+        let refs = updates
+            .by_name
+            .iter()
+            .map(|(name, ups)| {
+                let hash_hex = hex::encode(crate::backends::sha256(name.as_bytes()));
+                let state = rules::resolve_ref(ups, &configs, &hash_hex, |a, b| a == b);
+                MemberRef {
+                    members_only: updates.is_members_only(name, &state),
+                    name: name.clone(),
+                    state,
+                }
+            })
+            .collect();
+        Self {
+            refs,
+            updates,
+            configs,
+        }
+    }
+
+    /// The ref `name`, if any update names it.
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<&MemberRef> {
+        self.refs.iter().find(|r| r.name == name)
+    }
+}
+
 impl<'a> RepoService<'a> {
     /// Bind the service to `client`, the signer `identity`, and its `bridge` key material.
     pub fn new(
@@ -1629,6 +1698,49 @@ impl<'a> RepoService<'a> {
             out.push((ref_name, state));
         }
         Ok(out)
+    }
+
+    /// A member's refs of **public** `repo` (DESIGN §4.3, `private-repos.md` §19.3): its public
+    /// and members-only branches together, on real values, each marked members-only or not, with
+    /// the fold they came from (blinds, alerts, what did not open). `Ok(None)` when this signer
+    /// holds no members key for it (no identity, not a member, no key shared yet, or
+    /// members-only content off): then it has public refs only ([`Self::read_refs`]). A
+    /// private repository is refused (its refs are all sealed: [`Self::read_refs`]).
+    pub async fn read_members_refs(&self, repo: &RepoRef) -> Result<Option<MembersRefs>> {
+        repo.require_public("reading members-only branches")?;
+        if self.signer.is_none() {
+            return Ok(None);
+        }
+        let kr = self.keyring(repo).await?;
+        if !kr.has_members_key() || kr.resolution().keys.is_empty() {
+            return Ok(None);
+        }
+        let (scope, contract) = self.readable(repo).await?;
+        let state = crate::refs::read_git_state(
+            self.client,
+            &contract,
+            &scope,
+            crate::history::Freshness::Now,
+        )
+        .await?;
+        Ok(Some(MembersRefs::of(&state, |k, d| kr.open(k, d))))
+    }
+
+    /// What anyone learns of **public** `repo`'s members-only branches
+    /// ([`crate::refs::members_only_ref_count`]): how many members-only ref updates exist and how
+    /// many distinct name hashes they carry. Shown as "this repo also has members-only
+    /// branches", never as a number to outsiders (DESIGN §10).
+    pub async fn members_only_ref_count(&self, repo: &RepoRef) -> Result<(usize, usize)> {
+        repo.require_public("counting members-only branches")?;
+        let (scope, contract) = self.readable(repo).await?;
+        let state = crate::refs::read_git_state(
+            self.client,
+            &contract,
+            &scope,
+            crate::history::Freshness::Now,
+        )
+        .await?;
+        Ok(crate::refs::members_only_ref_count(&state))
     }
 
     /// Every ref of a **public** repository with its live tip (if any), the Platform document
