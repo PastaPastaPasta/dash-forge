@@ -27,12 +27,12 @@ import { revisionOf } from '../repo/made-public'
 import { readMaintainers } from '../repo/members'
 import { toManifest } from '../repo/packs'
 import { storedPrivateDoc } from '../repo/private-content'
-import { contractOf } from '../repo/source'
+import { contractOf, readAllRows } from '../repo/source'
 import { queryDocumentsWithProof, type PlainDocument } from '../sdk'
 import { readTargetsByIds, type RepoLite } from './mine'
 import type { InboxItem } from './inbox'
-import { everythingItem, publishesHistory, readConfigs, repoRefOf } from './inbox-repo-public'
-import { repoConversion } from '../repo/converted'
+import { everythingItem, repoRefOf } from './inbox-repo-public'
+import { publishesHistory, repoConversion } from '../repo/converted'
 
 /** The most posts of one bundle read to find mine (a whole thread is rarely more). */
 export const MAX_TARGETS = 100
@@ -97,7 +97,7 @@ export async function madePublicItems(sdk: EvoSDK, forge: ForgeIds, repo: RepoLi
     }
     // The owner published the repo's earlier history: said once, if it really was made public.
     if (m.uploader === repo.ownerId && !out.some((i) => i.kind === 'repoPublic') && publishesHistory(repo.id, [bytes])) {
-      if (repoConversion(ref, await readConfigs(sdk, ref)) !== null) out.push(everythingItem(repo, m.createdAt))
+      if (repoConversion(ref, await readAllRows(sdk, ref, DOC.config)) !== null) out.push(everythingItem(repo, m.createdAt))
     }
     // Each post's newest entry in the bundle (its current revision is the one published).
     const named = new Map<string, BundleEntry>()

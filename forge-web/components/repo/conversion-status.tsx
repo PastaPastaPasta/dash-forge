@@ -74,7 +74,7 @@ export function ConversionStalledBanner({ home, addr }: { home: RepoHome; addr: 
     { enabled: converted && ready && sdk !== null },
   )
   const { progress } = useConversionProgress(home, converted && maintains.data === true)
-  if (!converted || maintains.data !== true || progress === null || !isStalled(progress) || progress.lastStepAt === null) return null
+  if (!converted || maintains.data !== true || progress === null || !isStalled(progress)) return null
   return <ConversionStalledNote lastStepAt={progress.lastStepAt} href={finishHref(addr)} />
 }
 

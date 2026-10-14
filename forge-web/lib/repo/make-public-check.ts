@@ -38,7 +38,6 @@ import {
   loadMakePublicRecord,
   namedCodeRefs,
   refsOfRecord,
-  shortRef,
   type MakePublicCensus,
   type MakePublicCheck,
   type MakePublicMode,
@@ -51,9 +50,11 @@ import { packsOfKind, readManifestsOfKind, readRepoPackManifests } from './packs
 import { admitAll, blockHeightOf, bytesField, readableEvents } from './private-content'
 import { planRotation, rotationCost, type PrivateWriteContext } from './private-members'
 import { loadPrivateSessionUncached, sessionUnwrapper, type PrivateSession } from './private-session'
+import { refTip } from './fork'
+import { shortRef } from './ref-admin'
 import { publicRefKey, toResolvedRef, type ResolvedRef } from './refs'
 import type { RefUpdate } from '../rules'
-import { repoSource } from './source'
+import { readAllRows, repoSource } from './source'
 
 // ---------------------------------------------------------------------------------------------
 // Views and small chain reads (shared with the run and the status)
@@ -83,15 +84,10 @@ export async function readVisibility(sdk: EvoSDK, repo: RepoRef): Promise<'publi
   return doc['visibility'] === 'public' ? 'public' : 'private'
 }
 
-/** Every `config` of `repo`, oldest first (a repo has few). */
-export function readConfigRows(sdk: EvoSDK, repo: RepoRef): Promise<PlainDocument[]> {
-  return queryAllDocuments(sdk, repoSource(repo).repoQuery(DOC.config, { orderBy: [['$createdAt', 'asc']] }))
-}
-
 /** The conversion facts of `repo` read now (forge-core `RepoService::conversion`): null unless public and once private. */
 export async function readConversion(sdk: EvoSDK, repo: RepoRef): Promise<Conversion | null> {
   const pub = publicViewOf(repo)
-  return repoConversion(pub, await readConfigRows(sdk, pub))
+  return repoConversion(pub, await readAllRows(sdk, pub, DOC.config))
 }
 
 /**
@@ -112,8 +108,7 @@ export async function readOwnerBundles(sdk: EvoSDK, repo: RepoRef): Promise<Set<
  */
 export async function readMembersContinued(sdk: EvoSDK, repo: RepoRef, lane: PrivateSession): Promise<Set<string>> {
   const pub = publicViewOf(repo)
-  const read = (t: string): Promise<PlainDocument[]> => queryAllDocuments(sdk, repoSource(pub).repoQuery(t, { orderBy: [['$createdAt', 'asc']] }))
-  const [refUpdate, protectedRefUpdate, configHistory] = await Promise.all([read(DOC.refUpdate), read(DOC.protectedRefUpdate), readConfigHistory(sdk, pub)])
+  const [refUpdate, protectedRefUpdate, configHistory] = await Promise.all([readAllRows(sdk, pub, DOC.refUpdate), readAllRows(sdk, pub, DOC.protectedRefUpdate), readConfigHistory(sdk, pub)])
   const opened = new Set<string>()
   const updates = await membersUpdatesOf({ refUpdate, protectedRefUpdate }, async (stored) => {
     const r = await openContent(stored, lane.ctx)
@@ -301,8 +296,7 @@ export async function readCensus(
 ): Promise<{ census: MakePublicCensus; texts: CensusText[] }> {
   const view = { ...privateViewOf(repo), session }
   const src = repoSource(view)
-  const byCreated = { orderBy: [['$createdAt', 'asc']] as [string, 'asc'][] }
-  const [issues, patches] = await Promise.all([queryAllDocuments(sdk, src.repoQuery(DOC.issue, byCreated)), queryAllDocuments(sdk, src.repoQuery(DOC.patch, byCreated))])
+  const [issues, patches] = await Promise.all([readAllRows(sdk, view, DOC.issue), readAllRows(sdk, view, DOC.patch)])
   // comments by thread and reviews by pull request: the only indexes those two have
   const byTarget = (type: string, field: string, id: string): Promise<PlainDocument[]> =>
     queryAllDocuments(sdk, src.targetQuery(type, { where: [[field, '==', id]], orderBy: [[field, 'asc'], ['$createdAt', 'asc']] }))
@@ -332,7 +326,7 @@ export async function readCensus(
   await countKind(session, 'patch', patches, out, below)
   await countKind(session, 'comment', comments, out, below)
   await countKind(session, 'review', reviews, out, below)
-  const events = (await queryAllDocuments(sdk, src.repoQuery(DOC.event, byCreated))).filter((d) => {
+  const events = (await readAllRows(sdk, view, DOC.event)).filter((d) => {
     if (before === null) return true
     const at = blockHeightOf(d)
     return at !== undefined && at <= before
@@ -350,7 +344,7 @@ export async function readCensus(
       out.texts.push({ place: `event ${asIdentifierString(d['$id'])}`, text: value })
     }
   }
-  out.releases = (await queryAllDocuments(sdk, src.repoQuery(DOC.release, byCreated))).filter(writtenPrivate).length
+  out.releases = (await readAllRows(sdk, view, DOC.release)).filter(writtenPrivate).length
   const { authors, imported, texts, ...counts } = out
   const key = (i: { host: string; author: string }): string => `${i.host}\0${i.author}`
   return {
@@ -398,13 +392,6 @@ export interface InspectOptions {
   readonly below?: number
 }
 
-/** The tip a ref state names (forge-core `tip_of`): a diverged ref's first head. */
-function tipOf(state: { readonly state: string; readonly oid?: string; readonly heads?: readonly { readonly oid: string }[] }): string | null {
-  if (state.state === 'resolved') return state.oid ?? null
-  if (state.state === 'diverged') return state.heads?.[0]?.oid ?? null
-  return null
-}
-
 const REF_TYPES = [
   [DOC.refUpdate, false],
   [DOC.protectedRefUpdate, true],
@@ -412,8 +399,7 @@ const REF_TYPES = [
 
 /** Every ref-update row of the private view, by type, as stored. */
 async function refRows(sdk: EvoSDK, view: RepoRef): Promise<Map<string, PlainDocument[]>> {
-  const read = (t: string): Promise<PlainDocument[]> => queryAllDocuments(sdk, repoSource(view).repoQuery(t, { orderBy: [['$createdAt', 'asc']] }))
-  return new Map(await Promise.all(REF_TYPES.map(async ([t]) => [t, await read(t)] as const)))
+  return new Map(await Promise.all(REF_TYPES.map(async ([t]) => [t, await readAllRows(sdk, view, t)] as const)))
 }
 
 /**
@@ -486,7 +472,7 @@ export async function inspect(c: PrivateWriteContext, session: PrivateSession, o
   const allRefs: MakePublicRef[] = []
   let deleted = 0
   for (const r of await privateEraRefs(session, rows, sealOff)) {
-    const tip = tipOf(r.state)
+    const tip = refTip(r)
     if (tip !== null) allRefs.push({ name: r.refName, oid: tip })
     else if (r.state.state === 'unborn') deleted++
   }

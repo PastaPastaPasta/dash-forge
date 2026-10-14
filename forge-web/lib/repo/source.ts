@@ -14,7 +14,9 @@
  * contract's own (`forge-contracts/contracts/forge-{core,collab,community}.json`).
  */
 
-import type { DocumentQuery, OrderByClause, WhereClause } from '../sdk'
+import type { EvoSDK } from '@dashevo/evo-sdk'
+
+import { queryAllDocuments, type DocumentQuery, type OrderByClause, type PlainDocument, type WhereClause } from '../sdk'
 import type { ForgeIds } from '../deployments'
 import { DOC, type RepoRef } from './contract'
 import { contractKindOfType } from '../layout'
@@ -87,4 +89,9 @@ export function repoSource(repo: RepoRef): RepoSource {
         limit: CHUNK_QUERY_MAX,
       }),
   }
+}
+
+/** Every `type` document of `repo`, oldest first (all pages: for the types a repo has few of, or whose timeline is read whole). */
+export function readAllRows(sdk: EvoSDK, repo: RepoRef, type: string): Promise<PlainDocument[]> {
+  return queryAllDocuments(sdk, repoSource(repo).repoQuery(type, { orderBy: [['$createdAt', 'asc']] }))
 }

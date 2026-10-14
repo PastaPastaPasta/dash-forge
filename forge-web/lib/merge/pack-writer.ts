@@ -20,7 +20,7 @@ const TYPE_CODE: Readonly<Record<GitObject['type'], number>> = {
 }
 
 /** An entry header: 3-bit type, then the size as a little-endian varint (4 bits, then 7). */
-function entryHeader(type: number, size: number): Uint8Array {
+export function entryHeader(type: number, size: number): Uint8Array {
   const out: number[] = []
   let c = (type << 4) | (size & 0x0f)
   let rest = Math.floor(size / 16)

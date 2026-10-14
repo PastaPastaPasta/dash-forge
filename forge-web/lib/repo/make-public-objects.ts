@@ -21,7 +21,7 @@ import { zlibSync } from 'fflate'
 
 import { BrowseReader, MODE_GITLINK, MODE_TREE, ObjectLocator, type GitObject, type GitObjType } from '../browse'
 import { IndexTooLargeError, indexPacks, memoryPackSource, serializeLocator } from '../browse/indexer'
-import { writePack, type BuiltPack } from '../merge/pack-writer'
+import { entryHeader, writePack, type BuiltPack } from '../merge/pack-writer'
 import { findingLocation, MAX_SCAN_BYTES, scanFile, scanUnread, verdict, type Finding } from '../secrets'
 import { parseCommit, parseTag, parseTree } from '../view/git-objects'
 import { COPY, MakePublicError, type MakePublicSecret } from './make-public'
@@ -257,13 +257,6 @@ export async function scanObjects(store: WorkStore, tips: readonly string[], eve
   return out
 }
 
-/** A pack entry's header length for an object of `size` bytes (`lib/merge/pack-writer.ts`). */
-function entryHeaderLength(size: number): number {
-  let n = 1
-  for (let rest = Math.floor(size / 16); rest > 0; rest = Math.floor(rest / 128)) n++
-  return n
-}
-
 /** Each object's stored size in a fresh pack, by oid (deflating is the cost: done once per object). */
 export type EntrySizes = Map<string, number>
 
@@ -278,7 +271,8 @@ export async function packSize(store: WorkStore, oids: Iterable<string>, sizes: 
     let n = sizes.get(oid)
     if (n === undefined) {
       const obj = await store.read(oid)
-      n = entryHeaderLength(obj.bytes.length) + zlibSync(obj.bytes).length
+      // the header's length does not depend on the type
+      n = entryHeader(0, obj.bytes.length).length + zlibSync(obj.bytes).length
       sizes.set(oid, n)
     }
     bytes += n

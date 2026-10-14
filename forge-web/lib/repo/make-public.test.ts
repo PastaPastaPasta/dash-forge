@@ -29,11 +29,11 @@ import {
   sameRefs,
   saveMakePublicRecord,
   secretsOf,
-  shortRef,
   unpublishedRefs,
   type MakePublicSecret,
 } from './make-public'
 import { confirms } from './make-public-run'
+import { shortRef } from './ref-admin'
 import { idbPut } from '../idb'
 
 const oid = (c: string): string => c.repeat(40)

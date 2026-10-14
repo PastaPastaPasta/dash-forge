@@ -25,9 +25,10 @@ vi.mock('../repo/converted', async (orig) => ({
 
 import { base58Encode } from '../auth/base58'
 import { ENTRY_COMMENT, ENTRY_EPOCH_KEY, encodeBundle } from '../private'
+import { publishesHistory } from '../repo/converted'
 import { idbPut, resetMemoryStores } from '../idb'
 import { loadItems, planFeeds, pollOnce, threadKey, type Subscriptions } from './inbox'
-import { EVERYTHING_PUBLIC_WHAT, conversionAt, publishesHistory, repoPublicItems, repoRefOf } from './inbox-repo-public'
+import { EVERYTHING_PUBLIC_WHAT, conversionAt, repoPublicItems, repoRefOf } from './inbox-repo-public'
 
 const id = (b: number): Uint8Array => new Uint8Array(32).fill(b)
 const FORGE = { core: 'CORE', collab: 'COLLAB', community: 'COLLAB', group: 'GROUP' }

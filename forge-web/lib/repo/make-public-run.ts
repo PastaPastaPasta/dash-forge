@@ -39,6 +39,7 @@ import { storeArtifact } from '../storage/upload'
 import type { RepoConfig } from './config'
 import { DOC, withVis } from './contract'
 import { contractVisibilityOneWay } from './contract-shape'
+import { refTip } from './fork'
 import {
   COPY,
   MAKE_PUBLIC_WORDS,
@@ -114,6 +115,12 @@ export interface MakePublicOutcome {
   readonly spentCredits?: number
 }
 
+/** The signer's standing in the private view's keys. */
+export interface KeyStanding {
+  readonly maintainer: boolean
+  readonly currentEpoch: number | null
+}
+
 /** The chain as a run reaches it (see {@link sdkMakePublicIo}). */
 export interface MakePublicIo {
   /** The signer (base58). */
@@ -128,7 +135,7 @@ export interface MakePublicIo {
   /** The `packHash`es (hex) of every make-public bundle (kind 7) the owner recorded, history or not. */
   ownerBundles(): Promise<Set<string>>
   /** The signer's standing on a fresh read of the private view's keys. */
-  keys(): Promise<{ readonly maintainer: boolean; readonly currentEpoch: number | null }>
+  keys(): Promise<KeyStanding>
   /** The check (step 0) over a fresh session. */
   inspect(opts: { mode: MakePublicMode; refs?: readonly string[]; chosen?: readonly MakePublicRef[]; conversion: Conversion | null; below?: number; signal?: AbortSignal }): Promise<Inspection>
   /** The seal-off rotation: a fresh key wrapped to every member. Returns its epoch. */
@@ -158,8 +165,8 @@ const ROTATION_WAIT = { attempts: 5, ms: 2000 }
 /** Whether `typed` is the confirmation for the repo named `label` (or for any `<owner>/<name>` of `name`). */
 export function confirms(typed: string, name: string, label?: string): boolean {
   if (label !== undefined) return typed === MAKE_PUBLIC_WORDS(label)
-  const m = /^make (\S+) public$/.exec(typed)
-  return m !== null && (m[1] as string).endsWith(`/${name}`) && (m[1] as string).length > name.length + 1
+  const named = /^make (\S+) public$/.exec(typed)?.[1]
+  return named !== undefined && named.endsWith(`/${name}`) && named.length > name.length + 1
 }
 
 /**
@@ -185,12 +192,22 @@ async function recordedHistory(io: MakePublicIo, cutoff: number | undefined): Pr
  * or none yet: never rotate again then), or another maintainer's rotation (higher).
  */
 function epochMismatch(current: number | null, sealOff: number): MakePublicError {
-  return lagging(current, sealOff) ? new MakePublicError(COPY.lagging, 'E310') : new MakePublicError(COPY.keyChanged, 'E310')
+  return new MakePublicError(lagging(current, sealOff) ? COPY.lagging : COPY.keyChanged, 'E310')
 }
 
 /** Whether a node shows a key epoch below `sealOff` (or none): it hasn't caught up with this run's rotation. */
 function lagging(current: number | null, sealOff: number): boolean {
   return current === null || current < sealOff
+}
+
+/** `keys` read again, for as long as a node still lags behind `sealOff`'s rotation (a few tries, then as it is). */
+async function keysShowing(io: MakePublicIo, keys: KeyStanding, sealOff: number): Promise<KeyStanding> {
+  let now = keys
+  for (let i = 0; i < ROTATION_WAIT.attempts && lagging(now.currentEpoch, sealOff); i++) {
+    await io.sleep(ROTATION_WAIT.ms)
+    now = await io.keys()
+  }
+  return now
 }
 
 /** The run (dg `run` + `convert`) over `io`. */
@@ -212,11 +229,8 @@ export async function runMakePublicWith(io: MakePublicIo, choice: MakePublicChoi
   const savedSeal = saved?.sealOff ?? null
   // A recorded seal-off epoch above the one a node shows: the node hasn't caught up with this
   // run's own rotation. Wait a little, then stop: rotating again would seal off twice.
-  if (!flipped && savedSeal !== null && lagging(standing.currentEpoch, savedSeal)) {
-    for (let i = 0; i < ROTATION_WAIT.attempts && lagging(standing.currentEpoch, savedSeal); i++) {
-      await io.sleep(ROTATION_WAIT.ms)
-      standing = await io.keys()
-    }
+  if (!flipped && savedSeal !== null) {
+    standing = await keysShowing(io, standing, savedSeal)
     if (lagging(standing.currentEpoch, savedSeal)) throw new MakePublicError(COPY.lagging, 'E310')
   }
   // One cutoff for the whole run: what was sealed under it or later is never published. Once
@@ -282,11 +296,7 @@ export async function runMakePublicWith(io: MakePublicIo, choice: MakePublicChoi
     stop()
     const sealOff = record.sealOff as number
     // a node a block behind may not show the rotation yet
-    let now = await io.keys()
-    for (let i = 0; i < ROTATION_WAIT.attempts && lagging(now.currentEpoch, sealOff); i++) {
-      await io.sleep(ROTATION_WAIT.ms)
-      now = await io.keys()
-    }
+    const now = await keysShowing(io, await io.keys(), sealOff)
     if (now.currentEpoch !== sealOff) throw epochMismatch(now.currentEpoch, sealOff)
     if (mode === 'everything') {
       // What Everything publishes is final now (everything below the seal-off rotation): check
@@ -449,10 +459,12 @@ export function sdkMakePublicIo(c: PrivateWriteContext, opts: { readonly upload?
     invalidatePrivateSession(repo)
     repoContentWritten(pub)
   }
+  // Platform only: every reader, anonymous and the gateway included, must find it.
+  const storeOnPlatform = (bytes: Uint8Array): ReturnType<typeof storeArtifact> => storeArtifact(sdk, auth, pub, bytes, { policy: null, profiles: [], confirmPlatform: async () => true })
   const upload: UploadPack =
     opts.upload ??
     (async (bytes) => {
-      const s = await storeArtifact(sdk, auth, pub, bytes, { policy: null, profiles: [], confirmPlatform: async () => true })
+      const s = await storeOnPlatform(bytes)
       return { storage: s.storage, chunkCount: s.chunkCount, uris: s.uris }
     })
   return {
@@ -511,7 +523,7 @@ export function sdkMakePublicIo(c: PrivateWriteContext, opts: { readonly upload?
     publicState: async () => {
       const publicRefs = new Map<string, string>()
       for (const r of await readRefs(sdk, pub)) {
-        const tip = r.state.state === 'resolved' ? r.state.oid : r.state.state === 'diverged' ? (r.state.heads[0]?.oid ?? null) : null
+        const tip = refTip(r)
         if (tip !== null) publicRefs.set(r.refName, tip)
       }
       const lane = await loadPrivateSessionUncached(sdk, pub, c.network, auth.identityId, sessionUnwrapper(c.ops))
@@ -548,8 +560,7 @@ export function sdkMakePublicIo(c: PrivateWriteContext, opts: { readonly upload?
       }),
     storeBundle: async (bytes) => {
       try {
-        // Platform only: every reader, anonymous and the gateway included, must find it.
-        const s = await storeArtifact(sdk, auth, pub, bytes, { policy: null, profiles: [], confirmPlatform: async () => true })
+        const s = await storeOnPlatform(bytes)
         await writePackManifest(
           sdk,
           auth,

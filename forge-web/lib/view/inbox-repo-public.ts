@@ -21,10 +21,10 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import type { ForgeIds } from '../deployments'
 import { DOC, asIdentifierString, type RepoRef } from '../repo/contract'
+import { createdAtOf, markerAtOf, positiveAt } from '../repo/conversion-status'
 import { publishesHistory, readMakePublicBundles, repoConversion } from '../repo/converted'
-import { blockHeightOf } from '../repo/private-content'
-import { contractOf, repoSource } from '../repo/source'
-import { queryAllDocuments, queryDocumentsWithProof, type PlainDocument } from '../sdk'
+import { contractOf, readAllRows } from '../repo/source'
+import { queryDocumentsWithProof, type PlainDocument } from '../sdk'
 import type { InboxItem } from './inbox'
 import type { RepoLite } from './mine'
 
@@ -59,8 +59,6 @@ export function repoRefOf(forge: ForgeIds, repo: RepoLite): RepoRef {
   return { forge, repoId: repo.id, ownerId: repo.ownerId, name: repo.name, visibility: repo.private ? 'private' : 'public' }
 }
 
-const createdAt = (d: PlainDocument): number | null => (typeof d['$createdAt'] === 'number' && d['$createdAt'] > 0 ? d['$createdAt'] : null)
-
 /**
  * When `repo` (public now, with its config timeline `configs`) was made public: its marker's
  * `$createdAt`, else `repoUpdatedAt` (the flip's), else its newest private config's (the seal-off
@@ -69,27 +67,16 @@ const createdAt = (d: PlainDocument): number | null => (typeof d['$createdAt'] =
 export function conversionAt(repo: RepoRef, configs: readonly PlainDocument[], repoUpdatedAt: number | null): number | null {
   const conversion = repoConversion(repo, configs)
   if (conversion === null) return null
-  const marker = conversion.markerHeight === null ? undefined : configs.find((c) => c['vis'] !== 'private' && blockHeightOf(c) === conversion.markerHeight)
-  const at = marker === undefined ? null : createdAt(marker)
+  const at = markerAtOf(configs, conversion)
   if (at !== null) return at
   if (repoUpdatedAt !== null) return repoUpdatedAt
-  return configs.filter((c) => c['vis'] === 'private').reduce((m, c) => Math.max(m, createdAt(c) ?? 0), 0)
-}
-
-/** Whether `bundles` (an owner's make-public bundles' bytes) publish epoch keys of `repoId`: "Everything" (`converted.ts`). */
-export { publishesHistory }
-
-/** Every config of `repo` (its whole timeline). */
-export function readConfigs(sdk: EvoSDK, repo: RepoRef): Promise<PlainDocument[]> {
-  return queryAllDocuments(sdk, repoSource(repo).repoQuery(DOC.config, { orderBy: [['$createdAt', 'asc']] }))
+  return configs.filter((c) => c['vis'] === 'private').reduce((m, c) => Math.max(m, createdAtOf(c) ?? 0), 0)
 }
 
 /** The repo document's `$updatedAt`, or null when it can't be read. */
 async function repoUpdatedAt(sdk: EvoSDK, repo: RepoRef): Promise<number | null> {
   const { documents } = await queryDocumentsWithProof(sdk, { dataContractId: contractOf(repo.forge, DOC.repo), documentTypeName: DOC.repo, where: [['$id', '==', repo.repoId]], limit: 1 })
-  const d = documents.find((x) => asIdentifierString(x['$id']) === repo.repoId)
-  const u = d?.['$updatedAt']
-  return typeof u === 'number' && u > 0 ? u : null
+  return positiveAt(documents.find((x) => asIdentifierString(x['$id']) === repo.repoId)?.['$updatedAt'])
 }
 
 /**
@@ -100,12 +87,12 @@ async function repoUpdatedAt(sdk: EvoSDK, repo: RepoRef): Promise<number | null>
 export async function repoPublicItems(sdk: EvoSDK, forge: ForgeIds, repo: RepoLite, me: string): Promise<{ readonly items: InboxItem[]; readonly verdict: RepoPublicVerdict | null }> {
   if (repo.private) return { items: [], verdict: null }
   const ref = repoRefOf(forge, repo)
-  const configs = await readConfigs(sdk, ref)
-  if (repoConversion(ref, configs) === null) return { items: [], verdict: 'never' }
+  const configs = await readAllRows(sdk, ref, DOC.config)
+  const conversion = repoConversion(ref, configs)
+  if (conversion === null) return { items: [], verdict: 'never' }
   // The owner made it public: their own action never notifies them.
   if (me === repo.ownerId) return { items: [], verdict: 'done' }
-  const hasMarker = repoConversion(ref, configs)?.markerHeight != null
-  const at = conversionAt(ref, configs, hasMarker ? null : await repoUpdatedAt(sdk, ref))
+  const at = conversionAt(ref, configs, conversion.markerHeight === null ? await repoUpdatedAt(sdk, ref) : null)
   if (at === null) return { items: [], verdict: 'never' }
   const bundles = await readMakePublicBundles(sdk, ref)
   return { items: [repoPublicItem(repo, at, publishesHistory(repo.id, bundles.map((b) => b.bytes)))], verdict: 'done' }

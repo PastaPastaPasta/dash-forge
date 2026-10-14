@@ -204,11 +204,6 @@ export const COPY = {
 // Pure decisions (each is dg's function of the same name)
 // ---------------------------------------------------------------------------------------------
 
-/** `refs/heads/x` and `refs/tags/x` as `x`. */
-export function shortRef(name: string): string {
-  return name.replace(/^refs\/(heads|tags)\//, '')
-}
-
 /** The full names `r` may mean: itself when it is one, else the branch, then the tag (dg `candidates`). */
 export function refCandidates(r: string): string[] {
   return r.startsWith('refs/') ? [r] : [`refs/heads/${r}`, `refs/tags/${r}`]
@@ -258,10 +253,14 @@ export function leftOutRefs(wanted: readonly MakePublicRef[], publicRefs: Readon
 
 /** What the mode's scan found: the code's, plus everything else's with Everything, each (place, fingerprint) once (dg `secrets_of`). */
 export function secretsOf(check: Pick<MakePublicCheck, 'codeSecrets' | 'everythingSecrets'>, mode: MakePublicMode): MakePublicSecret[] {
-  const all = mode === 'everything' ? [...check.codeSecrets, ...check.everythingSecrets] : [...check.codeSecrets]
+  return uniqueSecrets(mode === 'everything' ? [...check.codeSecrets, ...check.everythingSecrets] : check.codeSecrets)
+}
+
+/** `secrets` with each (place, fingerprint) once, the first kept. */
+export function uniqueSecrets(secrets: readonly MakePublicSecret[]): MakePublicSecret[] {
   const seen = new Set<string>()
-  return all.filter((s) => {
-    const k = `${s.place}\0${s.fingerprint}`
+  return secrets.filter((s) => {
+    const k = `${s.place}\0${s.fingerprint.toLowerCase()}`
     if (seen.has(k)) return false
     seen.add(k)
     return true

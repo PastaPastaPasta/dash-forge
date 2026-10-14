@@ -5,7 +5,8 @@
  * and their order are `dg repo make-public`'s (`print_check`, `everything_counts`, `print_secrets`).
  */
 
-import { COPY, MAKE_PUBLIC_TOTAL_STEPS, MakePublicError, shortRef, type MakePublicCheck, type MakePublicMode, type MakePublicRef, type MakePublicStep } from '../repo/make-public'
+import { COPY, MAKE_PUBLIC_TOTAL_STEPS, MakePublicError, type MakePublicCheck, type MakePublicMode, type MakePublicRef, type MakePublicStep } from '../repo/make-public'
+import { shortRef } from '../repo/ref-admin'
 import { errorMessage } from '../utils'
 import { aboutDash } from './audience'
 import { plural } from './format'

@@ -21,12 +21,13 @@
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
-import { queryAllDocuments, queryDocuments, type PlainDocument } from '../sdk'
+import type { Conversion } from '../private'
+import { queryDocuments, type PlainDocument } from '../sdk'
 import { timeAgo } from '../view/format'
 import { DOC, asIdentifierString, type RepoRef } from './contract'
 import { knownConversion, repoConversion } from './converted'
 import { blockHeightOf, isSealedDoc } from './private-content'
-import { contractOf, repoSource } from './source'
+import { contractOf, readAllRows, repoSource } from './source'
 
 /** How far making a repo public got. Times are ms; null when not known. */
 export interface ConversionProgress {
@@ -71,14 +72,38 @@ export function stalledText(lastStepAt: number, now: number = Date.now()): strin
 /** The stalled banner's link text, to Settings → Danger zone. */
 export const FINISH_IT = 'Finish it'
 
-/** Whether `p` is unfinished and its newest step is over {@link STALLED_AFTER_MS} old at `now`. */
-export function isStalled(p: ConversionProgress, now: number = Date.now()): boolean {
-  return p.unfinished && p.lastStepAt !== null && now - p.lastStepAt > STALLED_AFTER_MS
+/** Whether a newest step that landed at `lastStepAt` is over {@link STALLED_AFTER_MS} old at `now`. */
+export function stepStalled(lastStepAt: number | null, now: number = Date.now()): lastStepAt is number {
+  return lastStepAt !== null && now - lastStepAt > STALLED_AFTER_MS
 }
 
-const createdAt = (d: PlainDocument): number | null => (typeof d['$createdAt'] === 'number' && d['$createdAt'] > 0 ? d['$createdAt'] : null)
+/** Whether `p` is unfinished and its newest step is over {@link STALLED_AFTER_MS} old at `now`. */
+export function isStalled(p: ConversionProgress, now: number = Date.now()): p is ConversionProgress & { readonly lastStepAt: number } {
+  return p.unfinished && stepStalled(p.lastStepAt, now)
+}
 
-const newest = (xs: readonly (number | null)[]): number | null => xs.reduce<number | null>((m, x) => (x !== null && (m === null || x > m) ? x : m), null)
+/** `v` (a `$createdAt` or `$updatedAt`, ms) when it is a time, else null. */
+export function positiveAt(v: unknown): number | null {
+  return typeof v === 'number' && v > 0 ? v : null
+}
+
+/** When `d` was created (ms), or null. */
+export function createdAtOf(d: PlainDocument): number | null {
+  return positiveAt(d['$createdAt'])
+}
+
+/** The latest of `ats` (ms), ignoring the unknown; null when none is known. */
+export function newestAt(...ats: readonly (number | null | undefined)[]): number | null {
+  const known = ats.filter((a): a is number => typeof a === 'number' && a > 0)
+  return known.length === 0 ? null : Math.max(...known)
+}
+
+/** When the conversion marker was written (ms): the first public config with `conversion`'s block height; null before step 4. */
+export function markerAtOf(configs: readonly PlainDocument[], conversion: Conversion): number | null {
+  if (conversion.markerHeight === null) return null
+  const marker = configs.find((c) => c['vis'] !== 'private' && blockHeightOf(c) === conversion.markerHeight)
+  return marker === undefined ? null : createdAtOf(marker)
+}
 
 /** A ref update written since the flip in plain text (a members-only one is sealed). */
 const publicRef = (d: PlainDocument): boolean => d['vis'] === 'public' && !isSealedDoc(d)
@@ -100,15 +125,13 @@ export interface ProgressRows {
 export function progressOf(repo: RepoRef, rows: ProgressRows): ConversionProgress {
   const conversion = repo.visibility === 'public' ? repoConversion(repo, rows.configs) : null
   if (conversion === null) return NOT_CONVERTED
-  const marker = conversion.markerHeight === null ? undefined : rows.configs.find((c) => c['vis'] !== 'private' && blockHeightOf(c) === conversion.markerHeight)
-  const markerAt = marker === undefined ? null : createdAt(marker)
-  const updated = rows.repoDoc?.['$updatedAt']
-  const flippedAt = typeof updated === 'number' && updated > 0 ? updated : null
+  const markerAt = markerAtOf(rows.configs, conversion)
+  const flippedAt = positiveAt(rows.repoDoc?.['$updatedAt'])
   const publicRefs = rows.refs.filter(publicRef)
   const hasPublicRefs = publicRefs.length > 0
   const hasPrivateEraRefs = rows.refs.some((d) => d['vis'] === 'private')
-  const sealOff = newest(rows.configs.filter((c) => c['vis'] === 'private').map(createdAt))
-  const lastStepAt = newest([sealOff, flippedAt, markerAt, ...publicRefs.map(createdAt)])
+  const sealOff = newestAt(...rows.configs.filter((c) => c['vis'] === 'private').map(createdAtOf))
+  const lastStepAt = newestAt(sealOff, flippedAt, markerAt, ...publicRefs.map(createdAtOf))
   return {
     converted: true,
     flippedAt,
@@ -139,7 +162,7 @@ function reflogEnd(sdk: EvoSDK, repo: RepoRef, type: string, end: 'oldest' | 'ne
  */
 export async function conversionProgress(sdk: EvoSDK, repo: RepoRef): Promise<ConversionProgress> {
   if (repo.visibility !== 'public' || knownConversion(repo.repoId) === null) return NOT_CONVERTED
-  const configs = await queryAllDocuments(sdk, repoSource(repo).repoQuery(DOC.config, { orderBy: [['$createdAt', 'asc']] }))
+  const configs = await readAllRows(sdk, repo, DOC.config)
   if (repoConversion(repo, configs) === null) return NOT_CONVERTED
   const [repoDoc, ...refPages] = await Promise.all([
     queryDocuments(sdk, { dataContractId: contractOf(repo.forge, DOC.repo), documentTypeName: DOC.repo, where: [['$id', '==', repo.repoId]], limit: 1 }).then(

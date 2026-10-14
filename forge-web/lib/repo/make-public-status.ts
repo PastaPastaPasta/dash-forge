@@ -17,8 +17,10 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import type { Network } from '../constants'
 import type { Conversion } from '../private'
 import type { PlainDocument } from '../sdk'
-import type { RepoRef } from './contract'
+import { DOC, type RepoRef } from './contract'
+import { newestAt } from './conversion-status'
 import { publishesHistory, readMakePublicBundles, repoConversion } from './converted'
+import { refTip } from './fork'
 import {
   MAKE_PUBLIC_STEPS,
   MAKE_PUBLIC_TOTAL_STEPS,
@@ -30,9 +32,10 @@ import {
   type MakePublicStep,
   type StepState,
 } from './make-public'
-import { privateViewOf, publicViewOf, readConfigRows, readMembersContinued, readRepoDoc } from './make-public-check'
+import { privateViewOf, publicViewOf, readMembersContinued, readRepoDoc } from './make-public-check'
 import { blockHeightOf } from './private-content'
 import { readRefs } from './refs'
+import { readAllRows } from './source'
 
 /** What a status is decided from. */
 export interface StatusFacts {
@@ -58,11 +61,6 @@ export interface StatusFacts {
   readonly owner: string
 }
 
-function newest(...ats: (number | null | undefined)[]): number | null {
-  const known = ats.filter((a): a is number => typeof a === 'number' && a > 0)
-  return known.length === 0 ? null : Math.max(...known)
-}
-
 /** The status a run's facts show (module docs). */
 export function statusOf(f: StatusFacts): MakePublicStatus {
   const record = f.record === null ? null : { mode: f.record.mode, refs: refsOfRecord(f.record), sealOff: f.record.sealOff }
@@ -80,7 +78,7 @@ export function statusOf(f: StatusFacts): MakePublicStatus {
       steps: st,
       doneCount: count('private', st, f.record !== null),
       totalSteps: MAKE_PUBLIC_TOTAL_STEPS,
-      lastStepAt: f.record === null ? null : newest(f.record.startedAt, sealed ? f.sealOffAt : null),
+      lastStepAt: f.record === null ? null : newestAt(f.record.startedAt, sealed ? f.sealOffAt : null),
       record,
       mode,
     }
@@ -104,7 +102,7 @@ export function statusOf(f: StatusFacts): MakePublicStatus {
     steps: st,
     doneCount: count(phase, st, true),
     totalSteps: MAKE_PUBLIC_TOTAL_STEPS,
-    lastStepAt: newest(f.flipAt, f.markerAt, ...[...f.publicRefs.values()].map((r) => r.at), ...f.historyBundles),
+    lastStepAt: newestAt(f.flipAt, f.markerAt, ...[...f.publicRefs.values()].map((r) => r.at), ...f.historyBundles),
     record,
     mode,
   }
@@ -133,7 +131,7 @@ function numberOf(d: PlainDocument, field: string): number | null {
 export async function readMakePublicStatus(sdk: EvoSDK, repo: RepoRef, network: Network, viewer: string | null): Promise<MakePublicStatus> {
   const [doc, record] = await Promise.all([readRepoDoc(sdk, repo), viewer === null ? null : loadMakePublicRecord(network, viewer, repo.repoId).catch(() => null)])
   const visibility = doc?.['visibility'] === 'public' ? 'public' : 'private'
-  const rows = await readConfigRows(sdk, visibility === 'public' ? publicViewOf(repo) : privateViewOf(repo))
+  const rows = await readAllRows(sdk, visibility === 'public' ? publicViewOf(repo) : privateViewOf(repo), DOC.config)
   const epochs = rows.map((d) => numberOf(d, 'epoch')).filter((e): e is number => e !== null)
   const highestEpoch = epochs.length === 0 ? null : Math.max(...epochs)
   const sealOffAt = record?.sealOff == null ? null : (rows.filter((d) => numberOf(d, 'epoch') === record.sealOff).map((d) => numberOf(d, '$createdAt') ?? 0)[0] ?? null)
@@ -151,8 +149,8 @@ export async function readMakePublicStatus(sdk: EvoSDK, repo: RepoRef, network: 
   ])
   const publicRefs = new Map<string, { oid: string; at: number }>()
   for (const r of refs) {
-    if (r.state.state === 'resolved') publicRefs.set(r.refName, { oid: r.state.oid, at: r.state.createdAt })
-    else if (r.state.state === 'diverged' && r.state.heads[0] !== undefined) publicRefs.set(r.refName, { oid: r.state.heads[0].oid, at: 0 })
+    const oid = refTip(r)
+    if (oid !== null) publicRefs.set(r.refName, { oid, at: r.state.state === 'resolved' ? r.state.createdAt : 0 })
   }
   return statusOf({
     ...base,
