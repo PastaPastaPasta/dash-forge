@@ -20,6 +20,7 @@ import { idbDelete, idbGet, idbPut } from '../idb'
 import { isLegalRefName, isRc1OidHex } from '../rules'
 import { RoleRefusedError } from '../rules/roles'
 import { rerunFields } from '../rules/ci-rerun'
+import { EMBARGO_KIND, encodeEmbargo, type EmbargoValue } from '../rules/embargo'
 import { isMemberGateRefusal, refreshRoleOnRefusal } from './role-claim'
 import { anchorOf, editKeepsAudience, groupReviewComments, isAuthorKind, issueStateV2, type AnchorFields, type Audience, type Policy } from '../rules/v2'
 import type { EventKind } from '../rules'
@@ -73,6 +74,7 @@ import {
   settledPost,
   reviewVerdictFields,
   threadLetterWriter,
+  eventWrite,
   writeRepoDoc,
   type PostContext,
   type VerdictInput,
@@ -814,6 +816,35 @@ export async function requestRerun(
     refId: decodeIdentifier(f.refId),
   }
   if (f.value !== undefined) data['value'] = f.value
+  return write(sdk, auth, repo, DOC.event, data, input.intent)
+}
+
+/**
+ * Set, move or withdraw the publication date of a coordinated fix, or record it published: one
+ * member event of kind 28 (`rules/embargo.ts`, forge-v2.md §3.5) on the members-only issue or PR
+ * that tracks the fix, naming the repository in `refId` (the release bot's index). Its value is
+ * sealed under the members key because the target is members-only; on a target that reads public
+ * a date or a withdrawal is refused before signing (it would be public). A maintainer or writer
+ * only: `claimedRole` refuses anyone else before signing. Parity: `dg publish --at`,
+ * `dg embargo cancel`.
+ */
+export async function setEmbargo(
+  sdk: EvoSDK,
+  auth: WriteAuth,
+  repo: RepoRef,
+  input: { target: WriteTarget; value: EmbargoValue; intent?: string },
+): Promise<WriteResult> {
+  if (repo.visibility === 'private') throw new Error('nothing in a private repo is published onto a public branch; nothing was written')
+  const data: Record<string, unknown> = {
+    targetId: decodeIdentifier(input.target.id),
+    targetNumber: input.target.number,
+    kind: EMBARGO_KIND,
+    refId: decodeIdentifier(repo.repoId),
+    value: encodeEmbargo(input.value),
+  }
+  if (input.value.type !== 'done' && (await eventWrite(sdk, repo, DOC.event, data)).audience === 'public') {
+    throw new Error(`#${input.target.number} is public, so its publication date would be public too; nothing was written`)
+  }
   return write(sdk, auth, repo, DOC.event, data, input.intent)
 }
 

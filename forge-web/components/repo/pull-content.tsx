@@ -149,6 +149,7 @@ import { mirrorRepo, useRepoLinks } from '@/components/repo/target-href'
 import { importedHost, importedUrlOf } from '@/lib/view/ref-targets'
 import { useAuth } from '@/contexts/auth-context'
 import { useWriteGuard } from '@/hooks/use-write-guard'
+import { EmbargoPanel } from '@/components/repo/embargo-panel'
 import { TargetNotFound } from '@/components/repo/number-content'
 import { CommentOwnActions, Timeline, type CommentSlots } from '@/components/repo/timeline'
 import { MakeOthersPublicButton, MakePublicBundleDialog, MakePublicButton, bundleable, makePublicWords, useQuotedMembersPost } from '@/components/repo/make-public'
@@ -2372,6 +2373,19 @@ function PullPage({
                 manageHref={repoHref('/repo/milestones', addr)}
               />
             </SidebarSection>
+            {repo.visibility === 'public' ? (
+              <EmbargoPanel
+                repo={repo}
+                target={{ id: pull.id, number: pull.number }}
+                embargo={thread.embargo ?? null}
+                isIssue={false}
+                membersOnly={pull.audience === 'members'}
+                facts={{ published: pull.state.merged }}
+                canSet={(isMaintainer || holdings.data?.role === 'writer') && !archived && guard.disabledReason === null}
+                defaultBranch={home.defaultBranch}
+                onDone={() => refresh()}
+              />
+            ) : null}
             <SidebarSection title="Linked issues" icon={Link2}>
               {linked.length === 0 ? (
                 <p className="text-anvil-500 dark:text-anvil-400">None. &ldquo;Fixes #12&rdquo; in the description links one.</p>

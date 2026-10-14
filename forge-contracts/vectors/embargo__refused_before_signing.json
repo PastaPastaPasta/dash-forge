@@ -1,0 +1,98 @@
+{
+  "name": "refused_before_signing",
+  "description": "Values refused before anything is signed: over 120 characters stored (a long message or branch name), no date, a pull request and a branch, a branch with no base or a base with no branch, a branch onto itself, a full ref name, an illegal tag, a blank message or one with a tab, an upper-case commit.",
+  "case": "embargo_value",
+  "rules": "v2",
+  "input": {
+    "parse": [],
+    "encode": [
+      {
+        "type": "schedule",
+        "at": 1792504800,
+        "branch": "sec/cve-77",
+        "onto": "main",
+        "tag": "v1.2.3",
+        "message": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      {
+        "type": "schedule",
+        "at": 1792504800,
+        "branch": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "onto": "main"
+      },
+      {
+        "type": "schedule",
+        "at": 0,
+        "pr": 4
+      },
+      {
+        "type": "schedule",
+        "at": 1792504800,
+        "pr": 4,
+        "branch": "x",
+        "onto": "main"
+      },
+      {
+        "type": "schedule",
+        "at": 1792504800,
+        "branch": "x"
+      },
+      {
+        "type": "schedule",
+        "at": 1792504800,
+        "onto": "main"
+      },
+      {
+        "type": "schedule",
+        "at": 1792504800,
+        "branch": "x",
+        "onto": "x"
+      },
+      {
+        "type": "schedule",
+        "at": 1792504800,
+        "branch": "refs/heads/x",
+        "onto": "main"
+      },
+      {
+        "type": "schedule",
+        "at": 1792504800,
+        "pr": 4,
+        "tag": "v1~1"
+      },
+      {
+        "type": "schedule",
+        "at": 1792504800,
+        "pr": 4,
+        "message": "  "
+      },
+      {
+        "type": "schedule",
+        "at": 1792504800,
+        "pr": 4,
+        "message": "tab\there"
+      },
+      {
+        "type": "done",
+        "commit": "ABABABABABABABABABABABABABABABABABABABAB"
+      }
+    ]
+  },
+  "expected": {
+    "parse": [],
+    "encode": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  }
+}

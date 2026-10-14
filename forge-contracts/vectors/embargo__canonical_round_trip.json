@@ -1,0 +1,122 @@
+{
+  "name": "canonical_round_trip",
+  "description": "Each value's one canonical form (keys v, at, pr, b, o, t, m; or cancel; or done; no spaces; JSON's shortest escapes, non-ASCII kept) parses back to the same value.",
+  "case": "embargo_value",
+  "rules": "v2",
+  "input": {
+    "parse": [
+      "{\"v\":1,\"at\":1792504800,\"b\":\"sec/cve-77\",\"o\":\"main\",\"t\":\"v1.2.3\"}",
+      "{\"v\":1,\"at\":1792504800,\"pr\":4}",
+      "{\"v\":1,\"at\":1792504800,\"pr\":4,\"t\":\"v2.0.0-rc.1\",\"m\":\"Fix the bounds check (#12)\"}",
+      "{\"v\":1,\"at\":1792504800,\"b\":\"fix\",\"o\":\"release/1.x\",\"m\":\"Fix\\n\\nSee the advisory.\"}",
+      "{\"v\":1,\"at\":1792504800,\"b\":\"sec/ü\",\"o\":\"main\",\"m\":\"Ünïcode is fine\"}",
+      "{\"v\":1,\"cancel\":true}",
+      "{\"v\":1,\"done\":\"abababababababababababababababababababab\"}",
+      "{\"v\":1,\"done\":\"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\"}"
+    ],
+    "encode": [
+      {
+        "type": "schedule",
+        "at": 1792504800,
+        "branch": "sec/cve-77",
+        "onto": "main",
+        "tag": "v1.2.3"
+      },
+      {
+        "type": "schedule",
+        "at": 1792504800,
+        "pr": 4
+      },
+      {
+        "type": "schedule",
+        "at": 1792504800,
+        "pr": 4,
+        "tag": "v2.0.0-rc.1",
+        "message": "Fix the bounds check (#12)"
+      },
+      {
+        "type": "schedule",
+        "at": 1792504800,
+        "branch": "fix",
+        "onto": "release/1.x",
+        "message": "Fix\n\nSee the advisory."
+      },
+      {
+        "type": "schedule",
+        "at": 1792504800,
+        "branch": "sec/ü",
+        "onto": "main",
+        "message": "Ünïcode is fine"
+      },
+      {
+        "type": "cancel"
+      },
+      {
+        "type": "done",
+        "commit": "abababababababababababababababababababab"
+      },
+      {
+        "type": "done",
+        "commit": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+      }
+    ]
+  },
+  "expected": {
+    "parse": [
+      {
+        "type": "schedule",
+        "at": 1792504800,
+        "branch": "sec/cve-77",
+        "onto": "main",
+        "tag": "v1.2.3"
+      },
+      {
+        "type": "schedule",
+        "at": 1792504800,
+        "pr": 4
+      },
+      {
+        "type": "schedule",
+        "at": 1792504800,
+        "pr": 4,
+        "tag": "v2.0.0-rc.1",
+        "message": "Fix the bounds check (#12)"
+      },
+      {
+        "type": "schedule",
+        "at": 1792504800,
+        "branch": "fix",
+        "onto": "release/1.x",
+        "message": "Fix\n\nSee the advisory."
+      },
+      {
+        "type": "schedule",
+        "at": 1792504800,
+        "branch": "sec/ü",
+        "onto": "main",
+        "message": "Ünïcode is fine"
+      },
+      {
+        "type": "cancel"
+      },
+      {
+        "type": "done",
+        "commit": "abababababababababababababababababababab"
+      },
+      {
+        "type": "done",
+        "commit": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+      }
+    ],
+    "encode": [
+      "{\"v\":1,\"at\":1792504800,\"b\":\"sec/cve-77\",\"o\":\"main\",\"t\":\"v1.2.3\"}",
+      "{\"v\":1,\"at\":1792504800,\"pr\":4}",
+      "{\"v\":1,\"at\":1792504800,\"pr\":4,\"t\":\"v2.0.0-rc.1\",\"m\":\"Fix the bounds check (#12)\"}",
+      "{\"v\":1,\"at\":1792504800,\"b\":\"fix\",\"o\":\"release/1.x\",\"m\":\"Fix\\n\\nSee the advisory.\"}",
+      "{\"v\":1,\"at\":1792504800,\"b\":\"sec/ü\",\"o\":\"main\",\"m\":\"Ünïcode is fine\"}",
+      "{\"v\":1,\"cancel\":true}",
+      "{\"v\":1,\"done\":\"abababababababababababababababababababab\"}",
+      "{\"v\":1,\"done\":\"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\"}"
+    ]
+  }
+}

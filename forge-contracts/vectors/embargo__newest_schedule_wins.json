@@ -1,0 +1,200 @@
+{
+  "name": "newest_schedule_wins",
+  "description": "The newest counted schedule is the embargo (the date moved an hour later). A triage member's later schedule and cancellation do not count. Due only from its date on.",
+  "case": "embargo",
+  "rules": "v2",
+  "input": {
+    "repoId": "Repo111111111111111111111111111111111111111",
+    "owner": "own",
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "wri",
+        "role": "writer",
+        "createdAt": 10
+      },
+      {
+        "identity": "tri",
+        "role": "triage",
+        "createdAt": 10
+      },
+      {
+        "identity": "rdr",
+        "role": "reader",
+        "createdAt": 10
+      },
+      {
+        "identity": "late",
+        "role": "writer",
+        "createdAt": 500
+      }
+    ],
+    "now": 1792508400,
+    "targets": [
+      {
+        "targetId": "iss12",
+        "isIssue": true
+      }
+    ],
+    "events": [
+      {
+        "id": "a",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "iss12",
+        "targetNumber": 12,
+        "kind": 28,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "value": "{\"v\":1,\"at\":1792504800,\"b\":\"sec/cve-77\",\"o\":\"main\",\"t\":\"v1.2.3\"}",
+        "actor": "maint",
+        "createdAt": 100
+      },
+      {
+        "id": "b",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "iss12",
+        "targetNumber": 12,
+        "kind": 28,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "value": "{\"v\":1,\"at\":1792508400,\"b\":\"sec/cve-77\",\"o\":\"main\",\"t\":\"v1.2.3\"}",
+        "actor": "wri",
+        "createdAt": 200
+      },
+      {
+        "id": "c",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "iss12",
+        "targetNumber": 12,
+        "kind": 28,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "value": "{\"v\":1,\"at\":1792504800,\"b\":\"sec/cve-77\",\"o\":\"main\",\"t\":\"v1.2.3\"}",
+        "actor": "tri",
+        "createdAt": 300
+      },
+      {
+        "id": "d",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "iss12",
+        "targetNumber": 12,
+        "kind": 28,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "value": "{\"v\":1,\"cancel\":true}",
+        "actor": "tri",
+        "createdAt": 400
+      }
+    ]
+  },
+  "expected": {
+    "records": [
+      {
+        "record": {
+          "id": "a",
+          "targetId": "iss12",
+          "number": 12,
+          "value": {
+            "type": "schedule",
+            "at": 1792504800,
+            "branch": "sec/cve-77",
+            "onto": "main",
+            "tag": "v1.2.3"
+          },
+          "actor": "maint",
+          "createdAt": 100
+        },
+        "counts": true
+      },
+      {
+        "record": {
+          "id": "b",
+          "targetId": "iss12",
+          "number": 12,
+          "value": {
+            "type": "schedule",
+            "at": 1792508400,
+            "branch": "sec/cve-77",
+            "onto": "main",
+            "tag": "v1.2.3"
+          },
+          "actor": "wri",
+          "createdAt": 200
+        },
+        "counts": true
+      },
+      {
+        "record": {
+          "id": "c",
+          "targetId": "iss12",
+          "number": 12,
+          "value": {
+            "type": "schedule",
+            "at": 1792504800,
+            "branch": "sec/cve-77",
+            "onto": "main",
+            "tag": "v1.2.3"
+          },
+          "actor": "tri",
+          "createdAt": 300
+        },
+        "counts": false
+      },
+      {
+        "record": {
+          "id": "d",
+          "targetId": "iss12",
+          "number": 12,
+          "value": {
+            "type": "cancel"
+          },
+          "actor": "tri",
+          "createdAt": 400
+        },
+        "counts": false
+      }
+    ],
+    "targets": [
+      {
+        "embargo": {
+          "targetId": "iss12",
+          "number": 12,
+          "plan": {
+            "at": 1792508400,
+            "branch": "sec/cve-77",
+            "onto": "main",
+            "tag": "v1.2.3"
+          },
+          "setBy": "wri",
+          "setAt": 200,
+          "id": "b",
+          "state": {
+            "state": "scheduled"
+          }
+        },
+        "due": true,
+        "checklist": [
+          {
+            "step": "makePublic",
+            "issue": 12,
+            "done": false
+          },
+          {
+            "step": "publish",
+            "done": false
+          },
+          {
+            "step": "tag",
+            "tag": "v1.2.3",
+            "done": false
+          },
+          {
+            "step": "release",
+            "tag": "v1.2.3",
+            "done": false
+          }
+        ]
+      }
+    ]
+  }
+}

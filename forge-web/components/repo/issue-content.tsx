@@ -107,6 +107,7 @@ import { MakeOthersPublicButton, MakePublicBundleDialog, MakePublicButton, bundl
 import { BundleAlertsNote, EarlierVersions, EditedAfterPublicNote, MadePublicBy, PublicEditHint, editIsPublic } from '@/components/repo/made-public'
 import type { BundleRequest } from '@/lib/repo/make-public-bundle'
 import { makePostPublic, provenanceOf } from '@/lib/repo/make-public-writes'
+import { EmbargoPanel } from '@/components/repo/embargo-panel'
 
 /** The write the confirm dialog is about to sign. */
 type Pending =
@@ -912,6 +913,19 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         <SidebarSection title="Development" icon={GitPullRequest}>
           <LinkedPulls addr={addr} number={issue.number} backlinks={backlinks.linking} />
         </SidebarSection>
+        {publicRepo ? (
+          <EmbargoPanel
+            repo={home.repo}
+            target={{ id: issue.id, number: issue.number }}
+            embargo={data.embargo ?? null}
+            isIssue
+            membersOnly={issue.audience === 'members' && issue.madePublicBy === undefined}
+            facts={{ issuePublic: issue.audience === undefined || issue.madePublicBy !== undefined }}
+            canSet={(isMaintainer || holdings.data?.role === 'writer') && !archived && guard.disabledReason === null}
+            defaultBranch={home.defaultBranch}
+            onDone={() => refresh()}
+          />
+        ) : null}
       </aside>
 
       {quoteGate.dialog}

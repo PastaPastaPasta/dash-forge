@@ -32,6 +32,7 @@ import {
   type PlainDocument,
 } from '../sdk'
 import { rerunRequest, type RerunRequest } from '../rules/ci-rerun'
+import { embargoRecord, type EmbargoRecord } from '../rules/embargo'
 import { countedReviews, foldPrReviewV2, issueStateV2, mergeTransition, prMergeBase, prStateV2, stateCode, statusOfCode, type PrReviewState, type ReadReview } from '../rules/v2'
 import {
   asIdentifierString,
@@ -403,6 +404,8 @@ export interface TargetLog {
   readonly plaintextValues?: number
   /** The target's well-formed CI re-run requests (event kind 26, `rules/ci-rerun.ts`), oldest first. */
   readonly ciReruns?: readonly RerunRequest[]
+  /** The target's well-formed publication-date records this reader opened (event kind 28, `rules/embargo.ts`), counted or not. */
+  readonly embargoRecords?: readonly EmbargoRecord[]
 }
 
 /** A target with no state documents. */
@@ -593,7 +596,16 @@ export async function toLog(repo: RepoRef, events: readonly PlainDocument[], aut
   const [r, a] = await Promise.all([readableEvents(repo, events), readableEvents(repo, authorEvents, 'authorEvent')])
   // `readableEvents` keeps the order: a document sealed before it was opened is `events[i]`'s.
   const ciReruns = r.docs.flatMap((d, i) => rerunRequest(repo.repoId, toRerunEvent(d, events[i]?.['enc'] !== undefined)) ?? [])
-  return { events: toEvents(r.docs), authorEvents: toEvents(a.docs), hiddenValues: r.hiddenValues + a.hiddenValues, plaintextValues: r.plaintextValues, ...(ciReruns.length > 0 ? { ciReruns } : {}) }
+  // a sealed value this reader could not open has none, so it is no record
+  const embargoRecords = r.docs.flatMap((d) => embargoRecord(repo.repoId, toRerunEvent(d)) ?? [])
+  return {
+    events: toEvents(r.docs),
+    authorEvents: toEvents(a.docs),
+    hiddenValues: r.hiddenValues + a.hiddenValues,
+    plaintextValues: r.plaintextValues,
+    ...(ciReruns.length > 0 ? { ciReruns } : {}),
+    ...(embargoRecords.length > 0 ? { embargoRecords } : {}),
+  }
 }
 
 /** One target's complete {@link TargetLog} (see {@link readEvents} on completeness). */
