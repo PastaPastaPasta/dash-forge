@@ -504,6 +504,10 @@ mod tests {
             codes::INTEGRITY
         );
         check(&u, &git_dir, Some("origin"), &pin("R2", OWNER_B), yes).unwrap();
-        assert_eq!(get(&git_dir, "repoId"), Some("R1".into()), "a check never re-pins");
+        assert_eq!(
+            get(&git_dir, "repoId"),
+            Some("R1".into()),
+            "a check never re-pins"
+        );
     }
 }

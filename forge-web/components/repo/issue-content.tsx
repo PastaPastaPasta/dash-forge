@@ -796,7 +796,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         <HiddenNote hidden={totalHidden(hidden)} what="comment" home={home} by={hidden} shown={data.membersOnly.length} />
         <BundleAlertsNote alerts={data.bundleAlerts} />
         {/* the timeline's members-only placeholders already offer a locked member the unlock */}
-        <EventValuesNote counts={eventValues} lane={data.membersOnly.length === 0 ? home.lane : undefined} />
+        <EventValuesNote counts={eventValues} lane={home.lane} unlockShown={data.membersOnly.length > 0} />
         </div>
 
         {/* Composer */}

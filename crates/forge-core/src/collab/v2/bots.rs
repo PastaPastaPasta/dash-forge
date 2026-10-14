@@ -1402,20 +1402,10 @@ impl Collab<'_> {
         };
         let asked = match job {
             Some(j) => {
-                let r = self
-                    .request_to_signer(repo, j)
-                    .await?
-                    .filter(|r| r.number == number)
-                    .ok_or_else(|| not_a_request(j, target, repo))?;
-                // issues and pull requests are numbered apart: the request's thread is this kind
-                let (kind, _) = self.target_doc_by_id(repo, &r.target_id).await?;
-                if !matches!(
-                    (kind, target),
-                    (ContentKind::Patch, ReadTarget::Pr(_))
-                        | (ContentKind::Issue, ReadTarget::Issue(_))
-                ) {
-                    return Err(not_a_request(j, target, repo));
-                }
+                let r = match self.request_to_signer(repo, j).await? {
+                    Some(r) if self.asks_about(repo, &r, target, number).await? => r,
+                    _ => return Err(not_a_request(j, target, repo)),
+                };
                 Some((platform::decode_identifier(j)?, r.asker))
             }
             None => None,
@@ -1431,15 +1421,35 @@ impl Collab<'_> {
         }
         for l in naming {
             let job = platform::encode_identifier(l.letter.job);
-            if self
-                .request_to_signer(repo, &job)
-                .await?
-                .is_some_and(|r| r.number == number && r.asker == l.sender)
-            {
+            let Some(r) = self.request_to_signer(repo, &job).await? else {
+                continue;
+            };
+            if r.asker == l.sender && self.asks_about(repo, &r, target, number).await? {
                 return Ok(Some(l));
             }
         }
         Ok(None)
+    }
+
+    /// Whether request `r` is about thread `target` (`#number`): its own number, and the document
+    /// it names is that kind of thread with that number (issues and pull requests are numbered
+    /// apart, and the request's number is the asker's word).
+    async fn asks_about(
+        &self,
+        repo: &RepoRef,
+        r: &AgentRequest,
+        target: ReadTarget,
+        number: u32,
+    ) -> Result<bool> {
+        if r.number != number {
+            return Ok(false);
+        }
+        let (kind, d) = self.target_doc_by_id(repo, &r.target_id).await?;
+        let kind_matches = matches!(
+            (kind, target),
+            (ContentKind::Patch, ReadTarget::Pr(_)) | (ContentKind::Issue, ReadTarget::Issue(_))
+        );
+        Ok(kind_matches && d.field_u64("number") == Some(u64::from(number)))
     }
 
     /// Request `job` of `repo` when it is one to the signer (a members-only task left unread),

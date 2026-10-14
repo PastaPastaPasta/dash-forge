@@ -18,11 +18,19 @@ import { MembersLockedLine, summarizesMembersOnly } from '@/components/repo/audi
  * unlock, or how to set up their key. A thread made public by a maintainer's bundle reads
  * public, but its events stay members-only (the bundle opens posts only; forge-core
  * `Collab::readable_events_of` reads them with the members key alone), so after a reload this is
- * the page's only way to them, and to the publication date.
+ * the page's only way to them, and to the publication date. `unlockShown`: the thread's
+ * members-only posts already offer it, so the line only says what is members-only.
  */
-export function EventValuesNote({ counts, lane }: { counts: EventValueCounts; lane?: MembersAccess | undefined }): JSX.Element | null {
+export function EventValuesNote({ counts, lane, unlockShown = false }: { counts: EventValueCounts; lane?: MembersAccess | undefined; unlockShown?: boolean }): JSX.Element | null {
   const changes = `${plural(counts.hidden, 'label, assignee or milestone change')} ${counts.hidden === 1 ? 'is' : 'are'}`
   // (only a public repo has `lane`, and a public repo reports no plaintext values)
+  if (counts.hidden > 0 && summarizesMembersOnly(lane) && unlockShown) {
+    return (
+      <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="event-values-note">
+        {changes} members-only.
+      </p>
+    )
+  }
   if (counts.hidden > 0 && summarizesMembersOnly(lane)) {
     return (
       <div className="mt-2">

@@ -59,7 +59,10 @@ fn ok(dir: &Path, home: &Path, args: &[&str]) -> String {
 fn helper_state(repo: &Path, home: &Path) -> Vec<String> {
     let git_dir = repo.join(".git");
     let mut found = Vec::new();
-    for e in std::fs::read_dir(git_dir.join("hooks")).into_iter().flatten() {
+    for e in std::fs::read_dir(git_dir.join("hooks"))
+        .into_iter()
+        .flatten()
+    {
         let name = e.unwrap().file_name().to_string_lossy().into_owned();
         if !name.ends_with(".sample") {
             found.push(format!("hooks/{name}"));
@@ -68,7 +71,11 @@ fn helper_state(repo: &Path, home: &Path) -> Vec<String> {
     if git_dir.join("dash").exists() {
         found.push("dash/".into());
     }
-    let config = git(repo, home, &["config", "--local", "--get-regexp", r"^dash\."]);
+    let config = git(
+        repo,
+        home,
+        &["config", "--local", "--get-regexp", r"^dash\."],
+    );
     found.extend(
         String::from_utf8_lossy(&config.stdout)
             .lines()
@@ -91,7 +98,12 @@ fn a_bare_url_listed_or_fetched_in_another_repository_leaves_it_alone() {
         ok(
             &repo,
             &home,
-            &["remote", "add", "origin", "https://github.com/example/source.git"],
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/example/source.git",
+            ],
         );
         if with_commit {
             ok(&repo, &home, &["commit", "-q", "--allow-empty", "-m", "x"]);
@@ -111,9 +123,9 @@ fn a_bare_url_listed_or_fetched_in_another_repository_leaves_it_alone() {
 }
 
 /// A clone of `URL` (`git clone` of an empty repository leaves just this: no refs, `origin` at
-/// the URL) is the helper's to keep state in. Its `list` creates the empty ledger (a clone of an
-/// empty repository never sends a `fetch`), and nothing else: the pin and the `pre-push` hook wait
-/// for a fetch or push that writes refs.
+/// the URL) is the helper's to keep state in. Its `list` creates the empty ledger before it
+/// connects (a clone of an empty repository never sends a `fetch`); nothing else is written before
+/// the network is reached.
 #[test]
 fn an_empty_clone_of_the_remote_gets_its_ledger_and_nothing_else_from_a_list() {
     let t = tempfile::TempDir::new().unwrap();

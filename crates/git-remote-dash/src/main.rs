@@ -29,9 +29,10 @@
 //! resolution to another repository is refused (E504) unless `dash.allowRepin` is set: see
 //! [`pin`].
 //!
-//! **Only a clone.** The helper keeps state (the pin, `.git/dash/`, the `pre-push` hook) only in
-//! a clone of the dash remote it serves ([`git::LocalRepo::is_clone_of`]), and a `list` alone
-//! (which may be `git ls-remote`) installs nothing there.
+//! **Only a clone.** The helper keeps its pin, ledger, `pre-push` hook and fetch records only in
+//! a clone of the dash remote it serves ([`git::LocalRepo::is_clone_of`]; a push from elsewhere
+//! keeps only what it needs to retry), and a `list` alone (which may be `git ls-remote`) installs
+//! nothing in a clone that already has refs.
 //!
 //! **Errors.** Any failure is rendered once, as the `dash: error: … [Ennn]` block of
 //! [`forge_core::user_error`] on stderr (git shows it verbatim), and the process exits with
@@ -192,8 +193,8 @@ fn run(goal: &mut Goal) -> Result<()> {
         .filter(|a| !a.contains("://") && args.get(2).is_some_and(|u| u != *a))
         .cloned();
 
-    // The helper keeps state (pin, ledger, `pre-push` hook, `.git/dash/`) only in a clone of
-    // this remote: a bare `git ls-remote dash://…` run in some other repository leaves it alone.
+    // The helper keeps its pin, ledger, `pre-push` hook and fetch records only in a clone of this
+    // remote: a bare `git ls-remote dash://…` run in some other repository leaves it alone.
     let in_clone = git::LocalRepo::is_clone_of(remote_name.as_deref(), url_arg);
     let rt = runtime()?;
     let mut helper = Helper::new(dash_url, remote_name, in_clone)?;

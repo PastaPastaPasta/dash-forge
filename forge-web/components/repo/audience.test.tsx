@@ -231,6 +231,13 @@ describe('the members-only events of a thread (a thread made public by a maintai
     expect(q('members-only-unlock')).toBeNull()
   })
 
+  it("when the thread's members-only posts already offer the unlock, the line only says so", () => {
+    act(() => root.render(<EventValuesNote counts={{ hidden: 2, plaintext: 0 }} lane={{ access: 'locked' } as MembersAccess} unlockShown />))
+    expect(q('event-values-note')?.textContent).toBe('2 label, assignee or milestone changes are members-only.')
+    expect(q('event-values-locked')).toBeNull()
+    expect(q('members-only-unlock')).toBeNull()
+  })
+
   it('an outsider, and a member who read them all, are offered nothing', () => {
     act(() => root.render(<EventValuesNote counts={{ hidden: 3, plaintext: 0 }} />))
     expect(q('event-values-note')?.textContent).toBe('3 label, assignee or milestone changes are not readable with your keys.')

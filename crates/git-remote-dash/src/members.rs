@@ -1282,7 +1282,9 @@ pub fn not_a_clone(url: &str) -> UserError {
         "members-only branches are fetched and pushed only from a clone of this repository",
     )
     .cause(format!("no remote of this repository has the URL {url}"))
-    .fix(format!("git clone {url}     # or: git remote add <name> {url}, then fetch that remote"))
+    .fix(format!(
+        "git clone {url}     # or: git remote add <name> {url}, then fetch that remote"
+    ))
 }
 
 fn hook_error(why: &str) -> UserError {
