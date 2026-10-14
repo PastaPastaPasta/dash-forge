@@ -26,6 +26,7 @@ import { CircleDot, Eye, EyeOff, Globe, GitPullRequest, Lock, Users } from 'luci
 import type { RepoHome, MembersOnlyEntry, MembersOnlyTarget } from '@/lib/view'
 import type { MembersAccess } from '@/lib/view/repo-view'
 import type { Membership } from '@/lib/rules/v2'
+import { botsOf } from '@/lib/rules/roles'
 import { readMembershipsCached, repoContractIds } from '@/lib/repo'
 import { readRunners } from '@/lib/repo/checks'
 import { enableMembersContent } from '@/lib/repo/private-members'
@@ -834,7 +835,9 @@ export function TurnOnMembersSheet({ home, open, onClose }: { home: RepoHome; op
   // Who gets a key: every member who holds the members key, and the maintainer turning it on
   // (listed or not). Unknown until the members are read: no cost is shown, and Turn on waits.
   const holders = members.data === null ? null : new Set([...keyHolders(members.data), ...(identity !== null ? [identity] : [])]).size
-  const [lead, costLine, older] = turnOnText(holders ?? 1)
+  // Bots get a key for their own members-only posts (§23), not the members key.
+  const bots = members.data === null ? 0 : botsOf(members.data).length
+  const [lead, costLine, older] = turnOnText(holders ?? 1, bots)
   const retry = (what: string, onRetry: () => void, testId: string): JSX.Element => (
     <p className="text-dense text-danger-700 dark:text-danger-400" role="alert" data-testid={testId}>
       {what}{' '}
@@ -888,7 +891,7 @@ export function TurnOnMembersSheet({ home, open, onClose }: { home: RepoHome; op
       onClose={onClose}
       title="Turn on members-only content?"
       description={lead}
-      cost={holders === null ? 'pending' : previewCredits(enableEstimate(holders))}
+      cost={holders === null ? 'pending' : previewCredits(enableEstimate(holders, bots))}
       confirmLabel="Turn on"
       cancelLabel="Not now"
       blocked={blocked}

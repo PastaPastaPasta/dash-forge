@@ -90,8 +90,11 @@ describe('the published keys of a repository made public', () => {
     expect(none.resolution.keys.size).toBe(0)
     expect(await none.gate.admit('comment', comment)).toMatchObject({ ok: false, reason: 'membersOnly', placeholder: { why: 'noKey' } })
     // a later client's envelope is members-only to this reader, never malformed
-    const later = { ...comment, enc: bytesToBase64(Uint8Array.from([0x05, ...new Uint8Array(60)])) }
+    const later = { ...comment, enc: bytesToBase64(Uint8Array.from([0x06, ...new Uint8Array(60)])) }
     expect(await s.gate.admit('comment', later)).toMatchObject({ ok: false, reason: 'unknownVersion' })
+    // a bot's post (v0x05) from someone with no Bot row is members-only too, never opened (§23)
+    const notABot = { ...comment, enc: bytesToBase64(Uint8Array.from([0x05, ...new Uint8Array(60)])) }
+    expect(await s.gate.admit('comment', notABot)).toMatchObject({ ok: false, reason: 'membersOnly', placeholder: { why: 'noKey' } })
   })
 
   it('a key that does not match its anchor is ignored, and said so', async () => {

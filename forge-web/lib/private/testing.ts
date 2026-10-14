@@ -5,6 +5,7 @@
  * `no-restricted-imports` bans importing it anywhere but `*.test.ts`.
  */
 
+import { __unsafeSealBotPostWithNonce, type PostKey } from './bot-post'
 import { sha256, utf8, type Bytes } from './bytes'
 import { __unsafeSealDocWithNonce, __unsafeSealMembersDocWithNonce, type PrivateDoc, type SealDocOptions } from './doc'
 import { hedgeFileId, hedgeNonce, type EpochKeys } from './keys'
@@ -44,6 +45,16 @@ export function sealMembersRefWithNonce(
   nonce: Uint8Array,
 ): Promise<SealedRefUpdate> {
   return __unsafeSealMembersRefWith(keys, ownerId, input, salt, async (doc, fields) => (await __unsafeSealMembersDocWithNonce(keys, doc, fields, nonce)).enc)
+}
+
+/** `sealBotPost` with a fixed nonce; returns the AD, raw `K_obj`, `COMMIT_obj` and padded TLV too (the `bot_post` vectors). */
+export function sealBotPostWithNonce(
+  post: PostKey,
+  doc: PrivateDoc,
+  fields: DocFields,
+  nonce: Uint8Array,
+): Promise<{ ad: Bytes; kObj: Bytes; commit: Bytes; tlv: Bytes; enc: Bytes }> {
+  return __unsafeSealBotPostWithNonce(post, doc, fields, nonce)
 }
 
 /** `sealLetter` with a fixed `K_obj`, nonce and slot IVs; returns the commitment, H, AD' and TLV too. */

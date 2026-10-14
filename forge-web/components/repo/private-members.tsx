@@ -21,7 +21,7 @@ import type { RepoHome } from '@/lib/view'
 import { plural, timeAgo } from '@/lib/view'
 import { ConsentMissingError, repoContractIds } from '@/lib/repo'
 import { ConsentCheck, Invitations, mayAdd, useInviteAccepted } from '@/components/repo/invite-banner'
-import { ROLE_LABEL, holdsMembersKey, membershipTitle } from '@/lib/rules/roles'
+import { ROLE_LABEL, addBotText, holdsMembersKey, membershipTitle } from '@/lib/rules/roles'
 import { namedAction } from '@/lib/spend-toast'
 import { noEncryptionKeyMessage } from '@/lib/auth/encryption-key'
 import type { Role } from '@/lib/rules/v2'
@@ -48,6 +48,8 @@ import { useAuth } from '@/contexts/auth-context'
 import { useAsync } from '@/hooks/use-async'
 import { usePersonInput } from '@/hooks/use-person-input'
 import { usePrivateWrite } from '@/hooks/use-private-write'
+import { useBotRole } from '@/hooks/use-bot-role'
+import { postKeysToasts } from '@/lib/repo/bot-keys'
 import { ResolvedPerson } from '@/components/repo/resolved-person'
 import { useSdk } from '@/hooks/use-sdk'
 import { useWriteGuard } from '@/hooks/use-write-guard'
@@ -71,6 +73,7 @@ function addContracts(repo: RepoHome['repo'], role: Role): ForgeContractKind[] {
 }
 
 function removalText(effect: RemovalEffect, name: string, role: Role, kept: Role | null): string {
+  if (role === 'bot') return `Removes ${name}, a bot. The repo key doesn't change, and nobody can read ${name}'s members-only posts any more.`
   if (effect === 'none') return `Removes ${name}'s ${role} role. They stay a maintainer, so the repo key does not change.`
   if (effect === 'rotate-keep') {
     return `Removes ${name}'s ${role} role; they stay a ${kept ?? 'member'}. The repo key rotates, because keys they handed out as a maintainer stop counting, and ${name} gets the new key too.`
@@ -98,6 +101,8 @@ function stepText(s: RotationStep): string {
       return `Another maintainer set key epoch ${s.epoch} first; their key is in effect.`
     case 'reanchored':
       return `Key epoch ${s.epoch} re-anchored under your name.`
+    case 'postKeys':
+      return postKeysToasts(s.sent).map((t) => `${t.title}.`).join(' ')
   }
 }
 
@@ -108,6 +113,8 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
   const write = usePrivateWrite(home.repo)
   const repo = home.repo
   const isOwner = identity === repo.ownerId
+  // Bot is offered only where the registered contract admits it (never on sakura's live set).
+  const bots = useBotRole(repo.forge)
   const current = session.resolution.currentEpoch
   const anchor = current === null ? undefined : session.anchors.get(current)
 
@@ -224,7 +231,7 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
                 <Input id="member-id" value={memberId} onChange={(e) => setMemberId(e.target.value)} placeholder="Identity id or name.dash" className="font-mono" spellCheck={false} />
               </Field>
             </div>
-            <RolePicker value={role} onChange={setRole} visibility="private" />
+            <RolePicker value={role} onChange={setRole} visibility="private" bots={bots} />
             <Button
               variant="primary"
               disabled={trimmed === '' || idError !== null || keyCheck.data !== true || !mayAdd(consent) || guard.disabledReason !== null || locked || cannotRead}
@@ -269,9 +276,13 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
       <ConfirmDialog
         open={adding}
         onClose={() => setAdding(false)}
-        title={`Add with ${ROLE_LABEL[role]} access`}
+        title={role === 'bot' ? 'Add a bot' : `Add with ${ROLE_LABEL[role]} access`}
         toast={namedAction(membershipTitle('grant', role))}
-        description={`Gives ${shortId(trimmed)} ${ROLE_LABEL[role]} access and shares the repo's key with them.${role === 'reader' ? ' With Read access they can read the repo and its history, open issues and pull requests, and comment, but not push or approve.' : ''}`}
+        description={
+          role === 'bot'
+            ? addBotText(shortId(trimmed))
+            : `Gives ${shortId(trimmed)} ${ROLE_LABEL[role]} access and shares the repo's key with them.${role === 'reader' ? ' With Read access they can read the repo and its history, open issues and pull requests, and comment, but not push or approve.' : ''}`
+        }
         cost={envFlow.cost(addMemberCost(role))}
         confirmLabel={envFlow.confirmLabel('Sign & add', 'add')}
         blocked={envFlow.blocked}

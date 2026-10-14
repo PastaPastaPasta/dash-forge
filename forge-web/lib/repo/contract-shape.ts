@@ -12,10 +12,11 @@
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
-/** A document type's top-level property names and index names. */
+/** A document type's top-level property names, index names and integer properties' `maximum`s. */
 interface TypeShape {
   readonly properties: ReadonlySet<string>
   readonly indexes: ReadonlySet<string>
+  readonly maxima: ReadonlyMap<string, number>
 }
 
 const shapes = new Map<string, Promise<ReadonlyMap<string, TypeShape>>>()
@@ -33,6 +34,12 @@ function shapeOf(sdk: EvoSDK, contractId: string): Promise<ReadonlyMap<string, T
         type,
         {
           properties: new Set(Object.keys(s?.properties ?? {})),
+          maxima: new Map(
+            Object.entries(s?.properties ?? {}).flatMap(([name, p]) => {
+              const max = (p as { maximum?: unknown } | null)?.maximum
+              return typeof max === 'number' ? [[name, max] as const] : []
+            }),
+          ),
           indexes: new Set((s?.indices ?? []).map((i) => i.name).filter((n): n is string => typeof n === 'string')),
         },
       ] as const),
@@ -51,6 +58,20 @@ export async function contractHasProperty(sdk: EvoSDK, contractId: string, docum
 /** Whether `documentType` of contract `contractId` declares the index named `index`. */
 export async function contractHasIndex(sdk: EvoSDK, contractId: string, documentType: string, index: string): Promise<boolean> {
   return (await shapeOf(sdk, contractId)).get(documentType)?.indexes.has(index) ?? false
+}
+
+/** The `maximum` the top-level integer `property` of `documentType` declares, or null. */
+export async function contractPropertyMaximum(sdk: EvoSDK, contractId: string, documentType: string, property: string): Promise<number | null> {
+  return (await shapeOf(sdk, contractId)).get(documentType)?.maxima.get(property) ?? null
+}
+
+/**
+ * Whether the registered forge-core `coreId` admits the Bot role: `writer.role` up to 4 (C2, the
+ * mainnet registration). Sakura's live contract stops at 3, so a bot there is an identity outside
+ * the members (DESIGN §4.9). Parity: forge-core `members::admits_bots`.
+ */
+export async function contractAdmitsBots(sdk: EvoSDK, coreId: string): Promise<boolean> {
+  return ((await contractPropertyMaximum(sdk, coreId, 'writer', 'role')) ?? 0) >= 4
 }
 
 /** Whether contract `contractId` declares the document type `documentType`. */

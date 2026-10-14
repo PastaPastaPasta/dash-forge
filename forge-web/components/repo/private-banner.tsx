@@ -9,7 +9,8 @@
  *   (KeyMismatch), "the key chain is broken at epoch 2 (anchor by carol)" (ChainBroken), and a
  *   member who cannot read the current epoch;
  * - for maintainers: documents under an unrecognised epoch, packs uploaded under an old key,
- *   and the repair check (§5.6) with a Repair button that shows its cost before spending.
+ *   and the repair check (§5.6) with a Repair button that shows its cost before spending; bots
+ *   with no key for their members-only posts yet (§23), with a Send button.
  */
 
 import { useState } from 'react'
@@ -19,7 +20,10 @@ import type { RepoHome } from '@/lib/view'
 import { plural } from '@/lib/view/format'
 import { base58Encode } from '@/lib/auth/base58'
 import { bytesToHex, type EpochAlert } from '@/lib/private'
-import { currentBurned, planRepair, repairCost, runRepair, type RepairPlan } from '@/lib/repo/private-members'
+import { currentBurned, missingBotKeys, planRepair, repairCost, runRepair, sendMissingBotKeys, type RepairPlan } from '@/lib/repo/private-members'
+import { postKeyLettersCost } from '@/lib/repo/bot-keys'
+import { botsOf } from '@/lib/rules/roles'
+import { useAsync } from '@/hooks/use-async'
 import { isMaintainer, type PrivateSession } from '@/lib/repo/private-session'
 import { useAuth } from '@/contexts/auth-context'
 import { usePrivateWrite } from '@/hooks/use-private-write'
@@ -178,7 +182,63 @@ function MemberAlerts({ home, session }: { home: RepoHome; session: PrivateSessi
     )
   }
   if (repair !== null && identity !== null) parts.push(<RepairNote key="repair" home={home} session={session} self={identity} plan={repair} />)
+  // the repair sends missing post keys too: only when there is no repair to run is this asked on its own
+  if (repair === null && maintainer && r.writeEpoch !== null && botsOf(session.members).length > 0) parts.push(<BotKeysNote key="bot-keys" home={home} session={session} />)
   return parts.length === 0 ? null : <>{parts}</>
+}
+
+/**
+ * Bots with no key for their members-only posts from this maintainer for the current key (§23: a
+ * bot added or a key rotated by a client that sent none), read once this tab can open its own
+ * letters, with Send and its cost.
+ */
+function BotKeysNote({ home, session }: { home: RepoHome; session: PrivateSession }): JSX.Element | null {
+  const write = usePrivateWrite(home.repo)
+  const [open, setOpen] = useState(false)
+  const epoch = session.resolution.writeEpoch
+  const missing = useAsync(() => missingBotKeys(write.context!), [write.context !== null, home.repo.repoId, epoch, session.members.length], {
+    enabled: write.context !== null,
+  })
+  const bots = missing.data?.ready ?? []
+  const keyless = missing.data?.keyless ?? []
+  if (bots.length === 0 && keyless.length === 0) return null
+  return (
+    <Note tone="caution" icon={<KeyRound className="h-4 w-4 text-caution-700 dark:text-caution-400" aria-hidden />} testId="bot-keys-missing">
+      {bots.map((id) => (
+        <p key={id}>
+          <Author identityId={id} link={false} /> has no key for its members-only posts yet, so it can&apos;t post members-only.
+        </p>
+      ))}
+      {keyless.map((id) => (
+        <p key={id}>
+          <Author identityId={id} link={false} /> has no encryption key yet, so it can&apos;t be sent its key for members-only posts.
+        </p>
+      ))}
+      {bots.length > 0 ? (
+        <div className="mt-2">
+          <Button size="sm" variant="primary" disabled={write.context === null} onClick={() => setOpen(true)}>
+            Send
+          </Button>
+        </div>
+      ) : null}
+      <ConfirmDialog
+        open={open}
+        onClose={() => setOpen(false)}
+        title={bots.length === 1 ? 'Send the bot its key' : 'Send the bots their keys'}
+        description={`Gives ${bots.length === 1 ? 'the bot its key' : `${bots.length} bots their keys`} for members-only posts. A bot's key opens only its own posts.`}
+        cost={postKeyLettersCost(bots.length)}
+        confirmLabel="Sign & send"
+        onConfirm={async (intent) => {
+          if (write.context === null) throw new Error('unlock with your encryption key first')
+          try {
+            await sendMissingBotKeys(write.context, intent)
+          } finally {
+            missing.reload()
+          }
+        }}
+      />
+    </Note>
+  )
 }
 
 function RepairNote({ home, session, self, plan }: { home: RepoHome; session: PrivateSession; self: string; plan: RepairPlan }): JSX.Element {

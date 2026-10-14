@@ -311,6 +311,12 @@ export const PACK_KIND = {
    */
   ENV_SNAPSHOT: 8,
   /**
+   * A key letter (`lib/private/key-letter.ts`, `private-repos.md` §20): keys sealed to specific
+   * people as a DFPK 0x02 artifact. The web writes one kind, a bot's key for members-only posts
+   * (`lib/repo/bot-keys.ts`).
+   */
+  KEY_LETTER: 10,
+  /**
    * A members-only git pack of a public repo (mixed-visibility DESIGN §4.3, `private-repos.md`
    * §19.5): one members-only branch's new objects, DFPK-sealed under the members key, thin against
    * the public packs, with no `tips` and never superseding. Kinds 64 + k are the members-only

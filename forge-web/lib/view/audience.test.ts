@@ -28,6 +28,7 @@ import {
 } from './audience'
 import { draftAudienceCounts } from './pending-review'
 import { NO_KEY_SHARED_TEXT } from '../repo/members-writes'
+import { postKeyLetterCredits } from '../env/write'
 
 const m = (identity: string, role: Membership['role']): Membership => ({ identity, role, createdAt: 0 })
 const MEMBERS = [m('alice', 'maintainer'), m('bob', 'writer'), m('bob', 'maintainer'), m('carl', 'reader'), m('dora', 'triage'), m('bot', 'reader')]
@@ -92,6 +93,14 @@ describe('turning members-only content on', () => {
     expect(aboutDash(enableEstimate(2))).toBe('0.0019 DASH')
     // the maintainer turning it on always gets a wrap
     expect(enableEstimate(0)).toBe(enableEstimate(1))
+    // each bot is sent its key for members-only posts (one letter), never a wrap
+    expect(enableEstimate(2, 1)).toBe(enableEstimate(2) + postKeyLetterCredits())
+  })
+
+  it('counts the bots in the sheet without calling them members', () => {
+    const text = turnOnText(3, 1)
+    expect(text[1]).toBe(`Setting up keys for 3 members, and a key for members-only posts for 1 bot, costs about ${aboutDash(enableEstimate(3, 1))}. Each later removal costs about the same again.`)
+    expect(turnOnText(1, 2)[1]).toBe(`You're the only member so far. Setting up your key, and a key for members-only posts for 2 bots, costs about ${aboutDash(enableEstimate(1, 2))}.`)
   })
 
   it('says the sheet in short sentences, with the older-builds note and no semicolons', () => {

@@ -98,6 +98,18 @@ export class EpochKeys {
   }
 
   /**
+   * `W_{e,b} = HKDF-Expand(PRK_e, "dash-forge/v2/bot-post" ‖ 0x00 ‖ u32(e) ‖ botId, 32)`: the post
+   * key of the bot `bot` for this epoch (mixed-visibility DESIGN §4.9, `private-repos.md` §23).
+   * Members derive it to open the bot's posts; a maintainer sends it to the bot in a `postKey`
+   * letter (`./bot-post`). It opens nothing but that bot's posts under this epoch. The caller wipes it.
+   */
+  async botPostKey(bot: Uint8Array): Promise<Bytes> {
+    if (bot.length !== 32) throw new RangeError('a bot id is 32 bytes')
+    const info = subkeyInfo('bot-post', this.epoch, bot)
+    return new Uint8Array(await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt: this.repoId, info }, this.base, 256))
+  }
+
+  /**
    * `K_pack,e,fileId` as raw bytes: what a key letter hands on so that someone without the members
    * key opens this one file and nothing else (`openPackWithFileKey`, DESIGN §4.3 "Branch keys").
    * The caller wipes it.

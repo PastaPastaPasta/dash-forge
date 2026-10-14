@@ -561,6 +561,9 @@ export function privateGate(repo: RepoRef, ctx: OpenContext): ContentGate {
           return unopened(type, doc, 'letter', 'letter')
         case 'unknownVersion':
           return { ok: false, reason: 'unknownVersion' }
+        case 'notABot':
+          // a bot's post whose author is no longer a bot here: members-only, as to anyone
+          return { ok: false, reason: 'membersOnly' }
         default:
           return { ok: false, reason: 'wrongKey' }
       }
@@ -572,8 +575,9 @@ export function privateGate(repo: RepoRef, ctx: OpenContext): ContentGate {
  * The bucket of an unreadable members-only document (forge-core `keyring::hidden_bucket`, as the
  * lane reads v0x03): a failed tag or a commitment that does not match is a document made for
  * another key (forged, relabelled or moved), "not encrypted for this repo", never an earlier use
- * of the epoch; a letter is for specific people; the late rule has its own; anything else is
- * "wrong or missing key". (A private repo's v0x01 reads keep their own mapping, {@link privateGate}.)
+ * of the epoch; a letter is for specific people; the late rule has its own; a bot's post whose
+ * author holds no Bot row now (a removed bot) is members-only, to members and outsiders alike;
+ * anything else is "wrong or missing key". (A private repo's v0x01 reads keep their own mapping, {@link privateGate}.)
  */
 export function hiddenReasonOf(reason: UnreadableReason): HiddenReason {
   switch (reason) {
@@ -588,6 +592,8 @@ export function hiddenReasonOf(reason: UnreadableReason): HiddenReason {
       return 'letter'
     case 'unknownVersion':
       return 'unknownVersion'
+    case 'notABot':
+      return 'membersOnly'
     default:
       return 'wrongKey'
   }
@@ -632,10 +638,11 @@ export function laneGate(repo: RepoRef, ctx: OpenContext, options: LaneOptions =
         return unopened(type, doc, 'noKey', 'membersOnly')
       }
       const reason = hiddenReasonOf(opened.reason)
-      // a later client's envelope is members-only to this reader, as to one without a key
+      // a later client's envelope, or a removed bot's post, is members-only to this reader, as to
+      // one without a key
       let why: Unopened = 'notReadable'
       if (reason === 'notEncrypted') why = 'notForThisRepo'
-      else if (reason === 'unknownVersion') why = 'noKey'
+      else if (reason === 'unknownVersion' || opened.reason === 'notABot') why = 'noKey'
       return unopened(type, doc, why, reason)
     },
   }
