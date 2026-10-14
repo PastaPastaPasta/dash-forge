@@ -741,11 +741,13 @@ cmd('bot ask', 'A bot asked to work on a pull request or issue: the request, and
 cmd('bot jobs', 'The requests to a bot (you, or --bot) in a repository since a time.', {
     'bot': S, 'since': I, 'count': I,
     'requests': A(O({'id': S, 'number': I, 'asker': S, 'task': nl(S), 'at': I,
+                     'allowed': D('Whether the bot\'s access allowed the request when it was written (a runner works only on those).', B),
                      'letter': D('Whether the asker shared the thread\'s members-only content with you.', B)},
                     ['id', 'number', 'asker', 'at', 'letter'])),
 }, ['bot', 'since', 'count', 'requests'])
 cmd('bot read', 'As a bot: one request\'s thread as you were given it.', {
-    'request': S, 'number': I, 'asker': S, 'task': nl(S), 'at': I, 'letter': nl(S), 'asOf': nl(I), 'head': nl(S),
+    'request': S, 'allowed': B, 'number': I, 'asker': S, 'task': nl(S), 'at': I, 'letter': nl(S), 'asOf': nl(I),
+    'head': nl(S),
     'packs': I, 'packFiles': SA,
     'posts': A(O({'kind': E('pull request', 'issue', 'comment', 'review'), 'id': S, 'author': S, 'at': I,
                   'status': E('public', 'membersOnly', 'notShared', 'after'), 'title': nl(S), 'body': nl(S)},

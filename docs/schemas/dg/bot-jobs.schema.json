@@ -40,6 +40,10 @@
           "at": {
             "type": "integer"
           },
+          "allowed": {
+            "type": "boolean",
+            "description": "Whether the bot's access allowed the request when it was written (a runner works only on those)."
+          },
           "letter": {
             "type": "boolean",
             "description": "Whether the asker shared the thread's members-only content with you."

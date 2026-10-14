@@ -23,6 +23,8 @@ use crate::private::named::{self, Recipient};
 use crate::private::pack::{self as sealed_pack, Head};
 use crate::private::{doc, DocKind, Fields, Opened};
 use crate::rules::agent_request::{self, AgentRequest, AskRefusal, RequestEvent};
+use crate::rules::long_body::{self, LongBody};
+use crate::members::MemberReader;
 use crate::rules::v2::{Audience, Role, Visibility};
 use crate::scope::RepoRef;
 use crate::user_error::{codes, UserError};
@@ -70,6 +72,9 @@ pub struct SharedCode {
     pub head: LetterHead,
     /// The packs, sorted by `packHash`.
     pub packs: Vec<LetterPack>,
+    /// Commits those packs hold that are not on the branch (stored with its commits by another
+    /// members-only branch or an earlier push): handed on too.
+    pub extra_commits: usize,
 }
 
 /// It carries file keys: `Debug` shows the branch and the pack count only.
@@ -95,9 +100,58 @@ pub struct AskPlan {
     pub members_only: bool,
     /// The AI service the bot's notice names.
     pub processor: Option<String>,
-    /// The `read` letter, when the bot may read on request and the thread holds members-only
-    /// posts or code.
+    /// Whether the bot's notice lets it read the threads it is asked about.
+    pub reads: bool,
+    /// A pull request from a fork or from someone outside the members: nothing members-only of
+    /// it is handed on.
+    pub foreign: bool,
+    /// The thread's members-only posts the bot does not get, and why.
+    pub left_out: Vec<(DocKind, String, NotShared)>,
+    /// The `read` letter: on a members-only thread, or when the thread holds members-only posts
+    /// or code the bot may read.
     pub letter: Option<LetterPlan>,
+}
+
+impl AskPlan {
+    /// Refuse, before anything is signed, a letter too large to write (the request's own key
+    /// counted).
+    fn check_size(&self) -> Result<()> {
+        let Some(l) = &self.letter else {
+            return Ok(());
+        };
+        let mut docs: Vec<LetterDoc> = l.docs.iter().map(|(_, d)| d.clone()).collect();
+        docs.push(LetterDoc {
+            id: [0xff; 32],
+            revision: 1,
+            key: zeroize::Zeroizing::new([0; 32]),
+        });
+        docs.sort_by(|a, b| (&a.id, a.revision).cmp(&(&b.id, b.revision)));
+        docs.dedup_by(|a, b| a.id == b.id && a.revision == b.revision);
+        let trial = ReadLetter {
+            job: [0; 32],
+            as_of: crate::cache::now_ms(),
+            target: ReadTarget::Pr(self.target.number.max(1)),
+            docs,
+            packs: l.packs(),
+            heads: l.code.as_ref().map_or_else(Vec::new, |c| vec![c.head.clone()]),
+        };
+        match trial.to_typed().map(|t| t.encode()) {
+            Some(Ok(_)) => Ok(()),
+            _ => Err(UserError::new(
+                codes::USAGE,
+                format!(
+                    "#{} is too large to share with a bot at once ({} posts{})",
+                    self.target.number,
+                    l.docs.len(),
+                    l.code
+                        .as_ref()
+                        .map_or_else(String::new, |c| format!(", {} stored pushes", c.packs.len()))
+                ),
+            )
+            .note("checked before anything was signed; nothing was sent to the bot")
+            .into()),
+        }
+    }
 }
 
 /// The `read` letter of an [`AskPlan`].
@@ -107,8 +161,8 @@ pub struct LetterPlan {
     pub docs: Vec<(DocKind, LetterDoc)>,
     /// The members-only code.
     pub code: Option<SharedCode>,
-    /// The members-only posts left out, and why.
-    pub left_out: Vec<(DocKind, String, NotShared)>,
+    /// The members-only long bodies (kind 70) of its documents, with their file keys.
+    pub bodies: Vec<LetterPack>,
     /// The bot's encryption key.
     bot_key: [u8; 33],
 }
@@ -119,12 +173,24 @@ impl std::fmt::Debug for LetterPlan {
         f.debug_struct("LetterPlan")
             .field("docs", &self.docs.len())
             .field("code", &self.code)
-            .field("left_out", &self.left_out.len())
             .finish_non_exhaustive()
     }
 }
 
 impl LetterPlan {
+    /// Every pack it hands on (the code's and the long bodies'), sorted, each once.
+    fn packs(&self) -> Vec<LetterPack> {
+        let mut packs: Vec<LetterPack> = self
+            .code
+            .iter()
+            .flat_map(|c| c.packs.iter().cloned())
+            .chain(self.bodies.iter().cloned())
+            .collect();
+        packs.sort_by_key(|p| p.pack_hash);
+        packs.dedup_by(|a, b| a.pack_hash == b.pack_hash);
+        packs
+    }
+
     /// How many of its documents are of `kind`.
     #[must_use]
     pub fn count(&self, kind: DocKind) -> usize {
@@ -201,6 +267,8 @@ impl std::fmt::Debug for ReceivedRead {
 pub struct JobRead {
     /// The request, its task opened with the letter when it is members-only.
     pub request: AgentRequest,
+    /// Whether the request was allowed when written: a runner works only on one that was.
+    pub allowed: bool,
     /// The newest `read` letter from the asker naming this job, if any.
     pub letter: Option<ReceivedRead>,
     /// The thread: the issue or pull request first, then its comments and reviews, oldest
@@ -278,8 +346,10 @@ impl Collab<'_> {
         let store = crate::storage::PackReader::from_user_config();
         let repo_id = repo.scope()?.repo_id;
         let private = repo.visibility == Visibility::Private;
+        // a member whose keys did not load counts the members' copies as unreadable; a
+        // non-member (a bot) holds no members key and skips them
         let keyring = if private {
-            self.keyring(repo).await.ok()
+            Some(self.keyring(repo).await.map_err(|_| ()))
         } else {
             None
         };
@@ -304,17 +374,22 @@ impl Collab<'_> {
             // letter for a member) is skipped, never counted as unreadable
             let plain: Option<zeroize::Zeroizing<Vec<u8>>> = match sealed_pack::sniff(&bytes) {
                 Head::Plain if !private => Some(zeroize::Zeroizing::new(bytes)),
-                Head::Sealed { .. } if private => {
-                    match keyring.as_ref().filter(|kr| !kr.resolution().keys.is_empty()) {
-                        Some(kr) => kr.open_pack(repo, &bytes, m.size_bytes).ok().map(zeroize::Zeroizing::new),
-                        None => continue,
-                    }
-                }
+                Head::Sealed { .. } if private => match &keyring {
+                    Some(Ok(kr)) if kr.resolution().keys.is_empty() => continue,
+                    Some(Ok(kr)) => kr
+                        .open_pack(repo, &bytes, m.size_bytes)
+                        .ok()
+                        .map(zeroize::Zeroizing::new),
+                    _ => None,
+                },
                 Head::OtherVersion(named::ARTIFACT_VERSION) if private => {
                     let Some((id, keys)) = &reader else {
                         continue;
                     };
-                    let owner_keys = self.owner_keys_of(&m.owner_id).await?;
+                    let Ok(owner_keys) = self.owner_keys_of(&m.owner_id).await else {
+                        out.unreadable += 1;
+                        continue;
+                    };
                     match named::open_artifact(
                         &repo_id,
                         &bytes,
@@ -337,6 +412,12 @@ impl Collab<'_> {
                 .and_then(|p| TypedLetter::decode(p))
                 .and_then(|t| AccessNotice::from_typed(&t));
             match notice {
+                // the writer reads both copies of a private repository's notice: one counts
+                Some(notice)
+                    if out
+                        .all
+                        .iter()
+                        .any(|e| e.writer == m.owner_id && e.notice == notice) => {}
                 Some(notice) => out.all.push(NoticeEntry {
                     id: m.document_id.clone(),
                     writer: m.owner_id.clone(),
@@ -381,7 +462,7 @@ impl Collab<'_> {
         }
         let kr = self.keyring(repo).await?;
         let members = crate::private::pack::seal(kr.writer(repo)?.write_keys(), &plain)
-            .map_err(|e| Error::Config(format!("sealing the access notice: {e}")))?;
+            .map_err(|e| Error::Config(format!("the access notice could not be prepared for members: {e}")))?;
         let bot = platform::encode_identifier(notice.bot);
         let bot_key = self.bot_key(repo, &bot).await?;
         let to_bot = self.seal_to_bot(repo, &bot, bot_key, &plain, false)?;
@@ -424,7 +505,7 @@ impl Collab<'_> {
         } else {
             named::seal_artifact(&repo_id, sender, sender_key_id, &me, &recipients, plain)
         };
-        sealed.map_err(|e| Error::Config(format!("sealing for the bot: {e}")))
+        sealed.map_err(|e| Error::Config(format!("this could not be prepared for the bot: {e}")))
     }
 
     /// Whether identity `who` has an encryption key anything members-only can be sent to.
@@ -446,7 +527,7 @@ impl Collab<'_> {
     }
 
     /// Refuse, before signing, a notice from anyone but a current maintainer or the owner.
-    async fn require_notice_writer(&self, repo: &RepoRef) -> Result<()> {
+    pub async fn require_notice_writer(&self, repo: &RepoRef) -> Result<()> {
         if self.asker_role(repo).await? == Some(Role::Maintainer) {
             return Ok(());
         }
@@ -460,23 +541,29 @@ impl Collab<'_> {
     }
 
     /// Plan asking bot `bot` (base58; `name` is how the copy names it) to work on issue or pull
-    /// request `number` of `repo` (§22.2): refused before anything is signed (E813) when its
-    /// current notice does not allow it ([`agent_request::check_ask`]); otherwise what will be
-    /// written: the request, and, when the notice lets the bot read on request and the thread
-    /// holds members-only posts or `code`, the `read` letter with the per-object key of every
-    /// members-only post revision the signer opens now. Messages to specific people are never
-    /// included, nor are posts under the older envelope (no key of their own).
-    #[allow(clippy::too_many_arguments)]
+    /// request `number` of `repo` (§22.2). Refused before anything is signed (E813) when its
+    /// current notice does not allow it ([`agent_request::check_ask`]), when the thread is a
+    /// message to specific people, when it is members-only and nothing of it can be handed on
+    /// (a private repository's older envelope), or when a members-only pull request comes from
+    /// a fork or from outside the members. Otherwise what will be written: the request, and,
+    /// when the notice lets the bot read on request, the `read` letter with the per-object key
+    /// of every members-only post revision the signer opens now (never messages to specific
+    /// people, nor posts under the older envelope, which have no key of their own). A public
+    /// pull request from a fork or from outside the members gets no letter. Members-only code
+    /// is added by [`Self::plan_with_code`].
     pub async fn plan_ask(
         &self,
         repo: &RepoRef,
         kind: TargetKind,
         number: u32,
-        bot: &str,
-        name: &str,
+        (bot, name): (&str, &str),
         task: &str,
-        code: Option<SharedCode>,
     ) -> Result<AskPlan> {
+        let refuse = |msg: String| -> Error {
+            UserError::new(codes::AGENT_NOT_ALLOWED, msg)
+                .note("checked before anything was signed; nothing was sent to the bot")
+                .into()
+        };
         if !agent_request::is_task(task) {
             return Err(UserError::new(
                 codes::USAGE,
@@ -493,101 +580,216 @@ impl Collab<'_> {
             .target_read(repo, kind, number)
             .await?
             .ok_or(Error::NotFound)?;
-        match &read {
-            TargetRead::Readable(_) => {}
-            TargetRead::MembersOnly(_) => {
-                return Err(UserError::new(
-                    codes::AGENT_NOT_ALLOWED,
-                    format!("you can't read #{number}, so you can't ask {name} to work on it"),
-                )
-                .note("checked before anything was signed; nothing was sent to the bot")
-                .into())
-            }
+        if matches!(read, TargetRead::MembersOnly(_)) {
+            return Err(refuse(format!(
+                "you can't read #{number}, so you can't ask {name} to work on it"
+            )));
         }
         let target = read.target(kind, number);
-        let members_only = repo.visibility == Visibility::Private
-            || self.target_audience(repo, &target.id).await? != Audience::Public;
+        let audience = self.target_audience(repo, &target.id).await?;
+        if audience == Audience::SpecificPeople {
+            return Err(refuse(format!(
+                "#{number} is a message to specific people: {name} can't be asked about it"
+            )));
+        }
+        let members_only = repo.visibility == Visibility::Private || audience != Audience::Public;
         let notices = self.access_notices(repo).await?;
         let notice = notices.for_bot(bot).map(|e| &e.notice);
         let role = self.asker_role(repo).await?;
         agent_request::check_ask(notice, role, number, members_only, crate::cache::now_ms())
             .map_err(|r| ask_refused(&r, name, repo))?;
-        let processor = notice.and_then(|n| n.processor.clone());
-        let letter = if notice.is_some_and(|n| n.may(MAY_READ_ON_REQUEST)) {
+        let reads = notice.is_some_and(|n| n.may(MAY_READ_ON_REQUEST));
+        // a private repository whose contract has no members-only envelope of its own (D38)
+        // writes the older one, which no letter can hand on: the bot could not even read the
+        // task
+        if reads
+            && repo.visibility == Visibility::Private
+            && !self.collab_contract(repo).await?.has_property(super::DOC_ISSUE, "aud")
+        {
+            return Err(refuse(format!(
+                "{name} can't be given this private repository's posts yet: older items in this repo can't be shared one at a time"
+            )));
+        }
+        // the asking client never hands a fork's or an outsider's pull request to a bot (§4.9)
+        let foreign = kind == TargetKind::Patch
+            && match self.patch(repo, number).await? {
+                Some(p) => {
+                    p.source_repo_id != repo.id()
+                        || (p.author != repo.owner_id()
+                            && MemberReader::new(self.client)
+                                .best_role(repo, &p.author)
+                                .await?
+                                .is_none())
+                }
+                None => false,
+            };
+        if foreign && members_only {
+            return Err(refuse(format!(
+                "#{number} comes from a fork or from someone outside the members: its members-only content can't be shared with {name}"
+            )));
+        }
+        let (letter, left_out) = if reads && !foreign {
             // the thread as stored (sealed posts with their `enc`), not as opened
             let stored = self
                 .target_doc(repo, kind, number)
                 .await?
                 .ok_or(Error::NotFound)?;
-            self.letter_plan(repo, kind, stored, code, bot).await?
+            self.letter_plan(repo, kind, stored, bot, members_only).await?
         } else {
-            None
+            (None, Vec::new())
         };
-        Ok(AskPlan {
+        let plan = AskPlan {
             target,
             bot: bot.to_owned(),
             task: task.to_owned(),
             members_only,
-            processor,
+            processor: notice.and_then(|n| n.processor.clone()),
+            reads,
+            foreign,
+            left_out,
             letter,
-        })
+        };
+        plan.check_size()?;
+        Ok(plan)
+    }
+
+    /// `plan` with a members-only pull request's `code` added to its letter (one is planned when
+    /// there was none). Refused when the bot may not read on request, or the thread's
+    /// members-only content may not be shared with it.
+    pub async fn plan_with_code(
+        &self,
+        repo: &RepoRef,
+        mut plan: AskPlan,
+        code: SharedCode,
+    ) -> Result<AskPlan> {
+        if !plan.reads || plan.foreign {
+            return Ok(plan);
+        }
+        match &mut plan.letter {
+            Some(l) => l.code = Some(code),
+            None => {
+                plan.letter = Some(LetterPlan {
+                    docs: Vec::new(),
+                    code: Some(code),
+                    bodies: Vec::new(),
+                    bot_key: self.bot_key(repo, &plan.bot).await?,
+                });
+            }
+        }
+        plan.check_size()?;
+        Ok(plan)
     }
 
     /// The `read` letter of a thread whose issue or PR is `d`: the per-object key of each
-    /// members-only post revision the signer opens, or `None` when there is nothing
-    /// members-only to hand on.
+    /// members-only post revision the signer opens, and the members-only posts left out. No
+    /// letter when the thread is public and holds nothing members-only the signer can hand on;
+    /// on a members-only thread there is always one (it carries the request's own key).
     async fn letter_plan(
         &self,
         repo: &RepoRef,
         kind: TargetKind,
         d: FetchedDocument,
-        code: Option<SharedCode>,
         bot: &str,
-    ) -> Result<Option<LetterPlan>> {
+        members_only: bool,
+    ) -> Result<(Option<LetterPlan>, Vec<(DocKind, String, NotShared)>)> {
         let kind = match kind {
             TargetKind::Issue => DocKind::Issue,
             TargetKind::Patch => DocKind::Patch,
         };
         let posts = self.thread_posts(repo, kind, d).await?;
-        if !posts.iter().any(|(_, d)| is_sealed(d)) && code.is_none() {
-            return Ok(None);
-        }
-        let keys = self.lane_keys(repo).await?;
         let mut docs = Vec::new();
         let mut left_out = Vec::new();
-        for (kind, d) in posts.iter().filter(|(_, d)| is_sealed(d)) {
-            let enc = d.field_bytes("enc").unwrap_or_default();
-            let why = match enc.first() {
-                Some(&doc::V4) => Some(NotShared::Letter),
-                Some(&doc::V1) => Some(NotShared::Older),
-                _ => None,
-            };
-            let key = match (&keys, why) {
-                (DocKeys::Held(kr, _), None) => kr.read_obj_key(*kind, d),
-                _ => None,
-            };
-            match (key, platform::decode_identifier(&d.id)) {
-                (Some(key), Ok(id)) => docs.push((
-                    *kind,
-                    LetterDoc {
-                        id,
-                        revision: revision_of(d),
-                        key,
-                    },
-                )),
-                _ => left_out.push((*kind, d.id.clone(), why.unwrap_or(NotShared::Unreadable))),
+        let mut continued: Vec<[u8; 32]> = Vec::new();
+        if posts.iter().any(|(_, d)| is_sealed(d)) {
+            let keys = self.lane_keys(repo).await?;
+            for (kind, d) in posts.iter().filter(|(_, d)| is_sealed(d)) {
+                let enc = d.field_bytes("enc").unwrap_or_default();
+                let why = match enc.first() {
+                    Some(&doc::V4) => Some(NotShared::Letter),
+                    Some(&doc::V1) => Some(NotShared::Older),
+                    _ => None,
+                };
+                let key = match (&keys, why) {
+                    (DocKeys::Held(kr, _), None) => kr.read_obj_key(*kind, d),
+                    _ => None,
+                };
+                if let (Some(_), DocKeys::Held(kr, _)) = (&key, &keys) {
+                    if let Opened::Readable(f) = kr.open(*kind, d) {
+                        if let Some(LongBody::Continued { sha256, .. }) =
+                            f.body.as_deref().map(long_body::parse)
+                        {
+                            continued.push(sha256);
+                        }
+                    }
+                }
+                match (key, platform::decode_identifier(&d.id)) {
+                    (Some(key), Ok(id)) => docs.push((
+                        *kind,
+                        LetterDoc {
+                            id,
+                            revision: revision_of(d),
+                            key,
+                        },
+                    )),
+                    _ => left_out.push((
+                        *kind,
+                        d.id.clone(),
+                        why.unwrap_or(NotShared::Unreadable),
+                    )),
+                }
             }
         }
-        if docs.is_empty() && code.is_none() {
-            return Ok(None);
+        if docs.is_empty() && !members_only {
+            return Ok((None, left_out));
         }
         let bot_key = self.bot_key(repo, bot).await?;
-        Ok(Some(LetterPlan {
-            docs,
-            code,
+        let bodies = if continued.is_empty() {
+            Vec::new()
+        } else {
+            self.long_body_keys(repo, &continued).await?
+        };
+        Ok((
+            Some(LetterPlan {
+                docs,
+                code: None,
+                bodies,
+                bot_key,
+            }),
             left_out,
-            bot_key,
-        }))
+        ))
+    }
+
+    /// The file keys of the members-only long bodies (kind 70) named `hashes` (their trailers'
+    /// SHA-256, which is their `packHash`), each from the first stored copy whose header this
+    /// reader's members key opens. A body with no such copy is left out: the bot then reads its
+    /// prefix, as any reader who cannot fetch it does.
+    async fn long_body_keys(&self, repo: &RepoRef, hashes: &[[u8; 32]]) -> Result<Vec<LetterPack>> {
+        let svc = self.repo_service()?;
+        let kr = self.keyring(repo).await?;
+        let manifests = svc.read_pack_manifests(repo).await?;
+        let store = crate::storage::PackReader::from_user_config();
+        let kind = u64::from(crate::pack::KIND_MEMBERS_LONG_BODY);
+        let mut out: Vec<LetterPack> = Vec::new();
+        for hash in hashes {
+            for m in manifests.iter().filter(|m| m.kind == kind && m.pack_hash == *hash) {
+                let Ok(sealed) = svc.fetch_artifact(repo, m, &store).await else {
+                    continue;
+                };
+                let key = crate::private::PackHeader::parse(&sealed, sealed.len() as u64)
+                    .ok()
+                    .and_then(|h| h.file_key(kr.epoch_keys(h.epoch())?).ok());
+                if let Some(key) = key {
+                    out.push(LetterPack {
+                        pack_hash: *hash,
+                        key,
+                    });
+                    break;
+                }
+            }
+        }
+        out.sort_by_key(|p| p.pack_hash);
+        out.dedup_by(|a, b| a.pack_hash == b.pack_hash);
+        Ok(out)
     }
 
     /// Write what `plan` planned: the request (an `event` of kind 27 on the thread, `refId` the
@@ -623,12 +825,24 @@ impl Collab<'_> {
             )
         };
         let mut docs: Vec<LetterDoc> = lp.docs.iter().map(|(_, d)| d.clone()).collect();
-        // the request itself, when it was sealed: the bot reads its task with this key
-        let written = self
-            .client
-            .fetch_document(&community, DOC_EVENT, &event)
-            .await?
-            .ok_or_else(|| unfinished("it could not be read back to share its task"))?;
+        // the request itself, when it was sealed: the bot reads its task with this key (read
+        // back, with a few tries while a lagging node catches up)
+        let mut written = None;
+        for attempt in 0..4u64 {
+            if attempt > 0 {
+                tokio::time::sleep(std::time::Duration::from_secs(2 * attempt)).await;
+            }
+            if let Ok(Some(d)) = self
+                .client
+                .fetch_document(&community, DOC_EVENT, &event)
+                .await
+            {
+                written = Some(d);
+                break;
+            }
+        }
+        let written =
+            written.ok_or_else(|| unfinished("it could not be read back to share its task"))?;
         if is_sealed(&written) {
             let key = self
                 .keyring(repo)
@@ -643,9 +857,8 @@ impl Collab<'_> {
         }
         docs.sort_by(|a, b| (&a.id, a.revision).cmp(&(&b.id, b.revision)));
         docs.dedup_by(|a, b| a.id == b.id && a.revision == b.revision);
-        let (heads, packs) = lp.code.as_ref().map_or((Vec::new(), Vec::new()), |c| {
-            (vec![c.head.clone()], c.packs.clone())
-        });
+        let heads = lp.code.as_ref().map_or_else(Vec::new, |c| vec![c.head.clone()]);
+        let packs = lp.packs();
         let letter = ReadLetter {
             job: platform::decode_identifier(&event)?,
             as_of: crate::cache::now_ms(),
@@ -664,7 +877,7 @@ impl Collab<'_> {
             .map_err(|e| unfinished(&format!("its letter could not be written: {e}")))?;
         let sealed = self
             .seal_to_bot(repo, &plan.bot, lp.bot_key, &plain, true)
-            .map_err(|e| unfinished(&format!("its letter could not be sealed: {e}")))?;
+            .map_err(|e| unfinished(&format!("its letter could not be prepared for the bot: {e}")))?;
         let (id, _) = self
             .repo_service()?
             .store_key_letter(repo, &sealed)
@@ -678,14 +891,14 @@ impl Collab<'_> {
 
     /// The requests to bot `bot` (base58) in `repo` written at or after `since` (ms), oldest
     /// first, read on the sparse `addressee (refId, $createdAt)` index (it spans every
-    /// repository: other repositories' events are left out). A sealed task this reader cannot
-    /// open is `None`.
+    /// repository: other repositories' events are left out), each with whether it was allowed
+    /// when written ([`Self::request_allowed`]). A sealed task this reader cannot open is `None`.
     pub async fn bot_requests(
         &self,
         repo: &RepoRef,
         bot: &str,
         since: u64,
-    ) -> Result<Vec<AgentRequest>> {
+    ) -> Result<Vec<(AgentRequest, bool)>> {
         let community = self.community_contract(repo).await?;
         let docs = self
             .client
@@ -716,14 +929,59 @@ impl Collab<'_> {
             .map(|d| d.id.clone())
             .collect();
         let (docs, _, _) = self.readable_events(repo, docs).await?;
-        Ok(docs
+        let requests: Vec<AgentRequest> = docs
             .iter()
             .filter_map(|d| {
                 let mut e = request_event_of(d);
                 e.value_hidden = sealed.contains(&d.id) && e.value.is_none();
                 agent_request::agent_request(&repo_id, &e)
             })
-            .collect())
+            .collect();
+        if requests.is_empty() {
+            return Ok(Vec::new());
+        }
+        let notices = self.access_notices(repo).await?;
+        let oracle = self.member_oracle(repo).await?;
+        let mut out = Vec::with_capacity(requests.len());
+        for r in requests {
+            let allowed = self.request_allowed(repo, &notices, &oracle, &r).await?;
+            out.push((r, allowed));
+        }
+        Ok(out)
+    }
+
+    /// Whether request `r` was allowed when it was written (§22.2,
+    /// [`agent_request::request_allowed`]): against the notice that counted for its bot then
+    /// (the newest by a current maintainer or the owner written before it) and the asker's role
+    /// then (`oracle`, the current memberships), on its thread as stored.
+    async fn request_allowed(
+        &self,
+        repo: &RepoRef,
+        notices: &Notices,
+        oracle: &crate::rules::v2::RoleOracle,
+        r: &AgentRequest,
+    ) -> Result<bool> {
+        let owner = repo.owner_id();
+        let then: Vec<NoticeEntry> = notices
+            .all
+            .iter()
+            .filter(|e| e.created_at <= r.created_at)
+            .cloned()
+            .collect();
+        let current = crate::private::access_notice::current(&then, |w| {
+            w == owner || oracle.role_at(w, u64::MAX) == Some(Role::Maintainer)
+        });
+        let notice = platform::decode_identifier(&r.bot)
+            .ok()
+            .and_then(|b| current.get(&b).map(|e| &e.notice));
+        let role = if r.asker == owner {
+            Some(Role::Maintainer)
+        } else {
+            oracle.role_at(&r.asker, r.created_at)
+        };
+        let members_only = repo.visibility == Visibility::Private
+            || self.target_audience(repo, &r.target_id).await? != Audience::Public;
+        Ok(agent_request::request_allowed(r, notice, role, members_only))
     }
 
     /// The `read` letters addressed to the signer in `repo`, from a current maintainer or
@@ -760,9 +1018,11 @@ impl Collab<'_> {
     }
 
     /// Job `job` (a request's event id) of `repo` as the signer, its bot, reads it (§22.3): the
-    /// request, the newest `read` letter from its asker naming it, and the thread: public posts
-    /// written up to the request as they are, members-only revisions the letter covers opened
-    /// with their keys, and the rest marked. Refused when the event is not a request to the
+    /// request (and whether it was allowed when written), the newest `read` letter from its
+    /// asker naming it, and the thread: public posts written up to the request as they are, and
+    /// members-only revisions the letter covers opened with their keys (a post edited since is
+    /// read at the revision the letter names; its long body from the letter's packs). Anything
+    /// else members-only is marked not shared. Refused when the event is not a request to the
     /// signer in `repo`.
     pub async fn read_job(&self, repo: &RepoRef, job: &str) -> Result<JobRead> {
         let community = self.community_contract(repo).await?;
@@ -786,6 +1046,11 @@ impl Collab<'_> {
         let mut request = agent_request::agent_request(repo.id(), &e)
             .filter(|r| r.bot == me)
             .ok_or_else(not_yours)?;
+        let notices = self.access_notices(repo).await?;
+        let oracle = self.member_oracle(repo).await?;
+        let allowed = self
+            .request_allowed(repo, &notices, &oracle, &request)
+            .await?;
         let job_id = platform::decode_identifier(job)?;
         let letter = self
             .read_letters(repo)
@@ -798,18 +1063,11 @@ impl Collab<'_> {
             })
             .next_back();
         let repo_id = repo.scope()?.repo_id;
-        let open = |kind: DocKind, d: &FetchedDocument| -> Option<Fields> {
-            let l = letter.as_ref()?;
-            let id = platform::decode_identifier(&d.id).ok()?;
-            let key = l.letter.doc_key(&id, revision_of(d))?;
-            let header = crate::keyring::header_of(kind, d)?;
-            match doc::open_shared_with_key(&repo_id, &header, &d.field_bytes("enc")?, key) {
-                Opened::Readable(f) => Some(*f),
-                _ => None,
-            }
-        };
         if request.task.is_none() {
-            request.task = open(DocKind::Event, &d).and_then(|f| f.event_value);
+            request.task = letter
+                .as_ref()
+                .and_then(|l| open_listed(&repo_id, &l.letter, DocKind::Event, &d))
+                .and_then(|f| f.event_value);
         }
         let collab = self.collab_contract(repo).await?;
         let mut target = None;
@@ -827,39 +1085,149 @@ impl Collab<'_> {
             }
         }
         let (kind, target) = target.ok_or(Error::NotFound)?;
-        let posts = self
-            .thread_posts(repo, kind, target)
-            .await?
-            .into_iter()
-            .map(|(kind, d)| {
-                let thread_root = matches!(kind, DocKind::Issue | DocKind::Patch);
-                let content = if is_sealed(&d) {
-                    open(kind, &d).map_or(JobContent::NotShared, |f| JobContent::Text {
-                        fields: Box::new(f),
-                        members_only: true,
-                    })
-                } else if !thread_root && d.created_at.unwrap_or(0) > request.created_at {
-                    JobContent::After
-                } else {
-                    JobContent::Text {
-                        fields: Box::new(text_fields(&d)),
-                        members_only: false,
-                    }
+        let bodies = LongBodies::default();
+        let mut posts = Vec::new();
+        for (kind, d) in self.thread_posts(repo, kind, target).await? {
+            let thread_root = matches!(kind, DocKind::Issue | DocKind::Patch);
+            let content = if is_sealed(&d) {
+                let fields = match &letter {
+                    Some(l) => self.open_as_listed(&collab, &repo_id, &l.letter, kind, &d).await,
+                    None => None,
                 };
-                JobPost {
-                    kind,
-                    id: d.id.clone(),
-                    author: d.owner_id.clone(),
-                    created_at: d.created_at.unwrap_or(0),
-                    content,
+                match (fields, &letter) {
+                    (Some(mut f), Some(l)) => {
+                        if let Some(body) = &f.body {
+                            if let Some(full) = bodies.read(self, repo, &l.letter, body).await {
+                                f.body = Some(full);
+                            }
+                        }
+                        JobContent::Text {
+                            fields: Box::new(f),
+                            members_only: true,
+                        }
+                    }
+                    _ => JobContent::NotShared,
                 }
-            })
-            .collect();
+            } else if !thread_root && d.created_at.unwrap_or(0) > request.created_at {
+                JobContent::After
+            } else {
+                JobContent::Text {
+                    fields: Box::new(text_fields(&d)),
+                    members_only: false,
+                }
+            };
+            posts.push(JobPost {
+                kind,
+                id: d.id.clone(),
+                author: d.owner_id.clone(),
+                created_at: d.created_at.unwrap_or(0),
+                content,
+            });
+        }
         Ok(JobRead {
             request,
+            allowed,
             letter,
             posts,
         })
+    }
+
+    /// Sealed post `d` (of `kind`) opened at the revision `letter` lists for it: the current
+    /// one, or, when it was edited since, the listed one from its history (issues, pull requests
+    /// and comments keep theirs). `None` when the letter lists none of its revisions.
+    async fn open_as_listed(
+        &self,
+        collab: &crate::platform::LoadedContract,
+        repo_id: &[u8; 32],
+        letter: &ReadLetter,
+        kind: DocKind,
+        d: &FetchedDocument,
+    ) -> Option<Fields> {
+        if let Some(f) = open_listed(repo_id, letter, kind, d) {
+            return Some(f);
+        }
+        let id = platform::decode_identifier(&d.id).ok()?;
+        let listed = letter.docs.iter().find(|x| x.id == id)?.revision;
+        let doc_type = match kind {
+            DocKind::Issue => super::DOC_ISSUE,
+            DocKind::Patch => super::DOC_PATCH,
+            DocKind::Comment => super::DOC_COMMENT,
+            _ => return None,
+        };
+        let history = self
+            .client
+            .fetch_document_history(collab, doc_type, &d.id, 100)
+            .await
+            .ok()?;
+        let mut old = history.into_iter().find(|h| revision_of(h) == listed)?;
+        // a history row is the same document: its creation stays the current one's
+        if old.created_at_block_height.is_none() {
+            old.created_at_block_height = d.created_at_block_height;
+        }
+        open_listed(repo_id, letter, kind, &old)
+    }
+}
+
+/// Sealed document `d` (of `kind`) opened with the key `letter` lists for its id and revision.
+fn open_listed(
+    repo_id: &[u8; 32],
+    letter: &ReadLetter,
+    kind: DocKind,
+    d: &FetchedDocument,
+) -> Option<Fields> {
+    let id = platform::decode_identifier(&d.id).ok()?;
+    let key = letter.doc_key(&id, revision_of(d))?;
+    let header = crate::keyring::header_of(kind, d)?;
+    match doc::open_shared_with_key(repo_id, &header, &d.field_bytes("enc")?, key) {
+        Opened::Readable(f) => Some(*f),
+        _ => None,
+    }
+}
+
+/// The members-only long bodies a `read` letter hands on, read once per job.
+#[derive(Default)]
+struct LongBodies {
+    manifests: tokio::sync::OnceCell<Vec<crate::repo::PackManifestInfo>>,
+}
+
+impl LongBodies {
+    /// The whole text of a members-only `body` whose trailer names a long body (kind 70) the
+    /// letter hands on: fetched, opened with its file key alone, and checked against the
+    /// trailer's SHA-256 and length. `None` keeps the prefix (any reader who cannot fetch it
+    /// reads the same).
+    async fn read(
+        &self,
+        collab: &Collab<'_>,
+        repo: &RepoRef,
+        letter: &ReadLetter,
+        body: &str,
+    ) -> Option<String> {
+        let LongBody::Continued { sha256, bytes, .. } = long_body::parse(body) else {
+            return None;
+        };
+        let key = &letter.packs.iter().find(|p| p.pack_hash == sha256)?.key;
+        let svc = collab.repo_service().ok()?;
+        let manifests = self
+            .manifests
+            .get_or_try_init(|| svc.read_pack_manifests(repo))
+            .await
+            .ok()?;
+        let store = crate::storage::PackReader::from_user_config();
+        let kind = u64::from(crate::pack::KIND_MEMBERS_LONG_BODY);
+        for m in manifests.iter().filter(|m| m.kind == kind && m.pack_hash == sha256) {
+            let Ok(sealed) = svc.fetch_artifact(repo, m, &store).await else {
+                continue;
+            };
+            let Ok(plain) =
+                crate::private::pack::open_with_file_key(&sealed, m.size_bytes, key)
+            else {
+                continue;
+            };
+            if plain.len() as u64 == bytes && crate::private::keys::sha256(&plain) == sha256 {
+                return String::from_utf8(plain).ok();
+            }
+        }
+        None
     }
 }
 

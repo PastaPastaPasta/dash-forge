@@ -731,7 +731,7 @@ pub fn open_members_with_key(
 /// [`open_members_with_key`] for the kinds a `read` key letter hands on ([`shares_kind`]). A
 /// pull request's branch names are keyed by its epoch, which the key's holder does not have:
 /// a name whose hash is not its plain SHA-256 cannot be checked, so it is dropped from what is
-/// shown (a name with no hash, or a hash with no name, is refused as ever).
+/// shown. A hash with no name is refused, and a name with no hash is kept, as members read them.
 #[must_use]
 pub fn open_shared_with_key(
     repo_id: &[u8; 32],

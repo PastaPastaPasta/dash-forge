@@ -11,6 +11,9 @@
     "request": {
       "type": "string"
     },
+    "allowed": {
+      "type": "boolean"
+    },
     "number": {
       "type": "integer"
     },

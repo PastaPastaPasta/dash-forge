@@ -181,7 +181,8 @@ async fn handle(s: &Session, id: &str) -> String {
         .map_or_else(|| id.to_owned(), |n| format!("@{n}"))
 }
 
-/// `YYYY-MM-DD` as the ms of that day's end (UTC): access lasts through the day named.
+/// `YYYY-MM-DD` as the last millisecond of that day (UTC): access lasts through the day named,
+/// and the line everyone reads names that day.
 fn parse_until(date: &str) -> Result<u64> {
     let bad = || crate::errors::usage(format!("--until {date:?}: give a date as YYYY-MM-DD"));
     let parts: Vec<&str> = date.split('-').collect();
@@ -193,7 +194,15 @@ fn parse_until(date: &str) -> Result<u64> {
         m.parse().map_err(|_| bad())?,
         d.parse().map_err(|_| bad())?,
     );
-    if !(1..=12).contains(&m) || !(1..=31).contains(&d) || !(1970..=9999).contains(&y) {
+    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    let days_in_month = match m {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return Err(bad()),
+    };
+    if !(1..=days_in_month).contains(&d) || !(1970..=9999).contains(&y) {
         return Err(bad());
     }
     // Howard Hinnant's days_from_civil
@@ -204,7 +213,7 @@ fn parse_until(date: &str) -> Result<u64> {
     let doy = (153 * mp + 2) / 5 + d - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     let days = era * 146_097 + doe - 719_468;
-    u64::try_from((days + 1) * 86_400_000).map_err(|_| bad())
+    u64::try_from((days + 1) * 86_400_000 - 1).map_err(|_| bad())
 }
 
 /// Refuse, before anything is signed, access for someone who is already a member: members read
@@ -286,11 +295,33 @@ async fn write_notice(
     Ok(())
 }
 
+/// Refuse, before anything is shown or signed, a notice the signer may not write or the bot
+/// could not receive (a private repository's notice is also a letter to the bot).
+async fn require_notice_writable(s: &Session, bot: &str, name: &str) -> Result<()> {
+    let collab = s.collab();
+    collab.require_notice_writer(&s.repo).await?;
+    if s.repo.visibility == Visibility::Private && !collab.has_encryption_key(&s.repo, bot).await? {
+        return Err(UserError::new(
+            codes::NO_ENCRYPTION_KEY,
+            format!(
+                "{} has no encryption key, so it can't be told its access to {}",
+                safe(name),
+                s.repo.display()
+            ),
+        )
+        .fix("ask its operator to add one: `dg auth keys add --encryption`")
+        .note("nothing was written")
+        .into());
+    }
+    Ok(())
+}
+
 async fn allow(ctx: &Ctx, a: &AllowArgs) -> Result<()> {
     let s = Session::open_for_write(ctx, &a.repo, "access not changed").await?;
     let bot = resolve_identity(&s.client, &a.bot, "bot").await?;
     let name = handle(&s, &bot).await;
     require_not_a_member(&s, &bot, &name).await?;
+    require_notice_writable(&s, &bot, &name).await?;
     let notices = s.collab().access_notices(&s.repo).await?;
     let previous = notices.for_bot(&bot);
     // abilities and fields this version does not know (a later push grant) are carried over,
@@ -380,6 +411,27 @@ async fn allow(ctx: &Ctx, a: &AllowArgs) -> Result<()> {
             safe(&name)
         );
     }
+    let kept: Vec<&str> = notice
+        .may
+        .iter()
+        .map(String::as_str)
+        .filter(|m| {
+            ![
+                MAY_POST,
+                MAY_POST_MEMBERS_ONLY,
+                MAY_READ_ON_REQUEST,
+                MAY_CI_MEMBERS_BRANCHES,
+            ]
+            .contains(m)
+        })
+        .chain(notice.extra.keys().map(String::as_str))
+        .collect();
+    if !kept.is_empty() && !ctx.json {
+        eprintln!(
+            "Keeps access this version can't show: {}",
+            safe(&kept.join(", "))
+        );
+    }
     let prompt = format!("Give {} this access to {}?", safe(&name), s.repo.display());
     write_notice(ctx, &s, &notice, &name, "allowed", &prompt).await
 }
@@ -388,6 +440,7 @@ async fn revoke(ctx: &Ctx, repo: &str, bot: &str) -> Result<()> {
     let s = Session::open_for_write(ctx, repo, "access not changed").await?;
     let bot = resolve_identity(&s.client, bot, "bot").await?;
     let name = handle(&s, &bot).await;
+    require_notice_writable(&s, &bot, &name).await?;
     let notices = s.collab().access_notices(&s.repo).await?;
     let Some(previous) = notices.for_bot(&bot).filter(|p| !p.notice.may.is_empty()) else {
         return Err(UserError::new(
@@ -510,65 +563,89 @@ async fn pr_code(ctx: &Ctx, s: &Session, number: u32) -> Result<Option<SharedCod
         branch: short,
         head: snap.letter.head,
         packs: snap.letter.packs,
+        extra_commits: snap.extra_commits,
     }))
 }
 
 /// The confirmation the asker reads before signing (DESIGN §10, "Ask").
 fn ask_summary(plan: &AskPlan, name: &str, code_note: Option<&str>) -> Vec<String> {
     let thread = format!("#{}", plan.target.number);
+    let plural = |n: usize, one: &str| format!("{n} {one}{}", if n == 1 { "" } else { "s" });
     let mut out = Vec::new();
     match &plan.letter {
         Some(l) => {
             let comments = l.count(DocKind::Comment) + l.count(DocKind::Review);
-            let mut what = vec![format!(
-                "{comments} comment{}",
-                if comments == 1 { "" } else { "s" }
-            )];
+            let own = l.count(DocKind::Patch) + l.count(DocKind::Issue) > 0;
+            let mut what = Vec::new();
+            if comments > 0 || !own {
+                what.push(plural(comments, "comment"));
+            }
             if let Some(c) = &l.code {
                 what.push(format!("branch {}", safe(&c.branch)));
             }
-            let things = if l.code.is_some() {
-                "members-only comments and code"
-            } else {
-                "members-only comments"
+            let things = match (l.code.is_some(), comments > 0 || !own) {
+                (true, true) => "members-only comments and code",
+                (true, false) => "members-only text and code",
+                (false, _) if own && comments == 0 => "members-only text",
+                (false, _) => "members-only comments",
             };
-            out.push(format!(
-                "{name} will get {thread}'s {things} as they are now ({}).",
-                what.join(", ")
-            ));
+            out.push(if what.is_empty() {
+                format!("{name} will get {thread}'s {things} as they are now.")
+            } else {
+                format!(
+                    "{name} will get {thread}'s {things} as they are now ({}).",
+                    what.join(", ")
+                )
+            });
+            if let Some(c) = l.code.as_ref().filter(|c| c.extra_commits > 0) {
+                out.push(format!(
+                    "It also gets {} that aren't on {} (stored with its commits by another members-only branch or an earlier push).",
+                    plural(c.extra_commits, "commit"),
+                    safe(&c.branch)
+                ));
+            }
             if let Some(p) = &plan.processor {
                 out.push(format!("{} processes them.", safe(p)));
             }
             out.push("It can't see anything added later unless you ask again.".into());
-            let letters = l
-                .left_out
-                .iter()
-                .filter(|(_, _, w)| *w == NotShared::Letter)
-                .count();
-            let older = l
-                .left_out
-                .iter()
-                .filter(|(_, _, w)| *w == NotShared::Older)
-                .count();
-            if letters > 0 {
-                out.push(format!(
-                    "{letters} message{} to specific people {} included.",
-                    if letters == 1 { "" } else { "s" },
-                    if letters == 1 { "isn't" } else { "aren't" }
-                ));
-            }
-            if older > 0 {
-                out.push(format!(
-                    "Older items in this repo can't be shared one at a time ({older} left out)."
-                ));
-            }
         }
+        None if plan.members_only => {}
         None => {
             out.push(format!("{name} will work on {thread} as everyone can read it."));
             if let Some(p) = &plan.processor {
                 out.push(format!("{} processes it.", safe(p)));
             }
         }
+    }
+    let count = |why: NotShared| plan.left_out.iter().filter(|(_, _, w)| *w == why).count();
+    let letters = count(NotShared::Letter);
+    if letters > 0 {
+        out.push(format!(
+            "{} to specific people {} included.",
+            plural(letters, "message"),
+            if letters == 1 { "isn't" } else { "aren't" }
+        ));
+    }
+    let older = count(NotShared::Older);
+    if older > 0 {
+        out.push(format!(
+            "Older items in this repo can't be shared one at a time ({older} left out)."
+        ));
+    }
+    let unreadable = count(NotShared::Unreadable);
+    if unreadable > 0 {
+        out.push(format!(
+            "{} you can't read {} included.",
+            plural(unreadable, "members-only post"),
+            if unreadable == 1 { "isn't" } else { "aren't" }
+        ));
+    }
+    if plan.foreign {
+        out.push(format!(
+            "{thread} comes from a fork or from someone outside the members: {name} gets only what everyone can read."
+        ));
+    } else if !plan.reads {
+        out.push(format!("{name} isn't allowed to read members-only content here."));
     }
     if let Some(n) = code_note {
         out.push(format!("Note: {n}."));
@@ -592,23 +669,23 @@ async fn ask(ctx: &Ctx, a: &AskArgs) -> Result<()> {
         (None, None) => return Err(crate::errors::usage("name the thread: --pr N or --issue N")),
     };
     let collab = s.collab();
-    // the members-only code is looked for only once the access allows the request
-    collab
-        .plan_ask(&s.repo, kind, number, &bot, &name, &a.task, None)
+    // the access is checked first; the members-only code is looked for only when the bot may
+    // read it
+    let plan = collab
+        .plan_ask(&s.repo, kind, number, (&bot, &name), &a.task)
         .await?;
-    let (code, code_note) = if kind == TargetKind::Patch {
+    let (plan, code_note) = if plan.reads && !plan.foreign && kind == TargetKind::Patch {
         match pr_code(ctx, &s, number).await {
-            Ok(c) => (c, None),
-            Err(why) => (None, Some(why)),
+            Ok(Some(code)) => (collab.plan_with_code(&s.repo, plan, code).await?, None),
+            Ok(None) => (plan, None),
+            Err(why) => (plan, Some(why)),
         }
     } else {
-        (None, None)
+        (plan, None)
     };
-    let plan = collab
-        .plan_ask(&s.repo, kind, number, &bot, &name, &a.task, code)
-        .await?;
     let letter_bytes = plan.letter.as_ref().map_or(0, |l| {
         128 + 140 * (l.docs.len() as u64 + 1)
+            + 140 * l.bodies.len() as u64
             + l.code.as_ref().map_or(0, |c| 140 * c.packs.len() as u64 + 200)
     });
     let est = crate::quote::event(a.task.len() as u64 + 61, true)
@@ -682,12 +759,13 @@ async fn jobs(ctx: &Ctx, repo: &str, since: Option<u64>, bot: Option<&str>) -> R
             "bot": bot,
             "since": since,
             "count": requests.len(),
-            "requests": requests.iter().map(|r| json!({
+            "requests": requests.iter().map(|(r, allowed)| json!({
                 "id": r.id,
                 "number": r.number,
                 "asker": r.asker,
                 "task": r.task,
                 "at": r.created_at,
+                "allowed": allowed,
                 "letter": has_letter(&r.id, &r.asker),
             })).collect::<Vec<_>>(),
         }),
@@ -695,9 +773,9 @@ async fn jobs(ctx: &Ctx, repo: &str, since: Option<u64>, bot: Option<&str>) -> R
             if requests.is_empty() {
                 println!("no requests to you since {since}");
             }
-            for r in &requests {
+            for (r, allowed) in &requests {
                 println!(
-                    "{}  #{}  by {}  {}{}",
+                    "{}  #{}  by {}  {}{}{}",
                     r.id,
                     r.number,
                     r.asker,
@@ -709,6 +787,11 @@ async fn jobs(ctx: &Ctx, repo: &str, since: Option<u64>, bot: Option<&str>) -> R
                         "  [members-only content shared]"
                     } else {
                         ""
+                    },
+                    if *allowed {
+                        ""
+                    } else {
+                        "  [outside the access the bot was given: not worked on]"
                     }
                 );
             }
@@ -729,21 +812,34 @@ async fn write_code(
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     let mut written = Vec::new();
     for p in &letter.packs {
-        let Some(m) = manifests.iter().find(|m| {
+        let mut plain = None;
+        for m in manifests.iter().filter(|m| {
             m.pack_hash == p.pack_hash
                 && m.kind == u64::from(forge_core::pack::KIND_MEMBERS_GIT_PACK)
-        }) else {
-            eprintln!(
-                "note: pack {} isn't stored in {}; skipped",
-                hex::encode(p.pack_hash),
-                s.repo.display()
-            );
+        }) {
+            let Ok(sealed) = svc.fetch_artifact(&s.repo, m, &store).await else {
+                continue;
+            };
+            if let Ok(b) =
+                forge_core::private::pack::open_with_file_key(&sealed, m.size_bytes, &p.key)
+            {
+                plain = Some(b);
+                break;
+            }
+        }
+        // long bodies are read with the thread; only git packs are written here
+        let Some(plain) = plain else {
+            if manifests.iter().any(|m| {
+                m.pack_hash == p.pack_hash
+                    && m.kind == u64::from(forge_core::pack::KIND_MEMBERS_GIT_PACK)
+            }) {
+                eprintln!(
+                    "note: pack {} could not be read from any copy; skipped",
+                    hex::encode(p.pack_hash)
+                );
+            }
             continue;
         };
-        let sealed = svc.fetch_artifact(&s.repo, m, &store).await?;
-        let plain =
-            forge_core::private::pack::open_with_file_key(&sealed, m.size_bytes, &p.key)
-                .map_err(|e| anyhow::anyhow!("pack {}: {e}", hex::encode(p.pack_hash)))?;
         let path = dir.join(format!("pack-{}.pack", hex::encode(p.pack_hash)));
         std::fs::write(&path, &plain).with_context(|| format!("writing {}", path.display()))?;
         written.push(path.display().to_string());
@@ -795,6 +891,7 @@ async fn read(ctx: &Ctx, repo: &str, job: &str, code: Option<&Path>) -> Result<(
     ctx.emit(
         json!({
             "request": read.request.id,
+            "allowed": read.allowed,
             "number": read.request.number,
             "asker": read.request.asker,
             "task": read.request.task,
@@ -816,6 +913,9 @@ async fn read(ctx: &Ctx, repo: &str, job: &str, code: Option<&Path>) -> Result<(
                     .as_deref()
                     .map_or_else(|| "(you weren't given the task)".to_owned(), |t| safe(t).to_string())
             );
+            if !read.allowed {
+                println!("this request is outside the access you were given: don't work on it");
+            }
             match letter {
                 Some(l) => println!(
                     "members-only content shared as of {} by {}",
@@ -872,9 +972,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn until_is_the_end_of_the_day_named() {
-        // 2026-01-01 00:00 UTC is 1767225600000; 2025-12-31 ends then
-        assert_eq!(parse_until("2025-12-31").unwrap(), 1_767_225_600_000);
+    fn until_is_the_last_moment_of_the_day_named() {
+        // 2026-01-01 00:00 UTC is 1767225600000; 2025-12-31 ends just before it
+        let until = parse_until("2025-12-31").unwrap();
+        assert_eq!(until, 1_767_225_599_999);
+        assert_eq!(access_notice::date_words(until), "31 Dec 2025");
+        assert_eq!(parse_until("2028-02-29").unwrap() % 86_400_000, 86_399_999);
+        assert!(parse_until("2026-02-29").is_err());
+        assert!(parse_until("2026-04-31").is_err());
         assert!(parse_until("2025-13-01").is_err());
         assert!(parse_until("tomorrow").is_err());
     }

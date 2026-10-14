@@ -327,7 +327,13 @@ pub fn date_words(ms: u64) -> String {
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
     let utc = crate::env::service::utc(ms);
-    let (y, m, d) = (&utc[0..4], &utc[5..7], &utc[8..10]);
+    let date = utc.split(' ').next().unwrap_or_default();
+    let mut parts = date.split('-');
+    let (y, m, d) = (
+        parts.next().unwrap_or_default(),
+        parts.next().unwrap_or_default(),
+        parts.next().unwrap_or_default(),
+    );
     let month = m
         .parse::<usize>()
         .ok()
