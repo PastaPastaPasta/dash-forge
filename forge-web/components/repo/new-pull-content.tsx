@@ -163,7 +163,8 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
     if (!draftHeld.current) savePrDraft(repo, { title: titleTouched ? title : '', body, head: headKey, base }, { memoryOnly: quoting || membersDraft })
   }, [repo, title, titleTouched, body, headKey, base, quoting, membersDraft])
 
-  const branches = useMemo(() => sortBranches(home.branches.filter((b) => tipOidOf(b) !== null), home.defaultBranch), [home.branches, home.defaultBranch])
+  // A branch for fewer people than all members is neither the head nor the base of a members-only PR (DESIGN §4.3).
+  const branches = useMemo(() => sortBranches(home.branches.filter((b) => tipOidOf(b) !== null && b.narrower === undefined), home.defaultBranch), [home.branches, home.defaultBranch])
   // A fork the link's (or the kept draft's) head names, e.g. a fork's Contribute link: listed even
   // when it is not the viewer's, for as long as this form is open.
   const [namedFork] = useState(() => {

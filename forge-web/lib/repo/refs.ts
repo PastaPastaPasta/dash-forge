@@ -64,6 +64,7 @@ import {
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 
+import type { Audience } from '../env/format'
 import { DOC, gitPlaneDocWellFormed, str, toRefUpdate, wellFormed, type RepoRef } from './contract'
 import { admitAll } from './private-content'
 import { readConfigHistory } from './config'
@@ -101,6 +102,11 @@ export interface ResolvedRef {
    * (`members-branches.ts`); its tip is a real commit. Absent: a public ref, as everyone reads it.
    */
   readonly audience?: 'members'
+  /**
+   * A members-only branch for fewer people than all members (phase 3F), read with this member's
+   * branch key: who it is for, and how many people that is now.
+   */
+  readonly narrower?: { readonly audience: Audience; readonly people: number }
 }
 
 /** The row's `refNameHash` as lowercase hex — hex order is byte order; base64 order is not. */

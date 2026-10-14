@@ -8,7 +8,7 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { describe, expect, it } from 'vitest'
 
 import { base58Encode } from '../auth/base58'
-import { EpochKeys, IdSet, bytesToHex, openContent, sealMembersRef, type OpenContext, type SealedRefUpdate } from '../private'
+import { BranchKey, BranchKeys, BranchRing, EpochKeys, IdSet, bytesToHex, foldBranchLetters, openContent, sealBranchRef, sealMembersRef, type OpenContext, type SealedRefUpdate } from '../private'
 import { bytesToBase64, type PlainDocument } from '../sdk'
 import { membersUpdatesOf } from './members-refs'
 import { asPlaintext } from './private-content'
@@ -115,6 +115,66 @@ describe('membersUpdatesOf', () => {
       { id: id(2), kind: 'publicName' },
       { id: id(3), kind: 'publicName' },
     ])
+  })
+})
+
+describe('membersUpdatesOf with narrower branches (enc v0x06)', () => {
+  const SEC = 'refs/heads/sec/embargo'
+  const letter = { name: SEC, keys: [BranchKey.fromBytes(new Uint8Array(32).fill(9))], audience: { group: 'maintainers' as const, also: [] }, to: [base58Encode(OWNER)] }
+  const ringOf = () => BranchRing.create(REPO_ID, foldBranchLetters([{ id: 'l', height: 1, letter }]), () => [OWNER])
+
+  it('opens them with the ring, folds them apart from the members key, and marks them', async () => {
+    const k0 = await EpochKeys.import(REPO_ID, 0, new Uint8Array(32).fill(3))
+    const ctx = await CTX(k0)
+    const ring = await ringOf()
+    const keys = ring.writeKeys(SEC) as BranchKeys
+    const narrow = await sealBranchRef(keys, OWNER, { type: 'refUpdate', name: SEC, newOid: A, force: false })
+    const members = await sealMembersRef(k0, OWNER, { type: 'refUpdate', name: NAME, newOid: B, force: false })
+    const rows = { refUpdate: [sealedRow(1, 900, narrow), sealedRow(2, 901, members)], protectedRefUpdate: [] }
+    const got = await membersUpdatesOf(rows, (d) => openContent(d, ctx), [], undefined, (d) => ring.open(d, d.enc))
+    expect(got.unreadable).toBe(0)
+    expect([...got.byName.keys()]).toEqual([SEC, NAME])
+    expect(got.byName.get(SEC)?.map((u) => [u.id, u.refName, u.newOid])).toEqual([[id(1), SEC, bytesToHex(A)]])
+    expect([...got.narrower]).toEqual([id(1)])
+    // a narrower branch's commits never count as the members key's
+    expect([...got.openedNewOids]).toEqual([bytesToHex(B)])
+    expect([...got.openedNarrower]).toEqual([[bytesToHex(A), SEC]])
+    expect(got.unreadableNarrower.size).toBe(0)
+    // the members key alone opens none of it: counted, once per branch
+    const alone = await membersUpdatesOf(rows, (d) => openContent(d, ctx))
+    expect(alone.unreadable).toBe(1)
+    expect([...alone.byName.keys()]).toEqual([NAME])
+    expect([...alone.unreadableNarrower]).toEqual([bytesToHex(narrow.refNameHash)])
+    expect(alone.narrower.size).toBe(0)
+  })
+
+  it('counts each branch it holds no key for once, and none whose newest update deletes it', async () => {
+    const k0 = await EpochKeys.import(REPO_ID, 0, new Uint8Array(32).fill(3))
+    const ctx = await CTX(k0)
+    const keys = (await ringOf()).writeKeys(SEC) as BranchKeys
+    const other = await BranchKeys.derive(REPO_ID, 0, BranchKey.fromBytes(new Uint8Array(32).fill(4)))
+    const a1 = await sealBranchRef(keys, OWNER, { type: 'refUpdate', name: SEC, newOid: A, force: false })
+    const a2 = await sealBranchRef(keys, OWNER, { type: 'refUpdate', name: SEC, newOid: B, prevOid: A, force: false })
+    const made = await sealBranchRef(other, OWNER, { type: 'refUpdate', name: 'refs/heads/gone', newOid: A, force: false })
+    const gone = await sealBranchRef(other, OWNER, { type: 'refUpdate', name: 'refs/heads/gone', newOid: new Uint8Array(20), prevOid: A, force: false })
+    // rows out of order: the newest of each name hash decides
+    const rows = { refUpdate: [sealedRow(4, 1003, gone), sealedRow(1, 1000, a1), sealedRow(3, 1002, made), sealedRow(2, 1001, a2)], protectedRefUpdate: [] }
+    const got = await membersUpdatesOf(rows, (d) => openContent(d, ctx))
+    expect(got.unreadable).toBe(4)
+    expect([...got.unreadableNarrower]).toEqual([bytesToHex(a1.refNameHash)])
+  })
+
+  it('a public name wins over a narrower update too (D29)', async () => {
+    const ring = await ringOf()
+    const keys = ring.writeKeys(SEC) as BranchKeys
+    const narrow = await sealBranchRef(keys, OWNER, { type: 'refUpdate', name: SEC, newOid: B, force: false })
+    const pub = { ...publicRow(1, 900, A), refName: SEC, refNameHash: b64(sha256(new TextEncoder().encode(SEC))) }
+    const rows = { refUpdate: [pub, sealedRow(2, 901, narrow)], protectedRefUpdate: [] }
+    const k0 = await EpochKeys.import(REPO_ID, 0, new Uint8Array(32).fill(3))
+    const got = await membersUpdatesOf(rows, async (d) => openContent(d, await CTX(k0)), [], undefined, (d) => ring.open(d, d.enc))
+    expect(got.alerts).toEqual([{ id: id(2), kind: 'publicName' }])
+    expect(got.narrower.size).toBe(0)
+    expect(got.byName.get(SEC)?.map((u) => u.id)).toEqual([id(1)])
   })
 })
 

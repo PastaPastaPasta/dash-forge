@@ -120,4 +120,29 @@ describe('members-only branches on the branches page', () => {
     expect(q('members-only-refs-note')?.textContent).toContain('This repo also has members-only branches.')
     expect(q('members-refs-unlock')?.textContent).toBe('Unlock to see them')
   })
+
+  it('a narrower branch says who it is for and offers no Publish; one the member can\'t open is a nameless row', async () => {
+    const session = { members: [{ identity: 'o', role: 'maintainer' }, { identity: 'w', role: 'writer' }] }
+    const narrow = { ...ref('refs/heads/sec/embargo', FIX, 'members'), narrower: { audience: { group: 'maintainers', also: [] }, people: 3 } }
+    const h = home({ members: true, membersOnlyRefs: true, lane: { access: 'member', session } as unknown as RepoHome['lane'], membersRefs: { unreadable: 2, noAccess: 2 } })
+    await act(async () => root.render(<RefListContent home={{ ...h, branches: [...h.branches, narrow] } as unknown as RepoHome} addr={addr} kind="branches" />))
+    const row = el.querySelector('[data-testid="members-ref-row"][data-ref="sec/embargo"]')
+    expect(row?.querySelector('[data-testid="narrower-ref-audience"]')?.textContent).toBe('Maintainers only · visible to 3 people')
+    expect(row?.querySelector('[data-testid="members-ref-publish"]')).toBeNull()
+    // the members-only branch keeps its Publish…
+    expect(el.querySelector('[data-testid="members-ref-row"][data-ref="sec/fix"] [data-testid="members-ref-publish"]')).not.toBeNull()
+    const hidden = [...el.querySelectorAll('[data-testid="members-ref-no-access"]')]
+    expect(hidden.map((r) => r.textContent)).toEqual(["A branch you don't have access to", "A branch you don't have access to"])
+    expect(hidden.some((r) => r.querySelector('a') !== null)).toBe(false)
+  })
+
+  it('a member who can open none of them still sees the group, with the nameless rows', async () => {
+    const session = { members: [{ identity: 'o', role: 'maintainer' }] }
+    await act(async () => root.render(<RefListContent home={home({ membersOnlyRefs: true, lane: { access: 'member', session } as unknown as RepoHome['lane'], membersRefs: { unreadable: 1, noAccess: 1 } })} addr={addr} kind="branches" />))
+    expect(q('refs-group-members')?.textContent).toContain("A branch you don't have access to")
+    expect(q('members-only-refs-note')).toBeNull()
+    // tags list nothing of the kind
+    await act(async () => root.render(<RefListContent home={home({ membersOnlyRefs: true, lane: { access: 'member', session } as unknown as RepoHome['lane'], membersRefs: { unreadable: 1, noAccess: 1 } })} addr={addr} kind="tags" />))
+    expect(q('members-ref-no-access')).toBeNull()
+  })
 })

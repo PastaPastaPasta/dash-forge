@@ -20,6 +20,7 @@ import { bytesToHex } from '@noble/hashes/utils.js'
 
 import {
   PackError,
+  openBranchPack,
   manifestStanding,
   openPackStream,
   parseHeader,
@@ -27,6 +28,7 @@ import {
   readPackRange,
   concatBytes,
 } from '../private'
+import type { BranchRing } from '../private'
 import type { PackManifest } from '../repo'
 import type { PrivateSession } from '../repo/private-session'
 
@@ -110,4 +112,17 @@ export async function openPrivateArtifact(
   const parts: Uint8Array[] = []
   for await (const segment of openPackStream(sealed, copy.sizeBytes, session.ctx.keys)) parts.push(segment)
   return concatBytes(...parts)
+}
+
+/**
+ * The plaintext of a whole narrower branch's pack (DFPK 0x03, phase 3F): its sealed bytes must hash
+ * to `packHash`, then it opens with the branch key its KCV selects among every generation `ring`
+ * holds (forge-core `open_members_pack`). Throws `PackError`; `noKey` for one this member holds no
+ * key for, which readers skip.
+ */
+export async function openBranchArtifact(ring: BranchRing, copy: PackManifest, sealed: Uint8Array): Promise<Uint8Array> {
+  if (sealed.length !== copy.sizeBytes || bytesToHex(sha256(sealed)) !== copy.packHash.toLowerCase()) {
+    throw new PackError('sealedPackCorrupt')
+  }
+  return openBranchPack(sealed, copy.sizeBytes, ring.allKeys())
 }

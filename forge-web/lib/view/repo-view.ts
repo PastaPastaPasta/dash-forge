@@ -98,9 +98,11 @@ export interface RepoHome {
   readonly membersOnlyRefs?: boolean
   /**
    * A member's members-only refs were folded into `branches` and `tags` (each `audience:
-   * 'members'`): how many members-only updates they could not open (`members-branches.ts`).
+   * 'members'`): how many members-only updates they could not open, and how many narrower
+   * branches they hold no key for (`noAccess`: "A branch you don't have access to", never named;
+   * `members-branches.ts`).
    */
-  readonly membersRefs?: { readonly unreadable: number }
+  readonly membersRefs?: { readonly unreadable: number; readonly noAccess: number }
 }
 
 /**
@@ -157,7 +159,7 @@ export async function withMembersRefs(sdk: EvoSDK, home: RepoHome): Promise<Repo
     branches: [...home.branches.filter(isPublicRef), ...refs.branches],
     tags: [...home.tags.filter(isPublicRef), ...refs.tags],
     membersOnlyRefs: home.membersOnlyRefs === true || refs.branches.length + refs.tags.length + refs.unreadable > 0,
-    membersRefs: { unreadable: refs.unreadable },
+    membersRefs: { unreadable: refs.unreadable, noAccess: refs.noAccess },
   }
 }
 

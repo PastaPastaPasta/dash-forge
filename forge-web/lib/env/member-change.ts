@@ -8,7 +8,9 @@
  * 2. the change (the caller's membership write, and any key share or rotation);
  * 3. a maintainer removal's saves, each only if its environment still has the predicted heads;
  * 4. the regroup, planned again from a fresh read once the saves just made show, for the members
- *    as the change left them.
+ *    as the change left them;
+ * 5. the narrower branches whose audience it changes (phase 3F, `branch-letters.ts`): their key
+ *    letters, planned before signing with the rest and sent once the change landed.
  *
  * A save that fails is reported and the rest go on: the change is never undone for it, and making
  * the change again (or Save it again) finishes it, since plans compare actual recipients.
@@ -17,6 +19,7 @@
 import type { Membership, Role } from '../rules/v2'
 import { sleep } from '../sdk/facade'
 import { errText } from '../storage/util'
+import { NO_BRANCHES, branchPeople, planBranchLetters, sendBranchLetters, unreadBranches, type BranchLetterSender, type BranchPlan, type BranchReads, type LetterOutcome } from './branch-letters'
 import type { Exposure } from './chain'
 import { audienceLabel, compareStrings as cmp } from './format'
 import { exposureFor, snapshotOf, stateOf, unreadableCount, type EnvBook } from './loader'
@@ -37,6 +40,8 @@ export interface MemberEnvIO {
   readonly members: () => Promise<Membership[]>
   /** Each person's highest-id usable encryption key id (`null`: none). */
   readonly keys: (ids: readonly string[]) => Promise<ReadonlyMap<string, number | null>>
+  /** The signer's narrower branches and their letters (absent: a repo that can't have any, e.g. a private one). */
+  readonly branches?: BranchReads & BranchLetterSender
 }
 
 /** What a member change does to environments, shown before signing. */
@@ -57,6 +62,8 @@ export interface MemberEnvPlan {
   readonly exposures: readonly Exposure[]
   /** Environments the signer can't read at all (the checklist can't list them). */
   readonly unreadable: number
+  /** The narrower branches whose key letters it sends once the change landed. */
+  readonly branches: BranchPlan
   /** The most it all costs, in credits. */
   readonly credits: number
 }
@@ -117,6 +124,7 @@ export async function planMemberChange(io: MemberEnvIO, change: MemberChange, me
   const regroup = planRegroup(book, people, me, after, leaves ? member : null, skip)
   notUpdated.push(...regroup.notUpdated)
   const all = [...first, ...removal, ...regroup.pins]
+  const branches = await planBranches(io, owner, after)
   return {
     change,
     after,
@@ -127,7 +135,21 @@ export async function planMemberChange(io: MemberEnvIO, change: MemberChange, me
     notUpdated,
     exposures: change.kind === 'revoke' && leaves ? exposureFor(book, member, heldMembersKey) : [],
     unreadable: change.kind === 'revoke' && leaves ? unreadableCount(book) : 0,
-    credits: pinsCredits(all),
+    branches,
+    credits: pinsCredits(all) + branches.items.reduce((sum, i) => sum + i.credits, 0),
+  }
+}
+
+/** The narrower branches part of a plan; a read that fails sends nothing and says so. */
+async function planBranches(io: MemberEnvIO, owner: string, after: readonly Membership[]): Promise<BranchPlan> {
+  const b = io.branches
+  if (b === undefined) return NO_BRANCHES
+  try {
+    const held = await b.held()
+    if (held === null || held.ring.isEmpty) return { ...NO_BRANCHES, notHeld: b.notHeld() }
+    return planBranchLetters(held, b.notHeld(), owner, after, await io.keys(branchPeople(held, owner, after)))
+  } catch (e) {
+    return unreadBranches(e, b.notHeld())
   }
 }
 
@@ -145,6 +167,8 @@ export interface MemberChangeOutcome {
   readonly notUpdated: readonly NotUpdated[]
   /** What people who lost access could read (a demotion's; a removal shows its own checklist). */
   readonly gone: readonly { readonly who: string; readonly exposure: Exposure }[]
+  /** The narrower branches' key letters sent. */
+  readonly letters: readonly LetterOutcome[]
 }
 
 /** How long the regroup after a change waits for the saves just made to show in a read. */
@@ -278,17 +302,19 @@ export async function runMemberChange(
   // node a block behind would still predict the old heads and every save would be skipped.
   if (plan.removal.length > 0) await readUntil(io, (b) => !b.maintainers.has(plan.change.member))
   const removal = await savePins(io, saver, plan.removal)
+  // the narrower branches' letters, now that the change landed (each failure is reported)
+  const letters = io.branches === undefined ? [] : await sendBranchLetters(plan.branches, io.branches)
   const waitFor = [...first.hashes, ...removal.hashes]
   const saves = [...first.outcomes, ...removal.outcomes]
   // nothing planned and nothing saved just before: nothing to do
-  if (plan.regroup.length === 0 && plan.notUpdated.length === 0 && waitFor.length === 0) return { saves, notUpdated: [], gone: [] }
+  if (plan.regroup.length === 0 && plan.notUpdated.length === 0 && waitFor.length === 0) return { saves, notUpdated: [], gone: [], letters }
   const book = await readUntil(io, (b) => waitFor.every((h) => b.manifests.some((m) => m.packHash === h)))
-  if (book === null) return { saves: [...saves, { kind: 'unread', reason: "couldn't read the environments to save them again" }], notUpdated: [], gone: [] }
+  if (book === null) return { saves: [...saves, { kind: 'unread', reason: "couldn't read the environments to save them again" }], notUpdated: [], gone: [], letters }
   let people: PeopleKeys
   try {
     people = await peopleKeys(io, book, owner, saver.me, await io.members(), plan.after)
   } catch (e) {
-    return { saves: [...saves, { kind: 'unread', reason: `couldn't read the members to save the environments again (${errText(e)})` }], notUpdated: [], gone: [] }
+    return { saves: [...saves, { kind: 'unread', reason: `couldn't read the members to save the environments again (${errText(e)})` }], notUpdated: [], gone: [], letters }
   }
   // against the members as planned: a node a block behind may not list the change yet
   const regroup = planRegroup(book, { ...people, members: [...plan.after] }, saver.me, plan.after, plan.leaves ? plan.change.member : null)
@@ -303,5 +329,5 @@ export async function runMemberChange(
       }
     }
   }
-  return { saves: [...saves, ...done.outcomes], notUpdated: regroup.notUpdated, gone }
+  return { saves: [...saves, ...done.outcomes], notUpdated: regroup.notUpdated, gone, letters }
 }

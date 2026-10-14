@@ -6,6 +6,8 @@
  * environments it saves again, for whom, and what that costs, before signing; then saves them
  * around the change ({@link runMemberChange}); then lists what was saved and, for a removal, the
  * values to change where they're used, each with "Mark changed" (which opens the editor on them).
+ * A public repo's branches for fewer people than all members ride the same plan (phase 3F): the
+ * key of each whose audience the change changes is sent once it lands, when this member holds it.
  *
  * A repo with environments that this tab can't open (no encryption key here, or locked) is
  * refused before anything is signed: the change would leave them saved for the wrong people.
@@ -22,7 +24,7 @@ import { useDpnsName } from '@/hooks/use-dpns-name'
 import { useEnvWriter, useEnvironments, useRepoPeople } from '@/hooks/use-environments'
 import { exposureFor } from '@/lib/env/loader'
 import { MemberChangeFailed, planMemberChange, planPins, runMemberChange, type MemberChange, type MemberChangeOutcome, type MemberEnvPlan } from '@/lib/env/member-change'
-import { notUpdatedLine, outcomeLine, pinLine, planHeadline } from '@/lib/env/plan-view'
+import { branchLine, branchNoKeyLines, branchesNotUpdatedLines, letterOutcomeLine, notUpdatedLine, outcomeLine, pinLine, planHeadline } from '@/lib/env/plan-view'
 import { exposureLine, unreadableLine } from '@/lib/env/view'
 import type { Exposure } from '@/lib/env'
 import { EnvChangeDialog, type EnvChangeMode } from '@/components/repo/environment-editor'
@@ -48,6 +50,10 @@ function idsOf(plan: MemberEnvPlan | null, outcome: MemberEnvOutcome | null): st
     for (const n of plan.notUpdated) {
       if (n.kind === 'unreadable') ids.add(n.author)
       if (n.kind === 'hidden') for (const a of n.authors) ids.add(a)
+    }
+    for (const b of plan.branches.items) {
+      if (b.action.kind === 'joiners') for (const id of b.action.people) ids.add(id)
+      for (const id of b.noKey) ids.add(id)
     }
   }
   if (outcome !== null) {
@@ -84,6 +90,8 @@ export interface MemberEnvOutcome extends MemberChangeOutcome {
 
 export interface MemberEnvFlow {
   readonly plan: MemberEnvPlan | null
+  /** The plan covers the repo's environments (the membership write's guard is then satisfied). */
+  readonly envsPlanned: boolean
   /** Why the change can't run from this tab, shown in its dialog (Confirm stays disabled). */
   readonly blocked: ReactNode | null
   /** `base` plus the saves, or `'pending'` while the plan is read. */
@@ -108,13 +116,15 @@ export function useMemberEnvFlow(home: RepoHome, change: MemberChange | null, he
   const book = envs.state.data?.book ?? null
   const hasEnvironments = book !== null && book.manifests.length > 0
   const canOpen = envs.state.data?.encryption === 'open' && !envs.locked && writer !== null
+  // a member reading a public repo's members-only content may hold keys of narrower branches
+  const hasBranches = writer?.io.branches !== undefined
   const changeKey = change === null ? '' : JSON.stringify(change)
   const planned = useAsync<MemberEnvPlan>(
     () => planMemberChange(writer!.io, change!, identity!, home.repo.ownerId, heldMembersKey),
     [changeKey, heldMembersKey, writer === null, identity ?? ''],
-    { enabled: change !== null && writer !== null && identity !== null && hasEnvironments && canOpen },
+    { enabled: change !== null && writer !== null && identity !== null && book !== null && (hasEnvironments ? canOpen : hasBranches) },
   )
-  const plan = change === null || !hasEnvironments ? null : planned.data
+  const plan = change === null || (!hasEnvironments && !hasBranches) ? null : planned.data
   let blocked: ReactNode | null = null
   if (change !== null) {
     if (envs.state.error !== null) {
@@ -131,13 +141,15 @@ export function useMemberEnvFlow(home: RepoHome, change: MemberChange | null, he
           }
         />
       )
-    } else if (planned.error !== null) {
+    } else if (planned.error !== null && hasEnvironments) {
+      // without environments a plan that fails only leaves branch keys unsent: the change goes on
       blocked = <BlockedNote text={`Couldn't plan the environments to save again: ${planned.error}`} />
     }
   }
-  const waiting = change !== null && blocked === null && (book === null || (hasEnvironments && plan === null))
+  const waiting = change !== null && blocked === null && (book === null || ((hasEnvironments || hasBranches) && plan === null && planned.error === null))
   return {
     plan,
+    envsPlanned: plan !== null && hasEnvironments,
     blocked,
     cost: (base) => {
       if (waiting) return 'pending'
@@ -147,7 +159,7 @@ export function useMemberEnvFlow(home: RepoHome, change: MemberChange | null, he
     },
     confirmLabel: (fallback, verb) => (plan !== null && planPins(plan).length > 0 ? `Save and ${verb}` : fallback),
     run: async (doChange, precheck) => {
-      if (change === null || !hasEnvironments || plan === null || writer === null) {
+      if (change === null || plan === null || writer === null) {
         await doChange()
         return
       }
@@ -157,7 +169,7 @@ export function useMemberEnvFlow(home: RepoHome, change: MemberChange | null, he
       } catch (e) {
         if (!(e instanceof MemberChangeFailed)) throw e
         // the change failed after environments were saved first: say so, then the change's own error
-        setOutcome({ saves: e.saves, notUpdated: [], gone: [], member: change.member, exposures: [], unreadable: 0 })
+        setOutcome({ saves: e.saves, notUpdated: [], gone: [], letters: [], member: change.member, exposures: [], unreadable: 0 })
         throw e.cause
       } finally {
         envs.state.reload()
@@ -181,7 +193,9 @@ export function MemberEnvPlanView({ flow }: { flow: MemberEnvFlow }): JSX.Elemen
   const plan = flow.plan
   if (plan === null) return null
   const pins = planPins(plan)
-  if (pins.length === 0 && plan.notUpdated.length === 0 && plan.exposures.length === 0 && plan.unreadable === 0) return null
+  const branchNotes = branchesNotUpdatedLines(plan.branches)
+  const branches = plan.branches.items
+  if (pins.length === 0 && plan.notUpdated.length === 0 && plan.exposures.length === 0 && plan.unreadable === 0 && branches.length === 0 && branchNotes.length === 0) return null
   return (
     <WithNames
       ids={idsOf(plan, null)}
@@ -202,6 +216,27 @@ export function MemberEnvPlanView({ flow }: { flow: MemberEnvFlow }): JSX.Elemen
               <ul className="space-y-1 text-[12px] text-caution-700 dark:text-caution-400" data-testid="member-env-not-updated">
                 {plan.notUpdated.map((n, i) => (
                   <li key={i}>{notUpdatedLine(n, name)}</li>
+                ))}
+              </ul>
+            ) : null}
+            {branches.length > 0 ? (
+              <ul className="list-disc space-y-1 pl-5 text-[12px] text-anvil-600 dark:text-anvil-300" data-testid="member-branch-letters">
+                {branches.map((b) => (
+                  <li key={b.name}>
+                    {branchLine(b, name)}
+                    {branchNoKeyLines(b, name).map((l) => (
+                      <span key={l} className="block text-caution-700 dark:text-caution-400">
+                        {l}
+                      </span>
+                    ))}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            {branchNotes.length > 0 ? (
+              <ul className="space-y-1 text-[12px] text-caution-700 dark:text-caution-400" data-testid="member-branch-not-updated">
+                {branchNotes.map((l) => (
+                  <li key={l}>{l}</li>
                 ))}
               </ul>
             ) : null}
@@ -261,6 +296,13 @@ export function MemberEnvOutcomeView({ home, flow }: { home: RepoHome; flow: Mem
             <ul className="space-y-1 text-[12px] text-caution-700 dark:text-caution-400">
               {outcome.notUpdated.map((n, i) => (
                 <li key={i}>{notUpdatedLine(n, name)}</li>
+              ))}
+            </ul>
+          ) : null}
+          {outcome.letters.length > 0 ? (
+            <ul className="space-y-1 text-[12px] text-anvil-700 dark:text-anvil-200" data-testid="member-branch-letters-sent">
+              {outcome.letters.map((l) => (
+                <li key={l.branch}>{letterOutcomeLine(l)}</li>
               ))}
             </ul>
           ) : null}
