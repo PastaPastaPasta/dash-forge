@@ -23,7 +23,7 @@ use serde_json::json;
 use forge_core::collab::v2::{AskPlan, Collab, JobContent, NotShared, SharedCode, TargetKind};
 use forge_core::private::access_notice::{
     self, AccessNotice, Askers, Threads, MAY_CI_MEMBERS_BRANCHES, MAY_POST, MAY_POST_MEMBERS_ONLY,
-    MAY_READ_ON_REQUEST,
+    MAY_PUSH, MAY_READ_ON_REQUEST, PUSH_FIELD, PUSH_POLICY_FIELD,
 };
 use forge_core::private::key_letter::ReadTarget;
 use forge_core::private::DocKind;
@@ -43,8 +43,38 @@ pub enum BotCommand {
     /// branches. Everyone can see a bot's access.
     Allow(Box<AllowArgs>),
     /// Take a bot's access away (maintainers). It gets nothing new from now on; what it was
-    /// already given stays with it.
+    /// already given stays with it. With `--push`, only the push access you gave it.
     Revoke {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The bot: `@name`, a DPNS name or an identity id.
+        bot: String,
+        /// Only its push access.
+        #[arg(long)]
+        push: bool,
+    },
+    /// Give a bot's push access more time (maintainers): every branch it may push to gets a new
+    /// end date, and a members-only branch whose key changed since gets its access again.
+    Renew {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The bot: `@name`, a DPNS name or an identity id.
+        bot: String,
+        /// When its push access ends (`YYYY-MM-DD`, UTC; at most 90 days ahead). Default: in
+        /// 30 days.
+        #[arg(long, value_name = "DATE")]
+        until: Option<String>,
+    },
+    /// Stop a bot pushing at once (any maintainer). Only the maintainer who gave the push access,
+    /// or the owner, can remove it; `dg bot resume` lets it push again.
+    Suspend {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The bot: `@name`, a DPNS name or an identity id.
+        bot: String,
+    },
+    /// Let a suspended bot push again under the push access it still has (maintainers).
+    Resume {
         /// The repository (`owner/name`).
         repo: String,
         /// The bot: `@name`, a DPNS name or an identity id.
@@ -133,6 +163,23 @@ pub struct AllowArgs {
     /// A note everyone can read.
     #[arg(long, value_name = "TEXT", default_value = "")]
     pub note: String,
+    /// Let it push: to branches starting with a prefix (`bot/ci-bot/`, the default when no value
+    /// is given), to one branch and every branch whose name starts with it (`gh-pages`), or to
+    /// one members-only branch shared with it. Repeat for more. It never pushes to protected
+    /// branches.
+    #[arg(long, value_name = "BRANCH", num_args = 0..=1, default_missing_value = "")]
+    pub push: Vec<String>,
+    /// When its push access ends (`YYYY-MM-DD`, UTC; at most 90 days ahead). Default: in 30
+    /// days, or at `--until` when that is sooner.
+    #[arg(long, value_name = "DATE")]
+    pub push_until: Option<String>,
+    /// Let it force-push and delete the branches it may push to (default: fast-forward only,
+    /// and it deletes only branches it pushed).
+    #[arg(long)]
+    pub allow_force: bool,
+    /// Have it push new branches and open pull requests, never push to an existing branch.
+    #[arg(long)]
+    pub open_pr_only: bool,
 }
 
 /// `dg bot ask`.
@@ -162,7 +209,10 @@ impl BotCommand {
     pub fn context(&self) -> (&'static str, Option<&String>) {
         match self {
             BotCommand::Allow(a) => ("access not changed", Some(&a.repo)),
-            BotCommand::Revoke { repo, .. } => ("access not changed", Some(repo)),
+            BotCommand::Revoke { repo, .. }
+            | BotCommand::Renew { repo, .. }
+            | BotCommand::Suspend { repo, .. }
+            | BotCommand::Resume { repo, .. } => ("access not changed", Some(repo)),
             BotCommand::List { repo } => ("could not read the bots' access", Some(repo)),
             BotCommand::Ask(a) => ("nothing was sent to the bot", Some(&a.repo)),
             BotCommand::Jobs { repo, .. } => ("could not read the requests", Some(repo)),
@@ -175,7 +225,12 @@ impl BotCommand {
 pub async fn run(ctx: &Ctx, cmd: &BotCommand) -> Result<()> {
     match cmd {
         BotCommand::Allow(a) => allow(ctx, a).await,
-        BotCommand::Revoke { repo, bot } => revoke(ctx, repo, bot).await,
+        BotCommand::Revoke { repo, bot, push } => revoke(ctx, repo, bot, *push).await,
+        BotCommand::Renew { repo, bot, until } => {
+            crate::bot_push::renew(ctx, repo, bot, until.as_deref()).await
+        }
+        BotCommand::Suspend { repo, bot } => crate::bot_push::suspend(ctx, repo, bot, true).await,
+        BotCommand::Resume { repo, bot } => crate::bot_push::suspend(ctx, repo, bot, false).await,
         BotCommand::List { repo } => list(ctx, repo).await,
         BotCommand::Ask(a) => ask(ctx, a).await,
         BotCommand::Jobs { repo, since, bot } => jobs(ctx, repo, *since, bot.as_deref()).await,
@@ -205,8 +260,8 @@ fn threads_json(threads: &Threads) -> serde_json::Value {
 }
 
 /// `@name` for an identity: its DPNS name when it has one, else its id.
-async fn handle(s: &Session, id: &str) -> String {
-    s.client
+pub(crate) async fn handle(client: &forge_core::platform::PlatformClient, id: &str) -> String {
+    client
         .dpns_first_names(vec![id])
         .await
         .get(id)
@@ -215,7 +270,7 @@ async fn handle(s: &Session, id: &str) -> String {
 
 /// `YYYY-MM-DD` as the last millisecond of that day (UTC): access lasts through the day named,
 /// and the line everyone reads names that day.
-fn parse_until(date: &str) -> Result<u64> {
+pub(crate) fn parse_until(date: &str) -> Result<u64> {
     let bad = || crate::errors::usage(format!("--until {date:?}: give a date as YYYY-MM-DD"));
     let parts: Vec<&str> = date.split('-').collect();
     let [y, m, d] = parts.as_slice() else {
@@ -278,13 +333,13 @@ async fn require_not_a_member(s: &Session, bot: &str, name: &str) -> Result<()> 
 }
 
 /// Write `notice` after showing what everyone will read and asking.
-async fn write_notice(
+pub(crate) async fn write_notice(
     ctx: &Ctx,
     s: &Session,
     notice: &AccessNotice,
     name: &str,
     status: &str,
-    prompt: &str,
+    prompt: Option<&str>,
 ) -> Result<()> {
     let collab = s.collab();
     let line = access_notice::public_line(notice, name, forge_core::cache::now_ms());
@@ -298,7 +353,10 @@ async fn write_notice(
         eprintln!("Everyone will read: {}", safe(&line));
         eprintln!("  Cost: about {}", cost_line(est, ctx.usd_price()));
     }
-    ctx.confirm_or_cancel(prompt)?;
+    // `None`: the caller asked already (and wrote what the notice names)
+    if let Some(prompt) = prompt {
+        ctx.confirm_or_cancel(prompt)?;
+    }
     let ((ids, pack_hash), spent) = s
         .metered(|| collab.write_access_notice(&s.repo, notice))
         .await?;
@@ -312,6 +370,7 @@ async fn write_notice(
             "processor": notice.processor,
             "until": notice.until,
             "line": line,
+            "push": notice.push_entries().unwrap_or_default(),
             "notice": ids,
             "packHash": hex::encode(pack_hash),
             "cost": cost_json(spent, ctx.usd_price()),
@@ -353,7 +412,7 @@ async fn require_notice_writable(s: &Session, bot: &str, name: &str, revoking: b
 async fn allow(ctx: &Ctx, a: &AllowArgs) -> Result<()> {
     let s = Session::open_for_write(ctx, &a.repo, "access not changed").await?;
     let bot = resolve_identity(&s.client, &a.bot, "bot").await?;
-    let name = handle(&s, &bot).await;
+    let name = handle(&s.client, &bot).await;
     require_not_a_member(&s, &bot, &name).await?;
     require_notice_writable(&s, &bot, &name, false).await?;
     let notices = s.collab().access_notices(&s.repo).await?;
@@ -380,7 +439,8 @@ async fn allow(ctx: &Ctx, a: &AllowArgs) -> Result<()> {
     }
     may.sort();
     may.dedup();
-    if may.is_empty() {
+    // `--push` adds `push` once its grants are written
+    if may.is_empty() && a.push.is_empty() {
         return Err(crate::errors::usage(
             "that gives the bot nothing to do: to take its access away, run `dg bot revoke`",
         ));
@@ -443,6 +503,8 @@ async fn allow(ctx: &Ctx, a: &AllowArgs) -> Result<()> {
         .map(String::as_str)
         .filter(|m| !KNOWN_MAY.contains(m))
         .chain(notice.extra.keys().map(String::as_str))
+        // push access is carried over as it is and shown by `dg bot list`
+        .filter(|k| ![MAY_PUSH, PUSH_FIELD, PUSH_POLICY_FIELD].contains(k))
         .collect();
     if !kept.is_empty() && !ctx.json {
         eprintln!(
@@ -451,7 +513,14 @@ async fn allow(ctx: &Ctx, a: &AllowArgs) -> Result<()> {
         );
     }
     let prompt = format!("Give {} this access to {}?", safe(&name), s.repo.display());
-    write_notice(ctx, &s, &notice, &name, "allowed", &prompt).await?;
+    let mut notice = notice;
+    let asked = if a.push.is_empty() {
+        Some(prompt.as_str())
+    } else {
+        crate::bot_push::allow_push(ctx, &s, &bot, &name, a, &mut notice, &prompt).await?;
+        None
+    };
+    write_notice(ctx, &s, &notice, &name, "allowed", asked).await?;
     if notice.may(MAY_POST_MEMBERS_ONLY) {
         send_post_key(ctx, &s, &bot).await?;
     }
@@ -489,11 +558,14 @@ async fn send_post_key(ctx: &Ctx, s: &Session, bot: &str) -> Result<()> {
     Ok(())
 }
 
-async fn revoke(ctx: &Ctx, repo: &str, bot: &str) -> Result<()> {
+async fn revoke(ctx: &Ctx, repo: &str, bot: &str, push: bool) -> Result<()> {
     let s = Session::open_for_write(ctx, repo, "access not changed").await?;
     let bot = resolve_identity(&s.client, bot, "bot").await?;
-    let name = handle(&s, &bot).await;
+    let name = handle(&s.client, &bot).await;
     require_notice_writable(&s, &bot, &name, true).await?;
+    if push {
+        return crate::bot_push::revoke_push(ctx, &s, &bot, &name).await;
+    }
     let notices = s.collab().access_notices(&s.repo).await?;
     let Some(previous) = notices.for_bot(&bot).filter(|p| !p.notice.may.is_empty()) else {
         return Err(UserError::new(
@@ -514,26 +586,53 @@ async fn revoke(ctx: &Ctx, repo: &str, bot: &str) -> Result<()> {
         );
     }
     let prompt = format!("Stop {}'s access to {}?", safe(&name), s.repo.display());
-    write_notice(ctx, &s, &notice, &name, "revoked", &prompt).await
+    write_notice(ctx, &s, &notice, &name, "revoked", Some(&prompt)).await?;
+    // the push access this maintainer gave goes too (only its writer can delete a grant; the
+    // notice above already stops every push)
+    crate::bot_push::delete_own_grants(ctx, &s, &bot)
+        .await
+        .map(drop)
 }
 
 async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
-    let s = Session::open(ctx, repo).await?;
+    // everyone reads a public repository's notices and grants; a member's (or the bot's) key is
+    // loaded when there is one, so the members-only branches it may push to are named
+    let s = crate::common::Reader::open_discussion(ctx, repo).await?;
     let notices = s.collab().access_notices(&s.repo).await?;
     let now = forge_core::cache::now_ms();
     let mut rows = Vec::new();
     for e in notices.current.values() {
         let id = forge_core::platform::encode_identifier(e.notice.bot);
-        let name = handle(&s, &id).await;
-        let writer = handle(&s, &e.writer).await;
-        rows.push((id, name, writer, e));
+        let name = handle(&s.client, &id).await;
+        let writer = handle(&s.client, &e.writer).await;
+        let access = s.collab().bot_push_access(&s.repo, &id).await?;
+        let push = crate::bot_push::describe(&s.client, &s.collab(), &s.repo, &access, &name).await;
+        rows.push((id, name, writer, e, push));
+    }
+    // bots with push access and no notice yet
+    let svc = s.service();
+    let mut others: Vec<String> = svc
+        .read_push_grants(&s.repo, None)
+        .await?
+        .into_iter()
+        .map(|g| g.bot)
+        .filter(|b| !rows.iter().any(|r| r.0 == *b))
+        .collect();
+    others.sort_unstable();
+    others.dedup();
+    let mut bare = Vec::new();
+    for id in others {
+        let name = handle(&s.client, &id).await;
+        let access = s.collab().bot_push_access(&s.repo, &id).await?;
+        let push = crate::bot_push::describe(&s.client, &s.collab(), &s.repo, &access, &name).await;
+        bare.push((id, name, push));
     }
     ctx.emit(
         json!({
             "repo": s.repo.display(),
-            "count": rows.len(),
+            "count": rows.len() + bare.len(),
             "unreadable": notices.unreadable,
-            "bots": rows.iter().map(|(id, name, _, e)| json!({
+            "bots": rows.iter().map(|(id, name, _, e, push)| json!({
                 "bot": id,
                 "may": e.notice.may,
                 "askers": e.notice.askers,
@@ -546,18 +645,42 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
                 "at": e.created_at,
                 "line": access_notice::public_line(&e.notice, name, now),
                 "notice": e.id,
-            })).collect::<Vec<_>>(),
+                "push": push.0,
+            })).chain(bare.iter().map(|(id, _, push)| json!({
+                "bot": id,
+                "may": [],
+                "askers": null,
+                "threads": null,
+                "processor": null,
+                "until": null,
+                "live": false,
+                "note": null,
+                "by": null,
+                "at": null,
+                "line": null,
+                "notice": null,
+                "push": push.0,
+            }))).collect::<Vec<_>>(),
         }),
         || {
-            if rows.is_empty() {
+            if rows.is_empty() && bare.is_empty() {
                 println!("No bots yet. A bot can report checks, post comments and work on pull requests you ask it to. It only reads members-only content when someone asks it to work on that thread.");
             }
-            for (_, name, writer, e) in &rows {
+            for (_, name, writer, e, push) in &rows {
                 println!("{}", safe(&access_notice::public_line(&e.notice, name, now)));
+                for line in &push.1 {
+                    println!("  {line}");
+                }
                 if !e.notice.note.is_empty() {
                     println!("  {}", safe(&e.notice.note));
                 }
                 println!("  set by {}", safe(writer));
+            }
+            for (_, name, push) in &bare {
+                println!("{} has no access settings here.", safe(name));
+                for line in &push.1 {
+                    println!("  {line}");
+                }
             }
             if notices.unreadable > 0 {
                 eprintln!("note: {} access record(s) couldn't be read", notices.unreadable);
@@ -727,7 +850,7 @@ async fn ask(ctx: &Ctx, a: &AskArgs) -> Result<()> {
     let s = Session::open_for_write(ctx, &a.repo, "nothing was sent to the bot").await?;
     s.refuse_if_banned("nothing was sent to the bot").await?;
     let bot = resolve_identity(&s.client, &a.bot, "bot").await?;
-    let name = handle(&s, &bot).await;
+    let name = handle(&s.client, &bot).await;
     let (kind, number) = match (a.pr, a.issue) {
         (Some(n), _) => (TargetKind::Patch, n),
         (None, Some(n)) => (TargetKind::Issue, n),

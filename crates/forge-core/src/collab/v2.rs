@@ -59,10 +59,12 @@ use crate::rules::{self, aud, Event, EventKind, IssueState, PrState};
 use crate::scope::RepoRef;
 use crate::user_error::{codes, UserError};
 
+mod bot_push;
 mod bots;
 mod bundles;
 mod census;
 mod make_public;
+pub use bot_push::{BotPushAccess, GrantRequest, GrantableBranch};
 pub use bots::{
     ask_refused, not_asked_here, AskPlan, Asked, JobContent, JobPost, JobRead, LetterPlan,
     NotShared, Notices, ReceivedRead, SharedCode,
@@ -9174,6 +9176,15 @@ impl<'a> Collab<'a> {
             bridge,
             Arc::clone(&self.keyring),
         ))
+    }
+
+    /// The service for reading what anyone reads of a public repository: the signer's
+    /// ([`Self::repo_service`]) when there is one, else a plain reader.
+    pub(super) fn public_reader(&self) -> Result<crate::repo::RepoService<'a>> {
+        match self.signer {
+            Some(_) => self.repo_service(),
+            None => Ok(crate::repo::RepoService::reader(self.client)),
+        }
     }
 
     /// Whether `tag_name` is currently live for `repo`: its release revisions' `delta` sum to

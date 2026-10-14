@@ -1,0 +1,44 @@
+{
+  "name": "until_for",
+  "description": "a grant lasts 30 days by default and at most 90; a client asks for 10 minutes less than 90 days at most, so consensus (which judges against the block's time) never refuses what it accepted.",
+  "case": "bot_push",
+  "rules": "v2",
+  "input": {
+    "op": "untilFor",
+    "now": 1000000000,
+    "requested": [
+      null,
+      999999999,
+      1000000000,
+      1086400000,
+      8776000000,
+      8775400000,
+      8776000001
+    ]
+  },
+  "expected": {
+    "results": [
+      {
+        "until": 3592000000
+      },
+      {
+        "refused": "past"
+      },
+      {
+        "refused": "past"
+      },
+      {
+        "until": 1086400000
+      },
+      {
+        "until": 8775400000
+      },
+      {
+        "until": 8775400000
+      },
+      {
+        "refused": "tooFar"
+      }
+    ]
+  }
+}

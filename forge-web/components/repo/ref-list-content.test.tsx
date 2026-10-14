@@ -47,6 +47,10 @@ vi.mock('@/hooks/use-sdk', () => ({ useSdk: () => ({ sdk: {}, network: 'devnet',
 vi.mock('@/contexts/auth-context', () => ({ useAuth: () => ({ signer: { identityId: 'M', network: 'devnet' } }) }))
 vi.mock('@/hooks/use-write-guard', () => ({ useWriteGuard: () => ({ check: () => true, failed: (e: unknown) => String(e), disabledReason: null }) }))
 vi.mock('@/components/repo/private-compose', () => ({ privateComposeBlock: () => null }))
+/** The repo's bots whose pushes a branch row names (phase 4E; none before the registration). */
+let pushingBots: ReadonlySet<string> = new Set()
+vi.mock('@/lib/repo/push-grants', () => ({ readPushingBots: async () => pushingBots }))
+vi.mock('@/components/repo/bot-handle', () => ({ useHandle: (id: string) => `@${id.toLowerCase()}`, handleOf: (id: string) => id }))
 const READER: Record<string, unknown> = {
   forView: () => READER,
   forHistoryWalk: () => READER,
@@ -231,5 +235,44 @@ describe('RefListContent Activity links', () => {
     await act(async () => root.render(<RefListContent home={priv} addr={addr} kind="branches" />))
     await settle()
     expect(links()).toEqual([])
+  })
+})
+
+describe('RefListContent bot pushes', () => {
+  const withPusher = (author: string): RepoHome => {
+    const h = home(TAG_A, ['bot/ci-bot/fix'])
+    return {
+      ...h,
+      branches: h.branches.map((b) => (b.refName === 'refs/heads/bot/ci-bot/fix' ? { ...b, state: { state: 'resolved', oid: COMMIT_B, author, createdAt: 1 } } : b)),
+    } as unknown as RepoHome
+  }
+
+  it('says "pushed by @ci-bot (bot)" beside a branch a bot pushed last', async () => {
+    pushingBots = new Set(['CI-BOT'])
+    try {
+      await act(async () => root.render(<RefListContent home={withPusher('CI-BOT')} addr={addr} kind="branches" />))
+      await settle()
+      const marks = [...el.querySelectorAll('[data-testid="pushed-by-bot"]')].map((n) => n.textContent)
+      expect(marks).toEqual(['pushed by @ci-bot (bot)'])
+    } finally {
+      pushingBots = new Set()
+    }
+  })
+
+  it('says nothing for a person, or where bots cannot push (no bots read)', async () => {
+    pushingBots = new Set(['CI-BOT'])
+    try {
+      await act(async () => root.render(<RefListContent home={withPusher('ALICE')} addr={addr} kind="branches" />))
+      await settle()
+      expect(el.querySelector('[data-testid="pushed-by-bot"]')).toBeNull()
+    } finally {
+      pushingBots = new Set()
+    }
+    // a fresh page (the read is per page)
+    act(() => root.unmount())
+    root = createRoot(el)
+    await act(async () => root.render(<RefListContent home={withPusher('CI-BOT')} addr={addr} kind="branches" />))
+    await settle()
+    expect(el.querySelector('[data-testid="pushed-by-bot"]')).toBeNull()
   })
 })

@@ -45,6 +45,7 @@
 //! `helper::network_target`.
 
 mod admin;
+mod bot_push;
 mod fetched;
 mod git;
 mod helper;

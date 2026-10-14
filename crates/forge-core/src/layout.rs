@@ -38,7 +38,7 @@ pub enum ForgeContract {
 }
 
 /// forge-core's document types (RC1; `packMirror` added by UPDATE-1).
-pub const CORE_TYPES: [&str; 13] = [
+pub const CORE_TYPES: [&str; 14] = [
     "repo",
     "maintainer",
     "writer",
@@ -52,6 +52,7 @@ pub const CORE_TYPES: [&str; 13] = [
     "label",
     "topic",
     "packMirror",
+    "pushGrant",
 ];
 
 /// forge-collab's document types (RC1; `repoKey` moved in from core; `ban` added by UPDATE-1).
@@ -100,8 +101,9 @@ pub const META_TYPES: [&str; 7] = [
 /// drops `starBeat`, whose count the star's own `byWeek` index takes over. Clients read the
 /// shape from the loaded contract (`Collab::fused_star`), so both builds work. `packMirror` and
 /// `ban` arrive with UPDATE-1 (an in-place update, roadmap D4): a contract still at its first
-/// version, or one built with those flags off, has neither.
-pub const OPTIONAL_TYPES: [&str; 3] = ["starBeat", "packMirror", "ban"];
+/// version, or one built with those flags off, has neither. `pushGrant` is B1's (the mainnet
+/// set only, D42).
+pub const OPTIONAL_TYPES: [&str; 4] = ["starBeat", "packMirror", "ban", "pushGrant"];
 
 impl ForgeContract {
     /// The contract that holds `doc_type` on a three-contract set, or `None` for a type RC1

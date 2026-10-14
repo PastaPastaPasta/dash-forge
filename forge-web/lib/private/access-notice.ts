@@ -20,10 +20,23 @@
  *
  * Which notice counts ({@link currentNotices}): per bot, the newest whose manifest's `$ownerId` is
  * a **current** maintainer or the owner. A notice past its `until` allows nothing. Fields a later
- * version adds (phase 4E's `push`, `pushPolicy`) are kept in `extra` and ignored; abilities this
- * client does not know are kept in `may` and grant nothing here.
+ * version adds are kept in `extra` and ignored; abilities this client does not know are kept in
+ * `may` and grant nothing here.
+ *
+ * Push access (phase 4E, D42; `private-repos.md` §24.2): `may` gains `push`, and two fields in
+ * `extra` list the push grants the notice gives and the runner's push rules ({@link pushEntries},
+ * {@link pushPolicy}):
+ *
+ * ```text
+ * "push":[{"grant":hex32,"match":"prefix","ref":"refs/heads/bot/ci-bot/"},{"branch":hex32,"grant":hex32,"members":true}],
+ * "pushPolicy":{"deleteOwnOnly":true,"fastForwardOnly":true,"openPrNotPush":false}
+ * ```
+ *
+ * The grants are the truth; the list says which of them the notice's writer meant. A newer notice
+ * without `push` suspends every push ({@link setPush} with no entries).
  */
 
+import { prefixOf, shortPrefix } from '../rules/push-grant'
 import { bytesToHex, type Bytes } from './bytes'
 import { compareBytes } from './ids'
 import { decodeKeyLetter, encodeKeyLetter, hexExact, KeyLetterError, type JsonValue, type TypedLetter } from './key-letter'
@@ -41,6 +54,17 @@ export const MAY_POST_MEMBERS_ONLY = 'postMembersOnly'
 export const MAY_READ_ON_REQUEST = 'readOnRequest'
 /** `may`: run checks on members-only branches (phase 4C). */
 export const MAY_CI_MEMBERS_BRANCHES = 'ciMembersBranches'
+/**
+ * `may`: push under its push grants (phase 4E, D42). A newer notice without it suspends the bot's
+ * pushes: the runner stops and readers mark later pushes (any maintainer may write one).
+ */
+export const MAY_PUSH = 'push'
+/** The notice field listing the push grants it shows ({@link PushEntry}). */
+export const PUSH_FIELD = 'push'
+/** The notice field holding the runner's push rules ({@link PushPolicy}). */
+export const PUSH_POLICY_FIELD = 'pushPolicy'
+/** The most push grants a notice lists. */
+export const PUSH_MAX = 32
 
 /** The longest `processor` name, in characters. */
 export const PROCESSOR_MAX = 100
@@ -285,4 +309,131 @@ export function publicLine(n: AccessNotice, bot: string, now: number): string {
   if (n.processor !== null) out += ` Processed by ${n.processor}.`
   if (n.until !== null) out += ` Until ${dateWords(n.until)}.`
   return out
+}
+
+// ---------------------------------------------------------------------------------------------
+// Push access (phase 4E)
+// ---------------------------------------------------------------------------------------------
+
+/** What a {@link PushEntry} covers: public refs starting with `prefix`, or one members-only branch by its name hash under the branch key. */
+export type PushScope = { readonly prefix: string } | { readonly members: Uint8Array }
+
+/**
+ * One push grant as a notice lists it: `{"grant": id, "match": "prefix", "ref": prefix}` for a public
+ * prefix, `{"branch": scope, "grant": id, "members": true}` for one members-only branch (its name
+ * hash, which the grant document already shows). forge-core `PushEntry`.
+ */
+export interface PushEntry {
+  /** The grant's document id (32 bytes). */
+  readonly grant: Uint8Array
+  readonly target: PushScope
+}
+
+/** The runner's push rules a notice states (`pushPolicy`): conventions, not consensus (DESIGN §4.9 "Not consensus"). */
+export interface PushPolicy {
+  /** The bot only fast-forwards a branch (the default). */
+  readonly fastForwardOnly: boolean
+  /** The bot deletes only branches it pushed itself (the default). */
+  readonly deleteOwnOnly: boolean
+  /** The bot never pushes to a branch that exists: it pushes a new branch and opens a pull request from it. */
+  readonly openPrNotPush: boolean
+}
+
+/** Fast-forward only, delete own branches only, push (not only open pull requests). */
+export const DEFAULT_PUSH_POLICY: PushPolicy = { fastForwardOnly: true, deleteOwnOnly: true, openPrNotPush: false }
+
+const own = (o: object, k: string): boolean => Object.prototype.hasOwnProperty.call(o, k)
+const isObject = (v: JsonValue | undefined): v is { readonly [k: string]: JsonValue } => typeof v === 'object' && v !== null && !Array.isArray(v)
+
+function pushEntryJson(e: PushEntry): JsonValue {
+  return 'prefix' in e.target
+    ? { grant: bytesToHex(e.grant), match: 'prefix', ref: e.target.prefix }
+    : { branch: bytesToHex(e.target.members), grant: bytesToHex(e.grant), members: true }
+}
+
+/** One listed entry, or null for one a writer never makes (forge-core `PushEntry::from_value`). */
+function pushEntryOf(v: JsonValue): PushEntry | null {
+  if (!isObject(v)) return null
+  const grant = hexExact(v.grant, 32)
+  if (grant === null || Object.keys(v).length !== 3) return null
+  const [match, ref, branch, members] = ['match', 'ref', 'branch', 'members'].map((k) => (own(v, k) ? v[k] : undefined))
+  if (match === 'prefix' && typeof ref === 'string' && branch === undefined && members === undefined) {
+    // a prefix exactly as `prefixOf` gives it
+    const p = prefixOf(ref)
+    return 'prefix' in p && p.prefix === ref ? { grant, target: { prefix: ref } } : null
+  }
+  if (match === undefined && ref === undefined && branch !== undefined && members === true) {
+    const h = hexExact(branch, 32)
+    return h === null ? null : { grant, target: { members: h } }
+  }
+  return null
+}
+
+/**
+ * The push grants `n` lists (`push`), sorted by grant: empty when it lists none, null when the field
+ * is malformed (not a list, an entry a writer never makes, more than {@link PUSH_MAX}, unsorted or
+ * repeated): readers then treat it as allowing no push. forge-core `AccessNotice::push_entries`.
+ */
+export function pushEntries(n: AccessNotice): PushEntry[] | null {
+  if (!own(n.extra, PUSH_FIELD)) return []
+  const v = n.extra[PUSH_FIELD]
+  if (!Array.isArray(v)) return null
+  const out: PushEntry[] = []
+  for (const item of v as readonly JsonValue[]) {
+    const e = pushEntryOf(item)
+    if (e === null) return null
+    out.push(e)
+  }
+  return out.length <= PUSH_MAX && ascending(out, (a, b) => compareBytes(a.grant, b.grant) < 0) ? out : null
+}
+
+/** `n`'s push rules: the stated ones (exactly the three flags), else {@link DEFAULT_PUSH_POLICY}. forge-core `AccessNotice::push_policy`. */
+export function pushPolicy(n: AccessNotice): PushPolicy {
+  const v = own(n.extra, PUSH_POLICY_FIELD) ? n.extra[PUSH_POLICY_FIELD] : undefined
+  if (!isObject(v) || Object.keys(v).length !== 3) return DEFAULT_PUSH_POLICY
+  const { fastForwardOnly, deleteOwnOnly, openPrNotPush } = v
+  if (typeof fastForwardOnly !== 'boolean' || typeof deleteOwnOnly !== 'boolean' || typeof openPrNotPush !== 'boolean') return DEFAULT_PUSH_POLICY
+  return { fastForwardOnly, deleteOwnOnly, openPrNotPush }
+}
+
+/** Whether `n` lets the bot push: `push` among its abilities and a well-formed list. forge-core `AccessNotice::allows_push`. */
+export function allowsPush(n: AccessNotice): boolean {
+  return noticeMay(n, MAY_PUSH) && pushEntries(n) !== null
+}
+
+/**
+ * `n` with its push ability, list and rules set (forge-core `AccessNotice::set_push`): with entries
+ * (sorted by grant, each once), `push` joins `may` and the list is written; with none, `push`
+ * leaves `may` and the list is removed (a suspension). The rules are written either way, so a
+ * suspension and a resume keep them. Everything else is kept.
+ */
+export function setPush(n: AccessNotice, entries: readonly PushEntry[], policy: PushPolicy): AccessNotice {
+  const sorted: PushEntry[] = []
+  for (const e of [...entries].sort((a, b) => compareBytes(a.grant, b.grant))) {
+    const last = sorted[sorted.length - 1]
+    if (last === undefined || compareBytes(last.grant, e.grant) !== 0) sorted.push(e)
+  }
+  const extra: { [k: string]: JsonValue } = {}
+  for (const [k, v] of Object.entries(n.extra)) {
+    if (k !== PUSH_FIELD && k !== PUSH_POLICY_FIELD) Object.defineProperty(extra, k, { value: v, enumerable: true, writable: true, configurable: true })
+  }
+  const may = n.may.filter((m) => m !== MAY_PUSH)
+  // the rules are written either way, so a suspension and a resume keep them
+  extra[PUSH_POLICY_FIELD] = { deleteOwnOnly: policy.deleteOwnOnly, fastForwardOnly: policy.fastForwardOnly, openPrNotPush: policy.openPrNotPush }
+  if (sorted.length === 0) return { ...n, may, extra }
+  extra[PUSH_FIELD] = sorted.map(pushEntryJson)
+  return { ...n, may: [...may, MAY_PUSH].sort(), extra }
+}
+
+/**
+ * The line everyone reads about a bot's push access (DESIGN §10 "Public line addition"), for each
+ * prefix it may push to with when that ends: "Can push to bot/ci-bot/ until 7 Nov 2026."; members-only
+ * branches are counted, never named: "Can push to 1 members-only branch." Null when it may push
+ * nowhere. forge-core `access_notice::push_line`.
+ */
+export function pushLine(prefixes: readonly (readonly [string, number])[], membersBranches: number): string | null {
+  const parts = prefixes.map(([p, until]) => `${shortPrefix(p)} until ${dateWords(until)}`)
+  if (membersBranches === 1) parts.push('1 members-only branch')
+  else if (membersBranches > 1) parts.push(`${membersBranches} members-only branches`)
+  return parts.length === 0 ? null : `Can push to ${listWords(parts)}.`
 }
