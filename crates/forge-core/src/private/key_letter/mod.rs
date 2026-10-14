@@ -212,13 +212,11 @@ impl TypedLetter {
             return None;
         }
         let end = pt.iter().rposition(|b| *b != b' ')? + 1;
-        let value: Zeroizing<Vec<u8>> = Zeroizing::new(pt[..end].to_vec());
-        let Value::Object(mut fields) = serde_json::from_slice::<Value>(&value).ok()? else {
+        let Value::Object(mut fields) = serde_json::from_slice::<Value>(&pt[..end]).ok()? else {
             return None;
         };
-        let kind = match fields.remove("type")? {
-            Value::String(s) => s,
-            _ => return None,
+        let Value::String(kind) = fields.remove("type")? else {
+            return None;
         };
         let v = fields.remove("v")?.as_u64()?;
         let letter = Self { kind, v, fields };
@@ -246,8 +244,8 @@ fn hex32(v: &Value) -> Option<[u8; 32]> {
 }
 
 /// The key that names a members-only commit's check runs: `HMAC-SHA256(salt, "dash-forge/v2/
-/// check-name")` of the blind's salt (stream 3D, `private::members_check`): a runner and anyone
-/// holding the salt resolve the opaque check names of that commit.
+/// check-name")` of the blind's salt, `K_name` of [`super::members_check::CheckKeys`] (§19.9): a
+/// runner and anyone holding the salt resolve the opaque check names of that commit.
 #[must_use]
 pub fn check_name_key(salt: &Salt) -> Zeroizing<[u8; 32]> {
     let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(salt).expect("HMAC takes any key length");
@@ -586,6 +584,15 @@ mod tests {
         assert!(TypedLetter::decode(&pad("{\"type\":\"x\",\"v\":1.0}")).is_none());
         assert!(TypedLetter::decode(&pad("{\"type\":\"x\",\"v\":1}")).is_some());
         assert!(TypedLetter::decode(&pad("[1]")).is_none());
+    }
+
+    #[test]
+    fn the_check_name_key_is_the_check_runs_k_name() {
+        let salt = [0x5a; 32];
+        assert_eq!(
+            *check_name_key(&salt),
+            crate::private::members_check::CheckKeys::new(&salt).name_key_for_vectors()
+        );
     }
 
     #[test]

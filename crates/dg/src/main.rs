@@ -10,6 +10,7 @@ mod audience;
 mod auth;
 mod bans;
 mod branch;
+mod branch_share;
 mod ci;
 mod collab;
 mod common;
@@ -236,8 +237,8 @@ pub enum Command {
         #[arg(long)]
         history: bool,
     },
-    /// Branches and who can see them: list them, start a members-only branch, and delete the
-    /// local branches `dg publish` published.
+    /// Branches and who can see them: list them, start a members-only branch, share one with
+    /// someone as it is now, and delete the local branches `dg publish` published.
     ///
     /// `dg branch` alone lists this clone's repository's branches in two groups, Public and
     /// Members only (members see both; anyone else sees the public ones).

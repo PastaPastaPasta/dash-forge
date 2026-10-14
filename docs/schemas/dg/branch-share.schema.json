@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/branch-share.schema.json",
+  "title": "dg branch share --json",
+  "description": "A members-only branch shared, as it is now, with people who are not members (a key letter only they and you open; later pushes are not shared).",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "shared"
+      ]
+    },
+    "branch": {
+      "type": "string"
+    },
+    "ref": {
+      "type": "string"
+    },
+    "head": {
+      "type": "string"
+    },
+    "commits": {
+      "type": "integer",
+      "description": "Commits on the branch beyond the public branches."
+    },
+    "extraCommits": {
+      "type": "integer",
+      "description": "Commits the shared packs hold that are not on the branch (stored with its commits by another members-only branch or an earlier push)."
+    },
+    "packs": {
+      "type": "integer",
+      "description": "How many stored members-only packs the share opens."
+    },
+    "to": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "The identity ids it was shared with (you are always a recipient too)."
+    },
+    "letter": {
+      "type": "string",
+      "description": "The share's packManifest document id."
+    },
+    "packHash": {
+      "type": "string"
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "branch",
+    "ref",
+    "head",
+    "commits",
+    "extraCommits",
+    "packs",
+    "to",
+    "letter",
+    "packHash",
+    "cost"
+  ],
+  "additionalProperties": true
+}

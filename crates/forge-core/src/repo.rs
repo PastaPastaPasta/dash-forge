@@ -3650,6 +3650,49 @@ impl<'a> RepoService<'a> {
         Ok((id, pack_hash))
     }
 
+    /// Store `sealed`, a key letter ([`crate::private::key_letter`], `private-repos.md` §20), as
+    /// Platform `chunk` documents and record its kind-10 `packManifest` (`objectCount` 0, no
+    /// `tips`, no `supersedes`). Platform only, as an environment snapshot is stored: its
+    /// recipients must find it whatever storage they configured. Returns the manifest's document
+    /// id and the letter's `packHash`.
+    pub async fn store_key_letter(
+        &self,
+        repo: &RepoRef,
+        sealed: &[u8],
+    ) -> Result<(String, [u8; 32])> {
+        let chain = PlatformChunkTarget::new(self, repo, crate::storage::PLATFORM_PROFILE);
+        let targets: Vec<&dyn StorageTarget> = vec![&chain];
+        let meta = PackMeta::for_bytes(sealed);
+        let pack_hash = meta.pack_hash_bytes()?;
+        let rep = crate::storage::replicate(&targets, sealed, &meta, 1)
+            .await
+            .map_err(|e| {
+                Error::from(UserError::storage_policy_not_met(
+                    &e,
+                    "store the share",
+                    false,
+                ))
+            })?;
+        let stored = StoredArtifact::from_replication(&rep, sealed)?;
+        let id = self
+            .write_pack_manifest(
+                repo,
+                &PackManifestInput {
+                    pack_hash,
+                    kind: u64::from(crate::pack::KIND_KEY_LETTER),
+                    size_bytes: sealed.len() as u64,
+                    object_count: 0,
+                    chunk_count: stored.chunk_count,
+                    storage: stored.storage,
+                    uris: stored.uris,
+                    supersedes: Vec::new(),
+                    tips: Vec::new(),
+                },
+            )
+            .await?;
+        Ok((id, pack_hash))
+    }
+
     /// Store `bytes`, a maintainer's make-public bundle ([`crate::private::bundle`], DESIGN §4.6),
     /// as Platform `chunk` documents and record its kind-7 `packManifest` (`objectCount` 0, no
     /// `tips`, no `supersedes`). Platform only, as an environment snapshot is stored: every

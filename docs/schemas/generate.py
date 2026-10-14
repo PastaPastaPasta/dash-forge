@@ -583,6 +583,14 @@ cmd('branch list', 'The repository\'s branches and who can see them. A member se
 cmd('branch new', 'A branch started in this clone, and who will see it once pushed (null: what the repository decides).', {
     'status': E('created'), 'branch': S, 'audience': nl(AUD),
 }, ['status', 'branch'])
+cmd('branch share', 'A members-only branch shared, as it is now, with people who are not members (a key letter only they and you open; later pushes are not shared).', {
+    'status': E('shared'), 'branch': S, 'ref': S, 'head': S,
+    'commits': D('Commits on the branch beyond the public branches.', I),
+    'extraCommits': D('Commits the shared packs hold that are not on the branch (stored with its commits by another members-only branch or an earlier push).', I),
+    'packs': D('How many stored members-only packs the share opens.', I),
+    'to': D('The identity ids it was shared with (you are always a recipient too).', SA),
+    'letter': D('The share\'s packManifest document id.', S), 'packHash': S, 'cost': COST,
+}, ['status', 'branch', 'ref', 'head', 'commits', 'extraCommits', 'packs', 'to', 'letter', 'packHash', 'cost'])
 cmd('branch cleanup', 'The local branches whose content `dg publish` published: deleted, or listed with --dry-run.', {
     'deleted': A(BRANCH_ROW), 'wouldDelete': A(BRANCH_ROW), 'keptCurrent': A(BRANCH_ROW),
 }, ['deleted', 'wouldDelete', 'keptCurrent'])
