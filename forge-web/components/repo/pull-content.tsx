@@ -20,6 +20,10 @@
  * plaintext by design.
  */
 
+import { aliasedReader } from '@/lib/view/blind-reader'
+import { membersLane } from '@/lib/repo'
+import { blindBook } from '@/lib/repo/members-blinds'
+import { hexToBytes } from '@/lib/private'
 import { Byline, ItemAuthor, Time } from '@/components/repo/byline'
 import { AuthorRolesProvider } from '@/components/repo/author-roles'
 import { useMirrorTrust } from '@/hooks/use-mirror-trust'
@@ -56,7 +60,7 @@ import {
 import { STATE_FILL, STATE_TEXT } from '@/lib/design/state'
 
 import type { PullThread, RepoHome, TimelineItem } from '@/lib/view'
-import { ACL_NAME, ARCHIVED_REASON, forkSourcePrefix, isLive, isMembersOnlyTarget, loadPullOrMembersOnly, loadPullThread, plural, policyOf, pullActions, type CommentView, type MembersOnlyTarget } from '@/lib/view'
+import { ACL_NAME, ARCHIVED_REASON, forkSourcePrefix, isLive, isMembersOnlyTarget, isPublicRef, loadPullOrMembersOnly, loadPullThread, plural, policyOf, pullActions, type CommentView, type MembersOnlyTarget } from '@/lib/view'
 import { NO_LETTER_ASK, QUOTE_CONFIRM, forwardText, notPublic, publicLineQuestion, publicTextOf, quotesMembersText, type ComposerAudience, type LetterAsk } from '@/lib/view/audience'
 import { AudienceChip, AudienceMark, AudienceWarnings, MEMBERS_CARD, MEMBERS_CARD_HEADER, MembersOnlyTargetPage, closeWithComment, letterThreadOf, useAudienceWarnings, useComposerAudience, useMembersTexts, useQuoteGate, warningName } from '@/components/repo/audience'
 import { commentDraftKey, commentEditDraftKey, discardedEdits, editDraftKey, useDraftText, useEditDraft } from '@/lib/view/draft-text'
@@ -254,6 +258,8 @@ type Pending =
   | { kind: 'delete-comment'; id: string }
   /** The author makes their members-only comment public; `losesFile`: an inline one, whose file name can't be kept (DESIGN §4.6). */
   | { kind: 'make-public'; id: string; quoted: string | null; losesFile: boolean }
+  /** The author makes their members-only PR's title and description public (DESIGN §4.6; its branches stay unnamed). */
+  | { kind: 'make-pull-public'; quoted: string | null }
   /** The author makes their members-only review's text public, as a comment attached to it. */
   | { kind: 'make-review-public'; id: string; text: string; quoted: string | null }
   | { kind: 'resolve'; root: string; resolve: boolean }
@@ -369,6 +375,25 @@ function PullPage({
 
   const { pull, timeline, review } = thread
   const repo = home.repo
+  // A members-only PR from a members-only branch (from the PR document itself, never from the branch
+  // list) folds on its blinded heads; git reads (the commit list, the branch's sync, the merge, an
+  // inline comment's code) take the real commits a member's session verified behind this PR's own
+  // blinds, and no other blind.
+  const membersPull = pull.membersPatch !== undefined
+  const membersSource = membersPull && pull.membersPatch?.sourcePublic === false
+  const lane = membersLane(repo)
+  const prBlinds = useMemo(() => {
+    const out = new Map<string, string>()
+    if (!membersPull || lane === undefined) return out
+    const book = blindBook(lane.ctx)
+    for (const blind of [pull.initialHeadOid, ...pull.review.headUpdates.map((h) => h.oid)]) {
+      const real = book.realOf(blind)
+      if (real !== undefined) out.set(blind.toLowerCase(), real)
+    }
+    return out
+  }, [membersPull, lane, pull.initialHeadOid, pull.review.headUpdates])
+  const gitOid = (oid: string): string => prBlinds.get(oid.toLowerCase()) ?? oid
+  const gitHead = gitOid(pull.headOid)
   // Who may mirror: an imported PR of theirs shows its original author, date, base and head (FG-6).
   const trust = useMirrorTrust(repo)
   // A mirrored PR's reviewers as they reviewed on the source forge (QW-017), not the mirror identity.
@@ -435,20 +460,20 @@ function PullPage({
   }
 
   // ---- the comparison (Files changed, the tab counts, the commit list) -----------------------
-  const spec = pullSpec(pull, home, pullOrigin?.baseOid ?? '')
+  const spec = pullSpec({ ...pull, headOid: gitHead }, home, pullOrigin?.baseOid ?? '')
   const comparison = usePullComparison(repo, pull.sourceId, spec)
   const cmp = comparison.data
   const headReader = cmp?.sides.head ?? null
   const { baseTipOid } = pullBase(pull, home)
   const commits = useAsync(
-    () => prCommits(headReader!, prHaveSet({ baseTipOid, comparedBaseOid: cmp!.comparedBaseOid, fellBack: cmp!.fellBack === true, merged: pull.state.merged }), pull.headOid),
-    [cmp === null ? '' : `${cmp.comparedBaseOid}:${comparison.sidesKey}`, pull.headOid, baseTipOid],
+    () => prCommits(headReader!, prHaveSet({ baseTipOid, comparedBaseOid: cmp!.comparedBaseOid, fellBack: cmp!.fellBack === true, merged: pull.state.merged }), gitHead),
+    [cmp === null ? '' : `${cmp.comparedBaseOid}:${comparison.sidesKey}`, gitHead, baseTipOid],
     { enabled: headReader !== null && cmp !== null },
   )
   // Merge integrity: whether the recorded merge commit contains this PR (a squash or a rebase of
   // it counts), read through the comparison's readers once it has loaded. Git objects only: no
   // Platform reads beyond the page's own.
-  const mergeHead = merged && pull.mergedAt !== undefined ? headAt(pull.review.headUpdates, pull.initialHeadOid, pull.mergedAt) : ''
+  const mergeHead = merged && pull.mergedAt !== undefined ? gitOid(headAt(pull.review.headUpdates, pull.initialHeadOid, pull.mergedAt)) : ''
   const mergeCheck = useAsync(
     () => checkMerge(cmp!.sides, { headOid: mergeHead, mergeOid: pull.mergeOid!, tipBefore: pull.baseOidAtMerge ?? '' }),
     [pull.mergeOid ?? '', mergeHead, pull.baseOidAtMerge ?? '', comparison.sidesKey],
@@ -525,20 +550,21 @@ function PullPage({
     // Read for a merged or closed PR too: its sidebar says whether the branch still exists (QW2-053).
     { enabled: ready && sdk !== null && pull.sourceRefName !== null && (!crossRepo || sourceRef !== null) },
   )
-  const readSync = sourceState.settled && !sourceState.error && pull.sourceRefName !== null ? headSync(pull.headOid, sourceState.data) : null
+  const readSync = sourceState.settled && !sourceState.error && pull.sourceRefName !== null ? headSync(gitHead, sourceState.data) : null
   // A branch this page just deleted or restored, until a read of it catches up (QW3-053: right
   // after "Delete … after merging" the node may still answer with the old tip).
   const [branchWrite, setBranchWrite] = useState<BranchWrite | null>(null)
   const [checkingDependents, setCheckingDependents] = useState(false)
   // Once a read shows the write, the read alone speaks again (later changes by others included).
   if (branchWrite !== null && readSync !== null && readSync.kind === (branchWrite.to === 'deleted' ? 'deleted' : 'in-sync')) setBranchWrite(null)
-  const sync = branchShown(readSync, branchWrite, pull.sourceRefName, pull.headOid)
+  const sync = branchShown(readSync, branchWrite, pull.sourceRefName, gitHead)
   // ---- new pushes (#453) ------------------------------------------------------------------------
   // An open PR notices a push while it is shown: one light probe a minute while the tab is
   // visible, and on focus (`useHeadProbe`). It asks only for what is newer than this read: the
   // PR's events past `eventMark`, and the source branch's newest update when it is readable from
   // here and its state was read. It never swaps the diff: the reader refreshes.
-  const probeSource = sourceState.settled && !sourceState.error ? sourceRefOf() : null
+  // A members-only branch is not probed (its updates are sealed; the PR's events still are).
+  const probeSource = sourceState.settled && !sourceState.error && !membersSource ? sourceRefOf() : null
   const probeKnown = probeSource === null ? null : sourceState.data
   const probeBase = useMemo(
     () =>
@@ -672,8 +698,8 @@ function PullPage({
     async () => {
       const c = cmp!
       const prPaths = c.truncated || c.upToDate === true || c.fellBack === true ? null : new Set(c.changes.flatMap((x) => (x.oldPath ? [x.path, x.oldPath] : [x.path])))
-      const likely = await unrecordedMergeLikely(c.sides, { tip: pull.baseTipOid, prev: pull.baseTipPrev ?? '', head: pull.headOid, prPaths, tipContainsHead: c.tipContainsHead === true })
-      return likely ? checkMerge(cmp!.sides, { headOid: pull.headOid, mergeOid: pull.baseTipOid, tipBefore: pull.baseTipPrev ?? '' }) : null
+      const likely = await unrecordedMergeLikely(c.sides, { tip: pull.baseTipOid, prev: pull.baseTipPrev ?? '', head: gitHead, prPaths, tipContainsHead: c.tipContainsHead === true })
+      return likely ? checkMerge(cmp!.sides, { headOid: gitHead, mergeOid: pull.baseTipOid, tipBefore: pull.baseTipPrev ?? '' }) : null
     },
     [pull.baseTipOid, pull.baseTipPrev ?? '', pull.headOid, comparison.sidesKey],
     { enabled: cmp !== null && unrecordedMergeCandidate(recordInputs) },
@@ -682,7 +708,8 @@ function PullPage({
   // The same, except the base also changed files the PR changes: not recordable here (Q5-A01).
   const unverifiedOid = unverifiedMerge(recordInputs, unrecordedCheck.data ?? null)
   // "Mark as merged (done elsewhere)" is offered on a ready PR whose head is on the base already.
-  const showMarkMerged = actions.canMarkMerged && !pull.state.draft && recordOid === null
+  // A members-only PR's head is a blind: it is published from the merge box, never marked merged at it.
+  const showMarkMerged = actions.canMarkMerged && !pull.state.draft && recordOid === null && !membersPull
   const base = shortBranch(pull.mergeBaseRefName) || 'the base branch'
   const canAuthorOrMember = authorOrMember && !archived
   // Who may request reviews (the author, or a member down to triage).
@@ -860,7 +887,8 @@ function PullPage({
     ],
     [thread.comments, carryPairs, pull.headOid],
   )
-  const snippetTexts = useSnippetTexts(tab === 'conversation' || (tab === 'files' && carryPairs.length > 0) ? headReader : null, snippetSources)
+  const snippetReader = useMemo(() => (headReader === null ? null : aliasedReader(headReader, prBlinds)), [headReader, prBlinds])
+  const snippetTexts = useSnippetTexts(tab === 'conversation' || (tab === 'files' && carryPairs.length > 0) ? snippetReader : null, snippetSources)
   // One line diff per file and older head, however many comments sit on it.
   const lineMaps = useMemo(() => {
     const out = new Map<string, LineMap | null>()
@@ -915,7 +943,8 @@ function PullPage({
     // The head update's member route is role 1's (event kind 16); anyone else updates as the author.
     isMember: caps.canPush,
     isAuthor,
-    signedIn: identity !== null && guard.disabledReason === null && !archived,
+    // A members-only branch is pushed with git: the web commits nothing to it (suggestions, Update branch).
+    signedIn: identity !== null && guard.disabledReason === null && !archived && !membersSource,
     branchAhead: sync?.kind === 'ahead',
     onCommitted: (c) => refresh((t) => t.pull.headOid === c),
   })
@@ -1179,8 +1208,18 @@ function PullPage({
           expectedRevision: BigInt(pull.revision),
           seal: {
             current: { title: pull.title, body: pull.long?.field ?? pull.body, baseRefName: pull.baseRefName, sourceRefName: pull.sourceRefName ?? undefined },
-            bind: { number: pull.number },
+            bind: { number: pull.number, ...(pull.membersPatch !== undefined ? { headOid: hexToBytes(pull.initialHeadOid) } : {}) },
             ...(pull.epoch !== null ? { patchEpoch: pull.epoch } : {}),
+            // A members-only PR keeps its branch hashes and its own head's real value and salt.
+            ...(pull.membersPatch !== undefined
+              ? {
+                  members: {
+                    basePublic: pull.membersPatch.basePublic,
+                    sourcePublic: pull.membersPatch.sourcePublic,
+                    ...(pull.membersPatch.head !== undefined ? { head: { real: hexToBytes(pull.membersPatch.head.real), salt: hexToBytes(pull.membersPatch.head.salt) } } : {}),
+                  },
+                }
+              : {}),
             imported: pull.importedRaw ?? null,
           },
           intent,
@@ -1225,6 +1264,17 @@ function PullPage({
         refresh((t) => t.comments.some((x) => x.id === p.id && x.audience !== 'members'))
         return
       }
+      case 'make-pull-public':
+        await makePostPublic(sdk, signer, repo, {
+          type: 'patch',
+          id: pull.id,
+          opened: { title: pull.title, ...(pull.body === '' ? {} : { body: pull.body }), ...provenanceOf(pull.importedRaw) },
+          expectedRevision: BigInt(pull.revision),
+          dropProof: holdings.data !== null && !isMember,
+          intent,
+        })
+        refresh((t) => t.pull.audience === undefined)
+        return
       case 'make-review-public':
         await makeReviewTextPublic(sdk, signer, repo, { reviewId: p.id, patchId: pull.id, text: p.text, post: postContext, intent })
         refresh((t) => t.reviews.some((r) => r.id === p.id && r.madePublic === true))
@@ -1300,6 +1350,8 @@ function PullPage({
         return previewReplace('comment', { body: thread.comments.find((x) => x.id === pending.id)?.body ?? '' })
       case 'make-review-public':
         return composeCost(repo, 'comment', { body: pending.text }, commentFirst)
+      case 'make-pull-public':
+        return previewReplace('patch', { title: pull.title, body: pull.body })
       default:
         return eventCost
     }
@@ -1389,7 +1441,7 @@ function PullPage({
   // or deleted, and the viewer may restore it at the head (QW3-052).
   const closedBranch = ((): { label: string; restore: boolean; run: () => Promise<void> } | null => {
     const name = pull.sourceRefName
-    if (open || closedSource === null || name === null || (sync?.kind !== 'in-sync' && sync?.kind !== 'deleted')) return null
+    if (open || closedSource === null || name === null || membersSource || (sync?.kind !== 'in-sync' && sync?.kind !== 'deleted')) return null
     const label = `${sourcePrefix}${shortBranch(name)}`
     if (sync.kind === 'deleted') {
       // Who could delete it may restore it: the head is still stored there (only the ref moved).
@@ -1417,12 +1469,14 @@ function PullPage({
   const checkSourceBranch = async (): Promise<string | null> => {
     const name = pull.sourceRefName
     if (!sdk || name === null || branchRepo === null) return null
-    const tip = await readBranchTip(sdk, branchRepo, name)
-    if (tip === null || tip.toLowerCase() === pull.headOid.toLowerCase()) return null
+    // A members-only branch is never read by its public hash (the nodes would learn `sha256(name)`):
+    // its tip is the member's fold, read with the home.
+    const tip = membersSource ? (tipOidOf(home.branches.find((b) => b.refName === name)) ?? null) : await readBranchTip(sdk, branchRepo, name)
+    if (tip === null || tip.toLowerCase() === gitHead.toLowerCase()) return null
     // Show the banner with its "Update PR head" (a same-repo branch is read from the repo home).
     if (crossRepo) sourceState.reload()
     else reloadHome?.()
-    return `${shortBranch(name)} moved to ${tip.slice(0, 7)} since this page read it, ahead of this PR's head ${pull.headOid.slice(0, 7)}. Update the PR head first, so the merge includes those commits.`
+    return `${shortBranch(name)} moved to ${tip.slice(0, 7)} since this page read it, ahead of this PR's head ${gitHead.slice(0, 7)}. Update the PR head first, so the merge includes those commits.`
   }
 
   // A merge (the box's, or "Mark as merged") judged again at the click with the members (and a
@@ -1494,6 +1548,13 @@ function PullPage({
                 <Pencil className="h-3.5 w-3.5" aria-hidden /> Edit
               </Button>
             ) : null}
+            {isAuthor && (pull.audience === 'members' || pull.audience === 'specificPeople') && repo.visibility === 'public' ? (
+              <MakePublicButton
+                onClick={() => setPending({ kind: 'make-pull-public', quoted: quotedPost(`${pull.title}\n${pull.body}`, pull.author, 'pull request') })}
+                disabled={writeBlocked || guard.disabledReason !== null || longEditBlock(pull.long) !== null}
+                title={longEditBlock(pull.long) ?? undefined}
+              />
+            ) : null}
             {canBundle && isMaintainer && othersInThread ? <MakeOthersPublicButton thread onClick={() => setBundleAsk(threadPosts)} /> : null}
           </div>
         )}
@@ -1515,7 +1576,7 @@ function PullPage({
             <span className="font-mono" data-testid="pr-base">{shortBranch(pull.mergeBaseRefName) || '?'}</span>
             {open && canMember && caps.canRetarget ? (
               <EditBase
-                branches={home.branches.filter(isLive).map((b) => b.refName)}
+                branches={home.branches.filter((b) => isLive(b) && isPublicRef(b)).map((b) => b.refName)}
                 current={pull.mergeBaseRefName}
                 source={crossRepo ? null : pull.sourceRefName}
                 defaultBranch={home.defaultBranch}
@@ -1552,7 +1613,7 @@ function PullPage({
           {mergeCheck.data ? <MergeContentNote content={mergeCheck.data} mergeOid={pull.mergeOid ?? ''} /> : null}
           {pull.headOid ? (
             <span className="flex items-center gap-1 text-anvil-500 dark:text-anvil-400" data-testid="pr-head">
-              head <Oid value={pull.headOid} chars={9} />
+              head <Oid value={gitHead} chars={9} />
             </span>
           ) : null}
           {refreshing ? <span className="text-[12px] text-anvil-500 dark:text-anvil-400">Refreshing…</span> : null}
@@ -1908,8 +1969,8 @@ function PullPage({
                       <VerdictLine approvals={null} proved={thread.verdicts} headOid={pull.headOid} />
                     </section>
                   ) : null}
-                  <ChecksRow summary={checkSummary} headOid={pull.headOid} onOpen={() => setTab('checks')} />
-                  {open && baseTipOid !== '' && cmp !== null && cmp.upToDate !== true && cmp.comparedBaseOid !== baseTipOid && (suggest.write.can || isAuthor) ? (
+                  <ChecksRow summary={checkSummary} headOid={gitHead} onOpen={() => setTab('checks')} />
+                  {open && baseTipOid !== '' && cmp !== null && cmp.upToDate !== true && cmp.comparedBaseOid !== baseTipOid && !membersSource && (suggest.write.can || isAuthor) ? (
                     <section aria-label="Update branch" className="flex flex-wrap items-center gap-3 rounded-lg border border-anvil-200 px-4 py-2 text-dense dark:border-anvil-800" data-testid="update-branch">
                       <RefreshCw className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
                       <span className="min-w-0 flex-1">
@@ -1990,7 +2051,25 @@ function PullPage({
                       ? null
                       : { authors: commitAuthors(commits.data.commits), complete: !commits.data.truncated },
                   closeIssues: closeLinked,
+                  // A members-only branch into a public base: the merge box publishes (DESIGN §4.3);
+                  // without the real head it cannot (a note says so, never a merge on the blind).
+                  ...(membersSource && (pull.realHeadOid === undefined || pull.sourceRefName === null) ? { publishBlocked: true } : {}),
+                  ...(membersSource && pull.realHeadOid !== undefined && pull.sourceRefName !== null
+                    ? {
+                        publish: {
+                          realHead: pull.realHeadOid,
+                          source: pull.sourceRefName,
+                          commits: commits.data === null ? null : commits.data.commits.map((c) => c.oid),
+                          commitsPartial: commits.data?.truncated === true,
+                          authors: commits.data === null ? [] : commitAuthors(commits.data.commits),
+                          changes: cmp === null ? null : cmp.changes,
+                          changesPartial: cmp?.truncated === true,
+                        },
+                      }
+                    : {}),
                   deleteBranch: (() => {
+                    // A members-only branch is deleted with git: the web writes no members-only ref.
+                    if (membersSource) return null
                     const src = sourceRef ?? (crossRepo ? null : repo)
                     const name = pull.sourceRefName
                     // `sourceDefault.data` is null until the default branch has been read (and after a failed read).
@@ -2079,7 +2158,7 @@ function PullPage({
                   <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-anvil-100 pt-3 dark:border-anvil-850">
                     {newerThanHead !== null ? <StaleHeadNote headOid={pull.headOid} newer={newerThanHead} testId="quick-review-stale-head" className="w-full" /> : null}
                     <span className="text-dense text-anvil-500 dark:text-anvil-400">
-                      Review head <span className="font-mono">{pull.headOid.slice(0, 9)}</span>:
+                      Review head <span className="font-mono">{gitHead.slice(0, 9)}</span>:
                     </span>
                     {(Object.keys(VERDICT_TEXT) as VerdictInput[]).filter((v) => !isAuthor || v === 'comment').map((v) => (
                       <Button
@@ -2345,7 +2424,7 @@ function PullPage({
                     The branch was deleted. The PR&apos;s head is <Oid value={pull.headOid} chars={7} copyable={false} />
                     {merged ? `, in ${shortBranch(pull.mergeBaseRefName)}'s history:` : '.'}
                   </p>
-                  {merged ? <CopyRow text={`git switch --detach ${pull.headOid}`} label="Copy the checkout command" className="mt-2" /> : null}
+                  {merged ? <CopyRow text={`git switch --detach ${gitHead}`} label="Copy the checkout command" className="mt-2" /> : null}
                 </>
               ) : (
                 <CopyRow text={checkout} label="Copy the checkout command" className="mt-2" />
@@ -2610,6 +2689,8 @@ function confirmText(pending: Pending | null, number: number, isMember: boolean,
       return makePublicWords('comment', pending.quoted, pending.losesFile)
     case 'make-review-public':
       return makePublicWords('review', pending.quoted)
+    case 'make-pull-public':
+      return makePublicWords('pull request', pending.quoted)
     case 'resolve':
       return pending.resolve
         ? { title: 'Resolve conversation', description: `Appends ${via} naming the thread. It collapses for everyone; anyone who can resolve it can unresolve it.`, label: 'Sign & resolve' }

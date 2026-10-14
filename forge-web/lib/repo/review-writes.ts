@@ -39,7 +39,7 @@ import { childAudience, membersWriter, repoHasMembersKey, sealMembersEdit, store
 import { invalidateRepoFeed, readReviews, readTargetLog } from './issues'
 import { readMemberships } from './members'
 import { readRunners } from './checks'
-import { PrivateWriteError, sealEdit } from './private-writes'
+import { PrivateWriteError, sealEdit, type MembersPatch } from './private-writes'
 import { bodyRoom, longBodyField } from './long-body'
 import { refitLongBodyField } from '../rules/long-body'
 import { bypassValue } from '../view/pull-actions'
@@ -861,6 +861,11 @@ export interface SealContext {
   readonly current: Readonly<Record<string, unknown>>
   readonly bind: Readonly<Record<string, unknown>>
   readonly patchEpoch?: number
+  /**
+   * A members-only PR: how it names its branches and its own head (its real value and salt, TLV
+   * 24 and 27), which an edit carries over (`sealMembersEdit`). `bind` then holds its blinded `headOid`.
+   */
+  readonly members?: MembersPatch
   /** An imported document's provenance as read (decrypted): kept in the re-sealed content. */
   readonly imported?: Readonly<Record<string, unknown>> | null
   /** An opened message to specific people: who it went to, which its edit is re-sealed to. */
@@ -970,7 +975,7 @@ async function replace(
       if (seal === undefined) throw new PrivateWriteError(`this ${documentType} is members-only, and an edit keeps who can read it; nothing was written`)
       if (expectedRevision === undefined) throw new Error(`a members-only ${documentType} edit needs the revision it was read at`)
       await precheckEdit(sdk, auth, { contractId: contractFor(repo, documentType), documentType, documentId, expectRepoId: repo.repoId, expectedRevision })
-      const sealed = await sealMembersEdit(sdk, auth, repo, documentType, { ...seal.bind }, seal.current, changes, seal.imported)
+      const sealed = await sealMembersEdit(sdk, auth, repo, documentType, { ...seal.bind }, seal.current, changes, seal.imported, documentType === 'patch' ? { epoch: seal.patchEpoch, patch: seal.members } : undefined)
       const drops = Object.fromEntries(Object.entries(changes).filter(([k, v]) => v === undefined && REFERENCE_FIELDS.includes(k) && k !== 'asMember'))
       replaced = { ...sealed, ...Object.fromEntries(PLAINTEXT_OF[documentType].map((f) => [f, undefined])), ...drops }
     }

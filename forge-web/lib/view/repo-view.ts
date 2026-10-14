@@ -35,9 +35,11 @@ import {
 } from '../repo'
 import { normalizeRepoName } from '../rules/v2'
 import { seedFromDomains } from './dpns'
+import { isPublicRef } from './refs'
 import { noteRepoGateways } from './storage-status'
 import type { PrivateSession } from '../repo/private-session'
 import type { LetterReading } from '../repo/private-content'
+import { membersOnlyRefsExist, readMembersRefs } from '../repo/members-branches'
 
 /** Backend descriptor for the repo header badge / clone box. */
 export interface BackendInfo {
@@ -89,6 +91,16 @@ export interface RepoHome {
    * its own home.
    */
   readonly refsPartial?: true
+  /**
+   * A public repo: whether it has members-only ref updates (`members-branches.ts`), which anyone
+   * may know, never how many (DESIGN §10). Absent when this read did not see the ref rows.
+   */
+  readonly membersOnlyRefs?: boolean
+  /**
+   * A member's members-only refs were folded into `branches` and `tags` (each `audience:
+   * 'members'`): how many members-only updates they could not open (`members-branches.ts`).
+   */
+  readonly membersRefs?: { readonly unreadable: number }
 }
 
 /**
@@ -129,6 +141,24 @@ export type MembersAccess =
  */
 export function withMembersSession(home: RepoHome, session: PrivateSession, access: 'member' | 'former' = 'member'): RepoHome {
   return { ...home, repo: { ...home.repo, lane: session }, lane: { access, session } }
+}
+
+/**
+ * A member's home with their members-only branches and tags folded in (`members-branches.ts`): each
+ * listed beside the public ones with `audience: 'members'` and its real tip, so the branch list,
+ * the ref switcher and the code pages reach them. The public refs stay exactly what everyone reads.
+ */
+export async function withMembersRefs(sdk: EvoSDK, home: RepoHome): Promise<RepoHome> {
+  const lane = home.repo.lane
+  if (lane === undefined || home.repo.visibility !== 'public' || home.repo.published === lane) return home
+  const refs = await readMembersRefs(sdk, home.repo, lane)
+  return {
+    ...home,
+    branches: [...home.branches.filter(isPublicRef), ...refs.branches],
+    tags: [...home.tags.filter(isPublicRef), ...refs.tags],
+    membersOnlyRefs: home.membersOnlyRefs === true || refs.branches.length + refs.tags.length + refs.unreadable > 0,
+    membersRefs: { unreadable: refs.unreadable },
+  }
 }
 
 /**
@@ -195,7 +225,7 @@ export async function loadRepoHome(
 /** A public repo's home from its chrome read and complete timelines (no further request). */
 function homeFromTimelines(chrome: RepoChrome, timelines: RepoTimelines): RepoHome {
   const { config, history } = configBundleOf(chrome.repo, timelines.config)
-  return homeOf(chrome, config, refsFromRows(chrome.repo, timelines.refUpdate, timelines.protectedRefUpdate, history))
+  return { ...homeOf(chrome, config, refsFromRows(chrome.repo, timelines.refUpdate, timelines.protectedRefUpdate, history)), membersOnlyRefs: membersOnlyRefsExist(timelines) }
 }
 
 /**
@@ -210,7 +240,7 @@ async function listHome(chrome: RepoChrome, read: ChromeTimelines): Promise<Repo
   const { config, history } = configBundleOf(chrome.repo, await read.config())
   if (read.refsWhole) {
     const rows = await read.refs()
-    return homeOf(chrome, config, refsFromRows(chrome.repo, rows.refUpdate, rows.protectedRefUpdate, history))
+    return { ...homeOf(chrome, config, refsFromRows(chrome.repo, rows.refUpdate, rows.protectedRefUpdate, history)), membersOnlyRefs: membersOnlyRefsExist(rows) }
   }
   const refName = `refs/heads/${config?.defaultBranch ?? chrome.doc.defaultBranch ?? 'main'}`
   const rows = await read.ref(hexToBase64(publicRefKey(refName)))

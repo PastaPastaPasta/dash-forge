@@ -31,6 +31,11 @@ export function isLive(ref: ResolvedRef): boolean {
   return tipOidOf(ref) !== null
 }
 
+/** Whether a ref is public: everyone reads it, unlike a members-only one a member's session folded in. */
+export function isPublicRef(ref: ResolvedRef): boolean {
+  return ref.audience === undefined
+}
+
 /** Find a branch ref by short name (`main`) within a resolved ref list. */
 export function findBranch(
   branches: readonly ResolvedRef[],

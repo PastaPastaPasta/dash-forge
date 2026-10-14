@@ -206,6 +206,15 @@ pub fn guard(g: &impl ObjectGraph, input: &GuardInput<'_>) -> Result<Outcome> {
         }
     }
     let all: Vec<String> = s.keys().cloned().collect();
+    if all.is_empty() {
+        // nothing members-only is known: no ref can publish any (and no git call is needed)
+        return Ok(Outcome {
+            verdict: Verdict::Pass,
+            findings: Vec::new(),
+            notes,
+            published: Vec::new(),
+        });
+    }
     let narrow: Vec<String> = s
         .iter()
         .filter(|(_, a)| **a != EntryAudience::Members)

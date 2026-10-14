@@ -25,7 +25,8 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 
 import { ObjectLocator } from '../browse'
-import { repoKey, type PackManifest, type RepoRef } from '../repo'
+import { PACK_KIND } from '../constants'
+import { membersLane, repoKey, type PackManifest, type RepoRef } from '../repo'
 import { onPrivateSessionEnded } from '../repo/private-session'
 import {
   loadArtifactBytesProgress,
@@ -290,6 +291,12 @@ async function downloadPacks(
       try {
         bytes = await loadArtifactBytesProgress(sdk, repo, manifest, (done) => report(base + done))
       } catch (e) {
+        // A members-only pack this member cannot open (another epoch, a narrower branch's key):
+        // its objects stay unreadable here, never fatal by itself.
+        if (manifest.kind === PACK_KIND.MEMBERS_GIT_PACK) {
+          outcomes.push({ manifest, unavailable: { packHash: manifest.packHash, hosts: [], reason: 'a members-only pack your key does not open', corrupt: false, skipped: 'noKey' } })
+          continue
+        }
         // A repository made public's pack this reader cannot open is skipped, as an unserved
         // external pack is: never fatal by itself.
         if (!(e instanceof PackSkippedError)) throw e
@@ -373,7 +380,7 @@ async function runFallback(
   const manifests = got.map((o) => o.manifest)
   // Decrypted packs (a private repo's, or a repository made public's opened with published keys)
   // had their sealed bytes checked against `packHash` before they were opened.
-  const isPrivate = repo.visibility === 'private' || repo.published !== undefined
+  const isPrivate = repo.visibility === 'private' || repo.published !== undefined || membersLane(repo) !== undefined
   try {
     validatePacks(packs, manifests, !isPrivate)
   } catch (e) {

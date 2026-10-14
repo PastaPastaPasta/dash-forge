@@ -167,6 +167,62 @@ impl Check {
     }
 }
 
+/// `dg doctor --init-ledger`: start the sealed-object ledger of the clone in the current
+/// directory (`git-remote-dash --init-ledger`), after the user confirms it never fetched
+/// members-only branches: an empty record tells the helper this clone holds none, so a public push
+/// goes through without the encryption key (mixed-visibility DESIGN §4.3).
+pub fn init_ledger(ctx: &Ctx) -> Result<()> {
+    ctx.confirm_or_cancel(
+        "Start this clone's record of members-only commits as empty? Say yes only if it never fetched members-only branches",
+    )?;
+    run_helper(ctx, "--init-ledger", |v: &Value| {
+        if v["created"] == true {
+            println!(
+                "Started the record at {}",
+                v["ledger"].as_str().unwrap_or_default()
+            );
+        } else {
+            println!(
+                "This clone already has a record: {}",
+                v["ledger"].as_str().unwrap_or_default()
+            );
+        }
+    })
+}
+
+/// `dg doctor --install-hook`: install the pre-push hook (`git-remote-dash --install-hook`) where
+/// git runs hooks for this clone, `core.hooksPath` included, keeping a pre-push hook already there.
+pub fn install_hook(ctx: &Ctx) -> Result<()> {
+    run_helper(ctx, "--install-hook", |v: &Value| {
+        let chained = if v["installed"] == "chained" {
+            " (the pre-push hook that was there runs after it)"
+        } else {
+            ""
+        };
+        println!(
+            "Pre-push hook in place: {}{chained}",
+            v["hook"].as_str().unwrap_or_default()
+        );
+    })
+}
+
+/// Run `git-remote-dash <flag>` in the current directory and report its JSON line.
+fn run_helper(ctx: &Ctx, flag: &str, human: impl FnOnce(&Value)) -> Result<()> {
+    use anyhow::Context as _;
+    let out = Command::new("git-remote-dash")
+        .arg(flag)
+        .output()
+        .with_context(|| format!("running git-remote-dash {flag}"))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        anyhow::bail!("git-remote-dash {flag} failed: {}", err.trim());
+    }
+    let v: Value = serde_json::from_slice(&out.stdout)
+        .with_context(|| format!("reading what git-remote-dash {flag} printed"))?;
+    ctx.emit(v.clone(), || human(&v));
+    Ok(())
+}
+
 /// A titled group of rows.
 struct Section {
     title: &'static str,

@@ -22,7 +22,7 @@ import { ACTIVE_NETWORK } from '@/lib/constants'
 import { errorMessage } from '@/lib/utils'
 import { saveBytes } from '@/lib/view/release-download'
 import { GATEWAY, gatewayCloneUrl, verifyGateway, type GatewayCheck, type GatewayConfig, type ProvedRef } from '@/lib/gateway'
-import { formatBytes, plural, selectedTip, tipOidOf, type RepoHome, type SelectedRef } from '@/lib/view'
+import { formatBytes, isPublicRef, plural, selectedTip, tipOidOf, type RepoHome, type SelectedRef } from '@/lib/view'
 import { repoCommands } from '@/lib/view/repo-commands'
 import { resolveTip } from '@/lib/view/tip'
 import { repoKey } from '@/lib/repo'
@@ -80,7 +80,8 @@ export function CloneBox({ home, addr, selected }: { home: RepoHome; addr: RepoA
 
 /** The refs this page proved, as {@link verifyGateway} compares them. */
 export function provedRefs(home: RepoHome): ProvedRef[] {
-  return [...home.branches, ...home.tags].flatMap((r) => {
+  // A mirror serves the public lane only: a member's members-only refs are no omission of its.
+  return [...home.branches, ...home.tags].filter(isPublicRef).flatMap((r) => {
     const oid = tipOidOf(r)
     if (oid === null) return []
     const s = r.state
@@ -195,7 +196,7 @@ function archiveRefs(home: RepoHome): ArchiveRefs {
       const oid = tipOidOf(r)
       return oid === null ? [] : [{ name: r.refName.replace(prefix, ''), oid }]
     })
-  return { tags: named(home.tags, 'refs/tags/'), heads: named(home.branches, 'refs/heads/') }
+  return { tags: named(home.tags.filter(isPublicRef), 'refs/tags/'), heads: named(home.branches.filter(isPublicRef), 'refs/heads/') }
 }
 
 function ZipDownload({ home, addr, selected }: { home: RepoHome; addr: RepoAddress; selected: SelectedRef }): JSX.Element | null {

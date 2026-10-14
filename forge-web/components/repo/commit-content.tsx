@@ -92,6 +92,8 @@ function Body({ reader, retry, oid, addr, repo, description }: { reader: BrowseR
   if (!data) return <LoadingBlock />
 
   const { commit, changes, truncated, tags } = data
+  const missing = new Set(data.missingParents ?? [])
+  const firstParentMissing = commit.parents[0] !== undefined && missing.has(commit.parents[0])
   const full = data.oid
   const tagNames = tags.map((t) => t.tag).filter((t) => t !== '')
   const body = commit.message.split('\n').slice(1).join('\n').trim()
@@ -114,12 +116,24 @@ function Body({ reader, retry, oid, addr, repo, description }: { reader: BrowseR
               <Tag className="h-3 w-3" aria-hidden /> tagged {tagNames.join(' → ')}
             </span>
           ) : null}
-          {commit.parents.map((p) => (
-            <Link key={p} href={repoHref('/repo/commit', addr, { oid: p })} className="hit-area flex items-center gap-1 hover:text-forge-800 dark:hover:text-forge-400">
-              parent <Oid value={p} chars={7} copyable={false} />
-            </Link>
-          ))}
+          {commit.parents.map((p) =>
+            missing.has(p) ? (
+              <span key={p} className="flex items-center gap-1" data-testid="commit-parent-missing">
+                parent <Oid value={p} chars={7} copyable={false} /> (not public)
+              </span>
+            ) : (
+              <Link key={p} href={repoHref('/repo/commit', addr, { oid: p })} className="hit-area flex items-center gap-1 hover:text-forge-800 dark:hover:text-forge-400">
+                parent <Oid value={p} chars={7} copyable={false} />
+              </Link>
+            ),
+          )}
         </div>
+        {missing.size > 0 ? (
+          <p className="mt-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-[12px] text-anvil-700 dark:text-anvil-200" data-testid="history-incomplete">
+            History incomplete: {missing.size === 1 ? 'a parent of this commit isn\'t' : 'parents of this commit aren\'t'} public here (members-only, or never stored).
+            {firstParentMissing ? ' What it changed can\'t be shown.' : ''}
+          </p>
+        ) : null}
         {commit.parents.length > 1 ? (
           <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
             Merge commit — changes are shown against the first parent.
@@ -129,7 +143,7 @@ function Body({ reader, retry, oid, addr, repo, description }: { reader: BrowseR
 
       <CommitChecks repo={repo} oid={full} />
 
-      {changes.length === 0 && !truncated ? (
+      {changes.length === 0 && !truncated && !firstParentMissing ? (
         <EmptyState title="No file changes" body="This commit touches no tree paths (e.g. a merge with no diff to its first parent)." />
       ) : (
         <DiffView

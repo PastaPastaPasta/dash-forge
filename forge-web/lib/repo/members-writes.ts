@@ -335,13 +335,32 @@ export async function membersWriter(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef)
   }
 }
 
+/**
+ * The members key of `repo`'s epoch `epoch`, read now: a members-only PR keeps its own epoch for
+ * its text (§4.5), which must still be readable and not closed.
+ */
+async function membersEpochKeys(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, epoch: number): Promise<EpochKeys> {
+  const ops = await encryptionOps(sdk, auth.network, auth.identityId, contractOf(repo.forge, DOC.repoKey))
+  if (ops === null) throw refused('add your encryption key to this browser (Settings → Members-only and private content) to write members-only content', 'E306')
+  const s = await loadPrivateSessionUncached(sdk, withoutSessions(repo), auth.network, auth.identityId, sessionUnwrapper(ops))
+  try {
+    if (!s.members.some((m) => m.identity === auth.identityId)) throw refused('only members of this repo can write what only members can read')
+    const keys = s.resolution.keys.get(epoch)
+    if (keys === undefined) throw refused(`you can't read key epoch ${epoch} of this repo`, 'E307')
+    if (s.resolution.burned.has(epoch)) throw refused(`key epoch ${epoch} is closed; this pull request can't be edited`, 'E310')
+    return keys
+  } finally {
+    s.close()
+  }
+}
+
 /** The event kind of a PR head update (`pr_sync`). */
 const HEAD_UPDATE_KIND = 16
 
 /** The v0x03 sealer of members-only content (`sealMembersDoc` with `vis: "public"`). */
 const sealMembers: DocSealer = (k, doc, f) => sealMembersDoc(k, { ...doc, vis: 'public' }, f)
 
-/** The sealed types members-only content takes in this release (PRs and ref updates are phase 3). */
+/** The sealed types members-only content takes through the generic writer (a PR takes its `patch`). */
 const MEMBERS_TYPES: ReadonlySet<PrivateDocType> = new Set(['issue', 'comment', 'review', 'event'])
 
 /**
@@ -349,11 +368,19 @@ const MEMBERS_TYPES: ReadonlySet<PrivateDocType> = new Set(['issue', 'comment', 
  * `repo` under `writer`: the content fields go into `enc` v0x03 with `vis: "public"`, `epoch` is
  * set, and `asMember` proves the signer a member (D14). Returns the document data to post.
  */
-export async function sealMembersContent(auth: WriteAuth, type: PrivateDocType, data: Record<string, unknown>, writer: MembersWriter): Promise<Record<string, unknown>> {
-  // a members-only PR goes only through `sealMembersPatch`, a PR head update (an event naming a
-  // commit) only through `sealMembersHeadUpdate`: here its `oid` would be sealed nowhere and the
-  // real commit left in plaintext
-  if (!MEMBERS_TYPES.has(type)) throw refused(`a members-only ${type} is not supported yet`)
+export async function sealMembersContent(
+  auth: WriteAuth,
+  type: PrivateDocType,
+  data: Record<string, unknown>,
+  writer: MembersWriter,
+  /** A members-only PR: how it names its branches and head ({@link sealMembersPatch}); required for one. */
+  patch?: MembersPatch,
+): Promise<Record<string, unknown>> {
+  // a members-only PR goes only through `sealMembersPatch` (with `patch`), a PR head update (an
+  // event naming a commit) only through `sealMembersHeadUpdate`: here its `oid` would be sealed
+  // nowhere and the real commit left in plaintext
+  if (type === 'patch' && patch === undefined) throw refused('a members-only pull request needs its branches named')
+  if (type !== 'patch' && !MEMBERS_TYPES.has(type)) throw refused(`a members-only ${type} is not supported yet`)
   if (type === 'event' && data['oid'] !== undefined && data['oid'] !== null) throw refused('a members-only event that names a commit is written as a head update')
   if (isSealedKind(type)) {
     const { used } = sealedTextUse(type, data)
@@ -367,7 +394,7 @@ export async function sealMembersContent(auth: WriteAuth, type: PrivateDocType, 
   const verdict = data['verdict']
   const member = verdict === 4 ? { ...data, verdict: 1 } : verdict === 5 ? { ...data, verdict: 2 } : data
   try {
-    const sealed = await sealContent(writer.keys, type, owner, member, sealMembers)
+    const sealed = type === 'patch' ? await sealMembersPatch(writer.keys, owner, member, patch as MembersPatch) : await sealContent(writer.keys, type, owner, member, sealMembers)
     // An event carries no proof field (its gate is the member event type itself).
     return type === 'event' ? sealed : { ...sealed, asMember: owner }
   } catch (e) {
@@ -383,7 +410,7 @@ export async function sealMembersContent(auth: WriteAuth, type: PrivateDocType, 
  * vectors): its text and branch names in `enc` v0x03, `baseRefNameHash` / `sourceRefNameHash` by
  * `patch`, and for a members-only source the copied blind `headOid` (rule C) with the real head
  * and its salt sealed beside it. Throws `MalformedError` before anything is signed when `headOid`
- * is not the blind of `patch.head`. Not wired to a write path yet (phase 3C).
+ * is not the blind of `patch.head`. The web's write path is {@link sealMembersContent} with `patch`.
  */
 export function sealMembersPatch(keys: EpochKeys, ownerId: Uint8Array, data: Record<string, unknown>, patch: MembersPatch): Promise<Record<string, unknown>> {
   return sealContent(keys, 'patch', ownerId, data, sealMembers, patch)
@@ -417,9 +444,26 @@ export async function sealMembersEdit(
   current: Readonly<Record<string, unknown>>,
   changes: Readonly<Record<string, unknown>>,
   imported?: Readonly<Record<string, unknown>> | null,
+  /**
+   * A members-only PR: its own epoch (an edit re-seals under it, as the CLI's
+   * `reseal_members_patch_edit`) and how it names its branches and head (TLV 24 and 27 carried
+   * over; `bind` holds its blinded `headOid`).
+   */
+  pr?: { readonly epoch: number | undefined; readonly patch: MembersPatch | undefined },
 ): Promise<Record<string, unknown>> {
-  if (type === 'patch') throw refused('a members-only pull request is not supported yet')
   const merged = editFields(type, bind, current, changes, imported)
+  if (type === 'patch') {
+    if (pr?.epoch === undefined || pr.patch === undefined) throw refused('this members-only pull request was not read whole here; reload it and edit again')
+    const owner = decodeIdentifier(auth.identityId)
+    try {
+      const sealed = await sealMembersPatch(await membersEpochKeys(sdk, auth, repo, pr.epoch), owner, merged, pr.patch)
+      return { enc: sealed['enc'], epoch: sealed['epoch'], asMember: owner }
+    } catch (e) {
+      if (e instanceof TooLargeError) throw refused('the text is too long for a members-only pull request')
+      if (e instanceof MalformedError) throw refused(`this pull request can't be saved members-only: ${e.message}`)
+      throw e
+    }
+  }
   const sealed = await sealMembersContent(auth, type, merged, await membersWriter(sdk, auth, repo))
   return { enc: sealed['enc'], epoch: sealed['epoch'], asMember: sealed['asMember'] }
 }
