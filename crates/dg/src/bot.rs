@@ -58,13 +58,17 @@ pub enum BotCommand {
     /// members-only posts (and, run in a clone, a members-only pull request's code) as they
     /// are now, and nothing added later.
     Ask(Box<AskArgs>),
-    /// As a bot: the requests to you in a repository since a time.
+    /// The requests to a bot in a repository since a time: to you (as a bot), or to `--bot`.
+    /// Everyone sees each request; a members-only thread's task only members and the bot.
     Jobs {
         /// The repository (`owner/name`).
         repo: String,
         /// Requests written at or after this time (ms since 1970). Default: the last day.
         #[arg(long, value_name = "MS")]
         since: Option<u64>,
+        /// The bot whose requests to list (`@name`, a DPNS name or an identity id). Default: you.
+        #[arg(long, value_name = "BOT")]
+        bot: Option<String>,
     },
     /// As a bot: one request's thread as you were given it.
     Read {
@@ -163,7 +167,7 @@ pub async fn run(ctx: &Ctx, cmd: &BotCommand) -> Result<()> {
         BotCommand::Revoke { repo, bot } => revoke(ctx, repo, bot).await,
         BotCommand::List { repo } => list(ctx, repo).await,
         BotCommand::Ask(a) => ask(ctx, a).await,
-        BotCommand::Jobs { repo, since } => jobs(ctx, repo, *since).await,
+        BotCommand::Jobs { repo, since, bot } => jobs(ctx, repo, *since, bot.as_deref()).await,
         BotCommand::Read { repo, job, code } => read(ctx, repo, job, code.as_deref()).await,
     }
 }
@@ -650,13 +654,18 @@ async fn ask(ctx: &Ctx, a: &AskArgs) -> Result<()> {
     Ok(())
 }
 
-async fn jobs(ctx: &Ctx, repo: &str, since: Option<u64>) -> Result<()> {
+async fn jobs(ctx: &Ctx, repo: &str, since: Option<u64>, bot: Option<&str>) -> Result<()> {
     let s = Session::open(ctx, repo).await?;
     let collab = s.collab();
     let me = s.identity.id();
+    let bot = match bot {
+        Some(b) => resolve_identity(&s.client, b, "bot").await?,
+        None => me.clone(),
+    };
     let since = since.unwrap_or_else(|| forge_core::cache::now_ms().saturating_sub(86_400_000));
-    let requests = collab.bot_requests(&s.repo, &me, since).await?;
-    let letters = if requests.is_empty() {
+    let requests = collab.bot_requests(&s.repo, &bot, since).await?;
+    // only the bot itself holds the letters addressed to it
+    let letters = if requests.is_empty() || bot != me {
         Vec::new()
     } else {
         collab.read_letters(&s.repo).await?
@@ -670,6 +679,7 @@ async fn jobs(ctx: &Ctx, repo: &str, since: Option<u64>) -> Result<()> {
     };
     ctx.emit(
         json!({
+            "bot": bot,
             "since": since,
             "count": requests.len(),
             "requests": requests.iter().map(|r| json!({
@@ -692,7 +702,7 @@ async fn jobs(ctx: &Ctx, repo: &str, since: Option<u64>) -> Result<()> {
                     r.number,
                     r.asker,
                     r.task.as_deref().map_or_else(
-                        || "(members-only: dg bot read shows it)".to_owned(),
+                        || "(the task is members-only)".to_owned(),
                         |t| format!("{:?}", safe(t))
                     ),
                     if has_letter(&r.id, &r.asker) {

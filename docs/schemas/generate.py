@@ -738,12 +738,12 @@ cmd('bot ask', 'A bot asked to work on a pull request or issue: the request, and
     'code': D('The members-only branch whose code was shared, if any.', nl(S)),
     'membersOnly': D('Whether the thread is members-only (the task is then members-only too).', B), 'cost': COST,
 }, ['status', 'bot', 'request', 'documents', 'membersOnly', 'cost'])
-cmd('bot jobs', 'As a bot: the requests to you in a repository since a time.', {
-    'since': I, 'count': I,
+cmd('bot jobs', 'The requests to a bot (you, or --bot) in a repository since a time.', {
+    'bot': S, 'since': I, 'count': I,
     'requests': A(O({'id': S, 'number': I, 'asker': S, 'task': nl(S), 'at': I,
                      'letter': D('Whether the asker shared the thread\'s members-only content with you.', B)},
                     ['id', 'number', 'asker', 'at', 'letter'])),
-}, ['since', 'count', 'requests'])
+}, ['bot', 'since', 'count', 'requests'])
 cmd('bot read', 'As a bot: one request\'s thread as you were given it.', {
     'request': S, 'number': I, 'asker': S, 'task': nl(S), 'at': I, 'letter': nl(S), 'asOf': nl(I), 'head': nl(S),
     'packs': I, 'packFiles': SA,

@@ -2,11 +2,14 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/bot-jobs.schema.json",
   "title": "dg bot jobs --json",
-  "description": "As a bot: the requests to you in a repository since a time.",
+  "description": "The requests to a bot (you, or --bot) in a repository since a time.",
   "type": "object",
   "properties": {
     "schemaVersion": {
       "const": 1
+    },
+    "bot": {
+      "type": "string"
     },
     "since": {
       "type": "integer"
@@ -54,6 +57,7 @@
   },
   "required": [
     "schemaVersion",
+    "bot",
     "since",
     "count",
     "requests"
