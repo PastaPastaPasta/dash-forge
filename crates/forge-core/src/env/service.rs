@@ -322,6 +322,24 @@ impl Book {
         chain::exposure(&histories, removed, held_members_key)
     }
 
+    /// The exposure ledger of `env` ([`chain::ledger`]): who could read each value it holds now,
+    /// and how many of its snapshots did not open here (their readers are not counted). `None`
+    /// when this reader cannot name `env`.
+    #[must_use]
+    pub fn ledger(&self, env: &str) -> Option<(Vec<chain::LedgerEntry>, usize)> {
+        let state = self.state(env)?;
+        let pick = |ids: &[String]| -> Vec<&Snapshot> {
+            ids.iter().filter_map(|i| self.snapshot(i)).collect()
+        };
+        let (heads, all) = (pick(&state.heads), pick(&state.snapshots));
+        let rows = chain::ledger(&EnvHistory {
+            env,
+            heads: &heads,
+            snapshots: &all,
+        });
+        Some((rows, state.snapshots.len() - all.len()))
+    }
+
     /// What the old format left in `env` (DESIGN §4.5, §10): whether its latest version is an
     /// old-format Members snapshot, the names held in its old-format snapshots this reader opened
     /// that are not marked changed in the latest version, and how many old-format snapshots did

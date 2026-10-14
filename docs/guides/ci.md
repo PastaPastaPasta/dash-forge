@@ -140,6 +140,7 @@ These are what the protocol and the current forge-collab contract allow. They ar
 - **Refuses workflow options that reach past the container.** A job that sets docker options or mounts (`container.options` / `volumes`, the same on `services`), or calls a reusable workflow, is refused unless the repository allows it.
 - **Keeps the daemon's socket out of jobs,** and puts jobs on the `bridge` network, not the host's.
 - **Hands secrets and a `GITHUB_TOKEN` to trusted refs only.** Other runs get an empty token, and secret values are redacted from logs before upload.
+- **Gives a job its `environment:`'s values** only on a trusted run, only when the environment is shared with the runner's identity by name, and only to the jobs that name it ([Environments](self-host-runner.md#environments)).
 - **Clears act's environment,** so `DASH_FORGE_KEY` never reaches act or a job, and ignores act configuration planted in the checkout.
 - **Follows GitHub's fork-PR model:** a pull request runs with the secrets only when its head is a trusted branch of the repository itself and its author the owner or a maintainer; a fork's or a non-member's PR runs with no secrets and an empty token, and by default a non-member's PR does not run at all ([Pull requests](self-host-runner.md#pull-requests)).
 
