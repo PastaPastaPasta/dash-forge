@@ -49,6 +49,7 @@ mod ref_activity;
 mod release;
 mod release_verify;
 mod repo;
+mod repo_make_public;
 mod repo_settings;
 mod repo_sync;
 mod search;
@@ -559,6 +560,13 @@ pub enum RepoCommand {
     /// content): epochs, wraps, pending rotation, repair.
     #[command(subcommand)]
     Keys(RepoKeysCommand),
+    /// Make a private repo public, once (its owner). This can't be undone.
+    ///
+    /// Choose what becomes public: `--code-only` (the code of the branches and tags you pick;
+    /// discussion and other branches stay members-only) or `--everything` (everything members
+    /// could ever read until now). `--check` shows what becomes public, what stays private and
+    /// the cost, and signs nothing. Code only can become Everything later, never the reverse.
+    MakePublic(Box<crate::repo_make_public::MakePublicArgs>),
     /// Members-only content in a public repository: turn it on, or see who has the key.
     #[command(subcommand)]
     Members(RepoMembersCommand),

@@ -197,6 +197,41 @@ pub fn published_keys(
     (keys, alerts)
 }
 
+/// The most epoch-key entries one make-public bundle of epoch keys carries: what fits one
+/// Platform chunk (14,700 B) beside its header and a full note, `(14,700 − 7 − 1,024) / 69`. A
+/// repository with more epochs below its seal-off epoch is published in several bundles.
+pub const MAX_EPOCH_ENTRIES: usize = 198;
+
+/// The note of every make-public bundle of epoch keys ([`epoch_key_bundles`]).
+pub const EPOCH_BUNDLE_NOTE: &str = "Everything written before this repository was made public.";
+
+/// The make-public bundles (§18.3) publishing `keys`, epoch keys of the repository `repo_id`
+/// (mixed-visibility DESIGN §4.10 step 7): one 0x06 entry per epoch, in epoch order, at most
+/// [`MAX_EPOCH_ENTRIES`] per bundle. Empty when `keys` is. The caller passes only epochs below
+/// the seal-off epoch ([`crate::keyring::Keyring::epoch_keys_below`]); readers ignore any other.
+///
+/// # Errors
+///
+/// Never in practice: [`bundle::encode`] refuses only more than `u16::MAX` entries.
+pub fn epoch_key_bundles(
+    repo_id: &[u8; 32],
+    keys: &BTreeMap<u32, EpochKey>,
+) -> Result<Vec<Vec<u8>>, super::PrivateError> {
+    let entries: Vec<bundle::Entry> = keys
+        .iter()
+        .map(|(&revision, key)| bundle::Entry {
+            kind: ENTRY_EPOCH_KEY,
+            target: *repo_id,
+            revision,
+            key: key.clone(),
+        })
+        .collect();
+    entries
+        .chunks(MAX_EPOCH_ENTRIES)
+        .map(|c| bundle::encode(c, EPOCH_BUNDLE_NOTE))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,5 +265,35 @@ mod tests {
         // between the flip and the first public config: every manifest is checked
         let early = Conversion::of(true, &configs[..3], |_| true).unwrap();
         assert!(early.may_be_sealed(u64::MAX));
+    }
+
+    #[test]
+    fn epoch_key_bundles_publish_each_epoch_once_and_split_by_size() {
+        let repo = [7u8; 32];
+        let keys: BTreeMap<u32, EpochKey> = (0..u32::try_from(MAX_EPOCH_ENTRIES + 3).unwrap())
+            .map(|e| {
+                (
+                    e,
+                    EpochKey::from_bytes([u8::try_from(e % 251).unwrap(); 32]),
+                )
+            })
+            .collect();
+        let bundles = epoch_key_bundles(&repo, &keys).unwrap();
+        assert_eq!(bundles.len(), 2);
+        let mut seen = Vec::new();
+        for b in &bundles {
+            assert!(b.len() <= 14_700);
+            let parsed = bundle::parse(b).unwrap();
+            assert_eq!(parsed.note, EPOCH_BUNDLE_NOTE);
+            for e in parsed.entries {
+                assert_eq!((e.kind, e.target), (ENTRY_EPOCH_KEY, repo));
+                assert_eq!(&e.key, &keys[&e.revision]);
+                seen.push(e.revision);
+            }
+        }
+        assert_eq!(seen, keys.keys().copied().collect::<Vec<_>>());
+        assert!(epoch_key_bundles(&repo, &BTreeMap::new())
+            .unwrap()
+            .is_empty());
     }
 }

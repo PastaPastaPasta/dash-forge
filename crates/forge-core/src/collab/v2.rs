@@ -60,11 +60,13 @@ use crate::scope::RepoRef;
 use crate::user_error::{codes, UserError};
 
 mod bundles;
+mod census;
 mod make_public;
 pub use bundles::{
     noun as bundle_noun, BundleAlert, BundlePlan, BundledPost, LeftOut, LeftOutWhy, Publication,
     PublicationState,
 };
+pub use census::{Census, CensusText};
 pub use make_public::{apply_review_texts, MakePublicPlan};
 
 /// forge-collab document types (issue through milestone); forge-community ones are marked.

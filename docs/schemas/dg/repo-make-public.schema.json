@@ -1,0 +1,164 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/repo-make-public.schema.json",
+  "title": "dg repo make-public --json",
+  "description": "A private repository made public, or (with --check) what would become public. A run that stopped part-way (another step is the owner's) is `in_progress`; run it again with --resume.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "check",
+        "public",
+        "in_progress"
+      ]
+    },
+    "repo": {
+      "type": "string"
+    },
+    "owner": {
+      "type": "string"
+    },
+    "mode": {
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "codeOnly",
+            "everything"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "`codeOnly` or `everything`; null in a check that shows both."
+    },
+    "made": {
+      "type": "boolean",
+      "description": "The repository was made public already (a check after the flip)."
+    },
+    "blockers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "codeOnly": {
+      "type": "object",
+      "description": "What Code only publishes: the refs and their tips, and the possible secrets in them."
+    },
+    "everything": {
+      "type": "object",
+      "description": "What Everything publishes: every live ref, the counts of what becomes readable, the former members whose words become public, environments still holding old-format values (E812) and the possible secrets."
+    },
+    "staysPrivate": {
+      "type": "object",
+      "properties": {
+        "letters": {
+          "type": "integer"
+        },
+        "environments": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "letters",
+        "environments"
+      ]
+    },
+    "minClientVersion": {
+      "type": "string"
+    },
+    "estimates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "codeOnly",
+              "everything"
+            ]
+          },
+          "cost": {
+            "$ref": "common.schema.json#/$defs/cost"
+          },
+          "storage": {
+            "$ref": "common.schema.json#/$defs/cost"
+          }
+        },
+        "required": [
+          "mode",
+          "cost",
+          "storage"
+        ]
+      }
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "step": {
+            "type": "string",
+            "enum": [
+              "sealOff",
+              "flip",
+              "config",
+              "code",
+              "notify",
+              "history"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "written",
+              "done",
+              "owner"
+            ]
+          },
+          "epoch": {},
+          "refs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "step",
+          "status"
+        ]
+      },
+      "description": "Each step and whether this run wrote it (`written`), found it done (`done`) or left it to the owner (`owner`)."
+    },
+    "notPublished": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Refs left out: members pushed members-only commits to them after the repository was made public."
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "repo"
+  ],
+  "additionalProperties": true
+}

@@ -134,6 +134,7 @@
     "repo keys rotate": "repo-keys-rotate.schema.json",
     "repo keys status": "repo-keys-status.schema.json",
     "repo list": "repo-list.schema.json",
+    "repo make-public": "repo-make-public.schema.json",
     "repo members enable": "repo-members-enable.schema.json",
     "repo members status": "repo-members-status.schema.json",
     "repo policy set": "repo-policy-set.schema.json",
