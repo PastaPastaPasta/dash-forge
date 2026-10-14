@@ -364,7 +364,7 @@ pub(crate) async fn schedule(
         )
         .cause("the date and what is published are kept members-only on the issue that tracks the fix")
         .fix(format!(
-            "open a members-only issue for the fix (`dg issue create {} --audience members`) and pass --issue with its number",
+            "open a members-only issue for the fix (`dg issue create {} --members`) and pass --issue with its number",
             s.repo.display()
         ))
         .note("nothing was written")

@@ -228,6 +228,23 @@ dg pr review     <owner>/<repo> 7 --comment --to writers --body "…"
 
 **Make other people's posts public (maintainers).** A maintainer can make anyone's members-only issue, comment or review public, and one sent to specific people if it was sent to them: `dg make-public <repo> <id or number>…`, or **Make public…** beside the post in the web app, and a whole conversation with `dg make-public <repo> <issue or PR number> --thread` or **Make thread public…**. Forge lists every person whose words become public before you confirm ("Make 6 posts public? Words by alice, bob and carol become public. They'll be notified."), and they see it in their notifications. Each post is made public as it reads now; `--history` (**Also publish earlier edits**) adds an issue's earlier versions. It doesn't edit the posts: it publishes the key that opens them, in one write of about 0.0022 DASH. Every reader, signed in or not, then shows them as public, with "Made public by @you". Left out, and named before you confirm: posts that are public already, messages for specific people that weren't sent to you, posts you can't read, posts too long to make public this way, and a pull request's own description (its comments and reviews are included). If the author edits a post after that, the edit is public too; an author using an older Forge build might keep it members-only, and readers then say it was "edited after it was made public" (an issue shows the version you made public, a comment shows that its new text is members-only). Only a maintainer can do this: Forge ignores anyone else's attempt.
 
+### Coordinated security fixes
+
+A fix for a vulnerability is made members-only and published on an agreed date, in the same repository:
+
+1. **Reports arrive by your `SECURITY.md`** (an email address and a PGP key, as on GitHub). Forge shows it as **Security policy** on the repository and on the new-issue form. There is no report form in Forge.
+2. **Track it** in a members-only issue (`dg issue create <repo> --members …`), or one for maintainers only (`--to maintainers`).
+3. **Fix it** on a members-only branch with a members-only pull request (`dg branch new --members sec/cve-…`, push, `dg pr create`). A runner set up for members-only branches runs its checks; the public sees only their outcomes, under names that mean nothing.
+4. **Set the date.** `dg publish --pr 7 --issue 12 --tag v1.2.3 --at 2026-10-20T14:00Z` (or a branch: `dg publish sec/cve-… --onto main --issue 12 --at …`) runs every check `dg publish` runs, then records the date and what is published on the tracking issue, members-only (about 0.0007 DASH); nothing is published. Members see it in the issue's **Publication** panel in the web app and in `dg embargo list`, with its checklist; anyone else sees only that a date was set on #12, by whom and when. Run it again with another `--at` to move the date (the newest counts), or `dg embargo cancel 12` to withdraw it. A maintainer or someone with Write access sets it; the panel's **Set a date…**, **Change date** and **Withdraw** do the same.
+5. **The release bot publishes it.** A member identity with Maintain access (Write is enough without a tag and for your own issue) runs `dg embargo run --wait --yes` in a clone of the repository, on a machine that stays on (or `dg embargo run --yes` from cron). When the date comes it checks everything first, then, in order: makes the tracking issue public, publishes the fix squashed into one new commit made at that moment on the branch as it is then, tags it and publishes the release. A run that stops part way finishes the rest when run again. It uses its own clock.
+
+```sh
+dg publish --pr 7 --issue 12 --tag v1.2.3 --at 2026-10-20T14:00Z   # the date and the plan, members-only
+dg embargo list <owner>/<repo>                                     # the dates and their checklists (members)
+dg embargo cancel 12                                               # withdraw a date
+dg embargo run --wait --yes                                        # the release bot, in a clone
+```
+
 **Not yet.** Members-only pull requests (and pull requests for specific people), branches, code and releases are coming later. A pull request's own description can't be made public yet. Search doesn't look inside members-only issues you can't read.
 
 ---

@@ -108,9 +108,13 @@ pub const WRITER_ONLY_EVENT_KINDS: [u64; 6] = [8, 15, 16, 19, 20, 23];
 
 /// The `event` kinds a client convention keeps from triage though consensus admits them (the
 /// kind is not on `t_triageKinds`): a CI re-run request (26, `rules::ci_rerun`), which, as on
-/// GitHub, needs write access. Readers ignore a triage member's (`ci_rerun::rerun_counts`), so
-/// clients refuse it before signing.
-pub const CLIENT_WRITER_EVENT_KINDS: [u64; 1] = [crate::rules::ci_rerun::CI_RERUN_KIND];
+/// GitHub, needs write access, and a publication date (28, `rules::embargo`). Readers ignore a
+/// triage member's (`ci_rerun::rerun_counts`, `embargo::record_counts`), so clients refuse it
+/// before signing.
+pub const CLIENT_WRITER_EVENT_KINDS: [u64; 2] = [
+    crate::rules::ci_rerun::CI_RERUN_KIND,
+    crate::rules::embargo::EMBARGO_KIND,
+];
 
 /// The least role an `event` of stored `kind` needs as a member write: a writer for
 /// [`WRITER_ONLY_EVENT_KINDS`] and [`CLIENT_WRITER_EVENT_KINDS`], triage for every other kind

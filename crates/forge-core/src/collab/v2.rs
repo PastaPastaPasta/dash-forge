@@ -8061,7 +8061,7 @@ impl<'a> Collab<'a> {
                 ),
             )
             .cause("a publication date is kept members-only on the members-only issue or pull request that tracks the fix")
-            .fix("open a members-only issue for the fix (`dg issue create --audience members`) and set the date there")
+            .fix("open a members-only issue for the fix (`dg issue create --members`) and set the date there")
             .into());
         }
         let mut props = target_props(target)?;
