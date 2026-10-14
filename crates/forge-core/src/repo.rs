@@ -2242,6 +2242,78 @@ impl<'a> RepoService<'a> {
             .await
     }
 
+    /// Whether this network's contract lets a private repository become public (mainnet C1:
+    /// `repo.visibility` is frozen only once public). The live sakura contracts freeze it.
+    pub async fn can_make_public(&self, repo: &RepoRef) -> Result<bool> {
+        let (_, contract) = self.readable(repo).await?;
+        Ok(contract.immutable_when("repo", "visibility") == Some(false))
+    }
+
+    /// Make private `repo` public (mixed-visibility DESIGN §4.10 step 3, C1): its owner replaces
+    /// the `repo` document with `visibility: "public"` and `defaultBranch` (which a private one
+    /// may not carry). The point of no return: consensus refuses any later change back (40128),
+    /// and anyone but the owner (40102). `Ok(false)` when it is public already (nothing signed).
+    /// Refused before signing (E103) on a network whose contract freezes the visibility.
+    pub async fn make_repo_public(&self, repo: &RepoRef, default_branch: &str) -> Result<bool> {
+        check_default_branch(default_branch)?;
+        let (_, contract) = self.writable(repo).await?;
+        if contract.immutable_when("repo", "visibility") != Some(false) {
+            return Err(UserError::new(
+                codes::NOT_IMPLEMENTED,
+                "this network's Forge can't make a private repository public yet",
+            )
+            .cause("its contract keeps a repository's visibility as it was created")
+            .note("nothing was written")
+            .into());
+        }
+        let changes = BTreeMap::from([
+            (
+                "visibility".to_string(),
+                Some(FieldValue::text(Visibility::Public.as_str())),
+            ),
+            (
+                "defaultBranch".to_string(),
+                Some(FieldValue::text(short_branch_name(default_branch))),
+            ),
+        ]);
+        self.doc_engine()?
+            .replace_document(&contract, "repo", repo.id(), &changes)
+            .await
+    }
+
+    /// The first plaintext `config` of a repository made public (DESIGN §4.10 step 4): `cfg`,
+    /// the settings it had while private (default branch, protected patterns, storage, the
+    /// archived flag), written as they are, even when they equal the defaults: it is also the
+    /// conversion marker readers place pre-conversion packs by (`private-repos.md` §18.1).
+    /// `repo` is the repository as it is now (public). Maintainer-gated at consensus.
+    pub async fn write_converted_config(
+        &self,
+        repo: &RepoRef,
+        cfg: &CurrentConfig,
+    ) -> Result<String> {
+        if repo.visibility != Visibility::Public {
+            return Err(Error::Config(
+                "a repository's first public settings are written after it is made public".into(),
+            ));
+        }
+        let (scope, contract) = self.writable(repo).await?;
+        let mut props = scope.props([
+            ("defaultBranch", FieldValue::text(&cfg.default_branch)),
+            ("backend", cfg.backend_value()),
+            ("archived", FieldValue::boolean(cfg.archived)),
+        ]);
+        if !cfg.protected_patterns.is_empty() {
+            props.insert(
+                "protectedPatterns".into(),
+                FieldValue::text_list(cfg.protected_patterns.clone()),
+            );
+        }
+        layout::stamp_vis(&mut props, Visibility::Public);
+        self.doc_engine()?
+            .create_document(&contract, DOC_CONFIG, props)
+            .await
+    }
+
     /// Write a `packManifest` (member-gated). Returns the manifest document id.
     pub async fn write_pack_manifest(
         &self,
@@ -2754,6 +2826,44 @@ impl<'a> RepoService<'a> {
             }
         }
         Ok((pack_blobs, blob_hashes))
+    }
+
+    /// Every git pack of `repo` this signer opens, as plaintext bytes, oldest first, and how many
+    /// it could not open. With `repo` the private view of a repository being made public
+    /// ([`RepoRef::private_view`]), these are its private-era packs opened with the member's own
+    /// keys: what making it public builds its fresh public pack from and scans for secrets
+    /// (mixed-visibility DESIGN §4.10). A pack it cannot open (late, or under an epoch it holds
+    /// no key for, or a plaintext pack pushed after the conversion) is counted, never fatal.
+    pub async fn open_git_packs(&self, repo: &RepoRef) -> Result<(Vec<Vec<u8>>, usize)> {
+        let contract = self.repo_contract(repo).await?;
+        let manifests = self.read_pack_manifests(repo).await?;
+        let git = git_pack_manifests(&manifests);
+        let roles = self.copy_roles(repo).await?;
+        let reader = self.repo_reader(repo, &manifests, &roles).await;
+        let (mut packs, mut skipped) = (Vec::new(), 0);
+        // oldest first, so a pack that deltas against an earlier one meets its bases first
+        let mut groups = group_by_hash(&git);
+        groups.sort_by_key(|(_, copies)| copies.iter().map(|m| m.created_at).min());
+        for (hash, copies) in groups {
+            let opened = match self
+                .fetch_best_copy_or_mirror(repo, &contract, &copies, &roles, &reader)
+                .await
+            {
+                Ok((sealed, m)) => {
+                    self.open_artifact_of(repo, &copies, m.size_bytes, sealed)
+                        .await
+                }
+                Err(e) => Err(e),
+            };
+            match opened {
+                Ok(plain) => packs.push(plain),
+                Err(e) => {
+                    tracing::warn!(pack = %hex::encode(hash), error = %e, "a pack this identity cannot open is left out");
+                    skipped += 1;
+                }
+            }
+        }
+        Ok((packs, skipped))
     }
 
     /// Consolidate a repo's live packs into **one** optimized pack and publish it with a

@@ -162,6 +162,7 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
             ("backend not changed", Some(repo))
         }
         Command::Repo(Rp::Edit(a)) => ("repository not edited", Some(&a.repo)),
+        Command::Repo(Rp::MakePublic(a)) => ("not made public", Some(&a.repo)),
         Command::Repo(Rp::Protect(crate::RepoProtectCommand::List { repo })) => {
             ("could not read the protected branches", Some(repo))
         }

@@ -251,6 +251,35 @@ impl LoadedContract {
             .as_integer::<i64>()
     }
 
+    /// How `document_type`'s `immutable` list freezes its top-level `property`, as the contract's
+    /// schema states it: `None` when it is not listed (or the type is unknown), `Some(true)` when
+    /// it is frozen outright, `Some(false)` when only under a `when` condition. Feature-detects a
+    /// one-way change a build flag adds (mainnet C1: `repo.visibility` may move from private to
+    /// public, never back).
+    pub fn immutable_when(&self, document_type: &str, property: &str) -> Option<bool> {
+        use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
+        let t = self.0.document_type_for_name(document_type).ok()?;
+        let list = t.schema().get_optional_value("immutable").ok()??;
+        list.as_array()?.iter().find_map(|entry| {
+            if entry.as_text() == Some(property) {
+                return Some(true);
+            }
+            let named = entry
+                .get_optional_value("property")
+                .ok()
+                .flatten()
+                .and_then(|p| p.as_text())
+                == Some(property);
+            named.then(|| {
+                entry
+                    .get_optional_value("when")
+                    .ok()
+                    .flatten()
+                    .is_none()
+            })
+        })
+    }
+
     /// The indexes of `document_type`, each as `name (property, property, …)` in the order its
     /// where-clauses must follow (Drive's rule). Empty for an unknown type.
     pub fn index_summaries(&self, document_type: &str) -> Vec<String> {

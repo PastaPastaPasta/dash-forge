@@ -70,6 +70,19 @@ impl RepoRef {
         })
     }
 
+    /// This repository as it was while it was private: what making it public reads its
+    /// private-era refs, packs and settings through, with the member's own keys
+    /// (mixed-visibility DESIGN §4.10). Every reader of a repository made public otherwise opens
+    /// its pre-conversion packs only with the keys the owner published (`private-repos.md`
+    /// §18.2).
+    #[must_use]
+    pub fn private_view(&self) -> Self {
+        Self {
+            visibility: Visibility::Private,
+            ..self.clone()
+        }
+    }
+
     /// Refuse `what` on a private repository (E207): the operations that do not handle one (a
     /// fork, whose copied refs and manifests would need the parent's keys; a release, whose
     /// notes and assets would be published unencrypted).
