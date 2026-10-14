@@ -75,7 +75,7 @@ function run(i: Obj): Json {
     }
     case 'noticeDecode':
       return {
-        results: arr(i.cases).map((c) => {
+        results: arr(i.cases).map((c): Json => {
           const t = decodeKeyLetter(hexToBytes(obj(c).plaintextHex as string))
           if (t === null) return { name: obj(c).name as Json, error: 'malformed' }
           const n = noticeFromTyped(t)
