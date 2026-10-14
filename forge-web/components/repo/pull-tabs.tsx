@@ -314,7 +314,7 @@ export function ChecksTab({
   /** The viewer's members-key session of a public repo: resolves members-only runs' names. */
   members?: PrivateSession
 }): JSX.Element {
-  const opened = useMembersRuns(members, runs)
+  const { opened, resolving } = useMembersRuns(members, runs)
   if (error !== null) return <ErrorState message={error} onRetry={onRetry} />
   if (runs === null || summary === null) return <LoadingBlock label="Reading check runs" />
   if (runs.length === 0 && expected.length === 0) {
@@ -395,7 +395,7 @@ export function ChecksTab({
                   Details
                 </a>
               ) : null}
-              <RunLog key={`${r.id}:${r.logSha256}`} run={r} members={own} label={name} />
+              {resolving.has(r.id) ? null : <RunLog key={`${r.id}:${r.logSha256}`} run={r} members={own} label={name} />}
               {r.artifacts.length > 0 ? <RunArtifacts run={r} /> : null}
             </li>
           )
@@ -414,18 +414,21 @@ export function ChecksTab({
 }
 
 const NO_OPENED: ReadonlyMap<string, OpenedRun | null> = new Map()
+const NO_RESOLVING: ReadonlySet<string> = new Set()
 
 /**
  * The members-only runs of `runs` the session `members` opens, by run id (null: its name is not
  * available); empty for everyone else and while they are read (the opaque names show meanwhile).
  */
-function useMembersRuns(members: PrivateSession | undefined, runs: readonly CheckRun[] | null): ReadonlyMap<string, OpenedRun | null> {
+function useMembersRuns(members: PrivateSession | undefined, runs: readonly CheckRun[] | null): { readonly opened: ReadonlyMap<string, OpenedRun | null>; readonly resolving: ReadonlySet<string> } {
   const book = members === undefined ? null : blindBook(members.ctx)
   const theirs = book === null || runs === null ? [] : runs.filter((r) => isMembersRun(r, book))
   const state = useAsync(() => resolveMembersRuns((members as PrivateSession).ctx, theirs), [members?.id ?? '', theirs.map((r) => `${r.id}:${r.headOid}:${r.logSha256}`).join(',')], {
     enabled: theirs.length > 0,
   })
-  return theirs.length > 0 ? (state.data ?? NO_OPENED) : NO_OPENED
+  if (theirs.length === 0) return { opened: NO_OPENED, resolving: NO_RESOLVING }
+  // until the names are read, a member's run offers no log: its bytes are the unopened ones
+  return state.data === null ? { opened: NO_OPENED, resolving: new Set(theirs.map((r) => r.id)) } : { opened: state.data, resolving: NO_RESOLVING }
 }
 
 /** "· from ci-bot": the reporter the branch policy pins a required check to. */

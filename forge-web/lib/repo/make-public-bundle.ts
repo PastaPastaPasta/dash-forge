@@ -10,10 +10,11 @@
  *
  * Everything is checked before anything is signed: the repo is public, the signer a current
  * maintainer or the owner (read now), and each post is left out, with the reason, when it is
- * public already, unreadable to the signer, a message not sent to them, or continued in a separate
- * members-only long-body artifact (decision P2B-D4). A pull request's own entry shows its title,
- * body and public branch names (`bundledPatch`): a members-only branch's name stays members-only,
- * which the plan reports ({@link BundledPost.membersBranches}).
+ * public already, unreadable to the signer, a message not sent to them, continued in a separate
+ * members-only long-body artifact (decision P2B-D4), or a pull request of a members-only branch:
+ * its key opens its whole text, that branch's name and newest commit included
+ * (`bundleWouldPublishMembersOnly`; its author can make its title and description public). A
+ * members-only PR between public branches is bundled.
  *
  * Keys: {@link planMakePublicBundle} derives each key only to check it and wipes it at once; the
  * write ({@link writeMakePublicBundle}) derives them again, encodes the bundle, stores it and
@@ -30,7 +31,7 @@ import {
   MAX_DOC_ENTRIES,
   V3,
   V4,
-  bundledPatch,
+  bundleWouldPublishMembersOnly,
   encodeDocBundle,
   entryKind,
   letterObjKey,
@@ -68,7 +69,7 @@ export interface BundleRequest {
 export type BundledKind = BundleRequest['type']
 
 /** Why a post asked for is left out of a bundle (forge-core `LeftOutWhy`). */
-export type LeftOutWhy = 'alreadyPublic' | 'unreadable' | 'notSent' | 'longBody'
+export type LeftOutWhy = 'alreadyPublic' | 'unreadable' | 'notSent' | 'longBody' | 'membersOnlyBranch'
 
 /** A post left out, and why. */
 export interface LeftOutPost {
@@ -95,8 +96,6 @@ export interface BundledPost {
   readonly text: string
   /** Earlier members-only revisions of an issue the signer can open and nobody published yet. */
   readonly earlier: number
-  /** A pull request: how many of its branches are members-only, whose names stay members-only (0, 1 or 2). */
-  readonly membersBranches: number
 }
 
 /** What a maintainer's bundle will publish, checked before anything is signed. */
@@ -181,6 +180,7 @@ async function postKey(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, session: Pri
     const opened = await openContent(stored, session.ctx)
     if (opened.status !== 'readable') return { why: 'unreadable' }
     if (continued(opened.fields)) return { why: 'longBody' }
+    if (await bundleWouldPublishMembersOnly(stored, opened.fields)) return { why: 'membersOnlyBranch' }
     const key = await membersKeyOf(session, stored)
     return key === null ? { why: 'unreadable' } : { key, fields: opened.fields, recipients: null }
   }
@@ -196,17 +196,6 @@ async function postKey(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, session: Pri
     }).catch(() => ({ why: 'notSent' as const }))
   }
   return { why: 'unreadable' }
-}
-
-/**
- * How many branch names of opened pull request `stored` (`fields`, as the signer reads it) its
- * bundle entry leaves out: those a published key cannot check, a members-only branch's
- * (`bundledPatch`, the rule every reader applies).
- */
-async function withheldBranches(stored: StoredPrivateDoc, fields: DocFields): Promise<number> {
-  const shown = await bundledPatch(stored, fields)
-  if (shown === null) return 0
-  return (['baseRefName', 'sourceRefName'] as const).filter((f) => fields[f] !== undefined && shown[f] === undefined).length
 }
 
 /**
@@ -295,7 +284,6 @@ async function plan(
         got.key.fill(0)
         throw e
       }
-      const membersBranches = r.type === 'patch' ? await withheldBranches(stored, got.fields) : 0
       take({ kind, target: stored.id, revision: current, key: got.key })
       revisions.push(current)
       earlierTotal += earlier
@@ -308,7 +296,6 @@ async function plan(
         recipients: got.recipients,
         text: [got.fields.title, got.fields.body].filter((t): t is string => t !== undefined && t !== '').join('\n'),
         earlier,
-        membersBranches,
       })
     }
   } finally {

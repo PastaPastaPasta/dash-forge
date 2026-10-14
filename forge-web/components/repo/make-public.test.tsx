@@ -29,20 +29,23 @@ describe('makePublicWords', () => {
 })
 
 describe('bundleWords', () => {
-  const post = (p: Partial<BundledPost>): BundledPost => ({ type: 'comment', id: 'c', author: 'alice', number: null, revisions: [1], recipients: null, text: '', earlier: 0, membersBranches: 0, ...p })
-  const plan = (posts: BundledPost[]): BundlePlan => ({ posts, leftOut: [], entries: posts.length, earlier: 0 })
+  const post = (p: Partial<BundledPost>): BundledPost => ({ type: 'comment', id: 'c', author: 'alice', number: null, revisions: [1], recipients: null, text: '', earlier: 0, ...p })
+  const plan = (posts: BundledPost[], leftOut: BundlePlan['leftOut'] = []): BundlePlan => ({ posts, leftOut, entries: posts.length, earlier: 0 })
   const name = (id: string): string => id
 
-  it('a pull request’s own text goes in, and a members-only branch’s name is said to stay members-only', () => {
-    const w = bundleWords(plan([post({ type: 'patch', id: 'p', number: 12, membersBranches: 1 }), post({ author: 'bob' })]), [], name)
+  it('a members-only pull request between public branches goes in like any post', () => {
+    const w = bundleWords(plan([post({ type: 'patch', id: 'p', number: 12 }), post({ author: 'bob' })]), [], name)
     expect(w.title).toBe('Make 2 posts public?')
-    expect(w.description).toBe("Words by alice and bob become public. They'll be notified. The members-only branch's name stays members-only. This can't be undone.")
+    expect(w.description).toBe("Words by alice and bob become public. They'll be notified. This can't be undone.")
     expect(w.leftOut).toEqual([])
-    expect(w.nothing).toBeNull()
   })
 
-  it('from and into members-only branches: both names; from public branches: no line', () => {
-    expect(bundleWords(plan([post({ type: 'patch', membersBranches: 2 })]), [], name).description).toContain("The members-only branches' names stay members-only.")
-    expect(bundleWords(plan([post({ type: 'patch' })]), [], name).description).not.toContain('branch')
+  it('a pull request of a members-only branch is left out, saying why and what its author can do', () => {
+    const w = bundleWords(plan([post({ author: 'bob' })], [{ type: 'patch', id: 'p', author: 'alice', why: 'membersOnlyBranch' }]), [], name)
+    expect(w.leftOut).toEqual([
+      "A pull request of a members-only branch: making it public this way would also publish the branch's name and newest commit. Its author can make its title and description public.",
+    ])
+    expect(w.description).not.toContain('branch')
+    expect(bundleWords(plan([], [{ type: 'patch', id: 'p', author: 'alice', why: 'membersOnlyBranch' }]), [], name).nothing).toBe('Nothing here can be made public.')
   })
 })

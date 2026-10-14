@@ -170,7 +170,7 @@ function Body({ reader, retry, oid, addr, repo, description }: { reader: BrowseR
 function CommitChecks({ repo, oid }: { repo: RepoRef; oid: string }): JSX.Element {
   const { sdk, ready, network } = useSdk(repoContractIds(repo))
   const lane = membersLane(repo)
-  const blinds = lane === undefined ? [] : blindBook(lane.ctx).blindsOf(oid).filter((b) => b !== oid.toLowerCase())
+  const blinds = lane === undefined ? [] : blindBook(lane.ctx).blindsOf(oid)
   const checks = useAsync(
     async () => {
       const members = await readMembershipsCached(sdk!, repo, network).then(

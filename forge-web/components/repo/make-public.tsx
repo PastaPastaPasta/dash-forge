@@ -141,8 +141,7 @@ export interface BundleWords {
 /**
  * The words of a maintainer's make-public dialog for `plan` (DESIGN §10): "Make 6 posts public?";
  * "Words by alice, bob and carol become public. They'll be notified."; a message to specific
- * people adds who it was sent to, a pull request from or into a members-only branch that the
- * branch's name stays members-only; then the quote check's findings (`quoted`), and "This can't be
+ * people adds who it was sent to; then the quote check's findings (`quoted`), and "This can't be
  * undone." `name` gives an identity's short name. What is left out is listed apart.
  */
 export function bundleWords(plan: BundlePlan, quoted: readonly string[], name: (id: string) => string): BundleWords {
@@ -155,16 +154,15 @@ export function bundleWords(plan: BundlePlan, quoted: readonly string[], name: (
     const people = plural(p.recipients, 'person', 'people')
     parts.push(one ? `It was sent only to ${people}; everyone will be able to read it.` : `@${name(p.author)}'s message was sent only to ${people}; everyone will be able to read it.`)
   }
-  // A pull request from (or into) a members-only branch: the bundle shows no name it can't check.
-  const branches = Math.max(0, ...plan.posts.map((p) => p.membersBranches))
-  if (branches === 1) parts.push("The members-only branch's name stays members-only.")
-  if (branches === 2) parts.push("The members-only branches' names stay members-only.")
   parts.push(...quoted, "This can't be undone.")
   const leftOut: string[] = []
   const cantRead = plan.leftOut.filter((l) => l.why === 'unreadable' || l.why === 'notSent')
   const single = n === 0 && plan.leftOut.length === 1
   for (const l of plan.leftOut) {
     if (l.why === 'longBody') leftOut.push(`@${name(l.author)}'s ${noun(l.type)} is too long to make public this way.`)
+    if (l.why === 'membersOnlyBranch') {
+      leftOut.push("A pull request of a members-only branch: making it public this way would also publish the branch's name and newest commit. Its author can make its title and description public.")
+    }
   }
   if (single && cantRead.length === 1) {
     const l = cantRead[0]!

@@ -719,8 +719,9 @@ function PullPage({
   // RC2 MOD: maintainers hide; readers see collapsed rows, and a hidden PR opens behind a banner.
   const canModerate = canMember && holdings.data?.maintain === true
   // Making other people's members-only posts public (DESIGN §4.6): a maintainer's bundle. The PR's
-  // own text (its members-only branch names stay members-only), its comments and reviews this
-  // reader opened (the maintainer's own go in the same write), offered when one is someone else's.
+  // own text (left out, with the reason, when it is from or into a members-only branch), its
+  // comments and reviews this reader opened (the maintainer's own go in the same write), offered
+  // when one is someone else's.
   const isMaintainer = holdings.data?.maintain === true
   const canBundle = identity !== null && !archived && guard.disabledReason === null && repo.visibility === 'public'
   const threadPosts: BundleRequest[] = canBundle
@@ -1774,7 +1775,6 @@ function PullPage({
                     <>
                       <MarkdownEditor id="edit-pr-body" label="Description" value={editing.body} onChange={(body) => setEditing({ ...editing, body })} links={links} />
                       <BodyCounter repo={repo} text={editing.body} field="description" long={editLong} />
-                      <PublicEditHint marks={pull} />
                     </>
                   ) : pull.body ? (
                     <>

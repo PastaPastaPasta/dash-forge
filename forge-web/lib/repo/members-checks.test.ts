@@ -39,10 +39,23 @@ async function sealedRun(id: string, name: string, blind: string, url: string, s
   const keys = await CheckKeys.of(salt)
   const blindBytes = (await blindOf(salt, real)) as Uint8Array
   const sealed = await keys.sealLog(blindBytes, name, real, new TextEncoder().encode(`${name}: ok\n`))
-  return { run: { id, name: await keys.opaqueName(name), headOid: blind, logUrl: url, logSha256: bytesToHex(sha256(sealed)) }, sealed }
+  return { run: { id, name: await keys.opaqueName(name), headOid: blind, logUrl: url, logSha256: bytesToHex(sha256(sealed)), trusted: true }, sealed }
 }
 
 describe('a members-only check run', () => {
+  it("is not opened by itself when a stranger reported it: blinds are public, so its log URL is the stranger's to choose", async () => {
+    const { ctx, blind } = await memberCtx()
+    const { run, sealed } = await sealedRun('r1', 'ci / build', blind, 'https://logs.example/1')
+    let fetched = 0
+    const spy = (async (url: string) => {
+      fetched++
+      return serving({ 'https://logs.example/1': sealed })(url)
+    }) as unknown as typeof fetch
+    const got = await resolveMembersRuns(ctx, [{ ...run, trusted: false }], spy, HOST)
+    expect(got.has('r1')).toBe(false)
+    expect(fetched).toBe(0)
+  })
+
   it('resolves to its real name and log for a member whose session verified the blind', async () => {
     const { ctx, blind } = await memberCtx()
     const { run, sealed } = await sealedRun('r1', 'ci / build', blind, 'https://logs.example/1')
@@ -65,8 +78,8 @@ describe('a members-only check run', () => {
 
   it('leaves public runs alone: a plain name, or a run on a commit that is not a verified blind', async () => {
     const { ctx, blind } = await memberCtx()
-    const plain: MembersRunInput = { id: 'p', name: 'build', headOid: blind, logUrl: 'https://logs.example/p', logSha256: 'aa'.repeat(32) }
-    const onReal: MembersRunInput = { id: 'q', name: 'abcdefghijklmnop', headOid: bytesToHex(REAL), logUrl: 'https://logs.example/q', logSha256: 'aa'.repeat(32) }
+    const plain: MembersRunInput = { id: 'p', name: 'build', headOid: blind, logUrl: 'https://logs.example/p', logSha256: 'aa'.repeat(32), trusted: true }
+    const onReal: MembersRunInput = { id: 'q', name: 'abcdefghijklmnop', headOid: bytesToHex(REAL), logUrl: 'https://logs.example/q', logSha256: 'aa'.repeat(32), trusted: true }
     expect((await resolveMembersRuns(ctx, [plain, onReal], serving({}), HOST)).size).toBe(0)
   })
 

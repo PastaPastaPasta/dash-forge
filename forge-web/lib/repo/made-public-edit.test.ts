@@ -1,7 +1,8 @@
 /**
- * After a maintainer's bundle covers a members-only post, its author's edits are written as
- * Public (DESIGN §4.6, "after a bundle"): the R5 replace (plaintext set, `enc` and `epoch`
- * removed), never a re-seal, so the public and members never see different current text.
+ * After a maintainer's bundle covers a members-only issue or comment, its author's edits are
+ * written as Public (DESIGN §4.6, "after a bundle"): the R5 replace (plaintext set, `enc` and
+ * `epoch` removed), never a re-seal, so the public and members never see different current text.
+ * A pull request's edit stays sealed: a public edit cannot keep its sealed branch names.
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
@@ -86,20 +87,11 @@ describe('an author’s edit of a post a maintainer made public', () => {
     expect('enc' in c && c['enc'] === undefined).toBe(true)
   })
 
-  it('a pull request’s edit is public too: its title and body only, its branch names stay unset', async () => {
+  it('a pull request’s edit stays members-only (H1): a public edit would lose its sealed branch names and real head', async () => {
     coveredBy = MAINT
-    await updateTarget(sdk, auth, REPO, {
-      type: 'patch',
-      id: PR,
-      body: 'An edited description.',
-      expectedRevision: 2n,
-      seal: { bind: {}, current: { title: 'Fix the bounds check', body: 'old', baseRefName: 'refs/heads/main', sourceRefName: 'refs/heads/sec/fix' } } as never,
-    })
-    expect(replaces.map((r) => r.documentType)).toEqual(['patch'])
-    const c = replaces[0]?.changes ?? {}
-    expect([c['title'], c['body']]).toEqual(['Fix the bounds check', 'An edited description.'])
-    expect('enc' in c && c['enc'] === undefined).toBe(true)
-    expect([c['baseRefName'], c['sourceRefName']]).toEqual([undefined, undefined])
+    // without its sealing context it is refused, never replaced with plaintext
+    await expect(updateTarget(sdk, auth, REPO, { type: 'patch', id: PR, body: 'An edited description.', expectedRevision: 2n })).rejects.toThrow(/members-only, and an edit keeps who can read it/)
+    expect(replaces).toEqual([])
   })
 
   it('not covered: the members-only comment is never replaced with plaintext', async () => {

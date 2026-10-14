@@ -439,6 +439,9 @@ describe('the members, read again at the click', () => {
   })
 })
 
+// The box itself keeps its outcome across a re-read in one mount; what lost it was the page being
+// mounted again under a new members-key session, which `hooks/use-repo-reload.test.tsx` covers
+// (that test fails without the fix, this one guards the box's half).
 describe('publishing a members-only PR, then the re-read (DESIGN §13 3C)', () => {
   const REAL = 'dd'.repeat(20)
   /** The PR as the page reads it: members-only from a members-only branch, its real head verified. */
@@ -448,7 +451,7 @@ describe('publishing a members-only PR, then the re-read (DESIGN §13 3C)', () =
   const publishOf = () => ({ realHead: REAL, source: 'refs/heads/sec/fix', commits: null, commitsPartial: false, authors: [], changes: null, changesPartial: false })
 
   /** The page: the publish refreshes the PR to merged, and the page reads it again (same members-key session). */
-  function MembersPage(): JSX.Element {
+  function MembersPage({ dropPublish = false }: { dropPublish?: boolean }): JSX.Element {
     const [merged, setMerged] = useState(false)
     return (
       <PullMerge
@@ -460,7 +463,7 @@ describe('publishing a members-only PR, then the re-read (DESIGN §13 3C)', () =
         isMaintainer
         checkout="dg pr checkout …"
         onMerged={() => setMerged(true)}
-        extras={{ deleteBranch: null, squashAuthors: { authors: [], complete: true }, publish: publishOf() }}
+        extras={{ deleteBranch: null, squashAuthors: { authors: [], complete: true }, ...(dropPublish ? {} : { publish: publishOf() }) }}
       />
     )
   }
@@ -484,6 +487,9 @@ describe('publishing a members-only PR, then the re-read (DESIGN §13 3C)', () =
     expect(panel?.querySelector('[data-step="event"]')?.getAttribute('data-state')).toBe('done')
     expect(host.querySelector('[data-testid="merge-result"]')?.textContent).toMatch(/^Published\. The base branch is now at/)
     expect(host.querySelector('[data-testid="merge-publish-blocked"]')).toBeNull()
+    // The word stays with the result even when a later read has no publish context.
+    await act(async () => root.render(<MembersPage dropPublish />))
+    expect(host.querySelector('[data-testid="merge-result"]')?.textContent).toMatch(/^Published\./)
     // Nothing more to start: no merge or publish button, and no second run.
     expect(host.querySelector('[data-testid="merge-submit"]')).toBeNull()
     expect(stepsRun).toHaveBeenCalledTimes(1)

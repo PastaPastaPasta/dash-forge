@@ -608,7 +608,7 @@ export async function bundleWouldPublishMembersOnly(doc: PrivateDoc, fields: Doc
   if (fields.headOid !== undefined || fields.oidSalt !== undefined) return true
   const keyed = async (hash: Uint8Array | undefined, name: string | undefined): Promise<boolean> =>
     hash !== undefined && (name === undefined || !constantTimeEqual(await sha256(utf8(name)), hash))
-  return (await keyed(doc.baseRefNameHash, fields.baseRefName)) || keyed(doc.sourceRefNameHash, fields.sourceRefName)
+  return (await keyed(doc.baseRefNameHash, fields.baseRefName)) || (await keyed(doc.sourceRefNameHash, fields.sourceRefName))
 }
 
 /**

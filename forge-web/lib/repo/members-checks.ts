@@ -12,8 +12,8 @@
  * log that is missing, fails its hash or does not open leaves it too. Parity: `dg ci status` /
  * `dg ci log` (`crates/dg/src/ci.rs`, `members_run_log`).
  *
- * The opened names and logs live with the members-key session that opened them (a lock or a key
- * change drops them with the session's context), like its blinds.
+ * The opened names and logs live with the members-key session that opened them: any session's end
+ * (a lock, a key change, a session retired) drops them.
  */
 
 import type { OpenContext } from '../private'
@@ -21,6 +21,7 @@ import { hexToBytes } from '../private/bytes'
 import { CheckKeys, isOpaqueName } from '../private/members-check'
 import { fetchVerifiedLog, safeLogUrl, type CheckRun } from './checks'
 import { blindBook, type BlindBook } from './members-blinds'
+import { onPrivateSessionEnded, onPrivateSessionsClosed } from './private-session'
 
 /** A members-only run, opened: the check's real name and its log. */
 export interface OpenedRun {
@@ -32,11 +33,16 @@ export interface OpenedRun {
 }
 
 /** The fields a run is opened from. */
-export type MembersRunInput = Pick<CheckRun, 'id' | 'name' | 'headOid' | 'logUrl' | 'logSha256'>
+export type MembersRunInput = Pick<CheckRun, 'id' | 'name' | 'headOid' | 'logUrl' | 'logSha256' | 'trusted'>
 
-/** Whether `run` is one `book` can open: an opaque name, on a blind the session verified, with a log. */
+/**
+ * Whether `run` is one `book` opens by itself: an opaque name, on a blind the session verified,
+ * from a trusted reporter (a maintainer, a writer or an enrolled runner). Blinds are public and
+ * anyone may report a run: a stranger's run on a member's blind would otherwise make every member's
+ * browser fetch a URL the stranger chose, unasked. A stranger's run keeps its opaque name.
+ */
 export function isMembersRun(run: MembersRunInput, book: BlindBook): boolean {
-  return isOpaqueName(run.name) && run.headOid !== undefined && run.headOid !== '' && book.saltOf(run.headOid) !== undefined
+  return run.trusted && isOpaqueName(run.name) && run.headOid !== undefined && run.headOid !== '' && book.saltOf(run.headOid) !== undefined
 }
 
 /**
@@ -57,8 +63,11 @@ export async function openMembersRun(run: MembersRunInput, salt: Uint8Array, fet
 }
 
 // Per members-key session: each run's opening, by run, head and log hash (a later report of the
-// run records a new log). A run that did not open is not kept, so the next read tries again.
-const opened = new WeakMap<OpenContext, Map<string, Promise<OpenedRun | null>>>()
+// run records a new log). A run that did not open is not kept, so the next read tries again. The
+// opened names and logs go when a session ends, as the members-only texts it opened do.
+const opened = new Map<OpenContext, Map<string, Promise<OpenedRun | null>>>()
+onPrivateSessionsClosed(() => opened.clear())
+onPrivateSessionEnded(() => opened.clear())
 
 function cacheOf(ctx: OpenContext): Map<string, Promise<OpenedRun | null>> {
   let cache = opened.get(ctx)
