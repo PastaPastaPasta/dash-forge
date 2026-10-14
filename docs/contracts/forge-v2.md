@@ -869,12 +869,12 @@ Not covered here: the client halves of B1 (the name/hash check for a bot's updat
 |---|---|---|
 | `aud` (L1) on issue, patch, comment, review | from `enc[0]` (0x01, 0x03, 0x05 → 1; 0x04 → 2), absent exactly when `enc` is; restated on every replace, dropped by the author's edit to Public | a disagreeing `aud` makes the document malformed (a placeholder) |
 | `mRole` (L2) | the signer's current `writer` role whenever the document carries `asMember`, on every create and replace; a maintainer leaves it out | roles come from the member list, never from `mRole` |
-| `comment.path`, `patch.baseRefName` / `sourceRefName` | set once, in the author's replace that drops `aud` (an inline comment made public keeps its file) | — |
+| `comment.path` | set once, in the author's replace that drops `aud` (an inline comment made public keeps its file); a PR's `baseRefName` / `sourceRefName` stay unset, since a members-only branch's name is hashed under the members key, which no public reader can check a plaintext name against | — |
 | `event.tAud`, `authorEvent.tAud` (M4, M3) | the target's stored `aud`; a value is sealed whenever `tAud` is set (also after a maintainer's bundle); an author's value on a members-only target is a sealed `authorEvent` | sealed `authorEvent` values open like events |
 | `packManifest.r = 0` (C3) | kinds 7, 8, 9 and 11, where `r`'s `minimum` is 0 | — |
 | `event.asMaintainer` on kind 23 (M2) | a maintainer's policy bypass | — |
-| v0x03 in private repositories (D38) | new content where forge-collab declares `aud`; edits re-seal as before | v0x01 and v0x03 |
-| `vis` on `webhook`, `topic`, `packMirror` (R-11) | left out where the type no longer declares it | an absent `vis` reads as public |
+| v0x03 in private repositories (D38) | new issues, PRs, comments and reviews where forge-collab declares `aud` (a text that fits only v0x01's room, 32 bytes more, stays v0x01); events and edits as before | v0x01 and v0x03 |
+| `vis` on `webhook`, `topic`, `packMirror` (R-11) | left out where the type no longer declares it | no reader depends on it |
 
 Before signing, on both networks: a PR's author cannot approve or request changes on it (R-03), the owner's own maintainer document is never removed (R-08), and private repositories cannot be starred or watched (R-12). A mainnet rule's refusal (10422) and a `deleteConstraints` refusal (40147: `ownerRowStays`, `keepVerdicts`) are worded for users.
 
