@@ -44,6 +44,7 @@ mod git;
 mod helper;
 mod journal;
 mod ledger;
+mod members;
 mod options;
 mod pin;
 mod policy;
@@ -139,6 +140,18 @@ fn run(goal: &mut Goal) -> Result<()> {
         }
         // `--check-key`: `dg`'s check, before it pays for a repository, that a push can sign.
         Some("--check-key") => return helper::check_key(),
+        // `--pre-push <remote> <url>`: the clone's `pre-push` hook (E810), with git's input on
+        // stdin. Its exit code is the hook's.
+        Some("--pre-push") => {
+            let code = members::pre_push(&args[2..], &mut io::stdin().lock())?;
+            std::process::exit(code);
+        }
+        // `--install-hook`: install the `pre-push` hook where git looks for it, `core.hooksPath`
+        // included (what `dg doctor --install-hook` runs, after the user agreed).
+        Some("--install-hook") => return ledger::install_hook(),
+        // `--init-ledger`: start the sealed-object ledger of a clone that never fetched
+        // members-only branches (`dg doctor --init-ledger`, after the user confirmed it).
+        Some("--init-ledger") => return ledger::init(),
         // Admin mode: `git-remote-dash --create-repo <name>` etc. (outside the git protocol).
         Some(first) if first.starts_with("--") => {
             let rt = runtime()?;

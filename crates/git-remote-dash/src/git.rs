@@ -78,7 +78,9 @@ fn git_output_env(
 
 /// A read of the local object database, `git --no-replace-objects <args>`, in `repo` (with the
 /// inherited `GIT_DIR` cleared) or in the repo git spawned the helper for when `None`. Replace
-/// refs are ignored (a push packs the real objects, so it is scanned as them), and a partial
+/// refs and a legacy graft file are ignored (`GIT_GRAFT_FILE=/dev/null`): a push packs the real
+/// objects, so it is scanned as them, and a local graft must not hide a members-only parent from
+/// the publication guard (S4 §1b). A partial
 /// clone never lazily fetches a missing blob through this helper mid-push
 /// (`GIT_NO_LAZY_FETCH=1`): a missing object reads as missing. stdout on success, git's stderr
 /// as the error otherwise.
@@ -111,7 +113,7 @@ fn git_read_output(
         repo,
         repo.is_some(),
         stdin,
-        &[("GIT_NO_LAZY_FETCH", "1")],
+        &[("GIT_NO_LAZY_FETCH", "1"), ("GIT_GRAFT_FILE", "/dev/null")],
     )
 }
 
