@@ -416,14 +416,14 @@ fn a_refusal_names_the_first_commits_and_the_branch_they_come_from() {
     let empty = ledger::State::Present(ledger::Ledger::default());
     let o = check(&f, &empty, Some(&s), true);
     let tips: BTreeMap<String, String> = [("refs/heads/sec/fix".to_owned(), f.s2.clone())].into();
-    let e = publish_refusal(&GitGraph::at(&f.path), &o, &tips, 0);
+    let (e, lines) = publish_refusal(&GitGraph::at(&f.path), &o, &tips, 0);
     assert_eq!(e.code, codes::PUBLISHES_MEMBERS_ONLY);
-    let text = e.to_string();
-    assert!(
-        text.contains("pushing refs/heads/main would publish 2 commits from members-only branch sec/fix"),
-        "{text}"
+    assert_eq!(
+        e.message,
+        "pushing refs/heads/main would publish 2 commits from members-only branch sec/fix"
     );
-    let shown = format!("{e:?}");
+    assert!(e.fix[0].starts_with("dg publish sec/fix --onto main"), "{:?}", e.fix);
+    let shown = lines.join("\n");
     assert!(shown.contains("S2 more secret") && shown.contains("S1 secret fix"), "{shown}");
 }
 
@@ -548,7 +548,7 @@ fn every_refusal_has_its_code_and_plain_copy() {
         }
     }
     let (e, _) = refusal_error(&Refusal::Ask, "refs/heads/fix-auth", "o/r");
-    assert_eq!(e.to_string().lines().next().unwrap(), "new branch fix-auth: choose who can see it");
+    assert_eq!(e.message, "new branch fix-auth: choose who can see it");
 }
 
 // --- grafts over an unreadable members-only parent ----------------------------------------------------

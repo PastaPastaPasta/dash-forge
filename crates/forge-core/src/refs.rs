@@ -958,6 +958,51 @@ mod members_tests {
     }
 
     #[test]
+    fn the_refs_view_lists_members_only_names_and_every_decryptable_tip() {
+        // sec/fix moved a -> b, then was force-pushed back to c (b survives only in the history);
+        // main is public
+        let mut main = public(5, 9, 0x5, None);
+        main.fields.insert(
+            "refNameHash".into(),
+            FieldValue::Bytes32(crate::backends::sha256(b"refs/heads/main")),
+        );
+        main.fields
+            .insert("refName".into(), FieldValue::text("refs/heads/main"));
+        let state = GitState {
+            ref_updates: vec![
+                main,
+                sealed(1, 10, 0, 0xa, None, false),
+                sealed(2, 11, 0, 0xb, Some(0xa), false),
+                sealed(3, 12, 0, 0xc, Some(0xb), true),
+            ],
+            ..GitState::default()
+        };
+        let ctx = ctx();
+        let open = |k, d: &FetchedDocument| {
+            let mut h = crate::keyring::header_of(k, d).unwrap();
+            h.vis = crate::rules::v2::Visibility::Public;
+            open_content(&ctx, &h, &d.field_bytes("enc").unwrap())
+        };
+        let outsider = super::refs_view(&state, None);
+        assert_eq!(outsider.public.len(), 1, "only main");
+        assert_eq!(outsider.members_only_updates, 3);
+        assert!(outsider.members.is_none() && !outsider.members_key);
+        let member = super::refs_view(&state, Some(&open)).members.unwrap();
+        assert_eq!(member.refs.len(), 2);
+        assert_eq!(
+            member.members_only.iter().collect::<Vec<_>>(),
+            [NAME],
+            "main is public, not members-only"
+        );
+        let hexes: Vec<String> = [0xa, 0xb, 0xc].iter().map(|b| hex::encode([*b; 20])).collect();
+        assert_eq!(member.decryptable, hexes, "the force-pushed-away tip too");
+        assert_eq!(member.unreadable, 0);
+        // the view's Debug shows counts only
+        let shown = format!("{member:?}");
+        assert!(!shown.contains(NAME) && !shown.contains(&hexes[0]), "{shown}");
+    }
+
+    #[test]
     fn a_members_only_delete_folds_as_a_delete() {
         let state = GitState {
             ref_updates: vec![

@@ -417,8 +417,7 @@ pub fn refusal_error(r: &Refusal, dst: &str, repo: &str) -> (UserError, &'static
             ))
             .fix("git config dash.newBranches public     # or members; then push again")
             .fix(format!("dg branch new --members {name}        # for one branch"))
-            .note("asked once in this clone: a later new branch with no setting is public")
-            .note(NOTE_NOTHING_SIGNED),
+            .note("asked once in this clone: a later new branch with no setting is public; nothing was signed or stored"),
             "choose who can see this new branch",
         ),
         Refusal::MembersBranchPublic => (
@@ -450,16 +449,17 @@ pub fn short(r: &str) -> &str {
 /// How many commits an E805 lists by name.
 const NAMED: usize = 5;
 
-/// E805 for `outcome`'s findings: the first commits as `%h %s` and a count, the members-only
-/// branch they come from when a held tip reaches them, and the two ways out. `members_tips`:
-/// members-only branch → its tip, as this pusher reads them; `public_missing`: public tips this
-/// clone does not hold (a false finding is then likely: fetch first).
+/// E805 for `outcome`'s findings, and the lines printed above it: the first commits as `%h %s`
+/// and a count. The error names the members-only branch they come from when a held tip reaches
+/// them, and the two ways out. `members_tips`: members-only branch → its tip, as this pusher reads
+/// them; `public_missing`: public tips this clone does not hold (a false finding is then likely:
+/// fetch first).
 pub fn publish_refusal(
     g: &GitGraph,
     outcome: &Outcome,
     members_tips: &BTreeMap<String, String>,
     public_missing: usize,
-) -> UserError {
+) -> (UserError, Vec<String>) {
     let first = &outcome.findings[0];
     let n = first.oids.len();
     let from = first.oids.first().and_then(|c| {
@@ -479,39 +479,37 @@ pub fn publish_refusal(
         || "a members-only branch".to_owned(),
         |b| format!("members-only branch {b}"),
     );
-    let mut e = UserError::new(
+    let mut lines = Vec::new();
+    for f in &outcome.findings {
+        lines.push(format!("dash: {} would publish:", f.dst));
+        let shown: Vec<String> = f.oids.iter().take(NAMED).cloned().collect();
+        lines.extend(g.describe(&shown).into_iter().map(|l| format!("dash:   {l}")));
+        if f.oids.len() > NAMED {
+            lines.push(format!("dash:   … and {} more", f.oids.len() - NAMED));
+        }
+    }
+    let branch = from.unwrap_or_else(|| "<members-only branch>".to_owned());
+    let e = UserError::new(
         codes::PUBLISHES_MEMBERS_ONLY,
         format!("pushing {} would publish {what} from {origin}", first.dst),
     )
-    .cause("anything pushed to a public branch can't be taken back, so nothing in this push was sent");
-    let shown: Vec<String> = first.oids.iter().take(NAMED).cloned().collect();
-    for line in g.describe(&shown) {
-        e = e.note(line);
-    }
-    if n > NAMED {
-        e = e.note(format!("… and {} more", n - NAMED));
-    }
-    let others = outcome.findings.len() - 1;
-    if others > 0 {
-        e = e.note(format!(
-            "{others} more {} of this push would publish members-only objects too",
-            plural(others, "ref", "refs")
-        ));
-    }
-    if public_missing > 0 {
-        e = e.note(format!(
-            "{public_missing} public {} not in this clone yet: run `git fetch`, then push again (a commit already public is not refused once it is here)",
-            plural(public_missing, "branch is", "branches are")
-        ));
-    }
-    let branch = from.unwrap_or_else(|| "<members-only branch>".to_owned());
-    e.fix(format!(
+    .cause("anything pushed to a public branch can't be taken back, so nothing in this push was sent")
+    .fix(format!(
         "dg publish {branch} --onto {}     # one new public commit; the members-only history stays members-only",
         short(&first.dst)
     ))
     .fix(format!(
         "git push -o {OPTION_PUBLISH_PRIVATE}=<new tip> …     # publish these commits as they are; it can't be undone"
-    ))
+    ));
+    let e = if public_missing > 0 {
+        e.note(format!(
+            "{public_missing} public {} not in this clone yet: run `git fetch`, then push again (a public commit isn't refused once it is here)",
+            plural(public_missing, "branch is", "branches are")
+        ))
+    } else {
+        e.note(NOTE_NOTHING_SIGNED)
+    };
+    (e, lines)
 }
 
 /// E806 for a push: the guard cannot tell what this clone holds.
@@ -875,7 +873,9 @@ pub fn pre_push(args: &[String], input: &mut dyn std::io::Read) -> Result<i32> {
         return Ok(0);
     }
     if state == ledger::State::Unknown {
-        eprintln!("pre-push: {}", ledger_unreadable());
+        let e = ledger_unreadable();
+        eprintln!("pre-push: {} {}", e.code, e.message);
+        eprintln!("          {}", e.cause.unwrap_or_default());
         eprintln!("          git push --no-verify skips this check, and publishes what it would refuse");
         return Ok(1);
     }

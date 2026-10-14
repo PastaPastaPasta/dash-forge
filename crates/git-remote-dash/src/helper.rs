@@ -2504,7 +2504,10 @@ fn guard_push(planned: &mut [Planned], view: &PushView, options: &OptionState) -
         }
         Verdict::Refuse => {
             let missing = p_tips.len() - g.present(&p_tips).map_or(0, |h| h.len());
-            let e = members::publish_refusal(&g, &outcome, &view.members_tips(), missing);
+            let (e, lines) = members::publish_refusal(&g, &outcome, &view.members_tips(), missing);
+            for line in lines {
+                eprintln!("{line}");
+            }
             say_refusal(&e);
             let named: BTreeSet<&str> = outcome.findings.iter().map(|f| f.dst.as_str()).collect();
             for p in planned.iter_mut().filter(|p| p.reject.is_none()) {
