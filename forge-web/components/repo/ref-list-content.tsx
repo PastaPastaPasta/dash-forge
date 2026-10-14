@@ -28,6 +28,7 @@ import { EmptyState } from '@/components/ui/states'
 import { RefDate, TagCommit, useTagPeeler } from '@/components/repo/tag-commit'
 import { Input } from '@/components/ui/input'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
+import { UnlockMore } from '@/components/auth/unlock-more'
 import { DeleteBranchButton, NewBranchButton, RestoreBranchButton, useBranchAdmin, useDeletedHere } from '@/components/repo/branch-admin'
 
 const KIND = {
@@ -109,6 +110,7 @@ export function RefListContent({
   )
 
   const [query, setQuery] = useState('')
+  const [unlocking, setUnlocking] = useState(false)
   // Tags are usually named for a version, so version order (newest first) is the useful default
   // there; branches usually are not, so name order (default branch first, then alphabetical).
   const [sort, setSort] = useState<SortMode>(kind === 'tags' ? 'version' : 'name')
@@ -137,11 +139,19 @@ export function RefListContent({
   const membersVisibleTo = home.lane?.access === 'member' || home.lane?.access === 'former' ? membersKeyHolders(home) : null
 
   const outsiderLine = !membersGroup && home.membersOnlyRefs === true && home.repo.visibility === 'public' ? (
-    <p className="flex items-center gap-1.5 text-dense text-anvil-600 dark:text-anvil-300" data-testid="members-only-refs-note">
-      <Lock className="h-3.5 w-3.5 shrink-0" aria-hidden />
-      {kind === 'branches' ? 'This repo also has members-only branches.' : 'This repo also has members-only tags.'}
-      {home.lane?.access === 'locked' ? ' Unlock to see them.' : null}
-    </p>
+    <div className="space-y-2" data-testid="members-only-refs-note">
+      <p className="flex flex-wrap items-center gap-1.5 text-dense text-anvil-600 dark:text-anvil-300">
+        <Lock className="h-3.5 w-3.5 shrink-0" aria-hidden />
+        {kind === 'branches' ? 'This repo also has members-only branches.' : 'This repo also has members-only tags.'}
+        {home.lane?.access === 'locked' ? (
+          // A member whose tab resumed with the signing key only (DESIGN §4.3: "unlock to see members-only branches").
+          <button type="button" className="hit-area font-medium text-forge-700 hover:underline dark:text-forge-400" aria-expanded={unlocking} onClick={() => setUnlocking((u) => !u)} data-testid="members-refs-unlock">
+            Unlock to see them
+          </button>
+        ) : null}
+      </p>
+      {unlocking && home.lane?.access === 'locked' ? <UnlockMore title="Unlock to see members-only branches" testId="members-refs-unlock-panel" forgot={false} /> : null}
+    </div>
   ) : null
 
   if (refs.length === 0) {

@@ -20,6 +20,8 @@
  * plaintext by design.
  */
 
+import { membersLane } from '@/lib/repo'
+import { blindBook } from '@/lib/repo/members-blinds'
 import { hexToBytes } from '@/lib/private'
 import { Byline, ItemAuthor, Time } from '@/components/repo/byline'
 import { AuthorRolesProvider } from '@/components/repo/author-roles'
@@ -375,6 +377,9 @@ function PullPage({
   // A members-only PR from a members-only branch folds on its blinded head; git reads (the commit
   // list, the branch's sync, the merge) take the real commit a member's session verified behind it.
   const gitHead = pull.realHeadOid ?? pull.headOid
+  // Any other blinded commit of this PR (a head it had at the merge), as git reads it.
+  const lane = membersLane(repo)
+  const gitOid = (oid: string): string => (lane === undefined ? oid : blindBook(lane.ctx).realOrPlain(oid))
   const sourceBranch = home.branches.find((b) => b.refName === pull.sourceRefName)
   const membersSource = (pull.sourceId === '' || pull.sourceId === repo.repoId) && sourceBranch?.audience === 'members'
   // Who may mirror: an imported PR of theirs shows its original author, date, base and head (FG-6).
@@ -443,7 +448,7 @@ function PullPage({
   }
 
   // ---- the comparison (Files changed, the tab counts, the commit list) -----------------------
-  const spec = pullSpec(pull, home, pullOrigin?.baseOid ?? '')
+  const spec = pullSpec({ ...pull, headOid: gitHead }, home, pullOrigin?.baseOid ?? '')
   const comparison = usePullComparison(repo, pull.sourceId, spec)
   const cmp = comparison.data
   const headReader = cmp?.sides.head ?? null
@@ -456,7 +461,7 @@ function PullPage({
   // Merge integrity: whether the recorded merge commit contains this PR (a squash or a rebase of
   // it counts), read through the comparison's readers once it has loaded. Git objects only: no
   // Platform reads beyond the page's own.
-  const mergeHead = merged && pull.mergedAt !== undefined ? headAt(pull.review.headUpdates, pull.initialHeadOid, pull.mergedAt) : ''
+  const mergeHead = merged && pull.mergedAt !== undefined ? gitOid(headAt(pull.review.headUpdates, pull.initialHeadOid, pull.mergedAt)) : ''
   const mergeCheck = useAsync(
     () => checkMerge(cmp!.sides, { headOid: mergeHead, mergeOid: pull.mergeOid!, tipBefore: pull.baseOidAtMerge ?? '' }),
     [pull.mergeOid ?? '', mergeHead, pull.baseOidAtMerge ?? '', comparison.sidesKey],
@@ -681,8 +686,8 @@ function PullPage({
     async () => {
       const c = cmp!
       const prPaths = c.truncated || c.upToDate === true || c.fellBack === true ? null : new Set(c.changes.flatMap((x) => (x.oldPath ? [x.path, x.oldPath] : [x.path])))
-      const likely = await unrecordedMergeLikely(c.sides, { tip: pull.baseTipOid, prev: pull.baseTipPrev ?? '', head: pull.headOid, prPaths, tipContainsHead: c.tipContainsHead === true })
-      return likely ? checkMerge(cmp!.sides, { headOid: pull.headOid, mergeOid: pull.baseTipOid, tipBefore: pull.baseTipPrev ?? '' }) : null
+      const likely = await unrecordedMergeLikely(c.sides, { tip: pull.baseTipOid, prev: pull.baseTipPrev ?? '', head: gitHead, prPaths, tipContainsHead: c.tipContainsHead === true })
+      return likely ? checkMerge(cmp!.sides, { headOid: gitHead, mergeOid: pull.baseTipOid, tipBefore: pull.baseTipPrev ?? '' }) : null
     },
     [pull.baseTipOid, pull.baseTipPrev ?? '', pull.headOid, comparison.sidesKey],
     { enabled: cmp !== null && unrecordedMergeCandidate(recordInputs) },
@@ -1948,7 +1953,7 @@ function PullPage({
                       <VerdictLine approvals={null} proved={thread.verdicts} headOid={pull.headOid} />
                     </section>
                   ) : null}
-                  <ChecksRow summary={checkSummary} headOid={pull.headOid} onOpen={() => setTab('checks')} />
+                  <ChecksRow summary={checkSummary} headOid={gitHead} onOpen={() => setTab('checks')} />
                   {open && baseTipOid !== '' && cmp !== null && cmp.upToDate !== true && cmp.comparedBaseOid !== baseTipOid && !membersSource && (suggest.write.can || isAuthor) ? (
                     <section aria-label="Update branch" className="flex flex-wrap items-center gap-3 rounded-lg border border-anvil-200 px-4 py-2 text-dense dark:border-anvil-800" data-testid="update-branch">
                       <RefreshCw className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
@@ -2044,6 +2049,8 @@ function PullPage({
                       }
                     : {}),
                   deleteBranch: (() => {
+                    // A members-only branch is deleted with git: the web writes no members-only ref.
+                    if (membersSource) return null
                     const src = sourceRef ?? (crossRepo ? null : repo)
                     const name = pull.sourceRefName
                     // `sourceDefault.data` is null until the default branch has been read (and after a failed read).
@@ -2132,7 +2139,7 @@ function PullPage({
                   <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-anvil-100 pt-3 dark:border-anvil-850">
                     {newerThanHead !== null ? <StaleHeadNote headOid={pull.headOid} newer={newerThanHead} testId="quick-review-stale-head" className="w-full" /> : null}
                     <span className="text-dense text-anvil-500 dark:text-anvil-400">
-                      Review head <span className="font-mono">{pull.headOid.slice(0, 9)}</span>:
+                      Review head <span className="font-mono">{gitHead.slice(0, 9)}</span>:
                     </span>
                     {(Object.keys(VERDICT_TEXT) as VerdictInput[]).filter((v) => !isAuthor || v === 'comment').map((v) => (
                       <Button
