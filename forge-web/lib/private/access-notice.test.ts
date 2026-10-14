@@ -59,9 +59,13 @@ describe('push fields', () => {
     // what a later version wrote stays
     expect(back?.extra.later).toBe(1)
 
-    const suspended = setPush(n, [], DEFAULT_PUSH_POLICY)
+    const kept = { ...DEFAULT_PUSH_POLICY, openPrNotPush: true }
+    const suspended = setPush(n, [], kept)
     expect(noticeMay(suspended, MAY_PUSH)).toBe(false)
-    expect(PUSH_FIELD in suspended.extra || PUSH_POLICY_FIELD in suspended.extra).toBe(false)
+    expect(PUSH_FIELD in suspended.extra && PUSH_POLICY_FIELD in suspended.extra).toBe(false)
+    expect(PUSH_POLICY_FIELD in suspended.extra).toBe(true)
+    // a suspension keeps the rules, so a resume reads them back
+    expect(pushPolicy(suspended)).toEqual(kept)
     expect(suspended.extra.later).toBe(1)
     expect(allowsPush(suspended)).toBe(false)
   })

@@ -1384,8 +1384,10 @@ is refused before signing ("Bots can't push to this repo yet.", E205; the helper
   under the branch key's current generation; only a maintainer holding the branch key can write it. A members-key
   branch ("All members") can never be granted: a bot never holds the members key. A prefix that is or covers a
   members-only branch's name the maintainer can read is refused before signing (the grant and the notice are public
-  and would name it); so is any prefix when the repository has members-only branches the maintainer's key doesn't
-  open. A private repository has no grants (a bot never holds its key, and a prefix would publish its branch names).
+  and would name it); so is any prefix when the repository has members-only branches and the maintainer's members key
+  isn't available (nothing can be checked). A branch for fewer people the maintainer is not among is not checked:
+  its name is unknown to them, so the prefix they type cannot publish it, and a public push of the same name is
+  anyone's possibility, not a bot's (§21). A private repository has no grants (a bot never holds its key, and a prefix would publish its branch names).
 - **How long.** 30 days by default (`--push-until`, else the access's own `until` when sooner); at most 90 days
   (`ttl90`); a client asks for 10 minutes less than 90 days at most, so the block's time never disagrees
   (`until_for`). "Renew" (`dg bot renew`) is offered from 14 days before the end: a new grant per branch or prefix,

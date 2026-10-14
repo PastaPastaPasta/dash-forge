@@ -616,6 +616,7 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
         .map(|g| g.bot)
         .filter(|b| !rows.iter().any(|r| r.0 == *b))
         .collect();
+    others.sort_unstable();
     others.dedup();
     let mut bare = Vec::new();
     for id in others {

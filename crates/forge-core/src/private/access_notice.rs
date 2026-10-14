@@ -330,15 +330,17 @@ impl AccessNotice {
         self.may(MAY_PUSH) && self.push_entries().is_some()
     }
 
-    /// Set its push ability, list and rules: with entries, `push` joins `may` and both fields
-    /// are written; with none, `push` leaves `may` and both fields are removed (a suspension).
+    /// Set its push ability, list and rules: with entries, `push` joins `may` and the list is
+    /// written; with none, `push` leaves `may` and the list is removed (a suspension). The rules
+    /// are written either way, so a suspension and a resume keep them.
     pub fn set_push(&mut self, mut entries: Vec<PushEntry>, policy: PushPolicy) {
         entries.sort_by_key(|a| a.grant);
         entries.dedup_by(|a, b| a.grant == b.grant);
         self.may.retain(|m| m != MAY_PUSH);
+        self.extra
+            .insert(PUSH_POLICY_FIELD.into(), policy.to_value());
         if entries.is_empty() {
             self.extra.remove(PUSH_FIELD);
-            self.extra.remove(PUSH_POLICY_FIELD);
             return;
         }
         self.may.push(MAY_PUSH.to_owned());
@@ -347,8 +349,6 @@ impl AccessNotice {
             PUSH_FIELD.into(),
             Value::Array(entries.iter().map(PushEntry::to_value).collect()),
         );
-        self.extra
-            .insert(PUSH_POLICY_FIELD.into(), policy.to_value());
     }
 
     /// Whether it still allows anything at `now` (ms): before its `until`.
@@ -733,8 +733,16 @@ mod tests {
         assert_eq!(back.push_policy(), PushPolicy::default());
         let s = String::from_utf8(n.encode().unwrap().to_vec()).unwrap();
         assert!(s.contains("\"pushPolicy\":{\"deleteOwnOnly\":true,\"fastForwardOnly\":true,\"openPrNotPush\":false}"), "{s}");
-        n.set_push(Vec::new(), PushPolicy::default());
+        let kept = PushPolicy {
+            open_pr_not_push: true,
+            ..PushPolicy::default()
+        };
+        n.set_push(Vec::new(), kept);
         assert!(!n.may(MAY_PUSH) && !n.extra.contains_key(PUSH_FIELD));
+        // a suspension keeps the rules, so a resume reads them back
+        let back = AccessNotice::decode(&n.encode().unwrap()).unwrap();
+        assert_eq!(back.push_policy(), kept);
+        assert!(!back.allows_push());
         // a malformed list allows no push
         let mut bad = notice();
         bad.may.push(MAY_PUSH.into());

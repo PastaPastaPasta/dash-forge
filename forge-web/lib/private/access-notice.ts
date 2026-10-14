@@ -403,8 +403,9 @@ export function allowsPush(n: AccessNotice): boolean {
 
 /**
  * `n` with its push ability, list and rules set (forge-core `AccessNotice::set_push`): with entries
- * (sorted by grant, each once), `push` joins `may` and both fields are written; with none, `push`
- * leaves `may` and both fields are removed (a suspension). Everything else is kept.
+ * (sorted by grant, each once), `push` joins `may` and the list is written; with none, `push`
+ * leaves `may` and the list is removed (a suspension). The rules are written either way, so a
+ * suspension and a resume keep them. Everything else is kept.
  */
 export function setPush(n: AccessNotice, entries: readonly PushEntry[], policy: PushPolicy): AccessNotice {
   const sorted: PushEntry[] = []
@@ -417,9 +418,10 @@ export function setPush(n: AccessNotice, entries: readonly PushEntry[], policy: 
     if (k !== PUSH_FIELD && k !== PUSH_POLICY_FIELD) Object.defineProperty(extra, k, { value: v, enumerable: true, writable: true, configurable: true })
   }
   const may = n.may.filter((m) => m !== MAY_PUSH)
+  // the rules are written either way, so a suspension and a resume keep them
+  extra[PUSH_POLICY_FIELD] = { deleteOwnOnly: policy.deleteOwnOnly, fastForwardOnly: policy.fastForwardOnly, openPrNotPush: policy.openPrNotPush }
   if (sorted.length === 0) return { ...n, may, extra }
   extra[PUSH_FIELD] = sorted.map(pushEntryJson)
-  extra[PUSH_POLICY_FIELD] = { deleteOwnOnly: policy.deleteOwnOnly, fastForwardOnly: policy.fastForwardOnly, openPrNotPush: policy.openPrNotPush }
   return { ...n, may: [...may, MAY_PUSH].sort(), extra }
 }
 
