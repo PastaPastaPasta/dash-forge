@@ -77,8 +77,12 @@ pub enum BotCommand {
         job: String,
         /// Write the members-only code you were given here, one git pack per file
         /// (`git index-pack` reads them).
-        #[arg(long, value_name = "DIR")]
+        #[arg(long, value_name = "DIR", conflicts_with = "public")]
         code: Option<PathBuf>,
+        /// Only what everyone can read: leave out anything members-only, even what you were
+        /// given (a runner working on a request in public mode).
+        #[arg(long)]
+        public: bool,
     },
 }
 
@@ -173,7 +177,12 @@ pub async fn run(ctx: &Ctx, cmd: &BotCommand) -> Result<()> {
         BotCommand::List { repo } => list(ctx, repo).await,
         BotCommand::Ask(a) => ask(ctx, a).await,
         BotCommand::Jobs { repo, since, bot } => jobs(ctx, repo, *since, bot.as_deref()).await,
-        BotCommand::Read { repo, job, code } => read(ctx, repo, job, code.as_deref()).await,
+        BotCommand::Read {
+            repo,
+            job,
+            code,
+            public,
+        } => read(ctx, repo, job, code.as_deref(), *public).await,
     }
 }
 
@@ -902,9 +911,9 @@ async fn write_code(
 }
 
 #[allow(clippy::too_many_lines)] // the JSON and the human view of one job
-async fn read(ctx: &Ctx, repo: &str, job: &str, code: Option<&Path>) -> Result<()> {
+async fn read(ctx: &Ctx, repo: &str, job: &str, code: Option<&Path>, public: bool) -> Result<()> {
     let s = Session::open(ctx, repo).await?;
-    let read = s.collab().read_job(&s.repo, job).await?;
+    let read = s.collab().read_job_as(&s.repo, job, !public).await?;
     let packs = match (code, &read.letter) {
         (Some(dir), Some(l)) if !l.letter.packs.is_empty() => {
             write_code(&s, &l.letter, dir).await?
@@ -958,6 +967,8 @@ async fn read(ctx: &Ctx, repo: &str, job: &str, code: Option<&Path>) -> Result<(
             "number": read.request.number,
             "asker": read.request.asker,
             "task": read.request.task,
+            "taskMembersOnly": read.task_members_only,
+            "foreignPull": read.foreign_pull,
             "at": read.request.created_at,
             "letter": letter.map(|l| l.id.clone()),
             "asOf": letter.map(|l| l.letter.as_of),

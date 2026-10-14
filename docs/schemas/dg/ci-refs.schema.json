@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/ci-refs.schema.json",
   "title": "dg ci refs --json",
-  "description": "The repository's live refs, their commits and who can see each. A member's identity reads the members-only ones too (`membersView`), by their real names and commits; a member whose key cannot read them here gets an error, never a list without them.",
+  "description": "The repository's live refs, their commits and who can see each. A member's identity reads the members-only ones too (`membersView`), by their real names and commits; a member whose key cannot read them here gets an error, never a list without them. Anyone else with an identity (a runner bot) reads the members-only branches shared with it (`sharedView`), as git lists them.",
   "type": "object",
   "properties": {
     "schemaVersion": {
@@ -20,6 +20,17 @@
     },
     "membersView": {
       "type": "boolean"
+    },
+    "sharedView": {
+      "type": "boolean",
+      "description": "Whether the members-only branches shared with this reader were read (a reader outside the members of a public repository)."
+    },
+    "shared": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "The members-only branches shared with this reader (full names), listed among the refs as members."
     },
     "refs": {
       "type": "array",

@@ -210,6 +210,13 @@ pub struct RepoState {
     pub reruns_since: Option<u64>,
     #[serde(default)]
     pub reruns_seen: std::collections::BTreeSet<String>,
+    /// Agents mode: the newest request `$createdAt` handled (ms), and the requests handled at
+    /// exactly that time. `None` until the first poll with `agents = true`, which records the
+    /// runner's clock and works on nothing older.
+    #[serde(default)]
+    pub agents_since: Option<u64>,
+    #[serde(default)]
+    pub agents_seen: std::collections::BTreeSet<String>,
     /// `schedule`: when the last poll judged the cron expressions (ms, the runner's clock).
     /// `None` until the first poll with `schedule = true`, which runs nothing.
     #[serde(default)]
@@ -254,6 +261,21 @@ impl RepoState {
             _ => {
                 self.reruns_since = Some(created_at);
                 self.reruns_seen = std::collections::BTreeSet::from([id.to_string()]);
+            }
+        }
+    }
+
+    /// Record request `id` to the bot (written at `created_at`) as handled, as
+    /// [`Self::handled_rerun`] does for re-runs.
+    pub fn handled_agent_job(&mut self, id: &str, created_at: u64) {
+        match self.agents_since {
+            Some(t) if created_at < t => {}
+            Some(t) if created_at == t => {
+                self.agents_seen.insert(id.to_string());
+            }
+            _ => {
+                self.agents_since = Some(created_at);
+                self.agents_seen = std::collections::BTreeSet::from([id.to_string()]);
             }
         }
     }

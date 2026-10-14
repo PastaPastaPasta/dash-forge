@@ -114,9 +114,74 @@ pub struct Config {
     /// seconds instead of at the next poll. Without it the runner only polls.
     #[serde(default)]
     pub relay: Option<Relay>,
+    /// Agents mode (`[agents]`): how requests to the runner's identity (`dg bot ask`) are
+    /// worked on, for the repositories with `agents = true`.
+    #[serde(default)]
+    pub agents: Option<Agents>,
     /// The repositories to watch.
     #[serde(rename = "repo")]
     pub repos: Vec<RepoConfig>,
+}
+
+/// `[agents]` (mixed-visibility DESIGN §4.9, "The runner"): the agent each request runs, the AI
+/// services it may reach, and the caps on what it posts. The runner's identity is the bot: it
+/// reads the request and the thread (and, when it was given them, the members-only posts and
+/// code) itself, and the agent gets plaintext only, in a container whose only way out is the
+/// runner's egress proxy, which lets through the endpoints of the AI service the bot's access
+/// names and nothing else.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Agents {
+    /// The agent's image. It reads the job from `/in/job.json`, works in `/work` (the code,
+    /// when the job has any) and writes `/out/result.json` (docs/guides/self-host-runner.md).
+    pub image: String,
+    /// The command it runs (default: the image's own).
+    #[serde(default)]
+    pub command: Vec<String>,
+    /// AI services by the name an access notice gives as what processes the content: the
+    /// endpoints the agent may reach, and its credentials for them.
+    #[serde(default)]
+    pub services: BTreeMap<String, AgentService>,
+    /// How long one job's agent may run.
+    #[serde(default = "default_agent_timeout")]
+    pub timeout_secs: u64,
+    /// The largest reply posted, in bytes (a longer one is cut). Default 4,000: a bot's
+    /// members-only post fits one document, as does a public comment.
+    #[serde(default = "default_reply_bytes")]
+    pub max_reply_bytes: usize,
+    /// How many suggested changes one job posts at most.
+    #[serde(default = "default_suggestions")]
+    pub max_suggestions: usize,
+    /// Where the egress proxy listens (`addr:port`; port 0 picks one). Under Docker Desktop or
+    /// OrbStack 127.0.0.1 works; on Linux, the Docker bridge's gateway (`172.17.0.1:0`).
+    #[serde(default = "default_proxy_listen")]
+    pub proxy_listen: String,
+    /// The host the relay container reaches the proxy at.
+    #[serde(default = "default_proxy_host")]
+    pub proxy_host: String,
+    /// The relay's image: socat, joined to the agent's internal network and the bridge.
+    #[serde(default = "default_relay_image")]
+    pub relay_image: String,
+    /// `docker`.
+    #[serde(default = "default_docker")]
+    pub docker: String,
+    /// The agent container's memory limit (`docker run --memory`).
+    #[serde(default = "default_agent_memory")]
+    pub memory: String,
+    /// Its CPU limit (`docker run --cpus`).
+    #[serde(default = "default_agent_cpus")]
+    pub cpus: String,
+}
+
+/// One AI service an agent may reach (`[agents.services."<name>"]`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentService {
+    /// `host:port` endpoints (`api.example.com:443`): the only places the agent connects to.
+    pub endpoints: Vec<String>,
+    /// `KEY=value` lines the agent gets in its environment (its API key for the service).
+    #[serde(default)]
+    pub env_file: Option<PathBuf>,
 }
 
 /// Paths of the tools the runner drives.
@@ -212,6 +277,10 @@ pub struct RepoConfig {
     /// members read the names and logs).
     #[serde(default)]
     pub members_branches: bool,
+    /// Work on the requests addressed to the runner's identity, a bot (`dg bot ask`), as
+    /// `[agents]` says (mixed-visibility DESIGN §4.9). Off by default.
+    #[serde(default)]
+    pub agents: bool,
 }
 
 /// Which pull requests a repository's runner runs. None ever gets the secrets unless its head
@@ -254,6 +323,33 @@ fn default_refs() -> Vec<String> {
 }
 fn default_true() -> bool {
     true
+}
+fn default_agent_timeout() -> u64 {
+    900
+}
+fn default_reply_bytes() -> usize {
+    4000
+}
+fn default_suggestions() -> usize {
+    5
+}
+fn default_proxy_listen() -> String {
+    "127.0.0.1:0".into()
+}
+fn default_proxy_host() -> String {
+    "host.docker.internal".into()
+}
+fn default_relay_image() -> String {
+    "alpine/socat:latest".into()
+}
+fn default_docker() -> String {
+    "docker".into()
+}
+fn default_agent_memory() -> String {
+    "2g".into()
+}
+fn default_agent_cpus() -> String {
+    "2".into()
 }
 fn default_dg() -> String {
     "dg".into()
@@ -305,6 +401,16 @@ impl Config {
                 bail!("{}: secrets_file must be an absolute path", r.repo);
             }
             check_members_branches(&c, r)?;
+            if r.agents && c.agents.is_none() {
+                bail!("{}: agents = true needs an [agents] section", r.repo);
+            }
+        }
+        if let Some(a) = &c.agents {
+            check_agents(a)?;
+            // job directories are bind-mounted by path, where a comma would end the option
+            if c.state_dir.to_string_lossy().contains(',') {
+                bail!("state_dir must not contain a comma when [agents] is set");
+            }
         }
         for (label, image) in &c.platforms {
             // `-self-hosted` makes act run the job directly on the runner's host, outside
@@ -382,6 +488,34 @@ fn check_members_branches(c: &Config, r: &RepoConfig) -> Result<()> {
                  members-only check's name and log there",
                 r.repo
             );
+        }
+    }
+    Ok(())
+}
+
+/// `[agents]`: endpoints are `host:port`, a reply has room, and credentials come from absolute
+/// paths.
+fn check_agents(a: &Agents) -> Result<()> {
+    if a.image.trim().is_empty() {
+        bail!("agents.image is empty");
+    }
+    if !(64..=crate::agents::MAX_REPLY_BYTES).contains(&a.max_reply_bytes) {
+        bail!(
+            "agents.max_reply_bytes must be 64 to {}",
+            crate::agents::MAX_REPLY_BYTES
+        );
+    }
+    for (name, s) in &a.services {
+        if s.endpoints.is_empty() {
+            bail!("agents.services.{name:?} lists no endpoints");
+        }
+        for e in &s.endpoints {
+            if crate::egress::Endpoint::parse(e).is_none() {
+                bail!("agents.services.{name:?}: endpoint {e:?} must be host:port");
+            }
+        }
+        if s.env_file.as_ref().is_some_and(|p| !p.is_absolute()) {
+            bail!("agents.services.{name:?}: env_file must be an absolute path");
         }
     }
     Ok(())

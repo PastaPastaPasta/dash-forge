@@ -756,8 +756,11 @@ cmd('ci log', 'A check run\'s log written to a file (`-o`; without it the log is
 }, ['name', 'bytes', 'output'])
 cmd('ci refs', 'The repository\'s live refs, their commits and who can see each. A member\'s identity reads the '
     'members-only ones too (`membersView`), by their real names and commits; a member whose key cannot read them here '
-    'gets an error, never a list without them.', {
+    'gets an error, never a list without them. Anyone else with an identity (a runner bot) reads the members-only '
+    'branches shared with it (`sharedView`), as git lists them.', {
     'repo': S, 'visibility': E('public', 'private'), 'membersView': B,
+    'sharedView': D('Whether the members-only branches shared with this reader were read (a reader outside the members of a public repository).', B),
+    'shared': D('The members-only branches shared with this reader (full names), listed among the refs as members.', SA),
     'refs': A(O({'ref': S, 'tip': S, 'audience': E('public', 'members', 'private')}, ['ref', 'tip', 'audience'])),
 }, ['repo', 'visibility', 'membersView', 'refs'])
 cmd('ci rerun', 'A re-run of a pull request\'s checks requested.', {
@@ -802,7 +805,10 @@ cmd('bot jobs', 'The requests to a bot (you, or --bot) in a repository since a t
                     ['id', 'number', 'asker', 'at', 'letter'])),
 }, ['bot', 'since', 'count', 'requests'])
 cmd('bot read', 'As a bot: one request\'s thread as you were given it.', {
-    'request': S, 'allowed': B, 'number': I, 'asker': S, 'task': nl(S), 'at': I, 'letter': nl(S), 'asOf': nl(I),
+    'request': S, 'allowed': B, 'number': I, 'asker': S, 'task': nl(S),
+    'taskMembersOnly': D('Whether the task is members-only (whatever reads it has read members-only content).', B),
+    'foreignPull': D('For a pull request: whether it comes from a fork or from someone outside the members (a runner works on it in public mode only); null for an issue.', nl(B)),
+    'at': I, 'letter': nl(S), 'asOf': nl(I),
     'head': nl(S),
     'packs': I, 'packFiles': SA,
     'posts': A(O({'kind': E('pull request', 'issue', 'comment', 'review'), 'id': S, 'author': S, 'at': I,

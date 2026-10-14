@@ -146,6 +146,10 @@ pub struct SharedBranch {
     pub as_of: u64,
     /// The letter's manifest id.
     pub letter_id: String,
+    /// The head as the letter names it: the blind its push carries, the real commit and the
+    /// blind's salt (a members-only branch's check runs are reported on the blind, under names
+    /// keyed by the salt).
+    pub letter_head: key_letter::LetterHead,
 }
 
 /// It carries file keys: `Debug` shows counts only.
@@ -228,11 +232,52 @@ pub fn shared_branches(
                 sender: r.manifest.owner_id.clone(),
                 as_of: b.as_of,
                 letter_id: id,
+                letter_head: b.head.clone(),
                 name: b.name,
             },
         );
     }
     (by_name.into_values().collect(), ignored)
+}
+
+/// The members-only branches of public `repo` shared with `signer` now (§20.2), as its git
+/// helper lists them: its letters checked against the repository's history, the newest per
+/// name, none named as a live public branch is.
+pub async fn shared_with_signer(
+    svc: &RepoService<'_>,
+    client: &PlatformClient,
+    repo: &RepoRef,
+    signer: &crate::keyring::PrivateSigner<'_>,
+) -> Result<Vec<SharedBranch>> {
+    let (identity_id, keys) = signer_reader_keys(signer, repo)?;
+    if keys.is_empty() {
+        return Ok(Vec::new());
+    }
+    let (state, manifests, roles) = futures::try_join!(
+        svc.git_state(repo),
+        svc.read_pack_manifests(repo),
+        svc.copy_roles(repo)
+    )?;
+    let live: BTreeSet<String> = crate::refs::refs_view(&state, None)
+        .public
+        .iter()
+        .filter(|(_, st)| crate::rules::tip_of(st).is_some())
+        .map(|(n, _)| n.clone())
+        .collect();
+    let inbox = received(
+        svc,
+        client,
+        repo,
+        &manifests,
+        &roles,
+        &LetterReader {
+            identity_id,
+            keys: &keys,
+        },
+        &BTreeSet::new(),
+    )
+    .await?;
+    Ok(shared_branches(&inbox.letters, &state, &live, &manifests, &roles).0)
 }
 
 /// The reader of a signer: its identity id and ENCRYPTION private keys for `repo`.

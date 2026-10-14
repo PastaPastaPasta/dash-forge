@@ -16,7 +16,9 @@ use crate::error::{Error, Result};
 use crate::key_letters::{self, LetterReader};
 use crate::members::MemberReader;
 use crate::platform::{self, FetchedDocument, FieldValue, QueryFilter, QueryOrder};
-use crate::private::access_notice::{AccessNotice, NoticeEntry, MAY_READ_ON_REQUEST};
+use crate::private::access_notice::{
+    AccessNotice, NoticeEntry, MAY_CI_MEMBERS_BRANCHES, MAY_READ_ON_REQUEST,
+};
 use crate::private::key_letter::{
     self, LetterDoc, LetterHead, LetterPack, ReadLetter, ReadTarget, TypedLetter,
 };
@@ -47,6 +49,32 @@ impl Notices {
         let id = platform::decode_identifier(bot).ok()?;
         self.current.get(&id)
     }
+}
+
+/// A `branch` letter a members-only push wrote to a runner bot ([`Collab::letter_ci_bots`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CiLetter {
+    /// The branch (full name).
+    pub branch: String,
+    /// The bot (base58).
+    pub bot: String,
+    /// The letter's manifest id.
+    pub letter: String,
+    /// The head it hands on (hex).
+    pub head: String,
+}
+
+/// What [`Collab::letter_ci_bots`] wrote, and what it could not: `(branch, bot, why)`, either
+/// left out when the failure was not about one.
+#[derive(Debug, Clone, Default)]
+pub struct CiLetters {
+    /// The letters written.
+    pub written: Vec<CiLetter>,
+    /// What was not written, and why.
+    pub failed: Vec<(Option<String>, Option<String>, String)>,
+    /// Branches (and the tip pushed) whose push the repository did not show yet: nothing was
+    /// written for them, and asking again a little later may.
+    pub lagging: Vec<(String, String)>,
 }
 
 /// Why a members-only post of the thread is not in a `read` letter.
@@ -278,6 +306,12 @@ impl std::fmt::Debug for ReceivedRead {
 pub struct JobRead {
     /// The request, its task opened with the letter when it is members-only.
     pub request: AgentRequest,
+    /// Whether the task is members-only (the request is sealed): whatever reads it has read
+    /// members-only content.
+    pub task_members_only: bool,
+    /// For a pull request: whether it comes from a fork or from someone outside the members
+    /// (as they are now). A runner works on such a request in public mode only.
+    pub foreign_pull: Option<bool>,
     /// Whether the request was allowed when written: a runner works only on one that was.
     pub allowed: bool,
     /// The newest `read` letter from the asker naming this job, if any.
@@ -548,6 +582,139 @@ impl Collab<'_> {
             named::seal_artifact(&repo_id, sender, sender_key_id, &me, &recipients, plain)
         };
         sealed.map_err(|e| Error::Config(format!("this could not be prepared for the bot: {e}")))
+    }
+
+    /// The bots (base58) whose current access notice in `repo` lets them run checks on
+    /// members-only branches now (`ciMembersBranches`, §22.1): the newest notice from a current
+    /// maintainer, live and listing that ability.
+    pub async fn ci_bots(&self, repo: &RepoRef) -> Result<Vec<String>> {
+        let notices = self.access_notices(repo).await?;
+        let now = crate::cache::now_ms();
+        Ok(notices
+            .current
+            .iter()
+            .filter(|(_, e)| e.notice.live_at(now) && e.notice.may(MAY_CI_MEMBERS_BRANCHES))
+            .map(|(bot, _)| platform::encode_identifier(*bot))
+            .collect())
+    }
+
+    /// After a members-only push of `branches` (full names of members-key branches of public
+    /// `repo`, each with the tip pushed), a `branch` letter of each branch as it is now (at that
+    /// tip, else it is `lagging`) to every runner bot whose access lets it run checks on
+    /// members-only branches (DESIGN §4.9, `private-repos.md` §22.4): the snapshot
+    /// `dg branch share` hands on ([`crate::members_git::share::snapshot`]), read in the clone at
+    /// `cwd` with the members key `kr`, sealed to the signer and the bot. Only a maintainer's or a
+    /// Write member's letter counts for its bot, so anyone else writes none. It never fails the
+    /// push it follows: what was written and what was not are returned.
+    #[allow(clippy::too_many_lines)] // one pass: the bots, their keys, each branch, each letter
+    pub async fn letter_ci_bots(
+        &self,
+        repo: &RepoRef,
+        kr: &std::sync::Arc<crate::keyring::Keyring>,
+        cwd: &std::path::Path,
+        branches: &[(String, String)],
+        progress: &dyn Fn(&str),
+    ) -> CiLetters {
+        let mut out = CiLetters::default();
+        if branches.is_empty() || repo.visibility != Visibility::Public {
+            return out;
+        }
+        let bots = match self.ci_bots(repo).await {
+            Ok(b) if b.is_empty() => return out,
+            Ok(b) => b,
+            Err(e) => {
+                out.failed.push((None, None, e.to_string()));
+                return out;
+            }
+        };
+        match self.asker_role(repo).await {
+            Ok(Some(Role::Maintainer | Role::Writer)) => {}
+            Ok(_) => {
+                out.failed.push((
+                    None,
+                    None,
+                    "only members with Write or Maintain access can share a members-only branch"
+                        .into(),
+                ));
+                return out;
+            }
+            Err(e) => {
+                out.failed.push((None, None, e.to_string()));
+                return out;
+            }
+        }
+        let mut keys = Vec::new();
+        for bot in bots {
+            match self.recipient_key_of(repo, &bot).await {
+                Ok(Some(k)) => keys.push((bot, k)),
+                Ok(None) => out
+                    .failed
+                    .push((None, Some(bot), "it has no encryption key".into())),
+                Err(e) => out.failed.push((None, Some(bot), e.to_string())),
+            }
+        }
+        if keys.is_empty() {
+            return out;
+        }
+        let svc = match self.repo_service() {
+            Ok(s) => s,
+            Err(e) => {
+                out.failed.push((None, None, e.to_string()));
+                return out;
+            }
+        };
+        for (branch, pushed) in branches {
+            progress(&format!(
+                "Sharing {} with {} runner bot(s) for their checks…",
+                crate::repo::short_branch_name(branch),
+                keys.len()
+            ));
+            let snap =
+                match crate::members_git::share::snapshot(&svc, repo, kr, cwd, branch, progress)
+                    .await
+                {
+                    Ok(s) if !s.tip.eq_ignore_ascii_case(pushed) => {
+                        out.lagging.push((branch.clone(), pushed.clone()));
+                        continue;
+                    }
+                    Ok(s) => s,
+                    Err(e) => {
+                        out.failed.push((Some(branch.clone()), None, e.to_string()));
+                        continue;
+                    }
+                };
+            let Some(typed) = snap.letter.to_typed() else {
+                out.failed
+                    .push((Some(branch.clone()), None, "its head did not check".into()));
+                continue;
+            };
+            let plain = match typed.encode() {
+                Ok(p) => p,
+                Err(e) => {
+                    out.failed.push((Some(branch.clone()), None, e.to_string()));
+                    continue;
+                }
+            };
+            for (bot, key) in &keys {
+                let written = match self.seal_to_bot(repo, bot, *key, &plain, true) {
+                    Ok(sealed) => svc.store_key_letter(repo, &sealed).await.map(|(id, _)| id),
+                    Err(e) => Err(e),
+                };
+                match written {
+                    Ok(letter) => out.written.push(CiLetter {
+                        branch: branch.clone(),
+                        bot: bot.clone(),
+                        letter,
+                        head: snap.tip.clone(),
+                    }),
+                    Err(e) => {
+                        out.failed
+                            .push((Some(branch.clone()), Some(bot.clone()), e.to_string()));
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// Whether identity `who` has an encryption key anything members-only can be sent to.
@@ -1073,8 +1240,15 @@ impl Collab<'_> {
     /// read at the revision the letter names; its long body from the letter's packs). Anything
     /// else members-only is marked not shared. Refused when the event is not a request to the
     /// signer in `repo`.
-    #[allow(clippy::too_many_lines)] // one pass: the request, its letter, the thread
     pub async fn read_job(&self, repo: &RepoRef, job: &str) -> Result<JobRead> {
+        self.read_job_as(repo, job, true).await
+    }
+
+    /// [`Self::read_job`], with `letters` false for what everyone reads: no `read` letter is
+    /// looked up or opened, so a members-only task or post stays unread (forge-runner's public
+    /// mode, DESIGN §4.9 "Run only proper requests").
+    #[allow(clippy::too_many_lines)] // one pass: the request, its letter, the thread
+    pub async fn read_job_as(&self, repo: &RepoRef, job: &str, letters: bool) -> Result<JobRead> {
         let community = self.community_contract(repo).await?;
         let me = self.signer_id()?;
         let not_yours = || {
@@ -1089,7 +1263,8 @@ impl Collab<'_> {
             .await?
             .ok_or_else(not_yours)?;
         let mut e = request_event_of(&d);
-        if is_sealed(&d) {
+        let task_members_only = is_sealed(&d);
+        if task_members_only {
             e.value = None;
             e.value_hidden = true;
         }
@@ -1102,7 +1277,12 @@ impl Collab<'_> {
             .request_allowed(repo, &notices, &oracle, &request)
             .await?;
         let job_id = platform::decode_identifier(job)?;
-        let letter = self.read_letters(repo).await?.into_iter().rfind(|r| {
+        let received = if letters {
+            self.read_letters(repo).await?
+        } else {
+            Vec::new()
+        };
+        let letter = received.into_iter().rfind(|r| {
             r.letter.job == job_id
                 && r.sender == request.asker
                 && match r.letter.target {
@@ -1133,6 +1313,24 @@ impl Collab<'_> {
             }
         }
         let (kind, target) = target.ok_or(Error::NotFound)?;
+        // the runner works on a fork's or an outsider's pull request in public mode only (§4.9);
+        // `sourceRepoId` and the author are in the clear even on a members-only one
+        let foreign_pull = if kind == DocKind::Patch {
+            let source = target
+                .field_bytes32("sourceRepoId")
+                .map(platform::encode_identifier)
+                .unwrap_or_default();
+            Some(
+                source != repo.id()
+                    || (target.owner_id != repo.owner_id()
+                        && MemberReader::new(self.client)
+                            .best_role(repo, &target.owner_id)
+                            .await?
+                            .is_none()),
+            )
+        } else {
+            None
+        };
         let bodies = LongBodies::default();
         let mut posts = Vec::new();
         for (kind, d) in self.thread_posts(repo, kind, target).await? {
@@ -1177,6 +1375,8 @@ impl Collab<'_> {
         }
         Ok(JobRead {
             request,
+            task_members_only,
+            foreign_pull,
             allowed,
             letter,
             posts,
