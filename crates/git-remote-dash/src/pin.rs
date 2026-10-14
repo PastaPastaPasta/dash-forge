@@ -4,9 +4,10 @@
 //! A DPNS name is a pointer, not an identity: a name can change hands, and a URL spelled
 //! with one would then resolve to another identity's repository of the same name. Fetching
 //! from it would mix a stranger's history into the clone, and pushing would send commits to
-//! them. So the first time this helper resolves a named URL inside a repository (the clone
-//! itself, or the first fetch of an existing one), it records what the URL resolved to in
-//! that repository's own git config, per network:
+//! them. So the first time this helper fetches or pushes a named URL inside a clone of it (the
+//! clone itself, or the first fetch of an existing one; a `list` alone, which may be
+//! `git ls-remote`, only checks: [`check`]), it records what the URL resolved to in that
+//! repository's own git config, per network:
 //!
 //! ```text
 //! [dash "devnet-sakura:dash://alice/project"]
@@ -89,10 +90,7 @@ pub fn guard(
     let Some(section) = section(url, &now.network) else {
         return Ok(Outcome::NotApplicable);
     };
-    let recorded = Recorded {
-        repo_id: config_get(git_dir, &format!("{section}.repoId"))?,
-        owner_id: config_get(git_dir, &format!("{section}.ownerId"))?,
-    };
+    let recorded = read(git_dir, &section)?;
     if recorded.is_empty() {
         record(git_dir, &section, now);
         return Ok(Outcome::Pinned);
@@ -119,6 +117,34 @@ pub fn guard(
     );
     record(git_dir, &section, now);
     Ok(Outcome::Repinned { was: recorded })
+}
+
+/// [`guard`]'s check alone, writing nothing: a `list` refuses a URL that moved (E504 unless
+/// `allow_repin`), and the fetch or push after it records the pin. git sends a `git ls-remote`
+/// and a fetch the same `list`, and a listing leaves the repository as it was.
+pub fn check(
+    url: &DashUrl,
+    git_dir: &Path,
+    remote: Option<&str>,
+    now: &Pin,
+    allow_repin: impl FnOnce() -> Result<bool>,
+) -> Result<()> {
+    let Some(section) = section(url, &now.network) else {
+        return Ok(());
+    };
+    let recorded = read(git_dir, &section)?;
+    if recorded.is_empty() || recorded.matches(&now.repo_id, &now.owner_id) || allow_repin()? {
+        return Ok(());
+    }
+    Err(moved(url, remote, &section, &recorded, now).into())
+}
+
+/// The pin recorded under `section` (fails closed: a pin that cannot be read is an error).
+fn read(git_dir: &Path, section: &str) -> Result<Recorded> {
+    Ok(Recorded {
+        repo_id: config_get(git_dir, &format!("{section}.repoId"))?,
+        owner_id: config_get(git_dir, &format!("{section}.ownerId"))?,
+    })
 }
 
 /// E504: the URL names another repository than the pinned one.
@@ -455,5 +481,29 @@ mod tests {
             guard(&u, &git_dir, None, &pin("R1", OWNER_A), no).unwrap(),
             Outcome::NotApplicable
         );
+    }
+
+    /// A `list` (maybe `git ls-remote`) only checks: nothing is written to the repository's
+    /// config, and a moved URL is still refused.
+    #[test]
+    fn a_check_writes_nothing_and_still_refuses_a_moved_url() {
+        let (_d, git_dir) = repo();
+        let u = url("dash://alice/project");
+        let config = std::fs::read_to_string(git_dir.join("config")).unwrap();
+        check(&u, &git_dir, Some("origin"), &pin("R1", OWNER_A), no).unwrap();
+        assert_eq!(get(&git_dir, "repoId"), None);
+        assert_eq!(
+            std::fs::read_to_string(git_dir.join("config")).unwrap(),
+            config
+        );
+        guard(&u, &git_dir, Some("origin"), &pin("R1", OWNER_A), no).unwrap();
+        check(&u, &git_dir, Some("origin"), &pin("R1", OWNER_A), no).unwrap();
+        let err = check(&u, &git_dir, Some("origin"), &pin("R2", OWNER_B), no).unwrap_err();
+        assert_eq!(
+            err.downcast_ref::<UserError>().unwrap().code,
+            codes::INTEGRITY
+        );
+        check(&u, &git_dir, Some("origin"), &pin("R2", OWNER_B), yes).unwrap();
+        assert_eq!(get(&git_dir, "repoId"), Some("R1".into()), "a check never re-pins");
     }
 }

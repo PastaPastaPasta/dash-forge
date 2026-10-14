@@ -163,6 +163,50 @@ pub struct Helper {
     /// that follows it: members-only branches someone gave it with `dg branch share` (`branch` key
     /// letters, `private-repos.md` §20.2), each at its shared head with its packs' file keys.
     shared_fetch: Option<SharedFetch>,
+    /// The repository git runs this helper in is a clone of this dash remote
+    /// ([`LocalRepo::is_clone_of`]): the only kind it keeps state in (pin, ledger, `pre-push`
+    /// hook, `.git/dash/`), and the only kind members-only branches are fetched into.
+    in_clone: bool,
+    /// A `list` offered members-only (or shared) branches to a clone whose `pre-push` hook is not
+    /// in place yet: what the `fetch` after it does first ([`FirstMembersFetch`]). A `list` alone
+    /// may be `git ls-remote` (git sends both the same `list`), which leaves the repository as it
+    /// was.
+    first_members_fetch: Option<FirstMembersFetch>,
+}
+
+/// What a clone's first fetch of members-only or shared branches does before anything else,
+/// put off from the `list` before it: install the `pre-push` hook, remember the public tips (and
+/// the branches shared with it), and read the members-only packs.
+struct FirstMembersFetch {
+    public_tips: Vec<String>,
+    shared: Option<Vec<String>>,
+}
+
+/// What a `list` that found members-only (or shared) branches for this reader does with them.
+#[derive(Debug)]
+enum MembersGate {
+    /// Not a clone of this remote: the public branches only.
+    NotAClone,
+    /// The `pre-push` hook is in place: offer them, reading their packs now.
+    Now,
+    /// The clone holds members-only commits and lost its hook: install it now (a repair), then as
+    /// [`Self::Now`].
+    InstallNow,
+    /// Offer them; the `fetch` after the `list` installs the hook and reads their packs.
+    Defer,
+    /// The hook can't be put in place: why ([`members::HookState::Blocked`]).
+    Blocked(UserError),
+}
+
+/// [`MembersGate`] for a clone (`in_clone`) in `hook` state that `holds` members-only commits.
+fn members_gate(in_clone: bool, hook: members::HookState, holds: bool) -> MembersGate {
+    match hook {
+        _ if !in_clone => MembersGate::NotAClone,
+        members::HookState::Ready => MembersGate::Now,
+        members::HookState::Blocked(e) => MembersGate::Blocked(e),
+        members::HookState::Installable { .. } if holds => MembersGate::InstallNow,
+        members::HookState::Installable { .. } => MembersGate::Defer,
+    }
 }
 
 /// What a fetch of shared branches needs from the `list` before it.
@@ -197,7 +241,7 @@ struct MembersFetch {
 impl Helper {
     /// Build a helper for `url`, reading the network config from the environment and git
     /// config ([`network_target`]). No identity is read here: see [`Self::ensure_signer`].
-    pub fn new(url: DashUrl, remote: Option<String>) -> Result<Self> {
+    pub fn new(url: DashUrl, remote: Option<String>, in_clone: bool) -> Result<Self> {
         let target = network_target()?;
         Ok(Self {
             url,
@@ -207,7 +251,15 @@ impl Helper {
             members: None,
             members_fetch: None,
             shared_fetch: None,
+            in_clone,
+            first_members_fetch: None,
         })
+    }
+
+    /// Whether the repository git runs this helper in is a clone of this remote
+    /// ([`LocalRepo::is_clone_of`]).
+    pub fn in_clone(&self) -> bool {
+        self.in_clone
     }
 
     /// Establish (once) the Platform connection and resolve the repo. Anonymous for a public
@@ -224,7 +276,8 @@ impl Helper {
                 })?;
             // The repository's append-only history lives with the clone
             // (`.git/dash/history`), so a fetch or push reads only what landed since the last.
-            if let Ok(git_dir) = LocalRepo::git_dir() {
+            // Never in a repository that is not a clone of this remote.
+            if let (true, Ok(git_dir)) = (self.in_clone, LocalRepo::git_dir()) {
                 client
                     .history()
                     .set_dir(git_dir.join("dash").join("history"));
@@ -240,8 +293,9 @@ impl Helper {
                     .with_context(|| format!("resolving repo {id}"))?,
             };
             // Before anything is read or a key opened: is this still the repository the
-            // clone was made from (a DPNS name can change hands)?
-            self.check_pin(&repo)?;
+            // clone was made from (a DPNS name can change hands)? Checked only: the fetch or
+            // push records it ([`Self::record_pin`]).
+            self.check_pin(&repo, false)?;
             let keyring = forge_core::repo::KeyringCache::default();
             let mut signer = None;
             if repo.visibility == forge_core::rules::v2::Visibility::Private {
@@ -271,12 +325,13 @@ impl Helper {
         Ok(self.conn.as_ref().expect("conn populated"))
     }
 
-    /// Pin a named URL's resolution in the repository git runs us for, or refuse one that now
-    /// resolves elsewhere (E504; [`crate::pin`]). Only when git named a repository
-    /// (`GIT_DIR`): `git ls-remote` outside one has nothing to pin, and a directory git
-    /// declined to use (safe.directory) is not written to.
-    fn check_pin(&self, repo: &RepoRef) -> Result<()> {
-        if std::env::var_os("GIT_DIR").is_none() {
+    /// Refuse a named URL that now resolves elsewhere than the repository git runs us for
+    /// pinned (E504; [`crate::pin`]), and (`record`) pin its resolution there. Only in a clone
+    /// of this remote ([`LocalRepo::is_clone_of`]): `git ls-remote` outside one has nothing to
+    /// pin, another repository's config is not written to, and neither is a directory git
+    /// declined to use (safe.directory).
+    fn check_pin(&self, repo: &RepoRef, record: bool) -> Result<()> {
+        if !self.in_clone {
             return Ok(());
         }
         let git_dir = LocalRepo::git_dir()?;
@@ -285,15 +340,41 @@ impl Helper {
             owner_id: repo.owner_id().to_string(),
             network: self.target.network.key(),
         };
-        let outcome = crate::pin::guard(
-            &self.url,
-            &git_dir,
-            self.remote.as_deref(),
-            &now,
-            crate::pin::allow_repin,
-        )?;
+        let (url, remote) = (&self.url, self.remote.as_deref());
+        if !record {
+            return crate::pin::check(url, &git_dir, remote, &now, crate::pin::allow_repin);
+        }
+        let outcome = crate::pin::guard(url, &git_dir, remote, &now, crate::pin::allow_repin)?;
         tracing::debug!(?outcome, "dash:// pin");
         Ok(())
+    }
+
+    /// Whether a fetch's `list` may offer members-only (or shared) branches now: `Ok(false)` with
+    /// the `pre-push` hook in place (installed now when the clone `holds` members-only commits and
+    /// lost it), `Ok(true)` when the `fetch` after the `list` installs it
+    /// ([`FirstMembersFetch`]), and why not otherwise.
+    fn members_gate(&self, holds: bool) -> std::result::Result<bool, UserError> {
+        match members_gate(self.in_clone, members::hook_state(), holds) {
+            MembersGate::NotAClone => Err(members::not_a_clone(&self.url_shown())),
+            MembersGate::Now => Ok(false),
+            MembersGate::Defer => Ok(true),
+            MembersGate::InstallNow => members::hook_blocked().map_or(Ok(false), Err),
+            MembersGate::Blocked(e) => Err(e),
+        }
+    }
+
+    /// The URL as a user writes it (`dash://…`).
+    fn url_shown(&self) -> String {
+        format!("{}://{}", crate::url::SCHEME, self.url)
+    }
+
+    /// Record the pin of the repository `list` resolved, now that a fetch or push writes to the
+    /// clone ([`Self::check_pin`]).
+    fn record_pin(&self) -> Result<()> {
+        match &self.conn {
+            Some(conn) => self.check_pin(&conn.repo, true),
+            None => Ok(()),
+        }
     }
 
     /// [`Self::ensure_conn`], plus the signing identity (loaded once, on first need): a push
@@ -411,6 +492,13 @@ impl Helper {
         if public.members_only_updates == 0 {
             return Ok(public.public);
         }
+        // members-only and shared branches go only into a clone of this remote, whose
+        // `pre-push` hook guards them: never into another repository a bare URL is fetched or
+        // listed in, nor outside one
+        if !for_push && !self.in_clone {
+            eprintln!("dash: this repository also has members-only branches; only a clone of it fetches them");
+            return Ok(public.public);
+        }
         // the fetch trigger of E806 (§11): the clone holds members-only commits, and the public
         // view alone would drop branches it fetched before
         let holds = members::ledger_holds_members_only()
@@ -426,16 +514,19 @@ impl Helper {
                     .await
             }
         };
-        if !for_push {
-            if let Some(blocked) = members::hook_blocked() {
-                if holds {
-                    return Err(blocked.into());
+        let defer = if for_push {
+            false
+        } else {
+            match self.members_gate(holds) {
+                Ok(defer) => defer,
+                Err(blocked) if holds => return Err(blocked.into()),
+                Err(blocked) => {
+                    blocked.eprint("dash: ");
+                    eprintln!("dash: fetching the public branches only");
+                    return Ok(public.public);
                 }
-                blocked.eprint("dash: ");
-                eprintln!("dash: fetching the public branches only");
-                return Ok(public.public);
             }
-        }
+        };
         let ring = self.attach_branch_ring(&kr, &state, false).await?;
         let open = |k, d: &forge_core::platform::FetchedDocument| kr.open(k, d);
         let view = forge_core::refs::refs_view(&state, Some(&open));
@@ -448,7 +539,14 @@ impl Helper {
                 m.alerts.len()
             );
         }
-        members::remember_public_tips(&live_tips(&view.public));
+        if defer {
+            self.first_members_fetch = Some(FirstMembersFetch {
+                public_tips: live_tips(&view.public),
+                shared: None,
+            });
+        } else if self.in_clone {
+            members::remember_public_tips(&live_tips(&view.public));
+        }
         if for_push {
             return Ok(m.refs);
         }
@@ -459,8 +557,10 @@ impl Helper {
         });
         // The members-only packs come first, so a members-only branch no stored pack holds (a
         // ref update written without its pack) is left out with a warning instead of failing the
-        // whole fetch with "bad object". A clone that already holds its commits keeps it.
-        if std::env::var_os("GIT_DIR").is_none() {
+        // whole fetch with "bad object". A clone that already holds its commits keeps it. A
+        // clone's first members-only fetch reads them in its `fetch` instead (`defer`): a branch
+        // with no pack then fails that fetch, and the next one (hook in place) leaves it out.
+        if defer {
             return Ok(m.refs);
         }
         self.fetch_packs(&[], &OptionState::default(), true, true)
@@ -529,16 +629,24 @@ impl Helper {
             }
             return Ok(public);
         }
-        if let Some(blocked) = members::hook_blocked() {
-            if holds {
-                return Err(blocked.into());
+        let defer = match self.members_gate(holds) {
+            Ok(defer) => defer,
+            Err(blocked) if holds => return Err(blocked.into()),
+            Err(blocked) => {
+                blocked.eprint("dash: ");
+                eprintln!("dash: fetching the public branches only");
+                return Ok(public);
             }
-            blocked.eprint("dash: ");
-            eprintln!("dash: fetching the public branches only");
-            return Ok(public);
-        }
+        };
         // the pre-push hook and the guard tell what this clone holds from the public history
-        members::remember_public_tips(&live_tips(&public));
+        if defer {
+            self.first_members_fetch = Some(FirstMembersFetch {
+                public_tips: live_tips(&public),
+                shared: Some(shared.iter().map(|b| b.name.clone()).collect()),
+            });
+        } else {
+            members::remember_public_tips(&live_tips(&public));
+        }
         self.shared_fetch = Some(SharedFetch {
             heads: shared.iter().map(|b| b.head.clone()).collect(),
             keys: shared
@@ -547,9 +655,10 @@ impl Helper {
                 .collect(),
         });
         // the shared packs come first, so a shared branch whose commits do not arrive is left out
-        // with a warning rather than failing the fetch with "bad object"
-        let in_repo = std::env::var_os("GIT_DIR").is_some();
-        if in_repo {
+        // with a warning rather than failing the fetch with "bad object" (a first fetch reads
+        // them in its `fetch`, `defer`)
+        let read_now = !defer;
+        if read_now {
             if let Err(e) = self
                 .fetch_packs(&[], &OptionState::default(), true, true)
                 .await
@@ -566,7 +675,7 @@ impl Helper {
         let mut refs = public;
         let mut given = Vec::new();
         for b in shared {
-            if in_repo && !LocalRepo::object_exists(&b.head) {
+            if read_now && !LocalRepo::object_exists(&b.head) {
                 eprintln!(
                     "dash: warning: {} was shared with you, but its commits didn't arrive; ask whoever shared it to share it again",
                     members::short(&b.name)
@@ -588,7 +697,7 @@ impl Helper {
                 },
             ));
         }
-        if in_repo {
+        if read_now {
             members::remember_shared_branches(&given);
         }
         Ok(refs)
@@ -718,7 +827,9 @@ impl Helper {
             out.members_only = m.members_only;
             out.decryptable = Some(m.decryptable);
             out.keyring = Some(kr);
-            members::remember_public_tips(&out.public_tips());
+            if self.in_clone {
+                members::remember_public_tips(&out.public_tips());
+            }
         }
         Ok(out)
     }
@@ -761,9 +872,26 @@ impl Helper {
     /// into the local odb. Full clone indexes the self-contained packs directly; a
     /// `--filter` partial clone re-packs through a scratch repo and writes `.promisor`.
     pub async fn fetch(&mut self, wants: &[Want], options: &OptionState) -> Result<()> {
-        // The sealed-object ledger, created empty on a clone or a fetch into a repository with
-        // no refs ([`crate::ledger`]).
-        crate::ledger::ensure_for_new_clone(options.cloning);
+        // A clone's state is written by what writes refs into it, never by a `list` alone (it
+        // may be `git ls-remote`): the pin, and the sealed-object ledger, created empty on a
+        // clone or a fetch into a repository with no refs ([`crate::ledger`]).
+        if self.in_clone {
+            self.record_pin()?;
+            crate::ledger::ensure_for_new_clone(options.cloning);
+        }
+        // a clone's first fetch of members-only or shared branches: the hook first, then what
+        // its `list` put off (the members-only packs come before the rest, as in a later `list`)
+        if let Some(first) = self.first_members_fetch.take() {
+            if let Some(blocked) = members::hook_blocked() {
+                return Err(blocked.into());
+            }
+            members::remember_public_tips(&first.public_tips);
+            if let Some(given) = &first.shared {
+                members::remember_shared_branches(given);
+            }
+            self.fetch_packs(&[], &OptionState::default(), true, true)
+                .await?;
+        }
         // every members-only commit the reader decrypts goes into the ledger even when nothing is
         // downloaded (the wanted commits may have arrived some other way)
         if let Some(m) = &self.members_fetch {
@@ -857,12 +985,14 @@ impl Helper {
     ) -> Result<FetchReport> {
         let members_fetch = self.members_fetch.clone();
         let shared_fetch = self.shared_fetch.clone();
+        let in_clone = self.in_clone;
         let shared_keys = shared_fetch.as_ref().map(|f| &f.keys);
         let conn = self.ensure_conn().await?;
         let svc = conn.service();
 
         let manifests = svc.read_pack_manifests(&conn.repo).await?;
-        let git_dir = LocalRepo::git_dir().ok();
+        // what this clone holds is recorded only in a clone of this remote
+        let git_dir = LocalRepo::git_dir().ok().filter(|_| in_clone);
         let have = git_dir
             .as_deref()
             .map(|d| crate::fetched::FetchedPacks::load(d, conn.repo.id()))
@@ -1049,6 +1179,9 @@ impl Helper {
             None
         };
         self.ensure_signer().await?;
+        if !dry_run {
+            self.record_pin()?;
+        }
         let view = self.push_view().await?;
         let conn = self.conn.as_ref().expect("conn populated");
         // How the repo is named in fixes the user may paste into `dg`: `owner/name`.
@@ -1087,16 +1220,25 @@ impl Helper {
             new_branches = decide_audiences(&mut planned, &view, &repo_label, options)?;
             guard_push(&mut planned, &view, &new_branches, options)?;
             // the first members-only branch a clone holds needs the pre-push hook, as a fetch
-            // of one does
+            // of one does; and only a clone of this remote pushes one
             if !dry_run && planned.iter().any(|p| p.reject.is_none() && p.sealed()) {
-                if let Some(e) = members::hook_blocked() {
+                let blocked = if self.in_clone {
+                    members::hook_blocked()
+                } else {
+                    Some(members::not_a_clone(&self.url_shown()))
+                };
+                if let Some(e) = blocked {
                     say_refusal(&e);
+                    let why = if self.in_clone {
+                        "members-only branch: the pre-push hook isn't in place"
+                    } else {
+                        "members-only branch: push it from a clone of this repository"
+                    };
                     for p in planned
                         .iter_mut()
                         .filter(|p| p.reject.is_none() && p.sealed())
                     {
-                        p.reject =
-                            Some("members-only branch: the pre-push hook isn't in place".into());
+                        p.reject = Some(why.into());
                     }
                 }
             }
@@ -6664,7 +6806,7 @@ mod tests {
         for (k, _) in &saved {
             std::env::remove_var(k);
         }
-        let built = super::Helper::new(url, None);
+        let built = super::Helper::new(url, None, false);
         for (k, v) in saved {
             if let Some(v) = v {
                 std::env::set_var(k, v);
@@ -6903,5 +7045,43 @@ mod tests {
         let repack = [manifest(3, "m", &[1, 2])];
         assert_eq!(super::claims_for(true, &repack, &members()).len(), 2);
         assert!(super::claims_for(false, &repack, &members()).is_empty());
+    }
+
+    /// A `list` never installs the `pre-push` hook (it may be `git ls-remote`): the `fetch` after
+    /// it does, and only in a clone of the remote. A clone that holds members-only commits and
+    /// lost its hook gets it back at once; a blocked hook says why.
+    #[test]
+    fn the_hook_waits_for_a_fetch_into_a_clone_of_the_remote() {
+        use super::{members_gate, members::HookState, MembersGate};
+        use forge_core::user_error::{codes, UserError};
+        let installable = || HookState::Installable {
+            dir: "/r/.git/hooks".into(),
+            me: "/bin/git-remote-dash".into(),
+        };
+        let blocked = || HookState::Blocked(UserError::new(codes::MEMBERS_ONLY_TO_OTHER_REMOTE, "x"));
+        for holds in [false, true] {
+            for hook in [HookState::Ready, installable(), blocked()] {
+                assert!(matches!(
+                    members_gate(false, hook, holds),
+                    MembersGate::NotAClone
+                ));
+            }
+            assert!(matches!(
+                members_gate(true, HookState::Ready, holds),
+                MembersGate::Now
+            ));
+            assert!(matches!(
+                members_gate(true, blocked(), holds),
+                MembersGate::Blocked(_)
+            ));
+        }
+        assert!(matches!(
+            members_gate(true, installable(), false),
+            MembersGate::Defer
+        ));
+        assert!(matches!(
+            members_gate(true, installable(), true),
+            MembersGate::InstallNow
+        ));
     }
 }
