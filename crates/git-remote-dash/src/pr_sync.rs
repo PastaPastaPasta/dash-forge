@@ -109,9 +109,18 @@ pub async fn sync_after_push(
                 continue;
             }
         };
+        // A members-only branch moves members-only PRs only: a public PR left over from a
+        // deleted public branch of the same name must never get its (real) new head in plaintext.
+        let branch_members = match collab.members_refs(source).await {
+            Ok(Some(fold)) => fold.get(&m.ref_name).is_some_and(|r| r.members_only),
+            _ => false,
+        };
         for (repo, view) in prs {
             // A private PR's documents are sealed; moving its head is `dg pr sync`'s job.
             if repo.visibility == forge_core::rules::v2::Visibility::Private {
+                continue;
+            }
+            if branch_members && !members_source(&view) {
                 continue;
             }
             let n = view.patch.number;
@@ -199,4 +208,5 @@ pub async fn sync_after_push(
 fn members_source(view: &forge_core::collab::v2::PatchView) -> bool {
     view.patch.audience == forge_core::rules::v2::Audience::Members
         && view.patch.real_head.is_some()
+        && view.patch.repo_id == view.patch.source_repo_id
 }

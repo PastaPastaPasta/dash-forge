@@ -342,6 +342,18 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
     s.refuse_if_archived(ctx, "pull request not created")
         .await?;
     s.refuse_if_banned("pull request not created").await?;
+    if !args.to.is_empty() && s.repo.visibility == forge_core::rules::v2::Visibility::Private {
+        return Err(UserError::new(
+            codes::USAGE,
+            "pull requests for specific people aren't supported in a private repository",
+        )
+        .cause("its branch names would be stored in a form anyone could check a guess against")
+        .fix("open it for the repository's members (leave out --to)")
+        .note("nothing was written")
+        .into());
+    }
+    // a members-only branch of the target is the source only when no other source is named
+    let named_source = args.head_repo.is_some() || fork.is_some();
     let handle = &s.repo;
     let forge = handle.forge();
     let cwd = std::env::current_dir().context("reading the current directory")?;
@@ -376,7 +388,9 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
         &cwd,
         &svc,
         candidates,
-        fold.as_deref().map(|f| (handle, f)),
+        fold.as_deref()
+            .filter(|_| !named_source)
+            .map(|f| (handle, f)),
     )
     .await?;
     // The base branch: --base, else the target's default branch. It must be a branch of the
@@ -1559,7 +1573,6 @@ async fn view(
             "baseRefName": v.merge_base.ref_name,
             "baseTip": v.base_tip,
             "headOid": v.head,
-            "realHeadOid": real_head,
             "initialHeadOid": v.patch.head_oid,
             "headOnBase": v.head_on_base,
             "headUpdates": review_state.head_updates.iter().map(|h| json!({
@@ -1589,6 +1602,7 @@ async fn view(
             "hiddenEventValues": v.log.hidden_values,
             "plaintextEventValues": v.log.plaintext_values,
     });
+    out["realHeadOid"] = json!(real_head);
     // Who it is for, and the members-only comments this reader cannot open: the ones D14
     // shows, and how many (kept out of the `json!` above: its macro depth is at the limit).
     let audience = json!({
@@ -2511,7 +2525,7 @@ fn plural_checks(n: usize) -> String {
 /// The checks on the PR head whose newest trusted run is not passing ("lint failing"), that
 /// the branch policy did not already judge: the policy refuses (or a bypass records) a required
 /// check that is not passing, so those are left out. Best effort: empty when unreadable.
-async fn head_checks_not_passing(
+pub(crate) async fn head_checks_not_passing(
     collab: &Collab<'_>,
     handle: &Repo,
     view: &PatchView,
@@ -2635,7 +2649,7 @@ fn refuse_members_merge(view: &PatchView, handle: &Repo, number: u64) -> Result<
 /// A merge is legal only from an open, ready PR (the contract's `c3_mergedAfter`: the sum
 /// after it is 2, so 0 before): a draft is marked ready first, a closed PR reopened. Refused
 /// before anything is pushed, so the base never takes a merge the chain would refuse.
-fn refuse_unmergeable(view: &PatchView, number: u64) -> Result<()> {
+pub(crate) fn refuse_unmergeable(view: &PatchView, number: u64) -> Result<()> {
     let (why, fix) = match (view.state.open, view.state.draft) {
         (true, false) => return Ok(()),
         (true, true) => (
@@ -2661,7 +2675,7 @@ fn refuse_unmergeable(view: &PatchView, number: u64) -> Result<()> {
 /// when the PR was opened has no tips (`pr_base_tips`), so no merge into it would count; and
 /// pushing a merge to a base that does not exist now would create it. `--event-only` may still
 /// record a merge into a base deleted since: its tips keep counting.
-fn refuse_missing_base(view: &PatchView, number: u64, event_only: bool) -> Result<()> {
+pub(crate) fn refuse_missing_base(view: &PatchView, number: u64, event_only: bool) -> Result<()> {
     let base = safe(&view.merge_base.ref_name);
     let when = if view.merge_base.retargeted {
         "retargeted to it"
@@ -2772,9 +2786,9 @@ fn require_merge_contains_pr(
 /// What [`require_merge_rights`] found: the policy in force (its merge methods are checked once
 /// the merge is planned) and, under a maintainer's `--override-policy`, the rules the merge
 /// bypasses (empty: none, the policy is met or there is none).
-struct MergeRights {
-    policy: Option<forge_core::rules::review::Policy>,
-    bypassed: Vec<String>,
+pub(crate) struct MergeRights {
+    pub(crate) policy: Option<forge_core::rules::review::Policy>,
+    pub(crate) bypassed: Vec<String>,
 }
 
 /// The checks before any git work, all E601/E804 with nothing paid. Only members can merge
@@ -2786,7 +2800,7 @@ struct MergeRights {
 /// still apply. A writer cannot merge into a protected base (only a maintainer's
 /// `protectedRefUpdate` can move it), and that holds for `--event-only` too: recording a merge
 /// into a branch the writer could not have pushed is the same claim.
-async fn require_merge_rights(
+pub(crate) async fn require_merge_rights(
     ctx: &Ctx,
     s: &Session,
     handle: &Repo,
@@ -4016,6 +4030,8 @@ struct Located {
     target: String,
     /// Whether the target repository is private (its fetches need the key).
     private: bool,
+    /// A members-only PR from a members-only branch (its head is the real commit here).
+    members: bool,
 }
 
 async fn locate(ctx: &Ctx, repo: &str, number: u64) -> Result<Located> {
@@ -4053,6 +4069,7 @@ async fn locate(ctx: &Ctx, repo: &str, number: u64) -> Result<Located> {
         base_ref,
         target,
         private: members || s.repo.visibility == forge_core::rules::v2::Visibility::Private,
+        members,
     })
 }
 
@@ -4110,6 +4127,7 @@ async fn checkout(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
         source,
         head,
         private,
+        members,
         ..
     } = locate(ctx, repo, number).await?;
     let cwd = std::env::current_dir()?;
@@ -4125,6 +4143,10 @@ async fn checkout(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
     }
     let branch = format!("pr/{number}");
     let step = place_pr_branch(&cwd, &branch, &head)?;
+    if members {
+        // pushing it later stays members-only (D12's local intent)
+        crate::branch::set_audience(&cwd, &branch, forge_core::rules::v2::Audience::Members)?;
+    }
     let switched = !matches!(step, CheckoutStep::CreateOnly(_));
     ctx.emit(
         json!({
@@ -4306,6 +4328,7 @@ async fn diff(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
         base_ref,
         target,
         private,
+        ..
     } = locate(ctx, repo, number).await?;
     git::require_branch_ref(&base_ref)?;
     let cwd = std::env::current_dir()?;

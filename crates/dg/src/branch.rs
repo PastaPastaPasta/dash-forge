@@ -198,6 +198,7 @@ async fn new(
     git::require_branch_ref(&full)?;
     let short_name = full.trim_start_matches("refs/heads/").to_string();
     let repo = crate::storage::clone_repo();
+    let in_clone = repo.is_some();
     // D12: `dg branch new` asks on a terminal when nothing says who can see the branch and
     // the repository has members-only content.
     let members = if members || public || !ctx.interactive() {
@@ -221,9 +222,11 @@ async fn new(
         args.push(s);
     }
     git::git(&cwd, &args, &[]).with_context(|| format!("creating branch {short_name}"))?;
+    // a "no" on the terminal is an answer too: recorded, so the push does not ask again
+    let asked = !members && !public && ctx.interactive() && in_clone;
     let audience = if members {
         Some(Audience::Members)
-    } else if public {
+    } else if public || asked {
         Some(Audience::Public)
     } else {
         None
@@ -442,10 +445,15 @@ fn cleanable(cwd: &Path, published: &[Published]) -> Vec<(String, String, Publis
         let Some((name, tip)) = line.split_once(' ') else {
             continue;
         };
+        // the published branch itself, or a branch recorded members-only that holds only
+        // commits the publish covered (never a public branch the members-only one grew from)
+        let short = name.trim_start_matches("refs/heads/");
+        let members = recorded_audience(cwd, short) == Some(Audience::Members);
         if let Some(p) = published.iter().rev().find(|p| {
             git::has_object(cwd, &p.commit)
-                && (tip == p.tip || git::is_ancestor(cwd, tip, &p.tip))
                 && name != p.base
+                && (tip == p.tip || git::is_ancestor(cwd, tip, &p.tip))
+                && (name == p.branch || (members && !git::is_ancestor(cwd, tip, &p.commit)))
         }) {
             found.push((name.to_string(), tip.to_string(), p.clone()));
         }

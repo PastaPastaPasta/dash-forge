@@ -271,7 +271,7 @@ pub enum Command {
         /// `members`, which is refused: each members-only branch keeps its own packs, so
         /// publishing one never exposes another.
         #[arg(long, value_enum, default_value = "public")]
-        lane: LaneArg,
+        packs: PacksArg,
     },
     /// Re-upload packs and record the new copies (maintainers and writers; --from-local
     /// writes nothing to Platform).
@@ -2309,9 +2309,9 @@ impl PrStateArg {
     }
 }
 
-/// Which packs `dg repack` consolidates (`--lane`).
+/// Which packs `dg repack` consolidates (`--packs`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-pub enum LaneArg {
+pub enum PacksArg {
     /// The public packs.
     Public,
     /// The members-only packs (refused: they are never consolidated).
@@ -2599,8 +2599,8 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
             repo,
             backend,
             profile,
-            lane,
-        } => maint::repack(ctx, repo.as_deref(), *backend, profile.as_deref(), *lane).await,
+            packs,
+        } => maint::repack(ctx, repo.as_deref(), *backend, profile.as_deref(), *packs).await,
         Command::Reseed {
             repo,
             profile,

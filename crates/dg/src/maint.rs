@@ -31,10 +31,10 @@ pub async fn repack(
     repo: Option<&str>,
     backend: Option<Backend>,
     profile: Option<&str>,
-    lane: crate::LaneArg,
+    packs: crate::PacksArg,
 ) -> Result<()> {
     let repo = repo.context("`dg repack` needs a repository: dg repack <owner>/<name>")?;
-    if lane == crate::LaneArg::Members {
+    if packs == crate::PacksArg::Members {
         return Err(UserError::new(
             codes::USAGE,
             "members-only packs aren't consolidated",

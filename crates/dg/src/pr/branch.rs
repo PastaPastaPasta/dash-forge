@@ -60,6 +60,18 @@ pub async fn writable_source(
             "PR #{number} names no source branch, so there is nothing to {action}"
         )));
     };
+    if super::members_source(view) {
+        return Err(UserError::new(
+            codes::USAGE,
+            format!("can't {action}: PR #{number} is from a members-only branch"),
+        )
+        .cause("dg doesn't commit to a members-only branch for you yet")
+        .fix(format!(
+            "check it out (`dg pr checkout <owner>/<repo> {number}`), commit, and push it; the push moves the PR (or `dg pr sync`)"
+        ))
+        .note("nothing was written")
+        .into());
+    }
     git::require_branch_ref(&ref_name)?;
     let repo = forge_core::resolve::resolve_id(&s.client, &view.patch.source_repo_id)
         .await

@@ -76,6 +76,8 @@ pub struct PublishArgs {
 /// One commit about to be published.
 struct Commit {
     oid: String,
+    /// A merge commit (its subject names branches: never put in a squash message).
+    merge: bool,
     author: String,
     email: String,
     subject: String,
@@ -127,7 +129,8 @@ pub async fn run(ctx: &Ctx, a: &PublishArgs) -> Result<()> {
     // what is published, and from where
     let (branch, tip, base, pr) = match a.pr {
         Some(n) => {
-            let (branch, tip, base, view) = pr_source(ctx, &collab, &s, &cwd, &remote, n).await?;
+            let (branch, tip, base, view) =
+                pr_source(ctx, &collab, &s, &cwd, &remote, n, a.history).await?;
             (branch, tip, base, Some(view))
         }
         None => {
@@ -148,6 +151,12 @@ pub async fn run(ctx: &Ctx, a: &PublishArgs) -> Result<()> {
     };
     let base_tip = public_base_tip(&fold, &base)?;
     ensure_local(ctx, &cwd, &remote, &base, &base_tip)?;
+    // an earlier `dg publish --pr` that published this tip but could not record the merge
+    if let (Some(view), Some(n)) = (&pr, a.pr) {
+        if let Some(done) = already_published(&cwd, &tip, &base, &base_tip) {
+            return record_merge_only(ctx, &collab, &s, view, n, &done, &repo).await;
+        }
+    }
     let plan = plan(&cwd, branch, tip, base, base_tip)?;
     let history = a.history;
     let identity = s.identity.id();
@@ -205,7 +214,7 @@ pub async fn run(ctx: &Ctx, a: &PublishArgs) -> Result<()> {
         let c = git::commit_tree(&cwd, &tree, &[&plan.base_tip], &message, &author)?;
         (c, Some(message))
     };
-    let findings = scan(&cwd, &plan.base_tip, &commit, &plan.files);
+    let findings = scan(&cwd, &plan, &commit, history);
     dialog(
         ctx,
         &plan,
@@ -215,6 +224,7 @@ pub async fn run(ctx: &Ctx, a: &PublishArgs) -> Result<()> {
         a,
         &author,
     )?;
+    refuse_unseen_branch_name(ctx, &plan, message.as_deref(), a.message.is_some())?;
     if findings.iter().any(|f| f.1) {
         return Err(UserError::new(
             codes::SECRET_IN_PUSH,
@@ -273,17 +283,18 @@ pub async fn run(ctx: &Ctx, a: &PublishArgs) -> Result<()> {
         },
     )?;
     let repair = repair_local_base(&cwd, &plan, &commit);
+    let remote_name = remote.clone();
     // a pull request is recorded merged at the public commit (DESIGN §4.4)
-    let merged = match &pr {
-        Some(view) => {
+    let merged = match (&pr, a.pr) {
+        (Some(view), Some(n)) => {
             collab.refs_changed();
             Some(
-                crate::pr::post_merge_event(&collab, &s.repo, view, &commit, false, &repo)
+                crate::pr::post_merge_event(&collab, &s.repo, view, &commit, true, &repo)
                     .await
-                    .map_err(|e| anyhow::Error::from(*e))?,
+                    .map_err(|e| merge_not_recorded(*e, n, &commit))?,
             )
         }
-        None => None,
+        _ => None,
     };
     let spent = s.spent_since(before).await;
     let price = ctx.usd_price();
@@ -313,18 +324,105 @@ pub async fn run(ctx: &Ctx, a: &PublishArgs) -> Result<()> {
             if let Some(n) = a.pr {
                 println!("✓ PR #{n} recorded merged at {}", short(&commit));
             }
-            repair.print(&plan, &commit);
+            repair.print(&plan, &commit, &remote_name);
             println!(
                 "  clean up later with `dg branch cleanup` (deletes local branches whose content is published)"
             );
         },
     );
-    if a.make_public {
-        if let Some(n) = a.pr {
-            crate::make_public::run(ctx, &repo, &[n.to_string()], true, false).await?;
-        }
+    if let (true, Some(n)) = (a.make_public, a.pr) {
+        crate::make_public::run(ctx, &repo, &[n.to_string()], true, false)
+            .await
+            .map_err(|e| {
+                let note = format!(
+                    "the branch is published and PR #{n} is recorded merged; make its discussion public with `dg make-public {repo} {n} --thread`"
+                );
+                match e.downcast::<UserError>() {
+                    Ok(u) => anyhow::Error::from(u.note(note)),
+                    Err(e) => e.context(note),
+                }
+            })?;
     }
     Ok(())
+}
+
+/// The public commit an earlier publish of `tip` onto `base` made, when this clone recorded it
+/// and the base holds it now (`base_tip` descends from it).
+fn already_published(cwd: &Path, tip: &str, base: &str, base_tip: &str) -> Option<String> {
+    let path = crate::branch::published_path(cwd).ok()?;
+    let text = std::fs::read_to_string(path).ok()?;
+    crate::branch::parse_published(&text)
+        .into_iter()
+        .rev()
+        .find(|p| {
+            p.tip.eq_ignore_ascii_case(tip)
+                && p.base == base
+                && git::has_object(cwd, &p.commit)
+                && git::is_ancestor(cwd, &p.commit, base_tip)
+        })
+        .map(|p| p.commit)
+}
+
+/// `dg publish --pr N` again after its merge could not be recorded: the publish is done, so
+/// only the merge transition is written, naming the public commit.
+async fn record_merge_only(
+    ctx: &Ctx,
+    collab: &Collab<'_>,
+    s: &Session,
+    view: &forge_core::collab::v2::PatchView,
+    n: u64,
+    commit: &str,
+    repo: &str,
+) -> Result<()> {
+    ctx.confirm_or_cancel(&format!(
+        "PR #{n} is already published as {}. Record it merged? (one transition, {})",
+        short(commit),
+        crate::fmt::cost_line(crate::quote::TRANSITION, ctx.usd_price())
+    ))?;
+    let before = s.balance().await;
+    let id = crate::pr::post_merge_event(collab, &s.repo, view, commit, true, repo)
+        .await
+        .map_err(|e| merge_not_recorded(*e, n, commit))?;
+    let spent = s.spent_since(before).await;
+    let price = ctx.usd_price();
+    ctx.emit(
+        json!({
+            "status": "merge_recorded",
+            "pr": n,
+            "commit": commit,
+            "mergeTransitionId": id,
+            "cost": crate::fmt::cost_json(spent, price),
+        }),
+        || {
+            println!(
+                "✓ PR #{n} recorded merged at {} · {}",
+                short(commit),
+                crate::fmt::cost_line(spent, price)
+            );
+        },
+    );
+    Ok(())
+}
+
+/// The error when the code is published and the merge transition was not written.
+fn merge_not_recorded(e: UserError, n: u64, commit: &str) -> anyhow::Error {
+    e.note(format!(
+        "the branch is published as {}; run `dg publish --pr {n}` again to record PR #{n} merged",
+        short(commit)
+    ))
+    .into()
+}
+
+/// Refuse a branch name git would read as something else (a refspec, a glob, a range).
+fn require_branch_name(full: &str) -> Result<()> {
+    if git::is_plain_branch_ref(full) {
+        Ok(())
+    } else {
+        Err(crate::errors::usage(format!(
+            "{} is not a plain branch name",
+            safe(short_name(full))
+        )))
+    }
 }
 
 /// `refs/heads/x` → `x`.
@@ -349,7 +447,7 @@ fn branch_source(
         })?,
     };
     let full = git::full_ref(&name);
-    git::require_branch_ref(&full)?;
+    require_branch_name(&full)?;
     let tip = git::git(
         cwd,
         &["rev-parse", "--verify", "-q", &format!("{full}^{{commit}}")],
@@ -411,6 +509,7 @@ async fn pr_source(
     cwd: &Path,
     remote: &str,
     n: u64,
+    history: bool,
 ) -> Result<(String, String, String, forge_core::collab::v2::PatchView)> {
     let number = u32::try_from(n).map_err(|_| crate::errors::usage("no such pull request"))?;
     let p = collab.patch(&s.repo, number).await?.ok_or_else(|| {
@@ -435,20 +534,32 @@ async fn pr_source(
         ))
         .into());
     }
-    if !view.state.open {
-        return Err(UserError::new(
-            codes::USAGE,
-            format!(
-                "PR #{n} is {}",
-                if view.state.merged {
-                    "merged"
-                } else {
-                    "closed"
-                }
-            ),
-        )
-        .note("nothing was published")
-        .into());
+    if view.state.merged {
+        return Err(
+            UserError::new(codes::USAGE, format!("PR #{n} is already merged"))
+                .note("nothing was published")
+                .into(),
+        );
+    }
+    // what `dg pr merge` checks before anything is built: open and ready, a base that was a
+    // branch when it was opened, the merger's role, the branch policy's approvals and checks
+    // and its merge methods (a squash, or a fast-forward with history)
+    crate::pr::refuse_unmergeable(&view, n)?;
+    crate::pr::refuse_missing_base(&view, n, false)?;
+    let method = if history {
+        crate::pr::METHOD_FF
+    } else {
+        crate::pr::METHOD_SQUASH
+    };
+    let rights =
+        crate::pr::require_merge_rights(ctx, s, &s.repo, &view, Some(method), false).await?;
+    let not_passing =
+        crate::pr::head_checks_not_passing(collab, &s.repo, &view, rights.policy.as_ref()).await;
+    if !not_passing.is_empty() && !ctx.json {
+        eprintln!(
+            "warning: some checks were not successful: {}",
+            safe(&not_passing.join(", "))
+        );
     }
     let branch = view.patch.source_ref_name.clone().unwrap_or_default();
     git::require_branch_ref(&branch)?;
@@ -467,7 +578,7 @@ async fn pr_source(
 
 /// The public tip of `base`, or a refusal: it must be a live public branch.
 fn public_base_tip(fold: &forge_core::repo::MembersRefs, base: &str) -> Result<String> {
-    git::require_branch_ref(base)?;
+    require_branch_name(base)?;
     match fold.get(base) {
         Some(r) if !r.members_only => forge_core::rules::tip_of(&r.state),
         Some(_) => {
@@ -524,7 +635,7 @@ fn plan(cwd: &Path, branch: String, tip: String, base: String, base_tip: String)
         &[
             "log",
             "--reverse",
-            "--format=%H%x00%an%x00%ae%x00%s",
+            "--format=%H%x00%P%x00%an%x00%ae%x00%s",
             &format!("{base_tip}..{tip}"),
             "--",
         ],
@@ -536,6 +647,7 @@ fn plan(cwd: &Path, branch: String, tip: String, base: String, base_tip: String)
             let mut f = l.split('\0');
             Some(Commit {
                 oid: f.next()?.to_string(),
+                merge: f.next()?.split_whitespace().count() > 1,
                 author: f.next()?.to_string(),
                 email: f.next()?.to_string(),
                 subject: f.next().unwrap_or_default().to_string(),
@@ -608,18 +720,22 @@ fn co_authors(plan: &Plan, me: &[(String, String)]) -> Vec<String> {
 /// The squash commit's message: `--message`, else the one commit's subject, else the newest
 /// subject over a list of every subject; co-author lines only when asked.
 fn squash_message(plan: &Plan, message: Option<&str>, co: bool, me: &[(String, String)]) -> String {
-    let mut m = match message {
-        Some(m) => m.trim_end().to_string(),
-        None if plan.commits.len() == 1 => plan.commits[0].subject.clone(),
-        None => {
-            let mut m = plan
-                .commits
-                .last()
-                .map(|c| c.subject.clone())
-                .unwrap_or_default();
+    // merge commits' subjects name branches ("Merge branch 'main' into sec/fix"): left out
+    let subjects: Vec<&str> = plan
+        .commits
+        .iter()
+        .filter(|c| !c.merge)
+        .map(|c| c.subject.as_str())
+        .collect();
+    let mut m = match (message, subjects.as_slice()) {
+        (Some(m), _) => m.trim_end().to_string(),
+        (None, []) => "Publish".to_string(),
+        (None, [one]) => (*one).to_string(),
+        (None, [.., last]) => {
+            let mut m = (*last).to_string();
             m.push_str("\n\n");
-            for c in &plan.commits {
-                m.push_str(&format!("* {}\n", c.subject));
+            for subject in &subjects {
+                m.push_str(&format!("* {subject}\n"));
             }
             m.trim_end().to_string()
         }
@@ -635,44 +751,81 @@ fn squash_message(plan: &Plan, message: Option<&str>, co: bool, me: &[(String, S
     m
 }
 
-/// Possible secrets in the files that change between `base_tip` and `commit`: `(location,
-/// refuses)` per finding, by the push helper's rules.
-fn scan(cwd: &Path, base_tip: &str, commit: &str, files: &[String]) -> Vec<(String, bool)> {
-    let mut out = Vec::new();
-    let changed = git::git(
+/// Possible secrets in what a publish makes public, by the push helper's rules: `(location,
+/// refuses)` per finding. A squash publishes one tree (the files that change between
+/// `base_tip` and `commit`); publishing with history publishes every commit, so each commit's
+/// added and changed files are scanned (a secret added and later removed is still published).
+fn scan(cwd: &Path, plan: &Plan, commit: &str, history: bool) -> Vec<(String, bool)> {
+    let mut out: Vec<(String, bool)> = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    let changes: Vec<(String, Vec<String>)> = if history {
+        plan.commits
+            .iter()
+            .filter(|c| !c.merge)
+            .map(|c| {
+                (
+                    c.oid.clone(),
+                    changed_files(cwd, &format!("{}^", c.oid), &c.oid),
+                )
+            })
+            .collect()
+    } else {
+        vec![(
+            commit.to_string(),
+            changed_files(cwd, &plan.base_tip, commit),
+        )]
+    };
+    for (at, paths) in changes {
+        for path in paths {
+            for f in scan_blob(cwd, &at, &path) {
+                if seen.insert(f.0.clone()) {
+                    out.push(f);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The files added or changed from `from` to `to`.
+fn changed_files(cwd: &Path, from: &str, to: &str) -> Vec<String> {
+    git::git(
         cwd,
         &[
             "diff",
             "--name-only",
             "--no-renames",
             "--diff-filter=AM",
-            base_tip,
-            commit,
+            from,
+            to,
             "--",
         ],
         &[],
     )
-    .map(|o| o.lines().map(str::to_string).collect::<Vec<_>>())
-    .unwrap_or_else(|_| files.to_vec());
-    for path in changed {
-        let Ok(bytes) = git::git_bytes(cwd, &["cat-file", "blob", &format!("{commit}:{path}")])
-        else {
-            continue;
-        };
-        let content = (bytes.len() <= forge_secrets::MAX_SCAN_BYTES
-            && forge_secrets::is_scannable(&bytes))
-        .then_some(bytes.as_slice());
-        let findings = match content {
-            Some(c) => forge_secrets::scan_file(&path, c),
-            None => forge_secrets::scan_unread(&path, &forge_secrets::git_blob_id(&bytes)),
-        };
-        for f in findings {
+    .map(|o| o.lines().map(str::to_string).collect())
+    .unwrap_or_default()
+}
+
+/// The findings in file `path` of commit `commit`.
+fn scan_blob(cwd: &Path, commit: &str, path: &str) -> Vec<(String, bool)> {
+    let Ok(bytes) = git::git_bytes(cwd, &["cat-file", "blob", &format!("{commit}:{path}")]) else {
+        return Vec::new();
+    };
+    let readable =
+        bytes.len() <= forge_secrets::MAX_SCAN_BYTES && forge_secrets::is_scannable(&bytes);
+    let findings = if readable {
+        forge_secrets::scan_file(path, &bytes)
+    } else {
+        forge_secrets::scan_unread(path, &forge_secrets::git_blob_id(&bytes))
+    };
+    findings
+        .iter()
+        .map(|f| {
             let refuses =
-                forge_secrets::verdict(&f, false).severity == forge_secrets::Severity::Refuse;
-            out.push((f.location(), refuses));
-        }
-    }
-    out
+                forge_secrets::verdict(f, false).severity == forge_secrets::Severity::Refuse;
+            (f.location(), refuses)
+        })
+        .collect()
 }
 
 /// The publish dialog in CLI form (§10): the exact list, the scan line, the method, the
@@ -689,7 +842,19 @@ fn dialog(
     if ctx.json {
         return Ok(());
     }
-    let names = authors(plan);
+    // with history the commits' author emails become public too
+    let names: Vec<String> = if a.history {
+        let mut out: Vec<String> = Vec::new();
+        for c in &plan.commits {
+            let who = format!("{} <{}>", c.author, c.email);
+            if !out.contains(&who) {
+                out.push(who);
+            }
+        }
+        out
+    } else {
+        authors(plan).into_iter().map(str::to_string).collect()
+    };
     let by = match names.as_slice() {
         [] => String::new(),
         [one] => format!(" by {}", safe(one)),
@@ -722,7 +887,10 @@ fn dialog(
             short(commit)
         );
         if let Some(m) = message {
-            println!("  Message: {}", safe(m.lines().next().unwrap_or_default()));
+            println!("  Message:");
+            for line in m.lines() {
+                println!("    {}", safe(line));
+            }
         }
         let co = co_authors(plan, me);
         if !co.is_empty() && !a.co_authors {
@@ -741,6 +909,32 @@ fn dialog(
         );
     }
     Ok(())
+}
+
+/// A squash message that names the members-only branch, chosen by nobody (no `-m`) and with
+/// no terminal to show it on: refused, so a script never publishes the name unseen.
+fn refuse_unseen_branch_name(
+    ctx: &Ctx,
+    plan: &Plan,
+    message: Option<&str>,
+    given: bool,
+) -> Result<()> {
+    let branch = short_name(&plan.branch);
+    let named = message.is_some_and(|m| !branch.is_empty() && m.contains(branch));
+    if !named || given || ctx.interactive() {
+        return Ok(());
+    }
+    Err(UserError::new(
+        codes::USAGE,
+        format!(
+            "the squash commit's message would name the members-only branch {}",
+            safe(branch)
+        ),
+    )
+    .cause("the message is public once published, and the branch's name is members-only")
+    .fix("pass the message yourself: -m \"…\"")
+    .note("nothing was published")
+    .into())
 }
 
 /// The confirmation: a yes for a squash; the word `publish` typed for history (or --yes).
@@ -793,13 +987,14 @@ impl Repair {
         }
     }
 
-    fn print(&self, plan: &Plan, commit: &str) {
+    fn print(&self, plan: &Plan, commit: &str, remote: &str) {
         let base = safe(short_name(&plan.base));
         match self {
             Self::Untouched => {}
             Self::Moved => println!("✓ moved your local {base} to {}", short(commit)),
             Self::Hint => println!(
-                "  your local {base} still holds the members-only commits: `git reset --keep origin/{base}`, after saving anything else on it"
+                "  your local {base} still holds the members-only commits: `git reset --keep {}/{base}`, after saving anything else on it",
+                safe(remote)
             ),
         }
     }
@@ -834,6 +1029,18 @@ fn repair_local_base(cwd: &Path, plan: &Plan, commit: &str) -> Repair {
         return Repair::Hint;
     }
     let current = git::current_branch(cwd).map(|b| git::full_ref(&b));
+    // a base checked out in another worktree is that worktree's: never moved from here
+    let elsewhere = git::git(cwd, &["worktree", "list", "--porcelain"], &[])
+        .map(|o| {
+            o.lines()
+                .filter(|l| *l == format!("branch {}", plan.base))
+                .count()
+        })
+        .unwrap_or(0)
+        > usize::from(current.as_deref() == Some(plan.base.as_str()));
+    if elsewhere {
+        return Repair::Hint;
+    }
     let moved = if current.as_deref() == Some(plan.base.as_str()) {
         git::git(cwd, &["reset", "-q", "--keep", commit], &[]).is_ok()
     } else {
@@ -861,6 +1068,7 @@ mod tests {
                 .enumerate()
                 .map(|(i, (a, e, s))| Commit {
                     oid: format!("{i:040}"),
+                    merge: s.starts_with("Merge "),
                     author: (*a).into(),
                     email: (*e).into(),
                     subject: (*s).into(),
@@ -891,6 +1099,16 @@ mod tests {
         assert_eq!(m, "Fix CVE\n\nCo-authored-by: bob <bob@x>");
         let one = plan_of(&[("bob", "bob@x", "Only")]);
         assert_eq!(squash_message(&one, None, false, &me()), "Only");
+        // a merge's subject names branches: left out
+        let merged = plan_of(&[
+            ("bob", "bob@x", "Fix"),
+            ("bob", "bob@x", "Merge branch 'main' into sec/fix"),
+            ("bob", "bob@x", "Test"),
+        ]);
+        assert_eq!(
+            squash_message(&merged, None, false, &me()),
+            "Test\n\n* Fix\n* Test"
+        );
     }
 
     #[test]
