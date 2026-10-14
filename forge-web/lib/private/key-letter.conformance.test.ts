@@ -7,11 +7,11 @@
  * same input and output shapes.
  */
 
-import { readFileSync, readdirSync } from "node:fs";
-import { resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { readFileSync, readdirSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { describe, expect, it } from 'vitest'
 
-import { bytesToHex, hexToBytes, sha256 } from "./bytes";
+import { bytesToHex, hexToBytes, sha256 } from './bytes'
 import {
   KeyLetterError,
   branchLetterFromTyped,
@@ -41,39 +41,39 @@ import {
 import type { PrivateDocType } from "./tlv";
 import { sealLetterArtifactWith } from "./testing";
 
-type Json = null | boolean | number | string | Json[] | { [k: string]: Json };
-type Obj = { readonly [k: string]: Json };
+type Json = null | boolean | number | string | Json[] | { [k: string]: Json }
+type Obj = { readonly [k: string]: Json }
 
 interface Vector {
-  readonly name: string;
-  readonly input: Obj;
-  readonly expected: Json;
+  readonly name: string
+  readonly input: Obj
+  readonly expected: Json
 }
 
-const VECTORS_DIR = resolve(process.cwd(), "..", "forge-contracts", "vectors");
+const VECTORS_DIR = resolve(process.cwd(), '..', 'forge-contracts', 'vectors')
 const FILES = readdirSync(VECTORS_DIR)
-  .filter((f) => f.startsWith("key_letter__") && f.endsWith(".json"))
-  .sort();
+  .filter((f) => f.startsWith('key_letter__') && f.endsWith('.json'))
+  .sort()
 
-const str = (j: Json | undefined): string => j as string;
-const obj = (j: Json | undefined): Obj => j as Obj;
-const arr = (j: Json | undefined): Json[] => j as Json[];
-const hex = (j: Json | undefined): Uint8Array => hexToBytes(str(j));
+const str = (j: Json | undefined): string => j as string
+const obj = (j: Json | undefined): Obj => j as Obj
+const arr = (j: Json | undefined): Json[] => j as Json[]
+const hex = (j: Json | undefined): Uint8Array => hexToBytes(str(j))
 
 function typed(j: Json | undefined): TypedLetter {
-  const o = obj(j);
+  const o = obj(j)
   return {
     type: str(o.type),
     v: o.v as number,
     fields: obj(o.fields) as { [k: string]: JsonValue },
-  };
+  }
 }
 
 const typedJson = (t: TypedLetter): Json => ({
   type: t.type,
   v: t.v,
   fields: t.fields as Json,
-});
+})
 
 function branchJson(b: BranchLetter): Json {
   return {
@@ -89,12 +89,12 @@ function branchJson(b: BranchLetter): Json {
       key: bytesToHex(p.key),
     })),
     asOf: b.asOf,
-  };
+  }
 }
 
 function branchOf(j: Json | undefined): BranchLetter {
-  const o = obj(j);
-  const h = obj(o.head);
+  const o = obj(j)
+  const h = obj(o.head)
   return {
     name: str(o.name),
     refNameHash: hex(o.refNameHash),
@@ -104,52 +104,50 @@ function branchOf(j: Json | undefined): BranchLetter {
       key: hex(obj(p).key),
     })),
     asOf: o.asOf as number,
-  };
+  }
 }
 
 async function runFormat(i: Obj): Promise<Json> {
-  let letter: TypedLetter;
+  let letter: TypedLetter
   if (i.branch !== undefined) {
-    const t = await branchLetterToTyped(branchOf(i.branch));
-    if (t === null) throw new Error("a well-formed branch letter");
-    expect(
-      branchJson((await branchLetterFromTyped(t)) as BranchLetter),
-    ).toEqual(i.branch);
-    letter = t;
+    const t = await branchLetterToTyped(branchOf(i.branch))
+    if (t === null) throw new Error('a well-formed branch letter')
+    expect(branchJson((await branchLetterFromTyped(t)) as BranchLetter)).toEqual(i.branch)
+    letter = t
   } else {
-    letter = typed(i.letter);
+    letter = typed(i.letter)
   }
   try {
-    const pt = encodeKeyLetter(letter);
-    expect(decodeKeyLetter(pt)).toEqual(letter);
-    return { letter: typedJson(letter), plaintextHex: bytesToHex(pt) };
+    const pt = encodeKeyLetter(letter)
+    expect(decodeKeyLetter(pt)).toEqual(letter)
+    return { letter: typedJson(letter), plaintextHex: bytesToHex(pt) }
   } catch (e) {
-    if (e instanceof KeyLetterError) return { error: e.code };
-    throw e;
+    if (e instanceof KeyLetterError) return { error: e.code }
+    throw e
   }
 }
 
 async function runDecode(i: Obj): Promise<Json> {
-  const results: Json[] = [];
+  const results: Json[] = []
   for (const c of arr(i.cases)) {
-    const name = str(obj(c).name);
-    const t = decodeKeyLetter(hex(obj(c).plaintextHex));
+    const name = str(obj(c).name)
+    const t = decodeKeyLetter(hex(obj(c).plaintextHex))
     if (t === null) {
-      results.push({ name, error: "malformed" });
-      continue;
+      results.push({ name, error: 'malformed' })
+      continue
     }
-    const b = await branchLetterFromTyped(t);
+    const b = await branchLetterFromTyped(t)
     results.push({
       name,
       letter: typedJson(t),
       branch: b === null ? null : branchJson(b),
-    });
+    })
   }
-  return { results };
+  return { results }
 }
 
 async function runSeal(i: Obj): Promise<Json> {
-  const plain = encodeKeyLetter(typed(i.letter));
+  const plain = encodeKeyLetter(typed(i.letter))
   const sealed = await sealLetterArtifactWith(
     hex(i.repoId),
     hex(obj(i.sender).priv),
@@ -163,67 +161,59 @@ async function runSeal(i: Obj): Promise<Json> {
     hex(i.kObj),
     hex(i.fileId),
     arr(i.ivs).map(hex),
-  );
+  )
   return {
     sealedHex: bytesToHex(sealed),
     packHash: bytesToHex(await sha256(sealed)),
     sizeBytes: sealed.length,
-  };
+  }
 }
 
 async function runOpen(i: Obj): Promise<Json> {
-  const m = obj(i.manifest);
+  const m = obj(i.manifest)
   const ownerKeys = arr(i.ownerKeys).map((k) => ({
     id: obj(k).id as number,
     purpose: obj(k).purpose as number,
     keyType: obj(k).keyType as number,
     data: hex(obj(k).data),
-  }));
-  const results: Json[] = [];
+  }))
+  const results: Json[] = []
   for (const r of arr(i.readers)) {
     const reader = {
       identityId: hex(obj(r).identityId),
       secrets: arr(obj(r).keys).map(hex),
-    };
+    }
     const got = await openKeyLetter(
       hex(i.repoId),
       { packHash: hex(m.packHash), sizeBytes: m.sizeBytes as number },
       hex(i.sealedHex),
       ownerKeys,
       reader,
-    );
-    results.push(
-      "error" in got
-        ? { error: got.error }
-        : { letter: typedJson(got.letter), recipients: got.recipients },
-    );
+    )
+    results.push('error' in got ? { error: got.error } : { letter: typedJson(got.letter), recipients: got.recipients })
   }
-  return { results };
+  return { results }
 }
 
 async function runFileKey(i: Obj): Promise<Json> {
-  const sealed = hex(i.sealedHex);
-  const keys = await EpochKeys.import(
-    hex(i.repoId),
-    i.epoch as number,
-    hex(i.epochKey),
-  );
-  const header = parseHeader(sealed);
-  const key = await keys.rawPackKey(header.fileId);
-  const plain = await openPackWithFileKey(sealed, sealed.length, key);
-  let wrong = "opened";
+  const sealed = hex(i.sealedHex)
+  const keys = await EpochKeys.import(hex(i.repoId), i.epoch as number, hex(i.epochKey))
+  const header = parseHeader(sealed)
+  const key = await keys.rawPackKey(header.fileId)
+  const plain = await openPackWithFileKey(sealed, sealed.length, key)
+  let wrong = 'opened'
   try {
-    await openPackWithFileKey(sealed, sealed.length, hex(i.wrongKey));
+    await openPackWithFileKey(sealed, sealed.length, hex(i.wrongKey))
   } catch (e) {
-    if (e instanceof PackError) wrong = e.code;
-    else throw e;
+    if (e instanceof PackError) wrong = e.code
+    else throw e
   }
   return {
     fileKey: bytesToHex(key),
     plaintextSha256: bytesToHex(await sha256(plain)),
     plaintextLen: plain.length,
     wrongKey: wrong,
-  };
+  }
 }
 
 // --- the `read` ops (forge-core `access_conformance::run_read`) ----------------------------------
@@ -376,11 +366,9 @@ describe("key letter conformance vectors", () => {
     expect(FILES.length).toBeGreaterThanOrEqual(15);
   });
   for (const f of FILES) {
-    const v = JSON.parse(
-      readFileSync(resolve(VECTORS_DIR, f), "utf8"),
-    ) as Vector;
+    const v = JSON.parse(readFileSync(resolve(VECTORS_DIR, f), 'utf8')) as Vector
     it(v.name, async () => {
-      const i = v.input;
+      const i = v.input
       const run = {
         format: runFormat,
         decode: runDecode,
@@ -395,13 +383,13 @@ describe("key letter conformance vectors", () => {
       expect(await run(i)).toEqual(v.expected);
     });
   }
-  it("refuses a letter past the cap", () => {
+  it('refuses a letter past the cap', () => {
     expect(() =>
       encodeKeyLetter({
-        type: "branch",
+        type: 'branch',
         v: 1,
-        fields: { x: "a".repeat(64 * 1024) },
+        fields: { x: 'a'.repeat(64 * 1024) },
       }),
-    ).toThrow(KeyLetterError);
-  });
-});
+    ).toThrow(KeyLetterError)
+  })
+})

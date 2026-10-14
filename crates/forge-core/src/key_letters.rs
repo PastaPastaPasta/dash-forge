@@ -39,10 +39,21 @@ pub struct LetterReader<'a> {
     pub keys: &'a [PrivateKey],
 }
 
+/// What [`received`] found: the letters addressed to the reader, and the `packHash` of every
+/// letter it opened that is not (a reader may remember those and never fetch them again).
+#[derive(Debug, Default)]
+pub struct Inbox {
+    /// The letters addressed to the reader, oldest first.
+    pub letters: Vec<Received>,
+    /// The letters that opened for nobody among the reader's keys.
+    pub not_mine: Vec<[u8; 32]>,
+}
+
 /// Every key letter of public `repo` addressed to `reader` (§20.1): the kind-10 manifests whose
-/// `$ownerId` is a current maintainer or Write member in `roles`, fetched, checked against their
-/// `packHash` and opened with the reader's keys. A letter for someone else is skipped silently;
-/// a damaged or malformed one is skipped with a log line, never an error.
+/// `$ownerId` is a current maintainer or Write member in `roles`, but those in `skip` (letters
+/// this reader already found are not its own), fetched, checked against their `packHash` and
+/// opened with the reader's keys. A letter for someone else, a damaged or malformed one, and one
+/// whose sender's keys cannot be read are skipped (with a log line), never an error.
 pub async fn received(
     svc: &RepoService<'_>,
     client: &PlatformClient,
@@ -50,14 +61,16 @@ pub async fn received(
     manifests: &[PackManifestInfo],
     roles: &RoleMap,
     reader: &LetterReader<'_>,
-) -> Result<Vec<Received>> {
+    skip: &BTreeSet<[u8; 32]>,
+) -> Result<Inbox> {
     let letters: Vec<&PackManifestInfo> = manifests
         .iter()
         .filter(|m| m.kind == u64::from(crate::pack::KIND_KEY_LETTER))
         .filter(|m| key_letter::trusted_sender(roles.get(&m.owner_id).copied()))
+        .filter(|m| !skip.contains(&m.pack_hash))
         .collect();
     if letters.is_empty() || reader.keys.is_empty() {
-        return Ok(Vec::new());
+        return Ok(Inbox::default());
     }
     let repo_id = repo.scope()?.repo_id;
     let store = crate::storage::PackReader::from_user_config();
@@ -69,8 +82,12 @@ pub async fn received(
         .buffer_unordered(FETCH_WINDOW)
         .collect()
         .await;
+    let r = Reader {
+        identity_id: reader.identity_id,
+        keys: reader.keys,
+    };
     let mut owner_keys: BTreeMap<String, Vec<OwnerKey>> = BTreeMap::new();
-    let mut out = Vec::new();
+    let mut out = Inbox::default();
     for (m, bytes) in fetched {
         let sealed = match bytes {
             Ok(b) => b,
@@ -83,7 +100,10 @@ pub async fn received(
             let keys = match client.fetch_identity(&m.owner_id).await {
                 Ok(identity) => crate::env::codec::owner_keys(&identity.public_keys()),
                 Err(Error::NotFound) => Vec::new(),
-                Err(e) => return Err(e),
+                Err(e) => {
+                    tracing::info!(sender = %m.owner_id, error = %e, "a key letter's sender could not be read; skipped");
+                    continue;
+                }
             };
             owner_keys.insert(m.owner_id.clone(), keys);
         }
@@ -91,23 +111,19 @@ pub async fn received(
             pack_hash: &m.pack_hash,
             size_bytes: m.size_bytes,
         };
-        let r = Reader {
-            identity_id: reader.identity_id,
-            keys: reader.keys,
-        };
         match key_letter::open(&repo_id, &check, &sealed, &owner_keys[&m.owner_id], &r) {
-            Ok(o) => out.push(Received {
+            Ok(o) => out.letters.push(Received {
                 manifest: m.clone(),
                 letter: o.letter,
                 recipients: o.recipients,
             }),
-            Err(OpenError::NotARecipient) => {}
+            Err(OpenError::NotARecipient) => out.not_mine.push(m.pack_hash),
             Err(e) => {
                 tracing::info!(letter = %m.document_id, error = %e, "a key letter did not open; skipped");
             }
         }
     }
-    out.sort_by(|a, b| {
+    out.letters.sort_by(|a, b| {
         (a.manifest.created_at, &a.manifest.document_id)
             .cmp(&(b.manifest.created_at, &b.manifest.document_id))
     });
@@ -176,10 +192,7 @@ pub fn shared_branches(
         .iter()
         .chain(&state.protected_ref_updates)
         .filter(|d| crate::repo::trusted_member(roles, &d.owner_id))
-        .filter(|d| {
-            d.field_bytes("enc").is_some_and(|e| !e.is_empty())
-                && d.field_str("vis").as_deref() == Some("public")
-        })
+        .filter(|d| crate::refs::is_members_only_ref(d))
         .filter_map(|d| Some((d.field_bytes32("refNameHash")?, d.field_bytes("newOid")?)))
         .collect();
     let mut by_name: BTreeMap<String, SharedBranch> = BTreeMap::new();

@@ -142,6 +142,11 @@ fn oid_lines(out: &str) -> BTreeSet<String> {
         .collect()
 }
 
+/// `oids`, one per line, each after `prefix` (`^` excludes it from a `rev-list`).
+fn stdin_lines<'a>(prefix: &str, oids: impl IntoIterator<Item = &'a String>) -> String {
+    oids.into_iter().map(|o| format!("{prefix}{o}\n")).collect()
+}
+
 /// The objects `tips` reach that `public` does not (`rev-list --objects`), or only commits.
 fn beyond_public(
     cwd: &Path,
@@ -149,16 +154,7 @@ fn beyond_public(
     public: &[String],
     objects: bool,
 ) -> Result<BTreeSet<String>> {
-    let mut input = String::new();
-    for t in tips {
-        input.push_str(t);
-        input.push('\n');
-    }
-    for p in public {
-        input.push('^');
-        input.push_str(p);
-        input.push('\n');
-    }
+    let input = stdin_lines("", tips) + &stdin_lines("^", public);
     let args: &[&str] = if objects {
         &["rev-list", "--objects", "--stdin"]
     } else {
@@ -178,6 +174,8 @@ fn beyond_public(
 struct Scratch {
     dir: tempfile::TempDir,
     cwd: PathBuf,
+    /// The clone's hash length in bytes (a pack's trailer): 20 for SHA-1, 32 for SHA-256.
+    hash_len: u64,
 }
 
 impl Scratch {
@@ -202,9 +200,17 @@ impl Scratch {
         let dir = tempfile::Builder::new()
             .prefix("share-")
             .tempdir_in(&parent)?;
+        let format = git::git(cwd, &["rev-parse", "--show-object-format"], &[])
+            .unwrap_or_else(|_| "sha1".to_owned());
         git::git(
             cwd,
-            &["init", "-q", "--bare", &dir.path().display().to_string()],
+            &[
+                "init",
+                "-q",
+                "--bare",
+                &format!("--object-format={format}"),
+                &dir.path().display().to_string(),
+            ],
             &[],
         )?;
         std::fs::write(
@@ -214,15 +220,13 @@ impl Scratch {
         Ok(Self {
             dir,
             cwd: cwd.to_path_buf(),
+            hash_len: if format == "sha256" { 32 } else { 20 },
         })
     }
 
     /// Index the plaintext git pack `pack` here and say what it holds: its own objects (those
     /// before the bases `--fix-thin` appends), the commits among them, and the appended bases.
-    fn contents(
-        &self,
-        pack: &[u8],
-    ) -> Result<(BTreeSet<String>, BTreeSet<String>, BTreeSet<String>)> {
+    fn contents(&self, pack: &[u8]) -> Result<PackContents> {
         let git_dir = self.dir.path();
         let out = git_with_input(
             &self.cwd,
@@ -237,7 +241,7 @@ impl Scratch {
             .to_owned();
         let idx = std::fs::read(git_dir.join(format!("objects/pack/pack-{name}.idx")))?;
         let listing = git_with_input(&self.cwd, Some(git_dir), &["show-index"], &idx)?;
-        let own_end = (pack.len() as u64).saturating_sub(20);
+        let own_end = (pack.len() as u64).saturating_sub(self.hash_len);
         let (mut own, mut bases) = (BTreeSet::new(), BTreeSet::new());
         for line in listing.lines() {
             let mut f = line.split_whitespace();
@@ -251,34 +255,122 @@ impl Scratch {
                 bases.insert(oid.to_owned());
             }
         }
-        let mut query = String::new();
-        for o in &own {
-            query.push_str(o);
-            query.push('\n');
-        }
         let types = git_with_input(
             &self.cwd,
             Some(git_dir),
             &["cat-file", "--batch-check=%(objectname) %(objecttype)"],
-            query.as_bytes(),
+            stdin_lines("", &own).as_bytes(),
         )?;
         let commits = types
             .lines()
             .filter_map(|l| l.strip_suffix(" commit"))
             .map(str::to_owned)
             .collect();
-        Ok((own, commits, bases))
+        Ok(PackContents {
+            own,
+            commits,
+            bases,
+        })
     }
 }
 
-/// One members-only pack of the repository: its manifest, its file key, and what it holds.
+/// One members-only pack of the repository: its `packHash` and its file key.
 struct Candidate {
     pack_hash: [u8; 32],
     key: Zeroizing<[u8; 32]>,
-    contents: PackContents,
 }
 
-/// A members-only branch as it is now, as a `branch` letter's body, with what it carries.
+/// A refusal that shares nothing.
+fn nothing_shared(code: &'static str, why: impl Into<String>) -> UserError {
+    UserError::new(code, why).note("nothing was shared")
+}
+
+fn nobody_refusal(why: impl Into<String>) -> anyhow::Error {
+    nothing_shared(codes::USAGE, why).into()
+}
+
+/// Drop from each pack's `bases` those a public branch reaches: they are already on the
+/// recipient's side.
+fn keep_private_bases(cwd: &Path, contents: &mut [PackContents], public: &[String]) -> Result<()> {
+    let all: BTreeSet<&String> = contents.iter().flat_map(|c| &c.bases).collect();
+    if all.is_empty() {
+        return Ok(());
+    }
+    let all: Vec<String> = all.into_iter().cloned().collect();
+    let private = beyond_public(cwd, &all, public, true)?;
+    for c in contents {
+        c.bases.retain(|b| private.contains(b));
+    }
+    Ok(())
+}
+
+/// How many objects the chosen packs carry beyond `needed` that the public branches do not reach
+/// (stored with the branch's commits by another members-only branch or an earlier push).
+fn count_extra_objects(
+    cwd: &Path,
+    choice: &Choice,
+    contents: &[PackContents],
+    needed: &BTreeSet<String>,
+    public: &[String],
+) -> Result<usize> {
+    let extra: Vec<String> = choice
+        .packs
+        .iter()
+        .flat_map(|i| contents[*i].own.iter())
+        .filter(|o| !needed.contains(*o))
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    if extra.is_empty() {
+        return Ok(0);
+    }
+    let beyond = beyond_public(cwd, &extra, public, true)?;
+    Ok(extra.iter().filter(|o| beyond.contains(*o)).count())
+}
+
+/// The people `--to` names, each once and never the sharer: `(identity id, the word that named
+/// them)` and their recipient slots, in the same order.
+async fn resolve_recipients(
+    s: &Session,
+    to: &[String],
+    me: &str,
+    action: &str,
+) -> Result<(Vec<(String, String)>, Vec<Recipient>)> {
+    let mut names: Vec<(String, String)> = Vec::new();
+    let mut recipients: Vec<Recipient> = Vec::new();
+    for word in to.iter().map(|w| w.trim()).filter(|w| !w.is_empty()) {
+        let id = crate::common::resolve_identity(&s.client, word, "recipient").await?;
+        if id == me || names.iter().any(|(i, _)| *i == id) {
+            continue;
+        }
+        let identity = s.client.fetch_identity(&id).await?;
+        let keys = identity.public_keys();
+        let Some(pk) = forge_core::keyring::recipient_key(&keys, &s.repo.forge().core)
+            .and_then(|k| <[u8; 33]>::try_from(k.public_key.as_slice()).ok())
+        else {
+            return Err(nothing_shared(
+                codes::NO_ENCRYPTION_KEY,
+                format!(
+                    "{action}: {word} has no encryption key, so nothing can be shared with them"
+                ),
+            )
+            .fix(format!(
+                "ask {word} to add one: `dg auth keys add --encryption`"
+            ))
+            .into());
+        };
+        recipients.push(Recipient {
+            identity_id: forge_core::platform::decode_identifier(&id)?,
+            public_key: pk,
+        });
+        names.push((id, word.to_owned()));
+    }
+    Ok((names, recipients))
+}
+
+/// A members-only branch as it is now, as a `branch` letter's body, with what it carries
+/// (what `dg branch share` and `dg bot ask` hand on).
 pub struct Snapshot {
     /// The letter's body: the head, the push's name hash, the packs and their file keys.
     pub letter: BranchLetter,
@@ -288,14 +380,16 @@ pub struct Snapshot {
     pub commits: usize,
     /// Commits the chosen packs hold that are not on the branch.
     pub extra_commits: usize,
+    /// Git objects the chosen packs hold that are not on the branch.
+    pub extra_objects: usize,
     /// How many packs.
     pub packs: usize,
 }
 
 /// Branch `full` of the repository of session `s` as it is now, read in the clone at `cwd`:
-/// the members-only ref update that set its tip and the stored members-only packs that hold
-/// its commits beyond the public branches (indexed in a scratch repository), as a `branch`
-/// letter's body. The caller has checked the signer's role and that `kr` holds the members key.
+/// the members-only ref update that set its tip (a current member's) and the stored
+/// members-only packs that hold its commits beyond the public branches, indexed in a scratch
+/// repository. The caller has checked the signer's role and that `kr` holds the members key.
 pub async fn snapshot(
     ctx: &Ctx,
     s: &Session,
@@ -309,11 +403,10 @@ pub async fn snapshot(
     let state = svc.git_state(&s.repo).await?;
     let view = MembersRefs::of(&state, |k, d| kr.open(k, d));
     let Some(branch) = view.refs.iter().find(|r| r.name == *full) else {
-        return Err(UserError::new(
+        return Err(nothing_shared(
             codes::NOT_FOUND,
             format!("{} has no branch {short}", s.repo.display()),
         )
-        .note("nothing was shared")
         .into());
     };
     if !branch.members_only {
@@ -322,38 +415,44 @@ pub async fn snapshot(
         )));
     }
     let Some(tip) = forge_core::rules::tip_of(&branch.state) else {
-        return Err(
-            UserError::new(codes::NOT_FOUND, format!("{short} was deleted"))
-                .note("nothing was shared")
-                .into(),
-        );
+        return Err(nothing_shared(codes::NOT_FOUND, format!("{short} was deleted")).into());
     };
-    let updates = view.updates.by_name.get(full).cloned().unwrap_or_default();
-    let introducing = updates.iter().rev().find(|u| {
-        u.new_oid.eq_ignore_ascii_case(&tip)
-            && view.updates.sealed.get(&u.id).is_some_and(Option::is_some)
+    let introducing = view.updates.by_name.get(full).and_then(|updates| {
+        updates.iter().rev().find(|u| {
+            u.new_oid.eq_ignore_ascii_case(&tip)
+                && view.updates.sealed.get(&u.id).is_some_and(Option::is_some)
+        })
     });
     let (Some(u), Some(b)) = (introducing, view.updates.blind_of(full, &tip)) else {
         return Err(nobody_refusal(format!(
             "{short}'s newest push didn't check out, so it can't be shared; `dg branch` shows it"
         )));
     };
-    let Some(ref_name_hash) = state
+    let Some((doc, ref_name_hash)) = state
         .ref_updates
         .iter()
         .chain(&state.protected_ref_updates)
         .find(|d| d.id == u.id)
-        .and_then(|d| d.field_bytes32("refNameHash"))
+        .and_then(|d| Some((d, d.field_bytes32("refNameHash")?)))
     else {
         bail!("the push that set {short} could not be read again");
     };
+    // a share counts for its recipient only when the push it names is a current member's
+    let roles = svc.copy_roles(&s.repo).await?;
+    if !forge_core::repo::trusted_member(&roles, &doc.owner_id) {
+        return Err(nothing_shared(
+            codes::USAGE,
+            format!("{short}'s newest push was made by someone who isn't a member any more, so it can't be shared"),
+        )
+        .fix(format!("push {short} again yourself, then share it"))
+        .into());
+    }
     if !git::has_object(cwd, &tip) {
-        return Err(UserError::new(
+        return Err(nothing_shared(
             codes::USAGE,
             format!("this clone doesn't have {short}'s newest commits yet"),
         )
         .fix("git fetch origin")
-        .note("nothing was shared")
         .into());
     }
     let public: Vec<String> = view
@@ -361,8 +460,18 @@ pub async fn snapshot(
         .iter()
         .filter(|r| !r.members_only)
         .filter_map(|r| forge_core::rules::tip_of(&r.state))
-        .filter(|t| git::has_object(cwd, t))
         .collect();
+    if public.iter().any(|t| !git::has_object(cwd, t)) {
+        return Err(nothing_shared(
+            codes::USAGE,
+            "this clone doesn't have the public branches' newest commits yet",
+        )
+        .cause(format!(
+            "what {short} adds to the public branches can only be worked out from them"
+        ))
+        .fix("git fetch origin")
+        .into());
+    }
     let needed = beyond_public(cwd, std::slice::from_ref(&tip), &public, true)?;
     let needed_commits = beyond_public(cwd, std::slice::from_ref(&tip), &public, false)?;
     if needed_commits.is_empty() {
@@ -373,7 +482,6 @@ pub async fn snapshot(
 
     // what every members-only pack holds
     let manifests = svc.read_pack_manifests(&s.repo).await?;
-    let roles = svc.copy_roles(&s.repo).await?;
     let members_kind = u64::from(forge_core::pack::KIND_MEMBERS_GIT_PACK);
     let mut by_hash: BTreeMap<[u8; 32], Vec<&PackManifestInfo>> = BTreeMap::new();
     for m in manifests
@@ -392,7 +500,9 @@ pub async fn snapshot(
     let contract = svc.repo_contract(&s.repo).await?;
     let reader = svc.repo_reader(&s.repo, &manifests, &roles).await;
     let scratch = Scratch::new(cwd)?;
+    // `contents[i]` is what `candidates[i]` holds
     let mut candidates: Vec<Candidate> = Vec::new();
+    let mut contents: Vec<PackContents> = Vec::new();
     for (hash, copies) in &by_hash {
         let (sealed, m) = match svc
             .fetch_best_copy_or_mirror(&s.repo, &contract, copies, &roles, &reader)
@@ -424,50 +534,34 @@ pub async fn snapshot(
                 continue;
             }
         };
-        let (own, commits, bases) = scratch.contents(&plain)?;
+        match scratch.contents(&plain) {
+            Ok(c) => contents.push(c),
+            Err(e) => {
+                tracing::info!(pack = %hex::encode(hash), error = %e, "a members-only pack could not be indexed; left out");
+                continue;
+            }
+        }
         candidates.push(Candidate {
             pack_hash: *hash,
             key,
-            contents: PackContents {
-                own,
-                commits,
-                bases,
-            },
         });
     }
-    // bases a public branch reaches are already on the recipient's side
-    let all_bases: Vec<String> = candidates
-        .iter()
-        .flat_map(|c| c.contents.bases.iter().cloned())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    let private_bases = if all_bases.is_empty() {
-        BTreeSet::new()
-    } else {
-        beyond_public(cwd, &all_bases, &public, true)?
-    };
-    for c in &mut candidates {
-        c.contents.bases.retain(|b| private_bases.contains(b));
-    }
     drop(scratch);
-    let contents: Vec<PackContents> = candidates.iter().map(|c| c.contents.clone()).collect();
+    keep_private_bases(cwd, &mut contents, &public)?;
     let choice = choose_packs(&needed, &needed_commits, &contents).map_err(|missing| {
-        anyhow::Error::from(
-            UserError::new(
-                codes::PACKS_UNREADABLE,
-                format!(
-                    "share {short}: {} of its objects aren't in any stored members-only pack",
-                    missing.len()
-                ),
-            )
-            .cause("the commits were pushed from somewhere whose packs are gone, or never stored")
-            .fix(format!(
-                "push {short} again from a clone that has it, then share it"
-            ))
-            .note("nothing was shared"),
+        nothing_shared(
+            codes::PACKS_UNREADABLE,
+            format!(
+                "share {short}: {} of its objects aren't in any stored members-only pack",
+                missing.len()
+            ),
         )
+        .cause("the commits were pushed from somewhere whose packs are gone, or never stored")
+        .fix(format!(
+            "push {short} again from a clone that has it, then share it"
+        ))
     })?;
+    let extra_objects = count_extra_objects(cwd, &choice, &contents, &needed, &public)?;
 
     let mut packs: Vec<LetterPack> = choice
         .packs
@@ -493,14 +587,9 @@ pub async fn snapshot(
         tip,
         commits: needed_commits.len(),
         extra_commits: choice.extra_commits,
+        extra_objects,
         packs: choice.packs.len(),
     })
-}
-
-fn nobody_refusal(why: impl Into<String>) -> anyhow::Error {
-    UserError::new(codes::USAGE, why.into())
-        .note("nothing was shared")
-        .into()
 }
 
 /// Run `dg branch share <name> --to …`.
@@ -528,34 +617,32 @@ pub async fn share(ctx: &Ctx, name: &str, to: &[String]) -> Result<()> {
         .best_role(&s.repo, &me)
         .await?;
     if !matches!(role, Some(Role::Maintainer | Role::Writer)) {
-        return Err(UserError::new(
+        return Err(nothing_shared(
             codes::NOT_A_WRITER,
             format!("share {short}: only members with Write or Maintain access can share a members-only branch"),
         )
-        .note("nothing was shared")
         .into());
     }
     let kr = svc.keyring(&s.repo).await?;
     if !kr.has_members_key() {
-        return Err(UserError::new(
+        return Err(nothing_shared(
             codes::MEMBERS_ONLY_OFF,
             format!("{} has no members-only content", s.repo.display()),
         )
-        .note("nothing was shared")
         .into());
     }
     if kr.resolution().keys.is_empty() {
-        return Err(UserError::new(
+        return Err(nothing_shared(
             codes::NO_KEY_SHARED,
             format!("share {short}: no key has been shared with you yet, so you can't read its members-only branches"),
         )
         .fix("ask a maintainer to run `dg repo members repair`")
-        .note("nothing was shared")
         .into());
     }
 
     let snap = snapshot(ctx, &s, &svc, &kr, &cwd, &full).await?;
-    let (tip, commits, choice) = (&snap.tip, snap.commits, &snap);
+    let (tip, commits, choice, extra_objects) =
+        (&snap.tip, snap.commits, &snap, snap.extra_objects);
 
     // the recipients: the sharer first, then each person named
     let signer = forge_core::keyring::PrivateSigner {
@@ -569,39 +656,12 @@ pub async fn share(ctx: &Ctx, name: &str, to: &[String]) -> Result<()> {
         .sender()
         .ok_or_else(|| forge_core::keyring::no_members_encryption_key_held(&action))?;
     let me_bytes = forge_core::platform::decode_identifier(&me)?;
+    let (names, others) = resolve_recipients(&s, to, &me, &action).await?;
     let mut recipients = vec![Recipient {
         identity_id: me_bytes,
         public_key: sender.public_key(),
     }];
-    let mut names: Vec<(String, String)> = Vec::new();
-    for word in to.iter().map(|w| w.trim()).filter(|w| !w.is_empty()) {
-        let id = crate::common::resolve_identity(&s.client, word, "recipient").await?;
-        if id == me || names.iter().any(|(i, _)| *i == id) {
-            continue;
-        }
-        let identity = s.client.fetch_identity(&id).await?;
-        let keys = identity.public_keys();
-        let Some(pk) = forge_core::keyring::recipient_key(&keys, &s.repo.forge().core)
-            .and_then(|k| <[u8; 33]>::try_from(k.public_key.as_slice()).ok())
-        else {
-            return Err(UserError::new(
-                codes::NO_ENCRYPTION_KEY,
-                format!(
-                    "{action}: {word} has no encryption key, so nothing can be shared with them"
-                ),
-            )
-            .fix(format!(
-                "ask {word} to add one: `dg auth keys add --encryption`"
-            ))
-            .note("nothing was shared")
-            .into());
-        };
-        recipients.push(Recipient {
-            identity_id: forge_core::platform::decode_identifier(&id)?,
-            public_key: pk,
-        });
-        names.push((id, word.to_owned()));
-    }
+    recipients.extend(others);
     if names.is_empty() {
         return Err(crate::errors::usage(
             "--to names nobody to share with but you: give @names or identity ids",
@@ -615,8 +675,8 @@ pub async fn share(ctx: &Ctx, name: &str, to: &[String]) -> Result<()> {
     }
 
     // the letter
-    let typed = snap
-        .letter
+    let letter = &snap.letter;
+    let typed = letter
         .to_typed()
         .context("the share could not be written: its head did not check")?;
     let sealed = key_letter::seal(
@@ -646,11 +706,11 @@ pub async fn share(ctx: &Ctx, name: &str, to: &[String]) -> Result<()> {
             safe(&short),
             crate::fmt::short(tip)
         );
-        if choice.extra_commits > 0 {
+        if extra_objects > 0 {
             eprintln!(
-                "  They also get {} commit(s) that aren't on {} (stored together with its commits by another members-only branch or an earlier push).",
-                choice.extra_commits,
-                safe(&short)
+                "  They also get {extra_objects} git object(s) that aren't on {} ({} of them commits): another members-only branch or an earlier push stored them with its commits.",
+                safe(&short),
+                choice.extra_commits
             );
         }
         eprintln!(
@@ -672,6 +732,7 @@ pub async fn share(ctx: &Ctx, name: &str, to: &[String]) -> Result<()> {
             "head": tip,
             "commits": commits,
             "extraCommits": choice.extra_commits,
+            "extraObjects": extra_objects,
             "packs": choice.packs,
             "to": names.iter().map(|(i, _)| i).collect::<Vec<_>>(),
             "letter": id,

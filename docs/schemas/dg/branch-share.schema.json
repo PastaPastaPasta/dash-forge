@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/branch-share.schema.json",
   "title": "dg branch share --json",
-  "description": "A members-only branch shared, as it is now, with people who are not members (a key letter only they and you open; later pushes are not shared).",
+  "description": "A members-only branch shared, as it is now, with people who are not members (only they and you can open the share; later pushes are not shared).",
   "type": "object",
   "properties": {
     "schemaVersion": {
@@ -31,6 +31,10 @@
       "type": "integer",
       "description": "Commits the shared packs hold that are not on the branch (stored with its commits by another members-only branch or an earlier push)."
     },
+    "extraObjects": {
+      "type": "integer",
+      "description": "Git objects of any kind the shared packs hold that are neither on the branch nor on a public branch (extraCommits counts the commits among them)."
+    },
     "packs": {
       "type": "integer",
       "description": "How many stored members-only packs the share opens."
@@ -44,7 +48,7 @@
     },
     "letter": {
       "type": "string",
-      "description": "The share's packManifest document id."
+      "description": "The share's packManifest document id (kind 10)."
     },
     "packHash": {
       "type": "string"
@@ -61,6 +65,7 @@
     "head",
     "commits",
     "extraCommits",
+    "extraObjects",
     "packs",
     "to",
     "letter",
