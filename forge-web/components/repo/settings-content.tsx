@@ -14,7 +14,7 @@ import type { RepoHome } from '@/lib/view'
 import type { RepoRef } from '@/lib/repo'
 import type { PrivateSession } from '@/lib/repo/private-session'
 import { ConsentMissingError, changeMemberRole, findConsent, grantMember, invalidateMembers, memberDocOf, precheckMemberChange, readMembershipsCached, repoContractIds, revokeMember } from '@/lib/repo'
-import { addMemberCost, planRotation, removalCost, removalEffect, roleChangeCost } from '@/lib/repo/private-members'
+import { addMemberCost, keyedRoleChangeCost, planRotation, removalCost, removalEffect } from '@/lib/repo/private-members'
 import { usePrivateWrite } from '@/hooks/use-private-write'
 import { ResolvedPerson } from '@/components/repo/resolved-person'
 import { ConsentCheck, Invitations, mayAdd, useInviteAccepted } from '@/components/repo/invite-banner'
@@ -22,12 +22,13 @@ import { MembersContentSetting, RemovalReads, useMembersKeyBlock } from '@/compo
 import type { Membership, Role as MemberRole } from '@/lib/rules/v2'
 import { NetworkBadge } from '@/components/ui/network-badge'
 import { previewCreate, previewDelete } from '@/lib/sdk'
-import { ROLE_LABEL, grantableRoles, holdsMembersKey, membershipTitle } from '@/lib/rules/roles'
+import { ROLE_LABEL, addBotText, grantableRoles, holdsMembersKey, membershipTitle } from '@/lib/rules/roles'
 import { namedAction } from '@/lib/spend-toast'
 import { RoleBadge, RolePicker, RoleSummary } from '@/components/repo/role-picker'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
+import { useBotRole } from '@/hooks/use-bot-role'
 import { usePersonInput } from '@/hooks/use-person-input'
 import { retryWhileMissing } from '@/lib/view/retry'
 import { useAuth } from '@/contexts/auth-context'
@@ -65,10 +66,19 @@ export function SettingsContent({ home, reload }: { home: RepoHome; reload: () =
   // (`no-key`), still gets the page and the way to open it.
   // No access resolved yet reads as an outsider, as RepoScaffold does.
   const access = home.private?.access ?? 'outsider'
-  if (home.repo.visibility === 'private' && (access === 'signed-out' || access === 'outsider')) {
+  if (home.repo.visibility === 'private' && (access === 'signed-out' || access === 'outsider' || access === 'bot')) {
     return <PrivateRepoState repo={home.repo} addr={{ owner: home.repo.ownerId, name: home.repo.name }} access={access} />
   }
   return <RepoSettings home={home} repo={home.repo} reload={reload} />
+}
+
+/** What a role change to or from Bot does to the key to members-only content (nothing to say otherwise). */
+function changeKeyText(from: MemberRole, to: MemberRole): string {
+  if (to === 'bot' && holdsMembersKey(from)) {
+    return " A bot doesn't get the key to members-only content, so the key changes and they can't read what is posted next. As a bot they get a key for their own members-only posts."
+  }
+  if (from === 'bot' && holdsMembersKey(to)) return " They get the key to members-only content too, so they can read it. Their members-only posts as a bot can't be read any more."
+  return ''
 }
 
 /** The cost of a key-aware removal from a public repo with members-only content, when this tab can plan its rotation. */
@@ -102,6 +112,8 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
   const isOwner = identity === repo.ownerId
   const viewer = useViewerRole(repo)
   const viewerRole = viewer.role
+  // Bot is offered only where the registered contract admits it (never on sakura's live set).
+  const bots = useBotRole(repo.forge)
   // The encryption key is in this browser, but this tab resumed with the signing key only: the
   // page's one unlock sits under Collaborators (Storage points to it).
   const locked = home.private?.access === 'locked'
@@ -139,6 +151,9 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
   const envChange: MemberChange | null =
     action === null ? null : action.kind === 'change' ? { kind: 'change', member: action.member, role: action.role, to: action.to } : { kind: action.kind, member: action.member, role: action.role }
   const envFlow = useMemberEnvFlow(home, envChange, action?.kind === 'revoke' && keyed && holdsMembersKey(action.role))
+  // A role change to or from Bot moves the key to members-only content: priced with it.
+  const changeCost = (member: string, from: MemberRole, to: MemberRole): ReturnType<typeof keyedRoleChangeCost> =>
+    keyedRoleChangeCost(keyed ? laneSession : null, identity, member, from, to, repo.forge.core, ops?.keyId ?? null)
   const runAction = async (intent: string): Promise<void> => {
     if (!sdk || !signer || !action) throw new Error('sign in to continue')
     const planned = envFlow.envsPlanned
@@ -155,7 +170,8 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
           setNoKeyYet(changed.keyShared === false ? action.member : null)
         } else if (action.kind === 'grant') {
           const granted = await grantMember(sdk, signer, repo, action.member, action.role, intent, ops, planned).catch(consentMissing)
-          setNoKeyYet(granted.keyShared === false ? action.member : null)
+          // a bot never gets the members key (it gets its key for members-only posts instead)
+          setNoKeyYet(granted.keyShared === false && action.role !== 'bot' ? action.member : null)
         } else {
           await revokeMember(sdk, signer, repo, action.member, action.role, intent, ops, planned)
         }
@@ -250,14 +266,15 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
                           action
                           value={m.role}
                           visibility={repo.visibility}
+                          bots={bots}
                           // Not the current role, nor a role whose document type they already hold in
                           // another row (a maintainer who is also a writer): the add would refuse it.
-                          exclude={grantableRoles(repo.visibility).filter(
+                          exclude={grantableRoles(repo.visibility, { bots }).filter(
                             (r) => r === m.role || memberRows.some((o) => o.identity === m.identity && o.role !== m.role && memberDocOf(o.role) === memberDocOf(r)),
                           )}
                           disabled={guard.disabledReason !== null}
                           onChange={(to) => {
-                            if (guard.check(roleChangeCost(m.role, to))) setAction({ kind: 'change', member: m.identity, role: m.role, to })
+                            if (guard.check(changeCost(m.identity, m.role, to))) setAction({ kind: 'change', member: m.identity, role: m.role, to })
                           }}
                         />
                         <p className="mt-1 text-[12px] text-anvil-500 dark:text-anvil-400">
@@ -289,7 +306,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
                   <Input id="member-id" value={memberId} onChange={(e) => setMemberId(e.target.value)} placeholder="Identity id or name.dash" className="font-mono" spellCheck={false} />
                 </Field>
               </div>
-              <RolePicker value={role} onChange={setRole} visibility={repo.visibility} />
+              <RolePicker value={role} onChange={setRole} visibility={repo.visibility} bots={bots} />
               <Button
                 variant="primary"
                 disabled={typed === null || !mayAdd(consent) || guard.disabledReason !== null}
@@ -337,7 +354,9 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
           onClose={() => setAction(null)}
           title={
             action?.kind === 'grant'
-              ? `Add with ${ROLE_LABEL[action.role]} access`
+              ? action.role === 'bot'
+                ? 'Add a bot'
+                : `Add with ${ROLE_LABEL[action.role]} access`
               : action?.kind === 'change'
                 ? `Change to ${ROLE_LABEL[action.to]} access`
                 : action?.kind === 'revoke'
@@ -348,12 +367,16 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
           toast={action === null ? undefined : namedAction(membershipTitle(action.kind, action.kind === 'change' ? action.to : action.role))}
           description={
             action?.kind === 'grant'
-              ? `Gives ${shortId(action.member)} ${ROLE_LABEL[action.role]} access.${keyed ? ' They get the key to members-only content too, so they can read it.' : ''}`
+              ? action.role === 'bot'
+                ? addBotText(shortId(action.member))
+                : `Gives ${shortId(action.member)} ${ROLE_LABEL[action.role]} access.${keyed ? ' They get the key to members-only content too, so they can read it.' : ''}`
               : action?.kind === 'change'
-                ? `Changes ${shortId(action.member)}'s access from ${ROLE_LABEL[action.role]} to ${ROLE_LABEL[action.to]}. They don't need to accept again.`
-                : keyed
-                  ? 'Removes them from this repo and changes the key to its members-only content.'
-                  : 'Removes them from this repo. Their past pushes and comments stay. Anything new they try is refused.'
+                ? `Changes ${shortId(action.member)}'s access from ${ROLE_LABEL[action.role]} to ${ROLE_LABEL[action.to]}. They don't need to accept again.${keyed ? changeKeyText(action.role, action.to) : ''}`
+                : action?.kind === 'revoke' && action.role === 'bot'
+                  ? `Removes ${shortId(action.member)}, a bot. ${keyed ? `The key to members-only content doesn't change, and nobody can read ${shortId(action.member)}'s members-only posts any more.` : 'Its past posts stay.'}`
+                  : keyed
+                    ? 'Removes them from this repo and changes the key to its members-only content.'
+                    : 'Removes them from this repo. Their past pushes and comments stay. Anything new they try is refused.'
           }
           cost={envFlow.cost(
             action === null
@@ -363,7 +386,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
                   ? keyedRemovalCost(laneSession, identity, action.member, action.role, repo.forge.core, ops?.keyId ?? null) ?? previewDelete(memberDocOf(action.role))
                   : previewDelete(memberDocOf(action.role))
                 : action.kind === 'change'
-                  ? roleChangeCost(action.role, action.to)
+                  ? changeCost(action.member, action.role, action.to)
                   : keyed
                     ? addMemberCost(action.role)
                     : previewCreate(memberDocOf(action.role)),

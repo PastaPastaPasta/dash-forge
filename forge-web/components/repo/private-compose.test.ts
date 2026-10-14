@@ -33,6 +33,7 @@ describe('the private compose gate', () => {
 
   it('non-members, members without a key, and unwritable epochs are blocked with the reason', () => {
     expect(privateWriteBlock(PRIV, undefined)).toMatch(/Only members/)
+    expect(privateWriteBlock(PRIV, { access: 'bot' })).toMatch(/Bots post members-only content/)
     expect(privateWriteBlock(PRIV, { access: 'no-key' } as RepoHome['private'])).toMatch(/encryption key/)
     expect(privateWriteBlock(PRIV, member({ currentEpoch: 1, burned: [1], keys: [0, 1] }))).toMatch(/epoch 1 is closed/)
     expect(privateWriteBlock(PRIV, member({ currentEpoch: 0, nonMembers: 1, keys: [0] }))).toMatch(/no longer a member/)

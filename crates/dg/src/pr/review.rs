@@ -434,13 +434,21 @@ pub async fn review(ctx: &Ctx, a: &PrReviewArgs) -> Result<()> {
         refuse_kept_letter(a, matches!(mode, Mode::Pending), existing.is_some())?;
     }
     let sealed = audience != Audience::Public;
+    // a bot's members-only review is sealed under its own post key, which a draft on disk does
+    // not use: it is submitted in one command, never kept pending (private-repos.md §23)
+    let bot = sealed
+        && !letter
+        && collab.signer_role(&s.repo).await? == Some(forge_core::rules::v2::Role::Bot);
+    if bot {
+        refuse_kept_bot_review(a, matches!(mode, Mode::Pending), existing.is_some())?;
+    }
     if let Some(d) = existing
         .as_ref()
         .filter(|d| d.attempted() && d.members != sealed)
     {
         return Err(refuse_attempted(d, &a.repo, a.number));
     }
-    let keys = if sealed && !letter {
+    let keys = if sealed && !letter && !bot {
         let kr = collab.keyring(&s.repo).await?;
         Some(
             if s.repo.visibility == forge_core::rules::v2::Visibility::Private {
@@ -455,7 +463,7 @@ pub async fn review(ctx: &Ctx, a: &PrReviewArgs) -> Result<()> {
     let file = DraftFile {
         path,
         keys,
-        memory_only: letter,
+        memory_only: letter || bot,
     };
     let shown = Shown {
         repo: &s.repo,
@@ -495,6 +503,32 @@ fn refuse_kept_letter(a: &PrReviewArgs, pending: bool, existing: bool) -> Result
         .into());
     }
     Ok(())
+}
+
+/// A bot's members-only review is never kept on disk: refused as a pending review (`pending`),
+/// and while another review is pending (`existing`), which it would be mixed with.
+fn refuse_kept_bot_review(a: &PrReviewArgs, pending: bool, existing: bool) -> Result<()> {
+    if !pending && !existing {
+        return Ok(());
+    }
+    let mut e = UserError::new(
+        codes::USAGE,
+        if pending {
+            "a bot's members-only review can't be kept as a pending review".to_string()
+        } else {
+            format!("you have a pending review on PR #{}", a.number)
+        },
+    );
+    e = if pending {
+        e.cause("a pending review is kept on this computer under the members key, which a bot never holds")
+            .fix("submit it in one command with --comment and its inline comments")
+    } else {
+        e.fix(format!(
+            "discard it (`dg pr review {} {} --discard`), then send this one",
+            a.repo, a.number
+        ))
+    };
+    Err(e.note("nothing was written").into())
 }
 
 /// Who a review is for, and the repository it is in: what its output names.

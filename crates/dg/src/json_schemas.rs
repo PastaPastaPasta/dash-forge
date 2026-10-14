@@ -447,6 +447,12 @@ fn reindex_and_key_repairs_match() {
         skipped: Vec::new(),
         won: true,
         burned: Some(2),
+        post_keys: forge_core::bot_keys::Issued {
+            epoch: 3,
+            sent: vec!["D".into()],
+            skipped: Vec::new(),
+            failed: None,
+        },
     });
     let repaired = json!({ "status": "repaired", "rotated": rotation, "nonMembers": ["C"], "wrapped": [], "skipped": [], "cost": crate::fmt::cost_json(1, None) });
     assert_valid("repo members enable", &repaired);

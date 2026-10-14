@@ -361,6 +361,39 @@ async fn scoped(
     Ok((repo.scope()?, client.fetch_contract(id).await?))
 }
 
+/// Whether `core` (the contract holding `writer`) admits the Bot role: `writer.role` up to 4
+/// (C2, the mainnet build's `mainnet_bot_role`). Sakura's live contract stops at 3, so a bot
+/// there is an identity outside the members (DESIGN §4.9).
+#[must_use]
+pub fn admits_bots(core: &LoadedContract) -> bool {
+    core.property_maximum(doc_type(Role::Bot), WRITER_ROLE)
+        .is_some_and(|m| m >= 4)
+}
+
+/// [`admits_bots`] for `repo`'s network, read now.
+pub async fn bot_role_available(client: &PlatformClient, repo: &RepoRef) -> Result<bool> {
+    let (_, core) = scoped(client, repo, doc_type(Role::Bot)).await?;
+    Ok(admits_bots(&core))
+}
+
+/// The refusal of a Bot grant where the contract has no Bot role (sakura's live set).
+#[must_use]
+pub fn no_bot_role(repo: &RepoRef, member: &str) -> Error {
+    UserError::new(
+        codes::USAGE,
+        format!(
+            "{} can't have bots as members yet: this network's contracts have no Bot role",
+            repo.display()
+        ),
+    )
+    .cause("the Bot role comes with the next registration of Forge's contracts")
+    .fix(format!(
+        "until then {member} can post publicly, report checks as a CI runner (`dg ci runner add`), and read what members share with it"
+    ))
+    .note("checked before anything was signed; nothing was written or paid")
+    .into()
+}
+
 /// Every `doc_type` membership document of `repo` (`maintainer`, `writer`, `runner`), complete.
 pub(crate) async fn membership_docs(
     client: &PlatformClient,
@@ -643,6 +676,9 @@ impl<'a> MemberService<'a> {
         crate::layout::stamp_vis(&mut props, repo.visibility);
         if let Some(c) = consent_by {
             props.insert("consentBy".to_string(), c);
+        }
+        if role == Role::Bot && !admits_bots(&core) {
+            return Err(no_bot_role(repo, member));
         }
         if let Some(code) = role.writer_role_code() {
             if core.has_property(doc_type(role), WRITER_ROLE) {
@@ -1080,7 +1116,7 @@ mod tests {
         }
         assert!(!holds_members_key(Role::Bot), "a bot never holds it");
         assert!(!Role::Bot.is_approver());
-        assert_eq!(Role::parse("bot"), None, "not offered yet");
+        assert_eq!(Role::parse("bot"), Some(Role::Bot));
         assert_eq!(Role::Bot.writer_role_code(), Some(4));
         assert!(refused_member(&you_are(Role::Bot, &repo())));
     }

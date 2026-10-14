@@ -1,0 +1,38 @@
+{
+  "name": "open__v03_relabelled_as_v05",
+  "description": "a members' v0x03 enc with enc[0] rewritten to 0x05 on the bot's document: the bot key derives another K_obj, CommitMismatch.",
+  "case": "bot_post",
+  "rules": "v2",
+  "input": {
+    "op": "open",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        }
+      },
+      "members": [],
+      "bots": [
+        "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"
+      ]
+    },
+    "doc": {
+      "type": "comment",
+      "vis": "public",
+      "ownerId": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+      "epoch": 0,
+      "targetId": "3333333333333333333333333333333333333333333333333333333333333333",
+      "enc": "05000102030405060708090a0be47c815058f7976ca3f5e8b7fdffbc8147bca4f6ed00c06578498373d39f7c96773c9f047972d3665ab53d09b6d60df705f2308bff8d056dfc4ab59a16edcf5c43a7c455bb6dfb3a4f70749149a201b205606101c7e01158b60c7fa47f95a12dcacb0bd9b05befe7ed0d544206c3b2b6",
+      "createdAtBlockHeight": 50
+    }
+  },
+  "expected": {
+    "status": "unreadable",
+    "reason": "commitMismatch"
+  }
+}

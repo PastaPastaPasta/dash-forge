@@ -37,7 +37,7 @@ import {
   type Anchor,
 } from '../private'
 import { RoleOracle, type Membership, type Role } from '../rules/v2'
-import { WRITER_ROLE_CODE } from '../rules/roles'
+import { WRITER_ROLE_CODE, botsOf } from '../rules/roles'
 import { contractHasProperty } from './contract-shape'
 import {
   ConsensusRefusal,
@@ -80,6 +80,7 @@ import {
 } from './writes'
 import { retryWhileMissing } from '../view/retry'
 import { shortId } from '../utils'
+import { announcePostKeys, missingPostKeys, postKeyLettersCost, sdkPostKeyIo, sendPostKeys, type PostKeysSent } from './bot-keys'
 
 
 /** An identity as the messages name it: its first 7 and last 5 characters. */
@@ -143,6 +144,12 @@ export interface RotationPlan {
   readonly unreachable: readonly string[]
   /** Identities explicitly excluded (removed, or wrapped without being members). */
   readonly excluded: readonly string[]
+  /**
+   * Every bot (a Bot row; an exclusion names who loses the key, not a bot) sent the new key's post key
+   * once the anchor wins (§23): a bot never gets the members key, so a rotation that sent none would
+   * silently stop its members-only posts.
+   */
+  readonly bots: readonly string[]
 }
 
 /**
@@ -207,7 +214,7 @@ export function planRotation(
     recipients.push({ identity: id, keyId: key.keyId, done: wrappedBySelf.has(id) })
   }
   const burn = mustBurn(exclude.length > 0, resume !== null, mine, recipients, remaining)
-  return { from: n, epoch, resume, burn, recipients, unreachable, excluded: [...excluded] }
+  return { from: n, epoch, resume, burn, recipients, unreachable, excluded: [...excluded], bots: botsOf(session.members) }
 }
 
 /** This browser holds encryption keys `held`, but not the identity's newest usable key `current`. */
@@ -265,18 +272,54 @@ export function roleChangeCost(from: Role, to: Role): CostPreview {
   return sumPreviews([previewDelete(memberDocOf(from)), previewCreate(memberDocOf(to))])
 }
 
-/** The cost shown before a rotation: its wraps plus the anchor (§5.5: members + 1). */
+/**
+ * The cost shown before a role change in a public repo with members-only content: the document
+ * swap, then what the key does. To Bot from a role that holds the key: a rotation without them,
+ * then the bot's post key; from Bot to one that holds it: a wrap. The swap alone when the session
+ * or this browser's key is not there to plan with, or for any other change.
+ */
+export function keyedRoleChangeCost(
+  session: PrivateSession | null,
+  self: string | null,
+  member: string,
+  from: Role,
+  to: Role,
+  coreId: string,
+  held: number | readonly number[] | null,
+): CostPreview {
+  const swap = roleChangeCost(from, to)
+  if (session === null || self === null || held === null) return swap
+  if (to === 'bot' && holdsMembersKey(from)) {
+    try {
+      return sumPreviews([swap, rotationCost(planRotation(session, self, [member], coreId, held)), postKeyLettersCost(1)])
+    } catch {
+      return swap
+    }
+  }
+  if (from === 'bot' && holdsMembersKey(to)) return sumPreviews([swap, previewCreate('repoKey')])
+  return swap
+}
+
+/** The cost shown before a rotation: its wraps plus the anchor (§5.5: members + 1), then each bot's post key. */
 export function rotationCost(plan: RotationPlan): CostPreview {
   // A burn: the burned key to every remaining member without one (so anyone can finish it), the
   // burned anchor, then every remaining member wrapped at the next epoch, then its anchor.
   const missing = plan.recipients.filter((x) => !x.done).length
   const wraps = plan.burn ? missing + plan.recipients.length : missing
-  return sumPreviews([...Array.from({ length: wraps }, () => previewCreate('repoKey')), previewCreate('config'), ...(plan.burn ? [previewCreate('config')] : [])])
+  return sumPreviews([
+    ...Array.from({ length: wraps }, () => previewCreate('repoKey')),
+    previewCreate('config'),
+    ...(plan.burn ? [previewCreate('config')] : []),
+    ...(plan.bots.length > 0 ? [postKeyLettersCost(plan.bots.length)] : []),
+  ])
 }
 
-/** The cost shown before adding a member: the membership document and one wrap (~0.0006 DASH). */
+/**
+ * The cost shown before adding a member: the membership document and one wrap (~0.0006 DASH); a
+ * bot gets no wrap but its key for members-only posts, one letter.
+ */
 export function addMemberCost(role: Role): CostPreview {
-  return sumPreviews([previewCreate(memberDocOf(role)), previewCreate('repoKey')])
+  return sumPreviews([previewCreate(memberDocOf(role)), role === 'bot' ? postKeyLettersCost(1) : previewCreate('repoKey')])
 }
 
 /** What a maintainer's client should do on this visit (§5.6), or null when nothing. */
@@ -292,6 +335,12 @@ export interface RepairPlan {
    * even when no non-member holds it. Any maintainer finishes a burn.
    */
   readonly burned: boolean
+  /**
+   * The repo's bots: the repair sends each the current post key none of this signer's letters gave
+   * it yet (§23). Which of them lack one takes a read of those letters ({@link missingBotKeys}),
+   * so the cost counts them all.
+   */
+  readonly bots: readonly string[]
 }
 
 /** The repair plan of `session` for `self` (pure); null when the check passes or self is not a maintainer. */
@@ -308,7 +357,7 @@ export function planRepair(session: PrivateSession, self: string, coreId: string
     else wrap.push(m)
   }
   if (rotate.length === 0 && wrap.length === 0 && waiting.length === 0 && !burned) return null
-  return { rotate, wrap, waiting, burned }
+  return { rotate, wrap, waiting, burned, bots: botsOf(session.members) }
 }
 
 // ---------------------------------------------------------------------------
@@ -338,6 +387,8 @@ export type RotationStep =
   /** The epoch's key reached someone it must not: anchored chain-only (§5.3), then the next. */
   | { readonly kind: 'burned'; readonly epoch: number }
   | { readonly kind: 'reanchored'; readonly epoch: number }
+  /** Bots sent (or not) their post key for `sent.epoch` (§23). */
+  | { readonly kind: 'postKeys'; readonly sent: PostKeysSent }
 
 /** A fresh session (§5.3: anchors are re-read before every write). */
 async function withFreshSession<T>(
@@ -676,6 +727,10 @@ export async function rotateRepoKey(
   const epoch = 'lost' in done ? done.lost : done.epoch
   if ('commit' in done && (await confirmAnchor(c, epoch, done.commit, drop, onStep)) === 'ours') {
     onStep?.({ kind: 'anchored', epoch })
+    // §23: in the same run as the wraps, every current Bot row gets its post key. Nobody is left
+    // out: removing a Bot row rotates nothing, and a maintainer who keeps a Bot row (`drop` names
+    // only the row removed) still needs theirs.
+    await sendBotKeys(c, `${intent}:post-keys`, { epoch }, onStep, drop)
     return epoch
   }
   // Their key is the repo's key now. If they rotated from a member list that still had the
@@ -903,8 +958,8 @@ export async function createEpochZero(c: PrivateWriteContext, defaultBranch: str
  * Turn members-only content on in a public repo (DESIGN D1, §4.1; parity: forge-core
  * `keyring::enable_members_key`): epoch 0 of its members key, the signer's self-wrap then the
  * settings-free anchor (`vis: "public"`, an empty TLV, no `backend` / `archived`:
- * {@link anchorContent}), then the key shared with every current member who holds it (the repair
- * check, §5.6). A maintainer only; resumable. Epoch 0 is minted only when the repo has no sealed
+ * {@link anchorContent}), then the key shared with every current member who holds it, and each
+ * bot sent its post key (the repair check, §5.6, §23). A maintainer only; resumable. Epoch 0 is minted only when the repo has no sealed
  * config at all: one that does not resolve is never papered over by a second epoch 0. Returns
  * whether this run wrote the anchor. No UI calls it yet (stream 1D's "Turn on members-only
  * content" sheet will).
@@ -1024,6 +1079,11 @@ export async function addPrivateMember(c: PrivateWriteContext, memberId: string,
   const receives = canReceive && holdsMembersKey(role)
   await precheckAdd(c, memberId, role)
   await grantMembershipDoc(c.sdk, c.auth, c.repo, memberId, role, `${intent}:member`)
+  // a bot is never wrapped to (L4): it gets its key for members-only posts instead (§23)
+  if (role === 'bot') {
+    await givePostKey(c, memberId, intent)
+    return { shared: false }
+  }
   if (!receives) return { shared: false }
   await waitForMembers(c, (rows) => holds(rows, memberId, role))
   await withFreshSession(c, (session) => wrapForMember(c, session, memberId, intent))
@@ -1119,7 +1179,10 @@ export const holds = (rows: readonly Membership[], identity: string, role?: Role
 export type RemovalEffect = 'rotate-exclude' | 'rotate-keep' | 'none'
 
 export function removalEffect(members: readonly Membership[], memberId: string, role: Role): RemovalEffect {
-  const keeps = members.some((m) => m.identity === memberId && m.role !== role)
+  // a bot never held the members key (L4): removing one rotates nothing (its posts stop opening)
+  if (!holdsMembersKey(role)) return 'none'
+  // only a role that holds the key keeps them in: one who stays as a bot leaves the key holders
+  const keeps = members.some((m) => m.identity === memberId && m.role !== role && holdsMembersKey(m.role))
   if (!keeps) return 'rotate-exclude'
   return role === 'maintainer' ? 'rotate-keep' : 'none'
 }
@@ -1220,7 +1283,8 @@ export async function removePrivateMember(
   const effect = removalEffect([...rows, { identity: memberId, role, createdAt: 0 }], memberId, role)
   if (effect === 'none') return null
   // A lagging node may still list the deleted role: every read from here on drops it.
-  const drop = [{ identity: memberId, ...(effect === 'rotate-exclude' ? {} : { role }) }]
+  // (only the row removed: a Bot row they keep is a bot still, and gets its post key from the rotation)
+  const drop = [{ identity: memberId, role }]
   let epoch: number | null = null
   try {
     epoch = await rotateRepoKey(c, effect === 'rotate-exclude' ? [memberId] : [], intent, onStep, drop, before)
@@ -1242,9 +1306,10 @@ export async function removePrivateMember(
     return null
   }
   // Once more, the repair check (§5.6): a concurrent rotation that lost, or one by a maintainer
-  // who did not exclude this member, shows up here and is fixed now.
+  // who did not exclude this member, shows up here and is fixed now. The rotation sent the bots
+  // their post keys already.
   try {
-    await runRepair(c, `${intent}:repair`, onStep, drop)
+    await runRepair(c, `${intent}:repair`, onStep, drop, false, false)
   } catch (e) {
     // the removal and the rotation both landed: only the last key shares are left
     if (e instanceof MembersUnsettledError) {
@@ -1558,7 +1623,8 @@ async function reanchorEpochsOf(
 
 /**
  * Run the repair check's actions (§5.6): rotate when a wrapped identity is not a member, then
- * wrap each member without a wrap to an enabled key.
+ * wrap each member without a wrap to an enabled key, then send each bot the current post key
+ * none of this signer's letters gave it yet (§23; a rotation here sent them already).
  */
 export async function runRepair(
   c: PrivateWriteContext,
@@ -1566,14 +1632,109 @@ export async function runRepair(
   onStep?: (s: RotationStep) => void,
   drop: readonly { readonly identity: string; readonly role?: Role }[] = [],
   afterLoss = false,
+  /** Send bots their missing post keys too; off right after a rotation that sent them (a lagging read would send them twice). */
+  botKeys = true,
 ): Promise<void> {
   const first = await withFreshSession(c, async (s) => planRepair(s, c.auth.identityId, c.repo.forge.core), drop)
-  if (first === null) return
-  if (first.rotate.length > 0 || first.burned) {
-    await rotateRepoKey(c, first.rotate, `${intent}:rotate`, onStep, [...drop, ...first.rotate.map((identity) => ({ identity }))], undefined, afterLoss)
+  const rotated = first !== null && (first.rotate.length > 0 || first.burned)
+  if (first !== null) {
+    if (rotated) {
+      await rotateRepoKey(c, first.rotate, `${intent}:rotate`, onStep, [...drop, ...first.rotate.map((identity) => ({ identity }))], undefined, afterLoss)
+    }
+    await withFreshSession(c, (session) => wrapMissing(c, session, intent, onStep, drop, rotated), drop)
   }
-  const rotated = first.rotate.length > 0 || first.burned
-  await withFreshSession(c, (session) => wrapMissing(c, session, intent, onStep, drop, rotated), drop)
+  if (!rotated && botKeys) await sendBotKeys(c, `${intent}:post-keys`, { missing: true }, onStep, drop)
+}
+
+/** What {@link sendBotKeys} sends: one epoch's keys to every bot, or the write epoch's to the bots `only` / missing one. */
+interface BotKeysTarget {
+  /** The epoch (a rotation's new one); the session's write epoch when absent. */
+  readonly epoch?: number
+  /** Only these bots (a bot just added). */
+  readonly only?: readonly string[]
+  /** Only the bots none of this signer's letters gave the epoch's post key yet. */
+  readonly missing?: boolean
+}
+
+/**
+ * Send bots their post keys (§23), as a maintainer over a fresh session, and say what was sent in
+ * toasts and `onStep`. Never throws: the membership or rotation it follows landed already, and a
+ * bot left without a key is reported, for a repair to finish. Null when there was nothing to send
+ * (no bots, not a maintainer, or no readable key to send).
+ */
+async function sendBotKeys(
+  c: PrivateWriteContext,
+  intent: string,
+  target: BotKeysTarget,
+  onStep?: (s: RotationStep) => void,
+  drop: readonly { readonly identity: string; readonly role?: Role }[] = [],
+): Promise<PostKeysSent | null> {
+  let bots: string[] = []
+  let epoch = target.epoch ?? -1
+  let sent: PostKeysSent | null
+  try {
+    sent = await withFreshSession(
+      c,
+      async (s) => {
+        bots = botsOf(s.members).filter((b) => target.only === undefined || target.only.includes(b))
+        if (bots.length === 0 || !isMaintainer(s, c.auth.identityId)) return null
+        epoch = target.epoch ?? s.resolution.writeEpoch ?? -1
+        const keys = s.resolution.keys.get(epoch)
+        if (keys === undefined || s.resolution.burned.has(epoch)) return null
+        const io = sdkPostKeyIo(c.sdk, c.auth, c.repo, c.network, c.ops.keyIds, intent, s.resolution.anchors.get(epoch)?.statedHeight)
+        const to = target.missing === true ? await missingPostKeys(io, keys, bots) : bots
+        return to.length === 0 ? null : sendPostKeys(io, keys, to)
+      },
+      drop,
+    )
+  } catch (e) {
+    sent = { epoch, sent: [], skipped: bots, failed: e instanceof Error ? e.message : String(e) }
+  }
+  if (sent === null) return null
+  onStep?.({ kind: 'postKeys', sent })
+  announcePostKeys(sent)
+  return sent
+}
+
+/**
+ * Give the bot `botId`, just added (or made a bot), its post key for the current key (§23), once
+ * the member list shows its Bot row. Nothing when the repo's key can't be read here.
+ */
+export async function givePostKey(c: PrivateWriteContext, botId: string, intent: string): Promise<PostKeysSent | null> {
+  try {
+    await waitForMembers(c, (rows) => holds(rows, botId, 'bot'))
+  } catch (e) {
+    const sent: PostKeysSent = { epoch: -1, sent: [], skipped: [botId], failed: e instanceof Error ? e.message : String(e) }
+    announcePostKeys(sent)
+    return sent
+  }
+  // a retried add finds the letter it sent and sends none again
+  return sendBotKeys(c, `${intent}:post-key`, { only: [botId], missing: true })
+}
+
+/**
+ * The bots of the repo with no post key for the current key from this signer yet (the banner's
+ * check): `ready` can be sent one now, `keyless` have no encryption key yet. Empty when there are
+ * none or the signer is not a maintainer.
+ */
+export async function missingBotKeys(c: PrivateWriteContext): Promise<{ readonly ready: string[]; readonly keyless: string[] }> {
+  return withFreshSession(c, async (s) => {
+    const bots = botsOf(s.members)
+    const epoch = s.resolution.writeEpoch
+    const keys = epoch === null ? undefined : s.resolution.keys.get(epoch)
+    if (bots.length === 0 || keys === undefined || !isMaintainer(s, c.auth.identityId)) return { ready: [], keyless: [] }
+    const io = sdkPostKeyIo(c.sdk, c.auth, c.repo, c.network, c.ops.keyIds, 'post-keys:check', epoch === null ? undefined : s.resolution.anchors.get(epoch)?.statedHeight)
+    const missing = await missingPostKeys(io, keys, bots)
+    const ready: string[] = []
+    const keyless: string[] = []
+    for (const id of missing) ((await io.recipientKey(id)) === null ? keyless : ready).push(id)
+    return { ready, keyless }
+  })
+}
+
+/** Send each bot missing one its post key for the current key (the repair note's action). */
+export function sendMissingBotKeys(c: PrivateWriteContext, intent: string): Promise<PostKeysSent | null> {
+  return sendBotKeys(c, intent, { missing: true })
 }
 
 /** §5.6's second action: wrap the current epoch to each member with no wrap to an enabled key. */
@@ -1606,9 +1767,12 @@ async function wrapMissing(
   }
 }
 
-/** The cost of a repair: a rotation (members + 1) when needed, plus one wrap per unwrapped member. */
+/**
+ * The cost of a repair: a rotation (members + 1, and each bot's post key) when needed, else one
+ * wrap per unwrapped member and, at most, a post key per bot.
+ */
 export function repairCost(session: PrivateSession, plan: RepairPlan, self: string, coreId: string, held: number | readonly number[]): CostPreview {
   const wraps = plan.wrap.map(() => previewCreate('repoKey'))
-  if (plan.rotate.length === 0 && !plan.burned) return sumPreviews(wraps)
+  if (plan.rotate.length === 0 && !plan.burned) return sumPreviews([...wraps, ...(plan.bots.length > 0 ? [postKeyLettersCost(plan.bots.length)] : [])])
   return rotationCost(planRotation(session, self, plan.rotate, coreId, held))
 }

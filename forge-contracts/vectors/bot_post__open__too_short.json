@@ -1,0 +1,37 @@
+{
+  "name": "open__too_short",
+  "description": "a v0x05 enc under 61 bytes is malformed before any key is used.",
+  "case": "bot_post",
+  "rules": "v2",
+  "input": {
+    "op": "open",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        }
+      },
+      "members": [],
+      "bots": [
+        "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"
+      ]
+    },
+    "doc": {
+      "type": "comment",
+      "vis": "public",
+      "ownerId": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+      "epoch": 0,
+      "targetId": "3333333333333333333333333333333333333333333333333333333333333333",
+      "enc": "05000102030405060708090a0bd8cba142dd331d95c2967b8082613e21bcc9724f4a5586a6b33a7bf3a39f670c5b4ec1291286482d8a324e65095654",
+      "createdAtBlockHeight": 50
+    }
+  },
+  "expected": {
+    "status": "malformed"
+  }
+}

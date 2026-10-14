@@ -16,7 +16,8 @@
  * that shares one members-only branch as it is now; `./read-letter` the `read` letter a request to a bot carries and
  * `./access-notice` a bot's kind-11 access notice (§22). `./branch-key` is a narrower branch's own key (DESIGN §4.3, phase 3F):
  * its generations, its ref updates (`enc` v0x06) and packs (DFPK 0x03), the `branchKey` letter and
- * the fold of those letters into a `BranchRing` (`sealBranchRef`'s and `sealBranchPack`'s fixed twins are test-only). `./bundle` also reads and writes a maintainer's make-public bundle (DESIGN §4.6), whose entries
+ * the fold of those letters into a `BranchRing` (`sealBranchRef`'s and `sealBranchPack`'s fixed twins are test-only); `./bot-post` is a bot's members-only post (`enc` v0x05, §23)
+ * and the `postKey` letter a maintainer sends the bot. `./bundle` also reads and writes a maintainer's make-public bundle (DESIGN §4.6), whose entries
  * publish one document revision's per-object key (`membersObjKey`, `letterObjKey`) and open it
  * with no other key (`openMembersWithKey`, `openLetterWithKey`). `./release`'s `sealRelease` and `sealReleaseManifest` are, since the web writes
  * sealed releases (`private-repos.md` §16.8, `lib/repo/sealed-release.ts`): both draw hedged
@@ -64,6 +65,7 @@ export {
   V2,
   V3,
   V4,
+  V5,
   FIRST_UNKNOWN,
   bundlesKind,
   docAd,
@@ -259,6 +261,18 @@ export {
   type PublishedBundle,
   type SkipReason,
 } from './convert'
+export {
+  PostKey,
+  TYPE_POST_KEY,
+  botObjKey,
+  botPostFramed,
+  openBotPost,
+  postKeyLetterFromTyped,
+  postKeyLetterToTyped,
+  postsKind,
+  sealBotPost,
+  type PostKeyLetter,
+} from './bot-post'
 export {
   KIND_KEY_LETTER,
   KeyLetterError,

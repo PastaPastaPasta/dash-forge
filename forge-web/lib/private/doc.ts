@@ -7,6 +7,7 @@
  */
 
 import { bytes, concat, constantTimeEqual, isU32, randomBytes, sha256, u32, utf8, type Bytes } from './bytes'
+import { botObjKey, botPostFramed, openBotPost, PostKey } from './bot-post'
 import { bytesEqual, type PrivateId } from './ids'
 import { hedgeNonce, objKeys, refNameHash, type EpochKeyring, type EpochKeys } from './keys'
 import { MalformedError, buildTlv, letterKind, padRecord, parseMembersTlv, parseTlv, type DocFields, type PrivateDocType } from './tlv'
@@ -26,11 +27,16 @@ export const V3 = 0x03
 /** `enc` version of a specific-people letter (§4.1, `./named`), in either kind of repository, under `epoch = 0`. */
 export const V4 = 0x04
 /**
- * The first `enc` version this client does not know (a bot's post, v0x05; a narrower branch's
- * ref update, v0x06; anything later): a content document carrying one is shown as members-only
- * and never opened (`unknownVersion`), so later envelopes do not break this reader.
+ * `enc` version of a bot's members-only post (§23, `./bot-post`): v0x03's envelope under a
+ * per-bot post key, admitted only from a Bot row of the repository.
  */
-export const FIRST_UNKNOWN = 0x05
+export const V5 = 0x05
+/**
+ * The first `enc` version this client does not know (a narrower branch's ref update, v0x06;
+ * anything later): a content document carrying one is shown as members-only and never opened
+ * (`unknownVersion`), so later envelopes do not break this reader.
+ */
+export const FIRST_UNKNOWN = 0x06
 const NONCE_LEN = 12
 const TAG_LEN = 16
 /** Smallest `enc`: version, nonce, tag (§4.1). */
@@ -442,8 +448,10 @@ export function __unsafeSealPrivateV3WithNonce(keys: EpochKeys, doc: PrivateDoc,
  * which the epoch keys cannot open; `./named`'s `openLetter` can, for its recipients.
  * `unknownVersion`: an `enc` version this client does not know ({@link FIRST_UNKNOWN} on),
  * written by a newer client for members (or fewer people); shown as members-only, never opened.
+ * `notABot`: a bot's post (`enc` v0x05) whose author holds no Bot row of this repository now (a
+ * bot that was removed, or someone who never was one); shown as members-only, never opened.
  */
-export type UnreadableReason = 'noEpoch' | 'noKey' | 'commitMismatch' | 'badTag' | 'late' | 'lateEdit' | 'letter' | 'unknownVersion'
+export type UnreadableReason = 'noEpoch' | 'noKey' | 'commitMismatch' | 'badTag' | 'late' | 'lateEdit' | 'letter' | 'unknownVersion' | 'notABot'
 
 export type OpenResult =
   | { readonly status: 'readable'; readonly fields: DocFields }
@@ -487,6 +495,8 @@ export interface OpenContext {
   readonly members: IdentitySet
   /** Burned epochs (§5.3): their content is late unless its author is a current member. */
   readonly burned?: ReadonlySet<number>
+  /** Identities with a current Bot row (`writer.role` 4): the only authors whose v0x05 posts open (§23). None when absent. */
+  readonly bots?: IdentitySet
 }
 
 /**
@@ -513,8 +523,8 @@ export function isUnknownVersion(type: PrivateDocType, enc: Uint8Array): boolean
  * Whether `enc` has the shape its type and its own `vis` demand (§8.1 step 1): a private
  * document's content is v0x01 or v0x03 (DESIGN D38), a public one's members-only content v0x03;
  * a v0x01 `enc` on a public document is malformed. A letter (v0x04) is framed by
- * {@link letterFramed}. A version from {@link FIRST_UNKNOWN} on is not framed here: see
- * {@link openContent}.
+ * {@link letterFramed}, a bot's post (v0x05) by `./bot-post`'s `botPostFramed`. A version from
+ * {@link FIRST_UNKNOWN} on is not framed here: see {@link openContent}.
  */
 function encShapeOk(doc: PrivateDoc, enc: Uint8Array): boolean {
   if (doc.type === 'config') return enc.length >= MIN_CONFIG_ENC && enc[0] === V2
@@ -526,6 +536,8 @@ function encShapeOk(doc: PrivateDoc, enc: Uint8Array): boolean {
       return enc.length >= MIN_MEMBERS_ENC
     case V4:
       return letterFramed(doc, enc)
+    case V5:
+      return botPostFramed(doc, enc)
     default:
       return false
   }
@@ -540,6 +552,8 @@ export async function openWithKey(doc: StoredPrivateDoc, keys: EpochKeys, anchor
   if (!encShapeOk(doc, enc) || !isU32(doc.epoch)) return MALFORMED
   if (enc[0] === V4) return unreadable('letter')
   if (enc[0] === V3) return openMembers(doc, keys)
+  // a bot's post opens only through openContent, which knows the bots
+  if (enc[0] === V5) return MALFORMED
   let body = enc.subarray(1)
   if (doc.type === 'config') {
     if (!constantTimeEqual(keys.commit, enc.subarray(1, 33))) return unreadable('commitMismatch')
@@ -648,12 +662,13 @@ export function sharesKind(type: PrivateDocType): boolean {
 }
 
 /**
- * `K_obj` of the members-only (`enc` v0x03) document `doc`, derived under `keys` (its epoch) and
- * checked against the commitment `enc` carries: what a member publishes in a make-public bundle
- * (DESIGN §4.6; forge-core `doc::members_obj_key`). Raw, through `deriveBits` (`./keys`); the
- * caller wipes it once the bundle is written. Null when it is not a well-framed v0x03 document of
- * a kind bundles publish, its epoch is not `keys`'s, or the key does not commit (it was not made
- * under it).
+ * `K_obj` of the members-only (`enc` v0x03, or a bot's v0x05) document `doc`, derived under
+ * `keys` (its epoch) and checked against the commitment `enc` carries: what a member publishes in
+ * a make-public bundle (DESIGN §4.6; forge-core `doc::members_obj_key`). Raw, through
+ * `deriveBits` (`./keys`); the caller wipes it once the bundle is written. Null when it is not a
+ * well-framed v0x03 or v0x05 document of a kind bundles publish, its epoch is not `keys`'s, or the
+ * key does not commit (it was not made under it). Whether a v0x05 author is a bot is the
+ * caller's reading layer's check, as for opening it.
  */
 export function membersObjKey(keys: EpochKeys, doc: PrivateDoc, enc: Uint8Array): Promise<Bytes | null> {
   return objKeyOf(keys, doc, enc, bundlesKind)
@@ -669,6 +684,17 @@ export function readObjKey(keys: EpochKeys, doc: PrivateDoc, enc: Uint8Array): P
 }
 
 async function objKeyOf(keys: EpochKeys, doc: PrivateDoc, enc: Uint8Array, kindOk: (type: PrivateDocType) => boolean): Promise<Bytes | null> {
+  // a bot's members-only post (v0x05): its key derives under the bot's post key, which the epoch
+  // key derives (whether its author is a bot is the reading layer's check)
+  if (enc[0] === V5) {
+    if (!kindOk(doc.type) || doc.ownerId.length !== 32) return null
+    const post = await PostKey.derive(keys, doc.ownerId)
+    try {
+      return await botObjKey(post, doc, enc)
+    } finally {
+      post.wipe()
+    }
+  }
   if (enc[0] !== V3 || !kindOk(doc.type) || !encShapeOk(doc, enc) || keys.epoch !== doc.epoch) return null
   let ad: Bytes
   try {
@@ -688,7 +714,7 @@ async function objKeyOf(keys: EpochKeys, doc: PrivateDoc, enc: Uint8Array, kindO
 }
 
 /**
- * Open the members-only (`enc` v0x03) document `doc` of repository `repoId` with a published
+ * Open the members-only (`enc` v0x03, or a bot's v0x05) document `doc` of repository `repoId` with a published
  * per-object key `kObj` (DESIGN §4.6, a maintainer's bundle), holding no epoch key (forge-core
  * `doc::open_members_with_key`): the AD is rebuilt from the document's public fields
  * ({@link docAdIn}), the commitment `kObj` derives is compared with the one `enc` carries
@@ -728,10 +754,11 @@ export async function openSharedWithKey(repoId: Uint8Array, doc: PrivateDoc, enc
 }
 
 async function openWithObjKey(repoId: Uint8Array, doc: PrivateDoc, enc: Uint8Array, kObj: Uint8Array, membersTlv = false): Promise<OpenResult> {
-  if (enc[0] !== V3 || !encShapeOk(doc, enc)) return MALFORMED
+  const version = enc[0]
+  if ((version !== V3 && version !== V5) || !encShapeOk(doc, enc)) return MALFORMED
   let ad: Bytes
   try {
-    ad = docAdIn(doc, repoId, V3)
+    ad = docAdIn(doc, repoId, version)
   } catch (e) {
     if (e instanceof MalformedError) return MALFORMED
     throw e
@@ -791,11 +818,24 @@ function isHeight(h: number | undefined): h is number {
   return h !== undefined && Number.isSafeInteger(h) && h >= 0
 }
 
+/** A bot's post: only from a Bot row of this repository now (§23). */
+async function openAsBotPost(doc: StoredPrivateDoc, keys: EpochKeys, ctx: OpenContext): Promise<OpenResult> {
+  if (ctx.bots?.has(doc.ownerId) !== true) return unreadable('notABot')
+  const post = await PostKey.derive(keys, doc.ownerId)
+  try {
+    return await openBotPost(post, doc, doc.enc)
+  } finally {
+    post.wipe()
+  }
+}
+
 /**
  * `open_content` (§8.1): decrypt and check a private or members-only document, in the normative
  * order, dispatching on `enc[0]` and `doc.vis`. A specific-people letter (v0x04) needs the
  * reader's encryption key and the sender's public key, which an {@link OpenContext} does not
- * hold: a well-framed one is `letter` here and opens through `./named`'s `openLetter`.
+ * hold: a well-framed one is `letter` here and opens through `./named`'s `openLetter`. A bot's
+ * post (v0x05) opens only when its author is in {@link OpenContext.bots} (else `notABot`), under
+ * the post key members derive from the epoch key and its author.
  */
 export async function openContent(doc: StoredPrivateDoc, ctx: OpenContext): Promise<OpenResult> {
   if (isUnknownVersion(doc.type, doc.enc)) return unreadable('unknownVersion')
@@ -806,7 +846,7 @@ export async function openContent(doc: StoredPrivateDoc, ctx: OpenContext): Prom
   const keys = ctx.keys.get(doc.epoch)
   if (keys === undefined) return unreadable('noKey')
   const isAnchor = doc.type === 'config' && doc.id !== undefined && bytesEqual(doc.id, anchor.id)
-  const result = await openWithKey(doc, keys, isAnchor)
+  const result = doc.enc[0] === V5 ? await openAsBotPost(doc, keys, ctx) : await openWithKey(doc, keys, isAnchor)
   if (result.status !== 'readable') return result
   // A member `event` is gated at consensus (a removed member cannot write one), so the late rule,
   // about un-gated writes under a superseded key, does not apply; its schema carries no

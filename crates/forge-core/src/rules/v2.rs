@@ -179,13 +179,19 @@ impl Role {
         }
     }
 
-    /// The role named by [`Self::as_str`], or `None` for any other text. Bot is not offered
-    /// yet (no client adds one before the mainnet registration), so `bot` is `None`.
+    /// The role named by [`Self::as_str`], or `None` for any other text. A Bot grant is
+    /// refused where the contract has no Bot role ([`crate::members::admits_bots`]).
     #[must_use]
     pub fn parse(name: &str) -> Option<Role> {
-        [Role::Maintainer, Role::Writer, Role::Triage, Role::Reader]
-            .into_iter()
-            .find(|r| r.as_str() == name)
+        [
+            Role::Maintainer,
+            Role::Writer,
+            Role::Triage,
+            Role::Reader,
+            Role::Bot,
+        ]
+        .into_iter()
+        .find(|r| r.as_str() == name)
     }
 }
 

@@ -4,8 +4,10 @@ import {
   RoleRefusedError,
   capabilitiesOf,
   claimedRole,
+  addBotText,
   grantableRoles,
   holdsMembersKey,
+  isBotOnly,
   ROLE_LABEL,
   ROLE_SUMMARY,
   verdictRefusal,
@@ -141,6 +143,16 @@ describe('holdsMembersKey', () => {
   })
 })
 
+describe('isBotOnly', () => {
+  it('is a Bot row and no human one', () => {
+    const row = (identity: string, role: Role) => ({ identity, role, createdAt: 1 })
+    expect(isBotOnly([row('a', 'bot')], 'a')).toBe(true)
+    expect(isBotOnly([row('a', 'bot'), row('a', 'maintainer')], 'a')).toBe(false)
+    expect(isBotOnly([row('b', 'bot')], 'a')).toBe(false)
+    expect(isBotOnly([], 'a')).toBe(false)
+  })
+})
+
 describe('role words (DESIGN §10)', () => {
   it('names the roles as GitHub does, with the picker help lines', () => {
     expect(grantableRoles('public').map((r) => ROLE_LABEL[r])).toEqual(['Read', 'Triage', 'Write', 'Maintain'])
@@ -164,6 +176,23 @@ describe('grantableRoles and roleLimit', () => {
   it('offers every role, a reader included, on public and private repos', () => {
     expect(grantableRoles('public')).toEqual(['reader', 'triage', 'writer', 'maintainer'])
     expect(grantableRoles('private')).toEqual(['reader', 'triage', 'writer', 'maintainer'])
+  })
+
+  it('offers Bot only where the registered contract admits it (never on a contract whose writer.role stops at 3)', () => {
+    expect(grantableRoles('public', { bots: false })).not.toContain('bot')
+    expect(grantableRoles('public', { bots: true })).toEqual(['reader', 'triage', 'writer', 'maintainer', 'bot'])
+    expect(grantableRoles('private', { bots: true })).toContain('bot')
+    // a bot is never a key holder (L4)
+    expect(holdsMembersKey('bot')).toBe(false)
+  })
+
+  it("says Bot's help line and its Add text as DESIGN §10 does", () => {
+    expect(ROLE_SUMMARY.bot).toBe(
+      "An automated account. It can post comments and reviews. It can't approve or merge, it pushes only to branches a maintainer allows, and it reads members-only content only when someone asks it to. To report checks it also needs to be added as a CI runner.",
+    )
+    expect(addBotText('@ci-bot')).toBe(
+      "Add @ci-bot as a bot? It will be able to post comments and reviews in this repo. It can't approve or merge, push unless a maintainer allows it, or read members-only content on its own. @ci-bot must accept.",
+    )
   })
 
   it('explains a limit to triage and readers only', () => {

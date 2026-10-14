@@ -35,12 +35,18 @@ describe('members-only content (enc v0x03)', () => {
     // repositories; the AD does not bind `vis`)
     expect(await openContent({ ...doc, vis: undefined, enc: a, createdAtBlockHeight: 5 }, ctx)).toEqual({ status: 'readable', fields: { body: 'members only' } })
     // a later client's envelope is members-only to this reader in either kind of repository, never malformed
-    for (const v of [0x05, 0x06, 0xff]) {
+    for (const v of [0x06, 0x07, 0xff]) {
       const later = Uint8Array.from(a)
       later[0] = v
       for (const vis of ['public', undefined] as const) {
         expect(await openContent({ ...doc, vis, enc: later, createdAtBlockHeight: 5 }, ctx)).toEqual({ status: 'unreadable', reason: 'unknownVersion' })
       }
+    }
+    // v0x05 is a bot's post: from an author with no Bot row it is never opened (§23)
+    const relabelled = Uint8Array.from(a)
+    relabelled[0] = 0x05
+    for (const vis of ['public', undefined] as const) {
+      expect(await openContent({ ...doc, vis, enc: relabelled, createdAtBlockHeight: 5 }, ctx)).toEqual({ status: 'unreadable', reason: 'notABot' })
     }
   })
 

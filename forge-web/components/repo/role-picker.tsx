@@ -1,6 +1,7 @@
 /**
  * The member role picker and badge (Settings → Members, RC2 member roles): Read, Triage, Write
- * and Maintain on every repo, each with what it may do (DESIGN §10); the owner's chip is "Owner".
+ * and Maintain on every repo, and Bot where the contract admits it, each with what it may do
+ * (DESIGN §10); the owner's chip is "Owner".
  */
 
 import { OWNER_LABEL, ROLE_LABEL, ROLE_SUMMARY, grantableRoles } from '@/lib/rules/roles'
@@ -14,6 +15,7 @@ export function RolePicker({
   disabled = false,
   exclude = [],
   action = false,
+  bots = false,
 }: {
   value: Role
   onChange: (role: Role) => void
@@ -27,8 +29,10 @@ export function RolePicker({
    * and so open the confirmation, as focus moves.
    */
   action?: boolean
+  /** Offer Bot: the registered contract admits it (`useBotRole`). */
+  bots?: boolean
 }): JSX.Element {
-  const roles = grantableRoles(visibility).filter((r) => !exclude.includes(r))
+  const roles = grantableRoles(visibility, { bots }).filter((r) => !exclude.includes(r))
   const anyChecked = !action && roles.includes(value)
   return (
     <div
