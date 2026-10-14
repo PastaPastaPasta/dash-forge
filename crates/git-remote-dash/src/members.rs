@@ -66,11 +66,11 @@ impl GitGraph {
 
     /// The objects of `oids` this repository holds.
     pub fn present(&self, oids: &[String]) -> Result<BTreeSet<String>> {
-        let wanted: Vec<&String> = oids.iter().filter(|o| is_hex_oid(o)).collect();
+        let wanted = hex_oids(oids);
         if wanted.is_empty() {
             return Ok(BTreeSet::new());
         }
-        let input = lines(wanted.iter().map(|s| s.as_str()));
+        let input = lines(&wanted);
         let out = self.git(
             &["cat-file", "--batch-check=%(objectname) %(objecttype)"],
             Some(input.as_bytes()),
@@ -126,8 +126,7 @@ impl GitGraph {
             return Vec::new();
         }
         let mut args = vec!["log", "--no-walk=unsorted", "--format=%h %s"];
-        let refs: Vec<&str> = oids.iter().map(String::as_str).collect();
-        args.extend(refs);
+        args.extend(oids.iter().map(String::as_str));
         self.git(&args, None).map_or_else(
             |_| {
                 oids.iter()
@@ -236,9 +235,18 @@ fn is_hex_oid(s: &str) -> bool {
     (s.len() == 40 || s.len() == 64) && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
-fn lines<'a>(it: impl Iterator<Item = &'a str>) -> String {
-    it.fold(String::new(), |mut s, l| {
-        s.push_str(l);
+/// The `oids` that are object ids, as `git` is asked for them.
+fn hex_oids(oids: &[String]) -> Vec<&str> {
+    oids.iter()
+        .map(String::as_str)
+        .filter(|o| is_hex_oid(o))
+        .collect()
+}
+
+/// `it`, one item per line.
+fn lines<S: AsRef<str>>(it: impl IntoIterator<Item = S>) -> String {
+    it.into_iter().fold(String::new(), |mut s, l| {
+        s.push_str(l.as_ref());
         s.push('\n');
         s
     })
@@ -501,6 +509,11 @@ pub fn short(r: &str) -> &str {
 /// How many commits an E805 lists by name.
 const NAMED: usize = 5;
 
+/// The commits of `oids` an E805 lists by name.
+fn named(oids: &[String]) -> &[String] {
+    &oids[..oids.len().min(NAMED)]
+}
+
 /// E805 for `outcome`'s findings, and the lines printed above it: the first commits as `%h %s`
 /// and a count. The error names the members-only branch they come from when a held tip reaches
 /// them, and the two ways out. `members_tips`: members-only branch → its tip, as this pusher reads
@@ -543,9 +556,8 @@ pub fn publish_refusal(
     let mut lines = Vec::new();
     for f in &outcome.findings {
         lines.push(format!("dash: {} would publish:", f.dst));
-        let shown: Vec<String> = f.oids.iter().take(NAMED).cloned().collect();
         lines.extend(
-            g.describe(&shown)
+            g.describe(named(&f.oids))
                 .into_iter()
                 .map(|l| format!("dash:   {l}")),
         );
@@ -699,7 +711,11 @@ pub fn read_ledger() -> ledger::State {
 /// Whether the clone's ledger records members-only objects, or cannot be read: the fetch trigger
 /// of E806 (DESIGN §11).
 pub fn ledger_holds_members_only() -> bool {
-    match read_ledger() {
+    holds_members_only(&read_ledger())
+}
+
+fn holds_members_only(state: &ledger::State) -> bool {
+    match state {
         ledger::State::Absent => false,
         ledger::State::Unknown => true,
         ledger::State::Present(l) => !l.is_empty(),
@@ -735,20 +751,6 @@ pub fn record(commits: &[String], packs: &[[u8; 32]]) -> Result<()> {
         return Ok(());
     }
     let dir = LocalRepo::common_dir()?;
-    let entries: Vec<Entry> = commits
-        .iter()
-        .filter(|c| is_hex_oid(c))
-        .map(|c| Entry {
-            kind: EntryKind::Commit,
-            id: c.clone(),
-            audience: EntryAudience::Members,
-        })
-        .chain(packs.iter().map(|p| Entry {
-            kind: EntryKind::Pack,
-            id: hex::encode(p),
-            audience: EntryAudience::Members,
-        }))
-        .collect();
     let held = match ledger::read(&dir) {
         Ok(ledger::State::Present(l)) => l,
         Ok(ledger::State::Absent) => {
@@ -758,11 +760,21 @@ pub fn record(commits: &[String], packs: &[[u8; 32]]) -> Result<()> {
         }
         Ok(ledger::State::Unknown) | Err(_) => return Err(ledger_unreadable().into()),
     };
-    let new: Vec<Entry> = entries
+    let new_commits = hex_oids(commits)
         .into_iter()
-        .filter(|e| match e.kind {
-            EntryKind::Commit => !held.commits.contains_key(&e.id),
-            EntryKind::Pack => !held.packs.contains_key(&e.id),
+        .filter(|c| !held.commits.contains_key(*c))
+        .map(|c| (EntryKind::Commit, c.to_owned()));
+    let new_packs = packs
+        .iter()
+        .map(hex::encode)
+        .filter(|p| !held.packs.contains_key(p))
+        .map(|p| (EntryKind::Pack, p));
+    let new: Vec<Entry> = new_commits
+        .chain(new_packs)
+        .map(|(kind, id)| Entry {
+            kind,
+            id,
+            audience: EntryAudience::Members,
         })
         .collect();
     ledger::append(&dir, &new).map_err(|e| {
@@ -788,16 +800,11 @@ pub fn remember_public_tips(tips: &[String]) {
         return;
     };
     let p = public_tips_path(&common);
-    let mut all: BTreeSet<String> = std::fs::read_to_string(&p)
-        .unwrap_or_default()
-        .lines()
-        .filter(|l| is_hex_oid(l))
-        .map(str::to_owned)
-        .collect();
+    let mut all = read_lines(&p);
     let before = all.len();
-    all.extend(tips.iter().filter(|t| is_hex_oid(t)).cloned());
+    all.extend(hex_oids(tips).into_iter().map(str::to_owned));
     if all.len() != before || !p.exists() {
-        forge_core::cache::write(&p, lines(all.iter().map(String::as_str)).as_bytes());
+        forge_core::cache::write(&p, lines(&all).as_bytes());
     }
 }
 
@@ -809,12 +816,7 @@ pub fn known_public_tips() -> Vec<String> {
 }
 
 fn read_public_tips(common: &Path) -> Vec<String> {
-    std::fs::read_to_string(public_tips_path(common))
-        .unwrap_or_default()
-        .lines()
-        .filter(|l| is_hex_oid(l))
-        .map(str::to_owned)
-        .collect()
+    read_lines(&public_tips_path(common)).into_iter().collect()
 }
 
 // --- the pre-push hook ------------------------------------------------------------------------
@@ -955,16 +957,14 @@ fn is_null_oid(o: &str) -> bool {
 /// one, to a remote that is not a dash remote this helper serves. A dash remote served by this
 /// helper is checked by its own guard, which knows each ref's audience. Exit 0 otherwise.
 pub fn pre_push(args: &[String], input: &mut dyn std::io::Read) -> Result<i32> {
-    let remote = args.first().cloned().unwrap_or_default();
-    let url = args.get(1).cloned().unwrap_or_else(|| remote.clone());
+    let remote = args.first().map_or("", String::as_str);
+    let url = args.get(1).map_or(remote, String::as_str);
     let mut text = String::new();
     input.read_to_string(&mut text)?;
     let updates = parse_hook_input(&text);
     let state = read_ledger();
-    match &state {
-        ledger::State::Absent => return Ok(0),
-        ledger::State::Present(l) if l.is_empty() => return Ok(0),
-        _ => {}
+    if !holds_members_only(&state) {
+        return Ok(0);
     }
     if url.starts_with("dash://") && helper_mismatch().is_none() {
         return Ok(0);
@@ -988,8 +988,8 @@ pub fn pre_push(args: &[String], input: &mut dyn std::io::Read) -> Result<i32> {
     known.extend(
         updates
             .iter()
-            .map(|u| u.remote_oid.clone())
-            .filter(|o| !is_null_oid(o)),
+            .filter(|u| !is_null_oid(&u.remote_oid))
+            .map(|u| u.remote_oid.clone()),
     );
     let batch: Vec<BatchRef> = updates
         .iter()
@@ -1032,7 +1032,7 @@ pub fn pre_push(args: &[String], input: &mut dyn std::io::Read) -> Result<i32> {
             codes::MEMBERS_ONLY_TO_OTHER_REMOTE,
             f.dst
         );
-        for l in g.describe(&f.oids.iter().take(NAMED).cloned().collect::<Vec<_>>()) {
+        for l in g.describe(named(&f.oids)) {
             eprintln!("          {l}");
         }
         if f.oids.len() > NAMED {
@@ -1053,18 +1053,14 @@ pub fn commits_missing_parents(
     repo: Option<&Path>,
     wants: &[String],
 ) -> Result<Vec<(String, Vec<String>)>> {
-    let wants: Vec<&str> = wants
-        .iter()
-        .map(String::as_str)
-        .filter(|w| is_hex_oid(w))
-        .collect();
+    let wants = hex_oids(wants);
     if wants.is_empty() {
         return Ok(Vec::new());
     }
     let out = git_read_in(
         repo,
         &["rev-list", "--missing=print", "--parents", "--stdin"],
-        Some(lines(wants.into_iter()).as_bytes()),
+        Some(lines(&wants).as_bytes()),
     )?;
     let text = String::from_utf8_lossy(&out);
     let missing: BTreeSet<&str> = text.lines().filter_map(|l| l.strip_prefix('?')).collect();
@@ -1123,7 +1119,7 @@ pub fn graft_missing_parents(
     let path = grafts_path(Path::new(String::from_utf8_lossy(&common).trim()));
     let mut all = read_lines(&path);
     all.extend(grafted.iter().cloned());
-    forge_core::cache::write(&path, lines(all.iter().map(String::as_str)).as_bytes());
+    forge_core::cache::write(&path, lines(&all).as_bytes());
     let pack_dir = objects_dir(repo)?.join("pack");
     for sha in packs {
         let marker = pack_dir.join(format!("pack-{sha}.promisor"));
@@ -1200,18 +1196,14 @@ fn run_git_in(repo: Option<&Path>, args: &[&str]) -> Result<()> {
 /// Write a commit-graph for the history of `tips` (DESIGN §4.3, S4: without one the guard costs a
 /// second on a large import). Best effort.
 pub fn write_commit_graph(tips: &[String]) {
-    let tips: Vec<&str> = tips
-        .iter()
-        .map(String::as_str)
-        .filter(|t| is_hex_oid(t))
-        .collect();
+    let tips = hex_oids(tips);
     if tips.is_empty() {
         return;
     }
     if let Err(e) = git_read_in(
         None,
         &["commit-graph", "write", "--no-progress", "--stdin-commits"],
-        Some(lines(tips.into_iter()).as_bytes()),
+        Some(lines(&tips).as_bytes()),
     ) {
         tracing::info!(error = %e, "could not write a commit-graph; the members-only check runs without one");
     }

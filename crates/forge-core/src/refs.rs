@@ -635,7 +635,6 @@ pub fn refs_view(state: &GitState, open: Option<DocOpener<'_>>) -> RefsView {
     let members = open.map(|open| {
         let configs = state.config_history();
         let updates = members_updates_of(state, &configs, open);
-        let decryptable = updates.opened_new_oids.clone();
         let live = |s: &crate::rules::RefState| *s != crate::rules::RefState::Unborn;
         let public_live: BTreeSet<&str> = public
             .iter()
@@ -659,7 +658,7 @@ pub fn refs_view(state: &GitState, open: Option<DocOpener<'_>>) -> RefsView {
         MembersView {
             refs,
             members_only,
-            decryptable: decryptable.into_iter().collect(),
+            decryptable: updates.opened_new_oids.into_iter().collect(),
             alerts: updates.alerts,
             unreadable: updates.unreadable,
         }

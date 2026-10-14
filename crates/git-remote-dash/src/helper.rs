@@ -45,6 +45,7 @@ use forge_core::user_error::{codes, dash, UserError, NOTE_PLATFORM_CHUNKS_JOURNA
 
 use futures::stream::{self, StreamExt, TryStreamExt};
 
+use forge_core::members_git::plan::BatchRef;
 use forge_core::members_git::Audience;
 
 use crate::git::{names_missing_object, LocalRepo, ScratchRepo};
@@ -313,34 +314,32 @@ impl Helper {
                     .to_owned(),
             )
         } else {
-            let loaded = if conn.signer.is_none() {
-                let why = "reading members-only branches opens them with your encryption key";
-                load_signer(&self.url, &conn.client, &conn.repo, why)
-                    .await
-                    .map(Some)
-            } else {
-                Ok(None)
-            };
-            match loaded {
-                Err(e) => MembersKeys::Locked(brief(&format!("{e:#}"))),
-                Ok(signer) => {
-                    if let Some(s) = signer {
-                        self.conn.as_mut().expect("conn populated").signer = Some(s);
-                    }
-                    let conn = self.conn.as_ref().expect("conn populated");
-                    match conn.service().keyring(&conn.repo).await {
-                        Ok(kr) if !kr.resolution().keys.is_empty() => MembersKeys::Held(kr),
-                        Ok(kr) if kr.reader_role().is_some() => {
-                            MembersKeys::Locked("no key has been shared with you yet".to_owned())
-                        }
-                        Ok(_) => MembersKeys::Locked("you are not a member".to_owned()),
-                        Err(e) => MembersKeys::Locked(brief(&format!("{e:#}"))),
-                    }
-                }
-            }
+            self.open_members_keyring().await
         };
         self.members = Some(keys.clone());
         Ok(keys)
+    }
+
+    /// The keyring of a reader whose key source is set up (loading the identity first when none
+    /// is loaded yet), or why it does not open members-only branches.
+    async fn open_members_keyring(&mut self) -> MembersKeys {
+        let conn = self.conn.as_ref().expect("conn populated");
+        if conn.signer.is_none() {
+            let why = "reading members-only branches opens them with your encryption key";
+            match load_signer(&self.url, &conn.client, &conn.repo, why).await {
+                Ok(s) => self.conn.as_mut().expect("conn populated").signer = Some(s),
+                Err(e) => return MembersKeys::Locked(brief(&format!("{e:#}"))),
+            }
+        }
+        let conn = self.conn.as_ref().expect("conn populated");
+        match conn.service().keyring(&conn.repo).await {
+            Ok(kr) if !kr.resolution().keys.is_empty() => MembersKeys::Held(kr),
+            Ok(kr) if kr.reader_role().is_some() => {
+                MembersKeys::Locked("no key has been shared with you yet".to_owned())
+            }
+            Ok(_) => MembersKeys::Locked("you are not a member".to_owned()),
+            Err(e) => MembersKeys::Locked(brief(&format!("{e:#}"))),
+        }
     }
 
     /// A PUBLIC repository's refs for `list` (DESIGN §4.3 "Fetch (C2)"): the member view when the
@@ -359,14 +358,11 @@ impl Helper {
         }
         // the fetch trigger of E806 (§11): the clone holds members-only commits, and the public
         // view alone would drop branches it fetched before
-        let live: BTreeSet<&str> = public
-            .public
-            .iter()
-            .filter(|(_, s)| tip_oid(s).is_some())
-            .map(|(n, _)| n.as_str())
-            .collect();
         let holds = members::ledger_holds_members_only()
-            && members::public_view_drops_branches(self.remote.as_deref(), &live);
+            && members::public_view_drops_branches(
+                self.remote.as_deref(),
+                &live_names(&public.public),
+            );
         let kr = match self.members_keys(for_push || holds).await? {
             MembersKeys::Held(kr) => kr,
             MembersKeys::Locked(why) if holds && !for_push => {
@@ -402,8 +398,7 @@ impl Helper {
                 m.alerts.len()
             );
         }
-        let public_tips: Vec<String> = view.public.iter().filter_map(|(_, s)| tip_oid(s)).collect();
-        members::remember_public_tips(&public_tips);
+        members::remember_public_tips(&live_tips(&view.public));
         if !for_push {
             self.members_fetch = Some(MembersFetch {
                 keyring: kr,
@@ -2007,7 +2002,7 @@ struct Writer<'a> {
 
 impl Writer<'_> {
     /// Write `planned[accepted[..]]` in one batch and settle it ([`settle_ref_writes`]): the
-    /// public refs as plaintext updates, the members-only ones sealed ([`write_members_batch`]).
+    /// public refs as plaintext updates, the members-only ones sealed ([`Self::members_batch`]).
     async fn batch(
         &self,
         planned: &mut [Planned],
@@ -2027,7 +2022,7 @@ impl Writer<'_> {
             )
             .await;
         }
-        let members_results = write_members_batch(self, planned, &members).await;
+        let members_results = self.members_batch(planned, &members).await;
         let landed = landed_before || members_results.iter().any(Result::is_ok);
         if public.is_empty() {
             return settle_ref_writes(planned, &members, members_results, landed_before);
@@ -2035,39 +2030,39 @@ impl Writer<'_> {
         settle_ref_writes(planned, &members, members_results, true)?;
         write_batch(self.svc, self.repo, planned, &public, self.progress, landed).await
     }
-}
 
-/// Write the members-only refs `planned[members[..]]`, sealed under the writer's members key:
-/// one result per ref, in order (an error before any write fails each of them).
-async fn write_members_batch(
-    w: &Writer<'_>,
-    planned: &[Planned],
-    members: &[usize],
-) -> Vec<forge_core::Result<String>> {
-    let fail_all = |why: String| {
-        members
-            .iter()
-            .map(|_| Err(forge_core::Error::Config(why.clone())))
-            .collect()
-    };
-    let Some(lane) = w.lane else {
-        return fail_all("the members key isn't available".into());
-    };
-    let writes = match ref_writes(planned, members) {
-        Ok(writes) => writes,
-        Err(e) => return fail_all(format!("{e:#}")),
-    };
-    let result = w
-        .svc
-        .write_members_ref_updates(w.repo, lane, &writes, |i| {
-            let p = &planned[members[i]];
-            let (text, event) = progress::ref_update_line(&p.spec.dst, p.new_oid.as_deref());
-            w.progress.emit(&text, &event);
-        })
-        .await;
-    match result {
-        Ok(results) => results,
-        Err(e) => fail_all(e.to_string()),
+    /// Write the members-only refs `planned[members[..]]`, sealed under the writer's members key:
+    /// one result per ref, in order (an error before any write fails each of them).
+    async fn members_batch(
+        &self,
+        planned: &[Planned],
+        members: &[usize],
+    ) -> Vec<forge_core::Result<String>> {
+        let fail_all = |why: String| {
+            members
+                .iter()
+                .map(|_| Err(forge_core::Error::Config(why.clone())))
+                .collect()
+        };
+        let Some(lane) = self.lane else {
+            return fail_all("the members key isn't available".into());
+        };
+        let writes = match ref_writes(planned, members) {
+            Ok(writes) => writes,
+            Err(e) => return fail_all(format!("{e:#}")),
+        };
+        let result = self
+            .svc
+            .write_members_ref_updates(self.repo, lane, &writes, |i| {
+                let p = &planned[members[i]];
+                let (text, event) = progress::ref_update_line(&p.spec.dst, p.new_oid.as_deref());
+                self.progress.emit(&text, &event);
+            })
+            .await;
+        match result {
+            Ok(results) => results,
+            Err(e) => fail_all(e.to_string()),
+        }
     }
 }
 
@@ -2103,21 +2098,7 @@ async fn write_batch(
     if accepted.is_empty() {
         return Ok(());
     }
-    let writes = accepted
-        .iter()
-        .map(|&i| {
-            let p = &planned[i];
-            Ok(forge_core::repo::RefWrite {
-                ref_name: p.spec.dst.clone(),
-                new_oid: match &p.new_oid {
-                    Some(oid) => oid_to_bytes(oid)?,
-                    None => vec![0u8; 20], // delete = zero oid
-                },
-                prev_oid: p.prev_oid.as_deref().map(oid_to_bytes).transpose()?,
-                force: p.spec.force,
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let writes = ref_writes(planned, accepted)?;
     // Test affordance, compiled only with `--features test-hooks`: fail after `n` ref updates of
     // a batch landed, the state a push that dies part-way leaves behind (e2e scenario 32).
     #[cfg(feature = "test-hooks")]
@@ -2203,6 +2184,19 @@ fn tip_oid(state: &RefState) -> Option<String> {
         RefState::Diverged { heads } => heads.first().map(|h| h.oid.clone()),
         RefState::Unborn => None,
     }
+}
+
+/// The names of the refs of `refs` that have a tip.
+fn live_names(refs: &[(String, RefState)]) -> BTreeSet<&str> {
+    refs.iter()
+        .filter(|(_, s)| tip_oid(s).is_some())
+        .map(|(n, _)| n.as_str())
+        .collect()
+}
+
+/// The tips of `refs`.
+fn live_tips(refs: &[(String, RefState)]) -> Vec<String> {
+    refs.iter().filter_map(|(_, s)| tip_oid(s)).collect()
 }
 
 /// The current remote tip of `name` within a resolved ref list.
@@ -2411,7 +2405,7 @@ struct PushView {
 impl PushView {
     /// P: the live public tips.
     fn public_tips(&self) -> Vec<String> {
-        self.public.iter().filter_map(|(_, s)| tip_oid(s)).collect()
+        live_tips(&self.public)
     }
 
     /// Each members-only branch's tip, as the pusher reads it.
@@ -2441,6 +2435,43 @@ fn say_refusal(e: &UserError) {
     progress::report(&event);
 }
 
+/// Reject every ref of `planned` not rejected yet, for `reason`.
+fn reject_accepted(planned: &mut [Planned], reason: &str) {
+    for p in planned.iter_mut().filter(|p| p.reject.is_none()) {
+        p.reject = Some(reason.to_owned());
+    }
+}
+
+/// The refs of `planned` not rejected yet, as the guard and the pack planner read them; `audience`
+/// says who each one is for.
+fn accepted_batch(planned: &[Planned], audience: impl Fn(&Planned) -> Audience) -> Vec<BatchRef> {
+    planned
+        .iter()
+        .filter(|p| p.reject.is_none())
+        .map(|p| BatchRef {
+            dst: p.spec.dst.clone(),
+            new: p.new_oid.clone(),
+            audience: audience(p),
+        })
+        .collect()
+}
+
+/// The `-o publish-private=<oid>` of this push ([`members::publish_private`]).
+fn publish_override(options: &OptionState) -> Option<String> {
+    let values: Vec<String> = options
+        .push_option_values(members::OPTION_PUBLISH_PRIVATE)
+        .map(str::to_owned)
+        .collect();
+    members::publish_private(&values)
+}
+
+/// Print `lines` to stderr, one each.
+fn eprint_lines(lines: impl IntoIterator<Item = String>) {
+    for line in lines {
+        eprintln!("{line}");
+    }
+}
+
 /// `-o members` / `-o public` (`None` when neither is given); `Err` when both are, which refuses
 /// the push.
 fn audience_option(
@@ -2456,9 +2487,7 @@ fn audience_option(
                 .cause("a new branch is either public or members-only")
                 .fix("push the members-only branches and the public ones separately");
             say_refusal(&e);
-            for p in planned.iter_mut().filter(|p| p.reject.is_none()) {
-                p.reject = Some("-o members and -o public together".into());
-            }
+            reject_accepted(planned, "-o members and -o public together");
             Err(())
         }
         (true, false) => Ok(Some(Audience::Members)),
@@ -2477,15 +2506,11 @@ fn decide_audiences(
     repo_label: &str,
     options: &OptionState,
 ) -> Result<()> {
+    use forge_core::members_git::guard::ObjectGraph as _;
     let Ok(option) = audience_option(planned, options) else {
         return Ok(());
     };
-    let public_live: BTreeSet<&str> = view
-        .public
-        .iter()
-        .filter(|(_, s)| tip_oid(s).is_some())
-        .map(|(n, _)| n.as_str())
-        .collect();
+    let public_live = live_names(&view.public);
     let facts = members::RepoFacts {
         members_key: view.members_key,
         has_members_branch: view.has_members_branch,
@@ -2545,12 +2570,9 @@ fn decide_audiences(
             if s_all.is_empty() {
                 return Ok(false);
             }
-            let t = [new.clone()];
-            let adds = forge_core::members_git::guard::ObjectGraph::commits(&g, &t, &p_tips)?;
-            let mut p_and_s = p_tips.clone();
-            p_and_s.extend(s_all.iter().cloned());
-            let public_only =
-                forge_core::members_git::guard::ObjectGraph::commits(&g, &t, &p_and_s)?;
+            let t = [new];
+            let adds = g.commits(&t, &p_tips)?;
+            let public_only = g.commits(&t, &[p_tips.as_slice(), s_all.as_slice()].concat())?;
             Ok(adds != public_only)
         };
         match members::decide(&dst, &signals, &facts, inherits)? {
@@ -2575,23 +2597,11 @@ fn decide_audiences(
 fn guard_push(planned: &mut [Planned], view: &PushView, options: &OptionState) -> Result<()> {
     use forge_core::members_git::guard::{Note, Verdict};
     refuse_written_grafts(planned);
-    let batch: Vec<forge_core::members_git::plan::BatchRef> = planned
-        .iter()
-        .filter(|p| p.reject.is_none())
-        .map(|p| forge_core::members_git::plan::BatchRef {
-            dst: p.spec.dst.clone(),
-            new: p.new_oid.clone(),
-            audience: p.audience.clone(),
-        })
-        .collect();
+    let batch = accepted_batch(planned, |p| p.audience.clone());
     if batch.is_empty() {
         return Ok(());
     }
-    let values: Vec<String> = options
-        .push_option_values(members::OPTION_PUBLISH_PRIVATE)
-        .map(str::to_owned)
-        .collect();
-    let publish = members::publish_private(&values);
+    let publish = publish_override(options);
     let p_tips = view.public_tips();
     // No members-only ref update means no members-only commit of this repository exists, and a
     // clone that ever fetched one from another dash remote has a ledger: nothing to be unable to
@@ -2614,17 +2624,13 @@ fn guard_push(planned: &mut [Planned], view: &PushView, options: &OptionState) -
                 members::cannot_check_push()
             };
             say_refusal(&e);
-            for p in planned.iter_mut().filter(|p| p.reject.is_none()) {
-                p.reject = Some("can't check for members-only commits".into());
-            }
+            reject_accepted(planned, "can't check for members-only commits");
         }
         Verdict::Refuse => {
             let missing = p_tips.len() - g.present(&p_tips).map_or(0, |h| h.len());
             let (e, lines) =
                 members::publish_refusal(&g, &outcome, &batch, &view.members_tips(), missing);
-            for line in lines {
-                eprintln!("{line}");
-            }
+            eprint_lines(lines);
             say_refusal(&e);
             let named: BTreeSet<&str> = outcome.findings.iter().map(|f| f.dst.as_str()).collect();
             for p in planned.iter_mut().filter(|p| p.reject.is_none()) {
@@ -2636,9 +2642,7 @@ fn guard_push(planned: &mut [Planned], view: &PushView, options: &OptionState) -
             }
         }
         Verdict::Pass => {
-            for line in members::publication_lines(&g, &outcome.published) {
-                eprintln!("{line}");
-            }
+            eprint_lines(members::publication_lines(&g, &outcome.published));
             if members_only_exists && outcome.notes.contains(&Note::NoKeyEmptyLedger) {
                 eprintln!(
                     "dash: note: your encryption key isn't available; this clone's record says it never held members-only commits, so the push was checked against that"
@@ -2681,54 +2685,30 @@ fn guard_private_push(
     options: &OptionState,
 ) -> Result<()> {
     use forge_core::members_git::guard::Verdict;
-    match members::read_ledger() {
-        forge_core::members_git::ledger::State::Absent => return Ok(()),
-        forge_core::members_git::ledger::State::Present(l) if l.is_empty() => return Ok(()),
-        _ => {}
+    if !members::ledger_holds_members_only() {
+        return Ok(());
     }
     refuse_written_grafts(planned);
-    let batch: Vec<forge_core::members_git::plan::BatchRef> = planned
-        .iter()
-        .filter(|p| p.reject.is_none())
-        .map(|p| forge_core::members_git::plan::BatchRef {
-            dst: p.spec.dst.clone(),
-            new: p.new_oid.clone(),
-            audience: Audience::Public,
-        })
-        .collect();
+    let batch = accepted_batch(planned, |_| Audience::Public);
     if batch.is_empty() {
         return Ok(());
     }
-    let mut known: Vec<String> = remote_refs.iter().filter_map(|(_, s)| tip_oid(s)).collect();
+    let mut known = live_tips(remote_refs);
     known.extend(members::known_public_tips());
-    let values: Vec<String> = options
-        .push_option_values(members::OPTION_PUBLISH_PRIVATE)
-        .map(str::to_owned)
-        .collect();
-    let publish = members::publish_private(&values);
+    let publish = publish_override(options);
     let outcome = members::run_guard(false, None, &known, &batch, publish.as_deref())?;
     let g = members::GitGraph::here();
     match outcome.verdict {
-        Verdict::Pass => {
-            for line in members::publication_lines(&g, &outcome.published) {
-                eprintln!("{line}");
-            }
-        }
+        Verdict::Pass => eprint_lines(members::publication_lines(&g, &outcome.published)),
         Verdict::Unavailable => {
             say_refusal(&members::ledger_unreadable());
-            for p in planned.iter_mut().filter(|p| p.reject.is_none()) {
-                p.reject = Some("can't check for members-only commits".into());
-            }
+            reject_accepted(planned, "can't check for members-only commits");
         }
         Verdict::Refuse => {
             let (e, lines) = members::publish_refusal(&g, &outcome, &batch, &BTreeMap::new(), 0);
-            for line in lines {
-                eprintln!("{line}");
-            }
+            eprint_lines(lines);
             say_refusal(&e);
-            for p in planned.iter_mut().filter(|p| p.reject.is_none()) {
-                p.reject = Some("would publish members-only commits".into());
-            }
+            reject_accepted(planned, "would publish members-only commits");
         }
     }
     Ok(())
@@ -2741,15 +2721,7 @@ fn members_pack_jobs(
     planned: &[Planned],
     public_tips: &[String],
 ) -> Vec<forge_core::members_git::plan::MembersPackJob> {
-    let batch: Vec<forge_core::members_git::plan::BatchRef> = planned
-        .iter()
-        .filter(|p| p.reject.is_none())
-        .map(|p| forge_core::members_git::plan::BatchRef {
-            dst: p.spec.dst.clone(),
-            new: p.new_oid.clone(),
-            audience: p.audience.clone(),
-        })
-        .collect();
+    let batch = accepted_batch(planned, |p| p.audience.clone());
     let prev: BTreeMap<String, String> = planned
         .iter()
         .filter(|p| p.reject.is_none() && p.members())
@@ -2779,6 +2751,8 @@ async fn upload_members_pack(
     let pack =
         build_pack(ctx.git_dir, &want, &have).context("building the members-only branch's pack")?;
     let objects = pack.parsed.object_count() as u64;
+    let plain_bytes = pack.bytes.len() as u64;
+    let resolved = &ctx.policy.resolved;
     let progress = Progress {
         enabled: ctx.progress.enabled || ctx.dry_run,
         ..ctx.progress
@@ -2789,19 +2763,14 @@ async fn upload_members_pack(
         refs: &refs,
         tip: job.want.first().map_or("", String::as_str),
         objects,
-        bytes: pack.bytes.len() as u64,
+        bytes: plain_bytes,
     });
     progress.emit(&format!("{text} (members-only)"), &event);
     if objects == 0 {
         return Ok(None);
     }
     if ctx.dry_run {
-        let est = members_pack_estimate(
-            ctx,
-            pack.bytes.len() as u64,
-            objects,
-            ctx.policy.resolved.platform,
-        );
+        let est = members_pack_estimate(ctx, plain_bytes, objects, resolved.platform);
         progress.note(&format!(
             "members-only pack for {}: est. {} DASH (dry run: nothing stored)",
             refs[0],
@@ -2811,12 +2780,11 @@ async fn upload_members_pack(
     }
     let lane = lane.ok_or_else(|| anyhow!("the members key isn't available"))?;
     let sealed = seal_members_pack(ctx, lane, &pack.bytes)?;
-    let job = PackJob::new(&sealed, pack.bytes.len() as u64, objects, 0)?;
+    let job = PackJob::new(&sealed, plain_bytes, objects, 0)?;
     if reuse_recorded(ctx, &job).await?.is_some() {
         return Ok(Some((job.pack_hash, 0)));
     }
-    let resolved = &ctx.policy.resolved;
-    let estimate = members_pack_estimate(ctx, pack.bytes.len() as u64, objects, resolved.platform);
+    let estimate = members_pack_estimate(ctx, plain_bytes, objects, resolved.platform);
     policy::enforce(
         estimate.total(),
         ctx.policy,
@@ -2840,12 +2808,7 @@ async fn upload_members_pack(
     .await?;
     crate::fetched::FetchedPacks::record(ctx.git_dir, ctx.repo.id(), job.pack_hash);
     retire_journal(ctx, &jpath, &replication);
-    let actual = members_pack_estimate(
-        ctx,
-        pack.bytes.len() as u64,
-        objects,
-        replication.has_platform(),
-    );
+    let actual = members_pack_estimate(ctx, plain_bytes, objects, replication.has_platform());
     Ok(Some((job.pack_hash, actual.total())))
 }
 

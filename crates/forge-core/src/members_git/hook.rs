@@ -67,8 +67,9 @@ pub enum Status {
 /// The `pre-push` hook in `dir`, judged against the hook [`script`] would write for `helper`.
 #[must_use]
 pub fn status(dir: &Path, helper: &Path) -> Status {
-    let Ok(text) = std::fs::read_to_string(dir.join("pre-push")) else {
-        return if dir.join("pre-push").exists() {
+    let hook = dir.join("pre-push");
+    let Ok(text) = std::fs::read_to_string(&hook) else {
+        return if hook.exists() {
             Status::Foreign
         } else {
             Status::Missing
@@ -78,7 +79,7 @@ pub fn status(dir: &Path, helper: &Path) -> Status {
         return Status::Foreign;
     }
     Status::Ours {
-        current: text == script(helper) && executable(&dir.join("pre-push")),
+        current: text == script(helper) && executable(&hook),
     }
 }
 
