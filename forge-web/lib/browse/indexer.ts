@@ -170,9 +170,15 @@ export async function indexPacks(
   packs: readonly Uint8Array[],
   onProgress?: (objectsIndexed: number, objectsTotal: number) => void,
   budget = INDEX_DECODE_MAX_BYTES,
+  /**
+   * Thin packs (a members-only push's, whose deltas name public objects, mixed-visibility DESIGN
+   * §4.3): a REF base none of `packs` holds is read here, checked against its OID, and used as a
+   * base only (it gets no row). Null: not found. Absent: such a base fails the index.
+   */
+  externalBase?: (oidHex: string) => Promise<GitObject | null>,
 ): Promise<IndexedObject[]> {
   try {
-    return await resolvePacks(packs, onProgress, budget)
+    return await resolvePacks(packs, onProgress, budget, externalBase)
   } catch (e) {
     if (e instanceof ObjectTooLargeError) throw new IndexTooLargeError(budget)
     throw e
@@ -183,6 +189,7 @@ async function resolvePacks(
   packs: readonly Uint8Array[],
   onProgress: ((objectsIndexed: number, objectsTotal: number) => void) | undefined,
   budget: number,
+  externalBase?: (oidHex: string) => Promise<GitObject | null>,
 ): Promise<IndexedObject[]> {
   interface Site {
     readonly packRef: number
@@ -264,19 +271,39 @@ async function resolvePacks(
     return res
   }
 
-  for (let at = 0; at < queue.length; at++) {
-    const site = queue[at] as Site
-    const blocked = tryResolve(site.packRef, site.rec)
-    if (typeof blocked === 'string') {
-      const sites = waiting.get(blocked)
-      if (sites === undefined) waiting.set(blocked, [site])
-      else sites.push(site)
+  let at = 0
+  const drain = async (): Promise<void> => {
+    for (; at < queue.length; at++) {
+      const site = queue[at] as Site
+      const blocked = tryResolve(site.packRef, site.rec)
+      if (typeof blocked === 'string') {
+        const sites = waiting.get(blocked)
+        if (sites === undefined) waiting.set(blocked, [site])
+        else sites.push(site)
+      }
+      if (++sinceYield >= YIELD_EVERY) {
+        sinceYield = 0
+        onProgress?.(memo.size, totalObjects)
+        await yieldToUI()
+      }
     }
-    if (++sinceYield >= YIELD_EVERY) {
-      sinceYield = 0
-      onProgress?.(memo.size, totalObjects)
-      await yieldToUI()
+  }
+  await drain()
+  // Bases outside these packs (a thin pack's): read each, once, then resolve what waited on it.
+  while (waiting.size > 0 && externalBase !== undefined) {
+    let found = 0
+    for (const oid of [...waiting.keys()]) {
+      const obj = await externalBase(oid)
+      if (obj === null || gitOidHex(obj.type, obj.bytes) !== oid) continue
+      if (obj.bytes.length > held.left) throw new ObjectTooLargeError(obj.bytes.length, held.left)
+      held.left -= obj.bytes.length
+      byOid.set(oid, { obj, depth: 0 })
+      for (const site of waiting.get(oid) ?? []) queue.push(site)
+      waiting.delete(oid)
+      found++
     }
+    if (found === 0) break
+    await drain()
   }
   if (waiting.size > 0) {
     const missing = waiting.keys().next().value as string

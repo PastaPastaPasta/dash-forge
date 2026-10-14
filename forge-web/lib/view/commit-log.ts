@@ -179,6 +179,12 @@ export interface CommitChanges extends TreeDiff {
   readonly oid: string
   /** The annotated tags the URL's id was peeled through to reach the commit (outermost first). */
   readonly tags: readonly TagObject[]
+  /**
+   * Parents this reader does not hold, in the commit's order: "history incomplete" (a public
+   * commit naming a members-only parent, which a conforming client never writes, mixed-visibility
+   * DESIGN §4.3). A missing first parent leaves `changes` empty: what the commit changed is unknown.
+   */
+  readonly missingParents?: readonly string[]
 }
 
 /**
@@ -292,10 +298,16 @@ export async function loadCommitChanges(reader: PrefixReader, id: string): Promi
     if (e instanceof ObjectTypeError) throw new CommitIdError('not-a-commit', id, [], e.actual, e.oid !== named)
     throw e
   }
+  // A parent this reader does not hold: a public commit naming a members-only one (or one a
+  // partial clone skipped, which keeps its own error below).
+  const missingParents = reader.locate === undefined || reader.incomplete === true ? [] : (await Promise.all(commit.parents.map(async (p) => ((await reader.locate?.(p)?.catch(() => undefined)) === null ? p : null)))).filter((p): p is string => p !== null)
   const parent = commit.parents[0]
+  if (parent !== undefined && missingParents.includes(parent)) {
+    return { commit, oid: peeled.oid, tags: peeled.tags, changes: [], truncated: false, missingParents }
+  }
   const parentTree = parent ? (await readCommit(reader, parent)).tree : null
   const diff = await diffTreesWithRenames({ base: reader, head: reader }, parentTree, commit.tree)
-  return { commit, oid: peeled.oid, tags: peeled.tags, ...diff }
+  return { commit, oid: peeled.oid, tags: peeled.tags, ...diff, ...(missingParents.length > 0 ? { missingParents } : {}) }
 }
 
 /** The commit that last changed a directory entry, for the file list's lazy commit column. */

@@ -50,6 +50,7 @@ import { packHashOperand } from './pack-hash'
 import { refusedAtBroadcast, retryAfterLag } from './lag-retry'
 import { privateWriter, sealForRepo, sealedIntent } from './private-writes'
 import { refreshRoleOnRefusal, roleClaim } from './role-claim'
+import { isListedMembersRef } from './members-branches'
 import { repoSource } from './source'
 import { assertNoPlaintext } from './writes'
 
@@ -337,6 +338,11 @@ export interface RefUpdateInput {
   readonly force?: boolean
 }
 
+/** A ref's short name for messages (`refs/heads/x` → `x`). */
+function displayName(refName: string): string {
+  return refName.replace(/^refs\/(heads|tags)\//, '')
+}
+
 /** `sha256(refName)` — the indexed key of every ref update. */
 export function refNameHash(refName: string): Uint8Array {
   return sha256(new TextEncoder().encode(refName))
@@ -391,6 +397,11 @@ export async function writeRefUpdate(
 ): Promise<WriteResult & { readonly documentType: 'refUpdate' | 'protectedRefUpdate' }> {
   let data = refUpdateData(input)
   let documentType: 'refUpdate' | 'protectedRefUpdate'
+  // A members-only branch is pushed with git (sealed); a public update of its name would make a
+  // public branch that wins over it (D29). Publishing one goes to a public base, never its name.
+  if (repo.visibility === 'public' && isListedMembersRef(repo.repoId, input.refName)) {
+    throw new Error(`${displayName(input.refName)} is a members-only branch. Push to it with git; the web changes public branches only.`)
+  }
   if (repo.visibility === 'private') {
     // Sealed patterns: only a member reading the repo can route, on a fresh session's config.
     if (repo.session === undefined) throw new Error("a private repo's protected branches are sealed: read it as a member before moving a ref")

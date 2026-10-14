@@ -41,6 +41,7 @@ pub mod convert;
 pub mod doc;
 pub mod epoch;
 pub mod keys;
+pub mod members_check;
 pub mod members_ref;
 pub mod named;
 pub mod pack;

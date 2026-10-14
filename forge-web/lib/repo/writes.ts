@@ -55,7 +55,7 @@ import { invalidateMembers, memberDocOf, readMemberships, roleOfMemberDoc } from
 import { contractHasProperty } from './contract-shape'
 import { refNameHash, repoContentWritten } from './push'
 import type { PrivateDocType } from '../private'
-import { isSealedKind, privateWriter, sealForRepo, sealPrivatePerObject, sealedIntent, sealedTextUse, PrivateWriteError, type PrivateWriter } from './private-writes'
+import { isSealedKind, privateWriter, sealForRepo, sealPrivatePerObject, sealedIntent, sealedTextUse, PrivateWriteError, type MembersPatch, type PrivateWriter } from './private-writes'
 import { MEMBERS_TEXT_LIMIT, audienceFor, childAudience, hasMembersKey, keyedContentKey, knownAudience, madePublicByBundle, membersWriter, noteAudience, sealMembersContent, storedOnce, storedTargetOnce, targetAudience, type MembersWriter } from './members-writes'
 import { LetterRefusedError, isLetterWriter, letterContentKey, letterThread, letterWriter, sdkLetterReads, sealLetterContent, type LetterWriter } from './letter-writes'
 import { bytesField, docAudience } from './private-content'
@@ -380,7 +380,7 @@ export async function writeRepoDoc(
     } else {
       const w = options.membersWriter ?? (await membersWriter(sdk, auth, repo))
       contentKey = await keyedContentKey(w.keys, said)
-      data = await sealMembersContent(auth, sealedType, data, w)
+      data = await sealMembersContent(auth, sealedType, data, w, options.membersPatch)
       intent = sealedIntent(intent, w.keys)
     }
   }
@@ -431,6 +431,8 @@ export interface WriteOptions {
    * action (a review and its comments, a renumbered issue). Absent: the thread's people re-listed.
    */
   readonly letter?: LetterWriter
+  /** A members-only PR: how it names its branches and head (`private-writes.ts` {@link MembersPatch}). */
+  readonly membersPatch?: MembersPatch
 }
 
 /**
@@ -705,6 +707,12 @@ export interface PatchInput {
   readonly headOid: string
   /** Open as a draft (review-parity P6): the patch, then a draft `transition` (kind 14). */
   readonly draft?: boolean
+  /**
+   * A members-only PR (mixed-visibility DESIGN §4.4) of a public repo: which branches are public,
+   * and for a members-only source the real head and the salt its blind ({@link headOid}) was made
+   * under (rule C: `headOid` is then the blind copied from the source branch's ref update).
+   */
+  readonly members?: MembersPatch
 }
 
 /**
@@ -748,8 +756,10 @@ export async function createPatch(
   await refuseIfBanned(sdk, repo, auth.network, auth.identityId)
   // A body longer than its field: its full text stored first (forge-v2.md §6.3).
   const others = { title: input.title, baseRefName: input.baseRefName, sourceRefName: input.sourceRefName }
-  const body = await longBodyField(sdk, auth, repo, 'patch', input.body, others, input.intent)
-  const created = await createNumbered(sdk, auth, repo, 'patch', patchData({ ...input, body }), input.intent, onRetry)
+  const audience: Audience = input.members !== undefined ? 'members' : repo.visibility === 'private' ? 'members' : 'public'
+  if (input.members !== undefined && repo.visibility !== 'public') throw new Error('members-only pull requests are written in public repos')
+  const body = await longBodyField(sdk, auth, repo, 'patch', input.body, others, input.intent, audience)
+  const created = await createNumbered(sdk, auth, repo, 'patch', patchData({ ...input, body }), input.intent, onRetry, audience, undefined, input.members)
   if (input.draft !== true) return created
   const target: StateTarget = { id: created.documentId, number: created.number, type: 'patch', author: auth.identityId }
   try {
@@ -790,6 +800,8 @@ async function createNumbered(
   audience: Audience = repo.visibility === 'private' ? 'members' : 'public',
   /** A message to specific people: who it goes to, for every renumbered attempt. */
   letter?: LetterWriter,
+  /** A members-only PR: how it names its branches and head. */
+  membersPatch?: MembersPatch,
 ): Promise<CreateIssueResult> {
   const noun = type === 'issue' ? 'issue' : 'PR'
   // A private repo, or members-only content: refuse over-long text before numbering, and seal
@@ -827,6 +839,7 @@ async function createNumbered(
         audience,
         ...(members ? { membersWriter: members } : {}),
         ...(letter ? { letter } : {}),
+        ...(membersPatch ? { membersPatch } : {}),
       })
       writeTriedNumber(triedKey, null)
       return { ...result, number, audience }

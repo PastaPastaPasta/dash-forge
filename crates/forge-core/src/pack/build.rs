@@ -393,10 +393,14 @@ const REPO_LOCATION_ENV: [&str; 6] = [
 ];
 
 /// `git -C <cwd> <args>` with the inherited repo-location variables cleared, so the
-/// repository is exactly `cwd`.
+/// repository is exactly `cwd`, and with replace refs and a legacy graft file ignored: a pack
+/// holds the real objects, and a local graft must not pull a members-only parent into a public
+/// pack the publication guard (which ignores grafts) passed (mixed-visibility S4).
 pub(super) fn git_at(cwd: &Path, args: &[&str]) -> Command {
     let mut cmd = Command::new("git");
     cmd.arg("-C").arg(cwd).args(args);
+    cmd.env("GIT_NO_REPLACE_OBJECTS", "1")
+        .env("GIT_GRAFT_FILE", "/dev/null");
     for var in REPO_LOCATION_ENV {
         cmd.env_remove(var);
     }

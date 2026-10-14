@@ -217,14 +217,17 @@ impl Collab<'_> {
         ))
     }
 
-    /// Whether the contract lets the replace that makes a `kind` post public set the sealed
-    /// fields a public one cannot otherwise gain (`comment.path`, a PR's branch names: mainnet
-    /// L1, which declares `aud`), so they are kept rather than lost.
+    /// Whether the replace that makes a `kind` post public sets the sealed fields a public one
+    /// cannot otherwise gain (`comment.path`: mainnet L1, which declares `aud`, makes it settable
+    /// once), so they are kept rather than lost. A PR's branch names stay unset on every contract:
+    /// a members-only branch's name is hashed under the members key, which no public reader can
+    /// check a plaintext name against.
     pub(super) async fn settable_once(&self, repo: &RepoRef, kind: DocKind) -> Result<bool> {
-        Ok(self
-            .collab_contract(repo)
-            .await?
-            .has_property(kind.type_name(), super::AUD))
+        Ok(kind != DocKind::Patch
+            && self
+                .collab_contract(repo)
+                .await?
+                .has_property(kind.type_name(), super::AUD))
     }
 
     /// Make the planned post public, with `body` as the text its body field takes (a long

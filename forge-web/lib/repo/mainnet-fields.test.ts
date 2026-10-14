@@ -46,7 +46,6 @@ vi.mock('../sdk', async (orig) => ({
 }))
 
 import { base58Encode } from '../auth/base58'
-import { MakePublicRefusedError } from './make-public-writes'
 import { makePublicChanges } from '../rules/make-public'
 import { ConsensusRefusal, type WriteAuth } from '../sdk'
 import { rc1Contracts, validateRc1, validateRc1Replace, type Rc1ContractName } from '../sdk/rc1-validate'
@@ -182,9 +181,9 @@ describe('make public keeps the inline path and branch names where the contract 
     expect(verdict.ok ? [] : verdict.errors.join(' ')).toMatch(/40128/)
   })
 
-  it('a pull request still is not made public one post at a time', async () => {
-    const { makePostPublic } = await import('./make-public-writes')
-    await expect(makePostPublic(mainnet, auth, MAIN, { type: 'patch', id: TARGET, opened: { title: 't' } })).rejects.toBeInstanceOf(MakePublicRefusedError)
+  it("a pull request's branch names stay unset on every contract (a members-only branch's name is keyed)", async () => {
+    expect(await makePublicKeepsFields(mainnet, MAIN, 'patch')).toBe(false)
+    expect(await makePublicKeepsFields(sakura, SAKURA, 'patch')).toBe(false)
   })
 })
 

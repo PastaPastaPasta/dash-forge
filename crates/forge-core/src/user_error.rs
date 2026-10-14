@@ -349,25 +349,26 @@ pub mod codes {
     /// `dg pr merge --delete-branch` would delete a branch other open pull requests use as
     /// their head or base.
     pub const BRANCH_IN_USE: &str = "E808";
-    // E805, E806 and E810 below are reserved for the members-only branch guard (phase 3A),
-    // E809 and E811 for a new branch's audience (3A), E812 for a repository's going public
-    // (5A) and E813 for a bot's access (4B). Nothing reports them yet, so they are
-    // unused until those phases land. Never reuse a number for another meaning: E808 is
-    // `BRANCH_IN_USE`, not the new-branch refusal (that is E811).
-    /// A push to a public ref would publish commits from a members-only branch (reserved).
+    // E805, E806 and E810 below are the members-only branch guard's (git-remote-dash, phase
+    // 3A), E809 and E811 a new branch's audience (3A); E812 is reserved for a repository's
+    // going public (5A) and E813 for a bot's access (4B). Never reuse a number for another
+    // meaning: E808 is `BRANCH_IN_USE`, not the new-branch refusal (that is E811).
+    /// A push to a public ref would publish commits from a members-only branch (or `-o public`
+    /// names a members-only one).
     pub const PUBLISHES_MEMBERS_ONLY: &str = "E805";
     /// A public push or a fetch cannot check for members-only commits: the encryption key is
-    /// not available (a locked key with a record of members-only branches, or no record at
-    /// all) (reserved).
+    /// not available (a public push with no record of what the clone holds, a fetch into a clone
+    /// that holds members-only commits), or the record is from a newer version.
     pub const CANNOT_CHECK_MEMBERS_ONLY: &str = "E806";
-    /// A push asked for a branch to be members-only, but the branch is already public
-    /// (reserved).
+    /// A push asked for a branch to be members-only, but the branch is already public (or it
+    /// is the default branch).
     pub const BRANCH_ALREADY_PUBLIC: &str = "E809";
     /// The `pre-push` hook refused to push members-only commits to a remote that is not a
-    /// Dash Forge repository, or to a public ref (reserved).
+    /// Dash Forge repository, or members-only branches are not fetched until the hook protects
+    /// them (a `core.hooksPath` directory, another `git-remote-dash` first on `PATH`).
     pub const MEMBERS_ONLY_TO_OTHER_REMOTE: &str = "E810";
-    /// A new branch has no audience yet: no local intent, push option or per-clone default
-    /// chose Public or Members-only (reserved).
+    /// A new branch has no audience yet: no local intent, push option, inheritance or
+    /// per-clone default chose Public or Members-only.
     pub const NEW_BRANCH_AUDIENCE: &str = "E811";
     /// Making a repository public with everything it holds is blocked: some content would
     /// become public that the owner has not dealt with, such as an environment saved in the

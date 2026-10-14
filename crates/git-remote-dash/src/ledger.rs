@@ -41,6 +41,35 @@ pub fn ensure_for_new_clone(cloning: bool) {
     }
 }
 
+/// `git-remote-dash --init-ledger`: create the empty ledger of the repository in the current
+/// directory, for a clone made before the helper created one. Only after the user confirmed the
+/// clone never fetched members-only branches (`dg doctor --init-ledger` asks): an empty ledger
+/// says "never held members-only commits". An existing ledger is left as it is.
+pub fn init() -> anyhow::Result<()> {
+    let dir = crate::git::LocalRepo::common_dir()?;
+    let made = create_empty(&dir)?;
+    println!(
+        "{}",
+        serde_json::json!({ "ledger": path(&dir), "created": made })
+    );
+    Ok(())
+}
+
+/// `git-remote-dash --install-hook`: install the `pre-push` hook in the directory git runs hooks
+/// from (`core.hooksPath` included), keeping a pre-push hook it finds there as
+/// [`forge_core::members_git::hook::CHAINED`].
+pub fn install_hook() -> anyhow::Result<()> {
+    let dir = crate::members::hooks_dir()?;
+    let me = crate::members::this_helper()
+        .ok_or_else(|| anyhow::anyhow!("can't tell where this git-remote-dash is installed"))?;
+    let done = forge_core::members_git::hook::install(&dir, &me)?;
+    println!(
+        "{}",
+        serde_json::json!({ "hook": dir.join("pre-push"), "installed": format!("{done:?}").to_lowercase() })
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

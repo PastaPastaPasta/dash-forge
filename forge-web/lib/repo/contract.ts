@@ -142,25 +142,37 @@ export function repoContractIds(repo: RepoRef | null): string[] {
 
 /**
  * The stable identity of a repo within a network — its `repoId`, plus the decryption session
- * of a private repo read by a member, or the published keys of a repository made public. Session
- * caches (browse context, content checks, fallback clones) key by it, so decrypted state never
- * outlives its session.
+ * of a private repo read by a member, or the published keys of a repository made public, and
+ * (phase 3) the members-key session of a public repo read by a member ({@link membersLane}): its
+ * members-only branches and packs are git plane too. Session caches (browse context, content
+ * checks, fallback clones) key by it, so decrypted state never outlives its session.
  */
 export function repoKey(repo: RepoRef): string {
   const session = repo.session ?? repo.published
-  return session === undefined ? repo.repoId : `${repo.repoId}#${session.id}`
+  const base = session === undefined ? repo.repoId : `${repo.repoId}#${session.id}`
+  const lane = membersLane(repo)
+  return lane === undefined ? base : `${base}#${lane.id}`
+}
+
+/**
+ * A public repo's members-key session, read by a member (or a member removed since who holds
+ * earlier key shares): what opens its members-only branches, pull requests and packs. Not the
+ * published keys a repository made public lends every reader on `lane` (those open history, not
+ * members-only content).
+ */
+export function membersLane(repo: RepoRef): PrivateSession | undefined {
+  return repo.visibility === 'public' && repo.lane !== undefined && repo.lane !== repo.published ? repo.lane : undefined
 }
 
 /**
  * The identity of a repo's **discussion** reads (issues, PRs, comments, reviews): {@link repoKey}
- * plus the members-key session of a public repo read by a member. Caches and page reads of
- * content key by it, so a member's decrypted members-only content never outlives the session
- * that opened it, and a page re-reads once the session is ready. The git plane keeps
- * {@link repoKey}: a members-key session changes nothing there. The reader's letter reader
- * (`letters`) is part of it as well.
+ * plus the session on `lane` when the git plane does not already key by it (a repository made
+ * public's published keys). Caches and page reads of content key by it, so a member's decrypted
+ * members-only content never outlives the session that opened it, and a page re-reads once the
+ * session is ready. The reader's letter reader (`letters`) is part of it as well.
  */
 export function contentKey(repo: RepoRef): string {
-  const lane = repo.lane === undefined ? repoKey(repo) : `${repoKey(repo)}#${repo.lane.id}`
+  const lane = repo.lane === undefined || membersLane(repo) !== undefined ? repoKey(repo) : `${repoKey(repo)}#${repo.lane.id}`
   // The letters this reader opens go with its letter reader too.
   return repo.letters === undefined ? lane : `${lane}#${repo.letters.id}`
 }

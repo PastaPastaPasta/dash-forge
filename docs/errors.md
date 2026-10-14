@@ -548,21 +548,26 @@ Only the repository's newest 100 pull requests are checked. When there are older
 
 ## E805
 
-**Would publish members-only commits.** *Reserved: this version doesn't report it yet. It arrives with members-only branches.* A push to a public branch would publish commits that belong to a members-only branch. Anything pushed to a public branch can't be taken back, so the push helper refuses the whole push before it signs or stores anything. The message names the first commits (`a1b2c3d Fix bounds check`) and how many there are, and git shows `! [remote rejected] main -> main (would publish members-only commits)`.
+**Would publish members-only commits.** A push to a public branch would publish commits that belong to a members-only branch. Anything pushed to a public branch can't be taken back, so the push helper refuses the whole push before it signs or stores anything. The message names the first commits (`a1b2c3d Fix bounds check`) and how many there are, and git shows `! [remote rejected] main -> main (would publish members-only commits)`.
 
 ```
+dash: refs/heads/main would publish:
+dash:   a1b2c3d Fix bounds check
+dash:   9f8e7d6 Add a regression test
+dash:   4c3b2a1 Tighten the check
 error: E805 pushing refs/heads/main would publish 3 commits from members-only branch sec/cve-77
-       a1b2c3d Fix bounds check
-       ...
-  fix: dg publish sec/cve-77 --onto main                 # one new public commit; the members-only history stays members-only
-       git push -o publish-private=<oid> origin main      # publish these 3 commits as they are
+  cause: anything pushed to a public branch can't be taken back, so nothing in this push was sent
+  fix:   make one new public commit, keeping the members-only history members-only: `dg publish sec/cve-77 --onto main`
+  or:    publish these commits as they are, which can't be undone: add `-o publish-private=<oid>` to the same push
 ```
 
-**What to do:** `dg publish <branch> --onto <public branch>` makes one new public commit, and the members-only history stays members-only. If you mean to publish the commits as they are, push with `-o publish-private=<oid>`. That is a publication and can't be undone.
+**What to do:** `dg publish <branch> --onto <public branch>` makes one new public commit, and the members-only history stays members-only. If you mean to publish the commits as they are, push with `-o publish-private=<oid>`, naming the new tip of the ref that publishes them: the push lists what it publishes. That is a publication and can't be undone. Setting it in `push.pushOption` doesn't work: it is ignored, so it can only ever apply to one push. If the message says some public branches aren't in your clone yet, run `git fetch` and push again: a public commit your clone doesn't have yet can't be told apart from a members-only one.
+
+Pushing a members-only branch with `-o public` is refused with this code too: that would publish it.
 
 ## E806
 
-**Can't check for members-only commits.** *Reserved: this version doesn't report it yet. It arrives with members-only branches.* Your encryption key isn't available, so Forge can't tell which commits in this clone are members-only. A public push can't be checked, and a fetch would quietly show only the public view. Forge refuses rather than guess.
+**Can't check for members-only commits.** Your encryption key isn't available, so Forge can't tell which commits in this clone are members-only. A public push can't be checked, and a fetch would quietly show only the public view. Forge refuses rather than guess.
 
 ```
 error: E806 can't check for members-only commits: your encryption key isn't available
@@ -570,39 +575,47 @@ error: E806 can't check for members-only commits: your encryption key isn't avai
   fix: dg auth unlock, then push again
 ```
 
+It has two triggers. A **push** to a public branch is refused when the repository has members-only branches, your key isn't available and this clone has no record of what it holds (`.git/dash/sealed-ledger`, which every clone made by a current `git-remote-dash` has). A **fetch** is refused when this clone has fetched members-only branches before and your key can't open them now: fetching only the public view would let `git fetch --prune` delete them. A push that would delete a members-only branch, or reuse its name for a public one, while your key isn't available is refused the same way: written without the key, it would publish the branch's name. A record from a newer version of Forge that this one can't read is refused the same way.
+
 **What to do:** unlock your encryption key with `dg auth unlock`, then run the command again. A key protected by a passphrase needs a terminal, or `DASH_FORGE_PASSPHRASE`. A clone that never held members-only commits can start its record with `dg doctor --init-ledger`.
 
 ## E809
 
-**Branch is already public.** *Reserved: this version doesn't report it yet. It arrives with members-only branches.* You asked for a members-only branch with a name that is already public. Nothing already pushed can be hidden, so Forge doesn't offer to hide it.
+**Branch is already public.** You asked for a members-only branch with a name that is already public. Nothing already pushed can be hidden, so Forge doesn't offer to hide it.
 
 ```
 error: E809 fix-auth is already public; nothing already pushed can be hidden
   fix: dg branch new --members fix-auth-2     # start a members-only branch from here
 ```
 
+The default branch is always public, so asking for it to be members-only is refused the same way.
+
 **What to do:** start a members-only branch from where you are with a new name (`dg branch new --members <new name>`), and carry on there.
 
 ## E810
 
-**Members-only commits not pushed to another remote.** *Reserved: this version doesn't report it yet. It arrives with members-only branches.* Your `pre-push` hook found members-only commits from a Dash Forge repository in what you are pushing to a remote that is not a Dash Forge remote (GitHub, for example), or to a public branch of one, and stopped the push.
+**Members-only commits not pushed to another remote.** Your `pre-push` hook found members-only commits from a Dash Forge repository in what you are pushing to a remote that is not a Dash Forge remote (GitHub, for example), or to a public branch of one, and stopped the push.
 
 ```
 pre-push: E810 refs/heads/main contains members-only commits from dash://o/r; not pushing to github
           git push --no-verify publishes them
 ```
 
+The hook is installed the first time a clone fetches members-only branches. It reads the clone's record of members-only commits, so it works without your key and for every remote. A `pre-push` hook you already had keeps running after it. The same code also says when members-only branches aren't fetched yet: when `core.hooksPath` points at a hooks directory Forge doesn't change on its own (run `dg doctor --install-hook` to add the hook there), or when another `git-remote-dash` comes first on your `PATH` (git would run that one, which may not check pushes).
+
 **What to do:** push only branches that don't hold members-only commits, or publish them first with `dg publish`. `git push --no-verify` skips the hook and publishes the commits to that remote. That is a publication, and no check can stop it.
 
 ## E811
 
-**New branch: choose who can see it.** *Reserved: this version doesn't report it yet. It arrives with members-only branches.* You pushed a branch Forge hasn't seen before, in a public repository that has members-only content on, and nothing says who should see it: no `dg branch new --members`, no push option, no `branch.<name>.dashAudience` setting, no commits built on a members-only branch, and no `dash.newBranches` setting for the clone. Forge asks once per clone and signs nothing.
+**New branch: choose who can see it.** You pushed a branch Forge hasn't seen before, in a public repository that has members-only content on, and nothing says who should see it: no `dg branch new --members`, no push option, no `branch.<name>.dashAudience` setting, no commits built on a members-only branch, and no `dash.newBranches` setting for the clone. Forge asks once per clone and signs nothing.
 
 ```
 error: E811 new branch fix-auth: choose who can see it
-  fix: git config dash.newBranches public     # or members; then push again
-       dg branch new --members fix-auth        # for one branch
+  fix:   set this clone's default, then push again: `git config dash.newBranches public` (or `members`)
+  or:    answer for this push: add `-o public` (or `-o members`); or `dg branch new --members fix-auth` for this branch
 ```
+
+It is only asked once the repository has at least one members-only branch, and never for the first push to an empty repository, while the owner is the only member, for the default branch (always public) or for a tag (a tag on a members-only commit is members-only). After it has been asked once, a new branch with nothing that says otherwise is public. `git push -o members` or `git push -o public` answers for one push.
 
 **What to do:** set `git config dash.newBranches public` (or `members`) for this clone and push again, or make the one branch members-only with `dg branch new --members <branch>`. A branch that is public stays public: nothing already pushed can be hidden ([E809](#e809)).
 

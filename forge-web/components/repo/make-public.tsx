@@ -67,6 +67,8 @@ export function makePublicWords(kind: MembersPostKind, quoted: string | null, lo
       : "Everyone will be able to read it as you save it now. Earlier versions stay members-only. This can't be undone."
   const parts = [description]
   if (losesFile) parts.push("Its file name can't be made public, so the comment will show without it.")
+  // A PR's branch names are fixed when it is opened (the live contracts): its code stays members-only.
+  if (kind === 'pull request') parts.push("Its branch names can't be made public, so it will show without them, and its code stays members-only until it is published.")
   if (quoted !== null) parts.push(quoted)
   return {
     title: kind === 'review' ? "Make your review's text public?" : `Make your ${kind} public?`,

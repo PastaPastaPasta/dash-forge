@@ -17,7 +17,7 @@ import { useViewerRole } from '@/hooks/use-repo-chrome'
 import { BACKLINK_FILE, backlinkFile } from '@/lib/rules/mirror-backlink'
 import { backlinkPageUrl, checkedClaim, checkMirrorClaim, githubRepoOf, newBacklinkUrl, type BacklinkCheck, type HeadCheck, type MirrorCheck } from '@/lib/view/mirror-check'
 import { mirrorSourceOfRepo } from '@/lib/view/mirror-source'
-import type { RepoHome } from '@/lib/view'
+import { isPublicRef, type RepoHome } from '@/lib/view'
 import { cn } from '@/lib/utils'
 
 /** The default branch's commit, when it resolved to one. */
@@ -29,7 +29,7 @@ function defaultHead(home: RepoHome): { branch: string; oid: string } | null {
 
 /** When a ref last moved: the newest signed ref update. */
 function lastUpdated(home: RepoHome): number {
-  return [...home.branches, ...home.tags].reduce((newest, r) => {
+  return [...home.branches, ...home.tags].filter(isPublicRef).reduce((newest, r) => {
     const at = r.state.state === 'resolved' ? r.state.createdAt : r.state.state === 'diverged' ? Math.max(...r.state.heads.map((h) => h.createdAt)) : 0
     return Math.max(newest, at)
   }, 0)

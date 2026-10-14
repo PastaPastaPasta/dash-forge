@@ -23,12 +23,13 @@
 
 import { storedAudAgrees } from '../rules/aud'
 import { decodeIdentifier } from '../auth/base58'
-import { openContent, openVis, propOf, type DocFields, type OpenContext, type PrivateDocType, type StoredPrivateDoc, type UnreadableReason } from '../private'
+import { bytesToHex, openContent, openVis, propOf, type DocFields, type OpenContext, type PrivateDocType, type StoredPrivateDoc, type UnreadableReason } from '../private'
 import { MAX_LETTER_RECIPIENTS, type LetterGroup } from '../rules/letters'
 import { ENC_SPECIFIC_PEOPLE, type Audience, type ContentKind, type Visibility } from '../rules/v2'
 import { base64ToBytes, type PlainDocument } from '../sdk'
 import { asIdentifierString, num, wellFormed, type RepoRef } from './contract'
 import { noteMembersKey } from './members-key-cache'
+import { blindBook } from './members-blinds'
 
 /**
  * Why a document is hidden. `membersOnly`: a members-only document of a public repo this reader
@@ -631,6 +632,7 @@ export function laneGate(repo: RepoRef, ctx: OpenContext, options: LaneOptions =
       if (opened.status === 'readable') {
         const out = asPlaintext(doc, opened.fields)
         out[AUDIENCE_FIELD] = 'members'
+        await learnHead(ctx, type, doc, opened.fields, out)
         return { ok: true, doc: out }
       }
       if (opened.status === 'malformed') return { ok: false, reason: 'notEncrypted' }
@@ -645,6 +647,31 @@ export function laneGate(repo: RepoRef, ctx: OpenContext, options: LaneOptions =
       else if (reason === 'unknownVersion') why = 'noKey'
       return unopened(type, doc, why, reason)
     },
+  }
+}
+
+/**
+ * Where an opened members-only PR or head update (kind 16) keeps the real commit its blinded head
+ * hides (lowercase hex), once the blind checked against it (`private-repos.md` §19.4). For git
+ * only; every fold keeps the blind in `headOid` / `oid`.
+ */
+export const REAL_HEAD = '$realHead'
+
+/** With {@link REAL_HEAD}: the salt its blind was made under (TLV 27, hex), which an edit of the PR carries over. */
+export const HEAD_SALT = '$headSalt'
+
+/**
+ * Learn the blind a members-only PR's `headOid` (a head update's `oid`) carries, against the real
+ * head and salt sealed beside it (TLV 24, 27), into the session's blinds; a verified one is also
+ * noted on the opened document ({@link REAL_HEAD}). A blind that does not check is learned nowhere.
+ */
+async function learnHead(ctx: OpenContext, type: PrivateDocType, doc: PlainDocument, fields: DocFields, out: PlainDocument): Promise<void> {
+  if ((type !== 'patch' && type !== 'event') || fields.headOid === undefined) return
+  const plain = bytesField(doc, type === 'patch' ? 'headOid' : 'oid')
+  if (plain === undefined) return
+  if (await blindBook(ctx).learn(plain, fields.headOid, fields.oidSalt)) {
+    out[REAL_HEAD] = bytesToHex(fields.headOid)
+    out[HEAD_SALT] = bytesToHex(fields.oidSalt as Uint8Array)
   }
 }
 

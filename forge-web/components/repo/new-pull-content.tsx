@@ -10,6 +10,11 @@
  * by the repo's allocation rule, retrying past a number someone claims meanwhile. A signed-out
  * draft is kept in this tab while the sign-in sheet is open (`lib/view/pr-draft.ts`; a private
  * repo's in page memory only).
+ *
+ * A member of a public repo may open a members-only PR (mixed-visibility DESIGN §4.4): from or
+ * into a members-only branch it is always members-only (a public PR would name the branch and its
+ * commits), and from a public branch the audience chip offers Members. Its head is the blind the
+ * source branch's ref update introduced (rule C), sealed with the real head and its salt.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -25,7 +30,11 @@ import { dropPrDraft, loadPrDraft, savePrDraft } from '@/lib/view/pr-draft'
 import { useQuotedUntilEmptied } from '@/lib/view/draft-text'
 import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, composeTooLong, privateComposeBlock } from '@/components/repo/private-compose'
 import { useLongCompose } from '@/components/repo/long-body'
-import { useMembersTexts, useQuoteGate } from '@/components/repo/audience'
+import { AudienceChip, useComposerAudience, useMembersTexts, useQuoteGate } from '@/components/repo/audience'
+import { blindBook } from '@/lib/repo/members-blinds'
+import { membersLane } from '@/lib/repo'
+import type { MembersPatch } from '@/lib/repo/private-writes'
+import { bytesToHex, hexToBytes } from '@/lib/private'
 import { quotesMembersText } from '@/lib/view/audience'
 import { useAuth } from '@/contexts/auth-context'
 import { useSdk } from '@/hooks/use-sdk'
@@ -51,6 +60,21 @@ import { contributeHref, forkHeadBranch, useForkParent } from '@/components/repo
 import { cn, shortId } from '@/lib/utils'
 import { spendAction } from '@/lib/spend-toast'
 
+/**
+ * How a members-only PR from `head` into `base` names its branches and head (DESIGN §4.4): public
+ * ones by their public hash, members-only ones keyed; a members-only source's head is the blind
+ * its branch's ref update introduced, copied with its salt (rule C). Throws when this tab never
+ * verified that blind (reload the branch list).
+ */
+function membersPatchOf(repo: RepoRef, head: HeadOption, base: ResolvedRef | undefined): { readonly headOid: string; readonly patch: MembersPatch } {
+  const basePublic = base?.audience !== 'members'
+  if (head.audience !== 'members') return { headOid: head.oid, patch: { basePublic, sourcePublic: true } }
+  const lane = membersLane(repo)
+  const intro = lane === undefined ? undefined : blindBook(lane.ctx).introduced(head.refName, head.oid)
+  if (intro === undefined) throw new Error(`${branchName(head.refName)}'s newest push could not be read here; reload the page and try again`)
+  return { headOid: bytesToHex(intro.blind), patch: { basePublic, sourcePublic: false, head: { real: hexToBytes(head.oid), salt: intro.salt } } }
+}
+
 /** A branch a PR can come from: this repo's, or one of the viewer's forks'. */
 interface HeadOption {
   readonly key: string
@@ -58,6 +82,8 @@ interface HeadOption {
   readonly refName: string
   readonly oid: string
   readonly label: string
+  /** A members-only branch of this repo (`ResolvedRef.audience`). */
+  readonly audience?: 'members'
 }
 
 const short = branchName
@@ -130,10 +156,12 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
   // later (another branch, a new push) must take its own head's subject (L-16).
   // Not while the PR is being opened, nor after a submit whose outcome is unknown: a reload must
   // not bring the draft back to be opened a second time.
+  // A draft naming a members-only branch (its head or its base) stays in memory only.
+  const membersDraft = home.branches.some((b) => b.audience === 'members' && (b.refName === base || headKey.endsWith(`:${b.refName}`)))
   const draftHeld = useRef(false)
   useEffect(() => {
-    if (!draftHeld.current) savePrDraft(repo, { title: titleTouched ? title : '', body, head: headKey, base }, { memoryOnly: quoting })
-  }, [repo, title, titleTouched, body, headKey, base, quoting])
+    if (!draftHeld.current) savePrDraft(repo, { title: titleTouched ? title : '', body, head: headKey, base }, { memoryOnly: quoting || membersDraft })
+  }, [repo, title, titleTouched, body, headKey, base, quoting, membersDraft])
 
   const branches = useMemo(() => sortBranches(home.branches.filter((b) => tipOidOf(b) !== null), home.defaultBranch), [home.branches, home.defaultBranch])
   // A fork the link's (or the kept draft's) head names, e.g. a fork's Contribute link: listed even
@@ -177,7 +205,9 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
   const options = useMemo<HeadOption[]>(() => {
     const opt = (r: RepoRef, b: ResolvedRef, label: string): HeadOption | null => {
       const oid = tipOidOf(b)
-      return oid === null ? null : { key: `${r.repoId}:${b.refName}`, repo: r, refName: b.refName, oid, label }
+      if (oid === null) return null
+      const membersOnly = b.audience === 'members'
+      return { key: `${r.repoId}:${b.refName}`, repo: r, refName: b.refName, oid, label: membersOnly ? `${label} (members only)` : label, ...(membersOnly ? { audience: 'members' as const } : {}) }
     }
     const own = branches.map((b) => opt(repo, b, short(b.refName)))
     const fromForks = (forks.data ?? []).flatMap(({ fork, refs }) => refs.map((b) => opt(fork, b, `${forkSourcePrefix({ ownerId: fork.ownerId, ownerLabel: shortId(fork.ownerId), name: fork.name }, repo)}${short(b.refName)}`)))
@@ -214,7 +244,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
     // The head picked keeps its repo (this fork, or a fork of it), never silently swapped.
     const headRepo = intoParent ? (head?.repo ?? repo) : to
     const href = intoParent ? contributeHref(to, headRepo, branch) : repoHref('/repo/pulls/new', { owner: to.ownerId, name: to.name }, { head: branch })
-    savePrDraft(to, { title: titleTouched ? title : '', body, head: `${headRepo.repoId}:refs/heads/${branch}`, base: '' }, { memoryOnly: quoting })
+    savePrDraft(to, { title: titleTouched ? title : '', body, head: `${headRepo.repoId}:refs/heads/${branch}`, base: '' }, { memoryOnly: quoting || membersDraft })
     router.push(href)
   }
   const baseRef = branches.find((b) => b.refName === base)
@@ -250,6 +280,10 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
     if (!titleTouched && subject.data) setTitle(subject.data)
   }, [subject.data, titleTouched])
 
+  // A members-only branch on either side makes the PR members-only; a public pair may be either.
+  const membersBranch = head?.audience === 'members' || baseRef?.audience === 'members'
+  const audience = useComposerAudience(home, { parent: membersBranch ? 'members' : 'public', letters: false })
+  const membersPull = repo.visibility === 'public' && audience.audience === 'members'
   const input =
     head === null
       ? null
@@ -275,7 +309,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
   // A description over its field: stored whole by a maintainer or writer (forge-v2.md §6.3).
   const longBody = useLongCompose(repo, 'patch', body, input ?? { title: title.trim() })
   const tooLong = composeTooLong(repo, 'patch', input ?? { title: title.trim(), body }, longBody)
-  const blocked = input === null || title.trim() === '' || noBase || sameBranch || nothing || composeBlock !== null || tooLong
+  const blocked = input === null || title.trim() === '' || noBase || sameBranch || nothing || composeBlock !== null || tooLong || audience.blocked !== null
 
   // The PR is open whatever happens here: a request that fails is reported, and can be made again
   // from the PR's Reviewers card.
@@ -311,8 +345,9 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
     if (pending || blocked || owners.loading || input === null) return
     if (!guard.check(cost, 'collab', 'open a pull request')) return
     if (!sdk || !signer) return
-    // Checked at submit, against all the members-only text the tab has opened by now.
-    quoteGate.check(repo.visibility === 'public' ? `${input.title}\n${input.body}` : null, membersTexts, () => void send())
+    // Checked at submit, against all the members-only text the tab has opened by now (a
+    // members-only PR may quote it).
+    quoteGate.check(repo.visibility === 'public' && !membersPull ? `${input.title}\n${input.body}` : null, membersTexts, () => void send())
   }
 
   const send = async (): Promise<void> => {
@@ -329,7 +364,8 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
       const created = await spendAction({ running: 'Opening the pull request…', done: 'Pull request opened' }, async (tag) => {
         let pr: Awaited<ReturnType<typeof createPatch>>
         try {
-          pr = await createPatch(sdk, tag(signer), repo, { ...input, ...(asDraft ? { draft: true } : {}), intent: draftIntent.intent }, (taken, next) =>
+          const members = membersPull && head !== null ? membersPatchOf(repo, head, baseRef) : null
+          pr = await createPatch(sdk, tag(signer), repo, { ...input, ...(members !== null ? { headOid: members.headOid, members: members.patch } : {}), ...(asDraft ? { draft: true } : {}), intent: draftIntent.intent }, (taken, next) =>
             setNote(`Someone claimed #${taken} a moment ago; retrying as #${next}.`),
           )
         } catch (e) {
@@ -360,7 +396,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
       // Nothing was sent: keep the draft again. (Sent but unconfirmed: it stays dropped.)
       if (!(e instanceof UnconfirmedWriteError)) {
         draftHeld.current = false
-        savePrDraft(repo, { title: titleTouched ? title : '', body, head: headKey, base }, { memoryOnly: quoting })
+        savePrDraft(repo, { title: titleTouched ? title : '', body, head: headKey, base }, { memoryOnly: quoting || membersDraft })
       }
       setError(guard.failed(e))
       setPending(false)
@@ -536,6 +572,11 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
           }
         />
         {composeBlock !== null ? <PrivateComposeNote reason={composeBlock} /> : null}
+        {membersBranch && repo.visibility === 'public' ? (
+          <p className="text-dense text-anvil-600 dark:text-anvil-300" data-testid="members-pull-note">
+            This pull request is members-only because its branch is. Publish its changes from the pull request when they are ready.
+          </p>
+        ) : null}
         <div className="flex flex-wrap items-center justify-between gap-3">
           <CostPreview cost={cost} />
           <div className="flex flex-wrap items-center gap-3">
@@ -543,6 +584,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
               <input type="checkbox" className="h-4 w-4 accent-forge-700" checked={asDraft} onChange={(e) => setAsDraft(e.target.checked)} />
               Open as a draft
             </label>
+            <AudienceChip home={home} state={audience} testId="pull-audience-chip" />
             <Button
               variant="primary"
               onClick={submit}

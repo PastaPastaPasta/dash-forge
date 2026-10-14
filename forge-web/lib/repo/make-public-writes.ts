@@ -54,8 +54,8 @@ export interface MakePublicInput {
  */
 export async function makePostPublic(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, input: MakePublicInput): Promise<ReplaceResult> {
   if (repo.visibility !== 'public') throw new MakePublicRefusedError(PRIVATE_REPO)
-  // A members-only PR's branch names are sealed and immutable: phase 3 builds it.
-  if (input.type === 'patch') throw new MakePublicRefusedError("A pull request can't be made public this way yet")
+  // A members-only PR (phase 3): its title and description become public; its branch names are
+  // immutable on the live contracts, so they stay unset (`lost`) and its head stays a blind.
   const { audience, doc: stored } = await storedAudience(sdk, repo, input.type, input.id)
   const author = asIdentifierString(stored['$ownerId'])
   if (author !== auth.identityId) throw new MakePublicRefusedError(NOT_AUTHOR)
@@ -108,11 +108,13 @@ export async function makePostPublic(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef
 }
 
 /**
- * Whether the replace that makes a `type` post of `repo` public keeps its sealed `path` and branch
- * names (mainnet L1, which declares `aud`, makes them settable once in it); elsewhere they are lost.
+ * Whether the replace that makes a `type` post of `repo` public keeps its sealed `path` (mainnet
+ * L1, which declares `aud`, makes it settable once in it); elsewhere it is lost. A PR's branch
+ * names stay unset on every contract: a members-only branch's name is hashed under the members key,
+ * which no public reader can check a plaintext name against (forge-core `Collab::settable_once`).
  */
-export function makePublicKeepsFields(sdk: EvoSDK, repo: RepoRef, type: 'issue' | 'patch' | 'comment'): Promise<boolean> {
-  return declares(sdk, repo, type, AUD)
+export async function makePublicKeepsFields(sdk: EvoSDK, repo: RepoRef, type: 'issue' | 'patch' | 'comment'): Promise<boolean> {
+  return type !== 'patch' && (await declares(sdk, repo, type, AUD))
 }
 
 /**

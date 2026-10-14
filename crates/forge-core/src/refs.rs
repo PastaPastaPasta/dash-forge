@@ -395,6 +395,10 @@ pub struct MembersUpdates {
     /// Members-only updates this reader could not open (no key, another epoch, a later envelope,
     /// late, malformed): counted, never folded.
     pub unreadable: usize,
+    /// The real non-null `newOid` of every members-only update this reader opened, those a
+    /// public name won over included (they still name members-only commits): the guard's
+    /// decryptable S.
+    pub opened_new_oids: BTreeSet<String>,
     /// The members-only updates folded into [`Self::by_name`], by document `$id`, each with the
     /// blind its `newOid` carries and that blind's salt when the blind checked (rule C copies
     /// both into a PR head or head update naming the same commit); `None` for a delete or an
@@ -529,6 +533,7 @@ impl std::fmt::Debug for MembersUpdates {
             .field("names", &self.by_name.len())
             .field("alerts", &self.alerts.len())
             .field("unreadable", &self.unreadable)
+            .field("opened_new_oids", &self.opened_new_oids.len())
             .field("sealed", &self.sealed.len())
             .finish()
     }
@@ -599,6 +604,9 @@ pub fn members_updates_of(
             let mut u = ref_update_from_doc(d, &hash_hex, protected);
             u.ref_name.clone_from(&real.name);
             u.new_oid = hex::encode(&real.new_oid);
+            if !crate::private::blind::is_null(&real.new_oid) {
+                out.opened_new_oids.insert(u.new_oid.clone());
+            }
             u.prev_oid = real
                 .prev_oid
                 .as_deref()
@@ -677,6 +685,121 @@ pub async fn read_members_refs(
         })
         .collect();
     Ok((refs, updates))
+}
+
+/// Every ref of a PUBLIC repository as the public folds it: the plaintext updates alone, one
+/// entry per name under the shared naming rule ([`crate::rules::display_ref_name`]).
+#[must_use]
+pub fn public_refs(state: &GitState) -> Vec<(String, crate::rules::RefState)> {
+    let configs = state.config_history();
+    let by_hash = state.ref_histories();
+    let mut out = Vec::with_capacity(by_hash.len());
+    for (hash, updates) in &by_hash {
+        let hash_hex = hex::encode(hash);
+        // Shared naming rule (forge-web applies the same one): never the raw newest update,
+        // which may carry a name that does not hash to this key.
+        let Some(ref_name) = crate::rules::display_ref_name(updates, &hash_hex).map(str::to_owned)
+        else {
+            continue;
+        };
+        let state = crate::rules::resolve_ref(updates, &configs, &hash_hex, |a, b| a == b);
+        out.push((ref_name, state));
+    }
+    out
+}
+
+/// A PUBLIC repository's refs as the git helper reads them, from one read of its history
+/// (mixed-visibility DESIGN §4.3): what everyone folds, whether members-only content is on, how
+/// many members-only ref updates exist, and, for a reader holding the members key, the member
+/// view.
+#[derive(Clone, Default)]
+pub struct RefsView {
+    /// The public fold ([`public_refs`]): P, what a public push is checked against.
+    pub public: Vec<(String, crate::rules::RefState)>,
+    /// The repository has a members key (a sealed `config`, DESIGN D1).
+    pub members_key: bool,
+    /// Members-only ref updates in the history, readable or not.
+    pub members_only_updates: usize,
+    /// The member view, when a members key was given.
+    pub members: Option<MembersView>,
+}
+
+/// A member's view of a public repository's refs ([`read_refs_view`]).
+#[derive(Clone, Default)]
+pub struct MembersView {
+    /// Every ref, public and members-only, on real values ([`read_members_refs`]).
+    pub refs: Vec<(String, crate::rules::RefState)>,
+    /// The names that are live only as members-only branches (a live public name wins, D29).
+    pub members_only: BTreeSet<String>,
+    /// Every non-null real `newOid` of a members-only update this reader opened, over the whole
+    /// fold history (sorted, deduplicated): the publication guard's decryptable S, so a branch
+    /// force-pushed away or a tip this clone never fetched still counts (S4 §1b).
+    pub decryptable: Vec<String>,
+    /// Blinds that did not check, and updates a public name won over.
+    pub alerts: Vec<RefAlert>,
+    /// Members-only updates this reader could not open.
+    pub unreadable: usize,
+}
+
+/// They hold members-only branch names and real commits: `Debug` shows only counts.
+impl std::fmt::Debug for RefsView {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RefsView")
+            .field("public", &self.public.len())
+            .field("members_key", &self.members_key)
+            .field("members_only_updates", &self.members_only_updates)
+            .field("members", &self.members)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for MembersView {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MembersView")
+            .field("refs", &self.refs.len())
+            .field("members_only", &self.members_only.len())
+            .field("decryptable", &self.decryptable.len())
+            .field("alerts", &self.alerts.len())
+            .field("unreadable", &self.unreadable)
+            .finish()
+    }
+}
+
+/// How a reader opens a sealed document with the keys it holds ([`refs_view`]).
+pub type DocOpener<'a> =
+    &'a dyn Fn(crate::private::DocKind, &FetchedDocument) -> crate::private::Opened;
+
+/// [`RefsView`] of `state`, opening members-only updates with `open` when a members key is
+/// held (`None`: the public view only).
+pub fn refs_view(state: &GitState, open: Option<DocOpener<'_>>) -> RefsView {
+    let public = public_refs(state);
+    let members_key = crate::keyring::has_members_key_in(&state.configs);
+    let members_only_updates = members_only_ref_count(state).0;
+    let members = open.map(|open| {
+        // the one member fold ([`crate::repo::MembersRefs`], members-only by the update that set
+        // the tip), with what the guard needs beside it
+        let m = crate::repo::MembersRefs::of(state, open);
+        let live = |s: &crate::rules::RefState| *s != crate::rules::RefState::Unborn;
+        let members_only = m
+            .refs
+            .iter()
+            .filter(|r| r.members_only && live(&r.state))
+            .map(|r| r.name.clone())
+            .collect();
+        MembersView {
+            refs: m.refs.into_iter().map(|r| (r.name, r.state)).collect(),
+            members_only,
+            decryptable: m.updates.opened_new_oids.into_iter().collect(),
+            alerts: m.updates.alerts,
+            unreadable: m.updates.unreadable,
+        }
+    });
+    RefsView {
+        public,
+        members_key,
+        members_only_updates,
+        members,
+    }
 }
 
 /// What an outsider learns of a public repository's members-only branches: how many sealed
@@ -1092,6 +1215,57 @@ mod members_tests {
         );
         // a base that was no branch when the PR was opened has no tips (D-501)
         assert!(fold.merge_base(&[], NAME, 5).historical.is_empty());
+    }
+
+    #[test]
+    fn the_refs_view_lists_members_only_names_and_every_decryptable_tip() {
+        // sec/fix moved a -> b, then was force-pushed back to c (b survives only in the history);
+        // main is public
+        let mut main = public(5, 9, 0x5, None);
+        main.fields.insert(
+            "refNameHash".into(),
+            FieldValue::Bytes32(crate::backends::sha256(b"refs/heads/main")),
+        );
+        main.fields
+            .insert("refName".into(), FieldValue::text("refs/heads/main"));
+        let state = GitState {
+            ref_updates: vec![
+                main,
+                sealed(1, 10, 0, 0xa, None, false),
+                sealed(2, 11, 0, 0xb, Some(0xa), false),
+                sealed(3, 12, 0, 0xc, Some(0xb), true),
+            ],
+            ..GitState::default()
+        };
+        let ctx = ctx();
+        let open = |k, d: &FetchedDocument| {
+            let mut h = crate::keyring::header_of(k, d).unwrap();
+            h.vis = crate::rules::v2::Visibility::Public;
+            open_content(&ctx, &h, &d.field_bytes("enc").unwrap())
+        };
+        let outsider = super::refs_view(&state, None);
+        assert_eq!(outsider.public.len(), 1, "only main");
+        assert_eq!(outsider.members_only_updates, 3);
+        assert!(outsider.members.is_none() && !outsider.members_key);
+        let member = super::refs_view(&state, Some(&open)).members.unwrap();
+        assert_eq!(member.refs.len(), 2);
+        assert_eq!(
+            member.members_only.iter().collect::<Vec<_>>(),
+            [NAME],
+            "main is public, not members-only"
+        );
+        let hexes: Vec<String> = [0xa, 0xb, 0xc]
+            .iter()
+            .map(|b| hex::encode([*b; 20]))
+            .collect();
+        assert_eq!(member.decryptable, hexes, "the force-pushed-away tip too");
+        assert_eq!(member.unreadable, 0);
+        // the view's Debug shows counts only
+        let shown = format!("{member:?}");
+        assert!(
+            !shown.contains(NAME) && !shown.contains(&hexes[0]),
+            "{shown}"
+        );
     }
 
     #[test]
