@@ -184,6 +184,7 @@ import type { CloseIssuesOption } from '@/components/repo/merge-panel'
 import { LINKED_ISSUES_MAX, linkedIssueTargets } from '@/lib/view/jump'
 import { EventValuesNote, HiddenNote } from '@/components/repo/hidden-note'
 import { EditedMarker, MarkdownEditor, withDiscardedEdit } from '@/components/repo/issue-bits'
+import { AgentsSection } from '@/components/repo/agents-section'
 import { AssigneePicker, LabelPicker, MilestonePicker, SidebarSection, applySetChange, assigneesConfirm, labelsConfirm, setChangeShows, stateToggleLabel, type SetChange } from '@/components/repo/target-rail'
 import { readMilestones } from '@/lib/repo/milestones'
 import { ReviewersCard } from '@/components/repo/reviewers-card'
@@ -1778,10 +1779,11 @@ function PullPage({
                 </div>
               </div>
 
-              {timeline.length > 0 || thread.membersOnly.length > 0 ? (
+              {timeline.length > 0 || thread.membersOnly.length > 0 || (thread.agentRequests?.length ?? 0) > 0 ? (
                 <Timeline
                   items={conversation}
                   membersOnly={thread.membersOnly}
+                  {...(thread.agentRequests ? { agentRequests: thread.agentRequests } : {})}
                   {...(home.lane ? { lane: home.lane } : {})}
                   links={links}
                   trust={trust}
@@ -2381,6 +2383,14 @@ function PullPage({
                 </ul>
               )}
             </SidebarSection>
+            {/* Bots this PR can be handed to (DESIGN §4.9): shown when a bot's access covers it. */}
+            <AgentsSection
+              home={home}
+              target={{ kind: 'pr', id: pull.id, number: pull.number }}
+              membersOnly={repo.visibility === 'private' || notPublic(pull.audience)}
+              membersSource={membersSource}
+              onAsked={(event) => refresh((t) => (t.agentRequests ?? []).some((r) => r.id === event))}
+            />
             {open && canAuthorOrMember && !pull.state.draft ? (
               <button
                 type="button"

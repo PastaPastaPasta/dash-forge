@@ -55,6 +55,7 @@ const REPO_TITLES: Readonly<Record<string, (q: Query, repo: string) => string>> 
   '/repo/milestones': (_q, repo) => `Milestones · ${repo}`,
   '/repo/settings': (_q, repo) => `Settings · ${repo}`,
   '/repo/settings/environments': (_q, repo) => `Environments · ${repo}`,
+  '/repo/settings/bots': (_q, repo) => `Bots and runners · ${repo}`,
 }
 
 const SITE_TITLES: Readonly<Record<string, string>> = {

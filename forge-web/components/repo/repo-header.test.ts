@@ -18,6 +18,7 @@ describe('activeRepoTab', () => {
     ['/repo/release', 'releases'],
     ['/repo/settings/', 'settings'],
     ['/repo/settings/environments/', 'settings'],
+    ['/repo/settings/bots/', 'settings'],
   ] as const)('%s lights %s', (path, tab) => {
     expect(activeRepoTab(path)).toBe(tab)
   })

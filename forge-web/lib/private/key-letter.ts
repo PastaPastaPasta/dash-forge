@@ -273,7 +273,8 @@ export interface BranchLetter {
 
 const LOWER_HEX = /^(?:[0-9a-f]{2})*$/;
 
-function hexExact(v: JsonValue | undefined, n: number): Bytes | null {
+/** `n` bytes from lowercase hex of exactly `2n` digits, or `null` (forge-core `key_letter::hex_exact`). */
+export function hexExact(v: JsonValue | undefined, n: number): Bytes | null {
   if (typeof v !== "string" || v.length !== 2 * n || !LOWER_HEX.test(v))
     return null;
   const out = new Uint8Array(n);

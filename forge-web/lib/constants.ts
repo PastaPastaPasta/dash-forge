@@ -311,6 +311,18 @@ export const PACK_KIND = {
    */
   ENV_SNAPSHOT: 8,
   /**
+   * A key letter (`lib/private/key-letter.ts`, `private-repos.md` §20): keys sealed to specific
+   * people (DFPK 0x02). The web writes one kind: the `read` letter a member's request to a bot
+   * carries (`lib/repo/bot-access.ts`).
+   */
+  KEY_LETTER: 10,
+  /**
+   * A bot's access notice (`lib/private/access-notice.ts`, `private-repos.md` §22.1): what a
+   * maintainer lets a bot do. Plaintext in a public repo; in a private one stored twice, under the
+   * members key and as a letter to the bot.
+   */
+  ACCESS_NOTICE: 11,
+  /**
    * A members-only git pack of a public repo (mixed-visibility DESIGN §4.3, `private-repos.md`
    * §19.5): one members-only branch's new objects, DFPK-sealed under the members key, thin against
    * the public packs, with no `tips` and never superseding. Kinds 64 + k are the members-only

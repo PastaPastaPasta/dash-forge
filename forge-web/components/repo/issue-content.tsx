@@ -89,6 +89,7 @@ import { Field, Input } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { EditedMarker, MarkdownEditor, withDiscardedEdit } from '@/components/repo/issue-bits'
+import { AgentsSection } from '@/components/repo/agents-section'
 import { AssigneePicker, LabelPicker, MilestonePicker, SidebarSection, applySetChange, assigneesConfirm, labelsConfirm, setChangeShows, stateToggleLabel, type SetChange } from '@/components/repo/target-rail'
 import { readMilestones } from '@/lib/repo/milestones'
 import { EventValuesNote, HiddenNote } from '@/components/repo/hidden-note'
@@ -709,10 +710,11 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         )}
 
         {/* Timeline */}
-        {!threadCollapsed && (timeline.length > 0 || data.membersOnly.length > 0 || (backlinks.linking.data?.mentioning.length ?? 0) > 0 || (duplicatesOf.data?.length ?? 0) > 0) ? (
+        {!threadCollapsed && (timeline.length > 0 || data.membersOnly.length > 0 || (data.agentRequests?.length ?? 0) > 0 || (backlinks.linking.data?.mentioning.length ?? 0) > 0 || (duplicatesOf.data?.length ?? 0) > 0) ? (
           <Timeline
             items={timeline}
             membersOnly={data.membersOnly}
+            {...(data.agentRequests ? { agentRequests: data.agentRequests } : {})}
             {...(home.lane ? { lane: home.lane } : {})}
             links={links}
             trust={trust}
@@ -912,6 +914,13 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         <SidebarSection title="Development" icon={GitPullRequest}>
           <LinkedPulls addr={addr} number={issue.number} backlinks={backlinks.linking} />
         </SidebarSection>
+        {/* Bots this issue can be handed to (DESIGN §4.9): shown when a bot's access covers it. */}
+        <AgentsSection
+          home={home}
+          target={{ kind: 'issue', id: issue.id, number: issue.number }}
+          membersOnly={home.repo.visibility === 'private' || notPublic(issue.audience)}
+          onAsked={(event) => refresh((t) => (t.agentRequests ?? []).some((r) => r.id === event))}
+        />
       </aside>
 
       {quoteGate.dialog}
