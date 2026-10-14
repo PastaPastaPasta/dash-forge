@@ -1475,7 +1475,14 @@ pub async fn has_members_key(client: &PlatformClient, repo: &RepoRef) -> Result<
             &[QueryOrder::asc("$createdAt")],
         )
         .await?;
-    Ok(configs.iter().any(|d| config_row(d).is_some()))
+    Ok(has_members_key_in(&configs))
+}
+
+/// Whether `configs`, a repository's `config` rows, include a sealed one: the members key of a
+/// public repository exists ([`has_members_key`] over rows already read).
+#[must_use]
+pub fn has_members_key_in(configs: &[FetchedDocument]) -> bool {
+    configs.iter().any(|d| config_row(d).is_some())
 }
 
 /// Whether `member` holds any wrap (`repoKey`) of `repo`'s members key: one read of the

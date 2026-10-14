@@ -6,9 +6,12 @@
 //! * [`ledger`]: the clone's sealed-object ledger, `<git common dir>/dash/sealed-ledger`;
 //! * [`guard`]: the publication guard, a pure function over the ledger, the commits the pusher
 //!   can decrypt, the batch and the public tips, through an object-graph seam the helper backs
-//!   with git.
+//!   with git;
+//! * [`hook`]: the clone's `pre-push` hook, which runs the ledger check for pushes to other
+//!   remotes (E810).
 
 pub mod guard;
+pub mod hook;
 pub mod ledger;
 pub mod plan;
 
