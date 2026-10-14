@@ -381,8 +381,8 @@ def seal_and_open_vectors():
          "is decrypted.", dict(man, packHash=H(sha256(b"other"))), sealed, okeys),
         ("open_size_mismatch", "the manifest's sizeBytes must be the length.", dict(packHash=man["packHash"],
          sizeBytes=len(sealed) + 1), sealed, okeys),
-        ("open_sender_not_owner", "the sender key must be the manifest owner's: a letter whose header names another "
-         "identity's key does not open (malformed).", man, sealed, [owner_key(CAROL)]),
+        ("open_sender_not_owner", "the sender key must be the manifest owner's: when the owner's key of the header's id "
+         "is another key, no slot opens under it (notARecipient).", man, sealed, [owner_key(CAROL)]),
     ]
     for name, desc, m, s, ok in cases:
         r = open_letter(m, s, ok, reader_json(BOB))

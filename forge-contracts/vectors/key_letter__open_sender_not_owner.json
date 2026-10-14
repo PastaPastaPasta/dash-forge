@@ -1,6 +1,6 @@
 {
   "name": "open_sender_not_owner",
-  "description": "the sender key must be the manifest owner's: a letter whose header names another identity's key does not open (malformed).",
+  "description": "the sender key must be the manifest owner's: when the owner's key of the header's id is another key, no slot opens under it (notARecipient).",
   "case": "key_letter",
   "rules": "v2",
   "input": {
