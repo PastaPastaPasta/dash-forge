@@ -1305,6 +1305,13 @@ async fn view(
     }
     let p = patch(&collab, handle, repo, number).await?;
     let mut v = collab.patch_view(handle, p).await?;
+    // a members-only PR from a members-only branch: the real commit behind its blinded head,
+    // for members (git uses it; every fold keeps the blind)
+    let real_head = if members_source(&v) {
+        Some(collab.real_head(handle, &v).await)
+    } else {
+        None
+    };
     let oracle = collab.member_oracle(handle).await?;
     let doc_id = v.patch.document_id.clone();
     // Every review that counts, a members-only one this reader cannot open included (its
@@ -1552,6 +1559,7 @@ async fn view(
             "baseRefName": v.merge_base.ref_name,
             "baseTip": v.base_tip,
             "headOid": v.head,
+            "realHeadOid": real_head,
             "initialHeadOid": v.patch.head_oid,
             "headOnBase": v.head_on_base,
             "headUpdates": review_state.head_updates.iter().map(|h| json!({
@@ -4011,7 +4019,8 @@ struct Located {
 }
 
 async fn locate(ctx: &Ctx, repo: &str, number: u64) -> Result<Located> {
-    let s = Reader::open(ctx, repo).await?;
+    // a member's identity is loaded in a public repository, so a members-only PR opens
+    let s = Reader::open_discussion(ctx, repo).await?;
     let target = s.repo.id().to_string();
     let collab = s.collab();
     let p = patch(&collab, &s.repo, repo, number).await?;

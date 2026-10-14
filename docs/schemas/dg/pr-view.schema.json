@@ -80,6 +80,13 @@
     "headOid": {
       "type": "string"
     },
+    "realHeadOid": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "For a members-only pull request from a members-only branch, read by a member: the commit its head names (`headOid` is then the blinded id everyone sees); null otherwise."
+    },
     "initialHeadOid": {
       "type": "string"
     },

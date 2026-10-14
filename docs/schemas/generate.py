@@ -398,7 +398,10 @@ cmd('pr list', 'A page of pull requests.', {
 cmd('pr view', 'A pull request: its state, head, reviews, threads and comments.', {
     'number': I, 'id': S, 'repoId': S, 'title': nl(S), 'body': nl(S), 'bodyIncomplete': ANY, 'author': S, 'createdAt': I,
     'state': E('open', 'closed', 'merged'), 'draft': B, 'labels': SA, 'assignees': SA, 'retargetedTo': nl(S), 'baseRef': S,
-    'baseRefName': S, 'baseTip': nl(S), 'headOid': S, 'initialHeadOid': S, 'headOnBase': B, 'headUpdates': A(OBJ),
+    'baseRefName': S, 'baseTip': nl(S), 'headOid': S,
+    'realHeadOid': D('For a members-only pull request from a members-only branch, read by a member: the commit its head '
+                     'names (`headOid` is then the blinded id everyone sees); null otherwise.', nl(S)),
+    'initialHeadOid': S, 'headOnBase': B, 'headUpdates': A(OBJ),
     'resolvedThreads': SA, 'milestone': nl(S), 'sourceRepoId': S, 'sourceRepo': ANY, 'sourceRefName': nl(S),
     'approvedBy': SA, 'changesRequestedBy': SA, 'reviewers': A(OBJ), 'requestedReviewers': A(OBJ), 'dismissedReviews': A(OBJ),
     'sinceYourReview': ANY, 'policy': R('policy'), 'approvals': ANY, 'reviews': A(OBJ), 'threads': A(OBJ),
