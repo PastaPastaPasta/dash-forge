@@ -22,6 +22,9 @@ sha1 = "0.10"
 flate2 = "1"
 hex = "0.4"
 glob-match = "0.2"
+# `members_git::share`: the scratch repository a branch's members-only packs are indexed in,
+# under the clone's own git directory.
+tempfile = "3"
 
 # storage profiles (`~/.config/dash-forge/storage.toml`) + AWS SigV4 request signing.
 # hmac 0.12 shares sha2's digest 0.10, so no second RustCrypto stack is pulled in.

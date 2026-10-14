@@ -8,12 +8,14 @@
 //!   can decrypt, the batch and the public tips, through an object-graph seam the helper backs
 //!   with git;
 //! * [`hook`]: the clone's `pre-push` hook, which runs the ledger check for pushes to other
-//!   remotes (E810).
+//!   remotes (E810);
+//! * [`share`]: one members-only branch as it is now, as a `branch` key letter hands it on.
 
 pub mod guard;
 pub mod hook;
 pub mod ledger;
 pub mod plan;
+pub mod share;
 
 #[cfg(test)]
 pub(crate) mod conformance;
