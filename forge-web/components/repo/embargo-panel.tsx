@@ -32,8 +32,16 @@ export function whenText(at: number): string {
 /** How far `at` is from `now` (both Unix seconds): "in 3 days", "2 hours ago". */
 export function untilText(at: number, now: number): string {
   const d = Math.abs(at - now)
-  const span = d < 3600 ? Math.max(1, Math.floor(d / 60)) : d < 86_400 ? Math.floor(d / 3600) : Math.floor(d / 86_400)
-  const unit = d < 3600 ? 'minute' : d < 86_400 ? 'hour' : 'day'
+  let unit = 'day'
+  let size = 86_400
+  if (d < 3600) {
+    unit = 'minute'
+    size = 60
+  } else if (d < 86_400) {
+    unit = 'hour'
+    size = 3600
+  }
+  const span = Math.max(1, Math.floor(d / size))
   const words = `${span} ${unit}${span === 1 ? '' : 's'}`
   return at >= now ? `in ${words}` : `${words} ago`
 }
@@ -80,13 +88,14 @@ export function draftValue(d: Draft, pr: number | null, now: number): { value: E
   const at = utcInputSeconds(d.at)
   if (at === null) return { problem: 'Choose the date and time (UTC).' }
   if (at <= now) return { problem: 'Choose a time in the future.' }
-  const opt = (s: string): string | undefined => (s.trim() === '' ? undefined : s.trim())
+  const tag = d.tag.trim()
+  const message = d.message.trim()
   const value: EmbargoValue = {
     type: 'schedule',
     at,
     ...(pr !== null ? { pr } : { branch: d.branch.trim(), onto: d.onto.trim() }),
-    ...(opt(d.tag) !== undefined ? { tag: opt(d.tag) } : {}),
-    ...(opt(d.message) !== undefined ? { message: opt(d.message) } : {}),
+    ...(tag !== '' ? { tag } : {}),
+    ...(message !== '' ? { message } : {}),
   }
   try {
     encodeEmbargo(value)
@@ -95,6 +104,37 @@ export function draftValue(d: Draft, pr: number | null, now: number): { value: E
     return { problem: `${why.charAt(0).toUpperCase()}${why.slice(1)}.` }
   }
   return { value }
+}
+
+/** The line that says where the date stands (`embargo` null: there is none). */
+function StateNote({ embargo, now }: { embargo: Embargo | null; now: number }): JSX.Element {
+  if (embargo === null) {
+    return (
+      <p className="text-anvil-600 dark:text-anvil-300" data-testid="embargo-state">
+        No publication date.
+      </p>
+    )
+  }
+  switch (embargo.state.state) {
+    case 'cancelled':
+      return (
+        <p className="text-anvil-600 dark:text-anvil-300" data-testid="embargo-state">
+          No publication date. <Author identityId={embargo.state.by} /> withdrew the one for {whenText(embargo.plan.at)}.
+        </p>
+      )
+    case 'done':
+      return (
+        <p className="text-anvil-700 dark:text-anvil-200" data-testid="embargo-state">
+          Published as <code className="font-mono text-[12px]">{embargo.state.commit.slice(0, 7)}</code> (planned for {whenText(embargo.plan.at)}).
+        </p>
+      )
+    case 'scheduled':
+      return (
+        <p className="text-anvil-700 dark:text-anvil-200" data-testid="embargo-state">
+          {embargoDue(embargo, now) ? 'Due since' : 'Publishes on'} <strong>{whenText(embargo.plan.at)}</strong> ({untilText(embargo.plan.at, now)}).
+        </p>
+      )
+  }
 }
 
 export function EmbargoPanel({
@@ -160,23 +200,7 @@ export function EmbargoPanel({
   return (
     <SidebarSection title="Publication" icon={CalendarClock}>
       <div className="space-y-2" data-testid="embargo-panel">
-        {embargo === null ? (
-          <p className="text-anvil-600 dark:text-anvil-300" data-testid="embargo-state">
-            No publication date.
-          </p>
-        ) : embargo.state.state === 'cancelled' ? (
-          <p className="text-anvil-600 dark:text-anvil-300" data-testid="embargo-state">
-            No publication date. <Author identityId={embargo.state.by} /> withdrew the one for {whenText(embargo.plan.at)}.
-          </p>
-        ) : embargo.state.state === 'done' ? (
-          <p className="text-anvil-700 dark:text-anvil-200" data-testid="embargo-state">
-            Published as <code className="font-mono text-[12px]">{embargo.state.commit.slice(0, 7)}</code> (planned for {whenText(embargo.plan.at)}).
-          </p>
-        ) : (
-          <p className="text-anvil-700 dark:text-anvil-200" data-testid="embargo-state">
-            {embargoDue(embargo, now) ? 'Due since' : 'Publishes on'} <strong>{whenText(embargo.plan.at)}</strong> ({untilText(embargo.plan.at, now)}).
-          </p>
-        )}
+        <StateNote embargo={embargo} now={now} />
         {embargo !== null && embargo.state.state !== 'cancelled' ? (
           <>
             <ol className="space-y-0.5" data-testid="embargo-checklist">

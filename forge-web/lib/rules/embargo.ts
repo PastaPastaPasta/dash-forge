@@ -135,15 +135,14 @@ export function parseEmbargo(text: string): EmbargoValue | null {
   const hasPlan = PLAN_KEYS.some((k) => k in o)
   let v: EmbargoValue
   if ('at' in o && !('cancel' in o) && !('done' in o)) {
-    const str = (k: string): string | undefined => (k in o ? (o[k] as string) : undefined)
     v = {
       type: 'schedule',
       at: o['at'] as number,
       ...('pr' in o ? { pr: o['pr'] as number } : {}),
-      ...(str('b') !== undefined ? { branch: str('b') } : {}),
-      ...(str('o') !== undefined ? { onto: str('o') } : {}),
-      ...(str('t') !== undefined ? { tag: str('t') } : {}),
-      ...(str('m') !== undefined ? { message: str('m') } : {}),
+      ...('b' in o ? { branch: o['b'] as string } : {}),
+      ...('o' in o ? { onto: o['o'] as string } : {}),
+      ...('t' in o ? { tag: o['t'] as string } : {}),
+      ...('m' in o ? { message: o['m'] as string } : {}),
     }
   } else if (o['cancel'] === true && !('at' in o) && !('done' in o) && !hasPlan) {
     v = { type: 'cancel' }

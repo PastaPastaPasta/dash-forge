@@ -166,6 +166,7 @@ fn plan_problem(plan: &EmbargoPlan) -> Option<String> {
 }
 
 impl EmbargoValue {
+    /// The value as its wire object.
     fn wire(&self) -> Wire {
         match self {
             Self::Schedule(p) => Wire {
@@ -226,6 +227,8 @@ impl EmbargoValue {
         if w.v != VERSION {
             return None;
         }
+        let no_plan =
+            w.pr.is_none() && w.b.is_none() && w.o.is_none() && w.t.is_none() && w.m.is_none();
         let value = match (w.at, w.cancel, w.done) {
             (Some(at), None, None) => Self::Schedule(EmbargoPlan {
                 at,
@@ -235,24 +238,8 @@ impl EmbargoValue {
                 tag: w.t,
                 message: w.m,
             }),
-            (None, Some(true), None)
-                if w.pr.is_none()
-                    && w.b.is_none()
-                    && w.o.is_none()
-                    && w.t.is_none()
-                    && w.m.is_none() =>
-            {
-                Self::Cancel
-            }
-            (None, None, Some(commit))
-                if w.pr.is_none()
-                    && w.b.is_none()
-                    && w.o.is_none()
-                    && w.t.is_none()
-                    && w.m.is_none() =>
-            {
-                Self::Done { commit }
-            }
+            (None, Some(true), None) if no_plan => Self::Cancel,
+            (None, None, Some(commit)) if no_plan => Self::Done { commit },
             _ => return None,
         };
         (value.encode().ok()? == text).then_some(value)
@@ -392,14 +379,14 @@ pub fn embargo_of(target_id: &str, records: &[EmbargoRecord]) -> Option<Embargo>
         .filter(|r| r.target_id == target_id)
         .collect();
     mine.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
-    let (i, s) = mine
+    let (i, s, plan) = mine
         .iter()
         .enumerate()
         .rev()
-        .find(|(_, r)| matches!(r.value, EmbargoValue::Schedule(_)))?;
-    let EmbargoValue::Schedule(plan) = &s.value else {
-        return None;
-    };
+        .find_map(|(i, r)| match &r.value {
+            EmbargoValue::Schedule(plan) => Some((i, *r, plan)),
+            _ => None,
+        })?;
     let state = mine[i + 1..]
         .iter()
         .find_map(|r| match &r.value {

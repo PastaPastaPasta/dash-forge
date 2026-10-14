@@ -88,13 +88,16 @@ def plan_problem(p):
     return None
 
 
+# a plan's fields and their short wire keys, in wire order
+PLAN_FIELDS = (("pr", "pr"), ("branch", "b"), ("onto", "o"), ("tag", "t"), ("message", "m"))
+
+
 def wire(value):
     if value["type"] == "schedule":
-        p = value
-        w = {"v": 1, "at": p["at"]}
-        for key, short in (("pr", "pr"), ("branch", "b"), ("onto", "o"), ("tag", "t"), ("message", "m")):
-            if p.get(key) is not None:
-                w[short] = p[key]
+        w = {"v": 1, "at": value["at"]}
+        for key, short in PLAN_FIELDS:
+            if value.get(key) is not None:
+                w[short] = value[key]
         return w
     if value["type"] == "cancel":
         return {"v": 1, "cancel": True}
@@ -116,12 +119,8 @@ def encode(value):
     return s
 
 
-def u32(n):
-    return isinstance(n, int) and not isinstance(n, bool) and 0 <= n < 2 ** 32
-
-
-def u64(n):
-    return isinstance(n, int) and not isinstance(n, bool) and 0 <= n < 2 ** 64
+def uint(n, bits):
+    return isinstance(n, int) and not isinstance(n, bool) and 0 <= n < 2 ** bits
 
 
 class Pairs(list):
@@ -145,16 +144,16 @@ def parse(text):
     for k in ("b", "o", "t", "m", "done"):
         if k in w and not isinstance(w[k], str):
             return None
-    if "at" in w and not u64(w["at"]):
+    if "at" in w and not uint(w["at"], 64):
         return None
-    if "pr" in w and not u32(w["pr"]):
+    if "pr" in w and not uint(w["pr"], 32):
         return None
     if "cancel" in w and not isinstance(w["cancel"], bool):
         return None
     plan_keys = {"pr", "b", "o", "t", "m"}
     if "at" in w and "cancel" not in w and "done" not in w:
         v = {"type": "schedule", "at": w["at"]}
-        for short, key in (("pr", "pr"), ("b", "branch"), ("o", "onto"), ("t", "tag"), ("m", "message")):
+        for key, short in PLAN_FIELDS:
             if short in w:
                 v[key] = w[short]
     elif w.get("cancel") is True and "at" not in w and "done" not in w and not plan_keys & set(w):
@@ -327,7 +326,7 @@ def value_vectors():
     refused = [
         schedule(branch="sec/cve-77", onto="main", tag="v1.2.3", message=long_msg),
         schedule(branch="b" * 100, onto="main"),
-        schedule(at=0, pr=4) | {"at": 0},
+        schedule(at=0, pr=4),
         schedule(pr=4, branch="x", onto="main"),
         schedule(branch="x"),
         schedule(onto="main"),

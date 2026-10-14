@@ -3614,7 +3614,7 @@ impl<'a> Collab<'a> {
     /// The audience of `repo`'s issue or patch `target_id` (a comment's, review's or event's
     /// parent): read from the stored document, never from the repository alone (DESIGN §3.3).
     /// It fails closed: a target that cannot be read is an error, never "public".
-    async fn target_audience(&self, repo: &RepoRef, target_id: &str) -> Result<Audience> {
+    pub async fn target_audience(&self, repo: &RepoRef, target_id: &str) -> Result<Audience> {
         Ok(self.target_parent(repo, target_id).await?.default)
     }
 
@@ -8094,12 +8094,6 @@ impl<'a> Collab<'a> {
     /// that cannot be read is an error.
     pub async fn target_reads_public(&self, repo: &RepoRef, target_id: &str) -> Result<bool> {
         Ok(self.target_audience(repo, target_id).await? == Audience::Public)
-    }
-
-    /// Who reads `repo`'s issue or pull request `target_id` now: its own audience, or Public
-    /// once a maintainer's bundle made it public (DESIGN §4.6). Fails closed.
-    pub async fn thread_audience(&self, repo: &RepoRef, target_id: &str) -> Result<Audience> {
-        self.target_audience(repo, target_id).await
     }
 
     /// `repo`'s publication-date records (`event` kind 28, [`rules::embargo`]), oldest first,

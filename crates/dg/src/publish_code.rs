@@ -472,6 +472,7 @@ pub(crate) struct PlanNames {
     pub base: String,
 }
 
+/// The names `plan` records when a publish is scheduled.
 fn plan_names(plan: &Plan) -> PlanNames {
     PlanNames {
         branch: plan.branch_name().to_string(),
@@ -726,6 +727,9 @@ async fn pr_source(
     // what `dg pr merge` checks before anything is built: open and ready, a base that was a
     // branch when it was opened, the merger's role, the branch policy's approvals and checks
     // and its merge methods (a squash, or a fast-forward with history)
+    if !later {
+        crate::pr::refuse_unmergeable(&view, n)?;
+    }
     crate::pr::refuse_missing_base(&view, n, false)?;
     if later && !view.state.open {
         return Err(UserError::new(
@@ -740,7 +744,6 @@ async fn pr_source(
         .into());
     }
     if !later {
-        crate::pr::refuse_unmergeable(&view, n)?;
         let method = if history {
             crate::pr::METHOD_FF
         } else {

@@ -105,6 +105,7 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
+/// The refusal for `text` that is not a time.
 fn at_error(text: &str) -> anyhow::Error {
     UserError::new(codes::USAGE, format!("{} is not a time", safe(text)))
         .fix("give a time with its zone: --at 2026-10-20T14:00Z, --at '2026-10-20 14:00 UTC', --at 2026-10-20T16:00+02:00")
@@ -213,11 +214,8 @@ pub(crate) fn when(at: u64) -> String {
 
 /// How far `at` is from `now`: "in 3 days", "in 2 hours", "5 minutes ago".
 fn relative(at: u64, now: u64) -> String {
-    let (d, future) = if at >= now {
-        (at - now, true)
-    } else {
-        (now - at, false)
-    };
+    let d = at.abs_diff(now);
+    let future = at >= now;
     let span = match d {
         0..=59 => {
             return if future {
@@ -250,7 +248,7 @@ async fn read_embargoes(collab: &Collab<'_>, repo: &RepoRef) -> Result<Vec<Embar
     Ok(embargo::embargoes(&records))
 }
 
-/// Issue or pull request `number` as a target, and whether it is an issue.
+/// Issue or pull request `number` of `repo` as a target.
 async fn target_of(collab: &Collab<'_>, repo: &RepoRef, number: u32) -> Result<Target> {
     for kind in [TargetKind::Issue, TargetKind::Patch] {
         if let Some(t) = collab.target_read(repo, kind, number).await? {
@@ -378,7 +376,7 @@ pub(crate) async fn schedule(
             .into());
         }
     }
-    let audience = collab.thread_audience(&s.repo, &target.id).await?;
+    let audience = collab.target_audience(&s.repo, &target.id).await?;
     if audience == forge_core::rules::v2::Audience::SpecificPeople {
         return Err(UserError::new(
             codes::USAGE,
@@ -438,7 +436,7 @@ pub(crate) async fn schedule(
     let e = Embargo {
         target_id: target.id.clone(),
         number: target.number,
-        plan: plan.clone(),
+        plan,
         set_by: collab.signer_id()?,
         set_at: 0,
         id: id.clone(),
@@ -450,7 +448,7 @@ pub(crate) async fn schedule(
             "status": "scheduled",
             "number": target.number,
             "at": at,
-            "plan": plan,
+            "plan": e.plan,
             "checklist": items,
             "eventId": id,
             "cost": cost_json(spent, ctx.usd_price()),
@@ -579,20 +577,12 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
             }
             for (e, items) in &rows {
                 let state = match &e.state {
-                    EmbargoState::Scheduled if e.due(now) => {
-                        format!(
-                            "due since {} ({})",
-                            when(e.plan.at),
-                            relative(e.plan.at, now)
-                        )
-                    }
-                    EmbargoState::Scheduled => {
-                        format!(
-                            "publishes {} ({})",
-                            when(e.plan.at),
-                            relative(e.plan.at, now)
-                        )
-                    }
+                    EmbargoState::Scheduled => format!(
+                        "{} {} ({})",
+                        if e.due(now) { "due since" } else { "publishes" },
+                        when(e.plan.at),
+                        relative(e.plan.at, now)
+                    ),
                     EmbargoState::Cancelled { by, .. } => format!(
                         "cancelled by {} (was {})",
                         crate::fmt::short_identity(by),
