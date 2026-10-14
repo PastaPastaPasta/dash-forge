@@ -164,8 +164,13 @@ pub fn seal(
     input: &RefUpdateIn<'_>,
 ) -> Result<SealedRefUpdate, PrivateError> {
     let salt = blind::fresh_salt()?;
-    let (header, fields) =
-        header_and_fields(keys.ref_name_hash(input.name), keys.epoch(), owner, input, &salt)?;
+    let (header, fields) = header_and_fields(
+        keys.ref_name_hash(input.name),
+        keys.epoch(),
+        owner,
+        input,
+        &salt,
+    )?;
     let enc = doc::seal_members(keys, &header, &fields)?;
     Ok(sealed(header, salt, enc))
 }
@@ -179,8 +184,13 @@ pub fn seal_with(
     salt: Salt,
     nonce: [u8; 12],
 ) -> Result<SealedRefUpdate, PrivateError> {
-    let (header, fields) =
-        header_and_fields(keys.ref_name_hash(input.name), keys.epoch(), owner, input, &salt)?;
+    let (header, fields) = header_and_fields(
+        keys.ref_name_hash(input.name),
+        keys.epoch(),
+        owner,
+        input,
+        &salt,
+    )?;
     let enc = doc::seal_members_with_nonce(keys, &header, &fields, nonce)?;
     Ok(sealed(header, salt, enc))
 }

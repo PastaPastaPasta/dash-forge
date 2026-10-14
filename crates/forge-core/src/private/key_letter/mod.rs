@@ -213,9 +213,8 @@ impl TypedLetter {
         let Value::Object(mut fields) = serde_json::from_slice::<Value>(&value).ok()? else {
             return None;
         };
-        let kind = match fields.remove("type")? {
-            Value::String(s) => s,
-            _ => return None,
+        let Value::String(kind) = fields.remove("type")? else {
+            return None;
         };
         let v = fields.remove("v")?.as_u64()?;
         let letter = Self { kind, v, fields };

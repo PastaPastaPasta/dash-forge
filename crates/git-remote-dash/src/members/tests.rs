@@ -411,7 +411,7 @@ fn check(
                 audience: Audience::Public,
             }],
             publish_private: None,
-            audiences: &Default::default(),
+            audiences: &BTreeMap::default(),
             decryptable_narrower: &[],
         },
     )

@@ -17,9 +17,7 @@ use crate::env::Audience;
 use crate::error::{Error, Result};
 use crate::members::Member;
 use crate::platform;
-use crate::private::branch_key::{
-    self, Branch, BranchKey, BranchKeyLetter, BranchRing, LetterIn,
-};
+use crate::private::branch_key::{self, Branch, BranchKey, BranchKeyLetter, BranchRing, LetterIn};
 use crate::private::key_letter::{self, ManifestCheck, OpenError};
 use crate::private::named::{OwnerKey, Reader, Recipient};
 use crate::repo::{PackManifestInfo, PackManifestInput, PlatformChunkTarget, RepoService};
@@ -78,7 +76,13 @@ pub fn spec(a: &Audience) -> String {
 /// maintainers", "All members + 1 person", "2 people".
 #[must_use]
 pub fn label(a: &Audience) -> String {
-    let people = |n: usize| if n == 1 { "1 person".to_owned() } else { format!("{n} people") };
+    let people = |n: usize| {
+        if n == 1 {
+            "1 person".to_owned()
+        } else {
+            format!("{n} people")
+        }
+    };
     match (a.group, a.also.len()) {
         (Some(g), 0) => g.label().to_owned(),
         (Some(g), n) => format!("{} + {}", g.label(), people(n)),
@@ -113,9 +117,11 @@ pub async fn read_ring(
     let repo_id = repo.scope()?.repo_id;
     let manifests = svc.read_pack_manifests(repo).await?;
     // a letter with no block height cannot be ordered against the others (nor judged late)
-    let letters: Vec<&PackManifestInfo> = manifests
-        .iter()
-        .filter(|m| m.kind == u64::from(crate::pack::KIND_KEY_LETTER) && m.created_at_block_height > 0)
+    let letters: Vec<PackManifestInfo> = manifests
+        .into_iter()
+        .filter(|m| {
+            m.kind == u64::from(crate::pack::KIND_KEY_LETTER) && m.created_at_block_height > 0
+        })
         .collect();
     let signer = svc.signer()?;
     let reader_keys = signer.encryption_keys(repo).private_keys();
@@ -123,10 +129,13 @@ pub async fn read_ring(
     let mut opened = Vec::new();
     if !letters.is_empty() && !reader_keys.is_empty() {
         let store = crate::storage::PackReader::from_user_config();
-        let fetched: Vec<(&PackManifestInfo, Result<Vec<u8>>)> =
-            futures::stream::iter(letters.iter().map(|m| {
-                let store = &store;
-                async move { (*m, svc.fetch_artifact(repo, m, store).await) }
+        // owned manifests: a stream of futures borrowing from a closure's argument is not
+        // general enough to be awaited from every caller (the gateway's Send futures)
+        let store = &store;
+        let fetched: Vec<(PackManifestInfo, Result<Vec<u8>>)> =
+            futures::stream::iter(letters.into_iter().map(|m| async move {
+                let got = svc.fetch_artifact(repo, &m, store).await;
+                (m, got)
             }))
             .buffer_unordered(FETCH_WINDOW)
             .collect()
@@ -156,7 +165,13 @@ pub async fn read_ring(
                 pack_hash: &m.pack_hash,
                 size_bytes: m.size_bytes,
             };
-            let (letter, recipients) = match key_letter::open(&repo_id, &check, &sealed, &owner_keys[&m.owner_id], &reader) {
+            let (letter, recipients) = match key_letter::open(
+                &repo_id,
+                &check,
+                &sealed,
+                &owner_keys[&m.owner_id],
+                &reader,
+            ) {
                 Ok(o) => (o.letter, o.recipients),
                 Err(OpenError::NotARecipient) => continue,
                 Err(e) => {
@@ -494,8 +509,14 @@ mod tests {
         assert!(parse_spec("members").is_none() && parse_spec("public").is_none());
         assert!(parse_spec("maintainers,writers").is_none());
         assert!(parse_spec("maintainers,not-an-id").is_none());
-        assert_eq!(parse_spec(&format!("members,{id}")).unwrap().group, Some(Group::Members));
-        assert_eq!(label(&parse_spec("writers").unwrap()), "Writers and maintainers");
+        assert_eq!(
+            parse_spec(&format!("members,{id}")).unwrap().group,
+            Some(Group::Members)
+        );
+        assert_eq!(
+            label(&parse_spec("writers").unwrap()),
+            "Writers and maintainers"
+        );
     }
 
     #[test]
@@ -506,10 +527,7 @@ mod tests {
             plan(&b, &set(&["a", "b", "c"])),
             Reletter::Joiners(set(&["c"]))
         );
-        assert_eq!(
-            plan(&b, &set(&["a"])),
-            Reletter::NewGeneration(set(&["b"]))
-        );
+        assert_eq!(plan(&b, &set(&["a"])), Reletter::NewGeneration(set(&["b"])));
         // someone left and someone joined: one new generation for everyone now
         assert_eq!(
             plan(&b, &set(&["a", "c"])),

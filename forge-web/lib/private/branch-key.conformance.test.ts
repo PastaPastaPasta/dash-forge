@@ -187,13 +187,13 @@ function errorJson(e: unknown): Json {
 }
 
 /** Who `audience` is now, with `groups` (group → base58 ids, the owner in each; forge-core `resolve`). */
-function resolve(audience: Audience, groups: Obj): Set<string> {
+function resolveAudience(audience: Audience, groups: Obj): Set<string> {
   const out = new Set(audience.also)
   if (audience.group !== null && audience.group in groups) for (const p of strs(groups, audience.group)) out.add(p)
   return out
 }
 
-const inAudienceOf = (groups: Obj) => (sender: string, a: Audience) => resolve(a, groups).has(sender)
+const inAudienceOf = (groups: Obj) => (sender: string, a: Audience) => resolveAudience(a, groups).has(sender)
 
 /** The letters as the fold takes them, and the ignored ones the parse refused (forge-core `parse_letters`). */
 function parseLetters(letters: readonly Obj[]): { ok: BranchLetterIn[]; bad: { id: string; reason: BranchLetterIgnored }[] } {
@@ -300,7 +300,7 @@ async function run(v: Vector): Promise<Json> {
       const ctx = obj(inp, 'context')
       const groups = obj(ctx, 'groups')
       const folded = foldBranchLetters(parseLetters(arr(ctx, 'letters')).ok, inAudienceOf(groups))
-      const ring = await BranchRing.create(repoId, folded, (b) => [...resolve(b.audience, groups)].map((p) => privateId(p)))
+      const ring = await BranchRing.create(repoId, folded, (b) => [...resolveAudience(b.audience, groups)].map((p) => privateId(p)))
       const { enc, ...header } = storedDoc(obj(inp, 'doc'))
       const opened = await ring.open(header, enc)
       switch (opened.status) {

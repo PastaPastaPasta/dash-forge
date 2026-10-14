@@ -1188,17 +1188,17 @@ impl<'a> RepoService<'a> {
         };
         match crate::private::sniff(&sealed) {
             // a narrower branch's pack (DFPK 0x03, phase 3F): its branch key, when held
-            Head::OtherVersion(version)
-                if version == crate::private::branch_key::PACK_VERSION =>
-            {
+            Head::OtherVersion(version) if version == crate::private::branch_key::PACK_VERSION => {
                 let ring = kr.branch_ring();
                 let held = crate::private::branch_key::sniff_kcv(&sealed)
                     .zip(ring.as_ref())
                     .and_then(|(kcv, r)| r.branch_of_kcv(kcv).map(|_| r));
                 match held {
-                    Some(r) => crate::private::branch_key::open_pack(&sealed, size_bytes, r.all_keys())
-                        .map(ArtifactRead::Bytes)
-                        .map_err(|e| sealed_error(&e)),
+                    Some(r) => {
+                        crate::private::branch_key::open_pack(&sealed, size_bytes, r.all_keys())
+                            .map(ArtifactRead::Bytes)
+                            .map_err(|e| sealed_error(&e))
+                    }
                     None => skipped(SkipReason::OtherFormat { version }),
                 }
             }

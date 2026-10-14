@@ -162,7 +162,7 @@ export async function readHeldBranches(sdk: EvoSDK, repo: RepoRef): Promise<Held
 
 /** One ring read: when it started, and whether it is read again once {@link RING_RETRY_MS} passed (it failed or missed a letter). */
 interface RingRead {
-  readonly read: Promise<HeldBranches | null>
+  read: Promise<HeldBranches | null>
   readonly at: number
   retry: boolean
 }

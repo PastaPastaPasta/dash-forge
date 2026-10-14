@@ -567,6 +567,8 @@ impl std::fmt::Debug for MembersUpdates {
             .field("opened_new_oids", &self.opened_new_oids.len())
             .field("sealed", &self.sealed.len())
             .field("narrower", &self.narrower.len())
+            .field("opened_narrower", &self.opened_narrower.len())
+            .field("unreadable_narrower", &self.unreadable_narrower.len())
             .finish()
     }
 }
@@ -717,8 +719,9 @@ pub fn members_updates_of(
     for (name, mut sealed) in members {
         // a name with a narrower update keeps only its narrower updates (phase 3F)
         if sealed.iter().any(|u| out.narrower.contains(&u.id)) {
-            let (keep, drop): (Vec<RefUpdate>, Vec<RefUpdate>) =
-                sealed.into_iter().partition(|u| out.narrower.contains(&u.id));
+            let (keep, drop): (Vec<RefUpdate>, Vec<RefUpdate>) = sealed
+                .into_iter()
+                .partition(|u| out.narrower.contains(&u.id));
             for u in drop {
                 out.sealed.remove(&u.id);
                 out.alerts.push(RefAlert {
@@ -855,6 +858,7 @@ impl std::fmt::Debug for MembersView {
             .field("members_only", &self.members_only.len())
             .field("decryptable", &self.decryptable.len())
             .field("narrower", &self.narrower.len())
+            .field("decryptable_narrower", &self.decryptable_narrower.len())
             .field("alerts", &self.alerts.len())
             .field("unreadable", &self.unreadable)
             .finish()

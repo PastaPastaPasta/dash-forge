@@ -1019,7 +1019,8 @@ impl Keyring {
             let Some(ring) = self.branch_ring() else {
                 return Opened::Unreadable(Unreadable::UnknownVersion);
             };
-            if self.visibility != Visibility::Public || d.field_str("vis").as_deref() != Some("public")
+            if self.visibility != Visibility::Public
+                || d.field_str("vis").as_deref() != Some("public")
             {
                 return Opened::Malformed;
             }

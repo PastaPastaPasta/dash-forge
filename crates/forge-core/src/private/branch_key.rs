@@ -43,10 +43,10 @@ use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use super::blind;
 use super::doc::{DocHeader, Opened, Unreadable, NONCE_LEN, TAG_LEN};
+use super::key_letter::TypedLetter;
 use super::keys::{ct_eq, rnd32, sha256, ObjKeys};
 use super::members_ref::{self, RefUpdateIn, SealedRefUpdate};
 use super::pack::{HEADER_LEN, MAGIC, WRITE_SEG_LOG2};
-use super::key_letter::TypedLetter;
 use super::{tlv, DocKind, Fields, PrivateError, GRACE_BLOCKS};
 use crate::env::{Audience, Group};
 use crate::rules::v2::Visibility;
@@ -100,7 +100,10 @@ impl BranchKey {
     /// A key from 64 lower-case hex characters (a letter's spelling); `None` otherwise.
     #[must_use]
     pub fn from_hex(s: &str) -> Option<Self> {
-        if s.len() != 64 || !s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        if s.len() != 64
+            || !s
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
         {
             return None;
         }
@@ -261,7 +264,8 @@ pub fn ledger_token(repo_id: &[u8; 32], first: &BranchKey) -> String {
 /// Whether `name` may be a narrower branch: a branch (`refs/heads/…`), not a tag or another ref.
 #[must_use]
 pub fn is_branch_name(name: &str) -> bool {
-    name.strip_prefix("refs/heads/").is_some_and(|b| !b.is_empty())
+    name.strip_prefix("refs/heads/")
+        .is_some_and(|b| !b.is_empty())
 }
 
 /// Seal a narrower branch's ref update under `keys` (the branch's current generation), with a
@@ -409,11 +413,15 @@ fn seal_pack_inner(
     let mut out = Vec::with_capacity(HEADER_LEN + plaintext.len() + 16 * segments);
     out.extend_from_slice(&h);
     for i in 0..segments {
-        let chunk = &plaintext[(i * seg).min(plaintext.len())..((i + 1) * seg).min(plaintext.len())];
+        let chunk =
+            &plaintext[(i * seg).min(plaintext.len())..((i + 1) * seg).min(plaintext.len())];
         let ct = cipher
             .encrypt(
                 Nonce::from_slice(&seg_nonce(i as u64, segments as u64)),
-                Payload { msg: chunk, aad: &h },
+                Payload {
+                    msg: chunk,
+                    aad: &h,
+                },
             )
             .map_err(|_| PrivateError::Malformed)?;
         out.extend_from_slice(&ct);
@@ -465,7 +473,8 @@ pub fn open_pack<'k>(
         let mut out = Zeroizing::new(Vec::with_capacity(usize::try_from(plain_len).unwrap_or(0)));
         let mut at = HEADER_LEN;
         for i in 0..segments {
-            let len = usize::try_from((plain_len - i * seg).min(seg) + 16).map_err(|_| corrupt())?;
+            let len =
+                usize::try_from((plain_len - i * seg).min(seg) + 16).map_err(|_| corrupt())?;
             let Some(ct) = sealed.get(at..at + len) else {
                 return Err(corrupt());
             };
@@ -578,7 +587,14 @@ impl BranchKeyLetter {
         );
         f.insert(
             "people".into(),
-            Value::Array(self.audience.also.iter().cloned().map(Value::String).collect()),
+            Value::Array(
+                self.audience
+                    .also
+                    .iter()
+                    .cloned()
+                    .map(Value::String)
+                    .collect(),
+            ),
         );
         f.insert(
             "to".into(),
@@ -936,7 +952,10 @@ impl BranchRing {
         if enc.len() < MIN_V6
             || enc[0] != V6
             || header.vis != Visibility::Public
-            || !matches!(header.kind, DocKind::RefUpdate | DocKind::ProtectedRefUpdate)
+            || !matches!(
+                header.kind,
+                DocKind::RefUpdate | DocKind::ProtectedRefUpdate
+            )
         {
             return Opened::Malformed;
         }

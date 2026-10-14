@@ -171,7 +171,9 @@ describe('membersUpdatesOf with narrower branches (enc v0x06)', () => {
     const narrow = await sealBranchRef(ring.writeKeys(SEC) as BranchKeys, OWNER, { type: 'refUpdate', name: SEC, newOid: A, force: false })
     // a member outside the branch's audience moves it with the members key
     const moved = await sealMembersRef(k0, OWNER, { type: 'refUpdate', name: SEC, newOid: B, prevOid: A, force: true })
-    const rows = { refUpdate: [sealedRow(3, 902, moved), sealedRow(1, 900, narrow)], protectedRefUpdate: [sealedRow(2, 901, moved)] }
+    // a protected update is sealed as one: the AD binds the document type
+    const movedProtected = await sealMembersRef(k0, OWNER, { type: 'protectedRefUpdate', name: SEC, newOid: B, prevOid: A, force: true })
+    const rows = { refUpdate: [sealedRow(3, 902, moved), sealedRow(1, 900, narrow)], protectedRefUpdate: [sealedRow(2, 901, movedProtected)] }
     const got = await membersUpdatesOf(rows, (d) => openContent(d, ctx), [], undefined, (d) => ring.open(d, d.enc))
     expect(got.byName.get(SEC)?.map((u) => u.id)).toEqual([id(1)])
     expect(got.alerts).toEqual([

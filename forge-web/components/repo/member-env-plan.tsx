@@ -118,8 +118,10 @@ export function useMemberEnvFlow(home: RepoHome, change: MemberChange | null, he
   const canOpen = envs.state.data?.encryption === 'open' && !envs.locked && writer !== null
   // a member reading a public repo's members-only content, in a repo with narrower branches (held,
   // not held, or not checked): their letters ride the plan
-  const narrowerRefs = home.branches.some((b) => b.narrower !== undefined) || home.membersRefs?.noAccess !== 0
-  const hasBranches = writer?.io.branches !== undefined && home.membersRefs !== undefined && narrowerRefs
+  const hasBranches =
+    writer?.io.branches !== undefined &&
+    home.membersRefs !== undefined &&
+    (home.membersRefs.noAccess !== 0 || (home.branches ?? []).some((b) => b.narrower !== undefined))
   const changeKey = change === null ? '' : JSON.stringify(change)
   const planned = useAsync<MemberEnvPlan>(
     () => planMemberChange(writer!.io, change!, identity!, home.repo.ownerId, heldMembersKey),

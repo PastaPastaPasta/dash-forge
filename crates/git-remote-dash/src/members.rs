@@ -1124,7 +1124,7 @@ pub fn pre_push(args: &[String], input: &mut dyn std::io::Read) -> Result<i32> {
             public_tips: &known,
             batch: &batch,
             publish_private: None,
-            audiences: &Default::default(),
+            audiences: &BTreeMap::default(),
             decryptable_narrower: &[],
         },
     )?;

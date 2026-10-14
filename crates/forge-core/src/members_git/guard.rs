@@ -249,7 +249,9 @@ pub fn guard(g: &impl ObjectGraph, input: &GuardInput<'_>) -> Result<Outcome> {
     }
     for (oid, token) in input.decryptable_narrower {
         let narrow = EntryAudience::Narrower(token.clone());
-        let a = s.remove(oid).map_or(narrow.clone(), |a| a.narrowest(narrow));
+        let a = s
+            .remove(oid)
+            .map_or(narrow.clone(), |a| a.narrowest(narrow));
         s.insert(oid.clone(), a);
     }
     // what each audience already holds (recorded or decryptable), before the batch adds its tips

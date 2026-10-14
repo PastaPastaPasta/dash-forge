@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 
 use super::{
     fold, open_pack, real_values, seal_pack_with, seal_ref_with, sniff_kcv, BranchKey,
-    BranchKeys, BranchKeyLetter, BranchRing, Ignored, LetterIn,
+    BranchKeyLetter, BranchKeys, BranchRing, Ignored, LetterIn,
 };
 use crate::private::conformance::{error_json, h32, input, nonce12, StoredDocIn, Vector};
 use crate::private::doc::Opened;
@@ -46,7 +46,10 @@ struct CtxIn {
 }
 
 /// Who `audience` is now, with `groups` (group → base58 ids, the owner in each).
-fn resolve(audience: &crate::env::Audience, groups: &BTreeMap<String, Vec<String>>) -> BTreeSet<String> {
+fn resolve(
+    audience: &crate::env::Audience,
+    groups: &BTreeMap<String, Vec<String>>,
+) -> BTreeSet<String> {
     let mut out: BTreeSet<String> = audience.also.iter().cloned().collect();
     if let Some(g) = audience.group {
         out.extend(groups.get(g.as_str()).into_iter().flatten().cloned());
@@ -179,6 +182,7 @@ fn fold_json(
     json!({ "branches": out, "ignored": ignored })
 }
 
+#[allow(clippy::too_many_lines)] // one arm per op, each a few lines
 fn run(v: &Vector) -> Value {
     let i: BranchIn = input(v);
     let repo_id = i.repo_id.as_deref().map(h32);
@@ -213,11 +217,16 @@ fn run(v: &Vector) -> Value {
                 force: i.force.unwrap(),
             };
             let salt = h32(i.salt.as_deref().unwrap());
-            let sealed =
-                match seal_ref_with(&k, owner, &input, salt, nonce12(i.nonce.as_deref().unwrap())) {
-                    Ok(s) => s,
-                    Err(e) => return error_json(&e),
-                };
+            let sealed = match seal_ref_with(
+                &k,
+                owner,
+                &input,
+                salt,
+                nonce12(i.nonce.as_deref().unwrap()),
+            ) {
+                Ok(s) => s,
+                Err(e) => return error_json(&e),
+            };
             let (header, fields) = members_ref::header_and_fields(
                 k.ref_name_hash(input.name),
                 gen,
@@ -319,10 +328,12 @@ fn run(v: &Vector) -> Value {
             }
             match crate::private::sniff(&head) {
                 Head::Plain => json!({ "kind": "plain" }),
-                Head::Short => json!({ "kind": "short" }),
+                // a DFPK 0x03 head too short for its KCV prefix
+                Head::Short | Head::OtherVersion(3) => json!({ "kind": "short" }),
                 Head::Sealed { epoch } => json!({ "kind": "sealed", "epoch": epoch }),
-                Head::OtherVersion(3) => json!({ "kind": "short" }),
-                Head::OtherVersion(version) => json!({ "kind": "otherVersion", "version": version }),
+                Head::OtherVersion(version) => {
+                    json!({ "kind": "otherVersion", "version": version })
+                }
             }
         }
         "fold" => fold_json(&repo_id.unwrap(), &i.letters.unwrap(), &i.groups.unwrap()),

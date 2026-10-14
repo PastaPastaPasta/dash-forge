@@ -9,6 +9,7 @@
 //! person to push them.
 
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -68,7 +69,9 @@ pub async fn prepare(s: &Session, after: &[Member]) -> Result<Plan> {
     let svc = RepoService::new(&s.client, &s.identity, &s.bridge);
     let ring = Arc::new(narrow::read_ring(&svc, &s.repo, after).await?);
     // the member fold opens the branches held, and counts the others
-    svc.keyring(&s.repo).await?.set_branch_ring(Arc::clone(&ring));
+    svc.keyring(&s.repo)
+        .await?
+        .set_branch_ring(Arc::clone(&ring));
     let not_held = match svc.read_members_refs(&s.repo).await {
         Ok(Some(m)) => m.updates.unreadable_narrower.len(),
         _ => 0,
@@ -100,10 +103,7 @@ impl Plan {
     /// The credits the planned letters cost.
     #[must_use]
     pub fn credits(&self) -> u64 {
-        self.items
-            .iter()
-            .map(|i| letter_credits(i.now.len()))
-            .sum()
+        self.items.iter().map(|i| letter_credits(i.now.len())).sum()
     }
 
     /// Print one line per branch (stderr) and return the sentence the confirmation adds.
@@ -112,10 +112,9 @@ impl Plan {
             let name = safe(forge_core::keyring::short_branch(&i.name));
             let label = narrow::label(&i.audience);
             match &i.action {
-                Reletter::Joiners(j) => eprintln!(
-                    "  {name} ({label} only): send its key to {}",
-                    comma_list(j)
-                ),
+                Reletter::Joiners(j) => {
+                    eprintln!("  {name} ({label} only): send its key to {}", comma_list(j));
+                }
                 Reletter::NewGeneration(_) => eprintln!(
                     "  {name} ({label} only): a new key for the {} people it is for now",
                     i.now.len()
@@ -139,7 +138,11 @@ impl Plan {
         }
         format!(
             " Then {} for fewer people {} its key again ({}).",
-            plural_with(self.items.len(), "members-only branch", "members-only branches"),
+            plural_with(
+                self.items.len(),
+                "members-only branch",
+                "members-only branches"
+            ),
             if self.items.len() == 1 { "gets" } else { "get" },
             cost_line(self.credits(), price)
         )
@@ -162,20 +165,22 @@ impl Plan {
             let name = forge_core::keyring::short_branch(&i.name).to_owned();
             match narrow::reletter(&svc, &s.repo, b, &i.audience, &i.now).await {
                 Ok(Some(w)) => {
-                    text.push_str(&format!(
+                    let _ = write!(
+                        text,
                         "\n  {} ({} only): its key went to {}",
                         safe(&name),
                         narrow::label(&i.audience),
                         people_count(w.to.len())
-                    ));
+                    );
                     out.push(json!({ "branch": name, "status": "sent", "to": w.to }));
                 }
                 Ok(None) => out.push(json!({ "branch": name, "status": "unchanged" })),
                 Err(e) => {
-                    text.push_str(&format!(
+                    let _ = write!(
+                        text,
                         "\n  {}: its key couldn't be sent ({e}); the next push of it sends it",
                         safe(&name)
-                    ));
+                    );
                     out.push(json!({ "branch": name, "status": "failed", "error": e.to_string() }));
                 }
             }

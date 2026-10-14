@@ -370,7 +370,10 @@ impl Helper {
                 Err(members::cannot_check_fetch(&brief(&format!("{e:#}"))).into())
             }
             Err(e) => {
-                eprintln!("dash: warning: branches for fewer people couldn't be read: {}", brief(&format!("{e:#}")));
+                eprintln!(
+                    "dash: warning: branches for fewer people couldn't be read: {}",
+                    brief(&format!("{e:#}"))
+                );
                 Ok(None)
             }
         }
@@ -885,7 +888,10 @@ impl Helper {
         }
         // Narrower branches (phase 3F): their letters first (a new branch's key, an audience that
         // changed since the last letter), then the keys this push seals under, read again.
-        let ring = if public_repo && !dry_run && planned.iter().any(|p| p.reject.is_none() && p.narrower()) {
+        let ring = if public_repo
+            && !dry_run
+            && planned.iter().any(|p| p.reject.is_none() && p.narrower())
+        {
             prepare_narrower(conn, &svc, &mut planned, &view, &new_branches).await
         } else {
             view.ring.clone()
@@ -1012,13 +1018,13 @@ impl Helper {
                     .iter()
                     .find(|p| p.reject.is_none() && p.spec.dst == job.ref_name)
                     .map(|p| p.audience.clone());
-                let sealer = match &audience {
+                let pack_key = match &audience {
                     Some(Audience::Narrower(_)) => PackSealer::Branch(
                         ring.as_deref().and_then(|r| r.write_keys(&job.ref_name)),
                     ),
                     _ => PackSealer::Members(lane.as_ref()),
                 };
-                if let Some((hash, credits)) = upload_members_pack(ctx, sealer, job).await? {
+                if let Some((hash, credits)) = upload_members_pack(ctx, pack_key, job).await? {
                     match audience {
                         Some(Audience::Narrower(token)) => {
                             narrower_packs.entry(token).or_default().push(hash);
@@ -2639,6 +2645,7 @@ fn record_narrower(commits: &[(String, String)]) -> Result<()> {
 /// Then the letters are read again, so the packs and ref updates seal under the current
 /// generation. A ref whose key cannot be settled is refused; the ring the push seals with is
 /// returned.
+#[allow(clippy::too_many_lines)] // new branches, then audience changes, then the read-back
 async fn prepare_narrower(
     conn: &Conn,
     svc: &RepoService<'_>,
@@ -2647,12 +2654,18 @@ async fn prepare_narrower(
     new_branches: &BTreeMap<String, NewBranch>,
 ) -> Option<std::sync::Arc<forge_core::private::branch_key::BranchRing>> {
     let reject_narrower = |planned: &mut [Planned], why: &str| {
-        for p in planned.iter_mut().filter(|p| p.reject.is_none() && p.narrower()) {
+        for p in planned
+            .iter_mut()
+            .filter(|p| p.reject.is_none() && p.narrower())
+        {
             p.reject = Some(why.to_owned());
         }
     };
     let Some(kr) = view.keyring.as_ref() else {
-        reject_narrower(planned, "the key that reads members-only branches isn't available");
+        reject_narrower(
+            planned,
+            "the key that reads members-only branches isn't available",
+        );
         return None;
     };
     let repo = &conn.repo;
@@ -2682,7 +2695,12 @@ async fn prepare_narrower(
             }
             Ok(None) => {}
             Err(e) => {
-                eprintln!("dash: error: {} couldn't be started for {}: {}", members::short(dst), forge_core::narrow::label(&audience), brief(&format!("{e:#}")));
+                eprintln!(
+                    "dash: error: {} couldn't be started for {}: {}",
+                    members::short(dst),
+                    forge_core::narrow::label(&audience),
+                    brief(&format!("{e:#}"))
+                );
                 reject_ref(planned, dst, "its key couldn't be sent");
             }
         }
@@ -2690,19 +2708,26 @@ async fn prepare_narrower(
     if let Some(ring) = view.ring.as_ref() {
         let names: Vec<String> = planned
             .iter()
-            .filter(|p| p.reject.is_none() && p.narrower() && !new_branches.contains_key(&p.spec.dst))
+            .filter(|p| {
+                p.reject.is_none() && p.narrower() && !new_branches.contains_key(&p.spec.dst)
+            })
             .map(|p| p.spec.dst.clone())
             .collect();
         for dst in names {
             let Some(b) = ring.get(&dst) else { continue };
             let people = forge_core::narrow::resolve_now(&b.audience, owner, members);
             if !people.contains(&me) {
-                eprintln!("dash: error: you are no longer one of the people {} is for", members::short(&dst));
+                eprintln!(
+                    "dash: error: you are no longer one of the people {} is for",
+                    members::short(&dst)
+                );
                 reject_ref(planned, &dst, "not one of the people this branch is for");
                 continue;
             }
             let done = match forge_core::narrow::with_keys(svc, repo, &people).await {
-                Ok((with, _)) => forge_core::narrow::reletter(svc, repo, b, &b.audience, &with).await,
+                Ok((with, _)) => {
+                    forge_core::narrow::reletter(svc, repo, b, &b.audience, &with).await
+                }
                 Err(e) => Err(e),
             };
             match done {
@@ -2712,7 +2737,11 @@ async fn prepare_narrower(
                     say_letter(&dst, &b.audience, &w);
                 }
                 Ok(None) => {}
-                Err(e) => eprintln!("dash: warning: {}'s audience changed and its key couldn't be updated: {}", members::short(&dst), brief(&format!("{e:#}"))),
+                Err(e) => eprintln!(
+                    "dash: warning: {}'s audience changed and its key couldn't be updated: {}",
+                    members::short(&dst),
+                    brief(&format!("{e:#}"))
+                ),
             }
         }
     }
@@ -2722,7 +2751,10 @@ async fn prepare_narrower(
     let ring = match forge_core::narrow::read_ring(svc, repo, members).await {
         Ok(r) => std::sync::Arc::new(r),
         Err(e) => {
-            eprintln!("dash: error: the branch keys just sent couldn't be read back: {}", brief(&format!("{e:#}")));
+            eprintln!(
+                "dash: error: the branch keys just sent couldn't be read back: {}",
+                brief(&format!("{e:#}"))
+            );
             reject_narrower(planned, "branch key not readable yet");
             return None;
         }
@@ -2742,10 +2774,15 @@ fn refuse_unsettled(
     new_branches: &BTreeMap<String, NewBranch>,
     expect: &BTreeMap<String, [u8; 4]>,
 ) {
-    for p in planned.iter_mut().filter(|p| p.reject.is_none() && p.narrower()) {
+    for p in planned
+        .iter_mut()
+        .filter(|p| p.reject.is_none() && p.narrower())
+    {
         let dst = p.spec.dst.clone();
         let started_by_us = match new_branches.get(&dst).and_then(|nb| nb.key.as_ref()) {
-            Some(key) => ring.get(&dst).is_some_and(|b| b.keys().first() == Some(key)),
+            Some(key) => ring
+                .get(&dst)
+                .is_some_and(|b| b.keys().first() == Some(key)),
             None => true,
         };
         let on_expected = expect
@@ -2756,7 +2793,10 @@ fn refuse_unsettled(
             say_refusal(&e);
             p.reject = Some(wire.to_owned());
         } else if !on_expected {
-            eprintln!("dash: error: {}'s new key isn't the one readers use yet; push again in a minute", members::short(&dst));
+            eprintln!(
+                "dash: error: {}'s new key isn't the one readers use yet; push again in a minute",
+                members::short(&dst)
+            );
             p.reject = Some("its key isn't settled yet".into());
         }
     }
@@ -2783,22 +2823,36 @@ async fn first_letter(
 ) -> forge_core::Result<Option<forge_core::narrow::Written>> {
     let (with, _) = forge_core::narrow::with_keys(svc, repo, people).await?;
     match (&nb.key, held) {
-        (Some(key), _) => {
-            forge_core::narrow::write_letter(svc, repo, dst, vec![key.clone()], audience.clone(), &with)
-                .await
-                .map(Some)
-        }
+        (Some(key), _) => forge_core::narrow::write_letter(
+            svc,
+            repo,
+            dst,
+            vec![key.clone()],
+            audience.clone(),
+            &with,
+        )
+        .await
+        .map(Some),
         // re-letter it for the audience asked for now (a new key when anyone who held it is no
         // longer in it)
         (None, Some(b)) if b.audience == *audience => {
             forge_core::narrow::reletter(svc, repo, b, audience, &with).await
         }
-        (None, Some(b)) => match forge_core::narrow::reletter(svc, repo, b, audience, &with).await {
-            Ok(None) => forge_core::narrow::write_letter(svc, repo, dst, b.keys().to_vec(), audience.clone(), &with)
+        (None, Some(b)) => {
+            match forge_core::narrow::reletter(svc, repo, b, audience, &with).await {
+                Ok(None) => forge_core::narrow::write_letter(
+                    svc,
+                    repo,
+                    dst,
+                    b.keys().to_vec(),
+                    audience.clone(),
+                    &with,
+                )
                 .await
                 .map(Some),
-            other => other,
-        },
+                other => other,
+            }
+        }
         (None, None) => Ok(None),
     }
 }
@@ -2814,7 +2868,10 @@ fn say_letter(dst: &str, audience: &forge_core::env::Audience, w: &forge_core::n
         w.gen
     );
     for s in &w.skipped {
-        eprintln!("dash: warning: {s} has no encryption key, so can't read {} yet", members::short(dst));
+        eprintln!(
+            "dash: warning: {s} has no encryption key, so can't read {} yet",
+            members::short(dst)
+        );
     }
 }
 
@@ -3095,7 +3152,11 @@ fn decide_narrower(
         }
         return Narrow::Decided;
     }
-    let Some(audience) = p.new_oid.as_ref().and(members::narrow_intent(&p.spec.src, dst)) else {
+    let Some(audience) = p
+        .new_oid
+        .as_ref()
+        .and(members::narrow_intent(&p.spec.src, dst))
+    else {
         return Narrow::Not;
     };
     let refusal = if view.members_only.contains(dst) || live_names(&view.public).contains(dst) {
@@ -3136,22 +3197,18 @@ fn decide_narrower(
             audience,
         });
     }
-    match forge_core::private::branch_key::BranchKey::generate() {
-        Ok(key) => {
-            p.audience = Audience::Narrower(forge_core::private::branch_key::ledger_token(
-                kr.repo_id(),
-                &key,
-            ));
-            Narrow::New(NewBranch {
-                key: Some(key),
-                audience,
-            })
-        }
-        Err(_) => {
-            p.reject = Some("no randomness for a new branch key".into());
-            Narrow::Decided
-        }
-    }
+    let Ok(key) = forge_core::private::branch_key::BranchKey::generate() else {
+        p.reject = Some("no randomness for a new branch key".into());
+        return Narrow::Decided;
+    };
+    p.audience = Audience::Narrower(forge_core::private::branch_key::ledger_token(
+        kr.repo_id(),
+        &key,
+    ));
+    Narrow::New(NewBranch {
+        key: Some(key),
+        audience,
+    })
 }
 
 /// The publication guard over the accepted refs (DESIGN D21, [`members::run_guard`]), before
@@ -3335,7 +3392,7 @@ fn members_pack_jobs(
 /// a dry run.
 async fn upload_members_pack(
     ctx: &PushContext<'_>,
-    sealer: PackSealer<'_>,
+    pack_key: PackSealer<'_>,
     job: &forge_core::members_git::plan::MembersPackJob,
 ) -> Result<Option<([u8; 32], u64)>> {
     let want: Vec<&str> = job.want.iter().map(String::as_str).collect();
@@ -3370,7 +3427,7 @@ async fn upload_members_pack(
         ));
         return Ok(None);
     }
-    let sealed = seal_members_pack(ctx, sealer, &pack.bytes)?;
+    let sealed = seal_members_pack(ctx, pack_key, &pack.bytes)?;
     let job = PackJob::new(&sealed, plain_bytes, objects, 0)?;
     if reuse_recorded(ctx, &job).await?.is_some() {
         return Ok(Some((job.pack_hash, 0)));
@@ -3429,19 +3486,22 @@ enum PackSealer<'a> {
     Branch(Option<&'a forge_core::private::branch_key::BranchKeys>),
 }
 
-/// The members-only pack `plain` sealed under `sealer`, kept beside a private push's sealed packs
+/// The members-only pack `plain` sealed under `pack_key`, kept beside a private push's sealed packs
 /// (`.git/dash/sealed/<repo>-members-<sha256>.pack`, or `-branch-<kcv>-` for a narrower branch) so
 /// an interrupted push stores the same bytes again (the same hash: found recorded, not paid
 /// twice), reused only while it opens under the current write epoch or generation and hashes back
 /// to `plain`.
 fn seal_members_pack(
     ctx: &PushContext<'_>,
-    sealer: PackSealer<'_>,
+    pack_key: PackSealer<'_>,
     plain: &[u8],
 ) -> Result<Vec<u8>> {
-    let label = match sealer {
+    let label = match pack_key {
         PackSealer::Members(_) => "members".to_owned(),
-        PackSealer::Branch(k) => format!("branch-{}", k.map(|k| hex::encode(k.kcv4())).unwrap_or_default()),
+        PackSealer::Branch(k) => format!(
+            "branch-{}",
+            k.map(|k| hex::encode(k.kcv4())).unwrap_or_default()
+        ),
     };
     let path = ctx.git_dir.join("dash").join("sealed").join(format!(
         "{}-{label}-{}.pack",
@@ -3450,7 +3510,7 @@ fn seal_members_pack(
     ));
     ctx.members_sealed.borrow_mut().push(path.clone());
     if let Ok(cached) = std::fs::read(&path) {
-        let reusable = match sealer {
+        let reusable = match pack_key {
             PackSealer::Members(Some(lane)) => {
                 let epoch = forge_core::private::PackHeader::parse(
                     cached
@@ -3466,8 +3526,12 @@ fn seal_members_pack(
             }
             PackSealer::Branch(Some(keys)) => {
                 forge_core::private::branch_key::sniff_kcv(&cached) == Some(keys.kcv4())
-                    && forge_core::private::branch_key::open_pack(&cached, cached.len() as u64, [keys])
-                        .is_ok_and(|o| o == plain)
+                    && forge_core::private::branch_key::open_pack(
+                        &cached,
+                        cached.len() as u64,
+                        [keys],
+                    )
+                    .is_ok_and(|o| o == plain)
             }
             _ => false,
         };
@@ -3475,7 +3539,7 @@ fn seal_members_pack(
             return Ok(cached);
         }
     }
-    let sealed = match sealer {
+    let sealed = match pack_key {
         PackSealer::Members(Some(lane)) => lane.seal_artifact(plain),
         PackSealer::Branch(Some(keys)) => forge_core::private::branch_key::seal_pack(keys, plain),
         PackSealer::Members(None) => return Err(anyhow!("the members key isn't available")),
