@@ -105,9 +105,22 @@ pub struct PullRow {
     pub source_ref_name: Option<String>,
     #[serde(default)]
     pub draft: bool,
+    /// Who it is for: `public`, `members` or `specificPeople` (absent from a dg older than
+    /// members-only pull requests: public).
+    #[serde(default)]
+    pub audience: Option<String>,
+    /// A members-only PR from a members-only branch: the real commit behind its blinded head
+    /// (`dg pr view`, for members; `headOid` stays the blind every fold uses).
+    #[serde(default)]
+    pub real_head_oid: Option<String>,
 }
 
 impl PullRow {
+    /// Whether everyone can read it.
+    pub fn is_public(&self) -> bool {
+        self.audience.as_deref().is_none_or(|a| a == "public")
+    }
+
     /// Whether the head lives in a fork (another repository).
     pub fn is_fork(&self) -> bool {
         self.source_repo_id != self.repo_id
@@ -383,6 +396,8 @@ mod tests {
             source_repo_id: "REPO".into(),
             source_ref_name: Some("refs/heads/feat".into()),
             draft,
+            audience: None,
+            real_head_oid: None,
         }
     }
 

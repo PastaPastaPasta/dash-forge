@@ -156,6 +156,8 @@ pub struct Relay {
 }
 
 /// One watched repository.
+// Its flags are independent operator switches, as runner.toml spells them.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RepoConfig {
@@ -198,6 +200,18 @@ pub struct RepoConfig {
     /// credits however often the expression fires.
     #[serde(default)]
     pub schedule: bool,
+    /// Run members-only branches (mixed-visibility DESIGN §4.3): a push to one, and a members-only
+    /// pull request from one, run as other pushes and PRs do, and are reported so the public sees
+    /// only each check's status and conclusion, under a name only members can read, and members
+    /// alone read its log (`dg ci report --members-branch`). The runner's identity must be a
+    /// member that holds its encryption key (`DASH_FORGE_KEY` an identity file, not a runner
+    /// key). Off by default: members-only branches and pull requests are not run (a log line
+    /// says so). An identity that reads members-only content never runs a stranger's code or
+    /// lets a job reach the Docker daemon, so this needs `pull_requests` other than `"all"`,
+    /// `allow_container_options` and `mount_docker_socket` off, and `log_storage` (where
+    /// members read the names and logs).
+    #[serde(default)]
+    pub members_branches: bool,
 }
 
 /// Which pull requests a repository's runner runs. None ever gets the secrets unless its head
@@ -290,6 +304,7 @@ impl Config {
             if r.secrets_file.as_ref().is_some_and(|p| !p.is_absolute()) {
                 bail!("{}: secrets_file must be an absolute path", r.repo);
             }
+            check_members_branches(&c, r)?;
         }
         for (label, image) in &c.platforms {
             // `-self-hosted` makes act run the job directly on the runner's host, outside
@@ -337,6 +352,39 @@ impl Config {
             .or_insert_with(|| DEFAULT_IMAGE.into());
         Ok(c)
     }
+}
+
+/// `members_branches = true` (DESIGN §4.3): refused with what would let a stranger's code or a job
+/// reach the Docker daemon, since this runner's identity reads members-only content, and without
+/// `log_storage`, where members read the names and logs.
+fn check_members_branches(c: &Config, r: &RepoConfig) -> Result<()> {
+    if r.members_branches {
+        let why = |what: &str| {
+            format!(
+                "{}: members_branches = true with {what}: this runner's identity reads \
+                 the repository's members-only content, so it never runs a stranger's \
+                 code or gives a job the Docker daemon",
+                r.repo
+            )
+        };
+        if r.pull_requests == PullPolicy::All {
+            bail!(why("pull_requests = \"all\""));
+        }
+        if r.allow_container_options {
+            bail!(why("allow_container_options = true"));
+        }
+        if c.mount_docker_socket {
+            bail!(why("mount_docker_socket = true"));
+        }
+        if c.log_storage.is_none() {
+            bail!(
+                "{}: members_branches = true needs log_storage: members read a \
+                 members-only check's name and log there",
+                r.repo
+            );
+        }
+    }
+    Ok(())
 }
 
 impl RepoConfig {
@@ -408,6 +456,37 @@ pub fn glob_match(pattern: &str, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn members_branches_refuse_strangers_code_and_the_daemon() {
+        let parse = |top: &str, repo: &str| {
+            Config::parse(&format!(
+                "state_dir = \"/s\"\n{top}\n[[repo]]\nrepo = \"a/b\"\nmembers_branches = true\n{repo}"
+            ))
+        };
+        assert!(parse("log_storage = \"l\"", "").is_ok());
+        for (top, repo, says) in [
+            (
+                "log_storage = \"l\"",
+                "pull_requests = \"all\"",
+                "pull_requests",
+            ),
+            (
+                "log_storage = \"l\"",
+                "allow_container_options = true",
+                "allow_container_options",
+            ),
+            (
+                "log_storage = \"l\"\nmount_docker_socket = true",
+                "",
+                "mount_docker_socket",
+            ),
+            ("", "", "log_storage"),
+        ] {
+            let e = format!("{:#}", parse(top, repo).unwrap_err());
+            assert!(e.contains(says), "{e}");
+        }
+    }
 
     const MIN: &str = r#"
 state_dir = "/tmp/x"

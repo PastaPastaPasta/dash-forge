@@ -38,6 +38,12 @@
 #      requires runs for real (its unrequired jobs do not, and nothing is reported skipped); with
 #      no policy requiring it, nothing runs; under a policy requiring every check, or one that
 #      can't be read, every filtered job runs.
+#  14. Members-only branches (a recording `dg ci refs` marks them): skipped while
+#      `members_branches` is off; with it on, a push runs its real commit from a cache of its own
+#      and every report says `--members-branch`, with no summary or artifacts and the summary at
+#      the top of the log; a members-only PR from that branch runs its real head and reports on
+#      the head it names (the blind); one from a public branch, and a row the identity can't read,
+#      run nothing.
 #  15. Environments (a recording `dg ci env`): on a trusted push each job gets only the environment
 #      it names, under the names it uses, any value intact (quotes, backslashes, `$`, CR LF,
 #      several lines), masked in its log line by line; a job naming an environment not shared
@@ -76,6 +82,13 @@ case " $* " in
   *" pr view "*) [[ -e "$FAKE_VIEW_FAILS" ]] && { echo "fake dg: the node did not answer" >&2; exit 1; }
                 python3 -c "import json,sys; print(json.dumps([p for p in json.load(open(sys.argv[1]))['prs'] if p['number']==int(sys.argv[2])][0]))" "$FAKE_PRS" "${@: -1}"; exit 0 ;;
   *" ci reruns "*) cat "$FAKE_RERUNS" 2>/dev/null || echo '{"requests":[]}'; exit 0 ;;
+  *" ci refs "*) [[ -e "$FAKE_REFS" ]] && { cat "$FAKE_REFS"; exit 0; }
+                # every ref of the stand-in remote, public (what `dg ci refs` says for a public repository)
+                git -C "$FAKE_REMOTE" for-each-ref --format='%(refname) %(objectname)' refs/heads refs/tags | python3 -c '
+import json, sys
+print(json.dumps(dict(visibility="public", membersView=False, refs=[dict(ref=r, tip=t, audience="public")
+                                                             for r, t in (l.split() for l in sys.stdin)])))'
+                exit 0 ;;
   *" repo view "*) cat "$FAKE_REPO" 2>/dev/null || echo '{"defaultBranch":"main"}'; exit 0 ;;
   *" repo policy show "*) [[ -e "$FAKE_POLICY_FAILS" ]] && { echo "fake dg: the node did not answer" >&2; exit 1; }
                          cat "$FAKE_POLICY" 2>/dev/null || echo '{"policy":null}'; exit 0 ;;
@@ -113,6 +126,8 @@ export FAKE_VIEW_FAILS="$W/view-fails"
 export FAKE_REPO="$W/repo.json"
 export FAKE_POLICY="$W/policy.json"
 export FAKE_POLICY_FAILS="$W/policy-fails"
+export FAKE_REFS="$W/refs.json"
+export FAKE_REMOTE="$R"
 export FAKE_ENVS="$W/envs"; mkdir -p "$FAKE_ENVS"
 export FAKE_ENV_LOG="$W/env-lookups.log"; : >"$FAKE_ENV_LOG"
 export DASH_FORGE_KEY="dfk1:devnet:fake:9:fake"
@@ -509,6 +524,62 @@ rm -f "$FAKE_POLICY_FAILS"
 check "when the policy can't be read, every filtered job runs" test "$(q "sorted(r['name'] for r in rs if r['sha']=='$HP4' and r['status']=='completed')")" = "['pp / other', 'pp / req']"
 check "…and the log says the policy could not be read" grep -q "leaves this push out: the branch policy could not be read" "$W/runner.log"
 
+echo "== 14. members-only branches"
+# every branch public but sec/*, which is members-only (what `dg ci refs` says for a member)
+refs_json() { git -C "$R" for-each-ref --format='%(refname) %(objectname)' refs/heads | python3 -c '
+import json, sys
+rows = [dict(ref=r, tip=t, audience="members" if r.startswith("refs/heads/sec/") else "public")
+        for r, t in (l.split() for l in sys.stdin)]
+print(json.dumps(dict(visibility="public", membersView=True, refs=rows)))' >"$FAKE_REFS"; }
+git -C "$R" switch -q -c sec/fix main
+git -C "$R" rm -rq --ignore-unmatch .forge
+mkdir -p "$R/.forge/workflows"
+cat >"$R/.forge/workflows/m.yml" <<'EOF'
+name: m
+on: [push, pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "members build at $GITHUB_SHA"
+EOF
+git -C "$R" add -A; git -C "$R" commit -qm "members: fix"
+refs_json
+: >"$FAKE_DG_LOG"; poll
+check "members_branches off: a members-only branch's push reports nothing" test "$(q "len(rs)")" = 0
+check "…and the log says why" grep -q "not run: a members-only branch, and this runner does not run members-only branches" "$W/runner.log"
+python3 - "$W/runner.toml" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace('schedule = true\n', 'schedule = true\nmembers_branches = true\n', 1)
+open(p, "w").write(s)
+PY
+echo more >"$R/m.txt"; git -C "$R" add -A; git -C "$R" commit -qm "members: more"
+HM=$(git -C "$R" rev-parse sec/fix)
+refs_json
+: >"$FAKE_DG_LOG"; poll
+check "members_branches on: the push runs, every report members-only" test "$(q "sorted(set((r['sha'], r.get('members-branch')) for r in rs))")" = "[('$HM', 'refs/heads/sec/fix')]"
+check "…queued, in_progress, completed" test "$(q "[r['status'] for r in rs if r['name']=='m / build']")" = "['queued', 'in_progress', 'completed']"
+check "…no summary and no artifacts, ever" test "$(q "any('summary' in r or 'artifact' in r for r in rs)")" = False
+check "…every report names the log storage (a log names the check for members)" test "$(q "{r.get('storage') for r in rs}")" = "{'e2e-logs'}"
+check "…the completed log starts with the summary and holds the job's output" test "$(q "[(l.startswith('forge-runner: success on refs/heads/sec/fix'), 'members build at $HM' in l) for l in (r['log_text'] for r in rs if r['status']=='completed')]")" = "[(True, True)]"
+check "…fetched into a cache of its own: the public runs' cache never holds it" bash -c "git --git-dir '$W/state/work/e2e__app/members.git' cat-file -e $HM && ! git --git-dir '$W/state/work/e2e__app/cache.git' cat-file -e $HM 2>/dev/null"
+BLIND=$(printf 'e%.0s' {1..40})
+python3 - "$HM" "$BLIND" >"$FAKE_PRS" <<'PY'
+import json, sys
+real, blind = sys.argv[1:]
+row = lambda n, ref, **kw: dict(number=n, title=f"pr {n}", author="MEMBER", state="open", baseRef="refs/heads/main",
+                                baseTip=None, headOid=blind, repoId="app", sourceRepoId="app", sourceRefName=ref,
+                                draft=False, audience="members", **kw)
+print(json.dumps({"prs": [row(9, "refs/heads/sec/fix", realHeadOid=real), row(10, "refs/heads/main"),
+                          {"number": 11, "title": None, "author": "B", "state": "open", "audience": "members",
+                           "readable": False, "why": "notAMember"}]}))
+PY
+: >"$FAKE_DG_LOG"; poll
+check "a members-only PR from it runs on the real head, reported on its blinded head" test "$(q "sorted(set((r['name'], r['sha'], r.get('members-branch')) for r in rs))")" = "[('m / build (pull_request)', '$BLIND', 'refs/heads/sec/fix')]"
+check "…the job saw the real commit" test "$(q "['members build at $HM' in r['log_text'] for r in rs if r['status']=='completed']")" = "[True]"
+check "…one from a public branch runs nothing, and says why" grep -q "PR #10 not run: a members-only pull request from a public branch" "$W/runner.log"
+
 echo "== 15. environments: each job gets its own, only on a trusted push, masked"
 TAG=$RANDOM$RANDOM
 python3 - "$FAKE_ENVS" "$TAG" <<'PY2'
@@ -573,7 +644,7 @@ EOF
 git -C "$R" add -A; git -C "$R" commit -qm "envs"
 HE=$(git -C "$R" rev-parse HEAD)
 : >"$FAKE_DG_LOG"; : >"$FAKE_ENV_LOG"; touch "$FAKE_ENVS/production.fail"
-poll
+refs_json; poll
 check "a failed lookup reports nothing (the push is tried again)" test "$(q "len([r for r in rs if r['sha']=='$HE'])")" = 0
 rm -f "$FAKE_ENVS/production.fail"; : >"$FAKE_ENV_LOG"
 poll
@@ -597,7 +668,7 @@ git -C "$R" switch -q -c envfeat release/env
 echo x >"$R/x.txt"; git -C "$R" add x.txt; git -C "$R" commit -qm "untrusted"
 HU=$(git -C "$R" rev-parse HEAD)
 : >"$FAKE_DG_LOG"; : >"$FAKE_ENV_LOG"
-poll
+refs_json; poll
 check "an untrusted push never asks for an environment" test "$(wc -l <"$FAKE_ENV_LOG" | tr -d ' ')" = 0
 check "…and its environment jobs run without the values" test "$(q "'stage=[]' in [r for r in rs if r['sha']=='$HU' and r['status']=='completed' and r['name']=='env / stage'][0]['log_text']")" = True
 check "…saying so" test "$(q "'only trusted refs get them' in [r for r in rs if r['sha']=='$HU' and r['status']=='completed' and r['name']=='env / stage'][0]['summary']")" = True

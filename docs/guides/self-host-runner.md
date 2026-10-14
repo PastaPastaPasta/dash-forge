@@ -106,6 +106,22 @@ on:
 - **Secrets as for a push of the branch.** A scheduled run gets the secrets when `trusted_refs` covers the default branch.
 - **Every run costs credits.** Each job posts three check-run reports, so `*/5 * * * *` writes hundreds of documents a day. That is why `schedule` is off by default. Pick the longest interval that does the job.
 
+## Members-only branches
+
+In a public repository, members can push branches only members can see (`dg branch new --members`), and open pull requests from them that are members-only too. The runner leaves them alone unless the repository's entry says `members_branches = true`: each poll then logs "not run: a members-only branch" (or pull request) instead.
+
+With `members_branches = true` the runner runs them as it runs other pushes and pull requests, and reports so that the public learns only how each check went:
+
+- **The runner's identity must be a member** that holds its encryption key, with the Read role at least (`dg collab add alice/project <runner> --role reader`, accepted by the runner identity) and a runner row (`dg ci runner add alice/project <runner>`). `DASH_FORGE_KEY` is then that identity's file (sealed with `DASH_FORGE_PASSPHRASE`), not a `dfk1:` runner key, which cannot read members-only content. The repository's member list shows the runner like any reader. A runner that reads branch by branch, without the members key, comes later.
+- **It finds them with `dg ci refs`**, which lists every ref with who can see it, as `git` reads them with the same key: a push to a members-only branch is run on its real commit, and a ref the members view no longer lists is not run.
+- **Members-only code stays apart.** It is fetched into a cache of its own (`members.git`), with the public branches it builds on, so a public run's checkout, whose log anyone reads, never holds a members-only commit. In a public repository, public runs fetch without the key, so a member's git brings nothing members-only into their cache either; don't record a default `dg` identity on the runner host (`dg auth` on that machine), which git would fall back to.
+- **When it can't tell.** A run waits (it is tried again on the next polls, up to `attempts`) when `dg ci refs` fails or, with `members_branches = true`, returns no members-only branches because the identity could not read them; a ref it does not list is not run.
+- **What the public sees.** Each check run is reported on the commit's blind, the value the branch's ref update shows the public instead of the commit, under a 16-character name only members can read, with its status, conclusion and times. It carries no summary, details link, run id or artifacts. Its log, with the summary at the top, is uploaded to `log_storage` so that only members can open it; the queued and running reports carry a short log too, so members see the check's name before it finishes. `log_storage` is required.
+- **What members see.** `dg ci status alice/project <commit>` lists the runs of a members-only branch's commit by their real names, and `dg ci log alice/project <commit> "ci / build"` prints a log ([CI and check runs](ci.md#members-only-branches)).
+- **Members-only pull requests** from a members-only branch run on their real head and report on the head the pull request shows (its blind), so its Checks count them. One from a public branch, or for specific people, is not run: the branch's own runs test that commit, and its members-only title must not reach a public log. A re-run request for one check of a members-only pull request re-runs every check of its head, because the runner cannot tell the coded names apart.
+- **Refused combinations.** An identity that reads members-only content never runs a stranger's code or hands a job the Docker daemon: the runner does not start with `members_branches = true` together with `pull_requests = "all"`, `allow_container_options = true` or `mount_docker_socket = true`.
+- **What the runner still sees.** The runner reads everything members-only in the repository, as any reader does, and so does a job's workflow code from a member's branch: whoever can push a members-only branch decides what its jobs print to their (members-only) logs.
+
 ## Environments
 
 A job that names an [environment](environments.md) gets its values as `${{ secrets.NAME }}`, as on GitHub:
@@ -165,6 +181,7 @@ secrets_file = "/etc/forge-runner/project.secrets"   # KEY=value lines, as act r
 # reruns = true                     # honour maintainers' and writers' re-run requests (see Re-runs)
 # schedule = false                  # run on.schedule crons on the default branch (see Schedules)
 # allow_container_options = false   # see Security before turning it on
+# members_branches = false          # run members-only branches (see Members-only branches)
 ```
 
 5. **Run it.**
@@ -280,7 +297,7 @@ The runner executes code from the repository: anyone who can push to a watched r
 - **No shared caches.** act's cache server is off (`--no-cache-server`), and act's action cache and workspaces are per run. One run cannot read or poison another's.
 - **One run at a time per repository.** Each run has its own directory under a per-repository lock, which is removed when the run ends.
 - **The runner key.** `DASH_FORGE_KEY` is a runner key: it can write check runs and nothing else, only on repositories that enrolled its identity, and only within its budget. It is passed to `dg` in the environment, never on a command line and never to act. A runner that reads [environments](#environments) also needs its identity's encryption key there, which opens whatever is shared with that identity.
-- **Logs are public.** Anyone can read a check run's log URL, so keep private output out of logs. On a private repository a check run carries no log, summary or run id (forge-community refuses them), so `dg` uploads no log there and records only each job's name, status and conclusion. The old `public_log` setting has no effect.
+- **Logs are public.** Anyone can read a check run's log URL, so keep private output out of logs. A members-only branch's log is the exception: only members can open it ([Members-only branches](#members-only-branches)). On a private repository a check run carries no log, summary or run id (forge-community refuses them), so `dg` uploads no log there and records only each job's name, status and conclusion. The old `public_log` setting has no effect.
 - **The artifact server has no authentication.** With `artifacts = true`, anyone who can reach `artifact_server_addr:artifact_server_port` while a workflow runs can add to its artifacts, which then go on its check run. Bind it where only the job network reaches ([Artifacts](#artifacts)); artifacts are public, like logs.
 
 ## What it does not do (yet)
