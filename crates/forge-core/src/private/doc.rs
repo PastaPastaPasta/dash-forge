@@ -764,7 +764,12 @@ pub fn open_shared_with_key(
     }
 }
 
-fn open_with_obj_key(repo_id: &[u8; 32], header: &DocHeader, enc: &[u8], k_obj: &[u8; 32]) -> Opened {
+fn open_with_obj_key(
+    repo_id: &[u8; 32],
+    header: &DocHeader,
+    enc: &[u8],
+    k_obj: &[u8; 32],
+) -> Opened {
     if enc.first() != Some(&V3) || !well_framed(header, enc) {
         return Opened::Malformed;
     }

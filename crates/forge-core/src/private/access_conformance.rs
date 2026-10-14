@@ -309,7 +309,16 @@ fn access_notice_conformance_vectors() {
     files.sort();
     for path in &files {
         let v: Map<String, Value> = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-        assert_eq!(run_notice(&v["input"]), v["expected"], "vector {}", path.display());
+        assert_eq!(
+            run_notice(&v["input"]),
+            v["expected"],
+            "vector {}",
+            path.display()
+        );
     }
-    assert!(files.len() >= 7, "ran {} access notice vectors", files.len());
+    assert!(
+        files.len() >= 7,
+        "ran {} access notice vectors",
+        files.len()
+    );
 }

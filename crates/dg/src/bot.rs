@@ -53,10 +53,9 @@ pub enum BotCommand {
         /// The repository (`owner/name`).
         repo: String,
     },
-    /// Ask a bot to work on a pull request or issue. Everyone can see that you asked; on a
-    /// members-only thread only members can see what you asked. The bot gets the thread's
-    /// members-only posts (and, run in a clone, a members-only pull request's code) as they
-    /// are now, and nothing added later.
+    /// Ask a bot to work on a pull request or issue. Everyone sees that you asked; only members
+    /// see a members-only thread's task. The bot gets that thread's members-only posts (and, in
+    /// a clone, its code) as they are now.
     Ask(Box<AskArgs>),
     /// The requests to a bot in a repository since a time: to you (as a bot), or to `--bot`.
     /// Everyone sees each request; a members-only thread's task only members and the bot.
@@ -94,6 +93,7 @@ pub enum AskersArg {
 
 /// `dg bot allow`.
 #[derive(Debug, Args)]
+#[allow(clippy::struct_excessive_bools)] // independent clap flags
 pub struct AllowArgs {
     /// The repository (`owner/name`).
     pub repo: String,
@@ -139,7 +139,12 @@ pub struct AskArgs {
     /// What to do (1 to 120 characters).
     pub task: String,
     /// The pull request.
-    #[arg(long, value_name = "NUMBER", conflicts_with = "issue", required_unless_present = "issue")]
+    #[arg(
+        long,
+        value_name = "NUMBER",
+        conflicts_with = "issue",
+        required_unless_present = "issue"
+    )]
     pub pr: Option<u32>,
     /// The issue.
     #[arg(long, value_name = "NUMBER")]
@@ -296,11 +301,15 @@ async fn write_notice(
 }
 
 /// Refuse, before anything is shown or signed, a notice the signer may not write or the bot
-/// could not receive (a private repository's notice is also a letter to the bot).
-async fn require_notice_writable(s: &Session, bot: &str, name: &str) -> Result<()> {
+/// could not receive (a private repository's notice is also a letter to the bot; taking access
+/// away still works without one: members stop honouring the old notice).
+async fn require_notice_writable(s: &Session, bot: &str, name: &str, revoking: bool) -> Result<()> {
     let collab = s.collab();
     collab.require_notice_writer(&s.repo).await?;
-    if s.repo.visibility == Visibility::Private && !collab.has_encryption_key(&s.repo, bot).await? {
+    if !revoking
+        && s.repo.visibility == Visibility::Private
+        && !collab.has_encryption_key(&s.repo, bot).await?
+    {
         return Err(UserError::new(
             codes::NO_ENCRYPTION_KEY,
             format!(
@@ -316,12 +325,13 @@ async fn require_notice_writable(s: &Session, bot: &str, name: &str) -> Result<(
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)] // one pass: who, the access, the checks, the write
 async fn allow(ctx: &Ctx, a: &AllowArgs) -> Result<()> {
     let s = Session::open_for_write(ctx, &a.repo, "access not changed").await?;
     let bot = resolve_identity(&s.client, &a.bot, "bot").await?;
     let name = handle(&s, &bot).await;
     require_not_a_member(&s, &bot, &name).await?;
-    require_notice_writable(&s, &bot, &name).await?;
+    require_notice_writable(&s, &bot, &name, false).await?;
     let notices = s.collab().access_notices(&s.repo).await?;
     let previous = notices.for_bot(&bot);
     // abilities and fields this version does not know (a later push grant) are carried over,
@@ -440,7 +450,7 @@ async fn revoke(ctx: &Ctx, repo: &str, bot: &str) -> Result<()> {
     let s = Session::open_for_write(ctx, repo, "access not changed").await?;
     let bot = resolve_identity(&s.client, bot, "bot").await?;
     let name = handle(&s, &bot).await;
-    require_notice_writable(&s, &bot, &name).await?;
+    require_notice_writable(&s, &bot, &name, true).await?;
     let notices = s.collab().access_notices(&s.repo).await?;
     let Some(previous) = notices.for_bot(&bot).filter(|p| !p.notice.may.is_empty()) else {
         return Err(UserError::new(
@@ -522,9 +532,8 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
 /// asker).
 async fn pr_code(ctx: &Ctx, s: &Session, number: u32) -> Result<Option<SharedCode>, String> {
     let collab = s.collab();
-    let patch = match collab.patch(&s.repo, number).await {
-        Ok(Some(p)) => p,
-        _ => return Ok(None),
+    let Ok(Some(patch)) = collab.patch(&s.repo, number).await else {
+        return Ok(None);
     };
     if !patch.from_members_only_branch() {
         return Ok(None);
@@ -611,7 +620,9 @@ fn ask_summary(plan: &AskPlan, name: &str, code_note: Option<&str>) -> Vec<Strin
         }
         None if plan.members_only => {}
         None => {
-            out.push(format!("{name} will work on {thread} as everyone can read it."));
+            out.push(format!(
+                "{name} will work on {thread} as everyone can read it."
+            ));
             if let Some(p) = &plan.processor {
                 out.push(format!("{} processes it.", safe(p)));
             }
@@ -645,7 +656,9 @@ fn ask_summary(plan: &AskPlan, name: &str, code_note: Option<&str>) -> Vec<Strin
             "{thread} comes from a fork or from someone outside the members: {name} gets only what everyone can read."
         ));
     } else if !plan.reads {
-        out.push(format!("{name} isn't allowed to read members-only content here."));
+        out.push(format!(
+            "{name} isn't allowed to read members-only content here."
+        ));
     }
     if let Some(n) = code_note {
         out.push(format!("Note: {n}."));
@@ -686,7 +699,9 @@ async fn ask(ctx: &Ctx, a: &AskArgs) -> Result<()> {
     let letter_bytes = plan.letter.as_ref().map_or(0, |l| {
         128 + 140 * (l.docs.len() as u64 + 1)
             + 140 * l.bodies.len() as u64
-            + l.code.as_ref().map_or(0, |c| 140 * c.packs.len() as u64 + 200)
+            + l.code
+                .as_ref()
+                .map_or(0, |c| 140 * c.packs.len() as u64 + 200)
     });
     let est = crate::quote::event(a.task.len() as u64 + 61, true)
         + if letter_bytes > 0 {
@@ -717,17 +732,14 @@ async fn ask(ctx: &Ctx, a: &AskArgs) -> Result<()> {
             "cost": cost_json(spent, ctx.usd_price()),
     });
     out[thread] = json!(number);
-    ctx.emit(
-        out,
-        || {
-            println!("✓ asked {} to work on #{number}", safe(&name));
-            println!("  request {}", asked.event);
-            if asked.letter.is_some() {
-                println!("  it got this thread's members-only content as it is now");
-            }
-            println!("  spent {}", cost_line(spent, ctx.usd_price()));
-        },
-    );
+    ctx.emit(out, || {
+        println!("✓ asked {} to work on #{number}", safe(&name));
+        println!("  request {}", asked.event);
+        if asked.letter.is_some() {
+            println!("  it got this thread's members-only content as it is now");
+        }
+        println!("  spent {}", cost_line(spent, ctx.usd_price()));
+    });
     Ok(())
 }
 
@@ -847,11 +859,14 @@ async fn write_code(
     Ok(written)
 }
 
+#[allow(clippy::too_many_lines)] // the JSON and the human view of one job
 async fn read(ctx: &Ctx, repo: &str, job: &str, code: Option<&Path>) -> Result<()> {
     let s = Session::open(ctx, repo).await?;
     let read = s.collab().read_job(&s.repo, job).await?;
     let packs = match (code, &read.letter) {
-        (Some(dir), Some(l)) if !l.letter.packs.is_empty() => write_code(&s, &l.letter, dir).await?,
+        (Some(dir), Some(l)) if !l.letter.packs.is_empty() => {
+            write_code(&s, &l.letter, dir).await?
+        }
         _ => Vec::new(),
     };
     let kind_word = |k: DocKind| match k {
@@ -869,7 +884,11 @@ async fn read(ctx: &Ctx, repo: &str, job: &str, code: Option<&Path>) -> Result<(
                     fields,
                     members_only,
                 } => (
-                    if *members_only { "membersOnly" } else { "public" },
+                    if *members_only {
+                        "membersOnly"
+                    } else {
+                        "public"
+                    },
                     fields.title.clone(),
                     fields.body.clone(),
                 ),

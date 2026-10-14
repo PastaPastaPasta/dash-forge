@@ -144,7 +144,12 @@ fn oid_lines(out: &str) -> BTreeSet<String> {
 
 /// `oids`, one per line, each after `prefix` (`^` excludes it from a `rev-list`).
 fn stdin_lines<'a>(prefix: &str, oids: impl IntoIterator<Item = &'a String>) -> String {
-    oids.into_iter().map(|o| format!("{prefix}{o}\n")).collect()
+    oids.into_iter().fold(String::new(), |mut out, o| {
+        out.push_str(prefix);
+        out.push_str(o);
+        out.push('\n');
+        out
+    })
 }
 
 /// The objects `tips` reach that `public` does not (`rev-list --objects`), or only commits.
@@ -390,11 +395,12 @@ pub struct Snapshot {
 /// the members-only ref update that set its tip (a current member's) and the stored
 /// members-only packs that hold its commits beyond the public branches, indexed in a scratch
 /// repository. The caller has checked the signer's role and that `kr` holds the members key.
+#[allow(clippy::too_many_lines, clippy::many_single_char_names)] // one pass, as share() was
 pub async fn snapshot(
     ctx: &Ctx,
     s: &Session,
     svc: &forge_core::repo::RepoService<'_>,
-    kr: &forge_core::keyring::Keyring,
+    kr: &std::sync::Arc<forge_core::keyring::Keyring>,
     cwd: &Path,
     full: &str,
 ) -> Result<Snapshot> {

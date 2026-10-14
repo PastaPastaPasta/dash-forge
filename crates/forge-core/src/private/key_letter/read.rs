@@ -278,7 +278,10 @@ impl ReadLetter {
     }
 
     fn well_formed(&self) -> bool {
-        let docs = self.docs.iter().all(|d| d.revision >= 1 && d.revision <= MAX_INT)
+        let docs = self
+            .docs
+            .iter()
+            .all(|d| d.revision >= 1 && d.revision <= MAX_INT)
             && self
                 .docs
                 .windows(2)

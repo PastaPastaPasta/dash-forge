@@ -22,6 +22,7 @@
 //! client does not know are kept in `may` and grant nothing here.
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 
 use serde_json::{Map, Value};
 use zeroize::Zeroizing;
@@ -184,7 +185,7 @@ impl AccessNotice {
             return None;
         }
         let mut t = TypedLetter::new(TYPE_ACCESS_NOTICE, 1);
-        t.fields = self.extra.clone();
+        t.fields.clone_from(&self.extra);
         let f = &mut t.fields;
         f.insert("askers".into(), Value::String(self.askers.as_str().into()));
         f.insert("bot".into(), Value::String(hex::encode(self.bot)));
@@ -295,7 +296,9 @@ impl AccessNotice {
 
     fn well_formed(&self) -> bool {
         let may = self.may.iter().all(|m| {
-            !m.is_empty() && m.chars().count() <= ABILITY_MAX && m.chars().all(|c| c.is_ascii_alphanumeric())
+            !m.is_empty()
+                && m.chars().count() <= ABILITY_MAX
+                && m.chars().all(|c| c.is_ascii_alphanumeric())
         }) && self.may.windows(2).all(|w| w[0] < w[1]);
         let threads = match &self.threads {
             Threads::All => true,
@@ -385,13 +388,13 @@ pub fn public_line(n: &AccessNotice, bot: &str, now: u64) -> String {
             Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
             None => String::new(),
         };
-        out.push_str(&format!(" Only on {ns}."));
+        let _ = write!(out, " Only on {ns}.");
     }
     if let Some(p) = &n.processor {
-        out.push_str(&format!(" Processed by {p}."));
+        let _ = write!(out, " Processed by {p}.");
     }
     if let Some(u) = n.until {
-        out.push_str(&format!(" Until {}.", date_words(u)));
+        let _ = write!(out, " Until {}.", date_words(u));
     }
     out
 }
@@ -423,10 +426,10 @@ pub struct NoticeEntry {
 /// manifest id) among those whose writer `is_maintainer` says is a current maintainer or the
 /// owner. Notices from anyone else are left out.
 #[must_use]
-pub fn current<'a>(
-    entries: &'a [NoticeEntry],
+pub fn current(
+    entries: &[NoticeEntry],
     is_maintainer: impl Fn(&str) -> bool,
-) -> BTreeMap<[u8; 32], &'a NoticeEntry> {
+) -> BTreeMap<[u8; 32], &NoticeEntry> {
     let mut out: BTreeMap<[u8; 32], &NoticeEntry> = BTreeMap::new();
     for e in entries.iter().filter(|e| is_maintainer(&e.writer)) {
         let newer = out
@@ -462,7 +465,9 @@ mod tests {
         let pt = notice().encode().unwrap();
         let s = String::from_utf8(pt.to_vec()).unwrap();
         assert!(s.starts_with("{\"askers\":\"writers\",\"bot\":\""), "{s}");
-        assert!(s.trim_end().ends_with("\"type\":\"accessNotice\",\"until\":1767225600000,\"v\":1}"));
+        assert!(s
+            .trim_end()
+            .ends_with("\"type\":\"accessNotice\",\"until\":1767225600000,\"v\":1}"));
         assert_eq!(AccessNotice::decode(&pt).unwrap(), notice());
     }
 

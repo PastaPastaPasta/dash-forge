@@ -321,7 +321,10 @@ mod tests {
             role: Some(Role::Triage),
         }
         .words("@ci-bot", "o/r", "");
-        assert_eq!(msg, "@ci-bot can't be asked by people with Triage access in o/r");
+        assert_eq!(
+            msg,
+            "@ci-bot can't be asked by people with Triage access in o/r"
+        );
         assert_eq!(
             fix,
             "ask a maintainer to change @ci-bot's access, or ask someone with Write access"
@@ -352,8 +355,22 @@ mod tests {
         };
         assert_eq!(agent_request("R", &hidden).unwrap().task, None);
         assert!(agent_request("other", &e).is_none());
-        assert!(agent_request("R", &RequestEvent { ref_id: None, ..e.clone() }).is_none());
-        assert!(agent_request("R", &RequestEvent { value: None, ..e.clone() }).is_none());
+        assert!(agent_request(
+            "R",
+            &RequestEvent {
+                ref_id: None,
+                ..e.clone()
+            }
+        )
+        .is_none());
+        assert!(agent_request(
+            "R",
+            &RequestEvent {
+                value: None,
+                ..e.clone()
+            }
+        )
+        .is_none());
         assert!(agent_request("R", &RequestEvent { kind: 26, ..e }).is_none());
         assert!(!is_task(&"x".repeat(121)) && !is_task(" ") && is_task("a\nb"));
     }

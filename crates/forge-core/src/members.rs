@@ -1005,9 +1005,10 @@ mod tests {
             assert_eq!(event_needs(k), Role::Triage, "{k:?}");
         }
         // Every code outside the deny-list is open to triage, unknown ones included, but for
-        // the client convention a reader never counts from triage (26, a CI re-run request).
+        // the client conventions a reader never counts from triage (26, a CI re-run request;
+        // 27, a request to a bot).
         for code in 0..64u64 {
-            let want = if matches!(code, 8 | 15 | 16 | 19 | 20 | 23 | 26) {
+            let want = if matches!(code, 8 | 15 | 16 | 19 | 20 | 23 | 26 | 27) {
                 Role::Writer
             } else {
                 Role::Triage

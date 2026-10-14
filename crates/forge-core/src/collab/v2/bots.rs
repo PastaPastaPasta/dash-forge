@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::{is_sealed, Collab, DocKeys, Target, TargetKind, TargetRead, DOC_EVENT};
 use crate::error::{Error, Result};
 use crate::key_letters::{self, LetterReader};
+use crate::members::MemberReader;
 use crate::platform::{self, FetchedDocument, FieldValue, QueryFilter, QueryOrder};
 use crate::private::access_notice::{AccessNotice, NoticeEntry, MAY_READ_ON_REQUEST};
 use crate::private::key_letter::{
@@ -24,7 +25,6 @@ use crate::private::pack::{self as sealed_pack, Head};
 use crate::private::{doc, DocKind, Fields, Opened};
 use crate::rules::agent_request::{self, AgentRequest, AskRefusal, RequestEvent};
 use crate::rules::long_body::{self, LongBody};
-use crate::members::MemberReader;
 use crate::rules::v2::{Audience, Role, Visibility};
 use crate::scope::RepoRef;
 use crate::user_error::{codes, UserError};
@@ -133,7 +133,10 @@ impl AskPlan {
             target: ReadTarget::Pr(self.target.number.max(1)),
             docs,
             packs: l.packs(),
-            heads: l.code.as_ref().map_or_else(Vec::new, |c| vec![c.head.clone()]),
+            heads: l
+                .code
+                .as_ref()
+                .map_or_else(Vec::new, |c| vec![c.head.clone()]),
         };
         match trial.to_typed().map(|t| t.encode()) {
             Some(Ok(_)) => Ok(()),
@@ -143,9 +146,10 @@ impl AskPlan {
                     "#{} is too large to share with a bot at once ({} posts{})",
                     self.target.number,
                     l.docs.len(),
-                    l.code
-                        .as_ref()
-                        .map_or_else(String::new, |c| format!(", {} stored pushes", c.packs.len()))
+                    l.code.as_ref().map_or_else(String::new, |c| format!(
+                        ", {} stored pushes",
+                        c.packs.len()
+                    ))
                 ),
             )
             .note("checked before anything was signed; nothing was sent to the bot")
@@ -330,6 +334,7 @@ impl Collab<'_> {
     /// with the members key (the members' copy) or the reader's own keys (the bot's letter) in a
     /// private one; and the one that counts per bot: the newest by a current maintainer or the
     /// owner.
+    #[allow(clippy::too_many_lines)] // one pass: fetch, check, open each form, decode
     pub async fn access_notices(&self, repo: &RepoRef) -> Result<Notices> {
         let svc = self.repo_service()?;
         let kind = u64::from(crate::pack::KIND_ACCESS_NOTICE);
@@ -461,14 +466,32 @@ impl Collab<'_> {
             return Ok((vec![id], hash));
         }
         let kr = self.keyring(repo).await?;
-        let members = crate::private::pack::seal(kr.writer(repo)?.write_keys(), &plain)
-            .map_err(|e| Error::Config(format!("the access notice could not be prepared for members: {e}")))?;
+        let members =
+            crate::private::pack::seal(kr.writer(repo)?.write_keys(), &plain).map_err(|e| {
+                Error::Config(format!(
+                    "the access notice could not be prepared for members: {e}"
+                ))
+            })?;
         let bot = platform::encode_identifier(notice.bot);
-        let bot_key = self.bot_key(repo, &bot).await?;
-        let to_bot = self.seal_to_bot(repo, &bot, bot_key, &plain, false)?;
+        // taking access away from a bot that has no key left reaches members only: their
+        // clients stop honouring the old notice, which is what a revocation is for
+        let to_bot = match self.recipient_key_of(repo, &bot).await? {
+            Some(key) => Some(self.seal_to_bot(repo, &bot, key, &plain, false)?),
+            None if notice.may.is_empty() => None,
+            None => Some(self.seal_to_bot(
+                repo,
+                &bot,
+                self.bot_key(repo, &bot).await?,
+                &plain,
+                false,
+            )?),
+        };
         let (first, hash) = svc.store_access_notice(repo, &members).await?;
-        let (second, _) = svc.store_access_notice(repo, &to_bot).await?;
-        Ok((vec![first, second], hash))
+        let mut ids = vec![first];
+        if let Some(to_bot) = to_bot {
+            ids.push(svc.store_access_notice(repo, &to_bot).await?.0);
+        }
+        Ok((ids, hash))
     }
 
     /// Seal `plain` to the signer (slot 0) and `bot`, whose encryption key is `bot_key`: a key
@@ -604,7 +627,10 @@ impl Collab<'_> {
         // task
         if reads
             && repo.visibility == Visibility::Private
-            && !self.collab_contract(repo).await?.has_property(super::DOC_ISSUE, "aud")
+            && !self
+                .collab_contract(repo)
+                .await?
+                .has_property(super::DOC_ISSUE, "aud")
         {
             return Err(refuse(format!(
                 "{name} can't be given this private repository's posts yet: older items in this repo can't be shared one at a time"
@@ -634,7 +660,8 @@ impl Collab<'_> {
                 .target_doc(repo, kind, number)
                 .await?
                 .ok_or(Error::NotFound)?;
-            self.letter_plan(repo, kind, stored, bot, members_only).await?
+            self.letter_plan(repo, kind, stored, bot, members_only)
+                .await?
         } else {
             (None, Vec::new())
         };
@@ -731,11 +758,7 @@ impl Collab<'_> {
                             key,
                         },
                     )),
-                    _ => left_out.push((
-                        *kind,
-                        d.id.clone(),
-                        why.unwrap_or(NotShared::Unreadable),
-                    )),
+                    _ => left_out.push((*kind, d.id.clone(), why.unwrap_or(NotShared::Unreadable))),
                 }
             }
         }
@@ -771,7 +794,10 @@ impl Collab<'_> {
         let kind = u64::from(crate::pack::KIND_MEMBERS_LONG_BODY);
         let mut out: Vec<LetterPack> = Vec::new();
         for hash in hashes {
-            for m in manifests.iter().filter(|m| m.kind == kind && m.pack_hash == *hash) {
+            for m in manifests
+                .iter()
+                .filter(|m| m.kind == kind && m.pack_hash == *hash)
+            {
                 let Ok(sealed) = svc.fetch_artifact(repo, m, &store).await else {
                     continue;
                 };
@@ -816,12 +842,9 @@ impl Collab<'_> {
         };
         let unfinished = |what: &str| {
             Error::from(
-                UserError::new(
-                    codes::USAGE,
-                    format!("the request was written, but {what}"),
-                )
-                .cause(format!("request {event}"))
-                .fix("ask again: the bot works only from a request with its letter"),
+                UserError::new(codes::USAGE, format!("the request was written, but {what}"))
+                    .cause(format!("request {event}"))
+                    .fix("ask again: the bot works only from a request with its letter"),
             )
         };
         let mut docs: Vec<LetterDoc> = lp.docs.iter().map(|(_, d)| d.clone()).collect();
@@ -857,7 +880,10 @@ impl Collab<'_> {
         }
         docs.sort_by(|a, b| (&a.id, a.revision).cmp(&(&b.id, b.revision)));
         docs.dedup_by(|a, b| a.id == b.id && a.revision == b.revision);
-        let heads = lp.code.as_ref().map_or_else(Vec::new, |c| vec![c.head.clone()]);
+        let heads = lp
+            .code
+            .as_ref()
+            .map_or_else(Vec::new, |c| vec![c.head.clone()]);
         let packs = lp.packs();
         let letter = ReadLetter {
             job: platform::decode_identifier(&event)?,
@@ -870,14 +896,18 @@ impl Collab<'_> {
             packs,
             heads,
         };
-        let plain = letter
+        let encoded = letter
             .to_typed()
             .ok_or_else(|| unfinished("its letter was not well formed"))?
             .encode()
             .map_err(|e| unfinished(&format!("its letter could not be written: {e}")))?;
         let sealed = self
-            .seal_to_bot(repo, &plan.bot, lp.bot_key, &plain, true)
-            .map_err(|e| unfinished(&format!("its letter could not be prepared for the bot: {e}")))?;
+            .seal_to_bot(repo, &plan.bot, lp.bot_key, &encoded, true)
+            .map_err(|e| {
+                unfinished(&format!(
+                    "its letter could not be prepared for the bot: {e}"
+                ))
+            })?;
         let (id, _) = self
             .repo_service()?
             .store_key_letter(repo, &sealed)
@@ -981,7 +1011,12 @@ impl Collab<'_> {
         };
         let members_only = repo.visibility == Visibility::Private
             || self.target_audience(repo, &r.target_id).await? != Audience::Public;
-        Ok(agent_request::request_allowed(r, notice, role, members_only))
+        Ok(agent_request::request_allowed(
+            r,
+            notice,
+            role,
+            members_only,
+        ))
     }
 
     /// The `read` letters addressed to the signer in `repo`, from a current maintainer or
@@ -1002,9 +1037,11 @@ impl Collab<'_> {
                 identity_id,
                 keys: &keys,
             },
+            &BTreeSet::new(),
         )
         .await?;
         Ok(received
+            .letters
             .into_iter()
             .filter_map(|r| {
                 Some(ReceivedRead {
@@ -1024,6 +1061,7 @@ impl Collab<'_> {
     /// read at the revision the letter names; its long body from the letter's packs). Anything
     /// else members-only is marked not shared. Refused when the event is not a request to the
     /// signer in `repo`.
+    #[allow(clippy::too_many_lines)] // one pass: the request, its letter, the thread
     pub async fn read_job(&self, repo: &RepoRef, job: &str) -> Result<JobRead> {
         let community = self.community_contract(repo).await?;
         let me = self.signer_id()?;
@@ -1052,16 +1090,14 @@ impl Collab<'_> {
             .request_allowed(repo, &notices, &oracle, &request)
             .await?;
         let job_id = platform::decode_identifier(job)?;
-        let letter = self
-            .read_letters(repo)
-            .await?
-            .into_iter()
-            .filter(|r| r.letter.job == job_id && r.sender == request.asker)
-            .filter(|r| match r.letter.target {
-                ReadTarget::Pr(n) | ReadTarget::Issue(n) => n == request.number,
-                ReadTarget::Branch(_) => false,
-            })
-            .next_back();
+        let letter = self.read_letters(repo).await?.into_iter().rfind(|r| {
+            r.letter.job == job_id
+                && r.sender == request.asker
+                && match r.letter.target {
+                    ReadTarget::Pr(n) | ReadTarget::Issue(n) => n == request.number,
+                    ReadTarget::Branch(_) => false,
+                }
+        });
         let repo_id = repo.scope()?.repo_id;
         if request.task.is_none() {
             request.task = letter
@@ -1091,7 +1127,10 @@ impl Collab<'_> {
             let thread_root = matches!(kind, DocKind::Issue | DocKind::Patch);
             let content = if is_sealed(&d) {
                 let fields = match &letter {
-                    Some(l) => self.open_as_listed(&collab, &repo_id, &l.letter, kind, &d).await,
+                    Some(l) => {
+                        self.open_as_listed(&collab, &repo_id, &l.letter, kind, &d)
+                            .await
+                    }
                     None => None,
                 };
                 match (fields, &letter) {
@@ -1214,12 +1253,14 @@ impl LongBodies {
             .ok()?;
         let store = crate::storage::PackReader::from_user_config();
         let kind = u64::from(crate::pack::KIND_MEMBERS_LONG_BODY);
-        for m in manifests.iter().filter(|m| m.kind == kind && m.pack_hash == sha256) {
+        for m in manifests
+            .iter()
+            .filter(|m| m.kind == kind && m.pack_hash == sha256)
+        {
             let Ok(sealed) = svc.fetch_artifact(repo, m, &store).await else {
                 continue;
             };
-            let Ok(plain) =
-                crate::private::pack::open_with_file_key(&sealed, m.size_bytes, key)
+            let Ok(plain) = crate::private::pack::open_with_file_key(&sealed, m.size_bytes, key)
             else {
                 continue;
             };
