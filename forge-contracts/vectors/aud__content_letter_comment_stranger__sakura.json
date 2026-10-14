@@ -1,0 +1,22 @@
+{
+  "name": "content_letter_comment_stranger__sakura",
+  "description": "A stranger's letter (v0x04): aud 2, no asMember, no mRole. (sakura contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "content",
+    "type": "comment",
+    "shape": {
+      "aud": false,
+      "mRole": false
+    },
+    "doc": {
+      "enc": "0400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "role": null
+  },
+  "expected": {
+    "aud": null,
+    "mRole": null
+  }
+}

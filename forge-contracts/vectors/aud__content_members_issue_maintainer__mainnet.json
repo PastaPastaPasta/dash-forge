@@ -1,0 +1,23 @@
+{
+  "name": "content_members_issue_maintainer__mainnet",
+  "description": "A maintainer's members-only issue: aud 1, no mRole. (mainnet contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "content",
+    "type": "issue",
+    "shape": {
+      "aud": true,
+      "mRole": true
+    },
+    "doc": {
+      "enc": "030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "asMember": true
+    },
+    "role": "maintainer"
+  },
+  "expected": {
+    "aud": 1,
+    "mRole": null
+  }
+}

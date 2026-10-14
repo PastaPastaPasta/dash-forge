@@ -1,0 +1,22 @@
+{
+  "name": "content_former_member_edit__sakura",
+  "description": "A former member's edit: asMember is cleared (a dead reference), so no mRole. (sakura contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "content",
+    "type": "comment",
+    "shape": {
+      "aud": false,
+      "mRole": false
+    },
+    "doc": {
+      "enc": "0400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "role": null
+  },
+  "expected": {
+    "aud": null,
+    "mRole": null
+  }
+}

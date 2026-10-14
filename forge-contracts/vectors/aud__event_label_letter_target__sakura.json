@@ -1,0 +1,22 @@
+{
+  "name": "event_label_letter_target__sakura",
+  "description": "A value on a letter is refused: an event names no recipients. (sakura contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "event",
+    "type": "event",
+    "shape": {
+      "tAud": false,
+      "authorEnc": false
+    },
+    "target": {
+      "enc": "0400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "value": true
+  },
+  "expected": {
+    "tAud": null,
+    "value": "refused"
+  }
+}

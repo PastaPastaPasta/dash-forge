@@ -1,6 +1,6 @@
 {
   "name": "v03_private_header_refused",
-  "description": "a writer never seals v0x03 for a private repository's document (v0x01 there).",
+  "description": "the members lane's writer never seals v0x03 for a private repository's document (D38 has its own).",
   "case": "mixed_doc_seal",
   "rules": "v2",
   "input": {

@@ -1,0 +1,15 @@
+{
+  "name": "manifest_r_browse_index_triage__mainnet",
+  "description": "Any other kind keeps the role it claimed. (mainnet contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "manifestR",
+    "shape": {
+      "maintKinds": true
+    },
+    "kind": 1,
+    "claimed": 2
+  },
+  "expected": 2
+}

@@ -9,9 +9,14 @@
  * the node it reports the first stage that fails and nothing after it, so a schema error keeps
  * precedence over a byte cap or a rule.
  *
- * The schema check is a small interpreter of the subset the RC1 contracts use (see
- * {@link checkSchema}); the rules are judged by the pinned wasm SDK
- * (`DataContract.checkDocumentPropertyConstraints`), the same code consensus runs.
+ * The schema check is a small interpreter of the subset the RC1 contracts use, and the protocol-14
+ * shorthands the mainnet build writes (`build.py --mainnet`, R-02: `"type": "identifier"`,
+ * `"type": "bytes"` with `size`; see {@link checkSchema}); the rules are judged by the pinned wasm
+ * SDK (`DataContract.checkDocumentPropertyConstraints`), the same code consensus runs, a replace
+ * with its stored document (so `$old.` and `$revision` are judged too).
+ *
+ * The contracts default to the frozen RC1 set (`forge-contracts/contracts`); `contractsDir` judges
+ * another build of the same three contracts (a `build.py --mainnet --out <dir>`).
  *
  * FOR TESTS AND SCRIPTS ONLY: it reads the contracts with `node:fs`, so app code must never
  * import it (the app writes through `lib/sdk/write.ts`, where the node is the judge).
@@ -54,24 +59,28 @@ export const RC1_VECTOR_OWNER = base58Encode(new Uint8Array(32).fill(7))
 /** The protocol version the reference judge uses (rs-dpp `PlatformVersion::get(14)`). */
 const PLATFORM_VERSION = 14
 
-let contractsCache: Record<Rc1ContractName, Json> | undefined
+/** The frozen RC1 contracts' directory, the default of every judge here. */
+const RC1_DIR = resolve(__dirname, '..', '..', '..', 'forge-contracts', 'contracts')
+
+const contractsCache = new Map<string, Record<Rc1ContractName, Json>>()
 
 /**
- * The frozen RC1 contract JSONs (`forge-contracts/contracts`), with the cross-contract
- * placeholders replaced by {@link CONTRACT_IDS} and `id` / `ownerId` set, ready for
- * `DataContract.fromJSON`. Read once and cached; treat the result as read-only.
+ * The contract JSONs of `dir` (default: the frozen RC1 set, `forge-contracts/contracts`), with the
+ * cross-contract placeholders replaced by {@link CONTRACT_IDS} and `id` / `ownerId` set, ready for
+ * `DataContract.fromJSON`. Read once per directory and cached; treat the result as read-only.
  */
-export function rc1Contracts(): Record<Rc1ContractName, Json> {
-  if (contractsCache) return contractsCache
-  const dir = resolve(__dirname, '..', '..', '..', 'forge-contracts', 'contracts')
+export function rc1Contracts(dir: string = RC1_DIR): Record<Rc1ContractName, Json> {
+  const cached = contractsCache.get(dir)
+  if (cached) return cached
   const read = (name: Rc1ContractName): Json => {
     const text = readFileSync(resolve(dir, `${name}.json`), 'utf8')
       .replaceAll('FORGE_CORE_CONTRACT_ID', CONTRACT_IDS['forge-core'])
       .replaceAll('FORGE_COLLAB_CONTRACT_ID', CONTRACT_IDS['forge-collab'])
     return { ...(JSON.parse(text) as Json), id: CONTRACT_IDS[name], ownerId: RC1_VECTOR_OWNER }
   }
-  contractsCache = Object.fromEntries(NAMES.map((n) => [n, read(n)])) as Record<Rc1ContractName, Json>
-  return contractsCache
+  const contracts = Object.fromEntries(NAMES.map((n) => [n, read(n)])) as Record<Rc1ContractName, Json>
+  contractsCache.set(dir, contracts)
+  return contracts
 }
 
 /** The RC1 contract holding `type` (the layout's map). Throws on a type no contract holds. */
@@ -161,6 +170,11 @@ function typeOk(type: unknown, value: unknown, byteArray: boolean): boolean {
   switch (type) {
     case 'array':
       return byteArray ? value instanceof Uint8Array : Array.isArray(value)
+    // protocol-14 shorthands (R-02): an identifier's 32 bytes, a byte array (`size` checked below)
+    case 'identifier':
+      return value instanceof Uint8Array && value.length === 32
+    case 'bytes':
+      return value instanceof Uint8Array
     case 'object':
       return isPlainObject(value)
     case 'string':
@@ -186,7 +200,8 @@ interface SchemaRun {
 
 /**
  * Checks `value` at `path` against `schema`: `$ref` to `#/$defs/*`, `type` (a `byteArray`
- * array is a `Uint8Array`, its items the bytes), `enum`, `const`, `minimum` / `maximum`,
+ * array is a `Uint8Array`, its items the bytes; the shorthands `identifier`, 32 bytes, and
+ * `bytes`, with an exact `size`), `enum`, `const`, `minimum` / `maximum`,
  * `minLength` / `maxLength` (Unicode scalar values, as Rust's `chars().count()`), `pattern`,
  * `maxBytes` (UTF-8 bytes), `minItems` / `maxItems`, `uniqueItems`, `items`, and objects'
  * `properties` / `required` (system `$` fields skipped) / `additionalProperties: false` /
@@ -203,7 +218,7 @@ function checkSchema(schema: Schema, value: unknown, path: string, run: SchemaRu
     checkSchema(def, value, path, run)
   }
   if (schema.type !== undefined && !typeOk(schema.type, value, schema.byteArray === true)) {
-    fail('type', `expected ${schema.byteArray ? 'a byte array (Uint8Array)' : String(schema.type)}`)
+    fail('type', `expected ${schema.byteArray || schema.type === 'bytes' ? 'a byte array (Uint8Array)' : schema.type === 'identifier' ? 'an identifier (32 bytes)' : String(schema.type)}`)
     return
   }
   if (Array.isArray(schema.enum) && !schema.enum.some((e) => canonical(e) === canonical(value)))
@@ -223,6 +238,7 @@ function checkSchema(schema: Schema, value: unknown, path: string, run: SchemaRu
     if (typeof schema.maxBytes === 'number' && bytes > schema.maxBytes) run.bytes.push(`maxBytes at ${at}: ${bytes} B > ${schema.maxBytes} (${MAX_BYTES_CODE})`)
   } else if (value instanceof Uint8Array || Array.isArray(value)) {
     const n = value.length
+    if (typeof schema.size === 'number' && n !== schema.size) fail('size', `${n} bytes, not ${schema.size}`)
     if (typeof schema.minItems === 'number' && n < schema.minItems) fail('minItems', `${n} items < ${schema.minItems}`)
     if (typeof schema.maxItems === 'number' && n > schema.maxItems) fail('maxItems', `${n} items > ${schema.maxItems}`)
     if (Array.isArray(value)) {
@@ -262,19 +278,23 @@ interface Judge {
   readonly contracts: Readonly<Record<Rc1ContractName, InstanceType<Evo['DataContract']>>>
 }
 
-let judgePromise: Promise<Judge> | undefined
+const judges = new Map<string, Promise<Judge>>()
 
-/** The wasm SDK and the three parsed contracts, loaded once. */
-function judge(): Promise<Judge> {
-  judgePromise ??= (async () => {
-    const evo = await import('@dashevo/evo-sdk')
-    await evo.EvoSDK.getLatestVersionNumber() // loads the wasm module
-    const json = rc1Contracts()
-    const parse = (name: Rc1ContractName) =>
-      evo.DataContract.fromJSON(json[name] as Parameters<Evo['DataContract']['fromJSON']>[0], true, PLATFORM_VERSION)
-    return { evo, contracts: Object.fromEntries(NAMES.map((n) => [n, parse(n)])) as Judge['contracts'] }
-  })()
-  return judgePromise
+/** The wasm SDK and the three parsed contracts of `dir`, loaded once per directory. */
+function judge(dir: string = RC1_DIR): Promise<Judge> {
+  let judged = judges.get(dir)
+  if (judged === undefined) {
+    judged = (async () => {
+      const evo = await import('@dashevo/evo-sdk')
+      await evo.EvoSDK.getLatestVersionNumber() // loads the wasm module
+      const json = rc1Contracts(dir)
+      const parse = (name: Rc1ContractName) =>
+        evo.DataContract.fromJSON(json[name] as Parameters<Evo['DataContract']['fromJSON']>[0], true, PLATFORM_VERSION)
+      return { evo, contracts: Object.fromEntries(NAMES.map((n) => [n, parse(n)])) as Judge['contracts'] }
+    })()
+    judges.set(dir, judged)
+  }
+  return judged
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -283,18 +303,29 @@ function judge(): Promise<Judge> {
 
 export type Rc1Verdict = { ok: true } | { ok: false; errors: string[] }
 
+/** How a document is judged: its signer (base58), and the contracts' directory ({@link rc1Contracts}). */
+export interface Rc1JudgeOptions {
+  readonly owner?: string
+  readonly contractsDir?: string
+}
+
+/** The id both sides of a judged replace carry (the pre-check refuses a stored document of another id). */
+const JUDGED_ID = base58Encode(new Uint8Array(32).fill(9))
+
 /**
  * Judges `doc` as a create of document type `type` by `opts.owner` (base58; default
  * {@link RC1_VECTOR_OWNER}): the JSON schema first (every failure, each naming its keyword and
  * path, e.g. `pattern at /refName: ...`), else `maxBytes`, else the first broken
  * `propertyConstraints` rule (`propertyConstraints <rule> (<violation>): ...`; a create has no stored
- * document, so `storedDocument` is `null` and every `$old.` read is absent). Rules reading a
- * total or a block height are not judged (the live suite covers them); rules reading
- * `$createdAt` / `$updatedAt` use the device clock, as the wasm pre-check does.
+ * document, so `storedDocument` is `null` and every `$old.` read is absent; `stored` judges it as
+ * a replace of that document instead, `$revision` one more than its). Rules reading a total, a
+ * referenced document or a block height are not judged (the live suite covers them); rules
+ * reading `$createdAt` / `$updatedAt` use the device clock, as the wasm pre-check does.
  */
-export async function validateRc1(type: string, doc: Record<string, unknown>, opts?: { owner?: string }): Promise<Rc1Verdict> {
+export async function validateRc1(type: string, doc: Record<string, unknown>, opts?: Rc1JudgeOptions & { readonly stored?: Record<string, unknown> }): Promise<Rc1Verdict> {
   const name = rc1ContractOf(type)
-  const contract = rc1Contracts()[name]
+  const dir = opts?.contractsDir ?? RC1_DIR
+  const contract = rc1Contracts(dir)[name]
   const documentSchemas = contract.documentSchemas as Record<string, Schema>
   const schema = documentSchemas[type]
   if (!schema) throw new Error(`rc1-validate: ${name} has no document type ${JSON.stringify(type)}`)
@@ -305,14 +336,18 @@ export async function validateRc1(type: string, doc: Record<string, unknown>, op
   const shape = structureErrors(schema, doc, opts?.owner ?? RC1_VECTOR_OWNER)
   if (shape.length > 0) return { ok: false, errors: shape }
 
-  const { evo, contracts } = await judge()
-  const document = new evo.Document({
-    documentTypeName: type,
-    dataContractId: CONTRACT_IDS[name],
-    ownerId: opts?.owner ?? RC1_VECTOR_OWNER,
-    properties: doc,
-  })
-  const broken = contracts[name].checkDocumentPropertyConstraints(document, null)
+  const { evo, contracts } = await judge(dir)
+  const make = (properties: Record<string, unknown>, revision?: bigint) =>
+    new evo.Document({
+      documentTypeName: type,
+      dataContractId: CONTRACT_IDS[name],
+      ownerId: opts?.owner ?? RC1_VECTOR_OWNER,
+      properties,
+      ...(opts?.stored !== undefined ? { id: JUDGED_ID, revision } : {}),
+    })
+  const document = make(doc, 2n)
+  const stored = opts?.stored !== undefined ? make(opts.stored, 1n) : null
+  const broken = contracts[name].checkDocumentPropertyConstraints(document, stored)
   return broken ? { ok: false, errors: [`propertyConstraints ${broken.rule} (${broken.violation}): ${broken.message}`] } : { ok: true }
 }
 
@@ -376,9 +411,10 @@ function sameValue(a: unknown, b: unknown): boolean {
 
 /**
  * A `when` condition of an `immutable` entry, judged on the replace (`doc`) with the stored
- * document under `$old.`. The subset the forge contracts use: `present`, `equal` (operands a
- * path or `{ const }`), `not`, `all`, `any`. Anything else throws, so a new form is never
- * silently judged as "not holding".
+ * document under `$old.`. The subset the forge contracts use: `present`, `absent`, `equal`
+ * (operands a path or `{ const }`), `not`, `all` / `allOf`, `any` / `anyOf` (the mainnet build's
+ * set-once fields, L1). Anything else throws, so a new form is never silently judged as "not
+ * holding".
  */
 function conditionHolds(cond: unknown, doc: Json, stored: Json): boolean {
   const read = (path: string): unknown => {
@@ -391,26 +427,29 @@ function conditionHolds(cond: unknown, doc: Json, stored: Json): boolean {
   const operand = (o: unknown): unknown => (typeof o === 'string' ? read(o) : o !== null && typeof o === 'object' && 'const' in o ? (o as Json).const : o)
   const c = cond as Json
   if (typeof c.present === 'string') return read(c.present) !== undefined
+  if (typeof c.absent === 'string') return read(c.absent) === undefined
   if (Array.isArray(c.equal) && c.equal.length === 2) return sameValue(operand(c.equal[0]), operand(c.equal[1]))
   if ('not' in c) return !conditionHolds(c.not, doc, stored)
-  if (Array.isArray(c.all)) return c.all.every((x) => conditionHolds(x, doc, stored))
-  if (Array.isArray(c.any)) return c.any.some((x) => conditionHolds(x, doc, stored))
+  const all = c.all ?? c.allOf
+  const any = c.any ?? c.anyOf
+  if (Array.isArray(all)) return all.every((x) => conditionHolds(x, doc, stored))
+  if (Array.isArray(any)) return any.some((x) => conditionHolds(x, doc, stored))
   throw new Error(`rc1-validate: an immutable condition this judge does not read: ${JSON.stringify(cond)}`)
 }
 
 /**
  * Judges `doc` as a replace of `stored` (both the document's properties), in the order a v5 node
  * does (`forge-contracts/vectors/rc1/README.md`, "Replace vectors"): the properties as for a
- * create ({@link validateRc1}), then `immutable`. Every top-level property that differs (changed,
+ * create ({@link validateRc1}, its rules with `stored` as the stored document), then `immutable`. Every top-level property that differs (changed,
  * added or removed) is refused with `40128` when the type lists it by name, or with a condition
  * that holds. The entries come from the pinned SDK's parse of the contract
  * (`documentTypeImmutableProperties`: `immutable` and `immutableWhen`), so this also checks the
  * SDK reads the conditions the contract declares.
  */
-export async function validateRc1Replace(type: string, stored: Json, doc: Json, opts?: { owner?: string }): Promise<Rc1Verdict> {
-  const asCreate = await validateRc1(type, doc, opts)
-  if (!asCreate.ok) return asCreate
-  const { contracts } = await judge()
+export async function validateRc1Replace(type: string, stored: Json, doc: Json, opts?: Rc1JudgeOptions): Promise<Rc1Verdict> {
+  const asReplace = await validateRc1(type, doc, { ...opts, stored })
+  if (!asReplace.ok) return asReplace
+  const { contracts } = await judge(opts?.contractsDir)
   const { immutable, immutableWhen } = contracts[rc1ContractOf(type)].documentTypeImmutableProperties(type)
   const fixed = new Set(immutable)
   const changed = [...new Set([...Object.keys(stored), ...Object.keys(doc)])].filter((k) => !sameValue(stored[k], doc[k])).sort()

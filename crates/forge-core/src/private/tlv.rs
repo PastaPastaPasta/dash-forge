@@ -255,6 +255,7 @@ fn allowed(kind: DocKind, tag: u8, anchor_with_prev: bool, blinds: bool) -> bool
             tag == REF_NAME || (blinds && matches!(tag, NEW_OID | PREV_OID | OID_SALT))
         }
         DocKind::Event => tag == EVENT_VALUE || head,
+        DocKind::AuthorEvent => tag == EVENT_VALUE,
         // a release's TLV is `private::release`'s (§16.2): none of these tags
         DocKind::Release => false,
         DocKind::Config => {
@@ -472,6 +473,7 @@ fn parse_inner(
         }
         DocKind::Review => true,
         DocKind::Event => f.event_value.is_some() || f.head_oid.is_some(),
+        DocKind::AuthorEvent => f.event_value.is_some(),
         DocKind::Release => false,
     };
     // the salt is sealed exactly when something is blinded with it

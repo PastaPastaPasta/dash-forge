@@ -9,8 +9,9 @@
  * Until the mainnet contract the clients allow exactly this change and refuse every other before
  * signing. On the live contracts `comment.path`, `patch.baseRefName`/`sourceRefName` and
  * `imported` are immutable, so a made-public inline comment keeps no file name (`lost`) and an
- * item whose import provenance is sealed cannot be made public. Pure; the `make_public__*`
- * vectors are shared with forge-core.
+ * item whose import provenance is sealed cannot be made public. The mainnet contract (L1, which
+ * declares `aud`) lets the replace that drops `aud` set the path and branch names once
+ * (`settableOnce`), so they are kept. Pure; the `make_public__*` vectors are shared with forge-core.
  */
 
 import type { DocFields } from '../private/tlv'
@@ -49,20 +50,30 @@ export interface MadePublic {
   readonly set: Readonly<Record<string, string>>
   /** Properties to remove: always `enc` and `epoch`. */
   readonly remove: readonly string[]
-  /** Sealed fields the live contracts cannot take (an inline comment's `path`): lost for everyone. */
+  /** Sealed fields the contract cannot take (an inline comment's `path` before mainnet): lost for everyone. */
   readonly lost: readonly string[]
 }
 
-/** The replace that makes a sealed `kind` document public from its opened content, or why not. */
-export function makePublicChanges(kind: ContentKind, opened: DocFields): MadePublic | { readonly error: MakePublicRefusal } {
+/**
+ * The replace that makes a sealed `kind` document public from its opened content, or why not.
+ * `settableOnce`: the contract lets this replace set `comment.path` and a PR's branch names
+ * (mainnet L1), which are otherwise lost.
+ */
+export function makePublicChanges(kind: ContentKind, opened: DocFields, settableOnce = false): MadePublic | { readonly error: MakePublicRefusal } {
   if (opened.importedAuthor !== undefined || opened.importedUrl !== undefined) return { error: 'imported' }
   const text = (v: string | undefined): string | null => (v !== undefined && !blank(v) ? v : null)
   const set: Record<string, string> = {}
   const lost: string[] = []
+  const keep = (field: 'path' | 'baseRefName' | 'sourceRefName'): void => {
+    const v = opened[field]
+    if (v === undefined) return
+    if (settableOnce) set[field] = v
+    else lost.push(field)
+  }
   if (kind === 'issue' || kind === 'patch') {
     if (kind === 'patch') {
-      if (opened.baseRefName !== undefined) lost.push('baseRefName')
-      if (opened.sourceRefName !== undefined) lost.push('sourceRefName')
+      keep('baseRefName')
+      keep('sourceRefName')
     }
     const title = text(opened.title)
     if (title === null) return { error: 'empty' }
@@ -70,7 +81,7 @@ export function makePublicChanges(kind: ContentKind, opened: DocFields): MadePub
     if (body !== null) set['body'] = body
     set['title'] = title
   } else if (kind === 'comment') {
-    if (opened.path !== undefined) lost.push('path')
+    keep('path')
     const body = text(opened.body)
     if (body === null) return { error: 'empty' }
     set['body'] = body

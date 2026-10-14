@@ -1,0 +1,12 @@
+{
+  "name": "read_public",
+  "description": "A public document: no aud, no enc.",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "read",
+    "type": "comment",
+    "doc": {}
+  },
+  "expected": "ok"
+}

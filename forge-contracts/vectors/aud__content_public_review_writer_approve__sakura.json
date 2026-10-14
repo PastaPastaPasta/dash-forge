@@ -1,0 +1,22 @@
+{
+  "name": "content_public_review_writer_approve__sakura",
+  "description": "A writer's public approve carries asMember, so mRole 1 on mainnet. (sakura contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "content",
+    "type": "review",
+    "shape": {
+      "aud": false,
+      "mRole": false
+    },
+    "doc": {
+      "asMember": true
+    },
+    "role": "writer"
+  },
+  "expected": {
+    "aud": null,
+    "mRole": null
+  }
+}

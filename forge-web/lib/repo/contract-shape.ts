@@ -12,10 +12,11 @@
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
-/** A document type's top-level property names and index names. */
+/** A document type's top-level property names, index names and integer `minimum`s. */
 interface TypeShape {
   readonly properties: ReadonlySet<string>
   readonly indexes: ReadonlySet<string>
+  readonly minimums: ReadonlyMap<string, number>
 }
 
 const shapes = new Map<string, Promise<ReadonlyMap<string, TypeShape>>>()
@@ -28,12 +29,22 @@ function shapeOf(sdk: EvoSDK, contractId: string): Promise<ReadonlyMap<string, T
     const contract = await sdk.contracts.fetch(contractId)
     if (!contract) throw new Error(`contract ${contractId} was not found`)
     const schemas = contract.schemas as Record<string, { properties?: Record<string, unknown>; indices?: readonly { name?: unknown }[] } | undefined>
+    const minimumOf = (p: unknown): number | undefined => {
+      const m = p !== null && typeof p === 'object' ? (p as { minimum?: unknown }).minimum : undefined
+      return typeof m === 'number' ? m : typeof m === 'bigint' ? Number(m) : undefined
+    }
     return new Map(
       Object.entries(schemas).map(([type, s]) => [
         type,
         {
           properties: new Set(Object.keys(s?.properties ?? {})),
           indexes: new Set((s?.indices ?? []).map((i) => i.name).filter((n): n is string => typeof n === 'string')),
+          minimums: new Map(
+            Object.entries(s?.properties ?? {}).flatMap(([name, p]) => {
+              const m = minimumOf(p)
+              return m === undefined ? [] : [[name, m] as const]
+            }),
+          ),
         },
       ] as const),
     )
@@ -46,6 +57,15 @@ function shapeOf(sdk: EvoSDK, contractId: string): Promise<ReadonlyMap<string, T
 /** Whether `documentType` of contract `contractId` declares the top-level `property`. */
 export async function contractHasProperty(sdk: EvoSDK, contractId: string, documentType: string, property: string): Promise<boolean> {
   return (await shapeOf(sdk, contractId)).get(documentType)?.properties.has(property) ?? false
+}
+
+/**
+ * The `minimum` `documentType`'s top-level integer `property` declares, as the contract states it
+ * (feature-detects a bound a build flag moves: mainnet C3 lets `packManifest.r` be 0); null for an
+ * unknown type or property, or no `minimum`. Parity: forge-core `LoadedContract::property_minimum`.
+ */
+export async function contractPropertyMinimum(sdk: EvoSDK, contractId: string, documentType: string, property: string): Promise<number | null> {
+  return (await shapeOf(sdk, contractId)).get(documentType)?.minimums.get(property) ?? null
 }
 
 /** Whether `documentType` of contract `contractId` declares the index named `index`. */

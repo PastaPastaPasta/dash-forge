@@ -21,6 +21,7 @@
  * stands in for the repo's public config, refs or packs (those read `repo.session` only).
  */
 
+import { storedAudAgrees } from '../rules/aud'
 import { decodeIdentifier } from '../auth/base58'
 import { bytesToHex, openContent, openVis, propOf, type DocFields, type OpenContext, type PrivateDocType, type StoredPrivateDoc, type UnreadableReason } from '../private'
 import { MAX_LETTER_RECIPIENTS, type LetterGroup } from '../rules/letters'
@@ -171,7 +172,7 @@ export interface ContentGate {
 }
 
 /** The rules' content kind of each sealed type; an `event` has none ({@link readableEvents}). */
-const KIND_OF: Readonly<Record<Exclude<PrivateDocType, 'event'>, ContentKind>> = {
+const KIND_OF: Readonly<Record<Exclude<PrivateDocType, 'event' | 'authorEvent'>, ContentKind>> = {
   issue: 'issue',
   patch: 'patch',
   comment: 'comment',
@@ -181,9 +182,16 @@ const KIND_OF: Readonly<Record<Exclude<PrivateDocType, 'event'>, ContentKind>> =
   config: 'config',
 }
 
-/** Whether `doc` is well formed for `repo` as a `type` (an event's shape is checked by its reader). */
+/**
+ * Whether `doc` is well formed for `repo` as a `type` (an event's shape is checked by its reader).
+ * A stated `aud` (mainnet L1) must name its `enc`'s class (`rules/aud.ts` `audAgrees`): `aud`
+ * without `enc`, outside 1..2, or naming the other class is malformed, so every gate (the members
+ * and letter readers, and a reader without keys) shows it as a placeholder or hides it, never as
+ * text. Parity: forge-core `Keyring::open`, `LetterKeys::open`.
+ */
 export function wellFormedAs(repo: RepoRef, type: PrivateDocType, doc: PlainDocument): boolean {
-  return type === 'event' || wellFormed(repo, KIND_OF[type], doc)
+  if (type === 'event' || type === 'authorEvent') return true
+  return storedAudAgrees(doc['aud'], bytesField(doc, 'enc')) && wellFormed(repo, KIND_OF[type], doc)
 }
 
 /** Whether a raw document carries a non-empty `enc` (the per-document switch, DESIGN §4.1). */
@@ -335,7 +343,8 @@ export function storedPrivateDoc(type: PrivateDocType, doc: PlainDocument, repos
           : {}),
       }
     case 'comment':
-    case 'event': {
+    case 'event':
+    case 'authorEvent': {
       const targetId = idField(doc, 'targetId')
       return targetId === undefined ? null : { ...base, targetId }
     }
@@ -699,14 +708,14 @@ export interface ReadableEvents {
 
 type EventRead = { readonly doc: PlainDocument; readonly value: 'none' | 'sealed' | 'plaintext' | 'hidden' }
 
-/** One member event as the folds read it (the CLI's `readable_event`). */
-async function readableEvent(gate: ContentGate, d: PlainDocument): Promise<EventRead> {
+/** One member event (or author event) as the folds read it (the CLI's `readable_event`). */
+async function readableEvent(gate: ContentGate, d: PlainDocument, type: 'event' | 'authorEvent'): Promise<EventRead> {
   const doc: PlainDocument = { ...d }
   if (doc['value'] === '' || doc['value'] === null) delete doc['value']
   if ((bytesField(doc, 'enc')?.length ?? 0) === 0) return { doc, value: doc['value'] === undefined ? 'none' : 'plaintext' }
   // a plaintext value next to `enc` is never trusted: only the sealed one counts
   delete doc['value']
-  const a = await gate.admit('event', doc)
+  const a = await gate.admit(type, doc)
   return a.ok ? { doc: a.doc, value: 'sealed' } : { doc, value: 'hidden' }
 }
 
@@ -717,12 +726,13 @@ async function readableEvent(gate: ContentGate, d: PlainDocument): Promise<Event
  * to `enc`. A plaintext value on its own came from an older client and is kept, and counted.
  * An empty value is no value. In a public repo an event of a members-only issue carries its value
  * sealed (it follows its target, DESIGN §3.3): opened through the members key, else dropped; a
- * public repo with no sealed event is returned unchanged.
+ * public repo with no sealed event is returned unchanged. `type` `authorEvent`: an author's retarget,
+ * sealed where the contract lets it be (mainnet M3), opened the same way.
  */
-export async function readableEvents(repo: RepoRef, docs: readonly PlainDocument[]): Promise<ReadableEvents> {
+export async function readableEvents(repo: RepoRef, docs: readonly PlainDocument[], type: 'event' | 'authorEvent' = 'event'): Promise<ReadableEvents> {
   if (repo.visibility !== 'private' && !docs.some(isSealedDoc)) return { docs, hiddenValues: 0, plaintextValues: 0 }
   const gate = gateFor(repo)
-  const read = await Promise.all(docs.map((d) => readableEvent(gate, d)))
+  const read = await Promise.all(docs.map((d) => readableEvent(gate, d, type)))
   return {
     docs: read.map((r) => r.doc),
     hiddenValues: read.filter((r) => r.value === 'hidden').length,

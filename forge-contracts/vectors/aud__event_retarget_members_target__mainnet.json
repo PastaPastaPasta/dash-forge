@@ -1,0 +1,23 @@
+{
+  "name": "event_retarget_members_target__mainnet",
+  "description": "An author's retarget of a members-only PR: refused where authorEvent has no enc, sealed where it has. (mainnet contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "event",
+    "type": "authorEvent",
+    "shape": {
+      "tAud": true,
+      "authorEnc": true
+    },
+    "target": {
+      "enc": "030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "aud": 1
+    },
+    "value": true
+  },
+  "expected": {
+    "tAud": 1,
+    "value": "sealed"
+  }
+}

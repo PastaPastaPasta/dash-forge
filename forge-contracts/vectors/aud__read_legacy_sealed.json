@@ -1,0 +1,14 @@
+{
+  "name": "read_legacy_sealed",
+  "description": "A sealed document without aud (sakura, or written before the registration) is judged by enc alone.",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "read",
+    "type": "comment",
+    "doc": {
+      "enc": "030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    }
+  },
+  "expected": "ok"
+}

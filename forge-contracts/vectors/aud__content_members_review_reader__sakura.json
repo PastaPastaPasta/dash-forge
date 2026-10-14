@@ -1,0 +1,23 @@
+{
+  "name": "content_members_review_reader__sakura",
+  "description": "A reader's members-only review (a comment verdict): mRole 3. (sakura contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "content",
+    "type": "review",
+    "shape": {
+      "aud": false,
+      "mRole": false
+    },
+    "doc": {
+      "enc": "030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "asMember": true
+    },
+    "role": "reader"
+  },
+  "expected": {
+    "aud": null,
+    "mRole": null
+  }
+}

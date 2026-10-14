@@ -1,0 +1,15 @@
+{
+  "name": "manifest_r_reserved_9__sakura",
+  "description": "Kind 9 (reserved) is maintainer-only too. (sakura contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "manifestR",
+    "shape": {
+      "maintKinds": false
+    },
+    "kind": 9,
+    "claimed": 1
+  },
+  "expected": 1
+}

@@ -1,0 +1,22 @@
+{
+  "name": "content_made_public_writer__sakura",
+  "description": "The replace that makes a writer's comment public drops enc, so aud goes; asMember stays, so mRole is restated. (sakura contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "content",
+    "type": "comment",
+    "shape": {
+      "aud": false,
+      "mRole": false
+    },
+    "doc": {
+      "asMember": true
+    },
+    "role": "writer"
+  },
+  "expected": {
+    "aud": null,
+    "mRole": null
+  }
+}
