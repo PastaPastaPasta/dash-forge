@@ -307,6 +307,16 @@ pub enum Command {
         /// Never overwrites a value you set, never anything that spends credits.
         #[arg(long)]
         fix: bool,
+        /// Start this clone's record of members-only commits, for a clone made before Dash
+        /// Forge kept one. Only for a clone that never fetched members-only branches: it asks
+        /// first.
+        #[arg(long, conflicts_with_all = ["fix", "install_hook"])]
+        init_ledger: bool,
+        /// Install the pre-push hook that stops members-only commits from reaching another
+        /// remote, in the directory git runs hooks from (`core.hooksPath` included). A pre-push
+        /// hook already there keeps running after it.
+        #[arg(long, conflicts_with_all = ["fix", "init_ledger"])]
+        install_hook: bool,
     },
     /// Publish this directory's git repo to Forge (creates it if needed, safe to re-run).
     ///
@@ -2543,7 +2553,13 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
         } => maint::reseed(ctx, repo.as_deref(), *to, profile.as_deref()).await,
         Command::Import(args) => import::import(ctx, args).await,
         Command::VerifyApp(args) => verify_app::run(ctx, args).await,
-        Command::Doctor { fix } => doctor::run(ctx, *fix).await,
+        Command::Doctor {
+            init_ledger: true, ..
+        } => doctor::init_ledger(ctx),
+        Command::Doctor {
+            install_hook: true, ..
+        } => doctor::install_hook(ctx),
+        Command::Doctor { fix, .. } => doctor::run(ctx, *fix).await,
         Command::Init(args) => repo::init(ctx, args).await,
         Command::Completions { .. } => unreachable!("handled in main before Ctx::resolve"),
     }
