@@ -634,7 +634,7 @@ error: E812 can't make everything public: environment production has values save
 
 ## E813
 
-**Bot can't be asked.** *Reserved: this version doesn't report it yet. It arrives with bot access.* You asked a bot to work on something outside the access its maintainers gave it. For example, the bot can only be asked by people with Write access or more, and you have Triage access. Nothing was signed, and nothing was sent to the bot.
+**Bot can't be asked.** You asked a bot to work on something outside the access its maintainers gave it: it has no access here, its access has ended, it can't be asked by people with your access, it can't be asked about this issue or pull request, or the thread is members-only and it may not read members-only content. For example, the bot can only be asked by people with Write access or more, and you have Triage access. Nothing was signed, and nothing was sent to the bot.
 
 ```
 error: E813 @ci-bot can't be asked by people with Triage access in o/r

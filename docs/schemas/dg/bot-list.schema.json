@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/bot-list.schema.json",
+  "title": "dg bot list --json",
+  "description": "Each bot's current access to a repository, as everyone reads it.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "repo": {
+      "type": "string"
+    },
+    "count": {
+      "type": "integer"
+    },
+    "unreadable": {
+      "type": "integer",
+      "description": "Access records this reader could not read."
+    },
+    "bots": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "bot": {
+            "type": "string"
+          },
+          "may": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What the bot may do: post, postMembersOnly, readOnRequest, ciMembersBranches (and abilities a later version adds)."
+          },
+          "askers": {
+            "type": "string",
+            "enum": [
+              "writers",
+              "maintainers"
+            ]
+          },
+          "threads": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "all"
+                ]
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                }
+              }
+            ],
+            "description": "\"all\", or the issue and pull request numbers it may be asked about."
+          },
+          "processor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "until": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "live": {
+            "type": "boolean"
+          },
+          "note": {
+            "type": "string"
+          },
+          "by": {
+            "type": "string"
+          },
+          "at": {
+            "type": "integer"
+          },
+          "line": {
+            "type": "string"
+          },
+          "notice": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "bot",
+          "may",
+          "askers",
+          "threads",
+          "live",
+          "by",
+          "at",
+          "line",
+          "notice"
+        ]
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "repo",
+    "count",
+    "bots"
+  ],
+  "additionalProperties": true
+}

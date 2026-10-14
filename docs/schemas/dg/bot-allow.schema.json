@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/bot-allow.schema.json",
+  "title": "dg bot allow --json",
+  "description": "A bot's access written: a new access notice everyone reads.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "allowed"
+      ]
+    },
+    "bot": {
+      "type": "string"
+    },
+    "may": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "What the bot may do: post, postMembersOnly, readOnRequest, ciMembersBranches (and abilities a later version adds)."
+    },
+    "askers": {
+      "type": "string",
+      "enum": [
+        "writers",
+        "maintainers"
+      ]
+    },
+    "threads": {
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "all"
+          ]
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        }
+      ],
+      "description": "\"all\", or the issue and pull request numbers it may be asked about."
+    },
+    "processor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "until": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "line": {
+      "type": "string",
+      "description": "The access as everyone reads it."
+    },
+    "notice": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "The notice's packManifest document ids (a private repository stores two copies)."
+    },
+    "packHash": {
+      "type": "string"
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "bot",
+    "may",
+    "askers",
+    "threads",
+    "line",
+    "notice",
+    "packHash",
+    "cost"
+  ],
+  "additionalProperties": true
+}

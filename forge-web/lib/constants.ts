@@ -318,6 +318,12 @@ export const PACK_KIND = {
    */
   KEY_LETTER: 10,
   /**
+   * A bot's access notice (`lib/private/access-notice.ts`, `private-repos.md` §22.1): what a
+   * maintainer lets a bot do. Plaintext in a public repo; in a private one stored twice, under the
+   * members key and as a letter to the bot.
+   */
+  ACCESS_NOTICE: 11,
+  /**
    * A members-only git pack of a public repo (mixed-visibility DESIGN §4.3, `private-repos.md`
    * §19.5): one members-only branch's new objects, DFPK-sealed under the members key, thin against
    * the public packs, with no `tips` and never superseding. Kinds 64 + k are the members-only
@@ -329,6 +335,12 @@ export const PACK_KIND = {
    * under a header naming the kind-64 pack, sealed like it, with no `tips`; `objectCount` = rows.
    */
   MEMBERS_OBJECT_LOCATOR: 65,
+  /**
+   * A members-only long body (`private-repos.md` §19): the full text of a members-only post longer
+   * than its field, sealed under the members key, named by the field's trailer. The web does not
+   * write one yet; a request to a bot hands on its file key (`lib/repo/bot-access.ts`).
+   */
+  MEMBERS_LONG_BODY: 70,
 } as const
 export type PackKind = (typeof PACK_KIND)[keyof typeof PACK_KIND]
 

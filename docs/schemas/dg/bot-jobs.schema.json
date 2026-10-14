@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/bot-jobs.schema.json",
+  "title": "dg bot jobs --json",
+  "description": "The requests to a bot (you, or --bot) in a repository since a time.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "bot": {
+      "type": "string"
+    },
+    "since": {
+      "type": "integer"
+    },
+    "count": {
+      "type": "integer"
+    },
+    "requests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "number": {
+            "type": "integer"
+          },
+          "asker": {
+            "type": "string"
+          },
+          "task": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "at": {
+            "type": "integer"
+          },
+          "allowed": {
+            "type": "boolean",
+            "description": "Whether the bot's access allowed the request when it was written (a runner works only on those)."
+          },
+          "letter": {
+            "type": "boolean",
+            "description": "Whether the asker shared the thread's members-only content with you."
+          }
+        },
+        "required": [
+          "id",
+          "number",
+          "asker",
+          "at",
+          "letter"
+        ]
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "bot",
+    "since",
+    "count",
+    "requests"
+  ],
+  "additionalProperties": true
+}

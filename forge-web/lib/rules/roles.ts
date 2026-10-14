@@ -304,10 +304,11 @@ export const WRITER_TRANSITION_KINDS: ReadonlySet<number> = new Set([13, 14, 15]
 export const WRITER_EVENT_KINDS: ReadonlySet<number> = new Set([8, 15, 16, 19, 20, 23])
 /**
  * Event kinds a client convention keeps from triage though consensus admits them: a CI re-run
- * request (26, `ci-rerun.ts`), which no reader counts from triage. Parity: forge-core
+ * request (26, `ci-rerun.ts`), which no reader counts from triage, and a request to a bot (27,
+ * `agent-request.ts`), whose askers are writers or maintainers. Parity: forge-core
  * `members::CLIENT_WRITER_EVENT_KINDS`.
  */
-export const CLIENT_WRITER_EVENT_KINDS: ReadonlySet<number> = new Set([26])
+export const CLIENT_WRITER_EVENT_KINDS: ReadonlySet<number> = new Set([26, 27])
 
 /** Whether `documentType` carries `r` (its gate proves the writer document's role). */
 export function isRoleGated(documentType: string): boolean {
@@ -339,6 +340,7 @@ const EVENT_WHAT: Readonly<Record<number, string>> = {
   20: 'unpin a conversation',
   23: 'record a policy bypass',
   26: 're-run checks',
+  27: 'ask a bot to work on something',
 }
 
 const TRANSITION_WHAT: Readonly<Record<number, string>> = {

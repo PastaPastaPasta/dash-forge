@@ -300,6 +300,7 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
             ("could not read the status", Some(repo))
         }
         Command::Ci(c) => c.context(),
+        Command::Bot(b) => b.context(),
         Command::Import(a) => ("import failed", a.repo.as_ref()),
         Command::Profile(crate::ProfileCommand::Show { .. }) => {
             ("could not read the profile", None)

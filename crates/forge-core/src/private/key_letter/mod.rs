@@ -57,6 +57,9 @@ pub const VECTOR_CASE: &str = "key_letter";
 
 #[cfg(test)]
 mod conformance;
+mod read;
+
+pub use read::{LetterDoc, ReadLetter, ReadTarget, TYPE_READ};
 
 /// A key letter's typed body: `type`, `v` and every other field.
 #[derive(Clone, PartialEq)]

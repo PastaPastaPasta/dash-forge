@@ -1662,6 +1662,12 @@ interface BotKeysTarget {
  * bot left without a key is reported, for a repair to finish. Null when there was nothing to send
  * (no bots, not a maintainer, or no readable key to send).
  */
+async function withPostAccess(sdk: PrivateWriteContext['sdk'], repo: PrivateWriteContext['repo'], bots: readonly string[]): Promise<string[]> {
+  // loaded on demand: the notice reader imports the browse plane, which imports this module
+  const { withPostAccess: allowed } = await import('./bot-access')
+  return allowed(sdk, repo, bots)
+}
+
 async function sendBotKeys(
   c: PrivateWriteContext,
   intent: string,
@@ -1678,6 +1684,9 @@ async function sendBotKeys(
       async (s) => {
         bots = botsOf(s.members).filter((b) => target.only === undefined || target.only.includes(b))
         if (bots.length === 0 || !isMaintainer(s, c.auth.identityId)) return null
+        // only bots whose access notice allows members-only replies get one (§22.1)
+        bots = await withPostAccess(c.sdk, c.repo, bots)
+        if (bots.length === 0) return null
         epoch = target.epoch ?? s.resolution.writeEpoch ?? -1
         const keys = s.resolution.keys.get(epoch)
         if (keys === undefined || s.resolution.burned.has(epoch)) return null
@@ -1719,10 +1728,12 @@ export async function givePostKey(c: PrivateWriteContext, botId: string, intent:
  */
 export async function missingBotKeys(c: PrivateWriteContext): Promise<{ readonly ready: string[]; readonly keyless: string[] }> {
   return withFreshSession(c, async (s) => {
-    const bots = botsOf(s.members)
     const epoch = s.resolution.writeEpoch
     const keys = epoch === null ? undefined : s.resolution.keys.get(epoch)
-    if (bots.length === 0 || keys === undefined || !isMaintainer(s, c.auth.identityId)) return { ready: [], keyless: [] }
+    if (keys === undefined || !isMaintainer(s, c.auth.identityId)) return { ready: [], keyless: [] }
+    // only bots whose access notice allows members-only replies get one (§22.1)
+    const bots = await withPostAccess(c.sdk, c.repo, botsOf(s.members))
+    if (bots.length === 0) return { ready: [], keyless: [] }
     const io = sdkPostKeyIo(c.sdk, c.auth, c.repo, c.network, c.ops.keyIds, 'post-keys:check', epoch === null ? undefined : s.resolution.anchors.get(epoch)?.statedHeight)
     const missing = await missingPostKeys(io, keys, bots)
     const ready: string[] = []

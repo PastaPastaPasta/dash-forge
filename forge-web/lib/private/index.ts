@@ -13,7 +13,8 @@
  * branches and pull requests (§19; `sealMembersRef`'s fixed-salt twin is test-only). `./bundle` and `./convert` are
  * a repository made public's readers (§18): its conversion facts and the keys its owner published;
  * `./key-letter` is the kind-10 key letter (§20): typed keys sealed to specific people, and the `branch` letter
- * that shares one members-only branch as it is now. `./branch-key` is a narrower branch's own key (DESIGN §4.3, phase 3F):
+ * that shares one members-only branch as it is now; `./read-letter` the `read` letter a request to a bot carries and
+ * `./access-notice` a bot's kind-11 access notice (§22). `./branch-key` is a narrower branch's own key (DESIGN §4.3, phase 3F):
  * its generations, its ref updates (`enc` v0x06) and packs (DFPK 0x03), the `branchKey` letter and
  * the fold of those letters into a `BranchRing` (`sealBranchRef`'s and `sealBranchPack`'s fixed twins are test-only); `./bot-post` is a bot's members-only post (`enc` v0x05, §23)
  * and the `postKey` letter a maintainer sends the bot. `./bundle` also reads and writes a maintainer's make-public bundle (DESIGN §4.6), whose entries
@@ -82,11 +83,14 @@ export {
   membersObjKey,
   openContent,
   openMembersWithKey,
+  openSharedWithKey,
   openWithKey,
   pads,
+  readObjKey,
   sealDoc,
   sealMembersDoc,
   sealPrivateV3,
+  sharesKind,
   type AnchorRef,
   type IdentitySet,
   type OpenContext,
@@ -286,6 +290,43 @@ export {
   type KeyLetterOpenResult,
   type TypedLetter,
 } from './key-letter'
+export {
+  TYPE_READ,
+  compareDocs,
+  readLetterDocKey,
+  readLetterFromTyped,
+  readLetterToTyped,
+  type LetterDoc,
+  type LetterHead,
+  type LetterPack,
+  type ReadLetter,
+  type ReadTarget,
+} from './read-letter'
+export {
+  KIND_ACCESS_NOTICE,
+  MAY_CI_MEMBERS_BRANCHES,
+  MAY_POST,
+  MAY_POST_MEMBERS_ONLY,
+  MAY_READ_ON_REQUEST,
+  NOTE_MAX,
+  PROCESSOR_MAX,
+  THREADS_MAX,
+  currentNotices,
+  dateWords,
+  decodeNotice,
+  emptyNotice,
+  encodeNotice,
+  noticeCovers,
+  noticeFromTyped,
+  noticeLiveAt,
+  noticeMay,
+  noticeToTyped,
+  publicLine,
+  type AccessNotice,
+  type Askers,
+  type NoticeEntry,
+  type Threads,
+} from './access-notice'
 export {
   BRANCH_KEY_LETTER_TYPE,
   BRANCH_PACK_VERSION,

@@ -96,13 +96,14 @@ import { shortId } from '@/lib/utils'
 // Layout
 // ---------------------------------------------------------------------------------------------
 
-/** The sections on this page, and Environments, which has its own page (it reads more). */
+/** The sections on this page, and Environments and Bots and runners, which have their own pages (they read more). */
 const SECTIONS = [
   ['general', 'General'],
   ['branches', 'Branches'],
   ['collaborators', 'Members'],
   ['storage', 'Storage'],
   ['environments', 'Environments'],
+  ['bots', 'Bots and runners'],
   ['webhooks', 'Webhooks'],
   ['bans', 'Bans'],
   ['danger', 'Danger zone'],
@@ -111,22 +112,26 @@ const SECTIONS = [
 const NAV_ITEM =
   'inline-flex items-center rounded px-2 py-1 text-anvil-600 hover:bg-anvil-100 coarse:min-h-11 coarse:px-3 hover:text-anvil-900 dark:text-anvil-300 dark:hover:bg-anvil-800'
 
-/** In-page navigation between the sections, and the link to Settings → Environments. */
+/** The sections that have their own page. */
+const PAGES: Readonly<Record<string, string>> = { environments: '/repo/settings/environments', bots: '/repo/settings/bots' }
+
+/** In-page navigation between the sections, and the links to Settings → Environments and → Bots and runners. */
 export function SettingsNav(): JSX.Element {
   const addr = useRepoAddress()
   return (
     <nav aria-label="Settings sections" className="flex flex-wrap gap-1 border-b border-anvil-200 pb-2 text-dense dark:border-anvil-800">
-      {SECTIONS.map(([id, label]) =>
-        id === 'environments' ? (
-          <Link key={id} href={repoHref('/repo/settings/environments', addr)} className={NAV_ITEM}>
+      {SECTIONS.map(([id, label]) => {
+        const page = PAGES[id]
+        return page !== undefined ? (
+          <Link key={id} href={repoHref(page, addr)} className={NAV_ITEM}>
             {label}
           </Link>
         ) : (
           <a key={id} href={`#${id}`} className={NAV_ITEM}>
             {label}
           </a>
-        ),
-      )}
+        )
+      })}
     </nav>
   )
 }

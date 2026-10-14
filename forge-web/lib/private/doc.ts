@@ -696,6 +696,16 @@ export async function bundledPatch(doc: PrivateDoc, fields: DocFields): Promise<
 }
 
 /**
+ * The kinds a `read` key letter hands on by their per-object key (DESIGN §4.9): what bundles
+ * publish, and also a pull request's own text and a member `event` (a request's task). A pull
+ * request opened with its key alone shows only the branch names whose hash is their plain SHA-256
+ * ({@link openSharedWithKey}). forge-core `doc::shares_kind`.
+ */
+export function sharesKind(type: PrivateDocType): boolean {
+  return bundlesKind(type) || type === 'patch' || type === 'event'
+}
+
+/**
  * `K_obj` of the members-only (`enc` v0x03, or a bot's v0x05) document `doc`, derived under
  * `keys` (its epoch) and checked against the commitment `enc` carries: what a member publishes in
  * a make-public bundle (DESIGN §4.6; forge-core `doc::members_obj_key`). Raw, through
@@ -704,9 +714,24 @@ export async function bundledPatch(doc: PrivateDoc, fields: DocFields): Promise<
  * key does not commit (it was not made under it). Whether a v0x05 author is a bot is the
  * caller's reading layer's check, as for opening it.
  */
-export async function membersObjKey(keys: EpochKeys, doc: PrivateDoc, enc: Uint8Array): Promise<Bytes | null> {
+export function membersObjKey(keys: EpochKeys, doc: PrivateDoc, enc: Uint8Array): Promise<Bytes | null> {
+  return objKeyOf(keys, doc, enc, bundlesKind)
+}
+
+/**
+ * {@link membersObjKey} for the kinds a `read` key letter hands on ({@link sharesKind}): what a
+ * member asking a bot gives it for one revision (forge-core `doc::read_obj_key`). The caller
+ * wipes it.
+ */
+export function readObjKey(keys: EpochKeys, doc: PrivateDoc, enc: Uint8Array): Promise<Bytes | null> {
+  return objKeyOf(keys, doc, enc, sharesKind)
+}
+
+async function objKeyOf(keys: EpochKeys, doc: PrivateDoc, enc: Uint8Array, kindOk: (type: PrivateDocType) => boolean): Promise<Bytes | null> {
+  // a bot's members-only post (v0x05): its key derives under the bot's post key, which the epoch
+  // key derives (whether its author is a bot is the reading layer's check)
   if (enc[0] === V5) {
-    if (doc.ownerId.length !== 32) return null
+    if (!kindOk(doc.type) || doc.ownerId.length !== 32) return null
     const post = await PostKey.derive(keys, doc.ownerId)
     try {
       return await botObjKey(post, doc, enc)
@@ -714,7 +739,7 @@ export async function membersObjKey(keys: EpochKeys, doc: PrivateDoc, enc: Uint8
       post.wipe()
     }
   }
-  if (enc[0] !== V3 || !bundlesKind(doc.type) || !encShapeOk(doc, enc) || keys.epoch !== doc.epoch) return null
+  if (enc[0] !== V3 || !kindOk(doc.type) || !encShapeOk(doc, enc) || keys.epoch !== doc.epoch) return null
   let ad: Bytes
   try {
     ad = docAd(doc, keys, V3)
@@ -743,8 +768,38 @@ export async function membersObjKey(keys: EpochKeys, doc: PrivateDoc, enc: Uint8
  * does not publish, or a malformed envelope, is malformed.
  */
 export async function openMembersWithKey(repoId: Uint8Array, doc: PrivateDoc, enc: Uint8Array, kObj: Uint8Array): Promise<OpenResult> {
+  if (!bundlesKind(doc.type)) return MALFORMED
+  return openWithObjKey(repoId, doc, enc, kObj, true)
+}
+
+/**
+ * {@link openMembersWithKey} for the kinds a `read` key letter hands on ({@link sharesKind};
+ * forge-core `doc::open_shared_with_key`). A pull request's branch names are keyed by its epoch,
+ * which the key's holder does not have: a name whose hash is not its plain SHA-256 cannot be
+ * checked, so it is dropped from what is shown (a hash with no name is refused as ever).
+ */
+export async function openSharedWithKey(repoId: Uint8Array, doc: PrivateDoc, enc: Uint8Array, kObj: Uint8Array): Promise<OpenResult> {
+  if (!sharesKind(doc.type)) return MALFORMED
+  // a public repository's members-only PR keeps its real head and that head's salt (§19)
+  const opened = await openWithObjKey(repoId, doc, enc, kObj, false)
+  if (opened.status !== 'readable' || doc.type !== 'patch') return opened
+  const fields: { -readonly [K in keyof DocFields]: DocFields[K] } = { ...opened.fields }
+  const pairs = [
+    [doc.baseRefNameHash, 'baseRefName'],
+    [doc.sourceRefNameHash, 'sourceRefName'],
+  ] as const
+  for (const [hash, key] of pairs) {
+    if (hash === undefined) continue
+    const name = fields[key]
+    if (name === undefined) return MALFORMED
+    if (!constantTimeEqual(hash, await sha256(utf8(name)))) delete fields[key]
+  }
+  return { status: 'readable', fields }
+}
+
+async function openWithObjKey(repoId: Uint8Array, doc: PrivateDoc, enc: Uint8Array, kObj: Uint8Array, bundle: boolean): Promise<OpenResult> {
   const version = enc[0]
-  if ((version !== V3 && version !== V5) || !bundlesKind(doc.type) || !encShapeOk(doc, enc)) return MALFORMED
+  if ((version !== V3 && version !== V5) || !encShapeOk(doc, enc)) return MALFORMED
   let ad: Bytes
   try {
     ad = docAdIn(doc, repoId, version)
@@ -766,8 +821,8 @@ export async function openMembersWithKey(repoId: Uint8Array, doc: PrivateDoc, en
   }
   let fields: DocFields
   try {
-    // as a member opens it ({@link openMembers}): a PR's real head and salt (24, 27) parse, and
-    // {@link bundledPatch} drops them
+    // as a member opens it ({@link openMembers}): a PR's real head and salt (24, 27) parse; a
+    // bundle's reader drops them ({@link bundledPatch}), a bot's read letter keeps them
     fields = doc.vis === 'public' ? parseMembersTlv(pt, doc.type) : parseTlv(pt, { type: doc.type, epoch: doc.epoch })
   } catch (e) {
     if (e instanceof MalformedError) return MALFORMED
@@ -775,6 +830,7 @@ export async function openMembersWithKey(repoId: Uint8Array, doc: PrivateDoc, en
   } finally {
     pt.fill(0)
   }
+  if (!bundle) return { status: 'readable', fields }
   const shown = await bundledPatch(doc, fields)
   return shown === null ? MALFORMED : { status: 'readable', fields: shown }
 }
