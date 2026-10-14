@@ -12,11 +12,12 @@
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
-/** A document type's top-level property names, index names and integer `minimum`s. */
+/** A document type's top-level property names, index names and integer `minimum`s and `maximum`s. */
 interface TypeShape {
   readonly properties: ReadonlySet<string>
   readonly indexes: ReadonlySet<string>
   readonly minimums: ReadonlyMap<string, number>
+  readonly maxima: ReadonlyMap<string, number>
 }
 
 const shapes = new Map<string, Promise<ReadonlyMap<string, TypeShape>>>()
@@ -29,22 +30,25 @@ function shapeOf(sdk: EvoSDK, contractId: string): Promise<ReadonlyMap<string, T
     const contract = await sdk.contracts.fetch(contractId)
     if (!contract) throw new Error(`contract ${contractId} was not found`)
     const schemas = contract.schemas as Record<string, { properties?: Record<string, unknown>; indices?: readonly { name?: unknown }[] } | undefined>
-    const minimumOf = (p: unknown): number | undefined => {
-      const m = p !== null && typeof p === 'object' ? (p as { minimum?: unknown }).minimum : undefined
+    const boundOf = (p: unknown, bound: 'minimum' | 'maximum'): number | undefined => {
+      const m = p !== null && typeof p === 'object' ? (p as Record<string, unknown>)[bound] : undefined
       return typeof m === 'number' ? m : typeof m === 'bigint' ? Number(m) : undefined
     }
+    const bounds = (s: { properties?: Record<string, unknown> } | undefined, bound: 'minimum' | 'maximum'): ReadonlyMap<string, number> =>
+      new Map(
+        Object.entries(s?.properties ?? {}).flatMap(([name, p]) => {
+          const m = boundOf(p, bound)
+          return m === undefined ? [] : [[name, m] as const]
+        }),
+      )
     return new Map(
       Object.entries(schemas).map(([type, s]) => [
         type,
         {
           properties: new Set(Object.keys(s?.properties ?? {})),
           indexes: new Set((s?.indices ?? []).map((i) => i.name).filter((n): n is string => typeof n === 'string')),
-          minimums: new Map(
-            Object.entries(s?.properties ?? {}).flatMap(([name, p]) => {
-              const m = minimumOf(p)
-              return m === undefined ? [] : [[name, m] as const]
-            }),
-          ),
+          minimums: bounds(s, 'minimum'),
+          maxima: bounds(s, 'maximum'),
         },
       ] as const),
     )
@@ -71,6 +75,20 @@ export async function contractPropertyMinimum(sdk: EvoSDK, contractId: string, d
 /** Whether `documentType` of contract `contractId` declares the index named `index`. */
 export async function contractHasIndex(sdk: EvoSDK, contractId: string, documentType: string, index: string): Promise<boolean> {
   return (await shapeOf(sdk, contractId)).get(documentType)?.indexes.has(index) ?? false
+}
+
+/** The `maximum` the top-level integer `property` of `documentType` declares, or null. */
+export async function contractPropertyMaximum(sdk: EvoSDK, contractId: string, documentType: string, property: string): Promise<number | null> {
+  return (await shapeOf(sdk, contractId)).get(documentType)?.maxima.get(property) ?? null
+}
+
+/**
+ * Whether the registered forge-core `coreId` admits the Bot role: `writer.role` up to 4 (C2, the
+ * mainnet registration). Sakura's live contract stops at 3, so a bot there is an identity outside
+ * the members (DESIGN §4.9). Parity: forge-core `members::admits_bots`.
+ */
+export async function contractAdmitsBots(sdk: EvoSDK, coreId: string): Promise<boolean> {
+  return ((await contractPropertyMaximum(sdk, coreId, 'writer', 'role')) ?? 0) >= 4
 }
 
 /** Whether contract `contractId` declares the document type `documentType`. */

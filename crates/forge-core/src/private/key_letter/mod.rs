@@ -249,7 +249,7 @@ fn hex_exact(v: &Value, n: usize) -> Option<Vec<u8>> {
     hex::decode(s).ok()
 }
 
-fn hex32(v: &Value) -> Option<[u8; 32]> {
+pub(crate) fn hex32(v: &Value) -> Option<[u8; 32]> {
     hex_exact(v, 32)?.try_into().ok()
 }
 

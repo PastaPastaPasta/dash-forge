@@ -156,7 +156,7 @@ enc = 0x01 ‖ nonce(12) ‖ AES-256-GCM(K_doc,e, nonce, plaintext, AD) ‖ tag(
 
 Minimum length 29 bytes (schema `minItems` 28 admits it). Maximum plaintext per type is `maxItems − 29`: **5091 bytes** for collab types, **1507 bytes** for `refUpdate`/`protectedRefUpdate` under the forge-core `enc.maxItems` of 1536 (§13; 995 bytes under the earlier 1024).
 
-**Which version where.** A document's `vis` equals its repository's visibility when it is written (consensus checks it), and the document's **own** `vis`, never the repository's current kind, decides the content versions a reader admits (a repository made public keeps its earlier documents' `vis: "private"`, §18.1): **0x01 and 0x03 when `vis` is private, 0x03 when `vis` is public**, 0x04 in either; `config` is 0x02 in both (§4.2). A v0x01 `enc` on a public document is `Malformed` at the framing step, before a key is used (`mixed_doc_open__v01_relabelled_refused`). Readers admit v0x03 on a private document (mixed-visibility DESIGN D38, `mixed_doc_open__v03_in_private_member`; the AD does not bind `vis`). Private repositories write v0x01 on a contract without `aud` (sakura's) and v0x03 for **new** issues, PRs, comments and reviews where forge-collab declares `aud` (the mainnet registration, D38's writer half: `seal_private_v3`, `vis` private in the AD and a private document's TLV, so one document's per-object key can be given on its own; vectors `mixed_doc_seal__v03_private_d38*`); a text that fits v0x01's room but not v0x03's, 32 bytes smaller, stays v0x01, and events and edits are sealed as before, so a private repository there holds both. A content envelope whose `enc[0]` is **0x05 or later** is a later client's (a bot's post is 0x05, a narrower branch's ref update 0x06): `open_content` returns `Unreadable(UnknownVersion)` for any type but `config` and `release`, never `Malformed` and never an error (`converted_repo_open__unknown_*`). The content predicate admits such an issue, patch, comment or review in a public repository (shown as members-only) and anything sealed in a private one; a public repository's git plane still reads plaintext only (§17.2).
+**Which version where.** A document's `vis` equals its repository's visibility when it is written (consensus checks it), and the document's **own** `vis`, never the repository's current kind, decides the content versions a reader admits (a repository made public keeps its earlier documents' `vis: "private"`, §18.1): **0x01 and 0x03 when `vis` is private, 0x03 when `vis` is public**, 0x04 in either; `config` is 0x02 in both (§4.2). A v0x01 `enc` on a public document is `Malformed` at the framing step, before a key is used (`mixed_doc_open__v01_relabelled_refused`). Readers admit v0x03 on a private document (mixed-visibility DESIGN D38, `mixed_doc_open__v03_in_private_member`; the AD does not bind `vis`). Private repositories write v0x01 on a contract without `aud` (sakura's) and v0x03 for **new** issues, PRs, comments and reviews where forge-collab declares `aud` (the mainnet registration, D38's writer half: `seal_private_v3`, `vis` private in the AD and a private document's TLV, so one document's per-object key can be given on its own; vectors `mixed_doc_seal__v03_private_d38*`); a text that fits v0x01's room but not v0x03's, 32 bytes smaller, stays v0x01, and events and edits are sealed as before, so a private repository there holds both. A bot's members-only post is **0x05** (§23), opened only when its author holds a Bot row of the repository (`Unreadable(NotABot)` otherwise, `converted_repo_open__v05_not_a_bot_*`). A content envelope whose `enc[0]` is **0x06 or later** is a later client's (a narrower branch's ref update is 0x06, §21): `open_content` returns `Unreadable(UnknownVersion)` for any type but `config` and `release`, never `Malformed` and never an error (`converted_repo_open__unknown_*`). The content predicate admits such an issue, patch, comment or review in a public repository (shown as members-only) and anything sealed in a private one; a public repository's git plane still reads plaintext only (§17.2).
 
 **Version 0x03: members-only content of a public repository.** The repository's members hold an epoch chain exactly as a private repository's (§5; its anchors are `config` documents with `vis: "public"`, no settings and an empty TLV). Each document is sealed under a per-object key bound to its nonce and its AD, and carries a key commitment:
 
@@ -939,7 +939,7 @@ A members-only review's plaintext `verdict` counts for **every reader** when it 
 | 7 | **make-public bundle**: plaintext keys that make sealed content readable to everyone (§18.3 has the layout); with 8, 9 and 11 written with `r = 0` where `packManifest.r` admits 0 (mainnet C3: only the maintainer operand passes it) | used: a maintainer's document entries (0x01–0x03, §17.5) and the epoch keys (entry 0x06) the owner of a repository made public published (§18.3) |
 | 8 | **environment snapshot**: one environment's canonical JSON, padded to 512-byte buckets, sealed as DFPK `0x02` to the people its audience covers when it is saved, the writer first, at most 64 (§3.7): a group (Maintainers, Writers and maintainers, All members; resolved from the member documents at write time, never bots), a group plus people, or specific people. Never under the members key: phase-1 snapshots in DFPK `0x01` under the members key (audience Members, the "old format") are read only. `supersedes` names earlier counted snapshots of the same environment. Readers check the bytes against the owner-signed `packHash` before decrypting, and count a snapshot only when its `$ownerId` is a current maintainer (DESIGN D24); vectors `env_snapshot__*` (`env_snapshot__v2_*` for the current artifact) | used |
 | 9 | environment registry | reserved (phase 4) |
-| 10 | **key letter** (§20): a typed letter of keys sealed as DFPK `0x02` to its recipients, the writer first, at most 64: a branch as it is now (`branch`), a narrower branch's key generations (`branchKey`, phase 3F), a bot's post key and one job's keys (phase 4). Consensus admits it from a maintainer or a Write member; readers take it only from a current one, after checking the bytes against the owner-signed `packHash`; vectors `key_letter__*` | used: `branch` (phase 3G) |
+| 10 | **key letter** (§20): a typed letter of keys sealed as DFPK `0x02` to its recipients, the writer first, at most 64: a branch as it is now (`branch`), a narrower branch's key generations (`branchKey`, phase 3F), a bot's post key (`postKey`, §23.2) and one job's keys (phase 4). Consensus admits it from a maintainer or a Write member; readers take it only from a current one (a `postKey` only from a current maintainer), after checking the bytes against the owner-signed `packHash`; vectors `key_letter__*`, `bot_post__letter*` | used: `branch` (phase 3G), `postKey` (phase 4A) |
 | 64 + k | the members-only (sealed) form of plain kind k in a public repository: 64 git pack (one members-only branch's, D22), 65 object locator, 66 flat index, 67 history index, 68 release assets, 69 history version lists. DFPK `0x01` under the members key; **never `tips`** (a sealed kind's tips would be the real commits its blinds hide), and a kind-64 pack never supersedes another (§19.4) | defined (§19); written by the git helper from phase 3A |
 | 70 | **members-only long body** (64 + 6): the full text of a members-only issue, comment or review longer than its field, sealed as DFPK `0x01` under the members key at the write epoch, re-read before the write. A members-only field's trailer resolves only to a kind-70 copy, a public field's only to kind 6. The reader checks `packHash`, then the late-content rule on the copy's `$ownerId` and height, then opens it with any epoch it holds | used by `dg`; the web refuses members-only long text for now |
 
@@ -1218,3 +1218,63 @@ The person making a role change does it in the same flow when they hold the key 
 - The clone's ledger records a narrower branch's commits with the token `branch:<16 hex of SHA-256("dash-forge/v2/br-id" ‖ 0x00 ‖ repoId ‖ K_br,0)>`, so a branch made again under the same name is another audience and the name is never written.
 - **The guard over audiences** (§19.6 generalised, D21 rev 4): S's commits are grouped by audience (members, or a narrower token); a sealed ref update (members-only or narrower) is refused the commits it adds that only audiences it is not **within** hold, minus what an audience it is within already held before the batch. An audience is within another when its group is no wider (Maintainers ⊂ Writers and maintainers ⊂ All members) and it lists no one the other does not; a narrower audience the push does not know is within itself only. So a Maintainers branch's commits are refused on an All-members branch or a Writers branch, and members-only commits on an "All members + @ci-bot" branch (the bot never holds the members key). Public refs are refused anything in S, as before.
 - A narrower branch is never the source or base of an All-members pull request (`dg pr create` and the web refuse it; publishing it works as for a members-only branch, squash by default).
+
+## 23. Bots' members-only posts (`enc` v0x05)
+
+A **bot** is a member with the Bot role: a `writer` document with `role` 4 (mixed-visibility DESIGN §4.9, D33; the
+contract admits role 4 only where it is built with `mainnet_bot_role`, so on sakura's live contracts a bot is an
+identity outside the members and `dg collab add --role bot` is refused before signing). It never holds the members key:
+consensus refuses a `repoKey` wrap to a role-4 row (L4, `repoKey.mr`), clients never wrap to one, and adding or
+removing a bot rotates nothing. It posts members-only issues, comments and reviews under a **post key** instead
+(`forge_core::private::bot_post`, web `lib/private/bot-post.ts`; vectors `bot_post__*` from
+`tools/private-repos-vectors/bot_post.py`).
+
+### 23.1 The envelope
+
+```
+W_{e,b}  = HKDF-Expand(PRK_e, "dash-forge/v2/bot-post" ‖ 0x00 ‖ u32(e) ‖ botId(32), 32)
+PRK_b    = HKDF-Extract(salt = repoId, IKM = W_{e,b})
+K_obj    = HKDF-Expand(PRK_b, "dash-forge/v2/obj" ‖ 0x00 ‖ u32(e) ‖ nonce ‖ SHA-256(AD), 32)
+enc      = 0x05 ‖ nonce(12) ‖ COMMIT_obj(32) ‖ AES-256-GCM(K_doc,obj, nonce, TLV, AD ‖ COMMIT_obj) ‖ tag(16)
+```
+
+`PRK_obj`, `K_doc,obj`, `COMMIT_obj`, the TLV, its padding and the room (5,120 − 61 bytes) are v0x03's (§4.1); the AD is
+§4.4's with version 0x05, so it binds the bot's `$ownerId` and the epoch. The writer's nonce is hedged as §3.6's under
+`K_hedge,b = HKDF-Expand(PRK_b, "dash-forge/v2/hedge" ‖ 0x00 ‖ u32(e), 32)` (the bot holds no `K_hedge,e`). Only issues,
+comments and reviews (a PR names its branches by keys of the epoch, which a bot never holds), in public repositories
+(`vis: "public"`) and private-only ones alike. A bot edits its own post by opening it with the post key of its epoch and
+sealing it again under the current one.
+
+**Reading** (`open_content`, step order of §8.1): framing (`enc[0] = 0x05`, at least 61 bytes, an issue, comment or
+review), the epoch exists, the reader holds its key, the document's `$ownerId` holds a **Bot row of the repository
+now** (else `Unreadable(NotABot)`: a removed bot's members-only posts end with its row, and a v0x05 document by anyone
+else is never opened), then `W` derived from the epoch key and that `$ownerId`, the commitment before GCM
+(`CommitMismatch`), GCM (`BadTag`), the TLV, and the late-content rule: a bot is not among the key's members, so its
+post under epoch `e` written after the next epoch's anchor plus the grace period is late (a rotation gives it a new
+post key). A post key opens and mints only its own bot's documents under its epoch; a bot can never derive `PRK_e`.
+Each post's `K_obj` is per object, so a maintainer's bundle (§17.5) and a read letter can publish or share one post.
+Outsiders see the members-only placeholder (`NoKey`). For an issue, PR, comment or review, `enc` versions from
+**0x06** are the unknown ones (§4; 0x06 is a narrower branch's ref update, §21).
+
+### 23.2 Post keys (`postKey` letters)
+
+```
+{"epoch":e,"key":"<64 lowercase hex: W_{e,b}>","type":"postKey","v":1}
+```
+
+A kind-10 key letter (§20.1) sealed to the sending maintainer (slot 0) and the bot. A **maintainer** sends one to each
+bot (each bot's key differs) whenever the key a bot needs changes, in the same run as the wraps:
+
+- turning members-only content on (epoch 0), and adding a bot (`dg collab add <repo> @ci-bot --role bot`, after the
+  bot accepted with `dg collab accept`);
+- every rotation, once its anchor is the epoch's anchor (a rotation by a client that sends no post keys silently stops
+  the bot's members-only posts until a repair);
+- `dg repo keys repair` (and the web's Repair): to each bot none of this signer's letters gave the current epoch's key
+  to (the signer opens its own letters and matches each carried key against `W` derived for each bot, since a letter
+  does not name its bot; another maintainer's letter is not visible, so a key may be sent twice, which is harmless).
+
+A bot takes a `postKey` letter only from a **current maintainer** (only maintainers change the key) and uses the
+newest one per epoch; with none for the current epoch it is refused before signing with E311 ("no post key for epoch
+N"). A bot without a usable encryption key is skipped and reported, and sent its key by a repair once it has one.
+Until phase 4B's access notices land every Bot row is sent a post key; with them, only bots whose newest notice allows
+members-only posts.

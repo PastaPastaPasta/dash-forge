@@ -1,0 +1,25 @@
+{
+  "name": "open_with_post_key__other_bots_post",
+  "description": "a post key opens nothing of another bot: NoKey.",
+  "case": "bot_post",
+  "rules": "v2",
+  "input": {
+    "op": "openWithPostKey",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "w": "56deaa0eb99776838ff42731e1e7e6b9247dfc4fd4e59c1cfdeaa09c1d8b5d21",
+    "epoch": 0,
+    "bot": "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+    "doc": {
+      "type": "comment",
+      "vis": "public",
+      "ownerId": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+      "epoch": 0,
+      "targetId": "3333333333333333333333333333333333333333333333333333333333333333",
+      "enc": "05000102030405060708090a0bd8cba142dd331d95c2967b8082613e21bcc9724f4a5586a6b33a7bf3a39f670c5b4ec1291286482d8a324e65095654e0fe0b76c2b18b8daa4a2ed2a6cca6248ddec68ace3f62d9108e9b9a99d43441ee3a37127df4ae98c9246fd586982dde2476afa004cec4d72405128905c4b9f7bd"
+    }
+  },
+  "expected": {
+    "status": "unreadable",
+    "reason": "noKey"
+  }
+}

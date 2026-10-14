@@ -1,0 +1,16 @@
+{
+  "name": "post_key__w_epoch0",
+  "description": "W_{0,b}: HKDF-Expand(PRK_0, \"dash-forge/v2/bot-post\" || 0x00 || u32(0) || botId).",
+  "case": "bot_post",
+  "rules": "v2",
+  "input": {
+    "op": "postKey",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "epoch": 0,
+    "bot": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"
+  },
+  "expected": {
+    "w": "f4b4b96d963aee33dbbc796a264260c0ebdcdb467ba3d01a8edd387f5115ed27"
+  }
+}

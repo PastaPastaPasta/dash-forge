@@ -52,7 +52,7 @@ import {
 import { DOC, asIdentifierString, withVis, type RepoRef } from './contract'
 import { defaultProtectedPatterns, isRc1BranchName, isRc1OidHex, isRc1TagName } from '../rules'
 import { invalidateMembers, memberDocOf, readMemberships, roleOfMemberDoc } from './members'
-import { contractHasProperty } from './contract-shape'
+import { contractAdmitsBots, contractHasProperty } from './contract-shape'
 import { refNameHash, repoContentWritten } from './push'
 import type { PrivateDocType } from '../private'
 import { isSealedKind, privateWriter, sealForRepo, sealPrivatePerObject, sealedIntent, sealedTextUse, PrivateWriteError, type MembersPatch, type PrivateWriter } from './private-writes'
@@ -1401,8 +1401,23 @@ export class MemberRoleTakenError extends Error {
   }
 }
 
-/** Refuse a role the owner cannot grant on `repo` ({@link grantableRoles}). */
-function assertGrantable(repo: RepoRef, role: Role): void {
+/**
+ * The refusal of a Bot grant where the registered contract has no Bot role (sakura's live set),
+ * before anything is signed. Parity: forge-core `members::no_bot_role`.
+ */
+export class NoBotRoleError extends Error {
+  constructor() {
+    super("This repo can't have bots as members yet: this network's contracts have no Bot role. Until then a bot can post publicly and report checks as a CI runner. Nothing was written.")
+    this.name = 'NoBotRoleError'
+  }
+}
+
+/** Refuse a role the owner cannot grant on `repo` ({@link grantableRoles}; a bot only where the contract admits it). */
+async function assertGrantable(sdk: EvoSDK, repo: RepoRef, role: Role): Promise<void> {
+  if (role === 'bot') {
+    if (!(await contractAdmitsBots(sdk, repo.forge.core))) throw new NoBotRoleError()
+    return
+  }
   if (!grantableRoles(repo.visibility).includes(role)) throw new Error(`the ${role} role can't be granted on this repo`)
 }
 
@@ -1637,7 +1652,7 @@ export async function grantMembershipDoc(
   intent?: string,
 ): Promise<WriteResult> {
   if (auth.identityId !== repo.ownerId) throw new Error('only the repo owner can add members')
-  assertGrantable(repo, role)
+  await assertGrantable(sdk, repo, role)
   const roleData = await writerRoleData(sdk, repo, role)
   const held = await findMembership(sdk, repo, role, memberId)
   if (held !== null) {
@@ -1734,7 +1749,7 @@ export async function changeMemberRole(
   if (auth.identityId !== repo.ownerId) throw new Error('only the repo owner can change roles')
   if (memberId === repo.ownerId) throw new Error("the owner's own role does not change")
   if (from === to) throw new Error(`they are already a ${to}`)
-  assertGrantable(repo, to)
+  await assertGrantable(sdk, repo, to)
   await writerRoleData(sdk, repo, to)
   if (memberDocOf(from) !== memberDocOf(to)) {
     const other = await findMembership(sdk, repo, to, memberId)
@@ -1765,7 +1780,13 @@ export async function changeMemberRole(
     // part of).
     await grantMembershipDoc(sdk, auth, repo, memberId, to, `${base}:add`)
     await keyed.flows.waitForMembers(keyed.c, (rows) => keyed.flows.holds(rows, memberId, to))
-    await keyed.flows.removePrivateMember(keyed.c, memberId, from, `${base}:remove`)
+    let sent = false
+    await keyed.flows.removePrivateMember(keyed.c, memberId, from, `${base}:remove`, (s) => {
+      if (s.kind === 'postKeys' && s.sent.sent.includes(memberId)) sent = true
+    })
+    // a maintainer made a bot: the rotation sends every Bot row its post key; a rotation that did
+    // not reach them (or none ran) leaves it to the missing-keys path
+    if (to === 'bot' && !sent) await keyed.flows.givePostKey(keyed.c, memberId, `${base}:post-key`)
     return keyedResult()
   }
   await revokeMembershipDoc(sdk, auth, repo, memberId, from)
@@ -1797,12 +1818,18 @@ export async function changeMemberRole(
     const base = intent ?? `members:role:${memberId}`
     const held = holdsMembersKey(from)
     const holdsNow = holdsMembersKey(to)
-    // Between roles that hold the members key, they keep it; to one that does not, it rotates away
-    // from them; to one that does from one that did not, it is shared with them (the repair
-    // check's wrap). Neither happens while every role holds the key (DESIGN §3.5); a Bot role
-    // (phase 4) will.
-    if (held && !holdsNow) await keyed.flows.rotateRepoKey(keyed.c, [memberId], `${base}:rotate`)
+    // Between roles that hold the members key, they keep it; to one that does not (Bot), it
+    // rotates away from them; to one that does from one that did not, it is shared with them (the
+    // repair check's wrap). A new bot gets its key for members-only posts instead: from the
+    // rotation when it sees their Bot row, else from the missing-keys path (never a second letter).
+    let sent = false
+    if (held && !holdsNow) {
+      await keyed.flows.rotateRepoKey(keyed.c, [memberId], `${base}:rotate`, (s) => {
+        if (s.kind === 'postKeys' && s.sent.sent.includes(memberId)) sent = true
+      }, [{ identity: memberId, role: from }])
+    }
     if (!held && holdsNow) await keyed.flows.runRepair(keyed.c, `${base}:share`)
+    if (to === 'bot' && !sent) await keyed.flows.givePostKey(keyed.c, memberId, `${base}:post-key`)
   }
   return granted
 }

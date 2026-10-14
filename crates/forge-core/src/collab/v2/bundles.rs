@@ -798,7 +798,9 @@ impl Collab<'_> {
     ) -> std::result::Result<EpochKey, LeftOutWhy> {
         let enc = d.field_bytes("enc").ok_or(LeftOutWhy::AlreadyPublic)?;
         let key = match enc.first() {
-            Some(&doc::V3) => {
+            // a bot's post (§23) opens for a member as a members-only one does: the reader
+            // derives the bot's post key and checks its Bot row
+            Some(&(doc::V3 | doc::V5)) => {
                 let DocKeys::Held(kr, _) = keys else {
                     return Err(LeftOutWhy::Unreadable);
                 };

@@ -267,12 +267,12 @@ cmd('repo keys status', 'A private or members-only repository\'s key epochs and 
 })
 cmd('repo keys repair', 'Keys shared again, or the key rotated, so every member can read.', {
     'status': E('repaired', 'nothing_to_do'), 'rotated': nl(R('rotation')), 'nonMembers': ANY, 'wrapped': ANY,
-    'skipped': ANY, 'cost': COST,
+    'skipped': ANY, 'postKeys': ANY, 'cost': COST,
 }, ['status'])
 cmd('repo keys rotate', 'A new key epoch.', {'status': E('rotated'), 'rotation': R('rotation'), 'cost': COST}, ['status'])
 cmd('repo members enable', 'Members-only content turned on. When it is on already and the key needs a repair (a '
     'member with no key yet, a rotation), the command repairs it and prints what `dg repo keys repair` prints.', {
-    'status': S, 'repo': S, 'epoch': ANY, 'wrapped': ANY, 'skipped': ANY, 'cost': COST,
+    'status': S, 'repo': S, 'epoch': ANY, 'wrapped': ANY, 'skipped': ANY, 'postKeys': ANY, 'cost': COST,
 }, ['status'], one_of=[
     ({'status': E('enabled', 'finished', 'already_on')}, ['repo']),
     ({'status': E('repaired', 'nothing_to_do'), 'rotated': nl(R('rotation')), 'nonMembers': ANY}, []),
@@ -571,7 +571,7 @@ cmd('verify-app', 'A deployed copy of the web app checked against a published bu
 cmd('collab add', 'A member added, or their role changed.', {
     'status': S, 'member': S, 'role': S, 'previousRole': nl(S), 'environmentsSavedFirst': ANY,
     'environmentsSavedAgain': ANY, 'environmentPlan': ANY, 'documentId': S, 'id': S,
-    'repo': S, 'cost': COST, 'keyShared': B, 'keyPending': ANY, 'rotation': nl(R('rotation')),
+    'repo': S, 'cost': COST, 'keyShared': B, 'keyPending': ANY, 'postKeySent': B, 'rotation': nl(R('rotation')),
     'branchesShared': D('Branches for fewer people whose key the change sent (to anyone who joined) or renewed '
                         '(for everyone left), each `sent`, `unchanged` or `failed`; null when none can change.',
                         ANY),

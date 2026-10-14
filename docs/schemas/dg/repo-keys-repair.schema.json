@@ -28,6 +28,7 @@
     "nonMembers": {},
     "wrapped": {},
     "skipped": {},
+    "postKeys": {},
     "cost": {
       "$ref": "common.schema.json#/$defs/cost"
     }

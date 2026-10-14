@@ -235,10 +235,21 @@ impl LoadedContract {
             .is_ok_and(|t| t.properties().contains_key(property))
     }
 
+    /// The `maximum` a top-level integer `property` of `document_type` declares, if any:
+    /// feature-detects a bound a build flag moves (`writer.role` admits the Bot role, 4, only
+    /// on a contract built with `mainnet_bot_role`). `None` for an unknown type or property.
+    pub fn property_maximum(&self, document_type: &str, property: &str) -> Option<i64> {
+        self.property_bound(document_type, property, "maximum")
+    }
+
     /// The `minimum` `document_type`'s top-level integer `property` declares, as the
     /// contract's schema states it: feature-detects a bound a build flag moves (mainnet C3 lets
     /// `packManifest.r` be 0). `None` for an unknown type or property, or no `minimum`.
     pub fn property_minimum(&self, document_type: &str, property: &str) -> Option<i64> {
+        self.property_bound(document_type, property, "minimum")
+    }
+
+    fn property_bound(&self, document_type: &str, property: &str, bound: &str) -> Option<i64> {
         use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
         let t = self.0.document_type_for_name(document_type).ok()?;
         t.schema()
@@ -246,7 +257,7 @@ impl LoadedContract {
             .ok()??
             .get_optional_value(property)
             .ok()??
-            .get_optional_value("minimum")
+            .get_optional_value(bound)
             .ok()??
             .as_integer::<i64>()
     }
@@ -5015,6 +5026,8 @@ mod tests {
             assert_eq!(core.immutable_when("repo", "visibility"), Some(!mainnet));
             assert_eq!(core.immutable_when("repo", "name"), Some(true));
             assert_eq!(core.immutable_when("repo", "description"), None);
+            // C2: the Bot role (writer.role 4) only on the mainnet build
+            assert_eq!(crate::members::admits_bots(&core), mainnet);
         }
     }
 
