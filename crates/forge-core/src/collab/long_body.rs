@@ -233,16 +233,21 @@ impl Collab<'_> {
             ))
         };
         long_body::stored_text(full, room, &[0; 32]).ok_or_else(no_room)?;
-        self.require_role(
-            repo,
-            Role::Writer,
-            &format!(
-                "post a text of {} bytes (a field holds {room}; a longer text is stored as a \
-                 repository artifact, which only maintainers and writers may record)",
-                full.len()
-            ),
-        )
-        .await?;
+        // a bot's public long body (kind 6) is one of the kinds the mainnet contract admits from
+        // its row (`botPack`, D42): stored claiming `r` 4, like its pushes
+        let as_bot = !members && self.bot_writes_packs(repo).await?;
+        if !as_bot {
+            self.require_role(
+                repo,
+                Role::Writer,
+                &format!(
+                    "post a text of {} bytes (a field holds {room}; a longer text is stored as \
+                     a repository artifact, which only maintainers, writers and bots may record)",
+                    full.len()
+                ),
+            )
+            .await?;
+        }
         let hash = if members {
             // sealed here, under keys read now (§5.3): the plaintext never leaves this process
             let lane = self.members_writer(repo).await?.lane(repo)?;
@@ -259,15 +264,20 @@ impl Collab<'_> {
                 )
                 .await?
         } else {
-            self.repo_service()?
-                .store_long_body(
-                    repo,
-                    full.as_bytes(),
-                    &store.external,
-                    store.platform,
-                    store.required,
-                )
-                .await?
+            let svc = self.repo_service()?;
+            let svc = if as_bot {
+                svc.as_bot(std::sync::Arc::default())
+            } else {
+                svc
+            };
+            svc.store_long_body(
+                repo,
+                full.as_bytes(),
+                &store.external,
+                store.platform,
+                store.required,
+            )
+            .await?
         };
         long_body::stored_text(full, room, &hash).ok_or_else(no_room)
     }

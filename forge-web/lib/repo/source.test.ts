@@ -49,7 +49,9 @@ describe('which contract holds a type', () => {
   ] as const)('names the types the %s schema declares, and no other', (name, types) => {
     const schema = JSON.parse(readFileSync(resolve(process.cwd(), '..', 'forge-contracts', 'contracts', `${name}.json`), 'utf8')) as { documentSchemas: Record<string, unknown> }
     // A fused-star forge-community (RC2 C1) has no starBeat; the layout keeps it for the beat shape.
-    const declared = [...types].filter((t) => t !== 'starBeat' || t in schema.documentSchemas)
+    // `pushGrant` is the mainnet set's only (B1, D42): clients detect it on the loaded contract.
+    const optional = ['starBeat', 'pushGrant']
+    const declared = [...types].filter((t) => !optional.includes(t) || t in schema.documentSchemas)
     expect(declared.sort()).toEqual(Object.keys(schema.documentSchemas).sort())
   })
 })

@@ -137,6 +137,17 @@ struct Row {
     members_only: bool,
     /// A branch for fewer people (phase 3F): its label and how many people it is for now.
     narrower: Option<(String, usize)>,
+    /// Who pushed its tip.
+    by: Option<String>,
+}
+
+/// Who pushed a ref's tip (a diverged ref's provisional one).
+fn pusher(state: &forge_core::rules::RefState) -> Option<String> {
+    match state {
+        forge_core::rules::RefState::Resolved { author, .. } => Some(author.clone()),
+        forge_core::rules::RefState::Diverged { heads } => heads.first().map(|h| h.author.clone()),
+        forge_core::rules::RefState::Unborn => None,
+    }
 }
 
 #[allow(clippy::too_many_lines)] // read, build the rows, then print them
@@ -175,6 +186,7 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
                     tip: forge_core::rules::tip_of(&r.state),
                     members_only: r.members_only,
                     narrower: if r.narrower { narrower(&r.name) } else { None },
+                    by: pusher(&r.state),
                 })
                 .collect(),
             false,
@@ -191,6 +203,7 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
                     tip: forge_core::rules::tip_of(st),
                     members_only: false,
                     narrower: None,
+                    by: pusher(st),
                 })
                 .collect(),
             others,
@@ -198,6 +211,21 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
     };
     let live: Vec<&Row> = rows.iter().filter(|r| r.tip.is_some()).collect();
     let current = git::current_branch(Path::new(".")).map(|b| git::full_ref(&b));
+    // "pushed by @ci-bot (bot)" beside a branch a bot pushed last (phase 4E; the Bot label
+    // comes from its role-4 row, read only where the contract has the role)
+    let bots = crate::collab::bots_of(&s.client, &s.repo).await;
+    let bot_names = if bots.is_empty() || ctx.json {
+        std::collections::BTreeMap::new()
+    } else {
+        s.client
+            .dpns_first_names(
+                live.iter()
+                    .filter_map(|r| r.by.as_deref())
+                    .filter(|b| bots.contains(*b)),
+            )
+            .await
+    };
+    let pushed_by_bot = |r: &Row| r.by.as_ref().filter(|b| bots.contains(*b)).cloned();
     let audience = |r: &Row| match (&r.narrower, r.members_only) {
         (Some(_), _) => "narrower",
         (None, true) => "members",
@@ -216,6 +244,9 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
                 if let Some((label, n)) = &r.narrower {
                     b["audienceLabel"] = json!(label);
                     b["visibleTo"] = json!(n);
+                }
+                if let Some(bot) = pushed_by_bot(r) {
+                    b["pushedByBot"] = json!(bot);
                 }
                 b
             }).collect::<Vec<_>>(),
@@ -250,8 +281,16 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
                             crate::narrow::people_count(*n)
                         )
                     });
+                    let bot = pushed_by_bot(r).map_or(String::new(), |b| {
+                        format!(
+                            "  pushed by {} (bot)",
+                            bot_names
+                                .get(&b)
+                                .map_or_else(|| b.clone(), |n| format!("@{}", safe(n)))
+                        )
+                    });
                     println!(
-                        "{mark} {:<width$}  {}{who}",
+                        "{mark} {:<width$}  {}{who}{bot}",
                         safe(name),
                         short(r.tip.as_deref().unwrap_or_default())
                     );

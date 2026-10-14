@@ -642,3 +642,14 @@ error: E813 @ci-bot can't be asked by people with Triage access in o/r
 ```
 
 **What to do:** ask someone with Write access to ask the bot, or ask a maintainer to change who can ask it (Settings → Bots and runners).
+
+## E814
+
+**Bot can't push here.** A bot's push went outside the push access its maintainers gave it: no push access covers the branch, the access ended, the maintainer who gave it is no longer a maintainer, the bot was removed and added again since (push access doesn't come back), a maintainer suspended its pushes, or the branch is protected. Repositories on networks without push access for bots refuse every bot push. Nothing was stored or signed.
+
+```
+error: E814 push rejected: you have no push access to refs/heads/main in o/r
+  cause: a maintainer gives a bot push access to a branch or a branch prefix (`dg bot allow o/r @ci-bot --push bot/ci-bot/`)
+```
+
+**What to do:** push to a branch the bot may push to (`dg bot list o/r` shows them), or ask a maintainer to give or renew the access (`dg bot allow … --push`, `dg bot renew`).

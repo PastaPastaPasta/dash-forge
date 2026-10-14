@@ -1,0 +1,163 @@
+{
+  "name": "grant_pick",
+  "description": "a bot pushes a ref under the usable grant covering it that ends last (then the newest, then by id): a prefix grant covers every public name starting with its prefix (one branch is granted as the prefix of its name, which covers longer names too), an exact grant one members-only name hash. No covering grant: notCovered; covering grants none usable: the newest one's reason.",
+  "case": "bot_push",
+  "rules": "v2",
+  "input": {
+    "op": "grantPick",
+    "grants": [
+      {
+        "id": "g01",
+        "granter": "M1",
+        "bot": "4tJ7mVo5yJm4b6rKZ2SRsG6YqfJHFDLC2kUwD3nAhZ7b",
+        "until": 20000,
+        "createdAt": 2000,
+        "prefix": "refs/heads/bot/ci-bot/"
+      },
+      {
+        "id": "g02",
+        "granter": "M1",
+        "bot": "4tJ7mVo5yJm4b6rKZ2SRsG6YqfJHFDLC2kUwD3nAhZ7b",
+        "until": 30000,
+        "createdAt": 3000,
+        "prefix": "refs/heads/bot/ci-bot/"
+      },
+      {
+        "id": "g03",
+        "granter": "M1",
+        "bot": "4tJ7mVo5yJm4b6rKZ2SRsG6YqfJHFDLC2kUwD3nAhZ7b",
+        "until": 9000,
+        "createdAt": 4000,
+        "prefix": "refs/heads/gh-pages"
+      },
+      {
+        "id": "g04",
+        "granter": "M1",
+        "bot": "4tJ7mVo5yJm4b6rKZ2SRsG6YqfJHFDLC2kUwD3nAhZ7b",
+        "until": 50000,
+        "createdAt": 500,
+        "prefix": "refs/heads/old/"
+      },
+      {
+        "id": "g05",
+        "granter": "M1",
+        "bot": "4tJ7mVo5yJm4b6rKZ2SRsG6YqfJHFDLC2kUwD3nAhZ7b",
+        "until": 20000,
+        "createdAt": 2000,
+        "scope": "f16afd926545609da0e231dd97ae33133397f5c30071469440f6155351cd9fdf"
+      }
+    ],
+    "ctx": {
+      "now": 10000,
+      "botRowAt": 1000,
+      "maintainers": [
+        "M1",
+        "M2"
+      ]
+    },
+    "targets": [
+      {
+        "name": "prefix_ends_last",
+        "target": {
+          "public": "refs/heads/bot/ci-bot/fix"
+        }
+      },
+      {
+        "name": "beside_the_prefix",
+        "target": {
+          "public": "refs/heads/bot/ci-bot2"
+        }
+      },
+      {
+        "name": "one_branch_and_longer",
+        "target": {
+          "public": "refs/heads/gh-pages-2"
+        }
+      },
+      {
+        "name": "older_than_row",
+        "target": {
+          "public": "refs/heads/old/x"
+        }
+      },
+      {
+        "name": "default_branch",
+        "target": {
+          "public": "refs/heads/main"
+        }
+      },
+      {
+        "name": "exact",
+        "target": {
+          "exact": "F16AFD926545609DA0E231DD97AE33133397F5C30071469440F6155351CD9FDF"
+        }
+      },
+      {
+        "name": "exact_other",
+        "target": {
+          "exact": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      {
+        "name": "public_name_never_exact",
+        "target": {
+          "public": "f16afd926545609da0e231dd97ae33133397f5c30071469440f6155351cd9fdf"
+        }
+      }
+    ]
+  },
+  "expected": {
+    "results": [
+      {
+        "name": "prefix_ends_last",
+        "pick": {
+          "grant": "g02"
+        }
+      },
+      {
+        "name": "beside_the_prefix",
+        "pick": {
+          "reason": "notCovered"
+        }
+      },
+      {
+        "name": "one_branch_and_longer",
+        "pick": {
+          "reason": "unusable",
+          "why": "expired"
+        }
+      },
+      {
+        "name": "older_than_row",
+        "pick": {
+          "reason": "unusable",
+          "why": "olderThanBotRow"
+        }
+      },
+      {
+        "name": "default_branch",
+        "pick": {
+          "reason": "notCovered"
+        }
+      },
+      {
+        "name": "exact",
+        "pick": {
+          "grant": "g05"
+        }
+      },
+      {
+        "name": "exact_other",
+        "pick": {
+          "reason": "notCovered"
+        }
+      },
+      {
+        "name": "public_name_never_exact",
+        "pick": {
+          "reason": "notCovered"
+        }
+      }
+    ]
+  }
+}

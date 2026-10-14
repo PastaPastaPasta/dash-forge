@@ -1238,7 +1238,7 @@ A notice is a typed object in the key letters' canonical form (§20.1), padded t
  "note":TEXT,"processor":TEXT|null,"revokes":[packHash,…],"threads":"all"|[n,…],"type":"accessNotice","until":ms|null,"v":1}
 ```
 
-- `may`, sorted, each once, ASCII letters and digits: `post` (comments and reviews), `postMembersOnly` (members-only replies on threads it is asked about, phase 4A), `readOnRequest` (a `read` letter per request), `ciMembersBranches` (a `branch` letter on every members push, phase 4C). An ability a reader does not know is kept and grants nothing; so are fields a later version adds (phase 4E's `push`, `pushPolicy`). A notice allowing nothing (`may` empty) takes the bot's access away (`dg bot revoke`).
+- `may`, sorted, each once, ASCII letters and digits: `post` (comments and reviews), `postMembersOnly` (members-only replies on threads it is asked about, phase 4A), `readOnRequest` (a `read` letter per request), `ciMembersBranches` (a `branch` letter on every members push, phase 4C). An ability a reader does not know is kept and grants nothing; so are fields a later version adds. Phase 4E adds `push` with the `push` and `pushPolicy` fields (§24.2). A notice allowing nothing (`may` empty) takes the bot's access away (`dg bot revoke`).
 - `askers`: who may ask it (writers: Write, Maintain and the owner; maintainers: Maintain and the owner). `threads`: `"all"` or 1–100 issue and pull request numbers, sorted. `processor`: the AI service that processes what the bot is given (1–100 characters, not blank, no control character). `until`: when it ends (ms); a notice past it allows nothing. `note`: at most 500 characters, newlines allowed. `revokes`: the `packHash`es of the notices it replaces (a record only).
 - **Storage.** A `packManifest` of kind 11 on Platform chunks (`objectCount` 0, no `tips`, no `supersedes`). In a public repository the bytes are stored as they are. In a private one, twice: sealed under the members key (DFPK `0x01`) for members, and a DFPK `0x02` artifact to the bot and the writer, since a bot never holds the members key. The first bytes say which (`pack::sniff`).
 - **Reader rule.** The bytes must hash to `packHash`. Per bot, the notice that counts is the newest (by `$createdAt`, then manifest id) whose writer is a **current** maintainer or the owner; anyone else's is ignored, and on the mainnet set consensus refuses it (C3, `r = 0`). Clients write `r = 0` where `packManifest.r` admits 0.
@@ -1364,3 +1364,92 @@ Only a Bot row whose current access notice (§22.1) is live and allows `postMemb
 path above (`bot_keys::with_post_access`; web `withPostAccess`); `dg bot allow --members-only-replies` sends it at once
 (the web's repair banner offers it). A bot whose notice stops allowing it, is revoked or ends gets none at the next
 rotation, so its members-only posting stops there.
+
+## 24. Bot push grants (phase 4E)
+
+A maintainer lets a bot push, per repository and per branch, visibly and revocably (DESIGN §4.9 "Pushing", D42). The
+pure rules are `forge_core::rules::push_grant` (web: `lib/rules/push-grant.ts`); the service is
+`RepoService::{read,write,delete}_push_grant(s)` and `collab::v2::bot_push`; vectors `bot_push__*` and
+`access_notice__format_push` from `tools/private-repos-vectors/push.py` and `access.py`. Only the mainnet contract has
+grants (`pushGrant`, `forge-v2.md` §9.1 B1); on sakura's live set a bot is not a member and every bot push and grant
+is refused before signing ("Bots can't push to this repo yet.", E205; the helper E814).
+
+### 24.1 Grants
+
+- **What one covers.** `prefix`: every public ref whose name starts with it, `refs/heads/bot/<bot name>/` by default
+  (`dg bot allow <repo> @ci-bot --push`). A pattern `bot/x/*` is the prefix `refs/heads/bot/x/`; one branch
+  (`--push gh-pages`) is granted as the prefix of its full name, which also covers longer names that start with it, and
+  the dialog says so. Another glob, or a name outside `refs/heads/`, is refused (`prefix_of`). `scope`: one
+  members-only branch **shared with the bot** (a narrower branch, §21, whose audience includes it), as its name hash
+  under the branch key's current generation; only a maintainer holding the branch key can write it. A members-key
+  branch ("All members") can never be granted: a bot never holds the members key. A prefix that is or covers a
+  members-only branch's name the maintainer can read is refused before signing (the grant and the notice are public
+  and would name it); so is any prefix when the repository has members-only branches and the maintainer's members key
+  isn't available (nothing can be checked). A branch for fewer people the maintainer is not among is not checked:
+  its name is unknown to them, so the prefix they type cannot publish it, and a public push of the same name is
+  anyone's possibility, not a bot's (§21). A private repository has no grants (a bot never holds its key, and a prefix would publish its branch names).
+- **How long.** 30 days by default (`--push-until`, else the access's own `until` when sooner); at most 90 days
+  (`ttl90`); a client asks for 10 minutes less than 90 days at most, so the block's time never disagrees
+  (`until_for`). "Renew" (`dg bot renew`) is offered from 14 days before the end: a new grant per branch or prefix,
+  and the renewing maintainer's own old grants are deleted.
+- **Which one a bot pushes under** (`usable`, `pick`): the bot holds a Bot row written no later than the grant (a bot
+  removed and added again does not get its push back), the granter is still a maintainer (consensus checks this too:
+  `grantor`), and now is before `until`; of those covering the ref, the one that ends last.
+- **A new branch-key generation** (§21.3) changes the branch's name hash: the bot's exact grant then names an earlier
+  generation's hash and stops working. `dg bot renew` (by a maintainer holding the branch key) writes it again under
+  the current hash, if the bot is still in the branch's audience.
+
+### 24.2 The notice's push fields
+
+`may` gains `push`, and the notice lists the grants it gives and the runner's rules:
+
+```
+"push":[{"grant":hex32,"match":"prefix","ref":"refs/heads/bot/ci-bot/"},{"branch":hex32,"grant":hex32,"members":true}],
+"pushPolicy":{"deleteOwnOnly":true,"fastForwardOnly":true,"openPrNotPush":false}
+```
+
+Entries are sorted by grant id (lowercase hex of the document id); a prefix entry's `ref` must be a prefix
+`prefix_of` accepts as it is. A malformed list makes the notice allow no push. `pushPolicy` absent or malformed is
+the defaults (fast-forward only, delete own branches only). The grants are the truth: a usable grant missing from the
+list is shown to maintainers as "@m let @ci-bot push here; this isn't in @ci-bot's access settings". The members-only
+entry carries only the name hash the grant document already shows. A newer notice without `push` **suspends** every
+push (`dg bot suspend`, any maintainer); `dg bot resume` lists the usable grants again; `dg bot allow` without
+`--push` keeps the push fields as they are, and `dg bot allow --push` resumes a suspended bot (it says so); `dg bot
+revoke` (everything) and `dg bot revoke --push` (only the push access this maintainer gave) delete the signer's own
+grants, and never lift another maintainer's suspension. An exact grant naming an earlier generation's hash is shown
+as stale ("the branch's key changed. Renew") and left out of the notice's list.
+
+### 24.3 Writing a bot's push
+
+Where the signer holds a Bot row, the helper reads the bot's access before anything is built (`bot_push::plan`) and
+refuses with E814 each ref no usable grant covers, a protected ref (a bot never updates one), every ref when a
+maintainer suspended its pushes, and every ref of a private repository. Each accepted ref update claims `r` 4 and
+names its grant (`pp` for a prefix grant, `pg` for an exact one) and the grant's granter (`grantor`); its
+`packManifest`s and `chunk`s claim `r` 4 too. A bot's manifest never supersedes (`botPack`): its push publishes a
+browse-index fragment but never folds the fragments (the next member's push does), and writes no history index
+(kinds 3 and 5 are not a bot's). A bot never writes a key letter: it never starts a narrower branch and never re-sends
+one's key; a branch whose audience changed gets its key with a member's next push. A bot without the members key that
+holds a narrower branch's key pushes that branch through the helper (the push's view opens with the branch ring
+alone, and `dg branch list` names it); fetching it through the helper is not built: a job gets its commits through a
+`branch` letter (phase 4C). The helper also holds a bot to its notice's rules: no forced push while `fastForwardOnly`,
+and no delete of a branch someone else pushed last while `deleteOwnOnly`. A bot's public long body (kind 6) is stored claiming `r` 4 too; its members-only text stays capped
+(§23).
+
+### 24.4 The runner's push path
+
+`forge-runner push <repo> --branch B --commit C` (and the agents mode, which calls `push::push`) pushes a job's output
+through `git push` with the bot's key, after its own checks (`push::decide`, runner conventions): the request is a
+proper one (a member asked, not a fork's pull request); a job that read members-only input pushes only to a
+members-only branch shared with the bot whose people are all among the narrowest members-only input it read, never to
+a public branch (taint); a usable grant covers the branch (`dg bot list --json`, status `usable`); the bot's pushes are
+not suspended; the push fast-forwards the branch unless `fastForwardOnly` is off, and with `openPrNotPush` the branch
+must not exist. The helper then checks the grant again and runs the publication guard, ledger and secret scan.
+
+### 24.5 How readers show a bot's push
+
+The Bot label comes from the pusher's current role-4 row: `dg branch` shows "pushed by @ci-bot (bot)" beside a branch
+a bot pushed last, `dg repo activity` "@ci-bot (bot)" on each of its pushes. A push is marked "outside the access
+@ci-bot was given" (`mark`) when the grant it named was written before the bot's current member row and it landed
+after that row, or when the bot's notice in force when it landed (the newest by a current maintainer then) did not
+allow pushing; a grant deleted later takes nothing back. A public bot update whose `refNameHash` is not
+`sha256(refName)` is dropped like anyone's (vector `bot_push__name_hash_mismatch_ignored`).

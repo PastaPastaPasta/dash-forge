@@ -85,8 +85,9 @@ use crate::user_error::{codes, UserError};
 /// (`forge-web/lib/spend.ts`'s `NO_REPO`) — kept identical so the two tools read the same.
 pub const NO_REPO: &str = "(no repo)";
 
-/// Document types no proved query can attribute to their author (see the module doc).
-pub const EXCLUDED_TYPES: &[&str] = &["review"];
+/// Document types no proved query can attribute to their author (see the module doc). A
+/// `pushGrant` (the mainnet set's bot push grants) has no `$ownerId` index, only `byBot`.
+pub const EXCLUDED_TYPES: &[&str] = &["review", "pushGrant"];
 
 /// One document type's totals in an [`AuditReport`].
 #[derive(Debug, Clone)]

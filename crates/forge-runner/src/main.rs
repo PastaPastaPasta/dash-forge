@@ -38,6 +38,7 @@ mod config;
 mod cron;
 mod egress;
 mod envs;
+mod push;
 mod relay;
 mod run;
 mod watch;
@@ -94,6 +95,31 @@ enum Cmd {
         /// (`CI / build`, `CI / build (pull_request)`).
         #[arg(long, value_name = "NAME")]
         check: Option<String>,
+    },
+    /// Push a commit to one branch as the bot (`DASH_FORGE_KEY`), as a job's output is pushed:
+    /// only to a branch its push access covers, never to a public branch after reading
+    /// members-only content, fast-forward only unless its access says otherwise.
+    Push {
+        /// The repository (`owner/name`, as configured).
+        repo: String,
+        /// The one branch to push to.
+        #[arg(long)]
+        branch: String,
+        /// The commit.
+        #[arg(long)]
+        commit: String,
+        /// The git directory holding the commit.
+        #[arg(long, default_value = ".git")]
+        git_dir: PathBuf,
+        /// The job read members-only content of the repository (readable by all its members).
+        #[arg(long, conflicts_with = "members_input_people")]
+        members_input: bool,
+        /// The job read members-only content readable only by these people (identity ids).
+        #[arg(long, value_delimiter = ',', value_name = "IDS")]
+        members_input_people: Vec<String>,
+        /// The request came from a fork's pull request or from outside the members.
+        #[arg(long)]
+        not_member: bool,
     },
 }
 
@@ -164,6 +190,33 @@ fn real_main(cli: &Cli) -> Result<()> {
                 println!("{name}\t{conclusion}");
             }
             Ok(())
+        }
+        Cmd::Push {
+            repo,
+            branch,
+            commit,
+            git_dir,
+            members_input,
+            members_input_people,
+            not_member,
+        } => {
+            let r = cfg
+                .repos
+                .iter()
+                .find(|r| &r.repo == repo)
+                .with_context(|| format!("{repo} is not in {}", cli.config.display()))?;
+            push::cli(
+                &cfg,
+                r,
+                &push::CliArgs {
+                    branch,
+                    commit,
+                    git_dir,
+                    members_input: *members_input,
+                    members_input_people,
+                    not_member: *not_member,
+                },
+            )
         }
     }
 }

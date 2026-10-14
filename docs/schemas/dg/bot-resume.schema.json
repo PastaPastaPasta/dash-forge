@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/bot-resume.schema.json",
+  "title": "dg bot resume --json",
+  "description": "A suspended bot's pushes resumed: a new access notice listing its usable push grants.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "bot": {
+      "type": "string"
+    },
+    "may": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "What the bot may do: post, postMembersOnly, readOnRequest, ciMembersBranches (and abilities a later version adds)."
+    },
+    "askers": {
+      "type": "string",
+      "enum": [
+        "writers",
+        "maintainers"
+      ]
+    },
+    "threads": {
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "all"
+          ]
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        }
+      ],
+      "description": "\"all\", or the issue and pull request numbers it may be asked about."
+    },
+    "processor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "until": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "line": {
+      "type": "string",
+      "description": "The access as everyone reads it."
+    },
+    "push": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "grant": {
+            "type": "string"
+          },
+          "target": {
+            "type": "object",
+            "description": "{\"prefix\": ref prefix} or {\"members\": name hash, hex}."
+          }
+        },
+        "required": [
+          "grant",
+          "target"
+        ]
+      },
+      "description": "The push access the notice lists: each grant's id (hex) and what it covers."
+    },
+    "notice": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "The notice's packManifest document ids (a private repository stores two copies)."
+    },
+    "packHash": {
+      "type": "string"
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "resumed"
+      ]
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "bot",
+    "may",
+    "line",
+    "notice",
+    "packHash",
+    "cost"
+  ],
+  "additionalProperties": true
+}

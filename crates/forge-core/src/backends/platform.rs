@@ -176,6 +176,8 @@ pub struct PlatformBackend<'a> {
     scope: &'a DocScope,
     /// The identity the engine writes as (a chunk's key includes its uploader).
     writer: String,
+    /// The `r` its chunks claim: the writer's 1, or a bot's 4 ([`Self::claiming`]).
+    r: u64,
 }
 
 impl<'a> PlatformBackend<'a> {
@@ -191,7 +193,15 @@ impl<'a> PlatformBackend<'a> {
             contract,
             scope,
             writer: writer.into(),
+            r: 1,
         }
+    }
+
+    /// The backend writing chunks that claim `r` (a bot's push: 4).
+    #[must_use]
+    pub fn claiming(mut self, r: u64) -> Self {
+        self.r = r;
+        self
     }
 
     /// The locator of a pack this backend stores.
@@ -356,7 +366,7 @@ impl PackBackend for PlatformBackend<'_> {
         // RC2 member roles: a chunk is push class, `r` 1 (the writer leaf proves `role == r`).
         stream::iter(docs.into_iter().map(|(_seq, props)| {
             let mut props = self.scope.scoped(props);
-            crate::members::stamp_claimed_role(self.contract, CHUNK_DOC_TYPE, &mut props, 1);
+            crate::members::stamp_claimed_role(self.contract, CHUNK_DOC_TYPE, &mut props, self.r);
             self.engine
                 .create_document(self.contract, CHUNK_DOC_TYPE, props)
         }))

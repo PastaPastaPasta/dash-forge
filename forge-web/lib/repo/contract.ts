@@ -273,6 +273,8 @@ export function toRefUpdate(doc: PlainDocument, isProtectedType: boolean): RefUp
     protected: isProtectedType,
     author: str(doc, '$ownerId'),
     createdAt: num(doc, '$createdAt'),
+    // a bot's push (phase 4E, `r` 4) names its grant: `pp` for a prefix grant, `pg` for an exact one
+    ...(num(doc, 'r') === 4 ? { botPush: { grant: asIdentifierString(doc['pp']) || asIdentifierString(doc['pg']) || null } } : {}),
   }
 }
 

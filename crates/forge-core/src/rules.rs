@@ -64,6 +64,7 @@ pub mod pack_mirror;
 pub mod parity;
 pub mod profile;
 pub mod provenance;
+pub mod push_grant;
 pub mod ref_collision;
 pub mod ref_history;
 pub mod review;
@@ -3842,6 +3843,7 @@ mod tests {
                 || v.case == crate::private::key_letter::VECTOR_CASE
                 || v.case == crate::private::access_notice::VECTOR_CASE
                 || v.case == crate::private::bot_post::VECTOR_CASE
+                || v.case == crate::rules::push_grant::VECTOR_CASE
                 || crate::members_git::conformance::CASES.contains(&v.case.as_str())
                 || v.case == crate::private::branch_key::conformance::CASE
                 || v.case == crate::private::members_check::CASE

@@ -18,6 +18,10 @@
  * it is for ("Maintainers only · visible to 3 people"), without Publish (it can't be the head of a
  * members-only pull request); a member without its key sees one row per such branch, "A branch you
  * don't have access to", with no name, tip or link.
+ *
+ * A branch whose tip a bot pushed (phase 4E) says "pushed by @ci-bot (bot)": the Bot label comes
+ * from the pusher's current Bot member row, read only where the contract has push grants (sakura's
+ * live set reads nothing more).
  */
 
 import { useCallback, useMemo, useState } from 'react'
@@ -25,7 +29,12 @@ import Link from 'next/link'
 import { Activity, GitBranch, Lock, Search, Tag } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { isDiverged, isLive, matchesRefQuery, plural, refParamFor, tipOidOf } from '@/lib/view'
-import { compareRefNames, compareTagNames, repoKey, type ResolvedRef } from '@/lib/repo'
+import { compareRefNames, compareTagNames, repoContractIds, repoKey, type ResolvedRef } from '@/lib/repo'
+import { readPushingBots } from '@/lib/repo/push-grants'
+import type { RefState } from '@/lib/rules'
+import { useAsync } from '@/hooks/use-async'
+import { useSdk } from '@/hooks/use-sdk'
+import { useHandle } from '@/components/repo/bot-handle'
 import { NO_ACCESS_TEXT, narrowWho, narrowerText } from '@/lib/repo/branch-ring'
 import { Oid } from '@/components/ui/oid'
 import { EmptyState } from '@/components/ui/states'
@@ -68,6 +77,23 @@ function ActivityLink({ addr, kind, name }: { addr: RepoAddress; kind: keyof typ
   )
 }
 
+/** Who pushed a ref's tip (a diverged ref's first head's): forge-core `dg branch`'s `pusher`. */
+export function pusherOf(state: RefState): string | null {
+  if (state.state === 'resolved') return state.author
+  if (state.state === 'diverged') return state.heads[0]?.author ?? null
+  return null
+}
+
+/** "pushed by @ci-bot (bot)" (DESIGN §10, phase 4E). */
+function PushedByBot({ id }: { id: string }): JSX.Element {
+  const handle = useHandle(id)
+  return (
+    <span className="shrink-0 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="pushed-by-bot">
+      pushed by {handle} (bot)
+    </span>
+  )
+}
+
 /** When a member's keys to branches for fewer people couldn't be read (the page goes on without them). */
 const UNCHECKED_TEXT = "Some members-only branches couldn't be checked. Reload the page to try again."
 
@@ -92,6 +118,13 @@ export function RefListContent({
 }): JSX.Element {
   const { prefix, icon: Icon, empty, noun, single } = KIND[kind]
   const admin = useBranchAdmin(home)
+  // the bots whose pushes a branch row names (none read before the registration)
+  const { sdk, ready, network } = useSdk(repoContractIds(home.repo))
+  const pushers = useAsync(() => readPushingBots(sdk!, home.repo), [ready, network, repoKey(home.repo)], { enabled: ready && sdk !== null && kind === 'branches' })
+  const botPusher = (ref: ResolvedRef): JSX.Element | null => {
+    const by = pusherOf(ref.state)
+    return by !== null && pushers.data?.has(by) === true ? <PushedByBot id={by} /> : null
+  }
   const branchAdmin = kind === 'branches'
   // Branches deleted from this page, with the tip each had: "Restore" puts one back there.
   const [deletedHere, setDeletedHere] = useDeletedHere(repoKey(home.repo))
@@ -238,6 +271,7 @@ export function RefListContent({
                     diverged
                   </span>
                 ) : null}
+                {botPusher(ref)}
                 {/* GitHub's "Updated": the tip commit's (or the tag's) date, QW2-023; not when this ref document last moved. */}
                 {tip ? <RefDate key={`date:${tip}`} peeler={peeler} tip={tip} pushedAt={refUpdatedAt(ref)} /> : null}
                 {tip && !isDefault ? (
@@ -326,6 +360,7 @@ export function RefListContent({
                         diverged
                       </span>
                     ) : null}
+                    {botPusher(ref)}
                     {tip ? <RefDate key={`date:${tip}`} peeler={peeler} tip={tip} pushedAt={refUpdatedAt(ref)} /> : null}
                     {tip && kind === 'branches' ? (
                       <Link

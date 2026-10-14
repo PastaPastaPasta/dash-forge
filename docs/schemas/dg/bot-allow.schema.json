@@ -2,17 +2,11 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/bot-allow.schema.json",
   "title": "dg bot allow --json",
-  "description": "A bot's access written: a new access notice everyone reads.",
+  "description": "A bot's access written: a new access notice everyone reads (and, with --push, its push grants first).",
   "type": "object",
   "properties": {
     "schemaVersion": {
       "const": 1
-    },
-    "status": {
-      "type": "string",
-      "enum": [
-        "allowed"
-      ]
     },
     "bot": {
       "type": "string"
@@ -64,6 +58,26 @@
       "type": "string",
       "description": "The access as everyone reads it."
     },
+    "push": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "grant": {
+            "type": "string"
+          },
+          "target": {
+            "type": "object",
+            "description": "{\"prefix\": ref prefix} or {\"members\": name hash, hex}."
+          }
+        },
+        "required": [
+          "grant",
+          "target"
+        ]
+      },
+      "description": "The push access the notice lists: each grant's id (hex) and what it covers."
+    },
     "notice": {
       "type": "array",
       "items": {
@@ -76,6 +90,12 @@
     },
     "cost": {
       "$ref": "common.schema.json#/$defs/cost"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "allowed"
+      ]
     }
   },
   "required": [
@@ -83,12 +103,12 @@
     "status",
     "bot",
     "may",
-    "askers",
-    "threads",
     "line",
     "notice",
     "packHash",
-    "cost"
+    "cost",
+    "askers",
+    "threads"
   ],
   "additionalProperties": true
 }

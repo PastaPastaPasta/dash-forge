@@ -7,6 +7,7 @@
 use anyhow::Result;
 use serde_json::json;
 
+use forge_core::rules::push_grant::PushMark;
 use forge_core::rules::ref_history::{ref_history, RefEvent, RefEventKind};
 
 use crate::common::Reader;
@@ -109,6 +110,40 @@ fn with_config_authors(
     events
 }
 
+/// How a bot's push among `events` is marked, by update id (public repositories; best effort:
+/// nothing is marked when a read fails).
+async fn bot_marks(
+    s: &Reader,
+    events: &[RefEvent],
+    bots: &std::collections::BTreeSet<String>,
+) -> std::collections::BTreeMap<String, PushMark> {
+    if !events
+        .iter()
+        .any(|e| e.by.as_ref().is_some_and(|b| bots.contains(b)))
+    {
+        return std::collections::BTreeMap::new();
+    }
+    let Ok(state) = s.service().git_state(&s.repo).await else {
+        return std::collections::BTreeMap::new();
+    };
+    let docs: Vec<&forge_core::platform::FetchedDocument> = state
+        .ref_updates
+        .iter()
+        .filter(|d| events.iter().any(|e| e.id == d.id))
+        .collect();
+    s.collab()
+        .bot_push_marks(&s.repo, &docs)
+        .await
+        .unwrap_or_default()
+}
+
+/// `@name` for `id` when it has one, else its id.
+fn short_name(id: &str, names: &std::collections::BTreeMap<String, String>) -> String {
+    names
+        .get(id)
+        .map_or_else(|| id.to_owned(), |n| format!("@{n}"))
+}
+
 /// `dg repo activity`.
 pub async fn activity(ctx: &Ctx, repo: &str, name: &str, tag: bool) -> Result<()> {
     let s = Reader::open(ctx, repo).await?;
@@ -150,9 +185,23 @@ pub async fn activity(ctx: &Ctx, repo: &str, name: &str, tag: bool) -> Result<()
             .dpns_first_names(ids.iter().map(String::as_str))
             .await
     };
+    // a bot's pushes (phase 4E): "(bot)", and whether each was outside the access it was given
+    let bots = crate::collab::bots_of(&s.client, &s.repo).await;
+    let marks = bot_marks(&s, &events, &bots).await;
     let display = s.repo.display();
+    let json_events: Vec<serde_json::Value> = events
+        .iter()
+        .map(|e| {
+            let mut v = json!(e);
+            if e.by.as_ref().is_some_and(|b| bots.contains(b)) {
+                v["bot"] = json!(true);
+                v["outsideAccess"] = json!(marks.get(&e.id) == Some(&PushMark::Outside));
+            }
+            v
+        })
+        .collect();
     ctx.emit(
-        json!({ "repo": display, "ref": ref_name, "events": events }),
+        json!({ "repo": display, "ref": ref_name, "events": json_events }),
         || {
             if events.is_empty() {
                 println!("No activity");
@@ -164,7 +213,21 @@ pub async fn activity(ctx: &Ctx, repo: &str, name: &str, tag: bool) -> Result<()
                 let when = crate::cost::format_utc(e.at);
                 let who = e.by.clone().map_or_else(
                     || "a maintainer (config)".to_string(),
-                    |id| with_name(&id, &names),
+                    |id| {
+                        let name = with_name(&id, &names);
+                        if !bots.contains(&id) {
+                            return name;
+                        }
+                        let outside = if marks.get(&e.id) == Some(&PushMark::Outside) {
+                            format!(
+                                " · outside the access {} was given",
+                                short_name(&id, &names)
+                            )
+                        } else {
+                            String::new()
+                        };
+                        format!("{name} (bot){outside}")
+                    },
                 );
                 let mark = match e.kind {
                     RefEventKind::ForcePushed | RefEventKind::Moved => "!",
