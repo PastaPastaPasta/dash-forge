@@ -443,19 +443,22 @@ pub fn ledger(e: &EnvHistory<'_>) -> Vec<LedgerEntry> {
                 readers: Vec::new(),
                 old_format: false,
             });
-            let mut readers: BTreeSet<String> = row.readers.drain(..).collect();
             for s in e
                 .snapshots
                 .iter()
                 .filter(|s| s.vars.get(name).is_some_and(|o| o.value == v.value))
             {
                 row.old_format |= s.members_key();
-                readers.extend(s.to.iter().cloned());
+                row.readers.extend(s.to.iter().cloned());
             }
-            row.readers = readers.into_iter().collect();
         }
     }
-    out.into_values().collect()
+    let mut rows: Vec<LedgerEntry> = out.into_values().collect();
+    for row in &mut rows {
+        row.readers.sort();
+        row.readers.dedup();
+    }
+    rows
 }
 
 #[cfg(test)]

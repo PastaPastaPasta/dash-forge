@@ -584,6 +584,15 @@ fn current<'b>(book: &'b Book, s: &Session, env: &str) -> Result<&'b Snapshot> {
         .map_err(|b| blocked_error(&s.repo, env, b, is_maintainer(book, s)))
 }
 
+/// How many changes were ignored because their author isn't a maintainer now.
+fn ignored_by_non_maintainers(book: &Book) -> usize {
+    book.resolution
+        .ignored
+        .iter()
+        .filter(|i| i.reason == forge_core::env::chain::IgnoredReason::NotAMaintainer)
+        .count()
+}
+
 /// One stderr line when someone who isn't a maintainer now posted a change naming `env`'s head:
 /// it is ignored (D24), and a maintainer should look (never used, never offered to save).
 fn warn_ignored(book: &Book, env: &str) {
@@ -939,12 +948,7 @@ async fn ls(ctx: &Ctx, repo: &str, env: Option<&str>) -> Result<()> {
         })
         .collect();
     let hidden = book.resolution.hidden.len();
-    let ignored = book
-        .resolution
-        .ignored
-        .iter()
-        .filter(|i| i.reason == forge_core::env::chain::IgnoredReason::NotAMaintainer)
-        .count();
+    let ignored = ignored_by_non_maintainers(&book);
     ctx.emit(
         json!({ "environments": rows, "hidden": hidden, "ignored": ignored }),
         || {
@@ -2306,12 +2310,7 @@ async fn exposure(ctx: &Ctx, repo: &str, env: &str) -> Result<()> {
         .ok_or_else(|| missing_error(&s.repo, &book, env))?;
     // Changes by people who aren't maintainers now are never opened, so their people are not
     // known here (a removed maintainer's versions among them).
-    let ignored = book
-        .resolution
-        .ignored
-        .iter()
-        .filter(|i| i.reason == forge_core::env::chain::IgnoredReason::NotAMaintainer)
-        .count();
+    let ignored = ignored_by_non_maintainers(&book);
     ctx.emit(
         json!({ "env": env, "entries": rows, "unopened": unopened, "ignored": ignored }),
         || {

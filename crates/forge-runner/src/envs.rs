@@ -256,12 +256,7 @@ fn scan_text(text: &str, bare: bool, out: &mut Reads) {
 /// Every read of `secrets` anywhere in `v` (keys included, for the whole-context check).
 fn scan_value(v: &Value, bare: bool, out: &mut Reads) {
     match v {
-        Value::String(s) => {
-            let mut r = Reads::default();
-            scan_text(s, bare, &mut r);
-            out.whole |= r.whole;
-            out.names.extend(r.names);
-        }
+        Value::String(s) => scan_text(s, bare, out),
         Value::Array(a) => a.iter().for_each(|x| scan_value(x, false, out)),
         Value::Object(o) => {
             for (k, x) in o {
@@ -275,17 +270,21 @@ fn scan_value(v: &Value, bare: bool, out: &mut Reads) {
     }
 }
 
-/// Whether `v` reads `secrets` other than by a literal name.
-fn reads_whole(v: &Value) -> bool {
+/// Every read of `secrets` in `v`.
+fn reads_in(v: &Value) -> Reads {
     let mut r = Reads::default();
     scan_value(v, false, &mut r);
-    r.whole
+    r
+}
+
+/// Whether `v` reads `secrets` other than by a literal name.
+fn reads_whole(v: &Value) -> bool {
+    reads_in(v).whole
 }
 
 /// Whether `v` reads `secrets` at all.
 fn reads_any(v: &Value) -> bool {
-    let mut r = Reads::default();
-    scan_value(v, false, &mut r);
+    let r = reads_in(v);
     r.whole || !r.names.is_empty()
 }
 
@@ -413,17 +412,14 @@ pub fn apply(
         }
     }
     let renamed = rename(&values, nonce, &mut given.secrets);
-    let jobs = wf.doc.get_mut("jobs").and_then(Value::as_object_mut);
-    for (id, job) in jobs.into_iter().flatten() {
-        let Some(map) = env_of.get(id).and_then(|e| renamed.get(e.as_str())) else {
+    for j in wf.jobs.iter().filter(|j| j.refused.is_none()) {
+        let Some(map) = env_of.get(&j.id).and_then(|e| renamed.get(e.as_str())) else {
             continue;
         };
-        if wf.jobs.iter().any(|j| &j.id == id && j.refused.is_none()) {
-            rewrite(job, false, map);
-            given
-                .notes
-                .insert(id.clone(), ", with its environment's values");
-        }
+        rewrite(&mut wf.doc["jobs"][&j.id], false, map);
+        given
+            .notes
+            .insert(j.id.clone(), ", with its environment's values");
     }
     wf.trimmed = true;
     given
@@ -476,7 +472,8 @@ fn rename<'v>(
     for (env, entries) in values {
         let mut names = BTreeMap::new();
         for (name, value) in *entries {
-            if name.to_ascii_uppercase().starts_with("GITHUB_") {
+            let upper = name.to_ascii_uppercase();
+            if upper.starts_with("GITHUB_") {
                 continue;
             }
             let new = format!("FORGE_ENV_{nonce}_{n}");
@@ -484,7 +481,7 @@ fn rename<'v>(
             if !value.is_empty() {
                 secrets.push((new.clone(), value.clone()));
             }
-            names.insert(name.to_ascii_uppercase(), new);
+            names.insert(upper, new);
         }
         out.insert(*env, names);
     }
