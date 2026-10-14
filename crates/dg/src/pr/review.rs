@@ -38,7 +38,7 @@ use forge_core::rules::v2::{Audience, ContentKind};
 use forge_core::user_error::{codes, UserError};
 
 use super::inline::{read_body_file, InlineSpec};
-use super::{estimate, patch, Est};
+use super::{estimate, Est};
 use crate::common::Session;
 use crate::context::Ctx;
 use crate::fmt::{cost_json, cost_line, safe, short};
@@ -376,7 +376,8 @@ pub async fn review(ctx: &Ctx, a: &PrReviewArgs) -> Result<()> {
     let s = Session::open_for_write(ctx, &a.repo, "review not posted").await?;
     s.refuse_if_banned("review not posted").await?;
     let collab = s.collab();
-    let p = patch(&collab, &s.repo, &a.repo, a.number).await?;
+    // a bot reads a members-only PR through its `read` letter for it (§22.3)
+    let (p, _) = super::reply_patch(&collab, &s.repo, &a.repo, a.number, a.job.as_deref()).await?;
     let view = collab.patch_view(&s.repo, p).await?;
     let me = s.identity.id();
     let path = draft_path(
@@ -1115,19 +1116,43 @@ pub async fn comment(ctx: &Ctx, a: &PrCommentArgs) -> Result<()> {
     let s = Session::open_for_write(ctx, &a.repo, "comment not posted").await?;
     s.refuse_if_banned("comment not posted").await?;
     let collab = s.collab();
-    let p = patch(&collab, &s.repo, &a.repo, a.number).await?;
+    // a bot reads a members-only PR through its `read` letter for it (§22.3)
+    let (p, mut letter) =
+        super::reply_patch(&collab, &s.repo, &a.repo, a.number, a.job.as_deref()).await?;
     let view = collab.patch_view(&s.repo, p).await?;
     let head = hex::decode(&view.head).context("PR head oid")?;
     // A reply names its thread's root (RC1 `reply_thread`: a reply to a reply is refused), so
     // `--reply-to` any comment of a thread replies to the thread.
     let (anchor, kind) = if let Some(reply) = &a.reply_to {
-        let (comments, sealed, _) = collab
-            .comments_read(&s.repo, &view.patch.document_id)
+        let read = || collab.comments_read(&s.repo, &view.patch.document_id);
+        let (mut comments, mut sealed, _) = read().await?;
+        let unopened = |sealed: &[forge_core::collab::v2::MembersOnly]| {
+            sealed.iter().any(|m| m.document_id == *reply)
+        };
+        // a bot replying to a members-only comment of a public PR it was asked about
+        if !letter && unopened(&sealed) {
+            letter = crate::bot::reply_letter(
+                &collab,
+                &s.repo,
+                forge_core::private::key_letter::ReadTarget::Pr(crate::common::number_arg(
+                    a.number,
+                )?),
+                None,
+            )
             .await?;
+            if letter {
+                (comments, sealed, _) = read().await?;
+            }
+        }
         let Some(root) = super::threads::root_id(&comments, reply) else {
-            // a members-only comment this signer cannot open: its thread is members-only
-            if sealed.iter().any(|m| m.document_id == *reply) {
-                return Err(crate::audience::members_only_thread(&s.repo));
+            // a members-only comment this signer cannot open: its thread is members-only, or,
+            // for a bot, written after it was asked
+            if unopened(&sealed) {
+                return Err(if letter {
+                    crate::bot::comment_not_shared(reply)
+                } else {
+                    crate::audience::members_only_thread(&s.repo)
+                });
             }
             return Err(crate::errors::not_found(
                 format!("comment {reply} is not on PR #{}", a.number),

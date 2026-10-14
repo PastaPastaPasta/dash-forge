@@ -15,8 +15,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use super::{
-    doc_kind, is_sealed, open_with, Collab, DocKeys, LetterKeys, MembersOnly, DOC_COMMENT,
-    DOC_ISSUE, DOC_REVIEW,
+    doc_kind, is_letter, is_sealed, open_with, Collab, DocKeys, LetterKeys, MembersOnly,
+    DOC_COMMENT, DOC_ISSUE, DOC_REVIEW,
 };
 use crate::error::{Error, Result};
 use crate::platform::{self, FetchedDocument, FieldValue};
@@ -327,7 +327,33 @@ impl Collab<'_> {
     /// title and body, plus its members-only branch names and the real head their git needs),
     /// and it is still noted as made public; everyone else reads what the bundle shows
     /// ([`crate::private::doc::bundled_patch`]).
+    ///
+    /// A bot replying on a thread it was asked about opens, besides, the revisions its `read`
+    /// letter lists ([`Collab::use_read_letter`], §22.3).
     pub(super) fn open_read(
+        &self,
+        repo_id: &[u8; 32],
+        entries: &DocEntries,
+        keys: &DocKeys,
+        letters: Option<&LetterKeys>,
+        kind: ContentKind,
+        d: FetchedDocument,
+    ) -> std::result::Result<FetchedDocument, MembersOnly> {
+        if !is_sealed(&d) || is_letter(&d) {
+            return self.open_read_keys(repo_id, entries, keys, letters, kind, d);
+        }
+        let Some(letter) = self.shared_letter(repo_id) else {
+            return self.open_read_keys(repo_id, entries, keys, letters, kind, d);
+        };
+        let stored = d.clone();
+        self.open_read_keys(repo_id, entries, keys, letters, kind, d)
+            .or_else(|m| {
+                super::bots::open_listed_doc(repo_id, &letter, doc_kind(kind), stored).ok_or(m)
+            })
+    }
+
+    /// [`Self::open_read`] with the reader's keys and the maintainers' bundles only.
+    fn open_read_keys(
         &self,
         repo_id: &[u8; 32],
         entries: &DocEntries,

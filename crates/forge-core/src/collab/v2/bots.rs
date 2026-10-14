@@ -10,6 +10,7 @@
 //! given.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use super::{is_sealed, Collab, DocKeys, Target, TargetKind, TargetRead, DOC_EVENT};
 use crate::error::{Error, Result};
@@ -27,7 +28,7 @@ use crate::private::pack::{self as sealed_pack, Head};
 use crate::private::{doc, DocKind, Fields, Opened};
 use crate::rules::agent_request::{self, AgentRequest, AskRefusal, RequestEvent};
 use crate::rules::long_body::{self, LongBody};
-use crate::rules::v2::{Audience, Role, Visibility};
+use crate::rules::v2::{Audience, ContentKind, Role, Visibility};
 use crate::scope::RepoRef;
 use crate::user_error::{codes, UserError};
 
@@ -1383,6 +1384,123 @@ impl Collab<'_> {
         })
     }
 
+    /// The `read` letter the bot signer replies on thread `target` of `repo` with (§22.3, §23):
+    /// the newest from a current maintainer or Write member that names `target`, whose request
+    /// (its `job`) is one to this bot about that thread asked by the letter's writer. With `job`
+    /// (a request's event id, as a runner passes it), that request's letter only, and refused
+    /// before anything else is read when `job` is not a request to the signer about `target`.
+    /// `None` when no such letter reached it.
+    pub async fn reply_letter(
+        &self,
+        repo: &RepoRef,
+        target: ReadTarget,
+        job: Option<&str>,
+    ) -> Result<Option<ReceivedRead>> {
+        let number = match target {
+            ReadTarget::Pr(n) | ReadTarget::Issue(n) => n,
+            ReadTarget::Branch(_) => return Ok(None),
+        };
+        let asked = match job {
+            Some(j) => {
+                let r = self
+                    .request_to_signer(repo, j)
+                    .await?
+                    .filter(|r| r.number == number)
+                    .ok_or_else(|| not_a_request(j, target, repo))?;
+                // issues and pull requests are numbered apart: the request's thread is this kind
+                let (kind, _) = self.target_doc_by_id(repo, &r.target_id).await?;
+                if !matches!(
+                    (kind, target),
+                    (ContentKind::Patch, ReadTarget::Pr(_))
+                        | (ContentKind::Issue, ReadTarget::Issue(_))
+                ) {
+                    return Err(not_a_request(j, target, repo));
+                }
+                Some((platform::decode_identifier(j)?, r.asker))
+            }
+            None => None,
+        };
+        let received = self.read_letters(repo).await?;
+        // newest first
+        let mut naming = received
+            .into_iter()
+            .rev()
+            .filter(|l| l.letter.target == target);
+        if let Some((job_id, asker)) = asked {
+            return Ok(naming.find(|l| l.letter.job == job_id && l.sender == asker));
+        }
+        for l in naming {
+            let job = platform::encode_identifier(l.letter.job);
+            if self
+                .request_to_signer(repo, &job)
+                .await?
+                .is_some_and(|r| r.number == number && r.asker == l.sender)
+            {
+                return Ok(Some(l));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Request `job` of `repo` when it is one to the signer (a members-only task left unread),
+    /// else `None`.
+    async fn request_to_signer(&self, repo: &RepoRef, job: &str) -> Result<Option<AgentRequest>> {
+        let community = self.community_contract(repo).await?;
+        let Some(d) = self
+            .client
+            .fetch_document(&community, DOC_EVENT, job)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let mut e = request_event_of(&d);
+        if is_sealed(&d) {
+            e.value = None;
+            e.value_hidden = true;
+        }
+        let me = self.signer_id()?;
+        Ok(agent_request::agent_request(repo.id(), &e).filter(|r| r.bot == me))
+    }
+
+    /// Open, from now on in what this `Collab` reads of `repo`, the members-only revisions
+    /// `letter` lists (a `read` letter to the bot signer, [`Self::reply_letter`]), with their
+    /// keys, as [`Self::read_job`] opens them: so a bot reads, and replies on, the thread it was
+    /// asked about without the members key (§22.3, §23). Nothing it does not list opens.
+    pub fn use_read_letter(&self, repo: &RepoRef, letter: &ReadLetter) -> Result<()> {
+        *crate::history::lock(&self.read_letter) =
+            Some((repo.scope()?.repo_id, Arc::new(letter.clone())));
+        Ok(())
+    }
+
+    /// The letter [`Self::use_read_letter`] gave for the repository `repo_id`.
+    pub(super) fn shared_letter(&self, repo_id: &[u8; 32]) -> Option<Arc<ReadLetter>> {
+        crate::history::lock(&self.read_letter)
+            .as_ref()
+            .filter(|(id, _)| id == repo_id)
+            .map(|(_, l)| Arc::clone(l))
+    }
+
+    /// Issue or pull request `d` of `repo` opened with [`Self::shared_letter`] at the revision
+    /// it lists, read from its history when it was edited since ([`Self::open_as_listed`]).
+    pub(super) async fn open_shared_target(
+        &self,
+        repo: &RepoRef,
+        kind: TargetKind,
+        d: &FetchedDocument,
+    ) -> Option<FetchedDocument> {
+        let repo_id = repo.scope().ok()?.repo_id;
+        let letter = self.shared_letter(&repo_id)?;
+        let collab = self.collab_contract(repo).await.ok()?;
+        let kind = match kind {
+            TargetKind::Issue => DocKind::Issue,
+            TargetKind::Patch => DocKind::Patch,
+        };
+        let f = self
+            .open_as_listed(&collab, &repo_id, &letter, kind, d)
+            .await?;
+        crate::collab::private::open_doc(Opened::Readable(Box::new(f)), d.clone())
+    }
+
     /// Sealed post `d` (of `kind`) opened at the revision `letter` lists for it: the current
     /// one, or, when it was edited since, the listed one from its history (issues, pull requests
     /// and comments keep theirs). `None` when the letter lists none of its revisions.
@@ -1433,6 +1551,78 @@ fn open_listed(
         Opened::Readable(f) => Some(*f),
         _ => None,
     }
+}
+
+/// [`open_listed`] as the public codecs read `d`: its fields put back in place.
+pub(super) fn open_listed_doc(
+    repo_id: &[u8; 32],
+    letter: &ReadLetter,
+    kind: DocKind,
+    d: FetchedDocument,
+) -> Option<FetchedDocument> {
+    let f = open_listed(repo_id, letter, kind, &d)?;
+    crate::collab::private::open_doc(Opened::Readable(Box::new(f)), d)
+}
+
+/// E102 for `job`, which is not a request to the signer about `target` of `repo`.
+fn not_a_request(job: &str, target: ReadTarget, repo: &RepoRef) -> Error {
+    UserError::new(
+        codes::NOT_FOUND,
+        format!(
+            "{job} is not a request to you about {} in {}",
+            thread_words(target),
+            repo.display()
+        ),
+    )
+    .fix(format!(
+        "`dg bot jobs {}` lists the requests to you",
+        repo.display()
+    ))
+    .note("checked before anything was signed; nothing was written or paid")
+    .into()
+}
+
+/// "pull request #3" / "issue #3".
+fn thread_words(target: ReadTarget) -> String {
+    match target {
+        ReadTarget::Pr(n) => format!("pull request #{n}"),
+        ReadTarget::Issue(n) => format!("issue #{n}"),
+        ReadTarget::Branch(_) => "a branch".into(),
+    }
+}
+
+/// E311 for a bot replying on members-only `target` of `repo` with no `read` letter for it
+/// ([`Collab::reply_letter`]; for the request `job` when one was given): a bot reads, and
+/// replies on, a members-only conversation only once it was asked there (§22.3, §23).
+#[must_use]
+pub fn not_asked_here(repo: &RepoRef, target: ReadTarget, job: Option<&str>) -> Error {
+    let what = thread_words(target);
+    let flag = match target {
+        ReadTarget::Issue(n) => format!("--issue {n}"),
+        ReadTarget::Pr(n) => format!("--pr {n}"),
+        ReadTarget::Branch(_) => String::new(),
+    };
+    let e = UserError::new(
+        codes::NO_KEY_SHARED,
+        format!(
+            "nothing members-only in {what} of {} has been shared with you",
+            repo.display()
+        ),
+    );
+    let e = match job {
+        Some(job) => e.cause(format!(
+            "request {job} shared nothing members-only with you, or whoever asked can no longer share it"
+        )),
+        None => e.cause(
+            "a bot reads members-only posts, and replies to them, only once someone with Write access asks it there",
+        ),
+    };
+    e.fix(format!(
+        "someone with Write access asks you there: `dg bot ask {} @<you> \"<task>\" {flag}`",
+        repo.display()
+    ))
+    .note("checked before anything was signed; nothing was written or paid")
+    .into()
 }
 
 /// The members-only long bodies a `read` letter hands on, read once per job.
@@ -1506,5 +1696,123 @@ fn request_event_of(d: &FetchedDocument) -> RequestEvent {
         value_hidden: false,
         actor: d.owner_id.clone(),
         created_at: d.created_at.unwrap_or_default(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::private::{EpochKey, EpochResolution, Lane};
+
+    const REPO: [u8; 32] = [0x11; 32];
+    const OWNER: [u8; 32] = [0x22; 32];
+    const ID: [u8; 32] = [0x5a; 32];
+
+    /// A members-only comment of a public repository at `revision`, and its per-object key as
+    /// the asker's `read` letter carries it.
+    fn sealed_comment(revision: u64) -> (FetchedDocument, zeroize::Zeroizing<[u8; 32]>) {
+        let mut res = EpochResolution::default();
+        res.keys.insert(0, EpochKey::from_bytes([3; 32]));
+        res.write_epoch = Some(0);
+        let lane = Lane::from_resolution(&REPO, &res).unwrap();
+        let props: BTreeMap<String, FieldValue> = [
+            ("targetId".to_string(), FieldValue::identifier([7; 32])),
+            ("body".to_string(), FieldValue::text("members only")),
+            ("vis".to_string(), FieldValue::text("public")),
+        ]
+        .into();
+        let sealed =
+            crate::collab::private::seal_members_props(&lane, DocKind::Comment, OWNER, props)
+                .unwrap();
+        let d = FetchedDocument {
+            id: platform::encode_identifier(ID),
+            owner_id: platform::encode_identifier(OWNER),
+            created_at: Some(1),
+            created_at_block_height: Some(10),
+            updated_at_block_height: None,
+            updated_at: None,
+            fields: sealed,
+            revision: Some(revision),
+        };
+        let header = crate::keyring::header_of(DocKind::Comment, &d).unwrap();
+        let key =
+            doc::read_obj_key(lane.write_keys(), &header, &d.field_bytes("enc").unwrap()).unwrap();
+        (d, key)
+    }
+
+    fn letter(docs: Vec<LetterDoc>) -> ReadLetter {
+        ReadLetter {
+            job: [0x33; 32],
+            as_of: 1,
+            target: ReadTarget::Pr(3),
+            docs,
+            packs: Vec::new(),
+            heads: Vec::new(),
+        }
+    }
+
+    /// A bot replying on a members-only thread reads a post its letter lists with that key
+    /// alone, back in the public shape; a revision it does not list stays unread.
+    #[test]
+    fn a_reply_letter_opens_the_revisions_it_lists_only() {
+        let (d, key) = sealed_comment(2);
+        let listed = letter(vec![LetterDoc {
+            id: ID,
+            revision: 2,
+            key: key.clone(),
+        }]);
+        let back = open_listed_doc(&REPO, &listed, DocKind::Comment, d.clone()).unwrap();
+        assert_eq!(back.field_str("body").as_deref(), Some("members only"));
+        // edited since the request: the current revision is not the one shared
+        let older = letter(vec![LetterDoc {
+            id: ID,
+            revision: 1,
+            key,
+        }]);
+        assert!(open_listed_doc(&REPO, &older, DocKind::Comment, d.clone()).is_none());
+        assert!(open_listed_doc(&REPO, &letter(Vec::new()), DocKind::Comment, d.clone()).is_none());
+        // another repository's id is bound into the key: it does not open there
+        assert!(open_listed_doc(&[0x12; 32], &listed, DocKind::Comment, d).is_none());
+    }
+
+    /// The refusal of a bot with no letter for the thread is E311, before signing, in plain
+    /// words, and tells how to ask it there.
+    #[test]
+    fn a_bot_not_asked_on_a_thread_is_refused_in_plain_words() {
+        let repo = RepoRef {
+            forge: crate::network::ForgeIds::test_forge(),
+            repo_id: "R".into(),
+            owner_id: "alice".into(),
+            name: "proj".into(),
+            visibility: Visibility::Public,
+        };
+        for (target, job, flag) in [
+            (ReadTarget::Pr(3), None, "--pr 3"),
+            (ReadTarget::Issue(5), Some("Job1"), "--issue 5"),
+        ] {
+            let Error::User(e) = not_asked_here(&repo, target, job) else {
+                panic!("a user error");
+            };
+            assert_eq!(e.code, codes::NO_KEY_SHARED);
+            let all = format!("{e} {}", e.fix.join(" "));
+            assert!(all.contains(flag), "{all}");
+            for banned in [
+                "sealed",
+                "lane",
+                "named",
+                "restricted",
+                "reveal",
+                "epoch",
+                "key letter",
+                "disclosure",
+            ] {
+                assert!(!all.to_lowercase().contains(banned), "{banned} in {all}");
+            }
+        }
+        let Error::User(e) = not_a_request("Job1", ReadTarget::Pr(3), &repo) else {
+            panic!("a user error");
+        };
+        assert_eq!(e.code, codes::NOT_FOUND);
+        assert!(e.to_string().contains("pull request #3"));
     }
 }

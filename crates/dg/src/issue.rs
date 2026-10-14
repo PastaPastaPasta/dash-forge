@@ -80,12 +80,22 @@ pub async fn run(ctx: &Ctx, cmd: &IssueCommand) -> Result<()> {
             reply_to,
             members,
             to,
+            job,
         } => {
             let ask = crate::audience::Ask {
                 members: *members,
                 to,
             };
-            comment(ctx, repo, *number, body, reply_to.as_deref(), ask).await
+            comment(
+                ctx,
+                repo,
+                *number,
+                body,
+                reply_to.as_deref(),
+                ask,
+                job.as_deref(),
+            )
+            .await
         }
         IssueCommand::EditComment {
             repo,
@@ -1434,17 +1444,31 @@ async fn comment(
     body: &str,
     reply_to: Option<&str>,
     ask: crate::audience::Ask<'_>,
+    job: Option<&str>,
 ) -> Result<()> {
     if let Some(r) = reply_to {
         crate::common::document_id_arg(r, "comment id", "`dg issue view --json`")?;
     }
     let s = Session::open_for_write(ctx, repo, "comment not posted").await?;
     s.refuse_if_banned("comment not posted").await?;
-    let target = target(&s, repo, number).await?;
-    refuse_if_locked(&s, number, &target.id).await?;
-    let price = ctx.usd_price();
     // One `Collab` for the command: the audience it asks for applies to the comment it writes.
     let collab = s.collab();
+    let n = number_arg(number)?;
+    let read = collab
+        .target_read(&s.repo, forge_core::collab::v2::TargetKind::Issue, n)
+        .await?
+        .ok_or_else(|| not_found(repo, number))?;
+    // a bot replies on a members-only issue only through its `read` letter for it (§22.3, §23)
+    let thread = forge_core::private::key_letter::ReadTarget::Issue(n);
+    let letter = (job.is_some()
+        || matches!(read, forge_core::collab::v2::TargetRead::MembersOnly(_)))
+        && crate::bot::reply_letter(&collab, &s.repo, thread, job).await?;
+    let target = read.target(forge_core::collab::v2::TargetKind::Issue, n);
+    if let Some(r) = reply_to {
+        crate::bot::require_reply_shared(&collab, &s.repo, (thread, &target.id), r, letter).await?;
+    }
+    refuse_if_locked(&s, number, &target.id).await?;
+    let price = ctx.usd_price();
     let crate::audience::Requested { audience, to } =
         crate::audience::requested(&s.client, &collab, &s.repo, ask, Some(&target.id), reply_to)
             .await?;
