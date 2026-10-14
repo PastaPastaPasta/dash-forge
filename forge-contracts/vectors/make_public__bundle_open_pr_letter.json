@@ -1,0 +1,30 @@
+{
+  "name": "bundle_open_pr_letter",
+  "description": "A PR sent to specific people: its names are public hashes, checked, shown.",
+  "case": "make_public",
+  "rules": "v2",
+  "input": {
+    "op": "bundleOpen",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "doc": {
+      "type": "patch",
+      "vis": "public",
+      "ownerId": "5e31f1a5e8ee45c53435fffe2ea6b17d5bb301b0511adc47ecf870f8c2e92eea",
+      "epoch": 0,
+      "number": 9,
+      "baseRefNameHash": "f921bd05e68b03740c450e565e0e6173e546193170b2dd404ddb6f153e9b5bf3",
+      "sourceRefNameHash": "60fb62599144902ee49cdf4d1339068b66e2560f65a043ecdf4e1a9135ccae53",
+      "id": "c4f9ebbc28daf684f32f48e2548489588850cc1bbb161248db175be3fbe5ce6e"
+    },
+    "enc": "040300000004d621f7a2533441093911492768c8b0dedf060a6ccff511d499fc8c8743fd02eea903f59800dc53b0c37ef30bb7eade1630a8cca3daf2e5d2ad6788c23ee41899cef9431df40365b0aa20c16570888c36ffd4bc7b7148b7d509f1ef8721fd978100557b9d66a8a6e3d64be8c820ed06b68155bb1be4f944d68940aa4020737531cf417e0c78acdc9aa774c3779ef92709eacd16e51655033ec1edbe3ee8b28a3818e5bdb5a4a95b3b84c7ffea4e0082af5ee3856c92bd2b93b0cdc5ff01da3f8165b16c1e8fe7074041b1d7035f2c77bfea3f7aa23c5f1e7a7055a5f72bd94ce71dfc5ec0c8c829dd5f390066f6cb54d947c009ac00bf91fe69e15784c67ec1d8c26457f995faefb2be58b807677f30550367c586301f10f1f705d3fdb55b7cd79e45e14ae423faee887562d0b2cdd95b84aebef04a43a6ee0418343dc7fc9141ed9ab6bec477427f17782cfc54c16594dbe6f7303a5429bc835c6a68f66d055698a185534dce719ffc56bec2804dcec8dda35f7f21064b58286edf3c67042ec7656ddaa2e63b00eb93bc5ccb5a44065966993dbef6fa5d646b44025fdf5938456046cb0c3bdc9112738088d93f8c9ee019a735d96fbf791d654083df",
+    "key": "c4245c2ee814320decd5b6250c6f60c3e76d67ff5e6d843eb59a5b947ce3479c"
+  },
+  "expected": {
+    "status": "readable",
+    "fields": {
+      "title": "A fix for Rae",
+      "baseRefName": "refs/heads/main",
+      "sourceRefName": "refs/heads/fix-for-rae"
+    }
+  }
+}

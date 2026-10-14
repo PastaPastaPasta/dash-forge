@@ -438,6 +438,8 @@ export function MergePanel({
     }
   }, [busy, onRunning])
   const [newTip, setNewTip] = useState<string | null>(null)
+  // whether the run that set `newTip` published: kept with the result, whatever the props say later
+  const [published, setPublished] = useState(false)
   // "Bypass rules": ticked by a maintainer, confirmed in a dialog; the rules the merge started
   // with are kept for its retries (the record names what was bypassed at the merge).
   const [bypassTicked, setBypassTicked] = useState(false)
@@ -564,6 +566,7 @@ export function MergePanel({
         setRun(done)
         setMergedHere(true)
         setNewTip(done.result?.newTip ?? null)
+        setPublished(publish !== undefined)
         onMerged()
         if (deletable !== null && alsoDelete) {
           try {
@@ -913,7 +916,7 @@ export function MergePanel({
       ) : null}
       {newTip ? (
         <p className="mt-2 text-dense text-anvil-700 dark:text-anvil-200" data-testid="merge-result">
-          {publish !== undefined ? 'Published' : 'Merged'}. The base branch is now at <Oid value={newTip} chars={9} />, and the PR will show as merged in a few seconds.
+          {published ? 'Published' : 'Merged'}. The base branch is now at <Oid value={newTip} chars={9} />, and the PR will show as merged in a few seconds.
         </p>
       ) : null}
       {publish !== undefined ? (

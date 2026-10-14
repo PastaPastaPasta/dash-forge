@@ -1424,12 +1424,11 @@ async fn view(
         .filter(|c| crate::audience::marked(handle, c.audience))
         .map(|c| c.document_id.as_str())
         .collect();
-    // what maintainers made public (DESIGN §4.6)
+    // what maintainers made public (DESIGN §4.6): the PR itself, its comments and reviews
     let published = crate::audience::Published::of(
         &collab,
-        comments
-            .iter()
-            .map(|c| c.document_id.as_str())
+        std::iter::once(v.patch.document_id.as_str())
+            .chain(comments.iter().map(|c| c.document_id.as_str()))
             .chain(reviews.iter().map(|r| r.document_id.as_str()))
             .chain(members_only.iter().map(|m| m.document_id.as_str())),
     );
@@ -1637,7 +1636,7 @@ async fn view(
         "membersOnlyComments": placeholders.iter().map(|m| crate::audience::placeholder_json(m)).collect::<Vec<_>>(),
         "membersOnlyHidden": members_only.len(),
         "membersOnlyReviewsHidden": uncounted_reviews.len(),
-        "madePublic": comments.iter().map(|c| c.document_id.as_str()).chain(reviews.iter().map(|r| r.document_id.as_str())).filter_map(|id| Some((id.to_string(), Some(published.json(id)).filter(|j| !j.is_null())?))).collect::<serde_json::Map<_, _>>(),
+        "madePublic": std::iter::once(v.patch.document_id.as_str()).chain(comments.iter().map(|c| c.document_id.as_str())).chain(reviews.iter().map(|r| r.document_id.as_str())).filter_map(|id| Some((id.to_string(), Some(published.json(id)).filter(|j| !j.is_null())?))).collect::<serde_json::Map<_, _>>(),
         "bundleAlerts": crate::audience::alerts_json(&collab.bundle_alerts()),
     });
     for extra in [standing, audience] {
@@ -1721,6 +1720,9 @@ async fn view(
             println!("author: {}", who(&v.patch.author));
             if crate::audience::marked(handle, pr_audience) {
                 println!("members-only: visible to members of {}", handle.display());
+            }
+            if let Some(line) = published.line(&v.patch.document_id, pr_audience, &who) {
+                println!("{line}");
             }
             if let Some(h) = &moderation.thread {
                 println!("{}", crate::fmt::hidden_line("this pull request", h, &who, show_hidden));

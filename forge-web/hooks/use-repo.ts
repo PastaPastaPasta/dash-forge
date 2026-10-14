@@ -38,6 +38,18 @@ import type { RepoAddress } from '@/hooks/use-query-param'
 export interface UseRepoResult extends AsyncState<RepoHome | null> {
   readonly ready: boolean
   readonly network: Network
+  /** Re-read the home past the cache, dropping its browse context ({@link HomeReloadOptions}). */
+  readonly reload: (options?: HomeReloadOptions) => void
+}
+
+/** How {@link UseRepoResult.reload} re-reads. */
+export interface HomeReloadOptions {
+  /**
+   * Keep the viewer's private or members-key session, and the home read through it until the new
+   * one is in: for a write that moves refs but changes no members or keys (a merge). A new session
+   * re-keys the page's reads (`contentKey`), which drops what the page shows (a merge box's outcome).
+   */
+  readonly keepSession?: boolean
 }
 
 // NOTE for future write flows: anything that mutates what RepoHome composes (refs, config,
@@ -226,12 +238,12 @@ export function useRepoHome(
     },
   )
   const { data, reload: rerun } = state
-  const reload = useCallback(() => {
+  const reload = useCallback((options?: HomeReloadOptions) => {
     for (const k of homeCacheKeys(key)) homeCache.delete(k)
     if (data !== null) {
       invalidateBrowseContext(repoKey(data.repo))
       // A private repo's session, or a public one's members-key session: read afresh too.
-      forgetPrivateHome(data.repo)
+      if (options?.keepSession !== true) forgetPrivateHome(data.repo)
     }
     rerun()
   }, [key, data, rerun])

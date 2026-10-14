@@ -30,7 +30,7 @@ export function MadePublicBy({ marks }: { marks: PublicationMarks }): JSX.Elemen
  * The note on a post its author sealed again after a maintainer made it public: an issue shows the
  * version made public to everyone; a comment or review keeps its new text for members.
  */
-export function EditedAfterPublicNote({ marks, kind }: { marks: PublicationMarks; kind: 'issue' | 'comment' | 'review' }): JSX.Element | null {
+export function EditedAfterPublicNote({ marks, kind }: { marks: PublicationMarks; kind: 'issue' | 'pull request' | 'comment' | 'review' }): JSX.Element | null {
   const by = marks.editedAfterPublicBy
   if (by === undefined) return null
   return (
@@ -108,6 +108,20 @@ export function PublicEditHint({ marks }: { marks: PublicationMarks }): JSX.Elem
     <p className={`flex flex-wrap items-center gap-1 ${MUTED}`} data-testid="public-edit-hint">
       <Globe className="h-3 w-3" aria-hidden /> <span className="font-medium">Public</span> ·
       <Author identityId={by} link={false} className="align-middle" /> made this public, so your edit is public too.
+    </p>
+  )
+}
+
+/**
+ * Under an author's edit of a pull request a maintainer made public: a PR's edit stays members-only
+ * (its branch names cannot be made public by an edit), and everyone else then reads that it was
+ * edited after it was made public.
+ */
+export function MembersEditHint({ marks }: { marks: PublicationMarks }): JSX.Element | null {
+  if (marks.madePublicBy === undefined) return null
+  return (
+    <p className={MUTED} data-testid="members-edit-hint">
+      <Author identityId={marks.madePublicBy} link={false} className="align-middle" /> made this public. Your edit will be members-only; everyone else will see that it was edited after it was made public.
     </p>
   )
 }

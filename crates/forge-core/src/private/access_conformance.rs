@@ -200,8 +200,8 @@ fn run_read_open_doc(i: &Value) -> Value {
                     &enc,
                     &hex32(&i["wrongKey"]),
                 ));
-            } else {
-                // a bundle does not publish a pull request's own text or an event
+            } else if header.kind == super::DocKind::Event {
+                // a bundle does not publish an event
                 assert!(doc::members_obj_key(&keys, &header, &enc).is_none());
             }
             json!({

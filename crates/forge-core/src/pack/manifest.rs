@@ -79,7 +79,8 @@ pub const KIND_MEMBERS_LONG_BODY: u8 = KIND_SEALED_BASE + KIND_LONG_BODY;
 /// D22): DFPK 0x01 under the members key, deltas against public objects and that branch only.
 pub const KIND_MEMBERS_GIT_PACK: u8 = KIND_SEALED_BASE + KIND_GIT_PACK;
 /// `packManifest.kind == 65..=69`: the members-only browse indexes (object locator, flat index,
-/// history index, release assets, history version lists).
+/// history index, release assets, history version lists). Only 65 is written: one per
+/// members-only pack ([`super::members_index`]).
 pub const KIND_MEMBERS_OBJECT_LOCATOR: u8 = KIND_SEALED_BASE + KIND_OBJECT_LOCATOR;
 
 /// The members-only kind of the plain artifact kind `plain` (64 + k), for the kinds a public

@@ -354,8 +354,8 @@ async function runReadOpenDoc(i: Obj): Promise<Json> {
       // a bundle's key for the same comment is the same key
       expect(await membersObjKey(keys, doc, enc)).toEqual(key);
       wrong = openedJson(await openSharedWithKey(repoId, doc, enc, hex(i.wrongKey)));
-    } else {
-      // a bundle does not publish a pull request's own text or an event
+    } else if (doc.type === "event") {
+      // a bundle does not publish an event
       expect(await membersObjKey(keys, doc, enc)).toBeNull();
     }
     results.push({

@@ -16,7 +16,7 @@ import { ConnectingBlock, UnreachableBanner } from '@/components/ui/platform-sta
 import { RepoHeader } from '@/components/repo/repo-header'
 import { RepoShellHeader } from '@/components/repo/repo-shell-header'
 import { RepoRail } from '@/components/repo/repo-rail'
-import { useRepoHome } from '@/hooks/use-repo'
+import { useRepoHome, type HomeReloadOptions } from '@/hooks/use-repo'
 import { useSdk } from '@/hooks/use-sdk'
 import { usePrivateHome } from '@/hooks/use-private-home'
 import { PrivateBanner } from '@/components/repo/private-banner'
@@ -44,7 +44,7 @@ export function RepoScaffold({
 }: {
   addr: RepoAddress
   /** The page body; `reload` re-reads the repo home (after a write that changes it). */
-  children: (home: RepoHome, reload: () => void) => ReactNode
+  children: (home: RepoHome, reload: (options?: HomeReloadOptions) => void) => ReactNode
   rail?: boolean
   /**
    * With no rail: lead the page with the rail's Verification card, collapsed to one line (code
@@ -89,7 +89,7 @@ function ScaffoldBody({
   repoHome,
 }: {
   addr: RepoAddress
-  children: (home: RepoHome, reload: () => void) => ReactNode
+  children: (home: RepoHome, reload: (options?: HomeReloadOptions) => void) => ReactNode
   rail: boolean
   verification: boolean
   refParam: string

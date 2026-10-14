@@ -1,6 +1,6 @@
 {
-  "name": "bundle_read_epoch_and_patch_entries_ignored",
-  "description": "Epoch-key (0x06) and PR (0x04) entries are not document entries here.",
+  "name": "bundle_read_epoch_and_pr_entry_on_comment_ignored",
+  "description": "An epoch-key (0x06) entry is not a document entry here, and a PR (0x04) entry naming a comment's id does not apply to the comment.",
   "case": "make_public",
   "rules": "v2",
   "input": {
