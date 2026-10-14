@@ -1,0 +1,19 @@
+{
+  "name": "format_negative",
+  "description": "the canonical form has no float, negative integer or integer past 2^53 - 1: refused.",
+  "case": "key_letter",
+  "rules": "v2",
+  "input": {
+    "op": "format",
+    "letter": {
+      "type": "x",
+      "v": 1,
+      "fields": {
+        "n": -1
+      }
+    }
+  },
+  "expected": {
+    "error": "invalid"
+  }
+}

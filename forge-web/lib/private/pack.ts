@@ -183,6 +183,28 @@ async function checkAndKey(header: PackHeader, sealedLen: number, keys: EpochKey
   }
 }
 
+/**
+ * Open a whole sealed artifact (DFPK 0x01) with its file key `rawKey` (`EpochKeys.rawPackKey`)
+ * instead of the epoch keys: what a key letter's recipient does. A wrong key fails the first tag
+ * (`sealedPackCorrupt`). Throws {@link PackError}.
+ */
+export async function openPackWithFileKey(sealed: Uint8Array, sizeBytes: number, rawKey: Uint8Array): Promise<Bytes> {
+  if (sealed.length !== sizeBytes) throw new PackError('sizeMismatch')
+  const header = parseHeader(sealed)
+  if (sealedLength(header.plaintextLen, header.segLog2) !== sizeBytes) throw new PackError('sealedPackCorrupt')
+  const o: Opened = {
+    header,
+    key: await crypto.subtle.importKey('raw', bytes(rawKey), { name: 'AES-GCM' }, false, ['decrypt']),
+    nSeg: segmentCount(header.plaintextLen, header.segLog2),
+  }
+  const chunks: Uint8Array[] = []
+  for (let i = 0; i < o.nSeg; i++) {
+    const [start, end] = segmentSpan(o, i, sizeBytes)
+    chunks.push(await decryptSegment(o, i, sealed.subarray(start, end)))
+  }
+  return concat(...chunks)
+}
+
 async function decryptSegment(o: Opened, i: number, sealedSegment: Uint8Array): Promise<Bytes> {
   try {
     return new Uint8Array(

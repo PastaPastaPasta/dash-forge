@@ -265,6 +265,9 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         Command::Branch {
             cmd: Some(crate::branch::BranchCommand::Cleanup { .. }),
         } => ("branches not cleaned up", None),
+        Command::Branch {
+            cmd: Some(crate::branch::BranchCommand::Share { .. }),
+        } => ("nothing was shared", None),
         Command::Publish(_) => ("nothing was published", None),
         Command::Cost(CostCommand::Estimate { .. }) => ("no estimate", None),
         Command::Cost(CostCommand::Audit { repo, .. }) => ("audit failed", repo.as_ref()),
