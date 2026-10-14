@@ -1365,3 +1365,66 @@ describe('spend measurement across back-to-back writes (D-2)', () => {
     ])
   })
 })
+
+describe('R-07: the contract rules are judged before anything is signed', () => {
+  /** A contract whose rule pre-check answers `broken`, recording the stored document it was given. */
+  const judging = (sdk: EvoSDK, broken: { rule: string; message: string } | undefined, stored: unknown[]): EvoSDK =>
+    ({
+      ...(sdk as unknown as Record<string, unknown>),
+      contracts: {
+        fetch: async () => ({
+          checkDocumentPropertyConstraints: (_doc: unknown, s: unknown) => {
+            stored.push(s)
+            return broken
+          },
+        }),
+      },
+    }) as unknown as EvoSDK
+
+  it('a create breaking a rule is refused as 10422 naming it, with null as its stored version: nothing broadcast or charged', async () => {
+    const signed: bigint[] = []
+    const spends: SpendEvent[] = []
+    const stored: unknown[] = []
+    const script: Script = { platformNonce: 1n, broadcast: () => undefined, wait: async () => ({}), exists: async () => null }
+    const sdk = judging(sdkOf(script, signed), { rule: 'audMember', message: 'it does not hold' }, stored)
+    const err = await createDocumentIdempotent(sdk, auth(spends), { ...write, contractId: 'R7a' }).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ConsensusRefusal)
+    expect((err as ConsensusRefusal).code).toBe(10422)
+    expect((err as ConsensusRefusal).message).toContain('rule "audMember"')
+    expect((err as ConsensusRefusal).feeCharged).toBe(false)
+    expect(stored).toEqual([null])
+    expect(signed).toEqual([])
+    expect(spends).toEqual([])
+  })
+
+  it('a replace is judged against the version it replaces (never undefined)', async () => {
+    const stored: unknown[] = []
+    let replaced = 0
+    const old = storedDoc('old')
+    const script: Script = {
+      platformNonce: 1n,
+      broadcast: () => undefined,
+      wait: async () => ({}),
+      exists: async () => old,
+      replace: async () => {
+        replaced += 1
+      },
+    }
+    const sdk = judging(sdkOf(script, []), { rule: 'keepAud', message: 'it does not hold' }, stored)
+    const err = await replaceDocumentIdempotent(sdk, auth([]), { contractId: 'R7b', documentType: 'issue', documentId: 'D', changes: { title: 'new' }, confirmTimeoutMs: 0 }).catch((e: unknown) => e)
+    expect((err as ConsensusRefusal).code).toBe(10422)
+    expect(stored).toEqual([old])
+    expect(replaced).toBe(0)
+  })
+
+  it('a document meeting every rule, or a contract the pre-check cannot read, is written as before', async () => {
+    const signed: bigint[] = []
+    const stored: unknown[] = []
+    const script: Script = { platformNonce: 1n, broadcast: () => undefined, wait: async () => ({}), exists: async (id) => ({ $id: id }) }
+    await createDocumentIdempotent(judging(sdkOf(script, signed), undefined, stored), auth([]), { ...write, contractId: 'R7c' })
+    expect(stored).toEqual([null])
+    // no `contracts` facade at all (the other tests here): nothing judged, nothing refused
+    await createDocumentIdempotent(sdkOf(script, signed), auth([]), { ...write, contractId: 'R7d' })
+    expect(signed).toHaveLength(2)
+  })
+})

@@ -65,6 +65,7 @@ import {
   sealLetterArtifactWith,
   sealLetterWith,
   sealMembersDocWithNonce,
+  sealPrivateV3WithNonce,
   sealPackWithFileId,
   sealReleaseManifestWithFileId,
   sealReleaseWithNonce,
@@ -152,7 +153,7 @@ const SHAPES: Readonly<Record<string, Shape>> = {
     bundles: each(leaves('owner', 'bytes')),
   }),
   converted_repo_skip: leaves('head', 'held'),
-  mixed_doc_seal: object({ ...leafFields('repoId', 'key', 'nonce'), doc: MIXED_DOC, fields: FIELDS }),
+  mixed_doc_seal: object({ ...leafFields('repoId', 'key', 'nonce', 'd38'), doc: MIXED_DOC, fields: FIELDS }),
   mixed_doc_open: object({
     repoId: LEAF,
     context: OPEN_CONTEXT,
@@ -325,6 +326,7 @@ const COLLAB_SEALED: Readonly<Record<string, readonly string[]>> = {
   comment: ['body', 'path'],
   review: ['body'],
   event: ['value'],
+  authorEvent: ['value'],
 }
 
 /** The TLV field a sealed property becomes, where the names differ (an event's `value`, tag 15). */
@@ -692,7 +694,9 @@ async function run(v: Vector): Promise<Json> {
       const doc = toDoc(obj(inp, 'doc'))
       const keys = await EpochKeys.import(hex(inp, 'repoId'), doc.epoch, hex(inp, 'key'))
       try {
-        const r = await sealMembersDocWithNonce(keys, doc, toFields(obj(inp, 'fields')), hex(inp, 'nonce'))
+        // `d38`: a private repository's new content on the mainnet contract (`sealPrivateV3`)
+        const seal = inp['d38'] === true ? sealPrivateV3WithNonce : sealMembersDocWithNonce
+        const r = await seal(keys, doc, toFields(obj(inp, 'fields')), hex(inp, 'nonce'))
         return { ad: bytesToHex(r.ad), kObj: bytesToHex(r.kObj), commit: bytesToHex(r.commit), tlv: bytesToHex(r.tlv), enc: bytesToHex(r.enc) }
       } catch (e) {
         if (e instanceof MalformedError) return { error: 'malformed' }

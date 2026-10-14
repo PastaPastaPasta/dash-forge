@@ -11,9 +11,10 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { RoleRefusedError, claimedRole, isRoleGated } from '../rules/roles'
+import { MAINTAINER_KINDS, manifestR } from '../rules/aud'
 import { ConsensusRefusal, GATE_REFUSED_CODE, WHERE_MISMATCH_CODE, type WriteAuth } from '../sdk'
 import { DOC, type RepoRef } from './contract'
-import { contractHasProperty } from './contract-shape'
+import { contractHasProperty, contractPropertyMinimum } from './contract-shape'
 import { invalidateMembers, readRoleOracle } from './members'
 import { contractOf } from './source'
 
@@ -41,7 +42,7 @@ export async function roleClaim(
   if (documentType === DOC.transition && Number(data['asAuthor'] ?? 0) > 0) return { r: 1 }
   const claim = async (): Promise<{ readonly r?: number }> => {
     const r = claimedRole(documentType, data, (await readRoleOracle(sdk, repo, auth.network)).currentRole(auth.identityId))
-    return r === null ? {} : { r }
+    return r === null ? {} : { r: await manifestClaim(sdk, repo, documentType, data, r) }
   }
   try {
     return await claim()
@@ -50,6 +51,18 @@ export async function roleClaim(
     invalidateMembers(repo, auth.network)
     return claim()
   }
+}
+
+/**
+ * The `r` a pack manifest of a maintainer-only kind claims (7, 8, 9, 11): 0 where the contract
+ * admits it (mainnet C3: `packManifest.r` has `minimum` 0, and only the maintainer operand passes
+ * it), else `r`. Parity: forge-core `RepoService::write_pack_manifest`.
+ */
+async function manifestClaim(sdk: EvoSDK, repo: RepoRef, documentType: string, data: Readonly<Record<string, unknown>>, r: number): Promise<number> {
+  const kind = data['kind']
+  if (documentType !== DOC.packManifest || typeof kind !== 'number' || !MAINTAINER_KINDS.includes(kind)) return r
+  const maintKinds = (await contractPropertyMinimum(sdk, contractOf(repo.forge, documentType), documentType, ROLE_CLAIM)) === 0
+  return manifestR({ maintKinds }, kind, r)
 }
 
 /**

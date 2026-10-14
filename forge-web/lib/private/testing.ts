@@ -6,7 +6,7 @@
  */
 
 import { sha256, utf8, type Bytes } from './bytes'
-import { __unsafeSealDocWithNonce, __unsafeSealMembersDocWithNonce, type PrivateDoc, type SealDocOptions } from './doc'
+import { __unsafeSealDocWithNonce, __unsafeSealMembersDocWithNonce, __unsafeSealPrivateV3WithNonce, type PrivateDoc, type SealDocOptions } from './doc'
 import { hedgeFileId, hedgeNonce, type EpochKeys } from './keys'
 import { __unsafeSealMembersRefWith, type RefUpdateIn, type SealedRefUpdate } from './members-ref'
 import { __unsafeSealLetterArtifactWith, __unsafeSealLetterWith, type LetterRecipient } from './named'
@@ -33,6 +33,16 @@ export function sealMembersDocWithNonce(
   nonce: Uint8Array,
 ): Promise<{ ad: Bytes; kObj: Bytes; commit: Bytes; tlv: Bytes; enc: Bytes }> {
   return __unsafeSealMembersDocWithNonce(keys, doc, fields, nonce)
+}
+
+/** `sealPrivateV3` (DESIGN D38) with a fixed nonce; returns the same intermediates as {@link sealMembersDocWithNonce}. */
+export function sealPrivateV3WithNonce(
+  keys: EpochKeys,
+  doc: PrivateDoc,
+  fields: DocFields,
+  nonce: Uint8Array,
+): Promise<{ ad: Bytes; kObj: Bytes; commit: Bytes; tlv: Bytes; enc: Bytes }> {
+  return __unsafeSealPrivateV3WithNonce(keys, doc, fields, nonce)
 }
 
 /** `sealMembersRef` with a fixed salt and nonce (the `sealed_ref` vectors). */

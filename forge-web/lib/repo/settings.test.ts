@@ -9,6 +9,8 @@ import { describe, expect, it, vi } from 'vitest'
 
 // The topic-document writes, observed (every other SDK export is the real one).
 const sdkWrites = vi.hoisted(() => ({ create: vi.fn(), del: vi.fn() }))
+// sakura's contracts: `vis` declared where it was (`mainnet-fields.ts` drops it only where it is not)
+vi.mock('./contract-shape', async (orig) => ({ ...(await orig<typeof import('./contract-shape')>()), contractHasProperty: async () => true }))
 vi.mock('../sdk', async (orig) => ({
   ...(await orig<typeof import('../sdk')>()),
   createDocumentIdempotent: (...a: unknown[]) => sdkWrites.create(...a),

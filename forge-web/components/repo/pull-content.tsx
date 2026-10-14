@@ -150,7 +150,7 @@ import { CommentOwnActions, Timeline, type CommentSlots } from '@/components/rep
 import { MakeOthersPublicButton, MakePublicBundleDialog, MakePublicButton, bundleable, makePublicWords, useQuotedMembersPost } from '@/components/repo/make-public'
 import { BundleAlertsNote, PublicEditHint, editIsPublic } from '@/components/repo/made-public'
 import type { BundleRequest } from '@/lib/repo/make-public-bundle'
-import { makePostPublic, makeReviewTextPublic, provenanceOf } from '@/lib/repo/make-public-writes'
+import { makePostPublic, makePublicKeepsFields, makeReviewTextPublic, provenanceOf } from '@/lib/repo/make-public-writes'
 import { ComparisonView, pullBase, pullSpec, usePullComparison } from '@/components/repo/pull-diff'
 import { CodeOwnersProvider, codeOwnerChangesIncomplete, useCodeOwnerStatus } from '@/components/repo/code-owners'
 import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, composeTooLong, privateComposeBlock } from '@/components/repo/private-compose'
@@ -252,7 +252,7 @@ type Pending =
   | { kind: 'retarget'; base: string }
   | { kind: 'edit-comment'; id: string; body: string }
   | { kind: 'delete-comment'; id: string }
-  /** The author makes their members-only comment public; `losesFile`: an inline one, whose file name can't be kept (DESIGN §4.6). */
+  /** The author makes their members-only comment public; `losesFile`: an inline one, whose file name the contract can't keep (DESIGN §4.6). */
   | { kind: 'make-public'; id: string; quoted: string | null; losesFile: boolean }
   /** The author makes their members-only review's text public, as a comment attached to it. */
   | { kind: 'make-review-public'; id: string; text: string; quoted: string | null }
@@ -763,10 +763,14 @@ function PullPage({
   // One confirm at a time: a write asked for while one is open (a picker applying on the same
   // click that opens another action) never silently replaces it.
   const setPending = useCallback((p: SetStateAction<Pending | null>) => setPendingState((cur) => (typeof p === 'function' ? p(cur) : p === null ? null : cur ?? p)), [])
-  // DESIGN §4.6: make the author's own members-only comment public (an inline one loses its file name).
+  // Where the contract keeps an inline comment's file name when it is made public (mainnet L1).
+  const keepsFile = useAsync(() => makePublicKeepsFields(sdk!, repo, 'comment'), [ready, repo.forge.collab], { enabled: ready && sdk !== null })
+  // DESIGN §4.6: make the author's own members-only comment public (an inline one loses its file
+  // name, except where the contract keeps it).
+  const keepsFileName = keepsFile.data === true
   const makeCommentPublic = useCallback(
-    (c: CommentView) => setPending({ kind: 'make-public', id: c.id, quoted: quotedPost(c.body, c.author, 'comment'), losesFile: c.anchor !== null }),
-    [setPending, quotedPost],
+    (c: CommentView) => setPending({ kind: 'make-public', id: c.id, quoted: quotedPost(c.body, c.author, 'comment'), losesFile: c.anchor !== null && !keepsFileName }),
+    [setPending, quotedPost, keepsFileName],
   )
   // Someone else's members-only comment, inline or not: a maintainer's bundle (DESIGN §4.6).
   const makeOthersPublic = useCallback((c: CommentView) => setBundleAsk([{ type: 'comment', id: c.id }]), [])
@@ -2095,7 +2099,7 @@ function PullPage({
                     ))}
                     {isAuthor ? (
                       <span className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="author-review-note">
-                        You opened this PR: your own approval would never count, so only a comment-only review is offered.
+                        You can&apos;t approve or request changes on your own pull request, so only a comment is offered.
                       </span>
                     ) : verdictRefused !== null ? (
                       <span role="alert" className="flex flex-wrap items-center gap-2 text-dense text-anvil-800 dark:text-anvil-100" data-testid="verdict-refused">

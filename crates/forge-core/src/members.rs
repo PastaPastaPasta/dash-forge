@@ -261,7 +261,7 @@ pub fn owner_row_refusal(repo: &RepoRef, member: &str, role: Role) -> Option<Use
             "The owner's own Maintain access can't be removed.",
         )
         .cause(format!(
-            "{} is owned by {member}, who always keeps it",
+            "the owner of {} always keeps Maintain access",
             repo.display()
         ))
         .note("checked before anything was signed; nothing was written or paid")

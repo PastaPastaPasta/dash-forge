@@ -44,6 +44,7 @@ import {
 import { readConfigBundle, type RepoConfig } from './config'
 import { repoContentWritten } from './push'
 import { DOC, asIdentifierString, num, str, stringArray, withVis, type RepoRef } from './contract'
+import { withoutUndeclaredVis } from './mainnet-fields'
 import { contractOf, repoSource } from './source'
 
 // ---------------------------------------------------------------------------------------------
@@ -495,8 +496,9 @@ export async function syncTopicDocs(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef,
       await createDocumentIdempotent(sdk, auth, {
         contractId: contractOf(repo.forge, DOC.topic),
         documentType: DOC.topic,
-        // `repoId` as the identifier's 32 bytes, like every other write.
-        data: withVis(repo.visibility, DOC.topic, { repoId: decodeIdentifier(repo.repoId), name }),
+        // `repoId` as the identifier's 32 bytes, like every other write; `vis` only where the
+        // contract still declares it (mainnet R-11 proves a public repo by the reference alone).
+        data: await withoutUndeclaredVis(sdk, contractOf(repo.forge, DOC.topic), DOC.topic, withVis(repo.visibility, DOC.topic, { repoId: decodeIdentifier(repo.repoId), name })),
       })
     } catch (e) {
       // Tagged in between (another device): the (repoId, name) index is unique.

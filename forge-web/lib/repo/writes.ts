@@ -28,7 +28,7 @@ import type { ForgeIds } from '../deployments'
 import { base58Encode, decodeIdentifier } from '../auth/base58'
 import { idbDelete, idbEntries, idbGet, idbPut } from '../idb'
 import { isGitRefName, type EventKind } from '../rules'
-import { RoleOracle, denseNumber, isAuthorKind, namesDenseRule, normalizeRepoName as normalizeV2RepoName, type Audience, type ClosedAs, type Role, type StateAction, type Visibility } from '../rules/v2'
+import { ENC_SPECIFIC_PEOPLE, RoleOracle, denseNumber, isAuthorKind, namesDenseRule, normalizeRepoName as normalizeV2RepoName, type Audience, type ClosedAs, type Role, type StateAction, type Visibility } from '../rules/v2'
 import { fetchIdentityKeys, heldKeysText, usableEncryptionKey, type EncryptionOps } from '../auth/encryption-key'
 import {
   ConsensusRefusal,
@@ -55,10 +55,10 @@ import { invalidateMembers, memberDocOf, readMemberships, roleOfMemberDoc } from
 import { contractHasProperty } from './contract-shape'
 import { refNameHash, repoContentWritten } from './push'
 import type { PrivateDocType } from '../private'
-import { isSealedKind, privateWriter, sealForRepo, sealedIntent, sealedTextUse, PrivateWriteError, type PrivateWriter } from './private-writes'
-import { MEMBERS_TEXT_LIMIT, audienceFor, childAudience, hasMembersKey, keyedContentKey, knownAudience, membersWriter, noteAudience, sealMembersContent, storedOnce, storedTargetOnce, targetAudience, type MembersWriter } from './members-writes'
+import { isSealedKind, privateWriter, sealForRepo, sealPrivatePerObject, sealedIntent, sealedTextUse, PrivateWriteError, type PrivateWriter } from './private-writes'
+import { MEMBERS_TEXT_LIMIT, audienceFor, childAudience, hasMembersKey, keyedContentKey, knownAudience, madePublicByBundle, membersWriter, noteAudience, sealMembersContent, storedOnce, storedTargetOnce, targetAudience, type MembersWriter } from './members-writes'
 import { LetterRefusedError, isLetterWriter, letterContentKey, letterThread, letterWriter, sdkLetterReads, sealLetterContent, type LetterWriter } from './letter-writes'
-import { docAudience } from './private-content'
+import { bytesField, docAudience } from './private-content'
 import { LETTER_EVENT_VALUE_TEXT, type LetterAsk } from '../view/audience'
 import type { ParentLetter } from '../rules/letters'
 import { invalidateRepoFeed } from './issues'
@@ -69,6 +69,8 @@ import { longBodyField } from './long-body'
 import { createSealedRelease, sealedReleaseEnv, type SealedReleaseOptions, type SealedReleaseWritten } from './sealed-release'
 import { noteTargetCreated } from './social'
 import { refreshRoleOnRefusal, roleClaim } from './role-claim'
+import { AUD, EVENT_TARGET_AUD, declares, withContentFields } from './mainnet-fields'
+import { AUD_LETTER, AUD_MEMBERS, eventFields, type EventTarget } from '../rules/aud'
 import { VerdictRefusedError, WRITER_ROLE_CODE, grantableRoles, holdsMembersKey, verdictRefusal } from '../rules/roles'
 import { contractOf, repoSource } from './source'
 import { MAX_PATTERN_CHARS } from './settings'
@@ -150,6 +152,21 @@ export interface PostContext {
 export function refuseVerdictForRole(post: PostContext, verdict: VerdictInput): void {
   const refused = verdictRefusal(post.role, verdict)
   if (refused !== null) throw new VerdictRefusedError(refused)
+}
+
+/** Why a PR's author gets no verdict on it (§8.2 row 29; mainnet R-03 `authorNoVerdict` refuses it at consensus). */
+export const OWN_VERDICT_REFUSED = "You can't approve or request changes on your own pull request."
+
+/**
+ * Refuse, before signing, an approve or request changes on PR `patchId` from its own author
+ * (forge-core `Collab::review`): a comment is offered instead. A PR that cannot be read now is
+ * left to consensus.
+ * @throws VerdictRefusedError
+ */
+export async function refuseOwnVerdict(sdk: EvoSDK, repo: RepoRef, signer: string, patchId: string, verdict: VerdictInput): Promise<void> {
+  if (verdict === 'comment') return
+  const patch = await storedOnce(sdk, repo, DOC.patch, patchId)
+  if (patch !== null && asIdentifierString(patch['$ownerId']) === signer) throw new VerdictRefusedError(OWN_VERDICT_REFUSED)
 }
 
 /** Why a non-member cannot comment on or review a locked thread. */
@@ -247,6 +264,7 @@ const CONTENT_FIELDS: Readonly<Record<string, readonly string[]>> = {
   protectedRefUpdate: ['refName'],
   config: ['defaultBranch', 'protectedPatterns'],
   event: ['value'],
+  authorEvent: ['value'],
   // `noPlain`'s fields, and `yanked` / `imported`, which a sealed release never carries (§16.2)
   release: ['name', 'notes', 'assets', 'assetManifest', 'yanked', 'imported'],
 }
@@ -271,7 +289,7 @@ export function assertNoPlaintext(
   if (leaked.length > 0) {
     throw new Error(`refusing to write ${leaked.join(', ')} in plaintext to ${where}`)
   }
-  if ((repo.visibility === 'private' || membersOnly) && fields.length > 0 && !sealed && documentType !== DOC.event) {
+  if ((repo.visibility === 'private' || membersOnly) && fields.length > 0 && !sealed && documentType !== DOC.event && documentType !== DOC.authorEvent) {
     throw new Error(`refusing to write an unencrypted ${documentType} to ${where}`)
   }
 }
@@ -285,7 +303,10 @@ export function assertNoPlaintext(
 function sealedTypeOf(documentType: string, data: Readonly<Record<string, unknown>>): PrivateDocType | null {
   if (isSealedKind(documentType)) return documentType
   const value = data['value']
-  return documentType === DOC.event && typeof value === 'string' && value !== '' ? 'event' : null
+  if (typeof value !== 'string' || value === '') return null
+  // an author's event value is sealed only where `authorEvent` declares `enc` (mainnet M3):
+  // `eventWrite` refuses it before here elsewhere
+  return documentType === DOC.event ? 'event' : documentType === DOC.authorEvent ? 'authorEvent' : null
 }
 
 /**
@@ -331,8 +352,11 @@ export async function writeRepoDoc(
   // make, before anything is sealed or signed. `r` is plaintext: it goes on beside `enc`.
   const claim = await roleClaim(sdk, auth, repo, documentType, data)
   // Who it is for (DESIGN §3.3): a private repo's everything is members-only; in a public repo
-  // what the caller settled (`audience`), and an event's value follows its target, read now.
-  const audience = await writeAudience(sdk, repo, documentType, data, options.audience)
+  // what the caller settled (`audience`), and an event's value follows its target, read now,
+  // as does its `tAud` where the contract declares it (mainnet M3, M4).
+  const event = documentType === DOC.event || documentType === DOC.authorEvent ? await eventWrite(sdk, repo, documentType, data) : null
+  const audience = event?.audience ?? (await writeAudience(sdk, repo, documentType, data, options.audience))
+  const targetAud = event?.tAud != null ? { [EVENT_TARGET_AUD]: event.tAud } : {}
   const sealedType = audience === 'public' ? null : sealedTypeOf(documentType, data)
   if (sealedType !== null) {
     // The retry cache compares what the action says, kept in this browser: keyed under the
@@ -347,7 +371,9 @@ export async function writeRepoDoc(
     } else if (repo.visibility === 'private') {
       const w = writer ?? (await privateWriter(sdk, auth, repo))
       contentKey = await keyedContentKey(w.keys, said)
-      data = await sealForRepo(sdk, auth, repo, sealedType, data, w)
+      // D38: on the mainnet contract (forge-collab declares `aud`) new content is v0x03, per object
+      const perObject = await declares(sdk, repo, DOC.issue, AUD)
+      data = await sealForRepo(sdk, auth, repo, sealedType, data, w, perObject ? sealPrivatePerObject : undefined)
       // D14: every sealed write by a member carries `asMember`.
       if (w.isMember === true) data = withMemberProof(documentType, data, auth.identityId)
       intent = sealedIntent(intent, w.keys)
@@ -358,6 +384,8 @@ export async function writeRepoDoc(
       intent = sealedIntent(intent, w.keys)
     }
   }
+  // `aud` and `mRole` where the contract declares them (mainnet L1, L2), from the document as signed
+  data = await withContentFields(sdk, auth, repo, documentType, data)
   assertNoPlaintext(repo, documentType, data, sealedType !== null && repo.visibility === 'public')
   let result: WriteResult | undefined
   try {
@@ -367,7 +395,7 @@ export async function writeRepoDoc(
         contractId: contractFor(repo, documentType),
         documentType,
         // The stamp goes on after sealing: it is plaintext on chain, never part of `enc`.
-        data: scoped(repo, withVis(repo.visibility, documentType, { ...signed, ...claim })),
+        data: scoped(repo, withVis(repo.visibility, documentType, { ...signed, ...claim, ...targetAud })),
         ...(intent ? { intent } : {}),
         ...(contentKey ? { contentKey } : {}),
       }),
@@ -451,6 +479,96 @@ function withMemberProof(documentType: string, data: Record<string, unknown>, si
   return { ...data, asMember: decodeIdentifier(signer) }
 }
 
+/** The `version` byte of the `enc` an audience is written with (the target an event's rules read). */
+function encOfAudience(repo: RepoRef, a: Audience): number | null {
+  if (a === 'public') return null
+  if (a === 'specificPeople') return ENC_SPECIFIC_PEOPLE
+  return repo.visibility === 'private' ? 0x01 : 0x03
+}
+
+/**
+ * Who an `event` or `authorEvent` write's value is for, and the `tAud` it carries (forge-core
+ * `Collab::event_fields`; the rule is `rules/aud.ts` `eventFields`): a value follows its target,
+ * plaintext on a public one, sealed under the members key on a members-only one (on the mainnet
+ * contract also after a maintainer's bundle made the target public: it keeps `aud = 1`), refused
+ * before signing on a message to specific people (an event names no recipients), and on an author
+ * event where `authorEvent` has no `enc`. `tAud` is the target's stored `aud`, where the contract
+ * declares it. On a contract without `tAud` (sakura) the target is read as before, through its
+ * audience; with it, from the stored target itself, failing closed.
+ */
+export async function eventWrite(sdk: EvoSDK, repo: RepoRef, documentType: string, data: Readonly<Record<string, unknown>>): Promise<{ readonly audience: Audience; readonly tAud: number | null }> {
+  const value = data['value']
+  const hasValue = typeof value === 'string' && value !== ''
+  const author = documentType === DOC.authorEvent
+  const [tAud, authorEnc] = await Promise.all([declares(sdk, repo, documentType, EVENT_TARGET_AUD), author && hasValue ? declares(sdk, repo, DOC.authorEvent, 'enc') : false])
+  const valueless: Audience = repo.visibility === 'private' ? 'members' : 'public'
+  if (!hasValue && !tAud) return { audience: valueless, tAud: null }
+  const v = data['targetId']
+  const targetId = v instanceof Uint8Array ? base58Encode(v) : asIdentifierString(v)
+  if (targetId === '') throw new PrivateWriteError('this event names no targetId, so who can read it is unknown; nothing was written')
+  const target = tAud ? await storedEventTarget(sdk, repo, targetId, hasValue) : await eventTargetAudience(sdk, repo, targetId)
+  const f = eventFields({ tAud, authorEnc }, author, target, hasValue)
+  switch (f.value) {
+    case 'none':
+      return { audience: valueless, tAud: f.tAud }
+    case 'plain':
+      return { audience: 'public', tAud: f.tAud }
+    case 'sealed':
+      return { audience: 'members', tAud: f.tAud }
+    case 'refused':
+      // A value on a message to specific people is refused (decided for 2A): never sealed under
+      // the members key, never written in plaintext.
+      if (target.aud === AUD_LETTER || target.enc === ENC_SPECIFIC_PEOPLE) throw new LetterRefusedError(LETTER_EVENT_VALUE_TEXT)
+      throw new PrivateWriteError("this is members-only, and an author's change with a value can't be sealed yet; ask a member to make it; nothing was written")
+  }
+}
+
+/** An event's target as its audience says (the contract has no `tAud`): what the folds always read. */
+async function eventTargetAudience(sdk: EvoSDK, repo: RepoRef, targetId: string): Promise<EventTarget> {
+  if (repo.visibility === 'private') {
+    const known = knownAudience(repo, targetId)
+    const stored = known !== undefined ? null : await storedTargetOnce(sdk, repo, targetId)
+    const letter = known === 'specificPeople' || (stored !== null && docAudience(stored) === 'specificPeople')
+    return { enc: encOfAudience(repo, letter ? 'specificPeople' : 'members') }
+  }
+  // a maintainer's bundle made it public for everyone: its target reads as public
+  return { enc: encOfAudience(repo, await targetAudience(sdk, repo, targetId)) }
+}
+
+/** How often an event's target that is not visible yet is read again (a block behind) before the write is refused. */
+const EVENT_TARGET_RETRIES = 3
+
+/**
+ * An event's target as stored (the contract has `tAud`): its own `aud` and `enc`, read and waited
+ * for like a parent; a target this tab just wrote may stand for itself until a node shows it.
+ * Whether a maintainer's bundle made it public is read only where it matters: a value on a sealed
+ * target that states no `aud`.
+ */
+async function storedEventTarget(sdk: EvoSDK, repo: RepoRef, targetId: string, hasValue: boolean): Promise<EventTarget> {
+  const read = async (): Promise<{ type: string; doc: PlainDocument } | null> => {
+    for (const type of [DOC.issue, DOC.patch]) {
+      const doc = await storedOnce(sdk, repo, type, targetId)
+      if (doc !== null) return { type, doc }
+    }
+    return null
+  }
+  // one this tab just wrote is not waited for: it stands for itself
+  const known = knownAudience(repo, targetId)
+  const found = known !== undefined ? await read() : await retryWhileMissing(read, EVENT_TARGET_RETRIES)
+  if (found === null) {
+    if (known === undefined) throw new PrivateWriteError('the issue or pull request this names was not found, so who can read it is unknown; nothing was written')
+    const enc = encOfAudience(repo, known)
+    const aud = enc === null ? null : await declares(sdk, repo, DOC.issue, AUD) ? (enc === ENC_SPECIFIC_PEOPLE ? AUD_LETTER : AUD_MEMBERS) : null
+    return { aud, enc }
+  }
+  const raw = found.doc[AUD]
+  const aud = typeof raw === 'number' ? raw : typeof raw === 'bigint' ? Number(raw) : null
+  const encBytes = bytesField(found.doc, 'enc')
+  const enc = encBytes !== undefined && encBytes.length > 0 ? (encBytes[0] as number) : null
+  const bundled = hasValue && aud === null && enc !== null && enc !== ENC_SPECIFIC_PEOPLE && repo.visibility === 'public' && (await madePublicByBundle(sdk, repo, found.type, found.doc))
+  return { aud, enc, bundled }
+}
+
 /**
  * The audience a `documentType` write of `repo` with `data` takes, safe by default: members-only
  * in a private repo; in a public one what the caller settled (`requested`), else what its parents
@@ -474,26 +592,6 @@ async function writeAudience(
     const id = idOf(field)
     if (id === '') throw new PrivateWriteError(`this ${what} names no ${field}, so who can read it is unknown; nothing was written`)
     return id
-  }
-  if (documentType === DOC.event || documentType === DOC.authorEvent) {
-    const value = data['value']
-    if (typeof value !== 'string' || value === '') return repo.visibility === 'private' ? 'members' : 'public'
-    // A value on a message to specific people is refused (decided for 2A): never sealed under the
-    // members key, never written in plaintext. A value-less change (close, lock) is public anyway.
-    if (repo.visibility === 'private') {
-      const targetId = named('targetId', 'event')
-      const known = knownAudience(repo, targetId)
-      const stored = known !== undefined ? null : await storedTargetOnce(sdk, repo, targetId)
-      if (known === 'specificPeople' || (stored !== null && docAudience(stored) === 'specificPeople')) throw new LetterRefusedError(LETTER_EVENT_VALUE_TEXT)
-      return 'members'
-    }
-    const target = await targetAudience(sdk, repo, named('targetId', 'event'))
-    if (target === 'specificPeople') throw new LetterRefusedError(LETTER_EVENT_VALUE_TEXT)
-    // An author event has no `enc` (consensus): its value would be public under a members-only target.
-    if (documentType === DOC.authorEvent && target !== 'public') {
-      throw new PrivateWriteError("this is members-only, and an author's change with a value can't be sealed yet; ask a member to make it; nothing was written")
-    }
-    return target
   }
   // A comment or review is always checked against its parents, even when the caller asked for
   // an audience: a requested "public" under a members-only parent is refused, never written.
@@ -949,6 +1047,7 @@ export async function createReview(
   if (!isRc1OidHex(input.commitOid)) throw new Error('a review names a 20- or 32-byte commit')
   const post = await settledPost(sdk, repo, auth.identityId, input.post, input.verdict)
   refuseVerdictForRole(post, input.verdict)
+  await refuseOwnVerdict(sdk, repo, auth.identityId, input.patchId, input.verdict)
   if (lockedOut(post)) throw new Error(LOCKED_REASON)
   // Who its text is for (its verdict is always public, D15): the PR's, unless asked narrower.
   const audience = await childAudience(sdk, repo, { targetId: input.patchId, ...(input.audience ? { requested: input.audience } : {}) })
@@ -1196,6 +1295,7 @@ export function starRelation(sdk: EvoSDK, auth: WriteAuth | null, viewer: string
   return {
     read: () => hasStar(sdk, repo.forge, viewer, repo.repoId),
     add: async () => {
+      requirePublicFor(repo, 'starred')
       const a = need(auth)
       const confirmed = (await createIndexOnly(sdk, a, repo.forge, 'star', repo.repoId)).confirmed
       if (confirmed && trending) {
@@ -1212,11 +1312,23 @@ export function starRelation(sdk: EvoSDK, auth: WriteAuth | null, viewer: string
   }
 }
 
+/**
+ * Refuse, before signing, a star or a watch (`what`: "starred", "watched") of a private repo: both
+ * are public signals, for public repos only (owner decision on R-12; the mainnet contract refuses
+ * them too). Removing one stays possible. Parity: forge-core `collab::v2::require_public_for`.
+ */
+export function requirePublicFor(repo: RepoRef, what: 'starred' | 'watched'): void {
+  if (repo.visibility === 'private') throw new Error(`Private repositories can't be ${what}.`)
+}
+
 /** The viewer's watch of a repo (forge-community `watch`, C-1): the inbox follows it on every device. */
 export function watchRelation(sdk: EvoSDK, auth: WriteAuth | null, viewer: string, repo: RepoRef): Relation {
   return {
     read: async () => (await findOwnIndexOnly(sdk, repo.forge, 'watch', viewer, repo.repoId)) !== null,
-    add: async () => (await createIndexOnly(sdk, need(auth), repo.forge, 'watch', repo.repoId)).confirmed,
+    add: async () => {
+      requirePublicFor(repo, 'watched')
+      return (await createIndexOnly(sdk, need(auth), repo.forge, 'watch', repo.repoId)).confirmed
+    },
     remove: async () => (await deleteIndexOnly(sdk, need(auth), repo.forge, 'watch', repo.repoId)).deleted,
   }
 }
@@ -1536,6 +1648,17 @@ export async function grantMembershipDoc(
   return result
 }
 
+/** Why the owner's own maintainer document stays (mainnet R-08 `ownerRowStays` refuses its delete, 40147). */
+export const OWNER_ROW_STAYS = "The owner's own Maintain access can't be removed."
+
+/**
+ * Refuse, before any write, removing the repo owner's own maintainer document: the owner always
+ * keeps Maintain access. Parity: forge-core `members::owner_row_refusal`.
+ */
+export function refuseOwnerRow(repo: RepoRef, memberId: string, role: Role): void {
+  if (role === 'maintainer' && memberId === repo.ownerId) throw new Error(OWNER_ROW_STAYS)
+}
+
 /**
  * Revoke a role on a public repo: the owner deletes the membership document. No-op when there
  * is none. Refused on a private repo ({@link PrivateMembershipError}). A public repo with
@@ -1555,6 +1678,7 @@ export async function revokeMember(
   environmentsPlanned = false,
 ): Promise<DeleteResult> {
   if (repo.visibility === 'private') throw new PrivateMembershipError('remove')
+  refuseOwnerRow(repo, memberId, role)
   await refuseMemberChangeWithEnvironments(sdk, repo, environmentsPlanned)
   const keyed = await membersKeyContext(sdk, auth, repo, ops, environmentsPlanned)
   if (keyed === null) return revokeMembershipDoc(sdk, auth, repo, memberId, role)
@@ -1680,6 +1804,7 @@ export async function revokeMembershipDoc(
   role: Role,
 ): Promise<DeleteResult> {
   if (auth.identityId !== repo.ownerId) throw new Error('only the repo owner can remove members')
+  refuseOwnerRow(repo, memberId, role)
   // A writer-document role (writer, triage, reader) deletes the member's `writer` document,
   // whichever of them it grants: a member holds at most one.
   const existing = await findMembership(sdk, repo, role, memberId)

@@ -19,7 +19,7 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { decodeIdentifier } from '../auth/base58'
 import { encryptionOps } from '../auth/encryption-key'
 import { idbDelete, idbEntries, idbGet, idbPut } from '../idb'
-import { EpochKeys, MalformedError, TooLargeError, checkBlind, type EpochResolution, openPack, propOf, refNameHash, sealDoc, sealPack, type DocFields, type PrivateDoc, type PrivateDocType } from '../private'
+import { EpochKeys, MalformedError, TooLargeError, checkBlind, type EpochResolution, openPack, propOf, refNameHash, sealDoc, sealPack, sealPrivateV3, type DocFields, type PrivateDoc, type PrivateDocType } from '../private'
 import type { WriteAuth } from '../sdk'
 import { DOC, type RepoRef } from './contract'
 import { contractOf } from './source'
@@ -35,6 +35,7 @@ const SEALED_FIELDS: Readonly<Record<PrivateDocType, readonly (keyof DocFields)[
   protectedRefUpdate: ['refName'],
   config: ['defaultBranch', 'protectedPatterns'],
   event: ['eventValue'],
+  authorEvent: ['eventValue'],
 }
 
 /**
@@ -192,6 +193,8 @@ export async function sealForRepo(
   type: PrivateDocType,
   data: Data,
   writer?: PrivateWriter | { readonly keys: EpochKeys },
+  /** How the content is sealed: v0x01 by default, {@link sealPrivatePerObject} for new content on mainnet (D38). */
+  seal: DocSealer = sealDoc,
 ): Promise<Data> {
   if (repo.visibility !== 'private') return data
   const { used, limit } = sealedTextUse(type, data)
@@ -200,7 +203,7 @@ export async function sealForRepo(
   }
   const keys = (writer ?? (await privateWriter(sdk, auth, repo))).keys
   try {
-    return await sealContent(keys, type, decodeIdentifier(auth.identityId), data)
+    return await sealContent(keys, type, decodeIdentifier(auth.identityId), data, seal)
   } catch (e) {
     if (e instanceof TooLargeError) throw new PrivateWriteError(`the text is too long for a private repo's encrypted ${type}`)
     if (e instanceof MalformedError) throw new PrivateWriteError(`this ${type} can't be written to a private repo: ${e.message}`)
@@ -210,6 +213,13 @@ export async function sealForRepo(
 
 /** Seals a document's TLV under `keys` (`sealDoc`; the conformance runner passes a fixed-nonce one). */
 export type DocSealer = (keys: EpochKeys, doc: PrivateDoc, fields: DocFields) => Promise<Uint8Array>
+
+/**
+ * A private repository's new content on the mainnet contract (DESIGN D38; forge-core
+ * `seal_private_members_props`): `enc` v0x03, a per-object key under the epoch, so one document's
+ * key can later be given on its own. Readers open v0x01 and v0x03 there alike.
+ */
+export const sealPrivatePerObject: DocSealer = (keys, doc, fields) => sealPrivateV3(keys, { ...doc, vis: 'private' }, fields)
 
 /**
  * The blind a members-only PR's `headOid`, or a head update's `oid`, carries (rule C,
@@ -328,6 +338,7 @@ export async function sealContent(
       break
     case 'comment':
     case 'event':
+    case 'authorEvent':
       doc.targetId = idOf(out['targetId'])
       // a members-only PR's head update (kind 16): its blind `oid`, the real head sealed beside it
       if (type === 'event') await sealHead(members?.head, bytesOf(out['oid']), fields)
