@@ -874,7 +874,8 @@ fn agent_args(
 
 /// Who the agent runs as: the runner's own user and group (`uid:gid` of the job directory), so
 /// it can write `/out` on a Linux host; never root: a runner running as root gives the agent
-/// `nobody`, with `/work` and `/out` opened up to it. `None` where there are no such ids.
+/// `nobody`, and hands it `in`, `work` and `out` (owned by it, mode 0700, never opened to other
+/// local users), the job directory itself traversable only. `None` where there are no such ids.
 fn job_user(dir: &Path) -> Option<String> {
     #[cfg(unix)]
     {
@@ -883,11 +884,13 @@ fn job_user(dir: &Path) -> Option<String> {
         if m.uid() != 0 {
             return Some(format!("{}:{}", m.uid(), m.gid()));
         }
-        for sub in ["work", "out"] {
-            let _ = Command::new("chmod")
-                .args(["-R", "a+rwX"])
-                .arg(dir.join(sub))
+        for sub in ["in", "work", "out"] {
+            let path = dir.join(sub);
+            let _ = Command::new("chown")
+                .args(["-R", "65534:65534"])
+                .arg(&path)
                 .status();
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700));
         }
         let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o711));
         Some("65534:65534".into())

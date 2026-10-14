@@ -606,6 +606,7 @@ impl Collab<'_> {
     /// `cwd` with the members key `kr`, sealed to the signer and the bot. Only a maintainer's or a
     /// Write member's letter counts for its bot, so anyone else writes none. It never fails the
     /// push it follows: what was written and what was not are returned.
+    #[allow(clippy::too_many_lines)] // one pass: the bots, their keys, each branch, each letter
     pub async fn letter_ci_bots(
         &self,
         repo: &RepoRef,
@@ -655,8 +656,12 @@ impl Collab<'_> {
         if keys.is_empty() {
             return out;
         }
-        let Ok(svc) = self.repo_service() else {
-            return out;
+        let svc = match self.repo_service() {
+            Ok(s) => s,
+            Err(e) => {
+                out.failed.push((None, None, e.to_string()));
+                return out;
+            }
         };
         for (branch, pushed) in branches {
             progress(&format!(
