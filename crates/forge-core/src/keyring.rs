@@ -1172,6 +1172,11 @@ impl Keyring {
         self.ctx.keys.get(&epoch)
     }
 
+    /// The subkeys of the write epoch, when there is one and this reader holds them.
+    pub fn write_epoch_keys(&self) -> Option<&EpochKeys> {
+        self.resolution.write_epoch.and_then(|e| self.epoch_keys(e))
+    }
+
     /// The `$createdAt` of stated(e): the earliest config of `epoch` at the block height where
     /// its key was first stated on chain (§5.3). A config without `enc` states no key and is
     /// not counted (as in the web's `statedAtOf`).
@@ -2168,9 +2173,6 @@ async fn self_wrap(
     }
 }
 
-/// Wrap the current epoch's key to `member` (§5.5 "add member"): the second of the two
-/// transitions of an add. Idempotent: the signer's own standing wrap with the same key counts.
-/// A standing wrap that cannot be replaced (the member changed keys since) needs a rotation.
 /// Post a `repoKey` wrap to `member` (a Bot row) of a **fresh random key** under the write
 /// epoch, never the members key: the e2e suites' way (`DASH_FORGE_SKIP_WRITE_PRECHECK`) to see
 /// consensus refuse a wrap to a bot (L4, `repoKey.mr` admits no 4) without any real key leaving
@@ -2198,6 +2200,9 @@ pub async fn wrap_probe_to_bot(
     }
 }
 
+/// Wrap the current epoch's key to `member` (§5.5 "add member"): the second of the two
+/// transitions of an add. Idempotent: the signer's own standing wrap with the same key counts.
+/// A standing wrap that cannot be replaced (the member changed keys since) needs a rotation.
 pub async fn add_member_wrap(
     signer: &PrivateSigner<'_>,
     repo: &RepoRef,
@@ -3198,12 +3203,7 @@ async fn missing_post_keys(
     kr: &Keyring,
 ) -> Result<crate::bot_keys::Issued> {
     let bots = crate::bot_keys::bots_of(kr.members(), &[]);
-    let Some(keys) = kr
-        .resolution
-        .write_epoch
-        .and_then(|e| kr.epoch_keys(e))
-        .filter(|_| !bots.is_empty())
-    else {
+    let Some(keys) = kr.write_epoch_keys().filter(|_| !bots.is_empty()) else {
         return Ok(crate::bot_keys::Issued::default());
     };
     let missing = crate::bot_keys::missing(signer, repo, keys, &bots).await?;

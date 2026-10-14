@@ -255,12 +255,14 @@ fn repair_estimate(kr: &Keyring, missing_posts: usize) -> (u64, String) {
         _ => (0, String::new()),
     };
     let (posts, post_what) = post_key_estimate(missing_posts);
-    match (what.is_empty(), post_what.is_empty()) {
-        (true, true) => (0, "nothing".into()),
-        (false, true) => (wraps, what),
-        (true, false) => (posts, post_what),
-        (false, false) => (wraps + posts, format!("{what} + {post_what}")),
+    let parts: Vec<String> = [what, post_what]
+        .into_iter()
+        .filter(|w| !w.is_empty())
+        .collect();
+    if parts.is_empty() {
+        return (0, "nothing".into());
     }
+    (wraps + posts, parts.join(" + "))
 }
 
 /// The post keys sent to `bots` bots (one key letter each, §23), and how a prompt says it.
@@ -322,7 +324,7 @@ async fn repair(ctx: &Ctx, repo: &str) -> Result<()> {
     require_maintainer(&kr, &s.repo, "repair the key")?;
     // the bots this signer has sent no post key for the current epoch (§23)
     let bots = forge_core::bot_keys::bots_of(kr.members(), &[]);
-    let missing_posts = match kr.resolution().write_epoch.and_then(|e| kr.epoch_keys(e)) {
+    let missing_posts = match kr.write_epoch_keys() {
         Some(keys) if !bots.is_empty() => Box::pin(forge_core::bot_keys::missing(
             &signer(&s),
             &s.repo,

@@ -536,7 +536,9 @@ fn edited_props(
 }
 
 /// A private replace's changes: `enc` and `epoch` of `sealed`, nothing else.
-fn enc_and_epoch(sealed: &BTreeMap<String, FieldValue>) -> BTreeMap<String, Option<FieldValue>> {
+pub(super) fn enc_and_epoch(
+    sealed: &BTreeMap<String, FieldValue>,
+) -> BTreeMap<String, Option<FieldValue>> {
     ["enc", "epoch"]
         .into_iter()
         .map(|k| (k.to_string(), sealed.get(k).cloned()))

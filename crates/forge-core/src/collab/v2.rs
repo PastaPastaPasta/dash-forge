@@ -1674,6 +1674,28 @@ fn clear_plaintext(
     sealed
 }
 
+/// The text `changes` sets in an edit of `opened`, an empty value being no value on either side;
+/// `None` when `opened` already reads that way (nothing to re-seal).
+fn text_edit(
+    opened: &FetchedDocument,
+    changes: &BTreeMap<String, Option<FieldValue>>,
+) -> Option<BTreeMap<String, Option<String>>> {
+    let text: BTreeMap<String, Option<String>> = changes
+        .iter()
+        .map(|(k, v)| {
+            let v = v
+                .as_ref()
+                .and_then(FieldValue::as_str)
+                .filter(|s| !s.is_empty());
+            (k.clone(), v.map(str::to_owned))
+        })
+        .collect();
+    let unchanged = text
+        .iter()
+        .all(|(k, v)| opened.field_str(k).filter(|s| !s.is_empty()) == *v);
+    (!unchanged).then_some(text)
+}
+
 /// The keys a PR edit re-seals under: the PR's own `epoch` (its ref-name hashes are keyed by it,
 /// §4.5), which must be held and not `burned`.
 fn patch_epoch_keys<'k>(
@@ -7332,27 +7354,10 @@ impl<'a> Collab<'a> {
                 )),
             )
         })?;
-        // an empty value is no value, on either side
-        let text: BTreeMap<String, Option<String>> = changes
-            .iter()
-            .map(|(k, v)| {
-                let v = v
-                    .as_ref()
-                    .and_then(FieldValue::as_str)
-                    .filter(|s| !s.is_empty());
-                (k.clone(), v.map(str::to_owned))
-            })
-            .collect();
-        if text
-            .iter()
-            .all(|(k, v)| opened.field_str(k).filter(|s| !s.is_empty()) == *v)
-        {
+        let Some(text) = text_edit(&opened, changes) else {
             // already reads that way: the stored enc/epoch, which the replace sees as held
-            return Ok(["enc", "epoch"]
-                .into_iter()
-                .map(|k| (k.to_string(), stored.fields.get(k).cloned()))
-                .collect());
-        }
+            return Ok(private::enc_and_epoch(&stored.fields));
+        };
         let owner = platform::decode_identifier(&self.signer_id()?)?;
         if members {
             // a public repository's members key is a `Lane`, never a private repository's seams
@@ -7402,13 +7407,12 @@ impl<'a> Collab<'a> {
             .field_u64("epoch")
             .and_then(|e| u32::try_from(e).ok())
             .ok_or_else(unreadable)?;
-        let (Some(header), Some(enc)) = (
+        let (Some(mut header), Some(enc)) = (
             crate::keyring::header_of(kind, stored),
             stored.field_bytes("enc"),
         ) else {
             return Err(unreadable());
         };
-        let mut header = header;
         header.vis = repo.visibility;
         let post = Box::pin(self.bot_post_key(repo, Some(epoch))).await?;
         private::open_doc(
@@ -7429,25 +7433,9 @@ impl<'a> Collab<'a> {
         changes: &BTreeMap<String, Option<FieldValue>>,
     ) -> Result<BTreeMap<String, Option<FieldValue>>> {
         let opened = Box::pin(self.open_own_bot_post(repo, kind, stored)).await?;
-        let text: BTreeMap<String, Option<String>> = changes
-            .iter()
-            .map(|(k, v)| {
-                let v = v
-                    .as_ref()
-                    .and_then(FieldValue::as_str)
-                    .filter(|s| !s.is_empty());
-                (k.clone(), v.map(str::to_owned))
-            })
-            .collect();
-        if text
-            .iter()
-            .all(|(k, v)| opened.field_str(k).filter(|s| !s.is_empty()) == *v)
-        {
-            return Ok(["enc", "epoch"]
-                .into_iter()
-                .map(|k| (k.to_string(), stored.fields.get(k).cloned()))
-                .collect());
-        }
+        let Some(text) = text_edit(&opened, changes) else {
+            return Ok(private::enc_and_epoch(&stored.fields));
+        };
         let post = self.bot_post_key(repo, None).await?;
         let sealed = private::reseal_bot_edit(&post, repo.visibility, kind, &opened, &text)?;
         Ok(clear_plaintext(kind, stored, sealed))

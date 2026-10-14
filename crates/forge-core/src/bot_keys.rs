@@ -161,7 +161,6 @@ async fn post_key_letters(
         futures::try_join!(svc.read_pack_manifests(repo), svc.copy_roles(repo))?;
     let manifests: Vec<_> = manifests
         .into_iter()
-        .filter(|m| m.kind == u64::from(crate::pack::KIND_KEY_LETTER))
         .filter(|m| roles.get(&m.owner_id) == Some(&Role::Maintainer))
         .filter(|m| from.is_none_or(|f| m.owner_id == f))
         .collect();
@@ -179,7 +178,6 @@ async fn post_key_letters(
         .letters
         .into_iter()
         .filter(|r| r.letter.kind == TYPE_POST_KEY)
-        .filter(|r| roles.get(&r.manifest.owner_id) == Some(&Role::Maintainer))
         .filter_map(|r| PostKeyLetter::from_typed(&r.letter).map(|l| (r.manifest.owner_id, l)))
         .collect())
 }

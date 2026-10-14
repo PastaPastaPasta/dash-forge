@@ -219,27 +219,25 @@ export function sdkPostKeyIo(
   }
 }
 
-/** "@ci-bot" as these messages name a bot: its short id. */
-const named = (id: string): string => shortId(id)
-
 /**
  * The toasts of a send (DESIGN §10 style, plain words): who got a key for members-only posts, who
  * could not and why. Nothing when there were no bots.
  */
 export function postKeysToasts(r: PostKeysSent): { readonly title: string; readonly tone?: 'warn'; readonly detail?: string }[] {
   const out: { title: string; tone?: 'warn'; detail?: string }[] = []
-  if (r.sent.length === 1) out.push({ title: `Sent ${named(r.sent[0] as string)} its key for members-only posts` })
+  if (r.sent.length === 1) out.push({ title: `Sent ${shortId(r.sent[0] as string)} its key for members-only posts` })
   else if (r.sent.length > 1) out.push({ title: `Sent ${r.sent.length} bots their keys for members-only posts` })
   if (r.skipped.length > 0) {
-    const who = r.skipped.length === 1 ? named(r.skipped[0] as string) : `${r.skipped.length} bots`
+    const one = r.skipped.length === 1
+    const who = one ? shortId(r.skipped[0] as string) : `${r.skipped.length} bots`
     out.push({
-      title: `${who} didn't get ${r.skipped.length === 1 ? 'its key' : 'their keys'} for members-only posts`,
+      title: `${who} didn't get ${one ? 'its key' : 'their keys'} for members-only posts`,
       tone: 'warn',
       // the reason stays in the step log: an error's own words are not written for this toast
       detail:
         r.failed !== undefined
           ? 'Sending stopped part-way. You can send the rest from the repo page.'
-          : `${r.skipped.length === 1 ? 'It has' : 'They have'} no encryption key yet. You can send ${r.skipped.length === 1 ? 'it' : 'them'} from the repo page once ${r.skipped.length === 1 ? 'it adds one' : 'they add one'}.`,
+          : `${one ? 'It has' : 'They have'} no encryption key yet. You can send ${one ? 'it' : 'them'} from the repo page once ${one ? 'it adds one' : 'they add one'}.`,
     })
   }
   return out

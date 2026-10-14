@@ -216,12 +216,10 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
     let probe_l4 = post_key && !forge_core::collab::v2::precheck_enabled();
     let can_receive =
         !(keyed || post_key) || crate::keys::member_can_receive(client, handle, member).await?;
-    let post_key_epoch = if post_key && can_receive {
+    let sends_post_key = post_key && can_receive && {
         let kr = signer.keyring(handle).await?;
         kr.writer(handle)?;
-        kr.resolution().write_epoch
-    } else {
-        None
+        kr.resolution().write_epoch.is_some()
     };
     if keyed {
         // Checked before anything is written: in a private repository a member with no
@@ -274,7 +272,7 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
                 ctx.usd_price()
             )
         )
-    } else if post_key_epoch.is_some() {
+    } else if sends_post_key {
         format!(
             "a membership document + the bot's key for its members-only posts, {}",
             cost_line(
@@ -370,12 +368,10 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
     };
     // the bot's post key for the current epoch, after any rotation above (which sends every Bot
     // row its key already); a re-run or a rotation leaves only a missing one to send
-    let post_keys = if post_key_epoch.is_some() {
+    let post_keys = if sends_post_key {
         let kr = signer.keyring(handle).await?;
         let keys = kr
-            .resolution()
-            .write_epoch
-            .and_then(|e| kr.epoch_keys(e))
+            .write_epoch_keys()
             .context("the members key changed while adding the bot: run `dg repo keys repair` to send its key")?;
         let bots = vec![member.to_string()];
         let bots = if held || rotation.is_some() {
