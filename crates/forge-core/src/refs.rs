@@ -590,7 +590,7 @@ pub fn has_narrower_updates(state: &GitState) -> bool {
 /// Whether `d` is a members-only ref update: `enc` present and stamped `vis: "public"` (a
 /// repository made public keeps its private-era updates stamped private; they are not members-only
 /// branches).
-fn is_members_only_ref(d: &FetchedDocument) -> bool {
+pub(crate) fn is_members_only_ref(d: &FetchedDocument) -> bool {
     d.field_bytes("enc").is_some_and(|e| !e.is_empty())
         && d.field_str("vis").as_deref() == Some(Visibility::Public.as_str())
 }

@@ -38,6 +38,17 @@ pub const BUCKET: usize = 512;
 pub const MAX_LETTER: usize = 64 * 1024;
 /// The largest integer a letter carries (JavaScript's safe integers, so both stacks agree).
 pub const MAX_INT: u64 = (1 << 53) - 1;
+/// The deepest nesting of arrays and objects a letter has (the top-level object is depth 1).
+pub const MAX_DEPTH: usize = 16;
+
+/// The nesting depth of `v` (a scalar is 0).
+fn depth(v: &Value) -> usize {
+    match v {
+        Value::Array(items) => 1 + items.iter().map(depth).max().unwrap_or(0),
+        Value::Object(map) => 1 + map.values().map(depth).max().unwrap_or(0),
+        _ => 0,
+    }
+}
 
 /// `"type": "branch"`.
 pub const TYPE_BRANCH: &str = "branch";
@@ -189,6 +200,9 @@ impl TypedLetter {
     /// The artifact plaintext: the canonical JSON padded with spaces to a multiple of
     /// [`BUCKET`].
     pub fn encode(&self) -> Result<Zeroizing<Vec<u8>>, LetterError> {
+        if 1 + self.fields.values().map(depth).max().unwrap_or(0) > MAX_DEPTH {
+            return Err(LetterError::Invalid("a letter nests at most 16 deep"));
+        }
         let raw = self.canonical()?;
         let size = raw.len().div_ceil(BUCKET).max(1) * BUCKET;
         if size > MAX_LETTER {
@@ -209,8 +223,11 @@ impl TypedLetter {
             return None;
         }
         let end = pt.iter().rposition(|b| *b != b' ')? + 1;
-        let value: Zeroizing<Vec<u8>> = Zeroizing::new(pt[..end].to_vec());
-        let Value::Object(mut fields) = serde_json::from_slice::<Value>(&value).ok()? else {
+        let value = serde_json::from_slice::<Value>(&pt[..end]).ok()?;
+        if depth(&value) > MAX_DEPTH {
+            return None;
+        }
+        let Value::Object(mut fields) = value else {
             return None;
         };
         let Value::String(kind) = fields.remove("type")? else {
@@ -220,11 +237,6 @@ impl TypedLetter {
         let letter = Self { kind, v, fields };
         let again = letter.encode().ok()?;
         (again.as_slice() == pt).then_some(letter)
-    }
-
-    /// Field `name` as a string.
-    fn str(&self, name: &str) -> Option<&str> {
-        self.fields.get(name)?.as_str()
     }
 }
 
@@ -242,8 +254,8 @@ fn hex32(v: &Value) -> Option<[u8; 32]> {
 }
 
 /// The key that names a members-only commit's check runs: `HMAC-SHA256(salt, "dash-forge/v2/
-/// check-name")` of the blind's salt (stream 3D, `private::members_check`): a runner and anyone
-/// holding the salt resolve the opaque check names of that commit.
+/// check-name")` of the blind's salt, `K_name` of [`super::members_check::CheckKeys`] (§19.9): a
+/// runner and anyone holding the salt resolve the opaque check names of that commit.
 #[must_use]
 pub fn check_name_key(salt: &Salt) -> Zeroizing<[u8; 32]> {
     let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(salt).expect("HMAC takes any key length");
@@ -308,13 +320,13 @@ impl std::fmt::Debug for BranchLetter {
     }
 }
 
-/// Whether `name` is a branch name a letter may carry: `refs/heads/` and a non-empty rest, at
-/// most 255 bytes, no control character.
+/// Whether `name` is a branch name a letter may carry: a ref git could create
+/// ([`crate::rules::is_git_ref_name`]: at most 255 bytes, `git check-ref-format`'s rules) under
+/// `refs/heads/`, not `refs/heads/HEAD`, with no control character.
 fn valid_branch_name(name: &str) -> bool {
-    name.len() <= 255
-        && name
-            .strip_prefix("refs/heads/")
-            .is_some_and(|rest| !rest.is_empty())
+    crate::rules::is_git_ref_name(name)
+        && name.starts_with("refs/heads/")
+        && name != "refs/heads/HEAD"
         && !name.chars().any(char::is_control)
 }
 
@@ -406,7 +418,7 @@ impl BranchLetter {
             })
             .collect::<Option<Vec<_>>>()?;
         let letter = Self {
-            name: t.str("name")?.to_owned(),
+            name: t.fields.get("name")?.as_str()?.to_owned(),
             ref_name_hash: hex32(t.fields.get("refNameHash")?)?,
             head,
             packs,
@@ -582,6 +594,15 @@ mod tests {
         assert!(TypedLetter::decode(&pad("{\"type\":\"x\",\"v\":1.0}")).is_none());
         assert!(TypedLetter::decode(&pad("{\"type\":\"x\",\"v\":1}")).is_some());
         assert!(TypedLetter::decode(&pad("[1]")).is_none());
+    }
+
+    #[test]
+    fn the_check_name_key_is_the_check_runs_k_name() {
+        let salt = [0x5a; 32];
+        assert_eq!(
+            *check_name_key(&salt),
+            crate::private::members_check::CheckKeys::new(&salt).name_key_for_vectors()
+        );
     }
 
     #[test]

@@ -591,6 +591,15 @@ cmd('branch new', 'A branch started in this clone, and who will see it once push
     'status': E('created'), 'branch': S, 'audience': {'anyOf': [nl(AUD), E('narrower')]},
     'audienceLabel': S, 'to': S, 'people': SA,
 }, ['status', 'branch'])
+cmd('branch share', 'A members-only branch shared, as it is now, with people who are not members (only they and you can open the share; later pushes are not shared).', {
+    'status': E('shared'), 'branch': S, 'ref': S, 'head': S,
+    'commits': D('Commits on the branch beyond the public branches.', I),
+    'extraCommits': D('Commits the shared packs hold that are not on the branch (stored with its commits by another members-only branch or an earlier push).', I),
+    'extraObjects': D('Git objects of any kind the shared packs hold that are neither on the branch nor on a public branch (extraCommits counts the commits among them).', I),
+    'packs': D('How many stored members-only packs the share opens.', I),
+    'to': D('The identity ids it was shared with (you are always a recipient too).', SA),
+    'letter': D('The share\'s packManifest document id (kind 10).', S), 'packHash': S, 'cost': COST,
+}, ['status', 'branch', 'ref', 'head', 'commits', 'extraCommits', 'extraObjects', 'packs', 'to', 'letter', 'packHash', 'cost'])
 cmd('branch audience', 'Who a branch for fewer people is for, or the change `--to` made.', {
     'branch': S, 'status': E('changed', 'local'), 'audience': S, 'label': S, 'audienceLabel': S, 'to': S,
     'people': SA, 'holders': SA, 'sentTo': SA, 'noKey': SA, 'cost': COST,

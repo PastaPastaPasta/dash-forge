@@ -20,9 +20,8 @@ use crate::platform;
 use crate::private::branch_key::{self, Branch, BranchKey, BranchKeyLetter, BranchRing, LetterIn};
 use crate::private::key_letter::{self, ManifestCheck, OpenError};
 use crate::private::named::{OwnerKey, Reader, Recipient};
-use crate::repo::{PackManifestInfo, PackManifestInput, PlatformChunkTarget, RepoService};
+use crate::repo::{PackManifestInfo, RepoService};
 use crate::scope::RepoRef;
-use crate::storage::StorageTarget;
 use crate::user_error::{codes, UserError};
 
 /// Letters fetched at once.
@@ -348,38 +347,9 @@ pub async fn write_letter(
     })
 }
 
-/// Store a sealed key letter as Platform chunks and record its kind-10 `packManifest` (Platform
-/// only: every recipient must find it).
+/// Store a sealed key letter ([`RepoService::store_key_letter`]): its `packManifest` id.
 async fn store_letter(svc: &RepoService<'_>, repo: &RepoRef, sealed: &[u8]) -> Result<String> {
-    let chain = PlatformChunkTarget::new(svc, repo, crate::storage::PLATFORM_PROFILE);
-    let targets: Vec<&dyn StorageTarget> = vec![&chain];
-    let meta = crate::backends::PackMeta::for_bytes(sealed);
-    let pack_hash = meta.pack_hash_bytes()?;
-    let rep = crate::storage::replicate(&targets, sealed, &meta, 1)
-        .await
-        .map_err(|e| {
-            Error::from(UserError::storage_policy_not_met(
-                &e,
-                "store the branch key",
-                false,
-            ))
-        })?;
-    let stored = crate::repo::StoredArtifact::from_replication(&rep, sealed)?;
-    svc.write_pack_manifest(
-        repo,
-        &PackManifestInput {
-            pack_hash,
-            kind: u64::from(crate::pack::KIND_KEY_LETTER),
-            size_bytes: sealed.len() as u64,
-            object_count: 0,
-            chunk_count: stored.chunk_count,
-            storage: stored.storage,
-            uris: stored.uris,
-            supersedes: Vec::new(),
-            tips: Vec::new(),
-        },
-    )
-    .await
+    Ok(svc.store_key_letter(repo, sealed).await?.0)
 }
 
 /// What a narrower branch's letters need now that its audience resolves to `now`. Every letter

@@ -26,6 +26,7 @@ The exit code says which schema applies: 0, the command's own; anything else, th
 | `dg branch cleanup` | [`branch-cleanup.schema.json`](dg/branch-cleanup.schema.json) |
 | `dg branch list` | [`branch-list.schema.json`](dg/branch-list.schema.json) |
 | `dg branch new` | [`branch-new.schema.json`](dg/branch-new.schema.json) |
+| `dg branch share` | [`branch-share.schema.json`](dg/branch-share.schema.json) |
 | `dg ci env` | [`ci-env.schema.json`](dg/ci-env.schema.json) |
 | `dg ci log` | [`ci-log.schema.json`](dg/ci-log.schema.json) |
 | `dg ci refs` | [`ci-refs.schema.json`](dg/ci-refs.schema.json) |

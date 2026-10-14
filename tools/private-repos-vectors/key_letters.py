@@ -38,6 +38,7 @@ CASE = "key_letter"
 BUCKET = 512
 MAX_LETTER = 64 * 1024
 MAX_INT = (1 << 53) - 1
+MAX_DEPTH = 16
 CHECK_NAME_LABEL = b"dash-forge/v2/check-name"
 BRANCH_FIELDS = ("asOf", "checkNameKey", "head", "name", "packs", "refNameHash")
 
@@ -51,6 +52,14 @@ def vector(name, description, inp, expected):
 
 
 # --- the canonical form ---------------------------------------------------------------------------
+
+
+def depth(v):
+    if isinstance(v, list):
+        return 1 + max((depth(x) for x in v), default=0)
+    if isinstance(v, dict):
+        return 1 + max((depth(x) for x in v.values()), default=0)
+    return 0
 
 
 def valid_value(v):
@@ -68,7 +77,7 @@ def valid_value(v):
 def encode(letter):
     """The padded plaintext of {"type", "v", **fields}, or None (a value with no canonical spelling, too large)."""
     obj = dict(letter["fields"], type=letter["type"], v=letter["v"])
-    if "type" in letter["fields"] or "v" in letter["fields"] or not valid_value(obj):
+    if "type" in letter["fields"] or "v" in letter["fields"] or not valid_value(obj) or depth(obj) > MAX_DEPTH:
         return None
     if not isinstance(letter["type"], str) or isinstance(letter["v"], bool) or not isinstance(letter["v"], int):
         return None
@@ -87,7 +96,7 @@ def decode(pt):
     body = pt.rstrip(b" ")
     try:
         obj = json.loads(body.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
+    except (UnicodeDecodeError, ValueError, RecursionError):
         return None
     if not isinstance(obj, dict) or not isinstance(obj.get("type"), str):
         return None
@@ -114,9 +123,19 @@ def hex_exact(s, n):
         return None
 
 
+def git_ref_name(name):
+    """forge-core `is_git_ref_name`: refs/, at most 255 bytes, git check-ref-format's rules."""
+    if len(name.encode()) > 255 or not name.startswith("refs/") or name.endswith(".lock"):
+        return False
+    path = name[len("refs/"):]
+    return (bool(path) and ".." not in path and "@{" not in path and not path.endswith(".")
+            and not any(b <= 0x20 or b == 0x7F or chr(b) in "~^:?*[\\" for b in path.encode())
+            and all(c and not c.startswith(".") and not c.endswith(".lock") for c in path.split("/")))
+
+
 def valid_branch_name(name):
-    return (isinstance(name, str) and len(name.encode()) <= 255 and name.startswith("refs/heads/")
-            and len(name) > len("refs/heads/") and not any(unicodedata.category(c) == "Cc" for c in name))
+    return (isinstance(name, str) and git_ref_name(name) and name.startswith("refs/heads/")
+            and name != "refs/heads/HEAD" and not any(unicodedata.category(c) == "Cc" for c in name))
 
 
 def branch_well_formed(b):
@@ -273,6 +292,18 @@ def decode_vectors():
         ("branch_bare_prefix", with_fields(name="refs/heads/")),
         ("branch_control_in_name", with_fields(name="refs/heads/a\u0085b")),
         ("branch_as_of_string", with_fields(asOf="1767225600000")),
+        ("branch_name_space", with_fields(name="refs/heads/fix auth")),
+        ("branch_name_dotdot", with_fields(name="refs/heads/a..b")),
+        ("branch_name_lock", with_fields(name="refs/heads/a.lock/b")),
+        ("branch_name_head", with_fields(name="refs/heads/HEAD")),
+        ("branch_name_nested_ok", with_fields(name="refs/heads/sec/fix-2")),
+        # UTF-16 order and code point order differ: U+FF71 sorts before U+1F600 by code point only
+        ("keys_code_point_order", pad('{"type":"x","v":1,"\uff71":1,"\U0001F600":2}'.encode())),
+        ("keys_utf16_order", pad('{"type":"x","v":1,"\U0001F600":2,"\uff71":1}'.encode())),
+        ("raw_del_and_line_separator", pad('{"s":"a\x7fb\u2028c","type":"x","v":1}'.encode())),
+        ("escaped_slash", pad(b'{"s":"a\\/b","type":"x","v":1}')),
+        ("nested_16", pad(b'{"d":' + b'[' * 15 + b']' * 15 + b',"type":"x","v":1}')),
+        ("nested_17", pad(b'{"d":' + b'[' * 16 + b']' * 16 + b',"type":"x","v":1}')),
     ]
     results = []
     for name, pt in cases:
@@ -285,9 +316,10 @@ def decode_vectors():
             r["branch"] = branch_from_typed(letter)
         results.append(r)
     ok = {r["name"] for r in results if "letter" in r}
-    assert ok == {"ok", "max_int", "escape_lowercase", "unknown_type"} | {n for n, _ in cases if n.startswith("branch_")}, ok
+    assert ok == {"ok", "max_int", "escape_lowercase", "unknown_type", "keys_code_point_order",
+                  "raw_del_and_line_separator", "nested_16"} | {n for n, _ in cases if n.startswith("branch_")}, ok
     branches = {r["name"] for r in results if r.get("branch")}
-    assert branches == {"ok"}, branches
+    assert branches == {"ok", "branch_name_nested_ok"}, branches
     vector("decode", "a reader takes only the exact canonical bytes (a bucket length, space padding, sorted keys, no "
            "whitespace, the writer's escapes, integers 0..2^53 - 1, a string `type` and an integer `v`), and the "
            "`branch` type v 1 only with its six fields, a blind that checks against a non-null head, packs sorted "
@@ -349,8 +381,8 @@ def seal_and_open_vectors():
          "is decrypted.", dict(man, packHash=H(sha256(b"other"))), sealed, okeys),
         ("open_size_mismatch", "the manifest's sizeBytes must be the length.", dict(packHash=man["packHash"],
          sizeBytes=len(sealed) + 1), sealed, okeys),
-        ("open_sender_not_owner", "the sender key must be the manifest owner's: a letter whose header names another "
-         "identity's key does not open (malformed).", man, sealed, [owner_key(CAROL)]),
+        ("open_sender_not_owner", "the sender key must be the manifest owner's: when the owner's key of the header's id "
+         "is another key, no slot opens under it (notARecipient).", man, sealed, [owner_key(CAROL)]),
     ]
     for name, desc, m, s, ok in cases:
         r = open_letter(m, s, ok, reader_json(BOB))

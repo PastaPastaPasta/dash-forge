@@ -156,6 +156,19 @@ pub struct Helper {
     /// members key, when members-only branches are fetched, and every members-only commit the
     /// reader decrypts (the ledger records them before the packs arrive).
     members_fetch: Option<MembersFetch>,
+    /// What the last `list` of a public repository found shared with this reader, for the fetch
+    /// that follows it: members-only branches someone gave it with `dg branch share` (`branch` key
+    /// letters, `private-repos.md` §20.2), each at its shared head with its packs' file keys.
+    shared_fetch: Option<SharedFetch>,
+}
+
+/// What a fetch of shared branches needs from the `list` before it.
+#[derive(Clone)]
+struct SharedFetch {
+    /// The shared heads (the ledger records them before the packs arrive).
+    heads: Vec<String>,
+    /// The members-only packs to fetch, by `packHash`, with their file keys.
+    keys: BTreeMap<[u8; 32], zeroize::Zeroizing<[u8; 32]>>,
 }
 
 /// A public repository's members key, as [`Helper::members_keys`] found it.
@@ -190,6 +203,7 @@ impl Helper {
             conn: None,
             members: None,
             members_fetch: None,
+            shared_fetch: None,
         })
     }
 
@@ -387,6 +401,7 @@ impl Helper {
     /// hook protects them and git runs this helper ([`members::members_fetch_blocked`]).
     async fn public_repo_refs(&mut self, for_push: bool) -> Result<Vec<(String, RefState)>> {
         self.members_fetch = None;
+        self.shared_fetch = None;
         let conn = self.ensure_conn().await?;
         let state = conn.service().git_state(&conn.repo).await?;
         let public = forge_core::refs::refs_view(&state, None);
@@ -402,19 +417,11 @@ impl Helper {
             );
         let kr = match self.members_keys(for_push || holds).await? {
             MembersKeys::Held(kr) => kr,
-            MembersKeys::Locked(why) if holds && !for_push => {
-                return Err(members::cannot_check_fetch(&why).into())
+            keys => {
+                return self
+                    .shared_or_public(&state, public.public, &keys, holds, for_push)
+                    .await
             }
-            MembersKeys::Anonymous if holds && !for_push => {
-                return Err(members::cannot_check_fetch("no identity is set up").into())
-            }
-            MembersKeys::Locked(why) => {
-                if !for_push {
-                    eprintln!("dash: this repository also has members-only branches; they aren't fetched ({why})");
-                }
-                return Ok(public.public);
-            }
-            MembersKeys::Anonymous => return Ok(public.public),
         };
         if !for_push {
             if let Some(blocked) = members::hook_blocked() {
@@ -465,6 +472,196 @@ impl Helper {
             );
         }
         Ok(kept)
+    }
+
+    /// The refs of a PUBLIC repository with members-only branches for a reader whose members key
+    /// does not open them (`keys`): the public view, plus the members-only branches shared with
+    /// this reader (`dg branch share`, `private-repos.md` §20.2) when its identity is loaded.
+    /// `holds`: the clone holds members-only commits the public view would drop, so the fetch
+    /// fails closed (E806) unless the shared branches still cover what it holds.
+    async fn shared_or_public(
+        &mut self,
+        state: &forge_core::refs::GitState,
+        public: Vec<(String, RefState)>,
+        keys: &MembersKeys,
+        holds: bool,
+        for_push: bool,
+    ) -> Result<Vec<(String, RefState)>> {
+        let shared = if for_push {
+            Vec::new()
+        } else {
+            match self.shared_branches(state, &public).await {
+                Ok(shared) => shared,
+                // fail closed: without the shares, the public view would drop what they gave
+                Err(e) if holds => {
+                    return Err(anyhow::Error::from(e)
+                        .context("reading the branches shared with you (try the fetch again)"))
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "could not read the branches shared with you");
+                    eprintln!("dash: warning: couldn't read the branches shared with you; fetching the public branches only");
+                    Vec::new()
+                }
+            }
+        };
+        let mut names = live_names(&public);
+        names.extend(shared.iter().map(|b| b.name.as_str()));
+        if holds && !for_push {
+            let dropped = members::dropped_branches(self.remote.as_deref(), &names);
+            if dropped.as_ref().is_none_or(|d| !d.is_empty()) {
+                let given = members::shared_branches_given();
+                return Err(match (dropped, keys, self.remote.as_deref()) {
+                    // every branch it would drop was one shared with this reader
+                    (Some(d), _, Some(remote)) if d.iter().all(|n| given.contains(n)) => {
+                        members::shared_branches_gone(remote, &d).into()
+                    }
+                    (_, MembersKeys::Locked(why), _) => members::cannot_check_fetch(why).into(),
+                    _ => members::cannot_check_fetch("no identity is set up").into(),
+                });
+            }
+        }
+        if shared.is_empty() {
+            if let (MembersKeys::Locked(why), false) = (keys, for_push) {
+                eprintln!("dash: this repository also has members-only branches; they aren't fetched ({why})");
+            }
+            return Ok(public);
+        }
+        if let Some(blocked) = members::hook_blocked() {
+            if holds {
+                return Err(blocked.into());
+            }
+            blocked.eprint("dash: ");
+            eprintln!("dash: fetching the public branches only");
+            return Ok(public);
+        }
+        // the pre-push hook and the guard tell what this clone holds from the public history
+        members::remember_public_tips(&live_tips(&public));
+        self.shared_fetch = Some(SharedFetch {
+            heads: shared.iter().map(|b| b.head.clone()).collect(),
+            keys: shared
+                .iter()
+                .flat_map(|b| b.packs.iter().map(|(h, k)| (*h, k.clone())))
+                .collect(),
+        });
+        // the shared packs come first, so a shared branch whose commits do not arrive is left out
+        // with a warning rather than failing the fetch with "bad object"
+        let in_repo = std::env::var_os("GIT_DIR").is_some();
+        if in_repo {
+            if let Err(e) = self
+                .fetch_packs(&[], &OptionState::default(), true, true)
+                .await
+            {
+                if holds {
+                    return Err(e);
+                }
+                tracing::warn!(error = %e, "the shared branches' packs could not be fetched");
+                eprintln!("dash: warning: the branches shared with you couldn't be fetched ({}); fetching the public branches only", brief(&format!("{e:#}")));
+                self.shared_fetch = None;
+                return Ok(public);
+            }
+        }
+        let mut refs = public;
+        let mut given = Vec::new();
+        for b in shared {
+            if in_repo && !LocalRepo::object_exists(&b.head) {
+                eprintln!(
+                    "dash: warning: {} was shared with you, but its commits didn't arrive; ask whoever shared it to share it again",
+                    members::short(&b.name)
+                );
+                continue;
+            }
+            eprintln!(
+                "dash: {} was shared with you as of {}; later pushes to it aren't shared",
+                members::short(&b.name),
+                forge_core::env::service::utc(b.as_of)
+            );
+            given.push(b.name.clone());
+            refs.push((
+                b.name,
+                RefState::Resolved {
+                    oid: b.head,
+                    author: b.sender,
+                    created_at: b.as_of,
+                },
+            ));
+        }
+        if in_repo {
+            members::remember_shared_branches(&given);
+        }
+        Ok(refs)
+    }
+
+    /// The members-only branches shared with this reader (`branch` key letters from a current
+    /// maintainer or Write member, checked against `state`; `private-repos.md` §20.2), when its
+    /// identity is loaded (none otherwise). Letters this reader already found are not its own are
+    /// remembered and never fetched again (`<common dir>/dash/letters-not-for-<id>`).
+    async fn shared_branches(
+        &mut self,
+        state: &forge_core::refs::GitState,
+        public: &[(String, RefState)],
+    ) -> forge_core::Result<Vec<forge_core::key_letters::SharedBranch>> {
+        let Some(conn) = self.conn.as_ref() else {
+            return Ok(Vec::new());
+        };
+        let Some(signer) = conn.signer.as_ref() else {
+            return Ok(Vec::new());
+        };
+        let ps = forge_core::keyring::PrivateSigner {
+            client: &conn.client,
+            identity: &signer.identity,
+            bridge: &signer.bridge,
+        };
+        let (id, keys) = forge_core::key_letters::signer_reader_keys(&ps, &conn.repo)?;
+        let svc = conn.service();
+        let (manifests, roles) = futures::try_join!(
+            svc.read_pack_manifests(&conn.repo),
+            svc.copy_roles(&conn.repo)
+        )?;
+        let not_mine_path = LocalRepo::common_dir().ok().map(|c| {
+            c.join("dash")
+                .join(format!("letters-not-for-{}", &hex::encode(id)[..16]))
+        });
+        let skip: BTreeSet<[u8; 32]> = not_mine_path
+            .as_deref()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .map(|t| {
+                t.lines()
+                    .filter_map(|l| hex::decode(l.trim()).ok()?.try_into().ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let reader = forge_core::key_letters::LetterReader {
+            identity_id: id,
+            keys: &keys,
+        };
+        let inbox = forge_core::key_letters::received(
+            &svc,
+            &conn.client,
+            &conn.repo,
+            &manifests,
+            &roles,
+            &reader,
+            &skip,
+        )
+        .await?;
+        if let (Some(p), false) = (&not_mine_path, inbox.not_mine.is_empty()) {
+            let mut all: BTreeSet<String> = skip.iter().map(hex::encode).collect();
+            all.extend(inbox.not_mine.iter().map(hex::encode));
+            let body: String = all.into_iter().map(|h| h + "\n").collect();
+            forge_core::cache::write(p, body.as_bytes());
+        }
+        let live: BTreeSet<String> = live_names(public).into_iter().map(str::to_owned).collect();
+        let (shared, ignored) = forge_core::key_letters::shared_branches(
+            &inbox.letters,
+            state,
+            &live,
+            &manifests,
+            &roles,
+        );
+        for (letter, why) in ignored {
+            tracing::info!(%letter, ?why, "a shared branch did not check out against the repository; left out");
+        }
+        Ok(shared)
     }
 
     /// What a push compares against and checks with (after [`Self::ensure_signer`]): a private
@@ -570,6 +767,9 @@ impl Helper {
             members::record(&m.decryptable, &[])?;
             record_narrower(&m.narrower)?;
         }
+        if let Some(sh) = &self.shared_fetch {
+            members::record(&sh.heads, &[])?;
+        }
         // The local git odb is the cache — never re-download objects git already has
         // (architecture §6). For a plain (non-filter) fetch, if every wanted object is
         // already present locally there is nothing to transfer. (A promisor fetch still
@@ -653,6 +853,8 @@ impl Helper {
         only_members: bool,
     ) -> Result<FetchReport> {
         let members_fetch = self.members_fetch.clone();
+        let shared_fetch = self.shared_fetch.clone();
+        let shared_keys = shared_fetch.as_ref().map(|f| &f.keys);
         let conn = self.ensure_conn().await?;
         let svc = conn.service();
 
@@ -664,8 +866,12 @@ impl Helper {
             .unwrap_or_default();
         let skip_held = incremental && options.filter.is_none();
         let members_kr = members_fetch.as_ref().map(|m| &m.keyring);
-        let mut git_packs =
-            packs_to_fetch(&manifests, skip_held.then_some(&have), members_kr.is_some());
+        let mut git_packs = packs_to_fetch(
+            &manifests,
+            skip_held.then_some(&have),
+            members_kr.is_some(),
+            shared_keys,
+        );
         if only_members {
             git_packs.retain(|m| m.kind == u64::from(forge_core::pack::KIND_MEMBERS_GIT_PACK));
         }
@@ -727,6 +933,7 @@ impl Helper {
             reader,
             converted,
             members: members_kr,
+            shared: shared_keys,
             meter,
         };
         let claims = claims_for(incremental, &manifests, roles);
@@ -764,6 +971,14 @@ impl Helper {
         // members-only objects are recorded in the clone's ledger before they arrive
         if let Some(m) = &members_fetch {
             record_members_fetch(m, &git_packs, &indexed)?;
+        }
+        if let Some(sh) = &shared_fetch {
+            let packs: Vec<[u8; 32]> = indexed
+                .iter()
+                .copied()
+                .filter(|h| sh.keys.contains_key(h))
+                .collect();
+            members::record(&sh.heads, &packs)?;
         }
         let shas = index_fetched(
             fetched.into_iter().map(|(_, g)| g).collect(),
@@ -1329,6 +1544,8 @@ struct Pass<'a> {
     converted: Option<&'a Converted>,
     /// The reader's members key, when members-only packs (kind 64) are fetched.
     members: Option<&'a std::sync::Arc<forge_core::keyring::Keyring>>,
+    /// The file keys of the members-only packs shared with a reader without the members key.
+    shared: Option<&'a BTreeMap<[u8; 32], zeroize::Zeroizing<[u8; 32]>>>,
     /// The fetch's one progress line, over every round.
     meter: &'a progress::FetchMeter,
 }
@@ -1393,11 +1610,13 @@ impl Pass<'_> {
             reader,
             converted,
             members,
+            shared,
             meter,
         } = *self;
         let fetched = stream::iter(packs.iter().map(|(h, copies)| async move {
+            let key = shared.and_then(|k| k.get(h)).map(|k| &**k);
             let got = fetch_one(
-                svc, repo, contract, copies, roles, reader, h, converted, members,
+                svc, repo, contract, copies, roles, reader, h, converted, members, key,
             )
             .await;
             // Only a pack that arrived adds bytes; one set aside counts as done.
@@ -1430,10 +1649,36 @@ fn claims_for(
     }
 }
 
+/// A members-only pack `h` (hex `hash`) opened with the file key it was shared with: its bytes,
+/// or, when the key does not open it, the pack set aside as without a key.
+fn open_shared_pack(
+    sealed: &[u8],
+    size_bytes: u64,
+    key: &[u8; 32],
+    h: &[u8; 32],
+    hash: &str,
+) -> forge_core::repo::ArtifactRead {
+    match forge_core::private::pack::open_with_file_key(sealed, size_bytes, key) {
+        Ok(b) => forge_core::repo::ArtifactRead::Bytes(b),
+        Err(e) => {
+            tracing::warn!(pack = %hash, error = %e, "a shared pack did not open with the key it was shared with");
+            let epoch = match forge_core::private::sniff(sealed) {
+                forge_core::private::Head::Sealed { epoch } => epoch,
+                _ => 0,
+            };
+            forge_core::repo::ArtifactRead::Skipped(forge_core::repo::Skipped {
+                pack: *h,
+                why: forge_core::private::convert::SkipReason::NoKey { epoch },
+            })
+        }
+    }
+}
+
 /// One pack of a fetch ([`Helper::fetch_packs`]): the bytes of the first of its `copies` that
 /// verifies (opened, when sealed), or why it was set aside. `converted`: the facts of a
 /// repository made public and the keys this reader holds for it, which can skip a sealed pack
-/// before it is downloaded.
+/// before it is downloaded. `shared_key`: the file key of a members-only pack shared with a
+/// reader who does not hold the members key (`private-repos.md` §20.2).
 #[allow(clippy::too_many_arguments)]
 async fn fetch_one(
     svc: &RepoService<'_>,
@@ -1445,15 +1690,16 @@ async fn fetch_one(
     h: &[u8; 32],
     converted: Option<&Converted>,
     members: Option<&std::sync::Arc<forge_core::keyring::Keyring>>,
+    shared_key: Option<&[u8; 32]>,
 ) -> Result<([u8; 32], Got)> {
     let hash = hex::encode(h);
     // a members-only pack (kind 64) opens with the reader's own members key; every other pack of
     // a public repository only with keys its owner published (`open_or_skip`)
-    let members_kr = members.filter(|_| {
-        copies
-            .iter()
-            .all(|m| m.kind == u64::from(forge_core::pack::KIND_MEMBERS_GIT_PACK))
-    });
+    let all_members = copies
+        .iter()
+        .all(|m| m.kind == u64::from(forge_core::pack::KIND_MEMBERS_GIT_PACK));
+    let members_kr = members.filter(|_| all_members);
+    let shared_key = shared_key.filter(|_| all_members && members_kr.is_none());
     if let Some((conversion, keys)) = converted {
         if let Some(s) = svc
             .skip_before_download(repo, contract, copies, reader, conversion, keys.as_deref())
@@ -1481,12 +1727,15 @@ async fn fetch_one(
                     progress::abbrev(&got, 16)
                 );
             }
-            let opened = match members_kr {
-                Some(kr) => {
+            let opened = match (members_kr, shared_key) {
+                (Some(kr), _) => {
                     svc.open_members_pack(repo, kr, copies, m.size_bytes, sealed)
                         .await
                 }
-                None => svc.open_or_skip(repo, copies, m.size_bytes, sealed).await,
+                // a shared pack opens with its own file key alone; a key that does not open it
+                // (a bad share) sets the pack aside, and the branch is left out with a warning
+                (None, Some(key)) => Ok(open_shared_pack(&sealed, m.size_bytes, key, h, &hash)),
+                (None, None) => svc.open_or_skip(repo, copies, m.size_bytes, sealed).await,
             };
             match opened {
                 Ok(forge_core::repo::ArtifactRead::Bytes(b)) => Ok((b, m)),
@@ -2002,11 +2251,16 @@ fn packs_to_fetch(
     manifests: &[forge_core::repo::PackManifestInfo],
     held: Option<&crate::fetched::FetchedPacks>,
     members: bool,
+    shared: Option<&BTreeMap<[u8; 32], zeroize::Zeroizing<[u8; 32]>>>,
 ) -> Vec<forge_core::repo::PackManifestInfo> {
     let members_kind = u64::from(forge_core::pack::KIND_MEMBERS_GIT_PACK);
     let git_packs: Vec<_> = manifests
         .iter()
-        .filter(|m| m.kind == u64::from(KIND_GIT_PACK) || (members && m.kind == members_kind))
+        .filter(|m| {
+            m.kind == u64::from(KIND_GIT_PACK)
+                || (m.kind == members_kind
+                    && (members || shared.is_some_and(|k| k.contains_key(&m.pack_hash))))
+        })
         .cloned()
         .collect();
     if git_packs.is_empty() {
