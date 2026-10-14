@@ -26,7 +26,7 @@ import { queryAllDocuments, type PlainDocument } from '../sdk'
 import { repoTimelines } from './chrome'
 import { configBundleOf, readConfigHistory } from './config'
 import { RING_RETRY_MS, branchRingFor, type HeldBranches } from './branch-ring'
-import { DOC, type RepoRef } from './contract'
+import { DOC, membersLane, type RepoRef } from './contract'
 import { blindBook, type Introduced } from './members-blinds'
 import { membersUpdatesOf, type RefAlert, type RefRows } from './members-refs'
 import { bytesField } from './private-content'
@@ -92,7 +92,29 @@ function isNarrowerRow(doc: PlainDocument): boolean {
  * leaves them unopened).
  */
 export async function readMembersRefs(sdk: EvoSDK, repo: RepoRef, lane: PrivateSession): Promise<MembersRefs> {
-  const { rows, configHistory } = await readRefRows(sdk, repo)
+  return membersRefsRead(sdk, repo, lane, await readRefRows(sdk, repo))
+}
+
+/**
+ * The full names of `repo`'s members-only branches and tags this reader opens (its members-key
+ * session, with the narrower branches it holds keys for): `[]` when the repo has none (a private
+ * repo has no members-only branches), `null` when it has some and this reader has no members-key
+ * session to open them. A public push grant's prefix is checked against them before signing (it
+ * would name one in public; forge-core `dg bot allow --push`'s `refuse_members_names`).
+ */
+export async function readMembersOnlyNames(sdk: EvoSDK, repo: RepoRef): Promise<readonly string[] | null> {
+  if (repo.visibility !== 'public') return []
+  const read = await readRefRows(sdk, repo)
+  if (!membersOnlyRefsExist(read.rows)) return []
+  const lane = membersLane(repo)
+  if (lane === undefined || lane.closed) return null
+  const refs = await membersRefsRead(sdk, repo, lane, read)
+  return [...refs.branches, ...refs.tags].map((r) => r.refName)
+}
+
+/** {@link readMembersRefs} over rows already read. */
+async function membersRefsRead(sdk: EvoSDK, repo: RepoRef, lane: PrivateSession, read: { readonly rows: RefRows; readonly configHistory: readonly ConfigDoc[] }): Promise<MembersRefs> {
+  const { rows, configHistory } = read
   const narrower = rows.refUpdate.some(isNarrowerRow) || rows.protectedRefUpdate.some(isNarrowerRow)
   const ring = (fresherThan?: number): Promise<HeldBranches | null> => branchRingFor(sdk, { ...repo, lane }, undefined, fresherThan === undefined ? {} : { fresherThan })
   let held = narrower ? await ring() : null

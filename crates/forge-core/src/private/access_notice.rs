@@ -42,6 +42,15 @@ pub const MAY_POST_MEMBERS_ONLY: &str = "postMembersOnly";
 pub const MAY_READ_ON_REQUEST: &str = "readOnRequest";
 /// `may`: run checks on members-only branches (a `branch` key letter on every members push).
 pub const MAY_CI_MEMBERS_BRANCHES: &str = "ciMembersBranches";
+/// `may`: push under its push grants (phase 4E, D42). A newer notice without it suspends the
+/// bot's pushes: the runner stops and readers mark later pushes (any maintainer may write one).
+pub const MAY_PUSH: &str = "push";
+/// The notice field listing the push grants it shows ([`PushEntry`]).
+pub const PUSH_FIELD: &str = "push";
+/// The notice field holding the runner's push rules ([`PushPolicy`]).
+pub const PUSH_POLICY_FIELD: &str = "pushPolicy";
+/// The most push grants a notice lists.
+pub const PUSH_MAX: usize = 32;
 
 /// The longest `processor` name, in characters.
 pub const PROCESSOR_MAX: usize = 100;
@@ -128,6 +137,126 @@ pub struct AccessNotice {
     pub extra: Map<String, Value>,
 }
 
+/// One push grant as a notice lists it: `{"grant": id, "match": "prefix", "ref": prefix}` for a
+/// public prefix, `{"branch": scope, "grant": id, "members": true}` for one members-only branch
+/// (its name hash under the branch key, which the grant document already shows). The grants are
+/// the truth; the list says which of them the notice's writer meant.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PushEntry {
+    /// The grant's document id.
+    #[serde(serialize_with = "hex32")]
+    pub grant: [u8; 32],
+    /// What it covers.
+    pub target: PushScope,
+}
+
+/// What a [`PushEntry`] covers.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PushScope {
+    /// Public refs starting with this prefix (`refs/heads/bot/ci-bot/`).
+    Prefix(String),
+    /// One members-only branch, by its name hash under the branch key.
+    #[serde(serialize_with = "hex32")]
+    Members([u8; 32]),
+}
+
+fn hex32<S: serde::Serializer>(v: &[u8; 32], s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_str(&hex::encode(v))
+}
+
+impl PushEntry {
+    fn to_value(&self) -> Value {
+        let mut m = Map::new();
+        m.insert("grant".into(), Value::String(hex::encode(self.grant)));
+        match &self.target {
+            PushScope::Prefix(p) => {
+                m.insert("match".into(), Value::String("prefix".into()));
+                m.insert("ref".into(), Value::String(p.clone()));
+            }
+            PushScope::Members(h) => {
+                m.insert("branch".into(), Value::String(hex::encode(h)));
+                m.insert("members".into(), Value::Bool(true));
+            }
+        }
+        Value::Object(m)
+    }
+
+    fn from_value(v: &Value) -> Option<Self> {
+        let m = v.as_object()?;
+        let grant = hex_exact32(m.get("grant")?)?;
+        let target = match (
+            m.get("match"),
+            m.get("ref"),
+            m.get("branch"),
+            m.get("members"),
+        ) {
+            (Some(Value::String(k)), Some(Value::String(p)), None, None)
+                if k == "prefix" && m.len() == 3 =>
+            {
+                crate::rules::push_grant::prefix_of(p)
+                    .ok()
+                    .filter(|full| full == p)?;
+                PushScope::Prefix(p.clone())
+            }
+            (None, None, Some(b), Some(Value::Bool(true))) if m.len() == 3 => {
+                PushScope::Members(hex_exact32(b)?)
+            }
+            _ => return None,
+        };
+        Some(Self { grant, target })
+    }
+}
+
+/// The runner's push rules a notice states (`pushPolicy`): conventions, not consensus (DESIGN
+/// §4.9 "Not consensus").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PushPolicy {
+    /// The bot only fast-forwards a branch (the default).
+    pub fast_forward_only: bool,
+    /// The bot deletes only branches it pushed itself (the default).
+    pub delete_own_only: bool,
+    /// The bot never pushes to a branch that exists: it pushes a new branch and opens a pull
+    /// request from it.
+    pub open_pr_not_push: bool,
+}
+
+impl Default for PushPolicy {
+    fn default() -> Self {
+        Self {
+            fast_forward_only: true,
+            delete_own_only: true,
+            open_pr_not_push: false,
+        }
+    }
+}
+
+impl PushPolicy {
+    fn to_value(self) -> Value {
+        let mut m = Map::new();
+        m.insert("deleteOwnOnly".into(), Value::Bool(self.delete_own_only));
+        m.insert(
+            "fastForwardOnly".into(),
+            Value::Bool(self.fast_forward_only),
+        );
+        m.insert("openPrNotPush".into(), Value::Bool(self.open_pr_not_push));
+        Value::Object(m)
+    }
+
+    fn from_value(v: &Value) -> Option<Self> {
+        let m = v.as_object()?;
+        let flag = |k: &str| m.get(k)?.as_bool();
+        (m.len() == 3).then_some(())?;
+        Some(Self {
+            fast_forward_only: flag("fastForwardOnly")?,
+            delete_own_only: flag("deleteOwnOnly")?,
+            open_pr_not_push: flag("openPrNotPush")?,
+        })
+    }
+}
+
 /// The fields this version reads, sorted.
 const FIELDS: [&str; 8] = [
     "askers",
@@ -168,6 +297,58 @@ impl AccessNotice {
     #[must_use]
     pub fn may(&self, name: &str) -> bool {
         self.may.iter().any(|m| m == name)
+    }
+
+    /// The push grants it lists (`push`), sorted by grant: empty when it lists none, `None` when
+    /// the field is malformed (then it shows no grant and its push ability is suspect: readers
+    /// treat it as allowing no push).
+    #[must_use]
+    pub fn push_entries(&self) -> Option<Vec<PushEntry>> {
+        let Some(v) = self.extra.get(PUSH_FIELD) else {
+            return Some(Vec::new());
+        };
+        let items = v.as_array()?;
+        let out = items
+            .iter()
+            .map(PushEntry::from_value)
+            .collect::<Option<Vec<_>>>()?;
+        (out.len() <= PUSH_MAX && out.windows(2).all(|w| w[0].grant < w[1].grant)).then_some(out)
+    }
+
+    /// Its push rules: the stated ones, else the defaults (fast-forward only, delete own only).
+    #[must_use]
+    pub fn push_policy(&self) -> PushPolicy {
+        self.extra
+            .get(PUSH_POLICY_FIELD)
+            .and_then(PushPolicy::from_value)
+            .unwrap_or_default()
+    }
+
+    /// Whether it lets the bot push now: `push` among its abilities and a well-formed list.
+    #[must_use]
+    pub fn allows_push(&self) -> bool {
+        self.may(MAY_PUSH) && self.push_entries().is_some()
+    }
+
+    /// Set its push ability, list and rules: with entries, `push` joins `may` and the list is
+    /// written; with none, `push` leaves `may` and the list is removed (a suspension). The rules
+    /// are written either way, so a suspension and a resume keep them.
+    pub fn set_push(&mut self, mut entries: Vec<PushEntry>, policy: PushPolicy) {
+        entries.sort_by_key(|a| a.grant);
+        entries.dedup_by(|a, b| a.grant == b.grant);
+        self.may.retain(|m| m != MAY_PUSH);
+        self.extra
+            .insert(PUSH_POLICY_FIELD.into(), policy.to_value());
+        if entries.is_empty() {
+            self.extra.remove(PUSH_FIELD);
+            return;
+        }
+        self.may.push(MAY_PUSH.to_owned());
+        self.may.sort();
+        self.extra.insert(
+            PUSH_FIELD.into(),
+            Value::Array(entries.iter().map(PushEntry::to_value).collect()),
+        );
     }
 
     /// Whether it still allows anything at `now` (ms): before its `until`.
@@ -399,6 +580,31 @@ pub fn public_line(n: &AccessNotice, bot: &str, now: u64) -> String {
     out
 }
 
+/// The line everyone reads about a bot's push access (DESIGN §10 "Public line addition"), for
+/// each prefix it may push to with when that ends: `Can push to bot/ci-bot/ until 7 Nov 2026.`;
+/// members-only branches are counted, never named: `Can push to 1 members-only branch.` `None`
+/// when it may push nowhere.
+#[must_use]
+pub fn push_line(prefixes: &[(&str, u64)], members_branches: usize) -> Option<String> {
+    let mut parts: Vec<String> = prefixes
+        .iter()
+        .map(|(p, until)| {
+            format!(
+                "{} until {}",
+                crate::rules::push_grant::short_prefix(p),
+                date_words(*until)
+            )
+        })
+        .collect();
+    match members_branches {
+        0 => {}
+        1 => parts.push("1 members-only branch".into()),
+        n => parts.push(format!("{n} members-only branches")),
+    }
+    let parts: Vec<&str> = parts.iter().map(String::as_str).collect();
+    (!parts.is_empty()).then(|| format!("Can push to {}.", list_words(&parts)))
+}
+
 fn hex_exact32(v: &Value) -> Option<[u8; 32]> {
     let s = v.as_str()?;
     if s.len() != 64 || s.bytes().any(|c| c.is_ascii_uppercase()) {
@@ -501,6 +707,53 @@ mod tests {
         let mut n = notice();
         n.extra.insert("bot".into(), Value::Null);
         assert!(n.to_typed().is_none());
+    }
+
+    #[test]
+    fn a_push_list_round_trips_and_suspending_removes_it() {
+        let mut n = notice();
+        n.set_push(
+            vec![
+                PushEntry {
+                    grant: [9; 32],
+                    target: PushScope::Members([3; 32]),
+                },
+                PushEntry {
+                    grant: [2; 32],
+                    target: PushScope::Prefix("refs/heads/bot/ci-bot/".into()),
+                },
+            ],
+            PushPolicy::default(),
+        );
+        assert!(n.may(MAY_PUSH) && n.allows_push());
+        let back = AccessNotice::decode(&n.encode().unwrap()).unwrap();
+        let entries = back.push_entries().unwrap();
+        assert_eq!(entries[0].grant, [2; 32]);
+        assert_eq!(entries[1].target, PushScope::Members([3; 32]));
+        assert_eq!(back.push_policy(), PushPolicy::default());
+        let s = String::from_utf8(n.encode().unwrap().to_vec()).unwrap();
+        assert!(s.contains("\"pushPolicy\":{\"deleteOwnOnly\":true,\"fastForwardOnly\":true,\"openPrNotPush\":false}"), "{s}");
+        let kept = PushPolicy {
+            open_pr_not_push: true,
+            ..PushPolicy::default()
+        };
+        n.set_push(Vec::new(), kept);
+        assert!(!n.may(MAY_PUSH) && !n.extra.contains_key(PUSH_FIELD));
+        // a suspension keeps the rules, so a resume reads them back
+        let back = AccessNotice::decode(&n.encode().unwrap()).unwrap();
+        assert_eq!(back.push_policy(), kept);
+        assert!(!back.allows_push());
+        // a malformed list allows no push
+        let mut bad = notice();
+        bad.may.push(MAY_PUSH.into());
+        bad.may.sort();
+        bad.extra
+            .insert(PUSH_FIELD.into(), Value::String("x".into()));
+        assert!(!bad.allows_push());
+        assert_eq!(
+            push_line(&[("refs/heads/bot/ci-bot/", 1_794_009_600_000)], 1).unwrap(),
+            "Can push to bot/ci-bot/ until 7 Nov 2026 and 1 members-only branch."
+        );
     }
 
     #[test]

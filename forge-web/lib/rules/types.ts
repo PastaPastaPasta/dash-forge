@@ -33,6 +33,12 @@ export interface RefUpdate {
   readonly author: string
   /** Consensus `$createdAt` (ms). The clock for ordering and as-of protection. */
   readonly createdAt: number
+  /**
+   * A bot's push (phase 4E: the update claims `r` 4): the push grant it names (`pp` or `pg`,
+   * base58), null when it names none. Absent on everyone else's. Readers only mark it
+   * (`lib/repo/push-grants.ts`); no rule of the fold reads it.
+   */
+  readonly botPush?: { readonly grant: string | null }
 }
 
 /**

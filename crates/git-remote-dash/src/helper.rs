@@ -707,18 +707,24 @@ impl Helper {
             let m = forge_core::refs::refs_view(&state, Some(&open))
                 .members
                 .expect("opened with a key");
-            let facts = narrower_facts(ring.as_deref(), kr.repo_id(), &m);
-            out.narrower_names = facts.names;
-            out.narrower = members::Narrower {
-                audiences: facts.audiences,
-                decryptable: facts.decryptable,
-            };
-            out.ring = ring;
-            out.remote_refs = m.refs;
-            out.members_only = m.members_only;
-            out.decryptable = Some(m.decryptable);
-            out.keyring = Some(kr);
+            out.adopt_members(kr, ring, m);
             members::remember_public_tips(&out.public_tips());
+        } else if forge_core::refs::has_narrower_updates(&state) {
+            // no members key, but branches with keys of their own may be shared with this signer
+            // (a bot's members-only push access, phase 4E): those branches open and push
+            let conn = self.conn.as_ref().expect("conn populated");
+            if let Ok(kr) = conn.service().keyring(&conn.repo).await {
+                if let Some(ring) = self
+                    .attach_branch_ring(&kr, &state, false)
+                    .await?
+                    .filter(|r| !r.is_empty())
+                {
+                    let open = |k, d: &forge_core::platform::FetchedDocument| kr.open(k, d);
+                    if let Some(m) = forge_core::refs::refs_view(&state, Some(&open)).members {
+                        out.adopt_members(kr, Some(ring), m);
+                    }
+                }
+            }
         }
         Ok(out)
     }
@@ -1078,6 +1084,38 @@ impl Helper {
         } else {
             specs
         };
+        // A bot pushes only under its push grants (phase 4E): the grant each ref is written
+        // under, and the refs none covers refused (E814), before anything is built.
+        let bot_kept;
+        let (svc, specs, bot) = match bot_plan(conn, &svc, &view, specs).await? {
+            None => (svc, specs, false),
+            Some(plan) => {
+                if let Some(e) = &plan.error {
+                    e.eprint("dash: ");
+                    let mut event = e.to_json();
+                    event["event"] = serde_json::json!("error");
+                    progress::report(&event);
+                }
+                bot_kept = specs
+                    .iter()
+                    .filter(|s| !plan.refused.iter().any(|(d, _)| *d == s.dst))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                refused.extend(
+                    plan.refused
+                        .into_iter()
+                        .map(|(dst, wire)| PushOutcome::Error(dst, wire)),
+                );
+                if bot_kept.is_empty() {
+                    return Ok(refused);
+                }
+                (
+                    svc.as_bot(std::sync::Arc::new(plan.push)),
+                    &bot_kept[..],
+                    true,
+                )
+            }
+        };
 
         let mut planned = plan_pushes(specs, &remote_refs, options);
         let mut new_branches = BTreeMap::new();
@@ -1190,7 +1228,8 @@ impl Helper {
         let mut history_paid = HistoryTarget::None;
         let mut stored: Option<StoredWith> = None;
         // Computed before anything is priced, so the push's estimate and cost guard include it.
-        let history = if !want_tips.is_empty() && (dry_run || publishes_browse_index()) {
+        // a bot writes no history index (kinds 3 and 5 are not among a bot's pack kinds)
+        let history = if !want_tips.is_empty() && !bot && (dry_run || publishes_browse_index()) {
             prepare_push_history(&svc, &conn.repo, &planned, &git_dir, progress).await
         } else {
             None
@@ -3027,6 +3066,11 @@ async fn prepare_narrower(
         if !accepted(planned, dst) {
             continue;
         }
+        // a bot writes no key letters (DESIGN §4.9): it pushes to branches shared with it only
+        if svc.is_bot() {
+            reject_ref(planned, dst, "a bot never starts a branch for fewer people");
+            continue;
+        }
         let audience = forge_core::narrow::with_me(&nb.audience, &me, owner, members);
         let people = forge_core::narrow::resolve_now(&audience, owner, members);
         let held = view.ring.as_ref().and_then(|r| r.get(dst));
@@ -3065,6 +3109,10 @@ async fn prepare_narrower(
                     members::short(&dst)
                 );
                 reject_ref(planned, &dst, "not one of the people this branch is for");
+                continue;
+            }
+            if svc.is_bot() {
+                // its key goes out with a member's next push of it, never a bot's
                 continue;
             }
             let done = match forge_core::narrow::with_keys(svc, repo, &people).await {
@@ -3262,6 +3310,26 @@ struct PushView {
 }
 
 impl PushView {
+    /// Take the member view `m`, opened with `kr` and the narrower branches' `ring`.
+    fn adopt_members(
+        &mut self,
+        kr: std::sync::Arc<forge_core::keyring::Keyring>,
+        ring: Option<std::sync::Arc<forge_core::private::branch_key::BranchRing>>,
+        m: forge_core::refs::MembersView,
+    ) {
+        let facts = narrower_facts(ring.as_deref(), kr.repo_id(), &m);
+        self.narrower_names = facts.names;
+        self.narrower = members::Narrower {
+            audiences: facts.audiences,
+            decryptable: facts.decryptable,
+        };
+        self.ring = ring;
+        self.remote_refs = m.refs;
+        self.members_only = m.members_only;
+        self.decryptable = Some(m.decryptable);
+        self.keyring = Some(kr);
+    }
+
     /// P: the live public tips.
     fn public_tips(&self) -> Vec<String> {
         live_tips(&self.public)
@@ -5477,6 +5545,78 @@ fn skip_write_precheck() -> bool {
     )
 }
 
+/// A bot's push plan ([`crate::bot_push::plan`]): `None` when the signer is not a Bot member of
+/// the repository. A private repository refuses every ref (a bot never holds the members key).
+/// The role read is advisory, as [`write_access_denied`]'s: when it fails, the push goes on as a
+/// person's and consensus decides.
+async fn bot_plan(
+    conn: &Conn,
+    svc: &RepoService<'_>,
+    view: &PushView,
+    specs: &[PushSpec],
+) -> Result<Option<crate::bot_push::BotPlan>> {
+    let me = conn.identity().id();
+    let Ok(Some(forge_core::rules::v2::Role::Bot)) = MemberReader::new(&conn.client)
+        .best_role(&conn.repo, &me)
+        .await
+    else {
+        return Ok(None);
+    };
+    let label = conn.repo.display();
+    let enforce = !skip_write_precheck();
+    if conn.repo.visibility == forge_core::rules::v2::Visibility::Private {
+        let mut plan = crate::bot_push::BotPlan::default();
+        if enforce {
+            plan.refused = specs
+                .iter()
+                .map(|s| {
+                    (
+                        s.dst.clone(),
+                        "bots can't push to a private repository".to_owned(),
+                    )
+                })
+                .collect();
+            plan.error = Some(
+                UserError::new(
+                    codes::BOT_PUSH_NOT_ALLOWED,
+                    format!("push rejected: bots can't push to {label}, a private repository"),
+                )
+                .cause("a bot never holds a private repository's key")
+                .note(NOTE_PRECHECK),
+            );
+        }
+        return Ok(Some(plan));
+    }
+    let s = conn.signer.as_ref().expect("signer loaded for a push");
+    let collab = forge_core::collab::v2::Collab::new(&conn.client, &s.identity, &s.bridge);
+    let access = collab.bot_push_access(&conn.repo, &me).await?;
+    let patterns = svc.protected_patterns(&conn.repo).await.unwrap_or_default();
+    let ring = view.ring.as_deref();
+    // who pushed each ref's tip now: a bot deletes only the branches it pushed (`deleteOwnOnly`)
+    let tip_by = |dst: &str| {
+        view.remote_refs
+            .iter()
+            .find(|(n, _)| n == dst)
+            .and_then(|(_, st)| match st {
+                RefState::Resolved { author, .. } => Some(author.clone()),
+                RefState::Diverged { heads } => heads.first().map(|h| h.author.clone()),
+                RefState::Unborn => None,
+            })
+    };
+    Ok(Some(crate::bot_push::plan(
+        &access,
+        specs,
+        &label,
+        |dst| {
+            ring.and_then(|r| r.write_keys(dst))
+                .map(|k| hex::encode(k.ref_name_hash(dst)))
+        },
+        |dst| forge_core::rules::matches_protected(dst, &patterns),
+        |dst| tip_by(dst).is_some_and(|a| a == me),
+        enforce,
+    )))
+}
+
 /// The advisory write pre-check (see [`write_access_denied`]): the refused refs' outcomes
 /// and the specs still to push. A non-member is refused everything; so is every push to an
 /// archived repo unless pushed with `-o allow-archived`; a writer is refused
@@ -5630,6 +5770,8 @@ async fn write_access_denied(
         .ok()?;
     match role {
         None => return Some(write_denied(&conn.repo.display(), &me)),
+        // a bot pushes under its grants: `bot_plan` judges each ref
+        Some(forge_core::rules::v2::Role::Bot) => return None,
         // RC2 member roles: a triage member or reader cannot push (every push document claims
         // `r` 1, and their writer document's role is 2 or 3).
         Some(role) if !role.is_approver() => return Some(role_denied(&conn.repo, &me, role)),

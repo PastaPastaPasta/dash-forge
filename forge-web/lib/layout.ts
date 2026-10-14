@@ -33,6 +33,8 @@ const CONTRACT_OF_TYPE: Readonly<Record<string, ForgeContractKind>> = {
   topic: 'core',
   // UPDATE-1 (roadmap D4): a copy of a listed pack that anyone records
   packMirror: 'core',
+  // B1 (DESIGN D42, the mainnet set only): a maintainer's push grant to a bot
+  pushGrant: 'core',
   // forge-collab: issues, PRs and their threads; repo keys (O-03)
   issue: 'collab',
   patch: 'collab',

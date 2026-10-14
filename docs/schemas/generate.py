@@ -781,21 +781,47 @@ cmd('ci reruns', 'The re-run requests written since a time.', {
 BOT_MAY = D('What the bot may do: post, postMembersOnly, readOnRequest, ciMembersBranches (and abilities a later version adds).', SA)
 BOT_THREADS = D('"all", or the issue and pull request numbers it may be asked about.', {'anyOf': [E('all'), A(I)]})
 BOT_ASKERS = E('writers', 'maintainers')
-cmd('bot allow', 'A bot\'s access written: a new access notice everyone reads.', {
-    'status': E('allowed'), 'bot': S, 'may': BOT_MAY, 'askers': BOT_ASKERS, 'threads': BOT_THREADS,
+BOT_PUSH_ENTRIES = D('The push access the notice lists: each grant\'s id (hex) and what it covers.',
+                     A(O({'grant': S, 'target': D('{"prefix": ref prefix} or {"members": name hash, hex}.', OBJ)},
+                         ['grant', 'target'])))
+BOT_NOTICE = {
+    'bot': S, 'may': BOT_MAY, 'askers': BOT_ASKERS, 'threads': BOT_THREADS,
     'processor': nl(S), 'until': nl(I), 'line': D('The access as everyone reads it.', S),
+    'push': BOT_PUSH_ENTRIES,
     'notice': D('The notice\'s packManifest document ids (a private repository stores two copies).', SA),
     'packHash': S, 'cost': COST,
-}, ['status', 'bot', 'may', 'askers', 'threads', 'line', 'notice', 'packHash', 'cost'])
-cmd('bot revoke', 'A bot\'s access taken away: a new access notice allowing nothing.', {
-    'status': E('revoked'), 'bot': S, 'may': BOT_MAY, 'askers': BOT_ASKERS, 'threads': BOT_THREADS,
-    'processor': nl(S), 'until': nl(I), 'line': S, 'notice': SA, 'packHash': S, 'cost': COST,
-}, ['status', 'bot', 'may', 'line', 'notice', 'packHash', 'cost'])
-cmd('bot list', 'Each bot\'s current access to a repository, as everyone reads it.', {
+}
+BOT_NOTICE_REQ = ['status', 'bot', 'may', 'line', 'notice', 'packHash', 'cost']
+cmd('bot allow', 'A bot\'s access written: a new access notice everyone reads (and, with --push, its push grants first).',
+    dict(BOT_NOTICE, status=E('allowed')), BOT_NOTICE_REQ + ['askers', 'threads'])
+cmd('bot revoke', 'A bot\'s access taken away: a new access notice allowing nothing (with --push, only the push access you gave).',
+    dict(BOT_NOTICE, status=E('revoked', 'pushRevoked')), BOT_NOTICE_REQ)
+cmd('bot suspend', 'A bot\'s pushes suspended: a new access notice without push.',
+    dict(BOT_NOTICE, status=E('suspended')), BOT_NOTICE_REQ)
+cmd('bot resume', 'A suspended bot\'s pushes resumed: a new access notice listing its usable push grants.',
+    dict(BOT_NOTICE, status=E('resumed')), BOT_NOTICE_REQ)
+cmd('bot renew', 'A bot\'s push access renewed: a new grant per branch or prefix, and the notice listing them (or, for a suspended bot, the new grants only).', {
+    **{k: v for k, v in BOT_NOTICE.items()},
+    'status': E('renewed'),
+    'renewed': D('The new grants (only when the bot is suspended: no notice is written).', A(O({'grant': S, 'branch': S, 'until': I}, ['grant', 'branch', 'until']))),
+    'suspended': B,
+}, ['status'])
+BOT_PUSH = D('The bot\'s push access (null where the contract has no push grants).', nl(O({
+    'suspended': B,
+    'policy': D('The notice\'s push rules.', nl(O({'fastForwardOnly': B, 'deleteOwnOnly': B, 'openPrNotPush': B}))),
+    'grants': A(O({'grant': S, 'prefix': nl(S), 'scope': nl(S), 'until': I, 'by': S, 'at': I,
+                   'status': E('usable', 'stale', 'expired', 'granterGone', 'notABot', 'olderThanBotRow'),
+                   'inNotice': B, 'renewDue': B,
+                   'branchRef': D('An exact grant\'s branch, when this reader holds its key and the grant names its current key.', nl(S)),
+                   'people': D('Who that branch is for now, bots left out.', nl(SA))},
+                  ['grant', 'until', 'by', 'at', 'status'])),
+}, ['suspended', 'grants'])))
+cmd('bot list', 'Each bot\'s current access to a repository, as everyone reads it, with its push access.', {
     'repo': S, 'count': I, 'unreadable': D('Access records this reader could not read.', I),
-    'bots': A(O({'bot': S, 'may': BOT_MAY, 'askers': BOT_ASKERS, 'threads': BOT_THREADS, 'processor': nl(S),
-                 'until': nl(I), 'live': B, 'note': S, 'by': S, 'at': I, 'line': S, 'notice': S},
-                ['bot', 'may', 'askers', 'threads', 'live', 'by', 'at', 'line', 'notice'])),
+    'bots': A(O({'bot': S, 'may': BOT_MAY, 'askers': nl(BOT_ASKERS), 'threads': nl(BOT_THREADS), 'processor': nl(S),
+                 'until': nl(I), 'live': B, 'note': nl(S), 'by': nl(S), 'at': nl(I), 'line': nl(S), 'notice': nl(S),
+                 'push': BOT_PUSH},
+                ['bot', 'may', 'live'])),
 }, ['repo', 'count', 'bots'])
 cmd('bot ask', 'A bot asked to work on a pull request or issue: the request, and the letter that hands it the thread\'s members-only content as it is now.', {
     'status': E('asked'), 'bot': S, 'pr': I, 'issue': I,

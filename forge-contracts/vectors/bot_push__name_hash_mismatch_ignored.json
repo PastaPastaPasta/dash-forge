@@ -1,0 +1,39 @@
+{
+  "name": "name_hash_mismatch_ignored",
+  "description": "consensus admits a bot's public update whose refNameHash is not sha256(refName) (no hash operator); every reader drops it, as it drops anyone's.",
+  "case": "bot_push",
+  "rules": "v2",
+  "input": {
+    "op": "refValid",
+    "updates": [
+      {
+        "id": "u1",
+        "refNameHash": "daea2b26939bf2fbb6eeed9ba5f5fb4711853a6054b87e01d1fe43c107b359a5",
+        "refName": "refs/heads/bot/ci-bot/x",
+        "prevOid": "",
+        "newOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "force": false,
+        "protected": false,
+        "author": "4tJ7mVo5yJm4b6rKZ2SRsG6YqfJHFDLC2kUwD3nAhZ7b",
+        "createdAt": 100
+      },
+      {
+        "id": "u1",
+        "refNameHash": "1111111111111111111111111111111111111111111111111111111111111111",
+        "refName": "refs/heads/bot/ci-bot/x",
+        "prevOid": "",
+        "newOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "force": false,
+        "protected": false,
+        "author": "4tJ7mVo5yJm4b6rKZ2SRsG6YqfJHFDLC2kUwD3nAhZ7b",
+        "createdAt": 100
+      }
+    ]
+  },
+  "expected": {
+    "results": [
+      true,
+      false
+    ]
+  }
+}

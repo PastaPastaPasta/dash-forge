@@ -1,0 +1,100 @@
+{
+  "name": "prefix_of",
+  "description": "the grant dialog turns a branch pattern into the prefix it grants: one trailing * is the prefix itself, a bare branch name is granted as the prefix of its full name; refused: empty, outside refs/heads/, any other glob (consensus compares prefixes only), malformed.",
+  "case": "bot_push",
+  "rules": "v2",
+  "input": {
+    "op": "prefixOf",
+    "patterns": [
+      "bot/ci-bot/*",
+      "bot/ci-bot/",
+      "gh-pages",
+      "refs/heads/release/",
+      "",
+      "*",
+      "refs/tags/v1",
+      "refs/remotes/x",
+      "bot/*/x",
+      "bot/ci?/",
+      "bot/[a]/",
+      "refs/heads/",
+      "a..b",
+      "a b",
+      "a\\b",
+      "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "deep//x"
+    ]
+  },
+  "expected": {
+    "results": [
+      {
+        "pattern": "bot/ci-bot/*",
+        "prefix": "refs/heads/bot/ci-bot/"
+      },
+      {
+        "pattern": "bot/ci-bot/",
+        "prefix": "refs/heads/bot/ci-bot/"
+      },
+      {
+        "pattern": "gh-pages",
+        "prefix": "refs/heads/gh-pages"
+      },
+      {
+        "pattern": "refs/heads/release/",
+        "prefix": "refs/heads/release/"
+      },
+      {
+        "pattern": "",
+        "refused": "empty"
+      },
+      {
+        "pattern": "*",
+        "refused": "empty"
+      },
+      {
+        "pattern": "refs/tags/v1",
+        "refused": "notABranch"
+      },
+      {
+        "pattern": "refs/remotes/x",
+        "refused": "notABranch"
+      },
+      {
+        "pattern": "bot/*/x",
+        "refused": "notAPrefix"
+      },
+      {
+        "pattern": "bot/ci?/",
+        "refused": "notAPrefix"
+      },
+      {
+        "pattern": "bot/[a]/",
+        "refused": "notAPrefix"
+      },
+      {
+        "pattern": "refs/heads/",
+        "refused": "malformed"
+      },
+      {
+        "pattern": "a..b",
+        "refused": "malformed"
+      },
+      {
+        "pattern": "a b",
+        "refused": "malformed"
+      },
+      {
+        "pattern": "a\\b",
+        "refused": "malformed"
+      },
+      {
+        "pattern": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "refused": "malformed"
+      },
+      {
+        "pattern": "deep//x",
+        "refused": "malformed"
+      }
+    ]
+  }
+}
