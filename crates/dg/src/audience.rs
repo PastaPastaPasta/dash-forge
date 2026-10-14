@@ -4,7 +4,7 @@
 
 use anyhow::Result;
 use forge_core::collab::v2::{
-    Collab, LetterInfo, MembersOnly, SentLetter, TargetKind, TargetLog, Unopened,
+    Collab, Comment, LetterInfo, MembersOnly, SentLetter, Target, TargetKind, TargetLog, Unopened,
 };
 use forge_core::platform::PlatformClient;
 use forge_core::rules::letters::{LetterGroup, LetterRequest};
@@ -92,7 +92,10 @@ pub async fn requested(
         // other members-only conversation takes none
         Err(e) if !ask.members && refused_non_member(&e) => {
             collab.request_audience(Some(Audience::Public));
-            if let Ok(Audience::Public) = collab.new_audience(repo, target, reply_to).await {
+            if matches!(
+                collab.new_audience(repo, target, reply_to).await,
+                Ok(Audience::Public)
+            ) {
                 eprintln!(
                     "note: this conversation was written while {} was private; your reply is public: everyone can read it",
                     repo.display()
@@ -551,32 +554,7 @@ pub async fn target_view(
     let m = &s.placeholders(vec![m.clone()])[0];
     let hint = why_hint(&s.repo, m.why);
     let repo = s.repo.display();
-    // A thread written before its repository was made public takes public replies (DESIGN §4.10
-    // L3): the ones this reader can read are shown under its row.
-    let replies = if s.repo.visibility == Visibility::Public {
-        let collab = s.collab();
-        let all = collab.comments(&s.repo, &m.document_id).await?;
-        // what maintainers hid stays collapsed here too (`dg issue view --show-hidden` on a
-        // thread one can read shows it)
-        let target = forge_core::collab::v2::Target {
-            kind,
-            id: m.document_id.clone(),
-            number,
-            author: m.author.clone(),
-        };
-        let hidden = collab
-            .hidden_items(&s.repo, &target, &log, &all, &[])
-            .await?;
-        if hidden.thread.is_some() {
-            Vec::new()
-        } else {
-            all.into_iter()
-                .filter(|c| hidden.item(&c.document_id).is_none())
-                .collect()
-        }
-    } else {
-        Vec::new()
-    };
+    let replies = public_replies(s, kind, number, m, &log).await?;
     let names = if ctx.json {
         std::collections::BTreeMap::new()
     } else {
@@ -586,6 +564,19 @@ pub async fn target_view(
             )
             .await
     };
+    let comments: Vec<serde_json::Value> = replies
+        .iter()
+        .map(|c| {
+            serde_json::json!({
+                "id": c.document_id,
+                "author": c.author,
+                "body": c.body,
+                "audience": json(c.audience),
+                "replyTo": c.reply_to,
+                "createdAt": c.created_at,
+            })
+        })
+        .collect();
     // The shape `dg issue view --json` / `dg pr view --json` gives a readable one, with what is
     // not readable here null or empty, and `readable` false.
     let mut out = serde_json::json!({
@@ -600,7 +591,7 @@ pub async fn target_view(
         "recipients": m.recipients,
         "readable": false,
         "why": why_word(m.why),
-        "comments": replies.iter().map(|c| serde_json::json!({"id": c.document_id, "author": c.author, "body": c.body, "audience": json(c.audience), "replyTo": c.reply_to, "createdAt": c.created_at})).collect::<Vec<_>>(),
+        "comments": comments,
         "membersOnlyComments": [],
         "events": [],
         "transitions": [],
@@ -646,6 +637,40 @@ pub async fn target_view(
         }
     });
     Ok(())
+}
+
+/// The replies a reader can read under a members-only thread of a repository made public: a
+/// thread written before the conversion takes public replies (DESIGN §4.10 L3). What maintainers
+/// hid stays collapsed here too (`dg issue view --show-hidden` on a thread one can read shows
+/// it), and a hidden thread shows none. Empty in a private repository.
+async fn public_replies(
+    s: &Reader,
+    kind: TargetKind,
+    number: u32,
+    m: &MembersOnly,
+    log: &TargetLog,
+) -> Result<Vec<Comment>> {
+    if s.repo.visibility != Visibility::Public {
+        return Ok(Vec::new());
+    }
+    let collab = s.collab();
+    let all = collab.comments(&s.repo, &m.document_id).await?;
+    let target = Target {
+        kind,
+        id: m.document_id.clone(),
+        number,
+        author: m.author.clone(),
+    };
+    let hidden = collab
+        .hidden_items(&s.repo, &target, log, &all, &[])
+        .await?;
+    if hidden.thread.is_some() {
+        return Ok(Vec::new());
+    }
+    Ok(all
+        .into_iter()
+        .filter(|c| hidden.item(&c.document_id).is_none())
+        .collect())
 }
 
 /// The notes a view prints under its items for those it could not show: the members-only ones

@@ -177,9 +177,7 @@ impl Collab<'_> {
             .count();
         Ok(out)
     }
-}
 
-impl Collab<'_> {
     /// Count the `kind` documents of `docs` written while private into `out`, opening them.
     async fn count(
         &self,
@@ -188,8 +186,10 @@ impl Collab<'_> {
         docs: Vec<FetchedDocument>,
         out: &mut Census,
     ) -> Result<()> {
-        let docs: Vec<FetchedDocument> = docs.into_iter().filter(written_private).collect();
-        let (letters, docs): (Vec<_>, Vec<_>) = docs.into_iter().partition(is_letter);
+        let (letters, docs): (Vec<_>, Vec<_>) = docs
+            .into_iter()
+            .filter(written_private)
+            .partition(is_letter);
         out.letters += letters.len();
         let read = self.readable(private, kind, docs).await?;
         out.unread += read.members_only.len();

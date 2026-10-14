@@ -52,7 +52,7 @@ use forge_core::private::convert::{
     epoch_key_bundles, unpublished_epochs, Conversion, CONVERTED_REPO_MIN_CLIENT_VERSION,
 };
 use forge_core::private::EpochKey;
-use forge_core::repo::{CurrentConfig, RepoService};
+use forge_core::repo::{visibility_frozen, CurrentConfig, RepoService};
 use forge_core::rules::v2::{Role, Visibility};
 use forge_core::rules::{tip_of, RefState};
 use forge_core::scope::RepoRef;
@@ -107,6 +107,7 @@ enum Mode {
 }
 
 impl Mode {
+    /// The mode's name in the dialog.
     fn label(self) -> &'static str {
         match self {
             Mode::CodeOnly => "Code only",
@@ -169,6 +170,7 @@ impl Saved {
         Ok((saved.repo_id == repo.repo_id).then_some(saved))
     }
 
+    /// Keep the record in `dir`, replacing an earlier one whole.
     fn save(&self, dir: &Path) -> Result<()> {
         private_dir(dir)?;
         let tmp = dir.join("state.json.tmp");
@@ -230,7 +232,7 @@ pub async fn run(ctx: &Ctx, a: &MakePublicArgs) -> Result<()> {
     let dir = state_dir(&s.repo)?;
     let saved = Saved::load(&dir, &s.repo)?;
     let me = s.identity.id();
-    let owner = s.repo.owner_id.clone();
+    let owner = s.repo.owner_id.as_str();
     let svc = RepoService::new(&s.client, &s.identity, &s.bridge);
     let conversion = if s.repo.visibility == Visibility::Public {
         match svc.conversion(&s.repo).await? {
@@ -258,7 +260,7 @@ pub async fn run(ctx: &Ctx, a: &MakePublicArgs) -> Result<()> {
     let private = s.repo.private_view();
     let psvc = RepoService::new(&s.client, &s.identity, &s.bridge);
     let kr = psvc.keyring(&private).await?;
-    if !is_maintainer(&kr, &me, &owner) {
+    if !is_maintainer(&kr, &me, owner) {
         return Err(not_the_owner(&s, &a.repo).await);
     }
     // a run that started Everything (some history published) finishes as Everything
@@ -309,7 +311,6 @@ pub async fn run(ctx: &Ctx, a: &MakePublicArgs) -> Result<()> {
                 &check,
                 mode,
                 &kr,
-                &owner,
                 conversion.as_ref(),
             );
         }
@@ -403,6 +404,7 @@ async fn published_keys(
     Ok(kr.epoch_keys_below(c.seal_off_epoch.unwrap_or(0)))
 }
 
+/// `repo` as it is once made public: what the published keys and refs are read through.
 fn public_view(repo: &RepoRef) -> RepoRef {
     RepoRef {
         visibility: Visibility::Public,
@@ -428,14 +430,7 @@ async fn preflight(
     let repo_label = safe(&a.repo).into_owned();
     // the network: the live contracts keep a repository's visibility as created
     if conversion.is_none() && !psvc.can_make_public(private).await? {
-        out.blockers.push(
-            UserError::new(
-                codes::NOT_IMPLEMENTED,
-                "this network's Forge can't make a private repository public yet",
-            )
-            .cause("its contract keeps a repository's visibility as it was created")
-            .note("nothing was written"),
-        );
+        out.blockers.push(visibility_frozen());
     }
     // the keys: the current one held, nothing pending
     match res.current_epoch {
@@ -493,35 +488,9 @@ async fn preflight(
     out.code_refs = if let Some(chosen) = chosen {
         chosen.to_vec()
     } else if a.refs.is_empty() {
-        let mut picked: Vec<(String, String)> = out
-            .all_refs
-            .iter()
-            .filter(|(n, _)| *n == default_ref)
-            .cloned()
-            .collect();
-        if let Some((_, tip)) = picked.first().cloned() {
-            for (n, t) in &out.all_refs {
-                if n.starts_with("refs/tags/") && git::is_ancestor(&work, &peeled(&work, t), &tip) {
-                    picked.push((n.clone(), t.clone()));
-                }
-            }
-        }
-        picked
+        default_code_refs(&work, &out.all_refs, &default_ref)
     } else {
-        let mut picked = Vec::new();
-        for r in &a.refs {
-            let names = candidates(r);
-            match out.all_refs.iter().find(|(n, _)| names.contains(n)) {
-                Some(found) => picked.push(found.clone()),
-                None => {
-                    return Err(crate::errors::not_found(
-                        format!("{} is not a branch or tag of {repo_label}", safe(r)),
-                        format!("`dg repo make-public {repo_label} --check` lists them"),
-                    ))
-                }
-            }
-        }
-        picked
+        named_code_refs(&out.all_refs, &a.refs, &repo_label)?
     };
     if mode == Some(Mode::CodeOnly) && conversion.is_none() && out.code_refs.is_empty() {
         out.blockers.push(
@@ -587,6 +556,51 @@ async fn preflight(
     };
     (out.pack_bytes, out.objects) = pack_size(&work, &pack_tips)?;
     Ok(out)
+}
+
+/// Code only's default: the default branch (`default_ref`) and the tags on it, from `all_refs`.
+fn default_code_refs(
+    work: &Path,
+    all_refs: &[(String, String)],
+    default_ref: &str,
+) -> Vec<(String, String)> {
+    let mut picked: Vec<(String, String)> = all_refs
+        .iter()
+        .filter(|(n, _)| n == default_ref)
+        .cloned()
+        .collect();
+    if let Some((_, tip)) = picked.first().cloned() {
+        for (n, t) in all_refs {
+            if n.starts_with("refs/tags/") && git::is_ancestor(work, &peeled(work, t), &tip) {
+                picked.push((n.clone(), t.clone()));
+            }
+        }
+    }
+    picked
+}
+
+/// Code only's refs as the owner named them (`--ref`), each a branch or tag of `all_refs`.
+fn named_code_refs(
+    all_refs: &[(String, String)],
+    named: &[String],
+    repo_label: &str,
+) -> Result<Vec<(String, String)>> {
+    named
+        .iter()
+        .map(|r| {
+            let full = candidates(r);
+            all_refs
+                .iter()
+                .find(|(n, _)| full.contains(n))
+                .cloned()
+                .ok_or_else(|| {
+                    crate::errors::not_found(
+                        format!("{} is not a branch or tag of {repo_label}", safe(r)),
+                        format!("`dg repo make-public {repo_label} --check` lists them"),
+                    )
+                })
+        })
+        .collect()
 }
 
 /// How many ref updates written while private were force-pushes.
@@ -743,6 +757,7 @@ fn pack_size(dir: &Path, tips: &[String]) -> Result<(u64, u64)> {
     Ok((size, count))
 }
 
+/// A scan finding `f` in `place`, as the check reports it.
 fn secret_of(f: &forge_secrets::Finding, place: String) -> Secret {
     Secret {
         place,
@@ -1003,11 +1018,7 @@ fn estimate(
 
 /// "1 person", "3 people".
 fn people(n: usize) -> String {
-    if n == 1 {
-        "1 person".into()
-    } else {
-        format!("{n} people")
-    }
+    plural_with(n, "person", "people")
 }
 
 /// `refs/heads/x` and `refs/tags/x` as `x`.
@@ -1063,7 +1074,7 @@ fn everything_counts(check: &Check) -> String {
 }
 
 /// The check, as the dialog shows it (DESIGN §10 "Make this repo public").
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[allow(clippy::too_many_lines)]
 fn print_check(
     ctx: &Ctx,
     repo: &RepoRef,
@@ -1071,7 +1082,6 @@ fn print_check(
     check: &Check,
     mode: Option<Mode>,
     kr: &Keyring,
-    owner: &str,
     conversion: Option<&Conversion>,
 ) {
     let price = ctx.usd_price();
@@ -1117,7 +1127,7 @@ fn print_check(
         json!({
             "status": "check",
             "repo": repo.display(),
-            "owner": owner,
+            "owner": repo.owner_id,
             "mode": mode,
             "made": conversion.is_some(),
             "blockers": check.blockers.iter().map(ToString::to_string).collect::<Vec<_>>(),
@@ -1173,11 +1183,11 @@ fn print_check(
                     println!("    {} you can't read yourself aren't counted.", plural(c.unread, "post"));
                 }
                 if !c.authors.is_empty() {
-                println!(
-                    "    Words by {}{} become public.",
-                    people(c.authors.len()),
-                    if check.former.is_empty() { String::new() } else { format!(", including {}", plural(check.former.len(), "former member")) }
-                );
+                    println!(
+                        "    Words by {}{} become public.",
+                        people(c.authors.len()),
+                        if check.former.is_empty() { String::new() } else { format!(", including {}", plural(check.former.len(), "former member")) }
+                    );
                 }
                 print_secrets(&secrets_of(check, Mode::Everything), true);
                 for env in &check.old_format {
@@ -1291,7 +1301,7 @@ async fn convert(r: Run<'_>, mut check: Check) -> Result<()> {
     // the refs this run publishes: the owner's earlier choice on this computer, else the
     // check's; a maintainer finishing someone else's run names them
     let saved_here = saved.as_ref().is_some_and(|sv| sv.mode == mode);
-    let wanted: Vec<(String, String)> = match mode {
+    let mut wanted: Vec<(String, String)> = match mode {
         Mode::CodeOnly => check.code_refs.clone(),
         Mode::Everything => check.all_refs.clone(),
     };
@@ -1313,11 +1323,7 @@ async fn convert(r: Run<'_>, mut check: Check) -> Result<()> {
     } else {
         (BTreeMap::new(), BTreeSet::new())
     };
-    let todo: Vec<(String, String)> = wanted
-        .iter()
-        .filter(|(n, _)| !public_refs.contains_key(n) && !members_only.contains(n))
-        .cloned()
-        .collect();
+    let todo = unpublished_refs(&wanted, &public_refs, &members_only);
     let left_out: Vec<String> = wanted
         .iter()
         .filter(|(n, _)| members_only.contains(n) && !public_refs.contains_key(n))
@@ -1350,7 +1356,6 @@ async fn convert(r: Run<'_>, mut check: Check) -> Result<()> {
                 &check,
                 Some(mode),
                 kr,
-                &s.repo.owner_id,
                 conversion.as_ref(),
             );
         }
@@ -1368,14 +1373,13 @@ async fn convert(r: Run<'_>, mut check: Check) -> Result<()> {
     let mut saved = saved.unwrap_or(Saved {
         repo_id: s.repo.repo_id.clone(),
         mode,
-        refs: wanted.clone(),
+        refs: Vec::new(),
         seal_off: None,
     });
     saved.mode = mode;
     saved.refs.clone_from(&wanted);
     saved.save(dir)?;
     // 2. seal off, 3. flip
-    let mut wanted = wanted;
     if flipped {
         steps.push(json!({ "step": "sealOff", "status": "done" }));
         steps.push(json!({ "step": "flip", "status": "done" }));
@@ -1419,7 +1423,6 @@ async fn convert(r: Run<'_>, mut check: Check) -> Result<()> {
             .into());
         }
         if mode == Mode::Everything {
-            let chosen = Some(wanted.clone());
             let again = Box::pin(preflight(
                 s,
                 &fresh_psvc,
@@ -1428,7 +1431,7 @@ async fn convert(r: Run<'_>, mut check: Check) -> Result<()> {
                 None,
                 a,
                 Some(mode),
-                chosen.as_deref(),
+                Some(wanted.as_slice()),
             ))
             .await?;
             if let Err(e) = gate(&again, mode, &allowed, &label) {
@@ -1443,8 +1446,8 @@ async fn convert(r: Run<'_>, mut check: Check) -> Result<()> {
         let default_branch = check
             .config
             .as_ref()
-            .map_or_else(|| "main".to_string(), |c| c.default_branch.clone());
-        svc.make_repo_public(&s.repo, &default_branch).await?;
+            .map_or("main", |c| c.default_branch.as_str());
+        svc.make_repo_public(&s.repo, default_branch).await?;
         if !ctx.json {
             println!("{label} is public now. It can never be private again.");
         }
@@ -1457,7 +1460,7 @@ async fn convert(r: Run<'_>, mut check: Check) -> Result<()> {
         .await?
         .and_then(|c| c.marker_height);
     if marker.is_none() {
-        let cfg = check.config.clone().unwrap_or_default();
+        let cfg = check.config.unwrap_or_default();
         fresh.write_converted_config(&public, &cfg).await?;
         steps.push(json!({ "step": "config", "status": "written" }));
     } else {
@@ -1465,26 +1468,12 @@ async fn convert(r: Run<'_>, mut check: Check) -> Result<()> {
     }
     // 5. the code
     let (public_refs, members_only) = public_state(&fresh, &public).await?;
-    let todo: Vec<&(String, String)> = wanted
-        .iter()
-        .filter(|(n, _)| !public_refs.contains_key(n) && !members_only.contains(n))
-        .collect();
+    let todo = unpublished_refs(&wanted, &public_refs, &members_only);
     if todo.is_empty() {
         steps.push(json!({ "step": "code", "status": "done" }));
     } else {
         let (work, _) = work_repo(psvc, private, &wanted).await?;
-        let mut args: Vec<String> = vec!["push".into(), "-o".into(), "public".into()];
-        for f in &allowed {
-            args.push("-o".into());
-            args.push(format!("{}={f}", forge_secrets::ALLOW_PUSH_OPTION));
-        }
-        args.push(s.repo.remote_url());
-        for (n, t) in &todo {
-            args.push(format!("{t}:{n}"));
-        }
-        let push: Vec<&str> = args.iter().map(String::as_str).collect();
-        git::git_dash(&work, &push, &git::dash_env_signing(ctx)?)
-            .context("pushing the published branches and tags")?;
+        push_public(ctx, &s.repo, &work, &todo, &allowed)?;
         steps.push(json!({ "step": "code", "status": "written", "refs": todo.iter().map(|(n, _)| n).collect::<Vec<_>>() }));
     }
     if !ctx.json {
@@ -1552,6 +1541,43 @@ async fn convert(r: Run<'_>, mut check: Check) -> Result<()> {
             println!("  cost: {}", cost_line(spent, price));
         },
     );
+    Ok(())
+}
+
+/// The refs of `wanted` still to publish: not public yet, and not continued by members after the
+/// flip.
+fn unpublished_refs<'w>(
+    wanted: &'w [(String, String)],
+    public_refs: &BTreeMap<String, String>,
+    members_only: &BTreeSet<String>,
+) -> Vec<&'w (String, String)> {
+    wanted
+        .iter()
+        .filter(|(n, _)| !public_refs.contains_key(n) && !members_only.contains(n))
+        .collect()
+}
+
+/// Step 5's push: `todo` from the work repository `work` to `repo` as public refs, through
+/// `git-remote-dash`, passing along the secrets the owner allowed.
+fn push_public(
+    ctx: &Ctx,
+    repo: &RepoRef,
+    work: &Path,
+    todo: &[&(String, String)],
+    allowed: &BTreeSet<String>,
+) -> Result<()> {
+    let mut args: Vec<String> = vec!["push".into(), "-o".into(), "public".into()];
+    for f in allowed {
+        args.push("-o".into());
+        args.push(format!("{}={f}", forge_secrets::ALLOW_PUSH_OPTION));
+    }
+    args.push(repo.remote_url());
+    for (n, t) in todo {
+        args.push(format!("{t}:{n}"));
+    }
+    let push: Vec<&str> = args.iter().map(String::as_str).collect();
+    git::git_dash(work, &push, &git::dash_env_signing(ctx)?)
+        .context("pushing the published branches and tags")?;
     Ok(())
 }
 

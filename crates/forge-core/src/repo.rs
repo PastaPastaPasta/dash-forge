@@ -60,6 +60,18 @@ pub struct PacksRead {
     pub unopened: usize,
 }
 
+/// The refusal of a network whose contract keeps a repository's visibility as it was created, so
+/// a private repository can't be made public ([`RepoService::can_make_public`]).
+#[must_use]
+pub fn visibility_frozen() -> UserError {
+    UserError::new(
+        codes::NOT_IMPLEMENTED,
+        "this network's Forge can't make a private repository public yet",
+    )
+    .cause("its contract keeps a repository's visibility as it was created")
+    .note("nothing was written")
+}
+
 /// A `packManifest` document read back from a repository.
 #[derive(Debug, Clone)]
 pub struct PackManifestInfo {
@@ -2271,13 +2283,7 @@ impl<'a> RepoService<'a> {
         check_default_branch(default_branch)?;
         let (_, contract) = self.writable(repo).await?;
         if contract.immutable_when("repo", "visibility") != Some(false) {
-            return Err(UserError::new(
-                codes::NOT_IMPLEMENTED,
-                "this network's Forge can't make a private repository public yet",
-            )
-            .cause("its contract keeps a repository's visibility as it was created")
-            .note("nothing was written")
-            .into());
+            return Err(visibility_frozen().into());
         }
         let changes = BTreeMap::from([
             (
