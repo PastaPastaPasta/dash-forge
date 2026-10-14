@@ -12,6 +12,7 @@
     "auth name register": "auth-name-register.schema.json",
     "auth new": "auth-new.schema.json",
     "auth status": "auth-status.schema.json",
+    "branch audience": "branch-audience.schema.json",
     "branch cleanup": "branch-cleanup.schema.json",
     "branch list": "branch-list.schema.json",
     "branch new": "branch-new.schema.json",

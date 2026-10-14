@@ -22,6 +22,7 @@ The exit code says which schema applies: 0, the command's own; anything else, th
 | `dg auth name register` | [`auth-name-register.schema.json`](dg/auth-name-register.schema.json) |
 | `dg auth new` | [`auth-new.schema.json`](dg/auth-new.schema.json) |
 | `dg auth status` | [`auth-status.schema.json`](dg/auth-status.schema.json) |
+| `dg branch audience` | [`branch-audience.schema.json`](dg/branch-audience.schema.json) |
 | `dg branch cleanup` | [`branch-cleanup.schema.json`](dg/branch-cleanup.schema.json) |
 | `dg branch list` | [`branch-list.schema.json`](dg/branch-list.schema.json) |
 | `dg branch new` | [`branch-new.schema.json`](dg/branch-new.schema.json) |
