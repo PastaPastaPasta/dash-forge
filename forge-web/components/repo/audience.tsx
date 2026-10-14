@@ -1063,6 +1063,11 @@ export function MembersOnlyTargetPage({ home, target }: { home: RepoHome; target
           <span data-testid="members-only-comments">{comments}</span>
         </span>
       </p>
+      {target.placeholder.editedAfterBy !== undefined ? (
+        <p className={MUTED} data-testid="edited-after-public">
+          Edited after <Author identityId={target.placeholder.editedAfterBy} link={false} className="align-middle" /> made it public; the new text is members-only.
+        </p>
+      ) : null}
       <div className="rounded-lg border border-dashed border-anvil-300 px-4 py-3 text-dense dark:border-anvil-700" data-testid="members-only-why">
         {letter && target.placeholder.locked === true ? (
           <UnlockMore title={UNLOCK_LETTERS} testId="letter-target-unlock" forgot={false} />

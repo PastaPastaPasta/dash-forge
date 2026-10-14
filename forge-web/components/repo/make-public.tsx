@@ -119,6 +119,16 @@ export function bundleable(audience: string | undefined): boolean {
   return audience === 'members' || audience === 'specificPeople'
 }
 
+/**
+ * Whether a members-only PR comes from or goes into a members-only branch (or names its real head):
+ * its key would publish that branch too, so a maintainer's plan leaves it out
+ * (`bundleWouldPublishMembersOnly`), and no button offers it alone.
+ */
+export function ofMembersOnlyBranch(pull: { readonly membersPatch?: { readonly basePublic: boolean; readonly sourcePublic: boolean; readonly head?: unknown } }): boolean {
+  const m = pull.membersPatch
+  return m !== undefined && (!m.basePublic || !m.sourcePublic || m.head !== undefined)
+}
+
 /** Someone else's post, for a reader who is not a maintainer: the §10 words in the dialog that opens in place of a plan. */
 export const ASK_A_MAINTAINER = NOT_MAINTAINER
 

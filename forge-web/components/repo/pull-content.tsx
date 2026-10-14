@@ -152,8 +152,8 @@ import { useAuth } from '@/contexts/auth-context'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { TargetNotFound } from '@/components/repo/number-content'
 import { CommentOwnActions, Timeline, type CommentSlots } from '@/components/repo/timeline'
-import { MakeOthersPublicButton, MakePublicBundleDialog, MakePublicButton, bundleable, makePublicWords, useQuotedMembersPost } from '@/components/repo/make-public'
-import { BundleAlertsNote, MadePublicBy, PublicEditHint, editIsPublic } from '@/components/repo/made-public'
+import { MakeOthersPublicButton, MakePublicBundleDialog, MakePublicButton, bundleable, makePublicWords, ofMembersOnlyBranch, useQuotedMembersPost } from '@/components/repo/make-public'
+import { BundleAlertsNote, EditedAfterPublicNote, MadePublicBy, MembersEditHint, PublicEditHint, editIsPublic } from '@/components/repo/made-public'
 import type { BundleRequest } from '@/lib/repo/make-public-bundle'
 import { makePostPublic, makeReviewTextPublic, provenanceOf } from '@/lib/repo/make-public-writes'
 import { ComparisonView, pullBase, pullSpec, usePullComparison } from '@/components/repo/pull-diff'
@@ -1361,7 +1361,7 @@ function PullPage({
         return eventCost
     }
   })()
-  const confirm = confirmText(pending, pull.number, caps.canLabel, pull.headOid, base)
+  const confirm = confirmText(pending, pull.number, caps.canLabel, pull.headOid, base, pull.madePublicBy !== undefined)
 
   // ---- conversation ------------------------------------------------------------------------------
   // Replies to an inline thread show under its root, not on their own.
@@ -1525,6 +1525,7 @@ function PullPage({
             <Field label="Title" htmlFor="edit-pr-title">
               <Input id="edit-pr-title" value={editing.title} onChange={(e) => setEditing({ ...editing, title: e.target.value })} maxLength={256} />
             </Field>
+            <MembersEditHint marks={pull} />
             <div className="flex gap-2">
               <Button
                 variant="primary"
@@ -1560,7 +1561,7 @@ function PullPage({
                 title={longEditBlock(pull.long) ?? undefined}
               />
             ) : null}
-            {canBundle && !isAuthor && bundleable(pull.audience) ? <MakeOthersPublicButton onClick={() => setBundleAsk([{ type: 'patch', id: pull.id }])} /> : null}
+            {canBundle && !isAuthor && bundleable(pull.audience) && !ofMembersOnlyBranch(pull) ? <MakeOthersPublicButton onClick={() => setBundleAsk([{ type: 'patch', id: pull.id }])} /> : null}
             {canBundle && isMaintainer && othersInThread && (threadPosts.length > 1 || pull.audience !== 'members') ? (
               <MakeOthersPublicButton thread onClick={() => setBundleAsk(threadPosts)} />
             ) : null}
@@ -1765,6 +1766,7 @@ function PullPage({
                   <EditedMarker createdAt={pull.createdAt} updatedAt={pull.updatedAt} />
                   <MadePublicBy marks={pull} />
                 </div>
+                <EditedAfterPublicNote marks={pull} kind="pull request" />
                 <div className="px-4 py-3">
                   {discarded.boxNote !== null && editing === null && editingComment === null ? (
                     <p role="status" className="mb-2 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="edit-draft-dropped">
@@ -2603,7 +2605,7 @@ function ChecksRow({ summary, headOid, onOpen }: { summary: ChecksSummary | null
 }
 
 /** The confirm dialog's words for each pending write. */
-function confirmText(pending: Pending | null, number: number, isMember: boolean, head: string, base: string): { title: string; description: string; label: string } {
+function confirmText(pending: Pending | null, number: number, isMember: boolean, head: string, base: string, madePublic: boolean): { title: string; description: string; label: string } {
   const via = isMember ? 'a member event' : 'an author event (you opened this PR)'
   const move = isMember ? 'a state change as a member' : 'a state change as the PR author'
   switch (pending?.kind) {
@@ -2694,7 +2696,13 @@ function confirmText(pending: Pending | null, number: number, isMember: boolean,
         label: 'Sign & change base',
       }
     case 'edit-pull':
-      return { title: `Edit PR #${number}`, description: 'You pay only for what changed. Earlier versions stay in its history.', label: 'Sign & save' }
+      return {
+        title: `Edit PR #${number}`,
+        description: madePublic
+          ? 'Your edit will be members-only; everyone else will see that it was edited after it was made public. You pay only for what changed.'
+          : 'You pay only for what changed. Earlier versions stay in its history.',
+        label: 'Sign & save',
+      }
     case 'edit-comment':
       return { title: 'Edit comment', description: 'You pay only for what changed. Earlier versions stay in its history.', label: 'Sign & save' }
     case 'delete-comment':

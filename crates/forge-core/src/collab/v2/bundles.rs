@@ -881,8 +881,8 @@ impl Collab<'_> {
     }
 
     /// Every post of the thread of issue or PR `target` (its document) a maintainer's bundle
-    /// can make public: the issue itself, and every comment and review on it (a PR's own text
-    /// is left out by [`Self::bundle_plan`]).
+    /// can make public: the issue or PR itself, and every comment and review on it
+    /// ([`Self::bundle_plan`] leaves out a PR of a members-only branch).
     pub async fn thread_posts(
         &self,
         repo: &RepoRef,

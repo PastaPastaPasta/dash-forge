@@ -97,7 +97,8 @@ export async function madePublicItems(sdk: EvoSDK, forge: ForgeIds, repo: RepoLi
     const named = new Map<string, BundleEntry>()
     for (const e of bundle.entries) {
       if (NOUN[e.kind] === undefined) continue
-      const k = base58Encode(e.target)
+      // by kind and target: another kind's entry naming the same id never hides this one
+      const k = `${e.kind}:${base58Encode(e.target)}`
       if (!named.has(k) && named.size >= MAX_TARGETS) continue
       if ((named.get(k)?.revision ?? -1) < e.revision) named.set(k, e)
     }
