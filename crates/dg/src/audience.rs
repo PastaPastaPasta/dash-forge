@@ -552,6 +552,16 @@ pub async fn target_view(
     let m = &s.placeholders(vec![m.clone()])[0];
     let hint = why_hint(&s.repo, m.why);
     let repo = s.repo.display();
+    // A thread written before its repository was made public takes public replies (DESIGN §4.10
+    // L3): the ones this reader can read are shown under its row.
+    let replies = if s.repo.visibility == Visibility::Public {
+        s.collab()
+            .comments(&s.repo, &m.document_id)
+            .await
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     // The shape `dg issue view --json` / `dg pr view --json` gives a readable one, with what is
     // not readable here null or empty, and `readable` false.
     let mut out = serde_json::json!({
@@ -566,7 +576,7 @@ pub async fn target_view(
         "recipients": m.recipients,
         "readable": false,
         "why": why_word(m.why),
-        "comments": [],
+        "comments": replies.iter().map(|c| serde_json::json!({"id": c.document_id, "author": c.author, "body": c.body, "audience": json(c.audience), "replyTo": c.reply_to, "createdAt": c.created_at})).collect::<Vec<_>>(),
         "membersOnlyComments": [],
         "events": [],
         "transitions": [],
@@ -600,6 +610,11 @@ pub async fn target_view(
             }
             Some(h) => println!("({h})"),
             None => println!("(only members of {repo} can read it)"),
+        }
+        for c in &replies {
+            println!();
+            println!("{}{}:", c.author, suffix(&s.repo, c.audience));
+            println!("{}", crate::fmt::safe(&c.body));
         }
     });
     Ok(())
