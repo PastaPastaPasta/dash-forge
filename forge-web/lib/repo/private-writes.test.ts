@@ -201,7 +201,8 @@ describe("D38: a private repo's new content on the mainnet contract", () => {
     const ev = chain['authorEvent']?.[0] as Doc
     expect(ev['value']).toBeUndefined()
     expect(ev['tAud']).toBe(1)
-    expect(base64ToBytes(String(ev['enc']))[0]).toBe(0x03)
+    // D38 seals posts per object, never events: a private repo's author event stays v0x01
+    expect(base64ToBytes(String(ev['enc']))[0]).toBe(0x01)
     const log = await toLog({ ...REPO_REF, session: await session() }, [], [ev])
     expect(log.authorEvents.map((e) => e.value)).toEqual(['refs/heads/release'])
   })
