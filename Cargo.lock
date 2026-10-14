@@ -1750,6 +1750,7 @@ dependencies = [
  "clap_complete",
  "forge-core",
  "forge-import",
+ "forge-secrets",
  "futures",
  "hex",
  "jsonschema",

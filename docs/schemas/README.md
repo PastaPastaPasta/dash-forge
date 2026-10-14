@@ -22,6 +22,9 @@ The exit code says which schema applies: 0, the command's own; anything else, th
 | `dg auth name register` | [`auth-name-register.schema.json`](dg/auth-name-register.schema.json) |
 | `dg auth new` | [`auth-new.schema.json`](dg/auth-new.schema.json) |
 | `dg auth status` | [`auth-status.schema.json`](dg/auth-status.schema.json) |
+| `dg branch cleanup` | [`branch-cleanup.schema.json`](dg/branch-cleanup.schema.json) |
+| `dg branch list` | [`branch-list.schema.json`](dg/branch-list.schema.json) |
+| `dg branch new` | [`branch-new.schema.json`](dg/branch-new.schema.json) |
 | `dg ci report` | [`ci-report.schema.json`](dg/ci-report.schema.json) |
 | `dg ci rerun` | [`ci-rerun.schema.json`](dg/ci-rerun.schema.json) |
 | `dg ci reruns` | [`ci-reruns.schema.json`](dg/ci-reruns.schema.json) |
@@ -117,6 +120,7 @@ The exit code says which schema applies: 0, the command's own; anything else, th
 | `dg profile key remove` | [`profile-key-remove.schema.json`](dg/profile-key-remove.schema.json) |
 | `dg profile set` | [`profile-set.schema.json`](dg/profile-set.schema.json) |
 | `dg profile show` | [`profile-show.schema.json`](dg/profile-show.schema.json) |
+| `dg publish` | [`publish.schema.json`](dg/publish.schema.json) |
 | `dg release create` | [`release-create.schema.json`](dg/release-create.schema.json) |
 | `dg release download` | [`release-download.schema.json`](dg/release-download.schema.json) |
 | `dg release list` | [`release-list.schema.json`](dg/release-list.schema.json) |

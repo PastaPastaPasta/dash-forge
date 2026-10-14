@@ -41,7 +41,7 @@ pub async fn run(ctx: &Ctx, cmd: &ReleaseCommand) -> Result<()> {
     match cmd {
         ReleaseCommand::Create(args) => {
             check_upload_names(&args.assets)?;
-            create(ctx, args).await
+            Box::pin(create(ctx, args)).await
         }
         ReleaseCommand::List { repo } => list(ctx, repo).await,
         ReleaseCommand::Download {

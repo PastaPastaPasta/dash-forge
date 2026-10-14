@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/branch-new.schema.json",
+  "title": "dg branch new --json",
+  "description": "A branch started in this clone, and who will see it once pushed (null: what the repository decides).",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "created"
+      ]
+    },
+    "branch": {
+      "type": "string"
+    },
+    "audience": {
+      "anyOf": [
+        {
+          "$ref": "common.schema.json#/$defs/audience"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "branch"
+  ],
+  "additionalProperties": true
+}
