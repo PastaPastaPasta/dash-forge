@@ -117,6 +117,9 @@ fn at_error(text: &str) -> anyhow::Error {
 /// a zone is refused (whose 14:00?), as is one that is not in the future.
 pub(crate) fn parse_at(text: &str, now: u64) -> Result<u64> {
     let t = text.trim();
+    if !t.is_ascii() {
+        return Err(at_error(text));
+    }
     let at = if let Some(rel) = t.strip_prefix('+') {
         let (n, unit) = rel.split_at(rel.len().saturating_sub(1));
         let n: u64 = n.parse().map_err(|_| at_error(text))?;
@@ -172,13 +175,24 @@ fn absolute(text: &str) -> Option<u64> {
             && zone.len() == 6
             && &zone[3..4] == ":" =>
         {
+            let (zh, zm) = (num(&zone[1..3])?, num(&zone[4..6])?);
+            if zh > 14 || zm > 59 {
+                return None;
+            }
             let sign = if zone.starts_with('-') { -1 } else { 1 };
-            sign * (num(&zone[1..3])? * 3600 + num(&zone[4..6])? * 60)
+            sign * (zh * 3600 + zm * 60)
         }
         _ => return None,
     };
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let month_days = match month {
+        2 if leap => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    };
     if !(1..=12).contains(&month)
-        || !(1..=31).contains(&day)
+        || !(1..=month_days).contains(&day)
         || hour > 23
         || minute > 59
         || second > 59
@@ -364,7 +378,23 @@ pub(crate) async fn schedule(
             .into());
         }
     }
-    if collab.target_reads_public(&s.repo, &target.id).await? {
+    let audience = collab.thread_audience(&s.repo, &target.id).await?;
+    if audience == forge_core::rules::v2::Audience::SpecificPeople {
+        return Err(UserError::new(
+            codes::USAGE,
+            format!(
+                "#{} is a message to specific people, so it can't hold a publication date",
+                target.number
+            ),
+        )
+        .fix(format!(
+            "track the fix in a members-only issue (`dg issue create {} --members`) and pass --issue with its number",
+            s.repo.display()
+        ))
+        .note("nothing was written")
+        .into());
+    }
+    if audience == forge_core::rules::v2::Audience::Public {
         return Err(UserError::new(
             codes::USAGE,
             format!(
@@ -526,19 +556,23 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
         rows.push((e, items));
     }
     ctx.emit(
-        json!(rows
-            .iter()
-            .map(|(e, items)| json!({
-                "number": e.number,
-                "at": e.plan.at,
-                "due": e.due(now),
-                "plan": e.plan,
-                "setBy": e.set_by,
-                "setAt": e.set_at,
-                "state": e.state,
-                "checklist": items,
-            }))
-            .collect::<Vec<_>>()),
+        json!({
+            "repo": s.repo.display(),
+            "count": rows.len(),
+            "embargoes": rows
+                .iter()
+                .map(|(e, items)| json!({
+                    "number": e.number,
+                    "at": e.plan.at,
+                    "due": e.due(now),
+                    "plan": e.plan,
+                    "setBy": e.set_by,
+                    "setAt": e.set_at,
+                    "state": e.state,
+                    "checklist": items,
+                }))
+                .collect::<Vec<_>>(),
+        }),
         || {
             if rows.is_empty() {
                 println!("No publication dates in {}.", s.repo.display());
@@ -642,7 +676,31 @@ async fn release_bot(ctx: &Ctx, wait: bool, poll: u64) -> Result<()> {
     let mut failed: Option<anyhow::Error> = None;
     loop {
         let s = Session::open(ctx, &repo).await?;
-        let all = read_embargoes(&s.collab(), &s.repo).await?;
+        let collab = s.collab();
+        // a bot that can't open the dates would see none and publish nothing: refused instead
+        if !matches!(
+            collab.signer_role(&s.repo).await?,
+            Some(Role::Maintainer | Role::Writer)
+        ) && collab.signer_id()? != s.repo.owner_id()
+        {
+            return Err(UserError::new(
+                codes::NOT_A_WRITER,
+                format!(
+                    "the release bot needs Write access or more in {}",
+                    s.repo.display()
+                ),
+            )
+            .fix("run it as a member with Maintain access (`dg collab add … --role maintain`)")
+            .into());
+        }
+        if collab.members_refs(&s.repo).await?.is_none() {
+            return Err(crate::pr::members_key_needed(
+                &s.repo,
+                "read the publication dates",
+            ));
+        }
+        let all = read_embargoes(&collab, &s.repo).await?;
+        drop(collab);
         drop(s);
         let now = now_secs();
         let waiting: Vec<&Embargo> = all
@@ -716,6 +774,23 @@ fn fetch_branch(ctx: &Ctx, cwd: &Path, remote: &str, branch: &str) -> Result<()>
     )
     .with_context(|| format!("fetching {branch} from {remote}"))?;
     if crate::git::current_branch(cwd).as_deref() == Some(branch) {
+        let here = crate::git::git(cwd, &["rev-parse", "HEAD"], &[])?;
+        let there = crate::git::git(cwd, &["rev-parse", "FETCH_HEAD"], &[])?;
+        if here != there {
+            return Err(UserError::new(
+                codes::USAGE,
+                format!(
+                    "{} is checked out in the release bot's clone at {}, and on Forge it is at {}",
+                    safe(branch),
+                    short(&here),
+                    short(&there)
+                ),
+            )
+            .cause("the release bot publishes the branch as it is on Forge")
+            .fix("check out another branch in the release bot's clone")
+            .note("nothing was published")
+            .into());
+        }
         return Ok(());
     }
     crate::git::git(
@@ -737,6 +812,7 @@ async fn publish_one(
 ) -> Result<String> {
     let s = Session::open_for_write(ctx, repo, "nothing was published").await?;
     let collab = s.collab();
+    still_due(&collab, &s.repo, e).await?;
     let me = collab.signer_id()?;
     let role = collab.signer_role(&s.repo).await?;
     let target = target_of(&collab, &s.repo, e.number).await?;
@@ -805,6 +881,8 @@ async fn publish_one(
                 .commit
         }
     };
+    // a date withdrawn or moved while the checks ran stops it here, before anything is public
+    still_due(&collab, &s.repo, e).await?;
     // 1. the tracking issue
     if !issue_public {
         crate::make_public::run(ctx, repo, &[e.number.to_string()], false, false).await?;
@@ -817,7 +895,7 @@ async fn publish_one(
         Box::pin(crate::publish_code::publish(ctx, &args))
             .await?
             .commit
-            .ok_or_else(|| anyhow::anyhow!("the publish named no commit"))?
+            .ok_or_else(|| anyhow::anyhow!("the publish gave no commit"))?
     };
     // 3. and 4. the tag and its release
     if let Some(t) = tag {
@@ -844,6 +922,27 @@ async fn publish_one(
         )
         .await?;
     Ok(commit)
+}
+
+/// Refuse to go on with `e` unless it is still the newest date of its thread and still waiting:
+/// a date withdrawn or moved since the dates were read stops the release before its next step.
+async fn still_due(collab: &Collab<'_>, repo: &RepoRef, e: &Embargo) -> Result<()> {
+    let now = read_embargoes(collab, repo)
+        .await?
+        .into_iter()
+        .find(|x| x.target_id == e.target_id);
+    match now {
+        Some(x) if x.id == e.id && x.state == EmbargoState::Scheduled => Ok(()),
+        _ => Err(UserError::new(
+            codes::USAGE,
+            format!(
+                "#{}'s publication date was withdrawn or changed while the release bot ran",
+                e.number
+            ),
+        )
+        .note("nothing more was published; the bot reads the dates again")
+        .into()),
+    }
 }
 
 /// Tag `commit` as `tag` on Forge (unless it is already), then release it (unless it is).
@@ -942,12 +1041,17 @@ mod tests {
             "tomorrow",
             "+5",
             "+5y",
+            "+5€",
+            "2026-10-20T14:€Z",
             "2026-13-01T00:00Z",
             "2026-10-20T24:00Z",
+            "2027-02-29T00:00Z",
+            "2026-10-20T14:00+15:00",
         ] {
             assert!(parse_at(bad, NOW).is_err(), "{bad}");
         }
         assert!(parse_at("2020-01-01T00:00Z", NOW).is_err(), "the past");
+        assert!(parse_at("2028-02-29T00:00Z", NOW).is_ok(), "a leap day");
     }
 
     #[test]

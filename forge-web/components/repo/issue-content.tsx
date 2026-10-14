@@ -917,11 +917,12 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
           <EmbargoPanel
             repo={home.repo}
             target={{ id: issue.id, number: issue.number }}
-            embargo={data.embargo ?? null}
+            embargo={data.embargo}
             isIssue
             membersOnly={issue.audience === 'members' && issue.madePublicBy === undefined}
             facts={{ issuePublic: issue.audience === undefined || issue.madePublicBy !== undefined }}
             canSet={(isMaintainer || holdings.data?.role === 'writer') && !archived && guard.disabledReason === null}
+            open={open}
             defaultBranch={home.defaultBranch}
             onDone={() => refresh()}
           />

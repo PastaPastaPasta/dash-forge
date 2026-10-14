@@ -105,14 +105,15 @@ export function EmbargoPanel({
   membersOnly,
   facts,
   canSet,
+  open,
   defaultBranch,
   onDone,
 }: {
   repo: RepoRef
   /** The issue or pull request the panel is on. */
   target: { readonly id: string; readonly number: number }
-  /** Its embargo, as read (null: none). */
-  embargo: Embargo | null
+  /** Its embargo, as read (null: none; undefined: unknown, the members could not be read). */
+  embargo: Embargo | null | undefined
   isIssue: boolean
   /** The thread is members-only: a date can be set on it. */
   membersOnly: boolean
@@ -120,6 +121,8 @@ export function EmbargoPanel({
   facts: EmbargoFacts
   /** The viewer has Write access or more and may write here now. */
   canSet: boolean
+  /** The thread is open: a new date is offered only then. */
+  open: boolean
   /** The repo's default branch: where a branch is published by default. */
   defaultBranch: string
   /** A write landed: read the thread again. */
@@ -130,9 +133,10 @@ export function EmbargoPanel({
   const [editing, setEditing] = useState<Draft | null>(null)
   const [withdrawing, setWithdrawing] = useState(false)
   const now = Math.floor(Date.now() / 1000)
-  const waiting = embargo !== null && embargo.state.state === 'scheduled'
-  // Nothing to show: no date this reader can read, and none they may set.
-  if (embargo === null && !(membersOnly && canSet)) return null
+  const waiting = embargo !== null && embargo !== undefined && embargo.state.state === 'scheduled'
+  // Nothing to show: the members could not be read (whose date counts is unknown), or no date
+  // this reader can read and none they may set.
+  if (embargo === undefined || (embargo === null && !(membersOnly && canSet && open))) return null
   const pr = isIssue ? null : target.number
   const startEdit = (): void => {
     const p = waiting ? embargo.plan : null
@@ -196,11 +200,14 @@ export function EmbargoPanel({
             </p>
           </>
         ) : null}
-        {canSet && membersOnly && embargo?.state.state !== 'done' ? (
+        {canSet && embargo?.state.state !== 'done' && ((membersOnly && open) || waiting) ? (
           <div className="flex flex-wrap gap-2">
-            <Button size="sm" variant="outline" onClick={startEdit} data-testid="embargo-set">
-              {waiting ? 'Change date' : 'Set a date…'}
-            </Button>
+            {membersOnly && open ? (
+              <Button size="sm" variant="outline" onClick={startEdit} data-testid="embargo-set">
+                {waiting ? 'Change date' : 'Set a date…'}
+              </Button>
+            ) : null}
+            {/* a date stays withdrawable once the thread is public (the release bot stopped part way) */}
             {waiting ? (
               <Button size="sm" variant="outline" onClick={() => setWithdrawing(true)} data-testid="embargo-withdraw">
                 Withdraw

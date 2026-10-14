@@ -60,9 +60,14 @@ def commit(h):
 
 # --- values --------------------------------------------------------------------------------------
 
+AT_MAX = 2 ** 53 - 1
+
+
 def plan_problem(p):
     if p.get("at", 0) == 0:
         return "no date"
+    if p["at"] > AT_MAX:
+        return "out of range"
     pr, b, o = p.get("pr"), p.get("branch"), p.get("onto")
     if pr is not None:
         if pr == 0:
@@ -78,7 +83,7 @@ def plan_problem(p):
     if p.get("tag") is not None and not tag_name(p["tag"]):
         return "bad tag"
     m = p.get("message")
-    if m is not None and (not m.strip() or any(ord(c) < 0x20 and c != "\n" or 0x7f <= ord(c) <= 0x9f for c in m)):
+    if m is not None and (all(c in " \n" for c in m) or any(ord(c) < 0x20 and c != "\n" or 0x7f <= ord(c) <= 0x9f for c in m)):
         return "bad message"
     return None
 
@@ -102,7 +107,11 @@ def encode(value):
     if value["type"] == "done" and not commit(value["commit"]):
         return None
     s = json.dumps(wire(value), separators=(",", ":"), ensure_ascii=False)
-    if len(s) > VALUE_MAX[0] or len(s.encode()) > VALUE_MAX[1]:
+    try:
+        size = len(s.encode())
+    except UnicodeEncodeError:  # a lone surrogate: not text any stack can store
+        return None
+    if len(s) > VALUE_MAX[0] or size > VALUE_MAX[1]:
         return None
     return s
 
@@ -262,6 +271,8 @@ def value_vectors():
         schedule(pr=4, tag="v2.0.0-rc.1", message="Fix the bounds check (#12)"),
         schedule(branch="fix", onto="release/1.x", message="Fix\n\nSee the advisory."),
         schedule(branch="sec/ü", onto="main", message="Ünïcode is fine"),
+        schedule(pr=4, message="\ufeff"),
+        schedule(pr=4, at=2 ** 53 - 1),
         {"type": "cancel"},
         {"type": "done", "commit": C40},
         {"type": "done", "commit": C64},
@@ -270,7 +281,8 @@ def value_vectors():
     assert all(texts), texts
     vector(CASE_VALUE, "canonical_round_trip",
            "Each value's one canonical form (keys v, at, pr, b, o, t, m; or cancel; or done; no spaces; "
-           "JSON's shortest escapes, non-ASCII kept) parses back to the same value.",
+           "JSON's shortest escapes, non-ASCII kept) parses back to the same value. A message of one U+FEFF is "
+           "not blank (blank is only spaces and line feeds); the latest date is 2^53 - 1.",
            {"parse": texts, "encode": good}, {"parse": good, "encode": texts})
     bad_texts = [
         '{"v":1, "cancel":true}',
@@ -295,6 +307,8 @@ def value_vectors():
         '{"v":1,"at":1792504800,"pr":4,"m":""}',
         '{"v":1,"at":1792504800,"pr":4,"m":"a\\u0007b"}',
         '{"v":1,"at":1792504800,"pr":4,"m":"\\u00e9"}',
+        '{"v":1,"at":1792504800,"pr":4,"m":"\\ud800"}',
+        '{"v":1,"at":9007199254740992,"pr":4}',
         '{"v":1,"done":"' + C40.upper() + '"}',
         '{"v":1,"done":"abc"}',
         '{"v":1,"done":"' + C40 + '","cancel":true}',
@@ -306,7 +320,8 @@ def value_vectors():
            "A value that is not exactly its own canonical encoding is no value: spacing, key order, duplicate keys, "
            "unknown keys, another version, a cancellation or completion carrying plan keys, a plan with neither or "
            "both of a pull request and a branch, numbers as floats or strings, illegal names, an empty message or "
-           "one with control characters, an escape the canonical form does not use, an upper-case commit.",
+           "one with control characters, an escape the canonical form does not use, a lone surrogate, a date past "
+           "2^53 - 1, an upper-case commit.",
            {"parse": bad_texts, "encode": []}, {"parse": [None] * len(bad_texts), "encode": []})
     long_msg = "x" * 80
     refused = [
@@ -320,6 +335,8 @@ def value_vectors():
         schedule(branch="refs/heads/x", onto="main"),
         schedule(pr=4, tag="v1~1"),
         schedule(pr=4, message="  "),
+        schedule(pr=4, message=" \n "),
+        schedule(pr=4, at=2 ** 53),
         schedule(pr=4, message="tab\there"),
         {"type": "done", "commit": "ABAB" * 10},
     ]
@@ -327,7 +344,8 @@ def value_vectors():
     vector(CASE_VALUE, "refused_before_signing",
            "Values refused before anything is signed: over 120 characters stored (a long message or branch name), "
            "no date, a pull request and a branch, a branch with no base or a base with no branch, a branch onto "
-           "itself, a full ref name, an illegal tag, a blank message or one with a tab, an upper-case commit.",
+           "itself, a full ref name, an illegal tag, a message of only spaces and line feeds or one with a tab, "
+           "a date past 2^53 - 1, an upper-case commit.",
            {"parse": [], "encode": refused}, {"parse": [], "encode": [None] * len(refused)})
 
 

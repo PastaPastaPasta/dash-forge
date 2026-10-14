@@ -53,9 +53,14 @@ const isControl = (c: string): boolean => {
   return n < 0x20 || (n >= 0x7f && n <= 0x9f)
 }
 
+/** A lone UTF-16 surrogate: not text Rust or Python can store. */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/
+
 /** What is wrong with `p`, or null. Parity: forge-core `plan_problem`. */
 function planProblem(p: EmbargoPlan): string | null {
-  if (!Number.isSafeInteger(p.at) || p.at <= 0) return 'the date is missing'
+  if (!Number.isInteger(p.at) || p.at <= 0) return 'the date is missing'
+  if (p.at > Number.MAX_SAFE_INTEGER) return 'the date is out of range'
+  for (const t of [p.branch, p.onto, p.tag, p.message]) if (t !== undefined && LONE_SURROGATE.test(t)) return 'the plan is not valid text'
   if (p.pr !== undefined) {
     if (p.pr === 0) return 'pull request 0 does not exist'
     if (p.branch !== undefined || p.onto !== undefined) return 'a pull request is published onto its own base: name no branch'
@@ -70,7 +75,7 @@ function planProblem(p: EmbargoPlan): string | null {
   }
   if (p.tag !== undefined && !isTagName(p.tag)) return `${JSON.stringify(p.tag)} is not a tag name`
   if (p.message !== undefined) {
-    if (p.message.trim() === '') return 'the message is empty'
+    if (/^[ \n]*$/.test(p.message)) return 'the message is empty'
     if ([...p.message].some((c) => c !== '\n' && isControl(c))) return 'the message has control characters'
   }
   return null
@@ -124,7 +129,7 @@ export function parseEmbargo(text: string): EmbargoValue | null {
   const o = w as Record<string, unknown>
   if (Object.keys(o).some((k) => !KEYS.has(k)) || o['v'] !== 1) return null
   for (const k of ['b', 'o', 't', 'm', 'done']) if (k in o && typeof o[k] !== 'string') return null
-  if ('at' in o && !isU(o['at'], Number.MAX_SAFE_INTEGER)) return null
+  if ('at' in o && !isU(o['at'], Number.MAX_SAFE_INTEGER)) return null // past 2^53 - 1 is refused by every stack
   if ('pr' in o && !isU(o['pr'], 0xffff_ffff)) return null
   if ('cancel' in o && typeof o['cancel'] !== 'boolean') return null
   const hasPlan = PLAN_KEYS.some((k) => k in o)

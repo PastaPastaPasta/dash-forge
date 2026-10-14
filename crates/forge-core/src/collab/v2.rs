@@ -8018,10 +8018,13 @@ impl<'a> Collab<'a> {
     /// Write a publication-date record (`event` kind 28, [`rules::embargo`], forge-v2.md §3.5)
     /// on the tracking issue or pull request `target`: a schedule, a cancellation or a
     /// completion. Its value is sealed under the members key because the target is
-    /// members-only, so a schedule or cancellation on a target that reads public for everyone
-    /// is refused before signing (the date and the plan would be public), as is one in a
-    /// private repository (nothing there is published onto a public branch). A completion may
-    /// be written on a target made public by then.
+    /// members-only, so a schedule on a target that reads public for everyone is refused
+    /// before signing (the date and the plan would be public), as is any record on a message to
+    /// specific people (an event names no recipients, so its value could not be sealed for
+    /// them) and in a private repository (nothing there is published onto a public branch). A
+    /// cancellation or a completion carries no date or plan, so either may be written on a
+    /// target made public meanwhile: a date stays withdrawable after the release bot made its
+    /// issue public.
     ///
     /// A maintainer or role-1 writer only: consensus admits a triage member's too, but no
     /// reader counts it ([`rules::embargo::record_counts`]).
@@ -8043,26 +8046,34 @@ impl<'a> Collab<'a> {
             .fix("a private repository goes public as a whole: `dg repo make-public`")
             .into());
         }
-        let what = format!(
-            "set a publication date on {} #{}",
-            target.kind.noun(),
-            target.number
-        );
+        let noun = target.kind.noun();
+        let what = format!("set a publication date on {noun} #{}", target.number);
         self.require_role(repo, Role::Writer, &what).await?;
-        if !matches!(value, rules::embargo::EmbargoValue::Done { .. })
-            && self.target_reads_public(repo, &target.id).await?
-        {
-            return Err(UserError::new(
-                codes::USAGE,
-                format!(
-                    "{} #{} is public, so its publication date would be public too",
-                    target.kind.noun(),
-                    target.number
-                ),
-            )
-            .cause("a publication date is kept members-only on the members-only issue or pull request that tracks the fix")
-            .fix("open a members-only issue for the fix (`dg issue create --members`) and set the date there")
-            .into());
+        match self.target_audience(repo, &target.id).await? {
+            Audience::SpecificPeople => {
+                return Err(UserError::new(
+                    codes::USAGE,
+                    format!(
+                        "{noun} #{} is a message to specific people, so it can't hold a publication date",
+                        target.number
+                    ),
+                )
+                .fix("track the fix in a members-only issue (`dg issue create --members`) and set the date there")
+                .into());
+            }
+            Audience::Public if matches!(value, rules::embargo::EmbargoValue::Schedule(_)) => {
+                return Err(UserError::new(
+                    codes::USAGE,
+                    format!(
+                        "{noun} #{} is public, so its publication date would be public too",
+                        target.number
+                    ),
+                )
+                .cause("a publication date is kept members-only on the members-only issue or pull request that tracks the fix")
+                .fix("open a members-only issue for the fix (`dg issue create --members`) and set the date there")
+                .into());
+            }
+            Audience::Public | Audience::Members => {}
         }
         let mut props = target_props(target)?;
         props.insert(
@@ -8083,6 +8094,12 @@ impl<'a> Collab<'a> {
     /// that cannot be read is an error.
     pub async fn target_reads_public(&self, repo: &RepoRef, target_id: &str) -> Result<bool> {
         Ok(self.target_audience(repo, target_id).await? == Audience::Public)
+    }
+
+    /// Who reads `repo`'s issue or pull request `target_id` now: its own audience, or Public
+    /// once a maintainer's bundle made it public (DESIGN §4.6). Fails closed.
+    pub async fn thread_audience(&self, repo: &RepoRef, target_id: &str) -> Result<Audience> {
+        self.target_audience(repo, target_id).await
     }
 
     /// `repo`'s publication-date records (`event` kind 28, [`rules::embargo`]), oldest first,

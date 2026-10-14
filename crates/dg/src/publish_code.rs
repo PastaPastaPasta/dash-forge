@@ -211,25 +211,34 @@ pub(crate) async fn publish(ctx: &Ctx, a: &PublishArgs) -> Result<Outcome> {
     };
     let base_tip = public_base_tip(&fold, &base)?;
     ensure_local(ctx, &cwd, &remote, &base, &base_tip)?;
-    // an earlier `dg publish --pr` that published this tip but could not record the merge
-    if let Some((n, view)) = &pr {
-        if let Some(done) = already_published(&cwd, &tip, &base, &base_tip) {
-            if a.check || at.is_some() {
-                return Err(UserError::new(
-                    codes::USAGE,
-                    format!("PR #{n} is already published as {}", short(&done)),
-                )
-                .fix(format!("record it merged: `dg publish --pr {n}`"))
-                .into());
+    // An earlier publish of this tip: this clone recorded it, or (the release bot, in any clone)
+    // the base already holds the branch's changes since the commit that published them.
+    let done = if a.release_bot {
+        in_base(&cwd, &tip, &base, &base_tip)?
+    } else {
+        already_published(&cwd, &tip, &base, &base_tip)
+    };
+    if let Some(done) = done {
+        match &pr {
+            // a pull request published by a run that could not record the merge: record it
+            Some((n, view)) => {
+                if a.release_bot && a.check {
+                    // the bot's checks pass: its publish step records the merge
+                    return Ok(Outcome { commit: None });
+                }
+                if a.check || at.is_some() {
+                    return Err(UserError::new(
+                        codes::USAGE,
+                        format!("PR #{n} is already published as {}", short(&done)),
+                    )
+                    .fix(format!("record it merged: `dg publish --pr {n}`"))
+                    .into());
+                }
+                record_merge_only(ctx, &collab, &s, view, *n, &done, &repo).await?;
+                return Ok(Outcome { commit: Some(done) });
             }
-            record_merge_only(ctx, &collab, &s, view, *n, &done, &repo).await?;
-            return Ok(Outcome { commit: Some(done) });
-        }
-    }
-    // the release bot again after a run that published: the base holds the branch's changes
-    if a.release_bot && a.pr.is_none() {
-        if let Some(done) = in_base(&cwd, &tip, &base, &base_tip)? {
-            return Ok(Outcome { commit: Some(done) });
+            None if a.release_bot => return Ok(Outcome { commit: Some(done) }),
+            None => {}
         }
     }
     let plan = plan(&cwd, branch, tip, base, base_tip)?;
@@ -470,20 +479,53 @@ fn plan_names(plan: &Plan) -> PlanNames {
     }
 }
 
-/// The public commit that already holds `tip`'s changes on `base` (its tip `base_tip`), when it
-/// does: this clone's record of an earlier publish, or the base itself when `tip` is in it or a
-/// squash of `tip` onto it would change nothing.
+/// How far back along the base's first parents [`in_base`] looks for the commit that published
+/// a branch.
+const IN_BASE_DEPTH: usize = 500;
+
+/// The public commit that published `tip`'s changes on `base` (its tip `base_tip`), when the base
+/// holds them: this clone's record of an earlier publish; else `tip` itself when it is on the
+/// base (published with history); else the **first** commit since the two met, along the base's
+/// first parents, onto which a squash of `tip` would change nothing (the squash that published
+/// it, never a later commit someone pushed on top). `None` when the base doesn't hold them.
 fn in_base(cwd: &Path, tip: &str, base: &str, base_tip: &str) -> Result<Option<String>> {
     if let Some(done) = already_published(cwd, tip, base, base_tip) {
         return Ok(Some(done));
     }
     if git::is_ancestor(cwd, tip, base_tip) {
-        return Ok(Some(base_tip.to_string()));
+        return Ok(Some(tip.to_string()));
     }
-    let base_tree = git::git(cwd, &["rev-parse", &format!("{base_tip}^{{tree}}")], &[])?;
-    Ok(git::merge_tree(cwd, base_tip, tip)?
-        .filter(|t| *t == base_tree)
-        .map(|_| base_tip.to_string()))
+    let tree_of = |c: &str| git::git(cwd, &["rev-parse", &format!("{c}^{{tree}}")], &[]);
+    if git::merge_tree(cwd, base_tip, tip)? != Some(tree_of(base_tip)?) {
+        return Ok(None);
+    }
+    let since = git::git(cwd, &["merge-base", base_tip, tip], &[])?;
+    let path = git::git(
+        cwd,
+        &[
+            "rev-list",
+            "--first-parent",
+            "--reverse",
+            &format!("--max-count={IN_BASE_DEPTH}"),
+            &format!("{since}..{base_tip}"),
+        ],
+        &[],
+    )?;
+    for c in path.lines() {
+        if git::merge_tree(cwd, c, tip)? == Some(tree_of(c)?) {
+            return Ok(Some(c.to_string()));
+        }
+    }
+    Err(UserError::new(
+        codes::USAGE,
+        format!(
+            "{} holds this branch's changes, but the commit that published them is more than {IN_BASE_DEPTH} commits back",
+            safe(short_branch_name(base))
+        ),
+    )
+    .fix("tag and release it by hand, then withdraw the date: `dg embargo cancel <number>`")
+    .note("nothing was published")
+    .into())
 }
 
 /// The public commit an earlier publish of `tip` onto `base` made, when this clone recorded it
@@ -685,6 +727,18 @@ async fn pr_source(
     // branch when it was opened, the merger's role, the branch policy's approvals and checks
     // and its merge methods (a squash, or a fast-forward with history)
     crate::pr::refuse_missing_base(&view, n, false)?;
+    if later && !view.state.open {
+        return Err(UserError::new(
+            codes::USAGE,
+            format!("PR #{n} is closed: a closed pull request isn't published"),
+        )
+        .fix(format!(
+            "reopen it first: `dg pr reopen {} {n}`",
+            s.repo.display()
+        ))
+        .note("nothing was written")
+        .into());
+    }
     if !later {
         crate::pr::refuse_unmergeable(&view, n)?;
         let method = if history {

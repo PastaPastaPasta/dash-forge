@@ -1,6 +1,6 @@
 {
   "name": "not_canonical_is_no_value",
-  "description": "A value that is not exactly its own canonical encoding is no value: spacing, key order, duplicate keys, unknown keys, another version, a cancellation or completion carrying plan keys, a plan with neither or both of a pull request and a branch, numbers as floats or strings, illegal names, an empty message or one with control characters, an escape the canonical form does not use, an upper-case commit.",
+  "description": "A value that is not exactly its own canonical encoding is no value: spacing, key order, duplicate keys, unknown keys, another version, a cancellation or completion carrying plan keys, a plan with neither or both of a pull request and a branch, numbers as floats or strings, illegal names, an empty message or one with control characters, an escape the canonical form does not use, a lone surrogate, a date past 2^53 - 1, an upper-case commit.",
   "case": "embargo_value",
   "rules": "v2",
   "input": {
@@ -27,6 +27,8 @@
       "{\"v\":1,\"at\":1792504800,\"pr\":4,\"m\":\"\"}",
       "{\"v\":1,\"at\":1792504800,\"pr\":4,\"m\":\"a\\u0007b\"}",
       "{\"v\":1,\"at\":1792504800,\"pr\":4,\"m\":\"\\u00e9\"}",
+      "{\"v\":1,\"at\":1792504800,\"pr\":4,\"m\":\"\\ud800\"}",
+      "{\"v\":1,\"at\":9007199254740992,\"pr\":4}",
       "{\"v\":1,\"done\":\"ABABABABABABABABABABABABABABABABABABABAB\"}",
       "{\"v\":1,\"done\":\"abc\"}",
       "{\"v\":1,\"done\":\"abababababababababababababababababababab\",\"cancel\":true}",
@@ -38,6 +40,8 @@
   },
   "expected": {
     "parse": [
+      null,
+      null,
       null,
       null,
       null,

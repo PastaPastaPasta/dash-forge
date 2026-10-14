@@ -607,13 +607,38 @@ cmd('branch audience', 'Who a branch for fewer people is for, or the change `--t
 cmd('branch cleanup', 'The local branches whose content `dg publish` published: deleted, or listed with --dry-run.', {
     'deleted': A(BRANCH_ROW), 'wouldDelete': A(BRANCH_ROW), 'keptCurrent': A(BRANCH_ROW),
 }, ['deleted', 'wouldDelete', 'keptCurrent'])
-cmd('publish', 'A members-only branch (or a members-only pull request\'s branch) published onto a public branch.', {
-    'status': E('published'), 'branch': S, 'onto': S, 'method': E('squash', 'history'), 'commit': S,
-    'membersOnlyTip': S, 'commits': SA, 'files': I, 'pr': nl(I), 'mergeTransitionId': nl(S),
+EMBARGO_PLAN = O({
+    'at': D('The publication date, Unix seconds (UTC).', I), 'pr': I, 'branch': S, 'onto': S, 'tag': S, 'message': S,
+}, ['at'])
+EMBARGO_STEP = O({'step': E('makePublic', 'publish', 'tag', 'release'), 'issue': I, 'tag': S, 'done': B}, ['step', 'done'])
+cmd('publish', 'A members-only branch (or a members-only pull request\'s branch) published onto a public branch, '
+    'checked without writing (`--check`), or given a publication date (`--at`).', {
+    'status': E('published', 'checked', 'scheduled'), 'branch': S, 'onto': S, 'method': E('squash', 'history'),
+    'commit': S, 'membersOnlyTip': S, 'commits': SA, 'files': I, 'pr': nl(I), 'mergeTransitionId': nl(S),
     'localBase': D('What happened to your local copy of the base: `moved` to the published commit, `needs-reset` '
                    '(it holds more; reset it yourself) or `untouched`.', E('moved', 'needs-reset', 'untouched')),
-    'cost': COST,
-}, ['status', 'branch', 'onto', 'method', 'commit'])
+    'number': D('`--at`: the issue or pull request the date is recorded on.', I),
+    'at': D('`--at`: the date, Unix seconds (UTC).', I), 'plan': EMBARGO_PLAN, 'checklist': A(EMBARGO_STEP),
+    'eventId': S, 'cost': COST,
+}, ['status'], one_of=[
+    ({'status': E('published')}, ['branch', 'onto', 'method', 'commit']),
+    ({'status': E('checked')}, ['branch', 'onto', 'method']),
+    ({'status': E('scheduled')}, ['number', 'at', 'plan', 'checklist', 'eventId']),
+])
+EMBARGO_STATE = O({'state': E('scheduled', 'cancelled', 'done'), 'by': S, 'at': I, 'commit': S}, ['state'])
+cmd('embargo list', 'The repository\'s publication dates, where each stands, and its checklist.', {
+    'repo': S, 'count': I, 'embargoes': A(O({
+        'number': I, 'at': I, 'due': B, 'plan': EMBARGO_PLAN, 'setBy': S, 'setAt': I, 'state': EMBARGO_STATE,
+        'checklist': A(EMBARGO_STEP),
+    }, ['number', 'at', 'due', 'plan', 'setBy', 'state', 'checklist'])),
+}, ['repo', 'count', 'embargoes'])
+cmd('embargo cancel', 'A publication date withdrawn.', {
+    'status': E('cancelled'), 'number': I, 'eventId': S, 'cost': COST,
+}, ['status', 'number', 'eventId'])
+cmd('embargo run', 'The release bot: one line per date it published (several JSON documents, one per step, as each '
+    'command prints them).', {
+    'status': E('published'), 'number': I, 'commit': S,
+}, ['status', 'number', 'commit'])
 
 # -- cost, maintenance, storage ---------------------------------------------------------------
 cmd('cost estimate', 'What a first push of the current repository would cost.', {

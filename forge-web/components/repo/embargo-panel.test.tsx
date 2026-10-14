@@ -65,6 +65,7 @@ function show(props: Partial<React.ComponentProps<typeof EmbargoPanel>>): void {
         membersOnly
         facts={{}}
         canSet
+        open
         defaultBranch="main"
         onDone={() => undefined}
         {...props}
@@ -110,6 +111,16 @@ describe('EmbargoPanel', () => {
     expect(el.querySelector('[data-testid="embargo-panel"]')).toBeNull()
     show({ membersOnly: false })
     expect(el.querySelector('[data-testid="embargo-panel"]')).toBeNull()
+    show({ open: false })
+    expect(el.querySelector('[data-testid="embargo-panel"]'), 'no new date on a closed thread').toBeNull()
+    show({ embargo: undefined })
+    expect(el.querySelector('[data-testid="embargo-panel"]'), 'members unknown').toBeNull()
+  })
+
+  it('keeps a waiting date withdrawable once the thread is public, and offers no new one', () => {
+    show({ embargo: embargo({ state: 'scheduled' }), membersOnly: false })
+    expect(el.querySelector('[data-testid="embargo-set"]')).toBeNull()
+    expect(text('embargo-withdraw')).toBe('Withdraw')
   })
 
   it('sets a date from the form, in UTC', async () => {

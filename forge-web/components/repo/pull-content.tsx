@@ -2377,11 +2377,12 @@ function PullPage({
               <EmbargoPanel
                 repo={repo}
                 target={{ id: pull.id, number: pull.number }}
-                embargo={thread.embargo ?? null}
+                embargo={thread.embargo}
                 isIssue={false}
                 membersOnly={pull.audience === 'members'}
                 facts={{ published: pull.state.merged }}
                 canSet={(isMaintainer || holdings.data?.role === 'writer') && !archived && guard.disabledReason === null}
+                open={pull.state.open}
                 defaultBranch={home.defaultBranch}
                 onDone={() => refresh()}
               />

@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/embargo-run.schema.json",
+  "title": "dg embargo run --json",
+  "description": "The release bot: one line per date it published (several JSON documents, one per step, as each command prints them).",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "published"
+      ]
+    },
+    "number": {
+      "type": "integer"
+    },
+    "commit": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "status",
+    "number",
+    "commit"
+  ],
+  "additionalProperties": true
+}

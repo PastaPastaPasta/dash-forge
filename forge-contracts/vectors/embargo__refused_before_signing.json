@@ -1,6 +1,6 @@
 {
   "name": "refused_before_signing",
-  "description": "Values refused before anything is signed: over 120 characters stored (a long message or branch name), no date, a pull request and a branch, a branch with no base or a base with no branch, a branch onto itself, a full ref name, an illegal tag, a blank message or one with a tab, an upper-case commit.",
+  "description": "Values refused before anything is signed: over 120 characters stored (a long message or branch name), no date, a pull request and a branch, a branch with no base or a base with no branch, a branch onto itself, a full ref name, an illegal tag, a message of only spaces and line feeds or one with a tab, a date past 2^53 - 1, an upper-case commit.",
   "case": "embargo_value",
   "rules": "v2",
   "input": {
@@ -70,6 +70,17 @@
         "type": "schedule",
         "at": 1792504800,
         "pr": 4,
+        "message": " \n "
+      },
+      {
+        "type": "schedule",
+        "at": 9007199254740992,
+        "pr": 4
+      },
+      {
+        "type": "schedule",
+        "at": 1792504800,
+        "pr": 4,
         "message": "tab\there"
       },
       {
@@ -81,6 +92,8 @@
   "expected": {
     "parse": [],
     "encode": [
+      null,
+      null,
       null,
       null,
       null,

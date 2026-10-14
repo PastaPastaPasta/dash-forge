@@ -115,12 +115,19 @@ fn is_commit(hex: &str) -> bool {
     matches!(hex.len(), 40 | 64) && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
+/// The latest date a plan may carry: 2^53 − 1 seconds, so every stack reads it as an exact number.
+pub const AT_MAX: u64 = (1 << 53) - 1;
+
 /// What is wrong with `plan`, or `None`: a date, exactly one of a pull request and a branch, a
 /// branch with the public branch it goes onto (and `onto` only with one), legal names, and a
-/// message that is one or more lines of text without control characters.
+/// message that is one or more lines of text without control characters. A message is blank
+/// when it holds only spaces and line feeds (one rule every stack applies the same way).
 fn plan_problem(plan: &EmbargoPlan) -> Option<String> {
     if plan.at == 0 {
         return Some("the date is missing".into());
+    }
+    if plan.at > AT_MAX {
+        return Some("the date is out of range".into());
     }
     match (&plan.pr, &plan.branch, &plan.onto) {
         (Some(0), _, _) => return Some("pull request 0 does not exist".into()),
@@ -148,7 +155,7 @@ fn plan_problem(plan: &EmbargoPlan) -> Option<String> {
         }
     }
     if let Some(m) = &plan.message {
-        if m.trim().is_empty() {
+        if m.chars().all(|c| c == ' ' || c == '\n') {
             return Some("the message is empty".into());
         }
         if m.chars().any(|c| c.is_control() && c != '\n') {

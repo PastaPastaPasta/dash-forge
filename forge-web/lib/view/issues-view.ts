@@ -895,7 +895,8 @@ export async function loadPullOrMembersOnly(
     ...(tally.alerts.length > 0 ? { bundleAlerts: tally.alerts } : {}),
     eventValues: eventValues(log),
     ciReruns: log.ciReruns ?? [],
-    embargo: embargoOfLog(repo, id, log, members ?? []),
+    // unknown (not "none") when the members could not be read: the panel then offers nothing
+    ...(members === null ? {} : { embargo: embargoOfLog(repo, id, log, members) }),
     locked: isLocked(transitions),
     // Every document read, the ones this reader cannot open too: the probe skips what it has seen.
     eventMark: eventMarkOf([...eventDocs, ...authorEventDocs]),

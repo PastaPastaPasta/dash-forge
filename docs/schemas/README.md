@@ -47,6 +47,9 @@ The exit code says which schema applies: 0, the command's own; anything else, th
 | `dg cost estimate` | [`cost-estimate.schema.json`](dg/cost-estimate.schema.json) |
 | `dg cost prices` | [`cost-prices.schema.json`](dg/cost-prices.schema.json) |
 | `dg doctor` | [`doctor.schema.json`](dg/doctor.schema.json) |
+| `dg embargo cancel` | [`embargo-cancel.schema.json`](dg/embargo-cancel.schema.json) |
+| `dg embargo list` | [`embargo-list.schema.json`](dg/embargo-list.schema.json) |
+| `dg embargo run` | [`embargo-run.schema.json`](dg/embargo-run.schema.json) |
 | `dg env audience` | [`env-audience.schema.json`](dg/env-audience.schema.json) |
 | `dg env edit` | [`env-edit.schema.json`](dg/env-edit.schema.json) |
 | `dg env export` | [`env-export.schema.json`](dg/env-export.schema.json) |

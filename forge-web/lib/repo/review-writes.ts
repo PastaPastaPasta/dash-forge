@@ -53,7 +53,7 @@ import { bundleCovers, contentGate } from './made-public'
 import { makePublicKeepsFields, provenanceOf } from './make-public-writes'
 import { audienceEdit, makePublicChanges } from '../rules/make-public'
 import { admitAll, docAudience } from './private-content'
-import { editLetterWriter, sdkLetterReads, sealLetterEdit, type LetterWriter } from './letter-writes'
+import { LetterRefusedError, editLetterWriter, sdkLetterReads, sealLetterEdit, type LetterWriter } from './letter-writes'
 import type { LetterFacts } from './private-content'
 import type { LetterAsk } from '../view/audience'
 import { privateWriterWithSession, type PrivateWriter } from './private-writes'
@@ -824,9 +824,10 @@ export async function requestRerun(
  * member event of kind 28 (`rules/embargo.ts`, forge-v2.md §3.5) on the members-only issue or PR
  * that tracks the fix, naming the repository in `refId` (the release bot's index). Its value is
  * sealed under the members key because the target is members-only; on a target that reads public
- * a date or a withdrawal is refused before signing (it would be public). A maintainer or writer
- * only: `claimedRole` refuses anyone else before signing. Parity: `dg publish --at`,
- * `dg embargo cancel`.
+ * a date is refused before signing (it would be public), while a withdrawal, which carries no
+ * date, may still be written there. A message to specific people holds none. A maintainer or
+ * writer only: `claimedRole` refuses anyone else before signing. Parity: `Collab::set_embargo`
+ * (`dg publish --at`, `dg embargo cancel`).
  */
 export async function setEmbargo(
   sdk: EvoSDK,
@@ -842,7 +843,13 @@ export async function setEmbargo(
     refId: decodeIdentifier(repo.repoId),
     value: encodeEmbargo(input.value),
   }
-  if (input.value.type !== 'done' && (await eventWrite(sdk, repo, DOC.event, data)).audience === 'public') {
+  const audience = await eventWrite(sdk, repo, DOC.event, data)
+    .then((w) => w.audience)
+    .catch((e: unknown) => {
+      if (e instanceof LetterRefusedError) throw new Error(`#${input.target.number} is a message to specific people, so it can't hold a publication date; nothing was written`)
+      throw e
+    })
+  if (input.value.type === 'schedule' && audience === 'public') {
     throw new Error(`#${input.target.number} is public, so its publication date would be public too; nothing was written`)
   }
   return write(sdk, auth, repo, DOC.event, data, input.intent)
