@@ -393,6 +393,16 @@ def notice_from_typed(t):
 BOT = sha256(b"dash-forge vectors: ci-bot")
 
 
+PUSH_EXTRA = {
+    "push": [
+        {"grant": H(sha256(b"grant one")), "match": "prefix", "ref": "refs/heads/bot/ci-bot/"},
+        {"branch": H(sha256(b"fix-auth under the branch key")), "grant": H(sha256(b"grant two")), "members": True},
+    ],
+    "pushPolicy": {"deleteOwnOnly": True, "fastForwardOnly": True, "openPrNotPush": False},
+}
+PUSH_EXTRA["push"].sort(key=lambda e: e["grant"])
+
+
 def sample_notice(**kw):
     n = dict(bot=BOT, may=["post", "postMembersOnly", "readOnRequest"], askers="writers", threads="all",
              processor="Example AI", until=1767225600000, revokes=[], note="Reviews pull requests when asked.")
@@ -414,6 +424,9 @@ def notice_vectors():
         ("format_later_fields", sample_notice(may=["post", "push"], extra={"push": [], "pushPolicy": {"fastForwardOnly": True}}),
          "fields and abilities of a later version (phase 4E's push) are kept, so the bytes re-encode, and grant "
          "nothing here."),
+        ("format_push", sample_notice(may=["post", "push"], extra=PUSH_EXTRA),
+         "phase 4E: `push` among the abilities, the push grants it lists (a public prefix by its ref, one "
+         "members-only branch by its name hash; sorted by grant id) and the runner's push rules."),
     ]:
         t = notice_to_typed(n)
         pt = encode(t)

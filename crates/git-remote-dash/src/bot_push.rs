@@ -91,7 +91,13 @@ pub fn plan(
                     &mut out,
                 );
             }
-            Err(_) => {}
+            // without the precheck the newest covering grant is named anyway, so consensus judges
+            // it (a removed granter's, an ended one, one older than a re-added bot's row)
+            Err(_) => {
+                if let Some(g) = access.grants.iter().rev().find(|g| g.covers(&target)) {
+                    grants.insert(dst.to_owned(), g.clone());
+                }
+            }
         }
     }
     out.push = BotPush { grants };
@@ -232,9 +238,10 @@ mod tests {
             refused,
             ["refs/heads/main", "refs/heads/old/y", "refs/heads/bot/b/p"]
         );
-        // without the precheck nothing is refused here: consensus decides
+        // without the precheck nothing is refused here: consensus decides, on the grant named
         let p = plan(&a, &specs, "o/r", |_| None, |_| true, false);
         assert!(p.refused.is_empty());
-        assert_eq!(p.push.grants.len(), 2);
+        assert_eq!(p.push.grants.len(), 3);
+        assert_eq!(p.push.grants["refs/heads/old/y"].created_at, 5);
     }
 }

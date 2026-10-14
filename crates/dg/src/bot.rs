@@ -250,8 +250,8 @@ fn threads_json(threads: &Threads) -> serde_json::Value {
 }
 
 /// `@name` for an identity: its DPNS name when it has one, else its id.
-pub(crate) async fn handle(s: &Session, id: &str) -> String {
-    s.client
+pub(crate) async fn handle(client: &forge_core::platform::PlatformClient, id: &str) -> String {
+    client
         .dpns_first_names(vec![id])
         .await
         .get(id)
@@ -402,7 +402,7 @@ async fn require_notice_writable(s: &Session, bot: &str, name: &str, revoking: b
 async fn allow(ctx: &Ctx, a: &AllowArgs) -> Result<()> {
     let s = Session::open_for_write(ctx, &a.repo, "access not changed").await?;
     let bot = resolve_identity(&s.client, &a.bot, "bot").await?;
-    let name = handle(&s, &bot).await;
+    let name = handle(&s.client, &bot).await;
     require_not_a_member(&s, &bot, &name).await?;
     require_notice_writable(&s, &bot, &name, false).await?;
     let notices = s.collab().access_notices(&s.repo).await?;
@@ -550,7 +550,7 @@ async fn send_post_key(ctx: &Ctx, s: &Session, bot: &str) -> Result<()> {
 async fn revoke(ctx: &Ctx, repo: &str, bot: &str, push: bool) -> Result<()> {
     let s = Session::open_for_write(ctx, repo, "access not changed").await?;
     let bot = resolve_identity(&s.client, bot, "bot").await?;
-    let name = handle(&s, &bot).await;
+    let name = handle(&s.client, &bot).await;
     require_notice_writable(&s, &bot, &name, true).await?;
     if push {
         return crate::bot_push::revoke_push(ctx, &s, &bot, &name).await;
@@ -584,20 +584,21 @@ async fn revoke(ctx: &Ctx, repo: &str, bot: &str, push: bool) -> Result<()> {
 }
 
 async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
-    let s = Session::open(ctx, repo).await?;
+    // everyone reads a public repository's notices and grants: no identity needed
+    let s = crate::common::Reader::open(ctx, repo).await?;
     let notices = s.collab().access_notices(&s.repo).await?;
     let now = forge_core::cache::now_ms();
     let mut rows = Vec::new();
     for e in notices.current.values() {
         let id = forge_core::platform::encode_identifier(e.notice.bot);
-        let name = handle(&s, &id).await;
-        let writer = handle(&s, &e.writer).await;
+        let name = handle(&s.client, &id).await;
+        let writer = handle(&s.client, &e.writer).await;
         let access = s.collab().bot_push_access(&s.repo, &id).await?;
-        let push = crate::bot_push::describe(&s, &access, &name).await;
+        let push = crate::bot_push::describe(&s.client, &s.collab(), &s.repo, &access, &name).await;
         rows.push((id, name, writer, e, push));
     }
     // bots with push access and no notice yet
-    let svc = forge_core::repo::RepoService::new(&s.client, &s.identity, &s.bridge);
+    let svc = s.service();
     let mut others: Vec<String> = svc
         .read_push_grants(&s.repo, None)
         .await?
@@ -608,9 +609,9 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
     others.dedup();
     let mut bare = Vec::new();
     for id in others {
-        let name = handle(&s, &id).await;
+        let name = handle(&s.client, &id).await;
         let access = s.collab().bot_push_access(&s.repo, &id).await?;
-        let push = crate::bot_push::describe(&s, &access, &name).await;
+        let push = crate::bot_push::describe(&s.client, &s.collab(), &s.repo, &access, &name).await;
         bare.push((id, name, push));
     }
     ctx.emit(
@@ -827,7 +828,7 @@ async fn ask(ctx: &Ctx, a: &AskArgs) -> Result<()> {
     let s = Session::open_for_write(ctx, &a.repo, "nothing was sent to the bot").await?;
     s.refuse_if_banned("nothing was sent to the bot").await?;
     let bot = resolve_identity(&s.client, &a.bot, "bot").await?;
-    let name = handle(&s, &bot).await;
+    let name = handle(&s.client, &bot).await;
     let (kind, number) = match (a.pr, a.issue) {
         (Some(n), _) => (TargetKind::Patch, n),
         (None, Some(n)) => (TargetKind::Issue, n),

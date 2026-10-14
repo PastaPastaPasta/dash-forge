@@ -186,7 +186,12 @@ impl PushEntry {
     fn from_value(v: &Value) -> Option<Self> {
         let m = v.as_object()?;
         let grant = hex_exact32(m.get("grant")?)?;
-        let target = match (m.get("match"), m.get("ref"), m.get("branch"), m.get("members")) {
+        let target = match (
+            m.get("match"),
+            m.get("ref"),
+            m.get("branch"),
+            m.get("members"),
+        ) {
             (Some(Value::String(k)), Some(Value::String(p)), None, None)
                 if k == "prefix" && m.len() == 3 =>
             {
@@ -232,7 +237,10 @@ impl PushPolicy {
     fn to_value(self) -> Value {
         let mut m = Map::new();
         m.insert("deleteOwnOnly".into(), Value::Bool(self.delete_own_only));
-        m.insert("fastForwardOnly".into(), Value::Bool(self.fast_forward_only));
+        m.insert(
+            "fastForwardOnly".into(),
+            Value::Bool(self.fast_forward_only),
+        );
         m.insert("openPrNotPush".into(), Value::Bool(self.open_pr_not_push));
         Value::Object(m)
     }
@@ -731,7 +739,8 @@ mod tests {
         let mut bad = notice();
         bad.may.push(MAY_PUSH.into());
         bad.may.sort();
-        bad.extra.insert(PUSH_FIELD.into(), Value::String("x".into()));
+        bad.extra
+            .insert(PUSH_FIELD.into(), Value::String("x".into()));
         assert!(!bad.allows_push());
         assert_eq!(
             push_line(&[("refs/heads/bot/ci-bot/", 1_794_009_600_000)], 1).unwrap(),

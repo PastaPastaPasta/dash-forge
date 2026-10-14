@@ -1,0 +1,176 @@
+{
+  "name": "grant_usable",
+  "description": "a grant can be pushed under now when the bot holds a Bot row written no later than the grant (a bot removed and added again does not get its push back), its granter is still a maintainer, and now is before its until; checked in that order.",
+  "case": "bot_push",
+  "rules": "v2",
+  "input": {
+    "op": "grantUsable",
+    "cases": [
+      {
+        "name": "live",
+        "grant": {
+          "id": "g01",
+          "granter": "M1",
+          "bot": "4tJ7mVo5yJm4b6rKZ2SRsG6YqfJHFDLC2kUwD3nAhZ7b",
+          "until": 20000,
+          "createdAt": 2000,
+          "prefix": "refs/heads/bot/ci-bot/"
+        },
+        "ctx": {
+          "now": 10000,
+          "botRowAt": 1000,
+          "maintainers": [
+            "M1",
+            "M2"
+          ]
+        }
+      },
+      {
+        "name": "expired",
+        "grant": {
+          "id": "g02",
+          "granter": "M1",
+          "bot": "4tJ7mVo5yJm4b6rKZ2SRsG6YqfJHFDLC2kUwD3nAhZ7b",
+          "until": 10000,
+          "createdAt": 2000,
+          "prefix": "refs/heads/bot/ci-bot/"
+        },
+        "ctx": {
+          "now": 10000,
+          "botRowAt": 1000,
+          "maintainers": [
+            "M1",
+            "M2"
+          ]
+        }
+      },
+      {
+        "name": "granter_gone",
+        "grant": {
+          "id": "g03",
+          "granter": "M9",
+          "bot": "4tJ7mVo5yJm4b6rKZ2SRsG6YqfJHFDLC2kUwD3nAhZ7b",
+          "until": 20000,
+          "createdAt": 2000,
+          "prefix": "refs/heads/bot/ci-bot/"
+        },
+        "ctx": {
+          "now": 10000,
+          "botRowAt": 1000,
+          "maintainers": [
+            "M1",
+            "M2"
+          ]
+        }
+      },
+      {
+        "name": "older_than_bot_row",
+        "grant": {
+          "id": "g04",
+          "granter": "M1",
+          "bot": "4tJ7mVo5yJm4b6rKZ2SRsG6YqfJHFDLC2kUwD3nAhZ7b",
+          "until": 20000,
+          "createdAt": 500,
+          "prefix": "refs/heads/bot/ci-bot/"
+        },
+        "ctx": {
+          "now": 10000,
+          "botRowAt": 1000,
+          "maintainers": [
+            "M1",
+            "M2"
+          ]
+        }
+      },
+      {
+        "name": "not_a_bot",
+        "grant": {
+          "id": "g05",
+          "granter": "M1",
+          "bot": "4tJ7mVo5yJm4b6rKZ2SRsG6YqfJHFDLC2kUwD3nAhZ7b",
+          "until": 20000,
+          "createdAt": 2000,
+          "prefix": "refs/heads/bot/ci-bot/"
+        },
+        "ctx": {
+          "now": 10000,
+          "botRowAt": null,
+          "maintainers": [
+            "M1",
+            "M2"
+          ]
+        }
+      },
+      {
+        "name": "same_block_as_row",
+        "grant": {
+          "id": "g06",
+          "granter": "M1",
+          "bot": "4tJ7mVo5yJm4b6rKZ2SRsG6YqfJHFDLC2kUwD3nAhZ7b",
+          "until": 20000,
+          "createdAt": 1000,
+          "prefix": "refs/heads/bot/ci-bot/"
+        },
+        "ctx": {
+          "now": 10000,
+          "botRowAt": 1000,
+          "maintainers": [
+            "M1",
+            "M2"
+          ]
+        }
+      },
+      {
+        "name": "older_and_expired_says_older",
+        "grant": {
+          "id": "g07",
+          "granter": "M1",
+          "bot": "4tJ7mVo5yJm4b6rKZ2SRsG6YqfJHFDLC2kUwD3nAhZ7b",
+          "until": 9000,
+          "createdAt": 500,
+          "prefix": "refs/heads/bot/ci-bot/"
+        },
+        "ctx": {
+          "now": 10000,
+          "botRowAt": 1000,
+          "maintainers": [
+            "M1",
+            "M2"
+          ]
+        }
+      }
+    ]
+  },
+  "expected": {
+    "results": [
+      {
+        "name": "live",
+        "unusable": null
+      },
+      {
+        "name": "expired",
+        "unusable": "expired"
+      },
+      {
+        "name": "granter_gone",
+        "unusable": "granterGone"
+      },
+      {
+        "name": "older_than_bot_row",
+        "unusable": "olderThanBotRow"
+      },
+      {
+        "name": "not_a_bot",
+        "unusable": "notABot"
+      },
+      {
+        "name": "same_block_as_row",
+        "unusable": null
+      },
+      {
+        "name": "older_and_expired_says_older",
+        "unusable": "olderThanBotRow"
+      }
+    ]
+  }
+}

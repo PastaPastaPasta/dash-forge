@@ -293,7 +293,7 @@ async fn open(
 ) -> Result<(Session, String, String, BotPushAccess)> {
     let s = Session::open_for_write(ctx, repo, "access not changed").await?;
     let bot = resolve_identity(&s.client, bot, "bot").await?;
-    let name = handle(&s, &bot).await;
+    let name = handle(&s.client, &bot).await;
     s.collab().require_notice_writer(&s.repo).await?;
     let access = s.collab().bot_push_access(&s.repo, &bot).await?;
     if !access.supported {
@@ -320,7 +320,7 @@ async fn granters(s: &Session, access: &BotPushAccess) -> Vec<String> {
     ids.dedup();
     let mut out = Vec::new();
     for id in ids {
-        out.push(handle(s, id).await);
+        out.push(handle(&s.client, id).await);
     }
     out
 }
@@ -575,7 +575,9 @@ pub(crate) async fn renew(ctx: &Ctx, repo: &str, bot: &str, until: Option<&str>)
 
 /// What `dg bot list` shows of a bot's push access: JSON and the lines (DESIGN §10).
 pub(crate) async fn describe(
-    s: &Session,
+    client: &forge_core::platform::PlatformClient,
+    collab: &forge_core::collab::v2::Collab<'_>,
+    repo: &forge_core::scope::RepoRef,
     access: &BotPushAccess,
     name: &str,
 ) -> (Value, Vec<String>) {
@@ -583,13 +585,9 @@ pub(crate) async fn describe(
         return (Value::Null, Vec::new());
     }
     let now = access.now;
-    let branches = s
-        .collab()
-        .grantable_branches(&s.repo)
-        .await
-        .unwrap_or_default();
-    let bots: Vec<String> = forge_core::members::MemberReader::new(&s.client)
-        .list(&s.repo)
+    let branches = collab.grantable_branches(repo).await.unwrap_or_default();
+    let bots: Vec<String> = forge_core::members::MemberReader::new(client)
+        .list(repo)
         .await
         .map(|m| forge_core::bot_keys::bots_of(&m, &[]))
         .unwrap_or_default();
@@ -624,7 +622,7 @@ pub(crate) async fn describe(
             (None, Some(b)) => forge_core::keyring::short_branch(&b.name).to_owned(),
             (None, None) => "a members-only branch".to_owned(),
         };
-        let granter = handle(s, &g.granter).await;
+        let granter = handle(client, &g.granter).await;
         let in_notice = decode_identifier(&g.id).is_ok_and(|id| listed.contains(&id));
         grants.push(json!({
             "grant": g.id,
@@ -661,7 +659,7 @@ pub(crate) async fn describe(
                         safe(name),
                         safe(&what),
                         if days == 1 { "" } else { "s" },
-                        s.repo.display(),
+                        repo.display(),
                         safe(name)
                     ));
                 }
@@ -678,7 +676,7 @@ pub(crate) async fn describe(
                 "{}'s push access ended on {}. Renew: dg bot renew {} {}",
                 safe(name),
                 date_words(g.until),
-                s.repo.display(),
+                repo.display(),
                 safe(name)
             )),
             Err(Unusable::GranterGone) => lines.push(format!(
@@ -686,7 +684,7 @@ pub(crate) async fn describe(
                 safe(name),
                 safe(&what),
                 safe(&granter),
-                s.repo.display(),
+                repo.display(),
                 safe(name),
                 safe(&what)
             )),
@@ -704,7 +702,7 @@ pub(crate) async fn describe(
         head.push(format!(
             "{}'s pushes are suspended. dg bot resume {} {}",
             safe(name),
-            s.repo.display(),
+            repo.display(),
             safe(name)
         ));
     } else if let Some(line) = access_notice::push_line(&refs, members) {
@@ -746,6 +744,11 @@ mod tests {
             now + push_grant::DEFAULT_TTL_MS
         );
         assert_eq!(push_until(None, Some(now + 5), now).unwrap(), now + 5);
-        assert!(push_until(Some("1970-01-01"), None, now).is_err());
+        let now_2026 = 1_790_000_000_000;
+        assert!(push_until(Some("2020-01-01"), None, now_2026).is_err());
+        assert!(push_until(Some("2027-01-01"), None, now_2026).is_err());
+        // the last day of the 90 is brought in, not refused
+        let ninety = push_until(Some("2026-11-13"), None, 1_786_800_000_000).unwrap();
+        assert!(ninety <= 1_786_800_000_000 + MAX_TTL_MS);
     }
 }

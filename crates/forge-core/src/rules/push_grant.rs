@@ -191,10 +191,7 @@ pub fn pick<'g>(
     target: &PushTarget<'_>,
     ctx: &GrantContext<'_>,
 ) -> Result<&'g PushGrant, NoGrant> {
-    let covering: Vec<&PushGrant> = grants
-        .iter()
-        .filter(|g| platform::decode_identifier(&g.bot).is_ok() && g.covers(target))
-        .collect();
+    let covering: Vec<&PushGrant> = grants.iter().filter(|g| g.covers(target)).collect();
     let best = covering
         .iter()
         .filter(|g| usable(g, ctx).is_ok())
@@ -425,5 +422,115 @@ mod tests {
         assert_eq!(mark(50, Some(&g), Some(1), Some(true)), PushMark::Granted);
         assert_eq!(mark(50, Some(&g), Some(1), Some(false)), PushMark::Outside);
         assert_eq!(mark(50, None, Some(1), None), PushMark::Granted);
+    }
+    /// The `bot_push__*` vectors (`tools/private-repos-vectors/push.py`), the same as forge-web
+    /// `lib/rules/push-grant.conformance.test.ts` runs.
+    #[test]
+    #[allow(clippy::too_many_lines)] // one arm per op
+    fn bot_push_vectors() {
+        use serde_json::{json, Value};
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../forge-contracts/vectors");
+        let mut ran = 0;
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            let file = path.file_name().unwrap().to_string_lossy().into_owned();
+            if !file.starts_with("bot_push__") {
+                continue;
+            }
+            let v: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            let inp = &v["input"];
+            let grant = |g: &Value| -> PushGrant { serde_json::from_value(g.clone()).unwrap() };
+            let maintainers = |c: &Value| -> BTreeSet<String> {
+                serde_json::from_value(c["maintainers"].clone()).unwrap()
+            };
+            let ctx_of = |c: &Value, m: &BTreeSet<String>| -> GrantContext<'static> {
+                GrantContext {
+                    now: c["now"].as_u64().unwrap(),
+                    bot_row_at: c["botRowAt"].as_u64(),
+                    maintainers: Box::leak(Box::new(m.clone())),
+                }
+            };
+            let got = match inp["op"].as_str().unwrap() {
+                "grantUsable" => {
+                    json!({ "results": inp["cases"].as_array().unwrap().iter().map(|c| {
+                    let m = maintainers(&c["ctx"]);
+                    json!({ "name": c["name"], "unusable": usable(&grant(&c["grant"]), &ctx_of(&c["ctx"], &m)).err() })
+                }).collect::<Vec<_>>() })
+                }
+                "grantPick" => {
+                    let grants: Vec<PushGrant> = inp["grants"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(grant)
+                        .collect();
+                    let m = maintainers(&inp["ctx"]);
+                    let ctx = ctx_of(&inp["ctx"], &m);
+                    json!({ "results": inp["targets"].as_array().unwrap().iter().map(|t| {
+                        let target = match (t["target"]["public"].as_str(), t["target"]["exact"].as_str()) {
+                            (Some(n), _) => PushTarget::Public(n),
+                            (_, Some(h)) => PushTarget::Exact(h),
+                            _ => unreachable!(),
+                        };
+                        let pick = match pick(&grants, &target, &ctx) {
+                            Ok(g) => json!({ "grant": g.id }),
+                            Err(NoGrant::NotCovered) => json!({ "reason": "notCovered" }),
+                            Err(NoGrant::Unusable(u)) => json!({ "reason": "unusable", "why": u }),
+                        };
+                        json!({ "name": t["name"], "pick": pick })
+                    }).collect::<Vec<_>>() })
+                }
+                "prefixOf" => {
+                    json!({ "results": inp["patterns"].as_array().unwrap().iter().map(|p| {
+                    let p = p.as_str().unwrap();
+                    match prefix_of(p) {
+                        Ok(full) => json!({ "pattern": p, "prefix": full }),
+                        Err(why) => json!({ "pattern": p, "refused": why }),
+                    }
+                }).collect::<Vec<_>>() })
+                }
+                "untilFor" => {
+                    let now = inp["now"].as_u64().unwrap();
+                    json!({ "results": inp["requested"].as_array().unwrap().iter().map(|r| {
+                        match until_for(now, r.as_u64()) {
+                            Ok(u) => json!({ "until": u }),
+                            Err(why) => json!({ "refused": why }),
+                        }
+                    }).collect::<Vec<_>>() })
+                }
+                "pushMark" => json!({ "results": inp["cases"].as_array().unwrap().iter().map(|c| {
+                    let g = (!c["grant"].is_null()).then(|| grant(&c["grant"]));
+                    let m = mark(c["at"].as_u64().unwrap(), g.as_ref(), c["botRowAt"].as_u64(), c["noticeAllowsPush"].as_bool());
+                    json!({ "name": c["name"], "mark": m })
+                }).collect::<Vec<_>>() }),
+                "noticePush" => {
+                    json!({ "results": inp["notices"].as_array().unwrap().iter().map(|n| {
+                    let bytes = hex::decode(n["plaintextHex"].as_str().unwrap()).unwrap();
+                    let notice = crate::private::access_notice::AccessNotice::decode(&bytes).unwrap();
+                    let entries = notice.push_entries().map(|es| es.iter().map(|e| match &e.target {
+                        crate::private::access_notice::PushScope::Prefix(p) => json!({ "grant": hex::encode(e.grant), "prefix": p }),
+                        crate::private::access_notice::PushScope::Members(h) => json!({ "grant": hex::encode(e.grant), "members": hex::encode(h) }),
+                    }).collect::<Vec<_>>());
+                    let pol = notice.push_policy();
+                    json!({
+                        "name": n["name"],
+                        "entries": entries,
+                        "policy": { "deleteOwnOnly": pol.delete_own_only, "fastForwardOnly": pol.fast_forward_only, "openPrNotPush": pol.open_pr_not_push },
+                        "allowsPush": notice.allows_push(),
+                    })
+                }).collect::<Vec<_>>() })
+                }
+                "refValid" => {
+                    json!({ "results": inp["updates"].as_array().unwrap().iter().map(|u| {
+                    let u: crate::rules::RefUpdate = serde_json::from_value(u.clone()).unwrap();
+                    crate::rules::is_update_valid(&u, &[])
+                }).collect::<Vec<_>>() })
+                }
+                op => panic!("{file}: unknown op {op}"),
+            };
+            assert_eq!(got, v["expected"], "{file}");
+            ran += 1;
+        }
+        assert!(ran >= 7, "ran {ran} bot_push vectors");
     }
 }

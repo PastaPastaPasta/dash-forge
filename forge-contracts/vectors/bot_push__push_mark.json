@@ -1,0 +1,116 @@
+{
+  "name": "push_mark",
+  "description": "readers mark a bot's push 'outside the access @ci-bot was given' when the grant it named was written before the bot's current member row and the push came after that row (a removed and re-added bot), or when the bot's notice in force when it landed did not allow pushing (a maintainer suspended it). A grant deleted later takes nothing back.",
+  "case": "bot_push",
+  "rules": "v2",
+  "input": {
+    "op": "pushMark",
+    "cases": [
+      {
+        "name": "granted",
+        "at": 3000,
+        "grant": {
+          "id": "g02",
+          "granter": "M1",
+          "bot": "4tJ7mVo5yJm4b6rKZ2SRsG6YqfJHFDLC2kUwD3nAhZ7b",
+          "until": 50000,
+          "createdAt": 2000,
+          "prefix": "refs/heads/bot/ci-bot/"
+        },
+        "botRowAt": 1000,
+        "noticeAllowsPush": true
+      },
+      {
+        "name": "no_notice",
+        "at": 3000,
+        "grant": {
+          "id": "g02",
+          "granter": "M1",
+          "bot": "4tJ7mVo5yJm4b6rKZ2SRsG6YqfJHFDLC2kUwD3nAhZ7b",
+          "until": 50000,
+          "createdAt": 2000,
+          "prefix": "refs/heads/bot/ci-bot/"
+        },
+        "botRowAt": 1000,
+        "noticeAllowsPush": null
+      },
+      {
+        "name": "older_grant_after_readd",
+        "at": 3000,
+        "grant": {
+          "id": "g01",
+          "granter": "M1",
+          "bot": "4tJ7mVo5yJm4b6rKZ2SRsG6YqfJHFDLC2kUwD3nAhZ7b",
+          "until": 50000,
+          "createdAt": 500,
+          "prefix": "refs/heads/bot/ci-bot/"
+        },
+        "botRowAt": 1000,
+        "noticeAllowsPush": true
+      },
+      {
+        "name": "older_grant_before_readd",
+        "at": 800,
+        "grant": {
+          "id": "g01",
+          "granter": "M1",
+          "bot": "4tJ7mVo5yJm4b6rKZ2SRsG6YqfJHFDLC2kUwD3nAhZ7b",
+          "until": 50000,
+          "createdAt": 500,
+          "prefix": "refs/heads/bot/ci-bot/"
+        },
+        "botRowAt": 1000,
+        "noticeAllowsPush": true
+      },
+      {
+        "name": "suspended",
+        "at": 3000,
+        "grant": {
+          "id": "g02",
+          "granter": "M1",
+          "bot": "4tJ7mVo5yJm4b6rKZ2SRsG6YqfJHFDLC2kUwD3nAhZ7b",
+          "until": 50000,
+          "createdAt": 2000,
+          "prefix": "refs/heads/bot/ci-bot/"
+        },
+        "botRowAt": 1000,
+        "noticeAllowsPush": false
+      },
+      {
+        "name": "grant_deleted_later",
+        "at": 3000,
+        "grant": null,
+        "botRowAt": 1000,
+        "noticeAllowsPush": true
+      }
+    ]
+  },
+  "expected": {
+    "results": [
+      {
+        "name": "granted",
+        "mark": "granted"
+      },
+      {
+        "name": "no_notice",
+        "mark": "granted"
+      },
+      {
+        "name": "older_grant_after_readd",
+        "mark": "outside"
+      },
+      {
+        "name": "older_grant_before_readd",
+        "mark": "granted"
+      },
+      {
+        "name": "suspended",
+        "mark": "outside"
+      },
+      {
+        "name": "grant_deleted_later",
+        "mark": "granted"
+      }
+    ]
+  }
+}

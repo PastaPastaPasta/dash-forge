@@ -79,8 +79,10 @@ impl Collab<'_> {
         repo: &RepoRef,
         updates: &[&crate::platform::FetchedDocument],
     ) -> Result<std::collections::BTreeMap<String, push_grant::PushMark>> {
-        let bots: Vec<&&crate::platform::FetchedDocument> =
-            updates.iter().filter(|d| push_grant::is_bot_push(d)).collect();
+        let bots: Vec<&&crate::platform::FetchedDocument> = updates
+            .iter()
+            .filter(|d| push_grant::is_bot_push(d))
+            .collect();
         let mut out = std::collections::BTreeMap::new();
         if bots.is_empty() {
             return Ok(out);
@@ -99,8 +101,8 @@ impl Collab<'_> {
         let notices = self.access_notices(repo).await?;
         for d in bots {
             let at = d.created_at.unwrap_or_default();
-            let grant = push_grant::named_grant(d)
-                .and_then(|id| grants.iter().find(|g| g.id == id));
+            let grant =
+                push_grant::named_grant(d).and_then(|id| grants.iter().find(|g| g.id == id));
             let row_at = members
                 .iter()
                 .find(|m| m.identity_id == d.owner_id && m.role == Role::Bot)

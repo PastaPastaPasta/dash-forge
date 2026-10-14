@@ -1126,7 +1126,11 @@ impl Helper {
                 if bot_kept.is_empty() {
                     return Ok(refused);
                 }
-                (svc.as_bot(std::sync::Arc::new(plan.push)), &bot_kept[..], true)
+                (
+                    svc.as_bot(std::sync::Arc::new(plan.push)),
+                    &bot_kept[..],
+                    true,
+                )
             }
         };
 
@@ -5472,8 +5476,9 @@ async fn bot_plan(
     specs: &[PushSpec],
 ) -> Result<Option<crate::bot_push::BotPlan>> {
     let me = conn.identity().id();
-    let Ok(Some(forge_core::rules::v2::Role::Bot)) =
-        MemberReader::new(&conn.client).best_role(&conn.repo, &me).await
+    let Ok(Some(forge_core::rules::v2::Role::Bot)) = MemberReader::new(&conn.client)
+        .best_role(&conn.repo, &me)
+        .await
     else {
         return Ok(None);
     };
@@ -5484,7 +5489,12 @@ async fn bot_plan(
         if enforce {
             plan.refused = specs
                 .iter()
-                .map(|s| (s.dst.clone(), "bots can't push to a private repository".to_owned()))
+                .map(|s| {
+                    (
+                        s.dst.clone(),
+                        "bots can't push to a private repository".to_owned(),
+                    )
+                })
                 .collect();
             plan.error = Some(
                 UserError::new(
