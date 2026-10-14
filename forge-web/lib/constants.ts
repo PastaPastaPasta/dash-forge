@@ -329,6 +329,12 @@ export const PACK_KIND = {
    * forms of plain kind k; only members read them (`lib/view/members-browse.ts`).
    */
   MEMBERS_GIT_PACK: 64,
+  /**
+   * A members-only long body (`private-repos.md` §19): the full text of a members-only post longer
+   * than its field, sealed under the members key, named by the field's trailer. The web does not
+   * write one yet; a request to a bot hands on its file key (`lib/repo/bot-access.ts`).
+   */
+  MEMBERS_LONG_BODY: 70,
 } as const
 export type PackKind = (typeof PACK_KIND)[keyof typeof PACK_KIND]
 

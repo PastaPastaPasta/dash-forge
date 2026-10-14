@@ -26,6 +26,7 @@ import type { AgentRequest } from '@/lib/rules/agent-request'
 import { ISSUE_CLOSE, ISSUE_LOCK, ISSUE_REOPEN, ISSUE_UNLOCK, PR_CLOSE, PR_DRAFT, PR_DRAFT_CLOSE, PR_DRAFT_REOPEN, PR_LOCK, PR_MERGE, PR_READY, PR_REOPEN, PR_UNLOCK, transitionPhrase } from '@/lib/rules/transition'
 import type { ReviewView, TransitionView } from '@/lib/repo'
 import { Author } from '@/components/author'
+import { useHandle } from '@/components/repo/bot-handle'
 import Link from 'next/link'
 import { useState, type ReactNode } from 'react'
 import { isEmptyMirroredReview, mirroredCommentText } from '@/lib/view/mirror-review-fold'
@@ -278,7 +279,8 @@ export interface BranchEventItem {
  * ago", and the task below it when this reader can read it. Everyone sees that someone asked; a
  * members-only task is shown to members only (an outsider's read has no task to show).
  */
-export function AgentRequestRow({ request }: { request: AgentRequest }): JSX.Element {
+export function AgentRequestRow({ request, outside = false }: { request: AgentRequest; outside?: boolean }): JSX.Element {
+  const bot = useHandle(request.bot)
   return (
     <div className={EVENT_ROW} data-testid="timeline-event" data-kind="agent-request">
       <span className={EVENT_ICON}>
@@ -288,6 +290,12 @@ export function AgentRequestRow({ request }: { request: AgentRequest }): JSX.Ele
         <p>
           <Author identityId={request.asker} link={false} className="align-middle" /> asked <Author identityId={request.bot} link={false} className="align-middle" /> to work on this
           <span className="whitespace-nowrap"> · {timeAgo(request.createdAt)}</span>
+          {outside ? (
+            <span className="text-caution-700 dark:text-caution-400" data-testid="agent-request-outside">
+              {' '}
+              · outside {bot}&apos;s access
+            </span>
+          ) : null}
         </p>
         {request.task !== null ? (
           <p className="mt-0.5 whitespace-pre-wrap break-words text-anvil-700 dark:text-anvil-200" data-testid="agent-request-task">
@@ -507,6 +515,7 @@ export function Timeline({
   lane,
   reviewActions,
   agentRequests = [],
+  outsideAccess,
 }: {
   items: readonly TimelineItem[]
   /** Where `#n` / `@name` in bodies link (omit: plain text). Keep it referentially stable. */
@@ -555,6 +564,8 @@ export function Timeline({
    * this". The task shows only when this reader can read it (a members-only task stays hidden).
    */
   agentRequests?: readonly AgentRequest[]
+  /** The requests (by id) that were outside their bot's access when written: flagged on their line. */
+  outsideAccess?: ReadonlySet<string>
 }): JSX.Element {
   // A hide or unhide the reader rule did not count (a writer's without the contract's proof, a
   // refId of another thread) is noise anyone could write, not the moderation record: left out.
@@ -658,7 +669,7 @@ export function Timeline({
         </div>,
       )
     } else if (row.kind === 'ask') {
-      rows.push(<AgentRequestRow key={`a-${row.request.id}`} request={row.request} />)
+      rows.push(<AgentRequestRow key={`a-${row.request.id}`} request={row.request} outside={outsideAccess?.has(row.request.id) === true} />)
     } else if (row.kind === 'members') {
       rows.push(
         row.all !== undefined ? (

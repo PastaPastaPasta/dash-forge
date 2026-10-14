@@ -9,7 +9,7 @@
  * characters). Everyone sees that someone asked; on a members-only thread only members see what.
  */
 
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Bot } from 'lucide-react'
 
 import type { RepoHome } from '@/lib/view'
@@ -26,6 +26,7 @@ import {
   membersSession,
   planAsk,
   readAccessNoticesCached,
+  requestWithinAccess,
   writeAsk,
   type AskAbout,
   type AskInput,
@@ -34,7 +35,8 @@ import {
   type Notices,
 } from '@/lib/repo/bot-access'
 import { checkAsk, isTask, refusalWords, TASK_MAX, type AskRefusal } from '@/lib/rules/agent-request'
-import type { Role } from '@/lib/rules/v2'
+import { RoleOracle, type Membership, type Role } from '@/lib/rules/v2'
+import type { AgentRequest } from '@/lib/rules/agent-request'
 import { previewCredits } from '@/lib/sdk'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
@@ -44,7 +46,8 @@ import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/input'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { SidebarSection } from '@/components/repo/target-rail'
-import { useHandle, useRepoDisplay } from '@/components/repo/bots-content'
+import { useRepoDisplay } from '@/components/repo/bots-content'
+import { useHandle } from '@/components/repo/bot-handle'
 
 /** The bots a thread lists: a current notice that allows something, is live at `now` and covers thread `number`. */
 export function agentsOf(notices: Notices | null, number: number, now: number): NoticeEntry[] {
@@ -57,6 +60,7 @@ export function AgentsSection({
   target,
   membersOnly,
   membersSource = false,
+  specificPeople = false,
   onAsked,
 }: {
   home: RepoHome
@@ -65,6 +69,8 @@ export function AgentsSection({
   membersOnly: boolean
   /** A pull request from a members-only branch: its code isn't included from the web. */
   membersSource?: boolean
+  /** A message to specific people: no bot is asked about one, so the panel is not shown. */
+  specificPeople?: boolean
   /** The request was written: the page reads the thread again. */
   onAsked: (event: string) => void
 }): JSX.Element | null {
@@ -80,13 +86,16 @@ export function AgentsSection({
   const [asking, setAsking] = useState<NoticeEntry | null>(null)
   const now = Date.now()
   const bots = agentsOf(notices.data, target.number, now)
-  if (bots.length === 0) return null
-  const canAsk = identity !== null && signer !== null
+  if (bots.length === 0 || specificPeople) return null
+  // Ask is offered only once the viewer's role is known and the bot's access allows them (the
+  // dialog checks again on fresh reads before anything is signed).
+  const viewerRole = identity !== null && signer !== null && role.settled && role.error === null ? role.data : undefined
+  const canAsk = (n: AccessNotice): boolean => viewerRole !== undefined && checkAsk(n, viewerRole, target.number, membersOnly, now) === null
   return (
     <SidebarSection title="Agents" icon={Bot}>
       <ul className="space-y-2" data-testid="agents">
         {bots.map((e) => (
-          <AgentRow key={e.id} entry={e} canAsk={canAsk} onAsk={() => setAsking(e)} />
+          <AgentRow key={e.id} entry={e} canAsk={canAsk(e.notice)} onAsk={() => setAsking(e)} />
         ))}
       </ul>
       {asking !== null && sdk !== null && signer !== null ? (
@@ -224,7 +233,7 @@ export function AskDialog({ bot, name, display, target, notice, role, membersOnl
           )}
           <label className="block space-y-1.5">
             <span className="block font-medium text-anvil-700 dark:text-anvil-200">What should it do?</span>
-            <Textarea value={task} onChange={(e) => setTask(e.target.value)} maxLength={TASK_MAX.bytes} className="min-h-[64px]" placeholder="Fix the failing test" data-testid="ask-task" />
+            <Textarea value={task} onChange={(e) => setTask(e.target.value)} maxLength={TASK_MAX.chars * 2} className="min-h-[64px]" placeholder="Fix the failing test" data-testid="ask-task" />
           </label>
           <p className="text-right font-mono text-[11px] text-anvil-500 dark:text-anvil-400">
             {[...task].length} / {TASK_MAX.chars}
@@ -233,4 +242,24 @@ export function AskDialog({ bot, name, display, target, notice, role, membersOnl
       ) : null}
     </ConfirmDialog>
   )
+}
+
+/**
+ * The requests of a thread that were outside their bot's access when written (DESIGN §4.9: the
+ * notice that counted then and the asker's role then; `requestWithinAccess`), by event id: the
+ * timeline flags them. Empty until the repo's notices are read (none flagged on a failed read).
+ */
+export function useRequestsOutsideAccess(home: RepoHome, requests: readonly AgentRequest[], members: readonly Membership[], membersOnly: boolean): ReadonlySet<string> {
+  const repo = home.repo
+  const { sdk, ready, network } = useSdk(repoContractIds(repo))
+  const session = membersSession(repo)
+  const notices = useAsync(() => readAccessNoticesCached(sdk!, repo), [ready, network, repo.repoId, session?.id ?? ''], {
+    enabled: ready && sdk !== null && requests.length > 0,
+  })
+  return useMemo(() => {
+    const read = notices.data
+    if (read === null || requests.length === 0) return new Set<string>()
+    const oracle = new RoleOracle(members)
+    return new Set(requests.filter((r) => !requestWithinAccess(r, read, oracle, repo.ownerId, membersOnly)).map((r) => r.id))
+  }, [notices.data, requests, members, repo.ownerId, membersOnly])
 }

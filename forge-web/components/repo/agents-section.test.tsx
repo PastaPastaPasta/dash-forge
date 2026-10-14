@@ -80,7 +80,7 @@ const notice = (over: Partial<AccessNotice> = {}): AccessNotice => ({
   ...over,
 })
 const target = { kind: 'pr' as const, id: 'PR42', number: 42 }
-const plan: AskPlan = { target, bot: 'BOT', membersOnly: true, processor: 'Example AI', shared: { thread: 1, comments: 37 }, leftOut: [] }
+const plan: AskPlan = { target, bot: 'BOT', membersOnly: true, processor: 'Example AI', reads: true, foreign: false, letter: true, shared: { thread: 1, comments: 37 }, shortened: 0, leftOut: [] }
 
 function dialog(over: { notice?: AccessNotice; role?: 'maintainer' | 'writer' | 'triage' | 'reader' | null; membersOnly?: boolean; planned?: () => Promise<AskPlan>; ask?: () => Promise<void> } = {}) {
   const planFn = vi.fn(over.planned ?? (async () => plan))
@@ -164,9 +164,38 @@ describe('the Ask dialog', () => {
   })
 
   it('drops the members-only clause when there is nothing members-only to hand on', async () => {
-    dialog({ membersOnly: false, planned: async () => ({ ...plan, membersOnly: false, shared: { thread: 0, comments: 0 } }) })
+    dialog({ membersOnly: false, planned: async () => ({ ...plan, membersOnly: false, letter: false, shared: { thread: 0, comments: 0 } }) })
     await flush()
     expect(byTestId('ask-summary')?.textContent).toBe('It will work on this pull request as everyone can read it.Example AI processes it.Everyone can see that you asked and what you asked.')
+  })
+})
+
+describe('the Ask dialog on a fork or an outsider’s pull request', () => {
+  it('says the bot gets only what everyone can read', async () => {
+    dialog({ membersOnly: false, planned: async () => ({ ...plan, membersOnly: false, foreign: true, letter: false, shared: { thread: 0, comments: 0 } }) })
+    await flush()
+    expect(byTestId('ask-summary')?.textContent).toBe(
+      '#42 comes from a fork or from someone outside the members: @ci-bot gets only what everyone can read.Example AI processes it.Everyone can see that you asked and what you asked.',
+    )
+  })
+
+  it('shows the refusal of a members-only one, before anything is signed', async () => {
+    const { BotAccessError } = await import('@/lib/repo/bot-access')
+    const { askFn } = dialog({
+      planned: async () => {
+        throw new BotAccessError("#42 comes from a fork or from someone outside the members: its members-only content can't be shared with @ci-bot. Nothing was signed.")
+      },
+    })
+    await flush()
+    expect(byTestId('ask-plan-error')?.textContent).toContain('#42 comes from a fork or from someone outside the members')
+    expect((byTestId('confirm') as HTMLButtonElement).disabled).toBe(true)
+    expect(askFn).not.toHaveBeenCalled()
+  })
+
+  it('tells how many long posts go shortened', async () => {
+    dialog({ planned: async () => ({ ...plan, shortened: 2 }) })
+    await flush()
+    expect(byTestId('ask-summary')?.textContent).toContain('2 long posts are sent shortened.')
   })
 })
 

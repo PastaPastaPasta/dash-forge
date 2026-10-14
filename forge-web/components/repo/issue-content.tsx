@@ -89,7 +89,10 @@ import { Field, Input } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { EditedMarker, MarkdownEditor, withDiscardedEdit } from '@/components/repo/issue-bits'
-import { AgentsSection } from '@/components/repo/agents-section'
+import { AgentsSection, useRequestsOutsideAccess } from '@/components/repo/agents-section'
+import type { AgentRequest } from '@/lib/rules/agent-request'
+import type { Membership } from '@/lib/rules/v2'
+
 import { AssigneePicker, LabelPicker, MilestonePicker, SidebarSection, applySetChange, assigneesConfirm, labelsConfirm, setChangeShows, stateToggleLabel, type SetChange } from '@/components/repo/target-rail'
 import { readMilestones } from '@/lib/repo/milestones'
 import { EventValuesNote, HiddenNote } from '@/components/repo/hidden-note'
@@ -108,6 +111,10 @@ import { MakeOthersPublicButton, MakePublicBundleDialog, MakePublicButton, bundl
 import { BundleAlertsNote, EarlierVersions, EditedAfterPublicNote, MadePublicBy, PublicEditHint, editIsPublic } from '@/components/repo/made-public'
 import type { BundleRequest } from '@/lib/repo/make-public-bundle'
 import { makePostPublic, provenanceOf } from '@/lib/repo/make-public-writes'
+
+/** No requests or members yet (stable empty inputs for the request flags). */
+const NO_REQUESTS: readonly AgentRequest[] = []
+const NO_MEMBERS: readonly Membership[] = []
 
 /** The write the confirm dialog is about to sign. */
 type Pending =
@@ -308,6 +315,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const commentTooLong = commentLong.long ? commentLong.problem !== null : utf8Length(comment) > BODY_MAX
 
   const moderation = useThreadModeration(sdk, ready, home.repo, data?.moderationInput, data?.moderation)
+  // Requests to bots that were outside the bot's access when written: flagged on their line.
+  const outsideAccess = useRequestsOutsideAccess(home, data?.agentRequests ?? NO_REQUESTS, data?.members ?? NO_MEMBERS, home.repo.visibility === 'private' || notPublic(data?.issue.audience))
 
   if (!Number.isFinite(number)) return <EmptyState icon={CircleDot} title="No issue addressed" body="Add &number= to the URL." />
   if (loading && !data) return <LoadingBlock label="Loading issue" />
@@ -714,7 +723,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
           <Timeline
             items={timeline}
             membersOnly={data.membersOnly}
-            {...(data.agentRequests ? { agentRequests: data.agentRequests } : {})}
+            {...(data.agentRequests ? { agentRequests: data.agentRequests, outsideAccess } : {})}
             {...(home.lane ? { lane: home.lane } : {})}
             links={links}
             trust={trust}
@@ -919,6 +928,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
           home={home}
           target={{ kind: 'issue', id: issue.id, number: issue.number }}
           membersOnly={home.repo.visibility === 'private' || notPublic(issue.audience)}
+          specificPeople={issue.audience === 'specificPeople'}
           onAsked={(event) => refresh((t) => (t.agentRequests ?? []).some((r) => r.id === event))}
         />
       </aside>

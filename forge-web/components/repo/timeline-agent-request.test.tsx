@@ -44,6 +44,13 @@ describe('a request to a bot in the timeline', () => {
     expect(host.querySelector('[data-testid="agent-request-task"]')?.textContent).toBe('fix the failing test')
   })
 
+  it("flags a request that was outside the bot's access when it was written", () => {
+    act(() => root.render(<AgentRequestRow request={request('fix it')} outside />))
+    expect(host.querySelector('[data-testid="agent-request-outside"]')?.textContent).toMatch(/· outside .+'s access$/)
+    act(() => root.render(<AgentRequestRow request={request('fix it')} />))
+    expect(host.querySelector('[data-testid="agent-request-outside"]')).toBeNull()
+  })
+
   it('shows the line only when the task is members-only and this reader cannot read it', () => {
     act(() => root.render(<AgentRequestRow request={request(null)} />))
     expect(host.textContent).toMatch(/^@alice asked @ci-bot to work on this · /)

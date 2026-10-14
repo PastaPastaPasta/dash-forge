@@ -13,13 +13,16 @@
  * - **Writing a notice** (maintainers and the owner, refused before signing otherwise; never for the
  *   owner or a human member): plaintext on Platform chunks in a public repo, two copies in a private
  *   one (members key, and a letter to the bot and the writer).
- * - **Asking.** Checked before anything is signed ({@link checkAsk}, E813: the bot's current notice
- *   and the viewer's role, the owner as a maintainer). Then the request event (its task follows the
- *   thread's audience, as every event value does), then, when the notice lets the bot read on
- *   request and the thread holds members-only posts, the `read` letter: every members-only (v0x03)
- *   post revision the asker opens, with its per-object key, and the request's own key; never a
- *   message to specific people (v0x04) or an older post (v0x01). Sealed to the asker (slot 0) and
- *   the bot. The web never includes code (that needs a clone: `dg bot ask`).
+ * - **Asking.** Checked before anything is signed, in forge-core's order: the thread is readable
+ *   and no message to specific people; the bot's current notice and the viewer's role ({@link
+ *   checkAsk}, E813, the owner as a maintainer); a private repo's older posts can't be handed on; a
+ *   fork's or an outsider's members-only pull request is refused (a public one gets no letter); the
+ *   letter fits. Then the request event (its task follows the thread's audience, as every event
+ *   value does), then, when the notice lets the bot read on request and the thread is members-only
+ *   or holds members-only posts, the `read` letter: every members-only (v0x03) post revision the
+ *   asker opens, with its per-object key, their long bodies' file keys, and the request's own key;
+ *   never a message to specific people (v0x04) or an older post (v0x01). Sealed to the asker (slot
+ *   0) and the bot. The web never includes code (that needs a clone: `dg bot ask`).
  *
  * Keys: a plan for the dialog derives each key only to count it and wipes it at once; the write
  * derives them again, seals the letter and wipes every key and the plaintext when done.
@@ -48,25 +51,29 @@ import {
   noticeMay,
   openContent,
   openPack,
+  parseHeader,
   readLetterToTyped,
   readObjKey,
   sealLetterArtifact,
   sealPack,
   type AccessNotice,
   type LetterDoc,
+  type LetterPack,
   type LetterRecipient,
   type NoticeEntry,
   type PrivateDocType,
 } from '../private'
-import { AGENT_REQUEST_KIND, checkAsk, isTask, refusalWords, roleWords, TASK_MAX, type AskRefusal } from '../rules/agent-request'
-import type { Role } from '../rules/v2'
+import { AGENT_REQUEST_KIND, checkAsk, isTask, refusalWords, requestAllowed, roleWords, TASK_MAX, type AgentRequest, type AskRefusal } from '../rules/agent-request'
+import { parseLongBody } from '../rules/long-body'
+import type { Role, RoleOracle } from '../rules/v2'
+import { compareBytes } from '../private/ids'
+import { mapPooled } from '../view/pool'
 import { queryAllDocuments, queryDocuments, type PlainDocument, type WriteAuth, type WriteResult } from '../sdk'
 import { estimateChunkCredits, previewCreate } from '../sdk/cost'
 import { sha256Hex } from '../storage/sigv4'
 import { retryWhileMissing } from '../view/retry'
 import { DOC, asIdentifierString, type RepoRef } from './contract'
 import { revisionOf } from './made-public'
-import { MAX_KEY_LETTER } from '../private/key-letter'
 import { readMaintainers, readViewerPermissions } from './members'
 import { bytesField, isSealedDoc, storedPrivateDoc } from './private-content'
 import { LONG_BODY_MANIFEST_CREDITS } from './long-body'
@@ -83,8 +90,10 @@ export class BotAccessError extends Error {
     message: string,
     /** What to do about it, when there is something. */
     readonly fix: string | null = null,
+    /** The lower layer's error behind a step that could not finish (never shown as is). */
+    cause?: unknown,
   ) {
-    super(message)
+    super(message, cause === undefined ? undefined : { cause })
     this.name = 'BotAccessError'
   }
 }
@@ -120,6 +129,9 @@ export interface Notices {
 }
 
 const NO_NOTICES: Notices = { all: [], current: new Map(), unreadable: 0 }
+
+/** Notice copies fetched at once. */
+const NOTICE_READS = 4
 
 const MAGIC = [0x44, 0x46, 0x50, 0x4b] // "DFPK"
 const MEMBERS_COPY = 0x01
@@ -158,10 +170,14 @@ export async function readAccessNotices(sdk: EvoSDK, repo: RepoRef): Promise<Not
   const { loadStoredArtifactBytes } = await import('../view/browse-source')
   const all: NoticeEntry[] = []
   let unreadable = 0
-  for (const m of [...manifests].reverse()) {
-    const notice = await loadStoredArtifactBytes(sdk, repo, m)
+  // oldest first, at most four reads in flight
+  const read = await mapPooled([...manifests].reverse(), NOTICE_READS, (m) =>
+    loadStoredArtifactBytes(sdk, repo, m)
       .then((b) => noticeOfCopy(repo, b, m.sizeBytes))
-      .catch(() => null)
+      .catch(() => null),
+  )
+  for (const [i, m] of [...manifests].reverse().entries()) {
+    const notice = read[i] ?? null
     if (notice === 'skip') continue
     if (notice === null) {
       unreadable += 1
@@ -331,12 +347,15 @@ export async function writeAccessNotice(
       const one = await storeOnPlatform(sdk, auth, repo, PACK_KIND.ACCESS_NOTICE, plain, intent)
       return { ids: [one.id], packHash: one.packHash }
     }
-    // Everything that can refuse is checked before the first copy is stored.
-    const publicKey = await botKey(sdk, repo, bot, opts.name)
-    const toBot = await sealToBot(sdk, auth, repo, bot, publicKey, plain)
+    // Everything that can refuse is checked before the first copy is stored. Taking access away
+    // from a bot with no encryption key writes the members' copy only: that is what members'
+    // clients read, and the bot has nothing to read it with.
+    const publicKey = notice.may.length === 0 ? await encryptionKeyOf(sdk, repo, bot) : await botKey(sdk, repo, bot, opts.name)
+    const toBot = publicKey === null ? null : await sealToBot(sdk, auth, repo, bot, publicKey, plain)
     const { keys } = await privateWriter(sdk, auth, repo)
     const members = await sealPack(keys, plain)
     const first = await storeOnPlatform(sdk, auth, repo, PACK_KIND.ACCESS_NOTICE, members, intent)
+    if (toBot === null) return { ids: [first.id], packHash: first.packHash }
     const second = await storeOnPlatform(sdk, auth, repo, PACK_KIND.ACCESS_NOTICE, toBot, `${intent}:bot`)
     return { ids: [first.id, second.id], packHash: first.packHash }
   } finally {
@@ -369,8 +388,16 @@ export interface AskPlan {
   readonly membersOnly: boolean
   /** The AI service the bot's notice names. */
   readonly processor: string | null
-  /** The members-only posts the letter carries (none: no letter). */
+  /** Whether the bot's notice lets it read the threads it is asked about. */
+  readonly reads: boolean
+  /** A pull request from a fork or from someone outside the members: nothing members-only of it is handed on. */
+  readonly foreign: boolean
+  /** Whether a `read` letter goes with the request (it then carries the request's own key too). */
+  readonly letter: boolean
+  /** The members-only posts the letter carries: the thread itself (0 or 1) and its comments and reviews. */
   readonly shared: { readonly thread: number; readonly comments: number }
+  /** Long members-only posts whose full text could not be handed on: the bot reads them shortened. */
+  readonly shortened: number
   /** The members-only posts left out, and why. */
   readonly leftOut: readonly NotShared[]
 }
@@ -396,8 +423,11 @@ async function threadPosts(sdk: EvoSDK, repo: RepoRef, target: AskTarget): Promi
   ]
 }
 
+/** A members-only post's per-object key as this tab opens it now, with its opened body; or why it is left out. */
+type PostKey = { readonly doc: LetterDoc; readonly body: string | null } | { readonly why: NotShared }
+
 /** The per-object key of members-only `post` as this tab opens it now, or why it is left out. */
-async function postKey(repo: RepoRef, session: PrivateSession | undefined, post: Post): Promise<{ readonly doc: LetterDoc } | { readonly why: NotShared }> {
+async function postKey(repo: RepoRef, session: PrivateSession | undefined, post: Post): Promise<PostKey> {
   const stored = storedPrivateDoc(post.type, post.doc, repo.visibility)
   const first = bytesField(post.doc, 'enc')?.[0]
   if (first === V4) return { why: 'letter' }
@@ -407,7 +437,7 @@ async function postKey(repo: RepoRef, session: PrivateSession | undefined, post:
   if (opened.status !== 'readable') return { why: 'unreadable' }
   const keys = session.resolution.keys.get(stored.epoch)
   const key = keys === undefined ? null : await readObjKey(keys, stored, stored.enc)
-  return key === null ? { why: 'unreadable' } : { doc: { id: stored.id, revision: revisionOf(post.doc), key } }
+  return key === null ? { why: 'unreadable' } : { doc: { id: stored.id, revision: revisionOf(post.doc), key }, body: opened.fields.body ?? null }
 }
 
 /** Whether this tab opens members-only `post` (a private repo's older posts too). */
@@ -416,10 +446,77 @@ async function opens(repo: RepoRef, session: PrivateSession | undefined, post: P
   return session !== undefined && stored !== null && (await openContent(stored, session.ctx)).status === 'readable'
 }
 
+/**
+ * The file keys of the members-only long bodies (kind 70) named `hashes` (their trailers' SHA-256,
+ * which is their `packHash`), each from the first stored copy whose header the members key this tab
+ * holds opens (forge-core `long_body_keys`). A body with no such copy is left out: the bot then
+ * reads its prefix, as any reader who cannot fetch it does.
+ */
+async function longBodyKeys(sdk: EvoSDK, repo: RepoRef, session: PrivateSession | undefined, hashes: readonly string[]): Promise<LetterPack[]> {
+  const wanted = [...new Set(hashes)]
+  if (wanted.length === 0 || session === undefined) return []
+  const manifests = await readManifestsOfKind(sdk, repo, PACK_KIND.MEMBERS_LONG_BODY)
+  const { loadStoredArtifactBytes } = await import('../view/browse-source')
+  const out: LetterPack[] = []
+  for (const hash of wanted) {
+    for (const m of manifests.filter((x) => x.packHash.toLowerCase() === hash)) {
+      const sealed = await loadStoredArtifactBytes(sdk, repo, m).catch(() => null)
+      if (sealed === null) continue
+      let header: ReturnType<typeof parseHeader>
+      try {
+        header = parseHeader(sealed)
+      } catch {
+        continue
+      }
+      const keys = session.resolution.keys.get(header.epoch)
+      if (keys === undefined) continue
+      out.push({ packHash: hexToBytes(hash), key: await keys.rawPackKey(header.fileId) })
+      break
+    }
+  }
+  return out.sort((a, b) => compareBytes(a.packHash, b.packHash))
+}
+
+/**
+ * Whether pull request `patch` is foreign (forge-core `plan_ask`): from another repository (a
+ * fork), or by someone who is neither the owner nor a member. A role that cannot be read counts as
+ * outside (fails closed).
+ */
+async function isForeign(sdk: EvoSDK, repo: RepoRef, patch: PlainDocument, network: Network): Promise<boolean> {
+  if (asIdentifierString(patch['sourceRepoId']) !== repo.repoId) return true
+  const author = asIdentifierString(patch['$ownerId'])
+  return author !== repo.ownerId && (await askerRole(sdk, repo, author, network)) === null
+}
+
+/**
+ * Whether a `read` letter of `docs` and `packs` (and the request's own key) fits a key letter, by
+ * encoding a trial of it (forge-core `AskPlan::check_size`).
+ */
+async function letterFits(target: AskTarget, docs: readonly LetterDoc[], packs: readonly LetterPack[]): Promise<boolean> {
+  const own: LetterDoc = { id: new Uint8Array(32).fill(0xff), revision: 1, key: new Uint8Array(32) }
+  const typed = await readLetterToTyped({
+    job: new Uint8Array(32),
+    asOf: Date.now(),
+    target: target.kind === 'pr' ? { pr: Math.max(1, target.number) } : { issue: Math.max(1, target.number) },
+    docs: dedupeDocs([...docs, own]),
+    packs,
+    heads: [],
+  })
+  if (typed === null) return false
+  try {
+    encodeKeyLetter(typed).fill(0)
+    return true
+  } catch (e) {
+    if (e instanceof KeyLetterError) return false
+    throw e
+  }
+}
+
 /** What {@link plan} found: the plan, and (when kept) the letter's keys. */
 interface Planned {
   readonly plan: AskPlan
   readonly docs: LetterDoc[]
+  readonly packs: LetterPack[]
   /** The bot's encryption key, when a letter will be written. */
   readonly botPublicKey: Uint8Array | null
 }
@@ -443,29 +540,49 @@ export interface AskInput extends AskAbout {
   readonly task: string
 }
 
+const NOTHING_SIGNED = ' Nothing was signed.'
+
 async function plan(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, input: AskAbout, keep: boolean): Promise<Planned> {
+  const n = input.target.number
+  const name = input.name
   const [notices, role, posts] = await Promise.all([readAccessNotices(sdk, repo), askerRole(sdk, repo, auth.identityId, auth.network), threadPosts(sdk, repo, input.target)])
   const root = posts[0] as Post
+  const session = membersSession(repo)
+  const rootVersion = bytesField(root.doc, 'enc')?.[0]
+  // In forge-core's order: the thread is readable, is no message to specific people, then the access.
+  if (isSealedDoc(root.doc) && rootVersion !== V4 && !(await opens(repo, session, root))) {
+    throw new BotAccessError(`You can't read #${n}, so you can't ask ${name} to work on it.${NOTHING_SIGNED}`)
+  }
+  if (rootVersion === V4) throw new BotAccessError(`#${n} is a message to specific people: ${name} can't be asked about it.${NOTHING_SIGNED}`)
   const membersOnly = repo.visibility === 'private' || isSealedDoc(root.doc)
   const notice = notices.current.get(input.bot)?.notice ?? null
-  const refusal = checkAsk(notice, role, input.target.number, membersOnly, Date.now())
-  if (refusal !== null) throw askRefused(refusal, input.name, input.display)
+  const refusal = checkAsk(notice, role, n, membersOnly, Date.now())
+  if (refusal !== null) throw askRefused(refusal, name, input.display)
+  const reads = notice !== null && noticeMay(notice, MAY_READ_ON_REQUEST)
+  // A private repository's posts here are under its older envelope, which no letter can hand on:
+  // the bot could not even read the task.
+  if (reads && repo.visibility === 'private') {
+    throw new BotAccessError(`${name} can't be given this private repository's posts yet: older items in this repo can't be shared one at a time.${NOTHING_SIGNED}`)
+  }
+  // The asking client never hands a fork's or an outsider's pull request to a bot (DESIGN §4.9).
+  const foreign = input.target.kind === 'pr' && (await isForeign(sdk, repo, root.doc, auth.network))
+  if (foreign && membersOnly) {
+    throw new BotAccessError(`#${n} comes from a fork or from someone outside the members: its members-only content can't be shared with ${name}.${NOTHING_SIGNED}`)
+  }
   const docs: LetterDoc[] = []
+  let packs: LetterPack[] = []
   const leftOut: NotShared[] = []
+  const continued: string[] = []
   let thread = 0
   let comments = 0
-  const session = membersSession(repo)
-  // A message to specific people takes no request: its event values go to its people only.
-  if (bytesField(root.doc, 'enc')?.[0] === V4) {
-    throw new BotAccessError(`${input.name} can't be asked about a message to specific people. Nothing was signed.`)
-  }
-  // Only a thread the asker reads can be handed on.
-  if (isSealedDoc(root.doc) && !(await opens(repo, session, root))) {
-    throw new BotAccessError(`You can't read #${input.target.number}, so you can't ask ${input.name} to work on it. Nothing was signed.`)
-  }
   let botPublicKey: Uint8Array | null = null
+  const wipe = (): void => {
+    for (const d of docs) d.key.fill(0)
+    for (const pk of packs) pk.key.fill(0)
+  }
+  const letter = reads && !foreign
   try {
-    if (notice !== null && noticeMay(notice, MAY_READ_ON_REQUEST) && posts.some((p) => isSealedDoc(p.doc))) {
+    if (letter) {
       for (const p of posts) {
         if (!isSealedDoc(p.doc)) continue
         const got = await postKey(repo, session, p)
@@ -475,43 +592,51 @@ async function plan(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, input: AskAbout
         }
         if (p === root) thread += 1
         else comments += 1
-        if (keep) docs.push(got.doc)
-        else got.doc.key.fill(0)
+        docs.push(got.doc)
+        const long = got.body === null ? null : parseLongBody(got.body)
+        if (long?.kind === 'continued') continued.push(long.sha256)
       }
     }
-    if (thread + comments > 0) {
+    // A members-only thread always gets a letter (it carries the request's own key); a public one
+    // only when it holds members-only posts the asker hands on.
+    const wantLetter = letter && (membersOnly || docs.length > 0)
+    if (wantLetter) {
+      packs = await longBodyKeys(sdk, repo, session, continued)
       // Everything the letter needs is checked here, before the request is signed.
-      if (letterBytes(thread + comments + 1) > MAX_KEY_LETTER) {
-        throw new BotAccessError(`#${input.target.number} has too many members-only posts to hand to ${input.name} at once (${thread + comments}). Nothing was signed.`)
-      }
-      botPublicKey = await botKey(sdk, repo, input.bot, input.name)
+      if (!(await letterFits(input.target, docs, packs))) throw new BotAccessError(`#${n} is too large to share with a bot at once (${docs.length} posts).${NOTHING_SIGNED}`)
+      botPublicKey = await botKey(sdk, repo, input.bot, name)
       await senderKey(sdk, auth, repo)
-      if ((await encryptionKeyState(auth.network, auth.identityId)) !== 'open') {
-        throw new BotAccessError(`Unlock this tab to hand the thread to ${input.name}. Nothing was signed.`)
-      }
+      if ((await encryptionKeyState(auth.network, auth.identityId)) !== 'open') throw new BotAccessError(`Unlock this tab to hand the thread to ${name}.${NOTHING_SIGNED}`)
     }
-  } catch (e) {
-    for (const d of docs) d.key.fill(0)
-    throw e
-  }
-  return {
-    plan: {
+    const planned: AskPlan = {
       target: input.target,
       bot: input.bot,
       membersOnly,
       processor: notice?.processor ?? null,
+      reads,
+      foreign,
+      letter: wantLetter,
       shared: { thread, comments },
+      shortened: new Set(continued).size - packs.length,
       leftOut,
-    },
-    docs,
-    botPublicKey,
+    }
+    if (!keep) {
+      wipe()
+      return { plan: planned, docs: [], packs: [], botPublicKey }
+    }
+    return { plan: planned, docs, packs, botPublicKey }
+  } catch (e) {
+    wipe()
+    throw e
   }
 }
 
 /**
  * What asking `input.bot` to work on `input.target` will hand on, read and checked now for the
  * dialog (forge-core `Collab::plan_ask`). Refused before anything is signed with
- * {@link AskRefusedError} (E813) when the bot's access does not allow it. Keeps no key.
+ * {@link AskRefusedError} (E813) when the bot's access does not allow it, or with
+ * {@link BotAccessError} for the thread (unreadable, a message to specific people, a private repo's
+ * older posts, a fork's or an outsider's members-only pull request, too large). Keeps no key.
  */
 export async function planAsk(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, input: AskAbout): Promise<AskPlan> {
   return (await plan(sdk, auth, repo, input, false)).plan
@@ -549,8 +674,8 @@ export async function writeAsk(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, inpu
     )
     const event = written.documentId
     if (planned.botPublicKey === null) return { plan: planned.plan, event, letter: null }
-    const unfinished = (what: string): BotAccessError =>
-      new BotAccessError(`The request was written, but ${what}.`, 'ask again: the bot works only from a request it was given the thread with')
+    const unfinished = (what: string, cause?: unknown): BotAccessError =>
+      new BotAccessError(`The request was written, but ${what}.`, 'ask again: the bot works only from a request it was given the thread with', cause)
     // the request itself, when its task is members-only: the bot reads it with this key
     const stored = await retryWhileMissing(async () => {
       const got = await queryDocuments(sdk, { dataContractId: contractOf(repo.forge, DOC.event), documentTypeName: DOC.event, where: [['$id', '==', event]], limit: 1 })
@@ -562,31 +687,31 @@ export async function writeAsk(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, inpu
       if ('why' in got) throw unfinished('its task could not be opened again to share it')
       docs.push({ ...got.doc, revision: 1 })
     }
-    const sorted = dedupeDocs(docs)
     const typed = await readLetterToTyped({
       job: decodeIdentifier(event),
       asOf: Date.now(),
       target: target.kind === 'pr' ? { pr: target.number } : { issue: target.number },
-      docs: sorted,
-      packs: [],
+      docs: dedupeDocs(docs),
+      packs: planned.packs,
       heads: [],
     })
     if (typed === null) throw unfinished('the thread could not be put together for the bot')
     try {
       plain = encodeKeyLetter(typed)
     } catch (e) {
-      if (e instanceof KeyLetterError) throw unfinished('the thread is too long to hand to the bot at once')
+      if (e instanceof KeyLetterError) throw unfinished('the thread is too long to hand to the bot at once', e)
       throw e
     }
     const sealed = await sealToBot(sdk, auth, repo, input.bot, planned.botPublicKey, plain).catch((e: unknown) => {
-      throw unfinished(`the thread could not be sent to the bot (${e instanceof Error ? e.message : String(e)})`)
+      throw unfinished('the thread could not be sent to the bot', e)
     })
     const letter = await storeOnPlatform(sdk, auth, repo, PACK_KIND.KEY_LETTER, sealed, `read-letter:${event}`).catch((e: unknown) => {
-      throw unfinished(`the thread could not be stored for the bot (${e instanceof Error ? e.message : String(e)})`)
+      throw unfinished('the thread could not be stored for the bot', e)
     })
     return { plan: planned.plan, event, letter: letter.id }
   } finally {
     for (const d of docs) d.key.fill(0)
+    for (const pk of planned.packs) pk.key.fill(0)
     plain?.fill(0)
   }
 }
@@ -601,9 +726,23 @@ function dedupeDocs(docs: readonly LetterDoc[]): LetterDoc[] {
   return out
 }
 
-/** An upper bound of a `read` letter's padded plaintext with `docs` revisions and no code. */
+/** An upper bound of a `read` letter's padded plaintext with `docs` revisions and no code (for the cost quote). */
 function letterBytes(docs: number): number {
   return 512 + 140 * docs
+}
+
+/**
+ * Whether request `req` was within its bot's access when it was written (forge-core
+ * `Collab::request_allowed`): against the notice that counted for its bot then (the newest written
+ * before it by the owner or a current maintainer) and the asker's role then, on a thread that is
+ * `membersOnly` or not.
+ */
+export function requestWithinAccess(req: AgentRequest, notices: Notices, oracle: RoleOracle, owner: string, membersOnly: boolean): boolean {
+  const then = notices.all.filter((e) => e.createdAt <= req.createdAt)
+  const counted = currentNotices(then, (w) => w === owner || oracle.currentRole(w) === 'maintainer')
+  const notice = [...counted.values()].find((e) => botIdOf(e.notice) === req.bot)?.notice ?? null
+  const role = req.asker === owner ? 'maintainer' : oracle.roleAt(req.asker, req.createdAt)
+  return requestAllowed(req, notice, role, membersOnly)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -624,7 +763,7 @@ export function noticeCredits(privateRepo: boolean): number {
 export function askCredits(p: AskPlan, task: string): number {
   const docs = p.shared.thread + p.shared.comments
   const event = previewCreate('event', { value: task.length > 0 ? task : 'x' }).credits
-  return event + (docs > 0 ? artifactCredits(letterBytes(docs + 1)) : 0)
+  return event + (p.letter ? artifactCredits(letterBytes(docs + 1)) : 0)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -642,7 +781,10 @@ export function askSummary(p: AskPlan, name: string, codeNote: boolean): string[
   const noun = p.target.kind === 'pr' ? 'pull request' : 'issue'
   const out: string[] = [`Ask ${name} to work on #${p.target.number}?`]
   const n = p.shared.comments
-  if (n > 0) {
+  if (p.foreign) {
+    out.push(`#${p.target.number} comes from a fork or from someone outside the members: ${name} gets only what everyone can read.`)
+    if (p.processor !== null) out.push(`${p.processor} processes it.`)
+  } else if (n > 0) {
     out.push(`It will get this ${noun}'s members-only comments as they are now (${n} ${n === 1 ? 'comment' : 'comments'}).`)
     if (p.processor !== null) out.push(`${p.processor} processes them.`)
     out.push("It can't see anything added later unless you ask again.")
@@ -650,10 +792,14 @@ export function askSummary(p: AskPlan, name: string, codeNote: boolean): string[
     out.push(`It will get this members-only ${noun} as it is now.`)
     if (p.processor !== null) out.push(`${p.processor} processes it.`)
     out.push("It can't see anything added later unless you ask again.")
+  } else if (p.letter) {
+    out.push(`It will get what you ask; none of this ${noun}'s members-only posts can be shared with it.`)
+    if (p.processor !== null) out.push(`${p.processor} processes it.`)
   } else {
     out.push(`It will work on this ${noun} as everyone can read it.`)
     if (p.processor !== null) out.push(`${p.processor} processes it.`)
   }
+  if (p.shortened > 0) out.push(`${p.shortened} long ${p.shortened === 1 ? 'post is' : 'posts are'} sent shortened.`)
   const letters = p.leftOut.filter((w) => w === 'letter').length
   const older = p.leftOut.filter((w) => w === 'older').length
   if (letters > 0) out.push(`${letters} ${letters === 1 ? "message to specific people isn't" : "messages to specific people aren't"} included.`)

@@ -47,21 +47,14 @@ import { Field, Input } from '@/components/ui/input'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { ErrorState, LoadingBlock } from '@/components/ui/states'
 import { PrivateRepoState } from '@/components/repo/private-repo-state'
+import { useHandle } from '@/components/repo/bot-handle'
 import { shortId } from '@/lib/utils'
 
 /** The empty state (DESIGN §10). */
 export const BOTS_EMPTY_TEXT =
   'No bots yet. A bot can report checks, post comments and work on pull requests you ask it to. It only reads members-only content when someone asks it to work on that thread.'
 
-/** How the copy names an identity: `@name` (its DPNS label), else its short id. */
-export function handleOf(id: string, name: string | null | undefined): string {
-  return name ? `@${name.replace(/\.dash$/i, '')}` : shortId(id)
-}
-
-/** The bot's handle as the copy writes it, from its DPNS name once read. */
-export function useHandle(id: string): string {
-  return handleOf(id, useDpnsName(id))
-}
+export { handleOf, useHandle } from '@/components/repo/bot-handle'
 
 /** What the page reads. */
 interface BotsRead {
