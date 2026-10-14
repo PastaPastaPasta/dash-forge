@@ -177,6 +177,22 @@ pub async fn run(ctx: &Ctx, cmd: &BotCommand) -> Result<()> {
     }
 }
 
+/// The abilities this version shows and sets; any other a notice lists is carried over untouched.
+const KNOWN_MAY: [&str; 4] = [
+    MAY_POST,
+    MAY_POST_MEMBERS_ONLY,
+    MAY_READ_ON_REQUEST,
+    MAY_CI_MEMBERS_BRANCHES,
+];
+
+/// A notice's threads as the JSON output spells them: `"all"` or the numbers.
+fn threads_json(threads: &Threads) -> serde_json::Value {
+    match threads {
+        Threads::All => json!("all"),
+        Threads::Listed(ns) => json!(ns),
+    }
+}
+
 /// `@name` for an identity: its DPNS name when it has one, else its id.
 async fn handle(s: &Session, id: &str) -> String {
     s.client
@@ -281,10 +297,7 @@ async fn write_notice(
             "bot": forge_core::platform::encode_identifier(notice.bot),
             "may": notice.may,
             "askers": notice.askers,
-            "threads": match &notice.threads {
-                Threads::All => json!("all"),
-                Threads::Listed(ns) => json!(ns),
-            },
+            "threads": threads_json(&notice.threads),
             "processor": notice.processor,
             "until": notice.until,
             "line": line,
@@ -340,15 +353,7 @@ async fn allow(ctx: &Ctx, a: &AllowArgs) -> Result<()> {
         p.notice
             .may
             .iter()
-            .filter(|m| {
-                ![
-                    MAY_POST,
-                    MAY_POST_MEMBERS_ONLY,
-                    MAY_READ_ON_REQUEST,
-                    MAY_CI_MEMBERS_BRANCHES,
-                ]
-                .contains(&m.as_str())
-            })
+            .filter(|m| !KNOWN_MAY.contains(&m.as_str()))
             .cloned()
             .collect()
     });
@@ -425,15 +430,7 @@ async fn allow(ctx: &Ctx, a: &AllowArgs) -> Result<()> {
         .may
         .iter()
         .map(String::as_str)
-        .filter(|m| {
-            ![
-                MAY_POST,
-                MAY_POST_MEMBERS_ONLY,
-                MAY_READ_ON_REQUEST,
-                MAY_CI_MEMBERS_BRANCHES,
-            ]
-            .contains(m)
-        })
+        .filter(|m| !KNOWN_MAY.contains(m))
         .chain(notice.extra.keys().map(String::as_str))
         .collect();
     if !kept.is_empty() && !ctx.json {
@@ -494,10 +491,7 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
                 "bot": id,
                 "may": e.notice.may,
                 "askers": e.notice.askers,
-                "threads": match &e.notice.threads {
-                    Threads::All => json!("all"),
-                    Threads::Listed(ns) => json!(ns),
-                },
+                "threads": threads_json(&e.notice.threads),
                 "processor": e.notice.processor,
                 "until": e.notice.until,
                 "live": e.notice.live_at(now) && !e.notice.may.is_empty(),
@@ -824,11 +818,15 @@ async fn write_code(
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     let mut written = Vec::new();
     for p in &letter.packs {
+        let copies: Vec<_> = manifests
+            .iter()
+            .filter(|m| {
+                m.pack_hash == p.pack_hash
+                    && m.kind == u64::from(forge_core::pack::KIND_MEMBERS_GIT_PACK)
+            })
+            .collect();
         let mut plain = None;
-        for m in manifests.iter().filter(|m| {
-            m.pack_hash == p.pack_hash
-                && m.kind == u64::from(forge_core::pack::KIND_MEMBERS_GIT_PACK)
-        }) {
+        for &m in &copies {
             let Ok(sealed) = svc.fetch_artifact(&s.repo, m, &store).await else {
                 continue;
             };
@@ -841,10 +839,7 @@ async fn write_code(
         }
         // long bodies are read with the thread; only git packs are written here
         let Some(plain) = plain else {
-            if manifests.iter().any(|m| {
-                m.pack_hash == p.pack_hash
-                    && m.kind == u64::from(forge_core::pack::KIND_MEMBERS_GIT_PACK)
-            }) {
+            if !copies.is_empty() {
                 eprintln!(
                     "note: pack {} could not be read from any copy; skipped",
                     hex::encode(p.pack_hash)
@@ -907,6 +902,8 @@ async fn read(ctx: &Ctx, repo: &str, job: &str, code: Option<&Path>) -> Result<(
         })
         .collect();
     let letter = read.letter.as_ref();
+    let first_head = letter.and_then(|l| l.letter.heads.first());
+    let pack_count = letter.map_or(0, |l| l.letter.packs.len());
     ctx.emit(
         json!({
             "request": read.request.id,
@@ -917,8 +914,8 @@ async fn read(ctx: &Ctx, repo: &str, job: &str, code: Option<&Path>) -> Result<(
             "at": read.request.created_at,
             "letter": letter.map(|l| l.id.clone()),
             "asOf": letter.map(|l| l.letter.as_of),
-            "head": letter.and_then(|l| l.letter.heads.first()).map(|h| hex::encode(&h.oid)),
-            "packs": letter.map_or(0, |l| l.letter.packs.len()),
+            "head": first_head.map(|h| hex::encode(&h.oid)),
+            "packs": pack_count,
             "packFiles": packs,
             "posts": posts,
         }),
@@ -943,11 +940,11 @@ async fn read(ctx: &Ctx, repo: &str, job: &str, code: Option<&Path>) -> Result<(
                 ),
                 None => println!("no members-only content was shared with you for this request"),
             }
-            if let Some(h) = letter.and_then(|l| l.letter.heads.first()) {
+            if let Some(h) = first_head {
                 println!(
                     "code: head {} in {} pack(s){}",
                     hex::encode(&h.oid),
-                    letter.map_or(0, |l| l.letter.packs.len()),
+                    pack_count,
                     if packs.is_empty() {
                         String::new()
                     } else {

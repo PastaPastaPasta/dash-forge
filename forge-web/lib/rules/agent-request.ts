@@ -133,12 +133,18 @@ export function roleWords(role: Role | null): string {
   }
 }
 
+/** The E813 message and its fix line. */
+export interface RefusalWords {
+  readonly message: string
+  readonly fix: string
+}
+
 /**
  * The E813 message and its fix line for `refusal`, for bot `bot` as the copy names it (`@ci-bot`)
  * in repository `repo` (`o/r`), with `untilWords` the notice's end as the copy writes a date.
  * The same strings as forge-core `AskRefusal::words`.
  */
-export function askRefusalWords(refusal: AskRefusal, bot: string, repo: string, untilWords: string): { readonly message: string; readonly fix: string } {
+export function askRefusalWords(refusal: AskRefusal, bot: string, repo: string, untilWords: string): RefusalWords {
   const change = `ask a maintainer to change ${bot}'s access`
   switch (refusal.why) {
     case 'noAccess':
@@ -158,6 +164,6 @@ export function askRefusalWords(refusal: AskRefusal, bot: string, repo: string, 
 }
 
 /** {@link askRefusalWords} with the notice's end as the copy writes a date. */
-export function refusalWords(refusal: AskRefusal, bot: string, repo: string): { readonly message: string; readonly fix: string } {
+export function refusalWords(refusal: AskRefusal, bot: string, repo: string): RefusalWords {
   return askRefusalWords(refusal, bot, repo, refusal.why === 'ended' ? dateWords(refusal.until) : '')
 }

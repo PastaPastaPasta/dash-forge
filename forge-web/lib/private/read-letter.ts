@@ -78,6 +78,8 @@ const FIELDS = ['asOf', 'checkNameKey', 'docs', 'heads', 'job', 'packs', 'target
 const U32_MAX = 0xffff_ffff
 
 const isCount = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0
+/** An issue or pull request number. */
+const isThreadNumber = (n: unknown): n is number => isCount(n) && n >= 1 && n <= U32_MAX
 
 /** The order of `docs`: by id, then revision. */
 export function compareDocs(a: LetterDoc, b: LetterDoc): number {
@@ -96,11 +98,14 @@ async function wellFormed(r: ReadLetter): Promise<boolean> {
     r.docs.every((d) => d.id.length === 32 && d.key.length === 32 && isCount(d.revision) && d.revision >= 1) &&
     r.docs.every((d, i) => i === 0 || compareDocs(r.docs[i - 1] as LetterDoc, d) < 0)
   const packs = r.packs.every((p, i) => i === 0 || compareBytes((r.packs[i - 1] as LetterPack).packHash, p.packHash) < 0)
-  const n = 'branch' in r.target ? null : 'pr' in r.target ? r.target.pr : r.target.issue
-  const target = n === null ? 'branch' in r.target && r.target.branch.length === 32 : isCount(n) && n >= 1 && n <= U32_MAX
-  if (!docs || !packs || !target || r.job.length !== 32 || !isCount(r.asOf)) return false
+  if (!docs || !packs || !targetOk(r.target) || r.job.length !== 32 || !isCount(r.asOf)) return false
   for (const h of r.heads) if (!(await headChecks(h))) return false
   return true
+}
+
+function targetOk(t: ReadTarget): boolean {
+  if ('branch' in t) return t.branch.length === 32
+  return isThreadNumber('pr' in t ? t.pr : t.issue)
 }
 
 function targetJson(t: ReadTarget): JsonValue {
@@ -114,7 +119,7 @@ function targetOf(v: JsonValue | undefined): ReadTarget | null {
   if (keys.length !== 1) return null
   const k = keys[0] as string
   const n = (v as { readonly [k: string]: JsonValue })[k]
-  const number = isCount(n) && n >= 1 && n <= U32_MAX ? n : null
+  const number = isThreadNumber(n) ? n : null
   switch (k) {
     case 'pr':
       return number === null ? null : { pr: number }

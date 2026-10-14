@@ -346,6 +346,15 @@ pub fn date_words(ms: u64) -> String {
     format!("{} {month} {y}", d.trim_start_matches('0'))
 }
 
+/// `a`, `a and b`, `a, b and c`.
+fn list_words(items: &[&str]) -> String {
+    match items.split_last() {
+        Some((last, [])) => (*last).to_owned(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+        None => String::new(),
+    }
+}
+
 /// The line everyone reads about a bot's access (DESIGN §10 "Public line"), for `bot` as the
 /// copy names it (`@ci-bot`), at `now` (ms): `@ci-bot can post here and read pull requests and
 /// issues it's asked about. Asked by writers and maintainers. Processed by <service>. Until
@@ -371,24 +380,15 @@ pub fn public_line(n: &AccessNotice, bot: &str, now: u64) -> String {
     if can.is_empty() {
         return format!("{bot} has no access here.");
     }
-    let can = match can.split_last() {
-        Some((last, [])) => (*last).to_owned(),
-        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
-        None => String::new(),
-    };
-    let mut out = format!("{bot} can {can}.");
+    let mut out = format!("{bot} can {}.", list_words(&can));
     out.push_str(match n.askers {
         Askers::Writers => " Asked by writers and maintainers.",
         Askers::Maintainers => " Asked by maintainers.",
     });
     if let Threads::Listed(ns) = &n.threads {
         let ns: Vec<String> = ns.iter().map(|n| format!("#{n}")).collect();
-        let ns = match ns.split_last() {
-            Some((last, [])) => last.clone(),
-            Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
-            None => String::new(),
-        };
-        let _ = write!(out, " Only on {ns}.");
+        let ns: Vec<&str> = ns.iter().map(String::as_str).collect();
+        let _ = write!(out, " Only on {}.", list_words(&ns));
     }
     if let Some(p) = &n.processor {
         let _ = write!(out, " Processed by {p}.");

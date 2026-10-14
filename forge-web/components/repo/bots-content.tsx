@@ -133,6 +133,7 @@ function Bots({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Elemen
   )
 }
 
+const LIST_CLASS = 'divide-y divide-anvil-200 rounded-lg border border-anvil-200 dark:divide-anvil-800 dark:border-anvil-800'
 
 /**
  * Each bot's access as everyone reads it, and the runners (DESIGN §4.9 "How access looks"). With
@@ -163,14 +164,14 @@ export function BotsView({
   return (
     <div className="space-y-4">
       {current.length > 0 ? (
-        <ul className="divide-y divide-anvil-200 rounded-lg border border-anvil-200 dark:divide-anvil-800 dark:border-anvil-800" data-testid="bot-list">
+        <ul className={LIST_CLASS} data-testid="bot-list">
           {current.map((e) => (
             <BotRow key={e.id} entry={e} now={now} {...(onEdit ? { onEdit } : {})} {...(onRemove ? { onRemove } : {})} />
           ))}
         </ul>
       ) : null}
       {runners.length > 0 ? (
-        <ul className="divide-y divide-anvil-200 rounded-lg border border-anvil-200 dark:divide-anvil-800 dark:border-anvil-800" data-testid="runner-list">
+        <ul className={LIST_CLASS} data-testid="runner-list">
           {runners.map((r) => (
             <li key={r} className="flex flex-wrap items-center gap-2 px-4 py-3 text-dense" data-testid="runner-row">
               <Server className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />

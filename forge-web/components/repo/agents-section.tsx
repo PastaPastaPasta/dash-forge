@@ -34,9 +34,8 @@ import {
   type AskTarget,
   type Notices,
 } from '@/lib/repo/bot-access'
-import { checkAsk, isTask, refusalWords, TASK_MAX, type AskRefusal } from '@/lib/rules/agent-request'
+import { checkAsk, isTask, refusalWords, TASK_MAX, type AgentRequest, type AskRefusal } from '@/lib/rules/agent-request'
 import { RoleOracle, type Membership, type Role } from '@/lib/rules/v2'
-import type { AgentRequest } from '@/lib/rules/agent-request'
 import { previewCredits } from '@/lib/sdk'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
@@ -191,18 +190,22 @@ export function AskDialog({ bot, name, display, target, notice, role, membersOnl
   const planned = useAsync(() => plan(about), [bot, target.id, display], { enabled: role !== undefined && local === null })
   const refusal = local ?? (planned.cause instanceof AskRefusedError ? planned.cause.refusal : null)
   const taskOk = isTask(task)
-  const blocked =
-    refusal !== null ? (
-      <AskRefusalNote refusal={refusal} name={name} display={display} />
-    ) : planned.error !== null ? (
+  let blocked: JSX.Element | undefined
+  if (refusal !== null) {
+    blocked = <AskRefusalNote refusal={refusal} name={name} display={display} />
+  } else if (planned.error !== null) {
+    blocked = (
       <p role="alert" className="text-dense text-danger-700 dark:text-danger-400" data-testid="ask-plan-error">
         {planned.error}
       </p>
-    ) : !taskOk ? (
+    )
+  } else if (!taskOk) {
+    blocked = (
       <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="ask-task-hint">
         Say what you&apos;d like it to do, in up to {TASK_MAX.chars} characters.
       </p>
-    ) : undefined
+    )
+  }
   const lines = planned.data === null ? [] : askSummary(planned.data, name, codeNote).slice(1)
   return (
     <ConfirmDialog

@@ -122,15 +122,20 @@ export function textOk(s: string, max: number, newline: boolean): boolean {
 }
 
 const isU32 = (n: unknown): n is number => typeof n === 'number' && Number.isInteger(n) && n >= 0 && n <= U32_MAX
+const isNat = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0
+
+/** Whether each of `xs` is `less` than the next (sorted, each once). */
+function ascending<T>(xs: readonly T[], less: (a: T, b: T) => boolean): boolean {
+  return xs.every((x, i) => i === 0 || less(xs[i - 1] as T, x))
+}
 
 function wellFormed(n: AccessNotice): boolean {
-  const may = n.may.every((m) => m.length > 0 && m.length <= ABILITY_MAX && /^[A-Za-z0-9]+$/.test(m)) && n.may.every((m, i) => i === 0 || (n.may[i - 1] as string) < m)
+  const may = n.may.every((m) => m.length > 0 && m.length <= ABILITY_MAX && /^[A-Za-z0-9]+$/.test(m)) && ascending(n.may, (a, b) => a < b)
   const threads =
-    n.threads === 'all' ||
-    (n.threads.length > 0 && n.threads.length <= THREADS_MAX && n.threads.every(isU32) && (n.threads[0] as number) >= 1 && n.threads.every((t, i) => i === 0 || (n.threads[i - 1] as number) < t))
+    n.threads === 'all' || (n.threads.length > 0 && n.threads.length <= THREADS_MAX && n.threads.every(isU32) && (n.threads[0] as number) >= 1 && ascending(n.threads, (a, b) => a < b))
   const processor = n.processor === null || (!isBlank(n.processor) && textOk(n.processor, PROCESSOR_MAX, false))
-  const revokes = n.revokes.length <= REVOKES_MAX && n.revokes.every((h) => h.length === 32) && n.revokes.every((h, i) => i === 0 || compareBytes(n.revokes[i - 1] as Uint8Array, h) < 0)
-  const until = n.until === null || (Number.isSafeInteger(n.until) && n.until >= 0)
+  const revokes = n.revokes.length <= REVOKES_MAX && n.revokes.every((h) => h.length === 32) && ascending(n.revokes, (a, b) => compareBytes(a, b) < 0)
+  const until = n.until === null || isNat(n.until)
   return n.bot.length === 32 && may && threads && processor && revokes && textOk(n.note, NOTE_MAX, true) && until
 }
 
@@ -188,8 +193,8 @@ export function noticeFromTyped(t: TypedLetter): AccessNotice | null {
     if (b === null) return null
     revokes.push(b)
   }
-  const until = f.until === null ? null : typeof f.until === 'number' && Number.isSafeInteger(f.until) && f.until >= 0 ? f.until : undefined
-  const processor = f.processor === null ? null : typeof f.processor === 'string' ? f.processor : undefined
+  const until = f.until === null || isNat(f.until) ? f.until : undefined
+  const processor = f.processor === null || typeof f.processor === 'string' ? f.processor : undefined
   if (until === undefined || processor === undefined || typeof f.note !== 'string') return null
   if (f.askers !== 'writers' && f.askers !== 'maintainers') return null
   const extra: { [k: string]: JsonValue } = {}

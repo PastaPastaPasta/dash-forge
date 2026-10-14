@@ -63,7 +63,7 @@ import {
   type NoticeEntry,
   type PrivateDocType,
 } from '../private'
-import { AGENT_REQUEST_KIND, checkAsk, isTask, refusalWords, requestAllowed, roleWords, TASK_MAX, type AgentRequest, type AskRefusal } from '../rules/agent-request'
+import { AGENT_REQUEST_KIND, checkAsk, isTask, refusalWords, requestAllowed, roleWords, TASK_MAX, type AgentRequest, type AskRefusal, type RefusalWords } from '../rules/agent-request'
 import { parseLongBody } from '../rules/long-body'
 import type { Role, RoleOracle } from '../rules/v2'
 import { compareBytes } from '../private/ids'
@@ -102,7 +102,7 @@ export class BotAccessError extends Error {
 export class AskRefusedError extends BotAccessError {
   constructor(
     readonly refusal: AskRefusal,
-    words: { readonly message: string; readonly fix: string },
+    words: RefusalWords,
   ) {
     super(words.message, words.fix)
     this.name = 'AskRefusedError'
@@ -170,13 +170,14 @@ export async function readAccessNotices(sdk: EvoSDK, repo: RepoRef): Promise<Not
   const { loadStoredArtifactBytes } = await import('../view/browse-source')
   const all: NoticeEntry[] = []
   let unreadable = 0
-  // oldest first, at most four reads in flight
-  const read = await mapPooled([...manifests].reverse(), NOTICE_READS, (m) =>
+  const oldestFirst = [...manifests].reverse()
+  // at most four reads in flight
+  const read = await mapPooled(oldestFirst, NOTICE_READS, (m) =>
     loadStoredArtifactBytes(sdk, repo, m)
       .then((b) => noticeOfCopy(repo, b, m.sizeBytes))
       .catch(() => null),
   )
-  for (const [i, m] of [...manifests].reverse().entries()) {
+  for (const [i, m] of oldestFirst.entries()) {
     const notice = read[i] ?? null
     if (notice === 'skip') continue
     if (notice === null) {
@@ -542,6 +543,12 @@ export interface AskInput extends AskAbout {
 
 const NOTHING_SIGNED = ' Nothing was signed.'
 
+/** Zero every per-object and file key a letter's plan holds. */
+function wipeKeys(docs: readonly LetterDoc[], packs: readonly LetterPack[]): void {
+  for (const d of docs) d.key.fill(0)
+  for (const pk of packs) pk.key.fill(0)
+}
+
 async function plan(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, input: AskAbout, keep: boolean): Promise<Planned> {
   const n = input.target.number
   const name = input.name
@@ -576,10 +583,6 @@ async function plan(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, input: AskAbout
   let thread = 0
   let comments = 0
   let botPublicKey: Uint8Array | null = null
-  const wipe = (): void => {
-    for (const d of docs) d.key.fill(0)
-    for (const pk of packs) pk.key.fill(0)
-  }
   const letter = reads && !foreign
   try {
     if (letter) {
@@ -621,12 +624,12 @@ async function plan(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, input: AskAbout
       leftOut,
     }
     if (!keep) {
-      wipe()
+      wipeKeys(docs, packs)
       return { plan: planned, docs: [], packs: [], botPublicKey }
     }
     return { plan: planned, docs, packs, botPublicKey }
   } catch (e) {
-    wipe()
+    wipeKeys(docs, packs)
     throw e
   }
 }
@@ -710,8 +713,7 @@ export async function writeAsk(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, inpu
     })
     return { plan: planned.plan, event, letter: letter.id }
   } finally {
-    for (const d of docs) d.key.fill(0)
-    for (const pk of planned.packs) pk.key.fill(0)
+    wipeKeys(docs, planned.packs)
     plain?.fill(0)
   }
 }

@@ -119,24 +119,20 @@ impl AskPlan {
         let Some(l) = &self.letter else {
             return Ok(());
         };
-        let mut docs: Vec<LetterDoc> = l.docs.iter().map(|(_, d)| d.clone()).collect();
+        let mut docs = l.letter_docs();
         docs.push(LetterDoc {
             id: [0xff; 32],
             revision: 1,
             key: zeroize::Zeroizing::new([0; 32]),
         });
-        docs.sort_by(|a, b| (&a.id, a.revision).cmp(&(&b.id, b.revision)));
-        docs.dedup_by(|a, b| a.id == b.id && a.revision == b.revision);
+        sort_dedup_docs(&mut docs);
         let trial = ReadLetter {
             job: [0; 32],
             as_of: crate::cache::now_ms(),
             target: ReadTarget::Pr(self.target.number.max(1)),
             docs,
             packs: l.packs(),
-            heads: l
-                .code
-                .as_ref()
-                .map_or_else(Vec::new, |c| vec![c.head.clone()]),
+            heads: l.heads(),
         };
         match trial.to_typed().map(|t| t.encode()) {
             Some(Ok(_)) => Ok(()),
@@ -190,9 +186,20 @@ impl LetterPlan {
             .flat_map(|c| c.packs.iter().cloned())
             .chain(self.bodies.iter().cloned())
             .collect();
-        packs.sort_by_key(|p| p.pack_hash);
-        packs.dedup_by(|a, b| a.pack_hash == b.pack_hash);
+        sort_dedup_packs(&mut packs);
         packs
+    }
+
+    /// The document revisions it opens, as planned (not yet sorted).
+    fn letter_docs(&self) -> Vec<LetterDoc> {
+        self.docs.iter().map(|(_, d)| d.clone()).collect()
+    }
+
+    /// The members-only commits it covers: the code's head, if there is code.
+    fn heads(&self) -> Vec<LetterHead> {
+        self.code
+            .as_ref()
+            .map_or_else(Vec::new, |c| vec![c.head.clone()])
     }
 
     /// How many of its documents are of `kind`.
@@ -308,6 +315,18 @@ fn text_fields(d: &FetchedDocument) -> Fields {
 
 fn revision_of(d: &FetchedDocument) -> u64 {
     d.revision.unwrap_or(1)
+}
+
+/// `docs` sorted by (id, revision), each once: the order a `read` letter keeps.
+fn sort_dedup_docs(docs: &mut Vec<LetterDoc>) {
+    docs.sort_by(|a, b| (&a.id, a.revision).cmp(&(&b.id, b.revision)));
+    docs.dedup_by(|a, b| a.id == b.id && a.revision == b.revision);
+}
+
+/// `packs` sorted by `packHash`, each once.
+fn sort_dedup_packs(packs: &mut Vec<LetterPack>) {
+    packs.sort_by_key(|p| p.pack_hash);
+    packs.dedup_by(|a, b| a.pack_hash == b.pack_hash);
 }
 
 impl Collab<'_> {
@@ -813,8 +832,7 @@ impl Collab<'_> {
                 }
             }
         }
-        out.sort_by_key(|p| p.pack_hash);
-        out.dedup_by(|a, b| a.pack_hash == b.pack_hash);
+        sort_dedup_packs(&mut out);
         Ok(out)
     }
 
@@ -847,7 +865,7 @@ impl Collab<'_> {
                     .fix("ask again: the bot works only from a request with its letter"),
             )
         };
-        let mut docs: Vec<LetterDoc> = lp.docs.iter().map(|(_, d)| d.clone()).collect();
+        let mut docs = lp.letter_docs();
         // the request itself, when it was sealed: the bot reads its task with this key (read
         // back, with a few tries while a lagging node catches up)
         let mut written = None;
@@ -878,13 +896,7 @@ impl Collab<'_> {
                 key,
             });
         }
-        docs.sort_by(|a, b| (&a.id, a.revision).cmp(&(&b.id, b.revision)));
-        docs.dedup_by(|a, b| a.id == b.id && a.revision == b.revision);
-        let heads = lp
-            .code
-            .as_ref()
-            .map_or_else(Vec::new, |c| vec![c.head.clone()]);
-        let packs = lp.packs();
+        sort_dedup_docs(&mut docs);
         let letter = ReadLetter {
             job: platform::decode_identifier(&event)?,
             as_of: crate::cache::now_ms(),
@@ -893,8 +905,8 @@ impl Collab<'_> {
                 TargetKind::Patch => ReadTarget::Pr(plan.target.number),
             },
             docs,
-            packs,
-            heads,
+            packs: lp.packs(),
+            heads: lp.heads(),
         };
         let encoded = letter
             .to_typed()
