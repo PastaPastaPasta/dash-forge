@@ -51,6 +51,7 @@ pub mod aud;
 pub mod bans;
 pub mod ci_rerun;
 pub mod codeowners;
+pub mod embargo;
 pub mod letters;
 pub mod long_body;
 pub mod make_public;
