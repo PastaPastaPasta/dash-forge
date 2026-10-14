@@ -22,6 +22,12 @@ The exit code says which schema applies: 0, the command's own; anything else, th
 | `dg auth name register` | [`auth-name-register.schema.json`](dg/auth-name-register.schema.json) |
 | `dg auth new` | [`auth-new.schema.json`](dg/auth-new.schema.json) |
 | `dg auth status` | [`auth-status.schema.json`](dg/auth-status.schema.json) |
+| `dg bot allow` | [`bot-allow.schema.json`](dg/bot-allow.schema.json) |
+| `dg bot ask` | [`bot-ask.schema.json`](dg/bot-ask.schema.json) |
+| `dg bot jobs` | [`bot-jobs.schema.json`](dg/bot-jobs.schema.json) |
+| `dg bot list` | [`bot-list.schema.json`](dg/bot-list.schema.json) |
+| `dg bot read` | [`bot-read.schema.json`](dg/bot-read.schema.json) |
+| `dg bot revoke` | [`bot-revoke.schema.json`](dg/bot-revoke.schema.json) |
 | `dg branch cleanup` | [`branch-cleanup.schema.json`](dg/branch-cleanup.schema.json) |
 | `dg branch list` | [`branch-list.schema.json`](dg/branch-list.schema.json) |
 | `dg branch new` | [`branch-new.schema.json`](dg/branch-new.schema.json) |

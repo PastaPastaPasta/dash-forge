@@ -213,10 +213,7 @@ pub struct JobRead {
 #[must_use]
 pub fn ask_refused(refusal: &AskRefusal, bot: &str, repo: &RepoRef) -> Error {
     let until = match refusal {
-        AskRefusal::Ended { until } => crate::env::service::utc(*until)
-            .get(..10)
-            .unwrap_or_default()
-            .to_owned(),
+        AskRefusal::Ended { until } => crate::private::access_notice::date_words(*until),
         _ => String::new(),
     };
     let (msg, fix) = refusal.words(bot, &repo.display(), &until);
@@ -421,6 +418,11 @@ impl Collab<'_> {
             named::seal_artifact(&repo_id, sender, sender_key_id, &me, &recipients, plain)
         };
         sealed.map_err(|e| Error::Config(format!("sealing for the bot: {e}")))
+    }
+
+    /// Whether identity `who` has an encryption key anything members-only can be sent to.
+    pub async fn has_encryption_key(&self, repo: &RepoRef, who: &str) -> Result<bool> {
+        Ok(self.recipient_key_of(repo, who).await?.is_some())
     }
 
     /// The bot's encryption key, or a refusal before anything is signed.

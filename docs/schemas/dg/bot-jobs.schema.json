@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/bot-jobs.schema.json",
+  "title": "dg bot jobs --json",
+  "description": "As a bot: the requests to you in a repository since a time.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "since": {
+      "type": "integer"
+    },
+    "count": {
+      "type": "integer"
+    },
+    "requests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "number": {
+            "type": "integer"
+          },
+          "asker": {
+            "type": "string"
+          },
+          "task": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "at": {
+            "type": "integer"
+          },
+          "letter": {
+            "type": "boolean",
+            "description": "Whether the asker shared the thread's members-only content with you."
+          }
+        },
+        "required": [
+          "id",
+          "number",
+          "asker",
+          "at",
+          "letter"
+        ]
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "since",
+    "count",
+    "requests"
+  ],
+  "additionalProperties": true
+}

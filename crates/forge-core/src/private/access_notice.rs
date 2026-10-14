@@ -320,6 +320,76 @@ impl AccessNotice {
     }
 }
 
+/// `ms` as the access copy writes a date: `30 Nov 2026` (UTC).
+#[must_use]
+pub fn date_words(ms: u64) -> String {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let utc = crate::env::service::utc(ms);
+    let (y, m, d) = (&utc[0..4], &utc[5..7], &utc[8..10]);
+    let month = m
+        .parse::<usize>()
+        .ok()
+        .and_then(|m| MONTHS.get(m.wrapping_sub(1)))
+        .copied()
+        .unwrap_or("");
+    format!("{} {month} {y}", d.trim_start_matches('0'))
+}
+
+/// The line everyone reads about a bot's access (DESIGN §10 "Public line"), for `bot` as the
+/// copy names it (`@ci-bot`), at `now` (ms): `@ci-bot can post here and read pull requests and
+/// issues it's asked about. Asked by writers and maintainers. Processed by <service>. Until
+/// 30 Nov 2026.` A notice that allows nothing, or has ended, says so.
+#[must_use]
+pub fn public_line(n: &AccessNotice, bot: &str, now: u64) -> String {
+    if let Some(until) = n.until.filter(|_| !n.live_at(now)) {
+        return format!("{bot}'s access ended on {}.", date_words(until));
+    }
+    let mut can: Vec<&str> = Vec::new();
+    if n.may(MAY_POST) {
+        can.push("post here");
+    }
+    if n.may(MAY_POST_MEMBERS_ONLY) {
+        can.push("post members-only replies on threads it's asked about");
+    }
+    if n.may(MAY_READ_ON_REQUEST) {
+        can.push("read pull requests and issues it's asked about");
+    }
+    if n.may(MAY_CI_MEMBERS_BRANCHES) {
+        can.push("run checks on members-only branches");
+    }
+    if can.is_empty() {
+        return format!("{bot} has no access here.");
+    }
+    let can = match can.split_last() {
+        Some((last, [])) => (*last).to_owned(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+        None => String::new(),
+    };
+    let mut out = format!("{bot} can {can}.");
+    out.push_str(match n.askers {
+        Askers::Writers => " Asked by writers and maintainers.",
+        Askers::Maintainers => " Asked by maintainers.",
+    });
+    if let Threads::Listed(ns) = &n.threads {
+        let ns: Vec<String> = ns.iter().map(|n| format!("#{n}")).collect();
+        let ns = match ns.split_last() {
+            Some((last, [])) => last.clone(),
+            Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+            None => String::new(),
+        };
+        out.push_str(&format!(" Only on {ns}."));
+    }
+    if let Some(p) = &n.processor {
+        out.push_str(&format!(" Processed by {p}."));
+    }
+    if let Some(u) = n.until {
+        out.push_str(&format!(" Until {}.", date_words(u)));
+    }
+    out
+}
+
 fn hex_exact32(v: &Value) -> Option<[u8; 32]> {
     let s = v.as_str()?;
     if s.len() != 64 || s.bytes().any(|c| c.is_ascii_uppercase()) {
@@ -444,5 +514,37 @@ mod tests {
         let cur = current(&entries, |w| w == "m1");
         assert_eq!(cur[&[4; 32]].id, "a");
         assert!(notice().live_at(1) && !notice().live_at(1_767_225_600_000));
+    }
+
+    #[test]
+    fn the_public_line_reads_as_the_design_says() {
+        let n = AccessNotice {
+            threads: Threads::All,
+            ..notice()
+        };
+        assert_eq!(
+            public_line(&n, "@ci-bot", 0),
+            "@ci-bot can post here and read pull requests and issues it's asked about. Asked by \
+             writers and maintainers. Processed by Example AI. Until 1 Jan 2026."
+        );
+        assert_eq!(
+            public_line(&n, "@ci-bot", 1_767_225_600_000),
+            "@ci-bot's access ended on 1 Jan 2026."
+        );
+        let listed = AccessNotice {
+            may: vec![MAY_CI_MEMBERS_BRANCHES.into()],
+            askers: Askers::Maintainers,
+            processor: None,
+            until: None,
+            ..notice()
+        };
+        assert_eq!(
+            public_line(&listed, "@b", 0),
+            "@b can run checks on members-only branches. Asked by maintainers. Only on #42 and #57."
+        );
+        assert_eq!(
+            public_line(&AccessNotice::empty([0; 32]), "@b", 0),
+            "@b has no access here."
+        );
     }
 }

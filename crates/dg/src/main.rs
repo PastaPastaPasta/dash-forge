@@ -9,6 +9,7 @@ mod api;
 mod audience;
 mod auth;
 mod bans;
+mod bot;
 mod branch;
 mod branch_share;
 mod ci;
@@ -312,6 +313,10 @@ pub enum Command {
     /// CI: runner keys and memberships, and check runs on commits.
     #[command(subcommand)]
     Ci(ci::CiCommand),
+    /// Bots: what each may do in a repository, and asking one to work on a pull request or
+    /// issue.
+    #[command(subcommand)]
+    Bot(bot::BotCommand),
     /// Search issues and pull requests (in one repository) and repositories, with the web
     /// search box's qualifiers (`is:open label:bug author:@me -label:wontfix`).
     #[command(subcommand)]
@@ -2604,6 +2609,7 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
         Command::Webhook(cmd) => webhook::run(ctx, cmd).await,
         Command::Env(cmd) => env::run(ctx, cmd).await,
         Command::Ci(cmd) => ci::run(ctx, cmd).await,
+        Command::Bot(cmd) => bot::run(ctx, cmd).await,
         Command::Search(cmd) => search::run(ctx, cmd).await,
         Command::Api(cmd) => api::run(ctx, cmd).await,
         Command::Repack {
