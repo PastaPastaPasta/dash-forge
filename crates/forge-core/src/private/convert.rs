@@ -286,7 +286,12 @@ mod tests {
     fn epoch_key_bundles_publish_each_epoch_once_and_split_by_size() {
         let repo = [7u8; 32];
         let keys: BTreeMap<u32, EpochKey> = (0..u32::try_from(MAX_EPOCH_ENTRIES + 3).unwrap())
-            .map(|e| (e, EpochKey::from_bytes([u8::try_from(e % 251).unwrap(); 32])))
+            .map(|e| {
+                (
+                    e,
+                    EpochKey::from_bytes([u8::try_from(e % 251).unwrap(); 32]),
+                )
+            })
             .collect();
         let bundles = epoch_key_bundles(&repo, &keys).unwrap();
         assert_eq!(bundles.len(), 2);
@@ -302,7 +307,9 @@ mod tests {
             }
         }
         assert_eq!(seen, keys.keys().copied().collect::<Vec<_>>());
-        assert!(epoch_key_bundles(&repo, &BTreeMap::new()).unwrap().is_empty());
+        assert!(epoch_key_bundles(&repo, &BTreeMap::new())
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

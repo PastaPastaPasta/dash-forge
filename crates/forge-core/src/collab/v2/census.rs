@@ -101,67 +101,48 @@ impl Collab<'_> {
         let filter = [Self::repo_filter(&private)?];
         let order = [QueryOrder::asc("$createdAt")];
         let mut out = Census::default();
-        let numbers = |d: &FetchedDocument| d.field_u64("number").map(|n| format!("#{n}"));
-        for (doc_type, kind) in [
-            (DOC_ISSUE, ContentKind::Issue),
-            (DOC_PATCH, ContentKind::Patch),
-            (DOC_COMMENT, ContentKind::Comment),
-            (DOC_REVIEW, ContentKind::Review),
-        ] {
-            let docs: Vec<FetchedDocument> = self
-                .client
-                .query_all_documents(&collab, doc_type, &filter, &order)
-                .await?
-                .into_iter()
-                .filter(written_private)
-                .collect();
-            let (letters, docs): (Vec<_>, Vec<_>) = docs.into_iter().partition(is_letter);
-            out.letters += letters.len();
-            let read = self.readable(&private, kind, docs).await?;
-            out.unread += read.members_only.len();
-            for d in &read.rows {
-                out.authors.insert(d.owner_id.clone());
-                out.revisions += usize::try_from(d.revision.unwrap_or(1).saturating_sub(1))
-                    .unwrap_or(usize::MAX);
-                if let Some(i) = imported_of(d) {
-                    out.imported.insert((host_of(&i.url), i.author));
-                }
-                let (noun, place) = match kind {
-                    ContentKind::Issue => {
-                        out.issues += 1;
-                        ("issue", numbers(d).unwrap_or_default())
-                    }
-                    ContentKind::Patch => {
-                        out.prs += 1;
-                        ("pull request", numbers(d).unwrap_or_default())
-                    }
-                    ContentKind::Comment => {
-                        out.comments += 1;
-                        ("comment", d.id.clone())
-                    }
-                    _ => {
-                        out.reviews += 1;
-                        ("review", d.id.clone())
-                    }
-                };
-                for field in ["title", "body", "path"] {
-                    if let Some(text) = d.field_str(field).filter(|t| !t.is_empty()) {
-                        out.texts.push(CensusText {
-                            place: format!("{noun} {place} {field}"),
-                            text,
-                        });
-                    }
-                }
+        // issues and pull requests by repository; comments by thread and reviews by pull request,
+        // the only indexes those two have
+        let issues = self
+            .client
+            .query_all_documents(&collab, DOC_ISSUE, &filter, &order)
+            .await?;
+        let patches = self
+            .client
+            .query_all_documents(&collab, DOC_PATCH, &filter, &order)
+            .await?;
+        let mut comments = Vec::new();
+        let mut reviews = Vec::new();
+        for (d, is_patch) in issues
+            .iter()
+            .map(|d| (d, false))
+            .chain(patches.iter().map(|d| (d, true)))
+        {
+            comments.extend(
+                self.by_target(&collab, DOC_COMMENT, "targetId", &d.id)
+                    .await?,
+            );
+            if is_patch {
+                reviews.extend(
+                    self.by_target(&collab, DOC_REVIEW, "patchId", &d.id)
+                        .await?,
+                );
             }
+        }
+        for (kind, docs) in [
+            (ContentKind::Issue, issues),
+            (ContentKind::Patch, patches),
+            (ContentKind::Comment, comments),
+            (ContentKind::Review, reviews),
+        ] {
+            self.count(&private, kind, docs, &mut out).await?;
         }
         let events: Vec<FetchedDocument> = self
             .client
             .query_all_documents(&community, DOC_EVENT, &filter, &order)
             .await?
             .into_iter()
-            .filter(|d| {
-                before.is_none_or(|h| d.created_at_block_height.is_some_and(|at| at <= h))
-            })
+            .filter(|d| before.is_none_or(|h| d.created_at_block_height.is_some_and(|at| at <= h)))
             .collect();
         for d in &events {
             match d.field_u64("kind") {
@@ -198,6 +179,62 @@ impl Collab<'_> {
     }
 }
 
+impl Collab<'_> {
+    /// Count the `kind` documents of `docs` written while private into `out`, opening them.
+    async fn count(
+        &self,
+        private: &RepoRef,
+        kind: ContentKind,
+        docs: Vec<FetchedDocument>,
+        out: &mut Census,
+    ) -> Result<()> {
+        let docs: Vec<FetchedDocument> = docs.into_iter().filter(written_private).collect();
+        let (letters, docs): (Vec<_>, Vec<_>) = docs.into_iter().partition(is_letter);
+        out.letters += letters.len();
+        let read = self.readable(private, kind, docs).await?;
+        out.unread += read.members_only.len();
+        let number = |d: &FetchedDocument| {
+            d.field_u64("number")
+                .map_or_else(String::new, |n| format!("#{n}"))
+        };
+        for d in &read.rows {
+            out.authors.insert(d.owner_id.clone());
+            out.revisions +=
+                usize::try_from(d.revision.unwrap_or(1).saturating_sub(1)).unwrap_or(usize::MAX);
+            if let Some(i) = imported_of(d) {
+                out.imported.insert((host_of(&i.url), i.author));
+            }
+            let (noun, place) = match kind {
+                ContentKind::Issue => {
+                    out.issues += 1;
+                    ("issue", number(d))
+                }
+                ContentKind::Patch => {
+                    out.prs += 1;
+                    ("pull request", number(d))
+                }
+                ContentKind::Comment => {
+                    out.comments += 1;
+                    ("comment", d.id.clone())
+                }
+                _ => {
+                    out.reviews += 1;
+                    ("review", d.id.clone())
+                }
+            };
+            for field in ["title", "body", "path"] {
+                if let Some(text) = d.field_str(field).filter(|t| !t.is_empty()) {
+                    out.texts.push(CensusText {
+                        place: format!("{noun} {place} {field}"),
+                        text,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,7 +242,10 @@ mod tests {
     #[test]
     fn hosts_are_read_from_urls() {
         assert_eq!(host_of("https://GitHub.com/o/r/issues/1"), "github.com");
-        assert_eq!(host_of("https://gitlab.example:8443/x?y#z"), "gitlab.example:8443");
+        assert_eq!(
+            host_of("https://gitlab.example:8443/x?y#z"),
+            "gitlab.example:8443"
+        );
         assert_eq!(host_of("not a url"), "not a url");
     }
 }

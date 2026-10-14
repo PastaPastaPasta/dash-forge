@@ -270,13 +270,7 @@ impl LoadedContract {
                 .flatten()
                 .and_then(|p| p.as_text())
                 == Some(property);
-            named.then(|| {
-                entry
-                    .get_optional_value("when")
-                    .ok()
-                    .flatten()
-                    .is_none()
-            })
+            named.then(|| entry.get_optional_value("when").ok().flatten().is_none())
         })
     }
 

@@ -56,7 +56,7 @@ use forge_core::user_error::{codes, UserError};
 
 use crate::common::Session;
 use crate::context::Ctx;
-use crate::fmt::{cost_json, cost_line, plural, safe, short};
+use crate::fmt::{cost_json, cost_line, plural, plural_with, safe, short};
 use crate::git;
 
 /// About what the flip (a replace of the `repo` document) costs: DESIGN §4.10's 0.0004 DASH.
@@ -127,8 +127,9 @@ struct Saved {
 fn state_dir(repo: &RepoRef) -> Result<PathBuf> {
     let base = match std::env::var_os("XDG_STATE_HOME").filter(|s| !s.is_empty()) {
         Some(s) => PathBuf::from(s),
-        None => PathBuf::from(std::env::var_os("HOME").context("HOME is not set")?)
-            .join(".local/state"),
+        None => {
+            PathBuf::from(std::env::var_os("HOME").context("HOME is not set")?).join(".local/state")
+        }
     };
     Ok(base.join("dash-forge/make-public").join(&repo.repo_id))
 }
@@ -230,16 +231,37 @@ pub async fn run(ctx: &Ctx, a: &MakePublicArgs) -> Result<()> {
     }
     // a run that started Everything (some history published) finishes as Everything
     let history_started = match &conversion {
-        Some(c) => !published_keys(&s, &public_view(&s.repo), c).await.is_empty(),
+        Some(c) => !published_keys(&s, &public_view(&s.repo), c)
+            .await
+            .is_empty(),
         None => false,
     };
     let mode = flag_mode
         .or(saved.as_ref().map(|s| s.mode))
         .or(history_started.then_some(Mode::Everything));
-    let check = Box::pin(preflight(ctx, &s, &psvc, &kr, &private, conversion.as_ref(), a, mode)).await?;
+    let check = Box::pin(preflight(
+        ctx,
+        &s,
+        &psvc,
+        &kr,
+        &private,
+        conversion.as_ref(),
+        a,
+        mode,
+    ))
+    .await?;
     if a.check || (mode.is_none() && conversion.is_none()) {
         if a.check || !ctx.json {
-            print_check(ctx, &s.repo, &a.repo, &check, mode, &kr, &owner, conversion.is_some());
+            print_check(
+                ctx,
+                &s.repo,
+                &a.repo,
+                &check,
+                mode,
+                &kr,
+                &owner,
+                conversion.is_some(),
+            );
         }
         if !a.check {
             return Err(UserError::new(
@@ -255,7 +277,10 @@ pub async fn run(ctx: &Ctx, a: &MakePublicArgs) -> Result<()> {
     let Some(mode) = mode else {
         return Err(UserError::new(
             codes::USAGE,
-            format!("{} was made public; say which mode to finish", safe(&a.repo)),
+            format!(
+                "{} was made public; say which mode to finish",
+                safe(&a.repo)
+            ),
         )
         .fix(format!(
             "dg repo make-public {} --resume --code-only (or --everything)",
@@ -264,7 +289,10 @@ pub async fn run(ctx: &Ctx, a: &MakePublicArgs) -> Result<()> {
         .note("this computer has no record of the run that started it")
         .into());
     };
-    Box::pin(convert(ctx, &s, &svc, &psvc, &kr, &private, conversion, saved, mode, check, a, &dir)).await
+    Box::pin(convert(
+        ctx, &s, &svc, &psvc, &kr, &private, conversion, saved, mode, check, a, &dir,
+    ))
+    .await
 }
 
 /// Whether the signer is the owner or a maintainer (the steps a run signs are theirs).
@@ -280,7 +308,11 @@ fn is_maintainer(kr: &Keyring, me: &str, owner: &str) -> bool {
 fn not_the_owner(repo: &str, owner: &str) -> anyhow::Error {
     UserError::new(
         codes::NOT_A_WRITER,
-        format!("only the owner ({}) can make {} public", safe(owner), safe(repo)),
+        format!(
+            "only the owner ({}) can make {} public",
+            safe(owner),
+            safe(repo)
+        ),
     )
     .note("nothing was written")
     .into()
@@ -327,17 +359,27 @@ async fn preflight(
     match res.current_epoch {
         Some(e) if kr.readable_epochs().contains(&e) => {}
         _ => out.blockers.push(
-            UserError::new(codes::NOT_A_KEY_HOLDER, "you don't hold this repo's current key")
-                .fix(format!("ask a maintainer to share it: dg repo keys repair {repo_label}"))
-                .note("nothing was written"),
+            UserError::new(
+                codes::NOT_A_KEY_HOLDER,
+                "you don't hold this repo's current key",
+            )
+            .fix(format!(
+                "ask a maintainer to share it: dg repo keys repair {repo_label}"
+            ))
+            .note("nothing was written"),
         ),
     }
     if let Some(r) = &res.repair {
         if r.rotate || !r.missing_wraps.is_empty() {
             out.blockers.push(
-                UserError::new(codes::ROTATION_PENDING, "this repo's key needs a repair first")
-                    .fix(format!("dg repo keys repair {repo_label}, then run this again"))
-                    .note("nothing was written"),
+                UserError::new(
+                    codes::ROTATION_PENDING,
+                    "this repo's key needs a repair first",
+                )
+                .fix(format!(
+                    "dg repo keys repair {repo_label}, then run this again"
+                ))
+                .note("nothing was written"),
             );
         }
     }
@@ -444,7 +486,8 @@ async fn preflight(
         .flat_map(|e| e.snapshots.iter())
         .collect();
     if book.old_format.iter().any(|id| !named.contains(id)) {
-        out.old_format.push("(an environment you can't read)".into());
+        out.old_format
+            .push("(an environment you can't read)".into());
     }
     // the fresh pack of what the mode publishes
     let pack_tips: Vec<String> = match mode {
@@ -516,7 +559,10 @@ async fn work_repo(
         for p in &packs {
             index_pack(&dir, p)?;
         }
-        std::fs::write(dir.join("make-public-packs"), format!("{} {skipped}\n", packs.len()))?;
+        std::fs::write(
+            dir.join("make-public-packs"),
+            format!("{} {skipped}\n", packs.len()),
+        )?;
     }
     for (name, tip) in refs {
         if git::has_object(&dir, tip) {
@@ -531,7 +577,7 @@ fn index_pack(dir: &Path, bytes: &[u8]) -> Result<()> {
     let mut child = Command::new("git")
         .arg("-C")
         .arg(dir)
-        .args(["index-pack", "--stdin", "--fix-thin", "-q"])
+        .args(["index-pack", "--stdin", "--fix-thin"])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -599,7 +645,9 @@ fn scan_objects(dir: &Path, tips: &[String], every: bool) -> Result<Vec<Secret>>
         args.extend(tips.iter().map(String::as_str));
         for line in git::git(dir, &args, &[])?.lines() {
             if let Some((oid, path)) = line.split_once(' ') {
-                paths.entry(oid.to_string()).or_insert_with(|| path.to_string());
+                paths
+                    .entry(oid.to_string())
+                    .or_insert_with(|| path.to_string());
             }
         }
     }
@@ -673,7 +721,9 @@ fn read_blobs(dir: &Path, oids: &[String]) -> Result<Vec<(String, Vec<u8>)>> {
             continue; // "<oid> missing"
         };
         let size: usize = size.parse().context("git cat-file size")?;
-        let body = rest.get(..size).context("git cat-file output ended early")?;
+        let body = rest
+            .get(..size)
+            .context("git cat-file output ended early")?;
         objects.push((oid.to_string(), body.to_vec()));
         rest = rest.get(size + 1..).unwrap_or_default();
     }
@@ -767,7 +817,11 @@ fn print_check(
         None => vec![Mode::CodeOnly, Mode::Everything],
     };
     let c = &check.census;
-    let tags = check.code_refs.iter().filter(|(n, _)| n.starts_with("refs/tags/")).count();
+    let tags = check
+        .code_refs
+        .iter()
+        .filter(|(n, _)| n.starts_with("refs/tags/"))
+        .count();
     let branches: Vec<&str> = check
         .code_refs
         .iter()
@@ -831,43 +885,28 @@ fn print_check(
                     if branches.is_empty() { "no branch".to_string() } else { branches.join(", ") },
                     if tags > 0 { format!(" and {}", plural(tags, "tag")) } else { String::new() }
                 );
-                let others = check.all_refs.len().saturating_sub(check.code_refs.len());
-                if others > 0 {
-                    println!("    Not chosen: {} (--ref picks them)", plural(others, "other branch or tag"));
+                let others: Vec<&str> = check
+                    .all_refs
+                    .iter()
+                    .filter(|r| !check.code_refs.contains(r))
+                    .map(|(n, _)| short_ref(n))
+                    .collect();
+                if !others.is_empty() {
+                    println!("    Not chosen: {} (--ref picks branches and tags)", others.join(", "));
                 }
                 println!("    Issues, pull requests, reviews and other branches stay members-only. You can make them public later.");
                 print_secrets(&secrets_of(check, Mode::CodeOnly));
             }
             if modes.contains(&Mode::Everything) {
                 println!("  Everything (--everything)");
-                println!(
-                    "    Everything members could ever read until now: {}, {}, {} and {}, {} earlier edits, hidden comments, every branch ever pushed ({}, including {} deleted), {} force-pushes, {}, old settings{}{}.",
-                    plural(c.issues, "issue"),
-                    plural(c.prs, "pull request"),
-                    plural(c.comments, "comment"),
-                    plural(c.reviews, "review"),
-                    c.revisions,
-                    plural(check.all_refs.len(), "live branch or tag"),
-                    check.deleted,
-                    check.forced,
-                    plural(c.releases, "release"),
-                    if c.imported.is_empty() {
-                        String::new()
-                    } else {
-                        format!(
-                            ", imported authors and links ({} from {})",
-                            plural(c.imported.len(), "person"),
-                            c.imported_hosts().into_iter().collect::<Vec<_>>().join(", ")
-                        )
-                    },
-                    if c.bot_requests == 0 { String::new() } else { format!(", and {} sent to bots", plural(c.bot_requests, "request")) },
-                );
+                println!("    Everything members could ever read until now: every issue, pull request, comment and review, every earlier edit, deleted and hidden comments, every branch ever pushed, releases, old settings, imported authors and links, and requests sent to bots.");
+                println!("    That is {}.", everything_counts(check));
                 if c.unread > 0 {
                     println!("    Also {} you can't read, which become public too.", plural(c.unread, "post"));
                 }
                 println!(
                     "    Words by {}{} become public.",
-                    plural(c.authors.len(), "person"),
+                    people(c.authors.len()),
                     if check.former.is_empty() { String::new() } else { format!(", including {}", plural(check.former.len(), "former member")) }
                 );
                 print_secrets(&secrets_of(check, Mode::Everything));
@@ -878,7 +917,7 @@ fn print_check(
             println!();
             println!(
                 "Stays private: {}, {}, and everything members write from now on.",
-                plural(c.letters, "message to specific people"),
+                plural_with(c.letters, "message to specific people", "messages to specific people"),
                 plural(check.environments, "environment")
             );
             println!("Members-only content keeps working afterwards, without a pause.");
@@ -902,6 +941,67 @@ fn print_check(
     );
 }
 
+/// "1 person", "3 people".
+fn people(n: usize) -> String {
+    if n == 1 {
+        "1 person".into()
+    } else {
+        format!("{n} people")
+    }
+}
+
+/// `refs/heads/x` and `refs/tags/x` as `x`.
+fn short_ref(name: &str) -> &str {
+    name.strip_prefix("refs/heads/")
+        .or_else(|| name.strip_prefix("refs/tags/"))
+        .unwrap_or(name)
+}
+
+/// What Everything makes readable, counted: the non-zero counts, in the dialog's order.
+fn everything_counts(check: &Check) -> String {
+    let c = &check.census;
+    let parts: Vec<String> = [
+        (c.issues, "issue", "issues"),
+        (c.prs, "pull request", "pull requests"),
+        (c.comments, "comment", "comments"),
+        (c.reviews, "review", "reviews"),
+        (c.revisions, "earlier edit", "earlier edits"),
+        (c.hidden, "hidden item", "hidden items"),
+        (
+            check.all_refs.len(),
+            "live branch or tag",
+            "live branches and tags",
+        ),
+        (check.deleted, "deleted branch", "deleted branches"),
+        (check.forced, "force-push", "force-pushes"),
+        (c.releases, "release", "releases"),
+        (
+            c.bot_requests,
+            "request sent to bots",
+            "requests sent to bots",
+        ),
+    ]
+    .iter()
+    .filter(|(n, _, _)| *n > 0)
+    .map(|(n, one, many)| plural_with(*n, one, many))
+    .chain((!c.imported.is_empty()).then(|| {
+        format!(
+            "imported posts by {} from {}",
+            people(c.imported.len()),
+            c.imported_hosts()
+                .into_iter()
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }))
+    .collect();
+    if parts.is_empty() {
+        "nothing written yet".into()
+    } else {
+        parts.join(", ")
+    }
+}
+
 fn print_secrets(found: &[&Secret]) {
     if found.is_empty() {
         println!("    No secrets found in what you're publishing.");
@@ -911,7 +1011,11 @@ fn print_secrets(found: &[&Secret]) {
         println!(
             "    Possible secret in {}{}",
             safe(&s.place),
-            if s.refuses { format!(" (publish anyway: --allow-secret {})", s.fingerprint) } else { String::new() }
+            if s.refuses {
+                format!(" (publish anyway: --allow-secret {})", s.fingerprint)
+            } else {
+                String::new()
+            }
         );
     }
 }
@@ -960,7 +1064,10 @@ async fn convert(
             return Err(b.clone().into());
         }
     }
-    if mode == Mode::Everything && !check.old_format.is_empty() && (new_publication || publishes_history) {
+    if mode == Mode::Everything
+        && !check.old_format.is_empty()
+        && (new_publication || publishes_history)
+    {
         let env = &check.old_format[0];
         return Err(UserError::new(
             codes::MAKE_PUBLIC_BLOCKED,
@@ -971,7 +1078,11 @@ async fn convert(
         .note("nothing was written")
         .into());
     }
-    let allowed: BTreeSet<String> = a.allow_secret.iter().map(|f| f.to_ascii_lowercase()).collect();
+    let allowed: BTreeSet<String> = a
+        .allow_secret
+        .iter()
+        .map(|f| f.to_ascii_lowercase())
+        .collect();
     if new_publication {
         let blocking: Vec<&Secret> = secrets_of(&check, mode)
             .into_iter()
@@ -980,7 +1091,10 @@ async fn convert(
         if let Some(first) = blocking.first() {
             let mut e = UserError::new(
                 codes::SECRET_IN_PUSH,
-                format!("this would publish a possible secret in {}", safe(&first.place)),
+                format!(
+                    "this would publish a possible secret in {}",
+                    safe(&first.place)
+                ),
             );
             for s in &blocking {
                 e = e.fix(format!(
@@ -996,7 +1110,16 @@ async fn convert(
     // the typed confirmation, unless this computer's record of an earlier run shows it was given
     if new_publication && !(a.resume && saved.is_some()) {
         if !ctx.json {
-            print_check(ctx, &s.repo, &a.repo, &check, Some(mode), kr, &owner, flipped);
+            print_check(
+                ctx,
+                &s.repo,
+                &a.repo,
+                &check,
+                Some(mode),
+                kr,
+                &owner,
+                flipped,
+            );
         }
         typed_confirmation(ctx, &a.repo)?;
     } else {
@@ -1048,7 +1171,10 @@ async fn convert(
     let public = public_view(&s.repo);
     // 4. the first public settings
     let fresh = RepoService::new(&s.client, &s.identity, &s.bridge);
-    let marker = fresh.conversion(&public).await?.and_then(|c| c.marker_height);
+    let marker = fresh
+        .conversion(&public)
+        .await?
+        .and_then(|c| c.marker_height);
     if marker.is_none() {
         let cfg = check.config.clone().unwrap_or_default();
         fresh.write_converted_config(&public, &cfg).await?;
