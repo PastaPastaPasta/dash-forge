@@ -412,6 +412,32 @@ fn check_gitmodules_blobs(oids: &[String], from: Option<&Path>) -> Result<()> {
 }
 
 impl LocalRepo {
+    /// Whether the repository git spawned the helper for is a clone of the dash remote at `url`,
+    /// the only kind of repository the helper keeps its pin, ledger and `pre-push` hook in. git
+    /// named a remote of the repository's own config (`git fetch origin`; `git clone` writes
+    /// `origin` before it runs the helper; its URL may be rewritten by `insteadOf`, so any
+    /// `url`/`pushurl` counts), or a remote of its own config has `url` exactly as its `url` or
+    /// `pushurl` (a bare-URL fetch into its own clone). `false` outside a repository, for a bare
+    /// `git ls-remote dash://…` or `git fetch dash://…` run in some other repository, and for a
+    /// remote only a global config or `git -c` defines.
+    pub fn is_clone_of(remote: Option<&str>, url: &str) -> bool {
+        if std::env::var_os("GIT_DIR").is_none() {
+            return false;
+        }
+        run_git(
+            &[
+                "config",
+                "--local",
+                "--get-regexp",
+                r"^remote\..*\.(url|pushurl)$",
+            ],
+            None,
+            false,
+            None,
+        )
+        .is_ok_and(|out| names_this_remote(&String::from_utf8_lossy(&out), remote, url))
+    }
+
     /// The local `GIT_DIR`, canonicalized to an absolute path. Falls back to `.git` under
     /// the current directory when the env var is unset (manual invocation).
     pub fn git_dir() -> Result<PathBuf> {
@@ -430,6 +456,18 @@ impl LocalRepo {
         std::fs::write(&path, b"").map_err(|e| anyhow!("writing {}: {e}", path.display()))?;
         Ok(())
     }
+}
+
+/// Whether `git config --get-regexp` output of remote URLs (`<key> <value>` lines) defines
+/// remote `remote`, or (no remote named) has `url` as a value.
+fn names_this_remote(config: &str, remote: Option<&str>, url: &str) -> bool {
+    config
+        .lines()
+        .filter_map(|l| l.split_once(' '))
+        .any(|(k, v)| match remote {
+            Some(r) => k == format!("remote.{r}.url") || k == format!("remote.{r}.pushurl"),
+            None => v.trim() == url,
+        })
 }
 
 /// A throwaway bare repo used to re-filter downloaded packs for a partial clone. The
@@ -505,7 +543,7 @@ impl Drop for ScratchRepo {
 
 #[cfg(test)]
 mod tests {
-    use super::{names_missing_object, objects_missing, run_git, ScratchRepo};
+    use super::{names_missing_object, names_this_remote, objects_missing, run_git, ScratchRepo};
     use forge_core::user_error::{codes, UserError};
     use std::path::Path;
 
@@ -872,5 +910,32 @@ mod tests {
             !objects_missing(&[blob], Some(not_a_repo.path()), false),
             "a git failure that is not a missing object is left to git's own check"
         );
+    }
+
+    #[test]
+    fn only_a_remote_with_this_exact_url_makes_a_clone_of_it() {
+        // `git config --local --get-regexp '^remote\..*\.(url|pushurl)$'` of the dash-forge
+        // source repository, and of a clone of a dash remote with a GitHub mirror
+        let source = "remote.origin.url https://github.com/PastaPastaPasta/dash-forge.git\n";
+        let clone = "remote.origin.url dash://alice/project\n\
+                     remote.mirror.url https://github.com/a/p.git\n\
+                     remote.mirror.pushurl dash://alice/other\n";
+        let bare = |config, url| names_this_remote(config, None, url);
+        assert!(!bare(source, "dash://alice/project"));
+        assert!(!bare("", "dash://alice/project"));
+        assert!(bare(clone, "dash://alice/project"));
+        assert!(bare(clone, "dash://alice/other"));
+        // another spelling of the same repository is another URL: git passes the URL as written
+        assert!(!bare(clone, "dash://alice/project.git"));
+        assert!(!bare(clone, "dash://alice/proj"));
+        // a named remote counts when the repository's own config defines it (its URL may be an
+        // `insteadOf` alias); one only `git -c` or a global config defines does not
+        let named = |config, r| names_this_remote(config, Some(r), "dash://alice/project");
+        assert!(named(clone, "origin"));
+        assert!(named(clone, "mirror"));
+        assert!(named("remote.short.url alias:project\n", "short"));
+        assert!(!named(clone, "zz"));
+        assert!(!named(clone, "origi"));
+        assert!(!named(source, "upstream"));
     }
 }

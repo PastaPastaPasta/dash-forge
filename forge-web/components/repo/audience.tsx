@@ -976,16 +976,25 @@ export function MembersOnlyRow({ entry }: { entry: MembersOnlyEntry }): JSX.Elem
  * told that instead.
  */
 export function MembersOnlySummary({ entries, lane }: { entries: readonly MembersOnlyEntry[]; lane: MembersAccess | undefined }): JSX.Element | null {
+  if (entries.length === 0) return null
+  return <MembersLockedLine what={lockedCount(entries.map((e) => e.item))} lane={lane} />
+}
+
+/**
+ * The line a member whose tab can't read members-only content yet sees over `what` this page
+ * holds of it: "`what` · Unlock to read", or how to set up their key. Null for anyone else.
+ */
+export function MembersLockedLine({ what, lane, testId = 'members-only-locked' }: { what: string; lane: MembersAccess | undefined; testId?: string }): JSX.Element | null {
   const [unlocking, setUnlocking] = useState(false)
   const { identity } = useAuth()
   const openLogin = useUiStore((s) => s.openLogin)
   const why = memberCantRead(lane)
-  if (why === null || entries.length === 0) return null
+  if (why === null) return null
   return (
-    <div className="space-y-2 rounded-lg border border-dashed border-anvil-300 px-4 py-2 text-dense text-anvil-600 dark:border-anvil-700 dark:text-anvil-300" data-testid="members-only-locked">
+    <div className="space-y-2 rounded-lg border border-dashed border-anvil-300 px-4 py-2 text-dense text-anvil-600 dark:border-anvil-700 dark:text-anvil-300" data-testid={testId}>
       <p className="flex flex-wrap items-center gap-x-2">
         <Lock className="h-3.5 w-3.5 shrink-0" aria-hidden />
-        <span>{lockedCount(entries.map((e) => e.item))}</span>
+        <span>{what}</span>
         {why === 'locked' ? (
           <>
             <span aria-hidden> · </span>

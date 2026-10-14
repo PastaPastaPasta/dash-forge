@@ -991,6 +991,12 @@ pub enum IssueCommand {
             conflicts_with = "members"
         )]
         to: Vec<String>,
+        /// As a bot: the request you are answering (its id, from `dg bot jobs`). On a
+        /// members-only thread you read what that request shared with you; without it, the
+        /// newest request on this thread that shared something with you. Ignored for anyone
+        /// but a bot.
+        #[arg(long, value_name = "REQUEST_ID")]
+        job: Option<String>,
     },
     /// Edit one of your comments (on an issue or a PR): its body only. In a private repo the
     /// text is re-sealed; an edit made while someone else's landed is refused (E607).
@@ -1662,6 +1668,11 @@ pub struct PrReviewArgs {
         conflicts_with = "members"
     )]
     pub to: Vec<String>,
+    /// As a bot: the request you are answering (its id, from `dg bot jobs`). On a
+    /// members-only pull request you read what that request shared with you; without it, the
+    /// newest request on it that shared something with you. Ignored for anyone but a bot.
+    #[arg(long, value_name = "REQUEST_ID")]
+    pub job: Option<String>,
     /// The summary and the inline comments, in order.
     #[command(flatten)]
     pub inline: pr::inline::InlineArgs,
@@ -1717,6 +1728,12 @@ pub struct PrCommentArgs {
         conflicts_with = "members"
     )]
     pub to: Vec<String>,
+    /// As a bot: the request you are answering (its id, from `dg bot jobs`). On a
+    /// members-only thread you read what that request shared with you; without it, the
+    /// newest request on this thread that shared something with you. Ignored for anyone
+    /// but a bot.
+    #[arg(long, value_name = "REQUEST_ID")]
+    pub job: Option<String>,
 }
 
 /// `dg pr merge` arguments.
@@ -2729,6 +2746,63 @@ mod tests {
             "--remove-milestone"
         ])
         .is_err());
+    }
+
+    /// A bot's members-only replies name their request (`--job`), as forge-runner writes them
+    /// (`agents::post_args`): general and inline on a pull request, general on an issue, and a
+    /// review.
+    #[test]
+    fn a_bots_replies_take_the_request_they_answer() {
+        const JOB: &str = "4uX8Lw2XoJw7Yb5mJgk8u7cGcF6dJmJ1yV9rBq3cQ6Zk";
+        let cli = Cli::try_parse_from([
+            "dg",
+            "pr",
+            "comment",
+            "o/r",
+            "3",
+            "--file=a.rs",
+            "--line=4",
+            "--suggest=-x",
+            "--body=Suggested change.",
+            "--members",
+            &format!("--job={JOB}"),
+        ])
+        .unwrap();
+        let Command::Pr(PrCommand::Comment(a)) = cli.command else {
+            panic!("not pr comment");
+        };
+        assert_eq!(a.job.as_deref(), Some(JOB));
+        assert!(a.members);
+        assert_eq!(a.suggest.as_deref(), Some("-x"));
+        let cli = Cli::try_parse_from([
+            "dg",
+            "issue",
+            "comment",
+            "o/r",
+            "5",
+            "--body=-r",
+            "--members",
+            "--job",
+            JOB,
+        ])
+        .unwrap();
+        let Command::Issue(IssueCommand::Comment { job, members, .. }) = cli.command else {
+            panic!("not issue comment");
+        };
+        assert_eq!((job.as_deref(), members), (Some(JOB), true));
+        let cli =
+            Cli::try_parse_from(["dg", "pr", "review", "o/r", "3", "--comment", "--job", JOB])
+                .unwrap();
+        let Command::Pr(PrCommand::Review(a)) = cli.command else {
+            panic!("not pr review");
+        };
+        assert_eq!(a.job.as_deref(), Some(JOB));
+        // a human's comment is unchanged: no request
+        let cli = Cli::try_parse_from(["dg", "pr", "comment", "o/r", "3", "--body", "hi"]).unwrap();
+        let Command::Pr(PrCommand::Comment(a)) = cli.command else {
+            panic!("not pr comment");
+        };
+        assert!(a.job.is_none());
     }
 
     /// `dg search`: flags after the query are flags, and a leading negation goes after `--`.

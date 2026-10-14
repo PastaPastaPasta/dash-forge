@@ -66,8 +66,8 @@ mod census;
 mod make_public;
 pub use bot_push::{BotPushAccess, GrantRequest, GrantableBranch};
 pub use bots::{
-    ask_refused, AskPlan, Asked, JobContent, JobPost, JobRead, LetterPlan, NotShared, Notices,
-    ReceivedRead, SharedCode,
+    ask_refused, not_asked_here, AskPlan, Asked, JobContent, JobPost, JobRead, LetterPlan,
+    NotShared, Notices, ReceivedRead, SharedCode,
 };
 pub use bundles::{
     noun as bundle_noun, BundleAlert, BundlePlan, BundledPost, LeftOut, LeftOutWhy, Publication,
@@ -3323,6 +3323,9 @@ pub struct Collab<'a> {
     /// A bot signer's post keys in a repository, by epoch (§23), read once per `Collab` and
     /// keyed by repository id ([`Self::bot_post_key`]).
     post_keys: std::sync::Mutex<Option<([u8; 32], PostKeys)>>,
+    /// A bot signer's `read` letter for the thread it replies on (§22.3), keyed by repository
+    /// id ([`Self::use_read_letter`]): the members-only revisions it lists open with their keys.
+    read_letter: std::sync::Mutex<Option<([u8; 32], Arc<crate::private::key_letter::ReadLetter>)>>,
 }
 
 /// A bot's post keys in one repository, by epoch.
@@ -3383,6 +3386,7 @@ impl<'a> Collab<'a> {
             members_patch: std::sync::Mutex::default(),
             members_refs: std::sync::Mutex::default(),
             post_keys: std::sync::Mutex::default(),
+            read_letter: std::sync::Mutex::default(),
         }
     }
 
@@ -3412,6 +3416,7 @@ impl<'a> Collab<'a> {
             members_patch: std::sync::Mutex::default(),
             members_refs: std::sync::Mutex::default(),
             post_keys: std::sync::Mutex::default(),
+            read_letter: std::sync::Mutex::default(),
         }
     }
 
@@ -4374,7 +4379,11 @@ impl<'a> Collab<'a> {
             }
             return Ok(Some(match read {
                 Ok(d) => TargetRead::Readable(d),
-                Err(m) => TargetRead::MembersOnly(m),
+                // edited since a bot was asked on it: the revision its letter lists (§22.3)
+                Err(m) => match self.open_shared_target(repo, kind, &stored).await {
+                    Some(d) => TargetRead::Readable(d),
+                    None => TargetRead::MembersOnly(m),
+                },
             }));
         }
         if is_letter(&d) {
@@ -4846,7 +4855,7 @@ impl<'a> Collab<'a> {
     /// The signer's best current role in `repo`, read once per `Collab` and repository. A
     /// long-lived `Collab` (an import run) keeps claiming the role it read: a role change
     /// while it runs is met by consensus refusing the write, and the next run reads anew.
-    async fn cached_role(&self, repo: &RepoRef) -> Result<Option<Role>> {
+    pub async fn cached_role(&self, repo: &RepoRef) -> Result<Option<Role>> {
         if let Some((_, m)) = crate::history::lock(&self.member)
             .as_ref()
             .filter(|(id, _)| id == repo.id())

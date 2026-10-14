@@ -592,7 +592,9 @@ pub fn work(
         }
     };
     out.audience = Some(audience.label());
-    post(cfg, repo, &thread, audience, &output, &mut out);
+    // members mode read the thread through the request's letter: its members-only posts name it
+    let job = (mode == Mode::Members).then_some(row.id.as_str());
+    post(cfg, repo, &thread, audience, job, &output, &mut out);
     Ok(out)
 }
 
@@ -1059,13 +1061,17 @@ fn run_agent(
 }
 
 /// The `dg` argument lists that post `output` on `thread` for `audience`: the reply, then each
-/// suggested change on its lines. `Err` when nothing may be posted: a public post after
-/// members-only input (checked again here, right before `dg`), or nothing to post.
+/// suggested change on its lines. A members-only post in members mode names its request
+/// (`job`, `--job`): a bot reads a members-only thread through what that request shared with
+/// it, never with the members key (private-repos.md §22.3, §23). `Err` when nothing may be
+/// posted: a public post after members-only input (checked again here, right before `dg`), or
+/// nothing to post.
 pub fn post_args(
     repo: &str,
     thread: &Thread,
     tainted: bool,
     audience: Audience,
+    job: Option<&str>,
     output: &Output,
 ) -> std::result::Result<Vec<Vec<String>>, String> {
     if tainted && audience == Audience::Public {
@@ -1107,22 +1113,26 @@ pub fn post_args(
     if audience == Audience::Members {
         for a in &mut posts {
             a.push("--members".into());
+            if let Some(job) = job {
+                a.push(format!("--job={job}"));
+            }
         }
     }
     Ok(posts)
 }
 
 /// Post `output` as `audience` ([`post_args`]; the audience was checked against the taint and the
-/// access by [`post_audience`]).
+/// access by [`post_audience`]); `job` is the request, in members mode.
 fn post(
     cfg: &Config,
     repo: &RepoConfig,
     thread: &Thread,
     audience: Audience,
+    job: Option<&str>,
     output: &Output,
     out: &mut Outcome,
 ) {
-    let posts = match post_args(&repo.repo, thread, out.tainted, audience, output) {
+    let posts = match post_args(&repo.repo, thread, out.tainted, audience, job, output) {
         Ok(p) => p,
         Err(why) => {
             out.refused = Some(why);
@@ -1432,33 +1442,67 @@ mod tests {
             true,
         )
         .unwrap();
-        let p = post_args("o/r", &pr, false, Audience::Public, &out).unwrap();
+        // a public post never names its request, even in members mode
+        let p = post_args("o/r", &pr, false, Audience::Public, Some("J"), &out).unwrap();
         assert_eq!(p[0], ["pr", "comment", "o/r", "42", "--body=-r"]);
         assert!(
             p[1].contains(&"--suggest=x".to_string())
                 && p[1].contains(&"--start-line=2".to_string())
         );
-        assert!(p.iter().all(|a| !a.contains(&"--members".to_string())));
-        let m = post_args("o/r", &pr, true, Audience::Members, &out).unwrap();
+        assert!(p
+            .iter()
+            .all(|a| !a.iter().any(|x| x == "--members" || x.starts_with("--job"))));
+        // public mode: members-only, with no request to name
+        let m = post_args("o/r", &pr, true, Audience::Members, None, &out).unwrap();
         assert!(m
             .iter()
             .all(|a| a.last().map(String::as_str) == Some("--members")));
-        assert!(post_args("o/r", &pr, true, Audience::Public, &out).is_err());
+        // members mode: every members-only post names its request, so the bot reads the thread
+        // through what it shared (§22.3)
+        let m = post_args("o/r", &pr, true, Audience::Members, Some("J"), &out).unwrap();
+        assert_eq!(m.len(), 2);
+        assert!(m
+            .iter()
+            .all(|a| a[a.len() - 2..] == ["--members".to_string(), "--job=J".to_string()]));
+        assert!(post_args("o/r", &pr, true, Audience::Public, Some("J"), &out).is_err());
         let issue = thread(true, None, vec![post("public", "issue")]);
         let p = post_args(
             "o/r",
             &issue,
             false,
             Audience::Public,
+            None,
             &read_output(br#"{"reply":"r"}"#, &a, false).unwrap(),
         )
         .unwrap();
         assert_eq!(p[0][0], "issue");
+        let p = post_args(
+            "o/r",
+            &issue,
+            true,
+            Audience::Members,
+            Some("J"),
+            &read_output(br#"{"reply":"r"}"#, &a, false).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            p[0],
+            [
+                "issue",
+                "comment",
+                "o/r",
+                "42",
+                "--body=r",
+                "--members",
+                "--job=J"
+            ]
+        );
         assert!(post_args(
             "o/r",
             &issue,
             false,
             Audience::Public,
+            None,
             &read_output(b"{}", &a, false).unwrap()
         )
         .is_err());

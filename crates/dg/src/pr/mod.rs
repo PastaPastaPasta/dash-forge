@@ -45,6 +45,7 @@ use forge_core::collab::v2::{
     approvals_over, Collab, Patch, PatchInput, PatchView, TargetKind, TargetRead,
 };
 use forge_core::create::default_journal_dir;
+use forge_core::private::key_letter::ReadTarget;
 use forge_core::repo::short_branch_name;
 use forge_core::rules::v2::{Role, StateAction};
 use forge_core::rules::RefState;
@@ -256,6 +257,39 @@ pub(crate) async fn patch(
         .patch(handle, number_arg(number)?)
         .await?
         .ok_or_else(|| not_found(repo, number))
+}
+
+/// PR `number` of `handle` as the signer reads it to comment on or review it, and whether a
+/// bot's `read` letter is in use: a bot reads a members-only PR through its letter for it
+/// ([`crate::bot::reply_letter`]: `job`'s, else the newest naming the PR, looked up only when
+/// the PR does not open otherwise), never with the members key. Anyone else reads it as
+/// [`patch`] does.
+pub(crate) async fn reply_patch(
+    collab: &Collab<'_>,
+    handle: &Repo,
+    repo: &str,
+    number: u64,
+    job: Option<&str>,
+) -> Result<(Patch, bool)> {
+    let n = number_arg(number)?;
+    let target = ReadTarget::Pr(n);
+    if job.is_some() && crate::bot::reply_letter(collab, handle, target, job).await? {
+        return Ok((patch(collab, handle, repo, number).await?, true));
+    }
+    match patch(collab, handle, repo, number).await {
+        Ok(p) => Ok((p, false)),
+        Err(e) => {
+            let members_only = matches!(
+                collab.target_read(handle, TargetKind::Patch, n).await,
+                Ok(Some(TargetRead::MembersOnly(_)))
+            );
+            if members_only && crate::bot::reply_letter(collab, handle, target, None).await? {
+                Ok((patch(collab, handle, repo, number).await?, true))
+            } else {
+                Err(e)
+            }
+        }
+    }
 }
 
 /// A PR and the connection it was read over: a signing [`Session`] for a command that writes,

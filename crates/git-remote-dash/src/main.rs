@@ -25,8 +25,14 @@
 //! with neither (no terminal, or `GIT_TERMINAL_PROMPT=0`) fails with E303 naming the ways out.
 //!
 //! **The repository pin.** A named URL's resolution (repo id, owner id, network) is recorded
-//! in the clone's git config the first time it is resolved there, and a later resolution to
-//! another repository is refused (E504) unless `dash.allowRepin` is set: see [`pin`].
+//! in the clone's git config the first time a fetch or push resolves it there, and a later
+//! resolution to another repository is refused (E504) unless `dash.allowRepin` is set: see
+//! [`pin`].
+//!
+//! **Only a clone.** The helper keeps its pin, ledger, `pre-push` hook and fetch records only in
+//! a clone of the dash remote it serves ([`git::LocalRepo::is_clone_of`]; a push from elsewhere
+//! keeps only what it needs to retry), and a `list` alone (which may be `git ls-remote`) installs
+//! nothing in a clone that already has refs.
 //!
 //! **Errors.** Any failure is rendered once, as the `dash: error: … [Ennn]` block of
 //! [`forge_core::user_error`] on stderr (git shows it verbatim), and the process exits with
@@ -188,8 +194,11 @@ fn run(goal: &mut Goal) -> Result<()> {
         .filter(|a| !a.contains("://") && args.get(2).is_some_and(|u| u != *a))
         .cloned();
 
+    // The helper keeps its pin, ledger, `pre-push` hook and fetch records only in a clone of this
+    // remote: a bare `git ls-remote dash://…` run in some other repository leaves it alone.
+    let in_clone = git::LocalRepo::is_clone_of(remote_name.as_deref(), url_arg);
     let rt = runtime()?;
-    let mut helper = Helper::new(dash_url, remote_name)?;
+    let mut helper = Helper::new(dash_url, remote_name, in_clone)?;
     let stdin = io::stdin();
     let stdout = io::stdout();
     protocol_loop(&rt, &mut helper, stdin.lock(), stdout.lock(), goal)
@@ -282,8 +291,9 @@ fn protocol_loop<R: BufRead, W: Write>(
                 fail_if_shallow(&opts)?;
                 let for_push = line.split_whitespace().nth(1) == Some("for-push");
                 // git sends `option cloning` only before a fetch, and a clone of an empty
-                // repository never fetches: a repository with no refs gets its ledger here.
-                if !for_push {
+                // repository never fetches: a clone with no refs gets its ledger here (only a
+                // clone of this remote: never a repository a bare URL is listed in).
+                if !for_push && helper.in_clone() {
                     ledger::ensure_for_new_clone(false);
                 }
                 let out = step(rt.block_on(helper.list(for_push)), "list refs")?;
