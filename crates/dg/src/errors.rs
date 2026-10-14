@@ -268,6 +268,7 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         Command::Branch {
             cmd: Some(crate::branch::BranchCommand::Share { .. }),
         } => ("nothing was shared", None),
+        Command::Branch {
             cmd: Some(crate::branch::BranchCommand::Audience { repo, .. }),
         } => ("who can see the branch didn't change", repo.as_ref()),
         Command::Publish(_) => ("nothing was published", None),
