@@ -704,17 +704,7 @@ impl Helper {
             let m = forge_core::refs::refs_view(&state, Some(&open))
                 .members
                 .expect("opened with a key");
-            let facts = narrower_facts(ring.as_deref(), kr.repo_id(), &m);
-            out.narrower_names = facts.names;
-            out.narrower = members::Narrower {
-                audiences: facts.audiences,
-                decryptable: facts.decryptable,
-            };
-            out.ring = ring;
-            out.remote_refs = m.refs;
-            out.members_only = m.members_only;
-            out.decryptable = Some(m.decryptable);
-            out.keyring = Some(kr);
+            out.adopt_members(kr, ring, m);
             members::remember_public_tips(&out.public_tips());
         } else if forge_core::refs::has_narrower_updates(&state) {
             // no members key, but branches with keys of their own may be shared with this signer
@@ -728,17 +718,7 @@ impl Helper {
                 {
                     let open = |k, d: &forge_core::platform::FetchedDocument| kr.open(k, d);
                     if let Some(m) = forge_core::refs::refs_view(&state, Some(&open)).members {
-                        let facts = narrower_facts(Some(&ring), kr.repo_id(), &m);
-                        out.narrower_names = facts.names;
-                        out.narrower = members::Narrower {
-                            audiences: facts.audiences,
-                            decryptable: facts.decryptable,
-                        };
-                        out.ring = Some(ring);
-                        out.remote_refs = m.refs;
-                        out.members_only = m.members_only;
-                        out.decryptable = Some(m.decryptable);
-                        out.keyring = Some(kr);
+                        out.adopt_members(kr, Some(ring), m);
                     }
                 }
             }
@@ -3246,6 +3226,26 @@ struct PushView {
 }
 
 impl PushView {
+    /// Take the member view `m`, opened with `kr` and the narrower branches' `ring`.
+    fn adopt_members(
+        &mut self,
+        kr: std::sync::Arc<forge_core::keyring::Keyring>,
+        ring: Option<std::sync::Arc<forge_core::private::branch_key::BranchRing>>,
+        m: forge_core::refs::MembersView,
+    ) {
+        let facts = narrower_facts(ring.as_deref(), kr.repo_id(), &m);
+        self.narrower_names = facts.names;
+        self.narrower = members::Narrower {
+            audiences: facts.audiences,
+            decryptable: facts.decryptable,
+        };
+        self.ring = ring;
+        self.remote_refs = m.refs;
+        self.members_only = m.members_only;
+        self.decryptable = Some(m.decryptable);
+        self.keyring = Some(kr);
+    }
+
     /// P: the live public tips.
     fn public_tips(&self) -> Vec<String> {
         live_tips(&self.public)

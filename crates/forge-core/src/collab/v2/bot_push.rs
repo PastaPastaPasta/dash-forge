@@ -3,11 +3,12 @@
 //! the bot's access notice read together, so a client, the helper and the runner judge a push
 //! the same way ([`crate::rules::push_grant`]).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::Collab;
 use crate::error::Result;
 use crate::members::MemberReader;
+use crate::platform::{decode_identifier, FetchedDocument};
 use crate::private::access_notice::NoticeEntry;
 use crate::rules::push_grant::{self, GrantContext, NoGrant, PushGrant, PushTarget, Unusable};
 use crate::rules::v2::Role;
@@ -77,20 +78,18 @@ impl Collab<'_> {
     pub async fn bot_push_marks(
         &self,
         repo: &RepoRef,
-        updates: &[&crate::platform::FetchedDocument],
-    ) -> Result<std::collections::BTreeMap<String, push_grant::PushMark>> {
-        let bots: Vec<&&crate::platform::FetchedDocument> = updates
+        updates: &[&FetchedDocument],
+    ) -> Result<BTreeMap<String, push_grant::PushMark>> {
+        let bots: Vec<&FetchedDocument> = updates
             .iter()
+            .copied()
             .filter(|d| push_grant::is_bot_push(d))
             .collect();
-        let mut out = std::collections::BTreeMap::new();
+        let mut out = BTreeMap::new();
         if bots.is_empty() {
             return Ok(out);
         }
-        let svc = match self.signer {
-            Some(_) => self.repo_service()?,
-            None => crate::repo::RepoService::reader(self.client),
-        };
+        let svc = self.public_reader()?;
         let grants = svc.read_push_grants(repo, None).await?;
         let members = MemberReader::new(self.client).list(repo).await?;
         let maintainers: BTreeSet<&str> = members
@@ -107,7 +106,7 @@ impl Collab<'_> {
                 .iter()
                 .find(|m| m.identity_id == d.owner_id && m.role == Role::Bot)
                 .map(|m| m.created_at);
-            let bot = crate::platform::decode_identifier(&d.owner_id).ok();
+            let bot = decode_identifier(&d.owner_id).ok();
             let then: Vec<NoticeEntry> = notices
                 .all
                 .iter()
@@ -146,10 +145,7 @@ impl Collab<'_> {
     /// its current notice. Where the contract has no push grants (sakura's live set) `supported`
     /// is false and nothing else is read.
     pub async fn bot_push_access(&self, repo: &RepoRef, bot: &str) -> Result<BotPushAccess> {
-        let svc = match self.signer {
-            Some(_) => self.repo_service()?,
-            None => crate::repo::RepoService::reader(self.client),
-        };
+        let svc = self.public_reader()?;
         let now = crate::cache::now_ms();
         let mut access = BotPushAccess {
             bot: bot.to_owned(),

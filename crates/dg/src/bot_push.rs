@@ -19,7 +19,7 @@ use forge_core::private::access_notice::{
 };
 use forge_core::repo::{GrantScope, RepoService};
 use forge_core::rules::push_grant::{
-    self, PatternRefusal, PushGrant, Unusable, MAX_TTL_MS, RENEW_WINDOW_MS,
+    self, PatternRefusal, PushGrant, Unusable, DAY_MS, MAX_TTL_MS, RENEW_WINDOW_MS,
 };
 use forge_core::user_error::{codes, UserError};
 
@@ -27,8 +27,6 @@ use crate::bot::{handle, parse_until, write_notice, AllowArgs};
 use crate::common::{resolve_identity, Session};
 use crate::context::Ctx;
 use crate::fmt::{cost_line, safe};
-
-const DAY_MS: u64 = 86_400_000;
 
 /// "Bots can't push to this repo yet." (DESIGN §10): the contract has no push grants.
 fn not_yet(repo: &str) -> anyhow::Error {
@@ -56,6 +54,28 @@ fn not_a_bot(name: &str, repo: &str) -> anyhow::Error {
     ))
     .note("nothing was written")
     .into()
+}
+
+/// The bot `name` has no push access to `repo` to `verb` (renew, resume).
+fn no_access_to(name: &str, repo: &str, verb: &str) -> anyhow::Error {
+    UserError::new(
+        codes::USAGE,
+        format!("{} has no push access to {repo} to {verb}", safe(name)),
+    )
+    .fix(format!(
+        "give it some: `dg bot allow {repo} {} --push`",
+        safe(name)
+    ))
+    .note("nothing was written")
+    .into()
+}
+
+/// The members-only branches the signer holds the key of; none when they can't be read.
+async fn grantable(s: &Session) -> Vec<GrantableBranch> {
+    s.collab()
+        .grantable_branches(&s.repo)
+        .await
+        .unwrap_or_default()
 }
 
 /// When push access asked for at `now` ends: `--push-until`, else 30 days ahead or the access's
@@ -303,7 +323,7 @@ pub(crate) async fn allow_push(
     let until = push_until(a.push_until.as_deref(), notice.until, now)?;
     let named = a.push.iter().any(|p| !p.is_empty());
     let branches = if named {
-        collab.grantable_branches(&s.repo).await.unwrap_or_default()
+        grantable(s).await
     } else {
         Vec::new()
     };
@@ -443,28 +463,9 @@ pub(crate) async fn suspend(ctx: &Ctx, repo: &str, bot: &str, suspend: bool) -> 
         let prompt = format!("Suspend {}'s pushes?", safe(&name));
         return write_notice(ctx, &s, &notice, &name, "suspended", Some(&prompt)).await;
     }
-    let branches = s
-        .collab()
-        .grantable_branches(&s.repo)
-        .await
-        .unwrap_or_default();
-    let entries = live_entries(&access, &branches);
+    let entries = live_entries(&access, &grantable(&s).await);
     if entries.is_empty() {
-        return Err(UserError::new(
-            codes::USAGE,
-            format!(
-                "{} has no push access to {} to resume",
-                safe(&name),
-                s.repo.display()
-            ),
-        )
-        .fix(format!(
-            "give it some: `dg bot allow {} {} --push`",
-            s.repo.display(),
-            safe(&name)
-        ))
-        .note("nothing was written")
-        .into());
+        return Err(no_access_to(&name, &s.repo.display(), "resume"));
     }
     notice.set_push(entries, policy);
     let prompt = format!("Let {} push again?", safe(&name));
@@ -530,11 +531,7 @@ pub(crate) async fn revoke_push(ctx: &Ctx, s: &Session, bot: &str, name: &str) -
     }
     let mut notice = next_notice(&access, bot)?;
     let policy = notice.push_policy();
-    let branches = s
-        .collab()
-        .grantable_branches(&s.repo)
-        .await
-        .unwrap_or_default();
+    let branches = grantable(s).await;
     let rest: Vec<PushEntry> = live_entries(&access, &branches)
         .into_iter()
         .filter(|e| {
@@ -571,11 +568,7 @@ pub(crate) async fn renew(ctx: &Ctx, repo: &str, bot: &str, until: Option<&str>)
     }
     let now = access.now;
     let until = push_until(until, None, now)?;
-    let branches = s
-        .collab()
-        .grantable_branches(&s.repo)
-        .await
-        .unwrap_or_default();
+    let branches = grantable(&s).await;
     // per scope, the newest grant that a renewal brings back (not one older than the bot's row:
     // that access doesn't come back; give it again)
     let mut todo: Vec<(GrantRequest, Vec<&PushGrant>)> = Vec::new();
@@ -615,21 +608,7 @@ pub(crate) async fn renew(ctx: &Ctx, repo: &str, bot: &str, until: Option<&str>)
         }
     }
     if todo.is_empty() {
-        return Err(UserError::new(
-            codes::USAGE,
-            format!(
-                "{} has no push access to {} to renew",
-                safe(&name),
-                s.repo.display()
-            ),
-        )
-        .fix(format!(
-            "give it some: `dg bot allow {} {} --push`",
-            s.repo.display(),
-            safe(&name)
-        ))
-        .note("nothing was written")
-        .into());
+        return Err(no_access_to(&name, &s.repo.display(), "renew"));
     }
     if !ctx.json {
         for (r, _) in &todo {
@@ -682,6 +661,7 @@ pub(crate) async fn renew(ctx: &Ctx, repo: &str, bot: &str, until: Option<&str>)
 }
 
 /// What `dg bot list` shows of a bot's push access: JSON and the lines (DESIGN §10).
+#[allow(clippy::too_many_lines)] // one pass over the grants: status, JSON row, line
 pub(crate) async fn describe(
     client: &forge_core::platform::PlatformClient,
     collab: &forge_core::collab::v2::Collab<'_>,

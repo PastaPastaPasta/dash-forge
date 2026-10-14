@@ -9019,6 +9019,15 @@ impl<'a> Collab<'a> {
         ))
     }
 
+    /// The service for reading what anyone reads of a public repository: the signer's
+    /// ([`Self::repo_service`]) when there is one, else a plain reader.
+    pub(super) fn public_reader(&self) -> Result<crate::repo::RepoService<'a>> {
+        match self.signer {
+            Some(_) => self.repo_service(),
+            None => Ok(crate::repo::RepoService::reader(self.client)),
+        }
+    }
+
     /// Whether `tag_name` is currently live for `repo`: its release revisions' `delta` sum to
     /// at least 1 ([`tag_is_live`]), the same test [`Collab::create_release`] and
     /// [`Collab::unpublish_release`] make before writing. Exposed for callers that want to fail

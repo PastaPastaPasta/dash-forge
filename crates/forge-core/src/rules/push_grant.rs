@@ -38,7 +38,8 @@ pub const BOT_PUSH_ROLE: u64 = 4;
 /// The case of the `bot_push__*` conformance vectors.
 pub const VECTOR_CASE: &str = "bot_push";
 
-const DAY_MS: u64 = 86_400_000;
+/// A day (ms).
+pub const DAY_MS: u64 = 86_400_000;
 /// A grant lasts at most this long after it is written (`ttl90`).
 pub const MAX_TTL_MS: u64 = 90 * DAY_MS;
 /// How long a grant lasts when the maintainer does not say.
@@ -199,14 +200,15 @@ pub fn pick<'g>(
     if let Some(g) = best {
         return Ok(g);
     }
-    covering
+    let Some(newest) = covering
         .iter()
         .max_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)))
-        .map_or(Err(NoGrant::NotCovered), |g| {
-            Err(NoGrant::Unusable(
-                usable(g, ctx).expect_err("no covering grant is usable"),
-            ))
-        })
+    else {
+        return Err(NoGrant::NotCovered);
+    };
+    Err(NoGrant::Unusable(
+        usable(newest, ctx).expect_err("no covering grant is usable"),
+    ))
 }
 
 /// Why a branch pattern cannot be granted.
@@ -252,7 +254,7 @@ pub fn prefix_of(pattern: &str) -> Result<String, PatternRefusal> {
         || full.contains("//")
         || full
             .chars()
-            .any(|c| c.is_control() || c == ' ' || c == '\\' || c == '~' || c == '^' || c == ':')
+            .any(|c| c.is_control() || matches!(c, ' ' | '\\' | '~' | '^' | ':'))
     {
         return Err(PatternRefusal::Malformed);
     }
@@ -423,6 +425,7 @@ mod tests {
         assert_eq!(mark(50, Some(&g), Some(1), Some(false)), PushMark::Outside);
         assert_eq!(mark(50, None, Some(1), None), PushMark::Granted);
     }
+
     /// The `bot_push__*` vectors (`tools/private-repos-vectors/push.py`), the same as forge-web
     /// `lib/rules/push-grant.conformance.test.ts` runs.
     #[test]

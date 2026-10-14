@@ -44,9 +44,9 @@ import {
 import {
   DOC_PUSH_GRANT,
   EXACT_GRANT,
+  MAX_TTL_MS,
   PREFIX_GRANT,
   RENEW_WINDOW_MS,
-  covers,
   isExact,
   mark,
   renewDue,
@@ -61,6 +61,7 @@ import {
 import type { RefUpdate } from '../rules/types'
 import type { Membership } from '../rules/v2'
 import { createDocumentIdempotent, deleteDocumentIdempotent, previewCreate, previewCredits, previewDelete, queryAllDocuments, sumPreviews, type CostPreview, type PlainDocument, type WriteAuth } from '../sdk'
+import { branchName } from '../view/format'
 import { BotAccessError, NOT_A_MAINTAINER, botIdOf, noticeCredits, readAccessNotices, readAccessNoticesCached, writeAccessNotice, type Notices } from './bot-access'
 import { readHeldBranches } from './branch-ring'
 import { asIdentifierString, num, type RepoRef } from './contract'
@@ -218,6 +219,11 @@ export interface PushState {
   readonly now: number
 }
 
+/** The identities (base58) among `members` that hold `role`. */
+function withRole(members: readonly Membership[], role: Membership['role']): Set<string> {
+  return new Set(members.filter((m) => m.role === role).map((m) => m.identity))
+}
+
 /** When `bot`'s current Bot row was written, from `members`; null when it holds none. */
 export function botRowAt(members: readonly Membership[], bot: string): number | null {
   return members.find((m) => m.identity === bot && m.role === 'bot')?.createdAt ?? null
@@ -230,7 +236,7 @@ export function pushAccessOf(state: PushState, bot: string, notice: NoticeEntry 
     supported: state.supported,
     grants: state.grants.filter((g) => g.bot === bot),
     botRowAt: botRowAt(state.members, bot),
-    maintainers: new Set(state.members.filter((m) => m.role === 'maintainer').map((m) => m.identity)),
+    maintainers: withRole(state.members, 'maintainer'),
     notice,
     now: state.now,
   }
@@ -348,9 +354,7 @@ export function isStale(g: PushGrant, branches: readonly GrantableBranch[]): boo
 }
 
 /** A branch's short name (`fix-auth`). */
-export function shortBranch(name: string): string {
-  return name.startsWith('refs/heads/') ? name.slice('refs/heads/'.length) : name
-}
+export const shortBranch = branchName
 
 // ---------------------------------------------------------------------------------------------
 // What the page says about a bot's push access (DESIGN §10; `dg bot list`)
@@ -482,7 +486,7 @@ export function botPushMarks(
   owner: string,
 ): Map<string, PushMark> {
   const out = new Map<string, PushMark>()
-  const maintainers = new Set(members.filter((m) => m.role === 'maintainer').map((m) => m.identity))
+  const maintainers = withRole(members, 'maintainer')
   for (const u of updates) {
     if (u.botPush === undefined) continue
     const at = u.createdAt
@@ -504,7 +508,7 @@ export async function readBotPushMarks(sdk: EvoSDK, repo: RepoRef, updates: read
   const none = { bots: new Set<string>(), marks: new Map<string, PushMark>() }
   if (!(await pushGrantsSupported(sdk, repo))) return none
   const members = await readMembershipsCached(sdk, repo)
-  const bots = new Set(members.filter((m) => m.role === 'bot').map((m) => m.identity))
+  const bots = withRole(members, 'bot')
   if (!updates.some((u) => u.botPush !== undefined)) return { bots, marks: new Map() }
   const [grants, notices] = await Promise.all([readPushGrants(sdk, repo), readAccessNoticesCached(sdk, repo)])
   return { bots, marks: botPushMarks(updates, grants, members, notices, repo.ownerId) }
@@ -516,7 +520,7 @@ export async function readBotPushMarks(sdk: EvoSDK, repo: RepoRef, updates: read
  */
 export async function readPushingBots(sdk: EvoSDK, repo: RepoRef): Promise<ReadonlySet<string>> {
   if (!(await pushGrantsSupported(sdk, repo))) return new Set()
-  return new Set((await readMembershipsCached(sdk, repo)).filter((m) => m.role === 'bot').map((m) => m.identity))
+  return withRole(await readMembershipsCached(sdk, repo), 'bot')
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -563,7 +567,7 @@ function liveEntries(a: BotPushAccess, branches: readonly GrantableBranch[]): Pu
 }
 
 /** The members-only branches this maintainer holds the key of, read only when `a` has an exact grant (to tell a stale one). */
-async function branchesFor(sdk: EvoSDK, repo: RepoRef, a: BotPushAccess): Promise<GrantableBranch[]> {
+export async function branchesFor(sdk: EvoSDK, repo: RepoRef, a: BotPushAccess): Promise<GrantableBranch[]> {
   return a.grants.some(isExact) ? readGrantableBranches(sdk, repo) : []
 }
 
@@ -634,8 +638,8 @@ async function writeNoticeAfter(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, not
 /** When push access asked for until `requested` (ms; null: 30 days) at `now` ends, or why not. */
 export function pushUntil(now: number, requested: number | null): number | { readonly error: string } {
   // the last ms of the 90th day is a day past the bound: brought in, not refused
-  if (requested !== null && requested > now + 91 * DAY_MS) return { error: 'Push access lasts at most 90 days.' }
-  const got = untilFor(now, requested === null ? null : Math.min(requested, now + 90 * DAY_MS))
+  if (requested !== null && requested > now + MAX_TTL_MS + DAY_MS) return { error: 'Push access lasts at most 90 days.' }
+  const got = untilFor(now, requested === null ? null : Math.min(requested, now + MAX_TTL_MS))
   return 'until' in got ? got.until : { error: got.refused === 'past' ? 'That date has passed.' : 'Push access lasts at most 90 days.' }
 }
 
@@ -796,7 +800,7 @@ export async function removeMyPush(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, 
   if (base.may.includes('push') && !suspended(a)) await writeNoticeAfter(sdk, auth, repo, setPush(base, rest, pushPolicy(base)), about)
 }
 
-/** Whether `r` covers the default branch `defaultBranch` (the dialog warns when that branch is unprotected). */
+/** Whether `r` covers `branch` (the dialog warns when the default branch is unprotected). */
 export function coversBranch(r: GrantRequest, branch: string): boolean {
-  return 'prefix' in r.scope && covers({ id: '', granter: '', bot: '', prefix: r.scope.prefix, until: 1, createdAt: 0 }, { public: `refs/heads/${branch}` })
+  return 'prefix' in r.scope && `refs/heads/${branch}`.startsWith(r.scope.prefix)
 }

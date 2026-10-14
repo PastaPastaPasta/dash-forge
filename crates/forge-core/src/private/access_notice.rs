@@ -333,7 +333,7 @@ impl AccessNotice {
     /// Set its push ability, list and rules: with entries, `push` joins `may` and both fields
     /// are written; with none, `push` leaves `may` and both fields are removed (a suspension).
     pub fn set_push(&mut self, mut entries: Vec<PushEntry>, policy: PushPolicy) {
-        entries.sort_by(|a, b| a.grant.cmp(&b.grant));
+        entries.sort_by_key(|a| a.grant);
         entries.dedup_by(|a, b| a.grant == b.grant);
         self.may.retain(|m| m != MAY_PUSH);
         if entries.is_empty() {

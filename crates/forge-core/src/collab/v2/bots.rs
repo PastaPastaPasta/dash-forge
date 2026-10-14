@@ -356,10 +356,7 @@ impl Collab<'_> {
     #[allow(clippy::too_many_lines)] // one pass: fetch, check, open each form, decode
     pub async fn access_notices(&self, repo: &RepoRef) -> Result<Notices> {
         // anyone reads a public repository's notices
-        let svc = match self.signer {
-            Some(_) => self.repo_service()?,
-            None => crate::repo::RepoService::reader(self.client),
-        };
+        let svc = self.public_reader()?;
         let kind = u64::from(crate::pack::KIND_ACCESS_NOTICE);
         let manifests: Vec<_> = svc
             .read_pack_manifests(repo)

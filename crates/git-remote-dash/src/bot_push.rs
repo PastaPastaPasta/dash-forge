@@ -241,7 +241,7 @@ mod tests {
 
     fn grant(prefix: &str, at: u64) -> PushGrant {
         PushGrant {
-            id: forge_core::platform::encode_identifier([at as u8; 32]),
+            id: forge_core::platform::encode_identifier([u8::try_from(at).unwrap(); 32]),
             granter: "M".into(),
             bot: forge_core::platform::encode_identifier([9; 32]),
             prefix: Some(prefix.into()),

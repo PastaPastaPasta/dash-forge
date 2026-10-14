@@ -1147,13 +1147,11 @@ impl<'a> RepoService<'a> {
         ref_name: &str,
         props: &mut BTreeMap<String, FieldValue>,
     ) -> Result<()> {
-        match &self.bot_push {
-            Some(b) => b.stamp_ref(contract, doc_type, ref_name, props),
-            None => {
-                crate::members::stamp_claimed_role(contract, doc_type, props, 1);
-                Ok(())
-            }
+        if let Some(b) = &self.bot_push {
+            return b.stamp_ref(contract, doc_type, ref_name, props);
         }
+        crate::members::stamp_claimed_role(contract, doc_type, props, 1);
+        Ok(())
     }
 
     /// The signer's view for private-repository key operations (E301 without a signer).
@@ -2024,10 +2022,10 @@ impl<'a> RepoService<'a> {
             return Ok(None);
         }
         let kr = self.keyring(repo).await?;
-        let members_key = kr.has_members_key() && !kr.resolution().keys.is_empty();
-        if !members_key && !kr.has_members_key() {
+        if !kr.has_members_key() {
             return Ok(None);
         }
+        let members_key = !kr.resolution().keys.is_empty();
         let (scope, contract) = self.readable(repo).await?;
         let state = crate::refs::read_git_state(
             self.client,

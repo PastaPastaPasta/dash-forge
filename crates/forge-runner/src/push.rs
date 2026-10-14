@@ -209,10 +209,7 @@ pub fn access_of(v: &serde_json::Value, bot: &str) -> Access {
 /// A branch's tip as the bot reads it now (`dg --json branch list`, with its key: a members-only
 /// branch shared with it is listed by its real name and commit), `None` when it does not exist.
 fn tip_now(cfg: &Config, repo: &RepoConfig, full: &str) -> Result<Option<String>> {
-    let mut cmd = Command::new(&cfg.bin.dg);
-    cmd.args(["--json", "branch", "list", &repo.repo]);
-    let v: serde_json::Value = serde_json::from_str(&run(cfg, cmd, "dg branch list")?)
-        .context("dg branch list: not JSON")?;
+    let v = dg_json(cfg, &["branch", "list", &repo.repo], "dg branch list")?;
     Ok(v["branches"]
         .as_array()
         .into_iter()
@@ -255,10 +252,7 @@ pub struct CliArgs<'a> {
 /// why, nothing written).
 pub fn cli(cfg: &Config, repo: &RepoConfig, a: &CliArgs<'_>) -> Result<()> {
     let members_input = if a.members_input {
-        let mut cmd = Command::new(&cfg.bin.dg);
-        cmd.args(["--json", "collab", "list", &repo.repo]);
-        let v: serde_json::Value = serde_json::from_str(&run(cfg, cmd, "dg collab list")?)
-            .context("dg collab list: not JSON")?;
+        let v = dg_json(cfg, &["collab", "list", &repo.repo], "dg collab list")?;
         Some(human_members(&v))
     } else if a.members_input_people.is_empty() {
         None
@@ -299,12 +293,16 @@ fn run(cfg: &Config, mut cmd: Command, what: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// `dg --json <args>`, run with the runner's network and parsed (`what` names it in errors).
+fn dg_json(cfg: &Config, args: &[&str], what: &str) -> Result<serde_json::Value> {
+    let mut cmd = Command::new(&cfg.bin.dg);
+    cmd.arg("--json").args(args);
+    serde_json::from_str(&run(cfg, cmd, what)?).with_context(|| format!("{what}: not JSON"))
+}
+
 /// The bot's own identity id (`dg --json auth status`, signing with `DASH_FORGE_KEY`).
 fn own_id(cfg: &Config) -> Result<String> {
-    let mut cmd = Command::new(&cfg.bin.dg);
-    cmd.args(["--json", "auth", "status"]);
-    let v: serde_json::Value = serde_json::from_str(&run(cfg, cmd, "dg auth status")?)
-        .context("dg auth status: not JSON")?;
+    let v = dg_json(cfg, &["auth", "status"], "dg auth status")?;
     v["identityId"]
         .as_str()
         .map(str::to_owned)
@@ -331,11 +329,8 @@ pub enum Pushed {
 pub fn push(cfg: &Config, repo: &RepoConfig, git_dir: &Path, req: &PushRequest) -> Result<Pushed> {
     let full = full_branch(&req.branch);
     let bot = own_id(cfg)?;
-    let mut list = Command::new(&cfg.bin.dg);
-    list.args(["--json", "bot", "list", &repo.repo]);
-    let v: serde_json::Value =
-        serde_json::from_str(&run(cfg, list, "dg bot list")?).context("dg bot list: not JSON")?;
-    let access = access_of(&v, &bot);
+    let list = dg_json(cfg, &["bot", "list", &repo.repo], "dg bot list")?;
+    let access = access_of(&list, &bot);
     let tip = tip_now(cfg, repo, &full)?;
     let tip = tip.as_deref();
     let ff = |old: &str, new: &str| {

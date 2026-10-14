@@ -38,19 +38,14 @@ impl RepoService<'_> {
         if !contract.has_document_type(DOC_PUSH_GRANT) {
             return Ok(Vec::new());
         }
-        let (filters, order) = match bot {
-            Some(b) => (
-                scope.filters([QueryFilter::eq(
-                    "botId",
-                    FieldValue::identifier(platform::decode_identifier(b)?),
-                )]),
-                vec![QueryOrder::asc("botId"), QueryOrder::asc("$createdAt")],
-            ),
-            None => (
-                scope.filters([]),
-                vec![QueryOrder::asc("botId"), QueryOrder::asc("$createdAt")],
-            ),
+        let filters = match bot {
+            Some(b) => scope.filters([QueryFilter::eq(
+                "botId",
+                FieldValue::identifier(platform::decode_identifier(b)?),
+            )]),
+            None => scope.filters([]),
         };
+        let order = [QueryOrder::asc("botId"), QueryOrder::asc("$createdAt")];
         let docs = self
             .client
             .query_all_documents(&contract, DOC_PUSH_GRANT, &filters, &order)

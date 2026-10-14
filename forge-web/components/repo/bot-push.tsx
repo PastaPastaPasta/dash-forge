@@ -33,6 +33,7 @@ import { repoContractIds } from '@/lib/repo'
 import { noticeCredits } from '@/lib/repo/bot-access'
 import { readMembersOnlyNames } from '@/lib/repo/members-branches'
 import {
+  branchesFor,
   coversBranch,
   givePush,
   grantWords,
@@ -149,28 +150,37 @@ export function BotPushSection({
 /** One note (DESIGN §10's words) and, for a maintainer, what fixes it: Renew, or Give access again. */
 function PushNoteLine({ note, bot, onAction }: { note: PushNote; bot: string; onAction?: (a: PushAction) => void }): JSX.Element {
   const granter = useHandle(note.grant.granter)
-  const preset = note.grant.prefix !== undefined ? shortPrefix(note.grant.prefix) : undefined
-  const fix =
-    onAction === undefined ? null : note.kind === 'renewDue' || note.kind === 'expired' || note.kind === 'stale' ? (
-      <button type="button" className="hit-area font-medium text-forge-700 hover:underline dark:text-forge-400" onClick={() => onAction({ kind: 'renew', bot: note.grant.bot })} data-testid="bot-push-note-renew">
-        Renew
-      </button>
-    ) : note.kind === 'granterGone' ? (
-      <button
-        type="button"
-        className="hit-area font-medium text-forge-700 hover:underline dark:text-forge-400"
-        onClick={() => onAction({ kind: 'give', bot: note.grant.bot, ...(preset !== undefined ? { preset } : {}) })}
-        data-testid="bot-push-note-give"
-      >
-        Give access again
-      </button>
-    ) : null
   return (
     <p className="flex flex-wrap items-center gap-x-2 text-caution-700 dark:text-caution-400" data-testid="bot-push-note" data-kind={note.kind}>
       <span>{pushNoteWords(note, bot, granter)}</span>
-      {fix}
+      {onAction === undefined ? null : <PushNoteFix note={note} onAction={onAction} />}
     </p>
   )
+}
+
+/** The button that fixes `note`: Renew for an ending, ended or stale grant, Give access again for a gone granter. */
+function PushNoteFix({ note, onAction }: { note: PushNote; onAction: (a: PushAction) => void }): JSX.Element | null {
+  const className = 'hit-area font-medium text-forge-700 hover:underline dark:text-forge-400'
+  switch (note.kind) {
+    case 'renewDue':
+    case 'expired':
+    case 'stale':
+      return (
+        <button type="button" className={className} onClick={() => onAction({ kind: 'renew', bot: note.grant.bot })} data-testid="bot-push-note-renew">
+          Renew
+        </button>
+      )
+    case 'granterGone': {
+      const preset = note.grant.prefix !== undefined ? shortPrefix(note.grant.prefix) : undefined
+      return (
+        <button type="button" className={className} onClick={() => onAction({ kind: 'give', bot: note.grant.bot, ...(preset !== undefined ? { preset } : {}) })} data-testid="bot-push-note-give">
+          Give access again
+        </button>
+      )
+    }
+    default:
+      return null
+  }
 }
 
 /** A branch pattern's refusal, as the dialog says it (forge-core `dg bot allow --push`'s words). */
@@ -244,6 +254,16 @@ export function PushDialog({ home, display, action, onClose, onSaved }: { home: 
   }
 }
 
+/** What stops Give from signing, or null: the first that applies. */
+function giveProblem(c: { closed: boolean; display: string; handle: string; readError: string | null; ended: boolean; built: ReturnType<typeof requestsOf>; end: ReturnType<typeof endOf> }): string | null {
+  if (c.closed) return privateRepoWords(c.display)
+  if (c.readError !== null) return c.readError
+  if (c.ended) return `${c.handle}'s access has ended, so it couldn't push. Change its access first.`
+  if ('error' in c.built) return c.built.error
+  if (typeof c.end !== 'number') return c.end.error
+  return c.built.requests.length === 0 ? 'Choose a branch or a branch prefix.' : null
+}
+
 /** Give push access (DESIGN §10 "Access": "push to branches … Push access ends [date] (at most 90 days)"). */
 function GiveDialog({ home, display, bot, preset, onClose, onSaved }: { home: RepoHome; display: string; bot: string; preset: string | null; onClose: () => void; onSaved: () => void }): JSX.Element {
   const repo = home.repo
@@ -281,19 +301,7 @@ function GiveDialog({ home, display, bot, preset, onClose, onSaved }: { home: Re
   // an ended access is refused at signing ("change its access first"): say it before
   const current = read.data?.access.notice ?? null
   const ended = current !== null && !noticeLiveAt(current.notice, now)
-  const problem = closed
-    ? privateRepoWords(display)
-    : read.error !== null
-      ? read.error
-      : ended
-        ? `${handle}'s access has ended, so it couldn't push. Change its access first.`
-        : 'error' in built
-          ? built.error
-          : typeof end !== 'number'
-            ? end.error
-            : built.requests.length === 0
-              ? 'Choose a branch or a branch prefix.'
-              : null
+  const problem = giveProblem({ closed, display, handle, readError: read.error, ended, built, end })
   const requests = 'error' in built ? [] : built.requests
   const resumes = read.data === null ? null : suspendedBy(read.data.access)
   const unprotected = !matchesProtected(`refs/heads/${home.defaultBranch}`, home.config?.protectedPatterns ?? []) && requests.some((r) => coversBranch(r, home.defaultBranch))
@@ -420,6 +428,16 @@ function GiveDialog({ home, display, bot, preset, onClose, onSaved }: { home: Re
   )
 }
 
+/** What stops Renew from signing, or null: the first that applies. `refused` is undefined until the access is read. */
+function renewProblem(c: { closed: boolean; display: string; handle: string; readError: string | null; refused: string | null | undefined; planned: number; end: ReturnType<typeof endOf> }): string | null {
+  if (c.closed) return privateRepoWords(c.display)
+  if (c.readError !== null) return c.readError
+  if (c.refused === undefined) return null
+  if (c.planned === 0) return `${c.handle} has no push access here to renew. Give it push access instead.`
+  if (c.refused !== null) return c.refused
+  return typeof c.end === 'number' ? null : c.end.error
+}
+
 /** Renew (DESIGN §10: "@ci-bot's push access to bot/ci-bot/ ends in 9 days. Renew"): a new end date for every branch it may push to. */
 function RenewDialog({ home, display, bot, onClose, onSaved }: { home: RepoHome; display: string; bot: string; onClose: () => void; onSaved: () => void }): JSX.Element {
   const repo = home.repo
@@ -432,8 +450,7 @@ function RenewDialog({ home, display, bot, onClose, onSaved }: { home: RepoHome;
   const read = useAsync(
     async () => {
       const access = await readBotPushAccess(sdk!, repo, bot)
-      const branches = access.grants.some((g) => g.scope !== undefined) ? await readGrantableBranches(sdk!, repo) : []
-      const plan = renewPlan(access, branches)
+      const plan = renewPlan(access, await branchesFor(sdk!, repo, access))
       // a prefix given again is checked against the members-only names as a new one is
       const names = plan.some((t) => 'prefix' in t.request.scope) ? await readMembersOnlyNames(sdk!, repo) : []
       return { access, plan, refused: membersNameRefusal(plan.map((t) => t.request), names) }
@@ -444,19 +461,7 @@ function RenewDialog({ home, display, bot, onClose, onSaved }: { home: RepoHome;
   const end = endOf(day, now)
   const plan = read.data?.plan ?? []
   const deletes = plan.reduce((n, t) => n + t.old.filter((g) => g.granter === identity).length, 0)
-  const problem = closed
-    ? privateRepoWords(display)
-    : read.error !== null
-      ? read.error
-      : read.data === null
-        ? null
-        : plan.length === 0
-          ? `${handle} has no push access here to renew. Give it push access instead.`
-          : read.data.refused !== null
-            ? read.data.refused
-            : typeof end !== 'number'
-              ? end.error
-              : null
+  const problem = renewProblem({ closed, display, handle, readError: read.error, refused: read.data === null ? undefined : read.data.refused, planned: plan.length, end })
   return (
     <ConfirmDialog
       open
