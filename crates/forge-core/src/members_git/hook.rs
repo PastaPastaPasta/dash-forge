@@ -174,7 +174,10 @@ mod tests {
         assert_eq!(status(&dir, helper), Status::Ours { current: true });
         assert_eq!(install(&dir, helper).unwrap(), Installed::Already);
         let text = std::fs::read_to_string(dir.join("pre-push")).unwrap();
-        assert!(text.contains(r"helper='/opt/it'\''s/git-remote-dash'"), "{text}");
+        assert!(
+            text.contains(r"helper='/opt/it'\''s/git-remote-dash'"),
+            "{text}"
+        );
         // another helper path: rewritten in place, nothing chained
         let moved = Path::new("/usr/local/bin/git-remote-dash");
         assert_eq!(status(&dir, moved), Status::Ours { current: false });

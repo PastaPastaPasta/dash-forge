@@ -177,9 +177,15 @@ pub fn init_ledger(ctx: &Ctx) -> Result<()> {
     )?;
     run_helper(ctx, "--init-ledger", |v: &Value| {
         if v["created"] == true {
-            println!("Started the record at {}", v["ledger"].as_str().unwrap_or_default());
+            println!(
+                "Started the record at {}",
+                v["ledger"].as_str().unwrap_or_default()
+            );
         } else {
-            println!("This clone already has a record: {}", v["ledger"].as_str().unwrap_or_default());
+            println!(
+                "This clone already has a record: {}",
+                v["ledger"].as_str().unwrap_or_default()
+            );
         }
     })
 }

@@ -4,6 +4,7 @@
 
 use super::*;
 use serde_json::Value;
+use std::fmt::Write as _;
 
 /// `git` in `dir`, with no user or system config (and none a caller's environment injects), a
 /// fixed author and committer, and `stdin`; its stdout.
@@ -63,7 +64,11 @@ struct Realized {
     abstract_of: BTreeMap<String, String>,
 }
 
-fn realize(objects: &serde_json::Map<String, Value>, notes: &serde_json::Map<String, Value>) -> Realized {
+#[allow(clippy::too_many_lines)] // one pass per object type, in dependency order
+fn realize(
+    objects: &serde_json::Map<String, Value>,
+    notes: &serde_json::Map<String, Value>,
+) -> Realized {
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().to_path_buf();
     init(&path);
@@ -72,14 +77,31 @@ fn realize(objects: &serde_json::Map<String, Value>, notes: &serde_json::Map<Str
         let o = &objects[id];
         let mut d: Vec<String> = Vec::new();
         match o["type"].as_str().unwrap() {
-            "tree" => d.extend(o["entries"].as_array().unwrap().iter().map(|e| e.as_str().unwrap().to_owned())),
+            "tree" => d.extend(
+                o["entries"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|e| e.as_str().unwrap().to_owned()),
+            ),
             "commit" => {
-                d.extend(o["parents"].as_array().unwrap().iter().map(|e| e.as_str().unwrap().to_owned()));
+                d.extend(
+                    o["parents"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|e| e.as_str().unwrap().to_owned()),
+                );
                 if let Some(t) = o["tree"].as_str() {
                     d.push(t.to_owned());
                 }
                 if let Some(n) = notes.get(id) {
-                    d.extend(n.as_array().unwrap().iter().map(|e| e.as_str().unwrap().to_owned()));
+                    d.extend(
+                        n.as_array()
+                            .unwrap()
+                            .iter()
+                            .map(|e| e.as_str().unwrap().to_owned()),
+                    );
                 }
             }
             "tag" => d.push(o["target"].as_str().unwrap().to_owned()),
@@ -117,12 +139,15 @@ fn realize(objects: &serde_json::Map<String, Value>, notes: &serde_json::Map<Str
                 "commit" => {
                     let tree = match notes.get(id) {
                         Some(targets) => {
-                            let note = git_in(&path, &["hash-object", "-w", "--stdin"], Some("a note"));
+                            let note =
+                                git_in(&path, &["hash-object", "-w", "--stdin"], Some("a note"));
                             let mut entries: Vec<String> = targets
                                 .as_array()
                                 .unwrap()
                                 .iter()
-                                .map(|t| format!("100644 blob {note}\t{}", real[t.as_str().unwrap()]))
+                                .map(|t| {
+                                    format!("100644 blob {note}\t{}", real[t.as_str().unwrap()])
+                                })
                                 .collect();
                             entries.sort();
                             git_in(&path, &["mktree"], Some(&(entries.join("\n") + "\n")))
@@ -153,7 +178,10 @@ fn realize(objects: &serde_json::Map<String, Value>, notes: &serde_json::Map<Str
             };
             real.insert(id.clone(), oid);
         }
-        assert!(real.len() > before, "the vector's graph has a cycle or a missing object");
+        assert!(
+            real.len() > before,
+            "the vector's graph has a cycle or a missing object"
+        );
     }
     let abstract_of = real.iter().map(|(a, r)| (r.clone(), a.clone())).collect();
     Realized {
@@ -218,7 +246,7 @@ fn ledger_of(v: &Value, r: &Realized) -> ledger::State {
         Value::Array(entries) => {
             let mut text = format!("{}\n", ledger::HEADER);
             for e in entries {
-                text.push_str(&format!("commit {}", r.oid(e["oid"].as_str().unwrap())));
+                write!(text, "commit {}", r.oid(e["oid"].as_str().unwrap())).unwrap();
                 if let Some(a) = e.get("audience").and_then(Value::as_str) {
                     text.push(' ');
                     text.push_str(a);
@@ -238,7 +266,8 @@ fn vectors(case: &str) -> Vec<(String, Value)> {
         .filter_map(|e| {
             let p = e.unwrap().path();
             let name = p.file_name()?.to_str()?.to_owned();
-            (name.starts_with(&format!("{case}__")) && name.ends_with(".json")).then(|| {
+            let json = p.extension().is_some_and(|e| e == "json");
+            (name.starts_with(&format!("{case}__")) && json).then(|| {
                 let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
                 (name, v)
             })
@@ -284,7 +313,10 @@ fn every_publish_guard_vector_holds_over_real_git() {
             })
             .collect();
         let state = ledger_of(&inp["ledger"], r);
-        let publish = inp.get("publishPrivate").and_then(Value::as_str).map(|p| r.oid(p));
+        let publish = inp
+            .get("publishPrivate")
+            .and_then(Value::as_str)
+            .map(|p| r.oid(p));
         let outcome = guard::guard(
             &GitGraph::at(&r.path),
             &GuardInput {
@@ -345,7 +377,12 @@ fn fixture() -> Fixture {
     }
 }
 
-fn check(f: &Fixture, ledger: &ledger::State, decryptable: Option<&[String]>, members_key: bool) -> Outcome {
+fn check(
+    f: &Fixture,
+    ledger: &ledger::State,
+    decryptable: Option<&[String]>,
+    members_key: bool,
+) -> Outcome {
     guard::guard(
         &GitGraph::at(&f.path),
         &GuardInput {
@@ -378,8 +415,16 @@ fn a_local_graft_or_replace_ref_cannot_hide_a_members_only_parent() {
     git_in(&f.path, &["replace", "-d", &f.merge], None);
     // the legacy graft file
     std::fs::create_dir_all(f.path.join(".git/info")).unwrap();
-    std::fs::write(f.path.join(".git/info/grafts"), format!("{} {}\n", f.merge, f.b)).unwrap();
-    assert_eq!(check(&f, &empty, Some(&s), true).verdict, Verdict::Refuse, "GIT_GRAFT_FILE is off");
+    std::fs::write(
+        f.path.join(".git/info/grafts"),
+        format!("{} {}\n", f.merge, f.b),
+    )
+    .unwrap();
+    assert_eq!(
+        check(&f, &empty, Some(&s), true).verdict,
+        Verdict::Refuse,
+        "GIT_GRAFT_FILE is off"
+    );
 }
 
 #[test]
@@ -402,9 +447,17 @@ fn a_locked_key_falls_back_on_the_ledger_and_a_fork_is_refused_too() {
     // a fork without members-only content: the ledger is the clone's, so still refused
     assert_eq!(check(&f, &held, None, false).verdict, Verdict::Refuse);
     // locked, no ledger, members-only content on: the guard cannot run (E806)
-    assert_eq!(check(&f, &ledger::State::Absent, None, true).verdict, Verdict::Unavailable);
+    assert_eq!(
+        check(&f, &ledger::State::Absent, None, true).verdict,
+        Verdict::Unavailable
+    );
     // locked, an empty ledger: through, with the note
-    let o = check(&f, &ledger::State::Present(ledger::Ledger::default()), None, true);
+    let o = check(
+        &f,
+        &ledger::State::Present(ledger::Ledger::default()),
+        None,
+        true,
+    );
     assert_eq!(o.verdict, Verdict::Pass);
     assert_eq!(o.notes, vec![guard::Note::NoKeyEmptyLedger]);
 }
@@ -416,15 +469,32 @@ fn a_refusal_names_the_first_commits_and_the_branch_they_come_from() {
     let empty = ledger::State::Present(ledger::Ledger::default());
     let o = check(&f, &empty, Some(&s), true);
     let tips: BTreeMap<String, String> = [("refs/heads/sec/fix".to_owned(), f.s2.clone())].into();
-    let (e, lines) = publish_refusal(&GitGraph::at(&f.path), &o, &tips, 0);
+    let batch = [BatchRef {
+        dst: "refs/heads/main".into(),
+        new: Some(f.merge.clone()),
+        audience: Audience::Public,
+    }];
+    let (e, lines) = publish_refusal(&GitGraph::at(&f.path), &o, &batch, &tips, 0);
     assert_eq!(e.code, codes::PUBLISHES_MEMBERS_ONLY);
     assert_eq!(
         e.message,
         "pushing refs/heads/main would publish 2 commits from members-only branch sec/fix"
     );
-    assert!(e.fix[0].starts_with("dg publish sec/fix --onto main"), "{:?}", e.fix);
+    assert!(
+        e.fix[0].ends_with("`dg publish sec/fix --onto main`"),
+        "{:?}",
+        e.fix
+    );
+    assert!(
+        e.fix[1].contains(&format!("-o publish-private={}", f.merge)),
+        "{:?}",
+        e.fix
+    );
     let shown = lines.join("\n");
-    assert!(shown.contains("S2 more secret") && shown.contains("S1 secret fix"), "{shown}");
+    assert!(
+        shown.contains("S2 more secret") && shown.contains("S1 secret fix"),
+        "{shown}"
+    );
 }
 
 // --- a new branch's audience (D12) ----------------------------------------------------------------
@@ -439,7 +509,12 @@ fn facts() -> RepoFacts {
     }
 }
 
-fn decided(dst: &str, s: &Signals, f: &RepoFacts, inherits: bool) -> std::result::Result<Audience, Refusal> {
+fn decided(
+    dst: &str,
+    s: &Signals,
+    f: &RepoFacts,
+    inherits: bool,
+) -> std::result::Result<Audience, Refusal> {
     decide(dst, s, f, || Ok(inherits)).unwrap()
 }
 
@@ -470,7 +545,11 @@ fn a_new_branch_takes_the_first_signal_then_asks_once() {
     });
     assert_eq!(decided("refs/heads/x", &option, &f, true), Ok(Public));
     let default = with(|s| s.clone_default = Some(Public));
-    assert_eq!(decided("refs/heads/x", &default, &f, true), Ok(Members), "inheritance first");
+    assert_eq!(
+        decided("refs/heads/x", &default, &f, true),
+        Ok(Members),
+        "inheritance first"
+    );
     assert_eq!(decided("refs/heads/x", &default, &f, false), Ok(Public));
     // no question while no members-only branch exists (rev 4.1), the owner is alone (rev 4), or
     // the repository is empty
@@ -497,38 +576,62 @@ fn audiences_that_cannot_be_are_refused() {
         ..Signals::default()
     };
     // the default branch is always public
-    assert_eq!(decided("refs/heads/main", &members, &f, false), Err(Refusal::DefaultBranch));
-    assert_eq!(decided("refs/heads/main", &Signals::default(), &f, true), Ok(Public));
+    assert_eq!(
+        decided("refs/heads/main", &members, &f, false),
+        Err(Refusal::DefaultBranch)
+    );
+    assert_eq!(
+        decided("refs/heads/main", &Signals::default(), &f, true),
+        Ok(Public)
+    );
     // an existing public branch stays public: E809
     let public_now = Signals {
         existing: Some(Public),
         option: Some(Members),
         ..Signals::default()
     };
-    assert_eq!(decided("refs/heads/x", &public_now, &f, false), Err(Refusal::AlreadyPublic));
+    assert_eq!(
+        decided("refs/heads/x", &public_now, &f, false),
+        Err(Refusal::AlreadyPublic)
+    );
     // an existing members-only branch stays members-only; `-o public` would publish it
     let members_now = Signals {
         existing: Some(Members),
         ..Signals::default()
     };
-    assert_eq!(decided("refs/heads/x", &members_now, &f, false), Ok(Members));
+    assert_eq!(
+        decided("refs/heads/x", &members_now, &f, false),
+        Ok(Members)
+    );
     let publish = Signals {
         option: Some(Public),
         ..members_now
     };
-    assert_eq!(decided("refs/heads/x", &publish, &f, false), Err(Refusal::MembersBranchPublic));
+    assert_eq!(
+        decided("refs/heads/x", &publish, &f, false),
+        Err(Refusal::MembersBranchPublic)
+    );
     // members-only asked for with members-only content off: refused, never public
     let off = RepoFacts {
         members_key: false,
         ..facts()
     };
-    assert_eq!(decided("refs/heads/x", &members, &off, false), Err(Refusal::MembersOff));
+    assert_eq!(
+        decided("refs/heads/x", &members, &off, false),
+        Err(Refusal::MembersOff)
+    );
     let default_members = Signals {
         clone_default: Some(Members),
         ..Signals::default()
     };
-    assert_eq!(decided("refs/heads/x", &default_members, &off, false), Err(Refusal::MembersOff));
-    assert_eq!(decided("refs/heads/x", &Signals::default(), &off, false), Ok(Public));
+    assert_eq!(
+        decided("refs/heads/x", &default_members, &off, false),
+        Err(Refusal::MembersOff)
+    );
+    assert_eq!(
+        decided("refs/heads/x", &Signals::default(), &off, false),
+        Ok(Public)
+    );
 }
 
 #[test]
@@ -543,7 +646,14 @@ fn every_refusal_has_its_code_and_plain_copy() {
         let (e, wire) = refusal_error(&r, "refs/heads/fix-auth", "o/r");
         assert_eq!(e.code, code, "{r:?}");
         let text = format!("{e:?} {wire}").to_lowercase();
-        for word in ["sealed", "lane", "epoch", "key letter", "disclosure", "reveal"] {
+        for word in [
+            "sealed",
+            "lane",
+            "epoch",
+            "key letter",
+            "disclosure",
+            "reveal",
+        ] {
             assert!(!text.contains(word), "{r:?}: {word} in {text}");
         }
     }
@@ -567,19 +677,29 @@ fn a_merge_whose_members_only_parent_is_missing_is_grafted_and_fsck_stays_clean(
             .map(str::to_owned)
             .collect()
     };
-    let in_merge_tree: BTreeSet<String> = objects(&["ls-tree", "-r", "-t", "--object-only", &f.merge])
-        .into_iter()
-        .chain([git_in(&f.path, &["rev-parse", &format!("{}^{{tree}}", f.merge)], None)])
-        .collect();
-    let members_only: BTreeSet<String> = objects(&["rev-list", "--objects", &f.s2, &format!("^{}", f.b)])
-        .difference(&in_merge_tree)
-        .cloned()
-        .collect();
+    let in_merge_tree: BTreeSet<String> =
+        objects(&["ls-tree", "-r", "-t", "--object-only", &f.merge])
+            .into_iter()
+            .chain([git_in(
+                &f.path,
+                &["rev-parse", &format!("{}^{{tree}}", f.merge)],
+                None,
+            )])
+            .collect();
+    let members_only: BTreeSet<String> =
+        objects(&["rev-list", "--objects", &f.s2, &format!("^{}", f.b)])
+            .difference(&in_merge_tree)
+            .cloned()
+            .collect();
     let keep: Vec<String> = objects(&["rev-list", "--objects", &f.merge])
         .difference(&members_only)
         .cloned()
         .collect();
-    let pack = git_bytes(&f.path, &["pack-objects", "--stdout", "-q"], (keep.join("\n") + "\n").as_bytes());
+    let pack = git_bytes(
+        &f.path,
+        &["pack-objects", "--stdout", "-q"],
+        (keep.join("\n") + "\n").as_bytes(),
+    );
     git_bytes(public.path(), &["index-pack", "--stdin"], &pack);
     let wants = [f.merge.clone()];
     let cut = commits_missing_parents(Some(public.path()), &wants).unwrap();
@@ -588,13 +708,24 @@ fn a_merge_whose_members_only_parent_is_missing_is_grafted_and_fsck_stays_clean(
         .unwrap()
         .filter_map(|e| {
             let n = e.unwrap().file_name().into_string().ok()?;
-            n.strip_prefix("pack-")?.strip_suffix(".pack").map(str::to_owned)
+            n.strip_prefix("pack-")?
+                .strip_suffix(".pack")
+                .map(str::to_owned)
         })
         .collect();
-    git_in(public.path(), &["remote", "add", "origin", "dash://o/r"], None);
-    let grafted = graft_missing_parents(Some(public.path()), &wants, &packs, Some("origin")).unwrap();
+    git_in(
+        public.path(),
+        &["remote", "add", "origin", "dash://o/r"],
+        None,
+    );
+    let grafted =
+        graft_missing_parents(Some(public.path()), &wants, &packs, Some("origin")).unwrap();
     assert_eq!(grafted, vec![f.merge.clone()]);
-    git_in(public.path(), &["update-ref", "refs/heads/main", &f.merge], None);
+    git_in(
+        public.path(),
+        &["update-ref", "refs/heads/main", &f.merge],
+        None,
+    );
     // log works, and fsck is clean
     let log = git_in(public.path(), &["log", "--format=%s", "main"], None);
     assert_eq!(log.lines().collect::<Vec<_>>(), ["Merge sec", "B", "A"]);

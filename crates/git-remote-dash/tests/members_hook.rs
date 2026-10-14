@@ -3,6 +3,7 @@
 //! bare repository, nor push a public branch merging it to another remote, while public branches
 //! still push; `--no-verify` is the documented escape. Offline: no Platform involved.
 
+use std::fmt::Write as _;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
@@ -71,7 +72,10 @@ fn the_hook_refuses_members_only_commits_to_other_remotes_and_lets_public_ones_t
     let backup = t.path().join("backup.git");
     std::fs::create_dir_all(&clone).unwrap();
     ok(&clone, &["init", "-q", "-b", "main"]);
-    ok(t.path(), &["init", "-q", "--bare", backup.to_str().unwrap()]);
+    ok(
+        t.path(),
+        &["init", "-q", "--bare", backup.to_str().unwrap()],
+    );
     let public = commit(&clone, "pub.txt", "public");
     ok(&clone, &["checkout", "-q", "-b", "sec/fix"]);
     let members_only = commit(&clone, "secret.txt", "members-only fix");
@@ -83,7 +87,7 @@ fn the_hook_refuses_members_only_commits_to_other_remotes_and_lets_public_ones_t
     assert!(init.status.success(), "{init:?}");
     let ledger = clone.join(".git/dash/sealed-ledger");
     let mut text = std::fs::read_to_string(&ledger).unwrap();
-    text.push_str(&format!("commit {members_only}\n"));
+    writeln!(text, "commit {members_only}").unwrap();
     std::fs::write(&ledger, text).unwrap();
     std::fs::write(clone.join(".git/dash/public-tips"), format!("{public}\n")).unwrap();
     let install = helper(&clone, &["--install-hook"]);
@@ -96,17 +100,32 @@ fn the_hook_refuses_members_only_commits_to_other_remotes_and_lets_public_ones_t
     let mirror = git(&clone, &["push", "--mirror", backup.to_str().unwrap()]);
     assert!(!mirror.status.success(), "{mirror:?}");
     let err = String::from_utf8_lossy(&mirror.stderr);
-    assert!(err.contains("E810") && err.contains("refs/heads/sec/fix"), "{err}");
+    assert!(
+        err.contains("E810") && err.contains("refs/heads/sec/fix"),
+        "{err}"
+    );
     assert!(err.contains("members-only fix"), "names the commit: {err}");
     assert!(err.contains("--no-verify"), "{err}");
     let listed = ok(&backup, &["for-each-ref", "--format=%(refname)"]);
     assert!(!listed.contains("sec/fix"), "{listed}");
     // a public branch merging it is refused as well
-    ok(&clone, &["merge", "-q", "--no-ff", "-m", "merge sec", "sec/fix"]);
+    ok(
+        &clone,
+        &["merge", "-q", "--no-ff", "-m", "merge sec", "sec/fix"],
+    );
     let merged = git(&clone, &["push", backup.to_str().unwrap(), "main"]);
     assert!(!merged.status.success(), "{merged:?}");
     // the documented escape: --no-verify publishes it
-    ok(&clone, &["push", "-q", "--no-verify", backup.to_str().unwrap(), "main"]);
+    ok(
+        &clone,
+        &[
+            "push",
+            "-q",
+            "--no-verify",
+            backup.to_str().unwrap(),
+            "main",
+        ],
+    );
 
     // a pre-push hook the user already had keeps running, after the check
     let chained = t.path().join("chained.log");
@@ -139,11 +158,17 @@ fn a_clone_that_never_held_members_only_commits_pushes_anywhere() {
     let backup = t.path().join("backup.git");
     std::fs::create_dir_all(&clone).unwrap();
     ok(&clone, &["init", "-q", "-b", "main"]);
-    ok(t.path(), &["init", "-q", "--bare", backup.to_str().unwrap()]);
+    ok(
+        t.path(),
+        &["init", "-q", "--bare", backup.to_str().unwrap()],
+    );
     commit(&clone, "a.txt", "one");
     assert!(helper(&clone, &["--init-ledger"]).status.success());
     assert!(helper(&clone, &["--install-hook"]).status.success());
-    ok(&clone, &["push", "-q", "--mirror", backup.to_str().unwrap()]);
+    ok(
+        &clone,
+        &["push", "-q", "--mirror", backup.to_str().unwrap()],
+    );
     // an unreadable ledger fails closed
     std::fs::write(
         clone.join(".git/dash/sealed-ledger"),

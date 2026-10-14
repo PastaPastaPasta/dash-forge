@@ -85,7 +85,12 @@ impl GitGraph {
     }
 
     /// `rev-list [--objects] include ^exclude`, over the objects this repository holds.
-    fn walk(&self, objects: bool, include: &[String], exclude: &[String]) -> Result<BTreeSet<String>> {
+    fn walk(
+        &self,
+        objects: bool,
+        include: &[String],
+        exclude: &[String],
+    ) -> Result<BTreeSet<String>> {
         let include = self.present(include)?;
         if include.is_empty() {
             return Ok(BTreeSet::new());
@@ -124,8 +129,17 @@ impl GitGraph {
         let refs: Vec<&str> = oids.iter().map(String::as_str).collect();
         args.extend(refs);
         self.git(&args, None).map_or_else(
-            |_| oids.iter().map(|o| o[..o.len().min(12)].to_owned()).collect(),
-            |out| String::from_utf8_lossy(&out).lines().map(str::to_owned).collect(),
+            |_| {
+                oids.iter()
+                    .map(|o| o[..o.len().min(12)].to_owned())
+                    .collect()
+            },
+            |out| {
+                String::from_utf8_lossy(&out)
+                    .lines()
+                    .map(str::to_owned)
+                    .collect()
+            },
         )
     }
 
@@ -210,6 +224,7 @@ impl ObjectGraph for GitGraph {
     }
 }
 
+#[allow(clippy::needless_pass_by_value)] // a `map_err` function
 fn graph_error(e: anyhow::Error) -> forge_core::Error {
     forge_core::Error::Config(format!(
         "reading this clone's history for the members-only check: {e:#}"
@@ -232,6 +247,7 @@ fn lines<'a>(it: impl Iterator<Item = &'a str>) -> String {
 // --- a new branch's audience (D12) ------------------------------------------------------------
 
 /// What the repository says about a push's new refs.
+#[allow(clippy::struct_excessive_bools)] // independent facts D12 reads, not a state
 #[derive(Debug, Clone, Default)]
 pub struct RepoFacts {
     /// Members-only content is on (a members key exists).
@@ -391,7 +407,7 @@ pub fn refusal_error(r: &Refusal, dst: &str, repo: &str) -> (UserError, &'static
                 format!("{name} exists on {repo} as a public branch")
             })
             .fix(format!(
-                "dg branch new --members {name}-2     # start a members-only branch from here"
+                "start a members-only branch from here under another name: `dg branch new --members {name}-2`"
             ))
             .note(NOTE_NOTHING_SIGNED),
             "already public",
@@ -402,8 +418,8 @@ pub fn refusal_error(r: &Refusal, dst: &str, repo: &str) -> (UserError, &'static
                 format!("{name} can't be members-only: {repo} has members-only content off"),
             )
             .cause("this push asks for a members-only branch, and the repository has no members key")
-            .fix(format!("turn it on: dg repo members enable {repo}"))
-            .fix("or push it as a public branch: git push -o public …")
+            .fix(format!("a maintainer turns it on: `dg repo members enable {repo}`"))
+            .fix(format!("push it as a public branch: add `-o public` to the push, or set `git config branch.{name}.dashAudience public`"))
             .note(NOTE_NOTHING_SIGNED),
             "members-only content is off",
         ),
@@ -415,8 +431,10 @@ pub fn refusal_error(r: &Refusal, dst: &str, repo: &str) -> (UserError, &'static
             .cause(format!(
                 "{repo} has members-only branches, and nothing says whether {name} is public or members-only"
             ))
-            .fix("git config dash.newBranches public     # or members; then push again")
-            .fix(format!("dg branch new --members {name}        # for one branch"))
+            .fix("set this clone's default, then push again: `git config dash.newBranches public` (or `members`)")
+            .fix(format!(
+                "answer for this push: add `-o public` (or `-o members`); or `dg branch new --members {name}` for this branch"
+            ))
             .note("asked once in this clone: a later new branch with no setting is public; nothing was signed or stored"),
             "choose who can see this new branch",
         ),
@@ -427,7 +445,7 @@ pub fn refusal_error(r: &Refusal, dst: &str, repo: &str) -> (UserError, &'static
             )
             .cause("-o public names a branch that exists as members-only")
             .fix(format!(
-                "dg publish {name} --onto <public branch>     # one new public commit"
+                "make one new public commit from it instead: `dg publish {name} --onto <public branch>`"
             ))
             .note(NOTE_NOTHING_SIGNED),
             "members-only branch",
@@ -457,10 +475,16 @@ const NAMED: usize = 5;
 pub fn publish_refusal(
     g: &GitGraph,
     outcome: &Outcome,
+    batch: &[BatchRef],
     members_tips: &BTreeMap<String, String>,
     public_missing: usize,
 ) -> (UserError, Vec<String>) {
     let first = &outcome.findings[0];
+    let tip = batch
+        .iter()
+        .find(|b| b.dst == first.dst)
+        .and_then(|b| b.new.clone())
+        .unwrap_or_else(|| "<new tip>".to_owned());
     let n = first.oids.len();
     let from = first.oids.first().and_then(|c| {
         members_tips
@@ -472,7 +496,10 @@ pub fn publish_refusal(
         FindingKind::Commits => format!("{n} {}", plural(n, "commit", "commits")),
         FindingKind::Tag => "a members-only tag".to_owned(),
         FindingKind::Object => "a members-only file or directory".to_owned(),
-        FindingKind::Note => format!("a note on {n} members-only {}", plural(n, "commit", "commits")),
+        FindingKind::Note => format!(
+            "a note on {n} members-only {}",
+            plural(n, "commit", "commits")
+        ),
         FindingKind::Replace => "a replacement of a members-only commit".to_owned(),
     };
     let origin = from.as_ref().map_or_else(
@@ -483,7 +510,11 @@ pub fn publish_refusal(
     for f in &outcome.findings {
         lines.push(format!("dash: {} would publish:", f.dst));
         let shown: Vec<String> = f.oids.iter().take(NAMED).cloned().collect();
-        lines.extend(g.describe(&shown).into_iter().map(|l| format!("dash:   {l}")));
+        lines.extend(
+            g.describe(&shown)
+                .into_iter()
+                .map(|l| format!("dash:   {l}")),
+        );
         if f.oids.len() > NAMED {
             lines.push(format!("dash:   … and {} more", f.oids.len() - NAMED));
         }
@@ -495,11 +526,11 @@ pub fn publish_refusal(
     )
     .cause("anything pushed to a public branch can't be taken back, so nothing in this push was sent")
     .fix(format!(
-        "dg publish {branch} --onto {}     # one new public commit; the members-only history stays members-only",
+        "make one new public commit, keeping the members-only history members-only: `dg publish {branch} --onto {}`",
         short(&first.dst)
     ))
     .fix(format!(
-        "git push -o {OPTION_PUBLISH_PRIVATE}=<new tip> …     # publish these commits as they are; it can't be undone"
+        "publish these commits as they are, which can't be undone: add `-o {OPTION_PUBLISH_PRIVATE}={tip}` to the same push"
     ));
     let e = if public_missing > 0 {
         e.note(format!(
@@ -519,7 +550,7 @@ pub fn cannot_check_push() -> UserError {
         "can't check for members-only commits: your encryption key isn't available and this clone has no record of what it holds",
     )
     .cause("the repository has members-only branches; a public push can't be checked without your key or this clone's record")
-    .fix("dg auth unlock, then push again (a key sealed with a passphrase needs a terminal, or DASH_FORGE_PASSPHRASE)")
+    .fix("dg auth unlock, then push again (a key protected by a passphrase needs a terminal, or DASH_FORGE_PASSPHRASE)")
     .fix("a clone that never fetched members-only branches can start its record: dg doctor --init-ledger")
     .note(NOTE_NOTHING_SIGNED)
 }
@@ -534,7 +565,7 @@ pub fn cannot_check_fetch(why: &str) -> UserError {
     .cause(format!(
         "this clone has fetched members-only branches, so fetching only the public view would drop them ({why})"
     ))
-    .fix("dg auth unlock, then fetch again (a key sealed with a passphrase needs a terminal, or DASH_FORGE_PASSPHRASE)")
+    .fix("dg auth unlock, then fetch again (a key protected by a passphrase needs a terminal, or DASH_FORGE_PASSPHRASE)")
     .note("nothing was fetched")
 }
 
@@ -544,7 +575,7 @@ pub fn ledger_unreadable() -> UserError {
         codes::CANNOT_CHECK_MEMBERS_ONLY,
         "can't check for members-only commits: this clone's record of them is from a newer version",
     )
-    .cause("the sealed-object ledger (.git/dash/sealed-ledger) is a version this git-remote-dash does not read")
+    .cause("this clone's record of members-only commits (.git/dash/sealed-ledger) is a version this git-remote-dash does not read")
     .fix("update git-remote-dash and dg to the version that wrote it")
     .note(NOTE_NOTHING_SIGNED)
 }
@@ -567,7 +598,11 @@ pub fn publication_lines(g: &GitGraph, published: &[Finding]) -> Vec<String> {
             plural(f.oids.len(), "object", "objects"),
             f.dst
         ));
-        out.extend(g.describe(&f.oids).into_iter().map(|l| format!("dash:   {l}")));
+        out.extend(
+            g.describe(&f.oids)
+                .into_iter()
+                .map(|l| format!("dash:   {l}")),
+        );
     }
     out
 }
@@ -663,7 +698,8 @@ pub fn record(commits: &[String], packs: &[[u8; 32]]) -> Result<()> {
     let held = match ledger::read(&dir) {
         Ok(ledger::State::Present(l)) => l,
         Ok(ledger::State::Absent) => {
-            ledger::create_empty(&dir).context("creating the sealed-object ledger")?;
+            ledger::create_empty(&dir)
+                .context("starting this clone's record of members-only commits")?;
             ledger::Ledger::default()
         }
         Ok(ledger::State::Unknown) | Err(_) => return Err(ledger_unreadable().into()),
@@ -679,7 +715,7 @@ pub fn record(commits: &[String], packs: &[[u8; 32]]) -> Result<()> {
         if e.kind() == std::io::ErrorKind::InvalidData {
             anyhow::Error::from(ledger_unreadable())
         } else {
-            anyhow::Error::from(e).context("recording members-only objects in the sealed-object ledger")
+            anyhow::Error::from(e).context("recording members-only commits in this clone's record")
         }
     })
 }
@@ -876,7 +912,9 @@ pub fn pre_push(args: &[String], input: &mut dyn std::io::Read) -> Result<i32> {
         let e = ledger_unreadable();
         eprintln!("pre-push: {} {}", e.code, e.message);
         eprintln!("          {}", e.cause.unwrap_or_default());
-        eprintln!("          git push --no-verify skips this check, and publishes what it would refuse");
+        eprintln!(
+            "          git push --no-verify skips this check, and publishes what it would refuse"
+        );
         return Ok(1);
     }
     let common = LocalRepo::common_dir()?;
@@ -958,7 +996,11 @@ pub fn commits_missing_parents(
     repo: Option<&Path>,
     wants: &[String],
 ) -> Result<Vec<(String, Vec<String>)>> {
-    let wants: Vec<&str> = wants.iter().map(String::as_str).filter(|w| is_hex_oid(w)).collect();
+    let wants: Vec<&str> = wants
+        .iter()
+        .map(String::as_str)
+        .filter(|w| is_hex_oid(w))
+        .collect();
     if wants.is_empty() {
         return Ok(Vec::new());
     }
@@ -1017,26 +1059,41 @@ pub fn graft_missing_parents(
     for sha in packs {
         let marker = pack_dir.join(format!("pack-{sha}.promisor"));
         if !marker.exists() {
-            std::fs::write(&marker, b"").with_context(|| format!("writing {}", marker.display()))?;
+            std::fs::write(&marker, b"")
+                .with_context(|| format!("writing {}", marker.display()))?;
         }
     }
     if let Some(remote) = remote.filter(|r| !r.is_empty() && !r.contains("://")) {
         run_git_in(repo, &["config", "core.repositoryformatversion", "1"])?;
         run_git_in(repo, &["config", "extensions.partialClone", remote])?;
-        run_git_in(repo, &["config", &format!("remote.{remote}.promisor"), "true"])?;
+        run_git_in(
+            repo,
+            &["config", &format!("remote.{remote}.promisor"), "true"],
+        )?;
     }
     Ok(grafted)
 }
 
 fn objects_dir(repo: Option<&Path>) -> Result<PathBuf> {
-    let out = git_read_in(repo, &["rev-parse", "--path-format=absolute", "--git-path", "objects"], None)?;
+    let out = git_read_in(
+        repo,
+        &[
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "objects",
+        ],
+        None,
+    )?;
     Ok(PathBuf::from(String::from_utf8_lossy(&out).trim()))
 }
 
 fn run_git_in(repo: Option<&Path>, args: &[&str]) -> Result<()> {
     let mut cmd = std::process::Command::new("git");
     if let Some(dir) = repo {
-        cmd.current_dir(dir).env_remove("GIT_DIR").env_remove("GIT_WORK_TREE");
+        cmd.current_dir(dir)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE");
     }
     let out = cmd.args(args).output().context("running git")?;
     if !out.status.success() {
@@ -1052,7 +1109,11 @@ fn run_git_in(repo: Option<&Path>, args: &[&str]) -> Result<()> {
 /// Write a commit-graph for the history of `tips` (DESIGN §4.3, S4: without one the guard costs a
 /// second on a large import). Best effort.
 pub fn write_commit_graph(tips: &[String]) {
-    let tips: Vec<&str> = tips.iter().map(String::as_str).filter(|t| is_hex_oid(t)).collect();
+    let tips: Vec<&str> = tips
+        .iter()
+        .map(String::as_str)
+        .filter(|t| is_hex_oid(t))
+        .collect();
     if tips.is_empty() {
         return;
     }

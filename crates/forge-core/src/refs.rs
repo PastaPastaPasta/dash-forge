@@ -614,12 +614,13 @@ impl std::fmt::Debug for MembersView {
     }
 }
 
+/// How a reader opens a sealed document with the keys it holds ([`refs_view`]).
+pub type DocOpener<'a> =
+    &'a dyn Fn(crate::private::DocKind, &FetchedDocument) -> crate::private::Opened;
+
 /// [`RefsView`] of `state`, opening members-only updates with `open` when a members key is
 /// held (`None`: the public view only).
-pub fn refs_view(
-    state: &GitState,
-    open: Option<&dyn Fn(crate::private::DocKind, &FetchedDocument) -> crate::private::Opened>,
-) -> RefsView {
+pub fn refs_view(state: &GitState, open: Option<DocOpener<'_>>) -> RefsView {
     let public = public_refs(state);
     let members_key = crate::keyring::has_members_key_in(&state.configs);
     let members_only_updates = members_only_ref_count(state).0;
@@ -687,11 +688,7 @@ pub async fn read_refs_view(
 ) -> Result<RefsView> {
     let state = read_git_state(client, contract, scope, Freshness::Now).await?;
     let open = keyring.map(|kr| move |k, d: &FetchedDocument| kr.open(k, d));
-    Ok(refs_view(
-        &state,
-        open.as_ref()
-            .map(|o| o as &dyn Fn(crate::private::DocKind, &FetchedDocument) -> _),
-    ))
+    Ok(refs_view(&state, open.as_ref().map(|o| o as DocOpener<'_>)))
 }
 
 /// What an outsider learns of a public repository's members-only branches: how many sealed
@@ -994,12 +991,18 @@ mod members_tests {
             [NAME],
             "main is public, not members-only"
         );
-        let hexes: Vec<String> = [0xa, 0xb, 0xc].iter().map(|b| hex::encode([*b; 20])).collect();
+        let hexes: Vec<String> = [0xa, 0xb, 0xc]
+            .iter()
+            .map(|b| hex::encode([*b; 20]))
+            .collect();
         assert_eq!(member.decryptable, hexes, "the force-pushed-away tip too");
         assert_eq!(member.unreadable, 0);
         // the view's Debug shows counts only
         let shown = format!("{member:?}");
-        assert!(!shown.contains(NAME) && !shown.contains(&hexes[0]), "{shown}");
+        assert!(
+            !shown.contains(NAME) && !shown.contains(&hexes[0]),
+            "{shown}"
+        );
     }
 
     #[test]

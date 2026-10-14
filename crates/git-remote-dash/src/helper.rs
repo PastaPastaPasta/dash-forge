@@ -298,36 +298,36 @@ impl Helper {
         }
         self.ensure_conn().await?;
         let conn = self.conn.as_ref().expect("conn populated");
-        let keys = if conn.signer.is_none() && !key_source_configured(&self.url, conn.repo.owner_id())
-        {
-            MembersKeys::Anonymous
-        } else {
-            let loaded = if conn.signer.is_none() {
-                let why = "reading members-only branches opens them with your encryption key";
-                load_signer(&self.url, &conn.client, &conn.repo, why)
-                    .await
-                    .map(Some)
+        let keys =
+            if conn.signer.is_none() && !key_source_configured(&self.url, conn.repo.owner_id()) {
+                MembersKeys::Anonymous
             } else {
-                Ok(None)
-            };
-            match loaded {
-                Err(e) => MembersKeys::Locked(brief(&format!("{e:#}"))),
-                Ok(signer) => {
-                    if let Some(s) = signer {
-                        self.conn.as_mut().expect("conn populated").signer = Some(s);
-                    }
-                    let conn = self.conn.as_ref().expect("conn populated");
-                    match conn.service().keyring(&conn.repo).await {
-                        Ok(kr) if !kr.resolution().keys.is_empty() => MembersKeys::Held(kr),
-                        Ok(kr) if kr.reader_role().is_some() => MembersKeys::Locked(
-                            "no key has been shared with you yet".to_owned(),
-                        ),
-                        Ok(_) => MembersKeys::Locked("you are not a member".to_owned()),
-                        Err(e) => MembersKeys::Locked(brief(&format!("{e:#}"))),
+                let loaded = if conn.signer.is_none() {
+                    let why = "reading members-only branches opens them with your encryption key";
+                    load_signer(&self.url, &conn.client, &conn.repo, why)
+                        .await
+                        .map(Some)
+                } else {
+                    Ok(None)
+                };
+                match loaded {
+                    Err(e) => MembersKeys::Locked(brief(&format!("{e:#}"))),
+                    Ok(signer) => {
+                        if let Some(s) = signer {
+                            self.conn.as_mut().expect("conn populated").signer = Some(s);
+                        }
+                        let conn = self.conn.as_ref().expect("conn populated");
+                        match conn.service().keyring(&conn.repo).await {
+                            Ok(kr) if !kr.resolution().keys.is_empty() => MembersKeys::Held(kr),
+                            Ok(kr) if kr.reader_role().is_some() => MembersKeys::Locked(
+                                "no key has been shared with you yet".to_owned(),
+                            ),
+                            Ok(_) => MembersKeys::Locked("you are not a member".to_owned()),
+                            Err(e) => MembersKeys::Locked(brief(&format!("{e:#}"))),
+                        }
                     }
                 }
-            }
-        };
+            };
         self.members = Some(keys.clone());
         Ok(keys)
     }
@@ -440,8 +440,8 @@ impl Helper {
     /// The `list` / `list for-push` response lines: `<oid> <refname>` per resolved ref and,
     /// for a fetch, an `@refs/heads/<default> HEAD` symref.
     pub async fn list(&mut self, for_push: bool) -> Result<Vec<String>> {
-        let public_repo = self.ensure_conn().await?.repo.visibility
-            == forge_core::rules::v2::Visibility::Public;
+        let public_repo =
+            self.ensure_conn().await?.repo.visibility == forge_core::rules::v2::Visibility::Public;
         let refs = if public_repo {
             self.public_repo_refs(for_push).await?
         } else {
@@ -506,7 +506,9 @@ impl Helper {
                 "the wanted history is incomplete after an incremental fetch; fetching every pack"
             );
             let full = self.fetch_packs(wants, options, false).await?;
-            if full.members_packs && options.filter.is_none() && LocalRepo::history_has_gaps(&want_oids)
+            if full.members_packs
+                && options.filter.is_none()
+                && LocalRepo::history_has_gaps(&want_oids)
             {
                 self.graft_unreadable_parents(&want_oids, &full.indexed);
             }
@@ -543,6 +545,8 @@ impl Helper {
 
     /// [`Self::fetch`]'s download: every stored git pack, or (`incremental`) only those not
     /// recorded as already held.
+    // One pass, in order: choose, download, record, index; each step is its own function.
+    #[allow(clippy::too_many_lines)]
     async fn fetch_packs(
         &mut self,
         wants: &[Want],
@@ -561,7 +565,8 @@ impl Helper {
             .unwrap_or_default();
         let skip_held = incremental && options.filter.is_none();
         let members_kr = members_fetch.as_ref().map(|m| &m.keyring);
-        let git_packs = packs_to_fetch(&manifests, skip_held.then_some(&have), members_kr.is_some());
+        let git_packs =
+            packs_to_fetch(&manifests, skip_held.then_some(&have), members_kr.is_some());
         let members_packs = manifests
             .iter()
             .any(|m| m.kind == u64::from(forge_core::pack::KIND_MEMBERS_GIT_PACK));
@@ -654,18 +659,9 @@ impl Helper {
             .map(|(h, _)| *h)
             .collect();
         let parent = parent_holding(&conn.client, svc, repo, &fetched).await;
-        // Members-only objects are recorded in the clone's ledger before they arrive: every
-        // members-only commit the reader decrypts, and the members-only packs about to be indexed
-        // (DESIGN D21; a crash after this leaves a record of more, never less).
+        // members-only objects are recorded in the clone's ledger before they arrive
         if let Some(m) = &members_fetch {
-            let kind_of: BTreeMap<[u8; 32], u64> =
-                git_packs.iter().map(|g| (g.pack_hash, g.kind)).collect();
-            let sealed: Vec<[u8; 32]> = indexed
-                .iter()
-                .copied()
-                .filter(|h| kind_of.get(h) == Some(&u64::from(forge_core::pack::KIND_MEMBERS_GIT_PACK)))
-                .collect();
-            members::record(&m.decryptable, &sealed)?;
+            record_members_fetch(m, &git_packs, &indexed)?;
         }
         let shas = index_fetched(
             fetched.into_iter().map(|(_, g)| g).collect(),
@@ -775,7 +771,8 @@ impl Helper {
             }
         }
         // The members key members-only refs are sealed under, read now (§5.3).
-        let (lane, fresh_keys) = if public_repo && !dry_run && planned.iter().any(Planned::members) {
+        let (lane, fresh_keys) = if public_repo && !dry_run && planned.iter().any(Planned::members)
+        {
             match svc.members_lane(&conn.repo).await {
                 Ok((lane, kr)) => (Some(lane), Some(kr)),
                 Err(e) => {
@@ -783,8 +780,12 @@ impl Helper {
                         forge_core::Error::User(u) => u.eprint("dash: "),
                         other => eprintln!("dash: error: {other}"),
                     }
-                    for p in planned.iter_mut().filter(|p| p.members() && p.reject.is_none()) {
-                        p.reject = Some("members-only branch: the members key isn't available".into());
+                    for p in planned
+                        .iter_mut()
+                        .filter(|p| p.members() && p.reject.is_none())
+                    {
+                        p.reject =
+                            Some("members-only branch: the members key isn't available".into());
                     }
                     (None, None)
                 }
@@ -820,7 +821,11 @@ impl Helper {
         let have_bases: Vec<String> = view
             .public
             .iter()
-            .chain(if public_repo { &[][..] } else { &remote_refs[..] })
+            .chain(if public_repo {
+                &[][..]
+            } else {
+                &remote_refs[..]
+            })
             .filter_map(|(_, s)| tip_oid(s))
             .filter(|oid| LocalRepo::object_exists(oid))
             .collect();
@@ -1109,6 +1114,27 @@ fn moved_branches(
             })
         })
         .collect()
+}
+
+/// Record, before they are indexed, what a members-only fetch brings: every members-only commit
+/// the reader decrypts and the members-only packs among `indexed` (DESIGN D21; a crash after this
+/// leaves a record of more, never less).
+fn record_members_fetch(
+    m: &MembersFetch,
+    git_packs: &[forge_core::repo::PackManifestInfo],
+    indexed: &[[u8; 32]],
+) -> Result<()> {
+    let members_kind = u64::from(forge_core::pack::KIND_MEMBERS_GIT_PACK);
+    let sealed: Vec<[u8; 32]> = indexed
+        .iter()
+        .copied()
+        .filter(|h| {
+            git_packs
+                .iter()
+                .any(|g| g.pack_hash == *h && g.kind == members_kind)
+        })
+        .collect();
+    members::record(&m.decryptable, &sealed)
 }
 
 /// What one fetch pass did ([`Helper::fetch_packs`]).
@@ -1940,8 +1966,15 @@ impl Writer<'_> {
         let (members, public): (Vec<usize>, Vec<usize>) =
             accepted.iter().partition(|&&i| planned[i].members());
         if members.is_empty() {
-            return write_batch(self.svc, self.repo, planned, &public, self.progress, landed_before)
-                .await;
+            return write_batch(
+                self.svc,
+                self.repo,
+                planned,
+                &public,
+                self.progress,
+                landed_before,
+            )
+            .await;
         }
         let members_results = write_members_batch(self, planned, &members).await;
         let landed = landed_before || members_results.iter().any(Result::is_ok);
@@ -2435,7 +2468,8 @@ fn decide_audiences(
             let adds = forge_core::members_git::guard::ObjectGraph::commits(&g, &t, &p_tips)?;
             let mut p_and_s = p_tips.clone();
             p_and_s.extend(s_all.iter().cloned());
-            let public_only = forge_core::members_git::guard::ObjectGraph::commits(&g, &t, &p_and_s)?;
+            let public_only =
+                forge_core::members_git::guard::ObjectGraph::commits(&g, &t, &p_and_s)?;
             Ok(adds != public_only)
         };
         match members::decide(&dst, &signals, &facts, inherits)? {
@@ -2458,6 +2492,7 @@ fn decide_audiences(
 /// anything is signed: E806 when it cannot tell, E805 when the batch would publish members-only
 /// objects (the whole batch is refused), and the list of what `-o publish-private` publishes.
 fn guard_push(planned: &mut [Planned], view: &PushView, options: &OptionState) -> Result<()> {
+    use forge_core::members_git::guard::{Note, Verdict};
     let batch: Vec<forge_core::members_git::plan::BatchRef> = planned
         .iter()
         .filter(|p| p.reject.is_none())
@@ -2489,7 +2524,6 @@ fn guard_push(planned: &mut [Planned], view: &PushView, options: &OptionState) -
         publish.as_deref(),
     )?;
     let g = members::GitGraph::here();
-    use forge_core::members_git::guard::{Note, Verdict};
     match outcome.verdict {
         Verdict::Unavailable => {
             let e = if members::read_ledger() == forge_core::members_git::ledger::State::Unknown {
@@ -2504,7 +2538,8 @@ fn guard_push(planned: &mut [Planned], view: &PushView, options: &OptionState) -
         }
         Verdict::Refuse => {
             let missing = p_tips.len() - g.present(&p_tips).map_or(0, |h| h.len());
-            let (e, lines) = members::publish_refusal(&g, &outcome, &view.members_tips(), missing);
+            let (e, lines) =
+                members::publish_refusal(&g, &outcome, &batch, &view.members_tips(), missing);
             for line in lines {
                 eprintln!("{line}");
             }
@@ -2574,8 +2609,8 @@ async fn upload_members_pack(
 ) -> Result<Option<([u8; 32], u64)>> {
     let want: Vec<&str> = job.want.iter().map(String::as_str).collect();
     let have: Vec<&str> = job.have.iter().map(String::as_str).collect();
-    let pack = build_pack(ctx.git_dir, &want, &have)
-        .context("building the members-only branch's pack")?;
+    let pack =
+        build_pack(ctx.git_dir, &want, &have).context("building the members-only branch's pack")?;
     let objects = pack.parsed.object_count() as u64;
     let progress = Progress {
         enabled: ctx.progress.enabled || ctx.dry_run,
@@ -2594,7 +2629,12 @@ async fn upload_members_pack(
         return Ok(None);
     }
     if ctx.dry_run {
-        let est = members_pack_estimate(ctx, pack.bytes.len() as u64, objects, ctx.policy.resolved.platform);
+        let est = members_pack_estimate(
+            ctx,
+            pack.bytes.len() as u64,
+            objects,
+            ctx.policy.resolved.platform,
+        );
         progress.note(&format!(
             "members-only pack for {}: est. {} DASH (dry run: nothing stored)",
             refs[0],
@@ -2624,10 +2664,21 @@ async fn upload_members_pack(
         &job.meta.pack_hash,
     );
     let replication = store_pack(ctx, &job, &externals, &jpath).await?;
-    record_pack_kind(ctx, &job, &replication, forge_core::pack::KIND_MEMBERS_GIT_PACK).await?;
+    record_pack_kind(
+        ctx,
+        &job,
+        &replication,
+        forge_core::pack::KIND_MEMBERS_GIT_PACK,
+    )
+    .await?;
     crate::fetched::FetchedPacks::record(ctx.git_dir, ctx.repo.id(), job.pack_hash);
     retire_journal(ctx, &jpath, &replication);
-    let actual = members_pack_estimate(ctx, pack.bytes.len() as u64, objects, replication.has_platform());
+    let actual = members_pack_estimate(
+        ctx,
+        pack.bytes.len() as u64,
+        objects,
+        replication.has_platform(),
+    );
     Ok(Some((job.pack_hash, actual.total())))
 }
 
@@ -2688,7 +2739,7 @@ fn seal_members_pack(
         .and_then(|()| std::fs::rename(&tmp, &path))
         .is_err()
     {
-        tracing::warn!("could not keep the sealed members-only pack; an interrupted push would seal it again");
+        tracing::warn!("could not keep the encrypted members-only pack; an interrupted push would encrypt it again");
     }
     Ok(sealed)
 }
@@ -4567,7 +4618,10 @@ fn key_source_configured(url: &DashUrl, owner_id: &str) -> bool {
     if HANDED_KEY.get().is_some() || std::env::var_os("DASH_FORGE_KEY").is_some() {
         return true;
     }
-    if matches!(forge_core::keystore::configured_default_source(), Ok(Some(_))) {
+    if matches!(
+        forge_core::keystore::configured_default_source(),
+        Ok(Some(_))
+    ) {
         return true;
     }
     matches!(url, DashUrl::Named { .. })

@@ -551,11 +551,14 @@ Only the repository's newest 100 pull requests are checked. When there are older
 **Would publish members-only commits.** A push to a public branch would publish commits that belong to a members-only branch. Anything pushed to a public branch can't be taken back, so the push helper refuses the whole push before it signs or stores anything. The message names the first commits (`a1b2c3d Fix bounds check`) and how many there are, and git shows `! [remote rejected] main -> main (would publish members-only commits)`.
 
 ```
+dash: refs/heads/main would publish:
+dash:   a1b2c3d Fix bounds check
+dash:   9f8e7d6 Add a regression test
+dash:   4c3b2a1 Tighten the check
 error: E805 pushing refs/heads/main would publish 3 commits from members-only branch sec/cve-77
-       a1b2c3d Fix bounds check
-       ...
-  fix: dg publish sec/cve-77 --onto main                 # one new public commit; the members-only history stays members-only
-       git push -o publish-private=<oid> origin main      # publish these 3 commits as they are
+  cause: anything pushed to a public branch can't be taken back, so nothing in this push was sent
+  fix:   make one new public commit, keeping the members-only history members-only: `dg publish sec/cve-77 --onto main`
+  or:    publish these commits as they are, which can't be undone: add `-o publish-private=<oid>` to the same push
 ```
 
 **What to do:** `dg publish <branch> --onto <public branch>` makes one new public commit, and the members-only history stays members-only. If you mean to publish the commits as they are, push with `-o publish-private=<oid>`, naming the new tip of the ref that publishes them: the push lists what it publishes. That is a publication and can't be undone. Setting it in `push.pushOption` doesn't work: it is ignored, so it can only ever apply to one push. If the message says some public branches aren't in your clone yet, run `git fetch` and push again: a public commit your clone doesn't have yet can't be told apart from a members-only one.
@@ -608,8 +611,8 @@ The hook is installed the first time a clone fetches members-only branches. It r
 
 ```
 error: E811 new branch fix-auth: choose who can see it
-  fix: git config dash.newBranches public     # or members; then push again
-       dg branch new --members fix-auth        # for one branch
+  fix:   set this clone's default, then push again: `git config dash.newBranches public` (or `members`)
+  or:    answer for this push: add `-o public` (or `-o members`); or `dg branch new --members fix-auth` for this branch
 ```
 
 It is only asked once the repository has at least one members-only branch, and never for the first push to an empty repository, while the owner is the only member, for the default branch (always public) or for a tag (a tag on a members-only commit is members-only). After it has been asked once, a new branch with nothing that says otherwise is public. `git push -o members` or `git push -o public` answers for one push.
