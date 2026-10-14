@@ -1072,24 +1072,10 @@ fn from_platform_text(msg: &str, ctx: &ErrorContext<'_>) -> Option<UserError> {
             &format!("40128: {}", one_line(msg)),
         ));
     }
-    // 10422 DocumentPropertyConstraintViolated, as text: the same rendering as the typed error.
-    if let Some((document_type, rule)) = violated_rule(msg) {
-        return Some(rule_refused(ctx, &document_type, &rule, &one_line(msg)));
-    }
-    // 40147 DocumentDeleteConstraintViolated (mainnet R-08, R-09): a delete a rule keeps.
-    if let Some((document_type, rule)) = violated_delete_rule(msg) {
-        let u = UserError::new(
-            codes::REJECTED,
-            ctx.headline(&format!("consensus refused it by the rule {rule:?}")),
-        );
-        return Some(match rule_explanation(&document_type, &rule) {
-            Some(why) => u
-                .cause(format!("{why} (40147: {document_type} rule {rule})"))
-                .note("refused before execution: nothing was deleted"),
-            None => u
-                .cause(one_line(msg))
-                .note("refused before execution: nothing was deleted"),
-        });
+    // 10422 DocumentPropertyConstraintViolated and 40147 DocumentDeleteConstraintViolated, as
+    // text: the same rendering as the typed error.
+    if let Some(u) = constraint_refused(ctx, msg) {
+        return Some(u);
     }
     // Before the network rule: Drive's refusal of a read travels as a gRPC status ("transport
     // error"), but it is an answer. Here the clauses are dg's own (`dg api query` words its own
@@ -1391,6 +1377,27 @@ fn violated_rule(msg: &str) -> Option<(String, String)> {
     };
     let rule = quoted("breaks its propertyConstraints rule \"")?;
     Some((quoted("document of type \"").unwrap_or_default(), rule))
+}
+
+/// A 10422 (a `propertyConstraints` rule) or 40147 (a `deleteConstraints` rule, mainnet R-08 and
+/// R-09: a delete a rule keeps) refusal in `msg`, worded with the rule's explanation.
+fn constraint_refused(ctx: &ErrorContext<'_>, msg: &str) -> Option<UserError> {
+    if let Some((document_type, rule)) = violated_rule(msg) {
+        return Some(rule_refused(ctx, &document_type, &rule, &one_line(msg)));
+    }
+    let (document_type, rule) = violated_delete_rule(msg)?;
+    let u = UserError::new(
+        codes::REJECTED,
+        ctx.headline(&format!("consensus refused it by the rule {rule:?}")),
+    );
+    Some(match rule_explanation(&document_type, &rule) {
+        Some(why) => u
+            .cause(format!("{why} (40147: {document_type} rule {rule})"))
+            .note("refused before execution: nothing was deleted"),
+        None => u
+            .cause(one_line(msg))
+            .note("refused before execution: nothing was deleted"),
+    })
 }
 
 /// `(document type, rule)` of a 40147 message: `Document … of type "maintainer" can not be

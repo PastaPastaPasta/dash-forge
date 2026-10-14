@@ -4459,7 +4459,6 @@ impl<'a> Collab<'a> {
         // An `event` or `authorEvent` carries its `value` (label or milestone name, dismiss
         // reason, assignee, retarget base) sealed when its target is (§7, DESIGN §3.3: an event
         // value follows its target), and, on mainnet, `tAud`, its target's `aud` (M3, M4).
-        let mut props = props;
         // A policy bypass (kind 23) proves its maintainer like a hide (mainnet M2 puts it in
         // `hideByMaint`); only a maintainer's counts anywhere (§8.2 row 8).
         if doc_type == DOC_EVENT

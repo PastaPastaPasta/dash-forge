@@ -14,6 +14,7 @@ use super::v2::Role;
 /// What the loaded contracts declare of the mainnet fields (the vectors' `input.shape`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[allow(clippy::struct_excessive_bools)] // one flag per declared contract feature
 pub struct Shape {
     /// The content type declares `aud` (L1, `mainnet_aud`).
     #[serde(default)]
@@ -195,6 +196,7 @@ pub fn manifest_r(shape: Shape, kind: u64, claimed: u64) -> u64 {
 mod enc_hex {
     use serde::{Deserialize, Deserializer, Serializer};
 
+    #[allow(clippy::ref_option, clippy::trivially_copy_pass_by_ref)] // serde's `with` signature
     pub fn serialize<S: Serializer>(v: &Option<u8>, s: S) -> Result<S::Ok, S::Error> {
         match v {
             Some(b) => s.serialize_str(&format!("{b:02x}")),
