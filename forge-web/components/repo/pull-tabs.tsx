@@ -14,7 +14,10 @@
  *   offered for download the way release assets are: streamed from the reporter's storage and
  *   saved only if they hash to the recorded SHA-256. A maintainer or writer can ask the runners
  *   to re-run one completed forge-runner check, or every check (a CI re-run request, event kind
- *   26); a request no newer run answers yet is shown as requested, to everyone.
+ *   26); a request no newer run answers yet is shown as requested, to everyone. A run on a
+ *   members-only branch carries an opaque name: a member whose session verified its commit reads
+ *   the real name and the log by opening the run's log (`members-checks.ts`); everyone else, and
+ *   a run whose log does not open, keeps the opaque name.
  */
 
 import Link from 'next/link'
@@ -36,6 +39,9 @@ import {
   type ExpectedCheck,
   type VerifiedLog,
 } from '@/lib/repo/checks'
+import { isMembersRun, resolveMembersRuns, type OpenedRun } from '@/lib/repo/members-checks'
+import { blindBook } from '@/lib/repo/members-blinds'
+import type { PrivateSession } from '@/lib/repo/private-session'
 import type { PrCommits } from '@/lib/view/pr-commits'
 import { plural, timeAgo } from '@/lib/view'
 import { Time } from '@/components/repo/byline'
@@ -51,6 +57,7 @@ import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { AssetRow } from '@/components/repo/releases-content'
 import { Button } from '@/components/ui/button'
 import type { RerunRequest } from '@/lib/rules/ci-rerun'
+import { useAsync } from '@/hooks/use-async'
 
 export function CommitsTab({
   commits,
@@ -150,10 +157,15 @@ function CheckIcon({ run }: { run: CheckRun }): JSX.Element {
 
 type LogState = { kind: 'idle' } | { kind: 'loading' } | { kind: 'done'; log: VerifiedLog } | { kind: 'error'; message: string }
 
-/** A run's log, fetched on demand and checked against its recorded SHA-256. */
-function RunLog({ run }: { run: CheckRun }): JSX.Element | null {
+/**
+ * A run's log, fetched on demand and checked against its recorded SHA-256. A members-only run a
+ * member opened shows its opened log (already read and checked to resolve its name); one that did
+ * not open offers none: its bytes are unreadable.
+ */
+function RunLog({ run, members, label }: { run: CheckRun; members: OpenedRun | null | undefined; label: string }): JSX.Element | null {
   const [state, setState] = useState<LogState>({ kind: 'idle' })
-  if (safeLogUrl(run.logUrl) === null || run.logSha256 === '') return null
+  if (members === null || safeLogUrl(run.logUrl) === null || run.logSha256 === '') return null
+  if (members !== undefined) return <OpenedLog log={members} label={label} />
   if (state.kind === 'idle' || state.kind === 'loading') {
     return (
       <button
@@ -182,11 +194,40 @@ function RunLog({ run }: { run: CheckRun }): JSX.Element | null {
           ? `Log verified: its SHA-256 matches the one the run records (${log.bytes} bytes)`
           : `Not the reported log: these bytes hash to ${log.sha256.slice(0, 12)}…, the run records ${run.logSha256.slice(0, 12)}…`}
       </p>
-      {log.verified ? (
-        <ScrollRegion as="pre" label={`Log of ${run.name}`} className="mt-1 max-h-96 overflow-auto rounded border border-anvil-200 bg-anvil-50 p-2 font-mono text-[12px] dark:border-anvil-800 dark:bg-anvil-950">
+      {log.verified && isSealedCheckLog(log.raw) ? (
+        <p className="mt-1 text-[12px] text-anvil-600 dark:text-anvil-300" data-testid="check-log-members-only">
+          This log is for members of this repo only.
+        </p>
+      ) : log.verified ? (
+        <ScrollRegion as="pre" label={`Log of ${label}`} className="mt-1 max-h-96 overflow-auto rounded border border-anvil-200 bg-anvil-50 p-2 font-mono text-[12px] dark:border-anvil-800 dark:bg-anvil-950">
           {log.text}
         </ScrollRegion>
       ) : null}
+    </div>
+  )
+}
+
+/** Whether `raw` is a members-only run's sealed log (`DFCL`, `private-repos.md` §19.9): unreadable text to anyone else. */
+function isSealedCheckLog(raw: Uint8Array): boolean {
+  return raw.length >= 5 && raw[0] === 0x44 && raw[1] === 0x46 && raw[2] === 0x43 && raw[3] === 0x4c
+}
+
+/** A members-only run's opened log: its bytes hashed to `logSha256` and opened as this run's. */
+function OpenedLog({ log, label }: { log: OpenedRun; label: string }): JSX.Element {
+  const [shown, setShown] = useState(false)
+  if (!shown) {
+    return (
+      <button type="button" className="text-[12px] text-forge-700 underline underline-offset-2 dark:text-forge-400" data-testid="check-log-open" onClick={() => setShown(true)}>
+        Log
+      </button>
+    )
+  }
+  return (
+    <div className="basis-full" data-testid="check-log" data-verified>
+      <p className="text-[12px] text-verify-700 dark:text-verify-400">Log verified: its SHA-256 matches the one the run records ({log.bytes} bytes)</p>
+      <ScrollRegion as="pre" label={`Log of ${label}`} className="mt-1 max-h-96 overflow-auto rounded border border-anvil-200 bg-anvil-50 p-2 font-mono text-[12px] dark:border-anvil-800 dark:bg-anvil-950">
+        {log.log}
+      </ScrollRegion>
     </div>
   )
 }
@@ -257,6 +298,7 @@ export function ChecksTab({
   subject = 'PR head',
   expected = [],
   rerun = null,
+  members,
 }: {
   runs: readonly CheckRun[] | null
   summary: ChecksSummary | null
@@ -269,7 +311,10 @@ export function ChecksTab({
   expected?: readonly ExpectedCheck[]
   /** CI re-runs, on a PR's head; null on a commit's checks. */
   rerun?: RerunControls | null
+  /** The viewer's members-key session of a public repo: resolves members-only runs' names. */
+  members?: PrivateSession
 }): JSX.Element {
+  const opened = useMembersRuns(members, runs)
   if (error !== null) return <ErrorState message={error} onRetry={onRetry} />
   if (runs === null || summary === null) return <LoadingBlock label="Reading check runs" />
   if (runs.length === 0 && expected.length === 0) {
@@ -308,10 +353,17 @@ export function ChecksTab({
           const state = r.status === 'completed' ? r.conclusion || 'completed' : r.status
           const duration = runDuration(r)
           const asked = rerun?.pending.get(r.name)
+          const own = opened.get(r.id)
+          const name = own?.name ?? r.name
           return (
-            <li key={r.id} className={CHECK_ROW} data-testid="check-run" data-name={r.name} data-outcome={checkOutcome(r)}>
+            <li key={r.id} className={CHECK_ROW} data-testid="check-run" data-name={name} data-outcome={checkOutcome(r)}>
               <CheckIcon run={r} />
-              <span className="min-w-0 font-medium [overflow-wrap:anywhere]">{r.name}</span>
+              <span className="min-w-0 font-medium [overflow-wrap:anywhere]">{name}</span>
+              {own === null ? (
+                <span className="text-[11px] text-anvil-500 dark:text-anvil-400" data-testid="check-name-unavailable">
+                  name not available
+                </span>
+              ) : null}
               {r.requiredSource !== null ? <RequiredSource source={r.requiredSource} /> : null}
               <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{state}</span>
               {duration ? <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{duration}</span> : null}
@@ -331,7 +383,7 @@ export function ChecksTab({
                 <button
                   type="button"
                   className="hit-area text-[12px] text-forge-700 underline underline-offset-2 dark:text-forge-400"
-                  aria-label={`Re-run ${r.name}`}
+                  aria-label={`Re-run ${name}`}
                   data-testid="check-rerun"
                   onClick={() => rerun.onRerun(r.name)}
                 >
@@ -343,7 +395,7 @@ export function ChecksTab({
                   Details
                 </a>
               ) : null}
-              <RunLog key={`${r.id}:${r.logSha256}`} run={r} />
+              <RunLog key={`${r.id}:${r.logSha256}`} run={r} members={own} label={name} />
               {r.artifacts.length > 0 ? <RunArtifacts run={r} /> : null}
             </li>
           )
@@ -359,6 +411,21 @@ export function ChecksTab({
       </ul>
     </div>
   )
+}
+
+const NO_OPENED: ReadonlyMap<string, OpenedRun | null> = new Map()
+
+/**
+ * The members-only runs of `runs` the session `members` opens, by run id (null: its name is not
+ * available); empty for everyone else and while they are read (the opaque names show meanwhile).
+ */
+function useMembersRuns(members: PrivateSession | undefined, runs: readonly CheckRun[] | null): ReadonlyMap<string, OpenedRun | null> {
+  const book = members === undefined ? null : blindBook(members.ctx)
+  const theirs = book === null || runs === null ? [] : runs.filter((r) => isMembersRun(r, book))
+  const state = useAsync(() => resolveMembersRuns((members as PrivateSession).ctx, theirs), [members?.id ?? '', theirs.map((r) => `${r.id}:${r.headOid}:${r.logSha256}`).join(',')], {
+    enabled: theirs.length > 0,
+  })
+  return theirs.length > 0 ? (state.data ?? NO_OPENED) : NO_OPENED
 }
 
 /** "· from ci-bot": the reporter the branch policy pins a required check to. */

@@ -587,12 +587,54 @@ async function openMembers(doc: StoredPrivateDoc, keys: EpochKeys): Promise<Open
 }
 
 /**
- * The kinds a maintainer's make-public bundle publishes by their per-object key: issues, comments
- * and reviews (a PR's sealed branch names are keyed by its epoch, which a bundle does not publish:
- * members-only PRs and their bundles come with phase 3). forge-core `doc::bundles_kind`.
+ * The kinds a maintainer's make-public bundle publishes by their per-object key: issues, comments,
+ * reviews and pull requests (a PR as {@link bundledPatch} shows it). forge-core `doc::bundles_kind`.
  */
 export function bundlesKind(type: PrivateDocType): boolean {
-  return type === 'issue' || type === 'comment' || type === 'review'
+  return type === 'issue' || type === 'comment' || type === 'review' || type === 'patch'
+}
+
+/**
+ * Whether publishing the per-object key of opened document `doc` (`fields`, as a member reads it)
+ * would publish something members-only (forge-core `doc::bundle_would_publish_members_only`): a
+ * PR's key opens its whole `enc`, which for a PR from or into a members-only branch carries that
+ * branch's name and the real head with its salt (TLV 24, 27), whatever readers choose to show. A
+ * maintainer's bundle leaves such a PR out; its author can still make its title and description
+ * public by an edit, which publishes only those. A members-only PR between public branches (both
+ * hashes `sha256(name)`, no 24 or 27) can be bundled.
+ */
+export async function bundleWouldPublishMembersOnly(doc: PrivateDoc, fields: DocFields): Promise<boolean> {
+  if (doc.type !== 'patch') return false
+  if (fields.headOid !== undefined || fields.oidSalt !== undefined) return true
+  const keyed = async (hash: Uint8Array | undefined, name: string | undefined): Promise<boolean> =>
+    hash !== undefined && (name === undefined || !constantTimeEqual(await sha256(utf8(name)), hash))
+  return (await keyed(doc.baseRefNameHash, fields.baseRefName)) || keyed(doc.sourceRefNameHash, fields.sourceRefName)
+}
+
+/**
+ * What a published key shows of an opened pull request `doc` (mixed-visibility DESIGN §4.4, §4.6;
+ * `private-repos.md` §17.5; forge-core `doc::bundled_patch`): its title, body and the names of its
+ * **public** branches. A branch name is shown only when its hash field is `sha256(name)`; any other
+ * hash is keyed under an epoch's ref key (a members-only branch), which a published key cannot
+ * check and whose name stays members-only, so the name is left out (the document is not malformed
+ * for it; a hash whose name is missing still is). The real head and its salt (TLV 24, 27) are never
+ * shown: the head stays the blind as written. Null when the document is malformed.
+ */
+export async function bundledPatch(doc: PrivateDoc, fields: DocFields): Promise<DocFields | null> {
+  const out: { -readonly [K in keyof DocFields]: DocFields[K] } = { ...fields }
+  const pairs: [Uint8Array | undefined, 'baseRefName' | 'sourceRefName'][] = [
+    [doc.baseRefNameHash, 'baseRefName'],
+    [doc.sourceRefNameHash, 'sourceRefName'],
+  ]
+  for (const [hash, field] of pairs) {
+    if (hash === undefined) continue
+    const name = out[field]
+    if (name === undefined) return null
+    if (!constantTimeEqual(await sha256(utf8(name)), hash)) delete out[field]
+  }
+  delete out.headOid
+  delete out.oidSalt
+  return out
 }
 
 /**
@@ -628,9 +670,9 @@ export async function membersObjKey(keys: EpochKeys, doc: PrivateDoc, enc: Uint8
  * `doc::open_members_with_key`): the AD is rebuilt from the document's public fields
  * ({@link docAdIn}), the commitment `kObj` derives is compared with the one `enc` carries
  * **before** GCM runs (a mismatch is `commitMismatch`: a lying entry, never shown), then GCM under
- * `K_doc,obj` and the TLV. Binding the AD into `K_obj` is what keeps a published key from opening,
- * or minting, any other document (§4.1). A kind a bundle does not publish, or a malformed
- * envelope, is malformed.
+ * `K_doc,obj` and the TLV (a PR as {@link bundledPatch} shows it). Binding the AD into `K_obj` is
+ * what keeps a published key from opening, or minting, any other document (§4.1). A kind a bundle
+ * does not publish, or a malformed envelope, is malformed.
  */
 export async function openMembersWithKey(repoId: Uint8Array, doc: PrivateDoc, enc: Uint8Array, kObj: Uint8Array): Promise<OpenResult> {
   if (enc[0] !== V3 || !bundlesKind(doc.type) || !encShapeOk(doc, enc)) return MALFORMED
@@ -653,14 +695,20 @@ export async function openMembersWithKey(repoId: Uint8Array, doc: PrivateDoc, en
   } catch {
     return unreadable('badTag')
   }
+  let fields: DocFields
   try {
-    return { status: 'readable', fields: parseTlv(pt, { type: doc.type, epoch: doc.epoch }) }
+    // as a member opens it ({@link openMembers}): a PR's real head and salt (24, 27) parse, and
+    // {@link bundledPatch} drops them
+    fields = doc.vis === 'public' ? parseMembersTlv(pt, doc.type) : parseTlv(pt, { type: doc.type, epoch: doc.epoch })
   } catch (e) {
     if (e instanceof MalformedError) return MALFORMED
     throw e
   } finally {
     pt.fill(0)
   }
+  if (doc.type !== 'patch') return { status: 'readable', fields }
+  const shown = await bundledPatch(doc, fields)
+  return shown === null ? MALFORMED : { status: 'readable', fields: shown }
 }
 
 /** The smallest existing epoch above `epoch`, with its anchor. */

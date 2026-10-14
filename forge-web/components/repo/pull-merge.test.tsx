@@ -71,6 +71,15 @@ vi.mock('@/lib/merge/runner', async (importOriginal) => {
     },
   }
 })
+// The publish dialog's own behaviour is `publish-dialog.test.tsx`'s: here it only says "Publish".
+vi.mock('@/components/repo/publish-dialog', () => ({
+  PublishDialog: ({ open, onPublish }: { open: boolean; onPublish: (c: { coAuthors: boolean }) => void }) =>
+    open ? (
+      <button type="button" data-testid="publish-go" onClick={() => onPublish({ coAuthors: false })}>
+        Publish
+      </button>
+    ) : null,
+}))
 vi.mock('@/components/repo/pull-diff', () => ({
   useComparisonSides: () => ({ sides: { base: reader, head: reader }, baseOnly: reader, sidesKey: 'k' }),
   pullBase: () => ({ baseRefName: 'refs/heads/main', baseTipOid: BASE, baseOidAtOpen: BASE }),
@@ -427,5 +436,56 @@ describe('the members, read again at the click', () => {
     await act(async () => undefined)
     expect(stepsRun).toHaveBeenCalledTimes(1)
     expect(onMerged).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('publishing a members-only PR, then the re-read (DESIGN §13 3C)', () => {
+  const REAL = 'dd'.repeat(20)
+  /** The PR as the page reads it: members-only from a members-only branch, its real head verified. */
+  const membersPull = (merged: boolean): PullView =>
+    ({ ...pullOf(merged), sourceId: '', realHeadOid: REAL, membersPatch: { basePublic: true, sourcePublic: false } }) as unknown as PullView
+  /** A fresh context per read, as the page builds one each render. */
+  const publishOf = () => ({ realHead: REAL, source: 'refs/heads/sec/fix', commits: null, commitsPartial: false, authors: [], changes: null, changesPartial: false })
+
+  /** The page: the publish refreshes the PR to merged, and the page reads it again (same members-key session). */
+  function MembersPage(): JSX.Element {
+    const [merged, setMerged] = useState(false)
+    return (
+      <PullMerge
+        recheckMembers={async () => null}
+        repo={repo}
+        home={homeAt(merged ? NEW_TIP : BASE)}
+        pull={membersPull(merged)}
+        canMerge={!merged}
+        isMaintainer
+        checkout="dg pr checkout …"
+        onMerged={() => setMerged(true)}
+        extras={{ deleteBranch: null, squashAuthors: { authors: [], complete: true }, publish: publishOf() }}
+      />
+    )
+  }
+
+  it('keeps the steps and the "Published." line on the re-read PR, and starts no other merge', async () => {
+    checkCount = 0
+    checks.mockReset()
+    checks.mockImplementation(async () => ({ check: 'merge', conflictPaths: [], packEstimate: { bytes: 4000, objectCount: 4 } }))
+    stepsRun.mockClear()
+    await act(async () => root.render(<MembersPage />))
+    await act(async () => undefined)
+    const submit = host.querySelector('[data-testid="merge-submit"]') as HTMLButtonElement
+    expect(submit.textContent).toBe('Squash and publish…')
+    expect(submit.disabled, host.textContent ?? '').toBe(false)
+    await act(async () => submit.click())
+    await act(async () => (host.querySelector('[data-testid="publish-go"]') as HTMLButtonElement).click())
+    await act(async () => undefined)
+    expect(stepsRun).toHaveBeenCalledTimes(1)
+    // The re-read PR reads merged: the box stays with its run and its result.
+    const panel = host.querySelector('[data-testid="merge-panel"]')
+    expect(panel?.querySelector('[data-step="event"]')?.getAttribute('data-state')).toBe('done')
+    expect(host.querySelector('[data-testid="merge-result"]')?.textContent).toMatch(/^Published\. The base branch is now at/)
+    expect(host.querySelector('[data-testid="merge-publish-blocked"]')).toBeNull()
+    // Nothing more to start: no merge or publish button, and no second run.
+    expect(host.querySelector('[data-testid="merge-submit"]')).toBeNull()
+    expect(stepsRun).toHaveBeenCalledTimes(1)
   })
 })

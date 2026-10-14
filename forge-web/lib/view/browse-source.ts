@@ -75,7 +75,7 @@ import { onPrivateSessionEnded, type PrivateSession } from '../repo/private-sess
 import { knownConversion } from '../repo/converted'
 import { HEADER_LEN, PackError, maybeSealed, skipReason, sniff, type Conversion, type SkipReason } from '../private'
 import { mirrorCopy, mirrorUrisOf, resetMirrorUris } from '../repo/pack-mirrors'
-import { MembersIndex, loadMembersPacks, membersGitPacks, membersPackSource } from './members-browse'
+import { MembersIndex, loadMembersPacks, membersGitPacks, membersPackSource, type MembersPacks } from './members-browse'
 
 /** Chunk queries in flight at once when one range spans more than a single query. */
 const CHUNK_QUERY_POOL = 6
@@ -1300,7 +1300,8 @@ export function artifactRangeFetch(
   // index plaintext offsets), mapped to sealed segments through the session's header cache. A
   // repository made public's copy recorded while it was private is checked by its first bytes:
   // sealed under a published key, it reads the same way; otherwise it is skipped.
-  const session = repo.session
+  // A public repo's members-only pack (kind 64) reads with the reader's members-key session.
+  const session = repo.session ?? (manifest.kind === PACK_KIND.MEMBERS_GIT_PACK ? membersLane(repo) : undefined)
   const reads = convertedReads(repo)
   const heads = new Map<string, Promise<Uint8Array>>()
   const readConverted = async (c: PackManifest, start: number, end: number): Promise<Uint8Array> => {
@@ -1899,17 +1900,24 @@ async function membersOverlay(
   // The public objects a thin members-only pack's deltas name: read with no re-resolve on a miss
   // (this very resolve is the one a miss would wait for).
   const pub = repoReader(null, repo, locator, packs, space)
+  const over = (members: MembersPacks) => ({
+    index: new MembersIndex(indexOf(locator), members),
+    packs: membersPackSource(packs, members),
+    space: [...space, ...members.manifests],
+  })
   // Members-only packs never cost a member their public browsing: one that does not index (a base
   // nobody serves, over the budget) leaves the members-only branches unreadable here, nothing else.
-  const members = await loadMembersPacks(
-    lane,
-    manifests,
-    space.length,
-    (m) => loadStoredArtifactBytes(sdk, repo, m),
-    (oid) => pub.readObject(oid).catch(() => null),
-  ).catch(() => null)
-  if (members === null) return null
-  return { index: new MembersIndex(indexOf(locator), members), packs: membersPackSource(packs, members), space: [...space, ...members.manifests] }
+  // A pack whose trusted index (kind 65) is read is read by range, with the members-key session.
+  const members = await loadMembersPacks(lane, manifests, space.length, {
+    load: (m) => loadStoredArtifactBytes(sdk, repo, m),
+    ranged: (m) => artifactRangeFetch(sdk, repo, m),
+    bases: (ranged) => {
+      const o = ranged === null ? null : over(ranged)
+      const reader = o === null ? pub : repoReader(null, repo, o.index, o.packs, o.space)
+      return (oid) => reader.readObject(oid).catch(() => null)
+    },
+  }).catch(() => null)
+  return members === null ? null : over(members)
 }
 
 /**
