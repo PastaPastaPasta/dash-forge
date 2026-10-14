@@ -1,0 +1,151 @@
+{
+  "name": "done_ticks_every_step",
+  "description": "A completion closes the embargo with its commit and ticks every checklist step, whatever the facts say.",
+  "case": "embargo",
+  "rules": "v2",
+  "input": {
+    "repoId": "Repo111111111111111111111111111111111111111",
+    "owner": "own",
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "wri",
+        "role": "writer",
+        "createdAt": 10
+      },
+      {
+        "identity": "tri",
+        "role": "triage",
+        "createdAt": 10
+      },
+      {
+        "identity": "rdr",
+        "role": "reader",
+        "createdAt": 10
+      },
+      {
+        "identity": "late",
+        "role": "writer",
+        "createdAt": 500
+      }
+    ],
+    "now": 1792504899,
+    "targets": [
+      {
+        "targetId": "iss12",
+        "isIssue": true,
+        "facts": {
+          "issuePublic": false
+        }
+      }
+    ],
+    "events": [
+      {
+        "id": "a",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "iss12",
+        "targetNumber": 12,
+        "kind": 28,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "value": "{\"v\":1,\"at\":1792504800,\"b\":\"sec/cve-77\",\"o\":\"main\",\"t\":\"v1.2.3\"}",
+        "actor": "maint",
+        "createdAt": 100
+      },
+      {
+        "id": "b",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "iss12",
+        "targetNumber": 12,
+        "kind": 28,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "value": "{\"v\":1,\"done\":\"abababababababababababababababababababab\"}",
+        "actor": "own",
+        "createdAt": 900
+      }
+    ]
+  },
+  "expected": {
+    "records": [
+      {
+        "record": {
+          "id": "a",
+          "targetId": "iss12",
+          "number": 12,
+          "value": {
+            "type": "schedule",
+            "at": 1792504800,
+            "branch": "sec/cve-77",
+            "onto": "main",
+            "tag": "v1.2.3"
+          },
+          "actor": "maint",
+          "createdAt": 100
+        },
+        "counts": true
+      },
+      {
+        "record": {
+          "id": "b",
+          "targetId": "iss12",
+          "number": 12,
+          "value": {
+            "type": "done",
+            "commit": "abababababababababababababababababababab"
+          },
+          "actor": "own",
+          "createdAt": 900
+        },
+        "counts": true
+      }
+    ],
+    "targets": [
+      {
+        "embargo": {
+          "targetId": "iss12",
+          "number": 12,
+          "plan": {
+            "at": 1792504800,
+            "branch": "sec/cve-77",
+            "onto": "main",
+            "tag": "v1.2.3"
+          },
+          "setBy": "maint",
+          "setAt": 100,
+          "id": "a",
+          "state": {
+            "state": "done",
+            "commit": "abababababababababababababababababababab",
+            "by": "own",
+            "at": 900
+          }
+        },
+        "due": false,
+        "checklist": [
+          {
+            "step": "makePublic",
+            "issue": 12,
+            "done": true
+          },
+          {
+            "step": "publish",
+            "done": true
+          },
+          {
+            "step": "tag",
+            "tag": "v1.2.3",
+            "done": true
+          },
+          {
+            "step": "release",
+            "tag": "v1.2.3",
+            "done": true
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,317 @@
+{
+  "name": "records_and_counting",
+  "description": "Kind 28 with refId = the repository and a canonical value is a record. The owner, a maintainer and a role-1 writer count; triage, a reader, a stranger and a writer before their membership do not. Another kind, another repository's event, a missing refId, an unreadable (absent) value and target number 0 are no records.",
+  "case": "embargo",
+  "rules": "v2",
+  "input": {
+    "repoId": "Repo111111111111111111111111111111111111111",
+    "owner": "own",
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "wri",
+        "role": "writer",
+        "createdAt": 10
+      },
+      {
+        "identity": "tri",
+        "role": "triage",
+        "createdAt": 10
+      },
+      {
+        "identity": "rdr",
+        "role": "reader",
+        "createdAt": 10
+      },
+      {
+        "identity": "late",
+        "role": "writer",
+        "createdAt": 500
+      }
+    ],
+    "now": 1792504790,
+    "targets": [],
+    "events": [
+      {
+        "id": "e1",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "iss12",
+        "targetNumber": 12,
+        "kind": 28,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "value": "{\"v\":1,\"at\":1792504800,\"b\":\"sec/cve-77\",\"o\":\"main\",\"t\":\"v1.2.3\"}",
+        "actor": "maint",
+        "createdAt": 100
+      },
+      {
+        "id": "e2",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "iss12",
+        "targetNumber": 12,
+        "kind": 28,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "value": "{\"v\":1,\"at\":1792504800,\"b\":\"sec/cve-77\",\"o\":\"main\",\"t\":\"v1.2.3\"}",
+        "actor": "wri",
+        "createdAt": 100
+      },
+      {
+        "id": "e3",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "iss12",
+        "targetNumber": 12,
+        "kind": 28,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "value": "{\"v\":1,\"at\":1792504800,\"b\":\"sec/cve-77\",\"o\":\"main\",\"t\":\"v1.2.3\"}",
+        "actor": "own",
+        "createdAt": 100
+      },
+      {
+        "id": "e4",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "iss12",
+        "targetNumber": 12,
+        "kind": 28,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "value": "{\"v\":1,\"at\":1792504800,\"b\":\"sec/cve-77\",\"o\":\"main\",\"t\":\"v1.2.3\"}",
+        "actor": "tri",
+        "createdAt": 100
+      },
+      {
+        "id": "e5",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "iss12",
+        "targetNumber": 12,
+        "kind": 28,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "value": "{\"v\":1,\"at\":1792504800,\"b\":\"sec/cve-77\",\"o\":\"main\",\"t\":\"v1.2.3\"}",
+        "actor": "rdr",
+        "createdAt": 100
+      },
+      {
+        "id": "e6",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "iss12",
+        "targetNumber": 12,
+        "kind": 28,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "value": "{\"v\":1,\"at\":1792504800,\"b\":\"sec/cve-77\",\"o\":\"main\",\"t\":\"v1.2.3\"}",
+        "actor": "stranger",
+        "createdAt": 100
+      },
+      {
+        "id": "e7",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "iss12",
+        "targetNumber": 12,
+        "kind": 28,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "value": "{\"v\":1,\"at\":1792504800,\"b\":\"sec/cve-77\",\"o\":\"main\",\"t\":\"v1.2.3\"}",
+        "actor": "late",
+        "createdAt": 100
+      },
+      {
+        "id": "e8",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "iss12",
+        "targetNumber": 12,
+        "kind": 26,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "value": "{\"v\":1,\"at\":1792504800,\"b\":\"sec/cve-77\",\"o\":\"main\",\"t\":\"v1.2.3\"}",
+        "actor": "maint",
+        "createdAt": 100
+      },
+      {
+        "id": "e9",
+        "repoId": "Other11111111111111111111111111111111111111",
+        "targetId": "iss12",
+        "targetNumber": 12,
+        "kind": 28,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "value": "{\"v\":1,\"at\":1792504800,\"b\":\"sec/cve-77\",\"o\":\"main\",\"t\":\"v1.2.3\"}",
+        "actor": "maint",
+        "createdAt": 100
+      },
+      {
+        "id": "e10",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "iss12",
+        "targetNumber": 12,
+        "kind": 28,
+        "refId": null,
+        "value": "{\"v\":1,\"at\":1792504800,\"b\":\"sec/cve-77\",\"o\":\"main\",\"t\":\"v1.2.3\"}",
+        "actor": "maint",
+        "createdAt": 100
+      },
+      {
+        "id": "e11",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "iss12",
+        "targetNumber": 12,
+        "kind": 28,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "value": null,
+        "actor": "maint",
+        "createdAt": 100
+      },
+      {
+        "id": "e12",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "iss12",
+        "targetNumber": 0,
+        "kind": 28,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "value": "{\"v\":1,\"at\":1792504800,\"b\":\"sec/cve-77\",\"o\":\"main\",\"t\":\"v1.2.3\"}",
+        "actor": "maint",
+        "createdAt": 100
+      }
+    ]
+  },
+  "expected": {
+    "records": [
+      {
+        "record": {
+          "id": "e1",
+          "targetId": "iss12",
+          "number": 12,
+          "value": {
+            "type": "schedule",
+            "at": 1792504800,
+            "branch": "sec/cve-77",
+            "onto": "main",
+            "tag": "v1.2.3"
+          },
+          "actor": "maint",
+          "createdAt": 100
+        },
+        "counts": true
+      },
+      {
+        "record": {
+          "id": "e2",
+          "targetId": "iss12",
+          "number": 12,
+          "value": {
+            "type": "schedule",
+            "at": 1792504800,
+            "branch": "sec/cve-77",
+            "onto": "main",
+            "tag": "v1.2.3"
+          },
+          "actor": "wri",
+          "createdAt": 100
+        },
+        "counts": true
+      },
+      {
+        "record": {
+          "id": "e3",
+          "targetId": "iss12",
+          "number": 12,
+          "value": {
+            "type": "schedule",
+            "at": 1792504800,
+            "branch": "sec/cve-77",
+            "onto": "main",
+            "tag": "v1.2.3"
+          },
+          "actor": "own",
+          "createdAt": 100
+        },
+        "counts": true
+      },
+      {
+        "record": {
+          "id": "e4",
+          "targetId": "iss12",
+          "number": 12,
+          "value": {
+            "type": "schedule",
+            "at": 1792504800,
+            "branch": "sec/cve-77",
+            "onto": "main",
+            "tag": "v1.2.3"
+          },
+          "actor": "tri",
+          "createdAt": 100
+        },
+        "counts": false
+      },
+      {
+        "record": {
+          "id": "e5",
+          "targetId": "iss12",
+          "number": 12,
+          "value": {
+            "type": "schedule",
+            "at": 1792504800,
+            "branch": "sec/cve-77",
+            "onto": "main",
+            "tag": "v1.2.3"
+          },
+          "actor": "rdr",
+          "createdAt": 100
+        },
+        "counts": false
+      },
+      {
+        "record": {
+          "id": "e6",
+          "targetId": "iss12",
+          "number": 12,
+          "value": {
+            "type": "schedule",
+            "at": 1792504800,
+            "branch": "sec/cve-77",
+            "onto": "main",
+            "tag": "v1.2.3"
+          },
+          "actor": "stranger",
+          "createdAt": 100
+        },
+        "counts": false
+      },
+      {
+        "record": {
+          "id": "e7",
+          "targetId": "iss12",
+          "number": 12,
+          "value": {
+            "type": "schedule",
+            "at": 1792504800,
+            "branch": "sec/cve-77",
+            "onto": "main",
+            "tag": "v1.2.3"
+          },
+          "actor": "late",
+          "createdAt": 100
+        },
+        "counts": false
+      },
+      {
+        "record": null,
+        "counts": null
+      },
+      {
+        "record": null,
+        "counts": null
+      },
+      {
+        "record": null,
+        "counts": null
+      },
+      {
+        "record": null,
+        "counts": null
+      },
+      {
+        "record": null,
+        "counts": null
+      }
+    ],
+    "targets": []
+  }
+}

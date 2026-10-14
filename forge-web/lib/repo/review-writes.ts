@@ -20,6 +20,7 @@ import { idbDelete, idbGet, idbPut } from '../idb'
 import { isLegalRefName, isRc1OidHex } from '../rules'
 import { RoleRefusedError } from '../rules/roles'
 import { rerunFields } from '../rules/ci-rerun'
+import { EMBARGO_KIND, encodeEmbargo, type EmbargoValue } from '../rules/embargo'
 import { isMemberGateRefusal, refreshRoleOnRefusal } from './role-claim'
 import { anchorOf, editKeepsAudience, groupReviewComments, isAuthorKind, issueStateV2, type AnchorFields, type Audience, type Policy } from '../rules/v2'
 import type { EventKind } from '../rules'
@@ -52,7 +53,7 @@ import { bundleCovers, contentGate } from './made-public'
 import { makePublicKeepsFields, provenanceOf } from './make-public-writes'
 import { audienceEdit, makePublicChanges } from '../rules/make-public'
 import { admitAll, docAudience } from './private-content'
-import { editLetterWriter, sdkLetterReads, sealLetterEdit, type LetterWriter } from './letter-writes'
+import { LetterRefusedError, editLetterWriter, sdkLetterReads, sealLetterEdit, type LetterWriter } from './letter-writes'
 import type { LetterFacts } from './private-content'
 import type { LetterAsk } from '../view/audience'
 import { privateWriterWithSession, type PrivateWriter } from './private-writes'
@@ -73,6 +74,7 @@ import {
   settledPost,
   reviewVerdictFields,
   threadLetterWriter,
+  eventWrite,
   writeRepoDoc,
   type PostContext,
   type VerdictInput,
@@ -814,6 +816,42 @@ export async function requestRerun(
     refId: decodeIdentifier(f.refId),
   }
   if (f.value !== undefined) data['value'] = f.value
+  return write(sdk, auth, repo, DOC.event, data, input.intent)
+}
+
+/**
+ * Set, move or withdraw the publication date of a coordinated fix, or record it published: one
+ * member event of kind 28 (`rules/embargo.ts`, forge-v2.md §3.5) on the members-only issue or PR
+ * that tracks the fix, naming the repository in `refId` (the release bot's index). Its value is
+ * sealed under the members key because the target is members-only; on a target that reads public
+ * a date is refused before signing (it would be public), while a withdrawal, which carries no
+ * date, may still be written there. A message to specific people holds none. A maintainer or
+ * writer only: `claimedRole` refuses anyone else before signing. Parity: `Collab::set_embargo`
+ * (`dg publish --at`, `dg embargo cancel`).
+ */
+export async function setEmbargo(
+  sdk: EvoSDK,
+  auth: WriteAuth,
+  repo: RepoRef,
+  input: { target: WriteTarget; value: EmbargoValue; intent?: string },
+): Promise<WriteResult> {
+  if (repo.visibility === 'private') throw new Error('nothing in a private repo is published onto a public branch; nothing was written')
+  const data: Record<string, unknown> = {
+    targetId: decodeIdentifier(input.target.id),
+    targetNumber: input.target.number,
+    kind: EMBARGO_KIND,
+    refId: decodeIdentifier(repo.repoId),
+    value: encodeEmbargo(input.value),
+  }
+  const audience = await eventWrite(sdk, repo, DOC.event, data)
+    .then((w) => w.audience)
+    .catch((e: unknown) => {
+      if (e instanceof LetterRefusedError) throw new Error(`#${input.target.number} is a message to specific people, so it can't hold a publication date; nothing was written`)
+      throw e
+    })
+  if (input.value.type === 'schedule' && audience === 'public') {
+    throw new Error(`#${input.target.number} is public, so its publication date would be public too; nothing was written`)
+  }
   return write(sdk, auth, repo, DOC.event, data, input.intent)
 }
 

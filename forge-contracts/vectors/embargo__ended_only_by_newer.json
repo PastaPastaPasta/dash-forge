@@ -1,0 +1,267 @@
+{
+  "name": "ended_only_by_newer",
+  "description": "A cancellation or completion older than the schedule (or at the same time with a smaller id) does not end it; one written in the same millisecond with a larger id does.",
+  "case": "embargo",
+  "rules": "v2",
+  "input": {
+    "repoId": "Repo111111111111111111111111111111111111111",
+    "owner": "own",
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "wri",
+        "role": "writer",
+        "createdAt": 10
+      },
+      {
+        "identity": "tri",
+        "role": "triage",
+        "createdAt": 10
+      },
+      {
+        "identity": "rdr",
+        "role": "reader",
+        "createdAt": 10
+      },
+      {
+        "identity": "late",
+        "role": "writer",
+        "createdAt": 500
+      }
+    ],
+    "now": 1792504800,
+    "targets": [
+      {
+        "targetId": "iss12",
+        "isIssue": true
+      },
+      {
+        "targetId": "iss14",
+        "isIssue": true
+      }
+    ],
+    "events": [
+      {
+        "id": "m",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "iss12",
+        "targetNumber": 12,
+        "kind": 28,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "value": "{\"v\":1,\"cancel\":true}",
+        "actor": "maint",
+        "createdAt": 50
+      },
+      {
+        "id": "n",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "iss12",
+        "targetNumber": 12,
+        "kind": 28,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "value": "{\"v\":1,\"at\":1792504800,\"b\":\"sec/cve-77\",\"o\":\"main\",\"t\":\"v1.2.3\"}",
+        "actor": "maint",
+        "createdAt": 100
+      },
+      {
+        "id": "a",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "iss12",
+        "targetNumber": 12,
+        "kind": 28,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "value": "{\"v\":1,\"done\":\"abababababababababababababababababababab\"}",
+        "actor": "maint",
+        "createdAt": 100
+      },
+      {
+        "id": "p",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "iss14",
+        "targetNumber": 14,
+        "kind": 28,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "value": "{\"v\":1,\"at\":1792504800,\"b\":\"sec/cve-77\",\"o\":\"main\",\"t\":\"v1.2.3\"}",
+        "actor": "maint",
+        "createdAt": 100
+      },
+      {
+        "id": "q",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "iss14",
+        "targetNumber": 14,
+        "kind": 28,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "value": "{\"v\":1,\"cancel\":true}",
+        "actor": "maint",
+        "createdAt": 100
+      }
+    ]
+  },
+  "expected": {
+    "records": [
+      {
+        "record": {
+          "id": "m",
+          "targetId": "iss12",
+          "number": 12,
+          "value": {
+            "type": "cancel"
+          },
+          "actor": "maint",
+          "createdAt": 50
+        },
+        "counts": true
+      },
+      {
+        "record": {
+          "id": "n",
+          "targetId": "iss12",
+          "number": 12,
+          "value": {
+            "type": "schedule",
+            "at": 1792504800,
+            "branch": "sec/cve-77",
+            "onto": "main",
+            "tag": "v1.2.3"
+          },
+          "actor": "maint",
+          "createdAt": 100
+        },
+        "counts": true
+      },
+      {
+        "record": {
+          "id": "a",
+          "targetId": "iss12",
+          "number": 12,
+          "value": {
+            "type": "done",
+            "commit": "abababababababababababababababababababab"
+          },
+          "actor": "maint",
+          "createdAt": 100
+        },
+        "counts": true
+      },
+      {
+        "record": {
+          "id": "p",
+          "targetId": "iss14",
+          "number": 14,
+          "value": {
+            "type": "schedule",
+            "at": 1792504800,
+            "branch": "sec/cve-77",
+            "onto": "main",
+            "tag": "v1.2.3"
+          },
+          "actor": "maint",
+          "createdAt": 100
+        },
+        "counts": true
+      },
+      {
+        "record": {
+          "id": "q",
+          "targetId": "iss14",
+          "number": 14,
+          "value": {
+            "type": "cancel"
+          },
+          "actor": "maint",
+          "createdAt": 100
+        },
+        "counts": true
+      }
+    ],
+    "targets": [
+      {
+        "embargo": {
+          "targetId": "iss12",
+          "number": 12,
+          "plan": {
+            "at": 1792504800,
+            "branch": "sec/cve-77",
+            "onto": "main",
+            "tag": "v1.2.3"
+          },
+          "setBy": "maint",
+          "setAt": 100,
+          "id": "n",
+          "state": {
+            "state": "scheduled"
+          }
+        },
+        "due": true,
+        "checklist": [
+          {
+            "step": "makePublic",
+            "issue": 12,
+            "done": false
+          },
+          {
+            "step": "publish",
+            "done": false
+          },
+          {
+            "step": "tag",
+            "tag": "v1.2.3",
+            "done": false
+          },
+          {
+            "step": "release",
+            "tag": "v1.2.3",
+            "done": false
+          }
+        ]
+      },
+      {
+        "embargo": {
+          "targetId": "iss14",
+          "number": 14,
+          "plan": {
+            "at": 1792504800,
+            "branch": "sec/cve-77",
+            "onto": "main",
+            "tag": "v1.2.3"
+          },
+          "setBy": "maint",
+          "setAt": 100,
+          "id": "p",
+          "state": {
+            "state": "cancelled",
+            "by": "maint",
+            "at": 100
+          }
+        },
+        "due": false,
+        "checklist": [
+          {
+            "step": "makePublic",
+            "issue": 14,
+            "done": false
+          },
+          {
+            "step": "publish",
+            "done": false
+          },
+          {
+            "step": "tag",
+            "tag": "v1.2.3",
+            "done": false
+          },
+          {
+            "step": "release",
+            "tag": "v1.2.3",
+            "done": false
+          }
+        ]
+      }
+    ]
+  }
+}

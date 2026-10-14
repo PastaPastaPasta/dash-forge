@@ -26,6 +26,17 @@
         "null"
       ]
     },
+    "taskMembersOnly": {
+      "type": "boolean",
+      "description": "Whether the task is members-only (whatever reads it has read members-only content)."
+    },
+    "foreignPull": {
+      "type": [
+        "boolean",
+        "null"
+      ],
+      "description": "For a pull request: whether it comes from a fork or from someone outside the members (a runner works on it in public mode only); null for an issue."
+    },
     "at": {
       "type": "integer"
     },

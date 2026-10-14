@@ -62,6 +62,7 @@ import {
 import { anchorContent } from '../repo/members-anchor'
 import { longBodyStoredText, needsLongBodyArtifact, openPublicLongBody, parseLongBody } from './long-body'
 import { rerunCounts, rerunFields, rerunRequest, type RerunEvent } from './ci-rerun'
+import { embargoChecklist, embargoCounts, embargoDue, embargoOf, embargoRecord, encodeEmbargo, parseEmbargo, type EmbargoEvent, type EmbargoFacts, type EmbargoRecord, type EmbargoValue } from './embargo'
 import { avatarSpec, botOperator, checkProfile, type BotClaim, type ProfileInput } from './profile'
 import { backlinkFile, readBacklink } from './mirror-backlink'
 import { checkMirrorUris, mirrorReadOrder, type MirrorReadInput } from './pack-mirror'
@@ -900,6 +901,45 @@ function runCaseV2(v: Vector): void {
         }
       })
       expect(got).toEqual(v.expected)
+      break
+    }
+    case 'embargo_value': {
+      onlyKeys(v, ['parse', 'encode'], {})
+      const inp = v.input as { readonly parse: readonly string[]; readonly encode: readonly EmbargoValue[] }
+      const encoded = inp.encode.map((x) => {
+        try {
+          return encodeEmbargo(x)
+        } catch {
+          return null
+        }
+      })
+      expect({ parse: inp.parse.map(parseEmbargo), encode: encoded }).toEqual(v.expected)
+      break
+    }
+    case 'embargo': {
+      const eventKeys = ['id', 'repoId', 'targetId', 'targetNumber', 'kind', 'refId', 'value', 'actor', 'createdAt']
+      onlyKeys(v, ['repoId', 'owner', 'memberships', 'now', 'targets', 'events'], { ...NESTED_KEYS, events: eventKeys, targets: ['targetId', 'isIssue', 'facts'] })
+      const inp = v.input as {
+        readonly repoId: string
+        readonly owner: string
+        readonly memberships: readonly v2.Membership[]
+        readonly now: number
+        readonly targets: readonly { readonly targetId: string; readonly isIssue: boolean; readonly facts?: EmbargoFacts }[]
+        readonly events: readonly EmbargoEvent[]
+      }
+      const oracle = new v2.RoleOracle(inp.memberships)
+      const counted: EmbargoRecord[] = []
+      const records = inp.events.map((e) => {
+        const record = embargoRecord(inp.repoId, e)
+        const counts = record === null ? null : embargoCounts(record, inp.owner, oracle)
+        if (record !== null && counts === true) counted.push(record)
+        return { record, counts }
+      })
+      const targets = inp.targets.map((t) => {
+        const e = embargoOf(t.targetId, counted)
+        return { embargo: e, due: e !== null && embargoDue(e, inp.now), checklist: e === null ? null : embargoChecklist(e, t.isIssue, t.facts ?? {}) }
+      })
+      expect({ records, targets }).toEqual(v.expected)
       break
     }
     case 'mirror_backlink': {

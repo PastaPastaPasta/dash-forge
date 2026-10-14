@@ -22,15 +22,21 @@
 //! ([`run::pull_trusted`]): a fork's or a stranger's head never gets them. It does NOT isolate
 //! jobs from the Docker daemon it drives: give it a daemon of its own.
 //!
+//! With `agents = true` the runner's identity is also a bot people ask to work on an issue or a
+//! pull request (`dg bot ask`): [`agents`] works on each request its access allows, the agent in a
+//! container whose only way out is the [`egress`] proxy (mixed-visibility DESIGN §4.9).
+//!
 //! Module map: [`config`] (runner.toml), [`watch`] (refs, cursors), [`relay`] (wake-ups),
 //! [`workflow`] (the YAML the runner reads before act), [`envs`] (environments' values for the
 //! jobs that name them), [`act`] (act's CLI and JSON log),
 //! [`run`] (one run end to end), [`artifacts`] (upload-artifact's uploads, zipped per artifact).
 
 mod act;
+mod agents;
 mod artifacts;
 mod config;
 mod cron;
+mod egress;
 mod envs;
 mod push;
 mod relay;
@@ -270,6 +276,12 @@ impl Schedule {
 /// as soon as the relay says ([`Schedule`]). Without a relay, or while it is unreachable, the
 /// interval alone drives the runner.
 fn watch(cfg: &Config, once: bool) -> Result<()> {
+    // what a crashed run left on a daemon the runner owns
+    if let (Some(a), true) = (&cfg.agents, cfg.sweep_after_timeout) {
+        if cfg.repos.iter().any(|r| r.agents) {
+            agents::sweep(a);
+        }
+    }
     let mut wakes = match (&cfg.relay, once) {
         (Some(r), false) => {
             let secret = relay::read_secret(&r.secret_file)?;
@@ -432,7 +444,8 @@ fn poll(cfg: &Config, repo: &config::RepoConfig) -> Result<()> {
         let pulls = poll_pulls(cfg, repo, &mut state, &path);
         let reruns = poll_reruns(cfg, repo, &mut state, &path);
         let schedule = poll_schedule(cfg, repo, &mut state, &path, head.as_ref());
-        return pulls.and(reruns).and(schedule);
+        let agents = poll_agents(cfg, repo, &mut state, &path);
+        return pulls.and(reruns).and(schedule).and(agents);
     }
     for push in pushes(&state.tips, &now) {
         let key = format!("{} {}", push.refname, push.oid);
@@ -463,8 +476,11 @@ fn poll(cfg: &Config, repo: &config::RepoConfig) -> Result<()> {
     }
     // Deleted refs leave the cursor too, and so do retries of refs that moved on.
     state.tips.retain(|r, _| now.contains_key(r));
+    // (re-run and agent requests keep their counts: their own halves of the poll judge them)
     state.failed.retain(|k, _| {
         k.starts_with("pull/")
+            || k.starts_with("rerun/")
+            || k.starts_with("agent/")
             || k.split_once(' ')
                 .is_some_and(|(r, o)| now.get(r).is_some_and(|t| t == o))
     });
@@ -473,7 +489,71 @@ fn poll(cfg: &Config, repo: &config::RepoConfig) -> Result<()> {
     // Re-run requests and schedules are judged even when the pull requests could not be read.
     let reruns = poll_reruns(cfg, repo, &mut state, &path);
     let schedule = poll_schedule(cfg, repo, &mut state, &path, head.as_ref());
-    pulls.and(reruns).and(schedule)
+    let agents = poll_agents(cfg, repo, &mut state, &path);
+    pulls.and(reruns).and(schedule).and(agents)
+}
+
+/// The agents half of a poll (`agents = true`, [`agents`]): read the requests to the runner's
+/// identity written since the last poll (`dg bot jobs`, the `addressee` index) and work on each,
+/// oldest first, in its own directory under the repository's (removed afterwards: it held what the
+/// job read). The first poll only sets the cursor, [`RERUN_SLACK_MS`] before the runner's clock. A
+/// request is handled once, whatever came of it; one that could not be read is tried again on the
+/// next polls, up to `attempts`, and the requests after it wait.
+fn poll_agents(
+    cfg: &Config,
+    repo: &config::RepoConfig,
+    state: &mut RepoState,
+    path: &std::path::Path,
+) -> Result<()> {
+    if !repo.agents {
+        return Ok(());
+    }
+    let Some(since) = state.agents_since else {
+        state.agents_since = Some(run::now_ms().saturating_sub(RERUN_SLACK_MS));
+        return state.save(path);
+    };
+    let (bot, rows) = agents::list_jobs(cfg, repo, since)?;
+    for row in agents::fresh(rows, since, &state.agents_seen) {
+        let failed_key = format!("agent/{}", row.id);
+        let worked = locked(cfg, repo, |dir| {
+            let job_dir = dir.join("agents").join(agents::safe_id(&row.id));
+            let _ = std::fs::remove_dir_all(&job_dir);
+            std::fs::create_dir_all(&job_dir)?;
+            restrict(&job_dir);
+            let result = agents::work(cfg, repo, &bot, &row, &job_dir);
+            if let Ok(o) = &result {
+                agents::record(cfg, repo, &row, &job_dir, o);
+            }
+            let _ = std::fs::remove_dir_all(&job_dir);
+            result
+        });
+        if let Err(e) = worked {
+            let tries = state.failed.entry(failed_key.clone()).or_insert(0);
+            *tries += 1;
+            eprintln!(
+                "forge-runner: {} job {} (attempt {tries} of {}): {e:#}",
+                repo.repo, row.id, cfg.attempts
+            );
+            if *tries < cfg.attempts {
+                return state.save(path);
+            }
+        }
+        state.failed.remove(&failed_key);
+        state.handled_agent_job(&row.id, row.at);
+        state.save(path)?;
+    }
+    Ok(())
+}
+
+/// Make `dir` readable by the runner's user only: a job directory holds what the job read.
+fn restrict(dir: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+    }
+    #[cfg(not(unix))]
+    let _ = dir;
 }
 
 /// The `schedule` half of a poll (`schedule = true`): run, on the default branch's tip, each

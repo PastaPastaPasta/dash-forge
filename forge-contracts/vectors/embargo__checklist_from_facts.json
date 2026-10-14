@@ -1,0 +1,191 @@
+{
+  "name": "checklist_from_facts",
+  "description": "Waiting embargoes: the tracking issue's checklist is make public, publish, tag, release, each done as the facts say (unknown is not done); a pull request's has no make-public step, and no tag or release without a tag.",
+  "case": "embargo",
+  "rules": "v2",
+  "input": {
+    "repoId": "Repo111111111111111111111111111111111111111",
+    "owner": "own",
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "wri",
+        "role": "writer",
+        "createdAt": 10
+      },
+      {
+        "identity": "tri",
+        "role": "triage",
+        "createdAt": 10
+      },
+      {
+        "identity": "rdr",
+        "role": "reader",
+        "createdAt": 10
+      },
+      {
+        "identity": "late",
+        "role": "writer",
+        "createdAt": 500
+      }
+    ],
+    "now": 1792504800,
+    "targets": [
+      {
+        "targetId": "iss12",
+        "isIssue": true,
+        "facts": {
+          "issuePublic": true,
+          "published": false,
+          "tagged": null,
+          "released": null
+        }
+      },
+      {
+        "targetId": "pr13",
+        "isIssue": false,
+        "facts": {
+          "published": true
+        }
+      },
+      {
+        "targetId": "none",
+        "isIssue": true
+      }
+    ],
+    "events": [
+      {
+        "id": "a",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "iss12",
+        "targetNumber": 12,
+        "kind": 28,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "value": "{\"v\":1,\"at\":1792504800,\"b\":\"sec/cve-77\",\"o\":\"main\",\"t\":\"v1.2.3\"}",
+        "actor": "maint",
+        "createdAt": 100
+      },
+      {
+        "id": "b",
+        "repoId": "Repo111111111111111111111111111111111111111",
+        "targetId": "pr13",
+        "targetNumber": 13,
+        "kind": 28,
+        "refId": "Repo111111111111111111111111111111111111111",
+        "value": "{\"v\":1,\"at\":1792504800,\"pr\":13}",
+        "actor": "maint",
+        "createdAt": 100
+      }
+    ]
+  },
+  "expected": {
+    "records": [
+      {
+        "record": {
+          "id": "a",
+          "targetId": "iss12",
+          "number": 12,
+          "value": {
+            "type": "schedule",
+            "at": 1792504800,
+            "branch": "sec/cve-77",
+            "onto": "main",
+            "tag": "v1.2.3"
+          },
+          "actor": "maint",
+          "createdAt": 100
+        },
+        "counts": true
+      },
+      {
+        "record": {
+          "id": "b",
+          "targetId": "pr13",
+          "number": 13,
+          "value": {
+            "type": "schedule",
+            "at": 1792504800,
+            "pr": 13
+          },
+          "actor": "maint",
+          "createdAt": 100
+        },
+        "counts": true
+      }
+    ],
+    "targets": [
+      {
+        "embargo": {
+          "targetId": "iss12",
+          "number": 12,
+          "plan": {
+            "at": 1792504800,
+            "branch": "sec/cve-77",
+            "onto": "main",
+            "tag": "v1.2.3"
+          },
+          "setBy": "maint",
+          "setAt": 100,
+          "id": "a",
+          "state": {
+            "state": "scheduled"
+          }
+        },
+        "due": true,
+        "checklist": [
+          {
+            "step": "makePublic",
+            "issue": 12,
+            "done": true
+          },
+          {
+            "step": "publish",
+            "done": false
+          },
+          {
+            "step": "tag",
+            "tag": "v1.2.3",
+            "done": false
+          },
+          {
+            "step": "release",
+            "tag": "v1.2.3",
+            "done": false
+          }
+        ]
+      },
+      {
+        "embargo": {
+          "targetId": "pr13",
+          "number": 13,
+          "plan": {
+            "at": 1792504800,
+            "pr": 13
+          },
+          "setBy": "maint",
+          "setAt": 100,
+          "id": "b",
+          "state": {
+            "state": "scheduled"
+          }
+        },
+        "due": true,
+        "checklist": [
+          {
+            "step": "publish",
+            "done": true
+          }
+        ]
+      },
+      {
+        "embargo": null,
+        "due": false,
+        "checklist": null
+      }
+    ]
+  }
+}

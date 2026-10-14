@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/embargo-list.schema.json",
+  "title": "dg embargo list --json",
+  "description": "The repository's publication dates, where each stands, and its checklist.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "repo": {
+      "type": "string"
+    },
+    "count": {
+      "type": "integer"
+    },
+    "embargoes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "number": {
+            "type": "integer"
+          },
+          "at": {
+            "type": "integer"
+          },
+          "due": {
+            "type": "boolean"
+          },
+          "plan": {
+            "type": "object",
+            "properties": {
+              "at": {
+                "type": "integer",
+                "description": "The publication date, Unix seconds (UTC)."
+              },
+              "pr": {
+                "type": "integer"
+              },
+              "branch": {
+                "type": "string"
+              },
+              "onto": {
+                "type": "string"
+              },
+              "tag": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "at"
+            ]
+          },
+          "setBy": {
+            "type": "string"
+          },
+          "setAt": {
+            "type": "integer"
+          },
+          "state": {
+            "type": "object",
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "scheduled",
+                  "cancelled",
+                  "done"
+                ]
+              },
+              "by": {
+                "type": "string"
+              },
+              "at": {
+                "type": "integer"
+              },
+              "commit": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "checklist": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "step": {
+                  "type": "string",
+                  "enum": [
+                    "makePublic",
+                    "publish",
+                    "tag",
+                    "release"
+                  ]
+                },
+                "issue": {
+                  "type": "integer"
+                },
+                "tag": {
+                  "type": "string"
+                },
+                "done": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "step",
+                "done"
+              ]
+            }
+          }
+        },
+        "required": [
+          "number",
+          "at",
+          "due",
+          "plan",
+          "setBy",
+          "state",
+          "checklist"
+        ]
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "repo",
+    "count",
+    "embargoes"
+  ],
+  "additionalProperties": true
+}
