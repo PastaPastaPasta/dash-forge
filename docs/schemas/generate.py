@@ -767,6 +767,20 @@ cmd('env export', 'An environment written to a file. Only with `--output`: witho
 cmd('env history', 'An environment\'s saved versions.', {
     'env': S, 'state': ANY, 'heads': ANY, 'changes': A(OBJ), 'ignored': ANY,
 }, ['env', 'changes'])
+cmd('env exposure', 'Who could read each of an environment\'s current values: everyone a version holding the same '
+    'value was saved for, from the versions you can open.', {
+    'env': S,
+    'entries': A(O({'name': S, 'readers': D('Identity ids, sorted.', SA),
+                    'oldFormat': D('A version saved in the old format held it too: anyone who held the members key '
+                                   'could read it.', B)}, ['name', 'readers', 'oldFormat'])),
+    'unopened': D('Versions of the environment you can\'t open; the people they were saved for are not counted.', I),
+    'ignored': D('Changes in the repository by people who aren\'t maintainers now, which are never opened; the people '
+                 'they were saved for are not counted.', I),
+}, ['env', 'entries', 'unopened', 'ignored'])
+cmd('ci env', 'An environment\'s values, for a CI runner it is shared with by name (what forge-runner reads).', {
+    'env': S, 'id': nl(S), 'updatedBy': S, 'updatedAt': I,
+    'entries': A(O({'name': S, 'type': E('secret', 'variable'), 'value': S}, ['name', 'type', 'value'])),
+}, ['env', 'entries'])
 
 # A command that prints JSON only when given one of these flags (and otherwise prints its own
 # format, even with --json).

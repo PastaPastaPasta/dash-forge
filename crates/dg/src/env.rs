@@ -295,6 +295,17 @@ pub enum EnvCommand {
         #[arg(long)]
         env: String,
     },
+    /// Show who could read each of an environment's current values
+    ///
+    /// Everyone a version holding the same value was saved for, from the versions you can
+    /// open. Reads can't be logged: this is who was given each value, not who read it.
+    Exposure {
+        /// The repository.
+        repo: String,
+        /// The environment.
+        #[arg(long)]
+        env: String,
+    },
     /// Change who can read an environment
     ///
     /// Saves it again for the new audience. Earlier versions stay readable by whoever could read
@@ -378,7 +389,7 @@ impl EnvCommand {
     /// The error headline and the repo, for `errors::context_for`.
     pub fn context(&self) -> (&'static str, Option<&String>) {
         match self {
-            Self::Ls { repo, .. } | Self::History { repo, .. } => {
+            Self::Ls { repo, .. } | Self::History { repo, .. } | Self::Exposure { repo, .. } => {
                 ("could not read the environments", Some(repo))
             }
             Self::Get { repo, .. } | Self::Export { repo, .. } => {
@@ -462,6 +473,7 @@ pub async fn run(ctx: &Ctx, cmd: &EnvCommand) -> Result<()> {
             force,
         } => export(ctx, repo, env, output.as_deref(), *force).await,
         EnvCommand::History { repo, env } => history(ctx, repo, env).await,
+        EnvCommand::Exposure { repo, env } => exposure(ctx, repo, env).await,
         EnvCommand::Audience {
             repo,
             env,
@@ -570,6 +582,15 @@ fn current<'b>(book: &'b Book, s: &Session, env: &str) -> Result<&'b Snapshot> {
     warn_ignored(book, env);
     book.current(env)
         .map_err(|b| blocked_error(&s.repo, env, b, is_maintainer(book, s)))
+}
+
+/// How many changes were ignored because their author isn't a maintainer now.
+fn ignored_by_non_maintainers(book: &Book) -> usize {
+    book.resolution
+        .ignored
+        .iter()
+        .filter(|i| i.reason == forge_core::env::chain::IgnoredReason::NotAMaintainer)
+        .count()
 }
 
 /// One stderr line when someone who isn't a maintainer now posted a change naming `env`'s head:
@@ -927,12 +948,7 @@ async fn ls(ctx: &Ctx, repo: &str, env: Option<&str>) -> Result<()> {
         })
         .collect();
     let hidden = book.resolution.hidden.len();
-    let ignored = book
-        .resolution
-        .ignored
-        .iter()
-        .filter(|i| i.reason == forge_core::env::chain::IgnoredReason::NotAMaintainer)
-        .count();
+    let ignored = ignored_by_non_maintainers(&book);
     ctx.emit(
         json!({ "environments": rows, "hidden": hidden, "ignored": ignored }),
         || {
@@ -2271,6 +2287,159 @@ async fn mark_changed(ctx: &Ctx, repo: &str, env: &str, names: &[String]) -> Res
         Ok(())
     })
     .await
+}
+
+/// `dg env exposure --env E`: the exposure ledger (DESIGN §4.5 "Audit and exposure"). For each
+/// current value, everyone a version holding it was saved for: exact for every version saved as
+/// letters; a version saved in the old format reached anyone who held the members key, which is
+/// said instead of listed. Versions this reader can't open are counted, not guessed at.
+async fn exposure(ctx: &Ctx, repo: &str, env: &str) -> Result<()> {
+    check_env_name(env)?;
+    let s = Session::open(ctx, repo).await?;
+    let book = book(&s).await?;
+    // Two versions at once are listed together; any other reason the values can't be used
+    // stops here.
+    match book.current(env) {
+        Ok(_) | Err(Blocked::Conflict { .. }) => {}
+        Err(_) => {
+            current(&book, &s, env)?;
+        }
+    }
+    let (rows, unopened) = book
+        .ledger(env)
+        .ok_or_else(|| missing_error(&s.repo, &book, env))?;
+    // Changes by people who aren't maintainers now are never opened, so their people are not
+    // known here (a removed maintainer's versions among them).
+    let ignored = ignored_by_non_maintainers(&book);
+    ctx.emit(
+        json!({ "env": env, "entries": rows, "unopened": unopened, "ignored": ignored }),
+        || {
+            println!(
+                "Who could read {env}'s current values in {}:",
+                s.repo.display()
+            );
+            if rows.is_empty() {
+                println!("  (no entries)");
+            }
+            for r in &rows {
+                let old = if r.old_format {
+                    ", and anyone who held the members key (saved in the old format)"
+                } else {
+                    ""
+                };
+                println!(
+                    "  {:<32} {}: {}{old}",
+                    r.name,
+                    count(r.readers.len(), "person"),
+                    r.readers.join(", ")
+                );
+            }
+            if unopened > 0 {
+                println!(
+                    "Not counted: {} of {env} you can't open. The people they were saved for may have read values that are still current.",
+                    count(unopened, "earlier version")
+                );
+            }
+            if ignored > 0 {
+                println!(
+                    "Not counted: {} in this repo by people who aren't maintainers now, which aren't opened. If one held a value that is still current, the people it was saved for could read it too.",
+                    count(ignored, "change")
+                );
+            }
+            println!("{ACCESS_SENTENCE}");
+        },
+    );
+    Ok(())
+}
+
+/// `dg ci env --env E` (forge-runner): `env`'s values for a CI runner, only when its audience
+/// names this identity, in `--also` or among Specific people (DESIGN §4.5 "CI"). A group never
+/// counts, so a runner identity that is also a member reads only what is shared with it by name;
+/// a version saved in the old format, for All members, is never given. The values go to stdout
+/// with `--json` only.
+pub async fn ci_values(ctx: &Ctx, repo: &str, env: &str) -> Result<()> {
+    check_env_name(env)?;
+    let s = Session::open(ctx, repo).await?;
+    // Without an encryption key nothing opens, which would read as "not shared" (E612).
+    if crate::keys::signer(&s).encryption_keys(&s.repo).is_empty() {
+        return Err(forge_core::keyring::no_encryption_key_held(&format!(
+            "read environment {env}"
+        ))
+        .into());
+    }
+    let book = book(&s).await?;
+    // A version that couldn't be fetched hides its environment's name: a runner tries again
+    // rather than taking it for "not shared".
+    if matches!(book.current(env), Err(Blocked::Missing { hidden }) if hidden > 0)
+        && book
+            .opened
+            .values()
+            .any(|o| matches!(o, forge_core::env::service::Opened::Unfetched(_)))
+    {
+        return Err(UserError::new(
+            codes::PACKS_UNREADABLE,
+            format!(
+                "some environments of {} couldn't be fetched",
+                s.repo.display()
+            ),
+        )
+        .cause(format!("{env} may be one of them"))
+        .fix("check the connection and storage, then try again")
+        .into());
+    }
+    let snap = current(&book, &s, env)?;
+    let me = s.identity.id();
+    named_for_ci(&s.repo, env, snap, &me)?;
+    let head = &book.heads(env)[0];
+    let entries: Vec<Value> = snap
+        .vars
+        .iter()
+        .map(|(n, v)| json!({ "name": n, "type": v.kind.as_str(), "value": v.value }))
+        .collect();
+    ctx.emit(
+        json!({
+            "env": env,
+            "id": snap.id.map(hex::encode),
+            "updatedBy": head.author,
+            "updatedAt": head.created_at,
+            "entries": entries,
+        }),
+        || {
+            println!(
+                "{env} in {} is shared with {me}: {}. The values are printed with --json only.",
+                s.repo.display(),
+                count(snap.vars.len(), "entry")
+            );
+        },
+    );
+    Ok(())
+}
+
+/// Refuse `snap` to a runner unless its audience names `me` ([`ci_values`]).
+fn named_for_ci(repo: &Repo, env: &str, snap: &Snapshot, me: &str) -> Result<()> {
+    let cause = if snap.members_key() {
+        format!("{env} was saved in the old format, for All members, which never includes a runner")
+    } else if snap.audience.also.iter().any(|a| a == me) {
+        return Ok(());
+    } else {
+        format!(
+            "{env} reaches {me} only through its group ({}); a runner reads an environment only when it's shared with it by name",
+            snap.audience.label()
+        )
+    };
+    Err(UserError::new(
+        codes::NOT_SHARED_YET,
+        format!(
+            "{} has no environment {env} shared with this runner",
+            repo.display()
+        ),
+    )
+    .cause(cause)
+    .fix(format!(
+        "a maintainer shares it: `dg env share {} --env {env} {me}`",
+        repo.display()
+    ))
+    .into())
 }
 
 async fn history(ctx: &Ctx, repo: &str, env: &str) -> Result<()> {
