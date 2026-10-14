@@ -87,8 +87,22 @@ pub async fn requested(
         return Ok(Requested { audience, to });
     }
     match collab.require_members_writer(repo, audience).await {
-        // not asked for: the conversation is members-only, and a public reply is not possible
-        Err(e) if !ask.members && refused_non_member(&e) => Err(members_only_thread(repo)),
+        // not asked for, by someone who isn't a member: a thread written before its repository
+        // was made public takes public replies (DESIGN §4.10 L3), so theirs is public; any
+        // other members-only conversation takes none
+        Err(e) if !ask.members && refused_non_member(&e) => {
+            collab.request_audience(Some(Audience::Public));
+            match collab.new_audience(repo, target, reply_to).await {
+                Ok(Audience::Public) => Ok(Requested {
+                    audience: Audience::Public,
+                    to: String::new(),
+                }),
+                _ => {
+                    collab.request_audience(None);
+                    Err(members_only_thread(repo))
+                }
+            }
+        }
         other => other
             .map(|()| Requested {
                 audience,
