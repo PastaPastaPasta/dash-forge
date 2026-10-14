@@ -38,7 +38,11 @@
             "null"
           ]
         }
-      }
+      },
+      "required": [
+        "onPlatform",
+        "notServedClaimed"
+      ]
     }
   },
   "required": [
