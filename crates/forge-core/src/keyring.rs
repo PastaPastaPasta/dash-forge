@@ -910,6 +910,16 @@ impl Keyring {
         if let Some(e) = self.alert_error(repo) {
             return e;
         }
+        if self.reader_role() == Some(Role::Bot) {
+            // a bot never holds the members key (§23): no repair gives it one
+            return UserError::new(
+                codes::NOT_A_KEY_HOLDER,
+                format!("private repo {}: a bot holds no key for it", repo.display()),
+            )
+            .cause("bots never get a repository's key; they read only what a member shares with them for one job")
+            .fix("ask a member with Write access to share the thread with this bot")
+            .into();
+        }
         let member = self.reader_role().is_some();
         let (why, fix) = if member {
             (

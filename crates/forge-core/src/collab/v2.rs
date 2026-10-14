@@ -236,6 +236,11 @@ fn bot_kind_check(repo: &RepoRef, kind: DocKind) -> Result<()> {
     .into())
 }
 
+/// Whether a fetched document is a bot's members-only post: `enc` v0x05 (§23).
+fn is_bot_post(d: &FetchedDocument) -> bool {
+    d.field_bytes("enc").and_then(|e| e.first().copied()) == Some(crate::private::bot_post::V5)
+}
+
 /// Whether a fetched document is a letter: `enc` v0x04, sealed to the people its writer listed
 /// (DESIGN §4.2), in either kind of repository.
 fn is_letter(d: &FetchedDocument) -> bool {
@@ -526,6 +531,9 @@ fn open_with(
                 ) => Unopened::NotForThisRepo,
                 crate::private::Opened::Unreadable(crate::private::Unreadable::UnknownVersion) => {
                     Unopened::NewerVersion
+                }
+                crate::private::Opened::Unreadable(crate::private::Unreadable::NotABot) => {
+                    Unopened::RemovedBot
                 }
                 _ => *otherwise,
             };
@@ -853,6 +861,9 @@ pub enum Unopened {
     /// A letter (`enc` v0x04) that does not list this reader, or a reader who signed nothing:
     /// only the people it was sent to can read it.
     NotARecipient,
+    /// A bot's post (`enc` v0x05) whose author holds no Bot row of this repository now: its
+    /// members-only posts ended when it was removed (`private-repos.md` §23).
+    RemovedBot,
 }
 
 /// A members-only document this reader cannot open, as DESIGN D14 shows it: who wrote it, when
@@ -2956,7 +2967,8 @@ fn members_only_error(repo: &RepoRef, kind: TargetKind, number: u32, m: &Members
         | Unopened::KeysUnreadable
         | Unopened::Locked
         | Unopened::NewerVersion
-        | Unopened::NotARecipient => {
+        | Unopened::NotARecipient
+        | Unopened::RemovedBot => {
             let mut e = UserError::new(codes::MEMBERS_ONLY, format!("{what} is members-only"))
                 .cause(format!(
                     "only members of {} can read it; it was opened by {}",
@@ -2974,6 +2986,7 @@ fn members_only_error(repo: &RepoRef, kind: TargetKind, number: u32, m: &Members
                 Unopened::KeysUnreadable => e.fix("the repository's keys could not be read just now: try again in a moment"),
                 Unopened::Locked => e.fix("unlock your key (enter its passphrase in a terminal, or set DASH_FORGE_PASSPHRASE), then read it again"),
                 Unopened::NewerVersion => e.fix("it was written by a newer version of Forge: update dg to read it"),
+                Unopened::RemovedBot => e.fix("it was posted by a bot that was removed from this repository: its members-only posts can't be read any more"),
                 _ => e.fix(format!(
                     "it was written for a key or for people you do not hold (after you were removed, late, or to specific people); `dg repo keys status {}` lists the keys you hold",
                     repo.display()
@@ -6820,6 +6833,11 @@ impl<'a> Collab<'a> {
             .await?
             .ok_or(Error::NotFound)?;
         edit_check(repo, DOC_COMMENT, &stored, &self.signer_id()?)?;
+        // a bot's own post opens with its post key, never the members key (§23)
+        if is_bot_post(&stored) {
+            let opened = Box::pin(self.open_own_bot_post(repo, DocKind::Comment, &stored)).await?;
+            return Ok(comment_from_doc(&opened));
+        }
         // per document: a members-only comment of a public repository opens with its members key
         if repo.visibility == Visibility::Private || is_sealed(&stored) {
             let kr = if repo.visibility == Visibility::Private {
@@ -7028,9 +7046,7 @@ impl<'a> Collab<'a> {
         if is_letter(stored) {
             return self.letter_edit(repo, kind, stored, changes).await;
         }
-        if stored.field_bytes("enc").and_then(|e| e.first().copied())
-            == Some(crate::private::bot_post::V5)
-        {
+        if is_bot_post(stored) {
             return Box::pin(self.bot_edit(repo, kind, stored, changes)).await;
         }
         let members = repo.visibility == Visibility::Public;
@@ -7095,16 +7111,15 @@ impl<'a> Collab<'a> {
         Ok(clear_plaintext(kind, stored, sealed))
     }
 
-    /// The `enc` / `epoch` a replace of the signer's own bot post (`enc` v0x05, §23) sets: opened
-    /// with the post key of its epoch, `changes` applied, and the whole content sealed again
-    /// under the current epoch's post key. Unchanged text keeps the stored `enc`.
-    async fn bot_edit(
+    /// The signer's own bot post `stored` (`enc` v0x05, §23) opened with the post key of its
+    /// epoch, for an edit: refused when the signer is not the bot that wrote it or holds no post
+    /// key for that epoch any more.
+    async fn open_own_bot_post(
         &self,
         repo: &RepoRef,
         kind: DocKind,
         stored: &FetchedDocument,
-        changes: &BTreeMap<String, Option<FieldValue>>,
-    ) -> Result<BTreeMap<String, Option<FieldValue>>> {
+    ) -> Result<FetchedDocument> {
         let doc_type = kind.type_name();
         let unreadable = || {
             Error::from(
@@ -7132,12 +7147,25 @@ impl<'a> Collab<'a> {
         };
         let mut header = header;
         header.vis = repo.visibility;
-        let old = self.bot_post_key(repo, Some(epoch)).await?;
-        let opened = private::open_doc(
-            crate::private::bot_post::open(&old, &header, &enc),
+        let post = Box::pin(self.bot_post_key(repo, Some(epoch))).await?;
+        private::open_doc(
+            crate::private::bot_post::open(&post, &header, &enc),
             stored.clone(),
         )
-        .ok_or_else(unreadable)?;
+        .ok_or_else(unreadable)
+    }
+
+    /// The `enc` / `epoch` a replace of the signer's own bot post (`enc` v0x05, §23) sets: opened
+    /// with the post key of its epoch, `changes` applied, and the whole content sealed again
+    /// under the current epoch's post key. Unchanged text keeps the stored `enc`.
+    async fn bot_edit(
+        &self,
+        repo: &RepoRef,
+        kind: DocKind,
+        stored: &FetchedDocument,
+        changes: &BTreeMap<String, Option<FieldValue>>,
+    ) -> Result<BTreeMap<String, Option<FieldValue>>> {
+        let opened = Box::pin(self.open_own_bot_post(repo, kind, stored)).await?;
         let text: BTreeMap<String, Option<String>> = changes
             .iter()
             .map(|(k, v)| {
