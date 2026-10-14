@@ -24,6 +24,12 @@
 //! `--pr N` publishes a members-only pull request's branch onto its base and records the pull
 //! request merged at the public commit. `--make-public` also makes its comments and reviews
 //! public (a maintainer's bundle; its own title and description stay members-only for now).
+//!
+//! `--check` stops after the checks: nothing is written. `--at <time>` publishes later (DESIGN
+//! §4.7 "Embargo", D18): after the same checks it records the date and the plan, members-only,
+//! on the issue that tracks the fix (`--issue`) or on the pull request, and nothing is published
+//! now. A release bot (`dg embargo run`, [`crate::embargo`]) publishes it at the time, with a
+//! squash it makes then.
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -74,6 +80,33 @@ pub struct PublishArgs {
     /// With --pr: also make the pull request's comments and reviews public (maintainers).
     #[arg(long, requires = "pr")]
     pub make_public: bool,
+    /// Publish at this time instead of now (`2026-10-20T14:00Z`, `2026-10-20 14:00 UTC`, or
+    /// `+2h`, `+3d`): records the date and what is published, members-only, on the issue that
+    /// tracks the fix (--issue) or the pull request (--pr). A release bot publishes it then
+    /// (`dg embargo run`); nothing is published now.
+    #[arg(long, value_name = "TIME", conflicts_with_all = ["history", "co_authors", "make_public", "check"])]
+    pub at: Option<String>,
+    /// With --at: the members-only issue that tracks the fix. It is made public first, at the
+    /// time.
+    #[arg(long, value_name = "N", requires = "at")]
+    pub issue: Option<u64>,
+    /// With --at: tag the published commit and release the tag (needs Maintain access then).
+    #[arg(long, value_name = "TAG", requires = "at")]
+    pub tag: Option<String>,
+    /// Run every check and show what would be published, then stop: nothing is written.
+    #[arg(long)]
+    pub check: bool,
+    /// Set by the release bot (`dg embargo run`): the run is unattended, and a branch whose
+    /// changes the base already holds is reported as published, not refused.
+    #[arg(skip)]
+    pub release_bot: bool,
+}
+
+/// What [`publish`] did.
+pub(crate) struct Outcome {
+    /// The public commit: published now, or found already published (`None` for `--check`
+    /// and `--at`).
+    pub commit: Option<String>,
 }
 
 /// One commit about to be published.
@@ -115,8 +148,23 @@ impl Plan {
 }
 
 /// `dg publish`.
-#[allow(clippy::too_many_lines)] // one publish's steps, in the order they happen
 pub async fn run(ctx: &Ctx, a: &PublishArgs) -> Result<()> {
+    Box::pin(publish(ctx, a)).await.map(|_| ())
+}
+
+/// `dg publish`, and the release bot's publish step.
+#[allow(clippy::too_many_lines)] // one publish's steps, in the order they happen
+pub(crate) async fn publish(ctx: &Ctx, a: &PublishArgs) -> Result<Outcome> {
+    // the time is read before anything else, so a typo costs no network read
+    let at =
+        a.at.as_deref()
+            .map(|t| crate::embargo::parse_at(t, crate::embargo::now_secs()))
+            .transpose()?;
+    if at.is_some() && a.issue.is_none() && a.pr.is_none() {
+        return Err(crate::errors::usage(
+            "--at records the date on the members-only issue that tracks the fix: pass --issue N (or --pr N)",
+        ));
+    }
     let cwd = std::env::current_dir().context("reading the current directory")?;
     let repo = crate::storage::clone_repo().ok_or_else(|| {
         crate::errors::usage(
@@ -145,7 +193,7 @@ pub async fn run(ctx: &Ctx, a: &PublishArgs) -> Result<()> {
     // what is published, and from where
     let (branch, tip, base, pr) = if let Some(n) = a.pr {
         let (branch, tip, base, view) =
-            pr_source(ctx, &collab, &s, &cwd, &remote, n, a.history).await?;
+            pr_source(ctx, &collab, &s, &cwd, &remote, n, a.history, at.is_some()).await?;
         (branch, tip, base, Some((n, view)))
     } else {
         let (branch, tip) = branch_source(&cwd, a.branch.as_deref(), &fold)?;
@@ -163,10 +211,34 @@ pub async fn run(ctx: &Ctx, a: &PublishArgs) -> Result<()> {
     };
     let base_tip = public_base_tip(&fold, &base)?;
     ensure_local(ctx, &cwd, &remote, &base, &base_tip)?;
-    // an earlier `dg publish --pr` that published this tip but could not record the merge
-    if let Some((n, view)) = &pr {
-        if let Some(done) = already_published(&cwd, &tip, &base, &base_tip) {
-            return record_merge_only(ctx, &collab, &s, view, *n, &done, &repo).await;
+    // An earlier publish of this tip: this clone recorded it, or (the release bot, in any clone)
+    // the base already holds the branch's changes since the commit that published them.
+    let done = if a.release_bot {
+        in_base(&cwd, &tip, &base, &base_tip)?
+    } else {
+        already_published(&cwd, &tip, &base, &base_tip)
+    };
+    if let Some(done) = done {
+        match &pr {
+            // a pull request published by a run that could not record the merge: record it
+            Some((n, view)) => {
+                if a.release_bot && a.check {
+                    // the bot's checks pass: its publish step records the merge
+                    return Ok(Outcome { commit: None });
+                }
+                if a.check || at.is_some() {
+                    return Err(UserError::new(
+                        codes::USAGE,
+                        format!("PR #{n} is already published as {}", short(&done)),
+                    )
+                    .fix(format!("record it merged: `dg publish --pr {n}`"))
+                    .into());
+                }
+                record_merge_only(ctx, &collab, &s, view, *n, &done, &repo).await?;
+                return Ok(Outcome { commit: Some(done) });
+            }
+            None if a.release_bot => return Ok(Outcome { commit: Some(done) }),
+            None => {}
         }
     }
     let plan = plan(&cwd, branch, tip, base, base_tip)?;
@@ -235,8 +307,16 @@ pub async fn run(ctx: &Ctx, a: &PublishArgs) -> Result<()> {
         &findings,
         a,
         &author,
+        at,
     );
-    refuse_unseen_branch_name(ctx, &plan, message.as_deref(), a.message.is_some())?;
+    // a scheduled publish runs unattended, as the release bot's does: nobody sees the message
+    refuse_unseen_branch_name(
+        ctx,
+        &plan,
+        message.as_deref(),
+        a.message.is_some(),
+        at.is_some() || a.release_bot,
+    )?;
     if findings.iter().any(|f| f.1) {
         return Err(UserError::new(
             codes::SECRET_IN_PUSH,
@@ -260,6 +340,26 @@ pub async fn run(ctx: &Ctx, a: &PublishArgs) -> Result<()> {
         .fix("if it is not a secret, list it in .forge/secret-scan-allow")
         .note("nothing was published")
         .into());
+    }
+    if a.check {
+        ctx.emit(
+            json!({
+                "status": "checked",
+                "branch": plan.branch_name(),
+                "onto": plan.base_name(),
+                "method": if history { "history" } else { "squash" },
+                "commits": plan.commits.iter().map(|c| c.oid.as_str()).collect::<Vec<_>>(),
+                "files": plan.files.len(),
+                "pr": a.pr,
+            }),
+            || println!("Checked: nothing was published (--check)."),
+        );
+        return Ok(Outcome { commit: None });
+    }
+    if let Some(at) = at {
+        let view = pr.as_ref().map(|(_, v)| v);
+        crate::embargo::schedule(ctx, &s, &fold, a, &plan_names(&plan), at, view).await?;
+        return Ok(Outcome { commit: None });
     }
     confirm(ctx, &plan, history)?;
     // the push: through the helper, whose guard lets exactly this tip through for history
@@ -342,19 +442,94 @@ pub async fn run(ctx: &Ctx, a: &PublishArgs) -> Result<()> {
         },
     );
     if let (true, Some(n)) = (a.make_public, a.pr) {
-        crate::make_public::run(ctx, &repo, &[n.to_string()], true, false)
-            .await
-            .map_err(|e| {
-                let note = format!(
-                    "the branch is published and PR #{n} is recorded merged; make its discussion public with `dg make-public {repo} {n} --thread`"
-                );
-                match e.downcast::<UserError>() {
-                    Ok(u) => anyhow::Error::from(u.note(note)),
-                    Err(e) => e.context(note),
-                }
-            })?;
+        make_pr_public(ctx, &repo, n).await?;
     }
-    Ok(())
+    Ok(Outcome {
+        commit: Some(commit),
+    })
+}
+
+/// `--make-public` after `dg publish --pr n`: the pull request's comments and reviews.
+async fn make_pr_public(ctx: &Ctx, repo: &str, n: u64) -> Result<()> {
+    crate::make_public::run(ctx, repo, &[n.to_string()], true, false)
+        .await
+        .map_err(|e| {
+            let note = format!(
+                "the branch is published and PR #{n} is recorded merged; make its discussion public with `dg make-public {repo} {n} --thread`"
+            );
+            match e.downcast::<UserError>() {
+                Ok(u) => anyhow::Error::from(u.note(note)),
+                Err(e) => e.context(note),
+            }
+        })
+}
+
+/// The names a scheduled publish records: the members-only branch and the public base.
+pub(crate) struct PlanNames {
+    /// The members-only branch's short name.
+    pub branch: String,
+    /// The public branch's short name.
+    pub base: String,
+}
+
+/// The names `plan` records when a publish is scheduled.
+fn plan_names(plan: &Plan) -> PlanNames {
+    PlanNames {
+        branch: plan.branch_name().to_string(),
+        base: plan.base_name().to_string(),
+    }
+}
+
+/// How far back along the base's first parents [`in_base`] looks for the commit that published
+/// a branch.
+const IN_BASE_DEPTH: usize = 500;
+
+/// The public commit that published `tip`'s changes on `base` (its tip `base_tip`), when the base
+/// holds them: this clone's record of an earlier publish; else `tip` itself when it is on the
+/// base (published with history); else the **first** commit since the two met, along the base's
+/// first parents, onto which a squash of `tip` would change nothing (the squash that published
+/// it, never a later commit someone pushed on top). `None` when the base doesn't hold them.
+fn in_base(cwd: &Path, tip: &str, base: &str, base_tip: &str) -> Result<Option<String>> {
+    if let Some(done) = already_published(cwd, tip, base, base_tip) {
+        return Ok(Some(done));
+    }
+    if git::is_ancestor(cwd, tip, base_tip) {
+        return Ok(Some(tip.to_string()));
+    }
+    let tree_of = |c: &str| git::git(cwd, &["rev-parse", &format!("{c}^{{tree}}")], &[]);
+    if git::merge_tree(cwd, base_tip, tip)? != Some(tree_of(base_tip)?) {
+        return Ok(None);
+    }
+    let since = git::git(cwd, &["merge-base", base_tip, tip], &[])?;
+    let range = format!("{since}..{base_tip}");
+    // git limits before it reverses, so the walk is counted first: past the bound it refuses
+    // rather than take a later commit for the one that published
+    let count: usize = git::git(cwd, &["rev-list", "--first-parent", "--count", &range], &[])?
+        .trim()
+        .parse()
+        .unwrap_or(usize::MAX);
+    if count <= IN_BASE_DEPTH {
+        let path = git::git(
+            cwd,
+            &["rev-list", "--first-parent", "--reverse", &range],
+            &[],
+        )?;
+        for c in path.lines() {
+            if git::merge_tree(cwd, c, tip)? == Some(tree_of(c)?) {
+                return Ok(Some(c.to_string()));
+            }
+        }
+    }
+    Err(UserError::new(
+        codes::USAGE,
+        format!(
+            "{} holds this branch's changes, but the commit that published them is more than {IN_BASE_DEPTH} commits back",
+            safe(short_branch_name(base))
+        ),
+    )
+    .fix("tag and release it by hand, then withdraw the date: `dg embargo cancel <number>`")
+    .note("nothing was published")
+    .into())
 }
 
 /// The public commit an earlier publish of `tip` onto `base` made, when this clone recorded it
@@ -508,7 +683,10 @@ fn branch_source(
 }
 
 /// A members-only pull request's branch, its real head, its base, and its view (for the merge
-/// transition). Its head is fetched when this clone does not hold it.
+/// transition). Its head is fetched when this clone does not hold it. `later` (`--at`): the
+/// merge checks (ready, approvals, checks, the merger's role) are left for the time, when the
+/// release bot runs them.
+#[allow(clippy::too_many_arguments)] // the session, the clone and the publish's choices
 async fn pr_source(
     ctx: &Ctx,
     collab: &Collab<'_>,
@@ -517,6 +695,7 @@ async fn pr_source(
     remote: &str,
     n: u64,
     history: bool,
+    later: bool,
 ) -> Result<(String, String, String, forge_core::collab::v2::PatchView)> {
     let number = u32::try_from(n).map_err(|_| crate::errors::usage("no such pull request"))?;
     let p = collab.patch(&s.repo, number).await?.ok_or_else(|| {
@@ -551,23 +730,40 @@ async fn pr_source(
     // what `dg pr merge` checks before anything is built: open and ready, a base that was a
     // branch when it was opened, the merger's role, the branch policy's approvals and checks
     // and its merge methods (a squash, or a fast-forward with history)
-    crate::pr::refuse_unmergeable(&view, n)?;
+    if !later {
+        crate::pr::refuse_unmergeable(&view, n)?;
+    }
     crate::pr::refuse_missing_base(&view, n, false)?;
-    let method = if history {
-        crate::pr::METHOD_FF
-    } else {
-        crate::pr::METHOD_SQUASH
-    };
-    let rights = crate::pr::require_merge_rights(ctx, s, &s.repo, &view, Some(method), false)
-        .await
-        .map_err(|e| as_publish(e, n))?;
-    let not_passing =
-        crate::pr::head_checks_not_passing(collab, &s.repo, &view, rights.policy.as_ref()).await;
-    if !not_passing.is_empty() && !ctx.json {
-        eprintln!(
-            "warning: some checks were not successful: {}",
-            safe(&not_passing.join(", "))
-        );
+    if later && !view.state.open {
+        return Err(UserError::new(
+            codes::USAGE,
+            format!("PR #{n} is closed: a closed pull request isn't published"),
+        )
+        .fix(format!(
+            "reopen it first: `dg pr reopen {} {n}`",
+            s.repo.display()
+        ))
+        .note("nothing was written")
+        .into());
+    }
+    if !later {
+        let method = if history {
+            crate::pr::METHOD_FF
+        } else {
+            crate::pr::METHOD_SQUASH
+        };
+        let rights = crate::pr::require_merge_rights(ctx, s, &s.repo, &view, Some(method), false)
+            .await
+            .map_err(|e| as_publish(e, n))?;
+        let not_passing =
+            crate::pr::head_checks_not_passing(collab, &s.repo, &view, rights.policy.as_ref())
+                .await;
+        if !not_passing.is_empty() && !ctx.json {
+            eprintln!(
+                "warning: some checks were not successful: {}",
+                safe(&not_passing.join(", "))
+            );
+        }
     }
     let branch = view.patch.source_ref_name.clone().unwrap_or_default();
     git::require_branch_ref(&branch)?;
@@ -855,6 +1051,7 @@ fn scan_blob(cwd: &Path, commit: &str, path: &str) -> Vec<(String, bool)> {
 
 /// The publish dialog in CLI form (§10): the exact list, the scan line, the method, the
 /// co-author line, and a branch-name warning.
+#[allow(clippy::too_many_arguments)] // what the dialog shows, each from its own step
 fn dialog(
     ctx: &Ctx,
     plan: &Plan,
@@ -863,6 +1060,7 @@ fn dialog(
     findings: &[(String, bool)],
     a: &PublishArgs,
     me: &[(String, String)],
+    at: Option<u64>,
 ) {
     if ctx.json {
         return;
@@ -885,7 +1083,13 @@ fn dialog(
         [one] => format!(" by {}", safe(one)),
         [rest @ .., last] => format!(" by {} and {}", safe(&rest.join(", ")), safe(last)),
     };
-    println!("Publish to everyone? This can't be undone. Anything published stays public forever, even if you delete it later.");
+    match at {
+        Some(at) => println!(
+            "Publish to everyone on {}? Until then nothing is published. Then it can't be undone: anything published stays public forever, even if you delete it later.",
+            crate::embargo::when(at)
+        ),
+        None => println!("Publish to everyone? This can't be undone. Anything published stays public forever, even if you delete it later."),
+    }
     println!(
         "  {}{by} · {}",
         plural(plan.commits.len(), "commit"),
@@ -943,16 +1147,18 @@ fn dialog(
 }
 
 /// A squash message that names the members-only branch, chosen by nobody (no `-m`) and with
-/// no terminal to show it on: refused, so a script never publishes the name unseen.
+/// no terminal to show it on, or for a publish that runs unattended later (`unattended`):
+/// refused, so a script or the release bot never publishes the name unseen.
 fn refuse_unseen_branch_name(
     ctx: &Ctx,
     plan: &Plan,
     message: Option<&str>,
     given: bool,
+    unattended: bool,
 ) -> Result<()> {
     let branch = plan.branch_name();
     let named = message.is_some_and(|m| !branch.is_empty() && m.contains(branch));
-    if !named || given || ctx.interactive() {
+    if !named || given || (ctx.interactive() && !unattended) {
         return Ok(());
     }
     Err(UserError::new(

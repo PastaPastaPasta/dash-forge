@@ -52,6 +52,7 @@ pub mod aud;
 pub mod bans;
 pub mod ci_rerun;
 pub mod codeowners;
+pub mod embargo;
 pub mod letters;
 pub mod long_body;
 pub mod make_public;
@@ -1354,7 +1355,7 @@ pub fn overlay_tree(base: &FlatIndex, later_commit_tree_diffs: &[TreeDiff]) -> F
 #[cfg(test)]
 mod tests {
     use super::{
-        aud, bans, ci_rerun, codeowners, default_protected_patterns, display_ref_name,
+        aud, bans, ci_rerun, codeowners, default_protected_patterns, display_ref_name, embargo,
         is_legal_ref_name, long_body, matches_protected, merge_base_tips,
         missing_default_protection, overlay_tree, pr_base_tips, resolve_ref, routes_protected, v2,
         Ancestry, ConfigDoc, Event, EventKind, FlatIndex, IssueState, MergeBaseTips, PrState,
@@ -2539,6 +2540,102 @@ mod tests {
         assert_eq!(serde_json::Value::from(got), v.expected, "vector `{ctx}`");
     }
 
+    #[derive(Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct EmbargoValueInput {
+        parse: Vec<String>,
+        encode: Vec<serde_json::Value>,
+    }
+
+    #[derive(Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct EmbargoInput {
+        repo_id: String,
+        owner: String,
+        memberships: Vec<v2::Membership>,
+        now: u64,
+        targets: Vec<EmbargoTarget>,
+        events: Vec<embargo::EmbargoEvent>,
+    }
+
+    #[derive(Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct EmbargoTarget {
+        target_id: String,
+        is_issue: bool,
+        #[serde(default)]
+        facts: embargo::Facts,
+    }
+
+    /// A value as the vectors write it (`{"type": "schedule", …plan}`, `{"type": "cancel"}`,
+    /// `{"type": "done", "commit": …}`).
+    fn embargo_value_of(v: &serde_json::Value) -> embargo::EmbargoValue {
+        let mut o = v.as_object().expect("a value object").clone();
+        match o
+            .remove("type")
+            .and_then(|t| t.as_str().map(str::to_string))
+            .as_deref()
+        {
+            Some("schedule") => embargo::EmbargoValue::Schedule(
+                serde_json::from_value(serde_json::Value::Object(o)).expect("a plan"),
+            ),
+            Some("cancel") => embargo::EmbargoValue::Cancel,
+            Some("done") => embargo::EmbargoValue::Done {
+                commit: o["commit"].as_str().expect("a commit").to_string(),
+            },
+            other => panic!("not an embargo value type {other:?}"),
+        }
+    }
+
+    /// Publication dates (`embargo__*`): the value's canonical form, records, counting, each
+    /// target's embargo, whether it is due, and its checklist.
+    fn run_embargo_case(v: &Vector) {
+        let ctx = &v.name;
+        let got = match v.case.as_str() {
+            "embargo_value" => {
+                let inp: EmbargoValueInput = input(v);
+                serde_json::json!({
+                    "parse": inp.parse.iter().map(|t| embargo::EmbargoValue::parse(t)).collect::<Vec<_>>(),
+                    "encode": inp.encode.iter().map(|x| embargo_value_of(x).encode().ok()).collect::<Vec<_>>(),
+                })
+            }
+            "embargo" => {
+                let inp: EmbargoInput = input(v);
+                let oracle = v2::RoleOracle::new(inp.memberships);
+                let mut counted = Vec::new();
+                let records: Vec<serde_json::Value> = inp
+                    .events
+                    .iter()
+                    .map(|e| {
+                        let r = embargo::embargo_record(&inp.repo_id, e);
+                        let counts = r
+                            .as_ref()
+                            .map(|r| embargo::record_counts(r, &inp.owner, &oracle));
+                        if let (Some(r), Some(true)) = (&r, counts) {
+                            counted.push(r.clone());
+                        }
+                        serde_json::json!({ "record": r, "counts": counts })
+                    })
+                    .collect();
+                let targets: Vec<serde_json::Value> = inp
+                    .targets
+                    .iter()
+                    .map(|t| {
+                        let e = embargo::embargo_of(&t.target_id, &counted);
+                        serde_json::json!({
+                            "embargo": e,
+                            "due": e.as_ref().is_some_and(|e| e.due(inp.now)),
+                            "checklist": e.as_ref().map(|e| embargo::checklist(e, t.is_issue, &t.facts)),
+                        })
+                    })
+                    .collect();
+                serde_json::json!({ "records": records, "targets": targets })
+            }
+            other => panic!("vector `{ctx}`: not an embargo case `{other}`"),
+        };
+        assert_eq!(got, v.expected, "vector `{ctx}`");
+    }
+
     /// Every key of `given` (the vector's JSON) must survive a parse + re-serialize into
     /// `parsed`, at every depth. A key the rule types do not have would be dropped by serde's
     /// default (ignore unknown fields) on the nested public types, so a typo there would
@@ -3456,6 +3553,7 @@ mod tests {
             }
             "long_body" => run_long_body(v),
             "ci_rerun" | "ci_rerun_write" => run_ci_rerun_case(v),
+            "embargo_value" | "embargo" => run_embargo_case(v),
             "key_handoff" | "key_handoff_open" | "copy" => run_key_handoff_case(v),
             other => panic!("vector `{ctx}`: unknown v2 case `{other}`"),
         }
