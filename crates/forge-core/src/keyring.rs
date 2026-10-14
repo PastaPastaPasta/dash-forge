@@ -2404,6 +2404,7 @@ fn step_for(f: KeyFacts) -> Step {
 /// is wrapped to the remaining members, anchored **burned** (a chain link only, carrying no key
 /// below it) and the rotation continues to `n + 2`; if another maintainer's anchor for `n + 1`
 /// wins that race, nothing more is posted and the result says the rotation lost.
+#[allow(clippy::too_many_lines)] // one rotation: the wraps, a burn, the anchor and the bots' post keys
 pub async fn rotate(
     signer: &PrivateSigner<'_>,
     repo: &RepoRef,

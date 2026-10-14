@@ -354,27 +354,28 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
     } else {
         None
     };
-    // the bot's post key for the current epoch (a rotation above already sent the new one); a
-    // re-run sends only one this signer has not sent yet
-    let post_keys = match post_key_epoch.filter(|_| rotation.is_none()) {
-        Some(epoch) => {
-            let kr = signer.keyring(handle).await?;
-            let keys = kr
-                .epoch_keys(epoch)
-                .context("the members key changed while adding the bot: run `dg repo keys repair` to send its key")?;
-            let bots = vec![member.to_string()];
-            let bots = if held {
-                Box::pin(forge_core::bot_keys::missing(&signer, handle, keys, &bots)).await?
-            } else {
-                bots
-            };
-            Some(
-                Box::pin(forge_core::bot_keys::issue(&signer, handle, keys, &bots))
-                    .await
-                    .context("sending the bot its key (re-run `dg collab add` to finish: the membership stands)")?,
-            )
-        }
-        None => None,
+    // the bot's post key for the current epoch, after any rotation above (a rotation away from a
+    // member becoming a bot sends it none); a re-run sends only one this signer has not sent yet
+    let post_keys = if post_key_epoch.is_some() {
+        let kr = signer.keyring(handle).await?;
+        let keys = kr
+            .resolution()
+            .write_epoch
+            .and_then(|e| kr.epoch_keys(e))
+            .context("the members key changed while adding the bot: run `dg repo keys repair` to send its key")?;
+        let bots = vec![member.to_string()];
+        let bots = if held {
+            Box::pin(forge_core::bot_keys::missing(&signer, handle, keys, &bots)).await?
+        } else {
+            bots
+        };
+        Some(
+            Box::pin(forge_core::bot_keys::issue(&signer, handle, keys, &bots))
+                .await
+                .context("sending the bot its key (re-run `dg collab add` to finish: the membership stands)")?,
+        )
+    } else {
+        None
     };
     // after the role (and any rotation) landed: the environments whose group it changed
     let (regrouped, regroup_text) = regroup.save(&s, &protected_hashes).await;
