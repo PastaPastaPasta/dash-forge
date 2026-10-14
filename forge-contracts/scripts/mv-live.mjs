@@ -58,9 +58,10 @@
 //   fees    the M-C fee probes: L3 (comment, review) and C4 (ref update, config) against the live
 //           set, a bot push against a writer push, label/topic/packMirror in forge-meta against
 //           the live forge-core (n rounds each after a warm-up write)
-//   fees2   the M-A2 fee probes (R-03, R-04, R-06): an approval, a comment and a bot push on this
-//           set against the same on --baseline <record>, a scratch registration of the rev 4.1
-//           set (`build.py --mainnet` before M-A2); written to a repo of its own there
+//   fees2   the M-A2 fee probes (R-03, R-04, R-06): an approval, a members-only comment and a bot
+//           push on this set against the same on --baseline <record>, a scratch registration of
+//           the rev 4.1 set (`build.py --mainnet` before M-A2), with a stranger's comment verdict
+//           and public comment as controls; written to a repo of its own there
 //
 // Documents are synthetic: `enc` is random bytes behind a real version byte (0x03 members, 0x04
 // letter, 0x05 bot post), since consensus never reads inside it; an exact grant's scope is a
@@ -288,6 +289,9 @@ async function create(who, type, data, { contract = CONTRACT[type], key = who.id
       if (!isInfra(e)) {
         const got = attempt > 0 ? await landed(who, type, contract, document) : undefined;
         if (got) return got;
+        // an index-only document (star, watch, follow) has no by-id read: a retry refused as a
+        // duplicate of the writer's own (40105) is the earlier attempt, landed
+        if (attempt > 0 && codeOf(e) === 40105) return document;
         throw e;
       }
       log(`infra (${msgOf(e).slice(0, 80)}); checking whether the ${type} landed before a retry`);
@@ -1177,6 +1181,9 @@ async function feeProbes2() {
     approval: (s) => ({ type: 'review', who: W, data: { repoId: s.Rf, patchId: docRef(s.pr), verdict: 1, commitOid: bytes(20, 2), vis: 'public', ...member(W, 1) } }),
     // R-04 on a members-only comment
     comment: (s) => ({ type: 'comment', who: W, data: { repoId: s.Rf, targetId: docRef(s.iss), vis: 'public', aud: 1, enc: sealed(3, 200), epoch: 0, ...member(W, 1) } }),
+    // controls: a stranger's comment verdict and public comment, which no M-A2 rule refuses
+    'review (verdict 3)': (s) => ({ type: 'review', who: S, data: { repoId: s.Rf, patchId: docRef(s.pr), verdict: 3, commitOid: bytes(20, 2), body: 'x'.repeat(200), vis: 'public' } }),
+    'public comment': (s) => ({ type: 'comment', who: S, data: { repoId: s.Rf, targetId: docRef(s.iss), vis: 'public', body: 'x'.repeat(200) } }),
     // R-06: the rev 4.1 push copies the grant's until and prefix
     'bot push': (s, i, isBase) => ({ type: 'refUpdate', who: B, data: { repoId: s.Rf, refNameHash: refHash(`${PREFIX}${i}`), refName: `${PREFIX}${i}`, newOid: bytes(20), vis: 'public', r: 4, pp: docRef(s.g), grantor: id(O.id), ...(isBase ? { gp: PREFIX, gu: Number(s.g.toObject().until) } : {}) } }),
   };
@@ -1409,7 +1416,7 @@ const feeSummary = Object.fromEntries(Object.entries(fees).map(([k, v]) => [k, s
 const delta = (a, b) => (feeSummary[a] && feeSummary[b] ? Math.round(((feeSummary[a].mean - feeSummary[b].mean) / feeSummary[b].mean) * 10000) / 100 : null);
 const feeDeltas = Object.fromEntries(['comment', 'review', 'refUpdate', 'config', 'label', 'topic', 'packMirror'].map((t) => [`${t}: scratch vs live (%)`, delta(`${t}: scratch`, `${t}: live`)])
   .concat([['refUpdate: bot push vs writer push (%)', delta('refUpdate: bot push (scratch)', 'refUpdate: writer push (scratch)')]])
-  .concat(['approval', 'comment', 'bot push'].map((t) => [`${t}: M-A2 vs rev 4.1 (%)`, delta(`${t}: m-a2`, `${t}: rev 4.1`)]))
+  .concat(['approval', 'comment', 'review (verdict 3)', 'public comment', 'bot push'].map((t) => [`${t}: M-A2 vs rev 4.1 (%)`, delta(`${t}: m-a2`, `${t}: rev 4.1`)]))
   .filter(([, v]) => v !== null));
 const report = { network: `devnet-${devnetName}`, scratch: { core: CORE, collab: COLLAB, community: COMM, meta: META, group: GROUP }, live: LIVE, run: tag, passed, total: results.length, infra, fees: feeSummary, feeDeltas, results };
 if (args.report) writeFileSync(String(args.report), `${JSON.stringify(report, null, 2)}\n`);
