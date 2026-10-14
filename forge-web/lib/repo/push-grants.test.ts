@@ -8,7 +8,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { base58Encode, decodeIdentifier } from '../auth/base58'
-import { DEFAULT_PUSH_POLICY, allowsPush, bytesToHex, pushEntries, pushPolicy, setPush, type AccessNotice, type NoticeEntry } from '../private'
+import { BranchKey, DEFAULT_PUSH_POLICY, allowsPush, bytesToHex, pushEntries, pushPolicy, setPush, type AccessNotice, type NoticeEntry } from '../private'
 import type { PushGrant } from '../rules/push-grant'
 import type { RefUpdate } from '../rules/types'
 import type { Membership } from '../rules/v2'
@@ -27,6 +27,7 @@ const m = vi.hoisted(() => ({
   readAccessNoticesCached: vi.fn(),
   writeAccessNotice: vi.fn(),
   readHeldBranches: vi.fn(),
+  readMembersOnlyNames: vi.fn(),
 }))
 
 vi.mock('../sdk', async (orig) => ({
@@ -38,6 +39,7 @@ vi.mock('../sdk', async (orig) => ({
 vi.mock('./contract-shape', () => ({ contractHasType: m.contractHasType, contractHasProperty: m.contractHasProperty }))
 vi.mock('./members', () => ({ readMembershipsFresh: m.readMembershipsFresh, readMembershipsCached: m.readMembershipsCached }))
 vi.mock('./branch-ring', () => ({ readHeldBranches: m.readHeldBranches }))
+vi.mock('./members-branches', () => ({ readMembersOnlyNames: m.readMembersOnlyNames }))
 vi.mock('./bot-access', async (orig) => ({
   ...(await orig<typeof import('./bot-access')>()),
   readAccessNotices: m.readAccessNotices,
@@ -119,6 +121,7 @@ beforeEach(() => {
   m.deleteDocumentIdempotent.mockResolvedValue({ confirmed: true })
   m.writeAccessNotice.mockResolvedValue({ ids: ['N'], packHash: 'cd'.repeat(32) })
   m.readHeldBranches.mockResolvedValue(null)
+  m.readMembersOnlyNames.mockResolvedValue([])
 })
 
 const sdk = {} as never
@@ -205,6 +208,55 @@ describe('what the page says', () => {
     expect(s.granters).toEqual([ME])
   })
 
+  it('only a newer usable grant over the same branches replaces an older one', () => {
+    const older = grant({ n: 1, createdAt: 2000 })
+    // written later by someone who is no longer a maintainer: it hides nothing
+    const newer = grant({ n: 2, createdAt: 2500, granter: id(4) })
+    const s = pg.summarizePush(access([older, newer], listing([older])))
+    expect(s.prefixes).toEqual([['refs/heads/bot/ci-bot/', NOW + 30 * DAY]])
+    expect(s.live.map((g) => g.id)).toEqual([older.id])
+    expect(s.notes.map((n) => n.kind)).toEqual(['granterGone'])
+  })
+
+  it("says an exact grant under an earlier key is stale, and doesn't count it", () => {
+    const branches = [{ name: 'refs/heads/fix-auth', current: 'cd'.repeat(32), earlier: ['ab'.repeat(32)], audienceNow: new Set([BOT]) }]
+    const staleGrant = { ...grant({ n: 1, scope: 'ab'.repeat(32) }), prefix: undefined }
+    const fresh = { ...grant({ n: 2, scope: 'ab'.repeat(32) }), prefix: undefined, scope: 'cd'.repeat(32) }
+    const s = pg.summarizePush(access([staleGrant], null), branches)
+    expect(s.membersBranches).toBe(0)
+    expect(s.live).toEqual([])
+    expect(s.notes.map((n) => pg.pushNoteWords(n, '@ci-bot', '@m'))).toEqual(["@ci-bot can no longer push to fix-auth: the branch's key changed."])
+    expect(pg.isStale(staleGrant, branches)).toBe(true)
+    expect(pg.isStale(fresh, branches)).toBe(false)
+    // under the current key it counts, and is named
+    expect(pg.summarizePush(access([fresh], null), branches).membersBranches).toBe(1)
+  })
+
+  it('names who suspended a bot when giving it push access lets it push again', () => {
+    const g = grant({ n: 1 })
+    const off = { ...entryOf(setPush(listing([g]), [], DEFAULT_PUSH_POLICY)), writer: OTHER }
+    expect(pg.suspendedBy(pg.pushAccessOf({ supported: true, grants: [g], members, now: NOW }, BOT, off))).toBe(OTHER)
+    // a bot never given push access isn't suspended
+    expect(pg.suspendedBy(pg.pushAccessOf({ supported: true, grants: [], members, now: NOW }, BOT, entryOf(baseNotice)))).toBeNull()
+    expect(pg.suspendedBy(pg.pushAccessOf({ supported: true, grants: [g], members, now: NOW }, BOT, entryOf(listing([g]))))).toBeNull()
+  })
+
+  it('refuses a public prefix that is or covers a members-only branch, and any prefix it cannot check', () => {
+    const prefix = (p: string) => ({ scope: { prefix: p }, label: p })
+    const names = ['refs/heads/fix-auth', 'refs/heads/bot/ci-bot/wip']
+    expect(pg.membersNameRefusal([prefix('refs/heads/fix-auth')], names)).toBe('fix-auth is a members-only branch: only branches shared with the bot can be given.')
+    expect(pg.membersNameRefusal([prefix('refs/heads/fix')], names)).toBe('fix-auth is a members-only branch: only branches shared with the bot can be given.')
+    expect(pg.membersNameRefusal([prefix('refs/heads/bot/ci-bot/')], names)).toContain('bot/ci-bot/wip is a members-only branch')
+    expect(pg.membersNameRefusal([prefix('refs/heads/docs/')], names)).toBeNull()
+    expect(pg.membersNameRefusal([prefix('refs/heads/docs/')], null)).toBe(pg.MEMBERS_UNCHECKED)
+    // a branch shared with the bot is given exactly: nothing public names it
+    expect(pg.membersNameRefusal([{ scope: { exact: new Uint8Array(32) }, label: 'fix-auth' }], null)).toBeNull()
+  })
+
+  it('costs a public notice: push access is never given in a private repo', () => {
+    expect(pg.pushChangeCost(1)).toEqual(pg.pushChangeCost(1, 0))
+  })
+
   it('grant words follow the design', () => {
     const until = Date.UTC(2026, 10, 7)
     expect(pg.grantWords('@ci-bot', { scope: { prefix: 'refs/heads/bot/ci-bot/' }, label: 'bot/ci-bot/' }, until)).toBe(
@@ -234,6 +286,36 @@ describe('changes', () => {
     await expect(pg.suspendPush(sdk, auth, repo, about)).rejects.toThrow("Bots can't push to this repo yet.")
     expect(m.createDocumentIdempotent).not.toHaveBeenCalled()
     expect(m.writeAccessNotice).not.toHaveBeenCalled()
+  })
+
+  it("refuses give and renew in a private repo before signing", async () => {
+    const g = grant({ n: 1 })
+    setup([g], entryOf(listing([g])))
+    const closed = { ...repo, visibility: 'private' } as RepoRef
+    const words = "Bots can't push to o/r, a private repository. Nothing was written."
+    await expect(pg.givePush(sdk, auth, closed, about, { requests: [{ scope: { prefix: 'refs/heads/x/' }, label: 'x/' }], until: NOW + DAY, policy: DEFAULT_PUSH_POLICY }, 'i')).rejects.toThrow(words)
+    await expect(pg.renewPush(sdk, auth, closed, about, NOW + DAY, 'i')).rejects.toThrow(words)
+    expect(m.createDocumentIdempotent).not.toHaveBeenCalled()
+    expect(m.writeAccessNotice).not.toHaveBeenCalled()
+  })
+
+  it('refuses a prefix naming a members-only branch before signing, and fails closed when it cannot check', async () => {
+    const g = grant({ n: 1 })
+    setup([g], entryOf(listing([g])))
+    const give = (p: string) => pg.givePush(sdk, auth, repo, about, { requests: [{ scope: { prefix: p }, label: p }], until: NOW + DAY, policy: DEFAULT_PUSH_POLICY }, 'i')
+    m.readMembersOnlyNames.mockResolvedValue(['refs/heads/fix-auth'])
+    await expect(give('refs/heads/fix')).rejects.toThrow('fix-auth is a members-only branch: only branches shared with the bot can be given. Nothing was written.')
+    m.readMembersOnlyNames.mockResolvedValue(null)
+    await expect(give('refs/heads/docs/')).rejects.toThrow(pg.MEMBERS_UNCHECKED)
+    // renewing a prefix checks it again
+    m.readMembersOnlyNames.mockResolvedValue(['refs/heads/bot/ci-bot/wip'])
+    await expect(pg.renewPush(sdk, auth, repo, about, NOW + DAY, 'i')).rejects.toThrow('bot/ci-bot/wip is a members-only branch')
+    expect(m.createDocumentIdempotent).not.toHaveBeenCalled()
+    expect(m.writeAccessNotice).not.toHaveBeenCalled()
+    // a prefix that covers none is given
+    m.readMembersOnlyNames.mockResolvedValue(['refs/heads/fix-auth'])
+    await give('refs/heads/docs/')
+    expect(m.createDocumentIdempotent).toHaveBeenCalledTimes(1)
   })
 
   it('refuses someone who is not a maintainer', async () => {
@@ -314,5 +396,57 @@ describe('changes', () => {
     expect(pushEntries(notice)?.map((e) => base58Encode(e.grant))).toEqual([theirs.id])
     setup([theirs], entryOf(notice))
     await expect(pg.removeMyPush(sdk, auth, repo, about)).rejects.toThrow('You gave @ci-bot no push access')
+  })
+
+  it("removing my push access never lifts another maintainer's suspension", async () => {
+    const mine = grant({ n: 1 })
+    const theirs = grant({ n: 2, granter: OTHER, prefix: 'refs/heads/docs/' })
+    setup([mine, theirs], { ...entryOf(setPush(listing([mine, theirs]), [], DEFAULT_PUSH_POLICY)), writer: OTHER })
+    await pg.removeMyPush(sdk, auth, repo, about)
+    expect(m.deleteDocumentIdempotent.mock.calls.map((c) => (c[2] as { documentId: string }).documentId)).toEqual([mine.id])
+    expect(m.writeAccessNotice).not.toHaveBeenCalled()
+  })
+
+  it('leaves a stale exact grant out of resume, and renew writes it again under the current key', async () => {
+    // fix-auth, shared with the bot, now at its second key generation
+    const name = 'refs/heads/fix-auth'
+    const keys = [BranchKey.fromBytes(new Uint8Array(32).fill(11)), BranchKey.fromBytes(new Uint8Array(32).fill(12))]
+    m.readHeldBranches.mockResolvedValue({ ring: { branches: new Map([[name, { name, keys }]]) }, people: new Map([[name, new Set([BOT])]]), partial: false })
+    const [branch] = await pg.readGrantableBranches(sdk, repo)
+    if (branch === undefined) throw new Error('no branch')
+    expect(branch.earlier).toHaveLength(1)
+    const staleGrant: PushGrant = { id: id(101), granter: ME, bot: BOT, scope: branch.earlier[0] as string, until: NOW + 30 * DAY, createdAt: 2000 }
+    const theirs = grant({ n: 2, granter: OTHER, prefix: 'refs/heads/docs/' })
+    const listed = setPush(
+      baseNotice,
+      [
+        { grant: decodeIdentifier(staleGrant.id), target: { members: Uint8Array.from(Buffer.from(staleGrant.scope as string, 'hex')) } },
+        { grant: decodeIdentifier(theirs.id), target: { prefix: theirs.prefix as string } },
+      ],
+      DEFAULT_PUSH_POLICY,
+    )
+    // suspended: resume lists the prefix grant alone
+    setup([staleGrant, theirs], entryOf(setPush(listed, [], DEFAULT_PUSH_POLICY)))
+    await pg.resumePush(sdk, auth, repo, about)
+    const resumed = m.writeAccessNotice.mock.calls[0]?.[3] as AccessNotice
+    expect(pushEntries(resumed)?.map((e) => base58Encode(e.grant))).toEqual([theirs.id])
+    // renewing writes it again under the branch's current hash, and deletes the stale one
+    setup([staleGrant, theirs], entryOf(listed))
+    await pg.renewPush(sdk, auth, repo, about, NOW + 30 * DAY, 'i')
+    const creates = m.createDocumentIdempotent.mock.calls.map((c) => (c[2] as { data: Record<string, unknown> }).data)
+    expect(creates.map((d) => (d.scope instanceof Uint8Array ? bytesToHex(d.scope) : d.prefix))).toEqual(['refs/heads/docs/', branch.current])
+    expect(m.deleteDocumentIdempotent.mock.calls.map((c) => (c[2] as { documentId: string }).documentId)).toEqual([staleGrant.id])
+    const renewed = m.writeAccessNotice.mock.calls[1]?.[3] as AccessNotice
+    expect(pushEntries(renewed)?.map((e) => base58Encode(e.grant)).sort()).toEqual([id(201), id(202)].sort())
+    // removing mine: the stale grant isn't listed with what others gave
+    vi.clearAllMocks()
+    m.readHeldBranches.mockResolvedValue({ ring: { branches: new Map([[name, { name, keys }]]) }, people: new Map([[name, new Set([BOT])]]), partial: false })
+    m.writeAccessNotice.mockResolvedValue({ ids: ['N'], packHash: 'cd'.repeat(32) })
+    m.deleteDocumentIdempotent.mockResolvedValue({ confirmed: true })
+    const othersStale: PushGrant = { ...staleGrant, id: id(103), granter: OTHER }
+    setup([othersStale, grant({ n: 4 }), theirs], entryOf(listed))
+    await pg.removeMyPush(sdk, auth, repo, about)
+    const rest = m.writeAccessNotice.mock.calls[0]?.[3] as AccessNotice
+    expect(pushEntries(rest)?.map((e) => base58Encode(e.grant))).toEqual([theirs.id])
   })
 })

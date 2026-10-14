@@ -31,7 +31,9 @@ const NOTE: &str = "checked before building or paying for anything: nothing was 
 
 /// Plan a bot's push of `specs` to `repo_label` under `access`. `exact_hash(dst)` is a members-
 /// only branch's name hash under the branch key this bot holds (a narrower branch shared with
-/// it), `None` for a public ref; `protected(dst)` whether the ref is protected now. With
+/// it), `None` for a public ref; `protected(dst)` whether the ref is protected now;
+/// `pushed_by_me(dst)` whether the bot pushed the ref's current tip (while its notice says
+/// `deleteOwnOnly` it deletes only those; while it says `fastForwardOnly` it never forces). With
 /// `enforce` off (`DASH_FORGE_SKIP_WRITE_PRECHECK`, which shows what consensus does) nothing is
 /// refused here: a ref with no grant is written naming none.
 pub fn plan(
@@ -40,6 +42,7 @@ pub fn plan(
     repo_label: &str,
     exact_hash: impl Fn(&str) -> Option<String>,
     protected: impl Fn(&str) -> bool,
+    pushed_by_me: impl Fn(&str) -> bool,
     enforce: bool,
 ) -> BotPlan {
     fn refuse(dst: &str, wire: &str, e: UserError, out: &mut BotPlan) {
@@ -70,6 +73,29 @@ pub fn plan(
                 dst,
                 "protected branch",
                 protected_ref(dst, repo_label),
+                &mut out,
+            );
+            continue;
+        }
+        let policy = access
+            .notice
+            .as_ref()
+            .map(|n| n.notice.push_policy())
+            .unwrap_or_default();
+        if enforce && s.force && policy.fast_forward_only {
+            refuse(
+                dst,
+                "fast-forward only",
+                not_forced(dst, repo_label),
+                &mut out,
+            );
+            continue;
+        }
+        if enforce && s.src.is_empty() && policy.delete_own_only && !pushed_by_me(dst) {
+            refuse(
+                dst,
+                "deletes only its own branches",
+                not_own(dst, repo_label),
                 &mut out,
             );
             continue;
@@ -123,6 +149,21 @@ fn suspended(repo: &str) -> UserError {
     .fix(format!(
         "ask a maintainer to resume them: `dg bot resume {repo} <you>`"
     ))
+}
+
+fn not_forced(dst: &str, repo: &str) -> UserError {
+    e814(format!(
+        "push rejected: you may only fast-forward {dst} in {repo}"
+    ))
+    .cause("your access in this repository says fast-forward only")
+    .fix("push without --force, on top of the branch as it is")
+}
+
+fn not_own(dst: &str, repo: &str) -> UserError {
+    e814(format!(
+        "push rejected: you may only delete branches you pushed in {repo}, and someone else pushed {dst}"
+    ))
+    .cause("your access in this repository lets you delete only your own branches")
 }
 
 fn protected_ref(dst: &str, repo: &str) -> UserError {
@@ -219,6 +260,29 @@ mod tests {
     }
 
     #[test]
+    fn the_notice_rules_hold_in_the_helper() {
+        let a = access(vec![grant("refs/heads/bot/b/", 20)]);
+        let mut forced = spec("refs/heads/bot/b/x");
+        forced.force = true;
+        let mut delete = spec("refs/heads/bot/b/y");
+        delete.src = String::new();
+        let mut delete_mine = spec("refs/heads/bot/b/z");
+        delete_mine.src = String::new();
+        let p = plan(
+            &a,
+            &[forced, delete, delete_mine],
+            "o/r",
+            |_| None,
+            |_| false,
+            |d| d.ends_with("/z"),
+            true,
+        );
+        let refused: Vec<&str> = p.refused.iter().map(|(d, _)| d.as_str()).collect();
+        assert_eq!(refused, ["refs/heads/bot/b/x", "refs/heads/bot/b/y"]);
+        assert!(p.push.grants.contains_key("refs/heads/bot/b/z"));
+    }
+
+    #[test]
     fn a_bot_pushes_only_under_a_grant_that_counts() {
         let a = access(vec![
             grant("refs/heads/bot/b/", 20),
@@ -230,7 +294,15 @@ mod tests {
             spec("refs/heads/old/y"),
             spec("refs/heads/bot/b/p"),
         ];
-        let p = plan(&a, &specs, "o/r", |_| None, |d| d.ends_with("/p"), true);
+        let p = plan(
+            &a,
+            &specs,
+            "o/r",
+            |_| None,
+            |d| d.ends_with("/p"),
+            |_| false,
+            true,
+        );
         assert_eq!(p.push.grants.len(), 1);
         assert!(p.push.grants.contains_key("refs/heads/bot/b/x"));
         let refused: Vec<&str> = p.refused.iter().map(|(d, _)| d.as_str()).collect();
@@ -239,7 +311,7 @@ mod tests {
             ["refs/heads/main", "refs/heads/old/y", "refs/heads/bot/b/p"]
         );
         // without the precheck nothing is refused here: consensus decides, on the grant named
-        let p = plan(&a, &specs, "o/r", |_| None, |_| true, false);
+        let p = plan(&a, &specs, "o/r", |_| None, |_| true, |_| false, false);
         assert!(p.refused.is_empty());
         assert_eq!(p.push.grants.len(), 3);
         assert_eq!(p.push.grants["refs/heads/old/y"].created_at, 5);

@@ -199,33 +199,18 @@ fn real_main(cli: &Cli) -> Result<()> {
                 .iter()
                 .find(|r| &r.repo == repo)
                 .with_context(|| format!("{repo} is not in {}", cli.config.display()))?;
-            let members_input = if *members_input {
-                let mut cmd = std::process::Command::new(&cfg.bin.dg);
-                cmd.args(["--json", "collab", "list", repo]);
-                let out = cmd.output().context("dg collab list: could not start")?;
-                let v: serde_json::Value =
-                    serde_json::from_slice(&out.stdout).context("dg collab list: not JSON")?;
-                Some(push::human_members(&v))
-            } else if members_input_people.is_empty() {
-                None
-            } else {
-                Some(members_input_people.iter().cloned().collect())
-            };
-            let req = push::PushRequest {
-                branch: branch.clone(),
-                commit: commit.to_ascii_lowercase(),
-                members_input,
-                proper: !*not_member,
-            };
-            match push::push(&cfg, r, git_dir, &req)? {
-                push::Pushed::Pushed { branch, commit } => {
-                    println!("pushed {commit} to {branch}");
-                    Ok(())
-                }
-                push::Pushed::Refused(why) => {
-                    anyhow::bail!("not pushed: {why} (nothing was written)")
-                }
-            }
+            push::cli(
+                &cfg,
+                r,
+                &push::CliArgs {
+                    branch,
+                    commit,
+                    git_dir,
+                    members_input: *members_input,
+                    members_input_people,
+                    not_member: *not_member,
+                },
+            )
         }
     }
 }

@@ -205,4 +205,37 @@ describe('push access (phase 4E)', () => {
     expect(requestsOf(['refs/tags/v1'], [])).toEqual({ error: 'refs/tags/v1: bots push to branches only.' })
     expect(requestsOf(['bot/*/x'], [])).toEqual({ error: 'bot/*/x: only a prefix can be given, like bot/ci-bot/ or bot/ci-bot/*.' })
   })
+
+  it('refuses a typed prefix that is or covers a members-only branch, and any prefix it cannot check', () => {
+    const shared = [{ name: 'refs/heads/fix-auth', current: 'ab'.repeat(32), earlier: [], audienceNow: new Set([bot]) }]
+    expect(requestsOf(['fix'], [], ['refs/heads/fix-auth'])).toEqual({ error: 'fix-auth is a members-only branch: only branches shared with the bot can be given.' })
+    expect(requestsOf(['bot/ci-bot/'], [], null)).toEqual({ error: "This repo has members-only branches you can't open, so a branch prefix can't be checked against them." })
+    // the branch itself, shared with the bot, is given exactly
+    const got = requestsOf(['docs/'], shared, ['refs/heads/fix-auth'])
+    if ('error' in got) throw new Error(got.error)
+    expect(got.requests.map((r) => r.label)).toEqual(['docs/', 'fix-auth'])
+  })
+
+  it('offers no Give or Renew in a private repo, and says why once', () => {
+    render(<BotsView current={[entry(listed)]} runners={[]} now={NOW} push={state([live])} me={ME} privateRepo="o/r" onPush={() => undefined} />)
+    expect(byTestId('bots-push-private').map((p) => p.textContent)).toEqual(["Bots can't push to o/r, a private repository."])
+    expect(byTestId('bot-push-give')).toHaveLength(0)
+    expect(byTestId('bot-push-renew')).toHaveLength(0)
+    expect(byTestId('bot-push-note-renew')).toHaveLength(0)
+    // what it was given can still be suspended or removed
+    expect(byTestId('bot-push-suspend')).toHaveLength(1)
+    expect(byTestId('bot-push-remove-mine')).toHaveLength(1)
+  })
+
+  it('says a grant under a branch key that changed is stale, with Renew, and leaves it out of the line', () => {
+    const onPush = vi.fn()
+    const branches = [{ name: 'refs/heads/fix-auth', current: 'cd'.repeat(32), earlier: ['ab'.repeat(32)], audienceNow: new Set([bot]) }]
+    const stale = { id: gid(3), granter: ME, bot, scope: 'ab'.repeat(32), until: NOW + 30 * DAY, createdAt: 2000 }
+    render(<BotsView current={[entry(listed)]} runners={[]} now={NOW} push={state([live, stale] as (typeof live)[])} branches={branches} me={ME} onPush={onPush} />)
+    expect(byTestId('bot-push-line')[0]?.textContent).toBe('Can push to bot/ci-bot/ until 22 Oct 2026.')
+    const note = byTestId('bot-push-note').find((n) => n.dataset.kind === 'stale')
+    expect(note?.textContent).toBe("@ci-bot can no longer push to fix-auth: the branch's key changed.Renew")
+    act(() => note?.querySelector('button')?.click())
+    expect(onPush).toHaveBeenLastCalledWith({ kind: 'renew', bot })
+  })
 })

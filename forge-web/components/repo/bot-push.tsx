@@ -17,22 +17,27 @@
  *   push access** deletes this maintainer's own grants.
  *
  * Shown only where the contract has push grants; elsewhere the page says "Bots can't push to this
- * repo yet." and offers nothing. The web never pushes as a bot.
+ * repo yet." and offers nothing. A private repository is never given push access ("Bots can't push
+ * to o/r, a private repository."), and a public prefix that is or covers a members-only branch's
+ * name is refused before signing (the grant would name it in public). The web never pushes as a
+ * bot.
  */
 
 import { useMemo, useState } from 'react'
 
 import type { RepoHome } from '@/lib/view'
-import { hexToBytes, pushLine, type PushPolicy } from '@/lib/private'
+import { hexToBytes, noticeLiveAt, pushLine, type PushPolicy } from '@/lib/private'
 import { matchesProtected } from '@/lib/rules'
 import { defaultPrefix, prefixOf, shortPrefix, type PatternRefusal } from '@/lib/rules/push-grant'
 import { repoContractIds } from '@/lib/repo'
 import { noticeCredits } from '@/lib/repo/bot-access'
+import { readMembersOnlyNames } from '@/lib/repo/members-branches'
 import {
-  branchOfScope,
   coversBranch,
   givePush,
   grantWords,
+  membersNameRefusal,
+  privateRepoWords,
   pushChangeCost,
   pushNoteWords,
   pushUntil,
@@ -46,6 +51,7 @@ import {
   summarizePush,
   suspendPush,
   suspended,
+  suspendedBy,
   type BotPushAccess,
   type GrantRequest,
   type GrantableBranch,
@@ -71,36 +77,31 @@ export type PushAction =
   | { readonly kind: 'resume'; readonly bot: string }
   | { readonly kind: 'removeMine'; readonly bot: string }
 
-/** How an exact grant's branch is named for this reader: its short name when this maintainer holds its key. */
-function branchNamer(branches: readonly GrantableBranch[]): (scope: string) => string | null {
-  return (scope) => {
-    const b = branchOfScope(branches, scope)
-    return b === undefined ? null : shortBranch(b.name)
-  }
-}
-
 /**
  * A bot's push access as its row shows it: the push line (or "@ci-bot's pushes are suspended."), a
- * note per grant that needs attention, and, with `onAction` (a maintainer), the changes.
+ * note per grant that needs attention, and, with `onAction` (a maintainer), the changes. `closed`
+ * (a private repository) offers no Give or Renew: the page says why once.
  */
 export function BotPushSection({
   access,
   branches = [],
   me,
+  closed = false,
   onAction,
 }: {
   access: BotPushAccess
   branches?: readonly GrantableBranch[]
   me: string | null
+  closed?: boolean
   onAction?: (a: PushAction) => void
 }): JSX.Element | null {
   const handle = useHandle(access.bot)
-  const s = summarizePush(access, branchNamer(branches))
+  const s = summarizePush(access, branches)
   const line = s.suspended ? `${handle}'s pushes are suspended.` : pushLine(s.prefixes, s.membersBranches)
   const isSuspended = suspended(access)
   const mine = me !== null && access.grants.some((g) => g.granter === me && g.until > access.now)
   // push access is for a Bot member: someone without that row is offered none
-  const canGive = access.botRowAt !== null
+  const canGive = access.botRowAt !== null && !closed
   if (line === null && s.notes.length === 0 && (onAction === undefined || (!canGive && !mine))) return null
   return (
     <div className="space-y-1" data-testid="bot-push">
@@ -110,7 +111,7 @@ export function BotPushSection({
         </p>
       ) : null}
       {s.notes.map((n) => (
-        <PushNoteLine key={`${n.kind}:${n.grant.id}`} note={n} bot={handle} {...(onAction ? { onAction } : {})} />
+        <PushNoteLine key={`${n.kind}:${n.grant.id}`} note={n} bot={handle} {...(onAction && !closed ? { onAction } : {})} />
       ))}
       {onAction ? (
         <div className="flex flex-wrap gap-2 pt-1">
@@ -119,7 +120,7 @@ export function BotPushSection({
               Give push access
             </Button>
           ) : null}
-          {s.renewable && s.notes.every((n) => n.kind !== 'renewDue' && n.kind !== 'expired') && s.live.length > 0 ? (
+          {!closed && s.renewable && s.notes.every((n) => n.kind !== 'renewDue' && n.kind !== 'expired' && n.kind !== 'stale') && s.live.length > 0 ? (
             <Button size="sm" variant="ghost" onClick={() => onAction({ kind: 'renew', bot: access.bot })} data-testid="bot-push-renew">
               Renew
             </Button>
@@ -150,7 +151,7 @@ function PushNoteLine({ note, bot, onAction }: { note: PushNote; bot: string; on
   const granter = useHandle(note.grant.granter)
   const preset = note.grant.prefix !== undefined ? shortPrefix(note.grant.prefix) : undefined
   const fix =
-    onAction === undefined ? null : note.kind === 'renewDue' || note.kind === 'expired' ? (
+    onAction === undefined ? null : note.kind === 'renewDue' || note.kind === 'expired' || note.kind === 'stale' ? (
       <button type="button" className="hit-area font-medium text-forge-700 hover:underline dark:text-forge-400" onClick={() => onAction({ kind: 'renew', bot: note.grant.bot })} data-testid="bot-push-note-renew">
         Renew
       </button>
@@ -186,15 +187,23 @@ export function refusalWords(pattern: string, why: PatternRefusal): string {
 /**
  * The grants a dialog asks for (forge-core `dg bot allow --push`'s `requests`): each pattern as the
  * prefix it grants, then each chosen members-only branch shared with the bot under its key's current
- * generation; each once.
+ * generation; each once. With `membersNames` (the members-only names this maintainer opens; null:
+ * the repo has some they can't open), a prefix that is or covers one is refused
+ * ({@link membersNameRefusal}).
  */
-export function requestsOf(patterns: readonly string[], shared: readonly GrantableBranch[]): { readonly requests: GrantRequest[] } | { readonly error: string } {
+export function requestsOf(
+  patterns: readonly string[],
+  shared: readonly GrantableBranch[],
+  membersNames?: readonly string[] | null,
+): { readonly requests: GrantRequest[] } | { readonly error: string } {
   const out: GrantRequest[] = []
   for (const p of patterns) {
     const got = prefixOf(p)
     if ('refused' in got) return { error: refusalWords(p, got.refused) }
     if (!out.some((r) => 'prefix' in r.scope && r.scope.prefix === got.prefix)) out.push({ scope: { prefix: got.prefix }, label: shortPrefix(got.prefix) })
   }
+  const refused = membersNames === undefined ? null : membersNameRefusal(out, membersNames)
+  if (refused !== null) return { error: refused }
   for (const b of shared) out.push({ scope: { exact: hexToBytes(b.current) }, label: shortBranch(b.name) })
   return { requests: out }
 }
@@ -251,15 +260,42 @@ function GiveDialog({ home, display, bot, preset, onClose, onSaved }: { home: Re
   const [day, setDay] = useState(() => dayIn(now + 30 * DAY_MS))
   const [force, setForce] = useState(false)
   const [openPr, setOpenPr] = useState(false)
-  const branches = useAsync(() => readGrantableBranches(sdk!, repo), [ready, repo.repoId], { enabled: ready && sdk !== null && repo.visibility === 'public' })
-  const shareable = (branches.data ?? []).filter((b) => b.audienceNow.has(bot))
+  const closed = repo.visibility !== 'public'
+  // what the change is checked against before signing: the branches this maintainer holds the key
+  // of, the members-only names a prefix must not cover, and whether the bot's pushes are suspended
+  const read = useAsync(
+    async () => {
+      const [branches, names, access] = await Promise.all([readGrantableBranches(sdk!, repo), readMembersOnlyNames(sdk!, repo), readBotPushAccess(sdk!, repo, bot)])
+      return { branches, names, access }
+    },
+    [ready, repo.repoId, bot],
+    { enabled: ready && sdk !== null && !closed },
+  )
+  const shareable = (read.data?.branches ?? []).filter((b) => b.audienceNow.has(bot))
   const built = requestsOf(
     shown,
     shareable.filter((b) => chosen.has(b.name)),
+    read.data?.names,
   )
   const end = endOf(day, now)
-  const problem = 'error' in built ? built.error : typeof end !== 'number' ? end.error : built.requests.length === 0 ? 'Choose a branch or a branch prefix.' : null
+  // an ended access is refused at signing ("change its access first"): say it before
+  const current = read.data?.access.notice ?? null
+  const ended = current !== null && !noticeLiveAt(current.notice, now)
+  const problem = closed
+    ? privateRepoWords(display)
+    : read.error !== null
+      ? read.error
+      : ended
+        ? `${handle}'s access has ended, so it couldn't push. Change its access first.`
+        : 'error' in built
+          ? built.error
+          : typeof end !== 'number'
+            ? end.error
+            : built.requests.length === 0
+              ? 'Choose a branch or a branch prefix.'
+              : null
   const requests = 'error' in built ? [] : built.requests
+  const resumes = read.data === null ? null : suspendedBy(read.data.access)
   const unprotected = !matchesProtected(`refs/heads/${home.defaultBranch}`, home.config?.protectedPatterns ?? []) && requests.some((r) => coversBranch(r, home.defaultBranch))
   const policy: PushPolicy = { fastForwardOnly: !force, deleteOwnOnly: !force, openPrNotPush: openPr }
   const add = (): void => {
@@ -274,7 +310,7 @@ function GiveDialog({ home, display, bot, preset, onClose, onSaved }: { home: Re
       onClose={onClose}
       title={`Let ${handle} push?`}
       description={WHO_STOPS}
-      cost={pushChangeCost(requests.length, repo.visibility === 'private')}
+      cost={closed || read.data !== null || read.error !== null ? pushChangeCost(requests.length) : 'pending'}
       confirmLabel="Give push access"
       {...(problem !== null ? { blocked: <p className="text-dense text-danger-700 dark:text-danger-400" data-testid="push-problem">{problem}</p> } : {})}
       onConfirm={async (intent) => {
@@ -370,6 +406,11 @@ function GiveDialog({ home, display, bot, preset, onClose, onSaved }: { home: Re
           ))}
         </div>
       ) : null}
+      {resumes !== null ? (
+        <p className="text-dense text-caution-700 dark:text-caution-400" data-testid="push-resumes">
+          This also lets {handle} push again: <HandleText id={resumes} /> suspended its pushes.
+        </p>
+      ) : null}
       {unprotected ? (
         <p className="text-[12px] text-caution-700 dark:text-caution-400" data-testid="push-default-unprotected">
           The default branch {home.defaultBranch} isn&apos;t protected, so {handle} could push to it.
@@ -387,27 +428,42 @@ function RenewDialog({ home, display, bot, onClose, onSaved }: { home: RepoHome;
   const handle = useHandle(bot)
   const now = useMemo(() => Date.now(), [])
   const [day, setDay] = useState(() => dayIn(now + 30 * DAY_MS))
+  const closed = repo.visibility !== 'public'
   const read = useAsync(
     async () => {
       const access = await readBotPushAccess(sdk!, repo, bot)
       const branches = access.grants.some((g) => g.scope !== undefined) ? await readGrantableBranches(sdk!, repo) : []
-      return { access, plan: renewPlan(access, branches) }
+      const plan = renewPlan(access, branches)
+      // a prefix given again is checked against the members-only names as a new one is
+      const names = plan.some((t) => 'prefix' in t.request.scope) ? await readMembersOnlyNames(sdk!, repo) : []
+      return { access, plan, refused: membersNameRefusal(plan.map((t) => t.request), names) }
     },
     [ready, repo.repoId, bot],
-    { enabled: ready && sdk !== null },
+    { enabled: ready && sdk !== null && !closed },
   )
   const end = endOf(day, now)
   const plan = read.data?.plan ?? []
   const deletes = plan.reduce((n, t) => n + t.old.filter((g) => g.granter === identity).length, 0)
-  const problem =
-    read.error !== null ? read.error : read.data === null ? null : plan.length === 0 ? `${handle} has no push access here to renew. Give it push access instead.` : typeof end !== 'number' ? end.error : null
+  const problem = closed
+    ? privateRepoWords(display)
+    : read.error !== null
+      ? read.error
+      : read.data === null
+        ? null
+        : plan.length === 0
+          ? `${handle} has no push access here to renew. Give it push access instead.`
+          : read.data.refused !== null
+            ? read.data.refused
+            : typeof end !== 'number'
+              ? end.error
+              : null
   return (
     <ConfirmDialog
       open
       onClose={onClose}
       title={`Renew ${handle}'s push access?`}
       description="Each branch it may push to gets a new end date. The older access you gave it is removed."
-      cost={read.data === null ? 'pending' : pushChangeCost(plan.length, repo.visibility === 'private', deletes)}
+      cost={closed || read.data !== null ? pushChangeCost(plan.length, deletes) : 'pending'}
       confirmLabel="Renew"
       {...(problem !== null ? { blocked: <p className="text-dense text-danger-700 dark:text-danger-400" data-testid="push-problem">{problem}</p> } : {})}
       onConfirm={async (intent) => {
@@ -516,7 +572,7 @@ function NoticeChangeDialog({
       onClose={onClose}
       title={`Remove ${handle}'s push access?`}
       description={`${handle} can no longer push under the access you gave it. What it pushed stays.`}
-      cost={pushChangeCost(0, repo.visibility === 'private', 1)}
+      cost={pushChangeCost(0, 1)}
       confirmLabel="Remove"
       onConfirm={() => run((s, a) => removeMyPush(s, a, repo, about))}
       successNote="Push access removed"

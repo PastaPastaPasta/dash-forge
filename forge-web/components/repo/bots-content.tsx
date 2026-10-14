@@ -41,7 +41,7 @@ import { repoContractIds } from '@/lib/repo'
 import { readRunnersCached } from '@/lib/repo/checks'
 import { botHasEncryptionKey, botIdOf, canChangeBotAccess, membersSession, noticeCredits, readAccessNotices, writeAccessNotice } from '@/lib/repo/bot-access'
 import { resolvePerson } from '@/lib/repo/person-input'
-import { PUSH_NOT_YET, PUSH_NOT_YET_HINT, deleteOwnGrants, pushAccessOf, readGrantableBranches, readPushState, type GrantableBranch, type PushState } from '@/lib/repo/push-grants'
+import { PUSH_NOT_YET, PUSH_NOT_YET_HINT, deleteOwnGrants, privateRepoWords, pushAccessOf, readGrantableBranches, readPushState, type GrantableBranch, type PushState } from '@/lib/repo/push-grants'
 import { previewCredits } from '@/lib/sdk'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
@@ -143,6 +143,7 @@ function Bots({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Elemen
             push={data.push}
             branches={data.branches}
             me={identity}
+            {...(repo.visibility === 'private' ? { privateRepo: display } : {})}
             {...(canEdit
               ? {
                   onEdit: (e: NoticeEntry) => setChange({ kind: 'edit', bot: botIdOf(e.notice), previous: e }),
@@ -168,7 +169,8 @@ const LIST_CLASS = 'divide-y divide-anvil-200 rounded-lg border border-anvil-200
  * `onEdit` / `onRemove` (a maintainer), each bot row offers Change access and Remove access. With
  * `push` (what the page read of push grants), each row says where the bot may push, a bot with push
  * access and no access settings gets a row, and `onPush` (a maintainer) offers the push changes;
- * before the registration the page says bots can't push here yet.
+ * before the registration the page says bots can't push here yet. `privateRepo` (the repo as the
+ * copy names it, in a private repository) offers no Give or Renew and says why once.
  */
 export function BotsView({
   current,
@@ -178,6 +180,7 @@ export function BotsView({
   push,
   branches = [],
   me = null,
+  privateRepo,
   onEdit,
   onRemove,
   onPush,
@@ -189,6 +192,7 @@ export function BotsView({
   push?: PushState
   branches?: readonly GrantableBranch[]
   me?: string | null
+  privateRepo?: string
   onEdit?: (e: NoticeEntry) => void
   onRemove?: (e: NoticeEntry) => void
   onPush?: (a: PushAction) => void
@@ -197,7 +201,7 @@ export function BotsView({
   // bots with push access and no access settings (`dg bot list` lists them too)
   const bare = pushes === null ? [] : [...new Set(pushes.grants.map((g) => g.bot))].filter((b) => !current.some((e) => botIdOf(e.notice) === b))
   const pushOf = (bot: string, entry: NoticeEntry | null): JSX.Element | null =>
-    pushes === null ? null : <BotPushSection access={pushAccessOf(pushes, bot, entry)} branches={branches} me={me} {...(onPush ? { onAction: onPush } : {})} />
+    pushes === null ? null : <BotPushSection access={pushAccessOf(pushes, bot, entry)} branches={branches} me={me} closed={privateRepo !== undefined} {...(onPush ? { onAction: onPush } : {})} />
   if (current.length === 0 && runners.length === 0 && bare.length === 0) {
     return (
       <p className="text-dense text-anvil-600 dark:text-anvil-300" data-testid="bots-empty">
@@ -224,6 +228,11 @@ export function BotsView({
       {push !== undefined && !push.supported && current.length > 0 ? (
         <p className="text-dense text-anvil-600 dark:text-anvil-300" data-testid="bots-push-not-yet">
           {PUSH_NOT_YET} {PUSH_NOT_YET_HINT}
+        </p>
+      ) : null}
+      {pushes !== null && privateRepo !== undefined && onPush !== undefined && (current.length > 0 || bare.length > 0) ? (
+        <p className="text-dense text-anvil-600 dark:text-anvil-300" data-testid="bots-push-private">
+          {privateRepoWords(privateRepo)}
         </p>
       ) : null}
       {runners.length > 0 ? (

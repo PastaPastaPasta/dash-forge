@@ -193,12 +193,89 @@ fn scope_of(g: &PushGrant) -> Option<GrantScope> {
     }
 }
 
-/// The entries of the grants in `access` that can be pushed under now.
-fn live_entries(access: &BotPushAccess) -> Vec<PushEntry> {
+/// Whether exact grant `g` names a branch's hash under an earlier key generation (it stopped
+/// working when the branch got a new key; `dg bot renew` writes it again).
+fn stale(g: &PushGrant, branches: &[GrantableBranch]) -> bool {
+    g.scope.as_ref().is_some_and(|h| {
+        branches
+            .iter()
+            .any(|b| b.earlier.iter().any(|e| hex::encode(e) == *h))
+    })
+}
+
+/// The entries of the grants in `access` that can be pushed under now (not a stale exact one).
+fn live_entries(access: &BotPushAccess, branches: &[GrantableBranch]) -> Vec<PushEntry> {
     access
         .live()
+        .filter(|g| !stale(g, branches))
         .filter_map(|g| entry(&g.id, &scope_of(g)?).ok())
         .collect()
+}
+
+/// Refuse, before signing, push access for a private repository: a bot never holds its key,
+/// and a prefix grant would publish branch names of it.
+fn require_public(repo: &forge_core::scope::RepoRef) -> Result<()> {
+    if repo.visibility == forge_core::rules::v2::Visibility::Public {
+        return Ok(());
+    }
+    Err(UserError::new(
+        codes::USAGE,
+        format!(
+            "Bots can't push to {}, a private repository.",
+            repo.display()
+        ),
+    )
+    .cause("a bot never holds a private repository's key")
+    .note("nothing was written")
+    .into())
+}
+
+/// Refuse, before signing, a public prefix that is or covers a members-only branch's name: the
+/// grant document and the notice would publish it. Only branches shared with the bot can be
+/// given (as exact grants). Fails closed when the members-only names can't be read.
+async fn refuse_members_names(
+    svc: &RepoService<'_>,
+    s: &Session,
+    reqs: &[GrantRequest],
+) -> Result<()> {
+    let prefixes: Vec<&str> = reqs
+        .iter()
+        .filter_map(|r| match &r.scope {
+            GrantScope::Prefix(p) => Some(p.as_str()),
+            GrantScope::Exact(_) => None,
+        })
+        .collect();
+    if prefixes.is_empty() || svc.members_only_ref_count(&s.repo).await?.0 == 0 {
+        return Ok(());
+    }
+    let Some(view) = svc.read_members_refs(&s.repo).await? else {
+        return Err(UserError::new(
+            codes::USAGE,
+            "this repository has members-only branches your key doesn't open, so a branch prefix can't be checked against them",
+        )
+        .fix("ask a maintainer who holds the members key to give the access")
+        .note("nothing was written")
+        .into());
+    };
+    for r in view.refs.iter().filter(|r| r.members_only) {
+        if let Some(p) = prefixes.iter().find(|p| r.name.starts_with(**p)) {
+            return Err(UserError::new(
+                codes::USAGE,
+                format!(
+                    "{} is a members-only branch: only branches shared with the bot can be given",
+                    safe(forge_core::keyring::short_branch(&r.name))
+                ),
+            )
+            .cause(format!(
+                "push access to {} would be public and name it",
+                safe(push_grant::short_prefix(p))
+            ))
+            .fix("share the branch with the bot (`dg branch audience <branch> --to …,@bot`) and give that branch")
+            .note("nothing was written")
+            .into());
+        }
+    }
+    Ok(())
 }
 
 /// `dg bot allow --push`: check, show and confirm the grants, write them, and list them in
@@ -218,6 +295,7 @@ pub(crate) async fn allow_push(
     if !access.supported {
         return Err(not_yet(&repo));
     }
+    require_public(&s.repo)?;
     if access.bot_row_at.is_none() {
         return Err(not_a_bot(name, &repo));
     }
@@ -231,6 +309,19 @@ pub(crate) async fn allow_push(
     };
     let reqs = requests(&a.push, bot, name, &branches)?;
     let svc = RepoService::new(&s.client, &s.identity, &s.bridge);
+    refuse_members_names(&svc, s, &reqs).await?;
+    // only a bot that was pushing (live grants) and a notice in force without push
+    if access.suspended() && access.live().next().is_some() && !ctx.json {
+        let by = match &access.notice {
+            Some(n) => handle(&s.client, &n.writer).await,
+            None => "a maintainer".to_owned(),
+        };
+        eprintln!(
+            "This also lets {} push again: {} suspended its pushes.",
+            safe(name),
+            safe(&by)
+        );
+    }
     if !ctx.json {
         for r in &reqs {
             eprintln!("{}", grant_line(name, r, until));
@@ -242,10 +333,11 @@ pub(crate) async fn allow_push(
             .flatten()
             .unwrap_or_else(|| "main".into());
         let patterns = svc.protected_patterns(&s.repo).await.unwrap_or_default();
-        if reqs
-            .iter()
-            .any(|r| matches!(r.scope, GrantScope::Prefix(_)))
-            && !forge_core::rules::matches_protected(&format!("refs/heads/{default}"), &patterns)
+        let default_ref = format!("refs/heads/{default}");
+        // only when a prefix asked for covers the default branch (as the web's dialog)
+        if reqs.iter().any(
+            |r| matches!(&r.scope, GrantScope::Prefix(p) if default_ref.starts_with(p.as_str())),
+        ) && !forge_core::rules::matches_protected(&default_ref, &patterns)
         {
             eprintln!(
                 "note: the default branch {} isn't protected, so access that covers it lets {} push to it (`dg repo protect defaults {repo}`)",
@@ -351,7 +443,12 @@ pub(crate) async fn suspend(ctx: &Ctx, repo: &str, bot: &str, suspend: bool) -> 
         let prompt = format!("Suspend {}'s pushes?", safe(&name));
         return write_notice(ctx, &s, &notice, &name, "suspended", Some(&prompt)).await;
     }
-    let entries = live_entries(&access);
+    let branches = s
+        .collab()
+        .grantable_branches(&s.repo)
+        .await
+        .unwrap_or_default();
+    let entries = live_entries(&access, &branches);
     if entries.is_empty() {
         return Err(UserError::new(
             codes::USAGE,
@@ -433,10 +530,19 @@ pub(crate) async fn revoke_push(ctx: &Ctx, s: &Session, bot: &str, name: &str) -
     }
     let mut notice = next_notice(&access, bot)?;
     let policy = notice.push_policy();
-    let rest: Vec<PushEntry> = access
-        .live()
-        .filter(|g| g.granter != me)
-        .filter_map(|g| entry(&g.id, &scope_of(g)?).ok())
+    let branches = s
+        .collab()
+        .grantable_branches(&s.repo)
+        .await
+        .unwrap_or_default();
+    let rest: Vec<PushEntry> = live_entries(&access, &branches)
+        .into_iter()
+        .filter(|e| {
+            access
+                .grants
+                .iter()
+                .any(|g| g.granter != me && decode_identifier(&g.id).ok() == Some(e.grant))
+        })
         .collect();
     if !ctx.json {
         eprintln!(
@@ -446,7 +552,8 @@ pub(crate) async fn revoke_push(ctx: &Ctx, s: &Session, bot: &str, name: &str) -
     }
     ctx.confirm_or_cancel(&format!("Remove {}'s push access?", safe(name)))?;
     delete_own_grants(ctx, s, bot).await?;
-    if notice.may(access_notice::MAY_PUSH) || !rest.is_empty() {
+    // a suspended bot stays suspended: its notice already lists no push
+    if notice.may(access_notice::MAY_PUSH) && !access.suspended() {
         notice.set_push(rest, policy);
         write_notice(ctx, s, &notice, name, "pushRevoked", None).await?;
     }
@@ -458,6 +565,7 @@ pub(crate) async fn revoke_push(ctx: &Ctx, s: &Session, bot: &str, name: &str) -
 /// are deleted, and the notice lists the new ones.
 pub(crate) async fn renew(ctx: &Ctx, repo: &str, bot: &str, until: Option<&str>) -> Result<()> {
     let (s, bot, name, access) = open(ctx, repo, bot).await?;
+    require_public(&s.repo)?;
     if access.bot_row_at.is_none() {
         return Err(not_a_bot(&name, &s.repo.display()));
     }
@@ -537,7 +645,7 @@ pub(crate) async fn renew(ctx: &Ctx, repo: &str, bot: &str, until: Option<&str>)
         .iter()
         .flat_map(|(_, old)| old.iter().filter_map(|g| decode_identifier(&g.id).ok()))
         .collect();
-    let mut entries: Vec<PushEntry> = live_entries(&access)
+    let mut entries: Vec<PushEntry> = live_entries(&access, &branches)
         .into_iter()
         .filter(|e| !replaced.contains(&e.grant))
         .collect();
@@ -606,10 +714,13 @@ pub(crate) async fn describe(
     for g in &access.grants {
         let status = access.usable(g);
         // a grant replaced by a newer one over the same branches says nothing more
-        let superseded = access
-            .grants
-            .iter()
-            .any(|o| o.created_at > g.created_at && o.prefix == g.prefix && o.scope == g.scope);
+        let superseded = access.grants.iter().any(|o| {
+            o.created_at > g.created_at
+                && o.prefix == g.prefix
+                && o.scope == g.scope
+                && access.usable(o).is_ok()
+        });
+        let is_stale = stale(g, &branches);
         // an exact grant's branch, when this reader holds its key (the bot does: it is shared
         // with it)
         let branch = g.scope.as_ref().and_then(|h| {
@@ -631,7 +742,11 @@ pub(crate) async fn describe(
             "until": g.until,
             "by": g.granter,
             "at": g.created_at,
-            "status": match status { Ok(()) => json!("usable"), Err(u) => json!(u) },
+            "status": match status {
+                Ok(()) if is_stale => json!("stale"),
+                Ok(()) => json!("usable"),
+                Err(u) => json!(u),
+            },
             "inNotice": in_notice,
             "renewDue": g.renew_due(now),
             // the runner pushes an exact grant's branch only under its current key
@@ -646,6 +761,13 @@ pub(crate) async fn describe(
             continue;
         }
         match status {
+            Ok(()) if is_stale => lines.push(format!(
+                "{} can no longer push to {}: the branch's key changed. Renew: dg bot renew {} {}",
+                safe(name),
+                safe(&what),
+                repo.display(),
+                safe(name)
+            )),
             Ok(()) => {
                 if g.is_exact() {
                     members += 1;
@@ -663,7 +785,8 @@ pub(crate) async fn describe(
                         safe(name)
                     ));
                 }
-                if !in_notice && access.notice.is_some() {
+                // while suspended the head line says why, as the web shows it
+                if !in_notice && access.notice.is_some() && !access.suspended() {
                     lines.push(format!(
                         "{} let {} push here; this isn't in {}'s access settings.",
                         safe(&granter),

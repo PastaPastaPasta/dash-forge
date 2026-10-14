@@ -41,8 +41,7 @@ pub enum BotCommand {
     /// branches. Everyone can see a bot's access.
     Allow(Box<AllowArgs>),
     /// Take a bot's access away (maintainers). It gets nothing new from now on; what it was
-    /// already given stays with it. With `--push`, only its push access: the push access you
-    /// gave it is removed, and what other maintainers gave stays.
+    /// already given stays with it. With `--push`, only the push access you gave it.
     Revoke {
         /// The repository (`owner/name`).
         repo: String,
@@ -429,7 +428,8 @@ async fn allow(ctx: &Ctx, a: &AllowArgs) -> Result<()> {
     }
     may.sort();
     may.dedup();
-    if may.is_empty() {
+    // `--push` adds `push` once its grants are written
+    if may.is_empty() && a.push.is_empty() {
         return Err(crate::errors::usage(
             "that gives the bot nothing to do: to take its access away, run `dg bot revoke`",
         ));
@@ -584,8 +584,9 @@ async fn revoke(ctx: &Ctx, repo: &str, bot: &str, push: bool) -> Result<()> {
 }
 
 async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
-    // everyone reads a public repository's notices and grants: no identity needed
-    let s = crate::common::Reader::open(ctx, repo).await?;
+    // everyone reads a public repository's notices and grants; a member's (or the bot's) key is
+    // loaded when there is one, so the members-only branches it may push to are named
+    let s = crate::common::Reader::open_discussion(ctx, repo).await?;
     let notices = s.collab().access_notices(&s.repo).await?;
     let now = forge_core::cache::now_ms();
     let mut rows = Vec::new();
@@ -617,7 +618,7 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
     ctx.emit(
         json!({
             "repo": s.repo.display(),
-            "count": rows.len(),
+            "count": rows.len() + bare.len(),
             "unreadable": notices.unreadable,
             "bots": rows.iter().map(|(id, name, _, e, push)| json!({
                 "bot": id,
@@ -636,7 +637,16 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
             })).chain(bare.iter().map(|(id, _, push)| json!({
                 "bot": id,
                 "may": [],
+                "askers": null,
+                "threads": null,
+                "processor": null,
+                "until": null,
                 "live": false,
+                "note": null,
+                "by": null,
+                "at": null,
+                "line": null,
+                "notice": null,
                 "push": push.0,
             }))).collect::<Vec<_>>(),
         }),

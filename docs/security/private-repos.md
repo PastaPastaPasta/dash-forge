@@ -1340,7 +1340,10 @@ is refused before signing ("Bots can't push to this repo yet.", E205; the helper
   the dialog says so. Another glob, or a name outside `refs/heads/`, is refused (`prefix_of`). `scope`: one
   members-only branch **shared with the bot** (a narrower branch, §21, whose audience includes it), as its name hash
   under the branch key's current generation; only a maintainer holding the branch key can write it. A members-key
-  branch ("All members") can never be granted: a bot never holds the members key.
+  branch ("All members") can never be granted: a bot never holds the members key. A prefix that is or covers a
+  members-only branch's name the maintainer can read is refused before signing (the grant and the notice are public
+  and would name it); so is any prefix when the repository has members-only branches the maintainer's key doesn't
+  open. A private repository has no grants (a bot never holds its key, and a prefix would publish its branch names).
 - **How long.** 30 days by default (`--push-until`, else the access's own `until` when sooner); at most 90 days
   (`ttl90`); a client asks for 10 minutes less than 90 days at most, so the block's time never disagrees
   (`until_for`). "Renew" (`dg bot renew`) is offered from 14 days before the end: a new grant per branch or prefix,
@@ -1367,8 +1370,10 @@ the defaults (fast-forward only, delete own branches only). The grants are the t
 list is shown to maintainers as "@m let @ci-bot push here; this isn't in @ci-bot's access settings". The members-only
 entry carries only the name hash the grant document already shows. A newer notice without `push` **suspends** every
 push (`dg bot suspend`, any maintainer); `dg bot resume` lists the usable grants again; `dg bot allow` without
-`--push` keeps the push fields as they are; `dg bot revoke` (everything) and `dg bot revoke --push` (only the push
-access this maintainer gave) delete the signer's own grants.
+`--push` keeps the push fields as they are, and `dg bot allow --push` resumes a suspended bot (it says so); `dg bot
+revoke` (everything) and `dg bot revoke --push` (only the push access this maintainer gave) delete the signer's own
+grants, and never lift another maintainer's suspension. An exact grant naming an earlier generation's hash is shown
+as stale ("the branch's key changed. Renew") and left out of the notice's list.
 
 ### 24.3 Writing a bot's push
 
@@ -1380,8 +1385,10 @@ names its grant (`pp` for a prefix grant, `pg` for an exact one) and the grant's
 browse-index fragment but never folds the fragments (the next member's push does), and writes no history index
 (kinds 3 and 5 are not a bot's). A bot never writes a key letter: it never starts a narrower branch and never re-sends
 one's key; a branch whose audience changed gets its key with a member's next push. A bot without the members key that
-holds a narrower branch's key reads and pushes that branch through the helper (the members view opens with the branch
-ring alone). A bot's public long body (kind 6) is stored claiming `r` 4 too; its members-only text stays capped
+holds a narrower branch's key pushes that branch through the helper (the push's view opens with the branch ring
+alone, and `dg branch list` names it); fetching it through the helper is not built: a job gets its commits through a
+`branch` letter (phase 4C). The helper also holds a bot to its notice's rules: no forced push while `fastForwardOnly`,
+and no delete of a branch someone else pushed last while `deleteOwnOnly`. A bot's public long body (kind 6) is stored claiming `r` 4 too; its members-only text stays capped
 (§23).
 
 ### 24.4 The runner's push path

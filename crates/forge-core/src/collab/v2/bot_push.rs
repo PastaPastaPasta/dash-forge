@@ -129,7 +129,8 @@ impl Collab<'_> {
     /// there and the contract admits a bot's packs (`packManifest.r` up to 4, the mainnet set).
     /// Then its public long bodies (kind 6) and its pushes claim `r` 4.
     pub async fn bot_writes_packs(&self, repo: &RepoRef) -> Result<bool> {
-        if self.signer_role(repo).await? != Some(Role::Bot) {
+        // the role read once per `Collab`, as `require_role` reads it
+        if self.cached_role(repo).await? != Some(Role::Bot) {
             return Ok(false);
         }
         let contract = self

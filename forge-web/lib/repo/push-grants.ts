@@ -66,6 +66,7 @@ import { readHeldBranches } from './branch-ring'
 import { asIdentifierString, num, type RepoRef } from './contract'
 import { contractHasProperty, contractHasType } from './contract-shape'
 import { readMembershipsCached, readMembershipsFresh } from './members'
+import { readMembersOnlyNames } from './members-branches'
 import { bytesField } from './private-content'
 import { contractOf, repoSource } from './source'
 
@@ -74,6 +75,15 @@ export const PUSH_NOT_YET = "Bots can't push to this repo yet."
 
 /** Before the registration: a bot pushes to its own fork and opens a pull request, as anyone does. */
 export const PUSH_NOT_YET_HINT = 'A bot can push to its own fork and open a pull request.'
+
+/**
+ * "Bots can't push to o/r, a private repository." (§24.1): a bot never holds a private repository's
+ * key, and a prefix grant would name its branches in public. Give and Renew are refused there
+ * before signing, and the page offers neither.
+ */
+export function privateRepoWords(display: string): string {
+  return `Bots can't push to ${display}, a private repository.`
+}
 
 const DAY_MS = 86_400_000
 
@@ -247,6 +257,17 @@ export function suspended(a: BotPushAccess): boolean {
 }
 
 /**
+ * Who suspended `a`'s pushes (base58), when giving it push access lets it push again: its current
+ * notice is in force without push while it still holds push access (as the page's "@ci-bot's
+ * pushes are suspended."). Null otherwise: a bot never given push access, or one whose access has
+ * ended (Give is refused then).
+ */
+export function suspendedBy(a: BotPushAccess): string | null {
+  if (a.notice === null || !noticeLiveAt(a.notice.notice, a.now) || allowsPush(a.notice.notice)) return null
+  return liveGrants(a).length > 0 ? a.notice.writer : null
+}
+
+/**
  * Every grant of `repo` and its members, read for a page (memberships through the page cache).
  * `supported` false, with nothing else read, where the contract has no grants.
  */
@@ -316,6 +337,16 @@ export function branchOfScope(branches: readonly GrantableBranch[], scope: strin
   return branches.find((b) => b.current === h || b.earlier.includes(h))
 }
 
+/**
+ * Whether exact grant `g` names a branch of `branches` by its hash under an earlier key generation:
+ * it stopped working when the branch got a new key, and Renew gives it again under the current
+ * one. forge-core `dg bot`'s `stale`.
+ */
+export function isStale(g: PushGrant, branches: readonly GrantableBranch[]): boolean {
+  const h = g.scope?.toLowerCase()
+  return h !== undefined && branches.some((b) => b.earlier.includes(h))
+}
+
 /** A branch's short name (`fix-auth`). */
 export function shortBranch(name: string): string {
   return name.startsWith('refs/heads/') ? name.slice('refs/heads/'.length) : name
@@ -331,6 +362,8 @@ export type PushNote =
   | { readonly kind: 'renewDue'; readonly grant: PushGrant; readonly what: string; readonly days: number }
   /** "@m let @ci-bot push here; this isn't in @ci-bot's access settings." */
   | { readonly kind: 'notInNotice'; readonly grant: PushGrant; readonly what: string }
+  /** "@ci-bot can no longer push to fix-auth: the branch's key changed." Renew. */
+  | { readonly kind: 'stale'; readonly grant: PushGrant; readonly what: string }
   /** "@ci-bot's push access ended on 7 Nov 2026." Renew. */
   | { readonly kind: 'expired'; readonly grant: PushGrant; readonly what: string }
   /** "@ci-bot can no longer push to bot/ci-bot/: @m is no longer a maintainer." Give access again. */
@@ -346,7 +379,7 @@ export interface PushSummary {
   readonly prefixes: readonly (readonly [string, number])[]
   readonly membersBranches: number
   readonly notes: readonly PushNote[]
-  /** The grants it can push under now. */
+  /** The grants it can push under now (not a stale one: its branch got a new key). */
   readonly live: readonly PushGrant[]
   /** Who gave the live grants (base58), each once. */
   readonly granters: readonly string[]
@@ -356,11 +389,17 @@ export interface PushSummary {
 
 /**
  * What the page says of `a` (forge-core `dg bot list`'s `describe`): the push line, then a note per
- * grant that needs attention. A grant replaced by a newer one over the same branches says nothing
- * more. `branchName` names an exact grant's branch when this reader holds its key.
+ * grant that needs attention. A grant replaced by a newer usable one over the same branches says
+ * nothing more. `branches` (the members-only branches this reader holds the key of) name an exact
+ * grant's branch, and tell a stale one: it names an earlier key's hash, so it is neither counted
+ * nor live.
  */
-export function summarizePush(a: BotPushAccess, branchName: (scope: string) => string | null = () => null): PushSummary {
+export function summarizePush(a: BotPushAccess, branches: readonly GrantableBranch[] = []): PushSummary {
   const ctx = grantContext(a)
+  const branchName = (scope: string): string | null => {
+    const b = branchOfScope(branches, scope)
+    return b === undefined ? null : shortBranch(b.name)
+  }
   const listed = new Set((a.notice === null ? [] : (pushEntries(a.notice.notice) ?? [])).map((e) => bytesToHex(e.grant)))
   // a suspension leaves every grant out on purpose: the suspended line says it once
   const isSuspended = suspended(a)
@@ -368,11 +407,14 @@ export function summarizePush(a: BotPushAccess, branchName: (scope: string) => s
   const prefixes: [string, number][] = []
   let membersBranches = 0
   for (const g of a.grants) {
-    const superseded = a.grants.some((o) => o.createdAt > g.createdAt && o.prefix === g.prefix && o.scope === g.scope)
+    // only a newer grant that can itself be pushed under replaces it (a removed granter's newer
+    // grant hides nothing)
+    const superseded = a.grants.some((o) => o.createdAt > g.createdAt && o.prefix === g.prefix && o.scope === g.scope && usable(o, ctx) === null)
     if (superseded) continue
     const what = g.prefix !== undefined ? shortPrefix(g.prefix) : (branchName(g.scope ?? '') ?? 'a members-only branch')
     const status = usable(g, ctx)
-    if (status === null) {
+    if (status === null && isStale(g, branches)) notes.push({ kind: 'stale', grant: g, what })
+    else if (status === null) {
       if (isExact(g)) membersBranches += 1
       else prefixes.push([g.prefix ?? '', g.until])
       if (renewDue(g, a.now)) notes.push({ kind: 'renewDue', grant: g, what, days: Math.min(Math.ceil((g.until - a.now) / DAY_MS), RENEW_WINDOW_MS / DAY_MS) })
@@ -381,7 +423,7 @@ export function summarizePush(a: BotPushAccess, branchName: (scope: string) => s
     else if (status === 'granterGone') notes.push({ kind: 'granterGone', grant: g, what })
     else if (status === 'olderThanBotRow') notes.push({ kind: 'olderThanRow', grant: g, what })
   }
-  const live = liveGrants(a)
+  const live = liveGrants(a).filter((g) => !isStale(g, branches))
   return {
     suspended: isSuspended && (prefixes.length > 0 || membersBranches > 0),
     prefixes,
@@ -411,6 +453,8 @@ export function pushNoteWords(n: PushNote, bot: string, granter: string): string
       return `${bot}'s push access to ${n.what} ends in ${n.days === 1 ? '1 day' : `${n.days} days`}.`
     case 'notInNotice':
       return `${granter} let ${bot} push here; this isn't in ${bot}'s access settings.`
+    case 'stale':
+      return `${bot} can no longer push to ${n.what}: the branch's key changed.`
     case 'expired':
       return `${bot}'s push access ended on ${dateWords(n.grant.until)}.`
     case 'granterGone':
@@ -510,12 +554,51 @@ function entryOf(id: string, scope: GrantScope): PushEntry {
   return { grant: decodeIdentifier(id), target: 'prefix' in scope ? { prefix: scope.prefix } : { members: scope.exact } }
 }
 
-/** The entries of `a`'s grants that can be pushed under now. */
-function liveEntries(a: BotPushAccess): PushEntry[] {
+/** The entries of `a`'s grants that can be pushed under now: not a stale one among `branches` ({@link isStale}). */
+function liveEntries(a: BotPushAccess, branches: readonly GrantableBranch[]): PushEntry[] {
   return liveGrants(a).flatMap((g) => {
     const s = scopeOf(g)
-    return s === null ? [] : [entryOf(g.id, s)]
+    return s === null || isStale(g, branches) ? [] : [entryOf(g.id, s)]
   })
+}
+
+/** The members-only branches this maintainer holds the key of, read only when `a` has an exact grant (to tell a stale one). */
+async function branchesFor(sdk: EvoSDK, repo: RepoRef, a: BotPushAccess): Promise<GrantableBranch[]> {
+  return a.grants.some(isExact) ? readGrantableBranches(sdk, repo) : []
+}
+
+/** Refuse, before signing, push access to a private repository (forge-core `dg bot`'s `require_public`). */
+function requirePublic(repo: RepoRef, about: PushAbout): void {
+  if (repo.visibility !== 'public') throw new BotAccessError(`${privateRepoWords(about.display)} Nothing was written.`)
+}
+
+/** Why a prefix can't be checked: the repo has members-only branches this maintainer can't open now. */
+export const MEMBERS_UNCHECKED = "This repo has members-only branches you can't open, so a branch prefix can't be checked against them."
+
+/**
+ * Why `requests` can't be given (forge-core `dg bot`'s `refuse_members_names`), or null: a public
+ * prefix that is or covers a members-only branch's name would name it in public (the grant and the
+ * notice are plaintext), so only branches shared with the bot are given, as exact grants. `names`
+ * are the members-only names this maintainer opens ({@link readMembersOnlyNames}); null, when the
+ * repo has some they can't open, refuses any prefix.
+ */
+export function membersNameRefusal(requests: readonly GrantRequest[], names: readonly string[] | null): string | null {
+  const prefixes = requests.flatMap((r) => ('prefix' in r.scope ? [r.scope.prefix] : []))
+  if (prefixes.length === 0) return null
+  if (names === null) return MEMBERS_UNCHECKED
+  const hit = names.find((n) => prefixes.some((p) => n.startsWith(p)))
+  return hit === undefined ? null : `${shortBranch(hit)} is a members-only branch: only branches shared with the bot can be given.`
+}
+
+/** {@link membersNameRefusal} read now, thrown before signing. */
+async function refuseMembersNames(sdk: EvoSDK, repo: RepoRef, requests: readonly GrantRequest[]): Promise<void> {
+  if (!requests.some((r) => 'prefix' in r.scope)) return
+  const why = membersNameRefusal(requests, await readMembersOnlyNames(sdk, repo))
+  if (why === null) return
+  throw new BotAccessError(
+    `${why} Nothing was written.`,
+    why === MEMBERS_UNCHECKED ? 'unlock members-only content first, or ask a maintainer who can open those branches' : 'share that branch with the bot and give it instead of the prefix',
+  )
 }
 
 /** The bot's current notice to build on, revoking it, or one allowing nothing. */
@@ -556,20 +639,24 @@ export function pushUntil(now: number, requested: number | null): number | { rea
   return 'until' in got ? got.until : { error: got.refused === 'past' ? 'That date has passed.' : 'Push access lasts at most 90 days.' }
 }
 
-/** What a change costs (an upper bound): `grants` new grants, `deletes` deleted ones (refunds) and the notice. */
-export function pushChangeCost(grants: number, privateRepo: boolean, deletes = 0): CostPreview {
+/**
+ * What a change costs (an upper bound): `grants` new grants, `deletes` deleted ones (refunds) and
+ * the notice. Push access is only ever given in a public repository, so its notice is a public one.
+ */
+export function pushChangeCost(grants: number, deletes = 0): CostPreview {
   return sumPreviews([
     ...Array.from({ length: grants }, () => previewCreate(DOC_PUSH_GRANT, { prefix: 'refs/heads/bot/ci-bot/' })),
     ...Array.from({ length: deletes }, () => previewDelete(DOC_PUSH_GRANT)),
-    previewCredits(noticeCredits(privateRepo)),
+    previewCredits(noticeCredits(false)),
   ])
 }
 
 /**
  * Give `about.bot` push access to each of `requests` until `until`, with `policy` (forge-core `dg bot
- * allow --push`): checked before anything is signed (the contract has grants, the signer is a
- * maintainer, the bot holds a Bot row, the end date), then one grant each, then the notice listing
- * them beside the live grants it already listed.
+ * allow --push`): checked before anything is signed (the contract has grants, the repo is public,
+ * the signer is a maintainer, the bot holds a Bot row, the end date, no prefix names a members-only
+ * branch), then one grant each, then the notice listing them beside the live grants it already
+ * listed. A suspended bot pushes again under the new grants (the dialog says so first).
  */
 export async function givePush(
   sdk: EvoSDK,
@@ -580,6 +667,7 @@ export async function givePush(
   intent: string,
 ): Promise<void> {
   const a = await openChange(sdk, auth, repo, about)
+  requirePublic(repo, about)
   requireGranter(a, auth)
   if (a.botRowAt === null) throw new BotAccessError(`${about.name} isn't a bot of ${about.display}: push access is for bots. Nothing was written.`, 'add it as a bot under Settings → Members first')
   if (input.requests.length === 0) throw new BotAccessError('Choose a branch or a branch prefix. Nothing was written.')
@@ -588,6 +676,7 @@ export async function givePush(
   }
   const until = pushUntil(a.now, input.until)
   if (typeof until !== 'number') throw new BotAccessError(`${until.error} Nothing was written.`)
+  await refuseMembersNames(sdk, repo, input.requests)
   const base = nextNotice(a)
   const live = new Set(liveGrants(a).map((g) => idHex(g.id)))
   const entries = (pushEntries(base) ?? []).filter((e) => live.has(bytesToHex(e.grant)))
@@ -627,20 +716,28 @@ export function renewPlan(a: BotPushAccess, branches: readonly GrantableBranch[]
 
 /**
  * Renew `about.bot`'s push access until `until` (forge-core `dg bot renew`): a new grant per branch
- * or prefix, the signer's own old grants over them deleted (best effort: they end anyway), and the
- * notice listing the new ones. A suspended bot stays suspended: renewing gives time, not the push
- * back, and writes no notice.
+ * or prefix (a stale exact grant written again under the branch's current key), the signer's own
+ * old grants over them deleted (best effort: they end anyway), and the notice listing the new ones.
+ * Refused before signing in a private repo, and for a prefix that now names a members-only branch.
+ * A suspended bot stays suspended: renewing gives time, not the push back, and writes no notice.
  */
 export async function renewPush(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, about: PushAbout, until: number, intent: string): Promise<{ readonly renewed: number; readonly stillSuspended: boolean }> {
   const a = await openChange(sdk, auth, repo, about)
+  requirePublic(repo, about)
   requireGranter(a, auth)
   if (a.botRowAt === null) throw new BotAccessError(`${about.name} isn't a bot of ${about.display}: push access is for bots. Nothing was written.`)
   const end = pushUntil(a.now, until)
   if (typeof end !== 'number') throw new BotAccessError(`${end.error} Nothing was written.`)
-  const plan = renewPlan(a, a.grants.some(isExact) ? await readGrantableBranches(sdk, repo) : [])
+  const branches = await branchesFor(sdk, repo, a)
+  const plan = renewPlan(a, branches)
   if (plan.length === 0) throw new BotAccessError(`${about.name} has no push access to ${about.display} to renew. Nothing was written.`, 'give it push access instead')
+  await refuseMembersNames(
+    sdk,
+    repo,
+    plan.map((t) => t.request),
+  )
   const replaced = new Set(plan.flatMap((t) => t.old.map((g) => idHex(g.id))))
-  const entries = liveEntries(a).filter((e) => !replaced.has(bytesToHex(e.grant)))
+  const entries = liveEntries(a, branches).filter((e) => !replaced.has(bytesToHex(e.grant)))
   for (const [i, t] of plan.entries()) {
     const id = await writePushGrant(sdk, auth, repo, about.bot, t.request.scope, end, `${intent}:renew:${i}`)
     entries.push(entryOf(id, t.request.scope))
@@ -666,7 +763,7 @@ export async function suspendPush(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, a
 /** Let a suspended bot push again under the grants it still has (forge-core `dg bot resume`). */
 export async function resumePush(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, about: PushAbout): Promise<void> {
   const a = await openChange(sdk, auth, repo, about)
-  const entries = liveEntries(a)
+  const entries = liveEntries(a, await branchesFor(sdk, repo, a))
   if (entries.length === 0) throw new BotAccessError(`${about.name} has no push access to ${about.display} to resume. Nothing was written.`, 'give it push access instead')
   const base = nextNotice(a)
   await writeAccessNotice(sdk, auth, repo, setPush(base, entries, pushPolicy(base)), { name: about.name, display: about.display })
@@ -687,15 +784,16 @@ export async function deleteOwnGrants(sdk: EvoSDK, auth: WriteAuth, repo: RepoRe
 /**
  * Remove the push access this maintainer gave `about.bot` (forge-core `dg bot revoke --push`): their
  * grants are deleted, and the notice lists what other maintainers gave (or no push at all). What it
- * pushed stays.
+ * pushed stays. A suspended bot stays suspended: its notice already lists no push, and none is
+ * written (writing the others' grants back would lift another maintainer's suspension).
  */
 export async function removeMyPush(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, about: PushAbout): Promise<void> {
   const a = await openChange(sdk, auth, repo, about)
   if (!a.grants.some((g) => g.granter === auth.identityId)) throw new BotAccessError(`You gave ${about.name} no push access to ${about.display}. Nothing was written.`, 'to stop it pushing at once, suspend its pushes')
   const base = nextNotice(a)
-  const rest = liveEntries({ ...a, grants: a.grants.filter((g) => g.granter !== auth.identityId) })
+  const rest = liveEntries({ ...a, grants: a.grants.filter((g) => g.granter !== auth.identityId) }, await branchesFor(sdk, repo, a))
   await deleteOwnGrants(sdk, auth, repo, about.bot)
-  if (base.may.includes('push') || rest.length > 0) await writeNoticeAfter(sdk, auth, repo, setPush(base, rest, pushPolicy(base)), about)
+  if (base.may.includes('push') && !suspended(a)) await writeNoticeAfter(sdk, auth, repo, setPush(base, rest, pushPolicy(base)), about)
 }
 
 /** Whether `r` covers the default branch `defaultBranch` (the dialog warns when that branch is unprotected). */

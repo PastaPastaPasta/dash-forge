@@ -5461,10 +5461,6 @@ fn skip_write_precheck() -> bool {
     )
 }
 
-/// The advisory write pre-check (see [`write_access_denied`]): the refused refs' outcomes
-/// and the specs still to push. A non-member is refused everything; so is every push to an
-/// archived repo unless pushed with `-o allow-archived`; a writer is refused
-/// the protected refs.
 /// A bot's push plan ([`crate::bot_push::plan`]): `None` when the signer is not a Bot member of
 /// the repository. A private repository refuses every ref (a bot never holds the members key).
 /// The role read is advisory, as [`write_access_denied`]'s: when it fails, the push goes on as a
@@ -5512,6 +5508,17 @@ async fn bot_plan(
     let access = collab.bot_push_access(&conn.repo, &me).await?;
     let patterns = svc.protected_patterns(&conn.repo).await.unwrap_or_default();
     let ring = view.ring.as_deref();
+    // who pushed each ref's tip now: a bot deletes only the branches it pushed (`deleteOwnOnly`)
+    let tip_by = |dst: &str| {
+        view.remote_refs
+            .iter()
+            .find(|(n, _)| n == dst)
+            .and_then(|(_, st)| match st {
+                RefState::Resolved { author, .. } => Some(author.clone()),
+                RefState::Diverged { heads } => heads.first().map(|h| h.author.clone()),
+                RefState::Unborn => None,
+            })
+    };
     Ok(Some(crate::bot_push::plan(
         &access,
         specs,
@@ -5521,10 +5528,15 @@ async fn bot_plan(
                 .map(|k| hex::encode(k.ref_name_hash(dst)))
         },
         |dst| forge_core::rules::matches_protected(dst, &patterns),
+        |dst| tip_by(dst).is_some_and(|a| a == me),
         enforce,
     )))
 }
 
+/// The advisory write pre-check (see [`write_access_denied`]): the refused refs' outcomes
+/// and the specs still to push. A non-member is refused everything; so is every push to an
+/// archived repo unless pushed with `-o allow-archived`; a writer is refused
+/// the protected refs.
 async fn precheck(
     conn: &Conn,
     svc: &RepoService<'_>,

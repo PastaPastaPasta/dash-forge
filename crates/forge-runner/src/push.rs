@@ -68,6 +68,9 @@ pub struct Access {
     pub fast_forward_only: bool,
     /// The notice's rules: never push to an existing branch.
     pub open_pr_not_push: bool,
+    /// Usable grants of members-only branches `dg` could not name (the key that opens them was
+    /// not loaded): a push to such a branch would be refused for the wrong reason.
+    pub unnamed_members: usize,
 }
 
 /// Why the runner does not push.
@@ -168,11 +171,18 @@ pub fn access_of(v: &serde_json::Value, bot: &str) -> Access {
     };
     let push = &row["push"];
     let policy = &push["policy"];
-    let granted = push["grants"]
+    let usable: Vec<&serde_json::Value> = push["grants"]
         .as_array()
         .into_iter()
         .flatten()
         .filter(|g| g["status"].as_str() == Some("usable"))
+        .collect();
+    let unnamed_members = usable
+        .iter()
+        .filter(|g| g["prefix"].is_null() && g["branchRef"].as_str().is_none())
+        .count();
+    let granted = usable
+        .into_iter()
         .filter_map(|g| {
             if let Some(p) = g["prefix"].as_str() {
                 return Some(Granted::Prefix(p.to_owned()));
@@ -192,7 +202,23 @@ pub fn access_of(v: &serde_json::Value, bot: &str) -> Access {
         suspended: push["suspended"].as_bool().unwrap_or(false),
         fast_forward_only: policy["fastForwardOnly"].as_bool().unwrap_or(true),
         open_pr_not_push: policy["openPrNotPush"].as_bool().unwrap_or(false),
+        unnamed_members,
     }
+}
+
+/// A branch's tip as the bot reads it now (`dg --json branch list`, with its key: a members-only
+/// branch shared with it is listed by its real name and commit), `None` when it does not exist.
+fn tip_now(cfg: &Config, repo: &RepoConfig, full: &str) -> Result<Option<String>> {
+    let mut cmd = Command::new(&cfg.bin.dg);
+    cmd.args(["--json", "branch", "list", &repo.repo]);
+    let v: serde_json::Value = serde_json::from_str(&run(cfg, cmd, "dg branch list")?)
+        .context("dg branch list: not JSON")?;
+    Ok(v["branches"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|b| b["ref"].as_str() == Some(full))
+        .and_then(|b| b["tip"].as_str().map(str::to_ascii_lowercase)))
 }
 
 /// Everyone a members-only input of the whole repository is readable by (`dg --json collab
@@ -206,6 +232,52 @@ pub fn human_members(v: &serde_json::Value) -> BTreeSet<String> {
         .filter_map(|m| m["identityId"].as_str().map(str::to_owned))
         .chain(v["ownerId"].as_str().map(str::to_owned))
         .collect()
+}
+
+/// `forge-runner push`'s arguments.
+#[derive(Debug)]
+pub struct CliArgs<'a> {
+    /// The one branch.
+    pub branch: &'a str,
+    /// The commit.
+    pub commit: &'a str,
+    /// The git directory holding it.
+    pub git_dir: &'a Path,
+    /// The job read the repository's members-only content.
+    pub members_input: bool,
+    /// The job read members-only content for these people only.
+    pub members_input_people: &'a [String],
+    /// A fork's pull request or a request from outside the members.
+    pub not_member: bool,
+}
+
+/// `forge-runner push`: the request from the command line, pushed or refused (an error naming
+/// why, nothing written).
+pub fn cli(cfg: &Config, repo: &RepoConfig, a: &CliArgs<'_>) -> Result<()> {
+    let members_input = if a.members_input {
+        let mut cmd = Command::new(&cfg.bin.dg);
+        cmd.args(["--json", "collab", "list", &repo.repo]);
+        let v: serde_json::Value = serde_json::from_str(&run(cfg, cmd, "dg collab list")?)
+            .context("dg collab list: not JSON")?;
+        Some(human_members(&v))
+    } else if a.members_input_people.is_empty() {
+        None
+    } else {
+        Some(a.members_input_people.iter().cloned().collect())
+    };
+    let req = PushRequest {
+        branch: a.branch.to_owned(),
+        commit: a.commit.to_ascii_lowercase(),
+        members_input,
+        proper: !a.not_member,
+    };
+    match push(cfg, repo, a.git_dir, &req)? {
+        Pushed::Pushed { branch, commit } => {
+            println!("pushed {commit} to {branch}");
+            Ok(())
+        }
+        Pushed::Refused(why) => bail!("not pushed: {why} (nothing was written)"),
+    }
 }
 
 /// Runs `cmd` with the runner's network, returning stdout or an error with what it said.
@@ -264,8 +336,8 @@ pub fn push(cfg: &Config, repo: &RepoConfig, git_dir: &Path, req: &PushRequest) 
     let v: serde_json::Value =
         serde_json::from_str(&run(cfg, list, "dg bot list")?).context("dg bot list: not JSON")?;
     let access = access_of(&v, &bot);
-    let tips = crate::watch::parse_ls_remote(&crate::run::ls_remote(cfg, repo)?);
-    let tip = tips.get(&full).map(String::as_str);
+    let tip = tip_now(cfg, repo, &full)?;
+    let tip = tip.as_deref();
     let ff = |old: &str, new: &str| {
         Command::new(&cfg.bin.git)
             .arg("--git-dir")
@@ -275,8 +347,14 @@ pub fn push(cfg: &Config, repo: &RepoConfig, git_dir: &Path, req: &PushRequest) 
             .status()
             .is_ok_and(|s| s.success())
     };
-    if let Err(why) = decide(req, &full, &access, tip, ff) {
-        return Ok(Pushed::Refused(why));
+    match decide(req, &full, &access, tip, ff) {
+        Err(Refusal::NotGranted | Refusal::Tainted) if access.unnamed_members > 0 => bail!(
+            "the bot's push access names {} members-only branch(es) dg could not open: is \
+             DASH_FORGE_KEY the bot's key, with its encryption key?",
+            access.unnamed_members
+        ),
+        Err(why) => return Ok(Pushed::Refused(why)),
+        Ok(()) => {}
     }
     let public = !access
         .granted
@@ -315,6 +393,7 @@ mod tests {
             suspended: false,
             fast_forward_only: true,
             open_pr_not_push: false,
+            unnamed_members: 0,
         }
     }
 
