@@ -1,0 +1,20 @@
+{
+  "name": "content_public_comment_writer__sakura",
+  "description": "A writer's public comment: asMember only where a rule needs it (here none), so no mRole. (sakura contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "content",
+    "type": "comment",
+    "shape": {
+      "aud": false,
+      "mRole": false
+    },
+    "doc": {},
+    "role": "writer"
+  },
+  "expected": {
+    "aud": null,
+    "mRole": null
+  }
+}

@@ -14,6 +14,16 @@ const IDS = ['8rSFEyS7gidGdS4r8m22YtMEc519otpDNQ242Zw9c1Gb', 'EA8HsynH63cw1i8xQL
 const D = (n: number): string => IDS[n - 1] as string
 
 // RC2 member roles: the claimed role (`r`) is role-claim.test.ts's and rc1-writers.test.ts's.
+// sakura's contracts: none of the mainnet fields (`mainnet-fields.ts`), `vis` where it was
+vi.mock('./contract-shape', async (orig) => {
+  const real = await orig<typeof import('./contract-shape')>()
+  const mainnet = new Set(['aud', 'mRole', 'tAud', 'enc', 'asMaintainer'])
+  return {
+    ...real,
+    contractHasProperty: async (...a: Parameters<typeof real.contractHasProperty>) => (mainnet.has(a[3]) ? false : a[3] === 'vis' ? true : real.contractHasProperty(...a)),
+    contractPropertyMinimum: async () => null,
+  }
+})
 vi.mock('./role-claim', async (orig) => ({ ...(await orig<typeof import('./role-claim')>()), roleClaim: async () => ({}) }))
 // Who a new document is for is read from its stored parents (members-writes.test.ts covers it);
 // these fixtures write to public threads.

@@ -75,6 +75,7 @@ import {
   findConsent,
   grantMembershipDoc,
   refuseMemberChangeWithEnvironments,
+  refuseOwnerRow,
   revokeMembershipDoc,
 } from './writes'
 import { retryWhileMissing } from '../view/retry'
@@ -1204,6 +1205,8 @@ export async function removePrivateMember(
   intent: string,
   onStep?: (s: RotationStep) => void,
 ): Promise<number | null> {
+  // The owner always keeps Maintain access (mainnet R-08): refused before anything is written.
+  refuseOwnerRow(c.repo, memberId, role)
   // Environments are letters to the people their audience covered (and a maintainer's snapshots
   // stop counting, D24): unless their saves are planned, refused before any re-anchor is paid for.
   await refuseMemberChangeWithEnvironments(c.sdk, c.repo, c.environmentsPlanned === true)

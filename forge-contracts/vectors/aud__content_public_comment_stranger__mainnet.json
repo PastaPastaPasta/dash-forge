@@ -1,0 +1,20 @@
+{
+  "name": "content_public_comment_stranger__mainnet",
+  "description": "A stranger's public comment carries neither field. (mainnet contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "content",
+    "type": "comment",
+    "shape": {
+      "aud": true,
+      "mRole": true
+    },
+    "doc": {},
+    "role": null
+  },
+  "expected": {
+    "aud": null,
+    "mRole": null
+  }
+}

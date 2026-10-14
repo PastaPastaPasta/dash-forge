@@ -1,0 +1,14 @@
+{
+  "name": "sniff_members",
+  "description": "DFPK 0x01: the members key, its epoch.",
+  "case": "branch_key",
+  "rules": "v2",
+  "input": {
+    "op": "sniff",
+    "head": "4446504b010e000000000003"
+  },
+  "expected": {
+    "kind": "sealed",
+    "epoch": 3
+  }
+}

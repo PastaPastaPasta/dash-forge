@@ -6,8 +6,9 @@
  */
 
 import { __unsafeSealBotPostWithNonce, type PostKey } from './bot-post'
+import { __unsafeSealBranchPackWith, __unsafeSealBranchRefWith, type BranchKeys } from './branch-key'
 import { sha256, utf8, type Bytes } from './bytes'
-import { __unsafeSealDocWithNonce, __unsafeSealMembersDocWithNonce, type PrivateDoc, type SealDocOptions } from './doc'
+import { __unsafeSealDocWithNonce, __unsafeSealMembersDocWithNonce, __unsafeSealPrivateV3WithNonce, type PrivateDoc, type SealDocOptions } from './doc'
 import { hedgeFileId, hedgeNonce, type EpochKeys } from './keys'
 import { __unsafeSealMembersRefWith, type RefUpdateIn, type SealedRefUpdate } from './members-ref'
 import { __unsafeSealLetterArtifactWith, __unsafeSealLetterWith, type LetterRecipient } from './named'
@@ -36,6 +37,16 @@ export function sealMembersDocWithNonce(
   return __unsafeSealMembersDocWithNonce(keys, doc, fields, nonce)
 }
 
+/** `sealPrivateV3` (DESIGN D38) with a fixed nonce; returns the same intermediates as {@link sealMembersDocWithNonce}. */
+export function sealPrivateV3WithNonce(
+  keys: EpochKeys,
+  doc: PrivateDoc,
+  fields: DocFields,
+  nonce: Uint8Array,
+): Promise<{ ad: Bytes; kObj: Bytes; commit: Bytes; tlv: Bytes; enc: Bytes }> {
+  return __unsafeSealPrivateV3WithNonce(keys, doc, fields, nonce)
+}
+
 /** `sealMembersRef` with a fixed salt and nonce (the `sealed_ref` vectors). */
 export function sealMembersRefWithNonce(
   keys: EpochKeys,
@@ -55,6 +66,16 @@ export function sealBotPostWithNonce(
   nonce: Uint8Array,
 ): Promise<{ ad: Bytes; kObj: Bytes; commit: Bytes; tlv: Bytes; enc: Bytes }> {
   return __unsafeSealBotPostWithNonce(post, doc, fields, nonce)
+}
+
+/** `sealBranchRef` with a fixed salt and nonce (the `branch_key` vectors). */
+export function sealBranchRefWith(keys: BranchKeys, ownerId: Uint8Array, input: RefUpdateIn, salt: Uint8Array, nonce: Uint8Array): Promise<SealedRefUpdate> {
+  return __unsafeSealBranchRefWith(keys, ownerId, input, salt, nonce)
+}
+
+/** `sealBranchPack` with a fixed `fileId` and segment size (the `branch_key` vectors). */
+export function sealBranchPackWith(keys: BranchKeys, plain: Uint8Array, fileId: Uint8Array, segLog2: number): Promise<Bytes> {
+  return __unsafeSealBranchPackWith(keys, plain, fileId, segLog2)
 }
 
 /** `sealLetter` with a fixed `K_obj`, nonce and slot IVs; returns the commitment, H, AD' and TLV too. */

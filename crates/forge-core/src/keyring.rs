@@ -407,6 +407,9 @@ pub struct Keyring {
     conversion: Option<crate::private::convert::Conversion>,
     /// Loaded with no identity ([`Self::load_anonymous`]): no wraps, no identity keys.
     anonymous: bool,
+    /// The narrower branches this reader holds keys for (phase 3F, [`Self::set_branch_ring`]):
+    /// what opens an `enc` v0x06 ref update.
+    branches: std::sync::RwLock<Option<std::sync::Arc<crate::private::branch_key::BranchRing>>>,
 }
 
 impl std::fmt::Debug for Keyring {
@@ -543,6 +546,7 @@ impl Keyring {
             unreadable_wraps: Vec::new(),
             conversion: None,
             anonymous,
+            branches: std::sync::RwLock::default(),
         };
         keyring.resolve(io, enc).await?;
         Box::pin(keyring.resolve_conversion(io, repo)).await;
@@ -1018,9 +1022,27 @@ impl Keyring {
         let Some(enc) = d.field_bytes("enc").filter(|e| !e.is_empty()) else {
             return Opened::Malformed;
         };
+        // a stated `aud` (mainnet L1) names the envelope's class (consensus checks it too)
+        if !crate::rules::aud::aud_agrees(d.field_u64("aud"), enc.first().copied()) {
+            return Opened::Malformed;
+        }
         let Some(mut header) = header_of(kind, d) else {
             return Opened::Malformed;
         };
+        // a narrower branch's ref update (phase 3F) opens with its branch key, never the members
+        // key; without the ring it is a later envelope, shown and never opened
+        if enc[0] == crate::private::branch_key::V6 {
+            let Some(ring) = self.branch_ring() else {
+                return Opened::Unreadable(Unreadable::UnknownVersion);
+            };
+            if self.visibility != Visibility::Public
+                || d.field_str("vis").as_deref() != Some("public")
+            {
+                return Opened::Malformed;
+            }
+            header.vis = Visibility::Public;
+            return ring.open(&header, &enc);
+        }
         // Which envelope a document may carry follows its OWN `vis` (private-repos.md §17, §18),
         // which consensus held equal to its repository's visibility when it was written: a
         // repository made public keeps its earlier documents' `vis: "private"`, and they open as
@@ -1064,6 +1086,24 @@ impl Keyring {
         } else {
             opened
         }
+    }
+
+    /// Attach the narrower branches this reader holds keys for (read from its `branchKey`
+    /// letters), replacing any attached before: [`Self::open`] then opens their ref updates.
+    pub fn set_branch_ring(&self, ring: std::sync::Arc<crate::private::branch_key::BranchRing>) {
+        *self
+            .branches
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ring);
+    }
+
+    /// The narrower branches attached ([`Self::set_branch_ring`]).
+    #[must_use]
+    pub fn branch_ring(&self) -> Option<std::sync::Arc<crate::private::branch_key::BranchRing>> {
+        self.branches
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// The per-object key `K_obj` of the members-only (`enc` v0x03) `kind` document `d`, which a
@@ -1344,7 +1384,9 @@ pub fn header_of(kind: DocKind, d: &FetchedDocument) -> Option<DocHeader> {
             h.base_ref_name_hash = d.field_bytes32("baseRefNameHash");
             h.source_ref_name_hash = d.field_bytes32("sourceRefNameHash");
         }
-        DocKind::Comment | DocKind::Event => h.target_id = d.field_bytes32("targetId"),
+        DocKind::Comment | DocKind::Event | DocKind::AuthorEvent => {
+            h.target_id = d.field_bytes32("targetId");
+        }
         DocKind::Review => h.patch_id = d.field_bytes32("patchId"),
         DocKind::RefUpdate | DocKind::ProtectedRefUpdate => {
             h.ref_name_hash = d.field_bytes32("refNameHash");
@@ -3372,6 +3414,7 @@ mod tests {
                 unreadable_wraps: Vec::new(),
                 conversion: None,
                 anonymous: false,
+                branches: std::sync::RwLock::default(),
             }
         }
     }

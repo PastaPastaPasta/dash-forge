@@ -156,7 +156,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
     keyedRoleChangeCost(keyed ? laneSession : null, identity, member, from, to, repo.forge.core, ops?.keyId ?? null)
   const runAction = async (intent: string): Promise<void> => {
     if (!sdk || !signer || !action) throw new Error('sign in to continue')
-    const planned = envFlow.plan !== null
+    const planned = envFlow.envsPlanned
     // their consent is gone or not given yet: nothing about the membership was signed
     let awaitingConsent = false
     const consentMissing = (e: unknown): never => {

@@ -1,0 +1,13 @@
+{
+  "name": "sniff_short",
+  "description": "four bytes: too short to tell.",
+  "case": "branch_key",
+  "rules": "v2",
+  "input": {
+    "op": "sniff",
+    "head": "4446504b"
+  },
+  "expected": {
+    "kind": "short"
+  }
+}

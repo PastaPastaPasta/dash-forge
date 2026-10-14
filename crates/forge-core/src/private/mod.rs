@@ -41,6 +41,7 @@ compile_error!("the `vectors` feature (deterministic nonces and file ids) is for
 
 pub mod blind;
 pub mod bot_post;
+pub mod branch_key;
 pub mod bundle;
 pub mod convert;
 pub mod doc;
@@ -94,6 +95,10 @@ pub enum DocKind {
     /// `event` (forge-collab): its `value` (a label or milestone name, a dismiss reason, an
     /// assignee, a retarget base) is sealed in a private repo.
     Event,
+    /// `authorEvent` (forge-community): a PR or issue author's own event. Its `value` (a
+    /// retarget base) is sealed where the contract declares `authorEvent.enc` (mainnet M3) and
+    /// the target is members-only or private; its TLV is an event's, without a head.
+    AuthorEvent,
     /// `release` (forge-core): its own TLV, keyed `tagName` and fold ([`release`], §16). The
     /// generic [`doc::seal`] and [`doc::open_content`] refuse it.
     Release,
@@ -112,6 +117,7 @@ impl DocKind {
             Self::ProtectedRefUpdate => "protectedRefUpdate",
             Self::Config => "config",
             Self::Event => "event",
+            Self::AuthorEvent => "authorEvent",
             Self::Release => "release",
         }
     }
@@ -120,7 +126,12 @@ impl DocKind {
     #[must_use]
     pub fn max_enc(self) -> usize {
         match self {
-            Self::Issue | Self::Patch | Self::Comment | Self::Review | Self::Event => 5120,
+            Self::Issue
+            | Self::Patch
+            | Self::Comment
+            | Self::Review
+            | Self::Event
+            | Self::AuthorEvent => 5120,
             Self::RefUpdate | Self::ProtectedRefUpdate | Self::Config | Self::Release => 1536,
         }
     }

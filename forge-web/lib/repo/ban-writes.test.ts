@@ -22,6 +22,16 @@ let failMembers: 'none' | 'fresh' | 'all' = 'none'
 let membersFreshReads = 0
 const created: string[] = []
 
+// sakura's contracts: none of the mainnet fields (`mainnet-fields.ts`), `vis` where it was
+vi.mock('./contract-shape', async (orig) => {
+  const real = await orig<typeof import('./contract-shape')>()
+  const mainnet = new Set(['aud', 'mRole', 'tAud', 'enc', 'asMaintainer'])
+  return {
+    ...real,
+    contractHasProperty: async (...a: Parameters<typeof real.contractHasProperty>) => (mainnet.has(a[3]) ? false : a[3] === 'vis' ? true : real.contractHasProperty(...a)),
+    contractPropertyMinimum: async () => null,
+  }
+})
 vi.mock('../sdk', async (importOriginal) => {
   const real = await importOriginal<typeof import('../sdk')>()
   return {

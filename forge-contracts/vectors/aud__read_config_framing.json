@@ -1,0 +1,15 @@
+{
+  "name": "read_config_framing",
+  "description": "A content document framed as a config is malformed.",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "read",
+    "type": "comment",
+    "doc": {
+      "enc": "02000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "aud": 1
+    }
+  },
+  "expected": "malformed"
+}

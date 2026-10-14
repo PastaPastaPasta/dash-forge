@@ -311,9 +311,10 @@ export const PACK_KIND = {
    */
   ENV_SNAPSHOT: 8,
   /**
-   * A key letter (`lib/private/key-letter.ts`, `private-repos.md` §20): keys sealed to specific
-   * people as a DFPK 0x02 artifact. The web writes one kind, a bot's key for members-only posts
-   * (`lib/repo/bot-keys.ts`).
+   * A key letter (`lib/private/key-letter.ts`, DESIGN §4.3, §4.9): keys sealed to specific people,
+   * a narrower branch's `branchKey` letters (`lib/repo/branch-ring.ts`) and a bot's key for its
+   * members-only posts (`postKey`, `lib/repo/bot-keys.ts`) among them. Never superseding; each
+   * reader opens the ones addressed to them.
    */
   KEY_LETTER: 10,
   /**

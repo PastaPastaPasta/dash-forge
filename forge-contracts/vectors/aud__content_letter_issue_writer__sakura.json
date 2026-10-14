@@ -1,0 +1,23 @@
+{
+  "name": "content_letter_issue_writer__sakura",
+  "description": "A writer's letter: aud 2 and mRole 1 (it carries asMember). (sakura contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "content",
+    "type": "issue",
+    "shape": {
+      "aud": false,
+      "mRole": false
+    },
+    "doc": {
+      "enc": "0400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "asMember": true
+    },
+    "role": "writer"
+  },
+  "expected": {
+    "aud": null,
+    "mRole": null
+  }
+}

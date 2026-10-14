@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/branch-audience.schema.json",
+  "title": "dg branch audience --json",
+  "description": "Who a branch for fewer people is for, or the change `--to` made.",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "branch": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "changed",
+        "local"
+      ]
+    },
+    "audience": {
+      "type": "string"
+    },
+    "label": {
+      "type": "string"
+    },
+    "audienceLabel": {
+      "type": "string"
+    },
+    "to": {
+      "type": "string"
+    },
+    "people": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "holders": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "sentTo": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "noKey": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "cost": {
+      "$ref": "common.schema.json#/$defs/cost"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "branch"
+  ],
+  "additionalProperties": true
+}

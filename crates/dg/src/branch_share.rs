@@ -152,7 +152,8 @@ fn stdin_lines<'a>(prefix: &str, oids: impl IntoIterator<Item = &'a String>) -> 
     })
 }
 
-/// The objects `tips` reach that `public` does not (`rev-list --objects`), or only commits.
+/// The objects `tips` reach that `public` does not (`rev-list --objects`), or only commits, in
+/// the clone at `cwd`.
 fn beyond_public(
     cwd: &Path,
     tips: &[String],
@@ -169,6 +170,23 @@ fn beyond_public(
         cwd,
         None,
         args,
+        input.as_bytes(),
+    )?))
+}
+
+/// [`beyond_public`] for objects the members-only packs carry, in the scratch repository that
+/// indexed them (and borrows the clone's objects): a pack may hold objects this clone never
+/// fetched, and the walk goes on past one that no pack or clone has.
+fn beyond_public_in(
+    scratch: &Scratch,
+    objects: &[String],
+    public: &[String],
+) -> Result<BTreeSet<String>> {
+    let input = stdin_lines("", objects) + &stdin_lines("^", public);
+    Ok(oid_lines(&git_with_input(
+        &scratch.cwd,
+        Some(scratch.dir.path()),
+        &["rev-list", "--objects", "--missing=allow-any", "--stdin"],
         input.as_bytes(),
     )?))
 }
@@ -296,13 +314,17 @@ fn nobody_refusal(why: impl Into<String>) -> anyhow::Error {
 
 /// Drop from each pack's `bases` those a public branch reaches: they are already on the
 /// recipient's side.
-fn keep_private_bases(cwd: &Path, contents: &mut [PackContents], public: &[String]) -> Result<()> {
+fn keep_private_bases(
+    scratch: &Scratch,
+    contents: &mut [PackContents],
+    public: &[String],
+) -> Result<()> {
     let all: BTreeSet<&String> = contents.iter().flat_map(|c| &c.bases).collect();
     if all.is_empty() {
         return Ok(());
     }
     let all: Vec<String> = all.into_iter().cloned().collect();
-    let private = beyond_public(cwd, &all, public, true)?;
+    let private = beyond_public_in(scratch, &all, public)?;
     for c in contents {
         c.bases.retain(|b| private.contains(b));
     }
@@ -312,7 +334,7 @@ fn keep_private_bases(cwd: &Path, contents: &mut [PackContents], public: &[Strin
 /// How many objects the chosen packs carry beyond `needed` that the public branches do not reach
 /// (stored with the branch's commits by another members-only branch or an earlier push).
 fn count_extra_objects(
-    cwd: &Path,
+    scratch: &Scratch,
     choice: &Choice,
     contents: &[PackContents],
     needed: &BTreeSet<String>,
@@ -330,7 +352,7 @@ fn count_extra_objects(
     if extra.is_empty() {
         return Ok(0);
     }
-    let beyond = beyond_public(cwd, &extra, public, true)?;
+    let beyond = beyond_public_in(scratch, &extra, public)?;
     Ok(extra.iter().filter(|o| beyond.contains(*o)).count())
 }
 
@@ -569,8 +591,7 @@ pub async fn share(ctx: &Ctx, name: &str, to: &[String]) -> Result<()> {
             key,
         });
     }
-    drop(scratch);
-    keep_private_bases(&cwd, &mut contents, &public)?;
+    keep_private_bases(&scratch, &mut contents, &public)?;
     let choice = choose_packs(&needed, &needed_commits, &contents).map_err(|missing| {
         nothing_shared(
             codes::PACKS_UNREADABLE,
@@ -584,7 +605,8 @@ pub async fn share(ctx: &Ctx, name: &str, to: &[String]) -> Result<()> {
             "push {short} again from a clone that has it, then share it"
         ))
     })?;
-    let extra_objects = count_extra_objects(&cwd, &choice, &contents, &needed, &public)?;
+    let extra_objects = count_extra_objects(&scratch, &choice, &contents, &needed, &public)?;
+    drop(scratch);
 
     // the recipients: the sharer first, then each person named
     let signer = forge_core::keyring::PrivateSigner {
@@ -640,6 +662,12 @@ pub async fn share(ctx: &Ctx, name: &str, to: &[String]) -> Result<()> {
     let typed = letter
         .to_typed()
         .context("the share could not be written: its head did not check")?;
+    if let Err(key_letter::LetterError::TooLarge(_)) = typed.encode() {
+        return Err(nobody_refusal(format!(
+            "{short} has too many pushes to share at once ({} packs)",
+            choice.packs.len()
+        )));
+    }
     let sealed = key_letter::seal(
         &s.repo.scope()?.repo_id,
         sender,

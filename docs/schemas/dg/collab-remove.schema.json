@@ -38,7 +38,10 @@
     "losingMembers": {},
     "environments": {},
     "resavedEnvironments": {},
-    "environmentPlan": {}
+    "environmentPlan": {},
+    "branchesShared": {
+      "description": "Branches for fewer people the removal renewed the key of, as for `collab add`."
+    }
   },
   "required": [
     "schemaVersion",

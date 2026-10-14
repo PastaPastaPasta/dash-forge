@@ -20,7 +20,7 @@ import { idbDelete, idbGet, idbPut } from '../idb'
 import { isLegalRefName, isRc1OidHex } from '../rules'
 import { RoleRefusedError } from '../rules/roles'
 import { rerunFields } from '../rules/ci-rerun'
-import { isMemberGateRefusal } from './role-claim'
+import { isMemberGateRefusal, refreshRoleOnRefusal } from './role-claim'
 import { anchorOf, editKeepsAudience, groupReviewComments, isAuthorKind, issueStateV2, type AnchorFields, type Audience, type Policy } from '../rules/v2'
 import type { EventKind } from '../rules'
 import {
@@ -37,7 +37,8 @@ import {
 import { DOC, asIdentifierString, byteFieldToHex, contentDocOf, num, str, type RepoRef } from './contract'
 import { childAudience, membersWriter, repoHasMembersKey, sealMembersEdit, storedAudience, storedOnce, type MembersWriter } from './members-writes'
 import { invalidateRepoFeed, readReviews, readTargetLog } from './issues'
-import { readMemberships } from './members'
+import { readMemberships, readRoleOracle } from './members'
+import { EVENT_AS_MAINTAINER } from './moderation-fold'
 import { readRunners } from './checks'
 import { PrivateWriteError, sealEdit, type MembersPatch } from './private-writes'
 import { bodyRoom, longBodyField } from './long-body'
@@ -45,9 +46,10 @@ import { refitLongBodyField } from '../rules/long-body'
 import { bypassValue } from '../view/pull-actions'
 import { repoSource } from './source'
 import { contractHasProperty } from './contract-shape'
+import { restateContentFields } from './mainnet-fields'
 import { refuseIfBanned } from './bans'
 import { bundleCovers, contentGate } from './made-public'
-import { provenanceOf } from './make-public-writes'
+import { makePublicKeepsFields, provenanceOf } from './make-public-writes'
 import { audienceEdit, makePublicChanges } from '../rules/make-public'
 import { admitAll, docAudience } from './private-content'
 import { editLetterWriter, sdkLetterReads, sealLetterEdit, type LetterWriter } from './letter-writes'
@@ -66,6 +68,7 @@ import {
   eventRoute,
   lockedOut,
   refusePlaintextInPrivate,
+  refuseOwnVerdict,
   refuseVerdictForRole,
   settledPost,
   reviewVerdictFields,
@@ -635,7 +638,11 @@ async function submitWith(
   const settled = await settledPost(sdk, repo, auth.identityId, post, draft.verdict)
   // Read and Triage give no verdict (DESIGN D15): refused before anything is signed or the draft
   // is marked attempted, unless its review is already written.
-  if (current.reviewId === undefined) refuseVerdictForRole(settled, draft.verdict)
+  if (current.reviewId === undefined) {
+    refuseVerdictForRole(settled, draft.verdict)
+    // nor does a PR's own author (mainnet R-03)
+    await refuseOwnVerdict(sdk, repo, auth.identityId, draft.prId, draft.verdict)
+  }
   if (current.attemptedAt === undefined) current = { ...current, attemptedAt: Date.now() }
   // Saved before the first write, so a crash after it leaves a draft that reconciles.
   if (current !== draft) await saveReviewDraft(current)
@@ -773,7 +780,16 @@ export async function recordPolicyBypass(
   repo: RepoRef,
   input: { target: WriteTarget; rules: readonly string[]; mergeOid: string; intent?: string },
 ): Promise<WriteResult> {
-  return write(sdk, auth, repo, DOC.event, targetEventData(input.target, 'policyBypass', { value: bypassValue(input.rules), oidHex: input.mergeOid }), input.intent)
+  const data = targetEventData(input.target, 'policyBypass', { value: bypassValue(input.rules), oidHex: input.mergeOid })
+  // A maintainer's bypass proves its maintainer like a hide where the contract declares it
+  // (mainnet M2 puts kind 23 in `hideByMaint`); only a maintainer's counts anywhere.
+  if (
+    (await contractHasProperty(sdk, repo.forge.community, DOC.event, EVENT_AS_MAINTAINER)) &&
+    (await readRoleOracle(sdk, repo, auth.network)).currentRole(auth.identityId) === 'maintainer'
+  ) {
+    data[EVENT_AS_MAINTAINER] = decodeIdentifier(auth.identityId)
+  }
+  return write(sdk, auth, repo, DOC.event, data, input.intent)
 }
 
 /**
@@ -957,7 +973,7 @@ async function replace(
     if (!editKeepsAudience(contentDocOf(documentType, read.doc), contentDocOf(documentType, { ...read.doc, ...replaced }))) {
       throw new PrivateWriteError('this message is for specific people, and an edit keeps who can read it; nothing was written')
     }
-    return finishReplace(sdk, auth, repo, documentType, documentId, replaced, expectedRevision)
+    return finishReplace(sdk, auth, repo, documentType, documentId, replaced, expectedRevision, read.doc)
   }
   // A public repo's document keeps the audience it was written for (DESIGN §2.4): a members-only
   // one is re-sealed as a whole under the members key, never replaced with plaintext; a public
@@ -965,7 +981,7 @@ async function replace(
   if (repo.visibility === 'public' && read.doc !== null && read.madePublicBy !== undefined && read.audience !== 'public') {
     // A maintainer made it public: the author's edit is public too (the author's Make public
     // replace, DESIGN §4.6), so the public and members never see different current text.
-    replaced = editAsPublic(documentType, read.doc, changes, seal, read.madePublicBy, auth.identityId, repo)
+    replaced = editAsPublic(documentType, read.doc, changes, seal, read.madePublicBy, auth.identityId, repo, await makePublicKeepsFields(sdk, repo, documentType))
     if (expectedRevision !== undefined) {
       await precheckEdit(sdk, auth, { contractId: contractFor(repo, documentType), documentType, documentId, expectRepoId: repo.repoId, expectedRevision })
     }
@@ -997,10 +1013,14 @@ async function replace(
     const drops = Object.fromEntries(Object.entries(changes).filter(([k, v]) => v === undefined && REFERENCE_FIELDS.includes(k)))
     replaced = { ...sealed, ...Object.fromEntries(PLAINTEXT_OF[documentType].map((f) => [f, undefined])), ...drops }
   }
-  return finishReplace(sdk, auth, repo, documentType, documentId, replaced, expectedRevision)
+  return finishReplace(sdk, auth, repo, documentType, documentId, replaced, expectedRevision, read.doc)
 }
 
-/** The replace itself, then the caches it invalidates. */
+/**
+ * The replace itself, then the caches it invalidates. `aud` and `mRole` are restated where the
+ * contract declares them (mainnet L1, L2), from `stored` (the document the edit read, else read
+ * now) with the changes applied.
+ */
 async function finishReplace(
   sdk: EvoSDK,
   auth: WriteAuth,
@@ -1009,17 +1029,21 @@ async function finishReplace(
   documentId: string,
   replaced: Record<string, unknown>,
   expectedRevision: bigint | undefined,
+  stored: PlainDocument | null = null,
 ): Promise<ReplaceResult> {
+  const changes = await restateContentFields(sdk, auth, repo, documentType, replaced, async () => stored ?? (await storedOnce(sdk, repo, documentType, documentId)))
   try {
-    return await replaceDocumentIdempotent(sdk, auth, {
-      contractId: contractFor(repo, documentType),
-      documentType,
-      documentId,
-      changes: replaced,
-      repo: repo.repoId,
-      expectRepoId: repo.repoId,
-      expectedRevision,
-    })
+    return await refreshRoleOnRefusal(repo, auth, documentType, () =>
+      replaceDocumentIdempotent(sdk, auth, {
+        contractId: contractFor(repo, documentType),
+        documentType,
+        documentId,
+        changes,
+        repo: repo.repoId,
+        expectRepoId: repo.repoId,
+        expectedRevision,
+      }),
+    )
   } finally {
     // An edited title or body changes list rows and the index's text search, not open counts.
     invalidateRepoFeed(repo, { counts: false })
@@ -1041,14 +1065,21 @@ function editAsPublic(
   by: string,
   signer: string,
   repo: RepoRef,
+  /** The contract keeps an inline comment's path in this replace (mainnet L1). */
+  keepsFields = false,
 ): Record<string, unknown> {
   const current = seal?.current ?? {}
-  const text = (k: 'title' | 'body'): string | undefined => {
+  const text = (k: 'title' | 'body' | 'path'): string | undefined => {
     const v = k in changes ? changes[k] : current[k]
     return typeof v === 'string' ? v : undefined
   }
-  const opened = { ...(text('title') !== undefined ? { title: text('title') } : {}), ...(text('body') !== undefined ? { body: text('body') } : {}), ...provenanceOf(seal?.imported) }
-  const plan = makePublicChanges(documentType, opened)
+  const opened = {
+    ...(text('title') !== undefined ? { title: text('title') } : {}),
+    ...(text('body') !== undefined ? { body: text('body') } : {}),
+    ...(documentType === 'comment' && text('path') !== undefined ? { path: text('path') } : {}),
+    ...provenanceOf(seal?.imported),
+  }
+  const plan = makePublicChanges(documentType, opened, keepsFields)
   const refused = (): PrivateWriteError =>
     new PrivateWriteError(`@${by} made this ${documentType === 'patch' ? 'pull request' : documentType} public, so an edit of it is public too, and this one can't be; nothing was written`)
   if ('error' in plan) throw refused()

@@ -231,10 +231,7 @@ impl Realized {
 }
 
 fn audience(v: &Value) -> Audience {
-    match v.as_str() {
-        Some("members") => Audience::Members,
-        _ => Audience::Public,
-    }
+    Audience::parse(v.as_str().unwrap()).expect("a vector's audience")
 }
 
 /// The ledger a vector describes, through the real parser (`null` absent, `"unknown"` another
@@ -280,7 +277,7 @@ fn vectors(case: &str) -> Vec<(String, Value)> {
 #[test]
 fn every_publish_guard_vector_holds_over_real_git() {
     let all = vectors("publish_guard");
-    assert!(all.len() >= 30, "{} vectors", all.len());
+    assert!(all.len() >= 40, "{} vectors", all.len());
     let mut repos: BTreeMap<String, Realized> = BTreeMap::new();
     for (name, v) in &all {
         let inp = &v["input"];
@@ -313,6 +310,22 @@ fn every_publish_guard_vector_holds_over_real_git() {
             })
             .collect();
         let state = ledger_of(&inp["ledger"], r);
+        let audiences: forge_core::members_git::guard::NarrowAudiences = inp
+            .get("audiences")
+            .map(|a| serde_json::from_value(a.clone()).unwrap())
+            .unwrap_or_default();
+        let narrower: Vec<(String, String)> = inp
+            .get("decryptableNarrower")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .map(|n| {
+                (
+                    r.oid(n["oid"].as_str().unwrap()),
+                    n["audience"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect();
         let publish = inp
             .get("publishPrivate")
             .and_then(Value::as_str)
@@ -326,6 +339,8 @@ fn every_publish_guard_vector_holds_over_real_git() {
                 public_tips: &public_tips,
                 batch: &batch,
                 publish_private: publish.as_deref(),
+                audiences: &audiences,
+                decryptable_narrower: &narrower,
             },
         )
         .unwrap_or_else(|e| panic!("{name}: {e}"));
@@ -396,6 +411,8 @@ fn check(
                 audience: Audience::Public,
             }],
             publish_private: None,
+            audiences: &BTreeMap::default(),
+            decryptable_narrower: &[],
         },
     )
     .unwrap()
@@ -778,4 +795,17 @@ fn only_a_merge_with_a_parent_here_is_grafted_never_lost_history() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[test]
+fn the_branches_shared_with_this_clone_read_back_by_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("shared-branches");
+    std::fs::write(
+        &p,
+        "refs/heads/sec/fix\nnot a branch\nrefs/tags/v1\nrefs/heads/a..b\nrefs/heads/a\n",
+    )
+    .unwrap();
+    let got: Vec<String> = read_branch_lines(&p).into_iter().collect();
+    assert_eq!(got, ["refs/heads/a", "refs/heads/sec/fix"]);
 }

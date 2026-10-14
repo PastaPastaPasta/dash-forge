@@ -1,0 +1,15 @@
+{
+  "name": "manifest_r_access_notice_maintainer__sakura",
+  "description": "A maintainer's access notice (kind 11). (sakura contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "manifestR",
+    "shape": {
+      "maintKinds": false
+    },
+    "kind": 11,
+    "claimed": 1
+  },
+  "expected": 1
+}

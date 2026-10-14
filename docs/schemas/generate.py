@@ -554,6 +554,9 @@ cmd('collab add', 'A member added, or their role changed.', {
     'status': S, 'member': S, 'role': S, 'previousRole': nl(S), 'environmentsSavedFirst': ANY,
     'environmentsSavedAgain': ANY, 'environmentPlan': ANY, 'documentId': S, 'id': S,
     'repo': S, 'cost': COST, 'keyShared': B, 'keyPending': ANY, 'postKeySent': B, 'rotation': nl(R('rotation')),
+    'branchesShared': D('Branches for fewer people whose key the change sent (to anyone who joined) or renewed '
+                        '(for everyone left), each `sent`, `unchanged` or `failed`; null when none can change.',
+                        ANY),
 }, ['status', 'member', 'role'])
 cmd('collab accept', 'An invitation accepted (or withdrawn).', {
     'status': S, 'repo': S, 'identityId': S, 'documentId': S, 'id': S, 'cost': COST,
@@ -561,6 +564,7 @@ cmd('collab accept', 'An invitation accepted (or withdrawn).', {
 cmd('collab remove', 'A member removed.', {
     'status': E('removed', 'not_a_member'), 'member': S, 'role': S, 'repo': S, 'rotation': nl(R('rotation')),
     'droppedEpochs': ANY, 'losingMembers': ANY, 'environments': ANY, 'resavedEnvironments': ANY, 'environmentPlan': ANY,
+    'branchesShared': D('Branches for fewer people the removal renewed the key of, as for `collab add`.', ANY),
 }, ['status', 'member'])
 cmd('make-public', 'Members-only posts made public: your own each edited to Public (a review given a public comment that carries its text), or anyone\'s by a maintainer\'s make-public bundle (`carrier` "bundle").', {
     'status': E('madePublic'), 'cost': COST, 'carrier': E('bundle'),
@@ -575,13 +579,17 @@ cmd('collab list', 'The repository\'s members and their roles.', {
 
 # -- branches and publishing ------------------------------------------------------------------
 BRANCH_ROW = O({'branch': S, 'tip': S, 'publishedAs': S, 'onto': S}, ['branch', 'tip', 'publishedAs', 'onto'])
-cmd('branch list', 'The repository\'s branches and who can see them. A member sees the members-only ones too; anyone else sees `alsoMembersOnly` instead (never how many).', {
+cmd('branch list', 'The repository\'s branches and who can see them. A member sees the members-only ones too, a branch for fewer people with who it is for when they hold its key, and counts the others in `noAccessBranches`; anyone else sees `alsoMembersOnly` instead (never how many).', {
     'repo': S,
-    'branches': A(O({'name': S, 'ref': S, 'tip': nl(S), 'audience': E('public', 'members')}, ['name', 'ref', 'audience'])),
+    'branches': A(O({'name': S, 'ref': S, 'tip': nl(S), 'audience': E('public', 'members', 'narrower'),
+                     'audienceLabel': D('Who a branch for fewer people is for ("Maintainers").', S),
+                     'visibleTo': D('How many people it is for now.', I)}, ['name', 'ref', 'audience'])),
     'alsoMembersOnly': B,
+    'noAccessBranches': D('Branches for fewer people this reader has no key for (one per key generation).', I),
 }, ['repo', 'branches', 'alsoMembersOnly'])
-cmd('branch new', 'A branch started in this clone, and who will see it once pushed (null: what the repository decides).', {
-    'status': E('created'), 'branch': S, 'audience': nl(AUD),
+cmd('branch new', 'A branch started in this clone, and who will see it once pushed (null: what the repository decides; `narrower`: fewer people than all members, `--to`).', {
+    'status': E('created'), 'branch': S, 'audience': {'anyOf': [nl(AUD), E('narrower')]},
+    'audienceLabel': S, 'to': S, 'people': SA,
 }, ['status', 'branch'])
 cmd('branch share', 'A members-only branch shared, as it is now, with people who are not members (only they and you can open the share; later pushes are not shared).', {
     'status': E('shared'), 'branch': S, 'ref': S, 'head': S,
@@ -592,6 +600,10 @@ cmd('branch share', 'A members-only branch shared, as it is now, with people who
     'to': D('The identity ids it was shared with (you are always a recipient too).', SA),
     'letter': D('The share\'s packManifest document id (kind 10).', S), 'packHash': S, 'cost': COST,
 }, ['status', 'branch', 'ref', 'head', 'commits', 'extraCommits', 'extraObjects', 'packs', 'to', 'letter', 'packHash', 'cost'])
+cmd('branch audience', 'Who a branch for fewer people is for, or the change `--to` made.', {
+    'branch': S, 'status': E('changed', 'local'), 'audience': S, 'label': S, 'audienceLabel': S, 'to': S,
+    'people': SA, 'holders': SA, 'sentTo': SA, 'noKey': SA, 'cost': COST,
+}, ['branch'])
 cmd('branch cleanup', 'The local branches whose content `dg publish` published: deleted, or listed with --dry-run.', {
     'deleted': A(BRANCH_ROW), 'wouldDelete': A(BRANCH_ROW), 'keptCurrent': A(BRANCH_ROW),
 }, ['deleted', 'wouldDelete', 'keptCurrent'])

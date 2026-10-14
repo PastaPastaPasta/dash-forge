@@ -1,0 +1,22 @@
+{
+  "name": "content_made_public_writer__mainnet",
+  "description": "The replace that makes a writer's comment public drops enc, so aud goes; asMember stays, so mRole is restated. (mainnet contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "content",
+    "type": "comment",
+    "shape": {
+      "aud": true,
+      "mRole": true
+    },
+    "doc": {
+      "asMember": true
+    },
+    "role": "writer"
+  },
+  "expected": {
+    "aud": null,
+    "mRole": 1
+  }
+}

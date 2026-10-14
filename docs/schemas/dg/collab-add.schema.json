@@ -54,6 +54,9 @@
           "type": "null"
         }
       ]
+    },
+    "branchesShared": {
+      "description": "Branches for fewer people whose key the change sent (to anyone who joined) or renewed (for everyone left), each `sent`, `unchanged` or `failed`; null when none can change."
     }
   },
   "required": [

@@ -17,6 +17,7 @@ import {
   BUDGET_EXCEEDED_CODE,
   CONTEST_FULL_CODE,
   ConsensusRefusal,
+  DELETE_RULE_REFUSED_CODE,
   DOCUMENT_EXPIRED_CODE,
   DUPLICATE_UNIQUE_CODE,
   GATE_REFUSED_CODE,
@@ -32,6 +33,7 @@ import {
   isNonceUsedError,
 } from '../sdk/write'
 import { errorMessage } from '../utils'
+import { refusedRule } from '../rules/transition'
 import { creditsAsDash } from './format'
 
 /** Which budget blocks a write, and by how much (credits): what the top-up / renew sheet shows. */
@@ -81,6 +83,30 @@ function frozenField({ property, documentType }: ConsensusRefusal['figures']): s
   return `Its "${property}" can't be changed once it's set.`
 }
 
+/**
+ * What each rule only the mainnet registration has asks for (`build.py --mainnet`: its
+ * `propertyConstraints`, 10422, and `deleteConstraints`, 40147), by rule name, in a user's words.
+ * Parity: forge-core `user_error::MAINNET_RULE_EXPLANATIONS`.
+ */
+export const MAINNET_RULE_SENTENCES: Readonly<Record<string, string>> = {
+  audMember: 'Only members can write members-only posts.',
+  encFraming: "This post's encryption doesn't fit who it's for.",
+  authorNoVerdict: "You can't approve or request changes on your own pull request. Post it as a comment instead.",
+  tAudSealed: 'A change to a members-only issue or pull request stays members-only.',
+  retargetValue: 'A base branch change needs the new base, and nothing else carries one.',
+  sealedNoText: "A members-only or private check run can't show a summary, links or artifacts.",
+  maintKinds: 'Only a maintainer can make posts public, save environments or send access notices.',
+  botPack: 'A bot can push only code, browse indexes and long texts, and never replaces what others pushed.',
+  botChunk: 'Only a maintainer, a writer or a bot with push access can push this.',
+  botGrant: "A bot can push only under a maintainer's push grant.",
+  grantPrefix: 'This branch is outside the branches the push grant allows.',
+  ttl90: 'A push grant has to end after now and within 90 days.',
+  oneScope: 'A push grant covers one members-only branch or one public branch prefix, not both.',
+  targetOnPublish: 'A public release points at the commit its tag points at, and an encrypted one at none.',
+  ownerRowStays: "The owner's own Maintain access can't be removed.",
+  keepVerdicts: 'An approval or a change request stays on record. Dismiss it instead.',
+}
+
 /** "You weren't charged." or what was: the second beat of every refusal. */
 export function chargedSentence(feeCharged: boolean | null | undefined): string {
   return feeCharged === true ? 'You paid a small processing fee.' : feeCharged === false ? "You weren't charged." : 'Check Settings → Spend for any fee.'
@@ -105,8 +131,15 @@ function refusalSentence(r: ConsensusRefusal): string {
     case 10417:
     case 10421:
       return `That text is too long. ${charged} Shorten it and try again.`
-    case 10422:
+    case 10422: {
+      const why = MAINNET_RULE_SENTENCES[refusedRule(r.message) ?? '']
+      if (why !== undefined) return `${why} ${charged}`
       return `Forge couldn't save this. ${charged} Reload to get the latest version of the app, then try again. Error code 10422.`
+    }
+    case DELETE_RULE_REFUSED_CODE: {
+      const why = MAINNET_RULE_SENTENCES[refusedRule(r.message) ?? '']
+      return why !== undefined ? `${why} ${charged}` : `This can't be deleted. ${charged} Error code ${DELETE_RULE_REFUSED_CODE}.`
+    }
     case 20014:
       return `This browser's key isn't allowed to make this kind of change. ${charged} Error code 20014.`
     case UNREADABLE_REFUSAL_CODE:

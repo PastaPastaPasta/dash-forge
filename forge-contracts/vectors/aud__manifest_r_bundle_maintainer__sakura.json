@@ -1,0 +1,15 @@
+{
+  "name": "manifest_r_bundle_maintainer__sakura",
+  "description": "A maintainer's make-public bundle (kind 7). (sakura contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "manifestR",
+    "shape": {
+      "maintKinds": false
+    },
+    "kind": 7,
+    "claimed": 1
+  },
+  "expected": 1
+}

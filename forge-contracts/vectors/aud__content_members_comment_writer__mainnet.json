@@ -1,0 +1,23 @@
+{
+  "name": "content_members_comment_writer__mainnet",
+  "description": "A writer's members-only comment (v0x03): aud 1 and mRole 1. (mainnet contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "content",
+    "type": "comment",
+    "shape": {
+      "aud": true,
+      "mRole": true
+    },
+    "doc": {
+      "enc": "030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "asMember": true
+    },
+    "role": "writer"
+  },
+  "expected": {
+    "aud": 1,
+    "mRole": 1
+  }
+}

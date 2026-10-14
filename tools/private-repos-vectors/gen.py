@@ -142,7 +142,7 @@ def bind(doc, K):
     t = doc["type"]
     if t in ("issue", "patch"):
         return u32(doc["number"])
-    if t in ("comment", "event"):
+    if t in ("comment", "event", "authorEvent"):
         return bytes.fromhex(doc["targetId"])
     if t == "review":
         return bytes.fromhex(doc["patchId"])
@@ -1294,10 +1294,11 @@ def epoch_vectors():
 # --- §4 sealed collaboration documents (the CLI's and the web's writers, same bytes) -------------
 
 SEALED = {"issue": ("title", "body"), "patch": ("title", "body", "baseRefName", "sourceRefName"),
-          "comment": ("body", "path"), "review": ("body",), "event": ("value",)}
+          "comment": ("body", "path"), "review": ("body",), "event": ("value",), "authorEvent": ("value",)}
 TLV_TAG = {"title": 1, "body": 2, "baseRefName": 4, "sourceRefName": 5, "path": 10, "importedAuthor": 13,
            "importedUrl": 14, "value": 15}
-BIND_OF = {"issue": "number", "patch": "number", "comment": "targetId", "review": "patchId", "event": "targetId"}
+BIND_OF = {"issue": "number", "patch": "number", "comment": "targetId", "review": "patchId", "event": "targetId",
+           "authorEvent": "targetId"}
 # the plaintext text cap per type: enc 5120 - v0x01 framing 29 - 3 bytes per TLV record
 TEXT_CAP = {"issue": 5120 - 29 - 6, "patch": 5120 - 29 - 12, "comment": 5120 - 29 - 6, "review": 5120 - 29 - 3}
 
@@ -1379,6 +1380,10 @@ def collab_seal_vectors():
       dict(targetId="44" * 32, targetNumber=3, kind=15, value="the approval predates the force-push",
            refId="99" * 32))
     v("event_retarget", "a retarget: the new base branch name is sealed.", "event",
+      dict(targetId="44" * 32, targetNumber=3, kind=8, value="refs/heads/release"))
+    v("author_event_retarget",
+      "an author's retarget (authorEvent, mainnet M3): the new base is sealed like a member event's, under the "
+      "docType authorEvent, so one cannot pass for the other.", "authorEvent",
       dict(targetId="44" * 32, targetNumber=3, kind=8, value="refs/heads/release"))
     for t, base in (("issue", dict(number=10, title="t")), ("comment", dict(targetId="33" * 32, body="b")),
                     ("review", dict(patchId="44" * 32, verdict=2, commitOid="dd" * 20)),
@@ -1941,9 +1946,21 @@ def mixed_vectors():
         vector("mixed_doc_seal", name, desc,
                dict(repoId=H(repoId), key=H(K0), doc=doc, fields=fields, nonce=H(NONCE)),
                dict(ad=H(A), kObj=H(ko), commit=H(C), tlv=H(pt), enc=H(e)))
+    # D38's writer half (mainnet): a private repository's new content is v0x03 by its own writer
+    # (`seal_private_v3`); the AD does not bind vis, so the bytes are the members-only seal's
+    A, ko, C, pt, e = seal_members(private_vis(MDOC), K0, tlv((2, MBODY.encode())))
+    vector("mixed_doc_seal", "v03_private_d38",
+           "a private repository's comment sealed v0x03 by the D38 writer on the mainnet contract (input.d38): a "
+           "private header, a private document's TLV (no blind tags), the members-only envelope and AD.",
+           dict(repoId=H(repoId), key=H(K0), doc=private_vis(MDOC), fields={"body": MBODY}, nonce=H(NONCE), d38=True),
+           dict(ad=H(A), kObj=H(ko), commit=H(C), tlv=H(pt), enc=H(e)))
+    vector("mixed_doc_seal", "v03_private_d38_public_header_refused",
+           "the D38 writer seals private documents only: a public header is refused.",
+           dict(repoId=H(repoId), key=H(K0), doc=MDOC, fields={"body": MBODY}, nonce=H(NONCE), d38=True),
+           dict(error="malformed"))
     for name, doc, fields, err, desc in [
         ("v03_private_header_refused", private_vis(MDOC), {"body": MBODY}, "malformed",
-         "a writer never seals v0x03 for a private repository's document (v0x01 there)."),
+         "the members lane's writer never seals v0x03 for a private repository's document (D38 has its own)."),
         ("v03_config_refused", dict(CONFIG0, vis="public"), {"defaultBranch": "refs/heads/main"}, "malformed",
          "a config is always v0x02, members lane or not."),
         ("v03_body_over_cap", MDOC, {"body": "b" * (MAX_ENC["comment"] - MIN_V3 - 2)}, "tooLarge",

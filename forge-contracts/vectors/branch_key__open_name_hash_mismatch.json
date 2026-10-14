@@ -1,0 +1,79 @@
+{
+  "name": "open_name_hash_mismatch",
+  "description": "refNameHash is the branch key's hash of another name than TLV 3's: malformed.",
+  "case": "branch_key",
+  "rules": "v2",
+  "input": {
+    "op": "open",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "letters": [
+        {
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "height": 100,
+          "sender": "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
+          "body": {
+            "type": "branchKey",
+            "v": 1,
+            "name": "refs/heads/sec/embargo",
+            "gen": 0,
+            "keys": [
+              "6465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80818283"
+            ],
+            "group": "maintainers",
+            "people": [],
+            "to": [
+              "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+            ]
+          }
+        },
+        {
+          "id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "height": 300,
+          "sender": "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
+          "body": {
+            "type": "branchKey",
+            "v": 1,
+            "name": "refs/heads/sec/embargo",
+            "gen": 1,
+            "keys": [
+              "6465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80818283",
+              "8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaab"
+            ],
+            "group": "maintainers",
+            "people": [],
+            "to": [
+              "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+            ]
+          }
+        }
+      ],
+      "groups": {
+        "maintainers": [
+          "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+        ],
+        "writers": [
+          "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+        ],
+        "members": [
+          "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+        ]
+      }
+    },
+    "doc": {
+      "type": "refUpdate",
+      "vis": "public",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "refNameHash": "10a1a0a525d078382b1e719550e6c3ab21a3ff8c7731b8e11e846c103f7c3c4b",
+      "newOid": "2792c4013b39c4f9ffaed68f5e88bfbd725c0542",
+      "force": false,
+      "prevOid": "777153af9ca560b3a817359ee1bf82fac6254284",
+      "enc": "06d02a38c3000102030405060708090a0bc6a245df06f3ccf9ec835080f99cf5bec34f46ac31cac3a6849110cc880d88c4c0bf0fc122b51a227051ab6cc1a0a2ee6b4976f583dfe76247574e473142c523433b4b9fb46e25509f74aa9ec526566192321c5d3788a9e2bd7a4dd62b8fd4b50f0f11869e31560585f28d61bffeee0d37bbb6aa58cc915a883cc3d96ec936befce221caa9bbecfa2c4537e77f9bc2a5a256e50aa190172d1a76",
+      "createdAtBlockHeight": 150
+    }
+  },
+  "expected": {
+    "status": "malformed"
+  }
+}

@@ -13,7 +13,9 @@
  * branches and pull requests (§19; `sealMembersRef`'s fixed-salt twin is test-only). `./bundle` and `./convert` are
  * a repository made public's readers (§18): its conversion facts and the keys its owner published;
  * `./key-letter` is the kind-10 key letter (§20): typed keys sealed to specific people, and the `branch` letter
- * that shares one members-only branch as it is now; `./bot-post` is a bot's members-only post (`enc` v0x05, §23)
+ * that shares one members-only branch as it is now. `./branch-key` is a narrower branch's own key (DESIGN §4.3, phase 3F):
+ * its generations, its ref updates (`enc` v0x06) and packs (DFPK 0x03), the `branchKey` letter and
+ * the fold of those letters into a `BranchRing` (`sealBranchRef`'s and `sealBranchPack`'s fixed twins are test-only); `./bot-post` is a bot's members-only post (`enc` v0x05, §23)
  * and the `postKey` letter a maintainer sends the bot. `./bundle` also reads and writes a maintainer's make-public bundle (DESIGN §4.6), whose entries
  * publish one document revision's per-object key (`membersObjKey`, `letterObjKey`) and open it
  * with no other key (`openMembersWithKey`, `openLetterWithKey`). `./release`'s `sealRelease` and `sealReleaseManifest` are, since the web writes
@@ -82,6 +84,7 @@ export {
   pads,
   sealDoc,
   sealMembersDoc,
+  sealPrivateV3,
   type AnchorRef,
   type IdentitySet,
   type OpenContext,
@@ -280,3 +283,31 @@ export {
   type KeyLetterOpenResult,
   type TypedLetter,
 } from './key-letter'
+export {
+  BRANCH_KEY_LETTER_TYPE,
+  BRANCH_PACK_VERSION,
+  BranchKey,
+  BranchKeys,
+  BranchRing,
+  MAX_BRANCH_GENERATIONS,
+  MAX_BRANCH_PEOPLE,
+  MIN_V6,
+  V6,
+  branchKeyLetterFromTyped,
+  branchKeyLetterGen,
+  branchKeyLetterToTyped,
+  currentGenerationLetter,
+  foldBranchLetters,
+  isBranchName,
+  nextGenerationLetter,
+  openBranchPack,
+  parseBranchKeyLetter,
+  sealBranchPack,
+  sealBranchRef,
+  sniffBranchKcv,
+  type Branch,
+  type BranchFold,
+  type BranchKeyLetter,
+  type BranchLetterIgnored,
+  type BranchLetterIn,
+} from './branch-key'

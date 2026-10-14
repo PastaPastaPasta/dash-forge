@@ -863,6 +863,21 @@ Not covered here: the client halves of B1 (the name/hash check for a bot's updat
 
 **M-B layout live (2026-10-13, Platform 5.0.0-beta.6).** Clients now take the layout from the deployment record (§2, forge-meta). On sakura's three-contract set `dg` and the web wrote and read a repo's labels, topics, ban, profile and follow as before, each in its old home. Against a second scratch four-contract set (`build.py --mainnet`, its record outside the repository, a local build pointed at it): a key bound to its group passed `dg auth login --strict-group` and signed every `dg` write; `dg` wrote labels, topics, a ban and its lift, a profile and, with members-only content on, `repoKey` wraps carrying `mr`; the web passed its group check, defined a label and followed an identity; `dg storage mirror add` recorded a `packMirror` (with `vis`), and once the pack's only recorded copy was deleted, `git-remote-dash` and a local gateway both read the pack through that record; the relay ran on the record and delivered a push webhook. Every one of the seven types was read back (proved) from forge-meta, and the three older contracts refuse them.
 
+**M-B fields (clients, phase M-B part 2).** `dg`, forge-core and the web write each mainnet field only where the loaded contract declares it, so one build serves sakura's set unchanged and a `--mainnet` set (the rules and vectors: `forge_core::rules::aud`, `forge-web/lib/rules/aud.ts`, `forge-contracts/vectors/aud__*`, judged against both shapes):
+
+| Field | Written | Read |
+|---|---|---|
+| `aud` (L1) on issue, patch, comment, review | from `enc[0]` (0x01, 0x03, 0x05 → 1; 0x04 → 2), absent exactly when `enc` is; restated on every replace, dropped by the author's edit to Public | a disagreeing `aud` makes the document malformed (a placeholder) |
+| `mRole` (L2) | the signer's current `writer` role whenever the document carries `asMember`, on every create and replace; a maintainer leaves it out | roles come from the member list, never from `mRole` |
+| `comment.path` | set once, in the author's replace that drops `aud` (an inline comment made public keeps its file); a PR's `baseRefName` / `sourceRefName` stay unset, since a members-only branch's name is hashed under the members key, which no public reader can check a plaintext name against | — |
+| `event.tAud`, `authorEvent.tAud` (M4, M3) | the target's stored `aud`; a value is sealed whenever `tAud` is set (also after a maintainer's bundle); an author's value on a members-only target is a sealed `authorEvent` | sealed `authorEvent` values open like events |
+| `packManifest.r = 0` (C3) | kinds 7, 8, 9 and 11, where `r`'s `minimum` is 0 | — |
+| `event.asMaintainer` on kind 23 (M2) | a maintainer's policy bypass | — |
+| v0x03 in private repositories (D38) | new issues, PRs, comments and reviews where forge-collab declares `aud` (a text that fits only v0x01's room, 32 bytes more, stays v0x01); events and edits as before | v0x01 and v0x03 |
+| `vis` on `webhook`, `topic`, `packMirror` (R-11) | left out where the type no longer declares it | no reader depends on it |
+
+Before signing, on both networks: a PR's author cannot approve or request changes on it (R-03), the owner's own maintainer document is never removed (R-08), and private repositories cannot be starred or watched (R-12). A mainnet rule's refusal (10422) and a `deleteConstraints` refusal (40147: `ownerRowStays`, `keepVerdicts`) are worded for users.
+
 **The Platform beta.6 items (mainnet only, phase M-A2).** dash-forge-qa `design/v5/PLATFORM-OPPORTUNITIES-5.0.0-beta.6.md` (research1) found what Platform 5.0.0-beta.4 to beta.6 lets the fresh registration add. The items the orchestrator took are `MAINNET_FLAGS` entries in `build.py`, each off in every devnet build and on with `--mainnet`. The live sakura set (`--check`) is unchanged. Book chapters are cited at v5.0.0-beta.6 (`book/src/contract-keywords/`).
 
 | Flag | Item | Contract | What consensus enforces | Until mainnet |

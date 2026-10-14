@@ -1,0 +1,23 @@
+{
+  "name": "content_edit_after_promotion__mainnet",
+  "description": "An edit after triage was made a writer restates the new role. (mainnet contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "content",
+    "type": "comment",
+    "shape": {
+      "aud": true,
+      "mRole": true
+    },
+    "doc": {
+      "enc": "030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "asMember": true
+    },
+    "role": "writer"
+  },
+  "expected": {
+    "aud": 1,
+    "mRole": 1
+  }
+}

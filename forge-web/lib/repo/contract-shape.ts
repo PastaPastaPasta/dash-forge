@@ -12,10 +12,11 @@
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
-/** A document type's top-level property names, index names and integer properties' `maximum`s. */
+/** A document type's top-level property names, index names and integer `minimum`s and `maximum`s. */
 interface TypeShape {
   readonly properties: ReadonlySet<string>
   readonly indexes: ReadonlySet<string>
+  readonly minimums: ReadonlyMap<string, number>
   readonly maxima: ReadonlyMap<string, number>
 }
 
@@ -29,18 +30,25 @@ function shapeOf(sdk: EvoSDK, contractId: string): Promise<ReadonlyMap<string, T
     const contract = await sdk.contracts.fetch(contractId)
     if (!contract) throw new Error(`contract ${contractId} was not found`)
     const schemas = contract.schemas as Record<string, { properties?: Record<string, unknown>; indices?: readonly { name?: unknown }[] } | undefined>
+    const boundOf = (p: unknown, bound: 'minimum' | 'maximum'): number | undefined => {
+      const m = p !== null && typeof p === 'object' ? (p as Record<string, unknown>)[bound] : undefined
+      return typeof m === 'number' ? m : typeof m === 'bigint' ? Number(m) : undefined
+    }
+    const bounds = (s: { properties?: Record<string, unknown> } | undefined, bound: 'minimum' | 'maximum'): ReadonlyMap<string, number> =>
+      new Map(
+        Object.entries(s?.properties ?? {}).flatMap(([name, p]) => {
+          const m = boundOf(p, bound)
+          return m === undefined ? [] : [[name, m] as const]
+        }),
+      )
     return new Map(
       Object.entries(schemas).map(([type, s]) => [
         type,
         {
           properties: new Set(Object.keys(s?.properties ?? {})),
-          maxima: new Map(
-            Object.entries(s?.properties ?? {}).flatMap(([name, p]) => {
-              const max = (p as { maximum?: unknown } | null)?.maximum
-              return typeof max === 'number' ? [[name, max] as const] : []
-            }),
-          ),
           indexes: new Set((s?.indices ?? []).map((i) => i.name).filter((n): n is string => typeof n === 'string')),
+          minimums: bounds(s, 'minimum'),
+          maxima: bounds(s, 'maximum'),
         },
       ] as const),
     )
@@ -53,6 +61,15 @@ function shapeOf(sdk: EvoSDK, contractId: string): Promise<ReadonlyMap<string, T
 /** Whether `documentType` of contract `contractId` declares the top-level `property`. */
 export async function contractHasProperty(sdk: EvoSDK, contractId: string, documentType: string, property: string): Promise<boolean> {
   return (await shapeOf(sdk, contractId)).get(documentType)?.properties.has(property) ?? false
+}
+
+/**
+ * The `minimum` `documentType`'s top-level integer `property` declares, as the contract states it
+ * (feature-detects a bound a build flag moves: mainnet C3 lets `packManifest.r` be 0); null for an
+ * unknown type or property, or no `minimum`. Parity: forge-core `LoadedContract::property_minimum`.
+ */
+export async function contractPropertyMinimum(sdk: EvoSDK, contractId: string, documentType: string, property: string): Promise<number | null> {
+  return (await shapeOf(sdk, contractId)).get(documentType)?.minimums.get(property) ?? null
 }
 
 /** Whether `documentType` of contract `contractId` declares the index named `index`. */

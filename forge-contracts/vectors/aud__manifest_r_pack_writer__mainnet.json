@@ -1,0 +1,15 @@
+{
+  "name": "manifest_r_pack_writer__mainnet",
+  "description": "A writer's git pack keeps r 1. (mainnet contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "manifestR",
+    "shape": {
+      "maintKinds": true
+    },
+    "kind": 0,
+    "claimed": 1
+  },
+  "expected": 1
+}

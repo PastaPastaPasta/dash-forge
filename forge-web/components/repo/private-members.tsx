@@ -133,7 +133,7 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
   // again, planned and priced before signing, made around the change.
   const envChange: MemberChange | null = adding ? { kind: 'grant', member: trimmed, role } : removing !== null ? { kind: 'revoke', member: removing.member, role: removing.role } : null
   const envFlow = useMemberEnvFlow(home, envChange, removing !== null && holdsMembersKey(removing.role))
-  const planned = (): PrivateWriteContext | null => (write.context === null ? null : { ...write.context, environmentsPlanned: envFlow.plan !== null })
+  const planned = (): PrivateWriteContext | null => (write.context === null ? null : { ...write.context, environmentsPlanned: envFlow.envsPlanned })
   const idError = person.error
   const keyCheck = useAsync(
     () => hasUsableEncryptionKey(sdk!, repo.forge.core, trimmed),

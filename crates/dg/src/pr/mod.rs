@@ -416,6 +416,33 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
             .and_then(|f| f.get(name))
             .is_some_and(|r| r.members_only)
     };
+    // a branch for fewer people (phase 3F) is never the source or base of a pull request every
+    // member reads (DESIGN §4.3): its name and commits would reach all of them
+    let narrower_ref = |name: &str| {
+        fold.as_deref()
+            .and_then(|f| f.get(name))
+            .is_some_and(|r| r.narrower)
+    };
+    let narrower = [
+        (source.id() == handle.id()).then_some(&head_ref),
+        Some(&base),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|n| narrower_ref(n));
+    if let Some(n) = narrower {
+        let name = forge_core::keyring::short_branch(n);
+        return Err(UserError::new(
+            codes::USAGE,
+            format!("pull request not created: {name} is for fewer people than all members"),
+        )
+        .cause("every member reads a members-only pull request, its branch names included")
+        .fix(format!(
+            "publish its work onto a public branch when it is ready: `dg publish {name} --onto <branch>`"
+        ))
+        .note("nothing was written")
+        .into());
+    }
     let (source_members, base_members) = (
         source.id() == handle.id() && members_ref(&head_ref),
         members_ref(&base),

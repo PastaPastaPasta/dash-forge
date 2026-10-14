@@ -534,7 +534,7 @@ export function ReviewDrawer({
               </fieldset>
               {isAuthor ? (
                 <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="review-author-note">
-                  You opened this PR: your own approval would never count, so your review is a comment.
+                  You can&apos;t approve or request changes on your own pull request, so your review is a comment.
                 </p>
               ) : refused !== null ? (
                 <div role="alert" className="flex flex-wrap items-center gap-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense text-anvil-800 dark:text-anvil-100" data-testid="review-verdict-refused">

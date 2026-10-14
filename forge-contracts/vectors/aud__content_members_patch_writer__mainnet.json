@@ -1,0 +1,23 @@
+{
+  "name": "content_members_patch_writer__mainnet",
+  "description": "A writer's members-only PR: aud 1, mRole 1. (mainnet contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "content",
+    "type": "patch",
+    "shape": {
+      "aud": true,
+      "mRole": true
+    },
+    "doc": {
+      "enc": "030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "asMember": true
+    },
+    "role": "writer"
+  },
+  "expected": {
+    "aud": 1,
+    "mRole": 1
+  }
+}

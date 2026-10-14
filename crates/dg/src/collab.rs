@@ -324,7 +324,14 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
         Some(p) => format!("{}{question}", p.explain(member, ctx.usd_price())),
         None => question,
     };
-    let question = format!("{question}{}", regroup.explain(ctx.usd_price()));
+    // branches for fewer people (phase 3F, D34): anyone the change adds to one gets its key, and
+    // anyone it takes off means a new key for everyone left, in this same flow
+    let narrow = crate::narrow::prepare(&s, &after_members).await?;
+    let question = format!(
+        "{question}{}{}",
+        regroup.explain(ctx.usd_price()),
+        narrow.explain(ctx.usd_price())
+    );
     if !ctx.confirm(&question)? {
         return Err(crate::errors::cancelled());
     }
@@ -382,6 +389,10 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
     if !regroup_text.is_empty() {
         eprintln!("{}", regroup_text.trim_start());
     }
+    let (relettered, narrow_text) = narrow.save(&s).await;
+    if !narrow_text.is_empty() {
+        eprintln!("{}", narrow_text.trim_start());
+    }
     // A role already held writes nothing (a keyed repository's wrap may still).
     let spent = if held && !keyed && post_keys.as_ref().is_none_or(|p| p.sent.is_empty()) {
         0
@@ -399,6 +410,7 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
             "environmentsSavedFirst": protected,
             "environmentsSavedAgain": regrouped,
             "environmentPlan": regroup.planned,
+            "branchesShared": relettered,
             "documentId": granted.document_id,
             "id": granted.document_id,
             "repo": handle.display(),
@@ -464,6 +476,9 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, no_resave: b
     // holds only the other document type is refused before anything is written, naming their
     // access and the `--role` that removes it (the default `--role writer` never removes a
     // maintainer).
+    if let Some(e) = forge_core::members::owner_row_refusal(handle, member, role) {
+        return Err(e.into());
+    }
     let held = MemberReader::new(client).roles_of(handle, member).await?;
     let held_roles: Vec<Role> = held.iter().map(|m| m.role).collect();
     if let Some(e) = wrong_role_refusal(&handle.display(), member, role, &held_roles) {
@@ -493,7 +508,10 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, no_resave: b
     } else {
         removal.explain(ctx.usd_price())
     };
-    let prompt = format!("{prompt}{explained}");
+    // branches for fewer people the member leaves (phase 3F, D34): a new key for everyone left
+    let after_members = crate::env::members_after(&before_members, member, role, false);
+    let narrow = crate::narrow::prepare(&s, &after_members).await?;
+    let prompt = format!("{prompt}{explained}{}", narrow.explain(ctx.usd_price()));
     if !ctx.confirm(&prompt)? {
         return Err(crate::errors::cancelled());
     }
@@ -545,6 +563,10 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, no_resave: b
     // after the rotation: the pinned environments saved again, unless changed meanwhile. Also
     // when they were gone already: a run that stopped before its saves is finished this way.
     let (resaved, exposed_lines) = crate::env::finish_removal(&s, &removal).await;
+    let (relettered, narrow_text) = narrow.save(&s).await;
+    if !narrow_text.is_empty() {
+        eprintln!("{}", narrow_text.trim_start());
+    }
     ctx.emit(
         json!({
             "status": if removed { "removed" } else { "not_a_member" },
@@ -557,6 +579,7 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, no_resave: b
             "environments": removal.exposed,
             "environmentPlan": removal.regroup_json(),
             "resavedEnvironments": resaved,
+            "branchesShared": relettered,
         }),
         || {
             if !dropped.is_empty() {

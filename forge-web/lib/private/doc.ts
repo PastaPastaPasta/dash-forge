@@ -65,6 +65,12 @@ const MAX_ENC: Readonly<Record<PrivateDocType, number>> = {
   protectedRefUpdate: 1536,
   config: 1536,
   event: 5120,
+  authorEvent: 5120,
+}
+
+/** The `enc` `maxItems` of `type` in its contract. */
+export function maxEnc(type: PrivateDocType): number {
+  return MAX_ENC[type]
 }
 
 /** The largest TLV plaintext a document of `type` can carry. */
@@ -169,6 +175,7 @@ function bind(doc: PrivateDoc, keys: EpochKeys | undefined): Bytes {
       return u32Field(doc.number, 'number')
     case 'comment':
     case 'event':
+    case 'authorEvent':
       return bytes(fixed(doc.targetId, 32, 'targetId'))
     case 'review':
       return bytes(fixed(doc.patchId, 32, 'patchId'))
@@ -353,9 +360,18 @@ interface MembersSealed {
  */
 async function sealMembersWith(keys: EpochKeys, doc: PrivateDoc, fields: DocFields, nonceOf: NonceOf): Promise<MembersSealed> {
   if (doc.vis !== 'public') throw new MalformedError('members-only content exists only in a public repository')
+  return v3Envelope(keys, doc, fields, true, nonceOf)
+}
+
+/**
+ * The v0x03 envelope of `fields` under `doc` (§4.1), for {@link sealMembersWith} and
+ * {@link sealPrivateV3With}: `blinds` says whether the records parse as a public repository's
+ * members-only content (the blind tags 22-24, 27 admitted) or as a private document's (reserved).
+ */
+async function v3Envelope(keys: EpochKeys, doc: PrivateDoc, fields: DocFields, blinds: boolean, nonceOf: NonceOf): Promise<MembersSealed> {
   if (doc.type === 'config') throw new MalformedError('a config is always v0x02')
   const ad = docAd(doc, keys, V3)
-  const records = buildTlv(fields, { type: doc.type, epoch: doc.epoch, blinds: true })
+  const records = buildTlv(fields, { type: doc.type, epoch: doc.epoch, blinds })
   const room = maxMembersPlaintext(doc.type)
   if (records.length > room) throw new TooLargeError(room)
   if (!(await refHashesMatch(doc, fields, keys, V3))) throw new MalformedError('a ref name does not match its hash')
@@ -381,11 +397,16 @@ async function sealMembersWith(keys: EpochKeys, doc: PrivateDoc, fields: DocFiel
  * `doc.vis` must be `public`; a config is refused (always v0x02). Throws {@link MalformedError}
  * and {@link TooLargeError} like {@link sealDoc}.
  */
-export async function sealMembersDoc(keys: EpochKeys, doc: PrivateDoc, fields: DocFields): Promise<Bytes> {
+export function sealMembersDoc(keys: EpochKeys, doc: PrivateDoc, fields: DocFields): Promise<Bytes> {
+  return sealedHedged(keys, (nonceOf) => sealMembersWith(keys, doc, fields, nonceOf))
+}
+
+/** The `enc` `seal` produces with a hedged random nonce (§3.6), the intermediates it leaves zeroed. */
+async function sealedHedged(keys: EpochKeys, seal: (nonceOf: NonceOf) => Promise<MembersSealed>): Promise<Bytes> {
   const hedged: NonceOf = async (ad, tlv) => hedgeNonce(keys, randomBytes(32), ad, await sha256(tlv))
   let sealed: MembersSealed | undefined
   try {
-    sealed = await sealMembersWith(keys, doc, fields, hedged)
+    sealed = await seal(hedged)
     return sealed.enc
   } finally {
     sealed?.tlv.fill(0)
@@ -399,6 +420,27 @@ export async function sealMembersDoc(keys: EpochKeys, doc: PrivateDoc, fields: D
  */
 export function __unsafeSealMembersDocWithNonce(keys: EpochKeys, doc: PrivateDoc, fields: DocFields, nonce: Uint8Array): Promise<MembersSealed> {
   return sealMembersWith(keys, doc, fields, async () => new Uint8Array(nonce))
+}
+
+/** The D38 seal: a private document only (an absent `vis` is private), its records parsed as a private document's. */
+async function sealPrivateV3With(keys: EpochKeys, doc: PrivateDoc, fields: DocFields, nonceOf: NonceOf): Promise<MembersSealed> {
+  if (doc.vis === 'public') throw new MalformedError('the per-object private seal is for a private repository')
+  return v3Envelope(keys, doc, fields, false, nonceOf)
+}
+
+/**
+ * Encrypt `fields` as a private repository's content in the v0x03 envelope (DESIGN D38; forge-core
+ * `doc::seal_private_v3`): a per-object key under the epoch, so one document's key can later be
+ * given on its own. Written for new content on the mainnet contract; a private document's TLV (no
+ * blind tags) with the members-only padding, AD and commitment. Throws like {@link sealMembersDoc}.
+ */
+export function sealPrivateV3(keys: EpochKeys, doc: PrivateDoc, fields: DocFields): Promise<Bytes> {
+  return sealedHedged(keys, (nonceOf) => sealPrivateV3With(keys, doc, fields, nonceOf))
+}
+
+/** INTERNAL, TEST-ONLY: {@link sealPrivateV3} with a caller-chosen nonce. Only `lib/private/testing.ts` may import it. */
+export function __unsafeSealPrivateV3WithNonce(keys: EpochKeys, doc: PrivateDoc, fields: DocFields, nonce: Uint8Array): Promise<MembersSealed> {
+  return sealPrivateV3With(keys, doc, fields, async () => new Uint8Array(nonce))
 }
 
 /**
@@ -754,7 +796,7 @@ export async function openContent(doc: StoredPrivateDoc, ctx: OpenContext): Prom
   // A member `event` is gated at consensus (a removed member cannot write one), so the late rule,
   // about un-gated writes under a superseded key, does not apply; its schema carries no
   // `$createdAtBlockHeight` either (§8.1 step 7).
-  if (doc.type === 'event') return result
+  if (doc.type === 'event' || doc.type === 'authorEvent') return result
   if (!isHeight(doc.createdAtBlockHeight)) return MALFORMED
   if (isLate(ctx.anchors, ctx.members, doc.epoch, doc.createdAtBlockHeight, doc.ownerId, ctx.burned)) return unreadable('late')
   // An edit re-seals the text: a late one (by a non-member, past the grace period) replaced the

@@ -14,7 +14,10 @@
  * two groups, "Public" and "Members only", the second with each branch's real tip and Publish; the
  * web never writes to a members-only ref (no delete or restore there: push with git). Everyone
  * else sees the public list and one line, "This repo also has members-only branches.", never a
- * number.
+ * number. A branch for fewer people than all members (phase 3F) is listed there too, saying who
+ * it is for ("Maintainers only · visible to 3 people"), without Publish (it can't be the head of a
+ * members-only pull request); a member without its key sees one row per such branch, "A branch you
+ * don't have access to", with no name, tip or link.
  */
 
 import { useCallback, useMemo, useState } from 'react'
@@ -23,6 +26,7 @@ import { Activity, GitBranch, Lock, Search, Tag } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { isDiverged, isLive, matchesRefQuery, plural, refParamFor, tipOidOf } from '@/lib/view'
 import { compareRefNames, compareTagNames, repoKey, type ResolvedRef } from '@/lib/repo'
+import { NO_ACCESS_TEXT, narrowWho, narrowerText } from '@/lib/repo/branch-ring'
 import { Oid } from '@/components/ui/oid'
 import { EmptyState } from '@/components/ui/states'
 import { RefDate, TagCommit, useTagPeeler } from '@/components/repo/tag-commit'
@@ -63,6 +67,9 @@ function ActivityLink({ addr, kind, name }: { addr: RepoAddress; kind: keyof typ
     </Link>
   )
 }
+
+/** When a member's keys to branches for fewer people couldn't be read (the page goes on without them). */
+const UNCHECKED_TEXT = "Some members-only branches couldn't be checked. Reload the page to try again."
 
 /** How many people can read a members-only branch: the repo's members who hold the members key (never bots). */
 function membersKeyHolders(home: RepoHome): number {
@@ -134,8 +141,12 @@ export function RefListContent({
     const plain = shown.filter((r) => r.audience !== 'members')
     return { live: plain.filter(isLive), deleted: plain.filter((r) => !isLive(r)), membersLive: members }
   }, [refs, query, sort, defaultRefName, short])
+  // Narrower branches this member holds no key for: one nameless row each (branches only); or,
+  // when their branch keys couldn't be read, one line saying so (never a no-access row).
+  const noAccess = kind === 'branches' ? (home.membersRefs?.noAccess ?? 0) : 0
+  const unchecked = kind === 'branches' && home.membersRefs?.noAccess === null
   // Whether this list has members-only refs to speak of: a member's own, or the public fact.
-  const membersGroup = refs.some((r) => r.audience === 'members')
+  const membersGroup = refs.some((r) => r.audience === 'members') || noAccess > 0 || unchecked
   const membersVisibleTo = home.lane?.access === 'member' || home.lane?.access === 'former' ? membersKeyHolders(home) : null
 
   // On the branches page: the fact covers branches and tags together, and branches are what it is about.
@@ -279,12 +290,18 @@ export function RefListContent({
           {membersVisibleTo !== null ? (
             <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Visible to {plural(membersVisibleTo, 'member', 'members')}.</p>
           ) : null}
-          {membersLive.length > 0 ? (
+          {unchecked ? (
+            <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="members-refs-unchecked">
+              {UNCHECKED_TEXT}
+            </p>
+          ) : null}
+          {membersLive.length > 0 || (noAccess > 0 && query.trim() === '') ? (
             <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
               {membersLive.map((ref) => {
                 const shortName = short(ref)
                 const tip = tipOidOf(ref)
                 const browseRef = refParamFor(shortName, kind === 'tags', home.defaultBranch)
+                const narrower = ref.narrower
                 return (
                   <div
                     key={ref.refName}
@@ -292,13 +309,18 @@ export function RefListContent({
                     data-testid="members-ref-row"
                     data-ref={shortName}
                   >
-                    <Lock className="h-3.5 w-3.5 shrink-0 text-anvil-500 dark:text-anvil-400" aria-label="Members only" />
+                    <Lock className="h-3.5 w-3.5 shrink-0 text-anvil-500 dark:text-anvil-400" aria-label={narrower !== undefined ? `${narrowWho(narrower.audience)} only` : 'Members only'} />
                     <Link
                       href={repoHref('/repo', addr, browseRef ? { ref: browseRef } : {})}
                       className="min-w-0 flex-1 truncate font-mono text-dense font-medium text-anvil-900 hover:text-forge-800 coarse:py-3 dark:text-anvil-50 dark:hover:text-forge-400"
                     >
                       {shortName}
                     </Link>
+                    {narrower !== undefined ? (
+                      <span className="shrink-0 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="narrower-ref-audience">
+                        {narrowerText(narrower.audience, narrower.people)}
+                      </span>
+                    ) : null}
                     {isDiverged(ref) ? (
                       <span className="rounded-full border border-caution/40 bg-caution/5 px-2 py-0.5 text-[11px] text-caution-700 dark:text-caution-400">
                         diverged
@@ -315,7 +337,7 @@ export function RefListContent({
                       </Link>
                     ) : null}
                     {tip ? tipChip(tip) : null}
-                    {tip && kind === 'branches' ? (
+                    {tip && kind === 'branches' && narrower === undefined ? (
                       // Published through a members-only pull request: its merge box squashes or publishes with history.
                       <Link
                         href={repoHref('/repo/pulls/new', addr, { head: shortName, base: home.defaultBranch })}
@@ -329,10 +351,22 @@ export function RefListContent({
                   </div>
                 )
               })}
+              {query.trim() === ''
+                ? Array.from({ length: noAccess }, (_, i) => (
+                    <div
+                      key={`no-access:${i}`}
+                      className="flex items-center gap-3 border-b border-anvil-100 px-4 py-2.5 text-dense text-anvil-500 last:border-b-0 dark:border-anvil-850 dark:text-anvil-400"
+                      data-testid="members-ref-no-access"
+                    >
+                      <Lock className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                      {NO_ACCESS_TEXT}
+                    </div>
+                  ))
+                : null}
             </div>
-          ) : (
+          ) : query.trim() !== '' ? (
             <p className="text-dense text-anvil-500 dark:text-anvil-400">No members-only {single} matches &ldquo;{query}&rdquo;.</p>
-          )}
+          ) : null}
         </section>
       ) : (
         outsiderLine

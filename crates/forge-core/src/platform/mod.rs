@@ -239,6 +239,17 @@ impl LoadedContract {
     /// feature-detects a bound a build flag moves (`writer.role` admits the Bot role, 4, only
     /// on a contract built with `mainnet_bot_role`). `None` for an unknown type or property.
     pub fn property_maximum(&self, document_type: &str, property: &str) -> Option<i64> {
+        self.property_bound(document_type, property, "maximum")
+    }
+
+    /// The `minimum` `document_type`'s top-level integer `property` declares, as the
+    /// contract's schema states it: feature-detects a bound a build flag moves (mainnet C3 lets
+    /// `packManifest.r` be 0). `None` for an unknown type or property, or no `minimum`.
+    pub fn property_minimum(&self, document_type: &str, property: &str) -> Option<i64> {
+        self.property_bound(document_type, property, "minimum")
+    }
+
+    fn property_bound(&self, document_type: &str, property: &str, bound: &str) -> Option<i64> {
         use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
         let t = self.0.document_type_for_name(document_type).ok()?;
         t.schema()
@@ -246,7 +257,7 @@ impl LoadedContract {
             .ok()??
             .get_optional_value(property)
             .ok()??
-            .get_optional_value("maximum")
+            .get_optional_value(bound)
             .ok()??
             .as_integer::<i64>()
     }
@@ -4920,6 +4931,79 @@ impl PushJournal {
 
 #[cfg(test)]
 mod tests {
+    /// A contract of `dir` (`forge-contracts/contracts` or a `build.py` output) parsed as a client
+    /// loads it, its cross-contract placeholders pointed at stand-in ids.
+    fn parsed(dir: &std::path::Path, name: &str) -> super::LoadedContract {
+        use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
+        let mut raw = std::fs::read_to_string(dir.join(format!("{name}.json"))).expect("contract");
+        for (i, p) in [
+            "FORGE_CORE_CONTRACT_ID",
+            "FORGE_COLLAB_CONTRACT_ID",
+            "FORGE_COMMUNITY_CONTRACT_ID",
+        ]
+        .iter()
+        .enumerate()
+        {
+            raw = raw.replace(
+                p,
+                &super::encode_identifier([0x0c + u8::try_from(i).unwrap(); 32]),
+            );
+        }
+        let mut json: serde_json::Value = serde_json::from_str(&raw).expect("json");
+        json["id"] = serde_json::json!(super::encode_identifier([0x1c; 32]));
+        json["ownerId"] = serde_json::json!(super::encode_identifier([0x1d; 32]));
+        json["version"] = serde_json::json!(1);
+        let pv = dash_sdk::dpp::version::PlatformVersion::get(14).expect("protocol 14");
+        super::LoadedContract(std::sync::Arc::new(
+            dash_sdk::platform::DataContract::from_json(json, true, pv).expect("parses"),
+        ))
+    }
+
+    /// The feature detection M-B part 2 writes by: sakura's committed contracts declare none of
+    /// the mainnet fields, and `build.py --mainnet` declares each (`property_minimum` reads
+    /// `packManifest.r`'s bound).
+    #[test]
+    fn the_mainnet_fields_are_detected_from_the_contract() {
+        let root = std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../forge-contracts"
+        ));
+        let built = tempfile::tempdir().expect("temp dir");
+        let out = std::process::Command::new("python3")
+            .arg(root.join("schema/build.py"))
+            .args(["--mainnet", "--out"])
+            .arg(built.path())
+            .output()
+            .expect("python3 runs build.py");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let committed = root.join("contracts");
+        for (dir, mainnet) in [(committed.as_path(), false), (built.path(), true)] {
+            let (core, collab, community) = (
+                parsed(dir, "forge-core"),
+                parsed(dir, "forge-collab"),
+                parsed(dir, "forge-community"),
+            );
+            assert_eq!(
+                core.property_minimum("packManifest", "r"),
+                Some(i64::from(!mainnet))
+            );
+            for t in ["issue", "patch", "comment", "review"] {
+                assert_eq!(collab.has_property(t, "aud"), mainnet, "{t}.aud");
+                assert_eq!(collab.has_property(t, "mRole"), mainnet, "{t}.mRole");
+            }
+            assert_eq!(community.has_property("event", "tAud"), mainnet);
+            assert_eq!(community.has_property("authorEvent", "enc"), mainnet);
+            assert_eq!(community.has_property("checkRun", "aud"), mainnet);
+            assert_eq!(community.has_property("webhook", "vis"), !mainnet);
+            // C2: the Bot role (writer.role 4) only on the mainnet build
+            assert_eq!(crate::members::admits_bots(&core), mainnet);
+        }
+    }
+
     use super::{
         ascending_equivalent, is_contract_missing, is_stale_contract, is_transient_node_error,
         page_to_exhaustion, page_until, retry_with_backoff, tie_probe_allowed, FetchedDocument,
