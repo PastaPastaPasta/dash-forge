@@ -399,13 +399,31 @@ impl Helper {
             );
         }
         members::remember_public_tips(&live_tips(&view.public));
-        if !for_push {
-            self.members_fetch = Some(MembersFetch {
-                keyring: kr,
-                decryptable: m.decryptable,
-            });
+        if for_push {
+            return Ok(m.refs);
         }
-        Ok(m.refs)
+        self.members_fetch = Some(MembersFetch {
+            keyring: kr,
+            decryptable: m.decryptable,
+        });
+        // The members-only packs come first, so a members-only branch no stored pack holds (a
+        // ref update written without its pack) is left out with a warning instead of failing the
+        // whole fetch with "bad object". A clone that already holds its commits keeps it.
+        if std::env::var_os("GIT_DIR").is_none() {
+            return Ok(m.refs);
+        }
+        self.fetch_packs(&[], &OptionState::default(), true, true)
+            .await?;
+        let (kept, dropped): (Vec<_>, Vec<_>) = m.refs.into_iter().partition(|(n, s)| {
+            !m.members_only.contains(n) || tip_oid(s).is_none_or(|t| LocalRepo::object_exists(&t))
+        });
+        for (name, _) in &dropped {
+            eprintln!(
+                "dash: warning: members-only branch {} isn't fetched: no stored pack holds its commits (whoever pushed it can push it again)",
+                members::short(name)
+            );
+        }
+        Ok(kept)
     }
 
     /// What a push compares against and checks with (after [`Self::ensure_signer`]): a private
@@ -517,7 +535,7 @@ impl Helper {
         // incomplete after an incremental fetch (a gc pruned objects of a recorded pack, or
         // the record came from another clone), or the incremental pass failed, fetch every
         // pack.
-        let incremental = self.fetch_packs(wants, options, true).await;
+        let incremental = self.fetch_packs(wants, options, true, false).await;
         let want_oids: Vec<String> = wants.iter().map(|w| w.oid.clone()).collect();
         let complete = incremental_fetch_complete(incremental.is_ok(), options, &want_oids, || {
             LocalRepo::history_has_gaps(&want_oids)
@@ -529,7 +547,7 @@ impl Helper {
                 error = ?incremental.err(),
                 "the wanted history is incomplete after an incremental fetch; fetching every pack"
             );
-            let full = self.fetch_packs(wants, options, false).await?;
+            let full = self.fetch_packs(wants, options, false, false).await?;
             if full.members_packs
                 && options.filter.is_none()
                 && LocalRepo::history_has_gaps(&want_oids)
@@ -568,7 +586,8 @@ impl Helper {
     }
 
     /// [`Self::fetch`]'s download: every stored git pack, or (`incremental`) only those not
-    /// recorded as already held.
+    /// recorded as already held; `only_members`: the members-only packs alone (the `list` of a
+    /// members-only fetch reads them first).
     // One pass, in order: choose, download, record, index; each step is its own function.
     #[allow(clippy::too_many_lines)]
     async fn fetch_packs(
@@ -576,6 +595,7 @@ impl Helper {
         wants: &[Want],
         options: &OptionState,
         incremental: bool,
+        only_members: bool,
     ) -> Result<FetchReport> {
         let members_fetch = self.members_fetch.clone();
         let conn = self.ensure_conn().await?;
@@ -589,8 +609,11 @@ impl Helper {
             .unwrap_or_default();
         let skip_held = incremental && options.filter.is_none();
         let members_kr = members_fetch.as_ref().map(|m| &m.keyring);
-        let git_packs =
+        let mut git_packs =
             packs_to_fetch(&manifests, skip_held.then_some(&have), members_kr.is_some());
+        if only_members {
+            git_packs.retain(|m| m.kind == u64::from(forge_core::pack::KIND_MEMBERS_GIT_PACK));
+        }
         let members_packs = manifests
             .iter()
             .any(|m| m.kind == u64::from(forge_core::pack::KIND_MEMBERS_GIT_PACK));
