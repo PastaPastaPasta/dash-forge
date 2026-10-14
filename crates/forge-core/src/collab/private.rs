@@ -458,7 +458,7 @@ fn edited_props(
     changes: &BTreeMap<String, Option<String>>,
 ) -> BTreeMap<String, FieldValue> {
     let mut props = opened.fields.clone();
-    for k in ["enc", "epoch"] {
+    for k in ["enc", "epoch", super::v2::REAL_HEAD_FIELD] {
         props.remove(k);
     }
     for (k, v) in changes {
@@ -725,8 +725,22 @@ fn restore(f: Fields, mut d: FetchedDocument) -> FetchedDocument {
         imported_author,
         imported_url,
         event_value,
+        head_oid,
+        oid_salt,
         ..
     } = f;
+    // a members-only PR's real head, kept only when its blind checks (members never fold it:
+    // it is for git, `private-repos.md` §19.4)
+    if let (Some(plain), Some(real)) = (d.field_bytes("headOid"), head_oid.as_deref()) {
+        if let Some(crate::private::blind::Head::Real { real, .. }) =
+            crate::private::blind::head_of(&plain, Some(real), oid_salt.as_ref())
+        {
+            d.fields.insert(
+                super::v2::REAL_HEAD_FIELD.into(),
+                FieldValue::text(hex::encode(real)),
+            );
+        }
+    }
     if let Some(FieldValue::Object(m)) = d.fields.get_mut("imported") {
         for (name, v) in [("author", imported_author), ("url", imported_url)] {
             if let Some(v) = v {
@@ -855,6 +869,58 @@ mod members_pr_tests {
             salt: push.salt,
         };
         seal_members_head_update_props(&lane(epoch), OWNER, p, &head).unwrap()
+    }
+
+    /// An opened members-only PR carries its real head for git (`$realHead`, read into
+    /// `Patch::real_head`) only when the blind checks; `headOid` stays the blind every fold reads.
+    #[test]
+    fn an_opened_members_only_pr_names_its_real_head_beside_the_blind() {
+        let h1 = [7u8; 20];
+        let p1 = push(0, h1);
+        let pr = |head_oid: Vec<u8>| {
+            let mut props = BTreeMap::new();
+            for (k, v) in [
+                ("number", FieldValue::integer(3)),
+                ("title", FieldValue::text("Fix")),
+                ("baseRefName", FieldValue::text("refs/heads/main")),
+                ("sourceRefName", FieldValue::text("refs/heads/sec/fix")),
+                ("sourceRepoId", FieldValue::bytes(REPO.to_vec())),
+                ("headOid", FieldValue::bytes(head_oid)),
+            ] {
+                props.insert(k.to_string(), v);
+            }
+            let members = MembersPatch {
+                base_public: true,
+                source_public: false,
+                head: Some(HeadBlind {
+                    real: h1.to_vec(),
+                    salt: p1.salt,
+                }),
+            };
+            seal_members_patch_props(&lane(0), OWNER, props, &members)
+        };
+        let open = |props: BTreeMap<String, FieldValue>| {
+            let d = fetched(props);
+            let mut header = crate::keyring::header_of(DocKind::Patch, &d).unwrap();
+            header.vis = crate::rules::v2::Visibility::Public;
+            let opened = open_content(&ctx(), &header, &d.field_bytes("enc").unwrap());
+            open_doc(opened, d).unwrap()
+        };
+        let d = open(pr(p1.new_oid.clone()).unwrap());
+        let patch = crate::collab::v2::patch_from_doc(&d);
+        assert_eq!(patch.real_head.as_deref(), Some(hex::encode(h1).as_str()));
+        assert_eq!(
+            patch.head_oid,
+            hex::encode(&p1.new_oid),
+            "the fold reads the blind"
+        );
+        // a writer refuses a head that is not the blind of the real head; a document whose
+        // stored blind was changed afterwards opens without a trusted real head
+        assert!(pr(vec![9; 20]).is_err());
+        let mut tampered = pr(p1.new_oid.clone()).unwrap();
+        tampered.insert("headOid".into(), FieldValue::bytes(vec![9; 20]));
+        let d = open(tampered);
+        assert_eq!(crate::collab::v2::patch_from_doc(&d).real_head, None);
     }
 
     #[test]

@@ -14,6 +14,8 @@ path = "src/main.rs"
 [dependencies]
 forge-core = { path = "../forge-core", features = ["cli-logging"] }
 forge-import = { path = "../forge-import" }
+# `dg publish` scans what it publishes with the push helper's secret rules.
+forge-secrets = { path = "../forge-secrets" }
 anyhow.workspace = true
 clap.workspace = true
 clap_complete = "4"

@@ -56,6 +56,9 @@
     "codeOwners": {},
     "cost": {
       "$ref": "common.schema.json#/$defs/cost"
+    },
+    "audience": {
+      "$ref": "common.schema.json#/$defs/audience"
     }
   },
   "required": [

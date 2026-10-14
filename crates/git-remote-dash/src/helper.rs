@@ -997,9 +997,9 @@ impl Helper {
         let final_refs = if dry_run {
             remote_refs
         } else {
-            // the keys the members-only refs were just sealed under, else those read for the push
-            let keys = fresh_keys.as_deref().or(view.keyring.as_deref());
-            read_refs_until_converged(conn, &planned, keys).await?
+            // the keys read for the push (`members_lane` left the ones it sealed under cached)
+            let members = fresh_keys.is_some() || view.keyring.is_some();
+            read_refs_until_converged(conn, &planned, members).await?
         };
         if let (Some(ctx), Some(history)) = (ctx.as_ref(), history) {
             // The guard took the fallback delta over a due full index: publish what was paid for.
@@ -1017,22 +1017,21 @@ impl Helper {
             }
         }
         // The branches that moved: the PRs following them get a head update (review-parity
-        // R14). Read before `finalize_outcomes` consumes the plan. A members-only branch is not
-        // among them: a public head update would publish its commit (members-only PRs follow
-        // their branch through `dg pr sync`, phase 3B).
-        let (members_moved, moved): (Vec<_>, Vec<_>) = moved_branches(&planned, &final_refs)
-            .into_iter()
-            .partition(|m| {
+        // R14), a members-only branch's members-only PRs a sealed one (`pr_sync`, which never
+        // gives a public PR a members-only commit). Read before `finalize_outcomes` consumes the
+        // plan. A members-only branch's move is also where runner bots will get its key letter.
+        let moved = moved_branches(&planned, &final_refs);
+        let members_moved: Vec<(String, String)> = moved
+            .iter()
+            .filter(|m| {
                 planned
                     .iter()
                     .any(|p| p.spec.dst == m.ref_name && p.members())
-            });
+            })
+            .map(|m| (m.ref_name.clone(), m.oid.clone()))
+            .collect();
         if !members_moved.is_empty() {
-            let moved: Vec<(String, String)> = members_moved
-                .into_iter()
-                .map(|m| (m.ref_name, m.oid))
-                .collect();
-            members::letter_runner_bots(&moved);
+            members::letter_runner_bots(&members_moved);
         }
         let outcomes = finalize_outcomes(planned, &final_refs, dry_run);
         if !dry_run && !moved.is_empty() {
@@ -1116,22 +1115,22 @@ impl Helper {
 async fn read_refs_until_converged(
     conn: &Conn,
     planned: &[Planned],
-    members: Option<&forge_core::keyring::Keyring>,
+    members: bool,
 ) -> Result<Vec<(String, RefState)>> {
     const MAX_ATTEMPTS: usize = 6;
     let svc = conn.service();
-    // a members-only branch is read back through the member view, with the pusher's key
+    // with the members key, refs are read back through the member view (members-only branches
+    // included), with the keys this push read
     let read = || async {
-        match members {
-            Some(kr) => Ok::<_, anyhow::Error>(
-                svc.read_refs_view(&conn.repo, Some(kr))
-                    .await?
-                    .members
-                    .map(|m| m.refs)
-                    .unwrap_or_default(),
-            ),
-            None => Ok(svc.read_refs(&conn.repo).await?),
-        }
+        let view = if members {
+            svc.read_members_refs(&conn.repo).await?
+        } else {
+            None
+        };
+        Ok::<_, anyhow::Error>(match view {
+            Some(m) => m.refs.into_iter().map(|r| (r.name, r.state)).collect(),
+            None => svc.read_refs(&conn.repo).await?,
+        })
     };
     // `None` = a delete, converged once the ref reads as gone. Deletes wait too: a node
     // that has not applied the delete yet would otherwise make a landed delete read as

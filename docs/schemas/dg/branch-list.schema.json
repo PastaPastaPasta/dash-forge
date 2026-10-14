@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/branch-list.schema.json",
+  "title": "dg branch list --json",
+  "description": "The repository's branches and who can see them. A member sees the members-only ones too; anyone else sees `alsoMembersOnly` instead (never how many).",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "repo": {
+      "type": "string"
+    },
+    "branches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "tip": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "audience": {
+            "type": "string",
+            "enum": [
+              "public",
+              "members"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "ref",
+          "audience"
+        ]
+      }
+    },
+    "alsoMembersOnly": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "repo",
+    "branches",
+    "alsoMembersOnly"
+  ],
+  "additionalProperties": true
+}

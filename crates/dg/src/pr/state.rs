@@ -300,6 +300,16 @@ async fn source_tip(s: &Session, view: &PatchView, number: u64) -> Result<(Repo,
     Ok((source, branch, tip))
 }
 
+/// `--head` as a lowercase commit id.
+fn head_arg(h: &str) -> Result<String> {
+    let h = h.to_ascii_lowercase();
+    if git::is_oid(&h) {
+        Ok(h)
+    } else {
+        Err(crate::errors::usage("--head must be a full hex commit id"))
+    }
+}
+
 /// `dg pr sync`: post a `headUpdate` when the source branch (or `--head`) is not the PR head.
 pub async fn sync(ctx: &Ctx, repo: &str, number: u64, head: Option<&str>) -> Result<()> {
     let pr = open_pr(ctx, repo, number, "pull request head not moved").await?;
@@ -312,12 +322,11 @@ pub async fn sync(ctx: &Ctx, repo: &str, number: u64, head: Option<&str>) -> Res
         .note("nothing was written")
         .into());
     }
+    if pr.view.patch.from_members_only_branch() {
+        return sync_members(ctx, &pr, number, head).await;
+    }
     let (new_head, from) = if let Some(h) = head {
-        let h = h.to_ascii_lowercase();
-        if !git::is_oid(&h) {
-            return Err(crate::errors::usage("--head must be a full hex commit id"));
-        }
-        (h, "--head".to_string())
+        (head_arg(h)?, "--head".to_string())
     } else {
         let (source, branch, tip) = source_tip(&pr.s, &pr.view, number).await?;
         (tip, format!("{} in {}", safe(&branch), source.display()))
@@ -365,6 +374,92 @@ pub async fn sync(ctx: &Ctx, repo: &str, number: u64, head: Option<&str>) -> Res
                 short(&pr.view.head),
                 short(&new_head),
                 route_text(route),
+                cost_line(spent, ctx.usd_price())
+            );
+        },
+    );
+    Ok(())
+}
+
+/// [`sync`] of a members-only PR from a members-only branch (DESIGN §4.4): the branch's tip is
+/// read from the member fold, and the head update copies the blind of the ref update that set
+/// it (rule C), sealed beside the real commit. `--head` must be a commit a members-only push of
+/// the branch set.
+async fn sync_members(ctx: &Ctx, pr: &Pr, number: u64, head: Option<&str>) -> Result<()> {
+    let collab = pr.s.collab();
+    let repo = &pr.s.repo;
+    let fold = collab.members_refs(repo).await?.ok_or_else(|| {
+        super::members_key_needed(repo, "move a members-only pull request's head")
+    })?;
+    let branch = pr.view.patch.source_ref_name.clone().unwrap_or_default();
+    let new_head = match head {
+        Some(h) => head_arg(h)?,
+        None => fold
+            .get(&branch)
+            .and_then(|r| forge_core::rules::tip_of(&r.state))
+            .ok_or_else(|| {
+                crate::errors::not_found(
+                    format!("{} is no longer in {}", safe(&branch), repo.display()),
+                    "the branch was deleted; push it again, or pass --head <commit>",
+                )
+            })?,
+    };
+    let current = Collab::real_head_of(&pr.view, Some(&fold));
+    if new_head.eq_ignore_ascii_case(&current) {
+        unchanged(
+            ctx,
+            "in_sync",
+            number,
+            &format!("PR #{number} is already at {}", short(&new_head)),
+            json!({ "headOid": current }),
+        );
+        return Ok(());
+    }
+    let Some(blind) = fold.updates.blind_of(&branch, &new_head).cloned() else {
+        return Err(UserError::new(
+            codes::USAGE,
+            format!(
+                "PR #{number}'s head not moved: {} was never pushed to {}",
+                short(&new_head),
+                safe(short_branch(&branch))
+            ),
+        )
+        .cause("a members-only pull request can only follow commits its members-only branch held")
+        .fix(format!(
+            "push it first: `git push origin {}`",
+            safe(short_branch(&branch))
+        ))
+        .note("nothing was written")
+        .into());
+    };
+    let est = event_estimate(StateRoute::Member, 0);
+    ctx.confirm_or_cancel(&format!(
+        "Move PR #{number}'s head {} → {}? (one event, {})",
+        short(&current),
+        short(&new_head),
+        cost_line(est, ctx.usd_price())
+    ))?;
+    let target = pr.view.patch.target();
+    let (id, spent) =
+        pr.s.metered(|| collab.post_members_head_update(repo, &target, &blind))
+            .await?;
+    ctx.emit(
+        json!({
+            "status": "synced",
+            "pr": number,
+            "written": true,
+            "previousHead": current,
+            "headOid": new_head,
+            "via": StateRoute::Member,
+            "eventId": id,
+            "cost": cost_json(spent, ctx.usd_price()),
+        }),
+        || {
+            println!(
+                "✓ PR #{number} head {} → {} {} · {}",
+                short(&current),
+                short(&new_head),
+                route_text(StateRoute::Member),
                 cost_line(spent, ctx.usd_price())
             );
         },
