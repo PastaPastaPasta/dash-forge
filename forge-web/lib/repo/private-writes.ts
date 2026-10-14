@@ -215,11 +215,20 @@ export async function sealForRepo(
 export type DocSealer = (keys: EpochKeys, doc: PrivateDoc, fields: DocFields) => Promise<Uint8Array>
 
 /**
- * A private repository's new content on the mainnet contract (DESIGN D38; forge-core
- * `seal_private_members_props`): `enc` v0x03, a per-object key under the epoch, so one document's
- * key can later be given on its own. Readers open v0x01 and v0x03 there alike.
+ * A private repository's new issue, PR, comment or review on the mainnet contract (DESIGN D38;
+ * forge-core `Collab::seal_for`): `enc` v0x03, a per-object key under the epoch, so one document's
+ * key can later be given on its own. A text that fits v0x01's room but not v0x03's (32 bytes
+ * smaller) is v0x01: both are well framed in a private repository, so the room a private text has
+ * is the same on every network. Readers open v0x01 and v0x03 there alike.
  */
-export const sealPrivatePerObject: DocSealer = (keys, doc, fields) => sealPrivateV3(keys, { ...doc, vis: 'private' }, fields)
+export const sealPrivatePerObject: DocSealer = async (keys, doc, fields) => {
+  try {
+    return await sealPrivateV3(keys, { ...doc, vis: 'private' }, fields)
+  } catch (e) {
+    if (e instanceof TooLargeError) return sealDoc(keys, doc, fields)
+    throw e
+  }
+}
 
 /**
  * The blind a members-only PR's `headOid`, or a head update's `oid`, carries (rule C,

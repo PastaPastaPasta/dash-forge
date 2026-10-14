@@ -3659,13 +3659,27 @@ impl<'a> Collab<'a> {
             let w = kr.writer(repo)?;
             let owner = platform::decode_identifier(&self.signer_id()?)?;
             // D38: on the mainnet contract (it declares `aud`) a private repository's new
-            // content is v0x03, per object; sakura's stays v0x01
-            if self
+            // issues, PRs, comments and reviews are v0x03, per object (events gain nothing from
+            // a key of their own); sakura's stay v0x01. A text that fits v0x01's room but not
+            // v0x03's, 32 bytes smaller, is v0x01 there too: both are well framed in a private
+            // repository, so the long-body room stays the same on every network.
+            let per_object = matches!(
+                kind,
+                DocKind::Issue | DocKind::Patch | DocKind::Comment | DocKind::Review
+            ) && self
                 .collab_contract(repo)
                 .await?
-                .has_property(DOC_ISSUE, AUD)
-            {
-                return private::seal_private_members_props(w.write_keys(), kind, owner, props);
+                .has_property(DOC_ISSUE, AUD);
+            if per_object {
+                match private::seal_private_members_props(
+                    w.write_keys(),
+                    kind,
+                    owner,
+                    props.clone(),
+                ) {
+                    Err(e) if private::is_too_large(&e) => {}
+                    sealed => return sealed,
+                }
             }
             return private::seal_props(w.write_keys(), kind, owner, props);
         }
@@ -4524,7 +4538,12 @@ impl<'a> Collab<'a> {
             enc: enc.as_ref().and_then(|e| e.first().copied()),
             bundled: false,
         };
-        if has_value && target.enc.is_some() && repo.visibility == Visibility::Public {
+        // a bundle matters only where no `tAud` states the target's class (sakura)
+        if has_value
+            && !shape.t_aud
+            && target.enc.is_some()
+            && repo.visibility == Visibility::Public
+        {
             target.bundled = self
                 .parent_with_bundles(repo, doc_kind(kind), &stored)
                 .await
@@ -4544,34 +4563,46 @@ impl<'a> Collab<'a> {
                 } else {
                     DocKind::Event
                 };
-                self.seal_for(repo, kind, props, Audience::Members, None).await
+                self.seal_for(repo, kind, props, Audience::Members, None)
+                    .await
             }
-            aud::EventValue::Refused if target.aud == Some(aud::AUD_LETTER)
-                || target.enc == Some(crate::rules::v2::ENC_SPECIFIC_PEOPLE) =>
-            {
-                Err(UserError::new(
-                    codes::USAGE,
-                    "labels, milestones and assignees can't be set on a message to specific people yet",
-                )
-                .note("nothing was written")
-                .into())
-            }
-            aud::EventValue::Refused => Err(UserError::new(
-                codes::USAGE,
-                format!(
-                    "this {} is members-only, so its author can change its base only with write \
-                     access",
-                    if kind == ContentKind::Patch {
-                        "pull request"
+            aud::EventValue::Refused => {
+                let noun = if kind == ContentKind::Patch {
+                    "pull request"
+                } else {
+                    "issue"
+                };
+                let letter = target.aud == Some(aud::AUD_LETTER)
+                    || target.enc == Some(crate::rules::v2::ENC_SPECIFIC_PEOPLE);
+                let e = if letter && !author {
+                    UserError::new(
+                        codes::USAGE,
+                        "labels, milestones and assignees can't be set on a message to specific people yet",
+                    )
+                } else if letter {
+                    UserError::new(
+                        codes::USAGE,
+                        format!("this {noun} is a message to specific people, so its base can't be changed yet"),
+                    )
+                } else {
+                    let what = if repo.visibility == Visibility::Private {
+                        "in a private repository"
                     } else {
-                        "issue"
-                    }
-                ),
-            )
-                .cause("the new base would be public: an author's own event can't be members-only on this network")
-                .fix("ask a member with write access to change it")
-                .note("checked before anything was signed; nothing was written or paid")
-                .into()),
+                        "members-only"
+                    };
+                    UserError::new(
+                        codes::USAGE,
+                        format!(
+                            "this {noun} is {what}, so its author can change its base only with write access"
+                        ),
+                    )
+                    .cause("the new base would be public: an author's own change can't be members-only on this network")
+                    .fix("ask a member with write access to change it")
+                };
+                Err(e
+                    .note("checked before anything was signed; nothing was written or paid")
+                    .into())
+            }
         }
     }
 
@@ -4712,7 +4743,7 @@ impl<'a> Collab<'a> {
             .and_then(|e| e.first().copied());
         let got = aud::content_fields(shape, version, as_member, role).map_err(|_| {
             Error::Config(format!(
-                "a {doc_type} was sealed with an envelope no post carries (version {})",
+                "this {doc_type} was encrypted in a form no post takes (version {}); nothing was written",
                 version.unwrap_or_default()
             ))
         })?;
@@ -7513,8 +7544,13 @@ impl<'a> Collab<'a> {
         // A PR's author never approves or requests changes on it (§8.2 row 29; mainnet R-03
         // refuses it at consensus): refused before signing, a comment offered instead.
         if precheck_enabled() && !matches!(verdict, Verdict::Comment | Verdict::Unknown(_)) {
-            let (_, patch) = self.target_doc_by_id(repo, patch_id).await?;
-            if patch.owner_id == self.signer_id()? {
+            // a PR a lagging node does not show yet is left to consensus (mainnet R-03)
+            let author = self
+                .target_doc_by_id(repo, patch_id)
+                .await
+                .ok()
+                .map(|(_, patch)| patch.owner_id);
+            if author.as_deref() == Some(self.signer_id()?.as_str()) {
                 return Err(UserError::new(
                     codes::USAGE,
                     "You can't approve or request changes on your own pull request.",

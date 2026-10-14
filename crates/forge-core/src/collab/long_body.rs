@@ -64,11 +64,11 @@ impl BodyField<'_> {
     }
 
     /// How many UTF-8 bytes of text the field holds in a document of a `visibility` repository
-    /// written for `audience`: 5,120 for public text; and a members-only (`enc` v0x03, whose 61
-    /// bytes of framing leave 32 bytes less than v0x01's; its padding is dropped when it does not
-    /// fit, `private-repos.md` §4.1) document's room in a public repository, and in a private one
-    /// whatever `audience` says: a private repository writes v0x03 on the mainnet contract (D38)
-    /// and v0x01 elsewhere, and the smaller room fits both. A release's notes are 5,120 either way.
+    /// written for `audience`: 5,120 for public text; the private-repository `enc` (v0x01)'s room
+    /// in a private repository whatever `audience` says; and in a public repository a
+    /// members-only document's (`enc` v0x03, whose 61 bytes of framing leave 32 bytes less; its
+    /// padding is dropped when it does not fit, `private-repos.md` §4.1). A release's notes are
+    /// 5,120 either way.
     #[must_use]
     pub fn room_for(
         &self,
@@ -100,7 +100,7 @@ impl BodyField<'_> {
         };
         let provenance = imported.map_or(0, |i| record(&i.author) + record(&i.url));
         let tlv = kind.max_enc()
-            - if members || visibility == Visibility::Private {
+            - if members {
                 crate::private::doc::MIN_V3
             } else {
                 crate::private::doc::MIN_V1
@@ -573,7 +573,7 @@ mod tests {
     /// byte more is refused.
     #[test]
     fn private_room_is_what_the_sealer_takes() {
-        use crate::collab::private::{seal_private_members_props, seal_props};
+        use crate::collab::private::seal_props;
         use crate::platform::FieldValue;
         use std::collections::BTreeMap;
         let keys = crate::private::EpochKeys::derive(
@@ -632,13 +632,10 @@ mod tests {
                     }
                     p
                 };
-                // the room is the mainnet v0x03 sealer's exactly (D38), which v0x01 also takes
                 seal_props(&keys, kind, [1; 32], props(room))
                     .unwrap_or_else(|e| panic!("{kind:?} {room}: {e}"));
-                seal_private_members_props(&keys, kind, [1; 32], props(room))
-                    .unwrap_or_else(|e| panic!("{kind:?} {room} (v0x03): {e}"));
                 assert!(
-                    seal_private_members_props(&keys, kind, [1; 32], props(room + 1)).is_err(),
+                    seal_props(&keys, kind, [1; 32], props(room + 1)).is_err(),
                     "{kind:?}: {} bytes sealed",
                     room + 1
                 );

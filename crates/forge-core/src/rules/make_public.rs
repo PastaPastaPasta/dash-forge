@@ -102,7 +102,8 @@ pub struct MadePublic {
 /// The replace that makes a sealed `kind` document public, from its opened content `opened`
 /// (DESIGN §4.6): the text as it stands now becomes the document's plaintext. `settable_once`:
 /// the contract lets the replace that drops `aud` set `comment.path` and a PR's branch names
-/// (mainnet L1), which are otherwise lost.
+/// (mainnet L1), which are otherwise lost. Clients pass it for comments only
+/// (`Collab::settable_once`): a members-only branch's name is keyed, so a PR's stay unset.
 ///
 /// # Errors
 /// [`MakePublicRefusal`]: sealed import provenance, a missing required field, or a kind that

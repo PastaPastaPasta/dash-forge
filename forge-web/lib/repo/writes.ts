@@ -240,6 +240,9 @@ function scoped(repo: RepoRef, data: Record<string, unknown>): Record<string, un
 /** The document types whose writes can change an open issue or PR count. */
 const COUNTED_TYPES: ReadonlySet<string> = new Set([DOC.issue, DOC.patch, DOC.transition])
 
+/** The private repo types D38 seals per object on the mainnet contract (never an event). */
+const PER_OBJECT_TYPES: ReadonlySet<string> = new Set([DOC.issue, DOC.patch, DOC.comment, DOC.review])
+
 /**
  * Drop the caches a write of `documentType` to `repo` invalidates, so the next read shows it.
  * Only a write that can change an open count makes the repo header refold its counts; a
@@ -372,7 +375,8 @@ export async function writeRepoDoc(
       const w = writer ?? (await privateWriter(sdk, auth, repo))
       contentKey = await keyedContentKey(w.keys, said)
       // D38: on the mainnet contract (forge-collab declares `aud`) new content is v0x03, per object
-      const perObject = await declares(sdk, repo, DOC.issue, AUD)
+      // (issues, PRs, comments and reviews: events gain nothing from a key of their own)
+      const perObject = PER_OBJECT_TYPES.has(sealedType) && (await declares(sdk, repo, DOC.issue, AUD))
       data = await sealForRepo(sdk, auth, repo, sealedType, data, w, perObject ? sealPrivatePerObject : undefined)
       // D14: every sealed write by a member carries `asMember`.
       if (w.isMember === true) data = withMemberProof(documentType, data, auth.identityId)
@@ -521,7 +525,7 @@ export async function eventWrite(sdk: EvoSDK, repo: RepoRef, documentType: strin
       // A value on a message to specific people is refused (decided for 2A): never sealed under
       // the members key, never written in plaintext.
       if (target.aud === AUD_LETTER || target.enc === ENC_SPECIFIC_PEOPLE) throw new LetterRefusedError(LETTER_EVENT_VALUE_TEXT)
-      throw new PrivateWriteError('this is members-only, so its author can change its base only with write access; ask a member with write access to change it; nothing was written')
+      throw new PrivateWriteError(`this is ${repo.visibility === 'private' ? 'in a private repo' : 'members-only'}, so its author can change its base only with write access; ask a member with write access to change it; nothing was written`)
   }
 }
 

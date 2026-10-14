@@ -219,9 +219,11 @@ def replace_vectors():
     settable = [
         ("edit_replace_inline_comment_keeps_path", "comment", dict(body="nit: rename", path="src/lib.rs"),
          "Where comment.path is settable once (mainnet L1), the made-public inline comment keeps its file name."),
-        ("edit_replace_patch_keeps_branch_names", "patch",
+        ("edit_replace_patch_branch_names_settable_once", "patch",
          dict(title="Fix", body="b", baseRefName="main", sourceRefName="fix"),
-         "Where the branch names are settable once (mainnet L1), a made-public PR keeps them."),
+         "The rule where the branch names are settable once (mainnet L1): the replace may set them. Clients pass "
+         "settableOnce for comments only: a members-only branch's name is hashed under the members key, which no "
+         "public reader can check a plaintext name against, so a made-public PR's names stay unset."),
         ("edit_replace_comment_settable_once_nothing_to_set", "comment", dict(body="general"),
          "A general comment has no path to set: the same replace on either contract."),
     ]

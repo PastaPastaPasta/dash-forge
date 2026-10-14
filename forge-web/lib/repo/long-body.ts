@@ -36,14 +36,14 @@ export type LongBodyKind = SealedKind | 'release'
 /**
  * How many UTF-8 bytes of text the field holds in `repo`, beside `others` (the document's other
  * text: a title, branch names, a path, and an imported document's `imported` author and URL, which
- * a re-seal keeps): 5,120 in a public repo and for release notes; in a private one, what the
- * members-only (v0x03) text limit leaves, 32 bytes under `SEALED_TEXT_LIMIT` (v0x01's, which counts
- * every record's framing): a private repo writes v0x03 on the mainnet contract (D38) and v0x01
- * elsewhere, and the smaller room fits both. Parity: forge-core `BodyField::room`.
+ * a re-seal keeps): 5,120 in a public repo and for release notes; in a private one, what the sealed
+ * text limit leaves (`SEALED_TEXT_LIMIT`, which counts every record's framing, so it is at most a
+ * few bytes under what the sealer takes). Parity: forge-core `BodyField::room`.
  */
 export function bodyRoom(repo: RepoRef, kind: LongBodyKind, others: Readonly<Record<string, unknown>> = {}): number {
   if (repo.visibility !== 'private' || kind === 'release') return FIELD_MAX
-  return Math.max(0, membersBodyRoom(kind, others) - provenanceBytes(others['imported']))
+  const rest = Object.fromEntries(Object.entries(others).filter(([k]) => k !== 'body'))
+  return Math.min(FIELD_MAX, Math.max(0, SEALED_TEXT_LIMIT[kind] - sealedTextUse(kind, rest).used - provenanceBytes(others['imported'])))
 }
 
 /** The text room of a members-only `kind` beside `others` (the v0x03 cap: 32 bytes under a private repo's). */

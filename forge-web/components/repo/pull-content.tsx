@@ -790,14 +790,17 @@ function PullPage({
   // One confirm at a time: a write asked for while one is open (a picker applying on the same
   // click that opens another action) never silently replaces it.
   const setPending = useCallback((p: SetStateAction<Pending | null>) => setPendingState((cur) => (typeof p === 'function' ? p(cur) : p === null ? null : cur ?? p)), [])
-  // Where the contract keeps an inline comment's file name when it is made public (mainnet L1).
-  const keepsFile = useAsync(() => makePublicKeepsFields(sdk!, repo, 'comment'), [ready, repo.forge.collab], { enabled: ready && sdk !== null })
-  // DESIGN §4.6: make the author's own members-only comment public (an inline one loses its file
-  // name, except where the contract keeps it).
-  const keepsFileName = keepsFile.data === true
+  // DESIGN §4.6: make the author's own members-only comment public. An inline one loses its file
+  // name, except where the contract keeps it (mainnet L1): asked when the dialog opens, so the
+  // dialog never says so before the answer is in.
   const makeCommentPublic = useCallback(
-    (c: CommentView) => setPending({ kind: 'make-public', id: c.id, quoted: quotedPost(c.body, c.author, 'comment'), losesFile: c.anchor !== null && !keepsFileName }),
-    [setPending, quotedPost, keepsFileName],
+    (c: CommentView) => {
+      void (async () => {
+        const keeps = c.anchor === null || (sdk !== null && (await makePublicKeepsFields(sdk, repo, 'comment').catch(() => false)))
+        setPending({ kind: 'make-public', id: c.id, quoted: quotedPost(c.body, c.author, 'comment'), losesFile: !keeps })
+      })()
+    },
+    [setPending, quotedPost, sdk, repo],
   )
   // Someone else's members-only comment, inline or not: a maintainer's bundle (DESIGN §4.6).
   const makeOthersPublic = useCallback((c: CommentView) => setBundleAsk([{ type: 'comment', id: c.id }]), [])
