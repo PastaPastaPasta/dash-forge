@@ -66,7 +66,15 @@ export function stepText(item: ChecklistItem, plan: EmbargoPlan): string {
 export function utcInputSeconds(value: string): number | null {
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(value)) return null
   const ms = Date.parse(`${value}:00Z`)
-  return Number.isFinite(ms) ? Math.floor(ms / 1000) : null
+  // an impossible date (30 February) parses as another one: refused, never moved
+  return Number.isFinite(ms) && new Date(ms).toISOString().slice(0, 16) === value ? Math.floor(ms / 1000) : null
+}
+
+/** Whether `e`, as read again, shows the write of `v` (the page re-reads until it does). */
+export function embargoShows(e: Embargo | null | undefined, v: EmbargoValue): boolean {
+  if (e === null || e === undefined) return false
+  if (v.type === 'schedule') return e.state.state === 'scheduled' && e.plan.at === v.at
+  return e.state.state === (v.type === 'cancel' ? 'cancelled' : 'done')
 }
 
 /** Unix seconds as a `datetime-local` value in UTC. */
@@ -165,8 +173,8 @@ export function EmbargoPanel({
   open: boolean
   /** The repo's default branch: where a branch is published by default. */
   defaultBranch: string
-  /** A write landed: read the thread again. */
-  onDone: () => void
+  /** A write of `value` landed: read the thread again until it shows ({@link embargoShows}). */
+  onDone: (value: EmbargoValue) => void
 }): JSX.Element | null {
   const { sdk } = useSdk()
   const { signer } = useAuth()
@@ -191,7 +199,7 @@ export function EmbargoPanel({
   const write = async (value: EmbargoValue, intent: string): Promise<void> => {
     if (sdk === null || signer === null) throw new Error('sign in to continue')
     await setEmbargo(sdk, signer, repo, { target, value, intent })
-    onDone()
+    onDone(value)
   }
   const draft = editing === null ? null : draftValue(editing, pr, now)
   const cost = (value: EmbargoValue): ReturnType<typeof composeCost> =>
@@ -249,8 +257,11 @@ export function EmbargoPanel({
         confirmLabel={waiting ? 'Change date' : 'Set date'}
         {...(signer === null ? { blocked: 'Sign in to set a publication date.' } : draft !== null && 'problem' in draft && editing?.at !== '' ? { blocked: draft.problem } : {})}
         onConfirm={async (intent) => {
-          if (draft === null || !('value' in draft)) throw new Error('the form is incomplete')
-          await write(draft.value, intent)
+          // checked again with the time now: a dialog left open past its time writes nothing
+          const fresh = editing === null ? null : draftValue(editing, pr, Math.floor(Date.now() / 1000))
+          if (fresh === null) throw new Error('the form is incomplete')
+          if ('problem' in fresh) throw new Error(fresh.problem)
+          await write(fresh.value, intent)
           setEditing(null)
         }}
         successNote="Date set"

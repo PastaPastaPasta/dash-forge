@@ -111,7 +111,7 @@ import { MakeOthersPublicButton, MakePublicBundleDialog, MakePublicButton, bundl
 import { BundleAlertsNote, EarlierVersions, EditedAfterPublicNote, MadePublicBy, PublicEditHint, editIsPublic } from '@/components/repo/made-public'
 import type { BundleRequest } from '@/lib/repo/make-public-bundle'
 import { makePostPublic, provenanceOf } from '@/lib/repo/make-public-writes'
-import { EmbargoPanel } from '@/components/repo/embargo-panel'
+import { EmbargoPanel, embargoShows } from '@/components/repo/embargo-panel'
 
 /** No requests or members yet (stable empty inputs for the request flags). */
 const NO_REQUESTS: readonly AgentRequest[] = []
@@ -943,7 +943,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
             canSet={(isMaintainer || holdings.data?.role === 'writer') && !archived && guard.disabledReason === null}
             open={open}
             defaultBranch={home.defaultBranch}
-            onDone={() => refresh()}
+            onDone={(value) => refresh((t) => embargoShows(t.embargo, value))}
           />
         ) : null}
       </aside>

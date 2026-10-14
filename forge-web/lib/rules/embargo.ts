@@ -8,8 +8,9 @@
  * tracking issue (or pull request) is members-only: the public learns that a date was set on the
  * thread, by whom and when, never the date or what is published. `refId` is the repository's own
  * id, so a release bot reads every date with one query on the sparse `addressee` index. The value
- * is one canonical JSON object of at most 120 characters; anything else is no record. A record
- * counts from the owner, a maintainer or a role-1 writer at its `createdAt`; per target the newest
+ * is one canonical JSON object of at most 120 characters; anything else is no record. A schedule
+ * counts from the owner, a maintainer or a role-1 writer at its `createdAt`, a cancellation or
+ * completion from anyone (consensus admitted its writer as a member); per target the newest
  * counted schedule is the embargo, and a newer cancellation or completion ends it.
  */
 
@@ -192,9 +193,13 @@ export function embargoRecord(repoId: string, e: EmbargoEvent): EmbargoRecord | 
   return { id: e.id, targetId: e.targetId, number: e.targetNumber, value, actor: e.actor, createdAt: e.createdAt }
 }
 
-/** Whether `r` counts: the owner, or a maintainer or role-1 writer at its `createdAt`. */
+/**
+ * Whether `r` counts: a schedule from the owner, or a maintainer or role-1 writer at its
+ * `createdAt`; a withdrawal or completion always (consensus admitted its writer as a member then,
+ * and it only stops a publication, so a later removal never brings a withdrawn date back).
+ */
 export function embargoCounts(r: EmbargoRecord, owner: string, oracle: RoleOracle): boolean {
-  return r.actor === owner || oracle.approverAt(r.actor, r.createdAt)
+  return r.value.type !== 'schedule' || r.actor === owner || oracle.approverAt(r.actor, r.createdAt)
 }
 
 /** Where an embargo stands. */

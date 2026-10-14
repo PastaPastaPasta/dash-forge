@@ -23,7 +23,7 @@ vi.mock('@/components/confirm-dialog', () => ({
     ) : null,
 }))
 
-import { EmbargoPanel, draftValue, untilText, utcInputSeconds, whenText } from './embargo-panel'
+import { EmbargoPanel, draftValue, embargoShows, untilText, utcInputSeconds, whenText } from './embargo-panel'
 import type { Embargo } from '@/lib/rules/embargo'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -145,6 +145,7 @@ describe('the form', () => {
   it('reads its time as UTC and checks the plan before signing', () => {
     expect(utcInputSeconds('2026-10-20T14:00')).toBe(AT)
     expect(utcInputSeconds('')).toBeNull()
+    expect(utcInputSeconds('2026-02-30T14:00'), 'an impossible date').toBeNull()
     const d = { at: '2026-10-20T14:00', branch: 'sec/x', onto: 'main', tag: '', message: '' }
     expect(draftValue(d, null, AT - 60)).toEqual({ value: { type: 'schedule', at: AT, branch: 'sec/x', onto: 'main' } })
     expect(draftValue(d, 7, AT - 60)).toEqual({ value: { type: 'schedule', at: AT, pr: 7 } })
@@ -152,6 +153,15 @@ describe('the form', () => {
     expect(draftValue({ ...d, branch: '' }, null, 0)).toHaveProperty('problem')
     expect(draftValue({ ...d, tag: 'v 1' }, null, 0)).toEqual({ problem: '"v 1" is not a tag name.' })
     expect(draftValue({ ...d, message: 'x'.repeat(90) }, null, 0)).toHaveProperty('problem')
+  })
+
+  it('knows when a re-read shows the write', () => {
+    const e = embargo({ state: 'scheduled' })
+    expect(embargoShows(e, { type: 'schedule', at: FAR, pr: 1 })).toBe(true)
+    expect(embargoShows(e, { type: 'schedule', at: AT, pr: 1 })).toBe(false)
+    expect(embargoShows(e, { type: 'cancel' })).toBe(false)
+    expect(embargoShows(embargo({ state: 'cancelled', by: 'b', at: 1 }), { type: 'cancel' })).toBe(true)
+    expect(embargoShows(null, { type: 'cancel' })).toBe(false)
   })
 
   it('prints times in UTC', () => {

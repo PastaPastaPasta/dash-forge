@@ -1,6 +1,6 @@
 {
   "name": "newest_schedule_wins",
-  "description": "The newest counted schedule is the embargo (the date moved an hour later). A triage member's later schedule and cancellation do not count. Due only from its date on.",
+  "description": "The newest counted schedule is the embargo (the date moved an hour later). A triage member's later schedule does not count. Due only from its date on.",
   "case": "embargo",
   "rules": "v2",
   "input": {
@@ -73,17 +73,6 @@
         "value": "{\"v\":1,\"at\":1792504800,\"b\":\"sec/cve-77\",\"o\":\"main\",\"t\":\"v1.2.3\"}",
         "actor": "tri",
         "createdAt": 300
-      },
-      {
-        "id": "d",
-        "repoId": "Repo111111111111111111111111111111111111111",
-        "targetId": "iss12",
-        "targetNumber": 12,
-        "kind": 28,
-        "refId": "Repo111111111111111111111111111111111111111",
-        "value": "{\"v\":1,\"cancel\":true}",
-        "actor": "tri",
-        "createdAt": 400
       }
     ]
   },
@@ -137,19 +126,6 @@
           },
           "actor": "tri",
           "createdAt": 300
-        },
-        "counts": false
-      },
-      {
-        "record": {
-          "id": "d",
-          "targetId": "iss12",
-          "number": 12,
-          "value": {
-            "type": "cancel"
-          },
-          "actor": "tri",
-          "createdAt": 400
         },
         "counts": false
       }

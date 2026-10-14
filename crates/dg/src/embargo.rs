@@ -871,7 +871,8 @@ async fn publish_one(
                 .commit
         }
     };
-    // a date withdrawn or moved while the checks ran stops it here, before anything is public
+    // A date withdrawn or moved while the bot works stops it before its next step: read again
+    // before each step that publishes something.
     still_due(&collab, &s.repo, e).await?;
     // 1. the tracking issue
     if !issue_public {
@@ -881,6 +882,7 @@ async fn publish_one(
     let commit = if let Some(c) = published {
         c
     } else {
+        still_due(&collab, &s.repo, e).await?;
         args.check = false;
         Box::pin(crate::publish_code::publish(ctx, &args))
             .await?
@@ -889,6 +891,7 @@ async fn publish_one(
     };
     // 3. and 4. the tag and its release
     if let Some(t) = tag {
+        still_due(&collab, &s.repo, e).await?;
         tag_and_release(
             ctx,
             &s,

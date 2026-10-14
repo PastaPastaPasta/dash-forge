@@ -501,20 +501,23 @@ fn in_base(cwd: &Path, tip: &str, base: &str, base_tip: &str) -> Result<Option<S
         return Ok(None);
     }
     let since = git::git(cwd, &["merge-base", base_tip, tip], &[])?;
-    let path = git::git(
-        cwd,
-        &[
-            "rev-list",
-            "--first-parent",
-            "--reverse",
-            &format!("--max-count={IN_BASE_DEPTH}"),
-            &format!("{since}..{base_tip}"),
-        ],
-        &[],
-    )?;
-    for c in path.lines() {
-        if git::merge_tree(cwd, c, tip)? == Some(tree_of(c)?) {
-            return Ok(Some(c.to_string()));
+    let range = format!("{since}..{base_tip}");
+    // git limits before it reverses, so the walk is counted first: past the bound it refuses
+    // rather than take a later commit for the one that published
+    let count: usize = git::git(cwd, &["rev-list", "--first-parent", "--count", &range], &[])?
+        .trim()
+        .parse()
+        .unwrap_or(usize::MAX);
+    if count <= IN_BASE_DEPTH {
+        let path = git::git(
+            cwd,
+            &["rev-list", "--first-parent", "--reverse", &range],
+            &[],
+        )?;
+        for c in path.lines() {
+            if git::merge_tree(cwd, c, tip)? == Some(tree_of(c)?) {
+                return Ok(Some(c.to_string()));
+            }
         }
     }
     Err(UserError::new(

@@ -235,8 +235,9 @@ def judge(inp):
     rows, counted = [], []
     for e in inp["events"]:
         r = record(inp["repoId"], e)
-        counts = None if r is None else (r["actor"] == inp["owner"] or approver_at(inp["memberships"], r["actor"],
-                                                                                    r["createdAt"]))
+        # a withdrawal or completion always counts (consensus admitted its writer as a member then)
+        counts = None if r is None else (r["value"]["type"] != "schedule" or r["actor"] == inp["owner"]
+                                         or approver_at(inp["memberships"], r["actor"], r["createdAt"]))
         rows.append({"record": r, "counts": counts})
         if counts:
             counted.append(r)
@@ -395,11 +396,19 @@ def embargo_vectors():
         ]})
     add("newest_schedule_wins",
         "The newest counted schedule is the embargo (the date moved an hour later). A triage member's later "
-        "schedule and cancellation do not count. Due only from its date on.",
+        "schedule does not count. Due only from its date on.",
         {"repoId": REPO, "owner": "own", "memberships": MEMBERS, "now": AT + 3600,
          "targets": [{"targetId": "iss12", "isIssue": True}], "events": [
-             ev("a", s1, 100), ev("b", s2, 200, actor="wri"), ev("c", s1, 300, actor="tri"),
-             ev("d", cancel, 400, actor="tri")]})
+             ev("a", s1, 100), ev("b", s2, 200, actor="wri"), ev("c", s1, 300, actor="tri")]})
+    add("withdrawal_counts_from_any_writer",
+        "A withdrawal or completion counts whoever wrote it (consensus admitted its writer as a member when it was "
+        "written; it only stops a publication): a triage member's withdrawal ends the date, and one by someone no "
+        "longer a member (their membership document deleted) still does, so a withdrawn date never comes back.",
+        {"repoId": REPO, "owner": "own", "memberships": MEMBERS, "now": AT + 10,
+         "targets": [{"targetId": "iss12", "isIssue": True}, {"targetId": "iss14", "isIssue": True}], "events": [
+             ev("a", s1, 100), ev("b", cancel, 200, actor="tri"),
+             ev("x", s1, 100, target="iss14", number=14), ev("y", cancel, 200, actor="gone", target="iss14",
+                                                             number=14)]})
     add("not_due_before_its_date",
         "One second before the date it is waiting, not due.",
         {"repoId": REPO, "owner": "own", "memberships": MEMBERS, "now": AT - 1,

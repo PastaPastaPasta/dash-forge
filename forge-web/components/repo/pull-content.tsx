@@ -150,7 +150,7 @@ import { mirrorRepo, useRepoLinks } from '@/components/repo/target-href'
 import { importedHost, importedUrlOf } from '@/lib/view/ref-targets'
 import { useAuth } from '@/contexts/auth-context'
 import { useWriteGuard } from '@/hooks/use-write-guard'
-import { EmbargoPanel } from '@/components/repo/embargo-panel'
+import { EmbargoPanel, embargoShows } from '@/components/repo/embargo-panel'
 import { TargetNotFound } from '@/components/repo/number-content'
 import { CommentOwnActions, Timeline, type CommentSlots } from '@/components/repo/timeline'
 import { MakeOthersPublicButton, MakePublicBundleDialog, MakePublicButton, bundleable, makePublicWords, ofMembersOnlyBranch, useQuotedMembersPost } from '@/components/repo/make-public'
@@ -2408,7 +2408,7 @@ function PullPage({
                 canSet={(isMaintainer || holdings.data?.role === 'writer') && !archived && guard.disabledReason === null}
                 open={pull.state.open}
                 defaultBranch={home.defaultBranch}
-                onDone={() => refresh()}
+                onDone={(value) => refresh((t) => embargoShows(t.embargo, value))}
               />
             ) : null}
             <SidebarSection title="Linked issues" icon={Link2}>

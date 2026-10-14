@@ -17,9 +17,11 @@
 //!   exactly its own canonical form (key order, spacing, duplicate keys, unknown keys or another
 //!   `v`) is no record, so both stacks read the same bytes the same way.
 //!
-//! A record **counts** only when its writer is the repository owner, or a maintainer or role-1
-//! writer at its `$createdAt` ([`record_counts`]); consensus admits triage's too on the live
-//! contracts. Per target, the newest counted schedule is the embargo, and a newer counted
+//! A **schedule** counts only when its writer is the repository owner, or a maintainer or role-1
+//! writer at its `$createdAt`; consensus admits triage's too on the live contracts. A
+//! cancellation or completion always counts: consensus admitted its writer as a member, and it
+//! only stops a publication, so a later removal of its writer never brings a date back
+//! ([`record_counts`]). Per target, the newest counted schedule is the embargo, and a newer
 //! cancellation or completion ends it ([`embargo_of`]).
 //!
 //! The release bot (D18) is a member identity, not a runner: at the date it makes the tracking
@@ -310,11 +312,16 @@ pub fn embargo_record(repo_id: &str, e: &EmbargoEvent) -> Option<EmbargoRecord> 
     })
 }
 
-/// Whether `rec` counts: its writer is the repository `owner`, or held a maintainer or role-1
-/// writer document at its `$createdAt` (`oracle`: the repository's current memberships).
+/// Whether `rec` counts. A schedule counts when its writer is the repository `owner`, or held a
+/// maintainer or role-1 writer document at its `$createdAt` (`oracle`: the repository's current
+/// memberships). A withdrawal or a completion always counts: consensus admitted its writer as a
+/// member when it was written, and it only ever stops a publication, so removing its writer
+/// later (which deletes their membership document) never brings a withdrawn date back.
 #[must_use]
 pub fn record_counts(rec: &EmbargoRecord, owner: &str, oracle: &RoleOracle) -> bool {
-    rec.actor == owner || oracle.approver_at(&rec.actor, rec.created_at)
+    !matches!(rec.value, EmbargoValue::Schedule(_))
+        || rec.actor == owner
+        || oracle.approver_at(&rec.actor, rec.created_at)
 }
 
 /// Where an embargo stands.
@@ -654,12 +661,17 @@ mod tests {
             role: Role::Triage,
             created_at: 1,
         }]);
-        let s = EmbargoValue::Cancel.encode().unwrap();
+        let s = EmbargoValue::Schedule(plan()).encode().unwrap();
         let mut r = embargo_record("R", &ev("a", &s, 5)).unwrap();
         r.actor = "T".into();
-        assert!(!record_counts(&r, "O", &oracle));
+        assert!(!record_counts(&r, "O", &oracle), "a triage member's date");
         r.actor = "O".into();
         assert!(record_counts(&r, "O", &oracle));
+        // a withdrawal counts whoever wrote it, a former member too
+        let c = EmbargoValue::Cancel.encode().unwrap();
+        let mut w = embargo_record("R", &ev("b", &c, 6)).unwrap();
+        w.actor = "gone".into();
+        assert!(record_counts(&w, "O", &oracle));
     }
 
     #[test]
