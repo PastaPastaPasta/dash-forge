@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 /// The line every hook this module writes carries, then ` v<version>`.
 pub const MARKER: &str = "# dash-forge pre-push hook";
 /// The version of the script [`script`] writes; a hook of an older version is rewritten.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 /// The name a foreign `pre-push` hook is kept under, run after the check.
 pub const CHAINED: &str = "pre-push.dash-chained";
 
@@ -40,11 +40,14 @@ pub fn script(helper: &Path) -> String {
          # it again. `git push --no-verify` skips it, and publishes those commits.\n\
          helper='{quoted}'\n\
          [ -x \"$helper\" ] || helper=git-remote-dash\n\
-         input=$(cat)\n\
-         printf '%s\\n' \"$input\" | \"$helper\" --pre-push \"$@\" || exit $?\n\
+         # git's input, byte for byte, for the check and then the hook this one chains\n\
+         input=$(mktemp \"${{TMPDIR:-/tmp}}/dash-pre-push.XXXXXX\") || exit 1\n\
+         trap 'rm -f \"$input\"' EXIT\n\
+         cat > \"$input\" || exit 1\n\
+         \"$helper\" --pre-push \"$@\" < \"$input\" || exit $?\n\
          chained=\"$(dirname \"$0\")/{CHAINED}\"\n\
          if [ -x \"$chained\" ]; then\n\
-         \x20 printf '%s\\n' \"$input\" | \"$chained\" \"$@\" || exit $?\n\
+         \x20 \"$chained\" \"$@\" < \"$input\" || exit $?\n\
          fi\n\
          exit 0\n"
     )
@@ -254,5 +257,18 @@ mod tests {
         assert!(!run("refuse"), "a refusal stops the push");
         let text = std::fs::read_to_string(&log).unwrap();
         assert!(!text.contains("chained"), "{text}");
+        // git's input reaches both byte for byte: an empty one stays empty
+        std::fs::remove_file(&log).ok();
+        let mut child = std::process::Command::new(dir.join("pre-push"))
+            .args(["origin", "url", "ok"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        drop(child.stdin.take());
+        assert!(child.wait().unwrap().success());
+        assert_eq!(
+            std::fs::read_to_string(&log).unwrap(),
+            "check --pre-push origin url ok\nchained origin url ok\n"
+        );
     }
 }

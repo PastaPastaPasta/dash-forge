@@ -2649,7 +2649,11 @@ fn guard_push(planned: &mut [Planned], view: &PushView, options: &OptionState) -
             reject_accepted(planned, "can't check for members-only commits");
         }
         Verdict::Refuse => {
-            let missing = p_tips.len() - g.present(&p_tips).map_or(0, |h| h.len());
+            // public tips (distinct commits) this clone does not hold; unknown counts as none
+            let distinct: BTreeSet<&String> = p_tips.iter().collect();
+            let missing = g
+                .present(&p_tips)
+                .map_or(0, |held| distinct.len().saturating_sub(held.len()));
             let (e, lines) =
                 members::publish_refusal(&g, &outcome, &batch, &view.members_tips(), missing);
             eprint_lines(lines);
