@@ -13,21 +13,25 @@
 //! Docker socket and join the `bridge` network; a job that sets docker options or mounts
 //! (`container.options` / `.volumes`, the same on services) or calls a reusable workflow is
 //! refused unless the repository allows it; secrets and a `GITHUB_TOKEN` go only to
-//! `trusted_refs`; act runs with a cleared environment and never reads the checkout's `.actrc`,
-//! `.env`, `.secrets`, `.vars` or `.input`; no cache server is shared between runs. Pull
+//! `trusted_refs`, and so do the values of an environment a job names, when its audience names
+//! the runner's identity ([`envs`]); act runs with a cleared environment and never reads the
+//! checkout's `.actrc`, `.env`, `.secrets`, `.vars` or `.input`; no cache server is shared
+//! between runs. Pull
 //! requests run as `pull_request` on their head, by default only members' (`pull_requests`), and
 //! with the secrets only from a trusted branch of the repository itself by the owner or a maintainer
 //! ([`run::pull_trusted`]): a fork's or a stranger's head never gets them. It does NOT isolate
 //! jobs from the Docker daemon it drives: give it a daemon of its own.
 //!
 //! Module map: [`config`] (runner.toml), [`watch`] (refs, cursors), [`relay`] (wake-ups),
-//! [`workflow`] (the YAML the runner reads before act), [`act`] (act's CLI and JSON log),
+//! [`workflow`] (the YAML the runner reads before act), [`envs`] (environments' values for the
+//! jobs that name them), [`act`] (act's CLI and JSON log),
 //! [`run`] (one run end to end), [`artifacts`] (upload-artifact's uploads, zipped per artifact).
 
 mod act;
 mod artifacts;
 mod config;
 mod cron;
+mod envs;
 mod relay;
 mod run;
 mod watch;

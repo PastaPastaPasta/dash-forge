@@ -27,6 +27,7 @@ use serde_json::json;
 use crate::act::{self, Invocation, Outcome, Results};
 use crate::artifacts;
 use crate::config::{Config, RepoConfig};
+use crate::envs;
 use crate::watch::{PullEvent, PullRow, Push};
 use crate::workflow::{self, Facts, Job, PullFacts, PushFacts};
 
@@ -951,6 +952,14 @@ pub fn run(
             return Ok(ran);
         }
     }
+    // Environments' values ([`envs`]): looked up before anything is reported, so a lookup that
+    // fails (a network error) retries the whole run, not half of it. Never for an untrusted run.
+    let looked = if trusted {
+        look_up_environments(cfg, repo, &plan)?
+    } else {
+        BTreeMap::new()
+    };
+    let nonce = envs::nonce()?;
     let event_path = run_dir.join("event.json");
     std::fs::write(&event_path, serde_json::to_vec(&f.event)?)?;
     let secrets = trusted.then(|| repo.secrets_file.clone()).flatten();
@@ -1003,10 +1012,49 @@ pub fn run(
             }
         }
     }
-    for wf in &plan.run {
-        run_workflow(&ctx, wf, &mut ran)?;
+    for wf in &mut plan.run {
+        let given = envs::apply(wf, trusted, &looked, &nonce);
+        run_workflow(&ctx, wf, &given, &mut ran)?;
     }
     Ok(ran)
+}
+
+/// Look up every environment `plan`'s workflows name (those a push's `paths` filter left out
+/// too: a required job among them runs), each once.
+fn look_up_environments(
+    cfg: &Config,
+    repo: &RepoConfig,
+    plan: &workflow::Plan,
+) -> Result<BTreeMap<String, envs::Lookup>> {
+    let all: Vec<&workflow::Workflow> = plan.run.iter().chain(&plan.path_filtered).collect();
+    envs::named(&all)
+        .into_iter()
+        .map(|env| {
+            let found = read_environment(cfg, repo, &env)?;
+            if let envs::Lookup::Unavailable(why) = &found {
+                eprintln!(
+                    "forge-runner: {}: environment {env} not given: {why}",
+                    repo.repo
+                );
+            }
+            Ok((env, found))
+        })
+        .collect()
+}
+
+/// `dg --json ci env <repo> --env <env>`, signed for by the runner's identity (DASH_FORGE_KEY,
+/// which must hold its encryption key): the environment's entries when it is shared with this
+/// runner by name.
+fn read_environment(cfg: &Config, repo: &RepoConfig, env: &str) -> Result<envs::Lookup> {
+    let mut cmd = with_network(Command::new(&cfg.bin.dg), cfg);
+    cmd.args(["--json", "ci", "env", &repo.repo, "--env", env])
+        .stdin(Stdio::null());
+    let out = cmd.output().context("dg ci env: could not start")?;
+    envs::parse_lookup(
+        out.status.success(),
+        &String::from_utf8_lossy(&out.stdout),
+        &String::from_utf8_lossy(&out.stderr),
+    )
 }
 
 /// What [`skip_filtered`] may report: the check names (`None`: every filtered one), and who
@@ -1179,7 +1227,13 @@ fn skip_filtered(
 }
 
 /// Run one workflow file with act (its refused jobs reported, not run) and report its jobs.
-fn run_workflow(c: &RunCtx<'_>, wf: &workflow::Workflow, ran: &mut Ran) -> Result<()> {
+/// `given`: what its jobs' environments give ([`envs::apply`]).
+fn run_workflow(
+    c: &RunCtx<'_>,
+    wf: &workflow::Workflow,
+    given: &envs::Given,
+    ran: &mut Ran,
+) -> Result<()> {
     let (refused, runnable): (Vec<&Job>, Vec<&Job>) =
         wf.jobs.iter().partition(|j| j.refused.is_some());
     for j in &refused {
@@ -1217,6 +1271,7 @@ fn run_workflow(c: &RunCtx<'_>, wf: &workflow::Workflow, ran: &mut Ran) -> Resul
     // One value for both: a bare `-s GITHUB_TOKEN` with no token in act's environment would
     // make act prompt for it (on a null stdin, failing the run).
     let token = github_token(c.secret_values);
+    let env_names: Vec<String> = given.secrets.iter().map(|(n, _)| n.clone()).collect();
     let args = act::run_args(
         c.cfg,
         &Invocation {
@@ -1226,13 +1281,14 @@ fn run_workflow(c: &RunCtx<'_>, wf: &workflow::Workflow, ran: &mut Ran) -> Resul
             event: c.event,
             secrets: c.secrets,
             github_token: token,
+            env_secrets: &env_names,
             action_cache: &action_cache,
             artifacts: art_dir.as_deref(),
         },
     );
     let started = Instant::now();
     let limit = c.deadline.saturating_duration_since(Instant::now());
-    let (results, timed_out, crashed) = run_act(c.cfg, &args, token, limit);
+    let (results, timed_out, crashed) = run_act(c.cfg, &args, token, &given.secrets, limit);
     if timed_out || crashed {
         sweep_containers(c.cfg);
     }
@@ -1247,7 +1303,12 @@ fn run_workflow(c: &RunCtx<'_>, wf: &workflow::Workflow, ran: &mut Ran) -> Resul
         ),
         None => BTreeMap::new(),
     };
-    let values: Vec<String> = c.secret_values.iter().map(|(_, v)| v.clone()).collect();
+    let values = masks(
+        c.secret_values
+            .iter()
+            .map(|(_, v)| v.as_str())
+            .chain(given.masks()),
+    );
     for j in runnable {
         let outcome = results.outcome(&j.id);
         let conclusion = outcome.conclusion(timed_out);
@@ -1262,7 +1323,7 @@ fn run_workflow(c: &RunCtx<'_>, wf: &workflow::Workflow, ran: &mut Ran) -> Resul
         };
         let (files, note) = uploads.remove(&j.id).unwrap_or_default();
         let summary = format!(
-            "forge-runner: {conclusion} on {} in {secs}s ({}){}{}{why}{note}",
+            "forge-runner: {conclusion} on {} in {secs}s ({}){}{}{}{why}{note}",
             c.trig.label(),
             wf.file.display(),
             if c.secrets.is_some() {
@@ -1270,6 +1331,7 @@ fn run_workflow(c: &RunCtx<'_>, wf: &workflow::Workflow, ran: &mut Ran) -> Resul
             } else {
                 ""
             },
+            given.notes.get(&j.id).copied().unwrap_or(""),
             c.note,
         );
         let r = Report {
@@ -1369,6 +1431,24 @@ fn read_secret_values(path: &Path) -> Result<Vec<(String, String)>> {
         .collect())
 }
 
+/// What [`redact`] masks for `values`: each value, and each line of a value of several lines,
+/// as a job may print one line of a key.
+fn masks<'v>(values: impl Iterator<Item = &'v str>) -> Vec<String> {
+    let mut out = Vec::new();
+    for v in values {
+        out.push(v.to_string());
+        if v.contains('\n') {
+            out.extend(
+                v.lines()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                    .map(str::to_string),
+            );
+        }
+    }
+    out
+}
+
 /// The `GITHUB_TOKEN` a secrets file's pairs set, or `""` (act upper-cases the names it reads
 /// from the file, so the match ignores case). act gets this value, the one [`redact`] masks.
 fn github_token(values: &[(String, String)]) -> &str {
@@ -1439,15 +1519,16 @@ fn url_encode(s: &str) -> String {
 }
 
 /// Run act with `args`, streaming its JSON log, stopped after `limit`: SIGINT first (act then
-/// tears its containers down), SIGKILL 20 s later. `github_token` goes in act's environment
-/// ([`act::command`]). Returns (results, timed out, crashed).
+/// tears its containers down), SIGKILL 20 s later. `github_token` and `secrets` (environments'
+/// values) go in act's environment ([`act::command`]). Returns (results, timed out, crashed).
 fn run_act(
     cfg: &Config,
     args: &[String],
     github_token: &str,
+    secrets: &[(String, String)],
     limit: Duration,
 ) -> (Results, bool, bool) {
-    let mut cmd = act::command(cfg, github_token);
+    let mut cmd = act::command(cfg, github_token, secrets);
     cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -2156,7 +2237,7 @@ mod tests {
         std::fs::write(
             &fake,
             format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nprintf '%s' \"$GITHUB_TOKEN\" > '{}'\n",
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nprintf '%s|%s' \"$GITHUB_TOKEN\" \"$FORGE_ENV_N_0\" > '{}'\n",
                 argv_file.display(),
                 env_file.display()
             ),
@@ -2165,6 +2246,8 @@ mod tests {
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
         let c = cfg(&format!("[bin]\nact = \"{}\"", fake.display()));
         let token = "ghs_FAKEtokenFAKEtoken";
+        let env = [("FORGE_ENV_N_0".to_string(), "FAKE env value".to_string())];
+        let env_names = ["FORGE_ENV_N_0".to_string()];
         let act_args = act::run_args(
             &c,
             &Invocation {
@@ -2174,27 +2257,43 @@ mod tests {
                 event: d.path(),
                 secrets: Some(d.path()),
                 github_token: token,
+                env_secrets: &env_names,
                 action_cache: d.path(),
                 artifacts: None,
             },
         );
-        run_act(&c, &act_args, token, Duration::from_secs(10));
+        run_act(&c, &act_args, token, &env, Duration::from_secs(10));
         let argv = std::fs::read_to_string(argv_file).unwrap();
         assert!(!argv.contains("FAKE"), "{argv}");
         assert!(argv.lines().any(|l| l == "GITHUB_TOKEN"), "{argv}");
-        assert_eq!(std::fs::read_to_string(env_file).unwrap(), token);
+        assert!(argv.lines().any(|l| l == "FORGE_ENV_N_0"), "{argv}");
+        assert_eq!(
+            std::fs::read_to_string(env_file).unwrap(),
+            format!("{token}|FAKE env value")
+        );
+    }
+
+    /// A key of several lines is masked whole and line by line, as a job may print one line.
+    #[test]
+    fn every_line_of_a_multi_line_value_is_masked() {
+        let key = "-----BEGIN KEY-----\nFAKEline1FAKE\r\nFAKEline2FAKE\n-----END KEY-----\n";
+        let m = masks(["short", key].into_iter());
+        let log = format!("whole: {key}\nline: FAKEline2FAKE\nshort");
+        let out = redact(&log, &m);
+        assert!(!out.contains("FAKE"), "{out}");
+        assert!(!out.contains("short"), "{out}");
     }
 
     #[test]
     fn a_hung_act_is_stopped_and_a_missing_act_is_a_crash() {
         let c = cfg("[bin]\nact = \"sleep\"");
-        let (_, timed_out, _) = run_act(&c, &["5".into()], "", Duration::from_millis(600));
+        let (_, timed_out, _) = run_act(&c, &["5".into()], "", &[], Duration::from_millis(600));
         assert!(timed_out);
         let c = cfg("[bin]\nact = \"/nonexistent/act\"");
-        let (_, timed_out, crashed) = run_act(&c, &[], "", Duration::from_secs(5));
+        let (_, timed_out, crashed) = run_act(&c, &[], "", &[], Duration::from_secs(5));
         assert!(!timed_out && crashed);
         let c = cfg("[bin]\nact = \"false\"");
-        let (_, _, crashed) = run_act(&c, &[], "", Duration::from_secs(5));
+        let (_, _, crashed) = run_act(&c, &[], "", &[], Duration::from_secs(5));
         assert!(!crashed, "a non-zero exit (a failed job) is not a crash");
     }
 }

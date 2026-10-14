@@ -9,8 +9,10 @@ Keep configuration and secrets for each environment (`dev`, `staging`, `producti
 5. [When two people change it at once](#when-two-people-change-it-at-once)
 6. [Changing members](#changing-members)
 7. [Removing a member](#removing-a-member)
-8. [What is public](#what-is-public)
-9. [Limits](#limits)
+8. [In CI workflows](#in-ci-workflows)
+9. [Who could read a value](#who-could-read-a-value)
+10. [What is public](#what-is-public)
+11. [Limits](#limits)
 
 ---
 
@@ -69,6 +71,7 @@ dg env run     <owner>/<repo> --env dev -- npm test   # the values go to the com
 dg env export  <owner>/<repo> --env dev -o .env       # a file only you can read, ignored by git
 dg env export  <owner>/<repo> --env dev | ./deploy    # .env text on stdout, for piping
 dg env history <owner>/<repo> --env production        # who changed what, and when
+dg env exposure <owner>/<repo> --env production       # who could read each current value
 dg env audience <owner>/<repo> --env ci --set writers --also @ci-bot   # change who can read it
 dg env share   <owner>/<repo> --env ci @ci-bot        # give one more person access
 dg env unshare <owner>/<repo> --env ci @ci-bot        # take it away, and list what to change
@@ -167,6 +170,49 @@ Changes saved by someone who wasn't a maintainer are ignored, but they stay on P
 
 The web needs your encryption key, unlocked in the tab, to make a member change in a repository with environments; without it the change is refused before anything is signed. If a change fails part way (the membership saved, the key share refused), the environments it planned are saved for the members as they are, and Settings → Environments lists anything still to save.
 
+## In CI workflows
+
+A [self-hosted runner](self-host-runner.md#environments) gives a job the values of the environment it names, as GitHub Actions does:
+
+```yaml
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production          # or {name: production, url: …}
+    steps:
+      - run: ./deploy.sh
+        env:
+          DB_URL: ${{ secrets.DB_URL }}
+```
+
+Every entry of the environment, secret or plain setting, is a `secrets.NAME` for that job only. An entry wins over a runner secret of the same name. Other jobs of the workflow can't read it, even under the same name in another environment.
+
+A runner reads an environment only when it is shared with the runner's identity **by name**:
+
+```sh
+dg env share <owner>/<repo> --env production @ci-runner        # or --also @ci-runner when you set the audience
+```
+
+A group never counts. All members doesn't include a runner, even one whose identity is a member, so a group environment gives it nothing until you share it by name. Taking it away is `dg env unshare --env production @ci-runner`, which lists the values the runner could read: change them where they're used.
+
+The runner gives the values only to runs it trusts: pushes to its `trusted_refs`, and pull requests from those branches by the owner or a maintainer. A fork's pull request, a non-member's, and a push to any other branch run the job without them, as GitHub runs a fork's pull request without secrets. A trusted run whose environment isn't shared with the runner doesn't run that job: its check says why.
+
+Values are masked in job logs, each line of a value of several lines too. Masking can't catch every way a job could print a value, so only share an environment with a runner whose workflows you trust.
+
+## Who could read a value
+
+Reads can't be logged, but who was given each value can be listed:
+
+```
+$ dg env exposure alice/shop --env production
+Who could read production's current values in alice/shop:
+  DB_URL                           4 people: <alice>, <bob>, <ci-runner>, <dana>
+  STRIPE_KEY                       2 people: <alice>, <ci-runner>
+Access is granted, not logged.
+```
+
+A value counts everyone each version holding it was saved for, so a value someone could read last year is listed with them until it changes. A version saved in the old format adds "anyone who held the members key". Versions you can't open are counted below the list, without their people.
+
 ## What is public
 
 Anyone can see that a repository has environments, how many, and for each change its author, its time, its size (rounded up to 512 bytes) and how many people it was sent to.
@@ -178,4 +224,4 @@ Nobody outside the audience can see an environment's name, who it is for, its en
 - An environment holds up to about 12 KB of names, values and notes. Shared with more than about 50 people, somewhat less: a save that doesn't fit is refused before anything is signed.
 - An environment can be shared with at most 64 people. "All members is 80 people" is refused: choose a smaller group or specific people.
 - Names: an environment is 1 to 64 letters, digits, `.`, `_` or `-`. An entry is letters, digits and `_`, not starting with a digit.
-- Using environments in CI workflows is **Coming soon**. Until then, `dg env run` on a machine whose identity can read the environment covers a deploy script.
+- A CI job gets an environment's values only from a self-hosted runner that the environment is shared with by name ([In CI workflows](#in-ci-workflows)). On another CI service, run `dg env run` with an identity the environment is shared with.

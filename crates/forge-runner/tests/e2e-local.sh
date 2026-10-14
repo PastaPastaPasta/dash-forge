@@ -38,6 +38,12 @@
 #      requires runs for real (its unrequired jobs do not, and nothing is reported skipped); with
 #      no policy requiring it, nothing runs; under a policy requiring every check, or one that
 #      can't be read, every filtered job runs.
+#  15. Environments (a recording `dg ci env`): on a trusted push each job gets only the environment
+#      it names, under the names it uses, any value intact (quotes, backslashes, `$`, CR LF,
+#      several lines), masked in its log line by line; a job naming an environment not shared
+#      with the runner is refused with dg's reason; a job reading `secrets` as a whole beside
+#      them is refused; an untrusted push never asks for an environment and runs its jobs
+#      without values; a failed lookup reports nothing and the push is tried again.
 set -uo pipefail
 RUNNER="${1:-${CARGO_TARGET_DIR:-target}/debug/forge-runner}"
 [[ -x "$RUNNER" ]] || { echo "SKIP: no forge-runner binary at $RUNNER"; exit 2; }
@@ -74,6 +80,10 @@ case " $* " in
   *" repo policy show "*) [[ -e "$FAKE_POLICY_FAILS" ]] && { echo "fake dg: the node did not answer" >&2; exit 1; }
                          cat "$FAKE_POLICY" 2>/dev/null || echo '{"policy":null}'; exit 0 ;;
   *" collab list "*) echo '{"members":[{"identityId":"MEMBER","role":"maintainer"}],"roles":true,"ownerId":"OWNER"}'; exit 0 ;;
+  *" ci env "*) e="${*: -1}"; echo "$e" >>"$FAKE_ENV_LOG"
+                [[ -e "$FAKE_ENVS/$e.fail" ]] && { echo '{"error":{"code":"E701","message":"no node answered"}}'; exit 1; }
+                [[ -e "$FAKE_ENVS/$e.json" ]] || { echo '{"error":{"code":"E612","message":"e2e/app has no environment '"$e"' shared with this runner","cause":"'"$e"' reaches it only through its group (All members)"}}'; exit 1; }
+                cat "$FAKE_ENVS/$e.json"; exit 0 ;;
 esac
 python3 - "$@" >>"$FAKE_DG_LOG" <<'PY'
 import json, sys, os
@@ -103,6 +113,8 @@ export FAKE_VIEW_FAILS="$W/view-fails"
 export FAKE_REPO="$W/repo.json"
 export FAKE_POLICY="$W/policy.json"
 export FAKE_POLICY_FAILS="$W/policy-fails"
+export FAKE_ENVS="$W/envs"; mkdir -p "$FAKE_ENVS"
+export FAKE_ENV_LOG="$W/env-lookups.log"; : >"$FAKE_ENV_LOG"
 export DASH_FORGE_KEY="dfk1:devnet:fake:9:fake"
 printf 'E2E_SECRET=hunter2-%s\n' "$RANDOM" >"$W/secrets"
 
@@ -496,6 +508,99 @@ HP4=$(git -C "$R" rev-parse pfilt)
 rm -f "$FAKE_POLICY_FAILS"
 check "when the policy can't be read, every filtered job runs" test "$(q "sorted(r['name'] for r in rs if r['sha']=='$HP4' and r['status']=='completed')")" = "['pp / other', 'pp / req']"
 check "…and the log says the policy could not be read" grep -q "leaves this push out: the branch policy could not be read" "$W/runner.log"
+
+echo "== 15. environments: each job gets its own, only on a trusted push, masked"
+TAG=$RANDOM$RANDOM
+python3 - "$FAKE_ENVS" "$TAG" <<'PY2'
+import json, sys, hashlib
+d, tag = sys.argv[1], sys.argv[2]
+tricky = 'q"uote\\back $HOME \'single\' #hash\r\nFAKEPEMLINE2-' + tag + '\nend with backslash \\'
+def env(name, entries):
+    json.dump({"env": name, "entries": [{"name": n, "type": "secret", "value": v} for n, v in entries]},
+              open(f"{d}/{name}.json", "w"))
+env("staging", [("DEPLOY_KEY", "stage-value-" + tag)])
+env("production", [("DEPLOY_KEY", "prod-value-" + tag), ("TRICKY", tricky), ("GITHUB_TOKEN", "not-taken-" + tag)])
+open(f"{d}/tricky.sha", "w").write(hashlib.sha256(tricky.encode()).hexdigest())
+PY2
+TRICKY_SHA=$(cat "$FAKE_ENVS/tricky.sha")
+git -C "$R" switch -q -c release/env main
+git -C "$R" rm -rq --ignore-unmatch .forge
+mkdir -p "$R/.forge/workflows"
+cat >"$R/.forge/workflows/env.yml" <<EOF
+name: env
+on: push
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "build-sees=[\${{ secrets.DEPLOY_KEY }}]"
+  stage:
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - run: echo "stage=[\$V]"; test "\$V" = "stage-value-$TAG" && echo STAGE-OK
+        env:
+          V: \${{ secrets.DEPLOY_KEY }}
+  prod:
+    runs-on: ubuntu-latest
+    environment: {name: production, url: 'https://example.invalid'}
+    needs: build
+    steps:
+      - run: test "\$(printf %s "\$T" | sha256sum | cut -c1-64)" = "$TRICKY_SHA" && echo TRICKY-OK; echo "line=[\$(printf %s "\$T" | sed -n 2p)]"; echo "prod=[\${{ secrets.deploy_key }}]"
+        env:
+          T: \${{ secrets['TRICKY'] }}
+      - run: echo "repo-secret=[\${{ secrets.E2E_SECRET }}] token=[\${{ secrets.GITHUB_TOKEN }}]"
+  hidden:
+    runs-on: ubuntu-latest
+    environment: secret-ops
+    steps:
+      - run: echo HIDDEN-RAN
+EOF
+cat >"$R/.forge/workflows/dump.yml" <<'EOF'
+name: dump
+on: push
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo '${{ toJSON(secrets) }}'
+  deploy:
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - run: echo "dump-deploy=[${{ secrets.DEPLOY_KEY }}]"
+EOF
+git -C "$R" add -A; git -C "$R" commit -qm "envs"
+HE=$(git -C "$R" rev-parse HEAD)
+: >"$FAKE_DG_LOG"; : >"$FAKE_ENV_LOG"; touch "$FAKE_ENVS/production.fail"
+poll
+check "a failed lookup reports nothing (the push is tried again)" test "$(q "len([r for r in rs if r['sha']=='$HE'])")" = 0
+rm -f "$FAKE_ENVS/production.fail"; : >"$FAKE_ENV_LOG"
+poll
+done_log() { q "[r for r in rs if r['sha']=='$HE' and r['status']=='completed' and r['name']=='$1'][0].get('log_text', '')"; }
+done_sum() { q "[r for r in rs if r['sha']=='$HE' and r['status']=='completed' and r['name']=='$1'][0]['summary']"; }
+check "each environment is looked up once" test "$(sort "$FAKE_ENV_LOG" | tr '\n' ' ')" = "production secret-ops staging "
+check "stage got staging's value, masked" bash -c '[[ "$1" == *STAGE-OK* && "$1" == *"stage=[***]"* ]]' _ "$(done_log 'env / stage')"
+check "prod got production's value of the same name (case-insensitive)" bash -c '[[ "$1" == *"prod=[***]"* ]]' _ "$(done_log 'env / prod')"
+check "a value with quotes, backslashes, \$, CR LF and lines arrives intact" bash -c '[[ "$1" == *TRICKY-OK* ]]' _ "$(done_log 'env / prod')"
+check "…and each of its lines is masked" bash -c '[[ "$1" == *"line=[***]"* ]]' _ "$(done_log 'env / prod')"
+check "a repository secret still reaches an environment job; GITHUB_ entries are not taken" bash -c '[[ "$1" == *"repo-secret=[***] token=[]"* ]]' _ "$(done_log 'env / prod')"
+check "a job naming no environment gets none of its values" bash -c '[[ "$1" == *"build-sees=[]"* ]]' _ "$(done_log 'env / build')"
+check "an environment not shared with the runner refuses its job, with dg's reason" bash -c '[[ "$1" == *"environment secret-ops can'"'"'t be read by this runner"*"[E612]"* ]]' _ "$(done_sum 'env / hidden')"
+check "…which never ran" bash -c "! grep -q HIDDEN-RAN '$FAKE_DG_LOG'"
+check "a job reading secrets as a whole beside an environment job is refused" bash -c '[[ "$1" == *"as a whole"* ]]' _ "$(done_sum 'dump / dump')"
+check "…and the environment job beside it runs" bash -c '[[ "$1" == *"dump-deploy=[***]"* ]]' _ "$(done_log 'dump / deploy')"
+check "the summary says the job had its environment's values" bash -c '[[ "$1" == *"with its environment'"'"'s values"* ]]' _ "$(done_sum 'env / prod')"
+check "no environment value appears in any report or log" bash -c "! grep -q -e 'value-$TAG' -e 'FAKEPEMLINE2-$TAG' -e 'not-taken-$TAG' '$FAKE_DG_LOG'"
+# An untrusted push: no lookup, the jobs run without the values.
+git -C "$R" switch -q -c envfeat release/env
+echo x >"$R/x.txt"; git -C "$R" add x.txt; git -C "$R" commit -qm "untrusted"
+HU=$(git -C "$R" rev-parse HEAD)
+: >"$FAKE_DG_LOG"; : >"$FAKE_ENV_LOG"
+poll
+check "an untrusted push never asks for an environment" test "$(wc -l <"$FAKE_ENV_LOG" | tr -d ' ')" = 0
+check "…and its environment jobs run without the values" test "$(q "'stage=[]' in [r for r in rs if r['sha']=='$HU' and r['status']=='completed' and r['name']=='env / stage'][0]['log_text']")" = True
+check "…saying so" test "$(q "'only trusted refs get them' in [r for r in rs if r['sha']=='$HU' and r['status']=='completed' and r['name']=='env / stage'][0]['summary']")" = True
 
 check "no act container, volume or network left behind" bash -c "! docker ps -a --format '{{.Names}}' | grep -q '^act-e2e'"
 

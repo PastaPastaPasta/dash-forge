@@ -123,8 +123,9 @@ const ENV_ALLOW_PREFIXES: [&str; 2] = ["DOCKER_", "XDG_"];
 /// An act command with a cleared environment (plus [`ENV_ALLOW`] / [`ENV_ALLOW_PREFIXES`]),
 /// and `GITHUB_TOKEN` set to `github_token` when it is not empty: [`run_args`] then names the
 /// secret without a value (`-s GITHUB_TOKEN`), which act reads from its own environment. The
+/// same for `secrets`, environments' values under this run's names ([`crate::envs`]). The
 /// environment is private to the runner's user; argv is not (`ps` shows it to everyone).
-pub fn command(cfg: &Config, github_token: &str) -> Command {
+pub fn command(cfg: &Config, github_token: &str, secrets: &[(String, String)]) -> Command {
     let mut c = Command::new(&cfg.bin.act);
     c.env_clear();
     for (k, v) in std::env::vars_os() {
@@ -141,6 +142,9 @@ pub fn command(cfg: &Config, github_token: &str) -> Command {
     }
     if !github_token.is_empty() {
         c.env("GITHUB_TOKEN", github_token);
+    }
+    for (name, value) in secrets {
+        c.env(name, value);
     }
     c
 }
@@ -162,6 +166,9 @@ pub struct Invocation<'a> {
     /// Only whether it is empty shapes the arguments: the value goes to act through
     /// [`command`]'s environment, never on its command line.
     pub github_token: &'a str,
+    /// The names of environments' values in [`command`]'s environment, each given as `-s NAME`
+    /// (random names: nothing about an environment shows on the command line).
+    pub env_secrets: &'a [String],
     /// Act's action cache and host workspaces for this run (`--action-cache-path`): per run, so
     /// nothing one run puts there reaches another.
     pub action_cache: &'a Path,
@@ -203,6 +210,12 @@ pub fn run_args(cfg: &Config, inv: &Invocation<'_>) -> Vec<String> {
             "GITHUB_TOKEN"
         }
         .into(),
+    ];
+    for name in inv.env_secrets {
+        a.push("-s".into());
+        a.push(name.clone());
+    }
+    a.extend([
         // No shared cache server: one repository's job could otherwise read or poison another's
         // `actions/cache` entries.
         "--no-cache-server".into(),
@@ -212,7 +225,7 @@ pub fn run_args(cfg: &Config, inv: &Invocation<'_>) -> Vec<String> {
         cfg.container_network.clone(),
         "--rm".into(),
         "--pull=false".into(),
-    ];
+    ]);
     if !cfg.mount_docker_socket {
         // `-`: act does not bind the Docker socket into job containers (its default does).
         a.push("--container-daemon-socket".into());
@@ -306,6 +319,7 @@ level=warning msg= ⚠ Apple M-series ⚠
             event: Path::new("/ev.json"),
             secrets,
             github_token: "",
+            env_secrets: &[],
             action_cache: Path::new("/s/run/1/act"),
             artifacts: None,
         }
@@ -326,7 +340,7 @@ level=warning msg= ⚠ Apple M-series ⚠
             },
         );
         assert_eq!(pair(&args, "-s").as_deref(), Some("GITHUB_TOKEN"));
-        let cmd = command(&c, token);
+        let cmd = command(&c, token, &[]);
         assert!(
             !cmd.get_args().any(|a| a.to_string_lossy().contains("FAKE"))
                 && !args.iter().any(|a| a.contains("FAKE")),
@@ -341,10 +355,57 @@ level=warning msg= ⚠ Apple M-series ⚠
         let none = run_args(&c, &inv(None));
         assert_eq!(pair(&none, "-s").as_deref(), Some("GITHUB_TOKEN="));
         assert_eq!(
-            env(&command(&c, "")),
+            env(&command(&c, "", &[])),
             None,
             "a host GITHUB_TOKEN is cleared"
         );
+    }
+
+    /// Environments' values reach act through its environment under this run's names, each
+    /// named by a bare `-s`; neither values nor environment entry names are on the command line.
+    #[test]
+    fn environment_values_are_never_on_the_command_line() {
+        let c = cfg("");
+        let names = vec![
+            "FORGE_ENV_AB12_0".to_string(),
+            "FORGE_ENV_AB12_1".to_string(),
+        ];
+        let args = run_args(
+            &c,
+            &Invocation {
+                env_secrets: &names,
+                ..inv(None)
+            },
+        );
+        let named: Vec<&String> = args
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i > 0 && args[i - 1] == "-s")
+            .map(|(_, a)| a)
+            .collect();
+        assert_eq!(
+            named,
+            ["GITHUB_TOKEN=", "FORGE_ENV_AB12_0", "FORGE_ENV_AB12_1"]
+        );
+        let values = [
+            ("FORGE_ENV_AB12_0".to_string(), "FAKE-one".to_string()),
+            (
+                "FORGE_ENV_AB12_1".to_string(),
+                "FAKE \"two\"\\\r\n$X".to_string(),
+            ),
+        ];
+        let cmd = command(&c, "", &values);
+        let env: BTreeMap<String, String> = cmd
+            .get_envs()
+            .filter_map(|(k, v)| {
+                Some((
+                    k.to_string_lossy().into_owned(),
+                    v?.to_string_lossy().into_owned(),
+                ))
+            })
+            .collect();
+        assert_eq!(env["FORGE_ENV_AB12_1"], values[1].1, "any value, as it is");
+        assert!(!args.iter().any(|a| a.contains("FAKE")));
     }
 
     #[test]
@@ -418,13 +479,13 @@ level=warning msg= ⚠ Apple M-series ⚠
             pair(&on, "--artifact-server-addr").as_deref(),
             Some("172.17.0.1")
         );
-        let url = command(&c, "")
+        let url = command(&c, "", &[])
             .get_envs()
             .find(|(k, _)| *k == "ACTIONS_RUNTIME_URL")
             .and_then(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()));
         assert_eq!(url.as_deref(), Some("http://host.docker.internal:34567/"));
         assert!(
-            command(&cfg(""), "")
+            command(&cfg(""), "", &[])
                 .get_envs()
                 .all(|(k, _)| k != "ACTIONS_RUNTIME_URL"),
             "no runtime URL from the runner's own environment"
@@ -457,7 +518,7 @@ level=warning msg= ⚠ Apple M-series ⚠
 
     #[test]
     fn act_sees_only_the_allowed_environment() {
-        let c = command(&cfg(""), "");
+        let c = command(&cfg(""), "", &[]);
         let envs: BTreeMap<String, Option<String>> = c
             .get_envs()
             .map(|(k, v)| {

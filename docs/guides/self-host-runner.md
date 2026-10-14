@@ -17,7 +17,8 @@ On every poll (every `interval_secs`, default 120 s, and within seconds of a pus
      - puts anything but `image`, `env`, `ports` and `credentials` in its `container` or in a service (so no `options` or `volumes`);
      - uses an expression (`${{ … }}`) anywhere in `container` or `services`;
      - calls a reusable workflow (`uses:`);
-     - names a `runs-on` label that `[platforms]` does not map to an image.
+     - names a `runs-on` label that `[platforms]` does not map to an image;
+     - names an environment the runner can't give it, or reads secrets in a way that would hand it another job's environment ([Environments](#environments)).
 
      A refused job becomes a failed check saying why, and act never sees it. `allow_container_options = true` lifts the container and service rules for one repository; the label rule always applies.
    - A workflow that uses a YAML merge key (`<<:`) is refused as a whole. The runner's YAML reader and act's disagree about it.
@@ -105,6 +106,32 @@ on:
 - **Secrets as for a push of the branch.** A scheduled run gets the secrets when `trusted_refs` covers the default branch.
 - **Every run costs credits.** Each job posts three check-run reports, so `*/5 * * * *` writes hundreds of documents a day. That is why `schedule` is off by default. Pick the longest interval that does the job.
 
+## Environments
+
+A job that names an [environment](environments.md) gets its values as `${{ secrets.NAME }}`, as on GitHub:
+
+```yaml
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production          # or {name: production, url: …}
+    steps:
+      - run: ./deploy.sh
+        env:
+          DB_URL: ${{ secrets.DB_URL }}
+```
+
+- **Only what is shared with the runner by name.** The runner reads an environment with `dg ci env`, as its own identity. It gets the values only when a maintainer shared the environment with that identity (`dg env share --env production <runner>`, or `--also` when choosing the audience). A group never counts: the runner gets nothing from All members, even when its identity is a member. So `DASH_FORGE_KEY` must hold the runner identity's encryption key: a `runner.dfk1` key from `dg ci runner new` can only sign check runs, and opens no environment.
+- **Only on trusted runs.** A push to a `trusted_refs` branch, a schedule on one, and a pull request from one by the owner or a maintainer get the values. Every other run (other branches, a fork's or a non-member's pull request) runs the job without them and never asks for them; its summary says so. `trusted_refs` without a `secrets_file` gives environments only.
+- **A job reads only its own environment.** act gives every job of a workflow file one set of secrets, so the runner renames each environment's entries for this run (random names, drawn after the commit was written) and rewrites `secrets.NAME` and `secrets['NAME']` in the copy of the workflow act reads, for the jobs that name that environment. An entry wins over a `secrets_file` secret of the same name. Entries whose names start with `GITHUB_` are left out, as GitHub reserves them.
+- **Refused, with the reason as the check:**
+  - an `environment:` built by an expression (`${{ matrix.env }}`), or a name that isn't an environment name;
+  - on a trusted run, an environment the runner can't read: not shared with it by name, not there, changed by two maintainers at once, or no encryption key;
+  - when a run carries an environment's values, any job of that workflow that reads `secrets` other than by name (`toJSON(secrets)`, `secrets[matrix.name]`) or calls a reusable workflow, and every job naming an environment when the workflow's own `env:` or `run-name` reads `secrets` as a whole.
+- **Values stay off disk and off the command line.** They reach act through its environment (a bare `-s NAME` each), never a file, so any value works: quotes, backslashes, several lines.
+- **Masked in logs.** Every value of 4 characters or more, secret or plain setting, is masked in job logs, and each line of a value of several lines too. Summaries say "with its environment's values" without naming them.
+- **Taking it away.** `dg env unshare --env production <runner>` stops the runner reading later values and lists the ones it could read. A compromised runner host has every value it was ever given: change them where they're used.
+
 ## Set it up
 
 0. **The binaries.** Each release archive for Linux and macOS holds `forge-runner` beside `dg` and `git-remote-dash` ([Install](../INSTALL.md)): `curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/install.sh | DASH_FORGE_BINARIES="dg git-remote-dash forge-runner" sh` installs all three. The Windows archive leaves it out: the runner drives act and Linux job containers. From source, `cargo install --locked --path crates/forge-runner`. Install [act](https://github.com/nektos/act) yourself, or use the [image](#with-docker), which has all four tools.
@@ -130,7 +157,7 @@ sweep_after_timeout = true          # only on a daemon the runner owns (see Secu
 [[repo]]
 repo = "alice/project"
 refs = ["refs/heads/**"]            # which pushes run; `*` stays in one path segment, `**` does not
-trusted_refs = ["refs/heads/main"]  # only these get the secrets
+trusted_refs = ["refs/heads/main"]  # only these get the secrets and environments' values
 secrets_file = "/etc/forge-runner/project.secrets"   # KEY=value lines, as act reads them
 # pull_requests = "members"         # or "all" (strangers' too, never with secrets) or "off"
 # reruns = true                     # honour maintainers' and writers' re-run requests (see Re-runs)
@@ -239,6 +266,7 @@ The runner executes code from the repository: anyone who can push to a watched r
   - Every other run gets an explicitly empty `GITHUB_TOKEN`, so act never falls back to a token from the host.
   - Anyone who can push a branch that matches `trusted_refs` can read the secrets, and so can a maintainer who opens a PR from such a branch. Keep `trusted_refs` to branches only maintainers can update: [protected branches](collaborating.md) take a maintainer's `protectedRefUpdate`.
   - Job summaries say "with secrets" when a run had them.
+  - Environments' values follow the same rule, and go only to the jobs that name the environment, when it is shared with the runner by name ([Environments](#environments)).
   - Secret values are masked in logs by act, and the runner replaces them again before a log is uploaded, because logs are public.
 - **Never a fork's or a stranger's code with secrets.** A push run is of the repository's own refs, which only its members can make. A pull request's run gets the secrets only when its head is a `trusted_refs` branch of this repository and its author the owner or a maintainer ([Pull requests](#pull-requests)); a fork's head never does, whoever wrote it, and a fork's objects and tags never reach the cache push runs use.
 - **Strangers' pull requests do not run by default.** With `pull_requests = "members"` only members' PRs run. `"all"` runs strangers' fork PRs on your daemon (without secrets, without `allow_container_options`), one after another: turn it on only for a daemon you would let anyone on the network use, and a job timeout you can afford per PR.
@@ -249,7 +277,7 @@ The runner executes code from the repository: anyone who can push to a watched r
 - **A clean environment.** act runs with its environment cleared except `PATH`, `HOME`, `TMPDIR`, `USER`, `LANG`, `TZ`, `DOCKER_*` and `XDG_*`. The runner's `DASH_FORGE_KEY` and cloud credentials never reach act or a job.
 - **No shared caches.** act's cache server is off (`--no-cache-server`), and act's action cache and workspaces are per run. One run cannot read or poison another's.
 - **One run at a time per repository.** Each run has its own directory under a per-repository lock, which is removed when the run ends.
-- **The runner key.** `DASH_FORGE_KEY` is a runner key: it can write check runs and nothing else, only on repositories that enrolled its identity, and only within its budget. It is passed to `dg` in the environment, never on a command line and never to act.
+- **The runner key.** `DASH_FORGE_KEY` is a runner key: it can write check runs and nothing else, only on repositories that enrolled its identity, and only within its budget. It is passed to `dg` in the environment, never on a command line and never to act. A runner that reads [environments](#environments) also needs its identity's encryption key there, which opens whatever is shared with that identity.
 - **Logs are public.** Anyone can read a check run's log URL, so keep private output out of logs. On a private repository a check run carries no log, summary or run id (forge-community refuses them), so `dg` uploads no log there and records only each job's name, status and conclusion. The old `public_log` setting has no effect.
 - **The artifact server has no authentication.** With `artifacts = true`, anyone who can reach `artifact_server_addr:artifact_server_port` while a workflow runs can add to its artifacts, which then go on its check run. Bind it where only the job network reaches ([Artifacts](#artifacts)); artifacts are public, like logs.
 

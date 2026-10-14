@@ -10,7 +10,7 @@
 //! [[repo]]
 //! repo = "alice/project"        # owner/name, as dg takes it
 //! refs = ["refs/heads/**"]      # which refs run (`*` stays within a path segment, `**` does not)
-//! trusted_refs = ["refs/heads/main"]   # only these get secrets
+//! trusted_refs = ["refs/heads/main"]   # only these get secrets and environments' values
 //! secrets_file = "/etc/forge-runner/alice-project.secrets"   # KEY=value lines (act --secret-file)
 //! schedule = true               # run `on.schedule` crons on the default branch (off by default)
 //!
@@ -167,7 +167,8 @@ pub struct RepoConfig {
     /// Ref globs that run.
     #[serde(default = "default_refs")]
     pub refs: Vec<String>,
-    /// Ref globs whose runs get the secrets file. Everything else runs without secrets.
+    /// Ref globs whose runs get the secrets file and the values of the environments their jobs
+    /// name (when shared with this runner). Everything else runs without either.
     #[serde(default)]
     pub trusted_refs: Vec<String>,
     /// act secrets (`KEY=value` lines), given only to trusted refs.
@@ -284,12 +285,6 @@ impl Config {
                     bail!("ref pattern {g:?} must start with refs/");
                 }
             }
-            if !r.trusted_refs.is_empty() && r.secrets_file.is_none() {
-                bail!(
-                    "{}: trusted_refs without a secrets_file gives nothing",
-                    r.repo
-                );
-            }
             // act resolves a relative --secret-file against the checkout (-C), which the pushed
             // repository controls; the runner would read another file from its own directory.
             if r.secrets_file.as_ref().is_some_and(|p| !p.is_absolute()) {
@@ -368,9 +363,10 @@ impl RepoConfig {
         }
     }
 
-    /// Whether a run of `refname` gets the secrets.
+    /// Whether a run of `refname` gets the secrets file (when there is one) and environments'
+    /// values.
     pub fn trusted(&self, refname: &str) -> bool {
-        self.secrets_file.is_some() && self.trusted_refs.iter().any(|g| glob_match(g, refname))
+        self.trusted_refs.iter().any(|g| glob_match(g, refname))
     }
 }
 
@@ -471,7 +467,6 @@ repo = "alice/project"
         for bad in [
             "state_dir = \"/x\"\ninterval_secs = 5\n[[repo]]\nrepo = \"a/b\"",
             "state_dir = \"/x\"\n[[repo]]\nrepo = \"a/b/c\"",
-            "state_dir = \"/x\"\n[[repo]]\nrepo = \"a/b\"\ntrusted_refs = [\"refs/heads/main\"]",
             "state_dir = \"/x\"\n[[repo]]\nrepo = \"a/b\"\nrefs = [\"main\"]",
             "state_dir = \"/x\"\nnetwork = \"devnet\"\n[[repo]]\nrepo = \"a/b\"",
             "state_dir = \"/x\"\nsocket = true\n[[repo]]\nrepo = \"a/b\"",
@@ -535,6 +530,13 @@ repo = "alice/project"
         assert!(!r.trusted("refs/heads/release-1/hotfix"));
         assert!(!r.trusted("refs/heads/feature"));
         assert!(!r.trusted("refs/heads/mainline"));
+        // Without a secrets file, trusted refs still get environments' values.
+        let c = Config::parse(
+            "state_dir = \"/x\"\n[[repo]]\nrepo = \"a/b\"\ntrusted_refs = [\"refs/heads/main\"]",
+        )
+        .unwrap();
+        assert!(c.repos[0].trusted("refs/heads/main"));
+        assert!(c.repos[0].secrets_file.is_none());
     }
 
     #[test]
