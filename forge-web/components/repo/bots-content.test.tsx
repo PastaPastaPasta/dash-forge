@@ -18,6 +18,8 @@ vi.mock('@/components/author', () => ({ Author: ({ identityId }: { identityId: s
 vi.mock('@/components/repo/private-repo-state', () => ({ PrivateRepoState: () => <p>private</p> }))
 
 const { BOTS_EMPTY_TEXT, BotsView, draftOf, handleOf, noticeOfDraft, removeWords, untilOfDay } = await import('./bots-content')
+const { requestsOf } = await import('./bot-push')
+const { DEFAULT_PUSH_POLICY, setPush } = await import('@/lib/private')
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -131,5 +133,76 @@ describe('the Access form', () => {
     expect(handleOf('X', 'ci-bot.dash')).toBe('@ci-bot')
     expect(handleOf('BotBotBotBotBotBot', null)).toBe('BotBotB…otBot')
     expect(removeWords('@ci-bot')).toBe("Stop @ci-bot's access? It gets nothing new from now on. What it was already given stays with it.")
+  })
+})
+
+describe('push access (phase 4E)', () => {
+  const DAY = 86_400_000
+  const NOW = Date.UTC(2026, 9, 14)
+  const bot = base58Encode(BOT)
+  const ME = base58Encode(new Uint8Array(32).fill(1))
+  const GONE = base58Encode(new Uint8Array(32).fill(5))
+  const gid = (n: number): string => base58Encode(new Uint8Array(32).fill(100 + n))
+  const members = [
+    { identity: ME, role: 'maintainer' as const, createdAt: 1 },
+    { identity: bot, role: 'bot' as const, createdAt: 1000 },
+  ]
+  const live = { id: gid(1), granter: ME, bot, prefix: 'refs/heads/bot/ci-bot/', until: NOW + 9 * DAY - 1, createdAt: 2000 }
+  const gone = { id: gid(2), granter: GONE, bot, prefix: 'refs/heads/docs/', until: NOW + 30 * DAY, createdAt: 2000 }
+  const listed = setPush(notice(), [{ grant: new Uint8Array(32).fill(101), target: { prefix: 'refs/heads/bot/ci-bot/' } }], DEFAULT_PUSH_POLICY)
+  const state = (grants: (typeof live)[]) => ({ supported: true, grants, members, now: NOW })
+
+  it('says where a bot may push and what needs attention, in the design\'s words', () => {
+    render(<BotsView current={[entry(listed)]} runners={[]} now={NOW} push={state([live, gone])} />)
+    expect(byTestId('bot-push-line')[0]?.textContent).toBe('Can push to bot/ci-bot/ until 22 Oct 2026.')
+    expect(byTestId('bot-push-note').map((n) => n.textContent)).toEqual([
+      "@ci-bot's push access to bot/ci-bot/ ends in 9 days.",
+      '@ci-bot can no longer push to docs/: @ci-bot is no longer a maintainer.',
+    ])
+    // anyone else reads it: no changes
+    expect(byTestId('bot-push-give')).toHaveLength(0)
+  })
+
+  it('gives a maintainer the changes, and Suspend names who gave the access', () => {
+    const onPush = vi.fn()
+    render(<BotsView current={[entry(listed)]} runners={[]} now={NOW} push={state([live])} me={ME} onPush={onPush} />)
+    expect(byTestId('bot-push-give')).toHaveLength(1)
+    expect(byTestId('bot-push-resume')).toHaveLength(0)
+    expect(byTestId('bot-push-remove-mine')).toHaveLength(1)
+    act(() => byTestId('bot-push-suspend')[0]?.click())
+    expect(onPush).toHaveBeenCalledWith({ kind: 'suspend', bot, granters: [ME] })
+    act(() => byTestId('bot-push-note-renew')[0]?.click())
+    expect(onPush).toHaveBeenLastCalledWith({ kind: 'renew', bot })
+  })
+
+  it('says a suspension once and offers Resume', () => {
+    const onPush = vi.fn()
+    render(<BotsView current={[entry(setPush(listed, [], DEFAULT_PUSH_POLICY))]} runners={[]} now={NOW} push={state([live])} me={ME} onPush={onPush} />)
+    expect(byTestId('bot-push-line')[0]?.textContent).toBe("@ci-bot's pushes are suspended.")
+    expect(byTestId('bot-push-note').map((n) => n.dataset.kind)).toEqual(['renewDue'])
+    expect(byTestId('bot-push-suspend')).toHaveLength(0)
+    act(() => byTestId('bot-push-resume')[0]?.click())
+    expect(onPush).toHaveBeenCalledWith({ kind: 'resume', bot })
+  })
+
+  it('lists a bot with push access and no access settings', () => {
+    render(<BotsView current={[]} runners={[]} now={NOW} push={state([live])} />)
+    expect(byTestId('bots-empty')).toHaveLength(0)
+    expect(byTestId('bot-public-line')[0]?.textContent).toBe('@ci-bot has no access settings here.')
+    expect(byTestId('bot-push-line')[0]?.textContent).toBe('Can push to bot/ci-bot/ until 22 Oct 2026.')
+  })
+
+  it("says bots can't push yet before the registration, with no controls", () => {
+    render(<BotsView current={[entry()]} runners={[]} now={NOW} push={{ supported: false, grants: [], members: [], now: NOW }} me={ME} onPush={() => undefined} />)
+    expect(byTestId('bots-push-not-yet')[0]?.textContent).toBe("Bots can't push to this repo yet. A bot can push to its own fork and open a pull request.")
+    expect(byTestId('bot-push')).toHaveLength(0)
+  })
+
+  it('turns the dialog\'s branches into grants, and refuses what it cannot give', () => {
+    const got = requestsOf(['bot/ci-bot/', 'gh-pages', 'bot/ci-bot/*'], [{ name: 'refs/heads/fix-auth', current: 'ab'.repeat(32), earlier: [], audienceNow: new Set([bot]) }])
+    if ('error' in got) throw new Error(got.error)
+    expect(got.requests.map((r) => r.label)).toEqual(['bot/ci-bot/', 'gh-pages', 'fix-auth'])
+    expect(requestsOf(['refs/tags/v1'], [])).toEqual({ error: 'refs/tags/v1: bots push to branches only.' })
+    expect(requestsOf(['bot/*/x'], [])).toEqual({ error: 'bot/*/x: only a prefix can be given, like bot/ci-bot/ or bot/ci-bot/*.' })
   })
 })

@@ -7,8 +7,13 @@
  * access, changes it, or takes it away here, as `dg bot allow` and `dg bot revoke` do: each save
  * writes a new notice naming the one it replaces.
  *
- * Push access (phase 4E) is not offered here; abilities and fields a later version wrote are kept
- * on a change, so saving here never takes them away.
+ * Push access (phase 4E, `./bot-push.tsx`): where the contract has push grants, each bot's row says
+ * where it may push and what needs attention, and a maintainer gives, renews, suspends, resumes or
+ * removes it there; a bot with push access and no access settings gets a row too. Elsewhere the page
+ * says "Bots can't push to this repo yet." The Access form keeps the push fields as they are (as
+ * `dg bot allow` without `--push` does), and abilities and fields a later version wrote are kept on a
+ * change, so saving here never takes them away. Remove access also removes the push access the
+ * signer gave (`dg bot revoke`).
  */
 
 import { useState } from 'react'
@@ -20,6 +25,7 @@ import {
   MAY_CI_MEMBERS_BRANCHES,
   MAY_POST,
   MAY_POST_MEMBERS_ONLY,
+  MAY_PUSH,
   MAY_READ_ON_REQUEST,
   PROCESSOR_MAX,
   emptyNotice,
@@ -35,6 +41,7 @@ import { repoContractIds } from '@/lib/repo'
 import { readRunnersCached } from '@/lib/repo/checks'
 import { botHasEncryptionKey, botIdOf, canChangeBotAccess, membersSession, noticeCredits, readAccessNotices, writeAccessNotice } from '@/lib/repo/bot-access'
 import { resolvePerson } from '@/lib/repo/person-input'
+import { PUSH_NOT_YET, PUSH_NOT_YET_HINT, deleteOwnGrants, pushAccessOf, readGrantableBranches, readPushState, type GrantableBranch, type PushState } from '@/lib/repo/push-grants'
 import { previewCredits } from '@/lib/sdk'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
@@ -48,6 +55,7 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 import { ErrorState, LoadingBlock } from '@/components/ui/states'
 import { PrivateRepoState } from '@/components/repo/private-repo-state'
 import { useHandle } from '@/components/repo/bot-handle'
+import { BotPushSection, PushDialog, type PushAction } from '@/components/repo/bot-push'
 import { shortId } from '@/lib/utils'
 
 /** The empty state (DESIGN §10). */
@@ -63,6 +71,10 @@ interface BotsRead {
   readonly runners: readonly string[]
   /** The viewer may change access: the owner or a current maintainer. */
   readonly maintainer: boolean
+  /** The bots' push access: every grant and the members (`supported` false, nothing read, before the registration). */
+  readonly push: PushState
+  /** The members-only branches this maintainer holds the key of, to name exact grants. */
+  readonly branches: readonly GrantableBranch[]
 }
 
 export function BotsContent({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
@@ -74,8 +86,11 @@ export function BotsContent({ home, addr }: { home: RepoHome; addr: RepoAddress 
   return <Bots home={home} addr={addr} />
 }
 
-/** One change a maintainer is making: give or change a bot's access, or take it away. */
-type Change = { readonly kind: 'edit'; readonly bot: string; readonly previous: NoticeEntry | null } | { readonly kind: 'remove'; readonly entry: NoticeEntry }
+/** One change a maintainer is making: give or change a bot's access, take it away, or change its push access. */
+type Change =
+  | { readonly kind: 'edit'; readonly bot: string; readonly previous: NoticeEntry | null }
+  | { readonly kind: 'remove'; readonly entry: NoticeEntry }
+  | { readonly kind: 'push'; readonly action: PushAction }
 
 function Bots({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
   const repo = home.repo
@@ -84,8 +99,10 @@ function Bots({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Elemen
   const session = membersSession(repo)
   const state = useAsync<BotsRead>(
     async () => {
-      const [notices, runners, maintainer] = await Promise.all([readAccessNotices(sdk!, repo), readRunnersCached(sdk!, repo), canChangeBotAccess(sdk!, repo, identity)])
-      return { current: [...notices.current.values()], unreadable: notices.unreadable, runners, maintainer }
+      const [notices, runners, maintainer, push] = await Promise.all([readAccessNotices(sdk!, repo), readRunnersCached(sdk!, repo), canChangeBotAccess(sdk!, repo, identity), readPushState(sdk!, repo)])
+      // an exact grant's branch is named only for a maintainer holding its key
+      const branches = push.grants.some((g) => g.scope !== undefined) ? await readGrantableBranches(sdk!, repo) : []
+      return { current: [...notices.current.values()], unreadable: notices.unreadable, runners, maintainer, push, branches }
     },
     [ready, network, repo.repoId, identity ?? '', session?.id ?? ''],
     { enabled: ready && sdk !== null },
@@ -93,6 +110,7 @@ function Bots({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Elemen
   const [change, setChange] = useState<Change | null>(null)
   const data = state.data
   const canEdit = data?.maintainer === true && identity !== null
+  const display = useRepoDisplay(home)
   return (
     <div className="max-w-3xl space-y-5" data-testid="bots">
       <Link
@@ -122,13 +140,23 @@ function Bots({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Elemen
             runners={data.runners}
             unreadable={data.unreadable}
             now={Date.now()}
-            {...(canEdit ? { onEdit: (e: NoticeEntry) => setChange({ kind: 'edit', bot: botIdOf(e.notice), previous: e }), onRemove: (e: NoticeEntry) => setChange({ kind: 'remove', entry: e }) } : {})}
+            push={data.push}
+            branches={data.branches}
+            me={identity}
+            {...(canEdit
+              ? {
+                  onEdit: (e: NoticeEntry) => setChange({ kind: 'edit', bot: botIdOf(e.notice), previous: e }),
+                  onRemove: (e: NoticeEntry) => setChange({ kind: 'remove', entry: e }),
+                  onPush: (action: PushAction) => setChange({ kind: 'push', action }),
+                }
+              : {})}
           />
           {canEdit ? <AddBot current={data.current} onPick={(bot, previous) => setChange({ kind: 'edit', bot, previous })} /> : null}
         </>
       )}
       {change?.kind === 'edit' ? <AccessDialog home={home} bot={change.bot} previous={change.previous} onClose={() => setChange(null)} onSaved={state.reload} /> : null}
       {change?.kind === 'remove' ? <RemoveDialog home={home} entry={change.entry} onClose={() => setChange(null)} onSaved={state.reload} /> : null}
+      {change?.kind === 'push' ? <PushDialog home={home} display={display} action={change.action} onClose={() => setChange(null)} onSaved={state.reload} /> : null}
     </div>
   )
 }
@@ -137,24 +165,40 @@ const LIST_CLASS = 'divide-y divide-anvil-200 rounded-lg border border-anvil-200
 
 /**
  * Each bot's access as everyone reads it, and the runners (DESIGN §4.9 "How access looks"). With
- * `onEdit` / `onRemove` (a maintainer), each bot row offers Change access and Remove access.
+ * `onEdit` / `onRemove` (a maintainer), each bot row offers Change access and Remove access. With
+ * `push` (what the page read of push grants), each row says where the bot may push, a bot with push
+ * access and no access settings gets a row, and `onPush` (a maintainer) offers the push changes;
+ * before the registration the page says bots can't push here yet.
  */
 export function BotsView({
   current,
   runners,
   unreadable = 0,
   now,
+  push,
+  branches = [],
+  me = null,
   onEdit,
   onRemove,
+  onPush,
 }: {
   current: readonly NoticeEntry[]
   runners: readonly string[]
   unreadable?: number
   now: number
+  push?: PushState
+  branches?: readonly GrantableBranch[]
+  me?: string | null
   onEdit?: (e: NoticeEntry) => void
   onRemove?: (e: NoticeEntry) => void
+  onPush?: (a: PushAction) => void
 }): JSX.Element {
-  if (current.length === 0 && runners.length === 0) {
+  const pushes = push?.supported === true ? push : null
+  // bots with push access and no access settings (`dg bot list` lists them too)
+  const bare = pushes === null ? [] : [...new Set(pushes.grants.map((g) => g.bot))].filter((b) => !current.some((e) => botIdOf(e.notice) === b))
+  const pushOf = (bot: string, entry: NoticeEntry | null): JSX.Element | null =>
+    pushes === null ? null : <BotPushSection access={pushAccessOf(pushes, bot, entry)} branches={branches} me={me} {...(onPush ? { onAction: onPush } : {})} />
+  if (current.length === 0 && runners.length === 0 && bare.length === 0) {
     return (
       <p className="text-dense text-anvil-600 dark:text-anvil-300" data-testid="bots-empty">
         {BOTS_EMPTY_TEXT}
@@ -166,9 +210,21 @@ export function BotsView({
       {current.length > 0 ? (
         <ul className={LIST_CLASS} data-testid="bot-list">
           {current.map((e) => (
-            <BotRow key={e.id} entry={e} now={now} {...(onEdit ? { onEdit } : {})} {...(onRemove ? { onRemove } : {})} />
+            <BotRow key={e.id} entry={e} now={now} push={pushOf(botIdOf(e.notice), e)} {...(onEdit ? { onEdit } : {})} {...(onRemove ? { onRemove } : {})} />
           ))}
         </ul>
+      ) : null}
+      {bare.length > 0 ? (
+        <ul className={LIST_CLASS} data-testid="bot-push-only-list">
+          {bare.map((b) => (
+            <BareBotRow key={b} bot={b} push={pushOf(b, null)} />
+          ))}
+        </ul>
+      ) : null}
+      {push !== undefined && !push.supported && current.length > 0 ? (
+        <p className="text-dense text-anvil-600 dark:text-anvil-300" data-testid="bots-push-not-yet">
+          {PUSH_NOT_YET} {PUSH_NOT_YET_HINT}
+        </p>
       ) : null}
       {runners.length > 0 ? (
         <ul className={LIST_CLASS} data-testid="runner-list">
@@ -190,19 +246,36 @@ export function BotsView({
   )
 }
 
-function BotRow({ entry, now, onEdit, onRemove }: { entry: NoticeEntry; now: number; onEdit?: (e: NoticeEntry) => void; onRemove?: (e: NoticeEntry) => void }): JSX.Element {
+function BotRow({
+  entry,
+  now,
+  push = null,
+  onEdit,
+  onRemove,
+}: {
+  entry: NoticeEntry
+  now: number
+  push?: JSX.Element | null
+  onEdit?: (e: NoticeEntry) => void
+  onRemove?: (e: NoticeEntry) => void
+}): JSX.Element {
   const id = botIdOf(entry.notice)
   const handle = useHandle(id)
   const allows = entry.notice.may.length > 0
+  // access that only lets it push: its push line says it ("has no access here" would contradict it)
+  const onlyPush = push !== null && allows && entry.notice.may.every((m) => m === MAY_PUSH)
   return (
     <li className="space-y-1.5 px-4 py-3 text-dense" data-testid="bot-row">
       <div className="flex flex-wrap items-center gap-2">
         <Author identityId={id} />
         <span className="rounded-full bg-anvil-100 px-2 py-0.5 text-[12px] text-anvil-700 dark:bg-anvil-800 dark:text-anvil-200">Bot</span>
       </div>
-      <p className="text-anvil-700 dark:text-anvil-200" data-testid="bot-public-line">
-        {publicLine(entry.notice, handle, now)}
-      </p>
+      {onlyPush ? null : (
+        <p className="text-anvil-700 dark:text-anvil-200" data-testid="bot-public-line">
+          {publicLine(entry.notice, handle, now)}
+        </p>
+      )}
+      {push}
       {entry.notice.note !== '' ? <p className="whitespace-pre-wrap break-words text-anvil-600 dark:text-anvil-300">{entry.notice.note}</p> : null}
       <p className="flex flex-wrap items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400">
         Set by <Author identityId={entry.writer} link={false} />
@@ -221,6 +294,23 @@ function BotRow({ entry, now, onEdit, onRemove }: { entry: NoticeEntry; now: num
           ) : null}
         </div>
       ) : null}
+    </li>
+  )
+}
+
+/** A bot with push access and no access settings: its push line and notes. */
+function BareBotRow({ bot, push }: { bot: string; push: JSX.Element | null }): JSX.Element {
+  const handle = useHandle(bot)
+  return (
+    <li className="space-y-1.5 px-4 py-3 text-dense" data-testid="bot-row">
+      <div className="flex flex-wrap items-center gap-2">
+        <Author identityId={bot} />
+        <span className="rounded-full bg-anvil-100 px-2 py-0.5 text-[12px] text-anvil-700 dark:bg-anvil-800 dark:text-anvil-200">Bot</span>
+      </div>
+      <p className="text-anvil-700 dark:text-anvil-200" data-testid="bot-public-line">
+        {handle} has no access settings here.
+      </p>
+      {push}
     </li>
   )
 }
@@ -452,6 +542,14 @@ function RemoveDialog({ home, entry, onClose, onSaved }: { home: RepoHome; entry
       onConfirm={async () => {
         if (sdk === null || signer === null) throw new Error('Sign in to change what a bot may do.')
         await writeAccessNotice(sdk, signer, repo, { ...emptyNotice(entry.notice.bot), revokes: [hexToBytes(entry.packHash)] }, { name: handle, display })
+        // the push access this maintainer gave goes too (only its writer can delete it; the notice
+        // above already stops every push)
+        try {
+          await deleteOwnGrants(sdk, signer, repo, bot)
+        } catch {
+          onSaved()
+          throw new Error(`${handle}'s access was removed, but the push access you gave it couldn't be removed yet. Try again from its row.`)
+        }
         onSaved()
       }}
       successNote="Access removed"

@@ -22,8 +22,12 @@ function configAsOf(configHistory: readonly ConfigDoc[], at: number): ConfigDoc 
   return best
 }
 
-/** The as-of-time protection check from §4: is update `u` a valid mover of its ref? */
-function isUpdateValid(u: RefUpdate, configHistory: readonly ConfigDoc[]): boolean {
+/**
+ * The as-of-time protection check from §4: is update `u` a valid mover of its ref? A bot's public
+ * update whose `refNameHash` is not `sha256(refName)` is dropped like anyone's (vector
+ * `bot_push__name_hash_mismatch_ignored`). forge-core `rules::is_update_valid`.
+ */
+export function isUpdateValid(u: RefUpdate, configHistory: readonly ConfigDoc[]): boolean {
   // (0) Injection / key-decoupling defense: an illegal refName is inert, and — when a
   // real 32-byte refNameHash is present — it MUST be sha256(refName).
   if (!isLegalRefName(u.refName)) return false

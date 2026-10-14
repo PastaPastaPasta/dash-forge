@@ -7,6 +7,10 @@
  * the list itself costs no request. Whether a branch move kept the old tip is git knowledge: the
  * newest {@link CONTAINS_CHECKED} moves are checked through the browse reader, a bounded walk
  * each; a move that cannot be checked reads "updated", never a guess.
+ *
+ * A bot's push (phase 4E) reads "@ci-bot (bot)", and one readers mark outside its access (a grant
+ * older than its current member row, or pushed while a maintainer had suspended it; §24.5) says
+ * "Outside the access @ci-bot was given". Read only where the contract has push grants.
  */
 
 import Link from 'next/link'
@@ -23,6 +27,9 @@ import { useSdk } from '@/hooks/use-sdk'
 import { useTrustView } from '@/hooks/use-trust-view'
 import { repoContractIds, repoKey } from '@/lib/repo'
 import { readRefHistory } from '@/lib/repo/ref-history'
+import { readBotPushMarks } from '@/lib/repo/push-grants'
+import type { PushMark } from '@/lib/rules/push-grant'
+import { useHandle } from '@/components/repo/bot-handle'
 import { refHistory, type RefEvent } from '@/lib/rules/refHistory'
 import type { RepoHome } from '@/lib/view'
 import { plural } from '@/lib/view'
@@ -63,8 +70,13 @@ function CommitLink({ addr, oid }: { addr: RepoAddress; oid: string }): JSX.Elem
   )
 }
 
-/** One entry: who, what, from and to, when. */
-function EventRow({ e, addr, configAuthor }: { e: RefEvent; addr: RepoAddress; configAuthor: string | undefined }): JSX.Element {
+/** "Outside the access @ci-bot was given" (§24.5). */
+function OutsideBadge({ bot }: { bot: string }): JSX.Element {
+  return <Badge tone="caution">Outside the access {useHandle(bot)} was given</Badge>
+}
+
+/** One entry: who, what, from and to, when; a bot's push says so, and whether it was outside its access. */
+function EventRow({ e, addr, configAuthor, bot = false, mark }: { e: RefEvent; addr: RepoAddress; configAuthor: string | undefined; bot?: boolean; mark?: PushMark | undefined }): JSX.Element {
   const who = e.by ?? configAuthor
   const icon =
     e.kind === 'deleted' ? (
@@ -109,6 +121,11 @@ function EventRow({ e, addr, configAuthor }: { e: RefEvent; addr: RepoAddress; c
     <li className="flex flex-wrap items-center gap-x-1.5 gap-y-1 border-b border-anvil-100 px-4 py-2.5 text-dense last:border-b-0 dark:border-anvil-850" data-kind={e.kind}>
       <span className="text-anvil-500 dark:text-anvil-400">{icon}</span>
       {who ? <Author identityId={who} /> : <span className="text-anvil-600 dark:text-anvil-300">A maintainer</span>}
+      {bot ? (
+        <span className="text-anvil-500 dark:text-anvil-400" data-testid="activity-bot">
+          (bot)
+        </span>
+      ) : null}
       <span>{verb[e.kind]}</span>
       {e.kind === 'created' && e.to !== null ? <CommitLink addr={addr} oid={e.to} /> : null}
       {e.from !== null && e.to !== null ? (
@@ -125,6 +142,7 @@ function EventRow({ e, addr, configAuthor }: { e: RefEvent; addr: RepoAddress; c
         </span>
       ) : null}
       {badge}
+      {bot && mark === 'outside' && who ? <OutsideBadge bot={who} /> : null}
       <span className="ml-auto text-[12px] text-anvil-500 dark:text-anvil-400">
         <Time ms={e.at} withDate />
       </span>
@@ -174,6 +192,8 @@ export function RefActivityContent({ home, addr, refName }: { home: RepoHome; ad
     return all.reverse()
   }, [h, refName, checked.data])
   const configAuthors = useMemo(() => new Map((h?.configs ?? []).map((c) => [c.id ?? '', c.author])), [h])
+  // the repo's bots and the marks on their pushes (nothing read before the registration)
+  const bots = useAsync(() => readBotPushMarks(sdk!, home.repo, h!.updates), [h, ready, network], { enabled: h !== null && ready && sdk !== null })
 
   const back = isTag ? '/repo/tags' : '/repo/branches'
   const Icon = isTag ? Tag : GitBranch
@@ -236,7 +256,14 @@ export function RefActivityContent({ home, addr, refName }: { home: RepoHome; ad
       </p>
       <ol className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800" data-testid="ref-activity">
         {shown.map((e) => (
-          <EventRow key={`${e.kind}:${e.id}`} e={e} addr={addr} configAuthor={configAuthors.get(e.id)} />
+          <EventRow
+            key={`${e.kind}:${e.id}`}
+            e={e}
+            addr={addr}
+            configAuthor={configAuthors.get(e.id)}
+            bot={e.by !== null && bots.data?.bots.has(e.by) === true}
+            mark={bots.data?.marks.get(e.id)}
+          />
         ))}
       </ol>
       {events.length > shown.length ? (
