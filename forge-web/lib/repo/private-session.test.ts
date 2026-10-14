@@ -13,6 +13,8 @@ import type { EncKeyLike } from '../auth/encryption-key'
 import {
   EpochKeys,
   GRACE_BLOCKS,
+  PostKey,
+  sealBotPost,
   bytesToHex,
   packHash,
   privateId,
@@ -30,7 +32,8 @@ import { readConfigBundle } from './config'
 import { readAllRefUpdates, readRefs } from './refs'
 import { readReviews } from './issues'
 import { queryIssues } from './issue-index'
-import { anchorVerdict, epochsAnchoredBy, needsKeepWrap, planRepair, planRotation, removalEffect, rotationCost, wrapOutcome } from './private-members'
+import { addMemberCost, anchorVerdict, epochsAnchoredBy, keyedRoleChangeCost, needsKeepWrap, planRepair, planRotation, removalEffect, repairCost, roleChangeCost, rotationCost, wrapOutcome } from './private-members'
+import { postKeyLettersCost } from './bot-keys'
 import { privateGate, sealedGate } from './private-content'
 import { editFields, sealContent } from './private-writes'
 import { loadPrivateSession, closePrivateSessions, parseConfigRow, type SessionSource, type SessionUnwrapper } from './private-session'
@@ -350,7 +353,7 @@ describe('private reads through the gate', () => {
     const page = await queryIssues(sdk, repo, { state: 'all', labels: [], author: null, assignee: null, mentions: null, sort: 'newest', text: '', page: 1, pageSize: 100 } as const, null, 'devnet')
     const list = page.rows
     expect(list.map((i) => i.title).sort()).toEqual(['in grace', 'readable'])
-    expect(page.hiddenBy).toEqual({ notEncrypted: 2, wrongKey: 0, late: 1, lateEdit: 0, membersOnly: 0, letter: 0, unknownVersion: 0 })
+    expect(page.hiddenBy).toEqual({ notEncrypted: 2, wrongKey: 0, late: 1, lateEdit: 0, membersOnly: 0, letter: 0, unknownVersion: 0, notABot: 0 })
     const body = list.find((i) => i.title === 'readable')?.body
     expect(body).toBe('hello')
   })
@@ -370,7 +373,7 @@ describe('private reads through the gate', () => {
     const page = await queryIssues(mockSdk({ issue: issues, event: [], authorEvent: [] }), repo, { state: 'all', labels: [], author: null, assignee: null, mentions: null, sort: 'newest', text: '', page: 1, pageSize: 100 } as const, null, 'devnet')
     const list = page.rows
     expect(list.map((i) => i.title)).toEqual(['edited in grace'])
-    expect(page.hiddenBy).toEqual({ notEncrypted: 0, wrongKey: 0, late: 0, lateEdit: 1, membersOnly: 0, letter: 0, unknownVersion: 0 })
+    expect(page.hiddenBy).toEqual({ notEncrypted: 0, wrongKey: 0, late: 0, lateEdit: 1, membersOnly: 0, letter: 0, unknownVersion: 0, notABot: 0 })
     // Maintainers read why (the CLI's bucket text is the same).
     const { HIDDEN_REASON_TEXT } = await import('./private-content')
     expect(HIDDEN_REASON_TEXT.lateEdit).toBe('edited after its author was removed; the original text is gone')
@@ -640,6 +643,98 @@ describe('rotation and repair planning', () => {
     expect(plan?.rotate).toEqual([b58(CAROL)])
     expect(plan?.wrap).toEqual([b58(DAN)])
     expect(planRepair(await sessionFor(w, BOB), b58(BOB), FORGE.core)).toBeNull()
+  })
+})
+
+describe("a bot's members-only posts (§23)", () => {
+  const BOT = id(0x2b)
+  const query = { state: 'all', labels: [], author: null, assignee: null, mentions: null, sort: 'newest', text: '', page: 1, pageSize: 100 } as const
+
+  /** An issue the bot posted members-only (`enc` v0x05) under `keys`, by `owner` with `owner`'s post key. */
+  async function botIssue(keys: EpochKeys, owner: Uint8Array, n: number, title: string): Promise<Record<string, unknown>> {
+    const post = await PostKey.derive(keys, owner)
+    const enc = await sealBotPost(post, { type: 'issue', ownerId: owner, epoch: keys.epoch, number: n }, { title, body: 'CI: 3 of 412 tests failed' })
+    post.wipe()
+    return { $id: b58(docId()), $ownerId: b58(owner), $createdAt: 50_000, $createdAtBlockHeight: 50, repoId: b58(REPO), epoch: keys.epoch, number: n, enc: bytesToBase64(enc) }
+  }
+
+  async function withBot(): Promise<World> {
+    const w = await world()
+    w.members.push({ identity: b58(BOT), role: 'bot', createdAt: 4 })
+    return w
+  }
+
+  it("a reader's context knows the current bots; a bot holds no key and needs no wrap", async () => {
+    const w = await withBot()
+    const s = await sessionFor(w, BOB)
+    expect(s.ctx.bots?.has(BOT)).toBe(true)
+    expect(s.ctx.bots?.has(BOB)).toBe(false)
+    expect(s.resolution.members.has(BOT)).toBe(false)
+    expect(planRepair(await sessionFor(w, ALICE), b58(ALICE), FORGE.core)).toBeNull()
+  })
+
+  it("members read a current bot's post; a removed bot's, or one from someone who is no bot, says so", async () => {
+    const w = await withBot()
+    const k0 = w.keys.get(0) as EpochKeys
+    const issues = [await botIssue(k0, BOT, 8, 'CI report'), await botIssue(k0, BOB, 9, 'not a bot')]
+    const read = async () =>
+      queryIssues(mockSdk({ issue: issues, event: [], authorEvent: [] }), { ...REPO_REF, session: await sessionFor(w, BOB) }, query, null, 'devnet')
+    const page = await read()
+    expect(page.rows.map((i) => i.title)).toEqual(['CI report'])
+    expect(page.hiddenBy).toEqual({ notEncrypted: 0, wrongKey: 0, late: 0, lateEdit: 0, membersOnly: 0, letter: 0, unknownVersion: 0, notABot: 1 })
+    // the bot is removed: its posts stop opening (DESIGN §4.9 "Revocation takes back")
+    w.members = w.members.filter((m) => m.identity !== b58(BOT))
+    const after = await read()
+    expect(after.rows).toEqual([])
+    expect(after.hiddenBy.notABot).toBe(2)
+    expect(after.hiddenBy.membersOnly).toBe(0)
+  })
+
+  it('a rotation sends every bot its post key, and its cost counts the letters', async () => {
+    const w = await withBot()
+    const s = await sessionFor(w, ALICE)
+    const plan = planRotation(s, b58(ALICE), [b58(CAROL)], FORGE.core, 4)
+    expect(plan.bots).toEqual([b58(BOT)])
+    expect(plan.recipients.some((r) => r.identity === b58(BOT))).toBe(false)
+    const without = { ...plan, bots: [] }
+    expect(rotationCost(plan).credits).toBe(rotationCost(without).credits + postKeyLettersCost(1).credits)
+    // excluding someone from the key leaves no Bot row out: removing a bot rotates nothing, and one kept still posts
+    expect(planRotation(s, b58(ALICE), [b58(CAROL), b58(BOT)], FORGE.core, 4).bots).toEqual([b58(BOT)])
+  })
+
+  it("a repair counts each bot's post key; adding a bot costs its row and one letter; removing one rotates nothing", async () => {
+    const w = await withBot()
+    const DAN = id(0x25)
+    w.members.push({ identity: b58(DAN), role: 'writer', createdAt: 9 })
+    const s = await sessionFor(w, ALICE)
+    const plan = planRepair(s, b58(ALICE), FORGE.core)
+    expect(plan?.bots).toEqual([b58(BOT)])
+    expect(repairCost(s, plan!, b58(ALICE), FORGE.core, 4).credits).toBe(previewCreate('repoKey').credits + postKeyLettersCost(1).credits)
+    expect(addMemberCost('bot').credits).toBe(previewCreate('writer').credits + postKeyLettersCost(1).credits)
+    expect(removalEffect(w.members, b58(BOT), 'bot')).toBe('none')
+  })
+
+  it('a maintainer staying on as a bot leaves the key holders: their removal rotates without them', async () => {
+    const rows: Membership[] = [
+      { identity: b58(ALICE), role: 'maintainer', createdAt: 1 },
+      { identity: b58(CAROL), role: 'maintainer', createdAt: 2 },
+      { identity: b58(CAROL), role: 'bot', createdAt: 3 },
+    ]
+    expect(removalEffect(rows, b58(CAROL), 'maintainer')).toBe('rotate-exclude')
+    // staying on as a writer keeps them in, as before
+    expect(removalEffect([...rows.slice(0, 2), { identity: b58(CAROL), role: 'writer', createdAt: 3 }], b58(CAROL), 'maintainer')).toBe('rotate-keep')
+  })
+
+  it('a role change to Bot is priced with the rotation and the post key; from Bot with a wrap', async () => {
+    const w = await world()
+    const s = await sessionFor(w, ALICE)
+    const swap = roleChangeCost('writer', 'bot').credits
+    const rotation = rotationCost(planRotation(s, b58(ALICE), [b58(CAROL)], FORGE.core, 4)).credits
+    expect(keyedRoleChangeCost(s, b58(ALICE), b58(CAROL), 'writer', 'bot', FORGE.core, 4).credits).toBe(swap + rotation + postKeyLettersCost(1).credits)
+    expect(keyedRoleChangeCost(s, b58(ALICE), b58(CAROL), 'bot', 'writer', FORGE.core, 4).credits).toBe(roleChangeCost('bot', 'writer').credits + previewCreate('repoKey').credits)
+    expect(keyedRoleChangeCost(s, b58(ALICE), b58(CAROL), 'writer', 'reader', FORGE.core, 4).credits).toBe(roleChangeCost('writer', 'reader').credits)
+    // nothing to plan with: the swap alone
+    expect(keyedRoleChangeCost(null, b58(ALICE), b58(CAROL), 'writer', 'bot', FORGE.core, 4).credits).toBe(swap)
   })
 })
 

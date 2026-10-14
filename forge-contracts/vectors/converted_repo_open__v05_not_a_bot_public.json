@@ -1,6 +1,6 @@
 {
-  "name": "unknown_v05_public",
-  "description": "an enc version 0x05 this client does not know: Unreadable(UnknownVersion), shown as members-only, never malformed.",
+  "name": "v05_not_a_bot_public",
+  "description": "enc v0x05 is a bot's post (§23): from an author with no Bot row it is never opened, Unreadable(NotABot), shown as members-only.",
   "case": "converted_repo_open",
   "rules": "v2",
   "input": {
@@ -31,6 +31,6 @@
   },
   "expected": {
     "status": "unreadable",
-    "reason": "unknownVersion"
+    "reason": "notABot"
   }
 }

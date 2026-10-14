@@ -1,0 +1,16 @@
+{
+  "name": "post_key__w_epoch1",
+  "description": "the same bot under epoch 1 (a rotation): a fresh post key.",
+  "case": "bot_post",
+  "rules": "v2",
+  "input": {
+    "op": "postKey",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+    "epoch": 1,
+    "bot": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"
+  },
+  "expected": {
+    "w": "b349ad4810d6daa60739c6e8fbbdc49c3be2ebc755a3626e695a5358d70c2bb9"
+  }
+}

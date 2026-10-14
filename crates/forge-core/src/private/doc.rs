@@ -23,10 +23,13 @@ pub const V3: u8 = 0x03;
 /// `enc` version of a specific-people letter (§4.1, [`super::named`]), in either kind of
 /// repository, always under `epoch = 0`.
 pub const V4: u8 = 0x04;
-/// The first `enc` version this client does not know (a bot's post, v0x05; a narrower branch's
-/// ref update, v0x06; anything later): a content document carrying one is shown as members-only
-/// and never opened (`Unreadable(UnknownVersion)`), so later envelopes do not break this reader.
-pub const FIRST_UNKNOWN: u8 = 0x05;
+/// `enc` version of a bot's members-only post (§23, [`super::bot_post`]): v0x03's envelope under
+/// a per-bot post key, admitted only from a Bot row of the repository.
+pub const V5: u8 = super::bot_post::V5;
+/// The first `enc` version this client does not know (a narrower branch's ref update, v0x06;
+/// anything later): a content document carrying one is shown as members-only and never opened
+/// (`Unreadable(UnknownVersion)`), so later envelopes do not break this reader.
+pub const FIRST_UNKNOWN: u8 = 0x06;
 pub(crate) const NONCE_LEN: usize = 12;
 pub(crate) const TAG_LEN: usize = 16;
 /// Smallest v0x01 `enc`: version, nonce and tag.
@@ -500,6 +503,10 @@ pub enum Unreadable {
     /// An `enc` version this client does not know ([`FIRST_UNKNOWN`] and later): written by a
     /// newer client for members (or fewer people). Shown as members-only, never opened.
     UnknownVersion,
+    /// A bot's post (`enc` v0x05) whose author holds no Bot row of this repository now: a bot
+    /// that was removed (its members-only posts end with its row), or someone who never was one.
+    /// Shown as members-only, never opened.
+    NotABot,
 }
 
 /// The result of [`open_content`].
@@ -539,6 +546,9 @@ pub struct OpenContext {
     pub members: BTreeSet<[u8; 32]>,
     /// Readable epochs whose anchor is burned (§5.3): nothing is written under them.
     pub burned: BTreeSet<u32>,
+    /// Identities with a current Bot row (`writer.role` 4): the only authors whose v0x05 posts
+    /// open (§23).
+    pub bots: BTreeSet<[u8; 32]>,
 }
 
 impl OpenContext {
@@ -624,6 +634,7 @@ fn well_framed(header: &DocHeader, enc: &[u8]) -> bool {
             (V1, Visibility::Private) => enc.len() >= MIN_V1,
             (V3, _) => enc.len() >= MIN_V3,
             (V4, _) => super::named::well_framed(header, enc),
+            (V5, _) => super::bot_post::well_framed(header, enc),
             _ => false,
         },
     }
@@ -634,6 +645,9 @@ fn decrypt(keys: &EpochKeys, header: &DocHeader, enc: &[u8], is_anchor: bool) ->
     match version {
         V3 => return decrypt_members(keys, header, enc),
         V4 => return Opened::Unreadable(Unreadable::Letter),
+        // a bot's post opens only through the reading layer, which knows the bots
+        // ([`open_content`]); the chain walk never meets one
+        V5 => return Opened::Malformed,
         _ => {}
     }
     let body = if version == V2 {
@@ -765,16 +779,25 @@ pub fn bundled_patch(header: &DocHeader, mut fields: Fields) -> Option<Fields> {
     Some(fields)
 }
 
-/// `K_obj` of the members-only (`enc` v0x03) document `header`, derived under `keys` (its epoch)
-/// and checked against the commitment it carries: what a member publishes in a make-public
-/// bundle (DESIGN §4.6). `None` when it is not a well-framed v0x03 document of a kind bundles
-/// publish, its epoch is not `keys`'s, or the key does not commit (it was not made under it).
+/// `K_obj` of the members-only (`enc` v0x03, or a bot's v0x05) document `header`, derived under
+/// `keys` (its epoch) and checked against the commitment it carries: what a member publishes in
+/// a make-public bundle (DESIGN §4.6). `None` when it is not a well-framed v0x03 or v0x05
+/// document of a kind bundles publish, its epoch is not `keys`'s, or the key does not commit (it
+/// was not made under it). Whether a v0x05 author is a bot is the caller's reading layer's
+/// check, as for opening it.
 #[must_use]
 pub fn members_obj_key(
     keys: &EpochKeys,
     header: &DocHeader,
     enc: &[u8],
 ) -> Option<zeroize::Zeroizing<[u8; 32]>> {
+    if enc.first() == Some(&V5) {
+        return super::bot_post::obj_key(
+            &super::bot_post::PostKey::derive(keys, &header.owner_id),
+            header,
+            enc,
+        );
+    }
     if enc.first() != Some(&V3)
         || !bundles_kind(header.kind)
         || !well_framed(header, enc)
@@ -789,8 +812,9 @@ pub fn members_obj_key(
     ct_eq(ObjKeys::derive(keys.repo_id(), &k_obj).commit(), commit).then_some(k_obj)
 }
 
-/// Open the members-only (`enc` v0x03) document `header` of repository `repo_id` with a
-/// published per-object key `k_obj` (DESIGN §4.6, a maintainer's bundle), holding no epoch key:
+/// Open the members-only (`enc` v0x03, or a bot's v0x05) document `header` of repository
+/// `repo_id` with a published per-object key `k_obj` (DESIGN §4.6, a maintainer's bundle),
+/// holding no epoch key:
 /// the AD is rebuilt from the document's public fields, the commitment `k_obj` derives is
 /// compared with the one `enc` carries **before** GCM runs (a mismatch is `CommitMismatch`: a
 /// lying entry, never shown), then GCM under `K_doc,obj` and the TLV. Binding the AD into `K_obj`
@@ -803,10 +827,13 @@ pub fn open_members_with_key(
     enc: &[u8],
     k_obj: &[u8; 32],
 ) -> Opened {
-    if enc.first() != Some(&V3) || !bundles_kind(header.kind) || !well_framed(header, enc) {
+    let Some(&version @ (V3 | V5)) = enc.first() else {
+        return Opened::Malformed;
+    };
+    if !bundles_kind(header.kind) || !well_framed(header, enc) {
         return Opened::Malformed;
     }
-    let Some(ad) = header.ad_in(repo_id, V3) else {
+    let Some(ad) = header.ad_in(repo_id, version) else {
         return Opened::Malformed;
     };
     let (nonce, rest) = enc[1..].split_at(NONCE_LEN);
@@ -859,7 +886,21 @@ pub fn open_content(ctx: &OpenContext, header: &DocHeader, enc: &[u8]) -> Opened
         return Opened::Unreadable(Unreadable::NoKey);
     };
     let is_anchor = header.id == Some(anchor.id);
-    match decrypt(keys, header, enc, is_anchor) {
+    let opened = if enc[0] == V5 {
+        // a bot's post: only from a Bot row of this repository now, under the post key members
+        // derive from the epoch key and its author (§23)
+        if !ctx.bots.contains(&header.owner_id) {
+            return Opened::Unreadable(Unreadable::NotABot);
+        }
+        super::bot_post::open(
+            &super::bot_post::PostKey::derive(keys, &header.owner_id),
+            header,
+            enc,
+        )
+    } else {
+        decrypt(keys, header, enc, is_anchor)
+    };
+    match opened {
         // a member `event` is gated at consensus (a removed member cannot write one), so the
         // late rule, which is about un-gated writes under a superseded key, does not apply;
         // its schema does not carry `$createdAtBlockHeight` either (§8.1 step 7)

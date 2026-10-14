@@ -262,8 +262,8 @@ pub struct EntryMismatch {
 /// `repo_id` through its honoured `entries` ([`DocEntries::of_doc`]): the first entry naming this
 /// revision whose key commits and opens it makes it [`BundleRead::Public`]; an entry whose key
 /// does not commit is an [`EntryMismatch`] and is ignored, as is one whose key commits to a
-/// document that does not open (it is malformed whatever the key). Members-only (`enc` v0x03) and
-/// letter (`enc` v0x04) documents both open this way.
+/// document that does not open (it is malformed whatever the key). Members-only (`enc` v0x03), a
+/// bot's members-only (`enc` v0x05, §23) and letter (`enc` v0x04) documents all open this way.
 #[must_use]
 pub fn read_revision(
     repo_id: &[u8; 32],
@@ -275,7 +275,9 @@ pub fn read_revision(
     let mut mismatches = Vec::new();
     for e in entries.iter().filter(|e| e.revision == revision) {
         let opened = match enc.first() {
-            Some(&doc::V3) => doc::open_members_with_key(repo_id, header, enc, e.key.expose()),
+            Some(&(doc::V3 | doc::V5)) => {
+                doc::open_members_with_key(repo_id, header, enc, e.key.expose())
+            }
             Some(&doc::V4) => super::named::open_with_key(repo_id, header, enc, e.key.expose()),
             _ => Opened::Malformed,
         };

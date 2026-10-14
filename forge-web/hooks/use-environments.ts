@@ -156,6 +156,6 @@ export function useRepoPeople(home: RepoHome, enabled: boolean): PeopleView | nu
  * environments go to the repo's members, so unlocking would open nothing for them.
  */
 export function asksToUnlock(home: RepoHome, encryption: EnvironmentsRead['encryption'] | null): boolean {
-  if ((home.repo.visibility === 'public' && home.lane === undefined) || home.private?.access === 'outsider') return false
+  if ((home.repo.visibility === 'public' && home.lane === undefined) || home.private?.access === 'outsider' || home.private?.access === 'bot') return false
   return home.lane?.access === 'locked' || home.private?.access === 'locked' || encryption === 'locked'
 }

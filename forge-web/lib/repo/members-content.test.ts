@@ -9,7 +9,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { describe, expect, it } from 'vitest'
 
 import { base58Encode } from '../auth/base58'
-import { EpochKeys, sealMembersDoc, type OpenContext, type PrivateDoc } from '../private'
+import { EpochKeys, PostKey, sealBotPost, sealMembersDoc, type OpenContext, type PrivateDoc } from '../private'
 import { readConfig, readConfigBundle } from './config'
 import { contentKey, repoKey, type RepoRef } from './contract'
 import { readableReviews } from './issues'
@@ -140,6 +140,42 @@ describe("a member's members-key session (laneGate)", () => {
     expect(hiddenReasonOf('badTag')).toBe('notEncrypted')
     expect(hiddenReasonOf('letter')).toBe('letter')
     expect(hiddenReasonOf('noKey')).toBe('wrongKey')
+  })
+
+  it("opens a current bot's members-only post; a removed bot's counts with the members-only placeholders, for members as for outsiders", async () => {
+    const BOT = id(0x4b)
+    const keys = await EpochKeys.import(REPO, 0, new Uint8Array(K0))
+    const post = await PostKey.derive(keys, BOT)
+    const doc: PrivateDoc = { type: 'comment', vis: 'public', ownerId: BOT, epoch: 0, targetId: ISSUE }
+    const row = {
+      $id: nextId(),
+      $ownerId: b58(BOT),
+      $createdAt: 1000,
+      $createdAtBlockHeight: 20,
+      repoId: b58(REPO),
+      targetId: b58(ISSUE),
+      vis: 'public',
+      epoch: 0,
+      asMember: b58(BOT),
+      enc: await sealBotPost(post, doc, { body: 'the build is green' }),
+    }
+    post.wipe()
+    const withBot: OpenContext = { ...(await ctxWith(K0)), bots: { has: (x: Uint8Array) => BOT.every((b, i) => b === x[i]) } }
+    const { docs } = await admitAll(laneGate(PUBLIC, withBot), 'comment', [row])
+    expect(docs.map((d) => d['body'])).toEqual(['the build is green'])
+    expect(docs.map(admittedAudience)).toEqual(['members'])
+    // the bot was removed: no Bot row, so the post never opens; a member holding the key is told why
+    const tally = new HiddenTally()
+    await admitAll(laneGate(PUBLIC, await ctxWith(K0)), 'comment', [row], tally)
+    expect(tally.value.notABot).toBe(1)
+    expect(tally.value.membersOnly).toBe(0)
+    expect(tally.placeholders[0]?.why).toBe('notABot')
+    expect(hiddenReasonOf('notABot')).toBe('notABot')
+    // one without the epoch key gets the plain members-only placeholder: no key, no reason
+    const outsider = new HiddenTally()
+    await admitAll(laneGate(PUBLIC, await ctxWith(null)), 'comment', [row], outsider)
+    expect(outsider.value.notABot).toBe(0)
+    expect(outsider.placeholders[0]?.why).not.toBe('notABot')
   })
 
   it('a member without the epoch key sees placeholders with the wrong-key reason', async () => {

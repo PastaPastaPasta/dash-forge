@@ -2585,7 +2585,7 @@ def named_artifact_vectors():
 # config timeline (facts), take the epoch keys the owner published in a kind-7 bundle (keys), and
 # skip a sealed artifact they hold no key for by its first bytes (skip).
 
-FIRST_UNKNOWN = 0x05
+FIRST_UNKNOWN = 0x06
 BUNDLE_MAGIC, BUNDLE_VERSION, ENTRY_EPOCH_KEY = b"DFRV", 0x01, 0x06
 
 
@@ -2698,7 +2698,13 @@ def converted_vectors():
       old_event, None, "public", False, CTX0, MALFORMED, v1_event)
     o("public_doc_in_private_repo", "a document stamped public in a private repository cannot exist (a repository "
       "never becomes private): malformed.", old_comment, "public", "private", False, CTX0, MALFORMED, v3)
-    for version, label in [(0x05, "v05"), (0x06, "v06"), (0xff, "vff")]:
+    bot_post = bytes([0x05]) + v3[1:]
+    o("v05_not_a_bot_public", "enc v0x05 is a bot's post (§23): from an author with no Bot row it is never opened, "
+      "Unreadable(NotABot), shown as members-only.", old_comment, "public", "public", True, CTX0,
+      unreadable("notABot"), bot_post)
+    o("v05_not_a_bot_private", "the same on a private repository's document: Unreadable(NotABot).", old_comment, None,
+      "private", False, CTX0, unreadable("notABot"), bot_post)
+    for version, label in [(0x06, "v06"), (0x07, "v07"), (0xff, "vff")]:
         later = bytes([version]) + v3[1:]
         o(f"unknown_{label}_public", f"an enc version {version:#04x} this client does not know: Unreadable("
           "UnknownVersion), shown as members-only, never malformed.", old_comment, "public", "public", True, CTX0,

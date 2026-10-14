@@ -1671,7 +1671,21 @@ async fn view(
     };
     let who = |id: &str| crate::fmt::with_name(id, &names);
     let me = s.viewer().unwrap_or_default();
-    let mark = |id: &str| match letters.get(id) {
+    let bots = if ctx.json {
+        std::collections::BTreeSet::new()
+    } else {
+        Box::pin(crate::collab::bots_of(client, handle)).await
+    };
+    let bot_of: std::collections::BTreeMap<&str, &'static str> = comments
+        .iter()
+        .map(|c| {
+            (
+                c.document_id.as_str(),
+                crate::collab::bot_tag(&bots, &c.author),
+            )
+        })
+        .collect();
+    let letter_mark = |id: &str| match letters.get(id) {
         Some(l) => format!(
             " · to {}",
             crate::audience::letter_to(&l.recipients, l.group, Some(me), &names)
@@ -1686,6 +1700,13 @@ async fn view(
                 .line(id, aud, &who)
                 .map_or(String::new(), |l| format!(" · {l}"))
         }
+    };
+    let mark = |id: &str| {
+        format!(
+            "{}{}",
+            bot_of.get(id).copied().unwrap_or_default(),
+            letter_mark(id)
+        )
     };
     ctx.emit(
         out,

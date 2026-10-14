@@ -1,0 +1,26 @@
+{
+  "name": "seal__event_refused",
+  "description": "nor an event.",
+  "case": "bot_post",
+  "rules": "v2",
+  "input": {
+    "op": "seal",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "w": "f4b4b96d963aee33dbbc796a264260c0ebdcdb467ba3d01a8edd387f5115ed27",
+    "bot": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+    "doc": {
+      "type": "event",
+      "vis": "public",
+      "ownerId": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+      "epoch": 0,
+      "targetId": "3333333333333333333333333333333333333333333333333333333333333333"
+    },
+    "fields": {
+      "eventValue": "bug"
+    },
+    "nonce": "000102030405060708090a0b"
+  },
+  "expected": {
+    "error": "malformed"
+  }
+}

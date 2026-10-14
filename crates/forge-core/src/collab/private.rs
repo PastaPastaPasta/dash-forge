@@ -197,6 +197,51 @@ pub fn seal_members_props(
     )
 }
 
+/// [`seal_props`] for a **bot's** members-only post (`enc` v0x05, `private-repos.md` §23): the
+/// same transform, sealed under the bot's post key `post` for its epoch, with `vis` the
+/// repository's visibility. Only issues, comments and reviews (a PR's branch names are keyed by
+/// the epoch, which a bot never holds); the owner is the post key's bot.
+pub fn seal_bot_props(
+    post: &crate::private::bot_post::PostKey,
+    vis: crate::rules::v2::Visibility,
+    kind: DocKind,
+    props: BTreeMap<String, FieldValue>,
+) -> Result<BTreeMap<String, FieldValue>> {
+    if !crate::private::bot_post::posts_kind(kind) {
+        return Err(Error::Config(format!(
+            "a bot posts no members-only {}",
+            kind.type_name()
+        )));
+    }
+    let public_hash = |n: &str| crate::private::keys::sha256(n.as_bytes());
+    seal_props_inner(
+        (post.epoch(), public_hash),
+        kind,
+        *post.bot(),
+        props,
+        &Members::sealed(),
+        |h, f| {
+            let mut h = h.clone();
+            h.vis = vis;
+            crate::private::bot_post::seal(post, &h, f)
+        },
+    )
+}
+
+/// [`reseal_members_edit`] for a bot's own post (`enc` v0x05): the whole content re-sealed under
+/// its post key `post` for the current epoch, with `changes` applied.
+pub fn reseal_bot_edit(
+    post: &crate::private::bot_post::PostKey,
+    vis: crate::rules::v2::Visibility,
+    kind: DocKind,
+    opened: &FetchedDocument,
+    changes: &BTreeMap<String, Option<String>>,
+) -> Result<BTreeMap<String, Option<FieldValue>>> {
+    let props = edited_props(opened, changes);
+    let sealed = seal_bot_props(post, vis, kind, props)?;
+    Ok(enc_and_epoch(&sealed))
+}
+
 /// The blind a members-only PR's `headOid`, or a head update's `oid`, carries (rule C,
 /// `private-repos.md` §19): the caller copies the plaintext from the document that introduced
 /// the commit (the source branch's ref update), and seals its real value and that document's salt
@@ -491,7 +536,9 @@ fn edited_props(
 }
 
 /// A private replace's changes: `enc` and `epoch` of `sealed`, nothing else.
-fn enc_and_epoch(sealed: &BTreeMap<String, FieldValue>) -> BTreeMap<String, Option<FieldValue>> {
+pub(super) fn enc_and_epoch(
+    sealed: &BTreeMap<String, FieldValue>,
+) -> BTreeMap<String, Option<FieldValue>> {
     ["enc", "epoch"]
         .into_iter()
         .map(|k| (k.to_string(), sealed.get(k).cloned()))

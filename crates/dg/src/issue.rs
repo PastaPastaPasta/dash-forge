@@ -802,7 +802,18 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool, history: bo
             .dpns_first_names(std::iter::once(author.as_str()).chain(actors))
             .await
     };
-    let who = |id: &str| with_name(id, &names);
+    let bots = if ctx.json {
+        std::collections::BTreeSet::new()
+    } else {
+        Box::pin(crate::collab::bots_of(&s.client, &s.repo)).await
+    };
+    let who = |id: &str| {
+        format!(
+            "{}{}",
+            with_name(id, &names),
+            crate::collab::bot_tag(&bots, id)
+        )
+    };
     let to = |l: &forge_core::collab::v2::LetterInfo| {
         crate::audience::letter_to(&l.recipients, l.group, s.viewer(), &names)
     };

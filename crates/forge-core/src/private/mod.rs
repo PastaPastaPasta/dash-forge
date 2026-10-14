@@ -25,7 +25,9 @@
 //! * [`blind`] and [`members_ref`]: members-only branches and pull requests of a public
 //!   repository: salted OID blinds, sealed ref updates and their real values (§19);
 //! * [`key_letter`]: key letters (kind 10), typed keys sealed to specific people, and the
-//!   `branch` letter that shares one members-only branch as it is now (§20).
+//!   `branch` letter that shares one members-only branch as it is now (§20);
+//! * [`bot_post`]: a bot's members-only posts (`enc` v0x05) under its per-epoch post key, and
+//!   the `postKey` letter that carries that key (§23).
 //!
 //! The seams the data plane routes through ([`RefNameHasher`], [`RepoCodec`], [`PackCipher`],
 //! [`RepoKeyReader`]) have their private implementations in [`Private`], built from the
@@ -38,6 +40,7 @@
 compile_error!("the `vectors` feature (deterministic nonces and file ids) is for tests only; never enable it in a release build");
 
 pub mod blind;
+pub mod bot_post;
 pub mod branch_key;
 pub mod bundle;
 pub mod convert;

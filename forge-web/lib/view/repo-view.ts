@@ -115,25 +115,26 @@ export type RepoHomeRefs = 'all' | 'default'
 /**
  * How the viewer reads a private repo: `signed-out` and `outsider` see only what is public
  * (`ux-dx-spec.md` §6.3), `no-key` is a member whose browser holds no encryption key yet,
- * `locked` a member whose tab resumed a signing-only session (unlock to read), and
+ * `locked` a member whose tab resumed a signing-only session (unlock to read), `bot` a Bot (never
+ * given the key), and
  * `member` reads through its decryption session (`repo.session`).
  */
 export type PrivateAccess =
-  | { readonly access: 'signed-out' | 'outsider' | 'no-key' | 'locked' }
+  | { readonly access: 'signed-out' | 'outsider' | 'no-key' | 'locked' | 'bot' }
   | { readonly access: 'member'; readonly session: PrivateSession }
 
 /**
  * How a signed-in member reads a public repo's members-only content: `none`, it has none (nobody
  * turned it on); `no-key`, their browser holds no encryption key; `locked`, the tab resumed
  * signing-only; `no-key-shared`, no maintainer has shared the key with them yet (E311, a member
- * added by an older client: a maintainer's Repair shares it); `member`, they read it through
+ * added by an older client: a maintainer's Repair shares it); `bot`, a Bot, never given the key; `member`, they read it through
  * their members-key session (`repo.lane`); `former`, a member removed since who still holds key
  * shares of earlier epochs: they read what was written under those (DESIGN §12 item 6, as `dg`),
  * through the same session, and write nothing members-only. Never changes the public config,
  * branches or packs.
  */
 export type MembersAccess =
-  | { readonly access: 'none' | 'no-key' | 'locked' | 'no-key-shared' }
+  | { readonly access: 'none' | 'no-key' | 'locked' | 'no-key-shared' | 'bot' }
   | { readonly access: 'member' | 'former'; readonly session: PrivateSession }
 
 /**

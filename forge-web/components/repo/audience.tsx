@@ -26,11 +26,12 @@ import { CircleDot, Eye, EyeOff, Globe, GitPullRequest, Lock, Users } from 'luci
 import type { RepoHome, MembersOnlyEntry, MembersOnlyTarget } from '@/lib/view'
 import type { MembersAccess } from '@/lib/view/repo-view'
 import type { Membership } from '@/lib/rules/v2'
+import { botsOf } from '@/lib/rules/roles'
 import { readMembershipsCached, repoContractIds } from '@/lib/repo'
 import { readRunners } from '@/lib/repo/checks'
 import { enableMembersContent } from '@/lib/repo/private-members'
 import { encryptionKeyState } from '@/lib/auth/encryption-key'
-import { NO_KEY_SHARED_TEXT } from '@/lib/repo/members-writes'
+import { BOT_READ_TEXT, NO_KEY_SHARED_TEXT } from '@/lib/repo/members-writes'
 import { composerCandidates, previewLetter, type LetterPreview, type LetterThread } from '@/lib/repo/letter-writes'
 import type { LetterFacts } from '@/lib/repo/private-content'
 import type { LetterGroup, ParentLetter } from '@/lib/rules/letters'
@@ -59,6 +60,7 @@ import {
   type LetterAsk,
   type LetterOffer,
   MEMBERS_OPTION_TEXT,
+  NOT_A_BOT_TEXT,
   PUBLIC_SENTENCE,
   QUOTE_CONFIRM,
   SET_UP_KEY,
@@ -834,7 +836,9 @@ export function TurnOnMembersSheet({ home, open, onClose }: { home: RepoHome; op
   // Who gets a key: every member who holds the members key, and the maintainer turning it on
   // (listed or not). Unknown until the members are read: no cost is shown, and Turn on waits.
   const holders = members.data === null ? null : new Set([...keyHolders(members.data), ...(identity !== null ? [identity] : [])]).size
-  const [lead, costLine, older] = turnOnText(holders ?? 1)
+  // Bots get a key for their own members-only posts (§23), not the members key.
+  const bots = members.data === null ? 0 : botsOf(members.data).length
+  const [lead, costLine, older] = turnOnText(holders ?? 1, bots)
   const retry = (what: string, onRetry: () => void, testId: string): JSX.Element => (
     <p className="text-dense text-danger-700 dark:text-danger-400" role="alert" data-testid={testId}>
       {what}{' '}
@@ -888,7 +892,7 @@ export function TurnOnMembersSheet({ home, open, onClose }: { home: RepoHome; op
       onClose={onClose}
       title="Turn on members-only content?"
       description={lead}
-      cost={holders === null ? 'pending' : previewCredits(enableEstimate(holders))}
+      cost={holders === null ? 'pending' : previewCredits(enableEstimate(holders, bots))}
       confirmLabel="Turn on"
       cancelLabel="Not now"
       blocked={blocked}
@@ -952,6 +956,11 @@ export function MembersOnlyRow({ entry }: { entry: MembersOnlyEntry }): JSX.Elem
         ) : null}
       </p>
       {unlocking ? <UnlockMore title={UNLOCK_LETTERS} testId="letter-unlock-panel" forgot={false} /> : null}
+      {item.why === 'notABot' ? (
+        <p className={MUTED} data-testid="not-a-bot">
+          {NOT_A_BOT_TEXT}
+        </p>
+      ) : null}
       {item.editedAfterBy !== undefined ? (
         <p className={MUTED} data-testid="edited-after-public">
           Edited after <Author identityId={item.editedAfterBy} link={false} className="align-middle" /> made it public; the new text is members-only.
@@ -1081,6 +1090,8 @@ export function MembersOnlyTargetPage({ home, target }: { home: RepoHome; target
           <p className={MUTED} role="status" data-testid="members-only-reading">
             Reading members-only content…
           </p>
+        ) : target.placeholder.why === 'notABot' ? (
+          <p data-testid="not-a-bot">{NOT_A_BOT_TEXT}</p>
         ) : why === 'locked' ? (
           <UnlockMore title={UNLOCK_MEMBERS_ONLY} testId="members-only-target-unlock" forgot={false} />
         ) : why === 'no-key' ? (
@@ -1093,6 +1104,8 @@ export function MembersOnlyTargetPage({ home, target }: { home: RepoHome; target
           </p>
         ) : why === 'no-key-shared' ? (
           <p data-testid="members-only-no-key-shared">{NO_KEY_SHARED_TEXT}</p>
+        ) : home.lane?.access === 'bot' ? (
+          <p data-testid="members-only-bot">{BOT_READ_TEXT}</p>
         ) : home.lane?.access === 'former' ? (
           <p>You can&apos;t read this one. It was written after you stopped being a member of this repo.</p>
         ) : home.lane?.access === 'member' ? (
@@ -1200,7 +1213,9 @@ export function MembersChip({ home }: { home: RepoHome }): JSX.Element | null {
         ? 'This repo has members-only content. Unlock this tab to read it.'
         : access === 'no-key'
           ? 'This repo has members-only content. Set up your encryption key to read it.'
-          : `This repo has members-only content. ${NO_KEY_SHARED_TEXT}`
+          : access === 'bot'
+            ? `This repo has members-only content. ${BOT_READ_TEXT}`
+            : `This repo has members-only content. ${NO_KEY_SHARED_TEXT}`
   return (
     <span className="relative inline-flex">
       <button

@@ -27,7 +27,7 @@
 
 import { bytes, bytesToHex, concat, u16, u32, utf8, type Bytes } from './bytes'
 import type { PublishedBundle } from './convert'
-import { V3, V4, openMembersWithKey, type PrivateDoc } from './doc'
+import { V3, V4, V5, openMembersWithKey, type PrivateDoc } from './doc'
 import { IdSet, type PrivateId } from './ids'
 import { openLetterWithKey } from './named'
 import { MalformedError, type DocFields, type PrivateDocType } from './tlv'
@@ -222,8 +222,8 @@ export interface EntryMismatch {
  * through its honoured `entries` ({@link DocEntries.ofDoc}; forge-core `bundle::read_revision`):
  * the first entry naming this revision whose key commits and opens it makes it `public`; an entry
  * whose key does not commit is an {@link EntryMismatch} and is ignored, as is one whose key commits
- * to a document that does not open (it is malformed whatever the key). Members-only (`enc` v0x03)
- * and letter (`enc` v0x04) documents both open this way. With none, the newest earlier revision an
+ * to a document that does not open (it is malformed whatever the key). Members-only (`enc` v0x03,
+ * and a bot's post, v0x05) and letter (`enc` v0x04) documents both open this way. With none, the newest earlier revision an
  * entry names makes it `editedAfter`.
  */
 export async function readRevision(
@@ -237,7 +237,11 @@ export async function readRevision(
   for (const e of entries) {
     if (e.revision !== revision) continue
     const opened =
-      enc[0] === V3 ? await openMembersWithKey(repoId, doc, enc, e.key) : enc[0] === V4 ? await openLetterWithKey(repoId, doc, enc, e.key) : null
+      enc[0] === V3 || enc[0] === V5
+        ? await openMembersWithKey(repoId, doc, enc, e.key)
+        : enc[0] === V4
+          ? await openLetterWithKey(repoId, doc, enc, e.key)
+          : null
     if (opened?.status === 'readable') return { read: { state: 'public', by: e.by, fields: opened.fields }, alerts }
     if (opened?.status === 'unreadable' && opened.reason === 'commitMismatch') alerts.push({ by: e.by, revision })
   }

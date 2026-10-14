@@ -400,6 +400,10 @@ pub fn why_hint(repo: &RepoRef, why: Unopened) -> Option<String> {
         Unopened::NotARecipient => {
             Some("only the people they were sent to can read them".to_string())
         }
+        Unopened::RemovedBot => Some(
+            "posted as a bot by someone who isn't a bot here now: its members-only posts as a bot can't be read any more"
+                .to_string(),
+        ),
     }
 }
 
@@ -442,6 +446,7 @@ pub fn why_word(why: Unopened) -> &'static str {
         Unopened::Locked => "locked",
         Unopened::NewerVersion => "newerVersion",
         Unopened::NotARecipient => "notARecipient",
+        Unopened::RemovedBot => "removedBot",
     }
 }
 

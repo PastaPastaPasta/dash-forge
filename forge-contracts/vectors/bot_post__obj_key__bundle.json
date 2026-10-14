@@ -1,0 +1,28 @@
+{
+  "name": "obj_key__bundle",
+  "description": "K_obj of a bot's post as a member derives it (what a maintainer's bundle or a read letter shares); anyone holding it opens that one post, and nothing else.",
+  "case": "bot_post",
+  "rules": "v2",
+  "input": {
+    "op": "objKey",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "doc": {
+      "type": "comment",
+      "vis": "public",
+      "ownerId": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+      "epoch": 0,
+      "targetId": "3333333333333333333333333333333333333333333333333333333333333333",
+      "enc": "05000102030405060708090a0bd8cba142dd331d95c2967b8082613e21bcc9724f4a5586a6b33a7bf3a39f670c5b4ec1291286482d8a324e65095654e0fe0b76c2b18b8daa4a2ed2a6cca6248ddec68ace3f62d9108e9b9a99d43441ee3a37127df4ae98c9246fd586982dde2476afa004cec4d72405128905c4b9f7bd"
+    }
+  },
+  "expected": {
+    "kObj": "7009ff96a311d6501df2faec42321d1bf6f0e1b75859ea7c7b9b8466af1b6f7a",
+    "opened": {
+      "status": "readable",
+      "fields": {
+        "body": "CI: 3 of 412 tests failed on fix-auth (members-only log)."
+      }
+    }
+  }
+}

@@ -1,6 +1,6 @@
 {
-  "name": "unknown_v05_private",
-  "description": "the same enc version 0x05 on a private repository's document: Unreadable(UnknownVersion).",
+  "name": "unknown_v07_private",
+  "description": "the same enc version 0x07 on a private repository's document: Unreadable(UnknownVersion).",
   "case": "converted_repo_open",
   "rules": "v2",
   "input": {
@@ -25,7 +25,7 @@
       "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
       "epoch": 0,
       "targetId": "3333333333333333333333333333333333333333333333333333333333333333",
-      "enc": "05000102030405060708090a0bf9a7fa2b8dc201ec7c98681cdcfcfdd62d0c8514308e08b3254c75e528853e9f68c2c5558f96fca1eaaaab098149e3d0179a64d1f241ee0b9de6ca6da223470d5625a3a96f37e16e4741f03834dc89db33640789703539675c630fe4e0e9e4408b34c9b046a9d4eb131bce11a57c4650",
+      "enc": "07000102030405060708090a0bf9a7fa2b8dc201ec7c98681cdcfcfdd62d0c8514308e08b3254c75e528853e9f68c2c5558f96fca1eaaaab098149e3d0179a64d1f241ee0b9de6ca6da223470d5625a3a96f37e16e4741f03834dc89db33640789703539675c630fe4e0e9e4408b34c9b046a9d4eb131bce11a57c4650",
       "createdAtBlockHeight": 50
     }
   },

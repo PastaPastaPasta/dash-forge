@@ -27,7 +27,8 @@ import {
   turnOnText,
 } from './audience'
 import { draftAudienceCounts } from './pending-review'
-import { NO_KEY_SHARED_TEXT } from '../repo/members-writes'
+import { BOT_READ_TEXT, NO_KEY_SHARED_TEXT } from '../repo/members-writes'
+import { postKeyLetterCredits } from '../env/write'
 
 const m = (identity: string, role: Membership['role']): Membership => ({ identity, role, createdAt: 0 })
 const MEMBERS = [m('alice', 'maintainer'), m('bob', 'writer'), m('bob', 'maintainer'), m('carl', 'reader'), m('dora', 'triage'), m('bot', 'reader')]
@@ -71,6 +72,7 @@ describe('what a composer offers', () => {
     expect(choice({ access: 'no-key' })?.members).toBe('no-key')
     expect(choice({ access: 'locked' })?.members).toBe('locked')
     expect(choice({ access: 'no-key-shared' })?.members).toBe('no-key-shared')
+    expect(choice({ access: 'bot' })?.members).toBe('bot')
   })
 
   it('never offers Members to a member removed since, who reads only what was written before', () => {
@@ -92,6 +94,14 @@ describe('turning members-only content on', () => {
     expect(aboutDash(enableEstimate(2))).toBe('0.0019 DASH')
     // the maintainer turning it on always gets a wrap
     expect(enableEstimate(0)).toBe(enableEstimate(1))
+    // each bot is sent its key for members-only posts (one letter), never a wrap
+    expect(enableEstimate(2, 1)).toBe(enableEstimate(2) + postKeyLetterCredits())
+  })
+
+  it('counts the bots in the sheet without calling them members', () => {
+    const text = turnOnText(3, 1)
+    expect(text[1]).toBe(`Setting up keys for 3 members, and a key for members-only posts for 1 bot, costs about ${aboutDash(enableEstimate(3, 1))}. Each later removal costs about the same again.`)
+    expect(turnOnText(1, 2)[1]).toBe(`You're the only member so far. Setting up your key, and a key for members-only posts for 2 bots, costs about ${aboutDash(enableEstimate(1, 2))}.`)
   })
 
   it('says the sheet in short sentences, with the older-builds note and no semicolons', () => {
@@ -118,6 +128,11 @@ describe('E311 and specific-people wording', () => {
   it("uses the one E311 text, which says how to get the key shared (DESIGN §10)", () => {
     expect(MEMBERS_OPTION_TEXT['no-key-shared']).toBe(NO_KEY_SHARED_TEXT)
     expect(NO_KEY_SHARED_TEXT).toBe("You're a member, but no key has been shared with you yet. Ask a maintainer to share it: Repair on the repo page, or dg repo keys repair.")
+  })
+
+  it('tells a bot to post from dg or a CI runner, not to ask for a repair', () => {
+    expect(MEMBERS_OPTION_TEXT.bot).toBe('Bots post members-only content with their own key, from dg or a CI runner, not from the web.')
+    expect(BOT_READ_TEXT).toBe("Bots never get this repo's key; they read only what a member shares with them for one job.")
   })
 
   it('names a specific-people document neutrally, never members-only', () => {

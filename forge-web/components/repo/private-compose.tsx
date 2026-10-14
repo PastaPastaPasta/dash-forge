@@ -10,7 +10,7 @@
 import type { RepoRef } from '@/lib/repo'
 import type { RepoHome } from '@/lib/view'
 import { FORMER_MEMBER_TEXT } from '@/lib/view/audience'
-import { MEMBERS_TEXT_LIMIT } from '@/lib/repo/members-writes'
+import { BOT_WRITE_TEXT, MEMBERS_TEXT_LIMIT } from '@/lib/repo/members-writes'
 import { SEALED_TEXT_LIMIT, sealedTextUse, writeBlockReason, type SealedKind } from '@/lib/repo/private-writes'
 import { previewCreate, previewCredits, sumPreviews, type CostPreview, type FirstWrite } from '@/lib/sdk'
 import { fieldEstimate, isLongBody, longBodyCredits } from '@/lib/repo/long-body'
@@ -34,6 +34,7 @@ export function privateWriteBlock(repo: RepoRef, access: RepoHome['private']): s
   if (repo.visibility !== 'private') return null
   if (access?.access === 'no-key') return 'Add your encryption key to this browser (Settings → Members-only and private content) to write to this private repo.'
   if (access?.access === 'locked') return 'Unlock to write to this private repo.'
+  if (access?.access === 'bot') return BOT_WRITE_TEXT
   if (access?.access !== 'member') return 'Only members can write to a private repo.'
   return writeBlockReason(access.session.resolution)
 }

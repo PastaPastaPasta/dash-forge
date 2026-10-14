@@ -32,6 +32,7 @@ import {
   V3,
   V4,
   bundleWouldPublishMembersOnly,
+  V5,
   encodeDocBundle,
   entryKind,
   letterObjKey,
@@ -171,11 +172,11 @@ type PostKey = { readonly key: Uint8Array; readonly fields: DocFields; readonly 
 
 /**
  * The per-object key of the signer's view of sealed post `stored` (forge-core `post_key`): a
- * members-only post opened with the members key, a message to specific people from the signer's
+ * members-only post (a bot's too: the bot row check is `openContent`'s) opened with the members key, a message to specific people from the signer's
  * own slot, after the whole letter reader rule.
  */
 async function postKey(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, session: PrivateSession | null, stored: StoredPrivateDoc): Promise<PostKey> {
-  if (stored.enc[0] === V3) {
+  if (stored.enc[0] === V3 || stored.enc[0] === V5) {
     if (session === null) return { why: 'unreadable' }
     const opened = await openContent(stored, session.ctx)
     if (opened.status !== 'readable') return { why: 'unreadable' }

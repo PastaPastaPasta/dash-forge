@@ -206,6 +206,13 @@ impl Collab<'_> {
         if audience == Audience::SpecificPeople {
             return Err(letter_too_long(room));
         }
+        // a bot's members-only text has no long-body artifact yet: kind 70 is sealed under the
+        // members key, which a bot never holds (§23)
+        if (members || repo.visibility == Visibility::Private)
+            && self.signer_role(repo).await? == Some(Role::Bot)
+        {
+            return Err(bot_text_too_long(room));
+        }
         if full.len() as u64 > long_body::MAX_BYTES {
             return Err(UserError::new(
                 codes::USAGE,
@@ -478,6 +485,23 @@ struct CopyView<'a> {
     svc: RepoService<'a>,
     manifests: Vec<PackManifestInfo>,
     roles: crate::repo::RoleMap,
+}
+
+/// A bot's members-only text too long for its field: a long body is a kind-70 artifact sealed
+/// under the members key, which a bot never holds (`private-repos.md` §23). `room` is the
+/// field's members-only room.
+#[must_use]
+pub fn bot_text_too_long(room: usize) -> crate::error::Error {
+    UserError::new(
+        codes::USAGE,
+        "this text is too long for a bot's members-only post",
+    )
+    .cause(format!(
+        "a bot's members-only post holds its text in one field: at most {room} bytes"
+    ))
+    .fix("shorten it, or split it into several comments")
+    .note("nothing was written")
+    .into()
 }
 
 /// A letter's text too long for its field: a letter's text lives in its own `enc` only (stored

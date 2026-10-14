@@ -45,6 +45,7 @@ import {
 } from '@/lib/repo/private-session'
 import { hasMembersKey } from '@/lib/repo/writes'
 import { repoHasMembersKey } from '@/lib/repo/members-writes'
+import { isBotOnly } from '@/lib/rules/roles'
 import { membersAccessOf } from '@/lib/repo/members-access'
 import { knownConversion } from '@/lib/repo/converted'
 import { DOC } from '@/lib/repo/contract'
@@ -180,6 +181,7 @@ export function usePrivateHome(home: RepoHome | null, addr: RepoAddress): Privat
     const lane = await membersAccessOf({
       identity: viewer,
       isMember,
+      isBot: isBotOnly(members, viewer),
       // A non-member's answer comes from the page's own config read (no read of its own).
       hasMembersKey: () => (isMember ? hasMembersKey(sdk!, base.repo) : repoHasMembersKey(sdk!, base.repo)),
       ops: () => encryptionOps(sdk!, network, viewer, contractOf(base.repo.forge, DOC.repoKey)),
@@ -220,6 +222,8 @@ export function usePrivateHome(home: RepoHome | null, addr: RepoAddress): Privat
       if (identity === null) return { ...base, private: { access: 'signed-out' } }
       const members = await readMembershipsCached(sdk!, base.repo, network)
       if (!members.some((m) => m.identity === identity)) return { ...base, private: { access: 'outsider' } }
+      // a bot is never given the repo's key: nothing to unlock, add or repair for it
+      if (isBotOnly(members, identity)) return { ...base, private: { access: 'bot' } }
       const ops = await encryptionOps(sdk!, network, identity, contractOf(base.repo.forge, DOC.repoKey))
       if (ops === null) return { ...base, private: { access: 'no-key' } }
       // A session picked up after a reload holds the signing key only: the encryption key needs

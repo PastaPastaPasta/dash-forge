@@ -19,7 +19,7 @@ Reading a public repository needs no identity: `dg repo view`, `dg repo list --o
 
 ## Members
 
-Members have one of four roles: **Read**, **Triage**, **Write** or **Maintain**. The **Owner** is the identity that created the repository. A **Bot** role for automated accounts is coming later. Every role holds the key to the repository's encrypted content, on public and private repositories alike. Consensus enforces what each role can write: a write the role does not allow is refused by Platform, and Forge's apps refuse it before you pay for it. Counting approvals is a rule Forge apps enforce: every app applies it alike ([Who enforces what](#who-enforces-what)).
+Members have one of four roles: **Read**, **Triage**, **Write** or **Maintain**. The **Owner** is the identity that created the repository. Automated accounts can be added as a **Bot** where the network's contracts have that role (below). Every human role holds the key to the repository's encrypted content, on public and private repositories alike. Consensus enforces what each role can write: a write the role does not allow is refused by Platform, and Forge's apps refuse it before you pay for it. Counting approvals is a rule Forge apps enforce: every app applies it alike ([Who enforces what](#who-enforces-what)).
 
 | Role | `--role` | Can | Closest GitHub role |
 |---|---|---|---|
@@ -28,6 +28,7 @@ Members have one of four roles: **Read**, **Triage**, **Write** or **Maintain**.
 | Write | `writer` (default; alias `write`) | Everything Triage can, plus push to unprotected branches, approve or request changes, merge, mark draft or ready, change a PR's base, dismiss reviews, pin, post check runs, and re-run checks. | Write |
 | Maintain | `maintainer` (alias `maintain`) | Everything Write can, plus protected branches, releases, repository settings (`config`, branch policy), webhooks and hiding comments. | Maintain, and most of Admin |
 | Owner | n/a | Everything Maintain can (the Owner is enrolled as a maintainer when the repository is created), plus adding and removing members and editing the description and topics. | Admin |
+| Bot | `bot` | An automated account. It can post comments and reviews, and open issues and PRs. It can't approve or merge, it pushes only to branches a maintainer allows, and it reads members-only content only when someone asks it to. To report checks it also needs to be added as a CI runner (`dg ci runner add`). It never gets the members key: a maintainer gives it a key for its own members-only posts, which members read and everyone else sees as members-only. Only where the network's contracts have the Bot role; elsewhere `--role bot` is refused before anything is signed. | an app or bot account |
 
 The repository's Owner alone adds and removes members, and edits the description and topics. The `--role` values `reader`, `triage`, `writer` and `maintainer` are the names `dg` has always taken, and `read`, `write` and `maintain` are accepted as aliases. `dg collab list`, `dg collab add` and the web app's Members settings show the role words; `--json` output keeps the `--role` names.
 

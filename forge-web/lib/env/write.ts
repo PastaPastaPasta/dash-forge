@@ -29,6 +29,17 @@ export function snapshotCredits(sealedLen: number): number {
   return estimateChunkCredits(sealedLen) + MANIFEST_CREDITS
 }
 
+/**
+ * The most a sealed `postKey` letter takes: 512 bytes of plaintext sealed to the sender and the
+ * bot, stored as a snapshot is (forge-core `bot_keys::LETTER_BYTES`; `lib/repo/bot-keys.ts`).
+ */
+export const POST_KEY_LETTER_BYTES = 1024
+
+/** What one `postKey` letter costs at most: a Platform chunk and its kind-10 manifest (forge-core `bot_keys::letter_credits`). */
+export function postKeyLetterCredits(): number {
+  return snapshotCredits(POST_KEY_LETTER_BYTES)
+}
+
 /** Why a change can't be saved from here: told as is, nothing was written. */
 export class EnvSaveError extends Error {
   constructor(message: string) {

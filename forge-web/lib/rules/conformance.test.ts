@@ -1153,7 +1153,8 @@ describe('FORGE_RULES conformance vectors', () => {
   // (`converted_repo_*`) run in `lib/private/conformance.test.ts`;
   // the environment snapshots (`env_snapshot*`) in `lib/env/conformance.test.ts`; the key letters
   // (`key_letter`) in `lib/private/key-letter.conformance.test.ts`; the narrower branches
-  // (`branch_key`) in `lib/private/branch-key.conformance.test.ts`.
+  // (`branch_key`) in `lib/private/branch-key.conformance.test.ts`; a bot's members-only posts
+  // (`bot_post`) in `lib/private/bot-post.conformance.test.ts`.
   // The members-only branch and PR cases (private-repos.md §19): `oid_blind`, `sealed_ref` and
   // `sealed_patch` run in `lib/private/members-git.conformance.test.ts`; `members_pack_plan` and
   // `publish_guard` pin the git remote helper's push planning and publish guard, which only the
@@ -1164,7 +1165,7 @@ describe('FORGE_RULES conformance vectors', () => {
   const isMembersGit = (v: Vector) => MEMBERS_GIT_CASES.includes(v.case) || v.case === 'members_check' || v.case === 'members_index'
   const isPrivate = (v: Vector) =>
     isMembersGit(v) ||
-    ['private_', 'mixed_doc_', 'named_envelope', 'named_artifact', 'converted_repo_', 'env_snapshot', 'key_letter', 'branch_key'].some((p) => v.case.startsWith(p))
+    ['private_', 'mixed_doc_', 'named_envelope', 'named_artifact', 'converted_repo_', 'env_snapshot', 'key_letter', 'branch_key', 'bot_post'].some((p) => v.case.startsWith(p))
   const v2Vectors = vectors.filter((v) => v.rules === 'v2' && !isPrivate(v))
   const privateVectors = vectors.filter(isPrivate)
 

@@ -217,10 +217,12 @@ fn print_status(handle: &RepoRef, arg: &str, kr: &Keyring) {
     }
 }
 
-/// How many distinct identities hold a role (a member with both roles is one wrap).
+/// How many distinct identities hold a role that holds the members key (a member with both
+/// roles is one wrap; a bot gets a post key instead, [`rotation_cost`]).
 pub fn distinct_members(members: &[forge_core::members::Member]) -> usize {
     members
         .iter()
+        .filter(|m| forge_core::members::holds_members_key(m.role))
         .map(|m| m.identity_id.as_str())
         .collect::<std::collections::BTreeSet<_>>()
         .len()
@@ -240,26 +242,57 @@ fn require_maintainer(kr: &Keyring, repo: &RepoRef, action: &str) -> Result<()> 
     .into())
 }
 
-/// The estimate of a repair from the loaded keyring: a rotation's `members + 1` writes, or one
-/// wrap per member missing one.
-fn repair_estimate(kr: &Keyring) -> (u64, String) {
-    match kr.resolution().repair.as_ref() {
-        Some(p) if p.rotate => rotation_cost(kr, distinct_members(kr.members())),
+/// The estimate of a repair from the loaded keyring: a rotation's `members + 1` writes (and the
+/// bots' post keys), or one wrap per member missing one plus one post key per bot `missing_posts`
+/// counts.
+fn repair_estimate(kr: &Keyring, missing_posts: usize) -> (u64, String) {
+    let (wraps, what) = match kr.resolution().repair.as_ref() {
+        Some(p) if p.rotate => return rotation_cost(kr, distinct_members(kr.members())),
         Some(p) if !p.missing_wraps.is_empty() => (
             WRAP_ESTIMATE_CREDITS * p.missing_wraps.len() as u64,
             crate::fmt::plural(p.missing_wraps.len(), "wrap"),
         ),
-        _ => (0, "nothing".into()),
+        _ => (0, String::new()),
+    };
+    let (posts, post_what) = post_key_estimate(missing_posts);
+    let parts: Vec<String> = [what, post_what]
+        .into_iter()
+        .filter(|w| !w.is_empty())
+        .collect();
+    if parts.is_empty() {
+        return (0, "nothing".into());
     }
+    (wraps + posts, parts.join(" + "))
+}
+
+/// The post keys sent to `bots` bots (one key letter each, §23), and how a prompt says it.
+fn post_key_estimate(bots: usize) -> (u64, String) {
+    if bots == 0 {
+        return (0, String::new());
+    }
+    (
+        forge_core::bot_keys::letter_credits() * bots as u64,
+        format!(
+            "{} for {}",
+            crate::fmt::plural(bots, "post key"),
+            crate::fmt::plural(bots, "bot")
+        ),
+    )
 }
 
 /// The estimate of the reader's next rotation over `members` members: a burn first when an
 /// earlier run left a key for the next epoch (§5.5).
 pub fn rotation_cost(kr: &Keyring, members: usize) -> (u64, String) {
-    if keyring::rotation_may_burn(kr) {
+    let (est, what) = if keyring::rotation_may_burn(kr) {
         burn_estimate(members)
     } else {
         rotation_estimate(members)
+    };
+    // every bot gets the new epoch's post key in the same run (§23)
+    let bots = forge_core::bot_keys::bots_of(kr.members(), &[]).len();
+    match post_key_estimate(bots) {
+        (0, _) => (est, what),
+        (posts, post_what) => (est + posts, format!("{what} + {post_what}")),
     }
 }
 
@@ -289,7 +322,20 @@ async fn repair(ctx: &Ctx, repo: &str) -> Result<()> {
     require_members_key(&s).await?;
     let kr = signer(&s).keyring(&s.repo).await?;
     require_maintainer(&kr, &s.repo, "repair the key")?;
-    let (est, what) = repair_estimate(&kr);
+    // the bots this signer has sent no post key for the current epoch (§23)
+    let bots = forge_core::bot_keys::bots_of(kr.members(), &[]);
+    let missing_posts = match kr.write_epoch_keys() {
+        Some(keys) if !bots.is_empty() => Box::pin(forge_core::bot_keys::missing(
+            &signer(&s),
+            &s.repo,
+            keys,
+            &bots,
+        ))
+        .await?
+        .len(),
+        _ => 0,
+    };
+    let (est, what) = repair_estimate(&kr, missing_posts);
     if est == 0 {
         ctx.emit(json!({ "status": "nothing_to_do" }), || {
             println!("{}: the key needs no repair.", s.repo.display());
@@ -319,6 +365,7 @@ fn emit_repair(ctx: &Ctx, repo: &RepoRef, report: &RepairReport, spent: u64, pri
             "nonMembers": report.non_members,
             "wrapped": report.wrapped,
             "skipped": report.skipped,
+            "postKeys": post_keys_json(&report.post_keys),
             "cost": cost_json(spent, price),
         }),
         || {
@@ -339,6 +386,7 @@ fn emit_repair(ctx: &Ctx, repo: &RepoRef, report: &RepairReport, spent: u64, pri
             for m in &report.skipped {
                 println!("not wrapped to {m}: they have no encryption key yet (`dg auth keys add --encryption`); run repair again once they do");
             }
+            print_post_keys(repo, &report.post_keys);
             println!("  cost: {}", cost_line(spent, price));
         },
     );
@@ -373,7 +421,32 @@ async fn rotate(ctx: &Ctx, repo: &str) -> Result<()> {
 
 /// A rotation as JSON.
 pub fn rotation_json(r: &Rotation) -> Value {
-    json!({ "epoch": r.epoch, "wrapped": r.wrapped, "skipped": r.skipped, "won": r.won, "burned": r.burned })
+    json!({ "epoch": r.epoch, "wrapped": r.wrapped, "skipped": r.skipped, "won": r.won, "burned": r.burned, "postKeys": post_keys_json(&r.post_keys) })
+}
+
+/// The bots' post keys a key change sent (§23), as JSON.
+pub fn post_keys_json(p: &forge_core::bot_keys::Issued) -> Value {
+    json!({ "epoch": p.epoch, "sent": p.sent, "skipped": p.skipped, "failed": p.failed })
+}
+
+/// The lines the bots' post keys a key change sent print (nothing with no bots).
+pub fn print_post_keys(repo: &RepoRef, p: &forge_core::bot_keys::Issued) {
+    for b in &p.sent {
+        println!("  sent {b} its key for members-only posts");
+    }
+    if let Some(why) = &p.failed {
+        println!(
+            "  sending the bots their keys stopped ({why}); `dg repo keys repair {}` finishes it",
+            repo.display()
+        );
+        return;
+    }
+    for b in &p.skipped {
+        println!(
+            "  not sent to {b}: it has no encryption key yet; `dg repo keys repair {}` sends it once it adds one",
+            repo.display()
+        );
+    }
 }
 
 /// The lines a rotation prints.
@@ -397,6 +470,7 @@ pub fn print_rotation(repo: &RepoRef, r: &Rotation) {
                 repo.display()
             );
         }
+        print_post_keys(repo, &r.post_keys);
     } else {
         println!(
             "{}: another maintainer rotated to epoch {} first; theirs stands and yours is superseded (nothing to do)",
@@ -515,6 +589,7 @@ async fn enable(ctx: &Ctx, repo: &str) -> Result<()> {
             "repo": s.repo.display(),
             "wrapped": done.wrapped,
             "skipped": done.skipped,
+            "postKeys": post_keys_json(&done.post_keys),
             "cost": cost_json(spent, price),
         }),
         || {
@@ -529,6 +604,7 @@ async fn enable(ctx: &Ctx, repo: &str) -> Result<()> {
                     s.repo.display()
                 );
             }
+            print_post_keys(&s.repo, &done.post_keys);
             println!("  cost: {}", cost_line(spent, price));
         },
     );

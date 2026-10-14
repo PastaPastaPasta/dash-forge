@@ -35,14 +35,16 @@ import { blindBook } from './members-blinds'
  * Why a document is hidden. `membersOnly`: a members-only document of a public repo this reader
  * holds no key for; `letter`: a specific-people document (`enc` v0x04) that does not name this
  * reader (or that this tab can't open until it unlocks); `unknownVersion`: encrypted in a format a later version of
- * Forge writes (`enc` v0x05 on), never opened here.
+ * Forge writes (`enc` v0x06 on), never opened here; `notABot`: a bot's post (`enc` v0x05) whose author is
+ * no bot of this repo now (removed, or made a human), which a reader holding the key sees apart from
+ * the members-only ones.
  */
-export type HiddenReason = 'notEncrypted' | 'wrongKey' | 'late' | 'lateEdit' | 'membersOnly' | 'letter' | 'unknownVersion'
+export type HiddenReason = 'notEncrypted' | 'wrongKey' | 'late' | 'lateEdit' | 'membersOnly' | 'letter' | 'unknownVersion' | 'notABot'
 
 /** Hidden documents, by reason. */
 export type HiddenCounts = Readonly<Record<HiddenReason, number>>
 
-const NO_HIDDEN: HiddenCounts = { notEncrypted: 0, wrongKey: 0, late: 0, lateEdit: 0, membersOnly: 0, letter: 0, unknownVersion: 0 }
+const NO_HIDDEN: HiddenCounts = { notEncrypted: 0, wrongKey: 0, late: 0, lateEdit: 0, membersOnly: 0, letter: 0, unknownVersion: 0, notABot: 0 }
 
 /** The sentence each reason is shown with. */
 export const HIDDEN_REASON_TEXT: Readonly<Record<HiddenReason, string>> = {
@@ -53,6 +55,7 @@ export const HIDDEN_REASON_TEXT: Readonly<Record<HiddenReason, string>> = {
   membersOnly: 'members-only',
   letter: 'for specific people',
   unknownVersion: 'written by a newer version of Forge',
+  notABot: "posted as a bot by someone who isn't a bot here now",
 }
 
 export function totalHidden(h: HiddenCounts): number {
@@ -65,9 +68,9 @@ export function totalHidden(h: HiddenCounts): number {
  * members access says which); `notReadable`, it holds keys of this repo but not one this document
  * opens with (written after their removal, or late); `notForThisRepo`, it fails this repo's key
  * checks (forged, relabelled or moved: the commitment or the tag); `letter`, it is for specific
- * people.
+ * people; `notABot`, it holds the key but the document is a bot's post by someone who is no bot here now.
  */
-export type Unopened = 'noKey' | 'notReadable' | 'notForThisRepo' | 'letter'
+export type Unopened = 'noKey' | 'notReadable' | 'notForThisRepo' | 'letter' | 'notABot'
 
 /**
  * A sealed document of a public repo this reader cannot open, as DESIGN D14 shows it: who wrote
@@ -570,6 +573,9 @@ export function privateGate(repo: RepoRef, ctx: OpenContext): ContentGate {
           return unopened(type, doc, 'letter', 'letter')
         case 'unknownVersion':
           return { ok: false, reason: 'unknownVersion' }
+        case 'notABot':
+          // a bot's post whose author is no bot here now, to a reader holding the key
+          return { ok: false, reason: 'notABot' }
         default:
           return { ok: false, reason: 'wrongKey' }
       }
@@ -581,8 +587,9 @@ export function privateGate(repo: RepoRef, ctx: OpenContext): ContentGate {
  * The bucket of an unreadable members-only document (forge-core `keyring::hidden_bucket`, as the
  * lane reads v0x03): a failed tag or a commitment that does not match is a document made for
  * another key (forged, relabelled or moved), "not encrypted for this repo", never an earlier use
- * of the epoch; a letter is for specific people; the late rule has its own; anything else is
- * "wrong or missing key". (A private repo's v0x01 reads keep their own mapping, {@link privateGate}.)
+ * of the epoch; a letter is for specific people; the late rule has its own; a bot's post whose
+ * author holds no Bot row now (a removed bot) has its own, which only a reader with the key reaches
+ * (one without gets `noKey` first, members-only); anything else is "wrong or missing key". (A private repo's v0x01 reads keep their own mapping, {@link privateGate}.)
  */
 export function hiddenReasonOf(reason: UnreadableReason): HiddenReason {
   switch (reason) {
@@ -597,6 +604,8 @@ export function hiddenReasonOf(reason: UnreadableReason): HiddenReason {
       return 'letter'
     case 'unknownVersion':
       return 'unknownVersion'
+    case 'notABot':
+      return 'notABot'
     default:
       return 'wrongKey'
   }
@@ -645,6 +654,7 @@ export function laneGate(repo: RepoRef, ctx: OpenContext, options: LaneOptions =
       let why: Unopened = 'notReadable'
       if (reason === 'notEncrypted') why = 'notForThisRepo'
       else if (reason === 'unknownVersion') why = 'noKey'
+      else if (reason === 'notABot') why = 'notABot'
       return unopened(type, doc, why, reason)
     },
   }
