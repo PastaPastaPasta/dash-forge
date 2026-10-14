@@ -623,14 +623,14 @@ This is not [E808](#e808), which is the refusal to delete a branch other pull re
 
 ## E812
 
-**Can't make everything public.** *Reserved: this version doesn't report it yet. It arrives with making a whole repository public.* Making a repository public with everything in it would publish something that isn't safe to publish yet. The message names it. Today the only case is an environment with values saved in the old format: anyone who joined later could read those values, and they would become public.
+**Can't make everything public.** Making a repository public with everything in it would publish something that isn't safe to publish yet. The message names it. Today the only case is an environment with values saved in the old format: anyone who joined later could read those values, and they would become public.
 
 ```
 error: E812 can't make everything public: environment production has values saved in the old format, which would become public
   fix: dg env resave --env production, change every listed value where it's used, then dg env mark-changed --env production
 ```
 
-**What to do:** do what the fix line says for each item listed, then run the command again. Or choose **Code only**, which publishes the code and leaves everything else members-only.
+**What to do:** do what the fix line says for each item listed, then run the command again. Or choose **Code only** (`dg repo make-public <owner>/<repo> --code-only`), which publishes the code and leaves everything else members-only. Nothing was written.
 
 ## E813
 

@@ -149,6 +149,7 @@ The exit code says which schema applies: 0, the command's own; anything else, th
 | `dg repo keys rotate` | [`repo-keys-rotate.schema.json`](dg/repo-keys-rotate.schema.json) |
 | `dg repo keys status` | [`repo-keys-status.schema.json`](dg/repo-keys-status.schema.json) |
 | `dg repo list` | [`repo-list.schema.json`](dg/repo-list.schema.json) |
+| `dg repo make-public` | [`repo-make-public.schema.json`](dg/repo-make-public.schema.json) |
 | `dg repo members enable` | [`repo-members-enable.schema.json`](dg/repo-members-enable.schema.json) |
 | `dg repo members status` | [`repo-members-status.schema.json`](dg/repo-members-status.schema.json) |
 | `dg repo policy set` | [`repo-policy-set.schema.json`](dg/repo-policy-set.schema.json) |

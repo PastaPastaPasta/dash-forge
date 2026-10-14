@@ -196,7 +196,9 @@ fn objects_missing(oids: &[String], repo: Option<&Path>, partial: bool) -> bool 
             .env_remove("GIT_DIR")
             .env_remove("GIT_WORK_TREE");
     }
-    cmd.args(["rev-list", "--objects", "--quiet"]);
+    // the error text is read below: git's own words, not a translation
+    cmd.env("LC_ALL", "C")
+        .args(["rev-list", "--objects", "--quiet"]);
     if partial {
         cmd.arg("--missing=allow-promisor");
     }
@@ -223,10 +225,13 @@ fn objects_missing(oids: &[String], repo: Option<&Path>, partial: bool) -> bool 
 
 /// Whether git's error text says an object is absent from the store:
 /// `fatal: missing blob object …`, `fatal: bad tree object …`, `fatal: bad object …`
-/// (rev-list and pack-objects word it the same way).
+/// (rev-list and pack-objects word it the same way), and for a missing parent commit
+/// `error: Could not read <oid>` / `fatal: Failed to traverse parents of commit <oid>`.
 pub fn names_missing_object(git_error: &str) -> bool {
     git_error.contains("missing ") && git_error.contains("object")
         || git_error.contains("bad ") && git_error.contains("object")
+        || git_error.contains("Could not read ")
+        || git_error.contains("Failed to traverse parents")
 }
 
 /// Run a git command whose exit *status* is the answer (0 → true, non-zero → false),
@@ -773,6 +778,21 @@ mod tests {
         let scratch = ScratchRepo::init().unwrap();
         scratch.index_pack(&second).unwrap();
         scratch.index_pack(&first).unwrap();
+    }
+
+    #[test]
+    fn a_missing_parent_commit_is_a_gap() {
+        // A members-only branch's pack holds its own commits only (D22): fetched alone, the
+        // public parent under it is missing, and the gap check must say so.
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        run_git(&["init", "-q", "--bare"], Some(d), true, None).unwrap();
+        let t1 = put(d, "tree", &entry("100644", "a", &put(d, "blob", b"1\n")));
+        let c1 = put(d, "commit", commit_text(&t1, None, 1).as_bytes());
+        let c2 = put(d, "commit", commit_text(&t1, Some(&c1), 2).as_bytes());
+        assert!(!objects_missing(std::slice::from_ref(&c2), Some(d), false));
+        std::fs::remove_file(d.join("objects").join(&c1[..2]).join(&c1[2..])).unwrap();
+        assert!(objects_missing(std::slice::from_ref(&c2), Some(d), false));
     }
 
     #[test]

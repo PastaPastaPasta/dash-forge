@@ -1,7 +1,8 @@
 /**
  * A members reader's blinds (`docs/security/private-repos.md` §19.1, §19.4; mixed-visibility DESIGN
- * §4.4): every verified pair of a blind and the real commit it hides, learned from the members-only
- * documents this reader opened (ref updates, pull requests, head updates), per members-key session.
+ * §4.4): every verified pair of a blind and the real commit it hides, with the salt it was made
+ * under, learned from the members-only documents this reader opened (ref updates, pull requests,
+ * head updates), per members-key session. The salt keys the check runs on that blind (§19.9).
  *
  * Folds keep comparing blinds as written (a PR's head, reviews and check runs); the real commit is
  * for git only: the diff, the browse plane, a merge. A blind whose check failed is never learned,
@@ -19,13 +20,14 @@ export interface Introduced {
 
 /** One session's blinds. */
 export class BlindBook {
-  private readonly real = new Map<string, string>()
+  /** Blind (hex) -> the real commit (hex) and the salt (TLV 27) of the document that verified it. */
+  private readonly real = new Map<string, { readonly real: string; readonly salt: Uint8Array }>()
   private readonly intro = new Map<string, Introduced>()
 
   /** Learn (`plain`, `real`) when `plain` checks as the blind of `real` under `salt`. Returns whether it checked. */
   async learn(plain: Uint8Array, real: Uint8Array | undefined, salt: Uint8Array | undefined): Promise<boolean> {
     if (real === undefined || salt === undefined || (await checkBlind(plain, real, salt)) !== 'ok') return false
-    this.real.set(bytesToHex(plain), bytesToHex(real))
+    this.real.set(bytesToHex(plain), { real: bytesToHex(real), salt: new Uint8Array(salt) })
     return true
   }
 
@@ -39,7 +41,19 @@ export class BlindBook {
 
   /** The real commit behind the blind `hex`, if a verified document named it. */
   realOf(hex: string): string | undefined {
-    return this.real.get(hex.toLowerCase())
+    return this.real.get(hex.toLowerCase())?.real
+  }
+
+  /** The salt the blind `hex` was made under, if a verified document named it: what keys its check runs. */
+  saltOf(hex: string): Uint8Array | undefined {
+    const salt = this.real.get(hex.toLowerCase())?.salt
+    return salt === undefined ? undefined : new Uint8Array(salt)
+  }
+
+  /** Every verified blind (hex) of the real commit `realHex`: where a members-only branch's runs on it are reported. */
+  blindsOf(realHex: string): string[] {
+    const want = realHex.toLowerCase()
+    return [...this.real].filter(([, v]) => v.real === want).map(([blind]) => blind)
   }
 
   /** The blind and salt of the members-only ref update that pushed branch `name`'s tip, the real commit `hex`. */

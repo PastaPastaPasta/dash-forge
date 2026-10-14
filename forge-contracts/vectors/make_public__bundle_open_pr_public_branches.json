@@ -1,0 +1,31 @@
+{
+  "name": "bundle_open_pr_public_branches",
+  "description": "A members-only PR between public branches: both names shown.",
+  "case": "make_public",
+  "rules": "v2",
+  "input": {
+    "op": "bundleOpen",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "doc": {
+      "type": "patch",
+      "vis": "public",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "number": 12,
+      "baseRefNameHash": "f921bd05e68b03740c450e565e0e6173e546193170b2dd404ddb6f153e9b5bf3",
+      "sourceRefNameHash": "116379e6eb5c24f696981e8ab284fe1a781d8cd4992e3d920c975d94717f59d7",
+      "id": "fb9af4156bb8db9891f3958bcb53c68f399d2df46c19c96f2bbf49b72768b658"
+    },
+    "enc": "03000102030405060708090a0ba356be5eeb40790d82c00c39a168e2608321a201ac1203d81291d9c0b27fb45d5663a837d93aab3bbcd7783a720d1de9cd51c189cf9af44e75e5f9074e7e502f7677766993b6e8cfde28f6df74451161a58000f5c4de0a9f51581a6cadef387b57e4a78e3f3a47d85607bf0dc842fb177d0b9142712721d62408f38a66a556604364a8307f9118f44ec199a5def716e773f36b4c7b207a69a3da6a96db13a91b1311f49607a8492e1421ac40a3e6e488",
+    "key": "108a1119696198045797b92d7d8beceaa899f38c418e3c00023ac7d710b3354d"
+  },
+  "expected": {
+    "status": "readable",
+    "fields": {
+      "title": "Fix the bounds check",
+      "body": "The upper bound was off by one.",
+      "baseRefName": "refs/heads/main",
+      "sourceRefName": "refs/heads/sec/fix"
+    }
+  }
+}

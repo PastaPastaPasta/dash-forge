@@ -12,7 +12,10 @@
  *   dropped after this tab writes one or changes the repo's members), and only when a page meets
  *   a sealed post in a public repo: a repo without members-only content never reads them.
  * - {@link withBundles} puts them in front of any content gate: a bundled post comes back as
- *   public with {@link MADE_PUBLIC_BY}; a post its author sealed again afterwards carries
+ *   public with {@link MADE_PUBLIC_BY}. A bundled pull request shows what a published key shows
+ *   of it (its title, body and public branch names; `bundledPatch`), except to a member who opens
+ *   it with their own keys: they read it so (its members-only branch names and real head too, for
+ *   git), still marked made public. A post its author sealed again afterwards carries
  *   {@link EDITED_AFTER_PUBLIC} (an issue is shown as the version made public, read from
  *   Platform's history of it; comments and reviews keep none). A thread page also lists an issue's
  *   earlier versions made public ({@link PUBLISHED_EARLIER}).
@@ -28,10 +31,12 @@ import { readMakePublicBundles } from './converted'
 import { readMaintainers } from './members'
 import { onMembersInvalidated } from './members-events'
 import { noteMembersKey } from './members-key-cache'
+import { forgetMembersTexts } from './members-texts'
 import {
   EDITED_AFTER_PUBLIC,
   MADE_PUBLIC_BY,
   PUBLISHED_EARLIER,
+  admittedAudience,
   asPlaintext,
   gateFor,
   isSealedDoc,
@@ -166,8 +171,9 @@ export interface BundleGateOptions {
 
 /**
  * `inner` (any content gate of public `repo`) with the maintainers' bundles in front of it, read
- * through `sdk` (module docs): a sealed issue, comment or review whose current revision an
- * honoured entry opens is admitted as public with {@link MADE_PUBLIC_BY}; one its author sealed
+ * through `sdk` (module docs): a sealed issue, comment, review or PR whose current revision an
+ * honoured entry opens is admitted as public with {@link MADE_PUBLIC_BY} (a PR `inner` opens with
+ * the reader's own keys is admitted as `inner` opened it, with the same mark); one its author sealed
  * again afterwards carries {@link EDITED_AFTER_PUBLIC} (an issue is admitted as the version made
  * public; a comment or review is `inner`'s admission); anything else is `inner`'s. Lying entries
  * ride on the admission ({@link Admission.alerts}). A private repo's gate is `inner` itself.
@@ -191,6 +197,15 @@ export function withBundles(sdk: EvoSDK, repo: RepoRef, inner: ContentGate, opti
       const history = earlierNamed && (outcome.state === 'editedAfter' || options.history === true) ? await publishedHistory(sdk, repo, doc, mine, alerts) : null
       const withAlerts = (a: Admission): Admission => (alerts.length === 0 ? a : { ...a, alerts })
       if (outcome.state === 'public') {
+        // A member's own open of a bundled PR (forge-core `open_read`): the same title and body,
+        // plus what their git needs; its text is public now, so it is no members-only text to quote.
+        if (type === 'patch') {
+          const own = await inner.admit(type, doc)
+          if (own.ok && admittedAudience(own.doc) !== 'public') {
+            forgetMembersTexts(repo.repoId, [asIdentifierString(doc['$id'])])
+            return withAlerts({ ok: true, doc: { ...own.doc, [MADE_PUBLIC_BY]: outcome.by } })
+          }
+        }
         const earlier = history ?? []
         return withAlerts({ ok: true, doc: earlier.length === 0 ? outcome.doc : { ...outcome.doc, [PUBLISHED_EARLIER]: earlier } })
       }

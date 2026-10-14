@@ -1239,6 +1239,19 @@ impl Keyring {
         self.resolution.keys.get(&epoch)
     }
 
+    /// The raw keys of the epochs below `seal_off` that this reader holds: what the owner of a
+    /// repository made public publishes with "Everything" (mixed-visibility DESIGN §4.10 step 7,
+    /// `private-repos.md` §18.3). Never an epoch at or above `seal_off`, the seal-off rotation's,
+    /// under which everything written from the conversion on stays members-only.
+    #[must_use]
+    pub fn epoch_keys_below(&self, seal_off: u32) -> BTreeMap<u32, EpochKey> {
+        self.resolution
+            .keys
+            .range(..seal_off)
+            .map(|(&e, k)| (e, k.clone()))
+            .collect()
+    }
+
     /// The chain link of `epoch`'s anchor (`prevEpoch`, `prevEpochKey`, `skipEpochKey`, burned),
     /// which every later config of the epoch repeats (§4.3). `None` for epoch 0; an error when
     /// the anchor does not open.

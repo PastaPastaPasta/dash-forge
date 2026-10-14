@@ -33,6 +33,7 @@ import {
   MAX_LETTER_RECIPIENTS,
   TooLargeError,
   V4,
+  bundledPatch,
   bundlesKind,
   docAdWithoutKeys,
   letterFramed,
@@ -464,7 +465,9 @@ export async function openLetterWithKey(repoId: Uint8Array, doc: PrivateDoc, enc
   const [first] = parsed.recipients
   if (parsed.recipients.length !== n || first === undefined || !bytesEqual(first, doc.ownerId) || hasDuplicate(parsed.recipients)) return { status: 'malformed' }
   if (!(await publicRefNamesMatch(doc, parsed.fields))) return { status: 'malformed' }
-  return { status: 'readable', fields: parsed.fields }
+  // a letter's branch names are public hashes, checked above; a PR shows what a bundle shows
+  const shown = await bundledPatch(doc, parsed.fields)
+  return shown === null ? { status: 'malformed' } : { status: 'readable', fields: shown }
 }
 
 // --- sealed artifacts under a specific-people header (DFPK version 0x02) ---------------------

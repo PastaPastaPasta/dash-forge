@@ -9,10 +9,11 @@
  * ```
  *
  * Integers are big-endian. Entry types: **0x01 comment, 0x02 issue, 0x03 review** (a document
- * revision's per-object key `K_obj` at `revision`: a maintainer's bundle, DESIGN §4.6), 0x04 patch
- * (reserved for members-only PRs, phase 3), **0x06 an epoch key** (`target` = the repository id,
- * `revision` = the epoch, `key` = `K_e`, written by the owner of a repository made public), and
- * 0x40 a sealed artifact (`target` = its `packHash`, `revision` 0). Readers skip entry types they
+ * revision's per-object key `K_obj` at `revision`: a maintainer's bundle, DESIGN §4.6), **0x04 a
+ * pull request** (its `K_obj`, shown as `bundledPatch` says: title, body and public branch names,
+ * never a members-only branch's name or the real head), **0x06 an epoch key** (`target` = the
+ * repository id, `revision` = the epoch, `key` = `K_e`, written by the owner of a repository made
+ * public), and 0x40 a sealed artifact (`target` = its `packHash`, `revision` 0). Readers skip entry types they
  * do not know.
  *
  * **Maintainer bundles** ({@link docEntries}, {@link readRevision}): readers honour a document
@@ -48,6 +49,8 @@ export const ENTRY_COMMENT = 0x01
 export const ENTRY_ISSUE = 0x02
 /** Entry type: a review's `K_obj`. */
 export const ENTRY_REVIEW = 0x03
+/** Entry type: a pull request revision's `K_obj`. */
+export const ENTRY_PATCH = 0x04
 /**
  * The most document entries one maintainer's bundle carries (a whole thread with its edit
  * history; about 200 fit one Platform chunk).
@@ -63,6 +66,8 @@ export function entryKind(type: PrivateDocType): number | null {
       return ENTRY_ISSUE
     case 'review':
       return ENTRY_REVIEW
+    case 'patch':
+      return ENTRY_PATCH
     default:
       return null
   }
@@ -154,8 +159,9 @@ export interface DocEntries {
 
 /**
  * The honoured document entries of `bundles` (forge-core `DocEntries::of`): none in a private
- * repository (`isPublic` false); else every entry of a comment, issue or review in a bundle that
- * parses, written by one of `maintainers` (the repository's owner and its current maintainers).
+ * repository (`isPublic` false); else every entry of a comment, issue, review or pull request in a
+ * bundle that parses, written by one of `maintainers` (the repository's owner and its current
+ * maintainers).
  */
 export function docEntries(isPublic: boolean, maintainers: Iterable<PrivateId>, bundles: readonly PublishedBundle[]): DocEntries {
   const byTarget = new Map<string, DocEntry[]>()
@@ -170,7 +176,7 @@ export function docEntries(isPublic: boolean, maintainers: Iterable<PrivateId>, 
         continue
       }
       for (const e of parsed.entries) {
-        if (e.kind !== ENTRY_COMMENT && e.kind !== ENTRY_ISSUE && e.kind !== ENTRY_REVIEW) continue
+        if (e.kind !== ENTRY_COMMENT && e.kind !== ENTRY_ISSUE && e.kind !== ENTRY_REVIEW && e.kind !== ENTRY_PATCH) continue
         const k = `${e.kind}:${bytesToHex(e.target)}`
         const list = byTarget.get(k)
         const entry: DocEntry = { by: b.owner, revision: e.revision, key: e.key }

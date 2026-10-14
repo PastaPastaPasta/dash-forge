@@ -22,6 +22,7 @@
 //! - [`historyindex`] — the history index (kind 3): each path's last first-parent change
 //!   and the exact commit count of a tip, computed at push time.
 //! - [`manifest`] — `packManifest` (kind 0/1/2/3) types + the repack supersedes planner.
+//! - [`members_index`] — the members-only object locator (kind 65) of one members-only pack.
 //!
 //! The chunker is pure, so it is fully implemented here and covered by round-trip and
 //! bounds unit tests.
@@ -32,6 +33,7 @@ pub mod fsck;
 pub mod historyindex;
 pub mod locator;
 pub mod manifest;
+pub mod members_index;
 pub mod parse;
 
 #[cfg(test)]
@@ -52,8 +54,8 @@ pub use locator::{
 pub use manifest::{
     plan_supersedes, PackManifest, KIND_ENV_SNAPSHOT, KIND_FLAT_INDEX, KIND_GIT_PACK,
     KIND_HISTORY_INDEX, KIND_HISTORY_VERSIONS, KIND_KEY_LETTER, KIND_LONG_BODY, KIND_MAKE_PUBLIC,
-    KIND_MEMBERS_GIT_PACK, KIND_MEMBERS_LONG_BODY, KIND_OBJECT_LOCATOR, KIND_RELEASE_ASSETS,
-    KIND_SEALED_BASE,
+    KIND_MEMBERS_GIT_PACK, KIND_MEMBERS_LONG_BODY, KIND_MEMBERS_OBJECT_LOCATOR,
+    KIND_OBJECT_LOCATOR, KIND_RELEASE_ASSETS, KIND_SEALED_BASE,
 };
 pub use parse::{git_oid, GitObjType, PackObject, ParsedPack, OID_LEN};
 

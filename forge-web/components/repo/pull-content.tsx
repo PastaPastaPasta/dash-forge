@@ -60,7 +60,8 @@ import {
 import { STATE_FILL, STATE_TEXT } from '@/lib/design/state'
 
 import type { PullThread, RepoHome, TimelineItem } from '@/lib/view'
-import { ACL_NAME, ARCHIVED_REASON, forkSourcePrefix, isLive, isMembersOnlyTarget, isPublicRef, loadPullOrMembersOnly, loadPullThread, plural, policyOf, pullActions, type CommentView, type MembersOnlyTarget } from '@/lib/view'
+import type { HomeReloadOptions } from '@/hooks/use-repo'
+import { ACL_NAME, ARCHIVED_REASON, forkSourcePrefix, invalidateBrowseContext, isLive, isMembersOnlyTarget, isPublicRef, loadPullOrMembersOnly, loadPullThread, plural, policyOf, pullActions, type CommentView, type MembersOnlyTarget } from '@/lib/view'
 import { NO_LETTER_ASK, QUOTE_CONFIRM, forwardText, notPublic, publicLineQuestion, publicTextOf, quotesMembersText, type ComposerAudience, type LetterAsk } from '@/lib/view/audience'
 import { AudienceChip, AudienceMark, AudienceWarnings, MEMBERS_CARD, MEMBERS_CARD_HEADER, MembersOnlyTargetPage, closeWithComment, letterThreadOf, useAudienceWarnings, useComposerAudience, useMembersTexts, useQuoteGate, warningName } from '@/components/repo/audience'
 import { commentDraftKey, commentEditDraftKey, discardedEdits, editDraftKey, useDraftText, useEditDraft } from '@/lib/view/draft-text'
@@ -152,8 +153,8 @@ import { useWriteGuard } from '@/hooks/use-write-guard'
 import { EmbargoPanel } from '@/components/repo/embargo-panel'
 import { TargetNotFound } from '@/components/repo/number-content'
 import { CommentOwnActions, Timeline, type CommentSlots } from '@/components/repo/timeline'
-import { MakeOthersPublicButton, MakePublicBundleDialog, MakePublicButton, bundleable, makePublicWords, useQuotedMembersPost } from '@/components/repo/make-public'
-import { BundleAlertsNote, PublicEditHint, editIsPublic } from '@/components/repo/made-public'
+import { MakeOthersPublicButton, MakePublicBundleDialog, MakePublicButton, bundleable, makePublicWords, ofMembersOnlyBranch, useQuotedMembersPost } from '@/components/repo/make-public'
+import { BundleAlertsNote, EditedAfterPublicNote, MadePublicBy, MembersEditHint, PublicEditHint, editIsPublic } from '@/components/repo/made-public'
 import type { BundleRequest } from '@/lib/repo/make-public-bundle'
 import { makePostPublic, makePublicKeepsFields, makeReviewTextPublic, provenanceOf } from '@/lib/repo/make-public-writes'
 import { ComparisonView, pullBase, pullSpec, usePullComparison } from '@/components/repo/pull-diff'
@@ -280,7 +281,7 @@ export function PullContent({
   addr: RepoAddress
   number: number
   /** Re-read the repo home (its refs) and drop its browse context: a browser merge moved a branch. */
-  reloadHome?: () => void
+  reloadHome?: (options?: HomeReloadOptions) => void
 }): JSX.Element {
   const { sdk, ready, network } = useSdk(repoContractIds(home.repo))
   // Just opened here: a node one block behind answers "not found"; keep asking briefly.
@@ -352,7 +353,7 @@ function PullPage({
   thread: PullThread
   refresh: (want?: (t: PullThread) => boolean, wait?: { attempts: number; delayMs: number; backoff: number; maxDelayMs: number }) => void
   refreshing: boolean
-  reloadHome?: () => void
+  reloadHome?: (options?: HomeReloadOptions) => void
 }): JSX.Element {
   const { sdk, ready, network } = useSdk(repoContractIds(home.repo))
   const { identity, signer, locked, lockedIdentity } = useAuth()
@@ -719,18 +720,22 @@ function PullPage({
   // RC2 MOD: maintainers hide; readers see collapsed rows, and a hidden PR opens behind a banner.
   const canModerate = canMember && holdings.data?.maintain === true
   // Making other people's members-only posts public (DESIGN §4.6): a maintainer's bundle. The PR's
-  // own text is never in one before phase 3; its members-only comments and reviews this reader
-  // opened are (the maintainer's own go in the same write), offered when one is someone else's.
+  // own text (left out, with the reason, when it is from or into a members-only branch), its
+  // comments and reviews this reader opened (the maintainer's own go in the same write), offered
+  // when one is someone else's.
   const isMaintainer = holdings.data?.maintain === true
   const canBundle = identity !== null && !archived && guard.disabledReason === null && repo.visibility === 'public'
   const threadPosts: BundleRequest[] = canBundle
     ? [
+        ...(bundleable(pull.audience) ? [{ type: 'patch' as const, id: pull.id }] : []),
         ...thread.comments.filter((c) => bundleable(c.audience)).map((c) => ({ type: 'comment' as const, id: c.id, author: c.author })),
         ...thread.reviews.filter((r) => bundleable(r.audience)).map((r) => ({ type: 'review' as const, id: r.id, author: r.reviewer })),
       ].map(({ type, id }) => ({ type, id }))
     : []
   const othersInThread =
-    thread.comments.some((c) => c.audience === 'members' && c.author !== identity) || thread.reviews.some((r) => r.audience === 'members' && r.reviewer !== identity)
+    (pull.audience === 'members' && pull.author !== identity) ||
+    thread.comments.some((c) => c.audience === 'members' && c.author !== identity) ||
+    thread.reviews.some((r) => r.audience === 'members' && r.reviewer !== identity)
   const moderation = useThreadModeration(sdk, ready, repo, thread.moderationInput, thread.moderation)
   const threadHidden = moderation?.thread ?? null
   const threadCollapsed = threadHidden !== null && !threadRevealed
@@ -1364,7 +1369,7 @@ function PullPage({
         return eventCost
     }
   })()
-  const confirm = confirmText(pending, pull.number, caps.canLabel, pull.headOid, base)
+  const confirm = confirmText(pending, pull.number, caps.canLabel, pull.headOid, base, pull.madePublicBy !== undefined)
 
   // ---- conversation ------------------------------------------------------------------------------
   // Replies to an inline thread show under its root, not on their own.
@@ -1528,6 +1533,7 @@ function PullPage({
             <Field label="Title" htmlFor="edit-pr-title">
               <Input id="edit-pr-title" value={editing.title} onChange={(e) => setEditing({ ...editing, title: e.target.value })} maxLength={256} />
             </Field>
+            <MembersEditHint marks={pull} />
             <div className="flex gap-2">
               <Button
                 variant="primary"
@@ -1563,7 +1569,10 @@ function PullPage({
                 title={longEditBlock(pull.long) ?? undefined}
               />
             ) : null}
-            {canBundle && isMaintainer && othersInThread ? <MakeOthersPublicButton thread onClick={() => setBundleAsk(threadPosts)} /> : null}
+            {canBundle && !isAuthor && bundleable(pull.audience) && !ofMembersOnlyBranch(pull) ? <MakeOthersPublicButton onClick={() => setBundleAsk([{ type: 'patch', id: pull.id }])} /> : null}
+            {canBundle && isMaintainer && othersInThread && (threadPosts.length > 1 || pull.audience !== 'members') ? (
+              <MakeOthersPublicButton thread onClick={() => setBundleAsk(threadPosts)} />
+            ) : null}
           </div>
         )}
         <div className="mt-2 flex flex-wrap items-center gap-2 text-dense">
@@ -1763,7 +1772,9 @@ function PullPage({
                   <Byline author={pull.author} createdAt={pull.createdAt} origin={origin} verb="opened this" />
                   <AudienceMark audience={pull.audience} letter={pull.letter} />
                   <EditedMarker createdAt={pull.createdAt} updatedAt={pull.updatedAt} />
+                  <MadePublicBy marks={pull} />
                 </div>
+                <EditedAfterPublicNote marks={pull} kind="pull request" />
                 <div className="px-4 py-3">
                   {discarded.boxNote !== null && editing === null && editingComment === null ? (
                     <p role="status" className="mb-2 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="edit-draft-dropped">
@@ -2031,8 +2042,12 @@ function PullPage({
                 onMerged={() => {
                   refresh((t) => t.pull.state.merged)
                   // The base branch moved and a pack was stored: the repo's refs and its
-                  // browse context are out of date too (L-09).
-                  reloadHome?.()
+                  // browse context are out of date too (L-09). A merge changes no members or
+                  // keys, so the session stays: a new one would re-key this page's reads and
+                  // remount it, taking the merge box's steps and result line with it. The
+                  // browse context read through the session is dropped here.
+                  invalidateBrowseContext(repoKey(repo))
+                  reloadHome?.({ keepSession: true })
                 }}
                 extras={{
                   onRunning: setMergeRunning,
@@ -2252,6 +2267,7 @@ function PullPage({
                 canRequest: identity !== null && open && caps.canRerunChecks && !writeBlocked,
                 onRerun: (check) => confirmEvent({ kind: 'rerun', check }, rerunCost(check)),
               }}
+              members={lane}
             />
           ) : (
             <BranchRunContext.Provider value={branchRun}>
@@ -2611,7 +2627,7 @@ function ChecksRow({ summary, headOid, onOpen }: { summary: ChecksSummary | null
 }
 
 /** The confirm dialog's words for each pending write. */
-function confirmText(pending: Pending | null, number: number, isMember: boolean, head: string, base: string): { title: string; description: string; label: string } {
+function confirmText(pending: Pending | null, number: number, isMember: boolean, head: string, base: string, madePublic: boolean): { title: string; description: string; label: string } {
   const via = isMember ? 'a member event' : 'an author event (you opened this PR)'
   const move = isMember ? 'a state change as a member' : 'a state change as the PR author'
   switch (pending?.kind) {
@@ -2702,7 +2718,13 @@ function confirmText(pending: Pending | null, number: number, isMember: boolean,
         label: 'Sign & change base',
       }
     case 'edit-pull':
-      return { title: `Edit PR #${number}`, description: 'You pay only for what changed. Earlier versions stay in its history.', label: 'Sign & save' }
+      return {
+        title: `Edit PR #${number}`,
+        description: madePublic
+          ? 'Your edit will be members-only; everyone else will see that it was edited after it was made public. You pay only for what changed.'
+          : 'You pay only for what changed. Earlier versions stay in its history.',
+        label: 'Sign & save',
+      }
     case 'edit-comment':
       return { title: 'Edit comment', description: 'You pay only for what changed. Earlier versions stay in its history.', label: 'Sign & save' }
     case 'delete-comment':

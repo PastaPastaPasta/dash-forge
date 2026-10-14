@@ -277,6 +277,24 @@ cmd('repo members enable', 'Members-only content turned on. When it is on alread
     ({'status': E('enabled', 'finished', 'already_on')}, ['repo']),
     ({'status': E('repaired', 'nothing_to_do'), 'rotated': nl(R('rotation')), 'nonMembers': ANY}, []),
 ])
+cmd('repo make-public', 'A private repository made public, or (with --check) what would become public. A run that '
+    'stopped part-way (another step is the owner\'s) is `in_progress`; run it again with --resume.', {
+    'status': E('check', 'public', 'in_progress'), 'repo': S, 'owner': S,
+    'mode': D('`codeOnly` or `everything`; null in a check that shows both.', nl(E('codeOnly', 'everything'))),
+    'made': D('The repository was made public already (a check after the flip).', B),
+    'blockers': SA, 'notes': SA,
+    'codeOnly': D('What Code only publishes: the refs and their tips, and the possible secrets in them.', OBJ),
+    'everything': D('What Everything publishes: every live ref, the counts of what becomes readable, the former members '
+                    'whose words become public, environments still holding old-format values (E812) and the possible secrets.', OBJ),
+    'staysPrivate': O({'letters': I, 'environments': I}, ['letters', 'environments']),
+    'minClientVersion': S,
+    'estimates': A(O({'mode': E('codeOnly', 'everything'), 'cost': COST, 'storage': COST}, ['mode', 'cost', 'storage'])),
+    'steps': D('Each step and whether this run wrote it (`written`), found it done (`done`) or left it to the owner (`owner`).',
+               A(O({'step': E('sealOff', 'flip', 'config', 'code', 'notify', 'history'), 'status': E('written', 'done', 'owner'),
+                    'epoch': ANY, 'refs': SA}, ['step', 'status']))),
+    'notPublished': D('Refs left out: members pushed members-only commits to them after the repository was made public.', SA),
+    'cost': COST,
+}, ['status', 'repo'])
 cmd('repo members status', 'Whether members-only content is on, and who has no key yet.', {
     'repo': S, 'on': B, 'epoch': ANY, 'youCanRead': B, 'noKeyYet': ANY,
 }, ['repo', 'on'])
@@ -408,7 +426,7 @@ cmd('pr view', 'A pull request: its state, head, reviews, threads and comments.'
     'generalComments': A(OBJ), 'comments': A(OBJ), 'hiddenComments': ANY, 'hiddenReviews': ANY, 'moderation': ANY,
     'hiddenEventValues': ANY, 'plaintextEventValues': ANY, 'audience': AUD, 'recipients': nl(I), 'readable': B,
     'why': S, 'membersOnlyComments': A(OBJ), 'membersOnlyHidden': I, 'membersOnlyReviewsHidden': I, 'mergeContent': ANY,
-    'madePublic': D('The comments and reviews maintainers made public with a make-public bundle, by id.', {'type': 'object', 'additionalProperties': MADE_PUBLIC}),
+    'madePublic': D('What maintainers made public with a make-public bundle, by id: the pull request itself (its own id), its comments and its reviews.', {'type': 'object', 'additionalProperties': MADE_PUBLIC}),
     'bundleAlerts': D('Make-public entries whose key does not match the post they name: ignored.', A(OBJ)),
     'policyMet': D('Whether the open PR meets the branch policy; null with no policy, on a PR that is not open, or when only code owner approvals are left (`dg pr merge` checks them).', nl(B)),
     'unmetRules': D('The branch rules left unmet, one line each, as `dg pr merge` names them (code owner approvals are not checked here).', SA),

@@ -5,9 +5,9 @@
  * index), each a maintainer's make-public bundle. A bundle by anyone but a current maintainer or
  * the owner is never read (readers ignore it), and my own bundles never become items.
  *
- * For each bundle: its bytes (hash-checked, as any stored artifact's), its comment, issue and
- * review entries (at most {@link MAX_TARGETS} posts read per bundle), and the posts among them that
- * are mine and that the entry's key really opens (its current revision, as every reader checks
+ * For each bundle: its bytes (hash-checked, as any stored artifact's), its comment, issue, review
+ * and pull request entries (at most {@link MAX_TARGETS} posts read per bundle), and the posts
+ * among them that are mine and that the entry's key really opens (its current revision, as every reader checks
  * it: a lying entry tells nobody). One item per bundle: "made your comment public", "made 3 of
  * your posts public", linking to the thread of the first. A read that fails fails the page, so
  * the feed's cursor stays and the bundle is read again on the next poll.
@@ -17,7 +17,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { base58Encode, decodeIdentifier } from '../auth/base58'
 import type { ForgeIds } from '../deployments'
-import { ENTRY_COMMENT, ENTRY_ISSUE, ENTRY_REVIEW, parseBundle, readRevision, type Bundle, type BundleEntry } from '../private'
+import { ENTRY_COMMENT, ENTRY_ISSUE, ENTRY_PATCH, ENTRY_REVIEW, parseBundle, readRevision, type Bundle, type BundleEntry } from '../private'
 import { DOC, asIdentifierString, type RepoRef } from '../repo/contract'
 import { revisionOf } from '../repo/made-public'
 import { readMaintainers } from '../repo/members'
@@ -36,19 +36,20 @@ function repoOf(forge: ForgeIds, repo: RepoLite): RepoRef {
   return { forge, repoId: repo.id, ownerId: repo.ownerId, name: repo.name, visibility: repo.private ? 'private' : 'public' }
 }
 
-const NOUN: Readonly<Record<number, { readonly type: 'comment' | 'issue' | 'review'; readonly noun: string }>> = {
+const NOUN: Readonly<Record<number, { readonly type: 'comment' | 'issue' | 'review' | 'patch'; readonly noun: string }>> = {
   [ENTRY_COMMENT]: { type: DOC.comment, noun: 'comment' },
   [ENTRY_ISSUE]: { type: DOC.issue, noun: 'issue' },
   [ENTRY_REVIEW]: { type: DOC.review, noun: 'review' },
+  [ENTRY_PATCH]: { type: DOC.patch, noun: 'pull request' },
 }
 
 /** One post a bundle names, read: its type, its author and the thread it is on. */
 interface NamedPost {
   readonly noun: string
   readonly author: string
-  /** The issue or PR it is on (itself for an issue). */
+  /** The issue or PR it is on (itself for an issue or PR). */
   readonly thread: string
-  /** An issue's title as the bundle published it. */
+  /** An issue's or PR's title as the bundle published it. */
   readonly title?: string
 }
 
@@ -68,8 +69,9 @@ async function openedPost(sdk: EvoSDK, forge: ForgeIds, repo: RepoLite, e: Bundl
   if (stored === null) return null
   const { read } = await readRevision(decodeIdentifier(repo.id), stored, revisionOf(d), stored.enc, [{ by, revision: e.revision, key: e.key }])
   if (read.state !== 'public') return null
-  const thread = n.type === DOC.issue ? id : asIdentifierString(d[n.type === DOC.review ? 'patchId' : 'targetId'])
-  const title = n.type === DOC.issue ? read.fields.title : undefined
+  const isThread = n.type === DOC.issue || n.type === DOC.patch
+  const thread = isThread ? id : asIdentifierString(d[n.type === DOC.review ? 'patchId' : 'targetId'])
+  const title = isThread ? read.fields.title : undefined
   return { noun: n.noun, author, thread, ...(title !== undefined ? { title } : {}) }
 }
 
@@ -95,7 +97,8 @@ export async function madePublicItems(sdk: EvoSDK, forge: ForgeIds, repo: RepoLi
     const named = new Map<string, BundleEntry>()
     for (const e of bundle.entries) {
       if (NOUN[e.kind] === undefined) continue
-      const k = base58Encode(e.target)
+      // by kind and target: another kind's entry naming the same id never hides this one
+      const k = `${e.kind}:${base58Encode(e.target)}`
       if (!named.has(k) && named.size >= MAX_TARGETS) continue
       if ((named.get(k)?.revision ?? -1) < e.revision) named.set(k, e)
     }
@@ -108,9 +111,11 @@ export async function madePublicItems(sdk: EvoSDK, forge: ForgeIds, repo: RepoLi
     const first = mine[0]
     if (first === undefined) continue
     const target = [...(await readTargetsByIds(sdk, forge, [first.thread])).values()][0]
-    // A members-only issue this bundle made public too reads by the title it published.
+    // A members-only issue or PR this bundle made public too reads by the title it published.
     const threadEntry = named.get(first.thread)
-    const threadTitle = mine.find((p) => p.thread === first.thread && p.title !== undefined)?.title ?? (threadEntry?.kind === ENTRY_ISSUE ? (await openedPost(sdk, forge, repo, threadEntry, by, null))?.title : undefined)
+    const threadTitle =
+      mine.find((p) => p.thread === first.thread && p.title !== undefined)?.title ??
+      (threadEntry?.kind === ENTRY_ISSUE || threadEntry?.kind === ENTRY_PATCH ? (await openedPost(sdk, forge, repo, threadEntry, by, null))?.title : undefined)
     out.push({
       id: m.documentId,
       kind: 'madePublic',

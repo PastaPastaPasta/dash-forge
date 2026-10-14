@@ -28,7 +28,10 @@ import { repoSource } from './source'
 /** The newest run of one check name on a commit. */
 export interface CheckRun {
   readonly id: string
+  /** As reported: on a members-only branch an opaque name only members resolve (`./members-checks`). */
   readonly name: string
+  /** The commit (lower-case hex) the run is reported on: a members-only branch's blind for such a run. */
+  readonly headOid?: string
   /** `queued` | `in_progress` | `completed` (the schema's enum). */
   readonly status: string
   /** Set once completed: `success`, `failure`, `neutral`, `skipped`, `cancelled`, … */
@@ -132,6 +135,7 @@ export function newestCheckRuns(docs: readonly PlainDocument[], isMember: (who: 
       return {
         id: str(d, '$id'),
         name,
+        headOid: byteFieldToHex(d, 'headOid'),
         status: str(d, 'status'),
         conclusion: str(d, 'conclusion'),
         detailsUrl: str(d, 'detailsUrl'),
@@ -296,6 +300,8 @@ export const LOG_MAX_BYTES = 32 * 1024 * 1024
 /** A run's log, read from where the reporter stored it, and whether it hashed to `logSha256`. */
 export interface VerifiedLog {
   readonly text: string
+  /** The bytes read (what `text` decodes): a members-only run's log opens from these. */
+  readonly raw: Uint8Array
   readonly bytes: number
   readonly sha256: string
   readonly verified: boolean
@@ -349,7 +355,7 @@ export async function fetchVerifiedLog(run: Pick<CheckRun, 'logUrl' | 'logSha256
     at += p.length
   }
   const got = bytesToHex(hash.digest())
-  return { text: new TextDecoder().decode(bytes), bytes: total, sha256: got, verified: got === run.logSha256.toLowerCase() }
+  return { text: new TextDecoder().decode(bytes), raw: bytes, bytes: total, sha256: got, verified: got === run.logSha256.toLowerCase() }
 }
 
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]'])

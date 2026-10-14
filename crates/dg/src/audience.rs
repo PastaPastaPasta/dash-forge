@@ -4,7 +4,7 @@
 
 use anyhow::Result;
 use forge_core::collab::v2::{
-    Collab, LetterInfo, MembersOnly, SentLetter, TargetKind, TargetLog, Unopened,
+    Collab, Comment, LetterInfo, MembersOnly, SentLetter, Target, TargetKind, TargetLog, Unopened,
 };
 use forge_core::platform::PlatformClient;
 use forge_core::rules::letters::{LetterGroup, LetterRequest};
@@ -87,8 +87,28 @@ pub async fn requested(
         return Ok(Requested { audience, to });
     }
     match collab.require_members_writer(repo, audience).await {
-        // not asked for: the conversation is members-only, and a public reply is not possible
-        Err(e) if !ask.members && refused_non_member(&e) => Err(members_only_thread(repo)),
+        // not asked for, by someone who isn't a member: a thread written before its repository
+        // was made public takes public replies (DESIGN §4.10 L3), so theirs is public; any
+        // other members-only conversation takes none
+        Err(e) if !ask.members && refused_non_member(&e) => {
+            collab.request_audience(Some(Audience::Public));
+            if matches!(
+                collab.new_audience(repo, target, reply_to).await,
+                Ok(Audience::Public)
+            ) {
+                eprintln!(
+                    "note: this conversation was written while {} was private; your reply is public: everyone can read it",
+                    repo.display()
+                );
+                Ok(Requested {
+                    audience: Audience::Public,
+                    to: String::new(),
+                })
+            } else {
+                collab.request_audience(None);
+                Err(members_only_thread(repo))
+            }
+        }
         other => other
             .map(|()| Requested {
                 audience,
@@ -536,14 +556,32 @@ pub async fn target_view(
 ) -> Result<()> {
     let log = s.collab().target_log(&s.repo, &m.document_id).await?;
     let state = state_word(kind, &log);
-    let names = if ctx.json {
-        std::collections::BTreeMap::new()
-    } else {
-        s.client.dpns_first_names([m.author.as_str()]).await
-    };
     let m = &s.placeholders(vec![m.clone()])[0];
     let hint = why_hint(&s.repo, m.why);
     let repo = s.repo.display();
+    let replies = public_replies(s, kind, number, m, &log).await?;
+    let names = if ctx.json {
+        std::collections::BTreeMap::new()
+    } else {
+        s.client
+            .dpns_first_names(
+                std::iter::once(m.author.as_str()).chain(replies.iter().map(|c| c.author.as_str())),
+            )
+            .await
+    };
+    let comments: Vec<serde_json::Value> = replies
+        .iter()
+        .map(|c| {
+            serde_json::json!({
+                "id": c.document_id,
+                "author": c.author,
+                "body": c.body,
+                "audience": json(c.audience),
+                "replyTo": c.reply_to,
+                "createdAt": c.created_at,
+            })
+        })
+        .collect();
     // The shape `dg issue view --json` / `dg pr view --json` gives a readable one, with what is
     // not readable here null or empty, and `readable` false.
     let mut out = serde_json::json!({
@@ -558,7 +596,7 @@ pub async fn target_view(
         "recipients": m.recipients,
         "readable": false,
         "why": why_word(m.why),
-        "comments": [],
+        "comments": comments,
         "membersOnlyComments": [],
         "events": [],
         "transitions": [],
@@ -593,8 +631,51 @@ pub async fn target_view(
             Some(h) => println!("({h})"),
             None => println!("(only members of {repo} can read it)"),
         }
+        for c in &replies {
+            println!();
+            println!(
+                "{}{}:",
+                at_name(&c.author, &names),
+                suffix(&s.repo, c.audience)
+            );
+            println!("{}", crate::fmt::safe(&c.body));
+        }
     });
     Ok(())
+}
+
+/// The replies a reader can read under a members-only thread of a repository made public: a
+/// thread written before the conversion takes public replies (DESIGN §4.10 L3). What maintainers
+/// hid stays collapsed here too (`dg issue view --show-hidden` on a thread one can read shows
+/// it), and a hidden thread shows none. Empty in a private repository.
+async fn public_replies(
+    s: &Reader,
+    kind: TargetKind,
+    number: u32,
+    m: &MembersOnly,
+    log: &TargetLog,
+) -> Result<Vec<Comment>> {
+    if s.repo.visibility != Visibility::Public {
+        return Ok(Vec::new());
+    }
+    let collab = s.collab();
+    let all = collab.comments(&s.repo, &m.document_id).await?;
+    let target = Target {
+        kind,
+        id: m.document_id.clone(),
+        number,
+        author: m.author.clone(),
+    };
+    let hidden = collab
+        .hidden_items(&s.repo, &target, log, &all, &[])
+        .await?;
+    if hidden.thread.is_some() {
+        return Ok(Vec::new());
+    }
+    Ok(all
+        .into_iter()
+        .filter(|c| hidden.item(&c.document_id).is_none())
+        .collect())
 }
 
 /// The notes a view prints under its items for those it could not show: the members-only ones

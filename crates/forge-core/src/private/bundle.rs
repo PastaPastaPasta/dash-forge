@@ -9,9 +9,11 @@
 //!
 //! Integers are big-endian. Entry types: **0x01 comment, 0x02 issue, 0x03 review** (a
 //! document's per-object key `K_obj` at its `$revision`: a maintainer's bundle, DESIGN §4.6),
-//! 0x04 patch (reserved for members-only PRs, phase 3), **0x06 an epoch key** (`target` = the
-//! repository id, `revision` = the epoch, `key` = `K_e`, written by the owner of a repository
-//! made public, §18.3), and 0x40 a sealed artifact (`target` = its `packHash`, `revision` 0).
+//! **0x04 a pull request** (its `K_obj`, shown as [`doc::bundled_patch`] says: title, body and
+//! public branch names, never a members-only branch's name or the real head), **0x06 an epoch
+//! key** (`target` = the repository id, `revision` = the epoch, `key` = `K_e`, written by the
+//! owner of a repository made public, §18.3), and 0x40 a sealed artifact (`target` = its
+//! `packHash`, `revision` 0).
 //! Readers skip entry types they do not know.
 //!
 //! **Maintainer bundles** ([`DocEntries`], [`read_revision`]): readers honour a document entry
@@ -47,6 +49,8 @@ pub const ENTRY_COMMENT: u8 = 0x01;
 pub const ENTRY_ISSUE: u8 = 0x02;
 /// Entry type: a review's `K_obj`.
 pub const ENTRY_REVIEW: u8 = 0x03;
+/// Entry type: a pull request revision's `K_obj`.
+pub const ENTRY_PATCH: u8 = 0x04;
 /// The most document entries one maintainer's bundle carries (a whole thread with its edit
 /// history; about 200 fit one Platform chunk).
 pub const MAX_DOC_ENTRIES: usize = 1000;
@@ -58,6 +62,7 @@ pub fn entry_kind(kind: DocKind) -> Option<u8> {
         DocKind::Comment => Some(ENTRY_COMMENT),
         DocKind::Issue => Some(ENTRY_ISSUE),
         DocKind::Review => Some(ENTRY_REVIEW),
+        DocKind::Patch => Some(ENTRY_PATCH),
         _ => None,
     }
 }
@@ -175,8 +180,9 @@ pub struct DocEntries {
 
 impl DocEntries {
     /// The honoured document entries of `bundles`: none in a private repository (`public`
-    /// false); else every entry of a comment, issue or review in a bundle that parses, written
-    /// by one of `maintainers` (the repository's owner and its current maintainers).
+    /// false); else every entry of a comment, issue, review or pull request in a bundle that
+    /// parses, written by one of `maintainers` (the repository's owner and its current
+    /// maintainers).
     #[must_use]
     pub fn of(public: bool, maintainers: &BTreeSet<[u8; 32]>, bundles: &[PublishedBundle]) -> Self {
         let mut out = Self::default();
@@ -187,11 +193,12 @@ impl DocEntries {
             let Ok(parsed) = parse(&b.bytes) else {
                 continue;
             };
-            for e in parsed
-                .entries
-                .into_iter()
-                .filter(|e| matches!(e.kind, ENTRY_COMMENT | ENTRY_ISSUE | ENTRY_REVIEW))
-            {
+            for e in parsed.entries.into_iter().filter(|e| {
+                matches!(
+                    e.kind,
+                    ENTRY_COMMENT | ENTRY_ISSUE | ENTRY_REVIEW | ENTRY_PATCH
+                )
+            }) {
                 out.by_target
                     .entry((e.kind, e.target))
                     .or_default()

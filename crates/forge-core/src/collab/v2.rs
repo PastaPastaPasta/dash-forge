@@ -60,11 +60,13 @@ use crate::scope::RepoRef;
 use crate::user_error::{codes, UserError};
 
 mod bundles;
+mod census;
 mod make_public;
 pub use bundles::{
     noun as bundle_noun, BundleAlert, BundlePlan, BundledPost, LeftOut, LeftOutWhy, Publication,
     PublicationState,
 };
+pub use census::{Census, CensusText};
 pub use make_public::{apply_review_texts, MakePublicPlan};
 
 /// forge-collab document types (issue through milestone); forge-community ones are marked.
@@ -7218,8 +7220,15 @@ impl<'a> Collab<'a> {
         {
             return Err(audience_fixed(doc_type, audience));
         }
-        // after a maintainer made it public, its author's edit is public too (DESIGN §4.6)
-        if let Some(by) = self.bundle_covers(repo, kind, &stored).await {
+        // after a maintainer made it public, its author's edit is public too (DESIGN §4.6); not
+        // a PR's: a public edit cannot keep its sealed branch names (immutable on the live
+        // contracts), so it stays sealed and readers say it was edited after it was made public
+        let covered = if kind == DocKind::Patch {
+            None
+        } else {
+            self.bundle_covers(repo, kind, &stored).await
+        };
+        if let Some(by) = covered {
             if self
                 .requested_audience()
                 .is_some_and(|want| want != Audience::Public)
