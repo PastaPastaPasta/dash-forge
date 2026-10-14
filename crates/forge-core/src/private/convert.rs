@@ -232,21 +232,6 @@ pub fn epoch_key_bundles(
         .collect()
 }
 
-/// The epochs of `held` (the keys an owner holds below the seal-off epoch) that `published` (the
-/// keys readers already honour, [`published_keys`]) does not cover: what step 7 still has to
-/// publish. A key honoured once also opens every epoch its chain reaches, but each epoch gets its
-/// own entry, so a reader never depends on walking the chain to open it.
-#[must_use]
-pub fn unpublished_epochs(
-    held: &BTreeMap<u32, EpochKey>,
-    published: &BTreeMap<u32, EpochKey>,
-) -> BTreeMap<u32, EpochKey> {
-    held.iter()
-        .filter(|(e, _)| !published.contains_key(e))
-        .map(|(&e, k)| (e, k.clone()))
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -310,15 +295,5 @@ mod tests {
         assert!(epoch_key_bundles(&repo, &BTreeMap::new())
             .unwrap()
             .is_empty());
-    }
-
-    #[test]
-    fn unpublished_epochs_are_the_held_ones_no_reader_honours_yet() {
-        let k = |b| EpochKey::from_bytes([b; 32]);
-        let held = BTreeMap::from([(0, k(1)), (1, k(2)), (2, k(3))]);
-        let published = BTreeMap::from([(1, k(2))]);
-        let left = unpublished_epochs(&held, &published);
-        assert_eq!(left.keys().copied().collect::<Vec<_>>(), vec![0, 2]);
-        assert!(unpublished_epochs(&held, &held).is_empty());
     }
 }

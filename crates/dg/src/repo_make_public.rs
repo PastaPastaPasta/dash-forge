@@ -49,7 +49,7 @@ use forge_core::cost::push_fees::{self, PushShape};
 use forge_core::keyring::Keyring;
 use forge_core::platform::{FetchedDocument, QueryFilter, QueryOrder};
 use forge_core::private::convert::{
-    epoch_key_bundles, unpublished_epochs, Conversion, CONVERTED_REPO_MIN_CLIENT_VERSION,
+    epoch_key_bundles, Conversion, CONVERTED_REPO_MIN_CLIENT_VERSION,
 };
 use forge_core::private::EpochKey;
 use forge_core::repo::{visibility_frozen, CurrentConfig, RepoService};
@@ -265,9 +265,7 @@ pub async fn run(ctx: &Ctx, a: &MakePublicArgs) -> Result<()> {
     }
     // a run that started Everything (some history published) finishes as Everything
     let history_started = match &conversion {
-        Some(c) => !published_keys(&s, &public_view(&s.repo), c)
-            .await?
-            .is_empty(),
+        Some(_) => !owner_bundles(&s, &public_view(&s.repo)).await?.is_empty(),
         None => false,
     };
     if history_started && flag_mode == Some(Mode::CodeOnly) {
@@ -392,16 +390,35 @@ async fn not_the_owner(s: &Session, repo: &str) -> anyhow::Error {
     .into()
 }
 
-/// The keys readers already honour for epochs below the seal-off epoch of `public` (read with a
-/// fresh service: the published keys are cached per service). An error when the published keys
-/// can't be read: a run must not publish them again on a read that failed.
-async fn published_keys(
-    s: &Session,
-    public: &RepoRef,
-    c: &Conversion,
-) -> Result<BTreeMap<u32, EpochKey>> {
-    let kr = Keyring::load_anonymous(&s.client, public).await?;
-    Ok(kr.epoch_keys_below(c.seal_off_epoch.unwrap_or(0)))
+/// The `packHash`es of the make-public bundles (kind 7) the owner of `public` recorded: what a
+/// run already published. Read from the manifests alone, so a bundle whose bytes a host doesn't
+/// serve right now still counts, and a failed read is an error, never "none yet".
+async fn owner_bundles(s: &Session, public: &RepoRef) -> Result<BTreeSet<[u8; 32]>> {
+    let kind = u64::from(forge_core::pack::KIND_MAKE_PUBLIC);
+    Ok(RepoService::reader(&s.client)
+        .read_pack_manifests(public)
+        .await?
+        .into_iter()
+        .filter(|m| m.kind == kind && m.owner_id == public.owner_id)
+        .map(|m| m.pack_hash)
+        .collect())
+}
+
+/// The make-public bundles of the keys the owner holds below the seal-off epoch that are not
+/// recorded yet (bundles are built the same way every run, so a recorded one has the same hash).
+fn bundles_to_store(
+    repo_id: &[u8; 32],
+    held: &BTreeMap<u32, EpochKey>,
+    recorded: &BTreeSet<[u8; 32]>,
+) -> Result<Vec<Vec<u8>>> {
+    let mut out = Vec::new();
+    for b in epoch_key_bundles(repo_id, held)? {
+        let hash = forge_core::backends::PackMeta::for_bytes(&b).pack_hash_bytes()?;
+        if !recorded.contains(&hash) {
+            out.push(b);
+        }
+    }
+    Ok(out)
 }
 
 /// `repo` as it is once made public: what the published keys and refs are read through.
@@ -1289,13 +1306,22 @@ async fn convert(r: Run<'_>, mut check: Check) -> Result<()> {
     let is_owner = s.identity.id() == s.repo.owner_id;
     let flipped = conversion.is_some();
     let public = public_view(&s.repo);
+    // A run that stops before signing anything, with no earlier run to continue, leaves no
+    // plaintext of the private era behind.
+    let fresh_start = !flipped && saved.is_none();
+    let discard = |e: anyhow::Error| {
+        if fresh_start {
+            let _ = std::fs::remove_dir_all(dir.join("work.git"));
+        }
+        e
+    };
     // only the owner flips, and only the owner chooses Everything
     if !is_owner && (!flipped || (mode == Mode::Everything && !history_started)) {
-        return Err(not_the_owner(s, &a.repo).await);
+        return Err(discard(not_the_owner(s, &a.repo).await));
     }
     if !flipped {
         if let Some(b) = check.blockers.first() {
-            return Err(b.clone().into());
+            return Err(discard(b.clone().into()));
         }
     }
     // the refs this run publishes: the owner's earlier choice on this computer, else the
@@ -1330,21 +1356,22 @@ async fn convert(r: Run<'_>, mut check: Check) -> Result<()> {
         .map(|(n, _)| n.clone())
         .collect();
     let publishes_history = mode == Mode::Everything && is_owner;
-    let published = match &conversion {
-        Some(c) if publishes_history => published_keys(s, &public, c).await?,
-        _ => BTreeMap::new(),
+    let recorded = if flipped && publishes_history {
+        owner_bundles(s, &public).await?
+    } else {
+        BTreeSet::new()
     };
     // a publication this computer has no confirmation of: refs not public yet, or the history
     let new_publication = !flipped
         || (!todo.is_empty() && !saved_here)
-        || (publishes_history && published.is_empty() && !saved_here);
+        || (publishes_history && recorded.is_empty() && !saved_here);
     let allowed: BTreeSet<String> = a
         .allow_secret
         .iter()
         .map(|f| f.to_ascii_lowercase())
         .collect();
     if new_publication || publishes_history {
-        gate(&check, mode, &allowed, &label)?;
+        gate(&check, mode, &allowed, &label).map_err(discard)?;
     }
     let (credits, storage) = estimate(&check, kr, mode, conversion.as_ref());
     if new_publication && !(a.resume && saved_here) {
@@ -1359,14 +1386,15 @@ async fn convert(r: Run<'_>, mut check: Check) -> Result<()> {
                 conversion.as_ref(),
             );
         }
-        typed_confirmation(ctx, &a.repo)?;
+        typed_confirmation(ctx, &a.repo).map_err(discard)?;
     } else {
         ctx.confirm_or_cancel(&format!(
             "Continue making {label} public ({}): about {}, plus storing the code ({} on Platform)?",
             mode.label(),
             cost_line(credits, price),
             cost_line(storage, price)
-        ))?;
+        ))
+        .map_err(discard)?;
     }
     let before = s.balance().await;
     let mut steps: Vec<Value> = Vec::new();
@@ -1498,8 +1526,8 @@ async fn convert(r: Run<'_>, mut check: Check) -> Result<()> {
             .keyring(private)
             .await?
             .epoch_keys_below(seal_off);
-        let published = published_keys(s, &public, &c).await?;
-        let left = unpublished_epochs(&held, &published);
+        let repo_id = forge_core::platform::decode_identifier(&s.repo.repo_id)?;
+        let left = bundles_to_store(&repo_id, &held, &owner_bundles(s, &public).await?)?;
         if left.is_empty() {
             steps.push(json!({ "step": "history", "status": "done" }));
         } else if !is_owner {
@@ -1511,9 +1539,8 @@ async fn convert(r: Run<'_>, mut check: Check) -> Result<()> {
                 );
             }
         } else {
-            let repo_id = forge_core::platform::decode_identifier(&s.repo.repo_id)?;
-            for b in epoch_key_bundles(&repo_id, &left)? {
-                fresh.store_make_public_bundle(&public, &b).await?;
+            for b in &left {
+                fresh.store_make_public_bundle(&public, b).await?;
             }
             steps.push(json!({ "step": "history", "status": "written" }));
         }
