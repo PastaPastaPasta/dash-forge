@@ -579,10 +579,19 @@ export async function inspect(c: PrivateWriteContext, session: PrivateSession, o
  * by name (default: the default branch and the tags on it, or this browser's record of a run under
  * way in that mode). Takes from seconds to minutes: it downloads and opens every pack written while
  * private. `signal` stops it between phases. `label`: how the copy names the repo (`o/r`).
+ * `packCache`: the same map across checks of one dialog (a changed choice of refs re-checks).
  */
 export async function makePublicCheck(
   c: PrivateWriteContext,
-  opts: { mode?: MakePublicMode; refs?: readonly string[]; signal?: AbortSignal; onProgress?: (what: string) => void; label?: string } = {},
+  opts: {
+    mode?: MakePublicMode
+    refs?: readonly string[]
+    signal?: AbortSignal
+    onProgress?: (what: string) => void
+    label?: string
+    /** Packs a check before this one opened: passed again, a re-check fetches only new ones. */
+    packCache?: PackCache
+  } = {},
 ): Promise<MakePublicCheck> {
   const visibility = await readVisibility(c.sdk, c.repo)
   const conversion = visibility === 'public' ? await readConversion(c.sdk, c.repo) : null
@@ -599,6 +608,7 @@ export async function makePublicCheck(
       ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
       ...(opts.onProgress !== undefined ? { onProgress: opts.onProgress } : {}),
       ...(opts.label !== undefined ? { label: opts.label } : {}),
+      ...(opts.packCache !== undefined ? { packCache: opts.packCache } : {}),
     })
     return check
   } finally {

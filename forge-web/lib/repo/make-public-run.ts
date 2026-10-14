@@ -94,6 +94,8 @@ export interface MakePublicChoice {
   readonly resume?: boolean
   /** Where the code pack goes (the merge's storage choice, `useMergeUpload`); default: Platform. */
   readonly upload?: UploadPack
+  /** Told each phase of the check the run makes again before it signs (it can take minutes). */
+  readonly onCheck?: (what: string) => void
 }
 
 /** What a run did. */
@@ -530,5 +532,14 @@ export async function runMakePublic(
   onProgress: (p: MakePublicProgress) => void,
   signal?: AbortSignal,
 ): Promise<MakePublicOutcome> {
-  return runMakePublicWith(sdkMakePublicIo(c, { ...(choice.upload !== undefined ? { upload: choice.upload } : {}), ...(choice.repoLabel !== undefined ? { label: choice.repoLabel } : {}) }), choice, onProgress, signal)
+  return runMakePublicWith(
+    sdkMakePublicIo(c, {
+      ...(choice.upload !== undefined ? { upload: choice.upload } : {}),
+      ...(choice.repoLabel !== undefined ? { label: choice.repoLabel } : {}),
+      ...(choice.onCheck !== undefined ? { onCheck: choice.onCheck } : {}),
+    }),
+    choice,
+    onProgress,
+    signal,
+  )
 }
