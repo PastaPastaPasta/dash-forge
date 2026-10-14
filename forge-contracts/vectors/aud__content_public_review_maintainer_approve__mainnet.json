@@ -1,0 +1,22 @@
+{
+  "name": "content_public_review_maintainer_approve__mainnet",
+  "description": "A maintainer's approve: the maintainer operand checks no role, so no mRole (reads 0). (mainnet contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "content",
+    "type": "review",
+    "shape": {
+      "aud": true,
+      "mRole": true
+    },
+    "doc": {
+      "asMember": true
+    },
+    "role": "maintainer"
+  },
+  "expected": {
+    "aud": null,
+    "mRole": null
+  }
+}

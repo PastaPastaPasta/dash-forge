@@ -12,6 +12,16 @@ const replaces: { documentType: string; changes: Record<string, unknown> }[] = [
 let configs: Record<string, unknown>[] = []
 let coveredBy: string | null = null
 
+// sakura's contracts: none of the mainnet fields (`mainnet-fields.ts`), `vis` where it was
+vi.mock('./contract-shape', async (orig) => {
+  const real = await orig<typeof import('./contract-shape')>()
+  const mainnet = new Set(['aud', 'mRole', 'tAud', 'enc', 'asMaintainer'])
+  return {
+    ...real,
+    contractHasProperty: async (...a: Parameters<typeof real.contractHasProperty>) => (mainnet.has(a[3]) ? false : a[3] === 'vis' ? true : real.contractHasProperty(...a)),
+    contractPropertyMinimum: async () => null,
+  }
+})
 vi.mock('../view/retry', () => ({ retryWhileMissing: vi.fn(async (f: () => Promise<unknown>) => f()) }))
 vi.mock('./made-public', async (orig) => ({ ...(await orig<typeof import('./made-public')>()), bundleCovers: vi.fn(async () => coveredBy) }))
 vi.mock('../sdk', async (importOriginal) => ({

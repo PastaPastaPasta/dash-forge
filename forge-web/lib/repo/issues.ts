@@ -592,15 +592,16 @@ export function toEvents(documents: readonly PlainDocument[]): Event[] {
  * repo's member events read through {@link readableEvents} (their values opened, and counted).
  */
 export async function toLog(repo: RepoRef, events: readonly PlainDocument[], authorEvents: readonly PlainDocument[]): Promise<TargetLog> {
-  const r = await readableEvents(repo, events)
+  // an author's retarget is sealed where the contract lets it be (mainnet M3): opened like an event's value
+  const [r, a] = await Promise.all([readableEvents(repo, events), readableEvents(repo, authorEvents, 'authorEvent')])
   // `readableEvents` keeps the order: a document sealed before it was opened is `events[i]`'s.
   const ciReruns = r.docs.flatMap((d, i) => rerunRequest(repo.repoId, toRerunEvent(d, events[i]?.['enc'] !== undefined)) ?? [])
   // A request's event has the re-run's shape: its task opened in place, or hidden from this reader.
   const agentRequests = r.docs.flatMap((d, i) => agentRequest(repo.repoId, toRerunEvent(d, events[i]?.['enc'] !== undefined)) ?? [])
   return {
     events: toEvents(r.docs),
-    authorEvents: toEvents(authorEvents),
-    hiddenValues: r.hiddenValues,
+    authorEvents: toEvents(a.docs),
+    hiddenValues: r.hiddenValues + a.hiddenValues,
     plaintextValues: r.plaintextValues,
     ...(ciReruns.length > 0 ? { ciReruns } : {}),
     ...(agentRequests.length > 0 ? { agentRequests } : {}),

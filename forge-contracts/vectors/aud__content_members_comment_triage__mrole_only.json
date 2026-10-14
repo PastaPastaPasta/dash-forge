@@ -1,0 +1,23 @@
+{
+  "name": "content_members_comment_triage__mrole_only",
+  "description": "Each field is written only where the contract declares it.",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "content",
+    "type": "comment",
+    "shape": {
+      "aud": false,
+      "mRole": true
+    },
+    "doc": {
+      "enc": "030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "asMember": true
+    },
+    "role": "triage"
+  },
+  "expected": {
+    "aud": null,
+    "mRole": 2
+  }
+}

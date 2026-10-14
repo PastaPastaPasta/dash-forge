@@ -22,10 +22,18 @@ describe('refreshRoleOnRefusal', () => {
     }
   })
 
+  it('drops it too for a post whose membership proof restates a role (mainnet mRole)', async () => {
+    for (const type of ['issue', 'patch', 'comment', 'review']) {
+      invalidate.mockClear()
+      await expect(refreshRoleOnRefusal(REPO, AUTH, type, () => Promise.reject(refusal(40127)))).rejects.toBeInstanceOf(ConsensusRefusal)
+      expect(invalidate).toHaveBeenCalledWith(REPO, 'devnet')
+    }
+  })
+
   it('keeps it on another refusal, an ungated type, or success', async () => {
     invalidate.mockClear()
     await expect(refreshRoleOnRefusal(REPO, AUTH, 'event', () => Promise.reject(refusal(40105)))).rejects.toBeInstanceOf(ConsensusRefusal)
-    await expect(refreshRoleOnRefusal(REPO, AUTH, 'comment', () => Promise.reject(refusal(40120)))).rejects.toBeInstanceOf(ConsensusRefusal)
+    await expect(refreshRoleOnRefusal(REPO, AUTH, 'star', () => Promise.reject(refusal(40120)))).rejects.toBeInstanceOf(ConsensusRefusal)
     expect(await refreshRoleOnRefusal(REPO, AUTH, 'event', async () => 7)).toBe(7)
     expect(invalidate).not.toHaveBeenCalled()
   })

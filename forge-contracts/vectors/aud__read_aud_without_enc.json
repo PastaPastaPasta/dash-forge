@@ -1,0 +1,14 @@
+{
+  "name": "read_aud_without_enc",
+  "description": "aud without enc is malformed (dependentRequired refuses it).",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "read",
+    "type": "comment",
+    "doc": {
+      "aud": 1
+    }
+  },
+  "expected": "malformed"
+}

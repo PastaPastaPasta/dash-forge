@@ -55,7 +55,7 @@ use crate::rules::v2::{
     TRANSITION_KINDS,
 };
 use crate::rules::v2::{CloseReason, ClosedAs};
-use crate::rules::{self, Event, EventKind, IssueState, PrState};
+use crate::rules::{self, aud, Event, EventKind, IssueState, PrState};
 use crate::scope::RepoRef;
 use crate::user_error::{codes, UserError};
 
@@ -84,6 +84,12 @@ pub const DOC_REVIEW: &str = "review";
 pub const DOC_EVENT: &str = "event";
 /// An author-gated event (thread resolution, review requests, head update).
 pub const DOC_AUTHOR_EVENT: &str = "authorEvent";
+/// `aud` on an issue, PR, comment or review (mainnet L1): 1 members, 2 a letter; absent public.
+pub const AUD: &str = "aud";
+/// `mRole` on an issue, PR, comment or review (mainnet L2): the `writer` role `asMember` proves.
+pub const MEMBER_ROLE: &str = "mRole";
+/// `tAud` on an `event` or `authorEvent` (mainnet M3, M4): its target's `aud`.
+pub const EVENT_TARGET_AUD: &str = "tAud";
 /// A state change of an issue or PR (close, reopen, merge, draft, ready): immutable,
 /// non-deletable, gated to members or the target's author, and judged against the target's
 /// state code by the contract's rules.
@@ -286,6 +292,10 @@ impl LetterKeys {
         use crate::private::named;
         let header = crate::keyring::header_of(doc_kind(kind), d)?;
         let enc = d.field_bytes("enc")?;
+        // a stated `aud` (mainnet L1) names the envelope's class (consensus checks it too)
+        if !crate::rules::aud::aud_agrees(d.field_u64(AUD), enc.first().copied()) {
+            return Some(crate::private::named::LetterOpened::Malformed);
+        }
         let owner = self.owners.get(&d.owner_id).map_or(&[][..], Vec::as_slice);
         let reader = named::Reader {
             identity_id: *identity_id,
@@ -435,6 +445,23 @@ fn event_target_id(props: &BTreeMap<String, FieldValue>) -> Result<String> {
         .and_then(|b| <[u8; 32]>::try_from(b).ok())
         .map(platform::encode_identifier)
         .ok_or_else(|| parent_not_found("event target", "(none)"))
+}
+
+/// Refuse, before signing, a star or a watch (`what`: "starred", "watched") of a private
+/// repository: both are public signals, public repositories only (owner decision on R-12; the
+/// mainnet contract's `where {"visibility": {"const": "public"}}` refuses them too). Removing
+/// one stays possible.
+pub fn require_public_for(repo: &RepoRef, what: &str) -> Result<()> {
+    if repo.visibility == Visibility::Private {
+        return Err(UserError::new(
+            codes::USAGE,
+            format!("Private repositories can't be {what}."),
+        )
+        .cause(format!("{} is private", repo.display()))
+        .note("checked before anything was signed; nothing was written or paid")
+        .into());
+    }
+    Ok(())
 }
 
 /// Who a stored document was written for, read from the document ([`Audience::of`]).
@@ -3636,6 +3663,29 @@ impl<'a> Collab<'a> {
             let kr = self.fresh_keyring(repo).await?;
             let w = kr.writer(repo)?;
             let owner = platform::decode_identifier(&self.signer_id()?)?;
+            // D38: on the mainnet contract (it declares `aud`) a private repository's new
+            // issues, PRs, comments and reviews are v0x03, per object (events gain nothing from
+            // a key of their own); sakura's stay v0x01. A text that fits v0x01's room but not
+            // v0x03's, 32 bytes smaller, is v0x01 there too: both are well framed in a private
+            // repository, so the long-body room stays the same on every network.
+            let per_object = matches!(
+                kind,
+                DocKind::Issue | DocKind::Patch | DocKind::Comment | DocKind::Review
+            ) && self
+                .collab_contract(repo)
+                .await?
+                .has_property(DOC_ISSUE, AUD);
+            if per_object {
+                match private::seal_private_members_props(
+                    w.write_keys(),
+                    kind,
+                    owner,
+                    props.clone(),
+                ) {
+                    Err(e) if private::is_too_large(&e) => {}
+                    sealed => return sealed,
+                }
+            }
             return private::seal_props(w.write_keys(), kind, owner, props);
         }
         match audience {
@@ -4425,41 +4475,138 @@ impl<'a> Collab<'a> {
             let r = members::claimed_role(role, as_author);
             members::stamp_claimed_role(contract, doc_type, &mut props, r);
         }
-        // A member `event` carries its `value` (label or milestone name, dismiss reason,
-        // assignee, retarget base) sealed when its target is (§7, DESIGN §3.3: an event value
-        // follows its target): every event in a private repository, and in a public one the
-        // events of a members-only issue. Every event write passes here.
-        let props = if doc_type == DOC_EVENT && props.contains_key("value") {
-            // fails closed: an event naming no readable target is refused, never public
-            let target = event_target_id(&props)?;
-            let audience = self.target_audience(repo, &target).await?;
-            // a letter's event value would need its people, which an event does not carry:
-            // refused (phase 2A), never sealed under the members key nor left in plaintext
-            if audience == Audience::SpecificPeople {
-                return Err(UserError::new(
-                    codes::USAGE,
-                    "labels, milestones and assignees can't be set on a message to specific people yet",
-                )
-                .note("nothing was written")
-                .into());
-            }
-            // the target's audience, never the command's request: an event has no audience of
-            // its own
-            let audience = if repo.visibility == Visibility::Private {
-                Audience::Members
-            } else {
-                audience
-            };
-            self.seal_for(repo, DocKind::Event, props, audience, None)
-                .await?
+        // An `event` or `authorEvent` carries its `value` (label or milestone name, dismiss
+        // reason, assignee, retarget base) sealed when its target is (§7, DESIGN §3.3: an event
+        // value follows its target), and, on mainnet, `tAud`, its target's `aud` (M3, M4).
+        // A policy bypass (kind 23) proves its maintainer like a hide (mainnet M2 puts it in
+        // `hideByMaint`); only a maintainer's counts anywhere (§8.2 row 8).
+        if doc_type == DOC_EVENT
+            && props.get("kind").and_then(FieldValue::as_u64)
+                == Some(super::event_kind_to_u64(EventKind::PolicyBypass))
+            && contract.has_property(DOC_EVENT, super::moderation::EVENT_AS_MAINTAINER)
+            && self.cached_role(repo).await? == Some(Role::Maintainer)
+        {
+            props.insert(
+                super::moderation::EVENT_AS_MAINTAINER.to_string(),
+                FieldValue::identifier(platform::decode_identifier(&self.signer_id()?)?),
+            );
+        }
+        let props = if doc_type == DOC_EVENT || doc_type == DOC_AUTHOR_EVENT {
+            self.event_fields(repo, contract, doc_type, props).await?
         } else {
             props
         };
         let engine = self.engine()?;
-        self.create_stamped(repo, doc_type, Self::with_repo(repo, props)?, async |all| {
-            engine.create_document(contract, doc_type, all).await
-        })
+        // a type whose contract has no `vis` takes none (mainnet R-11: `topic` proves a public
+        // repo by its reference alone, and a document carrying `vis` is refused)
+        let vis = contract.has_property(doc_type, crate::layout::VIS);
+        self.create_stamped(
+            repo,
+            doc_type,
+            Self::with_repo(repo, props)?,
+            async |mut all| {
+                if !vis {
+                    all.remove(crate::layout::VIS);
+                }
+                engine.create_document(contract, doc_type, all).await
+            },
+        )
         .await
+    }
+
+    /// The `event` or `authorEvent` (`doc_type`) `props` as written ([`aud::event_fields`]):
+    /// `tAud` where the contract declares it, and the value plaintext, sealed under the members
+    /// key (every event in a private repository) or refused, before signing, on a letter (its
+    /// people are not on the event) and for an author event that cannot carry `enc`.
+    async fn event_fields(
+        &self,
+        repo: &RepoRef,
+        contract: &LoadedContract,
+        doc_type: &str,
+        mut props: BTreeMap<String, FieldValue>,
+    ) -> Result<BTreeMap<String, FieldValue>> {
+        let has_value = props.contains_key("value");
+        let shape = aud::Shape {
+            t_aud: contract.has_property(doc_type, EVENT_TARGET_AUD),
+            author_enc: contract.has_property(DOC_AUTHOR_EVENT, "enc"),
+            ..aud::Shape::default()
+        };
+        if !has_value && !shape.t_aud {
+            return Ok(props);
+        }
+        // fails closed: an event naming no readable target is refused, never public
+        let target_id = event_target_id(&props)?;
+        let (kind, stored) = self.target_doc_by_id(repo, &target_id).await?;
+        let mut target = aud::EventTarget {
+            aud: stored.field_u64(AUD),
+            enc: stored.field_bytes("enc").and_then(|e| e.first().copied()),
+            bundled: false,
+        };
+        // a bundle matters only where no `tAud` states the target's class (sakura)
+        if has_value
+            && !shape.t_aud
+            && target.enc.is_some()
+            && repo.visibility == Visibility::Public
+        {
+            target.bundled = self
+                .parent_with_bundles(repo, doc_kind(kind), &stored)
+                .await
+                .default
+                == Audience::Public;
+        }
+        let author = doc_type == DOC_AUTHOR_EVENT;
+        let fields = aud::event_fields(shape, author, target, has_value);
+        if let Some(t) = fields.t_aud {
+            props.insert(EVENT_TARGET_AUD.to_string(), FieldValue::integer(t));
+        }
+        match fields.value {
+            aud::EventValue::None | aud::EventValue::Plain => Ok(props),
+            aud::EventValue::Sealed => {
+                let kind = if author {
+                    DocKind::AuthorEvent
+                } else {
+                    DocKind::Event
+                };
+                self.seal_for(repo, kind, props, Audience::Members, None)
+                    .await
+            }
+            aud::EventValue::Refused => {
+                let noun = if kind == ContentKind::Patch {
+                    "pull request"
+                } else {
+                    "issue"
+                };
+                let letter = target.is_letter();
+                let e = if letter && !author {
+                    UserError::new(
+                        codes::USAGE,
+                        "labels, milestones and assignees can't be set on a message to specific people yet",
+                    )
+                } else if letter {
+                    UserError::new(
+                        codes::USAGE,
+                        format!("this {noun} is a message to specific people, so its base can't be changed yet"),
+                    )
+                } else {
+                    let what = if repo.visibility == Visibility::Private {
+                        "in a private repository"
+                    } else {
+                        "members-only"
+                    };
+                    UserError::new(
+                        codes::USAGE,
+                        format!(
+                            "this {noun} is {what}, so its author can change its base only with write access"
+                        ),
+                    )
+                    .cause("the new base would be public: an author's own change can't be members-only on this network")
+                    .fix("ask a member with write access to change it")
+                };
+                Err(e
+                    .note("checked before anything was signed; nothing was written or paid")
+                    .into())
+            }
+        }
     }
 
     /// Run `create` on `props` stamped for `doc_type` ([`Self::stamp`]). When consensus refuses
@@ -4544,7 +4691,7 @@ impl<'a> Collab<'a> {
             verdict,
             Some(Verdict::ApproveNonMember | Verdict::RequestChangesNonMember)
         ) {
-            return Ok(());
+            return self.stamp_content_fields(repo, doc_type, props).await;
         }
         let needs = proof_required(props);
         let member = self.is_member(repo).await?;
@@ -4563,6 +4710,91 @@ impl<'a> Collab<'a> {
                 ),
                 needs: "writer".into(),
             });
+        }
+        self.stamp_content_fields(repo, doc_type, props).await
+    }
+
+    /// The mainnet `aud` and `mRole` of an issue, PR, comment or review as it will be stored
+    /// (`fields`: a create's properties, or a replace's stored document with its changes
+    /// applied), where the forge-collab contract declares them ([`aud::content_fields`]): `aud`
+    /// follows `enc`, `mRole` restates the signer's current role whenever the document carries
+    /// `asMember` (`None` = absent). Sakura's contracts declare neither: nothing changes there.
+    async fn content_fields(
+        &self,
+        repo: &RepoRef,
+        doc_type: &str,
+        fields: &BTreeMap<String, FieldValue>,
+    ) -> Result<Option<(aud::Shape, aud::ContentFields)>> {
+        let collab = self.collab_contract(repo).await?;
+        let shape = aud::Shape {
+            aud: collab.has_property(doc_type, AUD),
+            m_role: collab.has_property(doc_type, MEMBER_ROLE),
+            ..aud::Shape::default()
+        };
+        if !shape.aud && !shape.m_role {
+            return Ok(None);
+        }
+        let as_member = fields.contains_key(crate::layout::AS_MEMBER);
+        let role = if as_member && shape.m_role {
+            self.cached_role(repo).await?
+        } else {
+            None
+        };
+        let version = fields
+            .get("enc")
+            .and_then(FieldValue::as_bytes)
+            .and_then(|e| e.first().copied());
+        let got = aud::content_fields(shape, version, as_member, role).map_err(|_| {
+            Error::Config(format!(
+                "this {doc_type} was encrypted in a form no post takes (version {}); nothing was written",
+                version.unwrap_or_default()
+            ))
+        })?;
+        Ok(Some((shape, got)))
+    }
+
+    /// [`Self::content_fields`] put on a create's `props`.
+    async fn stamp_content_fields(
+        &self,
+        repo: &RepoRef,
+        doc_type: &str,
+        props: &mut BTreeMap<String, FieldValue>,
+    ) -> Result<()> {
+        if let Some((_, f)) = self.content_fields(repo, doc_type, props).await? {
+            for (name, v) in [(AUD, f.aud), (MEMBER_ROLE, f.m_role)] {
+                match v {
+                    Some(v) => props.insert(name.to_string(), FieldValue::integer(v)),
+                    None => props.remove(name),
+                };
+            }
+        }
+        Ok(())
+    }
+
+    /// [`Self::content_fields`] put on a replace's `changes` of the stored `stored`: `aud` and
+    /// `mRole` set or removed where the contract declares them (the author's replace may only
+    /// drop `aud`; a member restates the role it holds now).
+    async fn restate_content_fields(
+        &self,
+        repo: &RepoRef,
+        doc_type: &str,
+        stored: &FetchedDocument,
+        changes: &mut BTreeMap<String, Option<FieldValue>>,
+    ) -> Result<()> {
+        let mut after = stored.fields.clone();
+        for (k, v) in changes.iter() {
+            match v {
+                Some(v) => after.insert(k.clone(), v.clone()),
+                None => after.remove(k),
+            };
+        }
+        if let Some((shape, f)) = self.content_fields(repo, doc_type, &after).await? {
+            if shape.aud {
+                changes.insert(AUD.to_string(), f.aud.map(FieldValue::integer));
+            }
+            if shape.m_role {
+                changes.insert(MEMBER_ROLE.to_string(), f.m_role.map(FieldValue::integer));
+            }
         }
         Ok(())
     }
@@ -4594,6 +4826,17 @@ impl<'a> Collab<'a> {
         repo: &RepoRef,
         docs: Vec<FetchedDocument>,
     ) -> Result<(Vec<FetchedDocument>, usize, usize)> {
+        self.readable_events_of(repo, DocKind::Event, docs).await
+    }
+
+    /// [`Self::readable_events`] of `kind`: `event`, or `authorEvent`, whose value is sealed
+    /// only on the mainnet contract (M3).
+    async fn readable_events_of(
+        &self,
+        repo: &RepoRef,
+        kind: DocKind,
+        docs: Vec<FetchedDocument>,
+    ) -> Result<(Vec<FetchedDocument>, usize, usize)> {
         // A public repository's events are plaintext unless their target is members-only, so
         // its keys are loaded only when a sealed value is met (an outsider's hide it).
         let keys = if repo.visibility == Visibility::Private {
@@ -4604,7 +4847,7 @@ impl<'a> Collab<'a> {
             return Ok((docs, 0, 0));
         };
         let open = |d: &FetchedDocument| match &keys {
-            DocKeys::Held(kr, _) => kr.open(DocKind::Event, d),
+            DocKeys::Held(kr, _) => kr.open(kind, d),
             DocKeys::None(_) => {
                 crate::private::Opened::Unreadable(crate::private::Unreadable::NoKey)
             }
@@ -4850,8 +5093,12 @@ impl<'a> Collab<'a> {
         repo: &RepoRef,
         [transitions, events, author_events]: [Vec<FetchedDocument>; 3],
     ) -> Result<BTreeMap<String, TargetLog>> {
-        // A private repo's member events: their sealed values opened (§8.1).
+        // A private repo's member events: their sealed values opened (§8.1); an author's
+        // retarget too, where the contract lets it be sealed (mainnet M3).
         let (events, _, _) = self.readable_events(repo, events).await?;
+        let (author_events, _, _) = self
+            .readable_events_of(repo, DocKind::AuthorEvent, author_events)
+            .await?;
         let mut logs: BTreeMap<String, TargetLog> = BTreeMap::new();
         for d in &transitions {
             if let (Some(tid), Some(t)) = (transition_target_of(d), transition_from_doc(d)) {
@@ -5045,6 +5292,10 @@ impl<'a> Collab<'a> {
         })
         .await?;
         let (events, hidden_values, plaintext_values) = self.readable_events(repo, events).await?;
+        let (author_events, author_hidden, _) = self
+            .readable_events_of(repo, DocKind::AuthorEvent, author_events)
+            .await?;
+        let hidden_values = hidden_values + author_hidden;
         Ok(TargetLog {
             transitions,
             events: events.iter().filter_map(event_from_doc).collect(),
@@ -6818,6 +7069,8 @@ impl<'a> Collab<'a> {
             for field in self.dead_references(repo, collab, &stored).await? {
                 changes.insert(field.to_string(), None);
             }
+            self.restate_content_fields(repo, doc_type, &stored, &mut changes)
+                .await?;
             return self
                 .engine()?
                 .replace_document_guarded(collab, doc_type, id, &changes, Some(revision))
@@ -6843,6 +7096,8 @@ impl<'a> Collab<'a> {
         for field in self.dead_references(repo, collab, &stored).await? {
             changes.insert(field.to_string(), None);
         }
+        self.restate_content_fields(repo, doc_type, &stored, &mut changes)
+            .await?;
         self.engine()?
             .replace_document_guarded(collab, doc_type, id, &changes, Some(revision))
             .await
@@ -7287,6 +7542,25 @@ impl<'a> Collab<'a> {
             let role = self.cached_role(repo).await?;
             if let Some(e) = crate::members::verdict_refusal(role, verdict, repo) {
                 return Err(e.fix("post it as a comment instead").into());
+            }
+        }
+        // A PR's author never approves or requests changes on it (§8.2 row 29; mainnet R-03
+        // refuses it at consensus): refused before signing, a comment offered instead.
+        if precheck_enabled() && !matches!(verdict, Verdict::Comment | Verdict::Unknown(_)) {
+            // a PR a lagging node does not show yet is left to consensus (mainnet R-03)
+            let author = self
+                .target_doc_by_id(repo, patch_id)
+                .await
+                .ok()
+                .map(|(_, patch)| patch.owner_id);
+            if author.as_deref() == Some(self.signer_id()?.as_str()) {
+                return Err(UserError::new(
+                    codes::USAGE,
+                    "You can't approve or request changes on your own pull request.",
+                )
+                .fix("post it as a comment instead")
+                .note("checked before anything was signed; nothing was written or paid")
+                .into());
             }
         }
         let verdict = self.verdict_for(repo, verdict).await?;
@@ -8859,6 +9133,7 @@ impl<'a> Collab<'a> {
     /// already starred (nothing written, no beat either). On a fused-star contract
     /// ([`Self::fused_star`]) the star is all there is, whatever `trending` says.
     pub async fn star(&self, repo: &RepoRef, trending: bool) -> Result<bool> {
+        require_public_for(repo, "starred")?;
         let community = self.community_contract(repo).await?;
         let starred = self
             .create_own_index_only(&community, repo, DOC_STAR, BTreeMap::new())

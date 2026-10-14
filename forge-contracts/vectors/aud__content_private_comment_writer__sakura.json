@@ -1,0 +1,23 @@
+{
+  "name": "content_private_comment_writer__sakura",
+  "description": "A private repo's comment (v0x01): aud 1 and mRole 1. (sakura contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "content",
+    "type": "comment",
+    "shape": {
+      "aud": false,
+      "mRole": false
+    },
+    "doc": {
+      "enc": "0100000000000000000000000000000000000000000000000000000000",
+      "asMember": true
+    },
+    "role": "writer"
+  },
+  "expected": {
+    "aud": null,
+    "mRole": null
+  }
+}

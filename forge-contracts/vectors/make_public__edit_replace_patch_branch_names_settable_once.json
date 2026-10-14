@@ -1,0 +1,30 @@
+{
+  "name": "edit_replace_patch_branch_names_settable_once",
+  "description": "The rule where the branch names are settable once (mainnet L1): the replace may set them. Clients pass settableOnce for comments only: a members-only branch's name is hashed under the members key, which no public reader can check a plaintext name against, so a made-public PR's names stay unset.",
+  "case": "make_public",
+  "rules": "v2",
+  "input": {
+    "op": "replace",
+    "kind": "patch",
+    "opened": {
+      "title": "Fix",
+      "body": "b",
+      "baseRefName": "main",
+      "sourceRefName": "fix"
+    },
+    "settableOnce": true
+  },
+  "expected": {
+    "set": {
+      "baseRefName": "main",
+      "body": "b",
+      "sourceRefName": "fix",
+      "title": "Fix"
+    },
+    "remove": [
+      "enc",
+      "epoch"
+    ],
+    "lost": []
+  }
+}

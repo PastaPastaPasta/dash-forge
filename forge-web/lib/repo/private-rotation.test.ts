@@ -780,9 +780,9 @@ describe('correctness review of the burn fixes', () => {
     expect(bob.resolution.keys.has(1)).toBe(true)
   })
 
-  it('C2 removing your own maintainer role while you anchor an epoch is refused, nothing written', async () => {
+  it('C2 removing your own maintainer role is refused, nothing written (the owner always keeps Maintain access)', async () => {
     const configs = (chain['config'] ?? []).length
-    await expect(removePrivateMember(ctx, b58(ALICE), 'maintainer', 'rm-self')).rejects.toThrow(/your own maintainer role/)
+    await expect(removePrivateMember(ctx, b58(ALICE), 'maintainer', 'rm-self')).rejects.toThrow(/The owner's own Maintain access can't be removed/)
     expect((chain['config'] ?? []).length).toBe(configs)
     expect(members.some((m) => m.identity === b58(ALICE) && m.role === 'maintainer')).toBe(true)
   })

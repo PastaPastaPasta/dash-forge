@@ -1,0 +1,22 @@
+{
+  "name": "content_public_review_maintainer_approve__sakura",
+  "description": "A maintainer's approve: the maintainer operand checks no role, so no mRole (reads 0). (sakura contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "content",
+    "type": "review",
+    "shape": {
+      "aud": false,
+      "mRole": false
+    },
+    "doc": {
+      "asMember": true
+    },
+    "role": "maintainer"
+  },
+  "expected": {
+    "aud": null,
+    "mRole": null
+  }
+}

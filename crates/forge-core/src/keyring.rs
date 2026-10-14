@@ -1006,6 +1006,10 @@ impl Keyring {
         let Some(enc) = d.field_bytes("enc").filter(|e| !e.is_empty()) else {
             return Opened::Malformed;
         };
+        // a stated `aud` (mainnet L1) names the envelope's class (consensus checks it too)
+        if !crate::rules::aud::aud_agrees(d.field_u64("aud"), enc.first().copied()) {
+            return Opened::Malformed;
+        }
         let Some(mut header) = header_of(kind, d) else {
             return Opened::Malformed;
         };
@@ -1346,7 +1350,9 @@ pub fn header_of(kind: DocKind, d: &FetchedDocument) -> Option<DocHeader> {
             h.base_ref_name_hash = d.field_bytes32("baseRefNameHash");
             h.source_ref_name_hash = d.field_bytes32("sourceRefNameHash");
         }
-        DocKind::Comment | DocKind::Event => h.target_id = d.field_bytes32("targetId"),
+        DocKind::Comment | DocKind::Event | DocKind::AuthorEvent => {
+            h.target_id = d.field_bytes32("targetId");
+        }
         DocKind::Review => h.patch_id = d.field_bytes32("patchId"),
         DocKind::RefUpdate | DocKind::ProtectedRefUpdate => {
             h.ref_name_hash = d.field_bytes32("refNameHash");

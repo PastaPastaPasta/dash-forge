@@ -83,6 +83,7 @@ export {
   readObjKey,
   sealDoc,
   sealMembersDoc,
+  sealPrivateV3,
   sharesKind,
   type AnchorRef,
   type IdentitySet,

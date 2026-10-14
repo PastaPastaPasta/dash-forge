@@ -334,10 +334,11 @@ describe('forge-community writers are RC1-valid', () => {
     expect(types(await judged())).toEqual(['star', 'star', 'watch', 'follow'])
   })
 
-  it('no trending beat on your own repo or a private one (consensus refuses both)', async () => {
+  it('no trending beat on your own repo; a private one takes no star at all (public signals, R-12)', async () => {
     await starRelation(sdk, auth(ALICE), ALICE, REPO, true).add()
-    await starRelation(sdk, auth(BOB), BOB, { ...REPO, visibility: 'private' }, true).add()
-    expect(types(await judged())).toEqual(['star', 'star'])
+    await expect(starRelation(sdk, auth(BOB), BOB, { ...REPO, visibility: 'private' }, true).add()).rejects.toThrow("Private repositories can't be starred.")
+    await expect(watchRelation(sdk, auth(BOB), BOB, { ...REPO, visibility: 'private' }).add()).rejects.toThrow("Private repositories can't be watched.")
+    expect(types(await judged())).toEqual(['star'])
   })
 })
 

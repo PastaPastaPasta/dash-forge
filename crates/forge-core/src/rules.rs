@@ -48,6 +48,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod agent_request;
 pub mod asset_name;
+pub mod aud;
 pub mod bans;
 pub mod ci_rerun;
 pub mod codeowners;
@@ -1353,7 +1354,7 @@ pub fn overlay_tree(base: &FlatIndex, later_commit_tree_diffs: &[TreeDiff]) -> F
 #[cfg(test)]
 mod tests {
     use super::{
-        bans, ci_rerun, codeowners, default_protected_patterns, display_ref_name,
+        aud, bans, ci_rerun, codeowners, default_protected_patterns, display_ref_name,
         is_legal_ref_name, long_body, matches_protected, merge_base_tips,
         missing_default_protection, overlay_tree, pr_base_tips, resolve_ref, routes_protected, v2,
         Ancestry, ConfigDoc, Event, EventKind, FlatIndex, IssueState, MergeBaseTips, PrState,
@@ -1820,6 +1821,8 @@ mod tests {
         Replace {
             kind: v2::ContentKind,
             opened: Box<crate::private::Fields>,
+            #[serde(default)]
+            settable_once: bool,
         },
         ReviewText {
             reviews: Vec<v2::CarrierReview>,
@@ -2026,6 +2029,96 @@ mod tests {
         }
     }
 
+    /// The `aud` case (`tools/private-repos-vectors/aud.py`): the mainnet fields clients write
+    /// and read, against both contract shapes.
+    #[derive(Serialize, Deserialize)]
+    #[serde(tag = "op", rename_all = "camelCase", deny_unknown_fields)]
+    enum AudInput {
+        Content {
+            #[serde(rename = "type")]
+            _type: String,
+            shape: aud::Shape,
+            doc: AudDoc,
+            role: Option<v2::Role>,
+        },
+        Read {
+            #[serde(rename = "type")]
+            _type: String,
+            doc: AudDoc,
+        },
+        Event {
+            #[serde(rename = "type")]
+            doc_type: String,
+            shape: aud::Shape,
+            target: aud::EventTarget,
+            value: bool,
+        },
+        #[serde(rename = "manifestR")]
+        ManifestR {
+            shape: aud::Shape,
+            kind: u64,
+            claimed: u64,
+        },
+    }
+
+    #[derive(Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct AudDoc {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enc: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        as_member: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        aud: Option<u64>,
+    }
+
+    impl AudDoc {
+        fn version(&self) -> Option<u8> {
+            self.enc
+                .as_deref()
+                .filter(|e| !e.is_empty())
+                .map(|e| u8::from_str_radix(&e[..2], 16).expect("hex"))
+        }
+    }
+
+    fn run_aud(v: &Vector) {
+        use serde_json::json;
+        let ctx = &v.name;
+        let got = match input::<AudInput>(v) {
+            AudInput::Content {
+                shape, doc, role, ..
+            } => match aud::content_fields(shape, doc.version(), doc.as_member, role) {
+                Ok(f) => json!({ "aud": f.aud, "mRole": f.m_role }),
+                Err(e) => json!({ "error": e }),
+            },
+            AudInput::Read { doc, .. } => {
+                json!(if aud::aud_agrees(doc.aud, doc.version()) {
+                    "ok"
+                } else {
+                    "malformed"
+                })
+            }
+            AudInput::Event {
+                doc_type,
+                shape,
+                target,
+                value,
+            } => serde_json::to_value(aud::event_fields(
+                shape,
+                doc_type == "authorEvent",
+                target,
+                value,
+            ))
+            .expect("serialize"),
+            AudInput::ManifestR {
+                shape,
+                kind,
+                claimed,
+            } => json!(aud::manifest_r(shape, kind, claimed)),
+        };
+        assert_eq!(got, v.expected, "vector `{ctx}`");
+    }
+
     fn run_make_public(v: &Vector) {
         let ctx = &v.name;
         match input::<MakePublicInput>(v) {
@@ -2039,8 +2132,12 @@ mod tests {
                 let got = v2::audience_edit(visibility, &stored, &edited, &author, &signer);
                 assert_eq!(got, expected::<v2::AudienceEdit>(v), "vector `{ctx}`");
             }
-            MakePublicInput::Replace { kind, opened } => {
-                let got = match v2::make_public_changes(kind, &opened) {
+            MakePublicInput::Replace {
+                kind,
+                opened,
+                settable_once,
+            } => {
+                let got = match v2::make_public_changes(kind, &opened, settable_once) {
                     Ok(m) => serde_json::to_value(m),
                     Err(e) => serde_json::to_value(e).map(|e| serde_json::json!({ "error": e })),
                 }
@@ -3260,6 +3357,7 @@ mod tests {
             }
             "approval_count" | "mixed_edit" | "mixed_anchor" => run_mixed_case(v),
             "make_public" => run_make_public(v),
+            "aud" => run_aud(v),
             "git_plane_well_formed" => {
                 let inp: WellFormedInput = input(v);
                 assert_eq!(

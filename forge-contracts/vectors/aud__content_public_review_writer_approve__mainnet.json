@@ -1,0 +1,22 @@
+{
+  "name": "content_public_review_writer_approve__mainnet",
+  "description": "A writer's public approve carries asMember, so mRole 1 on mainnet. (mainnet contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "content",
+    "type": "review",
+    "shape": {
+      "aud": true,
+      "mRole": true
+    },
+    "doc": {
+      "asMember": true
+    },
+    "role": "writer"
+  },
+  "expected": {
+    "aud": null,
+    "mRole": 1
+  }
+}

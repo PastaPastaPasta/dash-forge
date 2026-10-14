@@ -1,0 +1,23 @@
+{
+  "name": "content_members_patch_writer__sakura",
+  "description": "A writer's members-only PR: aud 1, mRole 1. (sakura contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "content",
+    "type": "patch",
+    "shape": {
+      "aud": false,
+      "mRole": false
+    },
+    "doc": {
+      "enc": "030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "asMember": true
+    },
+    "role": "writer"
+  },
+  "expected": {
+    "aud": null,
+    "mRole": null
+  }
+}

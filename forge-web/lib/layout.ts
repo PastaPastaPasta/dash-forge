@@ -115,6 +115,13 @@ export const VIS_TYPES: ReadonlySet<string> = new Set([
 export const PUBLIC_ONLY_TYPES: ReadonlySet<string> = new Set(['topic', 'starBeat'])
 
 /**
+ * The stamped types whose `vis` the mainnet contract drops (R-11: a public repo is proved by the
+ * reference alone, and a document carrying `vis` is refused): their writer leaves it out where the
+ * registered contract no longer declares it, so a missing stamp is not a layout error here.
+ */
+export const VIS_DROPPED_TYPES: ReadonlySet<string> = new Set(['topic', 'webhook'])
+
+/**
  * `data` with the `vis` stamp a create of `documentType` in a repo of `visibility` carries, or
  * `data` itself for a type that has none. A stamp already set is kept.
  */
@@ -137,6 +144,7 @@ export function rc1WriteProblem(forge: ForgeIds | null, contractId: string, docu
   if (kind === null) return `no Forge contract holds the document type ${JSON.stringify(documentType)}`
   if (forge[kind] !== contractId) return `a ${documentType} belongs in forge-${kind}, not the contract it was sent to`
   const vis = data['vis']
+  if (vis === undefined && VIS_DROPPED_TYPES.has(documentType)) return null
   if (PUBLIC_ONLY_TYPES.has(documentType) && vis !== 'public') return `a ${documentType} must carry vis "public"`
   if (VIS_TYPES.has(documentType) && vis !== 'public' && vis !== 'private') return `a ${documentType} must carry its repo's visibility (vis)`
   return null
