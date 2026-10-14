@@ -502,8 +502,13 @@ pub fn work(cfg: &Config, repo: &RepoConfig, bot: &str, row: &JobRow, dir: &Path
         return Ok(out);
     }
     let result = outdir.join("result.json");
-    let bytes = match std::fs::metadata(&result) {
-        Ok(m) if m.len() <= MAX_RESULT_FILE => std::fs::read(&result)?,
+    // never followed: a link the agent made would have the runner read a file of its host
+    let bytes = match std::fs::symlink_metadata(&result) {
+        Ok(m) if m.is_file() && m.len() <= MAX_RESULT_FILE => std::fs::read(&result)?,
+        Ok(m) if !m.is_file() => {
+            out.refused = Some("the agent's result.json is not a file; nothing was posted".into());
+            return Ok(out);
+        }
         Ok(_) => {
             out.refused = Some("the agent's result.json is too large; nothing was posted".into());
             return Ok(out);

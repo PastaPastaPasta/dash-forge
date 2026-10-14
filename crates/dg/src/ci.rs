@@ -986,7 +986,7 @@ async fn members_target(s: &Session, branch: &str, oid: &str) -> Result<MembersT
     }
     let svc = forge_core::repo::RepoService::new(&s.client, &s.identity, &s.bridge);
     let Some(refs) = svc.read_members_refs(&s.repo).await? else {
-        return shared_target(s, &svc, branch, oid).await;
+        return Box::pin(shared_target(s, &svc, branch, oid)).await;
     };
     let found = introducing_update(&refs.updates, &branch, oid).ok_or_else(|| {
         UserError::new(
@@ -1139,7 +1139,7 @@ async fn report(ctx: &Ctx, a: &ReportArgs) -> Result<()> {
     let private = s.repo.visibility == Visibility::Private;
     // A members-only branch's run: on the commit's blind, under its opaque name.
     let members = match &a.members_branch {
-        Some(b) => Some(members_target(&s, b, &r.head_oid).await?),
+        Some(b) => Some(Box::pin(members_target(&s, b, &r.head_oid)).await?),
         None => None,
     };
     if let Some(m) = &members {
@@ -1847,7 +1847,7 @@ async fn refs(ctx: &Ctx, repo: &str) -> Result<()> {
     // as git lists them with the same key. A failed read fails: the runner must not take a
     // shared branch git lists for a public one.
     let shared = if members.is_none() && !private {
-        r.shared_branches().await?
+        Box::pin(r.shared_branches()).await?
     } else {
         Vec::new()
     };

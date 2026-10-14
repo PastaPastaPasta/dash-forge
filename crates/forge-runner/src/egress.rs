@@ -155,15 +155,16 @@ impl Drop for Proxy {
     }
 }
 
-/// Append `attempt` to the log and its file (`<ms> <verdict> <target>`).
+/// Append `attempt` to the log and its file (`<ms> <verdict> <target>`), one whole line at a time
+/// (connections are served on their own threads).
 fn record(log: &Mutex<Vec<Attempt>>, path: &Path, attempt: Option<Attempt>) {
     let Some(a) = attempt else { return };
+    let Ok(mut l) = log.lock() else { return };
     if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(path) {
-        let _ = writeln!(f, "{} {} {}", a.at, a.verdict.word(), a.target);
+        let line = format!("{} {} {}\n", a.at, a.verdict.word(), a.target);
+        let _ = f.write_all(line.as_bytes());
     }
-    if let Ok(mut l) = log.lock() {
-        l.push(a);
-    }
+    l.push(a);
 }
 
 /// Serve one connection: read its request head, judge it, and either tunnel it or refuse it.
