@@ -88,3 +88,45 @@ describe('published keys', () => {
     expect(await addPublished(r, REPO_ID, new Map(), [])).toBe(r)
   })
 })
+
+describe('epoch-key bundles (forge-core epoch_key_bundles)', () => {
+  it('publish each epoch once, in order, and split by size', async () => {
+    const { MAX_EPOCH_ENTRIES, EPOCH_BUNDLE_NOTE, epochKeyBundles } = await import('./convert')
+    const repo = new Uint8Array(32).fill(7)
+    const keys = new Map<number, Uint8Array>()
+    // inserted out of order: the bundle is in epoch order regardless
+    for (let e = MAX_EPOCH_ENTRIES + 2; e >= 0; e--) keys.set(e, new Uint8Array(32).fill(e % 251))
+    const bundles = epochKeyBundles(repo, keys)
+    expect(bundles).toHaveLength(2)
+    const seen: number[] = []
+    for (const b of bundles) {
+      expect(b.length).toBeLessThanOrEqual(14_700)
+      const parsed = parseBundle(b)
+      expect(parsed.note).toBe(EPOCH_BUNDLE_NOTE)
+      for (const e of parsed.entries) {
+        expect(e.kind).toBe(ENTRY_EPOCH_KEY)
+        expect(e.target).toEqual(repo)
+        expect(e.key).toEqual(keys.get(e.revision))
+        seen.push(e.revision)
+      }
+    }
+    expect(seen).toEqual([...keys.keys()].sort((a, b) => a - b))
+    expect(epochKeyBundles(repo, new Map())).toEqual([])
+  })
+
+  it('are byte-identical to forge-core (the same sha256 its unit test asserts)', async () => {
+    const { EPOCH_BUNDLE_NOTE, epochKeyBundles } = await import('./convert')
+    const { sha256 } = await import('@noble/hashes/sha2.js')
+    const { bytesToHex } = await import('@noble/hashes/utils.js')
+    const keys = new Map<number, Uint8Array>([
+      [5, new Uint8Array(32).fill(0x35)],
+      [0, new Uint8Array(32).fill(0x10)],
+      [1, new Uint8Array(32).fill(0x21)],
+    ])
+    const [only, ...rest] = epochKeyBundles(new Uint8Array(32).fill(7), keys)
+    expect(rest).toEqual([])
+    expect(only?.length).toBe(7 + 3 * 69 + new TextEncoder().encode(EPOCH_BUNDLE_NOTE).length)
+    // crates/forge-core/src/private/convert.rs `epoch_key_bundles_are_byte_identical_across_stacks`
+    expect(bytesToHex(sha256(only as Uint8Array))).toBe('740906d2c6534bbc3c7eaaa2b4a5e0321b3c2b4d710b5c9191d30d5953811757')
+  })
+})

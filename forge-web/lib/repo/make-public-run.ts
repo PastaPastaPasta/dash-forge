@@ -1,0 +1,534 @@
+/**
+ * Steps 1 to 7 of making a private repo public (mixed-visibility DESIGN §4.10; dg `convert`, with
+ * 5A's decisions), each reading state first so a run that stops can be run again and finishes:
+ *
+ * 1. the typed confirmation, when the run publishes something this browser has no record of;
+ * 2. the seal-off rotation while the repo is still private, never twice: a recorded seal-off epoch
+ *    that is still current is kept. The key is read again (up to about 10 s for a node behind) and
+ *    the run stops if someone else rotated meanwhile; with Everything the check runs again over
+ *    what is now final, and the gate stops the run before the flip;
+ * 3. the flip (the owner): the `repo` with `visibility: "public"` and its default branch;
+ * 4. the first public settings, unless they exist (any maintainer);
+ * 5. the code: one fresh public pack of the refs not public yet, never a branch members pushed to
+ *    after the flip, stored as a normal push stores it, then their public ref updates;
+ * 6. nothing is signed: Forge apps tell members from the flip and the published keys;
+ * 7. with Everything, the owner's history bundles not recorded yet (deterministic, so "recorded"
+ *    is an owner kind-7 manifest of the same `packHash`, whichever client wrote it). Any
+ *    maintainer finishes the rest of a run the owner started; this step stays the owner's.
+ *
+ * Each step is told running → done (or `owner`: waits for the owner). `signal` aborted between
+ * steps stops the run cleanly; it can be run again. Writes carry intents (idempotency keys), so a
+ * retry after a lost answer never writes twice. The chain is reached through {@link MakePublicIo}
+ * ({@link sdkMakePublicIo} in the app), so the decisions are tested without a network.
+ */
+
+import { sha256 } from '@noble/hashes/sha2.js'
+import { bytesToHex } from '@noble/hashes/utils.js'
+
+import { decodeIdentifier } from '../auth/base58'
+import { PACK_KIND } from '../constants'
+import type { UploadPack } from '../merge/runner'
+import { epochKeyBundles, EpochKeys, constantTimeEqual, openWithKey, type Anchor, type Conversion } from '../private'
+import { isRc1BranchName } from '../rules/oid'
+import { createDocumentIdempotent, readIdentityBalance, replaceDocumentIdempotent } from '../sdk'
+import { storeArtifact } from '../storage/upload'
+import type { RepoConfig } from './config'
+import { DOC, withVis } from './contract'
+import { contractVisibilityOneWay } from './contract-shape'
+import {
+  COPY,
+  MAKE_PUBLIC_WORDS,
+  MakePublicError,
+  deleteMakePublicRecord,
+  gateMakePublic,
+  leftOutRefs,
+  loadMakePublicRecord,
+  recordRefs,
+  refsOfRecord,
+  saveMakePublicRecord,
+  unpublishedRefs,
+  type MakePublicMode,
+  type MakePublicProgress,
+  type MakePublicRecord,
+  type MakePublicRef,
+  type MakePublicStep,
+} from './make-public'
+import {
+  inspect,
+  privateSessionFor,
+  privateViewOf,
+  publicViewOf,
+  readConversion,
+  readMembersContinued,
+  readOwnerBundles,
+  readVisibility,
+  type Inspection,
+  type PackCache,
+} from './make-public-check'
+import { buildPack } from './make-public-objects'
+import { invalidateRepoBundles } from './made-public'
+import { ownRawEpochKey, rotateRepoKey, type PrivateWriteContext } from './private-members'
+import { invalidatePrivateSession, isMaintainer, loadPrivateSessionUncached, sessionUnwrapper, type PrivateSession } from './private-session'
+import { repoContentWritten, writePackManifest, writeRefUpdate } from './push'
+import { configData, DEFAULT_CONFIG } from './settings'
+import { readRefs } from './refs'
+
+/** What the owner chose. */
+export interface MakePublicChoice {
+  readonly mode: MakePublicMode
+  /** Code only's branches and tags by name (default: the check's, or this browser's record). */
+  readonly refs?: readonly string[]
+  /** Fingerprints of possible secrets to publish anyway. */
+  readonly allowSecrets: readonly string[]
+  /**
+   * The typed words, `make ${repoLabel} public` (checked only when the run publishes something this
+   * browser has no record of; a run that only finishes one may pass '').
+   */
+  readonly confirmation: string
+  /** How the dialog names the repo (`owner/name`); default: any `make <owner>/<name> public`. */
+  readonly repoLabel?: string
+  /**
+   * Continue the run this browser recorded ("Finish it"): its refs, no typed words (dg `--resume`).
+   * Without it a run that publishes anything new needs the words, a record or not.
+   */
+  readonly resume?: boolean
+  /** Where the code pack goes (the merge's storage choice, `useMergeUpload`); default: Platform. */
+  readonly upload?: UploadPack
+}
+
+/** What a run did. */
+export interface MakePublicOutcome {
+  /** Every step is done (else the owner's history step waits). */
+  readonly finished: boolean
+  /** Branches and tags never published: members pushed to them after the flip. */
+  readonly notPublished: string[]
+  /** Credits spent, from the balance before and after (absent when it couldn't be read). */
+  readonly spentCredits?: number
+}
+
+/** The chain as a run reaches it (see {@link sdkMakePublicIo}). */
+export interface MakePublicIo {
+  /** The signer (base58). */
+  readonly me: string
+  /** The repo's owner (base58). */
+  readonly owner: string
+  readonly repoId: string
+  readonly repoName: string
+  readVisibility(): Promise<'public' | 'private'>
+  /** The conversion facts read now (null unless public and once private). */
+  readConversion(): Promise<Conversion | null>
+  /** The owner's recorded history bundles' `packHash`es (hex). */
+  ownerBundles(): Promise<Set<string>>
+  /** The signer's standing on a fresh read of the private view's keys. */
+  keys(): Promise<{ readonly maintainer: boolean; readonly currentEpoch: number | null }>
+  /** The check (step 0) over a fresh session. */
+  inspect(opts: { mode: MakePublicMode; refs?: readonly string[]; chosen?: readonly MakePublicRef[]; conversion: Conversion | null; below?: number; signal?: AbortSignal }): Promise<Inspection>
+  /** The seal-off rotation: a fresh key wrapped to every member. Returns its epoch. */
+  rotate(): Promise<number>
+  /** Whether the contract lets the repo's visibility move once. */
+  canFlip(): Promise<boolean>
+  flip(defaultBranch: string): Promise<void>
+  writeConfig(config: RepoConfig): Promise<void>
+  /** The public refs (name → tip) and the members-only ones continued after the flip. */
+  publicState(): Promise<{ readonly publicRefs: ReadonlyMap<string, string>; readonly membersOnly: ReadonlySet<string> }>
+  /** Store the fresh pack of `todo` (without what `have` reaches) and write their public ref updates. */
+  publishCode(inspection: Inspection, todo: readonly MakePublicRef[], have: readonly string[]): Promise<void>
+  /** The history bundles of the keys below `sealOff` the signer holds (the caller wipes them). */
+  historyBundles(sealOff: number): Promise<Uint8Array[]>
+  storeBundle(bytes: Uint8Array): Promise<void>
+  loadRecord(): Promise<MakePublicRecord | null>
+  saveRecord(r: MakePublicRecord): Promise<void>
+  deleteRecord(): Promise<void>
+  /** The signer's balance (credits), or null. */
+  balance(): Promise<number | null>
+  sleep(ms: number): Promise<void>
+}
+
+/** How long a run waits, at most, for a node to show its own rotation. */
+const ROTATION_WAIT = { attempts: 5, ms: 2000 }
+
+/** Whether `typed` is the confirmation for the repo named `label` (or for any `<owner>/<name>` of `name`). */
+export function confirms(typed: string, name: string, label?: string): boolean {
+  if (label !== undefined) return typed === MAKE_PUBLIC_WORDS(label)
+  const m = /^make (\S+) public$/.exec(typed)
+  return m !== null && (m[1] as string).endsWith(`/${name}`) && (m[1] as string).length > name.length + 1
+}
+
+/** The run (dg `run` + `convert`) over `io`. */
+export async function runMakePublicWith(io: MakePublicIo, choice: MakePublicChoice, onProgress: (p: MakePublicProgress) => void, signal?: AbortSignal): Promise<MakePublicOutcome> {
+  const stop = (): void => signal?.throwIfAborted()
+  const report = (step: MakePublicStep, state: MakePublicProgress['state'], detail?: string): void => onProgress({ step, state, ...(detail !== undefined ? { detail } : {}) })
+  const { mode } = choice
+  // nothing is chosen for the owner: with no mode, nothing runs
+  if (mode !== 'codeOnly' && mode !== 'everything') throw new MakePublicError(COPY.noMode, 'E201')
+  const isOwner = io.me === io.owner
+  stop()
+  const visibility = await io.readVisibility()
+  const conversion = visibility === 'public' ? await io.readConversion() : null
+  if (visibility === 'public' && conversion === null) throw new MakePublicError(COPY.publicAlready, 'E201')
+  const flipped = conversion !== null
+  const standing = await io.keys()
+  if (!isOwner && !standing.maintainer) throw new MakePublicError(COPY.notOwner, 'E601')
+  // a run that started Everything (some history published) finishes as Everything
+  const historyStarted = flipped && (await io.ownerBundles()).size > 0
+  if (historyStarted && mode === 'codeOnly') throw new MakePublicError(COPY.historyStarted, 'E201')
+  // only the owner flips, and only the owner chooses Everything
+  if (!isOwner && (!flipped || (mode === 'everything' && !historyStarted))) throw new MakePublicError(COPY.notOwner, 'E601')
+  const saved = await io.loadRecord()
+  const savedHere = saved !== null && saved.mode === mode
+  const named = choice.refs !== undefined && choice.refs.length > 0
+  const chosen = savedHere && !named ? refsOfRecord(saved) : undefined
+  if (flipped && !isOwner && mode === 'codeOnly' && !savedHere && !named) throw new MakePublicError(COPY.sayRefs, 'E201')
+  stop()
+  let inspection = await io.inspect({ mode, conversion, ...(named ? { refs: choice.refs } : {}), ...(chosen !== undefined ? { chosen } : {}), ...(signal !== undefined ? { signal } : {}) })
+  if (!flipped) {
+    const b = inspection.blockers[0]
+    if (b !== undefined) throw b
+  }
+  let wanted: readonly MakePublicRef[] = mode === 'codeOnly' ? inspection.check.codeRefs : inspection.check.allRefs
+  // what is public already, and what members continued after the flip (never published)
+  const before = flipped ? await io.publicState() : { publicRefs: new Map<string, string>(), membersOnly: new Set<string>() }
+  const todoNow = unpublishedRefs(wanted, before.publicRefs, before.membersOnly)
+  const publishesHistory = mode === 'everything' && isOwner
+  const recorded = flipped && publishesHistory ? await io.ownerBundles() : new Set<string>()
+  // a publication this browser has no confirmation of: refs not public yet, or the history
+  const newPublication = !flipped || (todoNow.length > 0 && !savedHere) || (publishesHistory && recorded.size === 0 && !savedHere)
+  if (newPublication || publishesHistory) {
+    const refusal = gateMakePublic(inspection.check, mode, choice.allowSecrets)
+    if (refusal !== null) throw refusal
+  }
+  // the words, unless this continues the run this browser recorded, with its refs (dg `--resume`)
+  const resuming = choice.resume === true && savedHere && !named
+  if (newPublication && !resuming && !confirms(choice.confirmation, io.repoName, choice.repoLabel)) {
+    throw new MakePublicError(COPY.words(MAKE_PUBLIC_WORDS(choice.repoLabel ?? `<owner>/${io.repoName}`)), 'E802')
+  }
+  stop()
+  const startBalance = await io.balance()
+  let record: MakePublicRecord = { mode, refs: recordRefs(wanted), sealOff: saved?.sealOff ?? null, startedAt: saved?.startedAt ?? Date.now() }
+  await io.saveRecord(record)
+  // 2. seal off, 3. flip
+  if (flipped) {
+    report('sealOff', 'done')
+    report('flip', 'done')
+  } else {
+    if (record.sealOff !== null && record.sealOff === standing.currentEpoch) {
+      report('sealOff', 'done')
+    } else {
+      report('sealOff', 'running')
+      const epoch = await io.rotate()
+      record = { ...record, sealOff: epoch }
+      await io.saveRecord(record)
+      report('sealOff', 'done')
+    }
+    stop()
+    // a node a block behind may not show the rotation yet
+    let now = await io.keys()
+    for (let i = 0; i < ROTATION_WAIT.attempts && (now.currentEpoch === null || now.currentEpoch < (record.sealOff as number)); i++) {
+      await io.sleep(ROTATION_WAIT.ms)
+      now = await io.keys()
+    }
+    if (now.currentEpoch !== record.sealOff) throw new MakePublicError(COPY.keyChanged, 'E310')
+    if (mode === 'everything') {
+      // What Everything publishes is final now (everything below the seal-off rotation): check
+      // it again, since members may have written or pushed since the first check.
+      inspection = await io.inspect({ mode, conversion: null, chosen: wanted, below: record.sealOff as number, ...(signal !== undefined ? { signal } : {}) })
+      const refusal = gateMakePublic(inspection.check, mode, choice.allowSecrets)
+      if (refusal !== null) throw new MakePublicError(`${refusal.message} ${COPY.stillPrivate}`, refusal.code, refusal.secrets)
+      wanted = inspection.check.allRefs
+      record = { ...record, refs: recordRefs(wanted) }
+      await io.saveRecord(record)
+    }
+    stop()
+    report('flip', 'running')
+    // the second check can take minutes: the key is read again right before the point of no return
+    if ((await io.keys()).currentEpoch !== record.sealOff) throw new MakePublicError(COPY.keyChanged, 'E310')
+    if (!(await io.canFlip())) throw new MakePublicError(COPY.frozen, 'E103')
+    await io.flip(inspection.check.defaultBranch)
+    report('flip', 'done')
+  }
+  stop()
+  // 4. the first public settings
+  if ((await io.readConversion())?.markerHeight == null) {
+    report('config', 'running')
+    await io.writeConfig(inspection.config ?? DEFAULT_CONFIG)
+  }
+  report('config', 'done')
+  stop()
+  // 5. the code
+  const state = await io.publicState()
+  const todo = unpublishedRefs(wanted, state.publicRefs, state.membersOnly)
+  const notPublished = leftOutRefs(wanted, state.publicRefs, state.membersOnly)
+  if (todo.length > 0) {
+    report('code', 'running', todo.map((r) => r.name).join(', '))
+    await io.publishCode(inspection, todo, [...state.publicRefs.values()])
+  }
+  report('code', 'done')
+  // 6. notifications: Forge apps read them from the flip and the published keys
+  report('notify', 'done')
+  stop()
+  // 7. the history
+  let finished = true
+  if (mode === 'everything') {
+    // never at or above this run's own seal-off epoch, even if a rotation slipped in before the flip
+    const stated = (await io.readConversion())?.sealOffEpoch ?? null
+    const sealOff = stated !== null && record.sealOff !== null ? Math.min(stated, record.sealOff) : (stated ?? record.sealOff ?? 0)
+    const recordedNow = await io.ownerBundles()
+    const bundles = await io.historyBundles(sealOff)
+    try {
+      const left = bundles.filter((b) => !recordedNow.has(bytesToHex(sha256(b))))
+      if (left.length === 0) report('history', 'done')
+      else if (!isOwner) {
+        finished = false
+        report('history', 'owner')
+      } else {
+        report('history', 'running')
+        for (const b of left) {
+          stop()
+          await io.storeBundle(b)
+        }
+        report('history', 'done')
+      }
+    } finally {
+      for (const b of bundles) b.fill(0)
+    }
+  } else {
+    report('history', 'skipped')
+  }
+  const endBalance = await io.balance()
+  if (finished) await io.deleteRecord()
+  return { finished, notPublished, ...(startBalance !== null && endBalance !== null ? { spentCredits: Math.max(0, startBalance - endBalance) } : {}) }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The history's keys
+// ---------------------------------------------------------------------------------------------
+
+/** Whether raw key `raw` of `epoch` commits to `anchor`. */
+async function commitsTo(repoId: Uint8Array, epoch: number, raw: Uint8Array, anchor: Anchor | undefined): Promise<boolean> {
+  if (anchor?.commit == null) return false
+  const keys = await EpochKeys.import(repoId, epoch, raw)
+  return constantTimeEqual(keys.commit, anchor.commit)
+}
+
+/** The fields of `anchor` opened with the session's key of its epoch (null: not readable). */
+async function openAnchorFields(session: PrivateSession, anchor: Anchor): Promise<{ prevEpoch?: number; prevEpochKey?: Uint8Array; skipEpochKey?: Uint8Array } | null> {
+  const keys = session.resolution.keys.get(anchor.config.epoch)
+  if (keys === undefined) return null
+  const c = anchor.config
+  const opened = await openWithKey({ type: 'config', ownerId: c.owner, epoch: c.epoch, id: c.id, createdAtBlockHeight: c.createdAtBlockHeight, enc: c.enc }, keys, true)
+  return opened.status === 'readable' ? opened.fields : null
+}
+
+/**
+ * The raw keys of every epoch below `sealOff` the signer reads (forge-core `epoch_keys_below`),
+ * each taken where the session's chain walk found it: the next anchor's `prevEpochKey`, a later
+ * anchor's `skipEpochKey` over a burned run, else the signer's own wrap; each checked against its
+ * anchor. The caller wipes them.
+ */
+export async function rawKeysBelow(session: PrivateSession, sealOff: number, ownWrap: (epoch: number) => Promise<Uint8Array>): Promise<Map<number, Uint8Array>> {
+  const r = session.resolution
+  const out = new Map<number, Uint8Array>()
+  const readable = [...r.keys.keys()].filter((e) => e < sealOff).sort((a, b) => a - b)
+  const opened = new Map<number, Awaited<ReturnType<typeof openAnchorFields>>>()
+  const fieldsOf = async (e: number) => {
+    if (!opened.has(e)) {
+      const a = r.anchors.get(e)
+      opened.set(e, a === undefined ? null : await openAnchorFields(session, a))
+    }
+    return opened.get(e) ?? null
+  }
+  try {
+    for (const e of readable) {
+      const anchor = r.anchors.get(e)
+      let raw: Uint8Array | null = null
+      const next = await fieldsOf(e + 1)
+      if (next?.prevEpoch === e && next.prevEpochKey !== undefined && (await commitsTo(session.repoId, e, next.prevEpochKey, anchor))) raw = next.prevEpochKey.slice()
+      for (const a of r.anchors.keys()) {
+        if (raw !== null) break
+        if (a <= e + 1 || !r.keys.has(a)) continue
+        const f = await fieldsOf(a)
+        if (f?.skipEpochKey !== undefined && (await commitsTo(session.repoId, e, f.skipEpochKey, anchor))) raw = f.skipEpochKey.slice()
+      }
+      if (raw === null) raw = await ownWrap(e).catch(() => null)
+      if (raw !== null) out.set(e, raw)
+    }
+  } finally {
+    for (const f of opened.values()) {
+      f?.prevEpochKey?.fill(0)
+      f?.skipEpochKey?.fill(0)
+    }
+  }
+  return out
+}
+
+// ---------------------------------------------------------------------------------------------
+// The app's chain
+// ---------------------------------------------------------------------------------------------
+
+/** Intents of this run's writes (the run's idempotency keys). */
+function intentOf(repoId: string, what: string): string {
+  return `make-public:${repoId}:${what}`
+}
+
+/** The chain of `c` (a member's write context; `c.repo` either view of the repo). */
+export function sdkMakePublicIo(c: PrivateWriteContext, opts: { readonly upload?: UploadPack; readonly label?: string; readonly onCheck?: (what: string) => void } = {}): MakePublicIo {
+  const { sdk, auth } = c
+  const repo = c.repo
+  const priv = privateViewOf(repo)
+  const pub = publicViewOf(repo)
+  const packCache: PackCache = new Map()
+  const fresh = <T>(use: (s: PrivateSession) => Promise<T>): Promise<T> =>
+    privateSessionFor(c).then(async (s) => {
+      try {
+        return await use(s)
+      } finally {
+        s.close()
+      }
+    })
+  const written = (): void => {
+    invalidatePrivateSession(repo)
+    repoContentWritten(pub)
+  }
+  const upload: UploadPack =
+    opts.upload ??
+    (async (bytes) => {
+      const s = await storeArtifact(sdk, auth, pub, bytes, { policy: null, profiles: [], confirmPlatform: async () => true })
+      return { storage: s.storage, chunkCount: s.chunkCount, uris: s.uris }
+    })
+  return {
+    me: auth.identityId,
+    owner: repo.ownerId,
+    repoId: repo.repoId,
+    repoName: repo.name,
+    readVisibility: () => readVisibility(sdk, repo),
+    readConversion: () => readConversion(sdk, repo),
+    ownerBundles: () => readOwnerBundles(sdk, repo),
+    keys: () => fresh(async (s) => ({ maintainer: isMaintainer(s, auth.identityId), currentEpoch: s.resolution.currentEpoch })),
+    inspect: (o) =>
+      fresh((s) =>
+        inspect(c, s, {
+          ...o,
+          packCache,
+          ...(opts.label !== undefined ? { label: opts.label } : {}),
+          ...(opts.onCheck !== undefined ? { onProgress: opts.onCheck } : {}),
+        }),
+      ),
+    rotate: async () => {
+      try {
+        return await rotateRepoKey({ ...c, repo: priv }, [], intentOf(repo.repoId, 'seal-off'))
+      } finally {
+        invalidatePrivateSession(repo)
+      }
+    },
+    canFlip: () => contractVisibilityOneWay(sdk, repo.forge.core),
+    flip: async (defaultBranch) => {
+      // copy-lint-ignore: checked against the repo's own settings before signing
+      if (!isRc1BranchName(defaultBranch)) throw new MakePublicError(COPY.badBranch(defaultBranch), 'E201')
+      try {
+        await replaceDocumentIdempotent(sdk, auth, {
+          contractId: repo.forge.core,
+          documentType: DOC.repo,
+          documentId: repo.repoId,
+          changes: { visibility: 'public', defaultBranch },
+          repo: repo.repoId,
+        })
+      } finally {
+        written()
+      }
+    },
+    writeConfig: async (config) => {
+      try {
+        await createDocumentIdempotent(sdk, auth, {
+          contractId: repo.forge.core,
+          documentType: DOC.config,
+          data: withVis('public', DOC.config, { repoId: decodeIdentifier(repo.repoId), ...configData(config) }),
+          intent: intentOf(repo.repoId, 'config'),
+        })
+      } finally {
+        written()
+      }
+    },
+    publicState: async () => {
+      const publicRefs = new Map<string, string>()
+      for (const r of await readRefs(sdk, pub)) {
+        const tip = r.state.state === 'resolved' ? r.state.oid : r.state.state === 'diverged' ? (r.state.heads[0]?.oid ?? null) : null
+        if (tip !== null) publicRefs.set(r.refName, tip)
+      }
+      const lane = await loadPrivateSessionUncached(sdk, pub, c.network, auth.identityId, sessionUnwrapper(c.ops))
+      try {
+        return { publicRefs, membersOnly: await readMembersContinued(sdk, pub, lane) }
+      } finally {
+        lane.close()
+      }
+    },
+    publishCode: async (inspection, todo, have) => {
+      const pack = await buildPack(inspection.store, todo.map((r) => r.oid), have, opts.label)
+      if (pack !== null) {
+        const stored = await upload(pack.bytes, { packHash: pack.packHash, objectCount: pack.objectCount })
+        await writePackManifest(sdk, auth, pub, { packHash: pack.packHash, kind: PACK_KIND.GIT_PACK, sizeBytes: pack.bytes.length, objectCount: pack.objectCount, ...stored }, intentOf(repo.repoId, `code:${pack.packHash}`))
+        // the browse index only makes it browse faster: best effort, as a push's
+        try {
+          const { publishMergeIndex } = await import('../merge/locator')
+          await publishMergeIndex(sdk, auth, pub, pack.bytes, pack.packHash, upload, intentOf(repo.repoId, `index:${pack.packHash}`))
+        } catch {
+          // the repo browses by the in-browser clone until the next push
+        }
+      }
+      for (const r of todo) await writeRefUpdate(sdk, auth, pub, { refName: r.name, newOid: r.oid }, { intent: intentOf(repo.repoId, `ref:${r.name}:${r.oid}`) })
+      written()
+    },
+    historyBundles: (sealOff) =>
+      fresh(async (s) => {
+        const keys = await rawKeysBelow(s, sealOff, (e) => ownRawEpochKey(s, { ...c, repo: priv }, e))
+        try {
+          return epochKeyBundles(decodeIdentifier(repo.repoId), keys)
+        } finally {
+          for (const k of keys.values()) k.fill(0)
+        }
+      }),
+    storeBundle: async (bytes) => {
+      try {
+        // Platform only: every reader, anonymous and the gateway included, must find it.
+        const s = await storeArtifact(sdk, auth, pub, bytes, { policy: null, profiles: [], confirmPlatform: async () => true })
+        await writePackManifest(
+          sdk,
+          auth,
+          pub,
+          { kind: PACK_KIND.MAKE_PUBLIC, objectCount: 0, packHash: s.packHash, sizeBytes: s.sizeBytes, chunkCount: s.chunkCount, storage: s.storage, uris: s.uris },
+          intentOf(repo.repoId, `history:${s.packHash}`),
+        )
+      } finally {
+        invalidateRepoBundles(pub)
+        written()
+      }
+    },
+    loadRecord: () => loadMakePublicRecord(c.network, repo.repoId),
+    saveRecord: (r) => saveMakePublicRecord(c.network, repo.repoId, r),
+    deleteRecord: () => deleteMakePublicRecord(c.network, repo.repoId),
+    balance: async () => {
+      try {
+        return Number(await readIdentityBalance(sdk, auth.identityId))
+      } catch {
+        return null
+      }
+    },
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  }
+}
+
+/**
+ * Make `c.repo` public (steps 1 to 7, module docs) as the owner chose: `choice.mode`, Code only's
+ * `refs`, the possible secrets allowed, and the typed words. The owner starts a run; after the
+ * flip any maintainer finishes it (the history step stays the owner's: `finished: false` and the
+ * step reported `owner`). Throws {@link MakePublicError} for every refusal, before anything is
+ * signed where it can be (E103, E201, E307, E310, E503, E601, E802, E807, E812), and whatever a
+ * write throws. `signal` aborted stops it between steps: run it again to continue.
+ */
+export async function runMakePublic(
+  c: PrivateWriteContext,
+  choice: MakePublicChoice,
+  onProgress: (p: MakePublicProgress) => void,
+  signal?: AbortSignal,
+): Promise<MakePublicOutcome> {
+  return runMakePublicWith(sdkMakePublicIo(c, { ...(choice.upload !== undefined ? { upload: choice.upload } : {}), ...(choice.repoLabel !== undefined ? { label: choice.repoLabel } : {}) }), choice, onProgress, signal)
+}

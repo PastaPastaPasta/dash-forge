@@ -442,6 +442,15 @@ async function rawEpochKey(session: PrivateSession, c: PrivateWriteContext, epoc
   throw new PrivateMembersError(`no wrap of epoch ${epoch} to you was found`, 'E307')
 }
 
+/**
+ * The raw key of readable `epoch` from the reader's own accepted wrap ({@link rawEpochKey}): what
+ * an owner's make-public bundle publishes when no later anchor carries it (`make-public-run.ts`).
+ * The caller wipes it. Throws {@link PrivateMembersError} (E307) when no such wrap opens.
+ */
+export async function ownRawEpochKey(session: PrivateSession, c: PrivateWriteContext, epoch: number): Promise<Uint8Array> {
+  return (await rawEpochKey(session, c, epoch)).raw
+}
+
 /** The reader's own wraps for `epoch` whose key is the epoch's key (accepted, §5.4). */
 function acceptedOwnWraps(session: PrivateSession, self: string, epoch: number): WrapDoc[] {
   const want = session.resolution.keys.get(epoch)
