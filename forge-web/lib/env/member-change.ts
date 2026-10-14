@@ -103,6 +103,12 @@ export async function planMemberChange(io: MemberEnvIO, change: MemberChange, me
   const leaves = !after.some((m) => m.identity === member)
   const wasMaintainer = before.some((m) => m.identity === member && m.role === 'maintainer')
   const isMaintainer = after.some((m) => m.identity === member && m.role === 'maintainer')
+  // no environment at all: only the narrower branches' letters (no member keys read for them)
+  if (book.manifests.length === 0) {
+    const branches = await planBranches(io, owner, after)
+    const credits = branches.items.reduce((sum, i) => sum + i.credits, 0)
+    return { change, after, leaves, first: [], removal: [], regroup: [], notUpdated: [], exposures: [], unreadable: 0, branches, credits }
+  }
   // the plan resolves groups against the members as the change leaves them; the keys of the
   // people they name are read now (a save made later reads them again)
   const people = await peopleKeys(io, book, owner, me, after, after)

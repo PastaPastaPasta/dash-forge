@@ -7,14 +7,16 @@
  * For every narrower branch the signer holds the key of, its audience is resolved against the
  * members as the change leaves them, keeping the people with a usable encryption key. Someone who
  * holds its current key and is no longer in it starts a new generation (a fresh key appended to
- * every earlier one) for everyone left; otherwise people in it who don't hold the key are sent the
- * current generation (all keys: they read the whole history). Branches the signer holds no key for
- * are only counted: the next person to push each one updates who can read it.
+ * every earlier one); otherwise, when people in it don't hold the key, the current generation (all
+ * keys: joiners read the whole history). Every letter goes to everyone the audience resolves to now,
+ * so every holder's record of who holds the key stays complete. A branch that has had
+ * {@link MAX_BRANCH_GENERATIONS} keys gets no new one. Branches the signer holds no key for are only
+ * counted: the next person to push each one updates who can read it.
  *
  * Pure but for {@link BranchLetterSender}, which `saver.ts` binds to the SDK and the vault.
  */
 
-import { BranchKey, MAX_ARTIFACT_RECIPIENTS, artifactHeaderLength, branchKeyLetterToTyped, type Branch, type BranchKeyLetter, type LetterRecipient, type TypedLetter } from '../private'
+import { BranchKey, MAX_ARTIFACT_RECIPIENTS, MAX_BRANCH_GENERATIONS, artifactHeaderLength, branchKeyLetterToTyped, type Branch, type BranchKeyLetter, type LetterRecipient, type TypedLetter } from '../private'
 import { resolveNow, type HeldBranches } from '../repo/branch-ring'
 import type { Membership } from '../rules/v2'
 import { errText } from '../storage/util'
@@ -24,9 +26,9 @@ import { EnvSaveError, recipientsOf, snapshotCredits, type PersonKey, type Sende
 /** What a narrower branch's letters need (forge-core `narrow::Reletter`). */
 export type Reletter =
   | { readonly kind: 'nothing' }
-  /** The audience grew: a letter of the current generation to these people. */
+  /** The audience grew (these people joined): a letter of the current generation, to everyone in it now. */
   | { readonly kind: 'joiners'; readonly people: readonly string[] }
-  /** The audience shrank (these people left): a new generation to everyone in it now. */
+  /** The audience shrank (these people left): a new generation, to everyone in it now. */
   | { readonly kind: 'newGeneration'; readonly left: readonly string[] }
 
 /**
@@ -95,8 +97,7 @@ export function planBranchLetters(held: HeldBranches, notHeld: number, owner: st
     const noKey = people.filter((p) => (keys.get(p) ?? null) === null)
     const action = reletterOf(b, new Set(now))
     if (action.kind === 'nothing') continue
-    const n = action.kind === 'joiners' ? action.people.length + 1 : now.length
-    items.push({ name: b.name, audience: b.audience, branch: b, action, now, noKey, credits: letterCredits(n) })
+    items.push({ name: b.name, audience: b.audience, branch: b, action, now, noKey, credits: letterCredits(now.length) })
   }
   return { items, notHeld, unread: null }
 }
@@ -161,8 +162,9 @@ export type LetterOutcome =
   | { readonly kind: 'failed'; readonly branch: string; readonly reason: string }
 
 /**
- * Send `plan`'s letters, after the role change landed (forge-core `narrow::reletter`): joiners get
- * the current generation, a shrunk audience a new one for everyone in it now. A letter that fails
+ * Send `plan`'s letters, after the role change landed (forge-core `narrow::reletter`), each to
+ * everyone in the audience now: the current generation when people joined, a new one when people
+ * left (refused for a branch that has had {@link MAX_BRANCH_GENERATIONS} keys). A letter that fails
  * is reported; the branch's next pusher sends it.
  */
 export async function sendBranchLetters(plan: BranchPlan, sender: BranchLetterSender): Promise<LetterOutcome[]> {
@@ -170,10 +172,11 @@ export async function sendBranchLetters(plan: BranchPlan, sender: BranchLetterSe
   for (const item of plan.items) {
     const b = item.branch
     try {
-      const sent =
-        item.action.kind === 'joiners'
-          ? await sender.send({ name: b.name, keys: [...b.keys], audience: item.audience }, new Set(item.action.people))
-          : await sender.send({ name: b.name, keys: [...b.keys, BranchKey.generate()], audience: item.audience }, new Set(item.now))
+      if (item.action.kind === 'newGeneration' && b.keys.length >= MAX_BRANCH_GENERATIONS) {
+        throw new EnvSaveError(`it has had ${b.keys.length} keys already, so it can't get a new one; publish its work, then start a new branch for the people it is for now`)
+      }
+      const keys = item.action.kind === 'joiners' ? [...b.keys] : [...b.keys, BranchKey.generate()]
+      const sent = await sender.send({ name: b.name, keys, audience: item.audience }, new Set(item.now))
       out.push({ kind: 'sent', branch: item.name, audience: item.audience, to: sent.to.length })
     } catch (e) {
       out.push({ kind: 'failed', branch: item.name, reason: errText(e) })

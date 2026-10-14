@@ -24,8 +24,10 @@
  * they open ({@link foldBranchLetters}) into a {@link BranchRing}: per name, the first letter starts
  * the chain and a later one counts only when it agrees with it on every generation both carry, so a
  * writer outside the audience cannot redirect a branch by sending its members a letter for a new
- * generation of its own. A write under an older generation after the newer one was issued (plus
- * {@link GRACE_BLOCKS}) by someone outside the current audience is late and never folded.
+ * generation of its own; and a letter counts only when its sender is in the audience as it resolves
+ * now. The keys of letters that do not count stay read-only. A write under an older generation
+ * after the newer one was issued (plus {@link GRACE_BLOCKS}) by someone outside the current audience
+ * is late and never folded.
  *
  * Keys never show in `toString` or `util.inspect`: a {@link BranchKey} keeps its bytes in a private
  * field, and every subkey of {@link BranchKeys} is a non-extractable WebCrypto key.
@@ -410,8 +412,13 @@ export interface BranchKeyLetter {
   readonly to: readonly string[]
 }
 
-/** Why a letter was not folded: a `branchKey` v1 body that breaks a rule, or one naming a branch already keyed by another chain. */
-export type BranchLetterIgnored = 'malformed' | 'otherChain'
+/**
+ * Why a letter was not folded: a `branchKey` v1 body that breaks a rule (`malformed`), one naming a
+ * branch already keyed by another chain (`otherChain`, a generation both carry differs), or one whose
+ * sender is not in the audience as it resolves now (`sender`: its own, for a branch's first letter;
+ * the branch's, for a later one).
+ */
+export type BranchLetterIgnored = 'malformed' | 'otherChain' | 'sender'
 
 const LETTER_FIELDS = new Set(['type', 'v', 'name', 'gen', 'keys', 'group', 'people', 'to'])
 const GROUPS: readonly Group[] = ['maintainers', 'writers', 'members']
@@ -504,6 +511,8 @@ export interface BranchLetterIn {
   readonly id: string
   /** Its `$createdAtBlockHeight`. */
   readonly height: number
+  /** Who wrote it: the manifest's `$ownerId` (base58). */
+  readonly sender: string
   /** The opened body. */
   readonly letter: BranchKeyLetter
 }
@@ -524,6 +533,12 @@ export interface Branch {
   readonly holders: readonly string[]
   /** The letters counted, in fold order. */
   readonly letters: readonly string[]
+  /**
+   * Keys of letters that do not count (their sender left the audience, or they fork the chain), by
+   * generation, each a generation's key other than the chain's, once each, ordered by (generation,
+   * key bytes): read-only, never written under ({@link BranchRing.open} holds them to the late rule).
+   */
+  readonly readOnly: readonly { readonly gen: number; readonly key: BranchKey }[]
 }
 
 /** The letter that adds generation `gen + 1` of `branch` with `next` as its key, for `audience`, sealed to `to`. */
@@ -545,18 +560,28 @@ export interface BranchFold {
 /**
  * Fold opened `branchKey` letters: taken in (height, id) order; per name the first letter starts the
  * chain and a later one counts only when it agrees on every generation both carry, extending the
- * chain when it carries more. Each generation is issued at the height of the first letter carrying
- * it; the audience is the newest counted letter's at the highest generation, and the current
- * generation's holders the union of its letters' `to`.
+ * chain when it carries more. A letter counts only when its sender is in the audience as it resolves
+ * now (`inAudience(sender, audience)`): the first letter's own audience, a later one's the chain's so
+ * far, so someone outside an audience cannot start a branch for it and a holder who leaves cannot
+ * keep the branch on a generation they made. Each generation is issued at the height of the first
+ * letter carrying it; the audience is the newest counted letter's at the highest generation, and the
+ * current generation's holders the union of its letters' `to`. The keys of letters that do not count
+ * are kept read-only on a branch that has a chain.
  */
-export function foldBranchLetters(letters: readonly BranchLetterIn[]): BranchFold {
+export function foldBranchLetters(letters: readonly BranchLetterIn[], inAudience: (sender: string, audience: Audience) => boolean): BranchFold {
   const sorted = [...letters].sort((a, b) => a.height - b.height || byCodePoint(a.id, b.id))
   type Cur = { name: string; keys: readonly BranchKey[]; audience: Audience; issuedAt: number[]; holders: Set<string>; letters: string[] }
   const out = new Map<string, Cur>()
   const ignored: { id: string; reason: BranchLetterIgnored }[] = []
-  for (const { id, height, letter } of sorted) {
+  const uncounted: BranchKeyLetter[] = []
+  for (const { id, height, sender, letter } of sorted) {
     const cur = out.get(letter.name)
     if (cur === undefined) {
+      if (!inAudience(sender, letter.audience)) {
+        ignored.push({ id, reason: 'sender' })
+        uncounted.push(letter)
+        continue
+      }
       out.set(letter.name, {
         name: letter.name,
         keys: letter.keys,
@@ -572,6 +597,12 @@ export function foldBranchLetters(letters: readonly BranchLetterIn[]): BranchFol
     for (let g = 0; g < common; g++) agree = (cur.keys[g] as BranchKey).equals(letter.keys[g] as BranchKey) && agree
     if (!agree) {
       ignored.push({ id, reason: 'otherChain' })
+      uncounted.push(letter)
+      continue
+    }
+    if (!inAudience(sender, cur.audience)) {
+      ignored.push({ id, reason: 'sender' })
+      uncounted.push(letter)
       continue
     }
     const have = cur.keys.length
@@ -587,6 +618,15 @@ export function foldBranchLetters(letters: readonly BranchLetterIn[]): BranchFol
   const branches = new Map<string, Branch>()
   for (const name of [...out.keys()].sort(byCodePoint)) {
     const c = out.get(name) as Cur
+    const readOnly: { gen: number; key: BranchKey }[] = []
+    for (const u of uncounted) {
+      if (u.name !== name) continue
+      for (const [g, k] of u.keys.entries()) {
+        const chainHas = c.keys[g]?.equals(k) === true
+        if (!chainHas && !readOnly.some((r) => r.gen === g && r.key.equals(k))) readOnly.push({ gen: g, key: k })
+      }
+    }
+    readOnly.sort((a, b) => a.gen - b.gen || compareKeyBytes(a.key, b.key))
     branches.set(name, {
       name,
       gen: c.keys.length - 1,
@@ -595,9 +635,22 @@ export function foldBranchLetters(letters: readonly BranchLetterIn[]): BranchFol
       issuedAt: c.issuedAt,
       holders: [...c.holders].sort(byCodePoint),
       letters: c.letters,
+      readOnly,
     })
   }
   return { branches, ignored }
+}
+
+/** Byte order of two keys' bytes (the read-only keys' tie-break); the copies are wiped. */
+function compareKeyBytes(a: BranchKey, b: BranchKey): number {
+  const x = a.expose()
+  const y = b.expose()
+  try {
+    return compareBytes(x, y)
+  } finally {
+    x.fill(0)
+    y.fill(0)
+  }
 }
 
 // --- the ring ------------------------------------------------------------------------------------
@@ -614,7 +667,8 @@ export class BranchRing {
     private readonly repoId: Bytes,
     /** The branches held, by name. */
     readonly branches: ReadonlyMap<string, Branch>,
-    private readonly derived: readonly (readonly [string, BranchKeys])[],
+    /** Every key held, by branch: `readOnly` for a key of a letter that did not count. */
+    private readonly derived: readonly { readonly name: string; readonly keys: BranchKeys; readonly readOnly: boolean }[],
     private readonly audienceNow: ReadonlyMap<string, IdSet>,
     /** Letters left out of the fold. */
     readonly ignored: BranchFold['ignored'],
@@ -626,10 +680,11 @@ export class BranchRing {
    */
   static async create(repoId: Uint8Array, fold: BranchFold, audienceNow: (b: Branch) => Iterable<Uint8Array>): Promise<BranchRing> {
     if (repoId.length !== 32) throw new RangeError('repoId must be 32 bytes')
-    const derived: (readonly [string, BranchKeys])[] = []
+    const derived: { name: string; keys: BranchKeys; readOnly: boolean }[] = []
     const now = new Map<string, IdSet>()
     for (const [name, b] of fold.branches) {
-      for (const [g, k] of b.keys.entries()) derived.push([name, await BranchKeys.derive(repoId, g, k)])
+      for (const [g, k] of b.keys.entries()) derived.push({ name, keys: await BranchKeys.derive(repoId, g, k), readOnly: false })
+      for (const r of b.readOnly) derived.push({ name, keys: await BranchKeys.derive(repoId, r.gen, r.key), readOnly: true })
       now.set(name, new IdSet(audienceNow(b)))
     }
     return new BranchRing(new Uint8Array(repoId), fold.branches, derived, now, fold.ignored)
@@ -645,21 +700,21 @@ export class BranchRing {
     return this.branches.size === 0
   }
 
-  /** Branch `name`'s current generation's keys, to write under. */
+  /** Branch `name`'s current generation's keys, to write under (never a read-only key). */
   writeKeys(name: string): BranchKeys | undefined {
     const b = this.branches.get(name)
     if (b === undefined) return undefined
-    return this.derived.find(([n, k]) => n === name && k.gen === b.gen)?.[1]
+    return this.derived.find((d) => d.name === name && d.keys.gen === b.gen && !d.readOnly)?.keys
   }
 
-  /** Every generation's keys of every branch held (what opens a DFPK 0x03 pack). */
+  /** Every key held, read-only ones included (what opens a DFPK 0x03 pack). */
   allKeys(): BranchKeys[] {
-    return this.derived.map(([, k]) => k)
+    return this.derived.map((d) => d.keys)
   }
 
   /** The branch whose keys open a DFPK 0x03 artifact with this KCV prefix, if any. */
   branchOfKcv(kcv4: Uint8Array): string | undefined {
-    return this.derived.find(([, k]) => bytesEqual(k.kcv4, kcv4))?.[0]
+    return this.derived.find((d) => bytesEqual(d.keys.kcv4, kcv4))?.name
   }
 
   /**
@@ -682,8 +737,8 @@ export class BranchRing {
     const nonce = enc.slice(5, 5 + NONCE_LEN)
     const commit = enc.subarray(5 + NONCE_LEN, 5 + NONCE_LEN + 32)
     let any = false
-    let hit: { name: string; keys: BranchKeys; docKey: CryptoKey } | undefined
-    for (const [name, k] of this.derived) {
+    let hit: { name: string; keys: BranchKeys; readOnly: boolean; docKey: CryptoKey } | undefined
+    for (const { name, keys: k, readOnly } of this.derived) {
       if (k.gen !== doc.epoch || !bytesEqual(k.kcv4, enc.subarray(1, 5))) continue
       any = true
       const kObj = await k.objKey(nonce, ad)
@@ -694,7 +749,7 @@ export class BranchRing {
         kObj.fill(0)
       }
       if (constantTimeEqual(obj.commit, commit)) {
-        hit = { name, keys: k, docKey: obj.docKey }
+        hit = { name, keys: k, readOnly, docKey: obj.docKey }
         break
       }
     }
@@ -721,15 +776,20 @@ export class BranchRing {
       return MALFORMED
     }
     if ((await realValues(doc, fields)) === null) return MALFORMED
-    if (this.isLate(hit.name, doc)) return { status: 'unreadable', reason: 'late' }
+    if (this.isLate(hit.name, doc, hit.readOnly)) return { status: 'unreadable', reason: 'late' }
     return { status: 'readable', fields }
   }
 
-  /** Written under generation g after generation g+1 was issued plus the grace period, by someone outside the branch's current audience. */
-  private isLate(name: string, doc: PrivateDoc & { readonly createdAtBlockHeight?: number }): boolean {
+  /**
+   * Written under generation g after generation g+1 was issued plus the grace period, by someone
+   * outside the branch's current audience. A read-only key is superseded by the first counted
+   * generation at or after its own (the earliest `issuedAt` from g on).
+   */
+  private isLate(name: string, doc: PrivateDoc & { readonly createdAtBlockHeight?: number }, readOnly: boolean): boolean {
     const b = this.branches.get(name)
     if (b === undefined) return true
-    const next = b.issuedAt[doc.epoch + 1]
+    const from = b.issuedAt.slice(doc.epoch)
+    const next = readOnly ? (from.length === 0 ? undefined : Math.min(...from)) : b.issuedAt[doc.epoch + 1]
     const height = doc.createdAtBlockHeight ?? Number.POSITIVE_INFINITY
     const inAudience = this.audienceNow.get(name)?.has(doc.ownerId) === true
     return next !== undefined && height > next + GRACE_BLOCKS && !inAudience

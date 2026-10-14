@@ -116,8 +116,10 @@ export function useMemberEnvFlow(home: RepoHome, change: MemberChange | null, he
   const book = envs.state.data?.book ?? null
   const hasEnvironments = book !== null && book.manifests.length > 0
   const canOpen = envs.state.data?.encryption === 'open' && !envs.locked && writer !== null
-  // a member reading a public repo's members-only content may hold keys of narrower branches
-  const hasBranches = writer?.io.branches !== undefined
+  // a member reading a public repo's members-only content, in a repo with narrower branches (held,
+  // not held, or not checked): their letters ride the plan
+  const narrowerRefs = home.branches.some((b) => b.narrower !== undefined) || home.membersRefs?.noAccess !== 0
+  const hasBranches = writer?.io.branches !== undefined && home.membersRefs !== undefined && narrowerRefs
   const changeKey = change === null ? '' : JSON.stringify(change)
   const planned = useAsync<MemberEnvPlan>(
     () => planMemberChange(writer!.io, change!, identity!, home.repo.ownerId, heldMembersKey),
@@ -164,7 +166,8 @@ export function useMemberEnvFlow(home: RepoHome, change: MemberChange | null, he
         return
       }
       try {
-        const done = await runMemberChange(writer.io, writer.saver, plan, home.repo.ownerId, doChange, precheck)
+        // the precheck guards the environments' first saves: without environments it never ran
+        const done = await runMemberChange(writer.io, writer.saver, plan, home.repo.ownerId, doChange, hasEnvironments ? precheck : undefined)
         setOutcome({ ...done, member: change.member, exposures: plan.exposures, unreadable: plan.unreadable })
       } catch (e) {
         if (!(e instanceof MemberChangeFailed)) throw e

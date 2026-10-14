@@ -1440,14 +1440,24 @@ export async function loadArtifactBytesProgress(
   const open = async (copy: PackManifest): Promise<Uint8Array> => {
     const bytes = await loadOneCopy(sdk, repo, copy, onProgress, cancel, !stored)
     // A narrower branch's pack (DFPK 0x03, phase 3F) opens with the branch keys this member holds;
-    // one they hold no key for is skipped, never an error.
+    // one they hold no key for is skipped, never an error. Classified only once the bytes hash to
+    // `packHash`: a bad copy (any writer may record one) is a failed copy, and the next is tried.
     const kcv = session !== undefined && session !== repo.session ? sniffBranchKcv(bytes) : null
     if (kcv !== null) {
+      if (bytesToHex(sha256(bytes)) !== copy.packHash.toLowerCase()) {
+        if (copy.storage === 0) forgetChunks(repo, copy)
+        throw new PackError('sealedPackCorrupt')
+      }
       const ring = (await branchRingFor(sdk, repo))?.ring ?? null
       if (ring === null || ring.branchOfKcv(kcv) === undefined) throw new PackSkippedError(copy.packHash, { reason: 'otherFormat', version: BRANCH_PACK_VERSION })
-      const plain = await openBranchArtifact(ring, copy, bytes)
-      opened.add(plain)
-      return plain
+      try {
+        const plain = await openBranchArtifact(ring, copy, bytes)
+        opened.add(plain)
+        return plain
+      } catch (e) {
+        if (copy.storage === 0) forgetChunks(repo, copy)
+        throw e
+      }
     }
     const keys = session ?? openableWith(copy, bytes)
     if (keys === undefined) return bytes

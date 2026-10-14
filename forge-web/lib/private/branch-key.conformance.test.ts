@@ -14,6 +14,7 @@ import { hmac } from '@noble/hashes/hmac.js'
 import { sha256 as nobleSha256 } from '@noble/hashes/sha2.js'
 import { describe, expect, it } from 'vitest'
 
+import type { Audience } from '../env/format'
 import {
   BranchKey,
   BranchKeys,
@@ -78,15 +79,16 @@ const DOC = object(
     'force', 'baseRefNameHash', 'sourceRefNameHash', 'id', 'createdAtBlockHeight', 'updatedAtBlockHeight', 'enc',
   ),
 )
-const LETTER = object({ ...leafFields('id', 'height', 'owner'), body: ANY })
+const LETTER = object({ ...leafFields('id', 'height', 'sender'), body: ANY })
 const SHAPE = object({
   ...leafFields(
     'op', 'repoId', 'key', 'keys', 'names', 'gen', 'type', 'ownerId', 'refName', 'newOid', 'prevOid', 'force', 'salt',
     'nonce', 'plain', 'fileId', 'segLog2', 'sealed', 'sizeBytes', 'head',
   ),
-  context: object({ letters: each(LETTER), audience: values(LEAF) }),
+  context: object({ letters: each(LETTER), groups: values(LEAF) }),
   doc: DOC,
   letters: each(LETTER),
+  groups: values(LEAF),
 })
 
 function isObj(v: Json | undefined): v is Obj {
@@ -184,6 +186,15 @@ function errorJson(e: unknown): Json {
   throw e
 }
 
+/** Who `audience` is now, with `groups` (group → base58 ids, the owner in each; forge-core `resolve`). */
+function resolve(audience: Audience, groups: Obj): Set<string> {
+  const out = new Set(audience.also)
+  if (audience.group !== null && audience.group in groups) for (const p of strs(groups, audience.group)) out.add(p)
+  return out
+}
+
+const inAudienceOf = (groups: Obj) => (sender: string, a: Audience) => resolve(a, groups).has(sender)
+
 /** The letters as the fold takes them, and the ignored ones the parse refused (forge-core `parse_letters`). */
 function parseLetters(letters: readonly Obj[]): { ok: BranchLetterIn[]; bad: { id: string; reason: BranchLetterIgnored }[] } {
   const ok: BranchLetterIn[] = []
@@ -191,14 +202,14 @@ function parseLetters(letters: readonly Obj[]): { ok: BranchLetterIn[]; bad: { i
   for (const l of letters) {
     const parsed = parseBranchKeyLetter(l['body'])
     if (parsed === 'malformed') bad.push({ id: str(l, 'id'), reason: 'malformed' })
-    else if (parsed !== null) ok.push({ id: str(l, 'id'), height: num(l, 'height'), letter: parsed })
+    else if (parsed !== null) ok.push({ id: str(l, 'id'), height: num(l, 'height'), sender: str(l, 'sender'), letter: parsed })
   }
   return { ok, bad }
 }
 
-async function foldJson(repoId: Uint8Array, letters: readonly Obj[]): Promise<Json> {
+async function foldJson(repoId: Uint8Array, letters: readonly Obj[], groups: Obj): Promise<Json> {
   const { ok, bad } = parseLetters(letters)
-  const { branches, ignored } = foldBranchLetters(ok)
+  const { branches, ignored } = foldBranchLetters(ok, inAudienceOf(groups))
   const all = [...bad, ...ignored]
   // the reference lists ignored letters in fold order, which is the input's height order
   const order = new Map(letters.map((l) => [str(l, 'id'), num(l, 'height')]))
@@ -207,6 +218,8 @@ async function foldJson(repoId: Uint8Array, letters: readonly Obj[]): Promise<Js
   for (const b of branches.values()) {
     const kcvs: string[] = []
     for (const [g, k] of b.keys.entries()) kcvs.push(bytesToHex((await BranchKeys.derive(repoId, g, k)).kcv4))
+    const readOnly: Json[] = []
+    for (const r of b.readOnly) readOnly.push({ gen: r.gen, kcv: bytesToHex((await BranchKeys.derive(repoId, r.gen, r.key)).kcv4) })
     out.push({
       name: b.name,
       group: b.audience.group,
@@ -216,6 +229,7 @@ async function foldJson(repoId: Uint8Array, letters: readonly Obj[]): Promise<Js
       holders: [...b.holders],
       kcvs,
       gen: b.gen,
+      readOnly,
     })
   }
   return { branches: out, ignored: all.map((i) => ({ id: i.id, reason: i.reason })) }
@@ -284,10 +298,9 @@ async function run(v: Vector): Promise<Json> {
     }
     case 'open': {
       const ctx = obj(inp, 'context')
-      const audience = obj(ctx, 'audience')
-      const ring = await BranchRing.create(repoId, foldBranchLetters(parseLetters(arr(ctx, 'letters')).ok), (b) =>
-        isObj(audience) && Array.isArray(audience[b.name]) ? (audience[b.name] as string[]).map((h) => hexToBytes(h)) : [],
-      )
+      const groups = obj(ctx, 'groups')
+      const folded = foldBranchLetters(parseLetters(arr(ctx, 'letters')).ok, inAudienceOf(groups))
+      const ring = await BranchRing.create(repoId, folded, (b) => [...resolve(b.audience, groups)].map((p) => privateId(p)))
       const { enc, ...header } = storedDoc(obj(inp, 'doc'))
       const opened = await ring.open(header, enc)
       switch (opened.status) {
@@ -339,7 +352,7 @@ async function run(v: Vector): Promise<Json> {
       throw new Error('unreachable')
     }
     case 'fold':
-      return foldJson(repoId, arr(inp, 'letters'))
+      return foldJson(repoId, arr(inp, 'letters'), obj(inp, 'groups'))
     default:
       throw new Error(`vector ${v.name}: branch_key op ${str(inp, 'op')}`)
   }
@@ -361,7 +374,7 @@ describe('narrower branch conformance vectors', () => {
   }
 
   it('ran every branch_key vector, every op', () => {
-    expect(FILES.length).toBeGreaterThanOrEqual(52)
+    expect(FILES.length).toBeGreaterThanOrEqual(59)
     for (const op of ['kdf', 'seal', 'open', 'packSeal', 'packOpen', 'sniff', 'fold']) expect(ran.get(op) ?? 0, op).toBeGreaterThanOrEqual(1)
     expect([...ran.values()].reduce((a, b) => a + b, 0)).toBe(FILES.length)
   })

@@ -4,8 +4,11 @@
  * the repo is fetched, checked against its manifest's `packHash` and opened as the signed-in reader
  * (`openKeyLetter`, the sender key from the manifest owner's identity only); the `branchKey` ones
  * fold into a {@link BranchRing} whose audience-now resolves against the member documents (the
- * owner in every group, as an environment's). Letters are taken from any sender: the fold keeps a
- * branch on its first chain, and a letter that does not open is skipped.
+ * owner in every group, as an environment's). A letter counts only when its sender (the manifest's
+ * uploader) is in the audience as it resolves now, and only when its `to` lists exactly its
+ * recipients, the reader among them (the next re-lettering trusts it for who holds the key); the
+ * fold keeps a branch on its first chain, the keys of letters that do not count stay read-only, and
+ * a letter that does not open is skipped.
  *
  * One read per members-key session ({@link branchRingFor}), ended with it; a read that fails is
  * `null` (narrower branches stay unopened, the page goes on) and is tried again after a short
@@ -14,7 +17,7 @@
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
-import { decodeIdentifier } from '../auth/base58'
+import { base58Encode, decodeIdentifier } from '../auth/base58'
 import { fetchIdentityKeys, ownerKeysOf, withLetterReader } from '../auth/encryption-key'
 import { PACK_KIND } from '../constants'
 import type { Audience } from '../env/format'
@@ -114,11 +117,13 @@ export async function readBranchRing(repoId: string, owner: string, members: rea
         if ('error' in got) continue
         const letter = branchKeyLetterFromTyped(got.letter)
         if (letter === null || letter === 'malformed') continue
-        opened.push({ id: m.documentId, height: m.createdAtBlockHeight ?? 0, letter })
+        // `to` must list exactly the letter's recipients, the reader among them (forge-core `narrow::read_ring`)
+        if (letter.to.length !== got.recipients || !letter.to.includes(base58Encode(reader.identityId))) continue
+        opened.push({ id: m.documentId, height: m.createdAtBlockHeight ?? 0, sender: m.uploader, letter })
       }
     })
   }
-  const fold = foldBranchLetters(opened)
+  const fold = foldBranchLetters(opened, (sender, a) => resolveNow(a, owner, members).has(sender))
   const people = new Map<string, ReadonlySet<string>>()
   for (const [name, b] of fold.branches) people.set(name, resolveNow(b.audience, owner, members))
   const ring = await BranchRing.create(id, fold, (b) => [...(people.get(b.name) ?? [])].map((p) => privateId(p)))

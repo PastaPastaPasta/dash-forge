@@ -121,7 +121,9 @@ describe('member changes re-letter narrower branches', () => {
     expect(plan.credits).toBe(item?.credits)
     expect(branchLine(item!, name)).toMatch(/^sec\/embargo \(Maintainers only\): send its key to will\. About 0\.\d+ DASH\.$/)
     expect(branchesNotUpdatedLines(plan.branches)).toEqual(["1 branch you don't have access to isn't updated here. The next person to push it updates who can read it."])
-    expect(outcome.letters.map(letterOutcomeLine)).toEqual(['Sent the key of sec/embargo (Maintainers only) to 2 people.'])
+    // to everyone the branch is for now, so every holder's record of who holds it stays complete
+    expect(outcome.letters.map(letterOutcomeLine)).toEqual(['Sent the key of sec/embargo (Maintainers only) to 3 people.'])
+    expect((await chain.ring(owner)).ring.get(NAME)?.holders).toEqual([owner.id, mara.id, will.id].sort())
     const theirs = (await chain.ring(will)).ring.get(NAME)
     expect(theirs?.gen).toBe(0)
     expect(theirs?.keys[0]?.equals((await chain.ring(owner)).ring.get(NAME)?.keys[0] as BranchKey)).toBe(true)
@@ -173,7 +175,7 @@ describe('member changes re-letter narrower branches', () => {
 
 describe('reletterOf (forge-core narrow::plan)', () => {
   const letter = { name: NAME, keys: [BranchKey.fromBytes(new Uint8Array(32).fill(1))], audience: MAINTAINERS, to: ['a', 'b'] }
-  const b = foldBranchLetters([{ id: 'x', height: 1, letter }]).branches.get(NAME)!
+  const b = foldBranchLetters([{ id: 'x', height: 1, sender: 'x', letter }], () => true).branches.get(NAME)!
 
   it('letters joiners, starts a generation when someone left, and does nothing otherwise', () => {
     expect(reletterOf(b, new Set(['a', 'b']))).toEqual({ kind: 'nothing' })
@@ -181,6 +183,22 @@ describe('reletterOf (forge-core narrow::plan)', () => {
     expect(reletterOf(b, new Set(['a']))).toEqual({ kind: 'newGeneration', left: ['b'] })
     // someone left and someone joined: one new generation for everyone now
     expect(reletterOf(b, new Set(['a', 'c']))).toEqual({ kind: 'newGeneration', left: ['b'] })
+  })
+
+  it('refuses a new key past 256 generations, sending nothing', async () => {
+    const keys = Array.from({ length: 256 }, (_, i) => BranchKey.fromBytes(new Uint8Array(32).fill(i)))
+    const full = foldBranchLetters([{ id: 'x', height: 1, sender: 'x', letter: { ...letter, keys } }], () => true).branches.get(NAME)!
+    let sent = 0
+    const counting: BranchLetterSender = {
+      send: async () => {
+        sent++
+        return { id: 'k', to: [], skipped: [] }
+      },
+    }
+    const item = { name: NAME, audience: MAINTAINERS, branch: full, action: { kind: 'newGeneration' as const, left: ['b'] }, now: ['a'], noKey: [], credits: 0 }
+    const out = await sendBranchLetters({ items: [item], notHeld: 0, unread: null }, counting)
+    expect(out).toEqual([{ kind: 'failed', branch: NAME, reason: expect.stringMatching(/has had 256 keys already/) }])
+    expect(sent).toBe(0)
   })
 
   it('quotes a letter by its recipients, at most 64', () => {

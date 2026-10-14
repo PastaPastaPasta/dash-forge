@@ -46,8 +46,11 @@ export interface MembersRefs {
   readonly alerts: readonly RefAlert[]
   /** Each members-only ref's whole update history (real values), by full name: a PR's base tips. */
   readonly updates: ReadonlyMap<string, readonly RefUpdate[]>
-  /** Narrower branches this member holds no key for: how many (one per branch, never named). */
-  readonly noAccess: number
+  /**
+   * Narrower branches this member holds no key for: how many (one per branch, never named);
+   * `null` when their branch keys couldn't be read, so which ones they hold is unknown.
+   */
+  readonly noAccess: number | null
 }
 
 /** Whether `doc` is a members-only ref update: sealed, under its own `vis: "public"` stamp (§19.3). */
@@ -92,7 +95,9 @@ export async function readMembersRefs(sdk: EvoSDK, repo: RepoRef, lane: PrivateS
   const { rows, configHistory } = await readRefRows(sdk, repo)
   const narrower = rows.refUpdate.some(isNarrowerRow) || rows.protectedRefUpdate.some(isNarrowerRow)
   const held = narrower ? await branchRingFor(sdk, { ...repo, lane }) : null
-  return membersRefsOf(rows, lane, configHistory, undefined, held)
+  const refs = await membersRefsOf(rows, lane, configHistory, undefined, held)
+  // a ring that couldn't be read says nothing about access: never "a branch you don't have access to"
+  return narrower && held === null ? { ...refs, noAccess: null } : refs
 }
 
 /**
@@ -145,9 +150,12 @@ export async function membersRefsOf(
     // rule C: a PR from this branch copies the blind of the newest members-only update that set its tip
     const tip = ref.state.state === 'resolved' ? ref.state.oid : null
     const setter = tip === null ? undefined : [...group].reverse().find((u) => u.newOid === tip && pushed.has(u.id))
-    if (tip !== null && setter !== undefined) book.introduce(name, tip, pushed.get(setter.id) as Introduced)
-    // narrower when the update that set its tip was (forge-core `is_narrower`)
-    const lastSet = [...group].reverse().find((u) => tip === null || u.newOid === tip)
+    // never a narrower branch's: it is neither the head nor the base of a members-only PR
+    if (tip !== null && setter !== undefined && !updates.narrower.has(setter.id)) book.introduce(name, tip, pushed.get(setter.id) as Introduced)
+    // narrower when the update that set its tip was (forge-core `is_narrower`; a diverged ref's
+    // first head, as its `tip_of`)
+    const head = ref.state.state === 'resolved' ? ref.state.oid : ref.state.state === 'diverged' ? (ref.state.heads[0]?.oid ?? null) : null
+    const lastSet = head === null ? undefined : [...group].reverse().find((u) => u.newOid === head)
     const branch = lastSet !== undefined && updates.narrower.has(lastSet.id) ? held?.ring.get(name) : undefined
     const listed: ResolvedRef = {
       ...ref,

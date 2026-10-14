@@ -121,7 +121,7 @@ describe('membersUpdatesOf', () => {
 describe('membersUpdatesOf with narrower branches (enc v0x06)', () => {
   const SEC = 'refs/heads/sec/embargo'
   const letter = { name: SEC, keys: [BranchKey.fromBytes(new Uint8Array(32).fill(9))], audience: { group: 'maintainers' as const, also: [] }, to: [base58Encode(OWNER)] }
-  const ringOf = () => BranchRing.create(REPO_ID, foldBranchLetters([{ id: 'l', height: 1, letter }]), () => [OWNER])
+  const ringOf = () => BranchRing.create(REPO_ID, foldBranchLetters([{ id: 'l', height: 1, sender: 'owner', letter }], () => true), () => [OWNER])
 
   it('opens them with the ring, folds them apart from the members key, and marks them', async () => {
     const k0 = await EpochKeys.import(REPO_ID, 0, new Uint8Array(32).fill(3))
@@ -162,6 +162,28 @@ describe('membersUpdatesOf with narrower branches (enc v0x06)', () => {
     const got = await membersUpdatesOf(rows, (d) => openContent(d, ctx))
     expect(got.unreadable).toBe(4)
     expect([...got.unreadableNarrower]).toEqual([bytesToHex(a1.refNameHash)])
+  })
+
+  it('a name with a narrower update keeps only those: its members-key updates are left out, with an alert each', async () => {
+    const k0 = await EpochKeys.import(REPO_ID, 0, new Uint8Array(32).fill(3))
+    const ctx = await CTX(k0)
+    const ring = await ringOf()
+    const narrow = await sealBranchRef(ring.writeKeys(SEC) as BranchKeys, OWNER, { type: 'refUpdate', name: SEC, newOid: A, force: false })
+    // a member outside the branch's audience moves it with the members key
+    const moved = await sealMembersRef(k0, OWNER, { type: 'refUpdate', name: SEC, newOid: B, prevOid: A, force: true })
+    const rows = { refUpdate: [sealedRow(3, 902, moved), sealedRow(1, 900, narrow)], protectedRefUpdate: [sealedRow(2, 901, moved)] }
+    const got = await membersUpdatesOf(rows, (d) => openContent(d, ctx), [], undefined, (d) => ring.open(d, d.enc))
+    expect(got.byName.get(SEC)?.map((u) => u.id)).toEqual([id(1)])
+    expect(got.alerts).toEqual([
+      { id: id(3), kind: 'narrowerName' },
+      { id: id(2), kind: 'narrowerName' },
+    ])
+    // what the members key decrypts is still its own
+    expect([...got.openedNewOids]).toEqual([bytesToHex(B)])
+    // without the branch key, the members-key updates fold as before
+    const alone = await membersUpdatesOf(rows, (d) => openContent(d, ctx))
+    expect(alone.byName.get(SEC)?.map((u) => u.id)).toEqual([id(2), id(3)])
+    expect(alone.alerts).toEqual([])
   })
 
   it('a public name wins over a narrower update too (D29)', async () => {

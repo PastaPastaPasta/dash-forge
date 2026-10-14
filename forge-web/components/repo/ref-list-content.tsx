@@ -26,7 +26,7 @@ import { Activity, GitBranch, Lock, Search, Tag } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { isDiverged, isLive, matchesRefQuery, plural, refParamFor, tipOidOf } from '@/lib/view'
 import { compareRefNames, compareTagNames, repoKey, type ResolvedRef } from '@/lib/repo'
-import { NO_ACCESS_TEXT, narrowLabel, narrowerText } from '@/lib/repo/branch-ring'
+import { NO_ACCESS_TEXT, narrowWho, narrowerText } from '@/lib/repo/branch-ring'
 import { Oid } from '@/components/ui/oid'
 import { EmptyState } from '@/components/ui/states'
 import { RefDate, TagCommit, useTagPeeler } from '@/components/repo/tag-commit'
@@ -67,6 +67,9 @@ function ActivityLink({ addr, kind, name }: { addr: RepoAddress; kind: keyof typ
     </Link>
   )
 }
+
+/** When a member's keys to branches for fewer people couldn't be read (the page goes on without them). */
+const UNCHECKED_TEXT = "Some members-only branches couldn't be checked. Reload the page to try again."
 
 /** How many people can read a members-only branch: the repo's members who hold the members key (never bots). */
 function membersKeyHolders(home: RepoHome): number {
@@ -138,10 +141,12 @@ export function RefListContent({
     const plain = shown.filter((r) => r.audience !== 'members')
     return { live: plain.filter(isLive), deleted: plain.filter((r) => !isLive(r)), membersLive: members }
   }, [refs, query, sort, defaultRefName, short])
-  // Narrower branches this member holds no key for: one nameless row each (branches only).
+  // Narrower branches this member holds no key for: one nameless row each (branches only); or,
+  // when their branch keys couldn't be read, one line saying so (never a no-access row).
   const noAccess = kind === 'branches' ? (home.membersRefs?.noAccess ?? 0) : 0
+  const unchecked = kind === 'branches' && home.membersRefs?.noAccess === null
   // Whether this list has members-only refs to speak of: a member's own, or the public fact.
-  const membersGroup = refs.some((r) => r.audience === 'members') || noAccess > 0
+  const membersGroup = refs.some((r) => r.audience === 'members') || noAccess > 0 || unchecked
   const membersVisibleTo = home.lane?.access === 'member' || home.lane?.access === 'former' ? membersKeyHolders(home) : null
 
   // On the branches page: the fact covers branches and tags together, and branches are what it is about.
@@ -285,6 +290,11 @@ export function RefListContent({
           {membersVisibleTo !== null ? (
             <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Visible to {plural(membersVisibleTo, 'member', 'members')}.</p>
           ) : null}
+          {unchecked ? (
+            <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="members-refs-unchecked">
+              {UNCHECKED_TEXT}
+            </p>
+          ) : null}
           {membersLive.length > 0 || (noAccess > 0 && query.trim() === '') ? (
             <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
               {membersLive.map((ref) => {
@@ -299,7 +309,7 @@ export function RefListContent({
                     data-testid="members-ref-row"
                     data-ref={shortName}
                   >
-                    <Lock className="h-3.5 w-3.5 shrink-0 text-anvil-500 dark:text-anvil-400" aria-label={narrower !== undefined ? `${narrowLabel(narrower.audience)} only` : 'Members only'} />
+                    <Lock className="h-3.5 w-3.5 shrink-0 text-anvil-500 dark:text-anvil-400" aria-label={narrower !== undefined ? `${narrowWho(narrower.audience)} only` : 'Members only'} />
                     <Link
                       href={repoHref('/repo', addr, browseRef ? { ref: browseRef } : {})}
                       className="min-w-0 flex-1 truncate font-mono text-dense font-medium text-anvil-900 hover:text-forge-800 coarse:py-3 dark:text-anvil-50 dark:hover:text-forge-400"
@@ -354,9 +364,9 @@ export function RefListContent({
                   ))
                 : null}
             </div>
-          ) : (
+          ) : query.trim() !== '' ? (
             <p className="text-dense text-anvil-500 dark:text-anvil-400">No members-only {single} matches &ldquo;{query}&rdquo;.</p>
-          )}
+          ) : null}
         </section>
       ) : (
         outsiderLine

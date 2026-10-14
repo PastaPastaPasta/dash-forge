@@ -113,7 +113,7 @@ describe("a narrower branch's packs (DFPK 0x03)", () => {
 
   it('open with a held branch key and are indexed; one whose key is not held is skipped, never an error', async () => {
     const held = BranchKey.fromBytes(new Uint8Array(32).fill(9))
-    const ring = await BranchRing.create(REPO, foldBranchLetters([{ id: 'l', height: 1, letter: { name: NAME, keys: [held], audience: { group: 'maintainers', also: [] }, to: ['11111111111111111111111111111111'] } }]), () => [])
+    const ring = await BranchRing.create(REPO, foldBranchLetters([{ id: 'l', height: 1, sender: 'owner', letter: { name: NAME, keys: [held], audience: { group: 'maintainers', also: [] }, to: ['11111111111111111111111111111111'] } }], () => true), () => [])
     const mine = await sealBranchPack(ring.writeKeys(NAME) as BranchKeys, pack)
     const theirs = await sealBranchPack(await BranchKeys.derive(REPO, 0, BranchKey.fromBytes(new Uint8Array(32).fill(4))), pack)
     const stored = new Map([[`m1`, mine], [`m2`, theirs]])

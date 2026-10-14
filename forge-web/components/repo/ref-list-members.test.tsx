@@ -145,4 +145,12 @@ describe('members-only branches on the branches page', () => {
     await act(async () => root.render(<RefListContent home={home({ membersOnlyRefs: true, lane: { access: 'member', session } as unknown as RepoHome['lane'], membersRefs: { unreadable: 1, noAccess: 1 } })} addr={addr} kind="tags" />))
     expect(q('members-ref-no-access')).toBeNull()
   })
+
+  it('a member whose branch keys could not be read is told so, never shown a branch they lack access to', async () => {
+    const session = { members: [{ identity: 'o', role: 'maintainer' }] }
+    await act(async () => root.render(<RefListContent home={home({ membersOnlyRefs: true, lane: { access: 'member', session } as unknown as RepoHome['lane'], membersRefs: { unreadable: 2, noAccess: null } })} addr={addr} kind="branches" />))
+    expect(q('members-refs-unchecked')?.textContent).toBe("Some members-only branches couldn't be checked. Reload the page to try again.")
+    expect(q('members-ref-no-access')).toBeNull()
+    expect(q('refs-group-members')?.textContent).not.toMatch(/matches/)
+  })
 })

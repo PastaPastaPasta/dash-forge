@@ -36,6 +36,9 @@ const OWNER = new Uint8Array(32).fill(0x22)
 const ME = base58Encode(OWNER)
 const keyOf = (b: number) => BranchKey.fromBytes(new Uint8Array(32).fill(b))
 const derive = (b: number, gen = 0) => BranchKeys.derive(REPO, gen, keyOf(b))
+const OUTSIDER = base58Encode(new Uint8Array(32).fill(0x44))
+/** The audience is the owner alone. */
+const ownerOnly = (sender: string) => sender === ME
 const INPUT: RefUpdateIn = { type: 'refUpdate', name: 'refs/heads/sec/x', newOid: new Uint8Array(20).fill(2), force: false }
 
 async function packError(p: Promise<unknown>): Promise<string> {
@@ -94,15 +97,18 @@ describe('the branchKey letter and the ring', () => {
 
   it('opens what its write keys sealed, and nothing of another generation', async () => {
     const next = nextGenerationLetter(
-      foldBranchLetters([{ id: 'a', height: 10, letter }]).branches.get(letter.name) as Branch,
+      foldBranchLetters([{ id: 'a', height: 10, sender: ME, letter }], ownerOnly).branches.get(letter.name) as Branch,
       keyOf(5),
       letter.audience,
       [ME],
     )
-    const fold = foldBranchLetters([
-      { id: 'a', height: 10, letter },
-      { id: 'b', height: 20, letter: next },
-    ])
+    const fold = foldBranchLetters(
+      [
+        { id: 'a', height: 10, sender: ME, letter },
+        { id: 'b', height: 20, sender: ME, letter: next },
+      ],
+      ownerOnly,
+    )
     const ring = await BranchRing.create(REPO, fold, () => [OWNER])
     const w = ring.writeKeys(letter.name) as BranchKeys
     expect(w.gen).toBe(1)
@@ -115,14 +121,39 @@ describe('the branchKey letter and the ring', () => {
     if (opened.status !== 'readable') return
     expect(bytesToHex((await realValues(doc, opened.fields))?.newOid as Uint8Array)).toBe(bytesToHex(INPUT.newOid))
     expect(await ring.open({ ...doc, epoch: 0 }, s.enc)).toEqual({ status: 'unreadable', reason: 'noKey' })
-    const empty = await BranchRing.create(REPO, foldBranchLetters([]), () => [])
+    const empty = await BranchRing.create(REPO, foldBranchLetters([], ownerOnly), () => [])
     expect(await empty.open(doc, s.enc)).toEqual({ status: 'unreadable', reason: 'noKey' })
+  })
+
+  it('keeps a letter from outside the audience read-only, never to write under', async () => {
+    const fork = nextGenerationLetter({ ...letter, gen: 0, issuedAt: [10], holders: [ME], letters: ['a'], readOnly: [] }, keyOf(7), letter.audience, [ME])
+    const fold = foldBranchLetters(
+      [
+        { id: 'b', height: 20, sender: OUTSIDER, letter: fork },
+        { id: 'a', height: 10, sender: ME, letter },
+        { id: 'c', height: 5, sender: OUTSIDER, letter: { ...letter, name: 'refs/heads/sec/y' } },
+      ],
+      ownerOnly,
+    )
+    expect(fold.ignored).toEqual([
+      { id: 'c', reason: 'sender' },
+      { id: 'b', reason: 'sender' },
+    ])
+    expect([...fold.branches.keys()]).toEqual([letter.name])
+    const b = fold.branches.get(letter.name) as Branch
+    expect(b.gen).toBe(0)
+    expect(b.readOnly.map((r) => r.gen)).toEqual([1])
+    const ring = await BranchRing.create(REPO, fold, () => [OWNER])
+    expect(ring.writeKeys(letter.name)?.gen).toBe(0)
+    expect(ring.allKeys()).toHaveLength(2)
+    const ro = await derive(7, 1)
+    expect(ring.branchOfKcv(ro.kcv4)).toBe(letter.name)
   })
 
   it('never shows key material', async () => {
     const k = keyOf(0xab)
     const keys = await derive(0xab)
-    const ring = await BranchRing.create(REPO, foldBranchLetters([{ id: 'a', height: 1, letter: { ...letter, keys: [k] } }]), () => [])
+    const ring = await BranchRing.create(REPO, foldBranchLetters([{ id: 'a', height: 1, sender: ME, letter: { ...letter, keys: [k] } }], ownerOnly), () => [])
     for (const s of [String(k), inspect(k), JSON.stringify(k), String(keys), inspect(keys), inspect(letter, { depth: 9 }), inspect(ring, { depth: 9 })]) {
       expect(s).not.toMatch(/abab|171,\s*171/)
     }

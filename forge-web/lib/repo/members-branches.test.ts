@@ -106,7 +106,7 @@ describe('narrower branches in the list', () => {
 
   it('lists a branch the member holds the key of with who it is for, and counts the others unnamed', async () => {
     const { session, keys } = await lane()
-    const ring = await BranchRing.create(REPO_ID, foldBranchLetters([{ id: 'l', height: 1, letter }]), () => [OWNER])
+    const ring = await BranchRing.create(REPO_ID, foldBranchLetters([{ id: 'l', height: 1, sender: 'owner', letter }], () => true), () => [OWNER])
     const held = { ring, people: new Map([[SEC, new Set(['o', 'm', 'n'])]]) }
     const narrow = await sealBranchRef(ring.writeKeys(SEC) as BranchKeys, OWNER, { type: 'refUpdate', name: SEC, newOid: A, force: false })
     const theirs = await sealBranchRef(await BranchKeys.derive(REPO_ID, 0, BranchKey.fromBytes(new Uint8Array(32).fill(4))), OWNER, { type: 'refUpdate', name: 'refs/heads/sec/x', newOid: B, force: false })

@@ -100,9 +100,9 @@ export interface RepoHome {
    * A member's members-only refs were folded into `branches` and `tags` (each `audience:
    * 'members'`): how many members-only updates they could not open, and how many narrower
    * branches they hold no key for (`noAccess`: "A branch you don't have access to", never named;
-   * `members-branches.ts`).
+   * `null`: their branch keys couldn't be read; `members-branches.ts`).
    */
-  readonly membersRefs?: { readonly unreadable: number; readonly noAccess: number }
+  readonly membersRefs?: { readonly unreadable: number; readonly noAccess: number | null }
 }
 
 /**

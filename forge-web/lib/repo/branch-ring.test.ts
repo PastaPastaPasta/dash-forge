@@ -106,6 +106,31 @@ describe('readBranchRing', () => {
     expect(b?.holders).toEqual(ids(owner))
     expect(held.ring.ignored.map((i) => i.reason)).toEqual(['otherChain'])
   })
+
+  it('counts a letter only from someone in the audience now; its keys stay read-only', async () => {
+    const k0 = BranchKey.fromBytes(new Uint8Array(32).fill(7))
+    const k1 = BranchKey.fromBytes(new Uint8Array(32).fill(9))
+    const first = await letter(1, owner, [mara], branchKeyLetterToTyped(maintainersLetter([k0], ids(owner, mara))))
+    // a writer (not a maintainer) extends the chain: not counted
+    const fromWriter = await letter(2, will, [mara], branchKeyLetterToTyped(maintainersLetter([k0, k1], ids(mara, will))))
+    // a writer starts a Maintainers branch of another name: not counted, and no branch
+    const started = await letter(3, will, [mara], branchKeyLetterToTyped({ ...maintainersLetter([k1], ids(mara, will)), name: 'refs/heads/sec/other' }))
+    const held = await readBranchRing(REPO_ID, owner.id, MEMBERS, sources([first, fromWriter, started], mara))
+    expect([...held.ring.branches.keys()]).toEqual([FIX])
+    const b = held.ring.get(FIX)
+    expect(b?.gen).toBe(0)
+    expect(b?.readOnly.map((r) => r.gen)).toEqual([1])
+    expect(held.ring.ignored.map((i) => i.reason)).toEqual(['sender', 'sender'])
+    expect(held.ring.writeKeys(FIX)?.gen).toBe(0)
+    expect(held.ring.allKeys()).toHaveLength(2)
+  })
+
+  it("skips a letter whose `to` is not exactly its recipients", async () => {
+    const k0 = BranchKey.fromBytes(new Uint8Array(32).fill(7))
+    // sealed to the owner and mara, but `to` names the owner alone
+    const short = await letter(1, owner, [mara], branchKeyLetterToTyped(maintainersLetter([k0], ids(owner))))
+    expect((await readBranchRing(REPO_ID, owner.id, MEMBERS, sources([short], mara))).ring.isEmpty).toBe(true)
+  })
 })
 
 describe('branchRingFor', () => {

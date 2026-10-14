@@ -35,12 +35,14 @@ export type RefOpener = (doc: StoredPrivateDoc) => Promise<OpenResult>
 
 /**
  * Why a members-only ref update is shown with an alert, by its `$id`: a blind that did not check
- * (kept on its real values), or `publicName`, an update naming a branch that is live in public
- * (left out of the fold, D29).
+ * (kept on its real values), `publicName`, an update naming a branch that is live in public
+ * (left out of the fold, D29), or `narrowerName`, a members-key update of a name this reader opens
+ * as a narrower branch (left out: the narrower branch wins, so a member outside its audience cannot
+ * move it or turn it into an all-members branch; forge-core `RefAlertKind::NarrowerName`).
  */
 export type RefAlert =
   | { readonly id: string; readonly field: OidField; readonly kind: 'mismatch' | 'width' }
-  | { readonly id: string; readonly kind: 'publicName' }
+  | { readonly id: string; readonly kind: 'publicName' | 'narrowerName' }
 
 /** What {@link membersUpdatesOf} returns. */
 export interface MembersUpdates {
@@ -50,7 +52,10 @@ export interface MembersUpdates {
    * `($createdAt, $id)`.
    */
   readonly byName: ReadonlyMap<string, readonly RefUpdate[]>
-  /** Blind alerts in row order (`refUpdate` rows, then `protectedRefUpdate`), then `publicName` alerts by name, then `($createdAt, $id)`. */
+  /**
+   * Blind alerts in row order (`refUpdate` rows, then `protectedRefUpdate`), then by name: its
+   * `narrowerName` alerts in row order, then its `publicName` alerts by `($createdAt, $id)`.
+   */
   readonly alerts: readonly RefAlert[]
   /**
    * Members-only updates this reader could not fold (no key, another epoch, late, malformed, a
@@ -100,7 +105,8 @@ function pushTo(m: Map<string, RefUpdate[]>, name: string, u: RefUpdate): void {
  * `open`) or v0x06 (through `openNarrower`, a narrower branch's) with an integer epoch and no
  * plaintext `refName`, and counted in `unreadable` otherwise. A name whose public updates resolve
  * (over `configHistory`) to anything but unborn keeps those alone: its members-only updates are
- * dropped with a `publicName` alert each.
+ * dropped with a `publicName` alert each. A name with an opened narrower update keeps only its
+ * narrower updates: its members-key ones are dropped with a `narrowerName` alert each.
  */
 export async function membersUpdatesOf(
   rows: RefRows,
@@ -166,7 +172,13 @@ export async function membersUpdatesOf(
   const byName = new Map<string, RefUpdate[]>()
   for (const name of [...new Set([...publicByName.keys(), ...membersByName.keys()])].sort(compareStrings)) {
     const pub = [...(publicByName.get(name) ?? [])].sort(compareKey)
-    const members = [...(membersByName.get(name) ?? [])].sort(compareKey)
+    let opened = membersByName.get(name) ?? []
+    // a name with a narrower update keeps only its narrower updates (phase 3F)
+    if (opened.some((u) => narrower.has(u.id))) {
+      for (const u of opened) if (!narrower.has(u.id)) alerts.push({ id: u.id, kind: 'narrowerName' })
+      opened = opened.filter((u) => narrower.has(u.id))
+    }
+    const members = [...opened].sort(compareKey)
     // public names win (D29): a live public branch is never shadowed by a members-only update
     if (pub.length > 0 && members.length > 0 && resolveRef(pub, configHistory, publicRefKey(name), isAncestor).state !== 'unborn') {
       for (const u of members) {
