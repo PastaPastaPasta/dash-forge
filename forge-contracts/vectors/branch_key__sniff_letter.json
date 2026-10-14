@@ -1,0 +1,14 @@
+{
+  "name": "sniff_letter",
+  "description": "DFPK 0x02: another layout (a letter).",
+  "case": "branch_key",
+  "rules": "v2",
+  "input": {
+    "op": "sniff",
+    "head": "4446504b020e000001000000"
+  },
+  "expected": {
+    "kind": "otherVersion",
+    "version": 2
+  }
+}

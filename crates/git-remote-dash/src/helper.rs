@@ -174,6 +174,8 @@ enum MembersKeys {
 struct MembersFetch {
     keyring: std::sync::Arc<forge_core::keyring::Keyring>,
     decryptable: Vec<String>,
+    /// Narrower branches' commits the reader decrypts, by ledger token (phase 3F).
+    narrower: Vec<(String, String)>,
 }
 
 impl Helper {
@@ -342,6 +344,41 @@ impl Helper {
         }
     }
 
+    /// Read the `branchKey` letters this reader holds (phase 3F) and attach them to `kr`, when the
+    /// history has narrower branches' updates or `always` (a push, which may create one). Best
+    /// effort: a failure leaves narrower branches unopened, with a warning.
+    async fn attach_branch_ring(
+        &self,
+        kr: &std::sync::Arc<forge_core::keyring::Keyring>,
+        state: &forge_core::refs::GitState,
+        always: bool,
+    ) -> Result<Option<std::sync::Arc<forge_core::private::branch_key::BranchRing>>> {
+        let narrower = forge_core::refs::has_narrower_updates(state);
+        if !always && !narrower {
+            return Ok(None);
+        }
+        let conn = self.conn.as_ref().expect("conn populated");
+        match forge_core::narrow::read_ring(&conn.service(), &conn.repo, kr.members()).await {
+            Ok(ring) => {
+                let ring = std::sync::Arc::new(ring);
+                kr.set_branch_ring(std::sync::Arc::clone(&ring));
+                Ok(Some(ring))
+            }
+            // fail closed (DESIGN §4.3 "Fetch (C2)"): a clone that holds commits of branches for
+            // fewer people never gets a view without them, which `fetch.prune` would act on
+            Err(e) if narrower && members::ledger_holds_narrower() => {
+                Err(members::cannot_check_fetch(&brief(&format!("{e:#}"))).into())
+            }
+            Err(e) => {
+                eprintln!(
+                    "dash: warning: branches for fewer people couldn't be read: {}",
+                    brief(&format!("{e:#}"))
+                );
+                Ok(None)
+            }
+        }
+    }
+
     /// A PUBLIC repository's refs for `list` (DESIGN §4.3 "Fetch (C2)"): the member view when the
     /// reader holds the members key and the repository has members-only branches, else the
     /// public one. A fetch fails closed (E806) rather than serve the public view to a clone that
@@ -389,9 +426,12 @@ impl Helper {
                 return Ok(public.public);
             }
         }
+        let ring = self.attach_branch_ring(&kr, &state, false).await?;
         let open = |k, d: &forge_core::platform::FetchedDocument| kr.open(k, d);
         let view = forge_core::refs::refs_view(&state, Some(&open));
         let m = view.members.expect("opened with a key");
+        let repo_id = *kr.repo_id();
+        let narrower = narrower_facts(ring.as_deref(), &repo_id, &m).decryptable;
         if !m.alerts.is_empty() {
             eprintln!(
                 "dash: warning: {} members-only branch update(s) didn't check out and were left out or kept on their real values; `dg branch` shows them",
@@ -405,6 +445,7 @@ impl Helper {
         self.members_fetch = Some(MembersFetch {
             keyring: kr,
             decryptable: m.decryptable,
+            narrower,
         });
         // The members-only packs come first, so a members-only branch no stored pack holds (a
         // ref update written without its pack) is left out with a warning instead of failing the
@@ -461,10 +502,18 @@ impl Helper {
         out.roles = svc.copy_roles(&conn.repo).await.ok();
         out.remote.clone_from(&self.remote);
         if let MembersKeys::Held(kr) = self.members_keys(true).await? {
+            let ring = self.attach_branch_ring(&kr, &state, true).await?;
             let open = |k, d: &forge_core::platform::FetchedDocument| kr.open(k, d);
             let m = forge_core::refs::refs_view(&state, Some(&open))
                 .members
                 .expect("opened with a key");
+            let facts = narrower_facts(ring.as_deref(), kr.repo_id(), &m);
+            out.narrower_names = facts.names;
+            out.narrower = members::Narrower {
+                audiences: facts.audiences,
+                decryptable: facts.decryptable,
+            };
+            out.ring = ring;
             out.remote_refs = m.refs;
             out.members_only = m.members_only;
             out.decryptable = Some(m.decryptable);
@@ -519,6 +568,7 @@ impl Helper {
         // downloaded (the wanted commits may have arrived some other way)
         if let Some(m) = &self.members_fetch {
             members::record(&m.decryptable, &[])?;
+            record_narrower(&m.narrower)?;
         }
         // The local git odb is the cache — never re-download objects git already has
         // (architecture §6). For a plain (non-filter) fetch, if every wanted object is
@@ -812,19 +862,20 @@ impl Helper {
         };
 
         let mut planned = plan_pushes(specs, &remote_refs, options);
+        let mut new_branches = BTreeMap::new();
         // Members-only branches (DESIGN §4.3): each ref's audience (D12), then the publication
         // guard over the whole batch (D21), before anything is built, signed or stored.
         if public_repo {
-            decide_audiences(&mut planned, &view, &repo_label, options)?;
-            guard_push(&mut planned, &view, options)?;
+            new_branches = decide_audiences(&mut planned, &view, &repo_label, options)?;
+            guard_push(&mut planned, &view, &new_branches, options)?;
             // the first members-only branch a clone holds needs the pre-push hook, as a fetch
             // of one does
-            if !dry_run && planned.iter().any(|p| p.reject.is_none() && p.members()) {
+            if !dry_run && planned.iter().any(|p| p.reject.is_none() && p.sealed()) {
                 if let Some(e) = members::hook_blocked() {
                     say_refusal(&e);
                     for p in planned
                         .iter_mut()
-                        .filter(|p| p.reject.is_none() && p.members())
+                        .filter(|p| p.reject.is_none() && p.sealed())
                     {
                         p.reject =
                             Some("members-only branch: the pre-push hook isn't in place".into());
@@ -840,11 +891,27 @@ impl Helper {
             refused.extend(finalize_outcomes(planned, &remote_refs, dry_run));
             return Ok(refused);
         }
+        // Narrower branches (phase 3F): their letters first (a new branch's key, an audience that
+        // changed since the last letter), then the keys this push seals under, read again.
+        let ring = if public_repo
+            && !dry_run
+            && planned.iter().any(|p| p.reject.is_none() && p.narrower())
+        {
+            prepare_narrower(conn, &svc, &mut planned, &view, &new_branches).await
+        } else {
+            view.ring.clone()
+        };
         // The members key members-only refs are sealed under, read now (§5.3).
         let (lane, fresh_keys) = if public_repo && !dry_run && planned.iter().any(Planned::members)
         {
             match svc.members_lane(&conn.repo).await {
-                Ok((lane, kr)) => (Some(lane), Some(kr)),
+                Ok((lane, kr)) => {
+                    // the reload replaced the cached keyring: it opens narrower branches too
+                    if let Some(r) = &ring {
+                        kr.set_branch_ring(std::sync::Arc::clone(r));
+                    }
+                    (Some(lane), Some(kr))
+                }
                 Err(e) => {
                     match &e {
                         forge_core::Error::User(u) => u.eprint("dash: "),
@@ -883,7 +950,7 @@ impl Helper {
             .collect();
         let public_want: Vec<String> = planned
             .iter()
-            .filter(|p| p.reject.is_none() && !p.members())
+            .filter(|p| p.reject.is_none() && !p.sealed())
             .filter_map(|p| p.new_oid.clone())
             .collect();
         // A public pack's bases are P, the public tips this clone holds (S4: a members-only base
@@ -950,14 +1017,31 @@ impl Helper {
             }
             sealed_cache = ctx.sealed.take();
             let mut members_packs = Vec::new();
+            let mut narrower_packs: BTreeMap<String, Vec<[u8; 32]>> = BTreeMap::new();
             for job in &members_jobs {
-                if let Some((hash, credits)) = upload_members_pack(ctx, lane.as_ref(), job).await? {
-                    members_packs.push(hash);
+                let audience = planned
+                    .iter()
+                    .find(|p| p.reject.is_none() && p.spec.dst == job.ref_name)
+                    .map(|p| p.audience.clone());
+                let pack_key = match &audience {
+                    Some(Audience::Narrower(_)) => PackSealer::Branch(
+                        ring.as_deref().and_then(|r| r.write_keys(&job.ref_name)),
+                    ),
+                    _ => PackSealer::Members(lane.as_ref()),
+                };
+                if let Some((hash, credits)) = upload_members_pack(ctx, pack_key, job).await? {
+                    match audience {
+                        Some(Audience::Narrower(token)) => {
+                            narrower_packs.entry(token).or_default().push(hash);
+                        }
+                        _ => members_packs.push(hash),
+                    }
                     est_credits += credits;
                 }
             }
             // The members-only tips this push publishes to members, recorded before any ref
-            // names them (D21: the clone's ledger lists every members-only commit it pushed).
+            // names them (D21: the clone's ledger lists every members-only commit it pushed);
+            // a narrower branch's under its own ledger token.
             let members_tips: Vec<String> = planned
                 .iter()
                 .filter(|p| p.reject.is_none() && p.members())
@@ -965,6 +1049,13 @@ impl Helper {
                 .collect();
             if !dry_run {
                 members::record(&members_tips, &members_packs)?;
+                for p in planned.iter().filter(|p| p.reject.is_none()) {
+                    if let Audience::Narrower(token) = &p.audience {
+                        let audience = ledger_audience(token)?;
+                        let packs = narrower_packs.remove(token).unwrap_or_default();
+                        members::record_as(&audience, p.new_oid.as_slice(), &packs)?;
+                    }
+                }
             }
             // Test affordance, compiled only with `--features test-hooks`: stop after the
             // manifest landed and before any ref is written — the state a push interrupted
@@ -981,8 +1072,15 @@ impl Helper {
 
         // Apply ref updates for accepted specs, then publish the browse index.
         if !dry_run {
-            let refs =
-                write_ref_updates(&svc, &conn.repo, &mut planned, progress, lane.as_ref()).await;
+            let refs = write_ref_updates(
+                &svc,
+                &conn.repo,
+                &mut planned,
+                progress,
+                lane.as_ref(),
+                ring.as_deref(),
+            )
+            .await;
             if refs.is_ok() {
                 forget_sealed(sealed_cache.as_deref());
                 for p in ctx.iter().flat_map(|c| c.members_sealed.take()) {
@@ -1947,6 +2045,7 @@ async fn write_ref_updates(
     planned: &mut [Planned],
     progress: Progress,
     lane: Option<&forge_core::private::Lane>,
+    ring: Option<&forge_core::private::branch_key::BranchRing>,
 ) -> Result<()> {
     let accepted: Vec<usize> = (0..planned.len())
         .filter(|&i| planned[i].reject.is_none())
@@ -1957,6 +2056,7 @@ async fn write_ref_updates(
         repo,
         progress,
         lane,
+        ring,
     };
     if gated.is_empty() {
         return w.batch(planned, &accepted, false).await;
@@ -2025,6 +2125,7 @@ struct Writer<'a> {
     repo: &'a RepoRef,
     progress: Progress,
     lane: Option<&'a forge_core::private::Lane>,
+    ring: Option<&'a forge_core::private::branch_key::BranchRing>,
 }
 
 impl Writer<'_> {
@@ -2037,7 +2138,7 @@ impl Writer<'_> {
         landed_before: bool,
     ) -> Result<()> {
         let (members, public): (Vec<usize>, Vec<usize>) =
-            accepted.iter().partition(|&&i| planned[i].members());
+            accepted.iter().partition(|&&i| planned[i].sealed());
         if members.is_empty() {
             return write_batch(
                 self.svc,
@@ -2058,9 +2159,74 @@ impl Writer<'_> {
         write_batch(self.svc, self.repo, planned, &public, self.progress, landed).await
     }
 
-    /// Write the members-only refs `planned[members[..]]`, sealed under the writer's members key:
-    /// one result per ref, in order (an error before any write fails each of them).
+    /// Write the sealed refs `planned[sealed[..]]`: the members-only ones under the writer's
+    /// members key, the narrower ones under their branch keys (phase 3F). One result per ref, in
+    /// order.
     async fn members_batch(
+        &self,
+        planned: &[Planned],
+        sealed: &[usize],
+    ) -> Vec<forge_core::Result<String>> {
+        let (narrower, members): (Vec<usize>, Vec<usize>) =
+            sealed.iter().partition(|&&i| planned[i].narrower());
+        let mut by_index: BTreeMap<usize, forge_core::Result<String>> = BTreeMap::new();
+        if !members.is_empty() {
+            by_index.extend(
+                members
+                    .iter()
+                    .copied()
+                    .zip(self.lane_batch(planned, &members).await),
+            );
+        }
+        if !narrower.is_empty() {
+            by_index.extend(
+                narrower
+                    .iter()
+                    .copied()
+                    .zip(self.branch_batch(planned, &narrower).await),
+            );
+        }
+        sealed
+            .iter()
+            .map(|i| by_index.remove(i).expect("one result per ref"))
+            .collect()
+    }
+
+    /// Write narrower refs `planned[narrower[..]]` under their branches' current generations.
+    async fn branch_batch(
+        &self,
+        planned: &[Planned],
+        narrower: &[usize],
+    ) -> Vec<forge_core::Result<String>> {
+        let fail_all = |why: String| {
+            narrower
+                .iter()
+                .map(|_| Err(forge_core::Error::Config(why.clone())))
+                .collect()
+        };
+        let Some(ring) = self.ring else {
+            return fail_all("the branch key isn't available".into());
+        };
+        let writes = match ref_writes(planned, narrower) {
+            Ok(writes) => writes,
+            Err(e) => return fail_all(format!("{e:#}")),
+        };
+        let result = self
+            .svc
+            .write_branch_ref_updates(self.repo, ring, &writes, |i| {
+                let p = &planned[narrower[i]];
+                let (text, event) = progress::ref_update_line(&p.spec.dst, p.new_oid.as_deref());
+                self.progress.emit(&text, &event);
+            })
+            .await;
+        match result {
+            Ok(results) => results,
+            Err(e) => fail_all(e.to_string()),
+        }
+    }
+
+    /// Write members-only refs `planned[members[..]]` under the members key.
+    async fn lane_batch(
         &self,
         planned: &[Planned],
         members: &[usize],
@@ -2311,9 +2477,19 @@ struct Planned {
 }
 
 impl Planned {
-    /// A members-only ref of a public repository.
+    /// A members-only ref of a public repository (sealed under the members key).
     fn members(&self) -> bool {
         self.audience == Audience::Members
+    }
+
+    /// A members-only or narrower ref: sealed, with a pack of its own.
+    fn sealed(&self) -> bool {
+        self.audience.is_sealed()
+    }
+
+    /// A narrower branch (phase 3F): sealed under its own branch key.
+    fn narrower(&self) -> bool {
+        matches!(self.audience, Audience::Narrower(_))
     }
 }
 
@@ -2400,6 +2576,318 @@ fn plan_pushes(
     planned
 }
 
+/// What a member view says about narrower branches, by ledger token ([`narrower_facts`]).
+#[derive(Default)]
+struct NarrowerFacts {
+    /// Live narrower branches the reader holds keys for, with their tokens.
+    names: BTreeMap<String, String>,
+    /// Who each held branch is for, by token.
+    audiences: forge_core::members_git::guard::NarrowAudiences,
+    /// `(newOid, token)` of every narrower branch's update the reader opened.
+    decryptable: Vec<(String, String)>,
+}
+
+fn narrower_facts(
+    ring: Option<&forge_core::private::branch_key::BranchRing>,
+    repo_id: &[u8; 32],
+    m: &forge_core::refs::MembersView,
+) -> NarrowerFacts {
+    let Some(ring) = ring else {
+        return NarrowerFacts::default();
+    };
+    let token = |name: &str| ring.get(name).map(|b| b.ledger_token(repo_id));
+    NarrowerFacts {
+        names: m
+            .narrower
+            .iter()
+            .filter_map(|n| token(n).map(|t| (n.clone(), t)))
+            .collect(),
+        audiences: ring
+            .branches()
+            .values()
+            .map(|b| (b.ledger_token(repo_id), narrow_audience(&b.audience)))
+            .collect(),
+        decryptable: m
+            .decryptable_narrower
+            .iter()
+            .filter_map(|(oid, name)| token(name).map(|t| (oid.clone(), t)))
+            .collect(),
+    }
+}
+
+/// A narrower branch's audience as the guard compares it.
+fn narrow_audience(
+    a: &forge_core::env::Audience,
+) -> forge_core::members_git::guard::NarrowAudience {
+    forge_core::members_git::guard::NarrowAudience {
+        group: a.group,
+        people: a.also.iter().cloned().collect(),
+    }
+}
+
+/// The ledger audience of a narrower branch's token.
+fn ledger_audience(token: &str) -> Result<forge_core::members_git::ledger::EntryAudience> {
+    forge_core::members_git::ledger::EntryAudience::parse(token)
+        .ok_or_else(|| anyhow!("a narrower branch's ledger token is malformed"))
+}
+
+/// Record narrower branches' commits in the ledger under their tokens (phase 3F).
+fn record_narrower(commits: &[(String, String)]) -> Result<()> {
+    let mut by_token: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    for (oid, token) in commits {
+        by_token.entry(token).or_default().push(oid.clone());
+    }
+    for (token, oids) in by_token {
+        members::record_as(&ledger_audience(token)?, &oids, &[])?;
+    }
+    Ok(())
+}
+
+/// Narrower branches of this push (phase 3F, DESIGN §4.3, D34), before anything is stored: a new
+/// branch's first letter (generation 0, to its audience's people with an encryption key), and for
+/// a branch whose audience changed since its last letter, a letter to the joiners or a new
+/// generation to everyone left (the branch's next pusher completes a change its maker could not).
+/// Then the letters are read again, so the packs and ref updates seal under the current
+/// generation. A ref whose key cannot be settled is refused; the ring the push seals with is
+/// returned.
+#[allow(clippy::too_many_lines)] // new branches, then audience changes, then the read-back
+async fn prepare_narrower(
+    conn: &Conn,
+    svc: &RepoService<'_>,
+    planned: &mut [Planned],
+    view: &PushView,
+    new_branches: &BTreeMap<String, NewBranch>,
+) -> Option<std::sync::Arc<forge_core::private::branch_key::BranchRing>> {
+    let reject_narrower = |planned: &mut [Planned], why: &str| {
+        for p in planned
+            .iter_mut()
+            .filter(|p| p.reject.is_none() && p.narrower())
+        {
+            p.reject = Some(why.to_owned());
+        }
+    };
+    let Some(kr) = view.keyring.as_ref() else {
+        reject_narrower(
+            planned,
+            "the key that reads members-only branches isn't available",
+        );
+        return None;
+    };
+    let repo = &conn.repo;
+    let owner = repo.owner_id();
+    let me = conn.identity().id();
+    let members = kr.members();
+    let mut wrote = false;
+    let accepted = |planned: &[Planned], dst: &str| {
+        planned
+            .iter()
+            .any(|p| p.reject.is_none() && p.narrower() && p.spec.dst == dst)
+    };
+    // the generation each branch must be on once the letters are read back
+    let mut expect: BTreeMap<String, [u8; 4]> = BTreeMap::new();
+    for (dst, nb) in new_branches {
+        if !accepted(planned, dst) {
+            continue;
+        }
+        let audience = forge_core::narrow::with_me(&nb.audience, &me, owner, members);
+        let people = forge_core::narrow::resolve_now(&audience, owner, members);
+        let held = view.ring.as_ref().and_then(|r| r.get(dst));
+        match first_letter(svc, repo, dst, nb, held, &audience, &people).await {
+            Ok(Some(w)) => {
+                wrote = true;
+                expect.insert(dst.clone(), w.top_kcv);
+                say_letter(dst, &audience, &w);
+            }
+            Ok(None) => {}
+            Err(e) => {
+                eprintln!(
+                    "dash: error: {} couldn't be started for {}: {}",
+                    members::short(dst),
+                    forge_core::narrow::label(&audience),
+                    brief(&format!("{e:#}"))
+                );
+                reject_ref(planned, dst, "its key couldn't be sent");
+            }
+        }
+    }
+    if let Some(ring) = view.ring.as_ref() {
+        let names: Vec<String> = planned
+            .iter()
+            .filter(|p| {
+                p.reject.is_none() && p.narrower() && !new_branches.contains_key(&p.spec.dst)
+            })
+            .map(|p| p.spec.dst.clone())
+            .collect();
+        for dst in names {
+            let Some(b) = ring.get(&dst) else { continue };
+            let people = forge_core::narrow::resolve_now(&b.audience, owner, members);
+            if !people.contains(&me) {
+                eprintln!(
+                    "dash: error: you are no longer one of the people {} is for",
+                    members::short(&dst)
+                );
+                reject_ref(planned, &dst, "not one of the people this branch is for");
+                continue;
+            }
+            let done = match forge_core::narrow::with_keys(svc, repo, &people).await {
+                Ok((with, _)) => {
+                    forge_core::narrow::reletter(svc, repo, b, &b.audience, &with).await
+                }
+                Err(e) => Err(e),
+            };
+            match done {
+                Ok(Some(w)) => {
+                    wrote = true;
+                    expect.insert(dst.clone(), w.top_kcv);
+                    say_letter(&dst, &b.audience, &w);
+                }
+                Ok(None) => {}
+                Err(e) => eprintln!(
+                    "dash: warning: {}'s audience changed and its key couldn't be updated: {}",
+                    members::short(&dst),
+                    brief(&format!("{e:#}"))
+                ),
+            }
+        }
+    }
+    if !wrote {
+        return view.ring.clone();
+    }
+    let ring = match forge_core::narrow::read_ring(svc, repo, members).await {
+        Ok(r) => std::sync::Arc::new(r),
+        Err(e) => {
+            eprintln!(
+                "dash: error: the branch keys just sent couldn't be read back: {}",
+                brief(&format!("{e:#}"))
+            );
+            reject_narrower(planned, "branch key not readable yet");
+            return None;
+        }
+    };
+    kr.set_branch_ring(std::sync::Arc::clone(&ring));
+    refuse_unsettled(planned, &ring, new_branches, &expect);
+    Some(ring)
+}
+
+/// Refuse the narrower refs whose key is not what was just sent, once the letters are read back:
+/// a new branch's chain starts with our key, and every branch written to is on the generation its
+/// letter carried (a letter that does not count, or a chain someone else started, refuses the ref
+/// instead of sealing under it).
+fn refuse_unsettled(
+    planned: &mut [Planned],
+    ring: &forge_core::private::branch_key::BranchRing,
+    new_branches: &BTreeMap<String, NewBranch>,
+    expect: &BTreeMap<String, [u8; 4]>,
+) {
+    for p in planned
+        .iter_mut()
+        .filter(|p| p.reject.is_none() && p.narrower())
+    {
+        let dst = p.spec.dst.clone();
+        let started_by_us = match new_branches.get(&dst).and_then(|nb| nb.key.as_ref()) {
+            Some(key) => ring
+                .get(&dst)
+                .is_some_and(|b| b.keys().first() == Some(key)),
+            None => true,
+        };
+        let on_expected = expect
+            .get(&dst)
+            .is_none_or(|kcv| ring.write_keys(&dst).is_some_and(|k| k.kcv4() == *kcv));
+        if !started_by_us {
+            let (e, wire) = members::narrow_taken(&dst);
+            say_refusal(&e);
+            p.reject = Some(wire.to_owned());
+        } else if !on_expected {
+            eprintln!(
+                "dash: error: {}'s new key isn't the one readers use yet; push again in a minute",
+                members::short(&dst)
+            );
+            p.reject = Some("its key isn't settled yet".into());
+        }
+    }
+}
+
+/// Refuse the planned ref `dst`, if any.
+fn reject_ref(planned: &mut [Planned], dst: &str, why: &str) {
+    if let Some(p) = planned.iter_mut().find(|p| p.spec.dst == dst) {
+        p.reject = Some(why.to_owned());
+    }
+}
+
+/// The letter that starts a narrower branch of this push, to `people` with an encryption key; for
+/// a branch made again under its old key (`held`), a re-lettering for the audience asked for now.
+/// `Ok(None)`: nothing to send.
+async fn first_letter(
+    svc: &RepoService<'_>,
+    repo: &RepoRef,
+    dst: &str,
+    nb: &NewBranch,
+    held: Option<&forge_core::private::branch_key::Branch>,
+    audience: &forge_core::env::Audience,
+    people: &BTreeSet<String>,
+) -> forge_core::Result<Option<forge_core::narrow::Written>> {
+    let (with, _) = forge_core::narrow::with_keys(svc, repo, people).await?;
+    match (&nb.key, held) {
+        (Some(key), _) => forge_core::narrow::write_letter(
+            svc,
+            repo,
+            dst,
+            vec![key.clone()],
+            audience.clone(),
+            &with,
+        )
+        .await
+        .map(Some),
+        // re-letter it for the audience asked for now (a new key when anyone who held it is no
+        // longer in it)
+        (None, Some(b)) if b.audience == *audience => {
+            forge_core::narrow::reletter(svc, repo, b, audience, &with).await
+        }
+        (None, Some(b)) => {
+            match forge_core::narrow::reletter(svc, repo, b, audience, &with).await {
+                Ok(None) => forge_core::narrow::write_letter(
+                    svc,
+                    repo,
+                    dst,
+                    b.keys().to_vec(),
+                    audience.clone(),
+                    &with,
+                )
+                .await
+                .map(Some),
+                other => other,
+            }
+        }
+        (None, None) => Ok(None),
+    }
+}
+
+/// One line per letter a push sent (phase 3F): who the branch is for and how many got its key.
+fn say_letter(dst: &str, audience: &forge_core::env::Audience, w: &forge_core::narrow::Written) {
+    let n = w.to.len();
+    eprintln!(
+        "dash: {} is for {}: its key went to {n} {} (generation {})",
+        members::short(dst),
+        forge_core::narrow::label(audience),
+        members::plural(n, "person", "people"),
+        w.gen
+    );
+    for s in &w.skipped {
+        eprintln!(
+            "dash: warning: {s} has no encryption key, so can't read {} yet",
+            members::short(dst)
+        );
+    }
+}
+
+/// A narrower branch this push starts (phase 3F): its generation-0 key and audience; or, for a
+/// name this pusher already holds a branch key for (deleted and pushed again), no new key and
+/// the audience asked for now.
+struct NewBranch {
+    key: Option<forge_core::private::branch_key::BranchKey>,
+    audience: forge_core::env::Audience,
+}
+
 /// What a push of a public repository knows about members-only branches
 /// ([`Helper::push_view`]).
 #[derive(Default)]
@@ -2419,6 +2907,12 @@ struct PushView {
     decryptable: Option<Vec<String>>,
     /// The pusher's members key.
     keyring: Option<std::sync::Arc<forge_core::keyring::Keyring>>,
+    /// The narrower branches the pusher holds keys for (phase 3F).
+    ring: Option<std::sync::Arc<forge_core::private::branch_key::BranchRing>>,
+    /// Live narrower branches the pusher holds keys for, with their ledger tokens.
+    narrower_names: BTreeMap<String, String>,
+    /// What the guard knows about narrower branches.
+    narrower: members::Narrower,
     /// The repository's owner.
     owner: String,
     /// Its current members (unread: unknown).
@@ -2532,10 +3026,11 @@ fn decide_audiences(
     view: &PushView,
     repo_label: &str,
     options: &OptionState,
-) -> Result<()> {
+) -> Result<BTreeMap<String, NewBranch>> {
     use forge_core::members_git::guard::ObjectGraph as _;
+    let mut new_branches = BTreeMap::new();
     let Ok(option) = audience_option(planned, options) else {
-        return Ok(());
+        return Ok(new_branches);
     };
     let public_live = live_names(&view.public);
     let facts = members::RepoFacts {
@@ -2572,6 +3067,16 @@ fn decide_audiences(
             say_refusal(&e);
             p.reject = Some(wire.to_owned());
             continue;
+        }
+        // narrower branches (phase 3F): one this pusher holds the key of keeps its audience; a
+        // new one asked for with `dg branch new --to` gets its generation-0 key here
+        match decide_narrower(p, &dst, view, option.as_ref(), &facts, repo_label) {
+            Narrow::Not => {}
+            Narrow::Decided => continue,
+            Narrow::New(nb) => {
+                new_branches.insert(dst, nb);
+                continue;
+            }
         }
         let existing = if view.members_only.contains(&dst) {
             Some(Audience::Members)
@@ -2615,13 +3120,111 @@ fn decide_audiences(
     if asked && !options.dry_run {
         members::mark_asked();
     }
-    Ok(())
+    Ok(new_branches)
+}
+
+/// What [`decide_narrower`] made of a ref.
+enum Narrow {
+    /// Not a narrower branch: the members-only rules decide.
+    Not,
+    /// Decided (a narrower audience, or refused).
+    Decided,
+    /// A new narrower branch: its audience is set, its key made.
+    New(NewBranch),
+}
+
+/// The narrower part of D12 (phase 3F): an existing narrower branch the pusher holds keeps its
+/// audience (`-o public` on it is publishing it, E805); a branch asked for narrower
+/// (`branch.<b>.dashAudience`, which `dg branch new --to` sets) that exists already, is the
+/// default branch or a tag, or in a repository without members-only content, is refused; a new
+/// one gets a fresh key.
+fn decide_narrower(
+    p: &mut Planned,
+    dst: &str,
+    view: &PushView,
+    option: Option<&Audience>,
+    facts: &members::RepoFacts,
+    repo_label: &str,
+) -> Narrow {
+    if let Some(token) = view.narrower_names.get(dst) {
+        if p.new_oid.is_some() && option == Some(&Audience::Public) {
+            let (e, wire) =
+                members::refusal_error(&members::Refusal::MembersBranchPublic, dst, repo_label);
+            say_refusal(&e);
+            p.reject = Some(wire.to_owned());
+        } else {
+            p.audience = Audience::Narrower(token.clone());
+        }
+        return Narrow::Decided;
+    }
+    let Some(audience) = p
+        .new_oid
+        .as_ref()
+        .and(members::narrow_intent(&p.spec.src, dst))
+    else {
+        return Narrow::Not;
+    };
+    let refusal = if view.members_only.contains(dst) || live_names(&view.public).contains(dst) {
+        Some(members::Refusal::AlreadyPublic)
+    } else if dst == facts.default_ref || !dst.starts_with("refs/heads/") {
+        Some(members::Refusal::DefaultBranch)
+    } else if !facts.members_key {
+        Some(members::Refusal::MembersOff)
+    } else {
+        None
+    };
+    if let Some(r) = refusal {
+        let (e, wire) = members::narrow_refusal(&r, dst, repo_label);
+        say_refusal(&e);
+        p.reject = Some(wire.to_owned());
+        return Narrow::Decided;
+    }
+    let Some(kr) = view.keyring.as_ref() else {
+        let (e, wire) = members::narrow_refusal(&members::Refusal::MembersOff, dst, repo_label);
+        say_refusal(&e);
+        p.reject = Some(wire.to_owned());
+        return Narrow::Decided;
+    };
+    // a branch of this name this pusher already holds a key for (deleted and pushed again): it
+    // keeps that key, under the audience asked for now, when the pusher may change it; a key of
+    // this name from anyone else is never written under
+    if let Some(b) = view.ring.as_ref().and_then(|r| r.get(dst)) {
+        let me = forge_core::platform::encode_identifier(*kr.reader());
+        if !forge_core::narrow::resolve_now(&b.audience, &view.owner, kr.members()).contains(&me) {
+            let (e, wire) = members::narrow_taken(dst);
+            say_refusal(&e);
+            p.reject = Some(wire.to_owned());
+            return Narrow::Decided;
+        }
+        p.audience = Audience::Narrower(b.ledger_token(kr.repo_id()));
+        return Narrow::New(NewBranch {
+            key: None,
+            audience,
+        });
+    }
+    let Ok(key) = forge_core::private::branch_key::BranchKey::generate() else {
+        p.reject = Some("no randomness for a new branch key".into());
+        return Narrow::Decided;
+    };
+    p.audience = Audience::Narrower(forge_core::private::branch_key::ledger_token(
+        kr.repo_id(),
+        &key,
+    ));
+    Narrow::New(NewBranch {
+        key: Some(key),
+        audience,
+    })
 }
 
 /// The publication guard over the accepted refs (DESIGN D21, [`members::run_guard`]), before
 /// anything is signed: E806 when it cannot tell, E805 when the batch would publish members-only
 /// objects (the whole batch is refused), and the list of what `-o publish-private` publishes.
-fn guard_push(planned: &mut [Planned], view: &PushView, options: &OptionState) -> Result<()> {
+fn guard_push(
+    planned: &mut [Planned],
+    view: &PushView,
+    new_branches: &BTreeMap<String, NewBranch>,
+    options: &OptionState,
+) -> Result<()> {
     use forge_core::members_git::guard::{Note, Verdict};
     refuse_written_grafts(planned);
     let batch = accepted_batch(planned, |p| p.audience.clone());
@@ -2635,12 +3238,25 @@ fn guard_push(planned: &mut [Planned], view: &PushView, options: &OptionState) -
     // check, so no E806 for a repository that only has members-only content turned on (D43 turns
     // it on at creation).
     let members_only_exists = view.members_key && view.has_members_branch;
+    let mut narrower = view.narrower.clone();
+    for (dst, nb) in new_branches {
+        if let Some(Audience::Narrower(token)) = planned
+            .iter()
+            .find(|p| &p.spec.dst == dst)
+            .map(|p| &p.audience)
+        {
+            narrower
+                .audiences
+                .insert(token.clone(), narrow_audience(&nb.audience));
+        }
+    }
     let outcome = members::run_guard(
         members_only_exists,
         view.decryptable.as_deref(),
         &p_tips,
         &batch,
         publish.as_deref(),
+        &narrower,
     )?;
     let g = members::GitGraph::here();
     match outcome.verdict {
@@ -2665,7 +3281,9 @@ fn guard_push(planned: &mut [Planned], view: &PushView, options: &OptionState) -
             say_refusal(&e);
             let named: BTreeSet<&str> = outcome.findings.iter().map(|f| f.dst.as_str()).collect();
             for p in planned.iter_mut().filter(|p| p.reject.is_none()) {
-                p.reject = Some(if named.contains(p.spec.dst.as_str()) {
+                p.reject = Some(if named.contains(p.spec.dst.as_str()) && p.sealed() {
+                    "would show commits to people who can't read them now".into()
+                } else if named.contains(p.spec.dst.as_str()) {
                     "would publish members-only commits".into()
                 } else {
                     "not pushed: another ref of this push would publish members-only commits".into()
@@ -2729,7 +3347,14 @@ fn guard_private_push(
     let mut known = live_tips(remote_refs);
     known.extend(members::known_public_tips());
     let publish = publish_override(options);
-    let outcome = members::run_guard(false, None, &known, &batch, publish.as_deref())?;
+    let outcome = members::run_guard(
+        false,
+        None,
+        &known,
+        &batch,
+        publish.as_deref(),
+        &members::Narrower::default(),
+    )?;
     let g = members::GitGraph::here();
     match outcome.verdict {
         Verdict::Pass => {
@@ -2761,7 +3386,7 @@ fn members_pack_jobs(
     let batch = accepted_batch(planned, |p| p.audience.clone());
     let prev: BTreeMap<String, String> = planned
         .iter()
-        .filter(|p| p.reject.is_none() && p.members())
+        .filter(|p| p.reject.is_none() && p.sealed())
         .filter_map(|p| {
             p.prev_oid
                 .clone()
@@ -2772,15 +3397,16 @@ fn members_pack_jobs(
     forge_core::members_git::plan::plan(public_tips, &prev, &batch).members
 }
 
-/// Build, seal under the members key's write epoch, store and record (kind 64) one members-only
-/// pack (DESIGN §4.3 "Packs"), as [`upload_push_pack`] stores a public one: priced and guarded
-/// first, stored per the policy, its manifest written before any ref names it. Its browse index
-/// (kind 65, [`publish_members_index`]) follows it to the same places. `Some((packHash,
+/// Build, seal (under the members key's write epoch, or a narrower branch's key), store and
+/// record (kind 64) one members-only pack (DESIGN §4.3 "Packs"), as [`upload_push_pack`] stores a
+/// public one: priced and guarded first, stored per the policy, its manifest written before any
+/// ref names it. A members-key pack's browse index (kind 65, [`publish_members_index`]) follows
+/// it to the same places. `Some((packHash,
 /// credits))` when a pack was stored (or an earlier push's is reused); `None` when it adds no
 /// objects or in a dry run.
 async fn upload_members_pack(
     ctx: &PushContext<'_>,
-    lane: Option<&forge_core::private::Lane>,
+    pack_key: PackSealer<'_>,
     job: &forge_core::members_git::plan::MembersPackJob,
 ) -> Result<Option<([u8; 32], u64)>> {
     let want: Vec<&str> = job.want.iter().map(String::as_str).collect();
@@ -2815,8 +3441,14 @@ async fn upload_members_pack(
         ));
         return Ok(None);
     }
-    let lane = lane.ok_or_else(|| anyhow!("the members key isn't available"))?;
-    let sealed = seal_members_pack(ctx, lane, &pack.bytes)?;
+    // the browse index is sealed as its pack is: under the members key only. A narrower branch's
+    // pack gets none (a members-key index would show every member its object ids); browsers
+    // read it whole, with that branch's key
+    let index_lane = match &pack_key {
+        PackSealer::Members(lane) => *lane,
+        PackSealer::Branch(_) => None,
+    };
+    let sealed = seal_members_pack(ctx, pack_key, &pack.bytes)?;
     let job = PackJob::new(&sealed, plain_bytes, objects, 0)?;
     if reuse_recorded(ctx, &job).await?.is_some() {
         return Ok(Some((job.pack_hash, 0)));
@@ -2850,7 +3482,9 @@ async fn upload_members_pack(
         replication,
         externals,
     };
-    publish_members_index(ctx, lane, &pack.parsed, job.pack_hash, &stored).await;
+    if let Some(lane) = index_lane {
+        publish_members_index(ctx, lane, &pack.parsed, job.pack_hash, &stored).await;
+    }
     Ok(Some((job.pack_hash, actual.total())))
 }
 
@@ -2924,40 +3558,74 @@ fn members_pack_estimate(
     })
 }
 
-/// The members-only pack `plain` sealed under `lane`'s write epoch, kept beside a private push's
-/// sealed packs (`.git/dash/sealed/<repo>-members-<sha256>.pack`) so an interrupted push stores the
-/// same bytes again (the same hash: found recorded, not paid twice), reused only while it opens
-/// under the current write epoch and hashes back to `plain`.
+/// The key a sealed branch's pack is encrypted under: the members key's write epoch, or a narrower
+/// branch's current generation (DFPK 0x03, phase 3F). `None` inside: the key is not available.
+#[derive(Clone, Copy)]
+enum PackSealer<'a> {
+    Members(Option<&'a forge_core::private::Lane>),
+    Branch(Option<&'a forge_core::private::branch_key::BranchKeys>),
+}
+
+/// The members-only pack `plain` sealed under `pack_key`, kept beside a private push's sealed packs
+/// (`.git/dash/sealed/<repo>-members-<sha256>.pack`, or `-branch-<kcv>-` for a narrower branch) so
+/// an interrupted push stores the same bytes again (the same hash: found recorded, not paid
+/// twice), reused only while it opens under the current write epoch or generation and hashes back
+/// to `plain`.
 fn seal_members_pack(
     ctx: &PushContext<'_>,
-    lane: &forge_core::private::Lane,
+    pack_key: PackSealer<'_>,
     plain: &[u8],
 ) -> Result<Vec<u8>> {
+    let label = match pack_key {
+        PackSealer::Members(_) => "members".to_owned(),
+        PackSealer::Branch(k) => format!(
+            "branch-{}",
+            k.map(|k| hex::encode(k.kcv4())).unwrap_or_default()
+        ),
+    };
     let path = ctx.git_dir.join("dash").join("sealed").join(format!(
-        "{}-members-{}.pack",
+        "{}-{label}-{}.pack",
         ctx.repo.id(),
         hex::encode(forge_core::private::keys::sha256(plain))
     ));
     ctx.members_sealed.borrow_mut().push(path.clone());
     if let Ok(cached) = std::fs::read(&path) {
-        let epoch = forge_core::private::PackHeader::parse(
-            cached
-                .get(..forge_core::private::pack::HEADER_LEN)
-                .unwrap_or_default(),
-            cached.len() as u64,
-        )
-        .map(|h| h.epoch());
-        if epoch == Ok(lane.write_epoch())
-            && lane
-                .open_artifact(&cached, cached.len() as u64)
-                .is_ok_and(|o| o == plain)
-        {
+        let reusable = match pack_key {
+            PackSealer::Members(Some(lane)) => {
+                let epoch = forge_core::private::PackHeader::parse(
+                    cached
+                        .get(..forge_core::private::pack::HEADER_LEN)
+                        .unwrap_or_default(),
+                    cached.len() as u64,
+                )
+                .map(|h| h.epoch());
+                epoch == Ok(lane.write_epoch())
+                    && lane
+                        .open_artifact(&cached, cached.len() as u64)
+                        .is_ok_and(|o| o == plain)
+            }
+            PackSealer::Branch(Some(keys)) => {
+                forge_core::private::branch_key::sniff_kcv(&cached) == Some(keys.kcv4())
+                    && forge_core::private::branch_key::open_pack(
+                        &cached,
+                        cached.len() as u64,
+                        [keys],
+                    )
+                    .is_ok_and(|o| o == plain)
+            }
+            _ => false,
+        };
+        if reusable {
             return Ok(cached);
         }
     }
-    let sealed = lane
-        .seal_artifact(plain)
-        .map_err(|_| anyhow!("the members-only pack could not be encrypted"))?;
+    let sealed = match pack_key {
+        PackSealer::Members(Some(lane)) => lane.seal_artifact(plain),
+        PackSealer::Branch(Some(keys)) => forge_core::private::branch_key::seal_pack(keys, plain),
+        PackSealer::Members(None) => return Err(anyhow!("the members key isn't available")),
+        PackSealer::Branch(None) => return Err(anyhow!("the branch key isn't available")),
+    }
+    .map_err(|_| anyhow!("the members-only pack could not be encrypted"))?;
     let tmp = path.with_extension("pack.tmp");
     if std::fs::create_dir_all(path.parent().unwrap_or(ctx.git_dir))
         .and_then(|()| std::fs::write(&tmp, &sealed))

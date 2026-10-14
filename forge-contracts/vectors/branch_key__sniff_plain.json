@@ -1,0 +1,13 @@
+{
+  "name": "sniff_plain",
+  "description": "a git pack.",
+  "case": "branch_key",
+  "rules": "v2",
+  "input": {
+    "op": "sniff",
+    "head": "5041434b00000002"
+  },
+  "expected": {
+    "kind": "plain"
+  }
+}

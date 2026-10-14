@@ -18,6 +18,12 @@
  * are read for a repository's default branch, which is always public. Nothing decrypted is
  * stored: the context lives in the browse cache under the members-key session (`repoKey`), and
  * goes with it.
+ *
+ * A narrower branch's packs (phase 3F) are kind 64 too, under a branch key (DFPK 0x03): each is
+ * fetched whole and opens with the branch keys this member holds (`lib/repo/branch-ring.ts`, read
+ * only once such a pack shows up); one whose key they don't hold is skipped, as a pack of another
+ * epoch is. They have no kind-65 index: one under the members key would show every member their
+ * object ids.
  */
 
 import { ObjectLocator, type GitObject, type ObjectIndex, type PackSource } from '../browse'
@@ -25,9 +31,10 @@ import type { IndexedObject } from '../browse/indexer'
 import { offsetKey, type LocatorEntry } from '../browse/locator'
 import { parseMembersIndex, type MembersIndexPlain } from '../browse/members-index'
 import { PACK_KIND } from '../constants'
+import { sniffBranchKcv, type BranchRing } from '../private'
 import { packsOfKind, type PackManifest } from '../repo'
 import type { PrivateSession } from '../repo/private-session'
-import { openPrivateArtifact } from './private-packs'
+import { openBranchArtifact, openPrivateArtifact } from './private-packs'
 
 /** Plaintext `[start, end)` of one members-only pack, from its `copy` when one is named. */
 export type MembersRange = (start: number, end: number, copy?: number) => Promise<Uint8Array>
@@ -85,6 +92,8 @@ interface Whole {
  * Open and index the members-only packs of `manifests` that `lane` reads, each by range when a
  * trusted index (kind 65) covers it and fetched whole otherwise. Null when no members-only pack
  * opens.
+ * Narrower branches' packs open with the branch keys `ring` holds (asked for once the first one
+ * shows up; null: none held).
  */
 export async function loadMembersPacks(
   lane: PrivateSession,
@@ -92,12 +101,14 @@ export async function loadMembersPacks(
   base: number,
   reads: MembersReads,
   budget?: number,
+  ring: () => Promise<BranchRing | null> = async () => null,
 ): Promise<MembersPacks | null> {
   const indexes = packsOfKind(manifests, PACK_KIND.MEMBERS_OBJECT_LOCATOR)
   const opened = new Map<string, Promise<MembersIndexPlain | null>>()
   const ranged: Ranged[] = []
   let whole: Whole[] = []
   let skipped = 0
+  let held: Promise<BranchRing | null> | undefined
   for (const [order, m] of membersGitPacks(manifests).entries()) {
     const rows = await trustedIndex(lane, m, indexes, reads.load, opened)
     if (rows !== null) {
@@ -106,6 +117,12 @@ export async function loadMembersPacks(
     }
     try {
       const sealed = await reads.load(m)
+      if (sniffBranchKcv(sealed) !== null) {
+        const r = await (held ??= ring().catch(() => null))
+        if (r === null) throw new Error('no branch key held')
+        whole.push({ order, manifest: m, bytes: await openBranchArtifact(r, m, sealed) })
+        continue
+      }
       whole.push({ order, manifest: m, bytes: await openPrivateArtifact(lane, m, sealed, m.copies ?? [m]) })
     } catch {
       // not this member's to open (another epoch, a narrower branch's key) or not served: its

@@ -1,0 +1,315 @@
+{
+  "name": "batch_tip_two_audiences",
+  "description": "one new commit pushed to a members-only branch and to a Maintainers branch in one batch: it counts as the Maintainers branch's, so the members-only ref is refused.",
+  "case": "publish_guard",
+  "rules": "v2",
+  "input": {
+    "objects": {
+      "180951f3c3a7378ee442defd00898f0ec43d5ec0": {
+        "type": "blob"
+      },
+      "759f29a623fd2792230f77fe05fd6d1921ea59ca": {
+        "type": "blob"
+      },
+      "40d877672faef8a9ff3f135acae9b166812ae63b": {
+        "type": "tree",
+        "entries": [
+          "180951f3c3a7378ee442defd00898f0ec43d5ec0"
+        ]
+      },
+      "5502d463ef427893cc9e88f6e245395c532faa01": {
+        "type": "tree",
+        "entries": [
+          "180951f3c3a7378ee442defd00898f0ec43d5ec0",
+          "759f29a623fd2792230f77fe05fd6d1921ea59ca"
+        ]
+      },
+      "6905d906b10f3649d4a9a218c3dd32815773a7d4": {
+        "type": "commit",
+        "parents": [],
+        "tree": "40d877672faef8a9ff3f135acae9b166812ae63b"
+      },
+      "8f24fefa6975fe1f9b6a5c47d33c5ca681560e4c": {
+        "type": "commit",
+        "parents": [
+          "6905d906b10f3649d4a9a218c3dd32815773a7d4"
+        ],
+        "tree": "40d877672faef8a9ff3f135acae9b166812ae63b"
+      },
+      "51c4c7ba148e7c253c773bec11ff78c999212ce0": {
+        "type": "commit",
+        "parents": [
+          "8f24fefa6975fe1f9b6a5c47d33c5ca681560e4c"
+        ],
+        "tree": "40d877672faef8a9ff3f135acae9b166812ae63b"
+      },
+      "1929d4b3738bafe163d4dfe206b41c9f290ca81d": {
+        "type": "commit",
+        "parents": [
+          "51c4c7ba148e7c253c773bec11ff78c999212ce0"
+        ],
+        "tree": "40d877672faef8a9ff3f135acae9b166812ae63b"
+      },
+      "8629d4b787e3887f07542bd9003ff146badff971": {
+        "type": "commit",
+        "parents": [
+          "51c4c7ba148e7c253c773bec11ff78c999212ce0"
+        ],
+        "tree": "5502d463ef427893cc9e88f6e245395c532faa01",
+        "patchId": "d5947adbb961070d89e230ce037bb75bf3ff7863df3c216f6decc395ccb58b2e"
+      },
+      "45d4b3ef492958ee914e3a1cf3ce86ffef4287ff": {
+        "type": "commit",
+        "parents": [
+          "8629d4b787e3887f07542bd9003ff146badff971"
+        ],
+        "tree": "5502d463ef427893cc9e88f6e245395c532faa01"
+      },
+      "04c2c5379cccfda4965713c2bfe1c1347b8413d3": {
+        "type": "commit",
+        "parents": [
+          "45d4b3ef492958ee914e3a1cf3ce86ffef4287ff"
+        ],
+        "tree": "5502d463ef427893cc9e88f6e245395c532faa01"
+      },
+      "3f7a7f79d7a92e4e7c2b4ef1be5a5db296b4dadc": {
+        "type": "commit",
+        "parents": [
+          "8f24fefa6975fe1f9b6a5c47d33c5ca681560e4c"
+        ],
+        "tree": "40d877672faef8a9ff3f135acae9b166812ae63b"
+      },
+      "c0632713e39ce31e98e1a926ceaa002af3221093": {
+        "type": "commit",
+        "parents": [
+          "8629d4b787e3887f07542bd9003ff146badff971"
+        ],
+        "tree": "5502d463ef427893cc9e88f6e245395c532faa01"
+      },
+      "af8bb0878991317b574ea2019f36e4176dac844a": {
+        "type": "commit",
+        "parents": [
+          "1929d4b3738bafe163d4dfe206b41c9f290ca81d",
+          "04c2c5379cccfda4965713c2bfe1c1347b8413d3"
+        ],
+        "tree": "5502d463ef427893cc9e88f6e245395c532faa01"
+      },
+      "959247fb271144986bcb43a42b97d358077d86ff": {
+        "type": "commit",
+        "parents": [
+          "1929d4b3738bafe163d4dfe206b41c9f290ca81d"
+        ],
+        "tree": "225f316d98df6e464aec53a553089175794b8ac6"
+      },
+      "225f316d98df6e464aec53a553089175794b8ac6": {
+        "type": "tree",
+        "entries": [
+          "180951f3c3a7378ee442defd00898f0ec43d5ec0",
+          "06c41273140ddfb396c4bb93bd0d90542c5744e8"
+        ]
+      },
+      "06c41273140ddfb396c4bb93bd0d90542c5744e8": {
+        "type": "blob"
+      },
+      "0bd06da0d95fb85fe2807ff8516084daf3ff2ee7": {
+        "type": "commit",
+        "parents": [
+          "1929d4b3738bafe163d4dfe206b41c9f290ca81d"
+        ],
+        "tree": "40d877672faef8a9ff3f135acae9b166812ae63b"
+      },
+      "e9441a61d900fe64641ae25a880cf824dbb413c0": {
+        "type": "commit",
+        "parents": [
+          "3f7a7f79d7a92e4e7c2b4ef1be5a5db296b4dadc"
+        ],
+        "tree": "40d877672faef8a9ff3f135acae9b166812ae63b"
+      },
+      "f9c7288b52ac9f232634e6775afe092e22243fa9": {
+        "type": "commit",
+        "parents": [
+          "51c4c7ba148e7c253c773bec11ff78c999212ce0"
+        ],
+        "tree": "40d877672faef8a9ff3f135acae9b166812ae63b"
+      },
+      "f630bc43c4d2ca782633538a44901e823225a3f8": {
+        "type": "commit",
+        "parents": [
+          "04c2c5379cccfda4965713c2bfe1c1347b8413d3",
+          "f9c7288b52ac9f232634e6775afe092e22243fa9"
+        ],
+        "tree": "40d877672faef8a9ff3f135acae9b166812ae63b"
+      },
+      "78d0cb4a3daddb820e03fc0bbb262444eb67bb1a": {
+        "type": "commit",
+        "parents": [
+          "04c2c5379cccfda4965713c2bfe1c1347b8413d3"
+        ],
+        "tree": "40d877672faef8a9ff3f135acae9b166812ae63b"
+      },
+      "8d1dbd4e13453bce18e658622bfe32f8f10e42ac": {
+        "type": "tag",
+        "target": "04c2c5379cccfda4965713c2bfe1c1347b8413d3"
+      },
+      "973874fba14b3d0a92ab0b9e9a13d3e46ecd45c7": {
+        "type": "tag",
+        "target": "1929d4b3738bafe163d4dfe206b41c9f290ca81d"
+      },
+      "2c16de5e7e4209b60ceafe5c92edb89ed7ef0b90": {
+        "type": "tag",
+        "target": "1929d4b3738bafe163d4dfe206b41c9f290ca81d"
+      },
+      "23c6d8802294e2e70dde4780d320a4918d6a084f": {
+        "type": "tree",
+        "entries": [
+          "180951f3c3a7378ee442defd00898f0ec43d5ec0"
+        ],
+        "gitlinks": {
+          "sub-fix": "45d4b3ef492958ee914e3a1cf3ce86ffef4287ff"
+        }
+      },
+      "d4c944ea22c993d218fbd2e4b503cdd192e2dba3": {
+        "type": "tree",
+        "entries": [
+          "180951f3c3a7378ee442defd00898f0ec43d5ec0"
+        ],
+        "gitlinks": {
+          "sub-lib": "8f24fefa6975fe1f9b6a5c47d33c5ca681560e4c"
+        }
+      },
+      "67058b4684e791243b47cbc6e407e5f7032362d9": {
+        "type": "tree",
+        "entries": [
+          "180951f3c3a7378ee442defd00898f0ec43d5ec0"
+        ],
+        "gitlinks": {
+          "sub-fix": "45d4b3ef492958ee914e3a1cf3ce86ffef4287ff",
+          "sub-lib": "8f24fefa6975fe1f9b6a5c47d33c5ca681560e4c"
+        }
+      },
+      "2219f32cea39424cf63fadae0804524c77254120": {
+        "type": "commit",
+        "parents": [
+          "1929d4b3738bafe163d4dfe206b41c9f290ca81d"
+        ],
+        "tree": "23c6d8802294e2e70dde4780d320a4918d6a084f"
+      },
+      "3f1ad5741a6f1bb98af68387d4c4d1a776d2a827": {
+        "type": "commit",
+        "parents": [
+          "1929d4b3738bafe163d4dfe206b41c9f290ca81d"
+        ],
+        "tree": "d4c944ea22c993d218fbd2e4b503cdd192e2dba3"
+      },
+      "45932d1a0db4c087766b41e8baadf12318725a1c": {
+        "type": "commit",
+        "parents": [
+          "2219f32cea39424cf63fadae0804524c77254120"
+        ],
+        "tree": "67058b4684e791243b47cbc6e407e5f7032362d9"
+      },
+      "e562ae38b0bf835bec51bcef76cf642de54dc9c1": {
+        "type": "commit",
+        "parents": [
+          "1929d4b3738bafe163d4dfe206b41c9f290ca81d"
+        ],
+        "tree": "5502d463ef427893cc9e88f6e245395c532faa01",
+        "patchId": "d5947adbb961070d89e230ce037bb75bf3ff7863df3c216f6decc395ccb58b2e"
+      },
+      "7966b432427b51f52f955ae2a06c054beb2183cf": {
+        "type": "blob"
+      },
+      "d7d96dca5cebb2d4d53eba4f8e1ae907656c06b7": {
+        "type": "tree",
+        "entries": [
+          "180951f3c3a7378ee442defd00898f0ec43d5ec0",
+          "759f29a623fd2792230f77fe05fd6d1921ea59ca",
+          "7966b432427b51f52f955ae2a06c054beb2183cf"
+        ]
+      },
+      "79c15b029c4182303510841c39114b1456d49819": {
+        "type": "commit",
+        "parents": [
+          "e562ae38b0bf835bec51bcef76cf642de54dc9c1"
+        ],
+        "tree": "d7d96dca5cebb2d4d53eba4f8e1ae907656c06b7",
+        "patchId": "fc5291f60d68aeb7a541f4b03d556f5b124a70a4e4b21126eb2161fbbfc8b534"
+      },
+      "2cfa44a786d345b052b78da3e7a2378e721f651a": {
+        "type": "commit",
+        "parents": [],
+        "tree": "40d877672faef8a9ff3f135acae9b166812ae63b"
+      },
+      "51e6d5b6c51e9a7ffa43502c1c9c6fce2255a388": {
+        "type": "commit",
+        "parents": [],
+        "tree": "40d877672faef8a9ff3f135acae9b166812ae63b"
+      }
+    },
+    "notes": {
+      "2cfa44a786d345b052b78da3e7a2378e721f651a": [
+        "51c4c7ba148e7c253c773bec11ff78c999212ce0"
+      ],
+      "51e6d5b6c51e9a7ffa43502c1c9c6fce2255a388": [
+        "45d4b3ef492958ee914e3a1cf3ce86ffef4287ff"
+      ]
+    },
+    "publicTips": [
+      "1929d4b3738bafe163d4dfe206b41c9f290ca81d",
+      "3f7a7f79d7a92e4e7c2b4ef1be5a5db296b4dadc"
+    ],
+    "membersKey": true,
+    "audiences": {
+      "branch:1111111111111111": {
+        "group": "maintainers",
+        "people": []
+      },
+      "branch:2222222222222222": {
+        "group": "writers",
+        "people": []
+      },
+      "branch:3333333333333333": {
+        "group": null,
+        "people": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ]
+      },
+      "branch:4444444444444444": {
+        "group": "members",
+        "people": [
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ]
+      }
+    },
+    "ledger": [],
+    "decryptable": [
+      "04c2c5379cccfda4965713c2bfe1c1347b8413d3"
+    ],
+    "batch": [
+      {
+        "dst": "refs/heads/sec/fix",
+        "new": "f9c7288b52ac9f232634e6775afe092e22243fa9",
+        "audience": "members"
+      },
+      {
+        "dst": "refs/heads/sec/maint",
+        "new": "f9c7288b52ac9f232634e6775afe092e22243fa9",
+        "audience": "branch:1111111111111111"
+      }
+    ]
+  },
+  "expected": {
+    "verdict": "refuse",
+    "findings": [
+      {
+        "dst": "refs/heads/sec/fix",
+        "kind": "commits",
+        "oids": [
+          "f9c7288b52ac9f232634e6775afe092e22243fa9"
+        ]
+      }
+    ],
+    "notes": [],
+    "published": []
+  }
+}

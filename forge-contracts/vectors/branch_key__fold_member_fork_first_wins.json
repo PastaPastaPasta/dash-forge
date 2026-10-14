@@ -1,0 +1,122 @@
+{
+  "name": "fold_member_fork_first_wins",
+  "description": "two audience members each start generation 1: the first counts, the other is a fork, kept read-only.",
+  "case": "branch_key",
+  "rules": "v2",
+  "input": {
+    "op": "fold",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "letters": [
+      {
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "height": 100,
+        "sender": "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
+        "body": {
+          "type": "branchKey",
+          "v": 1,
+          "name": "refs/heads/sec/embargo",
+          "gen": 0,
+          "keys": [
+            "6465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80818283"
+          ],
+          "group": "maintainers",
+          "people": [],
+          "to": [
+            "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+          ]
+        }
+      },
+      {
+        "id": "cbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcb",
+        "height": 200,
+        "sender": "Bswb3UyeD1pUTaGiE6WvqwFpJZsQSEY1xhJePCDTHdvp",
+        "body": {
+          "type": "branchKey",
+          "v": 1,
+          "name": "refs/heads/sec/embargo",
+          "gen": 1,
+          "keys": [
+            "6465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80818283",
+            "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+          ],
+          "group": "maintainers",
+          "people": [],
+          "to": [
+            "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
+            "Bswb3UyeD1pUTaGiE6WvqwFpJZsQSEY1xhJePCDTHdvp"
+          ]
+        }
+      },
+      {
+        "id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "height": 300,
+        "sender": "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
+        "body": {
+          "type": "branchKey",
+          "v": 1,
+          "name": "refs/heads/sec/embargo",
+          "gen": 1,
+          "keys": [
+            "6465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80818283",
+            "8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaab"
+          ],
+          "group": "maintainers",
+          "people": [],
+          "to": [
+            "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+          ]
+        }
+      }
+    ],
+    "groups": {
+      "maintainers": [
+        "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
+        "Bswb3UyeD1pUTaGiE6WvqwFpJZsQSEY1xhJePCDTHdvp"
+      ],
+      "writers": [
+        "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+      ],
+      "members": [
+        "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+      ]
+    }
+  },
+  "expected": {
+    "branches": [
+      {
+        "name": "refs/heads/sec/embargo",
+        "group": "maintainers",
+        "people": [],
+        "issuedAt": {
+          "0": 100,
+          "1": 200
+        },
+        "letters": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "cbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcb"
+        ],
+        "holders": [
+          "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
+          "Bswb3UyeD1pUTaGiE6WvqwFpJZsQSEY1xhJePCDTHdvp"
+        ],
+        "kcvs": [
+          "d02a38c3",
+          "2e355b6f"
+        ],
+        "gen": 1,
+        "readOnly": [
+          {
+            "gen": 1,
+            "kcv": "72ad7619"
+          }
+        ]
+      }
+    ],
+    "ignored": [
+      {
+        "id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "reason": "otherChain"
+      }
+    ]
+  }
+}

@@ -17,15 +17,18 @@ import { indexPacks, memoryPackSource, serializeLocator } from '../browse/indexe
 import { encodeMembersIndex } from '../browse/members-index'
 import { T_BLOB, T_REF_DELTA, concat, copyInsertDelta, hexToBytes, objHeader, packFrame } from '../browse/pack-fixtures'
 import { PACK_KIND } from '../constants'
+import { BranchKey, BranchKeys, BranchRing, foldBranchLetters, sealBranchPack } from '../private'
 import type { PackManifest } from '../repo'
 import type { PrivateSession } from '../repo/private-session'
 import { aliasedReader } from './blind-reader'
 import { MembersIndex, loadMembersPacks, membersPackSource, type MembersPacks, type MembersReads } from './members-browse'
 
-// Sealing is not what these tests are about (`private-packs.test.ts`, the private conformance
-// suite): a "sealed" artifact here is 0x5e then its plaintext, opened only when its bytes hash to
-// the manifest's packHash, as the real opener checks first.
-vi.mock('./private-packs', () => ({
+// Sealing is not what the kind-65 tests are about (`private-packs.test.ts`, the private
+// conformance suite): a "sealed" members-key artifact here is 0x5e then its plaintext, opened only
+// when its bytes hash to the manifest's packHash, as the real opener checks first. A narrower
+// branch's pack opens for real (`openBranchArtifact`).
+vi.mock('./private-packs', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./private-packs')>()),
   openPrivateArtifact: async (_lane: unknown, copy: { packHash: string }, sealed: Uint8Array) => {
     if (bytesToHex(sha256(sealed)) !== copy.packHash || sealed[0] !== 0x5e) throw new Error('sealedPackCorrupt')
     return sealed.slice(1)
@@ -226,5 +229,54 @@ describe('a members-only pack\'s browse index (kind 65)', () => {
     const reader = new BrowseReader(new MembersIndex(empty, members), membersPackSource(memoryPackSource([new Uint8Array(0), new Uint8Array(0), new Uint8Array(0)]), members))
     expect(Array.from((await reader.readObject(gitOidHex('blob', next))).bytes)).toEqual(Array.from(next))
     expect(Array.from((await reader.readObject(gitOidHex('blob', baseText))).bytes)).toEqual(Array.from(baseText))
+  })
+})
+
+describe("a narrower branch's packs (DFPK 0x03)", () => {
+  const REPO = new Uint8Array(32).fill(0x11)
+  const NAME = 'refs/heads/sec/embargo'
+  const blob = text('only for the maintainers\n')
+  const pack = packFrame(concat(objHeader(T_BLOB, blob.length), zlibSync(blob)))
+  const sha = async (b: Uint8Array) => bytesToHex(new Uint8Array(await crypto.subtle.digest('SHA-256', new Uint8Array(b))))
+  const manifest = async (n: number, sealed: Uint8Array): Promise<PackManifest> => ({
+    packHash: await sha(sealed),
+    kind: 64,
+    sizeBytes: sealed.length,
+    objectCount: 1,
+    chunkCount: 1,
+    storage: 0,
+    uris: [],
+    tips: [],
+    supersedes: [],
+    createdAt: 1000 + n,
+    documentId: `m${n}`,
+    uploader: 'u',
+    createdAtBlockHeight: 10 + n,
+  })
+
+  it('open with a held branch key and are indexed; one whose key is not held is skipped, never an error', async () => {
+    const held = BranchKey.fromBytes(new Uint8Array(32).fill(9))
+    const ring = await BranchRing.create(REPO, foldBranchLetters([{ id: 'l', height: 1, sender: 'owner', letter: { name: NAME, keys: [held], audience: { group: 'maintainers', also: [] }, to: ['11111111111111111111111111111111'] } }], () => true), () => [])
+    const mine = await sealBranchPack(ring.writeKeys(NAME) as BranchKeys, pack)
+    const theirs = await sealBranchPack(await BranchKeys.derive(REPO, 0, BranchKey.fromBytes(new Uint8Array(32).fill(4))), pack)
+    const stored = new Map([[`m1`, mine], [`m2`, theirs]])
+    const manifests = [await manifest(1, mine), await manifest(2, theirs)]
+    const lane = { closed: false } as unknown as PrivateSession
+    let asked = 0
+    const reads: MembersReads = {
+      load: async (m) => stored.get(m.documentId) as Uint8Array,
+      ranged: () => async () => new Uint8Array(0),
+      bases: () => async () => null,
+    }
+    const got = await loadMembersPacks(lane, manifests, 3, reads, undefined, async () => {
+      asked++
+      return ring
+    })
+    expect(asked).toBe(1)
+    expect(got?.skipped).toBe(1)
+    expect(got?.manifests.map((m) => m.documentId)).toEqual(['m1'])
+    expect(got?.locator.count).toBe(1)
+    // with no ring, nothing opens and nothing throws
+    expect(await loadMembersPacks(lane, manifests, 3, reads)).toBeNull()
   })
 })

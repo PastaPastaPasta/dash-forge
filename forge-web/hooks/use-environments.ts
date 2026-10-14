@@ -17,7 +17,9 @@ import { useSdk } from '@/hooks/use-sdk'
 import { encryptionKeyState, withLetterReader } from '@/lib/auth/encryption-key'
 import { readEnvironments, type EnvBook, type EnvKeys } from '@/lib/env/loader'
 import type { MemberEnvIO } from '@/lib/env/member-change'
-import { sdkEnvSaver } from '@/lib/env/saver'
+import { sdkBranchLetterSender, sdkEnvSaver } from '@/lib/env/saver'
+import { forgetBranchRing, readHeldBranches } from '@/lib/repo/branch-ring'
+import { membersLane } from '@/lib/repo/contract'
 import type { EnvSaver } from '@/lib/env/write'
 import type { Network } from '@/lib/constants'
 import type { PeopleView } from '@/lib/env/view'
@@ -85,7 +87,9 @@ export async function envKeysOf(home: RepoHome, network: Network, identity: stri
 /**
  * The reads and writes a maintainer's environment change makes in this tab ({@link EnvSaver},
  * {@link MemberEnvIO}), or `null` while signed out or before the SDK is ready. Reads are fresh
- * every time: a plan never decides from a cached member list.
+ * every time: a plan never decides from a cached member list. A member reading a public repo's
+ * members-only content also plans and sends the key letters of the narrower branches they hold
+ * (`io.branches`, phase 3F).
  */
 export function useEnvWriter(home: RepoHome): { readonly saver: EnvSaver; readonly io: MemberEnvIO } | null {
   const repo = home.repo
@@ -94,6 +98,24 @@ export function useEnvWriter(home: RepoHome): { readonly saver: EnvSaver; readon
   return useMemo(() => {
     if (!ready || sdk === null || signer === null || identity === null) return null
     const saver = sdkEnvSaver(sdk, signer, repo, network)
+    const lane = membersLane(repo)
+    const letters = sdkBranchLetterSender(sdk, signer, repo, network)
+    const branches: MemberEnvIO['branches'] =
+      lane === undefined
+        ? undefined
+        : {
+            held: () => readHeldBranches(sdk, repo),
+            // counted when the page folded the refs: those whose newest update this member couldn't open
+            notHeld: () => home.membersRefs?.noAccess ?? 0,
+            send: async (letter, people) => {
+              try {
+                return await letters.send(letter, people)
+              } finally {
+                // the page's ring read is stale once this tab sent a key: the next read sees it
+                forgetBranchRing(lane.id)
+              }
+            },
+          }
     const io: MemberEnvIO = {
       read: async (asMaintainer) => {
         const sources = sdkEnvSources(sdk, repo)
@@ -105,6 +127,7 @@ export function useEnvWriter(home: RepoHome): { readonly saver: EnvSaver; readon
         const got = await saver.keysOf(ids)
         return new Map([...got].map(([id, k]) => [id, k === null ? null : k.keyId]))
       },
+      ...(branches !== undefined ? { branches } : {}),
     }
     return { saver, io }
     // `home` changes identity on every repo read; what the writer uses of it is the repo and its key session

@@ -1151,7 +1151,9 @@ describe('FORGE_RULES conformance vectors', () => {
   // `private_*` cases (private-repos.md §11) and the mixed-visibility envelope cases
   // (`mixed_doc_*`, `named_envelope*`, `named_artifact*`) and a repository made public's readers
   // (`converted_repo_*`) run in `lib/private/conformance.test.ts`;
-  // the environment snapshots (`env_snapshot*`) in `lib/env/conformance.test.ts`.
+  // the environment snapshots (`env_snapshot*`) in `lib/env/conformance.test.ts`; the key letters
+  // (`key_letter`) in `lib/private/key-letter.conformance.test.ts`; the narrower branches
+  // (`branch_key`) in `lib/private/branch-key.conformance.test.ts`.
   // The members-only branch and PR cases (private-repos.md §19): `oid_blind`, `sealed_ref` and
   // `sealed_patch` run in `lib/private/members-git.conformance.test.ts`; `members_pack_plan` and
   // `publish_guard` pin the git remote helper's push planning and publish guard, which only the
@@ -1162,7 +1164,7 @@ describe('FORGE_RULES conformance vectors', () => {
   const isMembersGit = (v: Vector) => MEMBERS_GIT_CASES.includes(v.case) || v.case === 'members_check' || v.case === 'members_index'
   const isPrivate = (v: Vector) =>
     isMembersGit(v) ||
-    ['private_', 'mixed_doc_', 'named_envelope', 'named_artifact', 'converted_repo_', 'env_snapshot'].some((p) => v.case.startsWith(p))
+    ['private_', 'mixed_doc_', 'named_envelope', 'named_artifact', 'converted_repo_', 'env_snapshot', 'key_letter', 'branch_key'].some((p) => v.case.startsWith(p))
   const v2Vectors = vectors.filter((v) => v.rules === 'v2' && !isPrivate(v))
   const privateVectors = vectors.filter(isPrivate)
 
@@ -1170,6 +1172,7 @@ describe('FORGE_RULES conformance vectors', () => {
     expect(base.length).toBeGreaterThanOrEqual(45)
     expect(v2Vectors.length).toBeGreaterThanOrEqual(110)
     expect(privateVectors.length).toBeGreaterThanOrEqual(138)
+    expect(vectors.filter((v) => v.case === 'branch_key').length).toBeGreaterThanOrEqual(59)
     expect(base.length + v2Vectors.length + privateVectors.length).toBe(vectors.length)
     // every members-git case is present (forge-core `members_git::conformance` runs all five)
     for (const c of MEMBERS_GIT_CASES) expect(vectors.filter((v) => v.case === c).length, c).toBeGreaterThanOrEqual(5)

@@ -97,6 +97,17 @@ export class EpochKeys {
     return new Uint8Array(bits)
   }
 
+  /**
+   * `K_pack,e,fileId` as raw bytes: what a key letter hands on so that someone without the members
+   * key opens this one file and nothing else (`openPackWithFileKey`, DESIGN §4.3 "Branch keys").
+   * The caller wipes it.
+   */
+  async rawPackKey(fileId: Uint8Array): Promise<Bytes> {
+    if (fileId.length !== 16) throw new RangeError('fileId must be 16 bytes')
+    const info = subkeyInfo('pack', this.epoch, concat(new Uint8Array([PACK_VERSION]), fileId))
+    return new Uint8Array(await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt: this.repoId, info }, this.base, 256))
+  }
+
   /** `K_pack,e,fileId`: the AES-256-GCM key of one sealed artifact (§3.3). */
   packKey(fileId: Uint8Array): Promise<CryptoKey> {
     if (fileId.length !== 16) throw new RangeError('fileId must be 16 bytes')

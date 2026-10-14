@@ -97,11 +97,14 @@ impl SealedRefUpdate {
     }
 }
 
-/// The header and TLV fields of `input` under `keys` with `salt`: refused (`Malformed`) for a
-/// kind that is not a ref update, an OID that is not 20 or 32 bytes, a `prevOid` of another width
-/// than `newOid`, and an update that names no commit at all (a null create).
-fn header_and_fields(
-    keys: &EpochKeys,
+/// The header and TLV fields of `input` with `salt`, its name hashed to `ref_name_hash` and
+/// sealed under `epoch` (the members key's epoch, or a branch key's generation): refused
+/// (`Malformed`) for a kind that is not a ref update, an OID that is not 20 or 32 bytes, a
+/// `prevOid` of another width than `newOid`, and an update that names no commit at all (a null
+/// create).
+pub(crate) fn header_and_fields(
+    ref_name_hash: [u8; 32],
+    epoch: u32,
     owner: [u8; 32],
     input: &RefUpdateIn<'_>,
     salt: &Salt,
@@ -128,9 +131,9 @@ fn header_and_fields(
         oid_salt: Some(*salt),
         ..Fields::default()
     };
-    let mut header = DocHeader::new(kind, owner, keys.epoch());
+    let mut header = DocHeader::new(kind, owner, epoch);
     header.vis = Visibility::Public;
-    header.ref_name_hash = Some(keys.ref_name_hash(name));
+    header.ref_name_hash = Some(ref_name_hash);
     header.new_oid = Some(blind::plaintext_of(salt, new_oid).ok_or(PrivateError::Malformed)?);
     header.prev_oid = match prev_oid {
         Some(p) => Some(blind::plaintext_of(salt, p).ok_or(PrivateError::Malformed)?),
@@ -140,7 +143,7 @@ fn header_and_fields(
     Ok((header, fields))
 }
 
-fn sealed(header: DocHeader, salt: Salt, enc: Vec<u8>) -> SealedRefUpdate {
+pub(crate) fn sealed(header: DocHeader, salt: Salt, enc: Vec<u8>) -> SealedRefUpdate {
     SealedRefUpdate {
         kind: header.kind,
         ref_name_hash: header.ref_name_hash.expect("set by header_and_fields"),
@@ -161,7 +164,13 @@ pub fn seal(
     input: &RefUpdateIn<'_>,
 ) -> Result<SealedRefUpdate, PrivateError> {
     let salt = blind::fresh_salt()?;
-    let (header, fields) = header_and_fields(keys, owner, input, &salt)?;
+    let (header, fields) = header_and_fields(
+        keys.ref_name_hash(input.name),
+        keys.epoch(),
+        owner,
+        input,
+        &salt,
+    )?;
     let enc = doc::seal_members(keys, &header, &fields)?;
     Ok(sealed(header, salt, enc))
 }
@@ -175,7 +184,13 @@ pub fn seal_with(
     salt: Salt,
     nonce: [u8; 12],
 ) -> Result<SealedRefUpdate, PrivateError> {
-    let (header, fields) = header_and_fields(keys, owner, input, &salt)?;
+    let (header, fields) = header_and_fields(
+        keys.ref_name_hash(input.name),
+        keys.epoch(),
+        owner,
+        input,
+        &salt,
+    )?;
     let enc = doc::seal_members_with_nonce(keys, &header, &fields, nonce)?;
     Ok(sealed(header, salt, enc))
 }

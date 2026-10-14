@@ -70,10 +70,11 @@ import {
   resetRepoGateways,
 } from './storage-status'
 import { mapPooled, trimOldest } from './pool'
-import { openPrivateArtifact, readPrivateRange } from './private-packs'
+import { openBranchArtifact, openPrivateArtifact, readPrivateRange } from './private-packs'
 import { onPrivateSessionEnded, type PrivateSession } from '../repo/private-session'
+import { branchRingFor } from '../repo/branch-ring'
 import { knownConversion } from '../repo/converted'
-import { HEADER_LEN, PackError, maybeSealed, skipReason, sniff, type Conversion, type SkipReason } from '../private'
+import { BRANCH_PACK_VERSION, HEADER_LEN, PackError, maybeSealed, skipReason, sniff, sniffBranchKcv, type Conversion, type SkipReason } from '../private'
 import { mirrorCopy, mirrorUrisOf, resetMirrorUris } from '../repo/pack-mirrors'
 import { MembersIndex, loadMembersPacks, membersGitPacks, membersPackSource, type MembersPacks } from './members-browse'
 
@@ -431,7 +432,9 @@ export class PackSkippedError extends PackUnavailableError {
     const reason =
       why.reason === 'noKey'
         ? "stored encrypted while the repo was private, and its key wasn't made public"
-        : 'encrypted in a format a newer version of Forge writes'
+        : why.version === BRANCH_PACK_VERSION
+          ? "it belongs to a branch you don't have access to"
+          : 'encrypted in a format a newer version of Forge writes'
     super(packHash, [], false, reason)
     this.message = `pack ${packHash.slice(0, 12)}… is not readable here: ${reason}`
     this.name = 'PackSkippedError'
@@ -1437,6 +1440,26 @@ export async function loadArtifactBytesProgress(
   const opened = new WeakSet<Uint8Array>()
   const open = async (copy: PackManifest): Promise<Uint8Array> => {
     const bytes = await loadOneCopy(sdk, repo, copy, onProgress, cancel, !stored)
+    // A narrower branch's pack (DFPK 0x03, phase 3F) opens with the branch keys this member holds;
+    // one they hold no key for is skipped, never an error. Classified only once the bytes hash to
+    // `packHash`: a bad copy (any writer may record one) is a failed copy, and the next is tried.
+    const kcv = session !== undefined && session !== repo.session ? sniffBranchKcv(bytes) : null
+    if (kcv !== null) {
+      if (bytesToHex(sha256(bytes)) !== copy.packHash.toLowerCase()) {
+        if (copy.storage === 0) forgetChunks(repo, copy)
+        throw new PackError('sealedPackCorrupt')
+      }
+      const ring = (await branchRingFor(sdk, repo))?.ring ?? null
+      if (ring === null || ring.branchOfKcv(kcv) === undefined) throw new PackSkippedError(copy.packHash, { reason: 'otherFormat', version: BRANCH_PACK_VERSION })
+      try {
+        const plain = await openBranchArtifact(ring, copy, bytes)
+        opened.add(plain)
+        return plain
+      } catch (e) {
+        if (copy.storage === 0) forgetChunks(repo, copy)
+        throw e
+      }
+    }
     const keys = session ?? openableWith(copy, bytes)
     if (keys === undefined) return bytes
     try {
@@ -1916,7 +1939,10 @@ async function membersOverlay(
       const reader = o === null ? pub : repoReader(null, repo, o.index, o.packs, o.space)
       return (oid) => reader.readObject(oid).catch(() => null)
     },
-  }).catch(() => null)
+  }, undefined,
+    // a narrower branch's packs open with the branch keys this member holds (phase 3F)
+    async () => (await branchRingFor(sdk, repo))?.ring ?? null,
+  ).catch(() => null)
   return members === null ? null : over(members)
 }
 

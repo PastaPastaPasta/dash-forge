@@ -311,6 +311,12 @@ export const PACK_KIND = {
    */
   ENV_SNAPSHOT: 8,
   /**
+   * A key letter (`lib/private/key-letter.ts`, DESIGN §4.3, §4.9): keys sealed to specific people,
+   * a narrower branch's `branchKey` letters among them (`lib/repo/branch-ring.ts`). Never
+   * superseding; each reader opens the ones addressed to them.
+   */
+  KEY_LETTER: 10,
+  /**
    * A members-only git pack of a public repo (mixed-visibility DESIGN §4.3, `private-repos.md`
    * §19.5): one members-only branch's new objects, DFPK-sealed under the members key, thin against
    * the public packs, with no `tips` and never superseding. Kinds 64 + k are the members-only

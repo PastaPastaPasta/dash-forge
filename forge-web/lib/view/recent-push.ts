@@ -55,7 +55,8 @@ export function recentPushes(
   const out: RecentPush[] = []
   for (const b of home.branches) {
     const st = b.state
-    if (!b.refName.startsWith('refs/heads/') || b.refName === defaultRef || st.state !== 'resolved') continue
+    // a branch for fewer people than all members never opens a pull request (DESIGN §4.3)
+    if (!b.refName.startsWith('refs/heads/') || b.refName === defaultRef || st.state !== 'resolved' || b.narrower !== undefined) continue
     if (st.author !== viewer || isNullOid(st.oid) || st.oid === defaultTip) continue
     // A time slightly in the future (clock skew) is recent; one past the hour is not.
     if (now - st.createdAt > RECENT_PUSH_MS) continue

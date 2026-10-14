@@ -15,10 +15,15 @@
 //!      publishes an id, not content: an oracle only) and noted
 //!   6. opt-in (`patch_ids`): a commit the ref adds whose patch id (`git patch-id --stable`)
 //!      equals a members-only commit's, re-made with a new id: allowed, and warned about
-//! for each members-only ref update (dst, T): refuse commits recorded with a narrower audience
-//!   (D21 rev 4; nothing narrower exists before phase 3F)
+//! for each sealed ref update (dst, T), members-only or narrower (D21 rev 4, phase 3F):
+//!   refuse the commits T adds that only audiences dst is not within hold, minus what an audience
+//!   dst is within already held before the batch
 //! refuse the whole batch on any finding (E805)
 //! ```
+//!
+//! An audience is within another when its group is no wider (Maintainers ⊂ Writers and
+//! maintainers ⊂ All members) and it lists no one the other does not ([`NarrowAudiences`]); a
+//! narrower branch whose audience this push does not know is within itself only.
 //!
 //! Inputs decide completeness (S4 §1b): S is every members-only newOid the pusher can decrypt,
 //! not only current tips (a force-pushed-away branch, a stale clone); P must be local (fetch the
@@ -41,7 +46,6 @@ use serde::{Deserialize, Serialize};
 
 use super::ledger::{self, EntryAudience};
 use super::plan::BatchRef;
-use super::Audience;
 use crate::error::Result;
 
 /// A git object's type.
@@ -148,6 +152,60 @@ pub struct GuardInput<'a> {
     /// Compare the patch ids of the public commits the batch adds with the members-only commits'
     /// (opt-in: `git config dash.patchIdCheck true`).
     pub patch_ids: bool,
+    /// Who each narrower branch the pusher holds a key for is for, by ledger token.
+    pub audiences: &'a NarrowAudiences,
+    /// Every narrower branch's `newOid` the pusher can decrypt, with its branch's ledger token.
+    pub decryptable_narrower: &'a [(String, String)],
+}
+
+/// A narrower branch's audience as the guard compares it: a group (or none) and people.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NarrowAudience {
+    /// The role group, or `None` for people only.
+    pub group: Option<crate::env::Group>,
+    /// The people added (identity ids, any one spelling per run).
+    #[serde(default)]
+    pub people: BTreeSet<String>,
+}
+
+/// Narrower audiences by ledger token.
+pub type NarrowAudiences = BTreeMap<String, NarrowAudience>;
+
+fn group_rank(g: Option<crate::env::Group>) -> u8 {
+    use crate::env::Group;
+    match g {
+        None => 0,
+        Some(Group::Maintainers) => 1,
+        Some(Group::Writers) => 2,
+        Some(Group::Members) => 3,
+    }
+}
+
+/// Whether everyone `dst` is for may already read what `src` is for (`members` or a narrower
+/// branch's token): equal tokens, or both known with `dst`'s group no wider and its people a
+/// subset.
+fn within(dst: &str, src: &str, audiences: &NarrowAudiences) -> bool {
+    if dst == src {
+        return true;
+    }
+    let members = NarrowAudience {
+        group: Some(crate::env::Group::Members),
+        people: BTreeSet::new(),
+    };
+    let of = |t: &str| {
+        if t == "members" {
+            Some(&members)
+        } else {
+            audiences.get(t)
+        }
+    };
+    match (of(dst), of(src)) {
+        (Some(d), Some(s)) => {
+            group_rank(d.group) <= group_rank(s.group) && d.people.is_subset(&s.people)
+        }
+        _ => false,
+    }
 }
 
 /// The guard's verdict on a batch.
@@ -252,21 +310,28 @@ pub fn guard(g: &impl ObjectGraph, input: &GuardInput<'_>) -> Result<Outcome> {
     for oid in input.decryptable.into_iter().flatten() {
         s.entry(oid.clone()).or_insert(EntryAudience::Members);
     }
-    // what is already members-only (recorded or decryptable), before the batch adds its tips:
-    // a narrower branch's commits that are also members-only are not narrower
-    let established: Vec<String> = s
-        .iter()
-        .filter(|(_, a)| **a == EntryAudience::Members)
-        .map(|(o, _)| o.clone())
-        .collect();
-    for u in input
-        .batch
-        .iter()
-        .filter(|u| u.audience == Audience::Members)
-    {
-        if let Some(t) = &u.new {
-            s.entry(t.clone()).or_insert(EntryAudience::Members);
+    for (oid, token) in input.decryptable_narrower {
+        let narrow = EntryAudience::Narrower(token.clone());
+        let a = s
+            .remove(oid)
+            .map_or(narrow.clone(), |a| a.narrowest(narrow));
+        s.insert(oid.clone(), a);
+    }
+    // what each audience already holds (recorded or decryptable), before the batch adds its tips
+    let before = s.clone();
+    // a tip the batch pushes for two audiences counts with the narrower one, whatever the order
+    let mut batch_tips: BTreeMap<String, EntryAudience> = BTreeMap::new();
+    for u in input.batch {
+        if let (Some(t), Some(a)) = (&u.new, u.audience.entry()) {
+            let merged = match batch_tips.remove(t) {
+                Some(prev) => prev.narrowest(a),
+                None => a,
+            };
+            batch_tips.insert(t.clone(), merged);
         }
+    }
+    for (t, a) in batch_tips {
+        s.entry(t).or_insert(a);
     }
     let all: Vec<String> = s.keys().cloned().collect();
     if all.is_empty() {
@@ -280,11 +345,15 @@ pub fn guard(g: &impl ObjectGraph, input: &GuardInput<'_>) -> Result<Outcome> {
             remade: Vec::new(),
         });
     }
-    let narrow: Vec<String> = s
-        .iter()
-        .filter(|(_, a)| **a != EntryAudience::Members)
-        .map(|(o, _)| o.clone())
-        .collect();
+    let token = |a: &EntryAudience| a.token().unwrap_or("members").to_owned();
+    let mut by_audience: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (oid, a) in &s {
+        by_audience.entry(token(a)).or_default().push(oid.clone());
+    }
+    let mut held_before: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (oid, a) in &before {
+        held_before.entry(token(a)).or_default().push(oid.clone());
+    }
     let p = input.public_tips;
     let sealed_objects: OnceCell<BTreeSet<String>> = OnceCell::new();
     let sealed = |oid: &str| -> Result<bool> {
@@ -318,17 +387,28 @@ pub fn guard(g: &impl ObjectGraph, input: &GuardInput<'_>) -> Result<Outcome> {
                 });
             }
         };
-        if u.audience == Audience::Members {
-            if !narrow.is_empty() {
+        if u.audience.is_sealed() {
+            let dst = u.audience.as_str();
+            let wider: Vec<String> = by_audience
+                .iter()
+                .filter(|(a, _)| !within(dst, a, input.audiences))
+                .flat_map(|(_, xs)| xs.iter().cloned())
+                .collect();
+            if !wider.is_empty() {
                 let adds = g.commits(&[t.to_owned()], p)?;
-                let mut narrower = g.commits(&narrow, p)?;
-                if !established.is_empty() {
-                    let members = g.commits(&established, p)?;
-                    narrower.retain(|c| !members.contains(c));
+                let mut only_wider = g.commits(&wider, p)?;
+                let covered: Vec<String> = held_before
+                    .iter()
+                    .filter(|(a, _)| within(dst, a, input.audiences))
+                    .flat_map(|(_, xs)| xs.iter().cloned())
+                    .collect();
+                if !covered.is_empty() {
+                    let held = g.commits(&covered, p)?;
+                    only_wider.retain(|c| !held.contains(c));
                 }
                 finding(
                     FindingKind::Commits,
-                    adds.intersection(&narrower).cloned().collect(),
+                    adds.intersection(&only_wider).cloned().collect(),
                 );
             }
         } else {

@@ -915,6 +915,9 @@ pub struct MemberRef {
     pub state: RefState,
     /// A members-only branch: only members can read its name and commits.
     pub members_only: bool,
+    /// A narrower branch (phase 3F): only its audience, who hold its branch key, can read it.
+    /// Always members-only too.
+    pub narrower: bool,
 }
 
 /// A member's view of a public repository's refs: every ref, public and members-only, and the
@@ -956,6 +959,7 @@ impl MembersRefs {
                 let state = rules::resolve_ref(ups, &configs, &hash_hex, |a, b| a == b);
                 MemberRef {
                     members_only: updates.is_members_only(name, &state),
+                    narrower: updates.is_narrower(name, &state),
                     name: name.clone(),
                     state,
                 }
@@ -1183,6 +1187,21 @@ impl<'a> RepoService<'a> {
             }))
         };
         match crate::private::sniff(&sealed) {
+            // a narrower branch's pack (DFPK 0x03, phase 3F): its branch key, when held
+            Head::OtherVersion(version) if version == crate::private::branch_key::PACK_VERSION => {
+                let ring = kr.branch_ring();
+                let held = crate::private::branch_key::sniff_kcv(&sealed)
+                    .zip(ring.as_ref())
+                    .and_then(|(kcv, r)| r.branch_of_kcv(kcv).map(|_| r));
+                match held {
+                    Some(r) => {
+                        crate::private::branch_key::open_pack(&sealed, size_bytes, r.all_keys())
+                            .map(ArtifactRead::Bytes)
+                            .map_err(|e| sealed_error(&e))
+                    }
+                    None => skipped(SkipReason::OtherFormat { version }),
+                }
+            }
             Head::OtherVersion(version) => skipped(SkipReason::OtherFormat { version }),
             Head::Plain | Head::Short => skipped(SkipReason::OtherFormat { version: 0 }),
             Head::Sealed { epoch } if kr.epoch_keys(epoch).is_none() => {
@@ -1711,6 +1730,74 @@ impl<'a> RepoService<'a> {
         Ok(results)
     }
 
+    /// Write narrower branches' ref updates of PUBLIC `repo` (phase 3F, DESIGN §4.3), each sealed
+    /// (`enc` v0x06) under its branch's current generation in `ring`, which the caller read just
+    /// before (letters written by this push included): `refName` only inside `enc`, the branch
+    /// key's name hash, the real OIDs blinded under a fresh salt per update, `epoch` the
+    /// generation. Routed to `protectedRefUpdate` as a public update of the same name is. The
+    /// writes go in parallel, each reported through `on_landed(i)` as it lands; returns each
+    /// update's result in order, `Err` only when nothing was written.
+    pub async fn write_branch_ref_updates(
+        &self,
+        repo: &RepoRef,
+        ring: &crate::private::branch_key::BranchRing,
+        updates: &[RefWrite],
+        mut on_landed: impl FnMut(usize),
+    ) -> Result<Vec<Result<String>>> {
+        repo.require_public("writing a members-only branch")?;
+        for u in updates {
+            check_ref_write(&u.ref_name, &u.new_oid, u.prev_oid.as_deref())?;
+            if ring.write_keys(&u.ref_name).is_none() {
+                return Err(Error::Config(format!(
+                    "no key for {}: it is not a branch you have access to",
+                    crate::keyring::short_branch(&u.ref_name)
+                )));
+            }
+        }
+        let (scope, contract) = self.writable(repo).await?;
+        let configs = crate::refs::read_config_history(self.client, &contract, &scope).await?;
+        let engine = self.doc_engine()?;
+        let me = self.identity_id()?;
+        let owner_bytes = platform::decode_identifier(&me)?;
+        let owner = me == repo.owner_id();
+        let (scope, contract, configs, engine) = (&scope, &contract, &configs, &engine);
+        let mut landed = futures::stream::iter(updates.iter().map(|u| async move {
+            let doc_type = ref_doc_type(&u.ref_name, configs, owner);
+            let kind = if doc_type == DOC_PROTECTED_REF_UPDATE {
+                DocKind::ProtectedRefUpdate
+            } else {
+                DocKind::RefUpdate
+            };
+            let keys = ring
+                .write_keys(&u.ref_name)
+                .ok_or_else(|| Error::Config("the branch key went missing".into()))?;
+            let sealed = crate::private::branch_key::seal_ref(
+                keys,
+                owner_bytes,
+                &crate::private::members_ref::RefUpdateIn {
+                    kind,
+                    name: &u.ref_name,
+                    new_oid: &u.new_oid,
+                    prev_oid: u.prev_oid.as_deref(),
+                    force: u.force,
+                },
+            )
+            .map_err(|e| sealed_error(&e))?;
+            let mut props = scope.scoped(sealed.props());
+            crate::members::stamp_claimed_role(contract, doc_type, &mut props, 1);
+            engine.create_document(contract, doc_type, props).await
+        }))
+        .buffered(crate::backends::platform::pipeline_window());
+        let mut results = Vec::with_capacity(updates.len());
+        while let Some(r) = landed.next().await {
+            if r.is_ok() {
+                on_landed(results.len());
+            }
+            results.push(r);
+        }
+        Ok(results)
+    }
+
     /// A private ref update (§4.5): `refNameHash = HMAC(K_ref,e, refName)` under the write
     /// epoch re-resolved now, `refName` only inside `enc`, bound (AD) to the hash, the oids and
     /// `force`. Protected routing uses the decrypted config timeline.
@@ -1830,6 +1917,11 @@ impl<'a> RepoService<'a> {
             crate::history::Freshness::Now,
         )
         .await?;
+        // narrower branches (phase 3F) open with the branch keys this signer holds
+        if crate::refs::has_narrower_updates(&state) && kr.branch_ring().is_none() {
+            let ring = crate::narrow::read_ring(self, repo, kr.members()).await?;
+            kr.set_branch_ring(std::sync::Arc::new(ring));
+        }
         Ok(Some(MembersRefs::of(&state, |k, d| kr.open(k, d))))
     }
 

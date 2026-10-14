@@ -7,12 +7,14 @@ import { bytes, concat, isU32, randomBytes, sha256, u32, u64, type Bytes } from 
 import { PACK_VERSION, hedgeFileId, type EpochKeyring, type EpochKeys } from './keys'
 
 export const HEADER_LEN = 36
-const MAGIC = [0x44, 0x46, 0x50, 0x4b] // "DFPK"
+/** `"DFPK"`, the first bytes of every sealed artifact (§3.2). */
+export const MAGIC = [0x44, 0x46, 0x50, 0x4b]
 const TAG_LEN = 16
 /** The segment size writers use: `L = 14`, 16 KiB. */
 export const WRITER_SEG_LOG2 = 14
-const MIN_SEG_LOG2 = 10
-const MAX_SEG_LOG2 = 20
+/** The smallest and largest segment size a header may carry (`L`, §3.2). */
+export const MIN_SEG_LOG2 = 10
+export const MAX_SEG_LOG2 = 20
 
 /**
  * Why a sealed artifact cannot be read (§3.5). `unknownVersion`: a `DFPK` header of a version
@@ -121,7 +123,8 @@ export function parseHeader(sealed: Uint8Array): PackHeader {
   return { segLog2, epoch: view.getUint32(8), plaintextLen: Number(len), fileId: raw.slice(20, 36), raw }
 }
 
-function segmentNonce(i: number, final: boolean): Bytes {
+/** Segment `i`'s nonce: `u64(i) ‖ 00 00 00 ‖ final` (§3.3). */
+export function segmentNonce(i: number, final: boolean): Bytes {
   return concat(u64(i), new Uint8Array([0, 0, 0, final ? 1 : 0]))
 }
 
@@ -181,6 +184,28 @@ async function checkAndKey(header: PackHeader, sealedLen: number, keys: EpochKey
     key: await epochKeys.packKey(header.fileId),
     nSeg: segmentCount(header.plaintextLen, header.segLog2),
   }
+}
+
+/**
+ * Open a whole sealed artifact (DFPK 0x01) with its file key `rawKey` (`EpochKeys.rawPackKey`)
+ * instead of the epoch keys: what a key letter's recipient does. A wrong key fails the first tag
+ * (`sealedPackCorrupt`). Throws {@link PackError}.
+ */
+export async function openPackWithFileKey(sealed: Uint8Array, sizeBytes: number, rawKey: Uint8Array): Promise<Bytes> {
+  if (sealed.length !== sizeBytes) throw new PackError('sizeMismatch')
+  const header = parseHeader(sealed)
+  if (sealedLength(header.plaintextLen, header.segLog2) !== sizeBytes) throw new PackError('sealedPackCorrupt')
+  const o: Opened = {
+    header,
+    key: await crypto.subtle.importKey('raw', bytes(rawKey), { name: 'AES-GCM' }, false, ['decrypt']),
+    nSeg: segmentCount(header.plaintextLen, header.segLog2),
+  }
+  const chunks: Uint8Array[] = []
+  for (let i = 0; i < o.nSeg; i++) {
+    const [start, end] = segmentSpan(o, i, sizeBytes)
+    chunks.push(await decryptSegment(o, i, sealed.subarray(start, end)))
+  }
+  return concat(...chunks)
 }
 
 async function decryptSegment(o: Opened, i: number, sealedSegment: Uint8Array): Promise<Bytes> {

@@ -1,0 +1,52 @@
+{
+  "name": "fold_sender_outside_audience",
+  "description": "a writer outside Maintainers starts a Maintainers branch of a name before the maintainers do: its sender is not in its own audience, so it is ignored (no front-running a name).",
+  "case": "branch_key",
+  "rules": "v2",
+  "input": {
+    "op": "fold",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "letters": [
+      {
+        "id": "cacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacaca",
+        "height": 90,
+        "sender": "EBBduiozK9vBCemy4FcAjhVkby2FLPstxZxxN7jpgxtr",
+        "body": {
+          "type": "branchKey",
+          "v": 1,
+          "name": "refs/heads/sec/embargo",
+          "gen": 0,
+          "keys": [
+            "6465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80818283"
+          ],
+          "group": "maintainers",
+          "people": [],
+          "to": [
+            "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3",
+            "EBBduiozK9vBCemy4FcAjhVkby2FLPstxZxxN7jpgxtr"
+          ]
+        }
+      }
+    ],
+    "groups": {
+      "maintainers": [
+        "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+      ],
+      "writers": [
+        "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+      ],
+      "members": [
+        "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3"
+      ]
+    }
+  },
+  "expected": {
+    "branches": [],
+    "ignored": [
+      {
+        "id": "cacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacaca",
+        "reason": "sender"
+      }
+    ]
+  }
+}

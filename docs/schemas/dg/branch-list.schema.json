@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/branch-list.schema.json",
   "title": "dg branch list --json",
-  "description": "The repository's branches and who can see them. A member sees the members-only ones too; anyone else sees `alsoMembersOnly` instead (never how many).",
+  "description": "The repository's branches and who can see them. A member sees the members-only ones too, a branch for fewer people with who it is for when they hold its key, and counts the others in `noAccessBranches`; anyone else sees `alsoMembersOnly` instead (never how many).",
   "type": "object",
   "properties": {
     "schemaVersion": {
@@ -32,8 +32,17 @@
             "type": "string",
             "enum": [
               "public",
-              "members"
+              "members",
+              "narrower"
             ]
+          },
+          "audienceLabel": {
+            "type": "string",
+            "description": "Who a branch for fewer people is for (\"Maintainers\")."
+          },
+          "visibleTo": {
+            "type": "integer",
+            "description": "How many people it is for now."
           }
         },
         "required": [
@@ -45,6 +54,10 @@
     },
     "alsoMembersOnly": {
       "type": "boolean"
+    },
+    "noAccessBranches": {
+      "type": "integer",
+      "description": "Branches for fewer people this reader has no key for (one per key generation)."
     }
   },
   "required": [

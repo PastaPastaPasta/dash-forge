@@ -1,0 +1,22 @@
+{
+  "name": "seal_refused_null_create",
+  "description": "a create that is also a delete names nothing: refused.",
+  "case": "branch_key",
+  "rules": "v2",
+  "input": {
+    "op": "seal",
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "key": "6465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80818283",
+    "gen": 0,
+    "type": "refUpdate",
+    "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+    "refName": "refs/heads/sec/embargo",
+    "newOid": "0000000000000000000000000000000000000000",
+    "force": false,
+    "salt": "4d8d4a17eae4bccc43eb0abb7be9ad93022a215949ab26bda35a1ab338bb45e9",
+    "nonce": "000102030405060708090a0b"
+  },
+  "expected": {
+    "error": "malformed"
+  }
+}
