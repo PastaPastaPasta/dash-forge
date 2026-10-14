@@ -111,6 +111,7 @@ import { MakeOthersPublicButton, MakePublicBundleDialog, MakePublicButton, bundl
 import { BundleAlertsNote, EarlierVersions, EditedAfterPublicNote, MadePublicBy, PublicEditHint, editIsPublic } from '@/components/repo/made-public'
 import type { BundleRequest } from '@/lib/repo/make-public-bundle'
 import { makePostPublic, provenanceOf } from '@/lib/repo/make-public-writes'
+import { EmbargoPanel, embargoShows } from '@/components/repo/embargo-panel'
 
 /** No requests or members yet (stable empty inputs for the request flags). */
 const NO_REQUESTS: readonly AgentRequest[] = []
@@ -931,6 +932,20 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
           specificPeople={issue.audience === 'specificPeople'}
           onAsked={(event) => refresh((t) => (t.agentRequests ?? []).some((r) => r.id === event))}
         />
+        {publicRepo ? (
+          <EmbargoPanel
+            repo={home.repo}
+            target={{ id: issue.id, number: issue.number }}
+            embargo={data.embargo}
+            isIssue
+            membersOnly={issue.audience === 'members' && issue.madePublicBy === undefined}
+            facts={{ issuePublic: issue.audience === undefined || issue.madePublicBy !== undefined }}
+            canSet={(isMaintainer || holdings.data?.role === 'writer') && !archived && guard.disabledReason === null}
+            open={open}
+            defaultBranch={home.defaultBranch}
+            onDone={(value) => refresh((t) => embargoShows(t.embargo, value))}
+          />
+        ) : null}
       </aside>
 
       {quoteGate.dialog}

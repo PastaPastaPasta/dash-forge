@@ -1770,6 +1770,25 @@ fn rerun_event_of(d: &FetchedDocument) -> rules::ci_rerun::RerunEvent {
     }
 }
 
+/// The embargo rule's view of a kind-28 `event` ([`rules::embargo::EmbargoEvent`]), its value
+/// as opened (a sealed one this reader could not open has none).
+fn embargo_event_of(d: &FetchedDocument) -> rules::embargo::EmbargoEvent {
+    rules::embargo::EmbargoEvent {
+        id: d.id.clone(),
+        repo_id: id_field(d, "repoId").unwrap_or_default(),
+        target_id: d
+            .field_bytes32("targetId")
+            .map(platform::encode_identifier)
+            .unwrap_or_default(),
+        target_number: d.field_u64("targetNumber").unwrap_or_default(),
+        kind: d.field_u64("kind").unwrap_or_default(),
+        ref_id: id_field(d, "refId"),
+        value: d.field_str("value"),
+        actor: d.owner_id.clone(),
+        created_at: d.created_at.unwrap_or_default(),
+    }
+}
+
 /// The §5 content view of a fetched document of `kind`.
 fn content_of(kind: ContentKind, d: &FetchedDocument) -> ContentDoc {
     ContentDoc {
@@ -3602,7 +3621,7 @@ impl<'a> Collab<'a> {
     /// The audience of `repo`'s issue or patch `target_id` (a comment's, review's or event's
     /// parent): read from the stored document, never from the repository alone (DESIGN §3.3).
     /// It fails closed: a target that cannot be read is an error, never "public".
-    async fn target_audience(&self, repo: &RepoRef, target_id: &str) -> Result<Audience> {
+    pub async fn target_audience(&self, repo: &RepoRef, target_id: &str) -> Result<Audience> {
         Ok(self.target_parent(repo, target_id).await?.default)
     }
 
@@ -8011,6 +8030,137 @@ impl<'a> Collab<'a> {
             .into_iter()
             .map(|r| {
                 let counts = rules::ci_rerun::rerun_counts(&r, repo.owner_id(), &oracle);
+                (r, counts)
+            })
+            .collect())
+    }
+
+    /// Write a publication-date record (`event` kind 28, [`rules::embargo`], forge-v2.md §3.5)
+    /// on the tracking issue or pull request `target`: a schedule, a cancellation or a
+    /// completion. Its value is sealed under the members key because the target is
+    /// members-only, so a schedule on a target that reads public for everyone is refused
+    /// before signing (the date and the plan would be public), as is any record on a message to
+    /// specific people (an event names no recipients, so its value could not be sealed for
+    /// them) and in a private repository (nothing there is published onto a public branch). A
+    /// cancellation or a completion carries no date or plan, so either may be written on a
+    /// target made public meanwhile: a date stays withdrawable after the release bot made its
+    /// issue public.
+    ///
+    /// A maintainer or role-1 writer only: consensus admits a triage member's too, but no
+    /// reader counts it ([`rules::embargo::record_counts`]).
+    pub async fn set_embargo(
+        &self,
+        repo: &RepoRef,
+        target: &Target,
+        value: &rules::embargo::EmbargoValue,
+    ) -> Result<String> {
+        let text = value.encode().map_err(Error::Config)?;
+        if repo.visibility == Visibility::Private {
+            return Err(UserError::new(
+                codes::USAGE,
+                format!(
+                    "{} is private: nothing in it is published onto a public branch",
+                    repo.display()
+                ),
+            )
+            .fix("a private repository goes public as a whole: `dg repo make-public`")
+            .into());
+        }
+        let noun = target.kind.noun();
+        let what = format!("set a publication date on {noun} #{}", target.number);
+        self.require_role(repo, Role::Writer, &what).await?;
+        match self.target_audience(repo, &target.id).await? {
+            Audience::SpecificPeople => {
+                return Err(UserError::new(
+                    codes::USAGE,
+                    format!(
+                        "{noun} #{} is a message to specific people, so it can't hold a publication date",
+                        target.number
+                    ),
+                )
+                .fix("track the fix in a members-only issue (`dg issue create --members`) and set the date there")
+                .into());
+            }
+            Audience::Public if matches!(value, rules::embargo::EmbargoValue::Schedule(_)) => {
+                return Err(UserError::new(
+                    codes::USAGE,
+                    format!(
+                        "{noun} #{} is public, so its publication date would be public too",
+                        target.number
+                    ),
+                )
+                .cause("a publication date is kept members-only on the members-only issue or pull request that tracks the fix")
+                .fix("open a members-only issue for the fix (`dg issue create --members`) and set the date there")
+                .into());
+            }
+            Audience::Public | Audience::Members => {}
+        }
+        let mut props = target_props(target)?;
+        props.insert(
+            "kind".to_string(),
+            FieldValue::integer(rules::embargo::EMBARGO_KIND),
+        );
+        props.insert(
+            "refId".to_string(),
+            FieldValue::identifier(platform::decode_identifier(repo.id())?),
+        );
+        props.insert("value".to_string(), FieldValue::text(&text));
+        let community = self.community_contract(repo).await?;
+        self.write(repo, &community, DOC_EVENT, props).await
+    }
+
+    /// Whether `repo`'s issue or pull request `target_id` reads public for everyone: written
+    /// public, or made public by a maintainer's bundle (DESIGN §4.6). Fails closed: a target
+    /// that cannot be read is an error.
+    pub async fn target_reads_public(&self, repo: &RepoRef, target_id: &str) -> Result<bool> {
+        Ok(self.target_audience(repo, target_id).await? == Audience::Public)
+    }
+
+    /// `repo`'s publication-date records (`event` kind 28, [`rules::embargo`]), oldest first,
+    /// each with whether it counts ([`rules::embargo::record_counts`]): read, like the re-run
+    /// requests, on the sparse `addressee (refId, $createdAt)` index under the repository.
+    /// Values this reader cannot open (anyone but a member) are no records.
+    pub async fn embargo_records(
+        &self,
+        repo: &RepoRef,
+    ) -> Result<Vec<(rules::embargo::EmbargoRecord, bool)>> {
+        let community = self.community_contract(repo).await?;
+        let docs = self
+            .client
+            .query_all_documents(
+                &community,
+                DOC_EVENT,
+                &[
+                    QueryFilter::eq(
+                        "refId",
+                        FieldValue::identifier(platform::decode_identifier(repo.id())?),
+                    ),
+                    QueryFilter::gte("$createdAt", FieldValue::uint64(0)),
+                ],
+                &[QueryOrder::asc("$createdAt")],
+            )
+            .await?;
+        let docs: Vec<FetchedDocument> = docs
+            .into_iter()
+            .filter(|d| d.field_u64("kind") == Some(rules::embargo::EMBARGO_KIND))
+            .collect();
+        if docs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let (docs, _, _) = self.readable_events(repo, docs).await?;
+        let mut records: Vec<rules::embargo::EmbargoRecord> = docs
+            .iter()
+            .filter_map(|d| rules::embargo::embargo_record(repo.id(), &embargo_event_of(d)))
+            .collect();
+        records.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
+        if records.is_empty() {
+            return Ok(Vec::new());
+        }
+        let oracle = self.member_oracle(repo).await?;
+        Ok(records
+            .into_iter()
+            .map(|r| {
+                let counts = rules::embargo::record_counts(&r, repo.owner_id(), &oracle);
                 (r, counts)
             })
             .collect())

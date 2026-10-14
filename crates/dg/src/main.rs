@@ -19,6 +19,7 @@ mod config;
 mod context;
 mod cost;
 mod doctor;
+mod embargo;
 mod env;
 mod errors;
 mod fmt;
@@ -256,6 +257,10 @@ pub enum Command {
     /// history stays members-only (`--history` publishes the commits as they are). It lists
     /// what becomes public, checks the files for secrets and asks first. Run it in a clone.
     Publish(Box<publish_code::PublishArgs>),
+    /// Publication dates for coordinated fixes: list them, withdraw one, and run the release
+    /// bot that publishes each one when its time comes (`dg publish … --at` sets them).
+    #[command(subcommand)]
+    Embargo(embargo::EmbargoCommand),
     /// Cost estimates and spend audits.
     #[command(subcommand)]
     Cost(CostCommand),
@@ -2619,6 +2624,7 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
         } => make_public::run(ctx, repo, posts, *thread, *history).await,
         Command::Branch { cmd } => branch::run(ctx, cmd.as_ref()).await,
         Command::Publish(args) => Box::pin(publish_code::run(ctx, args)).await,
+        Command::Embargo(cmd) => Box::pin(embargo::run(ctx, cmd)).await,
         Command::Cost(cmd) => cost::run(ctx, cmd).await,
         Command::Storage(cmd) => storage::run(ctx, cmd).await,
         Command::Webhook(cmd) => webhook::run(ctx, cmd).await,
