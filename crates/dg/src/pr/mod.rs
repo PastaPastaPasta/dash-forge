@@ -45,6 +45,7 @@ use forge_core::collab::v2::{
     approvals_over, Collab, Patch, PatchInput, PatchView, TargetKind, TargetRead,
 };
 use forge_core::create::default_journal_dir;
+use forge_core::private::key_letter::ReadTarget;
 use forge_core::repo::short_branch_name;
 use forge_core::rules::v2::{Role, StateAction};
 use forge_core::rules::RefState;
@@ -271,7 +272,7 @@ pub(crate) async fn reply_patch(
     job: Option<&str>,
 ) -> Result<(Patch, bool)> {
     let n = number_arg(number)?;
-    let target = forge_core::private::key_letter::ReadTarget::Pr(n);
+    let target = ReadTarget::Pr(n);
     if job.is_some() && crate::bot::reply_letter(collab, handle, target, job).await? {
         return Ok((patch(collab, handle, repo, number).await?, true));
     }

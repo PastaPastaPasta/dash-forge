@@ -606,6 +606,8 @@ impl Helper {
     /// this reader (`dg branch share`, `private-repos.md` §20.2) when its identity is loaded.
     /// `holds`: the clone holds members-only commits the public view would drop, so the fetch
     /// fails closed (E806) unless the shared branches still cover what it holds.
+    // One pass: the shares, the fail-closed check, the hook gate, the packs, the refs.
+    #[allow(clippy::too_many_lines)]
     async fn shared_or_public(
         &mut self,
         state: &forge_core::refs::GitState,
@@ -673,7 +675,7 @@ impl Helper {
             members::remember_public_tips(&live_tips(&public));
         }
         self.shared_fetch = Some(SharedFetch {
-            heads: shared.iter().map(|b| b.head.clone()).collect(),
+            heads,
             keys: shared
                 .iter()
                 .flat_map(|b| b.packs.iter().map(|(h, k)| (*h, k.clone())))
@@ -1247,18 +1249,19 @@ impl Helper {
             // the first members-only branch a clone holds needs the pre-push hook, as a fetch
             // of one does; and only a clone of this remote pushes one
             if !dry_run && planned.iter().any(|p| p.reject.is_none() && p.sealed()) {
-                let blocked = if self.in_clone {
-                    members::hook_blocked()
+                let (blocked, why) = if self.in_clone {
+                    (
+                        members::hook_blocked(),
+                        "members-only branch: the pre-push hook isn't in place",
+                    )
                 } else {
-                    Some(members::not_a_clone(&self.url_shown()))
+                    (
+                        Some(members::not_a_clone(&self.url_shown())),
+                        "members-only branch: push it from a clone of this repository",
+                    )
                 };
                 if let Some(e) = blocked {
                     say_refusal(&e);
-                    let why = if self.in_clone {
-                        "members-only branch: the pre-push hook isn't in place"
-                    } else {
-                        "members-only branch: push it from a clone of this repository"
-                    };
                     for p in planned
                         .iter_mut()
                         .filter(|p| p.reject.is_none() && p.sealed())

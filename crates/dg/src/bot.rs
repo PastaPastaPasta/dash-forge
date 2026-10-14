@@ -1065,7 +1065,7 @@ pub(crate) async fn reply_letter(
     let Some(l) = collab.reply_letter(repo, target, job).await? else {
         return Err(forge_core::collab::v2::not_asked_here(repo, target, job).into());
     };
-    collab.use_read_letter(repo, &l.letter)?;
+    collab.use_read_letter(repo, l.letter)?;
     Ok(true)
 }
 
@@ -1102,10 +1102,7 @@ pub(crate) async fn require_reply_shared(
 pub(crate) fn comment_not_shared(comment: &str) -> anyhow::Error {
     UserError::new(
         codes::NO_KEY_SHARED,
-        format!(
-            "comment {} hasn't been shared with you",
-            safe(comment)
-        ),
+        format!("comment {} hasn't been shared with you", safe(comment)),
     )
     .cause("it is members-only, and it was written or changed after you were asked, or left out of what was shared")
     .fix("reply to the conversation itself (without --reply-to)")

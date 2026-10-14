@@ -30,16 +30,17 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use forge_core::collab::v2::{comment_props, review_props, Collab, PatchView};
+use forge_core::collab::v2::{comment_props, review_props, Collab, MembersOnly, PatchView};
 use forge_core::collab::{CommentAnchor, Verdict};
 use forge_core::create::default_journal_dir;
 use forge_core::platform::WriteIntent;
+use forge_core::private::key_letter::ReadTarget;
 use forge_core::rules::v2::{Audience, ContentKind};
 use forge_core::user_error::{codes, UserError};
 
 use super::inline::{read_body_file, InlineSpec};
 use super::{estimate, Est};
-use crate::common::Session;
+use crate::common::{number_arg, Session};
 use crate::context::Ctx;
 use crate::fmt::{cost_json, cost_line, safe, short};
 use crate::{PrCommentArgs, PrReviewArgs, VerdictArg};
@@ -1126,20 +1127,11 @@ pub async fn comment(ctx: &Ctx, a: &PrCommentArgs) -> Result<()> {
     let (anchor, kind) = if let Some(reply) = &a.reply_to {
         let read = || collab.comments_read(&s.repo, &view.patch.document_id);
         let (mut comments, mut sealed, _) = read().await?;
-        let unopened = |sealed: &[forge_core::collab::v2::MembersOnly]| {
-            sealed.iter().any(|m| m.document_id == *reply)
-        };
+        let unopened = |sealed: &[MembersOnly]| sealed.iter().any(|m| m.document_id == *reply);
         // a bot replying to a members-only comment of a public PR it was asked about
         if !letter && unopened(&sealed) {
-            letter = crate::bot::reply_letter(
-                &collab,
-                &s.repo,
-                forge_core::private::key_letter::ReadTarget::Pr(crate::common::number_arg(
-                    a.number,
-                )?),
-                None,
-            )
-            .await?;
+            let thread = ReadTarget::Pr(number_arg(a.number)?);
+            letter = crate::bot::reply_letter(&collab, &s.repo, thread, None).await?;
             if letter {
                 (comments, sealed, _) = read().await?;
             }

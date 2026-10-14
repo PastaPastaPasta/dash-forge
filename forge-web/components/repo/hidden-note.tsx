@@ -24,14 +24,14 @@ import { MembersLockedLine, summarizesMembersOnly } from '@/components/repo/audi
 export function EventValuesNote({ counts, lane, unlockShown = false }: { counts: EventValueCounts; lane?: MembersAccess | undefined; unlockShown?: boolean }): JSX.Element | null {
   const changes = `${plural(counts.hidden, 'label, assignee or milestone change')} ${counts.hidden === 1 ? 'is' : 'are'}`
   // (only a public repo has `lane`, and a public repo reports no plaintext values)
-  if (counts.hidden > 0 && summarizesMembersOnly(lane) && unlockShown) {
-    return (
-      <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="event-values-note">
-        {changes} members-only.
-      </p>
-    )
-  }
   if (counts.hidden > 0 && summarizesMembersOnly(lane)) {
+    if (unlockShown) {
+      return (
+        <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="event-values-note">
+          {changes} members-only.
+        </p>
+      )
+    }
     return (
       <div className="mt-2">
         <MembersLockedLine what={`${changes} members-only`} lane={lane} testId="event-values-locked" />

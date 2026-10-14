@@ -11,6 +11,7 @@ use forge_core::collab::v2::{
     Comment, IssueView, MembersOnly, SealedIssue, Target, TargetKind, TargetRead,
 };
 use forge_core::create::default_journal_dir;
+use forge_core::private::key_letter::ReadTarget;
 use forge_core::rules::v2::{
     close_reason_of, current_close_reason, status_of_code, CloseReason, ClosedAs, StateAction,
     Transition,
@@ -1455,15 +1456,14 @@ async fn comment(
     let collab = s.collab();
     let n = number_arg(number)?;
     let read = collab
-        .target_read(&s.repo, forge_core::collab::v2::TargetKind::Issue, n)
+        .target_read(&s.repo, TargetKind::Issue, n)
         .await?
         .ok_or_else(|| not_found(repo, number))?;
     // a bot replies on a members-only issue only through its `read` letter for it (§22.3, §23)
-    let thread = forge_core::private::key_letter::ReadTarget::Issue(n);
-    let letter = (job.is_some()
-        || matches!(read, forge_core::collab::v2::TargetRead::MembersOnly(_)))
+    let thread = ReadTarget::Issue(n);
+    let letter = (job.is_some() || matches!(read, TargetRead::MembersOnly(_)))
         && crate::bot::reply_letter(&collab, &s.repo, thread, job).await?;
-    let target = read.target(forge_core::collab::v2::TargetKind::Issue, n);
+    let target = read.target(TargetKind::Issue, n);
     if let Some(r) = reply_to {
         crate::bot::require_reply_shared(&collab, &s.repo, (thread, &target.id), r, letter).await?;
     }

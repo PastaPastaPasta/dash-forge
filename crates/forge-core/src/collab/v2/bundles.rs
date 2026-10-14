@@ -339,10 +339,12 @@ impl Collab<'_> {
         kind: ContentKind,
         d: FetchedDocument,
     ) -> std::result::Result<FetchedDocument, MembersOnly> {
-        if !is_sealed(&d) || is_letter(&d) {
-            return self.open_read_keys(repo_id, entries, keys, letters, kind, d);
-        }
-        let Some(letter) = self.shared_letter(repo_id) else {
+        let shared = if is_sealed(&d) && !is_letter(&d) {
+            self.shared_letter(repo_id)
+        } else {
+            None
+        };
+        let Some(letter) = shared else {
             return self.open_read_keys(repo_id, entries, keys, letters, kind, d);
         };
         let stored = d.clone();

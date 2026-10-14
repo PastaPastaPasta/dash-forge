@@ -1476,9 +1476,8 @@ impl Collab<'_> {
     /// `letter` lists (a `read` letter to the bot signer, [`Self::reply_letter`]), with their
     /// keys, as [`Self::read_job`] opens them: so a bot reads, and replies on, the thread it was
     /// asked about without the members key (§22.3, §23). Nothing it does not list opens.
-    pub fn use_read_letter(&self, repo: &RepoRef, letter: &ReadLetter) -> Result<()> {
-        *crate::history::lock(&self.read_letter) =
-            Some((repo.scope()?.repo_id, Arc::new(letter.clone())));
+    pub fn use_read_letter(&self, repo: &RepoRef, letter: ReadLetter) -> Result<()> {
+        *crate::history::lock(&self.read_letter) = Some((repo.scope()?.repo_id, Arc::new(letter)));
         Ok(())
     }
 
