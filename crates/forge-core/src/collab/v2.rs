@@ -201,13 +201,14 @@ fn is_sealed(d: &FetchedDocument) -> bool {
     d.field_bytes("enc").is_some_and(|e| !e.is_empty())
 }
 
-/// E311 for a bot with no post key for `epoch` of `repo` (§23): a maintainer sends one on every
-/// rotation; a rotation by a client that does not, or a failed send, leaves the bot without one.
-fn no_post_key(repo: &RepoRef, epoch: u32) -> Error {
+/// E311 for a bot with no post key for the current epoch of `repo` (§23): a maintainer sends
+/// one on every rotation; a rotation by a client that does not, or a failed send, leaves the bot
+/// without one.
+fn no_post_key(repo: &RepoRef) -> Error {
     UserError::new(
         codes::NO_KEY_SHARED,
         format!(
-            "no post key for epoch {epoch} in {}: this bot can't post members-only content yet",
+            "this bot has no key for its members-only posts in {} yet",
             repo.display()
         ),
     )
@@ -3013,7 +3014,7 @@ fn members_only_error(repo: &RepoRef, kind: TargetKind, number: u32, m: &Members
                 Unopened::KeysUnreadable => e.fix("the repository's keys could not be read just now: try again in a moment"),
                 Unopened::Locked => e.fix("unlock your key (enter its passphrase in a terminal, or set DASH_FORGE_PASSPHRASE), then read it again"),
                 Unopened::NewerVersion => e.fix("it was written by a newer version of Forge: update dg to read it"),
-                Unopened::RemovedBot => e.fix("it was posted by a bot that was removed from this repository: its members-only posts can't be read any more"),
+                Unopened::RemovedBot => e.fix("it was posted as a bot by someone who isn't a bot of this repository now: members-only posts as a bot can't be read any more"),
                 _ => e.fix(format!(
                     "it was written for a key or for people you do not hold (after you were removed, late, or to specific people); `dg repo keys status {}` lists the keys you hold",
                     repo.display()
@@ -3730,9 +3731,9 @@ impl<'a> Collab<'a> {
         {
             // a bot never holds the members key: its members-only posts are v0x05 under its
             // post key (§23)
+            bot_kind_check(repo, kind)?;
             let post = Box::pin(self.bot_post_key(repo, None)).await?;
-            return bot_kind_check(repo, kind)
-                .and_then(|()| private::seal_bot_props(&post, repo.visibility, kind, props));
+            return private::seal_bot_props(&post, repo.visibility, kind, props);
         }
         if repo.visibility == Visibility::Private {
             let kr = self.fresh_keyring(repo).await?;
@@ -3911,9 +3912,7 @@ impl<'a> Collab<'a> {
                 k
             }
         };
-        keys.get(&epoch)
-            .cloned()
-            .ok_or_else(|| no_post_key(repo, epoch))
+        keys.get(&epoch).cloned().ok_or_else(|| no_post_key(repo))
     }
 
     /// The identity keys of `owner` as the letter reader rule takes them, fetched once per

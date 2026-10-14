@@ -52,7 +52,7 @@ pub async fn run(ctx: &Ctx, cmd: &CollabCommand) -> Result<()> {
             member,
             role,
             no_resave,
-        } => remove(ctx, repo, member, *role, *no_resave).await,
+        } => Box::pin(remove(ctx, repo, member, *role, *no_resave)).await,
         CollabCommand::List { repo } => list(ctx, repo).await,
     }
 }
@@ -211,9 +211,9 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
     let post_key =
         role == Role::Bot && forge_core::keyring::has_members_key(client, handle).await?;
     // with the write pre-check off (DASH_FORGE_SKIP_WRITE_PRECHECK, the e2e suites' switch) a
-    // bot's add also attempts the members-key wrap clients never write, so consensus is seen
-    // refusing it (L4: `repoKey.mr` admits no 4)
-    let keyed = keyed || (post_key && !forge_core::collab::v2::precheck_enabled());
+    // bot's add also attempts a wrap to it, of a fresh random key and never the members key, so
+    // consensus is seen refusing it (L4: `repoKey.mr` admits no 4)
+    let probe_l4 = post_key && !forge_core::collab::v2::precheck_enabled();
     let can_receive =
         !(keyed || post_key) || crate::keys::member_can_receive(client, handle, member).await?;
     let post_key_epoch = if post_key && can_receive {
@@ -347,6 +347,13 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
         .grant(handle, member, role)
         .await
         .context("adding the member")?;
+    if probe_l4 {
+        forge_core::keyring::wrap_probe_to_bot(&signer, handle, member)
+            .await
+            .context(
+                "wrapping a key to the bot (a probe of a random key, never the members key)",
+            )?;
+    }
     if keyed && can_receive {
         forge_core::keyring::add_member_wrap(&signer, handle, member, role)
             .await
@@ -361,8 +368,8 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
     } else {
         None
     };
-    // the bot's post key for the current epoch, after any rotation above (a rotation away from a
-    // member becoming a bot sends it none); a re-run sends only one this signer has not sent yet
+    // the bot's post key for the current epoch, after any rotation above (which sends every Bot
+    // row its key already); a re-run or a rotation leaves only a missing one to send
     let post_keys = if post_key_epoch.is_some() {
         let kr = signer.keyring(handle).await?;
         let keys = kr
@@ -371,7 +378,7 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
             .and_then(|e| kr.epoch_keys(e))
             .context("the members key changed while adding the bot: run `dg repo keys repair` to send its key")?;
         let bots = vec![member.to_string()];
-        let bots = if held {
+        let bots = if held || rotation.is_some() {
             Box::pin(forge_core::bot_keys::missing(&signer, handle, keys, &bots)).await?
         } else {
             bots
@@ -737,9 +744,11 @@ fn keyed_remove_prompt(
     price: Option<f64>,
 ) -> String {
     // Writer, triage and reader are one `writer` document: another role is the other type.
-    let keeps_other_role = members
-        .iter()
-        .any(|m| m.identity_id == member && doc_type(m.role) != doc_type(role));
+    let keeps_other_role = members.iter().any(|m| {
+        m.identity_id == member
+            && doc_type(m.role) != doc_type(role)
+            && forge_core::members::holds_members_key(m.role)
+    });
     let remaining = crate::keys::distinct_members(members)
         - usize::from(
             members

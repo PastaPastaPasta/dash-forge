@@ -66,7 +66,7 @@ export function SettingsContent({ home, reload }: { home: RepoHome; reload: () =
   // (`no-key`), still gets the page and the way to open it.
   // No access resolved yet reads as an outsider, as RepoScaffold does.
   const access = home.private?.access ?? 'outsider'
-  if (home.repo.visibility === 'private' && (access === 'signed-out' || access === 'outsider')) {
+  if (home.repo.visibility === 'private' && (access === 'signed-out' || access === 'outsider' || access === 'bot')) {
     return <PrivateRepoState repo={home.repo} addr={{ owner: home.repo.ownerId, name: home.repo.name }} access={access} />
   }
   return <RepoSettings home={home} repo={home.repo} reload={reload} />
@@ -75,9 +75,9 @@ export function SettingsContent({ home, reload }: { home: RepoHome; reload: () =
 /** What a role change to or from Bot does to the key to members-only content (nothing to say otherwise). */
 function changeKeyText(from: MemberRole, to: MemberRole): string {
   if (to === 'bot' && holdsMembersKey(from)) {
-    return " A bot can't read members-only content, so its key changes and they can't read what is posted next. As a bot they get a key for their own members-only posts."
+    return " A bot doesn't get the key to members-only content, so the key changes and they can't read what is posted next. As a bot they get a key for their own members-only posts."
   }
-  if (from === 'bot' && holdsMembersKey(to)) return ' They get the key to members-only content too, so they can read it.'
+  if (from === 'bot' && holdsMembersKey(to)) return " They get the key to members-only content too, so they can read it. Their members-only posts as a bot can't be read any more."
   return ''
 }
 

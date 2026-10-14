@@ -59,6 +59,15 @@ export function holdsMembersKey(role: Role): boolean {
 }
 
 /**
+ * Whether `identity` holds a Bot row here and no human one: a bot, which never holds a repo's key
+ * and writes members-only content with its own post key, not from a browser (DESIGN §3.5, §23).
+ */
+export function isBotOnly(members: readonly Membership[], identity: string): boolean {
+  const rows = members.filter((m) => m.identity === identity)
+  return rows.length > 0 && rows.every((m) => m.role === 'bot')
+}
+
+/**
  * The bots among `members` (a Bot row, `writer.role` 4): each once, in member order, but those in
  * `exclude`. Readers open a bot's members-only posts only from these (§23); maintainers send them
  * their post keys. Parity: forge-core `bot_keys::bots_of`, `keyring::bot_ids`.

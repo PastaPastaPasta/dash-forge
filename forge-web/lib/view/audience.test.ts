@@ -27,7 +27,7 @@ import {
   turnOnText,
 } from './audience'
 import { draftAudienceCounts } from './pending-review'
-import { NO_KEY_SHARED_TEXT } from '../repo/members-writes'
+import { BOT_READ_TEXT, NO_KEY_SHARED_TEXT } from '../repo/members-writes'
 import { postKeyLetterCredits } from '../env/write'
 
 const m = (identity: string, role: Membership['role']): Membership => ({ identity, role, createdAt: 0 })
@@ -72,6 +72,7 @@ describe('what a composer offers', () => {
     expect(choice({ access: 'no-key' })?.members).toBe('no-key')
     expect(choice({ access: 'locked' })?.members).toBe('locked')
     expect(choice({ access: 'no-key-shared' })?.members).toBe('no-key-shared')
+    expect(choice({ access: 'bot' })?.members).toBe('bot')
   })
 
   it('never offers Members to a member removed since, who reads only what was written before', () => {
@@ -127,6 +128,11 @@ describe('E311 and specific-people wording', () => {
   it("uses the one E311 text, which says how to get the key shared (DESIGN §10)", () => {
     expect(MEMBERS_OPTION_TEXT['no-key-shared']).toBe(NO_KEY_SHARED_TEXT)
     expect(NO_KEY_SHARED_TEXT).toBe("You're a member, but no key has been shared with you yet. Ask a maintainer to share it: Repair on the repo page, or dg repo keys repair.")
+  })
+
+  it('tells a bot to post from dg or a CI runner, not to ask for a repair', () => {
+    expect(MEMBERS_OPTION_TEXT.bot).toBe('Bots post members-only content with their own key, from dg or a CI runner, not from the web.')
+    expect(BOT_READ_TEXT).toBe("Bots never get this repo's key; they read only what a member shares with them for one job.")
   })
 
   it('names a specific-people document neutrally, never members-only', () => {

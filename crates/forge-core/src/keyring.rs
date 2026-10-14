@@ -1456,7 +1456,9 @@ pub fn hidden_bucket(o: &Opened) -> Option<&'static str> {
         Opened::Unreadable(Unreadable::UnknownVersion) => {
             Some("written by a newer version of Forge")
         }
-        Opened::Unreadable(Unreadable::NotABot) => Some("posted by a bot that was removed"),
+        Opened::Unreadable(Unreadable::NotABot) => {
+            Some("posted as a bot by someone who isn't a bot here now")
+        }
         Opened::Unreadable(_) => Some("wrong or missing key"),
     }
 }
@@ -2169,6 +2171,33 @@ async fn self_wrap(
 /// Wrap the current epoch's key to `member` (§5.5 "add member"): the second of the two
 /// transitions of an add. Idempotent: the signer's own standing wrap with the same key counts.
 /// A standing wrap that cannot be replaced (the member changed keys since) needs a rotation.
+/// Post a `repoKey` wrap to `member` (a Bot row) of a **fresh random key** under the write
+/// epoch, never the members key: the e2e suites' way (`DASH_FORGE_SKIP_WRITE_PRECHECK`) to see
+/// consensus refuse a wrap to a bot (L4, `repoKey.mr` admits no 4) without any real key leaving
+/// this client in the refused transition. Clients never wrap to a bot otherwise.
+pub async fn wrap_probe_to_bot(
+    signer: &PrivateSigner<'_>,
+    repo: &RepoRef,
+    member: &str,
+) -> Result<()> {
+    let w = signer.open(repo).await?;
+    let epoch = w.kr.writer(repo)?.write_epoch();
+    match signer
+        .post_wrap(
+            &w,
+            epoch,
+            &EpochKey::generate()?,
+            platform::decode_identifier(member)?,
+        )
+        .await?
+    {
+        WrapOutcome::Posted | WrapOutcome::Same => Ok(()),
+        other => Err(Error::Config(format!(
+            "the probe wrap was not posted: {other:?}"
+        ))),
+    }
+}
+
 pub async fn add_member_wrap(
     signer: &PrivateSigner<'_>,
     repo: &RepoRef,
@@ -2558,15 +2587,7 @@ pub async fn rotate(
         let link = next_link(&w.kr, &from, from_burned, false, skip_below.as_ref())?;
         let input = AnchorInput::current(&w.kr, epoch, &key, Some(link));
         let won = anchor_and_confirm(signer, &w, repo, &input).await?;
-        let post_keys = Box::pin(rotation_post_keys(
-            signer,
-            &w,
-            repo,
-            (epoch, &key),
-            exclude,
-            won,
-        ))
-        .await?;
+        let post_keys = Box::pin(rotation_post_keys(signer, &w, repo, (epoch, &key), won)).await?;
         return Ok(Rotation {
             epoch,
             wrapped,
@@ -2580,21 +2601,21 @@ pub async fn rotate(
 
 /// The bots' post keys for a rotation's new epoch (`epoch`, its key), sent once its anchor `won`,
 /// in the same run as the wraps (§23): a bot never gets the members key, so a rotation that
-/// sent none would silently stop its members-only posts. Bots in `exclude` (being removed) get
-/// none.
+/// sent none would silently stop its members-only posts. Every current Bot row gets one, also a
+/// maintainer who keeps a Bot row while the rotation takes the members key away from them
+/// (removing a Bot row never rotates).
 async fn rotation_post_keys(
     signer: &PrivateSigner<'_>,
     w: &WriteCtx,
     repo: &RepoRef,
     (epoch, key): (u32, &EpochKey),
-    exclude: &[String],
     won: bool,
 ) -> Result<crate::bot_keys::Issued> {
     if !won {
         return Ok(crate::bot_keys::Issued::default());
     }
     let keys = EpochKeys::derive(&w.scope.repo_id, epoch, key);
-    let bots = crate::bot_keys::bots_of(w.kr.members(), exclude);
+    let bots = crate::bot_keys::bots_of(w.kr.members(), &[]);
     // the rotation stands whatever happens here: a failed send is reported, and a repair
     // finishes it
     Ok(

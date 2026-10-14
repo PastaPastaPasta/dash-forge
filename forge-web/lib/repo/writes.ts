@@ -1780,9 +1780,13 @@ export async function changeMemberRole(
     // part of).
     await grantMembershipDoc(sdk, auth, repo, memberId, to, `${base}:add`)
     await keyed.flows.waitForMembers(keyed.c, (rows) => keyed.flows.holds(rows, memberId, to))
-    await keyed.flows.removePrivateMember(keyed.c, memberId, from, `${base}:remove`)
-    // a maintainer made a bot: the rotation left them out, so they get their post key now
-    if (to === 'bot') await keyed.flows.givePostKey(keyed.c, memberId, `${base}:post-key`)
+    let sent = false
+    await keyed.flows.removePrivateMember(keyed.c, memberId, from, `${base}:remove`, (s) => {
+      if (s.kind === 'postKeys' && s.sent.sent.includes(memberId)) sent = true
+    })
+    // a maintainer made a bot: the rotation sends every Bot row its post key; a rotation that did
+    // not reach them (or none ran) leaves it to the missing-keys path
+    if (to === 'bot' && !sent) await keyed.flows.givePostKey(keyed.c, memberId, `${base}:post-key`)
     return keyedResult()
   }
   await revokeMembershipDoc(sdk, auth, repo, memberId, from)
@@ -1816,11 +1820,16 @@ export async function changeMemberRole(
     const holdsNow = holdsMembersKey(to)
     // Between roles that hold the members key, they keep it; to one that does not (Bot), it
     // rotates away from them; to one that does from one that did not, it is shared with them (the
-    // repair check's wrap). A new bot gets its key for members-only posts instead (the rotation
-    // sends none to the identity it rotates away from).
-    if (held && !holdsNow) await keyed.flows.rotateRepoKey(keyed.c, [memberId], `${base}:rotate`)
+    // repair check's wrap). A new bot gets its key for members-only posts instead: from the
+    // rotation when it sees their Bot row, else from the missing-keys path (never a second letter).
+    let sent = false
+    if (held && !holdsNow) {
+      await keyed.flows.rotateRepoKey(keyed.c, [memberId], `${base}:rotate`, (s) => {
+        if (s.kind === 'postKeys' && s.sent.sent.includes(memberId)) sent = true
+      }, [{ identity: memberId, role: from }])
+    }
     if (!held && holdsNow) await keyed.flows.runRepair(keyed.c, `${base}:share`)
-    if (to === 'bot') await keyed.flows.givePostKey(keyed.c, memberId, `${base}:post-key`)
+    if (to === 'bot' && !sent) await keyed.flows.givePostKey(keyed.c, memberId, `${base}:post-key`)
   }
   return granted
 }

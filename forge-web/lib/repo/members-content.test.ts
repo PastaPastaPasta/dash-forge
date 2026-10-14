@@ -164,12 +164,18 @@ describe("a member's members-key session (laneGate)", () => {
     const { docs } = await admitAll(laneGate(PUBLIC, withBot), 'comment', [row])
     expect(docs.map((d) => d['body'])).toEqual(['the build is green'])
     expect(docs.map(admittedAudience)).toEqual(['members'])
-    // the bot was removed: no Bot row, so the post never opens and reads as members-only
+    // the bot was removed: no Bot row, so the post never opens; a member holding the key is told why
     const tally = new HiddenTally()
     await admitAll(laneGate(PUBLIC, await ctxWith(K0)), 'comment', [row], tally)
-    expect(tally.value.membersOnly).toBe(1)
-    expect(tally.placeholders[0]?.why).toBe('noKey')
-    expect(hiddenReasonOf('notABot')).toBe('membersOnly')
+    expect(tally.value.notABot).toBe(1)
+    expect(tally.value.membersOnly).toBe(0)
+    expect(tally.placeholders[0]?.why).toBe('notABot')
+    expect(hiddenReasonOf('notABot')).toBe('notABot')
+    // one without the epoch key gets the plain members-only placeholder: no key, no reason
+    const outsider = new HiddenTally()
+    await admitAll(laneGate(PUBLIC, await ctxWith(null)), 'comment', [row], outsider)
+    expect(outsider.value.notABot).toBe(0)
+    expect(outsider.placeholders[0]?.why).not.toBe('notABot')
   })
 
   it('a member without the epoch key sees placeholders with the wrong-key reason', async () => {

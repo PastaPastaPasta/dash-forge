@@ -196,7 +196,9 @@ function BotKeysNote({ home, session }: { home: RepoHome; session: PrivateSessio
   const write = usePrivateWrite(home.repo)
   const [open, setOpen] = useState(false)
   const epoch = session.resolution.writeEpoch
-  const missing = useAsync(() => missingBotKeys(write.context!), [write.context !== null, home.repo.repoId, epoch, session.members.length], {
+  // read again when the set of bots or the key changes, not on every membership change
+  const botIds = botsOf(session.members).sort().join(',')
+  const missing = useAsync(() => missingBotKeys(write.context!), [write.context !== null, home.repo.repoId, epoch, botIds], {
     enabled: write.context !== null,
   })
   const bots = missing.data?.ready ?? []

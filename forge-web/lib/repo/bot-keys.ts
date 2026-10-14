@@ -147,8 +147,19 @@ export async function missingPostKeys(io: PostKeyIo, keys: EpochKeys, bots: read
 /** A key letter is fetched for its post key this many at once. */
 const FETCH_WINDOW = 4
 
-/** {@link PostKeyIo} over the SDK and this browser's vault, writing as `auth` in `repo` (each manifest's intent under `intent`). */
-export function sdkPostKeyIo(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, network: Network, heldKeyIds: readonly number[], intent: string): PostKeyIo {
+/**
+ * {@link PostKeyIo} over the SDK and this browser's vault, writing as `auth` in `repo` (each manifest's intent under `intent`).
+ * `since`: the block height the current key was first stated at; a letter written before it is for an earlier key, so it is not fetched.
+ */
+export function sdkPostKeyIo(
+  sdk: EvoSDK,
+  auth: WriteAuth,
+  repo: RepoRef,
+  network: Network,
+  heldKeyIds: readonly number[],
+  intent: string,
+  since?: number,
+): PostKeyIo {
   const me = auth.identityId
   const core = repo.forge.core
   const repoId = decodeIdentifier(repo.repoId)
@@ -187,7 +198,9 @@ export function sdkPostKeyIo(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, networ
       )
     },
     sentLetters: async () => {
-      const own = (await readManifestsOfKind(sdk, repo, PACK_KIND.KEY_LETTER)).filter((m) => m.uploader === me)
+      const own = (await readManifestsOfKind(sdk, repo, PACK_KIND.KEY_LETTER)).filter(
+        (m) => m.uploader === me && (since === undefined || m.createdAtBlockHeight === undefined || m.createdAtBlockHeight >= since),
+      )
       if (own.length === 0) return []
       const fetched = await mapPooled(own, FETCH_WINDOW, async (m) => ({ m, bytes: await loadStoredArtifactBytes(sdk, repo, m).catch(() => null) }))
       const ownerKeys = ownerKeysOf((await fetchIdentityKeys(sdk, me)) ?? [])

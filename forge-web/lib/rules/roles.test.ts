@@ -7,6 +7,7 @@ import {
   addBotText,
   grantableRoles,
   holdsMembersKey,
+  isBotOnly,
   ROLE_LABEL,
   ROLE_SUMMARY,
   verdictRefusal,
@@ -139,6 +140,16 @@ describe('memberMayWriteEvent', () => {
 describe('holdsMembersKey', () => {
   it('every human role holds the members key, readers included (DESIGN §3.5)', () => {
     for (const role of ['maintainer', 'writer', 'triage', 'reader'] as const) expect(holdsMembersKey(role)).toBe(true)
+  })
+})
+
+describe('isBotOnly', () => {
+  it('is a Bot row and no human one', () => {
+    const row = (identity: string, role: Role) => ({ identity, role, createdAt: 1 })
+    expect(isBotOnly([row('a', 'bot')], 'a')).toBe(true)
+    expect(isBotOnly([row('a', 'bot'), row('a', 'maintainer')], 'a')).toBe(false)
+    expect(isBotOnly([row('b', 'bot')], 'a')).toBe(false)
+    expect(isBotOnly([], 'a')).toBe(false)
   })
 })
 

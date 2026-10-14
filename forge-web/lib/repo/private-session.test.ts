@@ -353,7 +353,7 @@ describe('private reads through the gate', () => {
     const page = await queryIssues(sdk, repo, { state: 'all', labels: [], author: null, assignee: null, mentions: null, sort: 'newest', text: '', page: 1, pageSize: 100 } as const, null, 'devnet')
     const list = page.rows
     expect(list.map((i) => i.title).sort()).toEqual(['in grace', 'readable'])
-    expect(page.hiddenBy).toEqual({ notEncrypted: 2, wrongKey: 0, late: 1, lateEdit: 0, membersOnly: 0, letter: 0, unknownVersion: 0 })
+    expect(page.hiddenBy).toEqual({ notEncrypted: 2, wrongKey: 0, late: 1, lateEdit: 0, membersOnly: 0, letter: 0, unknownVersion: 0, notABot: 0 })
     const body = list.find((i) => i.title === 'readable')?.body
     expect(body).toBe('hello')
   })
@@ -373,7 +373,7 @@ describe('private reads through the gate', () => {
     const page = await queryIssues(mockSdk({ issue: issues, event: [], authorEvent: [] }), repo, { state: 'all', labels: [], author: null, assignee: null, mentions: null, sort: 'newest', text: '', page: 1, pageSize: 100 } as const, null, 'devnet')
     const list = page.rows
     expect(list.map((i) => i.title)).toEqual(['edited in grace'])
-    expect(page.hiddenBy).toEqual({ notEncrypted: 0, wrongKey: 0, late: 0, lateEdit: 1, membersOnly: 0, letter: 0, unknownVersion: 0 })
+    expect(page.hiddenBy).toEqual({ notEncrypted: 0, wrongKey: 0, late: 0, lateEdit: 1, membersOnly: 0, letter: 0, unknownVersion: 0, notABot: 0 })
     // Maintainers read why (the CLI's bucket text is the same).
     const { HIDDEN_REASON_TEXT } = await import('./private-content')
     expect(HIDDEN_REASON_TEXT.lateEdit).toBe('edited after its author was removed; the original text is gone')
@@ -673,7 +673,7 @@ describe("a bot's members-only posts (§23)", () => {
     expect(planRepair(await sessionFor(w, ALICE), b58(ALICE), FORGE.core)).toBeNull()
   })
 
-  it("members read a current bot's post; a removed bot's, or one from someone who is no bot, is members-only", async () => {
+  it("members read a current bot's post; a removed bot's, or one from someone who is no bot, says so", async () => {
     const w = await withBot()
     const k0 = w.keys.get(0) as EpochKeys
     const issues = [await botIssue(k0, BOT, 8, 'CI report'), await botIssue(k0, BOB, 9, 'not a bot')]
@@ -681,15 +681,16 @@ describe("a bot's members-only posts (§23)", () => {
       queryIssues(mockSdk({ issue: issues, event: [], authorEvent: [] }), { ...REPO_REF, session: await sessionFor(w, BOB) }, query, null, 'devnet')
     const page = await read()
     expect(page.rows.map((i) => i.title)).toEqual(['CI report'])
-    expect(page.hiddenBy).toEqual({ notEncrypted: 0, wrongKey: 0, late: 0, lateEdit: 0, membersOnly: 1, letter: 0, unknownVersion: 0 })
+    expect(page.hiddenBy).toEqual({ notEncrypted: 0, wrongKey: 0, late: 0, lateEdit: 0, membersOnly: 0, letter: 0, unknownVersion: 0, notABot: 1 })
     // the bot is removed: its posts stop opening (DESIGN §4.9 "Revocation takes back")
     w.members = w.members.filter((m) => m.identity !== b58(BOT))
     const after = await read()
     expect(after.rows).toEqual([])
-    expect(after.hiddenBy.membersOnly).toBe(2)
+    expect(after.hiddenBy.notABot).toBe(2)
+    expect(after.hiddenBy.membersOnly).toBe(0)
   })
 
-  it('a rotation sends each bot but the excluded its post key, and its cost counts the letters', async () => {
+  it('a rotation sends every bot its post key, and its cost counts the letters', async () => {
     const w = await withBot()
     const s = await sessionFor(w, ALICE)
     const plan = planRotation(s, b58(ALICE), [b58(CAROL)], FORGE.core, 4)
@@ -697,7 +698,8 @@ describe("a bot's members-only posts (§23)", () => {
     expect(plan.recipients.some((r) => r.identity === b58(BOT))).toBe(false)
     const without = { ...plan, bots: [] }
     expect(rotationCost(plan).credits).toBe(rotationCost(without).credits + postKeyLettersCost(1).credits)
-    expect(planRotation(s, b58(ALICE), [b58(CAROL), b58(BOT)], FORGE.core, 4).bots).toEqual([])
+    // excluding someone from the key leaves no Bot row out: removing a bot rotates nothing, and one kept still posts
+    expect(planRotation(s, b58(ALICE), [b58(CAROL), b58(BOT)], FORGE.core, 4).bots).toEqual([b58(BOT)])
   })
 
   it("a repair counts each bot's post key; adding a bot costs its row and one letter; removing one rotates nothing", async () => {

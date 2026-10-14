@@ -401,7 +401,7 @@ pub fn why_hint(repo: &RepoRef, why: Unopened) -> Option<String> {
             Some("only the people they were sent to can read them".to_string())
         }
         Unopened::RemovedBot => Some(
-            "posted by a bot that was removed: its members-only posts can't be read any more"
+            "posted as a bot by someone who isn't a bot here now: its members-only posts as a bot can't be read any more"
                 .to_string(),
         ),
     }

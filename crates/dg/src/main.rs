@@ -2422,8 +2422,8 @@ pub enum RoleArg {
     Maintainer,
     /// Bot: an automated account. It can post comments and reviews. It can't approve or merge,
     /// it pushes only to branches a maintainer allows, and it reads members-only content only
-    /// when someone asks it to. To report checks it also needs to be added as a CI runner (a
-    /// `writer` document, role 4; needs a network whose contracts have the Bot role).
+    /// when someone asks it to. To report checks it also needs to be added as a CI runner. Needs
+    /// a network whose contracts have the Bot role.
     Bot,
 }
 

@@ -64,7 +64,8 @@ pub struct Issued {
 /// Send the post key of `keys`'s epoch to each of `bots` (base58 ids): one `postKey` letter per
 /// bot, sealed to the signer (slot 0, so it can find what it sent) and the bot, stored on
 /// Platform as a kind-10 manifest. A bot with no usable encryption key is skipped, never an
-/// error; a failed write stops the run (what was sent stays sent; a repair finishes it).
+/// error; a failed write stops the run and is reported in [`Issued::failed`], with what was sent
+/// before it (a repair finishes it). An error only when nothing could start (no sender key).
 pub async fn issue(
     signer: &PrivateSigner<'_>,
     repo: &RepoRef,
@@ -86,49 +87,84 @@ pub async fn issue(
         ))
     })?;
     let me = platform::decode_identifier(&signer.identity.id())?;
-    let repo_id = repo.scope()?.repo_id;
     let svc = RepoService::new(signer.client, signer.identity, signer.bridge);
-    let core = repo.forge().core.clone();
-    for bot in bots {
-        let bot_id = platform::decode_identifier(bot)?;
-        let public_key = match signer.client.fetch_identity(bot).await {
-            Ok(identity) => recipient_key(&identity.public_keys(), &core)
-                .and_then(|k| <[u8; 33]>::try_from(k.public_key.as_slice()).ok()),
-            Err(Error::NotFound) => None,
-            Err(e) => return Err(e),
-        };
-        let Some(public_key) = public_key else {
-            out.skipped.push(bot.clone());
-            continue;
-        };
-        let letter = PostKeyLetter::of(&PostKey::derive(keys, &bot_id)).to_typed();
-        let recipients = [
-            Recipient {
-                identity_id: me,
-                public_key: sender.public_key(),
-            },
-            Recipient {
-                identity_id: bot_id,
-                public_key,
-            },
-        ];
-        let sealed = key_letter::seal(&repo_id, sender, sender_key_id, &me, &recipients, &letter)?;
-        svc.store_key_letter(repo, &sealed).await?;
-        out.sent.push(bot.clone());
+    for (i, bot) in bots.iter().enumerate() {
+        match issue_one(signer, &svc, repo, keys, (sender_key_id, sender), me, bot).await {
+            Ok(true) => out.sent.push(bot.clone()),
+            Ok(false) => out.skipped.push(bot.clone()),
+            // what was sent stays sent: the rest are reported, and a repair finishes them
+            Err(e) => {
+                out.skipped.extend(bots[i..].iter().cloned());
+                out.failed = Some(e.to_string());
+                break;
+            }
+        }
     }
     Ok(out)
 }
 
+/// Send `bot` its post key under `keys`: `false` when it has no usable encryption key (or no
+/// identity).
+async fn issue_one(
+    signer: &PrivateSigner<'_>,
+    svc: &RepoService<'_>,
+    repo: &RepoRef,
+    keys: &EpochKeys,
+    (sender_key_id, sender): (u32, &crate::envelope::PrivateKey),
+    me: [u8; 32],
+    bot: &str,
+) -> Result<bool> {
+    let bot_id = platform::decode_identifier(bot)?;
+    let public_key = match signer.client.fetch_identity(bot).await {
+        Ok(identity) => recipient_key(&identity.public_keys(), &repo.forge().core)
+            .and_then(|k| <[u8; 33]>::try_from(k.public_key.as_slice()).ok()),
+        Err(Error::NotFound) => None,
+        Err(e) => return Err(e),
+    };
+    let Some(public_key) = public_key else {
+        return Ok(false);
+    };
+    let letter = PostKeyLetter::of(&PostKey::derive(keys, &bot_id)).to_typed();
+    let recipients = [
+        Recipient {
+            identity_id: me,
+            public_key: sender.public_key(),
+        },
+        Recipient {
+            identity_id: bot_id,
+            public_key,
+        },
+    ];
+    let sealed = key_letter::seal(
+        &repo.scope()?.repo_id,
+        sender,
+        sender_key_id,
+        &me,
+        &recipients,
+        &letter,
+    )?;
+    svc.store_key_letter(repo, &sealed).await?;
+    Ok(true)
+}
+
 /// The `postKey` letters `reader` can open in `repo`: `(sender, letter)`, oldest first. Only a
-/// current maintainer's (only maintainers rotate the key); a letter of another type is skipped.
+/// current maintainer's (only maintainers rotate the key), and only `from`'s when given; other
+/// senders' letters are never fetched, and a letter of another type is skipped.
 async fn post_key_letters(
     svc: &RepoService<'_>,
     client: &PlatformClient,
     repo: &RepoRef,
     reader: &LetterReader<'_>,
+    from: Option<&str>,
 ) -> Result<Vec<(String, PostKeyLetter)>> {
     let (manifests, roles) =
         futures::try_join!(svc.read_pack_manifests(repo), svc.copy_roles(repo))?;
+    let manifests: Vec<_> = manifests
+        .into_iter()
+        .filter(|m| m.kind == u64::from(crate::pack::KIND_KEY_LETTER))
+        .filter(|m| roles.get(&m.owner_id) == Some(&Role::Maintainer))
+        .filter(|m| from.is_none_or(|f| m.owner_id == f))
+        .collect();
     let inbox = key_letters::received(
         svc,
         client,
@@ -158,7 +194,7 @@ pub async fn received(
     reader: &LetterReader<'_>,
 ) -> Result<BTreeMap<u32, PostKey>> {
     let repo_id = repo.scope()?.repo_id;
-    Ok(post_key_letters(svc, client, repo, reader)
+    Ok(post_key_letters(svc, client, repo, reader, None)
         .await?
         .into_iter()
         .map(|(_, l)| (l.epoch, l.post_key(&repo_id, &reader.identity_id)))
@@ -185,7 +221,7 @@ pub async fn missing(
         keys: &private_keys,
     };
     let me = signer.identity.id();
-    let sent: Vec<PostKeyLetter> = post_key_letters(&svc, signer.client, repo, &reader)
+    let sent: Vec<PostKeyLetter> = post_key_letters(&svc, signer.client, repo, &reader, Some(&me))
         .await?
         .into_iter()
         .filter(|(sender, l)| *sender == me && l.epoch == keys.epoch())

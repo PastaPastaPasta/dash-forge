@@ -2,6 +2,7 @@
 
 import { Lock } from 'lucide-react'
 import { readPublicRepoFacts, repoContractIds, type RepoRef } from '@/lib/repo'
+import { BOT_READ_TEXT } from '@/lib/repo/members-writes'
 import { formatBytes, timeAgo } from '@/lib/view'
 import { useAsync } from '@/hooks/use-async'
 import { useSdk } from '@/hooks/use-sdk'
@@ -30,9 +31,9 @@ export function PrivateRepoState({
   addr: RepoAddress
   /**
    * Why the contents stay sealed (`usePrivateHome`): not signed in, not a member, no key here,
-   * or a member whose tab resumed a signing-only session (`locked`: unlock inline).
+   * a member whose tab resumed a signing-only session (`locked`: unlock inline), or a bot.
    */
-  access: 'signed-out' | 'outsider' | 'no-key' | 'locked'
+  access: 'signed-out' | 'outsider' | 'no-key' | 'locked' | 'bot'
 }): JSX.Element {
   const { sdk, ready } = useSdk(repoContractIds(repo))
   const facts = useAsync(() => readPublicRepoFacts(sdk!, repo), [ready, repo.repoId], { enabled: ready && sdk !== null })
@@ -61,6 +62,8 @@ export function PrivateRepoState({
               </Link>{' '}
               to read them.
             </>
+          ) : access === 'bot' ? (
+            `Private: contents are encrypted for members. ${BOT_READ_TEXT}`
           ) : (
             "Private: contents are encrypted for members. You're not one."
           )}

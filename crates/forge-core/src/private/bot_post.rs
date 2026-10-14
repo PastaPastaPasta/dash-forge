@@ -438,6 +438,24 @@ mod tests {
     }
 
     #[test]
+    fn a_bundle_publishes_one_bot_post() {
+        use crate::private::bundle::{read_revision, BundleRead, DocEntry};
+        let post = PostKey::derive(&keys(), &BOT);
+        let enc = seal(&post, &header(BOT), &body("made public")).unwrap();
+        let k = crate::private::doc::members_obj_key(&keys(), &header(BOT), &enc).unwrap();
+        let entry = DocEntry {
+            by: [0x22; 32],
+            revision: 1,
+            key: crate::private::EpochKey::from_bytes(*k),
+        };
+        let (read, mismatches) = read_revision(&REPO, &header(BOT), 1, &enc, &[entry]);
+        assert!(mismatches.is_empty());
+        assert!(
+            matches!(read, BundleRead::Public { fields, .. } if *fields == body("made public"))
+        );
+    }
+
+    #[test]
     fn debug_never_shows_the_key() {
         let post = PostKey::derive(&keys(), &BOT);
         let shown = format!("{post:?} {:?}", PostKeyLetter::of(&post));

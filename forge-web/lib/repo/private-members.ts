@@ -145,8 +145,9 @@ export interface RotationPlan {
   /** Identities explicitly excluded (removed, or wrapped without being members). */
   readonly excluded: readonly string[]
   /**
-   * The bots (not excluded) sent the new key's post key once the anchor wins (§23): a bot never
-   * gets the members key, so a rotation that sent none would silently stop its members-only posts.
+   * Every bot (a Bot row; an exclusion names who loses the key, not a bot) sent the new key's post key
+   * once the anchor wins (§23): a bot never gets the members key, so a rotation that sent none would
+   * silently stop its members-only posts.
    */
   readonly bots: readonly string[]
 }
@@ -213,7 +214,7 @@ export function planRotation(
     recipients.push({ identity: id, keyId: key.keyId, done: wrappedBySelf.has(id) })
   }
   const burn = mustBurn(exclude.length > 0, resume !== null, mine, recipients, remaining)
-  return { from: n, epoch, resume, burn, recipients, unreachable, excluded: [...excluded], bots: botsOf(session.members, [...excluded]) }
+  return { from: n, epoch, resume, burn, recipients, unreachable, excluded: [...excluded], bots: botsOf(session.members) }
 }
 
 /** This browser holds encryption keys `held`, but not the identity's newest usable key `current`. */
@@ -726,8 +727,10 @@ export async function rotateRepoKey(
   const epoch = 'lost' in done ? done.lost : done.epoch
   if ('commit' in done && (await confirmAnchor(c, epoch, done.commit, drop, onStep)) === 'ours') {
     onStep?.({ kind: 'anchored', epoch })
-    // §23: in the same run as the wraps, each bot (but those being removed) gets its post key
-    await sendBotKeys(c, `${intent}:post-keys`, { epoch, exclude }, onStep, drop)
+    // §23: in the same run as the wraps, every current Bot row gets its post key. Nobody is left
+    // out: removing a Bot row rotates nothing, and a maintainer who keeps a Bot row (`drop` names
+    // only the row removed) still needs theirs.
+    await sendBotKeys(c, `${intent}:post-keys`, { epoch }, onStep, drop)
     return epoch
   }
   // Their key is the repo's key now. If they rotated from a member list that still had the
@@ -1280,7 +1283,8 @@ export async function removePrivateMember(
   const effect = removalEffect([...rows, { identity: memberId, role, createdAt: 0 }], memberId, role)
   if (effect === 'none') return null
   // A lagging node may still list the deleted role: every read from here on drops it.
-  const drop = [{ identity: memberId, ...(effect === 'rotate-exclude' ? {} : { role }) }]
+  // (only the row removed: a Bot row they keep is a bot still, and gets its post key from the rotation)
+  const drop = [{ identity: memberId, role }]
   let epoch: number | null = null
   try {
     epoch = await rotateRepoKey(c, effect === 'rotate-exclude' ? [memberId] : [], intent, onStep, drop, before)
@@ -1642,11 +1646,10 @@ export async function runRepair(
   if (!rotated && botKeys) await sendBotKeys(c, `${intent}:post-keys`, { missing: true }, onStep, drop)
 }
 
-/** What {@link sendBotKeys} sends: one epoch's keys to every bot but `exclude`, or the write epoch's to the bots `only` / missing one. */
+/** What {@link sendBotKeys} sends: one epoch's keys to every bot, or the write epoch's to the bots `only` / missing one. */
 interface BotKeysTarget {
   /** The epoch (a rotation's new one); the session's write epoch when absent. */
   readonly epoch?: number
-  readonly exclude?: readonly string[]
   /** Only these bots (a bot just added). */
   readonly only?: readonly string[]
   /** Only the bots none of this signer's letters gave the epoch's post key yet. */
@@ -1673,12 +1676,12 @@ async function sendBotKeys(
     sent = await withFreshSession(
       c,
       async (s) => {
-        bots = botsOf(s.members, target.exclude ?? []).filter((b) => target.only === undefined || target.only.includes(b))
+        bots = botsOf(s.members).filter((b) => target.only === undefined || target.only.includes(b))
         if (bots.length === 0 || !isMaintainer(s, c.auth.identityId)) return null
         epoch = target.epoch ?? s.resolution.writeEpoch ?? -1
         const keys = s.resolution.keys.get(epoch)
         if (keys === undefined || s.resolution.burned.has(epoch)) return null
-        const io = sdkPostKeyIo(c.sdk, c.auth, c.repo, c.network, c.ops.keyIds, intent)
+        const io = sdkPostKeyIo(c.sdk, c.auth, c.repo, c.network, c.ops.keyIds, intent, s.resolution.anchors.get(epoch)?.statedHeight)
         const to = target.missing === true ? await missingPostKeys(io, keys, bots) : bots
         return to.length === 0 ? null : sendPostKeys(io, keys, to)
       },
@@ -1720,7 +1723,7 @@ export async function missingBotKeys(c: PrivateWriteContext): Promise<{ readonly
     const epoch = s.resolution.writeEpoch
     const keys = epoch === null ? undefined : s.resolution.keys.get(epoch)
     if (bots.length === 0 || keys === undefined || !isMaintainer(s, c.auth.identityId)) return { ready: [], keyless: [] }
-    const io = sdkPostKeyIo(c.sdk, c.auth, c.repo, c.network, c.ops.keyIds, 'post-keys:check')
+    const io = sdkPostKeyIo(c.sdk, c.auth, c.repo, c.network, c.ops.keyIds, 'post-keys:check', epoch === null ? undefined : s.resolution.anchors.get(epoch)?.statedHeight)
     const missing = await missingPostKeys(io, keys, bots)
     const ready: string[] = []
     const keyless: string[] = []

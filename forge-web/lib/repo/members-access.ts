@@ -2,6 +2,7 @@
  * How a signed-in viewer reads a public repo's members-only content (DESIGN §4.1, §12 item 6):
  * the decision `usePrivateHome` takes, apart from React and the SDK so it can be tested.
  *
+ * - A bot (a Bot row and no human one): `none`, or `bot` once members-only content is on.
  * - A current member: `none` (nothing turned on), `no-key`, `locked`, `no-key-shared` (E311), or
  *   `member` with their members-key session.
  * - Anyone else who holds key shares of the repo (a member removed since): `former` with the same
@@ -22,6 +23,8 @@ export interface MembersAccessSource<Ops> {
   readonly identity: string
   /** Whether the viewer is a current member of the repo. */
   readonly isMember: boolean
+  /** The viewer's only row is a Bot row: it is never given the key, so there is nothing to unlock or repair. */
+  readonly isBot?: boolean
   /** Whether the repo has a members key (members-only content turned on). */
   readonly hasMembersKey: () => Promise<boolean>
   /** This browser's encryption-key operations for the viewer, or null (no key here). */
@@ -41,6 +44,7 @@ export interface MembersAccessSource<Ops> {
 /** The viewer's members access, or null: none at all (an outsider's view). */
 export async function membersAccessOf<Ops>(src: MembersAccessSource<Ops>): Promise<MembersAccess | null> {
   if (!(await src.hasMembersKey())) return src.isMember ? { access: 'none' } : null
+  if (src.isBot === true) return { access: 'bot' }
   const ops = await src.ops()
   if (ops === null) return src.isMember ? { access: 'no-key' } : null
   if (src.locked()) return src.isMember || (await src.holdsShare()) ? { access: 'locked' } : null
