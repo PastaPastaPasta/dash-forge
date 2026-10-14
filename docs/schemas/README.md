@@ -25,6 +25,7 @@ The exit code says which schema applies: 0, the command's own; anything else, th
 | `dg branch cleanup` | [`branch-cleanup.schema.json`](dg/branch-cleanup.schema.json) |
 | `dg branch list` | [`branch-list.schema.json`](dg/branch-list.schema.json) |
 | `dg branch new` | [`branch-new.schema.json`](dg/branch-new.schema.json) |
+| `dg ci env` | [`ci-env.schema.json`](dg/ci-env.schema.json) |
 | `dg ci report` | [`ci-report.schema.json`](dg/ci-report.schema.json) |
 | `dg ci rerun` | [`ci-rerun.schema.json`](dg/ci-rerun.schema.json) |
 | `dg ci reruns` | [`ci-reruns.schema.json`](dg/ci-reruns.schema.json) |
@@ -45,6 +46,7 @@ The exit code says which schema applies: 0, the command's own; anything else, th
 | `dg env audience` | [`env-audience.schema.json`](dg/env-audience.schema.json) |
 | `dg env edit` | [`env-edit.schema.json`](dg/env-edit.schema.json) |
 | `dg env export` | [`env-export.schema.json`](dg/env-export.schema.json) |
+| `dg env exposure` | [`env-exposure.schema.json`](dg/env-exposure.schema.json) |
 | `dg env get` | [`env-get.schema.json`](dg/env-get.schema.json) |
 | `dg env history` | [`env-history.schema.json`](dg/env-history.schema.json) |
 | `dg env import` | [`env-import.schema.json`](dg/env-import.schema.json) |

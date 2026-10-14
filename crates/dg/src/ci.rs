@@ -137,6 +137,18 @@ pub enum CiCommand {
         #[arg(long, value_name = "MS")]
         since: Option<u64>,
     },
+    /// An environment's values, for a CI runner it is shared with by name
+    ///
+    /// What forge-runner reads for a job's `environment:`. Shared by name means `dg env share
+    /// --env <name> <runner>` or `--also`: a group never counts, so a runner that is also a
+    /// member reads nothing through its role. The values are printed with `--json` only.
+    Env {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The environment.
+        #[arg(long)]
+        env: String,
+    },
 }
 
 /// `dg ci runner` subcommands.
@@ -252,6 +264,7 @@ impl CiCommand {
     /// The error headline and the repo, for `errors::context_for`.
     pub fn context(&self) -> (&'static str, Option<&String>) {
         match self {
+            CiCommand::Env { repo, .. } => ("could not read the environment", Some(repo)),
             CiCommand::Runner(RunnerCommand::New(a)) => ("runner not created", Some(&a.repo)),
             CiCommand::Runner(RunnerCommand::Add { repo, .. }) => {
                 ("runner not enrolled", Some(repo))
@@ -273,6 +286,7 @@ impl CiCommand {
 /// Dispatch a `ci` subcommand.
 pub async fn run(ctx: &Ctx, cmd: &CiCommand) -> Result<()> {
     match cmd {
+        CiCommand::Env { repo, env } => crate::env::ci_values(ctx, repo, env).await,
         CiCommand::Runner(RunnerCommand::New(a)) => runner_new(ctx, a).await,
         CiCommand::Runner(RunnerCommand::Add { repo, runner }) => {
             runner_add(ctx, repo, runner).await
