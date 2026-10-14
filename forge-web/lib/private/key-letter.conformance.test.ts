@@ -328,7 +328,13 @@ function headerDoc(j: Json | undefined): PrivateDoc {
 }
 
 function openedJson(r: OpenResult): Json {
-  if (r.status === "readable") return { status: "readable", fields: { ...r.fields } as unknown as Json };
+  if (r.status === "readable") {
+    // bytes (a members-only PR's real head and its salt) as lowercase hex, as forge-core writes them
+    const fields = Object.fromEntries(
+      Object.entries(r.fields).map(([k, v]) => [k, v instanceof Uint8Array ? bytesToHex(v) : v]),
+    );
+    return { status: "readable", fields: fields as unknown as Json };
+  }
   return r.status === "unreadable"
     ? { status: "unreadable", reason: r.reason }
     : { status: "malformed" };

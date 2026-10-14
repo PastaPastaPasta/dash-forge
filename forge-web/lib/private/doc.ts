@@ -705,7 +705,8 @@ export async function openMembersWithKey(repoId: Uint8Array, doc: PrivateDoc, en
  */
 export async function openSharedWithKey(repoId: Uint8Array, doc: PrivateDoc, enc: Uint8Array, kObj: Uint8Array): Promise<OpenResult> {
   if (!sharesKind(doc.type)) return MALFORMED
-  const opened = await openWithObjKey(repoId, doc, enc, kObj)
+  // a public repository's members-only PR carries its real head and that head's salt (§19)
+  const opened = await openWithObjKey(repoId, doc, enc, kObj, doc.vis === 'public')
   if (opened.status !== 'readable' || doc.type !== 'patch') return opened
   const fields: { -readonly [K in keyof DocFields]: DocFields[K] } = { ...opened.fields }
   const pairs = [
@@ -721,7 +722,7 @@ export async function openSharedWithKey(repoId: Uint8Array, doc: PrivateDoc, enc
   return { status: 'readable', fields }
 }
 
-async function openWithObjKey(repoId: Uint8Array, doc: PrivateDoc, enc: Uint8Array, kObj: Uint8Array): Promise<OpenResult> {
+async function openWithObjKey(repoId: Uint8Array, doc: PrivateDoc, enc: Uint8Array, kObj: Uint8Array, membersTlv = false): Promise<OpenResult> {
   if (enc[0] !== V3 || !encShapeOk(doc, enc)) return MALFORMED
   let ad: Bytes
   try {
@@ -743,7 +744,7 @@ async function openWithObjKey(repoId: Uint8Array, doc: PrivateDoc, enc: Uint8Arr
     return unreadable('badTag')
   }
   try {
-    return { status: 'readable', fields: parseTlv(pt, { type: doc.type, epoch: doc.epoch }) }
+    return { status: 'readable', fields: membersTlv ? parseMembersTlv(pt, doc.type) : parseTlv(pt, { type: doc.type, epoch: doc.epoch }) }
   } catch (e) {
     if (e instanceof MalformedError) return MALFORMED
     throw e

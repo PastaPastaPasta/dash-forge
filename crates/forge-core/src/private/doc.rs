@@ -779,7 +779,7 @@ pub fn open_members_with_key(
     if !bundles_kind(header.kind) {
         return Opened::Malformed;
     }
-    open_with_obj_key(repo_id, header, enc, k_obj)
+    open_with_obj_key(repo_id, header, enc, k_obj, false)
 }
 
 /// [`open_members_with_key`] for the kinds a `read` key letter hands on ([`shares_kind`]). A
@@ -796,7 +796,10 @@ pub fn open_shared_with_key(
     if !shares_kind(header.kind) {
         return Opened::Malformed;
     }
-    match open_with_obj_key(repo_id, header, enc, k_obj) {
+    // a public repository's members-only PR (and its head updates) carries its real head and
+    // that head's salt (§19), read as a member reads them
+    let members_tlv = header.vis == Visibility::Public;
+    match open_with_obj_key(repo_id, header, enc, k_obj, members_tlv) {
         Opened::Readable(mut f) if header.kind == DocKind::Patch => {
             let public = |hash: Option<[u8; 32]>, name: &mut Option<String>| match (hash, &*name) {
                 (Some(h), Some(n)) if !ct_eq(&h, &sha256(n.as_bytes())) => {
@@ -823,6 +826,7 @@ fn open_with_obj_key(
     header: &DocHeader,
     enc: &[u8],
     k_obj: &[u8; 32],
+    members_tlv: bool,
 ) -> Opened {
     if enc.first() != Some(&V3) || !well_framed(header, enc) {
         return Opened::Malformed;
@@ -844,7 +848,12 @@ fn open_with_obj_key(
         return Opened::Unreadable(Unreadable::BadTag);
     };
     let pt = zeroize::Zeroizing::new(pt);
-    match tlv::parse(&pt, header.kind, false) {
+    let parsed = if members_tlv {
+        tlv::parse_members(&pt, header.kind)
+    } else {
+        tlv::parse(&pt, header.kind, false)
+    };
+    match parsed {
         Some(fields) => Opened::Readable(Box::new(fields)),
         None => Opened::Malformed,
     }

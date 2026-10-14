@@ -249,6 +249,7 @@ def tlv_fields(doc_type, pt):
     """The reference TLV reader for the fields these vectors carry (title 1, body 2, base 4, source 5, value 15),
     padding (64) skipped."""
     names = {1: "title", 2: "body", 4: "baseRefName", 5: "sourceRefName", 15: "eventValue"}
+    raw = {24: "headOid", 27: "oidSalt"}  # a members-only PR's real head and its salt (§19), hex
     out, i = {}, 0
     while i < len(pt):
         tag, n = pt[i], int.from_bytes(pt[i + 1:i + 3], "big")
@@ -256,6 +257,8 @@ def tlv_fields(doc_type, pt):
         i += 3 + n
         if tag in names:
             out[names[tag]] = v.decode()
+        elif tag in raw:
+            out[raw[tag]] = H(v)
     return out
 
 
@@ -286,6 +289,10 @@ def read_open_doc_vectors():
     docs = [
         ("patch", patch, tlv((1, b"Fix the auth bypass"), (2, b"Members-only until the release."),
                             (4, b"refs/heads/main"), (5, b"refs/heads/fix-auth"))),
+        ("patch_members_branch", dict(patch, number=43), tlv(
+            (1, b"Fix the auth bypass"), (2, b"From a members-only branch."), (4, b"refs/heads/main"),
+            (5, b"refs/heads/fix-auth"), (24, sha256(b"dash-forge vectors: read head")[:20]),
+            (27, sha256(b"dash-forge vectors: read salt")))),
         ("comment", comment, tlv((2, b"The token is logged in auth.rs"))),
         ("event", event, tlv((15, b"fix the failing test"))),
     ]
@@ -299,13 +306,15 @@ def read_open_doc_vectors():
     p = rows[0]
     assert p["result"]["opened"]["fields"] == {"title": "Fix the auth bypass", "body": "Members-only until the release.",
                                                 "baseRefName": "refs/heads/main"}
-    wrong_open = open_with_key(docs[1][1], bytes.fromhex(rows[1]["encHex"]), wrong)
+    assert rows[1]["result"]["opened"]["fields"]["headOid"] == H(sha256(b"dash-forge vectors: read head")[:20])
+    wrong_open = open_with_key(docs[2][1], bytes.fromhex(rows[2]["encHex"]), wrong)
     assert wrong_open == opened("commitMismatch")
     vector("key_letter", "read_open_doc", "what a bot reads with a `read` letter: each members-only document (a pull "
            "request's own text, a comment, a member event's value) opens with its per-object key K_obj alone, which "
            "a member derives under the epoch key and checks against the commitment; the pull request's base branch "
            "(hashed as its plain SHA-256) is kept and its members-only source branch (hashed under the epoch key, "
-           "which the bot does not hold) is dropped. Another key fails the commitment before GCM.",
+           "which the bot does not hold) is dropped; a PR from a members-only branch also carries its real head "
+           "and that head's salt (TLV 24, 27), read as members read them. Another key fails the commitment before GCM.",
            dict(op="readOpenDoc", repoId=H(repoId), epoch=0, epochKey=H(K0),
                 docs=[dict(name=r["name"], header=r["header"], encHex=r["encHex"]) for r in rows], wrongKey=H(wrong)),
            dict(results=[dict(name=r["name"], **r["result"]) for r in rows], wrongKey=wrong_open))
