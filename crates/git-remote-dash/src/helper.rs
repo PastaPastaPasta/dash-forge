@@ -3276,7 +3276,9 @@ fn guard_push(
             say_refusal(&e);
             let named: BTreeSet<&str> = outcome.findings.iter().map(|f| f.dst.as_str()).collect();
             for p in planned.iter_mut().filter(|p| p.reject.is_none()) {
-                p.reject = Some(if named.contains(p.spec.dst.as_str()) {
+                p.reject = Some(if named.contains(p.spec.dst.as_str()) && p.sealed() {
+                    "would show commits to people who can't read them now".into()
+                } else if named.contains(p.spec.dst.as_str()) {
                     "would publish members-only commits".into()
                 } else {
                     "not pushed: another ref of this push would publish members-only commits".into()

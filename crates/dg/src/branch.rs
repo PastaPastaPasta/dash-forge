@@ -250,6 +250,9 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
             }
             print("Public", false);
             print("Members only 🔒", true);
+            if no_access > 0 && !live.iter().any(|r| r.members_only) {
+                println!("Members only 🔒");
+            }
             for _ in 0..no_access {
                 println!("  A branch you don't have access to");
             }
