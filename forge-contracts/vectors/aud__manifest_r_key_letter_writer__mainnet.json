@@ -1,0 +1,15 @@
+{
+  "name": "manifest_r_key_letter_writer__mainnet",
+  "description": "A writer's key letter (kind 10) keeps r 1. (mainnet contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "manifestR",
+    "shape": {
+      "maintKinds": true
+    },
+    "kind": 10,
+    "claimed": 1
+  },
+  "expected": 1
+}

@@ -10,6 +10,8 @@ const created: { contractId: string; documentType: string; data: Record<string, 
 const deleted: string[] = []
 let stored: Record<string, unknown>[] = []
 
+// sakura's contracts: `vis` declared where it was (`mainnet-fields.ts` drops it only where it is not)
+vi.mock('./contract-shape', async (orig) => ({ ...(await orig<typeof import('./contract-shape')>()), contractHasProperty: async () => true }))
 vi.mock('../sdk', async (orig) => {
   const real = await orig<typeof import('../sdk')>()
   return {

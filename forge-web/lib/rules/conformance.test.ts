@@ -43,6 +43,7 @@ import { refHistory } from './refHistory'
 import { letterPlan, type LetterInput } from './letters'
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
 import { encodeTlv, type DocFields } from '../private/tlv'
+import { audAgrees, contentFields, eventFields, manifestR, type AudShape } from './aud'
 import { audienceEdit, makePublicChanges, reviewTextCarriers, type CarrierComment, type CarrierReview } from './make-public'
 import {
   EpochKeys,
@@ -597,9 +598,9 @@ function runCaseV2(v: Vector): void {
         const inp = v.input as { readonly visibility: v2.Visibility; readonly stored: v2.ContentDoc; readonly edited: v2.ContentDoc; readonly author: string; readonly signer: string }
         expect(audienceEdit(inp.visibility, inp.stored, inp.edited, inp.author, inp.signer)).toEqual(v.expected)
       } else if (op === 'replace') {
-        onlyKeys(v, ['op', 'kind', 'opened'], { opened: ['title', 'body', 'path', 'baseRefName', 'sourceRefName', 'importedAuthor', 'importedUrl'] })
-        const inp = v.input as { readonly kind: v2.ContentKind; readonly opened: DocFields }
-        expect(makePublicChanges(inp.kind, inp.opened)).toEqual(v.expected)
+        onlyKeys(v, ['op', 'kind', 'opened', 'settableOnce'], { opened: ['title', 'body', 'path', 'baseRefName', 'sourceRefName', 'importedAuthor', 'importedUrl'] })
+        const inp = v.input as { readonly kind: v2.ContentKind; readonly opened: DocFields; readonly settableOnce?: boolean }
+        expect(makePublicChanges(inp.kind, inp.opened, inp.settableOnce === true)).toEqual(v.expected)
       } else {
         expect(op).toBe('reviewText')
         onlyKeys(v, ['op', 'reviews', 'comments'], {
@@ -608,6 +609,31 @@ function runCaseV2(v: Vector): void {
         })
         const inp = v.input as { readonly reviews: readonly CarrierReview[]; readonly comments: readonly CarrierComment[] }
         expect(reviewTextCarriers(inp.reviews, inp.comments)).toEqual(v.expected)
+      }
+      break
+    }
+    case 'aud': {
+      // the mainnet fields (`tools/private-repos-vectors/aud.py`), against both contract shapes
+      const op = (v.input as { readonly op: string }).op
+      const version = (hex: string | undefined): number | null => (hex === undefined || hex === '' ? null : parseInt(hex.slice(0, 2), 16))
+      if (op === 'content') {
+        onlyKeys(v, ['op', 'type', 'shape', 'doc', 'role'], { shape: ['aud', 'mRole'], doc: ['enc', 'asMember'] })
+        const inp = v.input as { readonly shape: AudShape; readonly doc: { readonly enc?: string; readonly asMember?: boolean }; readonly role: v2.Role | null }
+        expect(contentFields(inp.shape, version(inp.doc.enc), inp.doc.asMember === true, inp.role)).toEqual(v.expected)
+      } else if (op === 'read') {
+        onlyKeys(v, ['op', 'type', 'doc'], { doc: ['enc', 'aud'] })
+        const inp = v.input as { readonly doc: { readonly enc?: string; readonly aud?: number } }
+        expect(audAgrees(inp.doc.aud ?? null, version(inp.doc.enc)) ? 'ok' : 'malformed').toEqual(v.expected)
+      } else if (op === 'event') {
+        onlyKeys(v, ['op', 'type', 'shape', 'target', 'value'], { shape: ['tAud', 'authorEnc'], target: ['aud', 'enc', 'bundled'] })
+        const inp = v.input as { readonly type: string; readonly shape: AudShape; readonly target: { readonly aud?: number; readonly enc?: string; readonly bundled?: boolean }; readonly value: boolean }
+        const target = { aud: inp.target.aud ?? null, enc: version(inp.target.enc), bundled: inp.target.bundled === true }
+        expect(eventFields(inp.shape, inp.type === 'authorEvent', target, inp.value)).toEqual(v.expected)
+      } else {
+        expect(op).toBe('manifestR')
+        onlyKeys(v, ['op', 'shape', 'kind', 'claimed'], { shape: ['maintKinds'] })
+        const inp = v.input as { readonly shape: AudShape; readonly kind: number; readonly claimed: number }
+        expect(manifestR(inp.shape, inp.kind, inp.claimed)).toEqual(v.expected)
       }
       break
     }

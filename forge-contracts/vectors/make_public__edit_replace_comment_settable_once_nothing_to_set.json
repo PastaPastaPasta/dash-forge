@@ -1,0 +1,24 @@
+{
+  "name": "edit_replace_comment_settable_once_nothing_to_set",
+  "description": "A general comment has no path to set: the same replace on either contract.",
+  "case": "make_public",
+  "rules": "v2",
+  "input": {
+    "op": "replace",
+    "kind": "comment",
+    "opened": {
+      "body": "general"
+    },
+    "settableOnce": true
+  },
+  "expected": {
+    "set": {
+      "body": "general"
+    },
+    "remove": [
+      "enc",
+      "epoch"
+    ],
+    "lost": []
+  }
+}

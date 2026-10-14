@@ -18,6 +18,16 @@ const artifacts: string[] = []
 const replaces: { documentType: string; changes: Record<string, unknown> }[] = []
 
 // Lag retries happen once here (no real time in tests).
+// sakura's contracts: none of the mainnet fields (`mainnet-fields.ts`), `vis` where it was
+vi.mock('./contract-shape', async (orig) => {
+  const real = await orig<typeof import('./contract-shape')>()
+  const mainnet = new Set(['aud', 'mRole', 'tAud', 'enc', 'asMaintainer'])
+  return {
+    ...real,
+    contractHasProperty: async (...a: Parameters<typeof real.contractHasProperty>) => (mainnet.has(a[3]) ? false : a[3] === 'vis' ? true : real.contractHasProperty(...a)),
+    contractPropertyMinimum: async () => null,
+  }
+})
 vi.mock('../view/retry', () => ({ retryWhileMissing: vi.fn(async (f: () => Promise<unknown>) => f()) }))
 /** The repo's configs: a members-key anchor beside the plaintext one (members-only content is on). */
 let configs: Record<string, unknown>[] = []

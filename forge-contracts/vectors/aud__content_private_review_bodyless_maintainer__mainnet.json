@@ -1,0 +1,23 @@
+{
+  "name": "content_private_review_bodyless_maintainer__mainnet",
+  "description": "A private repo's bodyless approval is sealed too (L1): aud 1. (mainnet contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "content",
+    "type": "review",
+    "shape": {
+      "aud": true,
+      "mRole": true
+    },
+    "doc": {
+      "enc": "0100000000000000000000000000000000000000000000000000000000",
+      "asMember": true
+    },
+    "role": "maintainer"
+  },
+  "expected": {
+    "aud": 1,
+    "mRole": null
+  }
+}

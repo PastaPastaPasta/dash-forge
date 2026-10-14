@@ -65,8 +65,10 @@ vi.mock('../sdk/write', async (orig) => {
   }
 })
 vi.mock('../sdk/facade', async (orig) => ({ ...(await orig<typeof import('../sdk/facade')>()), sleep: async () => undefined }))
-// A three-contract set's repoKey has no `mr` (mainnet L4): wraps carry none.
-vi.mock('./contract-shape', () => ({ contractHasProperty: async () => false }))
+// A three-contract set's repoKey has no `mr` (mainnet L4): wraps carry none. `declared`: the
+// mainnet properties a test's contracts declare (none by default: sakura's set).
+let declared: ReadonlySet<string> = new Set()
+vi.mock('./contract-shape', () => ({ contractHasProperty: async (_s: unknown, _c: string, _t: string, p: string) => declared.has(p) }))
 
 let members: Membership[] = []
 let failAnchor = false
@@ -137,6 +139,7 @@ function wrap(owner: Uint8Array, member: Uint8Array, epoch: number, raw: Uint8Ar
 
 beforeEach(async () => {
   for (const k of Object.keys(chain)) delete chain[k]
+  declared = new Set()
   held = ops
   squatted.clear()
   sessionLoads = 0
@@ -167,6 +170,43 @@ async function open(type: 'issue' | 'patch' | 'comment' | 'review' | 'refUpdate'
 }
 const PLAINTEXT = ['title', 'body', 'baseRefName', 'sourceRefName', 'path', 'refName', 'defaultBranch', 'protectedPatterns']
 const noPlaintext = (d: Doc): string[] => PLAINTEXT.filter((f) => d[f] !== undefined)
+
+describe("D38: a private repo's new content on the mainnet contract", () => {
+  it('is sealed v0x03 (per object), stamped private with aud 1, and opens for a member; on sakura v0x01 with no aud, as before', async () => {
+    await createIssue(sdk, auth, REPO_REF, { title: 'sakura', body: '' })
+    const before = chain['issue']?.[0] as Doc
+    expect(base64ToBytes(String(before['enc']))[0]).toBe(0x01)
+    expect(before['aud']).toBeUndefined()
+    declared = new Set(['aud'])
+    await createComment(sdk, auth, REPO_REF, { targetId: String(before['$id']), body: 'per object' })
+    const doc = chain['comment']?.[0] as Doc
+    expect(base64ToBytes(String(doc['enc']))[0]).toBe(0x03)
+    expect(doc['vis']).toBe('private')
+    expect(doc['aud']).toBe(1)
+    expect(doc['asMember']).toBeDefined()
+    expect(noPlaintext(doc)).toEqual([])
+    const a = await open('comment', doc)
+    expect(a.ok && a.doc['body']).toBe('per object')
+  })
+
+  it("an author's retarget is sealed (authorEvent declares enc, M3) with its target's tAud, and its reader opens it", async () => {
+    declared = new Set(['aud', 'tAud', 'enc'])
+    await createIssue(sdk, auth, REPO_REF, { title: 'mainnet', body: '' })
+    const issue = chain['issue']?.[0] as Doc
+    expect(issue['aud']).toBe(1)
+    const { writeRepoDoc } = await import('./writes')
+    const { toLog } = await import('./issues')
+    const { decodeIdentifier } = await import('../auth/base58')
+    await writeRepoDoc(sdk, auth, REPO_REF, 'authorEvent', { targetId: decodeIdentifier(String(issue['$id'])), targetNumber: 1, kind: 8, value: 'refs/heads/release' })
+    const ev = chain['authorEvent']?.[0] as Doc
+    expect(ev['value']).toBeUndefined()
+    expect(ev['tAud']).toBe(1)
+    // D38 seals posts per object, never events: a private repo's author event stays v0x01
+    expect(base64ToBytes(String(ev['enc']))[0]).toBe(0x01)
+    const log = await toLog({ ...REPO_REF, session: await session() }, [], [ev])
+    expect(log.authorEvents.map((e) => e.value)).toEqual(['refs/heads/release'])
+  })
+})
 
 describe('sealed writes to a private repo', () => {
   it('an issue is sealed under the current epoch and opens with its text', async () => {
@@ -202,7 +242,8 @@ describe('sealed writes to a private repo', () => {
     expect(a.ok && a.doc['body']).toBe('looks off')
     await createPatch(sdk, auth, REPO_REF, { title: 'p', body: '', baseRefName: 'refs/heads/main', sourceRepoId: b58(REPO), sourceRefName: 'refs/heads/x', headOid: 'cd'.repeat(20) })
     const patchId = String(chain['patch']?.[0]?.['$id'])
-    await createReview(sdk, auth, REPO_REF, { patchId, verdict: 'approve', commitOid: 'cd'.repeat(20), body: 'ship it', post: { isMember: true } })
+    // the PR's own author: a comment (an approve of one's own PR is refused before signing)
+    await createReview(sdk, auth, REPO_REF, { patchId, verdict: 'comment', commitOid: 'cd'.repeat(20), body: 'ship it', post: { isMember: true } })
     const r = chain['review']?.[0] as Doc
     expect(noPlaintext(r)).toEqual([])
     const ar = await open('review', r)

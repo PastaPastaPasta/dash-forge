@@ -448,6 +448,9 @@ fn report_fork(
 async fn star(ctx: &Ctx, repo: &str, on: bool, trending: bool) -> Result<()> {
     let s = Session::open(ctx, repo).await?;
     let handle = &s.repo;
+    if on {
+        forge_core::collab::v2::require_public_for(handle, "starred")?;
+    }
     let collab = s.collab();
     let trending = on
         && trending
@@ -542,6 +545,9 @@ async fn star(ctx: &Ctx, repo: &str, on: bool, trending: bool) -> Result<()> {
 async fn watch(ctx: &Ctx, repo: &str, on: bool) -> Result<()> {
     // Not a write to the repo: an archived repo can be watched, as it can be starred.
     let s = Session::open(ctx, repo).await?;
+    if on {
+        forge_core::collab::v2::require_public_for(&s.repo, "watched")?;
+    }
     let verb = if on { "Watch" } else { "Stop watching" };
     let price = ctx.usd_price();
     ctx.confirm_or_cancel(&format!(

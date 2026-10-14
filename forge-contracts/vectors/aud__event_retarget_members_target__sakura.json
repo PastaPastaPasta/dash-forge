@@ -1,0 +1,22 @@
+{
+  "name": "event_retarget_members_target__sakura",
+  "description": "An author's retarget of a members-only PR: refused where authorEvent has no enc, sealed where it has. (sakura contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "event",
+    "type": "authorEvent",
+    "shape": {
+      "tAud": false,
+      "authorEnc": false
+    },
+    "target": {
+      "enc": "030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "value": true
+  },
+  "expected": {
+    "tAud": null,
+    "value": "refused"
+  }
+}

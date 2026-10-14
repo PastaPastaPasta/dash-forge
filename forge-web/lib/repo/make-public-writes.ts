@@ -14,6 +14,7 @@ import { audienceEdit, blank, makePublicChanges } from '../rules/make-public'
 import { precheckEdit, replaceDocumentIdempotent, type ReplaceResult, type WriteAuth, type WriteResult } from '../sdk'
 import { DOC, asIdentifierString, contentDocOf, type RepoRef } from './contract'
 import { longBodyField } from './long-body'
+import { AUD, declares, restateContentFields } from './mainnet-fields'
 import { childAudience, forgetStoredDoc, noteAudience, storedAudience } from './members-writes'
 import { invalidateRepoFeed } from './issues'
 import { PrivateWriteError } from './private-writes'
@@ -60,7 +61,7 @@ export async function makePostPublic(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef
   if (author !== auth.identityId) throw new MakePublicRefusedError(NOT_AUTHOR)
   if (audience === 'public') throw new MakePublicRefusedError(ALREADY_PUBLIC)
   if (stored['vis'] === 'private') throw new MakePublicRefusedError('Posts from before this repo was public can be made public by a maintainer')
-  const plan = makePublicChanges(input.type, input.opened)
+  const plan = makePublicChanges(input.type, input.opened, await makePublicKeepsFields(sdk, repo, input.type))
   if ('error' in plan) {
     throw new MakePublicRefusedError(
       plan.error === 'imported'
@@ -84,12 +85,14 @@ export async function makePostPublic(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef
     const others = plan.set['title'] === undefined ? {} : { title: plan.set['title'] }
     changes['body'] = await longBodyField(sdk, auth, repo, input.type, body, others, input.intent, 'public', { type: input.type, id: input.id })
   }
+  // `aud` dropped with `enc`, `mRole` restated (mainnet L1, L2), where the contract declares them
+  const restated = await restateContentFields(sdk, auth, repo, input.type, changes, async () => stored)
   try {
     const result = await replaceDocumentIdempotent(sdk, auth, {
       contractId: contractFor(repo, input.type),
       documentType: input.type,
       documentId: input.id,
-      changes,
+      changes: restated,
       repo: repo.repoId,
       expectRepoId: repo.repoId,
       expectedRevision: input.expectedRevision,
@@ -102,6 +105,16 @@ export async function makePostPublic(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef
   } finally {
     invalidateRepoFeed(repo, { counts: false })
   }
+}
+
+/**
+ * Whether the replace that makes a `type` post of `repo` public keeps its sealed `path` (mainnet
+ * L1, which declares `aud`, makes it settable once in it); elsewhere it is lost. A PR's branch
+ * names stay unset on every contract: a members-only branch's name is hashed under the members key,
+ * which no public reader can check a plaintext name against (forge-core `Collab::settable_once`).
+ */
+export async function makePublicKeepsFields(sdk: EvoSDK, repo: RepoRef, type: 'issue' | 'patch' | 'comment'): Promise<boolean> {
+  return type !== 'patch' && (await declares(sdk, repo, type, AUD))
 }
 
 /**

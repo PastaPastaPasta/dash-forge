@@ -29,6 +29,7 @@ import {
   type WriteAuth,
 } from '../sdk'
 import { DOC, asIdentifierString, byteFieldToHex, num, str, stringArray, withVis, type RepoRef } from './contract'
+import { withoutUndeclaredVis } from './mainnet-fields'
 
 /** The GitHub event names a relay delivers (`dg webhook add --events`). Empty means all. */
 export const WEBHOOK_EVENTS = ['push', 'issues', 'pull_request', 'issue_comment', 'pull_request_review', 'release', 'check_run'] as const
@@ -244,7 +245,8 @@ export async function writeWebhook(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, 
   await createDocumentIdempotent(sdk, auth, {
     contractId: repo.forge.community,
     documentType: DOC.webhook,
-    data: { ...plainFields(repo, input), ...sealed },
+    // `vis` only where the contract still declares it (mainnet R-11: the reference alone proves a public repo)
+    data: await withoutUndeclaredVis(sdk, repo.forge.community, DOC.webhook, { ...plainFields(repo, input), ...sealed }),
     // The secret is sealed afresh on each attempt: the content key is the plain fields.
     contentKey: `webhook:${repo.repoId}:${input.hookId}:${input.url}:${input.events.join(',')}:${input.relayIdentityId}:${input.disabled === true}`,
     ...(intent !== undefined ? { intent } : {}),

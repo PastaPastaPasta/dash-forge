@@ -1,0 +1,24 @@
+{
+  "name": "event_bundled_target_label__mainnet",
+  "description": "A label on an issue a maintainer's bundle made public: plaintext before the registration; on mainnet tAud stays 1 and tAudSealed refuses a plaintext value, so it is sealed. (mainnet contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "event",
+    "type": "event",
+    "shape": {
+      "tAud": true,
+      "authorEnc": true
+    },
+    "target": {
+      "enc": "030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "bundled": true,
+      "aud": 1
+    },
+    "value": true
+  },
+  "expected": {
+    "tAud": 1,
+    "value": "sealed"
+  }
+}

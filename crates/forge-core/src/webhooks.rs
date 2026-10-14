@@ -746,8 +746,13 @@ impl<'a> WebhookService<'a> {
     pub async fn send(&self, repo: &RepoRef, prepared: &PreparedWebhook) -> Result<String> {
         let forge = repo.forge();
         let contract = self.client.fetch_contract(&forge.community).await?;
+        let mut props = prepared.properties.clone();
+        // mainnet R-11: the reference alone proves a public repo, and a `vis` is refused
+        if !contract.has_property(DOC_WEBHOOK, crate::layout::VIS) {
+            props.remove(crate::layout::VIS);
+        }
         WriteEngine::new(self.client, self.identity, self.bridge.doc_op_key()?)?
-            .create_document(&contract, DOC_WEBHOOK, prepared.properties.clone())
+            .create_document(&contract, DOC_WEBHOOK, props)
             .await
     }
 

@@ -1,0 +1,23 @@
+{
+  "name": "event_assign_members_target__mainnet",
+  "description": "An event without a value on a members-only issue. (mainnet contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "event",
+    "type": "event",
+    "shape": {
+      "tAud": true,
+      "authorEnc": true
+    },
+    "target": {
+      "enc": "030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "aud": 1
+    },
+    "value": false
+  },
+  "expected": {
+    "tAud": 1,
+    "value": "none"
+  }
+}

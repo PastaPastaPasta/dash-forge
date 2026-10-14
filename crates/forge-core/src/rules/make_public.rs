@@ -100,7 +100,10 @@ pub struct MadePublic {
 }
 
 /// The replace that makes a sealed `kind` document public, from its opened content `opened`
-/// (DESIGN §4.6): the text as it stands now becomes the document's plaintext.
+/// (DESIGN §4.6): the text as it stands now becomes the document's plaintext. `settable_once`:
+/// the contract lets the replace that drops `aud` set `comment.path` and a PR's branch names
+/// (mainnet L1), which are otherwise lost. Clients pass it for comments only
+/// (`Collab::settable_once`): a members-only branch's name is keyed, so a PR's stay unset.
 ///
 /// # Errors
 /// [`MakePublicRefusal`]: sealed import provenance, a missing required field, or a kind that
@@ -108,6 +111,7 @@ pub struct MadePublic {
 pub fn make_public_changes(
     kind: ContentKind,
     opened: &Fields,
+    settable_once: bool,
 ) -> Result<MadePublic, MakePublicRefusal> {
     if opened.imported_author.is_some() || opened.imported_url.is_some() {
         return Err(MakePublicRefusal::Imported);
@@ -119,16 +123,20 @@ pub fn make_public_changes(
         remove: vec!["enc".to_string(), "epoch".to_string()],
         ..MadePublic::default()
     };
-    let mut lose = |field: &str, v: &Option<String>| {
-        if v.is_some() {
-            out.lost.push(field.to_string());
+    // a sealed field the public document cannot take is lost, or, where the contract makes it
+    // settable once in the replace that drops `aud` (mainnet L1, DESIGN §4.11), set
+    let keep = |out: &mut MadePublic, field: &str, v: &Option<String>| match v {
+        Some(v) if settable_once => {
+            out.set.insert(field.to_string(), v.clone());
         }
+        Some(_) => out.lost.push(field.to_string()),
+        None => {}
     };
     match kind {
         ContentKind::Issue | ContentKind::Patch => {
             if kind == ContentKind::Patch {
-                lose("baseRefName", &opened.base_ref_name);
-                lose("sourceRefName", &opened.source_ref_name);
+                keep(&mut out, "baseRefName", &opened.base_ref_name);
+                keep(&mut out, "sourceRefName", &opened.source_ref_name);
             }
             let title = title.ok_or(MakePublicRefusal::Empty)?;
             out.set.insert("title".to_string(), title);
@@ -137,7 +145,7 @@ pub fn make_public_changes(
             }
         }
         ContentKind::Comment => {
-            lose("path", &opened.path);
+            keep(&mut out, "path", &opened.path);
             out.set
                 .insert("body".to_string(), body.ok_or(MakePublicRefusal::Empty)?);
         }
@@ -318,7 +326,7 @@ mod tests {
             path: Some("src/lib.rs".into()),
             ..Fields::default()
         };
-        let got = make_public_changes(ContentKind::Comment, &opened).expect("public");
+        let got = make_public_changes(ContentKind::Comment, &opened, false).expect("public");
         assert_eq!(got.set.get("body").map(String::as_str), Some("nit"));
         assert_eq!(got.remove, ["enc", "epoch"]);
         assert_eq!(got.lost, ["path"]);
@@ -327,11 +335,11 @@ mod tests {
             ..opened
         };
         assert_eq!(
-            make_public_changes(ContentKind::Comment, &imported),
+            make_public_changes(ContentKind::Comment, &imported, false),
             Err(MakePublicRefusal::Imported)
         );
         assert_eq!(
-            make_public_changes(ContentKind::Issue, &Fields::default()),
+            make_public_changes(ContentKind::Issue, &Fields::default(), false),
             Err(MakePublicRefusal::Empty)
         );
     }

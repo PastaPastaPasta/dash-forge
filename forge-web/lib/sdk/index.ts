@@ -18,6 +18,7 @@ export {
   GATE_REFUSED_CODE,
   WHERE_MISMATCH_CODE,
   RULE_REFUSED_CODE,
+  DELETE_RULE_REFUSED_CODE,
   KEY_LIMIT_CODES,
   UnconfirmedWriteError,
   BusyWriteError,

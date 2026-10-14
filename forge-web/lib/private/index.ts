@@ -80,6 +80,7 @@ export {
   pads,
   sealDoc,
   sealMembersDoc,
+  sealPrivateV3,
   type AnchorRef,
   type IdentitySet,
   type OpenContext,

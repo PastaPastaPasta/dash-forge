@@ -1,0 +1,23 @@
+{
+  "name": "event_bundled_target_label__sakura",
+  "description": "A label on an issue a maintainer's bundle made public: plaintext before the registration; on mainnet tAud stays 1 and tAudSealed refuses a plaintext value, so it is sealed. (sakura contract)",
+  "case": "aud",
+  "rules": "v2",
+  "input": {
+    "op": "event",
+    "type": "event",
+    "shape": {
+      "tAud": false,
+      "authorEnc": false
+    },
+    "target": {
+      "enc": "030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "bundled": true
+    },
+    "value": true
+  },
+  "expected": {
+    "tAud": null,
+    "value": "plain"
+  }
+}
