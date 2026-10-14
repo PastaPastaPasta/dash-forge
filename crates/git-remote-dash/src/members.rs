@@ -723,7 +723,7 @@ pub fn ledger_unreadable() -> UserError {
     .note(NOTE_NOTHING_SIGNED)
 }
 
-fn plural<'a>(n: usize, one: &'a str, many: &'a str) -> &'a str {
+pub fn plural<'a>(n: usize, one: &'a str, many: &'a str) -> &'a str {
     if n == 1 {
         one
     } else {

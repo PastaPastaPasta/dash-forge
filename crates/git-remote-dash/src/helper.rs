@@ -1040,8 +1040,7 @@ impl Helper {
                 members::record(&members_tips, &members_packs)?;
                 for p in planned.iter().filter(|p| p.reject.is_none()) {
                     if let Audience::Narrower(token) = &p.audience {
-                        let audience = forge_core::members_git::ledger::EntryAudience::parse(token)
-                            .ok_or_else(|| anyhow!("a narrower branch's ledger token is malformed"))?;
+                        let audience = ledger_audience(token)?;
                         let packs = narrower_packs.remove(token).unwrap_or_default();
                         members::record_as(&audience, p.new_oid.as_slice(), &packs)?;
                     }
@@ -2595,15 +2594,7 @@ fn narrower_facts(
         audiences: ring
             .branches()
             .values()
-            .map(|b| {
-                (
-                    b.ledger_token(repo_id),
-                    forge_core::members_git::guard::NarrowAudience {
-                        group: b.audience.group,
-                        people: b.audience.also.iter().cloned().collect(),
-                    },
-                )
-            })
+            .map(|b| (b.ledger_token(repo_id), narrow_audience(&b.audience)))
             .collect(),
         decryptable: m
             .decryptable_narrower
@@ -2613,6 +2604,22 @@ fn narrower_facts(
     }
 }
 
+/// A narrower branch's audience as the guard compares it.
+fn narrow_audience(
+    a: &forge_core::env::Audience,
+) -> forge_core::members_git::guard::NarrowAudience {
+    forge_core::members_git::guard::NarrowAudience {
+        group: a.group,
+        people: a.also.iter().cloned().collect(),
+    }
+}
+
+/// The ledger audience of a narrower branch's token.
+fn ledger_audience(token: &str) -> Result<forge_core::members_git::ledger::EntryAudience> {
+    forge_core::members_git::ledger::EntryAudience::parse(token)
+        .ok_or_else(|| anyhow!("a narrower branch's ledger token is malformed"))
+}
+
 /// Record narrower branches' commits in the ledger under their tokens (phase 3F).
 fn record_narrower(commits: &[(String, String)]) -> Result<()> {
     let mut by_token: BTreeMap<&str, Vec<String>> = BTreeMap::new();
@@ -2620,9 +2627,7 @@ fn record_narrower(commits: &[(String, String)]) -> Result<()> {
         by_token.entry(token).or_default().push(oid.clone());
     }
     for (token, oids) in by_token {
-        let audience = forge_core::members_git::ledger::EntryAudience::parse(token)
-            .ok_or_else(|| anyhow!("a narrower branch's ledger token is malformed"))?;
-        members::record_as(&audience, &oids, &[])?;
+        members::record_as(&ledger_audience(token)?, &oids, &[])?;
     }
     Ok(())
 }
@@ -2669,29 +2674,7 @@ async fn prepare_narrower(
         let audience = forge_core::narrow::with_me(&nb.audience, &me, owner, members);
         let people = forge_core::narrow::resolve_now(&audience, owner, members);
         let held = view.ring.as_ref().and_then(|r| r.get(dst));
-        let written = match forge_core::narrow::with_keys(svc, repo, &people).await {
-            Ok((with, _)) => match (&nb.key, held) {
-                (Some(key), _) => {
-                    forge_core::narrow::write_letter(svc, repo, dst, vec![key.clone()], audience.clone(), &with)
-                        .await
-                        .map(Some)
-                }
-                // a branch made again under its old key: re-letter it for the audience asked
-                // for now (a new key when anyone who held it is no longer in it)
-                (None, Some(b)) if b.audience == audience => {
-                    forge_core::narrow::reletter(svc, repo, b, &audience, &with).await
-                }
-                (None, Some(b)) => match forge_core::narrow::reletter(svc, repo, b, &audience, &with).await {
-                    Ok(None) => forge_core::narrow::write_letter(svc, repo, dst, b.keys().to_vec(), audience.clone(), &with)
-                        .await
-                        .map(Some),
-                    other => other,
-                },
-                (None, None) => Ok(None),
-            },
-            Err(e) => Err(e),
-        };
-        match written {
+        match first_letter(svc, repo, dst, nb, held, &audience, &people).await {
             Ok(Some(w)) => {
                 wrote = true;
                 expect.insert(dst.clone(), w.top_kcv);
@@ -2700,9 +2683,7 @@ async fn prepare_narrower(
             Ok(None) => {}
             Err(e) => {
                 eprintln!("dash: error: {} couldn't be started for {}: {}", members::short(dst), forge_core::narrow::label(&audience), brief(&format!("{e:#}")));
-                if let Some(p) = planned.iter_mut().find(|p| &p.spec.dst == dst) {
-                    p.reject = Some("its key couldn't be sent".into());
-                }
+                reject_ref(planned, dst, "its key couldn't be sent");
             }
         }
     }
@@ -2717,9 +2698,7 @@ async fn prepare_narrower(
             let people = forge_core::narrow::resolve_now(&b.audience, owner, members);
             if !people.contains(&me) {
                 eprintln!("dash: error: you are no longer one of the people {} is for", members::short(&dst));
-                if let Some(p) = planned.iter_mut().find(|p| p.spec.dst == dst) {
-                    p.reject = Some("not one of the people this branch is for".into());
-                }
+                reject_ref(planned, &dst, "not one of the people this branch is for");
                 continue;
             }
             let done = match forge_core::narrow::with_keys(svc, repo, &people).await {
@@ -2749,9 +2728,20 @@ async fn prepare_narrower(
         }
     };
     kr.set_branch_ring(std::sync::Arc::clone(&ring));
-    // what readers keep must be what was just sent: a new branch's chain starts with our key, and
-    // every branch written to is on the generation its letter carried (a letter that does not
-    // count, or a chain someone else started, refuses the ref instead of sealing under it)
+    refuse_unsettled(planned, &ring, new_branches, &expect);
+    Some(ring)
+}
+
+/// Refuse the narrower refs whose key is not what was just sent, once the letters are read back:
+/// a new branch's chain starts with our key, and every branch written to is on the generation its
+/// letter carried (a letter that does not count, or a chain someone else started, refuses the ref
+/// instead of sealing under it).
+fn refuse_unsettled(
+    planned: &mut [Planned],
+    ring: &forge_core::private::branch_key::BranchRing,
+    new_branches: &BTreeMap<String, NewBranch>,
+    expect: &BTreeMap<String, [u8; 4]>,
+) {
     for p in planned.iter_mut().filter(|p| p.reject.is_none() && p.narrower()) {
         let dst = p.spec.dst.clone();
         let started_by_us = match new_branches.get(&dst).and_then(|nb| nb.key.as_ref()) {
@@ -2770,7 +2760,47 @@ async fn prepare_narrower(
             p.reject = Some("its key isn't settled yet".into());
         }
     }
-    Some(ring)
+}
+
+/// Refuse the planned ref `dst`, if any.
+fn reject_ref(planned: &mut [Planned], dst: &str, why: &str) {
+    if let Some(p) = planned.iter_mut().find(|p| p.spec.dst == dst) {
+        p.reject = Some(why.to_owned());
+    }
+}
+
+/// The letter that starts a narrower branch of this push, to `people` with an encryption key; for
+/// a branch made again under its old key (`held`), a re-lettering for the audience asked for now.
+/// `Ok(None)`: nothing to send.
+async fn first_letter(
+    svc: &RepoService<'_>,
+    repo: &RepoRef,
+    dst: &str,
+    nb: &NewBranch,
+    held: Option<&forge_core::private::branch_key::Branch>,
+    audience: &forge_core::env::Audience,
+    people: &BTreeSet<String>,
+) -> forge_core::Result<Option<forge_core::narrow::Written>> {
+    let (with, _) = forge_core::narrow::with_keys(svc, repo, people).await?;
+    match (&nb.key, held) {
+        (Some(key), _) => {
+            forge_core::narrow::write_letter(svc, repo, dst, vec![key.clone()], audience.clone(), &with)
+                .await
+                .map(Some)
+        }
+        // re-letter it for the audience asked for now (a new key when anyone who held it is no
+        // longer in it)
+        (None, Some(b)) if b.audience == *audience => {
+            forge_core::narrow::reletter(svc, repo, b, audience, &with).await
+        }
+        (None, Some(b)) => match forge_core::narrow::reletter(svc, repo, b, audience, &with).await {
+            Ok(None) => forge_core::narrow::write_letter(svc, repo, dst, b.keys().to_vec(), audience.clone(), &with)
+                .await
+                .map(Some),
+            other => other,
+        },
+        (None, None) => Ok(None),
+    }
 }
 
 /// One line per letter a push sent (phase 3F): who the branch is for and how many got its key.
@@ -2780,7 +2810,7 @@ fn say_letter(dst: &str, audience: &forge_core::env::Audience, w: &forge_core::n
         "dash: {} is for {}: its key went to {n} {} (generation {})",
         members::short(dst),
         forge_core::narrow::label(audience),
-        if n == 1 { "person" } else { "people" },
+        members::plural(n, "person", "people"),
         w.gen
     );
     for s in &w.skipped {
@@ -3153,13 +3183,9 @@ fn guard_push(
             .find(|p| &p.spec.dst == dst)
             .map(|p| &p.audience)
         {
-            narrower.audiences.insert(
-                token.clone(),
-                forge_core::members_git::guard::NarrowAudience {
-                    group: nb.audience.group,
-                    people: nb.audience.also.iter().cloned().collect(),
-                },
-            );
+            narrower
+                .audiences
+                .insert(token.clone(), narrow_audience(&nb.audience));
         }
     }
     let outcome = members::run_guard(
@@ -3395,10 +3421,6 @@ fn members_pack_estimate(
     })
 }
 
-/// The members-only pack `plain` sealed under `lane`'s write epoch, kept beside a private push's
-/// sealed packs (`.git/dash/sealed/<repo>-members-<sha256>.pack`) so an interrupted push stores the
-/// same bytes again (the same hash: found recorded, not paid twice), reused only while it opens
-/// under the current write epoch and hashes back to `plain`.
 /// The key a sealed branch's pack is encrypted under: the members key's write epoch, or a narrower
 /// branch's current generation (DFPK 0x03, phase 3F). `None` inside: the key is not available.
 #[derive(Clone, Copy)]
@@ -3407,6 +3429,11 @@ enum PackSealer<'a> {
     Branch(Option<&'a forge_core::private::branch_key::BranchKeys>),
 }
 
+/// The members-only pack `plain` sealed under `sealer`, kept beside a private push's sealed packs
+/// (`.git/dash/sealed/<repo>-members-<sha256>.pack`, or `-branch-<kcv>-` for a narrower branch) so
+/// an interrupted push stores the same bytes again (the same hash: found recorded, not paid
+/// twice), reused only while it opens under the current write epoch or generation and hashes back
+/// to `plain`.
 fn seal_members_pack(
     ctx: &PushContext<'_>,
     sealer: PackSealer<'_>,

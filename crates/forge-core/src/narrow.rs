@@ -208,6 +208,18 @@ pub struct Recipients {
     pub skipped: Vec<String>,
 }
 
+/// The public keys of identity `id`; none for an identity Platform does not have.
+async fn public_keys_of(
+    client: &platform::PlatformClient,
+    id: &str,
+) -> Result<Vec<platform::IdentityKeyInfo>> {
+    match client.fetch_identity(id).await {
+        Ok(identity) => Ok(identity.public_keys()),
+        Err(Error::NotFound) => Ok(Vec::new()),
+        Err(e) => Err(e),
+    }
+}
+
 async fn recipients(
     svc: &RepoService<'_>,
     repo: &RepoRef,
@@ -224,11 +236,7 @@ async fn recipients(
     let mut skipped = Vec::new();
     let core = repo.forge().core.clone();
     for other in people.iter().filter(|p| **p != me) {
-        let keys = match signer.client.fetch_identity(other).await {
-            Ok(identity) => identity.public_keys(),
-            Err(Error::NotFound) => Vec::new(),
-            Err(e) => return Err(e),
-        };
+        let keys = public_keys_of(signer.client, other).await?;
         match crate::keyring::recipient_key(&keys, &core)
             .and_then(|k| <[u8; 33]>::try_from(k.public_key.as_slice()).ok())
         {
@@ -397,18 +405,9 @@ pub async fn reletter(
     audience: &Audience,
     now: &BTreeSet<String>,
 ) -> Result<Option<Written>> {
-    match plan(branch, now) {
-        Reletter::Nothing => Ok(None),
-        Reletter::Joiners(_) => write_letter(
-            svc,
-            repo,
-            &branch.name,
-            branch.keys().to_vec(),
-            audience.clone(),
-            now,
-        )
-        .await
-        .map(Some),
+    let keys = match plan(branch, now) {
+        Reletter::Nothing => return Ok(None),
+        Reletter::Joiners(_) => branch.keys().to_vec(),
         Reletter::NewGeneration(_) => {
             let mut keys = branch.keys().to_vec();
             if keys.len() >= branch_key::MAX_GENERATIONS {
@@ -425,11 +424,12 @@ pub async fn reletter(
                 .into());
             }
             keys.push(BranchKey::generate().map_err(|e| Error::Config(e.to_string()))?);
-            write_letter(svc, repo, &branch.name, keys, audience.clone(), now)
-                .await
-                .map(Some)
+            keys
         }
-    }
+    };
+    write_letter(svc, repo, &branch.name, keys, audience.clone(), now)
+        .await
+        .map(Some)
 }
 
 /// Who of `people` can be sent a letter now (a usable encryption key), and who cannot.
@@ -443,11 +443,7 @@ pub async fn with_keys(
     let mut ok = BTreeSet::new();
     let mut skipped = Vec::new();
     for p in people {
-        let keys = match client.fetch_identity(p).await {
-            Ok(identity) => identity.public_keys(),
-            Err(Error::NotFound) => Vec::new(),
-            Err(e) => return Err(e),
-        };
+        let keys = public_keys_of(client, p).await?;
         if crate::keyring::recipient_key(&keys, &core).is_some() {
             ok.insert(p.clone());
         } else {

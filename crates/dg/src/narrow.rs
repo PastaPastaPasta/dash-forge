@@ -9,6 +9,7 @@
 //! person to push them.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use anyhow::Result;
 use serde_json::{json, Value};
@@ -21,7 +22,7 @@ use forge_core::repo::RepoService;
 use forge_core::rules::v2::Visibility;
 
 use crate::common::Session;
-use crate::fmt::{cost_line, safe};
+use crate::fmt::{cost_line, plural_with, safe};
 
 /// The cost a letter is quoted at: one Platform chunk of a 64-recipient letter and its manifest.
 fn letter_credits(people: usize) -> u64 {
@@ -47,7 +48,7 @@ pub struct Item {
 /// The narrower branches a role change re-letters.
 #[derive(Default)]
 pub struct Plan {
-    ring: Option<std::sync::Arc<BranchRing>>,
+    ring: Option<Arc<BranchRing>>,
     /// The branches whose letters change.
     pub items: Vec<Item>,
     /// Narrower branches the signer cannot open (it does not hold their keys): their next pusher
@@ -65,9 +66,9 @@ pub async fn prepare(s: &Session, after: &[Member]) -> Result<Plan> {
         return Ok(Plan::default());
     }
     let svc = RepoService::new(&s.client, &s.identity, &s.bridge);
-    let ring = std::sync::Arc::new(narrow::read_ring(&svc, &s.repo, after).await?);
+    let ring = Arc::new(narrow::read_ring(&svc, &s.repo, after).await?);
     // the member fold opens the branches held, and counts the others
-    svc.keyring(&s.repo).await?.set_branch_ring(std::sync::Arc::clone(&ring));
+    svc.keyring(&s.repo).await?.set_branch_ring(Arc::clone(&ring));
     let not_held = match svc.read_members_refs(&s.repo).await {
         Ok(Some(m)) => m.updates.unreadable_narrower.len(),
         _ => 0,
@@ -113,7 +114,7 @@ impl Plan {
             match &i.action {
                 Reletter::Joiners(j) => eprintln!(
                     "  {name} ({label} only): send its key to {}",
-                    j.iter().cloned().collect::<Vec<_>>().join(", ")
+                    comma_list(j)
                 ),
                 Reletter::NewGeneration(_) => eprintln!(
                     "  {name} ({label} only): a new key for the {} people it is for now",
@@ -128,11 +129,7 @@ impl Plan {
         if self.not_held > 0 {
             eprintln!(
                 "  {} you don't have access to: whoever pushes {} next updates who can read {}",
-                if self.not_held == 1 {
-                    "1 branch".to_owned()
-                } else {
-                    format!("{} branches", self.not_held)
-                },
+                plural_with(self.not_held, "branch", "branches"),
                 if self.not_held == 1 { "it" } else { "each" },
                 if self.not_held == 1 { "it" } else { "them" }
             );
@@ -142,11 +139,7 @@ impl Plan {
         }
         format!(
             " Then {} for fewer people {} its key again ({}).",
-            if self.items.len() == 1 {
-                "1 members-only branch".to_owned()
-            } else {
-                format!("{} members-only branches", self.items.len())
-            },
+            plural_with(self.items.len(), "members-only branch", "members-only branches"),
             if self.items.len() == 1 { "gets" } else { "get" },
             cost_line(self.credits(), price)
         )
@@ -170,11 +163,10 @@ impl Plan {
             match narrow::reletter(&svc, &s.repo, b, &i.audience, &i.now).await {
                 Ok(Some(w)) => {
                     text.push_str(&format!(
-                        "\n  {} ({} only): its key went to {} {}",
+                        "\n  {} ({} only): its key went to {}",
                         safe(&name),
                         narrow::label(&i.audience),
-                        w.to.len(),
-                        if w.to.len() == 1 { "person" } else { "people" }
+                        people_count(w.to.len())
                     ));
                     out.push(json!({ "branch": name, "status": "sent", "to": w.to }));
                 }
@@ -193,7 +185,7 @@ impl Plan {
 }
 
 /// The branch `name` among the signer's narrower branches, with the ring it came from.
-pub async fn held(s: &Session, name: &str) -> Result<Option<(std::sync::Arc<BranchRing>, Branch)>> {
+pub async fn held(s: &Session, name: &str) -> Result<Option<(Arc<BranchRing>, Branch)>> {
     if s.repo.visibility != Visibility::Public {
         return Ok(None);
     }
@@ -201,7 +193,7 @@ pub async fn held(s: &Session, name: &str) -> Result<Option<(std::sync::Arc<Bran
     let members = forge_core::members::MemberReader::new(&s.client)
         .list(&s.repo)
         .await?;
-    let ring = std::sync::Arc::new(narrow::read_ring(&svc, &s.repo, &members).await?);
+    let ring = Arc::new(narrow::read_ring(&svc, &s.repo, &members).await?);
     let b = ring.get(name).cloned();
     Ok(b.map(|b| (ring, b)))
 }
@@ -218,8 +210,14 @@ pub fn describe(b: &Branch, people: &BTreeSet<String>) -> Value {
     })
 }
 
-/// The people of `audience` now, by name.
+/// "1 person" / "3 people".
 #[must_use]
-pub fn people_of(audience: &Audience, owner: &str, members: &[Member]) -> BTreeSet<String> {
-    narrow::resolve_now(audience, owner, members)
+pub fn people_count(n: usize) -> String {
+    plural_with(n, "person", "people")
+}
+
+/// `a, b, c`.
+#[must_use]
+pub fn comma_list(xs: &BTreeSet<String>) -> String {
+    xs.iter().cloned().collect::<Vec<_>>().join(", ")
 }

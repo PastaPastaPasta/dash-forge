@@ -16,6 +16,7 @@
 //!   mapping in `<git common dir>/dash/published`).
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
 use serde_json::json;
@@ -126,6 +127,7 @@ struct Row {
     narrower: Option<(String, usize)>,
 }
 
+#[allow(clippy::too_many_lines)] // read, build the rows, then print them
 async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
     let s = Reader::open_discussion(ctx, repo).await?;
     let svc = s.service();
@@ -232,8 +234,8 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
                     };
                     let who = r.narrower.as_ref().map_or(String::new(), |(label, n)| {
                         format!(
-                            "  {label} only · visible to {n} {}",
-                            if *n == 1 { "person" } else { "people" }
+                            "  {label} only · visible to {}",
+                            crate::narrow::people_count(*n)
                         )
                     });
                     println!(
@@ -336,7 +338,7 @@ async fn branch_ring(
     svc: &forge_core::repo::RepoService<'_>,
     repo: &forge_core::scope::RepoRef,
 ) -> Option<(
-    std::sync::Arc<forge_core::private::branch_key::BranchRing>,
+    Arc<forge_core::private::branch_key::BranchRing>,
     Vec<forge_core::members::Member>,
 )> {
     let kr = svc.keyring(repo).await.ok()?;
@@ -344,12 +346,12 @@ async fn branch_ring(
         return None;
     }
     let members = kr.members().to_vec();
-    let ring = std::sync::Arc::new(
+    let ring = Arc::new(
         forge_core::narrow::read_ring(svc, repo, &members)
             .await
             .ok()?,
     );
-    kr.set_branch_ring(std::sync::Arc::clone(&ring));
+    kr.set_branch_ring(Arc::clone(&ring));
     Some((ring, members))
 }
 
@@ -452,14 +454,6 @@ fn set_narrower(cwd: &Path, b: &str, audience: &forge_core::env::Audience) -> Re
     Ok(())
 }
 
-fn people_word(n: usize) -> &'static str {
-    if n == 1 {
-        "person"
-    } else {
-        "people"
-    }
-}
-
 /// `dg branch audience <b> [--to …]`: who a branch for fewer people is for; with `--to`, change
 /// it. Someone added gets its key now; someone taken off means a new key for everyone left (the
 /// next push uses it). A branch not pushed yet only changes this clone's setting.
@@ -486,16 +480,15 @@ async fn audience_cmd(ctx: &Ctx, name: &str, to: Option<&str>, repo: Option<&str
         let Some((_, b)) = held else {
             return Err(no_access(&short_name).into());
         };
-        let people = crate::narrow::people_of(&b.audience, &owner, &members);
+        let people = forge_core::narrow::resolve_now(&b.audience, &owner, &members);
         let label = forge_core::narrow::label(&b.audience);
         let mut out = crate::narrow::describe(&b, &people);
         out["branch"] = json!(short_name);
         ctx.emit(out, || {
             println!(
-                "{} is for {label} · visible to {} {}",
+                "{} is for {label} · visible to {}",
                 safe(&short_name),
-                people.len(),
-                people_word(people.len())
+                crate::narrow::people_count(people.len())
             );
             for p in &people {
                 println!("  {p}");
@@ -534,19 +527,17 @@ async fn audience_cmd(ctx: &Ctx, name: &str, to: Option<&str>, repo: Option<&str
     let (now, no_key) = forge_core::narrow::with_keys(&svc, &s.repo, &people).await?;
     let action = forge_core::narrow::plan(&b, &now);
     let label = forge_core::narrow::label(&audience);
-    let list = |xs: &std::collections::BTreeSet<String>| xs.iter().cloned().collect::<Vec<_>>().join(", ");
     let question = match &action {
         Reletter::NewGeneration(left) => format!(
-            "Make {} for {label}? {} won't see anything pushed to it from now on (they keep what they could read). A new key goes to {} {}.",
+            "Make {} for {label}? {} won't see anything pushed to it from now on (they keep what they could read). A new key goes to {}.",
             safe(&short_name),
-            list(left),
-            now.len(),
-            people_word(now.len())
+            crate::narrow::comma_list(left),
+            crate::narrow::people_count(now.len())
         ),
         Reletter::Joiners(j) => format!(
             "Make {} for {label}? {} will see its whole history.",
             safe(&short_name),
-            list(j)
+            crate::narrow::comma_list(j)
         ),
         Reletter::Nothing => format!(
             "Make {} for {label}? Nobody gains or loses access.",
@@ -601,10 +592,9 @@ async fn audience_cmd(ctx: &Ctx, name: &str, to: Option<&str>, repo: Option<&str
         }),
         || {
             println!(
-                "{} is for {label} · its key went to {} {} · {}",
+                "{} is for {label} · its key went to {} · {}",
                 safe(&short_name),
-                written.to.len(),
-                people_word(written.to.len()),
+                crate::narrow::people_count(written.to.len()),
                 crate::fmt::cost_line(spent, price)
             );
         },

@@ -603,6 +603,7 @@ fn is_members_only_ref(d: &FetchedDocument) -> bool {
 /// alone resolve to a live branch over `configs` keeps them only, and its members-only updates
 /// are left out with an alert, so a member cannot seal an update that moves `main` for members
 /// only. The public reader ([`GitState::ref_histories`]) folds the plaintext updates alone.
+#[allow(clippy::too_many_lines)] // one pass over the documents, then one over the names
 pub fn members_updates_of(
     state: &GitState,
     configs: &[ConfigDoc],
