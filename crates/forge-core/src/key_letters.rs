@@ -82,6 +82,10 @@ pub async fn received(
         .buffer_unordered(FETCH_WINDOW)
         .collect()
         .await;
+    let r = Reader {
+        identity_id: reader.identity_id,
+        keys: reader.keys,
+    };
     let mut owner_keys: BTreeMap<String, Vec<OwnerKey>> = BTreeMap::new();
     let mut out = Inbox::default();
     for (m, bytes) in fetched {
@@ -106,10 +110,6 @@ pub async fn received(
         let check = ManifestCheck {
             pack_hash: &m.pack_hash,
             size_bytes: m.size_bytes,
-        };
-        let r = Reader {
-            identity_id: reader.identity_id,
-            keys: reader.keys,
         };
         match key_letter::open(&repo_id, &check, &sealed, &owner_keys[&m.owner_id], &r) {
             Ok(o) => out.letters.push(Received {

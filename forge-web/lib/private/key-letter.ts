@@ -21,7 +21,7 @@
 
 import { isGitRefName } from '../rules/oid'
 import { blind as blindOf, isNull, isOidWidth } from './blind'
-import { bytes, bytesToHex, constantTimeEqual, sha256, utf8, type Bytes } from './bytes'
+import { bytes, bytesToHex, constantTimeEqual, hexToBytes, sha256, utf8, type Bytes } from './bytes'
 import { compareBytes } from './ids'
 import { ArtifactError, openLetterArtifact, sealLetterArtifact, type LetterReader, type LetterRecipient, type OwnerKey } from './named'
 
@@ -208,9 +208,7 @@ const LOWER_HEX = /^(?:[0-9a-f]{2})*$/
 
 function hexExact(v: JsonValue | undefined, n: number): Bytes | null {
   if (typeof v !== 'string' || v.length !== 2 * n || !LOWER_HEX.test(v)) return null
-  const out = new Uint8Array(n)
-  for (let i = 0; i < n; i++) out[i] = parseInt(v.slice(2 * i, 2 * i + 2), 16)
-  return out
+  return hexToBytes(v)
 }
 
 /** A ref git could create (forge-core `is_git_ref_name`) under `refs/heads/`, not `refs/heads/HEAD`, no control character. */

@@ -495,13 +495,12 @@ impl Helper {
         }
         // the pre-push hook and the guard tell what this clone holds from the public history
         members::remember_public_tips(&live_tips(&public));
-        let mut keys_by_pack = BTreeMap::new();
-        for b in &shared {
-            keys_by_pack.extend(b.packs.iter().map(|(h, k)| (*h, k.clone())));
-        }
         self.shared_fetch = Some(SharedFetch {
             heads: shared.iter().map(|b| b.head.clone()).collect(),
-            keys: keys_by_pack,
+            keys: shared
+                .iter()
+                .flat_map(|b| b.packs.iter().map(|(h, k)| (*h, k.clone())))
+                .collect(),
         });
         // the shared packs come first, so a shared branch whose commits do not arrive is left out
         // with a warning rather than failing the fetch with "bad object"
@@ -1547,6 +1546,31 @@ fn claims_for(
     }
 }
 
+/// A members-only pack `h` (hex `hash`) opened with the file key it was shared with: its bytes,
+/// or, when the key does not open it, the pack set aside as without a key.
+fn open_shared_pack(
+    sealed: &[u8],
+    size_bytes: u64,
+    key: &[u8; 32],
+    h: &[u8; 32],
+    hash: &str,
+) -> forge_core::repo::ArtifactRead {
+    match forge_core::private::pack::open_with_file_key(sealed, size_bytes, key) {
+        Ok(b) => forge_core::repo::ArtifactRead::Bytes(b),
+        Err(e) => {
+            tracing::warn!(pack = %hash, error = %e, "a shared pack did not open with the key it was shared with");
+            let epoch = match forge_core::private::sniff(sealed) {
+                forge_core::private::Head::Sealed { epoch } => epoch,
+                _ => 0,
+            };
+            forge_core::repo::ArtifactRead::Skipped(forge_core::repo::Skipped {
+                pack: *h,
+                why: forge_core::private::convert::SkipReason::NoKey { epoch },
+            })
+        }
+    }
+}
+
 /// One pack of a fetch ([`Helper::fetch_packs`]): the bytes of the first of its `copies` that
 /// verifies (opened, when sealed), or why it was set aside. `converted`: the facts of a
 /// repository made public and the keys this reader holds for it, which can skip a sealed pack
@@ -1607,23 +1631,7 @@ async fn fetch_one(
                 }
                 // a shared pack opens with its own file key alone; a key that does not open it
                 // (a bad share) sets the pack aside, and the branch is left out with a warning
-                (None, Some(key)) => Ok(
-                    match forge_core::private::pack::open_with_file_key(&sealed, m.size_bytes, key)
-                    {
-                        Ok(b) => forge_core::repo::ArtifactRead::Bytes(b),
-                        Err(e) => {
-                            tracing::warn!(pack = %hash, error = %e, "a shared pack did not open with the key it was shared with");
-                            let epoch = match forge_core::private::sniff(&sealed) {
-                                forge_core::private::Head::Sealed { epoch } => epoch,
-                                _ => 0,
-                            };
-                            forge_core::repo::ArtifactRead::Skipped(forge_core::repo::Skipped {
-                                pack: *h,
-                                why: forge_core::private::convert::SkipReason::NoKey { epoch },
-                            })
-                        }
-                    },
-                ),
+                (None, Some(key)) => Ok(open_shared_pack(&sealed, m.size_bytes, key, h, &hash)),
                 (None, None) => svc.open_or_skip(repo, copies, m.size_bytes, sealed).await,
             };
             match opened {

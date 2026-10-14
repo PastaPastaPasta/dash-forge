@@ -238,11 +238,6 @@ impl TypedLetter {
         let again = letter.encode().ok()?;
         (again.as_slice() == pt).then_some(letter)
     }
-
-    /// Field `name` as a string.
-    fn str(&self, name: &str) -> Option<&str> {
-        self.fields.get(name)?.as_str()
-    }
 }
 
 /// Lowercase hex of exactly `n` bytes, or `None`.
@@ -423,7 +418,7 @@ impl BranchLetter {
             })
             .collect::<Option<Vec<_>>>()?;
         let letter = Self {
-            name: t.str("name")?.to_owned(),
+            name: t.fields.get("name")?.as_str()?.to_owned(),
             ref_name_hash: hex32(t.fields.get("refNameHash")?)?,
             head,
             packs,
