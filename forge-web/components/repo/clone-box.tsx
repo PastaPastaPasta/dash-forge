@@ -80,7 +80,8 @@ export function CloneBox({ home, addr, selected }: { home: RepoHome; addr: RepoA
 
 /** The refs this page proved, as {@link verifyGateway} compares them. */
 export function provedRefs(home: RepoHome): ProvedRef[] {
-  return [...home.branches, ...home.tags].flatMap((r) => {
+  // A mirror serves the public lane only: a member's members-only refs are no omission of its.
+  return [...home.branches, ...home.tags].filter((r) => r.audience === undefined).flatMap((r) => {
     const oid = tipOidOf(r)
     if (oid === null) return []
     const s = r.state
@@ -195,7 +196,8 @@ function archiveRefs(home: RepoHome): ArchiveRefs {
       const oid = tipOidOf(r)
       return oid === null ? [] : [{ name: r.refName.replace(prefix, ''), oid }]
     })
-  return { tags: named(home.tags, 'refs/tags/'), heads: named(home.branches, 'refs/heads/') }
+  const pub = (refs: RepoHome['tags']) => refs.filter((r) => r.audience === undefined)
+  return { tags: named(pub(home.tags), 'refs/tags/'), heads: named(pub(home.branches), 'refs/heads/') }
 }
 
 function ZipDownload({ home, addr, selected }: { home: RepoHome; addr: RepoAddress; selected: SelectedRef }): JSX.Element | null {

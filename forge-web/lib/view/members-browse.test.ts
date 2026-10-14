@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest'
 import { BrowseReader, FragmentedIndex, ObjectLocator, gitOidHex, type GitObject } from '../browse'
 import { indexPacks, memoryPackSource, serializeLocator } from '../browse/indexer'
 import { T_BLOB, T_REF_DELTA, concat, copyInsertDelta, hexToBytes, objHeader, packFrame } from '../browse/pack-fixtures'
+import { aliasedReader } from './blind-reader'
 import { MembersIndex, membersPackSource, type MembersPacks } from './members-browse'
 
 const text = (s: string) => new TextEncoder().encode(s)
@@ -69,16 +70,18 @@ describe('a thin members-only pack over the public context', () => {
   })
 })
 
-describe('the reader alias', () => {
-  it('reads the commit a blind hides only when the alias names it', async () => {
+describe('a members-only PR\'s blinds', () => {
+  it('read as the real commits this PR verified, and nothing else', async () => {
     const blob = text('members-only file\n')
     const pack = packFrame(concat(objHeader(T_BLOB, blob.length), zlibSync(blob)))
     const locator = ObjectLocator.parse(serializeLocator(await indexPacks([pack])))
     const real = gitOidHex('blob', blob)
     const blind = 'ab'.repeat(20)
     const plain = new BrowseReader(locator, memoryPackSource([pack]))
+    // a plain reader never takes a blind for the commit it hides
     await expect(plain.readObject(blind)).rejects.toThrow()
-    const aliased = new BrowseReader(locator, memoryPackSource([pack]), { alias: (oid) => (oid === blind ? real : undefined) })
+    const aliased = aliasedReader(plain, new Map([[blind, real]]))
     expect(Array.from((await aliased.readObject(blind)).bytes)).toEqual(Array.from(blob))
+    await expect(aliasedReader(plain, new Map()).readObject(blind)).rejects.toThrow()
   })
 })

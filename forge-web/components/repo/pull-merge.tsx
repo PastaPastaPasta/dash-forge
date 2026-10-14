@@ -14,6 +14,7 @@ import type { SquashAuthors } from '@/lib/merge/engine'
 import { MergePanel, type CloseIssuesOption, type DeleteBranchOption, type PublishContext } from '@/components/repo/merge-panel'
 import { useBrowseReader } from '@/hooks/use-browse-reader'
 import { isListedMembersRef } from '@/lib/repo/members-branches'
+import { membersLane } from '@/lib/repo'
 import { pullBase, useComparisonSides } from '@/components/repo/pull-diff'
 
 /**
@@ -65,7 +66,14 @@ export function PullMerge({
   if (!shown) return null
   // A members-only base is merged with git: the web writes no members-only ref (DESIGN §4.3).
   const { baseRefName } = pullBase(pull, home)
-  if (repo.visibility === 'public' && isListedMembersRef(repo.repoId, baseRefName)) {
+  if (extras.publishBlocked === true) {
+    return (
+      <p className="rounded-lg border border-anvil-200 p-4 text-dense text-anvil-700 dark:border-anvil-800 dark:text-anvil-200" data-testid="merge-publish-blocked">
+        This pull request comes from a members-only branch whose newest push couldn&apos;t be read here. Reload the page, or publish it with <span className="font-mono">dg publish</span>.
+      </p>
+    )
+  }
+  if (pull.membersPatch?.basePublic === false || (repo.visibility === 'public' && isListedMembersRef(repo.repoId, baseRefName))) {
     return (
       <p className="rounded-lg border border-anvil-200 p-4 text-dense text-anvil-700 dark:border-anvil-800 dark:text-anvil-200" data-testid="merge-members-base">
         This pull request goes into a members-only branch. Merge it with git or <span className="font-mono">dg pr merge</span>: the web changes public branches only.
@@ -97,8 +105,10 @@ export interface MergeExtras {
   readonly onBranchDeleted?: () => void
   /** The record box shown above the merge box (Q5-A09): the up-to-date hint points to it. */
   readonly recordAbove?: { readonly kind: 'record' | 'command'; readonly oid: string } | null
-  /** A members-only branch's PR into a public base: publish it ({@link PublishContext}, without the public reader, read here). */
-  readonly publish?: Omit<PublishContext, 'publicReader'>
+  /** A members-only branch's PR into a public base: publish it ({@link PublishContext}). */
+  readonly publish?: PublishContext
+  /** A members-only branch's PR whose real head this page could not read: a note, never a merge. */
+  readonly publishBlocked?: true
 }
 
 function MergeReaders({
@@ -121,10 +131,11 @@ function MergeReaders({
   extras: MergeExtras
 }): JSX.Element | null {
   const { sides, baseOnly, sidesKey } = useComparisonSides(repo, pull.sourceId)
-  // Publishing: what the public reads (no members key), which the pack must complete.
-  const publicRepo = useMemo(() => (extras.publish === undefined ? null : { ...repo, lane: undefined }), [repo, extras.publish])
+  // A member's merge into a public base: what the public reads (no members key), which the pack
+  // must complete, whether it publishes a members-only branch or not.
+  const publicRepo = useMemo(() => (membersLane(repo) === undefined ? null : { ...repo, lane: undefined }), [repo])
   const publicState = useBrowseReader(publicRepo)
-  const publicReader = publicState.kind === 'ready' ? publicState.reader : null
+  const publicReader = publicRepo === null ? undefined : publicState.kind === 'ready' ? publicState.reader : null
   // Build only on the base as it stands now, and only on a base the PR could merge into (D-501);
   // `pullBase` falls back to the PR's historical tip, which is right for the diff only.
   const { baseRefName } = pullBase(pull, home)
@@ -155,7 +166,8 @@ function MergeReaders({
       {...(extras.checkSourceBranch !== undefined ? { checkSourceBranch: extras.checkSourceBranch } : {})}
       {...(extras.onBranchDeleted !== undefined ? { onBranchDeleted: extras.onBranchDeleted } : {})}
       {...(extras.recordAbove !== undefined ? { recordAbove: extras.recordAbove } : {})}
-      {...(extras.publish !== undefined ? { publish: { ...extras.publish, publicReader } } : {})}
+      {...(extras.publish !== undefined ? { publish: extras.publish } : {})}
+      {...(publicReader !== undefined ? { publicReader } : {})}
     />
   )
 }

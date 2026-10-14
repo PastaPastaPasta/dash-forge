@@ -29,7 +29,7 @@ function defaultHead(home: RepoHome): { branch: string; oid: string } | null {
 
 /** When a ref last moved: the newest signed ref update. */
 function lastUpdated(home: RepoHome): number {
-  return [...home.branches, ...home.tags].reduce((newest, r) => {
+  return [...home.branches, ...home.tags].filter((r) => r.audience === undefined).reduce((newest, r) => {
     const at = r.state.state === 'resolved' ? r.state.createdAt : r.state.state === 'diverged' ? Math.max(...r.state.heads.map((h) => h.createdAt)) : 0
     return Math.max(newest, at)
   }, 0)

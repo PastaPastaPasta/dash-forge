@@ -22,17 +22,19 @@ export class BlindBook {
   private readonly real = new Map<string, string>()
   private readonly intro = new Map<string, Introduced>()
 
-  /**
-   * Learn (`plain`, `real`) when `plain` checks as the blind of `real` under `salt`; `introduces`:
-   * a ref update that pushed the commit, whose blind and salt a new PR from that branch copies.
-   * Returns whether the pair checked.
-   */
-  async learn(plain: Uint8Array, real: Uint8Array | undefined, salt: Uint8Array | undefined, introduces = false): Promise<boolean> {
+  /** Learn (`plain`, `real`) when `plain` checks as the blind of `real` under `salt`. Returns whether it checked. */
+  async learn(plain: Uint8Array, real: Uint8Array | undefined, salt: Uint8Array | undefined): Promise<boolean> {
     if (real === undefined || salt === undefined || (await checkBlind(plain, real, salt)) !== 'ok') return false
-    const realHex = bytesToHex(real)
-    this.real.set(bytesToHex(plain), realHex)
-    if (introduces) this.intro.set(realHex, { blind: new Uint8Array(plain), salt: new Uint8Array(salt) })
+    this.real.set(bytesToHex(plain), bytesToHex(real))
     return true
+  }
+
+  /**
+   * Record that branch `name`'s tip, the real commit `realHex`, was pushed by a ref update whose
+   * verified blind and salt are `intro`: a new PR from that branch copies them (rule C).
+   */
+  introduce(name: string, realHex: string, intro: Introduced): void {
+    this.intro.set(`${name}\0${realHex.toLowerCase()}`, intro)
   }
 
   /** The real commit behind the blind `hex`, if a verified document named it. */
@@ -45,9 +47,9 @@ export class BlindBook {
     return this.realOf(hex) ?? hex.toLowerCase()
   }
 
-  /** The blind and salt of a members-only ref update that pushed the real commit `hex`. */
-  introduced(hex: string): Introduced | undefined {
-    return this.intro.get(hex.toLowerCase())
+  /** The blind and salt of the members-only ref update that pushed branch `name`'s tip, the real commit `hex`. */
+  introduced(name: string, hex: string): Introduced | undefined {
+    return this.intro.get(`${name}\0${hex.toLowerCase()}`)
   }
 }
 

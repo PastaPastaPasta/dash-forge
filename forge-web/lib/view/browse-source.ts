@@ -76,7 +76,6 @@ import { knownConversion } from '../repo/converted'
 import { HEADER_LEN, PackError, maybeSealed, skipReason, sniff, type Conversion, type SkipReason } from '../private'
 import { mirrorCopy, mirrorUrisOf, resetMirrorUris } from '../repo/pack-mirrors'
 import { MembersIndex, loadMembersPacks, membersGitPacks, membersPackSource } from './members-browse'
-import { blindBook } from '../repo/members-blinds'
 
 /** Chunk queries in flight at once when one range spans more than a single query. */
 const CHUNK_QUERY_POOL = 6
@@ -1900,13 +1899,15 @@ async function membersOverlay(
   // The public objects a thin members-only pack's deltas name: read with no re-resolve on a miss
   // (this very resolve is the one a miss would wait for).
   const pub = repoReader(null, repo, locator, packs, space)
+  // Members-only packs never cost a member their public browsing: one that does not index (a base
+  // nobody serves, over the budget) leaves the members-only branches unreadable here, nothing else.
   const members = await loadMembersPacks(
     lane,
     manifests,
     space.length,
     (m) => loadStoredArtifactBytes(sdk, repo, m),
     (oid) => pub.readObject(oid).catch(() => null),
-  )
+  ).catch(() => null)
   if (members === null) return null
   return { index: new MembersIndex(indexOf(locator), members), packs: membersPackSource(packs, members), space: [...space, ...members.manifests] }
 }
@@ -2291,11 +2292,7 @@ export function repoReader(
   unavailable: readonly UnavailablePack[] = [],
 ): BrowseReader {
   const key = repoKey(repo)
-  // A member reads a members-only document's blinded commit id as the commit it hides.
-  const lane = membersLane(repo)
-  const book = lane === undefined ? null : blindBook(lane.ctx)
   const reader: BrowseReader = new BrowseReader(locator, packs, {
-    ...(book !== null ? { alias: (oid: string) => book.realOf(oid) } : {}),
     onObject: objectObserver(key),
     // Bytes that never arrived: the views re-read once the connection is back (L-10).
     onUnreachable: () => noteReadOutage(key),

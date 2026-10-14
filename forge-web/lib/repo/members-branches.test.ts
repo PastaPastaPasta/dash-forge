@@ -79,7 +79,7 @@ describe('membersRefsOf', () => {
     expect(got.unreadable).toBe(0)
     expect(got.updates.get(FIX)?.map((u) => u.newOid)).toEqual([bytesToHex(A), bytesToHex(B)])
     // rule C: a PR from sec/fix copies the blind and salt of the update that pushed its tip
-    const intro = blindBook(session.ctx).introduced(bytesToHex(B))
+    const intro = blindBook(session.ctx).introduced(FIX, bytesToHex(B))
     expect(intro !== undefined && bytesToHex(intro.blind)).toBe(bytesToHex(second.newOid))
     expect(intro !== undefined && bytesToHex(intro.salt)).toBe(bytesToHex(second.salt))
     expect(blindBook(session.ctx).realOf(bytesToHex(second.newOid))).toBe(bytesToHex(B))

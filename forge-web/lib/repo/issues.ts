@@ -940,14 +940,16 @@ export async function readPull(
   const opened = patchDoc[AUDIENCE_FIELD] === 'members'
   if (repo.visibility === 'private' || base.retargeted || opened) baseKeyHex = base.refName === '' ? '' : publicRefKey(base.refName)
   const baseRefNameHashRaw = /^[0-9a-f]{64}$/.test(baseKeyHex) ? hexToBase64(baseKeyHex) : ''
-  // A members-only base: its history is the member's fold of its members-only updates.
+  // A members-only base: its history is the member's fold of its members-only updates. It is never
+  // read by its public hash, which would hand the nodes `sha256(name)` to guess the name from.
   const lane = membersLane(repo)
-  const membersBase = lane !== undefined && base.refName !== '' && isListedMembersRef(repo.repoId, base.refName)
+  const keyedBase = opened && !base.retargeted && base.refName !== '' && byteFieldToHex(patchDoc, 'baseRefNameHash') !== publicRefKey(base.refName)
+  const membersBase = lane !== undefined && base.refName !== '' && (keyedBase || isListedMembersRef(repo.repoId, base.refName))
 
   // Build the base ref's historical-tips set for the merge-reachability predicate.
   let isAncestor: IsAncestor = () => false
   let tips: BaseRefTips = { historical: [], tip: undefined, atOpen: undefined }
-  if (baseRefNameHashRaw.length > 0) {
+  if (baseRefNameHashRaw.length > 0 && (membersBase || !keyedBase)) {
     const [updates, configs] = await Promise.all([
       membersBase
         ? readMembersRefs(sdk, repo, lane).then((m) => [...(m.updates.get(base.refName) ?? [])])
@@ -973,8 +975,9 @@ export async function readPull(
   const review = foldPrReviewV2(l.events, l.authorEvents, author, initialHeadOid, new Set())
   const headOid = review.head
   // A members-only PR from a members-only branch folds on blinds; a member's git reads the commit
-  // each blind hides, as their session verified it (rule C: nothing real goes into a fold).
-  const realHeadOid = lane === undefined ? undefined : blindBook(lane.ctx).realOf(headOid)
+  // each blind hides, as their session verified it (rule C: nothing real goes into a fold). Only a
+  // members-only PR's own head: a public document copying a blind maps to nothing.
+  const realHeadOid = lane === undefined || !opened ? undefined : blindBook(lane.ctx).realOf(headOid)
 
   return {
     id,

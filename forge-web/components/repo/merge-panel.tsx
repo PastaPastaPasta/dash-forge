@@ -87,13 +87,13 @@ export interface PublishContext {
   readonly source: string
   /** The commits the branch adds (the PR's commit list), newest first; null while unread. */
   readonly commits: readonly string[] | null
+  /** The commit list was capped: more are published than it holds. */
+  readonly commitsPartial: boolean
   /** Their authors, `Name <email>`, oldest first, each once. */
   readonly authors: readonly string[]
   /** The files the squash changes on the base (the comparison's); null while unread. */
   readonly changes: readonly FileChange[] | null
   readonly changesPartial: boolean
-  /** A reader of what the public reads (no members key): the pack must complete it. Null while it loads. */
-  readonly publicReader: ObjectReader | null
 }
 
 /** The publish dialog's verdict for a publish method, read once the dialog opens. */
@@ -107,7 +107,7 @@ async function publishScan(reader: ObjectReader, sides: DiffSides, publish: Publ
   }
   const { changes, partial } = await historyChanges(sides, publish.commits ?? [publish.realHead])
   const scan = await scanChanges(reader, changes, allow)
-  return partial ? { ...scan, partial: true } : scan
+  return partial || publish.commitsPartial ? { ...scan, partial: true } : scan
 }
 
 /** "Delete the branch after merging": runnable, or shown disabled with why. */
@@ -177,6 +177,7 @@ export function MergePanel({
   recheckMembers,
   onBranchDeleted,
   publish,
+  publicReader,
 }: {
   repo: RepoRef
   pull: PullView
@@ -230,6 +231,12 @@ export function MergePanel({
   onBranchDeleted?: () => void
   /** Publish a members-only branch's PR instead of merging it ({@link PublishContext}). */
   publish?: PublishContext
+  /**
+   * A public repo read with a members key: a reader of what the public reads (no members key),
+   * which every merge's pack must complete; null while it loads (merging waits). Absent: the
+   * base reader is the public's.
+   */
+  publicReader?: ObjectReader | null
 }): JSX.Element | null {
   const { sdk } = useSdk()
   const { signer, locked: sessionLocked } = useAuth()
@@ -532,7 +539,7 @@ export function MergePanel({
               return r.kind === 'published' ? `fragment at packRef ${r.packRef}` : `skipped: ${r.reason}`
             },
             // Published: complete for the public (no members key), never for this member's reader.
-            verifyPack: (pack, tip) => missingFromClosure(pack, tip, input.baseTip, publish?.publicReader ?? (readers ?? { base: baseOnly }).base),
+            verifyPack: (pack, tip) => missingFromClosure(pack, tip, input.baseTip, publicReader ?? (readers ?? { base: baseOnly }).base),
             readBaseTip: async () => {
               // The same rule the page's tip came from (resolveRef, then the provisional tip).
               const ref = await resolveRefByHash(sdk, repo, bytesToBase64(refNameHash(baseRefName)), await readConfigHistory(sdk, repo))
@@ -603,7 +610,8 @@ export function MergePanel({
   const scan = useAsync<PublishScan>(
     () => publishScan(reader!, sides!, publish!, method),
     [publishing, method, head, sidesKey, publish?.changes?.length ?? -1, publish?.commits?.length ?? -1],
-    { enabled: publishing && publish !== undefined && reader !== null && sides !== null },
+    // Scanned once what it publishes is read: an empty list is no scan.
+    { enabled: publishing && publish !== undefined && reader !== null && sides !== null && publish.changes !== null && publish.commits !== null },
   )
   const onMergeClick = (): void => {
     // Locked: the click opens Unlock (the guard); merging is the next click, once unlocked.
@@ -698,7 +706,7 @@ export function MergePanel({
                 variant={gate.bypassing && failure === null ? 'danger' : 'primary'}
                 onClick={onMergeClick}
                 loading={busy}
-                disabled={!unlockFirst && ((!gate.enabled && failure === null) || !identityOk || !methodAllowed || busy || newTip !== null || guard.disabledReason !== null || (publish !== undefined && publish.publicReader === null))}
+                disabled={!unlockFirst && ((!gate.enabled && failure === null) || !identityOk || !methodAllowed || busy || newTip !== null || guard.disabledReason !== null || publicReader === null)}
                 aria-describedby={gate.reason !== null ? 'merge-gate-reason' : undefined}
                 data-testid="merge-submit"
               >
@@ -919,10 +927,12 @@ export function MergePanel({
             base: baseRefName,
             source: publish.source,
             commits: publish.commits?.length ?? null,
+            commitsPartial: publish.commitsPartial,
+            mergeCommit: method !== 'squash' && writesMergeCommit,
             authors: publish.authors.map(authorName),
             files: publish.changes?.length ?? null,
             filesPartial: publish.changesPartial,
-            scan: scan.error !== null ? scan.error : scan.data,
+            scan: publish.changes === null || publish.commits === null ? null : scan.error !== null ? scan.error : scan.data,
             coAuthors: method === 'squash' ? coAuthors : [],
             messageNamesBranch: namesBranch(method === 'squash' ? squashBase : writesMergeCommit ? mergeMsg : '', publish.source),
           }}

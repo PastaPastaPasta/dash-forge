@@ -70,7 +70,7 @@ function membersPatchOf(repo: RepoRef, head: HeadOption, base: ResolvedRef | und
   const basePublic = base?.audience !== 'members'
   if (head.audience !== 'members') return { headOid: head.oid, patch: { basePublic, sourcePublic: true } }
   const lane = membersLane(repo)
-  const intro = lane === undefined ? undefined : blindBook(lane.ctx).introduced(head.oid)
+  const intro = lane === undefined ? undefined : blindBook(lane.ctx).introduced(head.refName, head.oid)
   if (intro === undefined) throw new Error(`${branchName(head.refName)}'s newest push could not be read here; reload the page and try again`)
   return { headOid: bytesToHex(intro.blind), patch: { basePublic, sourcePublic: false, head: { real: hexToBytes(head.oid), salt: intro.salt } } }
 }
@@ -156,10 +156,12 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
   // later (another branch, a new push) must take its own head's subject (L-16).
   // Not while the PR is being opened, nor after a submit whose outcome is unknown: a reload must
   // not bring the draft back to be opened a second time.
+  // A draft naming a members-only branch (its head or its base) stays in memory only.
+  const membersDraft = home.branches.some((b) => b.audience === 'members' && (b.refName === base || headKey.endsWith(`:${b.refName}`)))
   const draftHeld = useRef(false)
   useEffect(() => {
-    if (!draftHeld.current) savePrDraft(repo, { title: titleTouched ? title : '', body, head: headKey, base }, { memoryOnly: quoting })
-  }, [repo, title, titleTouched, body, headKey, base, quoting])
+    if (!draftHeld.current) savePrDraft(repo, { title: titleTouched ? title : '', body, head: headKey, base }, { memoryOnly: quoting || membersDraft })
+  }, [repo, title, titleTouched, body, headKey, base, quoting, membersDraft])
 
   const branches = useMemo(() => sortBranches(home.branches.filter((b) => tipOidOf(b) !== null), home.defaultBranch), [home.branches, home.defaultBranch])
   // A fork the link's (or the kept draft's) head names, e.g. a fork's Contribute link: listed even
@@ -241,7 +243,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
     // The head picked keeps its repo (this fork, or a fork of it), never silently swapped.
     const headRepo = intoParent ? (head?.repo ?? repo) : to
     const href = intoParent ? contributeHref(to, headRepo, branch) : repoHref('/repo/pulls/new', { owner: to.ownerId, name: to.name }, { head: branch })
-    savePrDraft(to, { title: titleTouched ? title : '', body, head: `${headRepo.repoId}:refs/heads/${branch}`, base: '' }, { memoryOnly: quoting })
+    savePrDraft(to, { title: titleTouched ? title : '', body, head: `${headRepo.repoId}:refs/heads/${branch}`, base: '' }, { memoryOnly: quoting || membersDraft })
     router.push(href)
   }
   const baseRef = branches.find((b) => b.refName === base)
@@ -393,7 +395,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
       // Nothing was sent: keep the draft again. (Sent but unconfirmed: it stays dropped.)
       if (!(e instanceof UnconfirmedWriteError)) {
         draftHeld.current = false
-        savePrDraft(repo, { title: titleTouched ? title : '', body, head: headKey, base }, { memoryOnly: quoting })
+        savePrDraft(repo, { title: titleTouched ? title : '', body, head: headKey, base }, { memoryOnly: quoting || membersDraft })
       }
       setError(guard.failed(e))
       setPending(false)

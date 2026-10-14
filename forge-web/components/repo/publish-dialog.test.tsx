@@ -83,6 +83,12 @@ describe('PublishDialog', () => {
     expect($('publish-branch-name')?.textContent).toContain('The commit message names the members-only branch sec/fix. Everyone will be able to read the name.')
   })
 
+  it('says when more commits are published than were counted, and when history adds a merge commit', () => {
+    show({ method: 'history', commitsPartial: true, mergeCommit: true })
+    expect($('publish-list')?.textContent).toContain('at least 3 commits by alice and bob')
+    expect($('publish-method')?.textContent).toBe("Publish with history: the commits are published as they are, joined to main by a merge commit. The last one will be visibly linked to this branch's members-only activity.")
+  })
+
   it('asks for the word publish before publishing with history, and offers no co-author lines there', () => {
     const onPublish = show({ method: 'history' })
     expect($('publish-method')?.textContent).toBe("Publish with history: the 3 commits are published as they are. The last one will be visibly linked to this branch's members-only activity.")
@@ -110,6 +116,9 @@ describe('PublishDialog', () => {
     expect(publishButton().disabled).toBe(true)
     show({ scan: 'the branch could not be read' })
     expect($('publish-scan')?.textContent).toBe("Couldn't check for secrets: the branch could not be read")
+    // an unscanned publish is confirmed like a finding
+    expect(publishButton().disabled).toBe(true)
+    act(() => ($('publish-anyway') as HTMLInputElement).click())
     expect(publishButton().disabled).toBe(false)
   })
 })

@@ -21,10 +21,10 @@ import { queryAllDocuments, type PlainDocument } from '../sdk'
 import { repoTimelines } from './chrome'
 import { configBundleOf, readConfigHistory } from './config'
 import { DOC, type RepoRef } from './contract'
-import { blindBook } from './members-blinds'
+import { blindBook, type Introduced } from './members-blinds'
 import { membersUpdatesOf, type RefAlert, type RefRows } from './members-refs'
 import { bytesField } from './private-content'
-import type { PrivateSession } from './private-session'
+import { onPrivateSessionsClosed, type PrivateSession } from './private-session'
 import { publicRefKey, toResolvedRef, type ResolvedRef } from './refs'
 import { repoSource } from './source'
 
@@ -89,15 +89,19 @@ export async function membersRefsOf(
 ): Promise<MembersRefs> {
   const book = blindBook(lane.ctx)
   const members = new Set<string>()
+  // Each opened update's verified blind and salt of its new tip, by document id.
+  const pushed = new Map<string, Introduced>()
   const updates = await membersUpdatesOf(
     rows,
     async (stored) => {
       const opened = await openContent(stored, lane.ctx)
       if (opened.status === 'readable' && stored.newOid !== undefined) {
-        // the update introduces its new tip: a PR from the branch copies this blind and salt (rule C)
-        await book.learn(stored.newOid, opened.fields.newOid, opened.fields.oidSalt, true)
+        const id = stored.id === undefined ? null : idKey(stored.id)
+        if (await book.learn(stored.newOid, opened.fields.newOid, opened.fields.oidSalt)) {
+          if (id !== null) pushed.set(id, { blind: new Uint8Array(stored.newOid), salt: new Uint8Array(opened.fields.oidSalt as Uint8Array) })
+        }
         if (stored.prevOid !== undefined) await book.learn(stored.prevOid, opened.fields.prevOid, opened.fields.oidSalt)
-        if (stored.id !== undefined) members.add(idKey(stored.id))
+        if (id !== null) members.add(id)
       }
       return opened
     },
@@ -115,6 +119,10 @@ export async function membersRefsOf(
     if (ref === null || ref.state.state === 'unborn') continue
     names.add(name)
     histories.set(name, group)
+    // rule C: a PR from this branch copies the blind of the newest members-only update that set its tip
+    const tip = ref.state.state === 'resolved' ? ref.state.oid : null
+    const setter = tip === null ? undefined : [...group].reverse().find((u) => u.newOid === tip && pushed.has(u.id))
+    if (tip !== null && setter !== undefined) book.introduce(name, tip, pushed.get(setter.id) as Introduced)
     const listed: ResolvedRef = { ...ref, audience: 'members' }
     if (name.startsWith('refs/heads/')) branches.push(listed)
     else if (name.startsWith('refs/tags/')) tags.push(listed)
@@ -124,6 +132,8 @@ export async function membersRefsOf(
 
 /** The members-only ref names this tab's members-key sessions listed, by repo id (base58). */
 const listedNames = new Map<string, Set<string>>()
+// Decrypted names go with the sessions that read them (the vault locked, the key changed).
+onPrivateSessionsClosed(() => listedNames.clear())
 
 function knownNames(repoId: Uint8Array): Set<string> {
   const key = base58Encode(repoId)

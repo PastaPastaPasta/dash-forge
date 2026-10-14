@@ -121,9 +121,9 @@ export function peopleText(names: readonly string[]): string {
 }
 
 /** "3 commits by alice and bob · 14 files" (the dialog's exact list). Null parts are left out while unread. */
-export function publishListText(commits: number | null, authors: readonly string[], files: number | null, filesPartial = false): string {
+export function publishListText(commits: number | null, authors: readonly string[], files: number | null, filesPartial = false, commitsPartial = false): string {
   const parts: string[] = []
-  if (commits !== null) parts.push(`${commits} ${commits === 1 ? 'commit' : 'commits'}${authors.length > 0 ? ` by ${peopleText(authors)}` : ''}`)
+  if (commits !== null) parts.push(`${commitsPartial ? 'at least ' : ''}${commits} ${commits === 1 && !commitsPartial ? 'commit' : 'commits'}${authors.length > 0 ? ` by ${peopleText(authors)}` : ''}`)
   if (files !== null) parts.push(`${filesPartial ? 'at least ' : ''}${files} ${files === 1 ? 'file' : 'files'}`)
   return parts.join(' · ')
 }

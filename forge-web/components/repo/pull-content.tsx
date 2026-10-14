@@ -20,6 +20,7 @@
  * plaintext by design.
  */
 
+import { aliasedReader } from '@/lib/view/blind-reader'
 import { membersLane } from '@/lib/repo'
 import { blindBook } from '@/lib/repo/members-blinds'
 import { hexToBytes } from '@/lib/private'
@@ -374,14 +375,25 @@ function PullPage({
 
   const { pull, timeline, review } = thread
   const repo = home.repo
-  // A members-only PR from a members-only branch folds on its blinded head; git reads (the commit
-  // list, the branch's sync, the merge) take the real commit a member's session verified behind it.
-  const gitHead = pull.realHeadOid ?? pull.headOid
-  // Any other blinded commit of this PR (a head it had at the merge), as git reads it.
+  // A members-only PR from a members-only branch (from the PR document itself, never from the branch
+  // list) folds on its blinded heads; git reads (the commit list, the branch's sync, the merge, an
+  // inline comment's code) take the real commits a member's session verified behind this PR's own
+  // blinds, and no other blind.
+  const membersPull = pull.membersPatch !== undefined
+  const membersSource = membersPull && pull.membersPatch?.sourcePublic === false
   const lane = membersLane(repo)
-  const gitOid = (oid: string): string => (lane === undefined ? oid : blindBook(lane.ctx).realOrPlain(oid))
-  const sourceBranch = home.branches.find((b) => b.refName === pull.sourceRefName)
-  const membersSource = (pull.sourceId === '' || pull.sourceId === repo.repoId) && sourceBranch?.audience === 'members'
+  const prBlinds = useMemo(() => {
+    const out = new Map<string, string>()
+    if (!membersPull || lane === undefined) return out
+    const book = blindBook(lane.ctx)
+    for (const blind of [pull.initialHeadOid, ...pull.review.headUpdates.map((h) => h.oid)]) {
+      const real = book.realOf(blind)
+      if (real !== undefined) out.set(blind.toLowerCase(), real)
+    }
+    return out
+  }, [membersPull, lane, pull.initialHeadOid, pull.review.headUpdates])
+  const gitOid = (oid: string): string => prBlinds.get(oid.toLowerCase()) ?? oid
+  const gitHead = gitOid(pull.headOid)
   // Who may mirror: an imported PR of theirs shows its original author, date, base and head (FG-6).
   const trust = useMirrorTrust(repo)
   // A mirrored PR's reviewers as they reviewed on the source forge (QW-017), not the mirror identity.
@@ -696,7 +708,8 @@ function PullPage({
   // The same, except the base also changed files the PR changes: not recordable here (Q5-A01).
   const unverifiedOid = unverifiedMerge(recordInputs, unrecordedCheck.data ?? null)
   // "Mark as merged (done elsewhere)" is offered on a ready PR whose head is on the base already.
-  const showMarkMerged = actions.canMarkMerged && !pull.state.draft && recordOid === null
+  // A members-only PR's head is a blind: it is published from the merge box, never marked merged at it.
+  const showMarkMerged = actions.canMarkMerged && !pull.state.draft && recordOid === null && !membersPull
   const base = shortBranch(pull.mergeBaseRefName) || 'the base branch'
   const canAuthorOrMember = authorOrMember && !archived
   // Who may request reviews (the author, or a member down to triage).
@@ -874,7 +887,8 @@ function PullPage({
     ],
     [thread.comments, carryPairs, pull.headOid],
   )
-  const snippetTexts = useSnippetTexts(tab === 'conversation' || (tab === 'files' && carryPairs.length > 0) ? headReader : null, snippetSources)
+  const snippetReader = useMemo(() => (headReader === null ? null : aliasedReader(headReader, prBlinds)), [headReader, prBlinds])
+  const snippetTexts = useSnippetTexts(tab === 'conversation' || (tab === 'files' && carryPairs.length > 0) ? snippetReader : null, snippetSources)
   // One line diff per file and older head, however many comments sit on it.
   const lineMaps = useMemo(() => {
     const out = new Map<string, LineMap | null>()
@@ -1455,12 +1469,14 @@ function PullPage({
   const checkSourceBranch = async (): Promise<string | null> => {
     const name = pull.sourceRefName
     if (!sdk || name === null || branchRepo === null) return null
-    const tip = await readBranchTip(sdk, branchRepo, name)
-    if (tip === null || tip.toLowerCase() === pull.headOid.toLowerCase()) return null
+    // A members-only branch is never read by its public hash (the nodes would learn `sha256(name)`):
+    // its tip is the member's fold, read with the home.
+    const tip = membersSource ? (tipOidOf(home.branches.find((b) => b.refName === name)) ?? null) : await readBranchTip(sdk, branchRepo, name)
+    if (tip === null || tip.toLowerCase() === gitHead.toLowerCase()) return null
     // Show the banner with its "Update PR head" (a same-repo branch is read from the repo home).
     if (crossRepo) sourceState.reload()
     else reloadHome?.()
-    return `${shortBranch(name)} moved to ${tip.slice(0, 7)} since this page read it, ahead of this PR's head ${pull.headOid.slice(0, 7)}. Update the PR head first, so the merge includes those commits.`
+    return `${shortBranch(name)} moved to ${tip.slice(0, 7)} since this page read it, ahead of this PR's head ${gitHead.slice(0, 7)}. Update the PR head first, so the merge includes those commits.`
   }
 
   // A merge (the box's, or "Mark as merged") judged again at the click with the members (and a
@@ -1560,7 +1576,7 @@ function PullPage({
             <span className="font-mono" data-testid="pr-base">{shortBranch(pull.mergeBaseRefName) || '?'}</span>
             {open && canMember && caps.canRetarget ? (
               <EditBase
-                branches={home.branches.filter(isLive).map((b) => b.refName)}
+                branches={home.branches.filter((b) => isLive(b) && b.audience === undefined).map((b) => b.refName)}
                 current={pull.mergeBaseRefName}
                 source={crossRepo ? null : pull.sourceRefName}
                 defaultBranch={home.defaultBranch}
@@ -2035,13 +2051,16 @@ function PullPage({
                       ? null
                       : { authors: commitAuthors(commits.data.commits), complete: !commits.data.truncated },
                   closeIssues: closeLinked,
-                  // A members-only branch into a public base: the merge box publishes (DESIGN §4.3).
+                  // A members-only branch into a public base: the merge box publishes (DESIGN §4.3);
+                  // without the real head it cannot (a note says so, never a merge on the blind).
+                  ...(membersSource && (pull.realHeadOid === undefined || pull.sourceRefName === null) ? { publishBlocked: true } : {}),
                   ...(membersSource && pull.realHeadOid !== undefined && pull.sourceRefName !== null
                     ? {
                         publish: {
                           realHead: pull.realHeadOid,
                           source: pull.sourceRefName,
                           commits: commits.data === null ? null : commits.data.commits.map((c) => c.oid),
+                          commitsPartial: commits.data?.truncated === true,
                           authors: commits.data === null ? [] : commitAuthors(commits.data.commits),
                           changes: cmp === null ? null : cmp.changes,
                           changesPartial: cmp?.truncated === true,
@@ -2405,7 +2424,7 @@ function PullPage({
                     The branch was deleted. The PR&apos;s head is <Oid value={pull.headOid} chars={7} copyable={false} />
                     {merged ? `, in ${shortBranch(pull.mergeBaseRefName)}'s history:` : '.'}
                   </p>
-                  {merged ? <CopyRow text={`git switch --detach ${pull.headOid}`} label="Copy the checkout command" className="mt-2" /> : null}
+                  {merged ? <CopyRow text={`git switch --detach ${gitHead}`} label="Copy the checkout command" className="mt-2" /> : null}
                 </>
               ) : (
                 <CopyRow text={checkout} label="Copy the checkout command" className="mt-2" />

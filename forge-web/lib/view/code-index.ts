@@ -21,6 +21,7 @@
  * Searching a built index sends no request: the worker holds the text.
  */
 
+import { membersLane } from '../repo'
 import { ObjectTooLargeError, SPAN_SENTINEL } from '../browse'
 import { storedMaxBytes } from '../browse/pack'
 import { ACTIVE_NETWORK } from '../constants'
@@ -89,7 +90,8 @@ export interface CodeSearchTarget {
 const privateScopes = new Set<string>()
 
 export function codeSearchTarget(repo: RepoRef, tip: string, ref: string, defaultBranch: boolean): CodeSearchTarget {
-  const persist = repo.visibility !== 'private'
+  // A member's index may hold members-only branches' files: in memory only, with their session.
+  const persist = repo.visibility !== 'private' && membersLane(repo) === undefined
   const scope = `${ACTIVE_NETWORK.key}:${persist ? repo.repoId : repoKey(repo)}`
   if (!persist) privateScopes.add(scope)
   return { scope, persist, tip, ref, defaultBranch }

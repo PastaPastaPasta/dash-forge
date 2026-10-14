@@ -30,6 +30,10 @@ export interface PublishFacts {
   readonly source: string
   /** How many commits the branch adds, and their authors' names (null while unread). */
   readonly commits: number | null
+  /** More commits are published than were counted (a long branch). */
+  readonly commitsPartial?: boolean
+  /** Publish with history writes a merge commit too (the base moved since the branch began). */
+  readonly mergeCommit?: boolean
   readonly authors: readonly string[]
   /** Files the public gains (null while unread); `filesPartial`: more than were counted. */
   readonly files: number | null
@@ -67,10 +71,11 @@ export function PublishDialog({
   const history = facts.method === 'history'
   const scan = facts.scan
   const scanned = scan !== null && typeof scan !== 'string'
-  const refuses = scanned && scan.findings.some((f) => f.severity === 'refuse')
+  // A finding the helper would refuse, or a scan that could not run: published only once confirmed.
+  const refuses = (scanned && scan.findings.some((f) => f.severity === 'refuse')) || typeof scan === 'string'
   const base = branchName(facts.base)
   const source = branchName(facts.source)
-  const list = publishListText(facts.commits, facts.authors, facts.files, facts.filesPartial === true)
+  const list = publishListText(facts.commits, facts.authors, facts.files, facts.filesPartial === true, facts.commitsPartial === true)
   const ready = scan !== null && (!refuses || anyway) && (!history || typed.trim().toLowerCase() === PUBLISH_WORD)
   const blockedWhy = scan === null ? 'Checking for secrets…' : refuses && !anyway ? 'Confirm the possible secret first' : history && typed.trim().toLowerCase() !== PUBLISH_WORD ? `Type ${PUBLISH_WORD} to continue` : undefined
   return (
@@ -113,7 +118,7 @@ export function PublishDialog({
         ) : null}
         <p data-testid="publish-method">
           {history
-            ? `Publish with history: the ${facts.commits === null ? '' : `${facts.commits} `}commits are published as they are. The last one will be visibly linked to this branch's members-only activity.`
+            ? `Publish with history: the ${facts.commits === null || facts.commitsPartial === true ? '' : `${facts.commits} `}commits are published as they are${facts.mergeCommit === true ? `, joined to ${base} by a merge commit` : ''}. The last one will be visibly linked to this branch's members-only activity.`
             : `Squash into one commit: one new commit on ${base}; the members-only history stays members-only.`}
         </p>
         {facts.messageNamesBranch ? (

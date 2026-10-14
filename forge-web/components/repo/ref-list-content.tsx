@@ -138,11 +138,12 @@ export function RefListContent({
   const membersGroup = refs.some((r) => r.audience === 'members')
   const membersVisibleTo = home.lane?.access === 'member' || home.lane?.access === 'former' ? membersKeyHolders(home) : null
 
-  const outsiderLine = !membersGroup && home.membersOnlyRefs === true && home.repo.visibility === 'public' ? (
+  // On the branches page: the fact covers branches and tags together, and branches are what it is about.
+  const outsiderLine = kind === 'branches' && !membersGroup && home.membersOnlyRefs === true && home.repo.visibility === 'public' ? (
     <div className="space-y-2" data-testid="members-only-refs-note">
       <p className="flex flex-wrap items-center gap-1.5 text-dense text-anvil-600 dark:text-anvil-300">
         <Lock className="h-3.5 w-3.5 shrink-0" aria-hidden />
-        {kind === 'branches' ? 'This repo also has members-only branches.' : 'This repo also has members-only tags.'}
+        This repo also has members-only branches.
         {home.lane?.access === 'locked' ? (
           // A member whose tab resumed with the signing key only (DESIGN §4.3: "unlock to see members-only branches").
           <button type="button" className="hit-area font-medium text-forge-700 hover:underline dark:text-forge-400" aria-expanded={unlocking} onClick={() => setUnlocking((u) => !u)} data-testid="members-refs-unlock">
