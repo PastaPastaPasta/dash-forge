@@ -114,6 +114,9 @@ pub async fn run(
                     "  Its file name can't be made public, so the comment will show without it."
                 );
             }
+            if p.plan.changes.lost.iter().any(|f| f.ends_with("RefName")) {
+                println!("  Its title and description become public; its branch names don't.");
+            }
         }
     }
     let clauses: String = bodies.iter().flatten().map(Planned::clause).collect();

@@ -85,6 +85,11 @@ pub enum LeftOutWhy {
     NotSent,
     /// Its text continues in a separate members-only artifact, which a bundle does not publish.
     LongBody,
+    /// A pull request from or into a members-only branch: its key would also publish that
+    /// branch's name and newest commit (its author can make its title and description public).
+    MembersOnlyBranch,
+    /// Nothing a bundle can publish.
+    NotBundled,
 }
 
 impl LeftOutWhy {
@@ -96,6 +101,10 @@ impl LeftOutWhy {
             Self::Unreadable => "you can't read it with your keys",
             Self::NotSent => "it's a message that wasn't sent to you",
             Self::LongBody => "it's too long to make public this way",
+            Self::MembersOnlyBranch => {
+                "it's a pull request of a members-only branch: making it public this way would publish the branch's name and newest commit too (its author can make its title and description public)"
+            }
+            Self::NotBundled => "it can't be made public this way",
         }
     }
 }
@@ -565,6 +574,7 @@ impl Collab<'_> {
                 bundle::ENTRY_COMMENT => (DocKind::Comment, DOC_COMMENT),
                 bundle::ENTRY_ISSUE => (DocKind::Issue, DOC_ISSUE),
                 bundle::ENTRY_REVIEW => (DocKind::Review, DOC_REVIEW),
+                bundle::ENTRY_PATCH => (DocKind::Patch, super::DOC_PATCH),
                 _ => continue,
             };
             // honoured only when its author is a maintainer: then `entries` holds it
@@ -598,8 +608,9 @@ impl Collab<'_> {
     /// an issue the signer can open (Platform keeps an issue's history). Refused before anything
     /// is signed unless `repo` is public and the signer a current maintainer (or the owner); a
     /// post that is public already, that the signer cannot read (a message not sent to them),
-    /// whose text continues in a members-only long-body artifact, or a PR's own text, is left
-    /// out ([`BundlePlan::left_out`]). Errors when nothing is left to publish.
+    /// whose text continues in a members-only long-body artifact, or a PR of a members-only
+    /// branch (its key would publish the branch), is left out ([`BundlePlan::left_out`]). Errors
+    /// when nothing is left to publish.
     pub async fn bundle_plan(
         &self,
         repo: &RepoRef,
@@ -636,7 +647,7 @@ impl Collab<'_> {
                 continue;
             }
             let Some(entry_kind) = bundle::entry_kind(kind) else {
-                plan.left_out.push(leave(LeftOutWhy::Unreadable));
+                plan.left_out.push(leave(LeftOutWhy::NotBundled));
                 continue;
             };
             let target = platform::decode_identifier(&d.id)?;
@@ -809,7 +820,13 @@ impl Collab<'_> {
                 // only what the signer reads as a member (the epoch and late rules included)
                 match kr.open(kind, d) {
                     Opened::Readable(f) if long_body(&f) => return Err(LeftOutWhy::LongBody),
-                    Opened::Readable(_) => {}
+                    Opened::Readable(f) => {
+                        let header =
+                            crate::keyring::header_of(kind, d).ok_or(LeftOutWhy::Unreadable)?;
+                        if doc::bundle_would_publish_members_only(&header, &f) {
+                            return Err(LeftOutWhy::MembersOnlyBranch);
+                        }
+                    }
                     _ => return Err(LeftOutWhy::Unreadable),
                 }
                 kr.obj_key(kind, d).ok_or(LeftOutWhy::Unreadable)?
@@ -826,6 +843,8 @@ impl Collab<'_> {
                         return Err(LeftOutWhy::LongBody);
                     }
                 }
+                // a letter's branch names are public hashes, checked by the open; a letter
+                // carries no blinded head
                 k
             }
             _ => return Err(LeftOutWhy::Unreadable),

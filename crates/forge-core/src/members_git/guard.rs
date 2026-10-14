@@ -297,21 +297,13 @@ pub fn guard(g: &impl ObjectGraph, input: &GuardInput<'_>) -> Result<Outcome> {
         }
         Ok(sealed_objects.get().is_some_and(|o| o.contains(oid)))
     };
-    let sealed_commits: OnceCell<BTreeSet<String>> = OnceCell::new();
-    let members_only_commits = || -> Result<&BTreeSet<String>> {
-        if sealed_commits.get().is_none() {
-            let _ = sealed_commits.set(g.commits(&all, p)?);
-        }
-        Ok(sealed_commits.get().expect("set above"))
-    };
-    // the members-only commits by patch id, read once, when the pusher opted in
-    let sealed_patches: OnceCell<BTreeMap<String, String>> = OnceCell::new();
+    // each public update of a commit: its destination, target, the commits it adds and those of
+    // them no members-only commit reaches (for the gitlink notes and the patch-id warning)
+    let mut public_commits: Vec<(String, String, BTreeSet<String>, BTreeSet<String>)> = Vec::new();
     let mut p_and_s: Vec<String> = p.to_vec();
     p_and_s.extend(all.iter().cloned());
     let mut findings = Vec::new();
     let mut published = Vec::new();
-    let mut gitlinks = Vec::new();
-    let mut remade = Vec::new();
     for u in input.batch {
         let Some(t) = u.new.as_deref() else {
             continue;
@@ -355,43 +347,8 @@ pub fn guard(g: &impl ObjectGraph, input: &GuardInput<'_>) -> Result<Outcome> {
                         FindingKind::Commits,
                         adds.difference(&public_only).cloned().collect(),
                     );
-                    let mut links = g.gitlinks(&target, p)?;
-                    if !links.is_empty() {
-                        let members_only = members_only_commits()?;
-                        links.retain(|l| members_only.contains(&l.target));
-                        links.sort();
-                        gitlinks.extend(links.into_iter().map(|l| GitlinkNote {
-                            dst: u.dst.clone(),
-                            commit: l.commit,
-                            path: l.path,
-                            target: l.target,
-                        }));
-                    }
-                    if input.patch_ids {
-                        let members_only = members_only_commits()?;
-                        let fresh: Vec<String> = public_only.iter().cloned().collect();
-                        if !fresh.is_empty() && !members_only.is_empty() {
-                            if sealed_patches.get().is_none() {
-                                let ids: Vec<String> = members_only.iter().cloned().collect();
-                                let mut by_patch = BTreeMap::new();
-                                // lowest id first, so `like` is the lowest when several match
-                                for (c, pid) in g.patch_ids(&ids)? {
-                                    by_patch.entry(pid).or_insert(c);
-                                }
-                                let _ = sealed_patches.set(by_patch);
-                            }
-                            let by_patch = sealed_patches.get().expect("set above");
-                            for (c, pid) in g.patch_ids(&fresh)? {
-                                if let Some(like) = by_patch.get(&pid) {
-                                    remade.push(Remade {
-                                        dst: u.dst.clone(),
-                                        commit: c,
-                                        like: like.clone(),
-                                    });
-                                }
-                            }
-                        }
-                    }
+                    // the notes are computed once over the whole batch, below
+                    public_commits.push((u.dst.clone(), peeled.target.clone(), adds, public_only));
                 }
             } else if sealed(&peeled.target)? {
                 finding(FindingKind::Object, vec![peeled.target.clone()]);
@@ -419,6 +376,7 @@ pub fn guard(g: &impl ObjectGraph, input: &GuardInput<'_>) -> Result<Outcome> {
             findings.extend(found);
         }
     }
+    let (gitlinks, remade) = notes_over(g, &all, p, &public_commits, input.patch_ids)?;
     Ok(Outcome {
         verdict: if findings.is_empty() {
             Verdict::Pass
@@ -431,4 +389,70 @@ pub fn guard(g: &impl ObjectGraph, input: &GuardInput<'_>) -> Result<Outcome> {
         gitlinks,
         remade,
     })
+}
+
+/// The batch's gitlink notes and (when `patch_ids`) re-made commits, over the public updates of a
+/// commit (`(dst, target, adds, public_only)` in batch order), with one walk for the whole batch:
+/// a gitlink belongs to the commit that introduces it, so a note goes to every update adding
+/// that commit; a patch id is the commit's alone.
+fn notes_over(
+    g: &impl ObjectGraph,
+    all: &[String],
+    p: &[String],
+    public_commits: &[(String, String, BTreeSet<String>, BTreeSet<String>)],
+    patch_ids: bool,
+) -> Result<(Vec<GitlinkNote>, Vec<Remade>)> {
+    let (mut gitlinks, mut remade) = (Vec::new(), Vec::new());
+    if public_commits.is_empty() || all.is_empty() {
+        return Ok((gitlinks, remade));
+    }
+    let members_only = g.commits(all, p)?;
+    if members_only.is_empty() {
+        return Ok((gitlinks, remade));
+    }
+    let targets: Vec<String> = public_commits.iter().map(|(_, t, ..)| t.clone()).collect();
+    let mut links = g.gitlinks(&targets, p)?;
+    links.retain(|l| members_only.contains(&l.target));
+    links.sort();
+    for (dst, _, adds, _) in public_commits {
+        gitlinks.extend(
+            links
+                .iter()
+                .filter(|l| adds.contains(&l.commit))
+                .map(|l| GitlinkNote {
+                    dst: dst.clone(),
+                    commit: l.commit.clone(),
+                    path: l.path.clone(),
+                    target: l.target.clone(),
+                }),
+        );
+    }
+    if patch_ids {
+        let fresh: BTreeSet<String> = public_commits
+            .iter()
+            .flat_map(|(.., public_only)| public_only.iter().cloned())
+            .collect();
+        if !fresh.is_empty() {
+            let ids: Vec<String> = members_only.iter().cloned().collect();
+            let mut by_patch = BTreeMap::new();
+            // lowest id first, so `like` is the lowest when several match
+            for (c, pid) in g.patch_ids(&ids)? {
+                by_patch.entry(pid).or_insert(c);
+            }
+            let fresh: Vec<String> = fresh.into_iter().collect();
+            let theirs = g.patch_ids(&fresh)?;
+            for (dst, _, _, public_only) in public_commits {
+                for c in public_only {
+                    if let Some(like) = theirs.get(c).and_then(|pid| by_patch.get(pid)) {
+                        remade.push(Remade {
+                            dst: dst.clone(),
+                            commit: c.clone(),
+                            like: like.clone(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    Ok((gitlinks, remade))
 }

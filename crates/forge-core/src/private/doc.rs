@@ -658,6 +658,25 @@ pub fn bundles_kind(kind: DocKind) -> bool {
     )
 }
 
+/// Whether publishing the key of the opened pull request `fields` (of `header`) would publish
+/// something members-only: a branch hashed under an epoch's ref key (a members-only branch, whose
+/// name is in `fields`) or the real head and its salt (TLV 24, 27). A key opens the whole of `enc`,
+/// whatever readers choose to show, so a maintainer's bundle leaves such a PR out (its author can
+/// still make its title and description public by an edit, which publishes only those).
+#[must_use]
+pub fn bundle_would_publish_members_only(header: &DocHeader, fields: &Fields) -> bool {
+    let keyed = |hash: Option<[u8; 32]>, name: Option<&String>| match (hash, name) {
+        (Some(h), Some(n)) => !ct_eq(&h, &sha256(n.as_bytes())),
+        (Some(_), None) => true,
+        (None, _) => false,
+    };
+    header.kind == DocKind::Patch
+        && (fields.head_oid.is_some()
+            || fields.oid_salt.is_some()
+            || keyed(header.base_ref_name_hash, fields.base_ref_name.as_ref())
+            || keyed(header.source_ref_name_hash, fields.source_ref_name.as_ref()))
+}
+
 /// What a published key shows of an opened pull request (mixed-visibility DESIGN §4.4, §4.6;
 /// `private-repos.md` §17.5): its title, body and the names of its **public** branches. A branch
 /// name is shown only when its hash field is `sha256(name)`; any other hash is keyed under an
@@ -874,6 +893,48 @@ mod tests {
             ..Fields::default()
         };
         (h, f)
+    }
+
+    #[test]
+    fn a_bundle_leaves_out_a_pr_whose_key_would_publish_a_members_only_branch() {
+        let keys = keys();
+        let (main, fix) = (
+            "refs/heads/main".to_string(),
+            "refs/heads/sec/fix".to_string(),
+        );
+        let mut h = DocHeader::new(DocKind::Patch, [0x22; 32], 0);
+        h.base_ref_name_hash = Some(sha256(main.as_bytes()));
+        h.source_ref_name_hash = Some(sha256(fix.as_bytes()));
+        let public = Fields {
+            title: Some("t".into()),
+            base_ref_name: Some(main.clone()),
+            source_ref_name: Some(fix.clone()),
+            ..Fields::default()
+        };
+        // between public branches, with a plain head: nothing members-only in its key
+        assert!(!bundle_would_publish_members_only(&h, &public));
+        // a members-only source (keyed hash), or a blinded head with its real value and salt
+        let mut keyed = h.clone();
+        keyed.source_ref_name_hash = Some(keys.ref_name_hash(&fix));
+        assert!(bundle_would_publish_members_only(&keyed, &public));
+        let head = Fields {
+            head_oid: Some(vec![7; 20]),
+            oid_salt: Some([9; 32]),
+            ..public.clone()
+        };
+        assert!(bundle_would_publish_members_only(&h, &head));
+        // shown as a published key can check it: the keyed name and the head left out
+        let shown = bundled_patch(&keyed, head).unwrap();
+        assert_eq!(
+            (
+                shown.base_ref_name.as_deref(),
+                shown.source_ref_name,
+                shown.head_oid
+            ),
+            (Some(main.as_str()), None, None)
+        );
+        // never for another kind
+        assert!(!bundle_would_publish_members_only(&issue().0, &issue().1));
     }
 
     #[test]

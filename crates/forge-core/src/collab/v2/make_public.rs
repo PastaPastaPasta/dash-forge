@@ -111,13 +111,6 @@ impl Collab<'_> {
             return Err(self.not_your_post(repo).await);
         }
         owner_check(repo, kind.type_name(), &stored, &me, "make public")?;
-        if kind == DocKind::Patch {
-            // a members-only PR's branch names are sealed and immutable: phase 3 builds it
-            return Err(refused(
-                "a pull request can't be made public this way yet",
-                "only issues, comments and reviews can be made public by their author for now",
-            ));
-        }
         if stored.field_str("vis").as_deref() == Some("private") {
             return Err(refused(
                 "Posts from before this repo was public can be made public by a maintainer.",

@@ -196,7 +196,9 @@ fn objects_missing(oids: &[String], repo: Option<&Path>, partial: bool) -> bool 
             .env_remove("GIT_DIR")
             .env_remove("GIT_WORK_TREE");
     }
-    cmd.args(["rev-list", "--objects", "--quiet"]);
+    // the error text is read below: git's own words, not a translation
+    cmd.env("LC_ALL", "C")
+        .args(["rev-list", "--objects", "--quiet"]);
     if partial {
         cmd.arg("--missing=allow-promisor");
     }

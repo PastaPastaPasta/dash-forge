@@ -234,6 +234,7 @@ impl ObjectGraph for GitGraph {
                     "--root",
                     "--no-abbrev",
                     "--no-renames",
+                    "--ignore-submodules=none",
                     "--format=%x01%H",
                 ],
                 Some(input.as_bytes()),
@@ -280,6 +281,7 @@ impl ObjectGraph for GitGraph {
                     "--root",
                     "--no-renames",
                     "--no-color",
+                    "--no-ext-diff",
                     "--format=commit %H",
                 ],
                 Some(lines(&wanted).as_bytes()),
@@ -769,7 +771,11 @@ pub fn remade_lines(g: &GitGraph, remade: &[Remade]) -> Vec<String> {
         remade.len(),
         plural(remade.len(), "commit", "commits"),
         plural(remade.len(), "has", "have"),
-        plural(remade.len(), "a members-only commit", "members-only commits"),
+        plural(
+            remade.len(),
+            "a members-only commit",
+            "members-only commits"
+        ),
     )];
     for r in remade {
         let public = g.describe(std::slice::from_ref(&r.commit)).concat();
