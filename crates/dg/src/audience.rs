@@ -92,15 +92,14 @@ pub async fn requested(
         // other members-only conversation takes none
         Err(e) if !ask.members && refused_non_member(&e) => {
             collab.request_audience(Some(Audience::Public));
-            match collab.new_audience(repo, target, reply_to).await {
-                Ok(Audience::Public) => Ok(Requested {
+            if let Ok(Audience::Public) = collab.new_audience(repo, target, reply_to).await {
+                Ok(Requested {
                     audience: Audience::Public,
                     to: String::new(),
-                }),
-                _ => {
-                    collab.request_audience(None);
-                    Err(members_only_thread(repo))
-                }
+                })
+            } else {
+                collab.request_audience(None);
+                Err(members_only_thread(repo))
             }
         }
         other => other
