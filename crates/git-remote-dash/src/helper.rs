@@ -523,8 +523,14 @@ impl Helper {
         // The local git odb is the cache — never re-download objects git already has
         // (architecture §6). For a plain (non-filter) fetch, if every wanted object is
         // already present locally there is nothing to transfer. (A promisor fetch still
-        // runs, since a present commit may need its filtered blobs materialized.)
-        if wants_already_local(wants, options) {
+        // runs, since a present commit may need its filtered blobs materialized.) A members
+        // fetch's `list` indexed the members-only packs already, and those hold a branch's own
+        // objects only (their bases are the public tips, D22): a wanted members-only tip being
+        // here says nothing of the public history under it, so the whole wanted history must be.
+        let want_oids: Vec<String> = wants.iter().map(|w| w.oid.clone()).collect();
+        if wants_already_local(wants, options)
+            && (self.members_fetch.is_none() || !LocalRepo::history_has_gaps(&want_oids))
+        {
             tracing::info!(
                 wants = wants.len(),
                 "all wanted objects already local; skipping fetch"
@@ -536,7 +542,6 @@ impl Helper {
         // the record came from another clone), or the incremental pass failed, fetch every
         // pack.
         let incremental = self.fetch_packs(wants, options, true, false).await;
-        let want_oids: Vec<String> = wants.iter().map(|w| w.oid.clone()).collect();
         let complete = incremental_fetch_complete(incremental.is_ok(), options, &want_oids, || {
             LocalRepo::history_has_gaps(&want_oids)
         });
