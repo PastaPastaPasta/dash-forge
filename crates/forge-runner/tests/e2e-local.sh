@@ -47,9 +47,10 @@
 #  15. Environments (a recording `dg ci env`): on a trusted push each job gets only the environment
 #      it names, under the names it uses, any value intact (quotes, backslashes, `$`, CR LF,
 #      several lines), masked in its log line by line; a job naming an environment not shared
-#      with the runner is refused with dg's reason; a job reading `secrets` as a whole beside
-#      them is refused; an untrusted push never asks for an environment and runs its jobs
-#      without values; a failed lookup reports nothing and the push is tried again.
+#      with the runner is refused, its check saying nothing of the audience; a job reading
+#      `secrets` as a whole beside them is refused; an untrusted push never asks for an
+#      environment and runs its jobs without values; a failed lookup reports nothing and the
+#      push is tried again.
 set -uo pipefail
 RUNNER="${1:-${CARGO_TARGET_DIR:-target}/debug/forge-runner}"
 [[ -x "$RUNNER" ]] || { echo "SKIP: no forge-runner binary at $RUNNER"; exit 2; }
@@ -657,7 +658,8 @@ check "a value with quotes, backslashes, \$, CR LF and lines arrives intact" bas
 check "…and each of its lines is masked" bash -c '[[ "$1" == *"line=[***]"* ]]' _ "$(done_log 'env / prod')"
 check "a repository secret still reaches an environment job; GITHUB_ entries are not taken" bash -c '[[ "$1" == *"repo-secret=[***] token=[]"* ]]' _ "$(done_log 'env / prod')"
 check "a job naming no environment gets none of its values" bash -c '[[ "$1" == *"build-sees=[]"* ]]' _ "$(done_log 'env / build')"
-check "an environment not shared with the runner refuses its job, with dg's reason" bash -c '[[ "$1" == *"environment secret-ops can'"'"'t be read by this runner"*"[E612]"* ]]' _ "$(done_sum 'env / hidden')"
+check "an environment not shared with the runner refuses its job" bash -c '[[ "$1" == *"environment secret-ops can'"'"'t be read by this runner: it isn'"'"'t shared with this runner by name, or doesn'"'"'t exist"* ]]' _ "$(done_sum 'env / hidden')"
+check "…saying nothing of its audience; dg's reason goes to the runner's log only" bash -c '[[ "$1" != *group* ]] && grep -q "environment secret-ops not given: .*only through its group.*\[E612\]" "$2"' _ "$(done_sum 'env / hidden')" "$W/runner.log"
 check "…which never ran" bash -c "! grep -q HIDDEN-RAN '$FAKE_DG_LOG'"
 check "a job reading secrets as a whole beside an environment job is refused" bash -c '[[ "$1" == *"as a whole"* ]]' _ "$(done_sum 'dump / dump')"
 check "…and the environment job beside it runs" bash -c '[[ "$1" == *"dump-deploy=[***]"* ]]' _ "$(done_log 'dump / deploy')"
