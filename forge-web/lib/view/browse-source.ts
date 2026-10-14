@@ -1972,9 +1972,22 @@ async function coversReadable(sdk: EvoSDK, repo: RepoRef, locator: ObjectLocator
   if (convertedReads(repo) === null) return false
   const covered = locator.packRefsCovered()
   const gaps = space.filter((m, i) => m.objectCount !== 0 && !covered.has(i))
-  const skipped = await Promise.all(gaps.map((m) => skipBeforeDownload(sdk, repo, m.copies ?? [m])))
-  return skipped.every((s) => s !== null)
+  // Four heads at a time, none started after the first pack that cannot go unindexed. Only a
+  // members-only (`noKey`) skip qualifies: a pack of a newer format may hold what the clone can read.
+  try {
+    await mapPooled(gaps, 4, async (m) => {
+      const skipped = await skipBeforeDownload(sdk, repo, m.copies ?? [m])
+      if (skipped === null || skipped.why.reason !== 'noKey') throw NOT_SKIPPED
+    })
+    return true
+  } catch (e) {
+    if (e === NOT_SKIPPED) return false
+    throw e
+  }
 }
+
+/** Thrown inside {@link coversReadable}'s pool to stop it at a pack that must be indexed. */
+const NOT_SKIPPED = new Error('pack is not skipped')
 
 /**
  * Index fragments at least this large are read a fanout slice at a time when `ranged`
@@ -2172,14 +2185,16 @@ async function publishedLocator(
   // query failure is enough to reach this.
   // A repository made public keeps its private era's fragments, sealed under keys the owner may
   // not have published (Code only): such a fragment is skipped (§18.2), set aside as if it had
-  // never been published. The packs it indexed are sealed alike, and `coversReadable` lets the
-  // ones this reader skips go unindexed; any other gap still sends the repo to the fallback clone.
+  // never been published, in such a repo only (anywhere else a skip still fails the index). The
+  // packs it indexed are sealed alike, and `coversReadable` lets the ones this reader skips go
+  // unindexed; any other gap still sends the repo to the fallback clone.
+  const inConvertedRepo = convertedReads(repo) !== null
   let locator: ObjectLocator
   try {
     const loaded = await Promise.all(
       ordered.map((m) =>
         (ranged && m.storage === 0 && m.sizeBytes >= RANGED_INDEX_MIN_BYTES ? openFragment(sdk, repo, m) : wholeFragment(sdk, repo, m, progressKey)).catch((e: unknown) => {
-          if (e instanceof PackSkippedError) return null
+          if (e instanceof PackSkippedError && inConvertedRepo) return null
           throw e
         }),
       ),

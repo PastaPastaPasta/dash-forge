@@ -366,13 +366,32 @@ function membersOnlyEntries(tally: HiddenTally, reviews: readonly ReviewView[]):
 /** The comment sub-query's page size on a thread read: a full page may not be all of them. */
 const COMMENT_PAGE = 100
 
+/** The event sub-queries' page size on a thread read. */
+const EVENT_PAGE = 100
+
 /** What the members-only target page shows under a thread's row: its replies ({@link membersOnlyReplies}) and how it takes new ones. */
 type TargetReplies = Pick<MembersOnlyTarget, 'timeline' | 'membersOnly' | 'hidden' | 'moderation' | 'moderationInput' | 'locked' | 'writtenWhilePrivate'>
 
 /** The members-only target page of `placeholder` (a well-formed sealed issue or PR this reader cannot open). */
-function membersOnlyTarget(placeholder: MembersOnlyItem, number: number, transitions: readonly TransitionView[], comments: number, replies: TargetReplies = {}): MembersOnlyTarget {
+function membersOnlyTarget(placeholder: MembersOnlyItem, number: number, transitions: readonly TransitionView[], read: TargetRead): MembersOnlyTarget {
   const status = statusOfCode(stateCode(transitions))
-  return { placeholder, number, open: status.open, merged: status.merged, comments, ...(comments >= COMMENT_PAGE ? { moreComments: true as const } : {}), ...replies }
+  return { placeholder, number, open: status.open, merged: status.merged, comments: read.comments, ...(read.more ? { moreComments: true as const } : {}), ...read.replies }
+}
+
+/**
+ * What {@link membersOnlyReplies} read: the thread's `comments` read, whether there may be `more`
+ * of them than that (a full page not completed: nothing in it could be read, and the thread takes
+ * no public reply), and the `replies` shown.
+ */
+interface TargetRead {
+  readonly replies: TargetReplies
+  readonly comments: number
+  readonly more: boolean
+}
+
+/** A target's rows of `type` in full, oldest first: the continuation of a full first page of a thread read. */
+function readTargetRows(sdk: EvoSDK, repo: RepoRef, type: string, id: string): Promise<PlainDocument[]> {
+  return queryAllDocuments(sdk, repoSource(repo).targetQuery(type, { where: [['targetId', '==', id]], orderBy: [['targetId', 'asc'], ['$createdAt', 'asc']] }))
 }
 
 /**
@@ -391,24 +410,39 @@ async function membersOnlyReplies(
   rows: { readonly comments: readonly PlainDocument[]; readonly events: readonly PlainDocument[]; readonly authorEvents: readonly PlainDocument[]; readonly memberships: readonly Membership[] | null },
   transitions: readonly TransitionView[],
   network: Network,
-): Promise<TargetReplies> {
+): Promise<TargetRead> {
   const byTime = (a: PlainDocument, b: PlainDocument) => num(a, '$createdAt') - num(b, '$createdAt')
   const thread = { id: str(raw, '$id'), author: str(raw, '$ownerId') }
-  const tally = new HiddenTally()
-  const admitted = (await admitAll(gate, 'comment', [...rows.comments].sort(byTime), tally)).docs.map(toCommentView)
+  // Its own `vis` stamp, in the clear: no key is needed to tell an old thread (§4.10).
+  const writtenWhilePrivate = repo.visibility === 'public' && str(raw, 'vis') === 'private'
+  let commentDocs = rows.comments
+  let tally = new HiddenTally()
+  let admitted = (await admitAll(gate, 'comment', [...commentDocs].sort(byTime), tally)).docs.map(toCommentView)
+  // A full first page may not be all of them: a thread with replies to show, or one that takes
+  // public ones (a later page may hold what this one lacks), is read to the end, as it is when opened.
+  const full = commentDocs.length >= COMMENT_PAGE
+  const completing = full && (admitted.length > 0 || writtenWhilePrivate)
+  if (completing) {
+    commentDocs = await readTargetRows(sdk, repo, DOC.comment, thread.id)
+    tally = new HiddenTally()
+    admitted = (await admitAll(gate, 'comment', [...commentDocs].sort(byTime), tally)).docs.map(toCommentView)
+  }
   const base: TargetReplies = {
     membersOnly: membersOnlyEntries(tally, []),
     hidden: tally.value,
     locked: isLocked(transitions),
-    // Its own `vis` stamp, in the clear: no key is needed to tell an old thread (§4.10).
-    ...(repo.visibility === 'public' && str(raw, 'vis') === 'private' ? { writtenWhilePrivate: true as const } : {}),
+    ...(writtenWhilePrivate ? { writtenWhilePrivate: true as const } : {}),
   }
+  const read = (replies: TargetReplies): TargetRead => ({ replies, comments: commentDocs.length, more: full && !completing })
   const shownIds = [...admitted.map((c) => c.author), ...(base.membersOnly ?? []).map((e) => e.item.author)]
   if (admitted.length === 0) {
     if (shownIds.length > 0) await prefetchDpnsNames(sdk, shownIds, network).catch(() => undefined)
-    return { ...base, timeline: [] }
+    return read({ ...base, timeline: [] })
   }
-  const log = await toLog(repo, [...rows.events].sort(byTime), [...rows.authorEvents].sort(byTime))
+  // The events (and a PR's author events) fold the moderation of what is shown: complete too.
+  const more = async (page: readonly PlainDocument[], type: string): Promise<readonly PlainDocument[]> => (page.length >= EVENT_PAGE ? readTargetRows(sdk, repo, type, thread.id) : page)
+  const [events, authorEvents] = await Promise.all([more(rows.events, DOC.event), more(rows.authorEvents, DOC.authorEvent)])
+  const log = await toLog(repo, [...events].sort(byTime), [...authorEvents].sort(byTime))
   const [comments, members] = await Promise.all([
     withLongBodies(sdk, repo, admitted),
     rows.memberships ?? readMembershipsCached(sdk, repo, network).catch(() => null),
@@ -416,7 +450,7 @@ async function membersOnlyReplies(
   ])
   const proved = hasHides(log.events) ? await hidesProved(sdk, repo).catch(() => false) : false
   const modInput = moderationInput({ events: log.events, thread, owner: repo.ownerId, members: members ?? [], proved, comments, membersUnread: members === null })
-  return { ...base, timeline: mergeTimeline(comments, [], [], [], tally.total > 0), moderation: foldModeration(modInput), moderationInput: modInput }
+  return read({ ...base, timeline: mergeTimeline(comments, [], [], [], tally.total > 0), moderation: foldModeration(modInput), moderationInput: modInput })
 }
 
 /** Whether a members-only target's read already shows comment `id` (a reply this page posted, L-77). */
@@ -436,7 +470,9 @@ export async function readTargetUntil<T>(
   signal: { readonly aborted: boolean },
 ): Promise<T | MembersOnlyTarget | null> {
   if (ids.length === 0) return first
-  const want = ids.map((id) => (t: T | MembersOnlyTarget) => !isMembersOnlyTarget(t) || targetShowsComment(t, id))
+  // A read that says there are more comments than it shows (a full page it did not complete)
+  // cannot show the reply: no point reading it again.
+  const want = ids.map((id) => (t: T | MembersOnlyTarget) => !isMembersOnlyTarget(t) || t.moreComments === true || targetShowsComment(t, id))
   return readUntil<T | MembersOnlyTarget>(() => load().catch(() => first), want, { signal, first })
 }
 
@@ -609,7 +645,7 @@ export async function loadIssueOrMembersOnly(sdk: EvoSDK, repo: RepoRef, number:
     const memberships = membershipsFromDocs(docsAt(res, 4).length < 100 ? docsAt(res, 4) : null, docsAt(res, 5).length < 100 ? docsAt(res, 5) : null)
     if (memberships !== null) seedMemberships(repo, network, memberships, membersAtStart)
     const replies = await membersOnlyReplies(sdk, repo, gate, raw, { comments: docsAt(res, 0), events: docsAt(res, 1), authorEvents: [], memberships }, transitions, network)
-    return membersOnlyTarget(admitted.placeholder, number, transitions, docsAt(res, 0).length, replies)
+    return membersOnlyTarget(admitted.placeholder, number, transitions, replies)
   }
   const doc = admitted.doc
   const id = str(doc, '$id')
@@ -911,7 +947,7 @@ export async function loadPullOrMembersOnly(
     const memberships = membershipsFromDocs(docsAt(res, 5).length < 100 ? docsAt(res, 5) : null, docsAt(res, 6).length < 100 ? docsAt(res, 6) : null)
     if (memberships !== null) seedMemberships(repo, network, memberships, membersAtStart)
     const replies = await membersOnlyReplies(sdk, repo, gate, raw, { comments: docsAt(res, 0), events: docsAt(res, 1), authorEvents: docsAt(res, 2), memberships }, transitions, network)
-    return membersOnlyTarget(admitted.placeholder, number, transitions, docsAt(res, 0).length, replies)
+    return membersOnlyTarget(admitted.placeholder, number, transitions, replies)
   }
   const doc = admitted.doc
   const id = str(doc, '$id')

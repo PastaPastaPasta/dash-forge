@@ -56,7 +56,10 @@ function mockSdk(store: Store): EvoSDK {
   return {
     documents: {
       query: async (q: DocumentQuery) => {
-        const rows = filtered(q).sort((a, b) => (a['$createdAt'] as number) - (b['$createdAt'] as number))
+        let rows = filtered(q).sort((a, b) => (a['$createdAt'] as number) - (b['$createdAt'] as number))
+        // A page continues after its cursor's row (ascending reads).
+        const after = rows.findIndex((d) => idOf(d['$id']) === idOf(q.startAfter))
+        if (q.startAfter !== undefined && after >= 0) rows = rows.slice(after + 1)
         const desc = (q.orderBy ?? []).some(([, dir]) => dir === 'desc')
         return new Map((desc ? rows.reverse() : rows).slice(0, q.limit ?? 100).map((d) => [String(d['$id']), d]))
       },
@@ -285,6 +288,68 @@ describe('an outsider reads the replies under a thread it cannot open', () => {
     if (!isMembersOnlyTarget(t)) throw new Error('expected a members-only target')
     expect(t.writtenWhilePrivate).toBeUndefined()
     expect(t.timeline).toEqual([])
+  })
+
+  it('a full first page of comments is read to the end when the thread takes public replies (a later page may hold them)', async () => {
+    const store = await converted()
+    const collab = store['COLLAB'] as Record<string, Doc[]>
+    // 100 members-only comments the reader cannot open, then a public reply on the second page.
+    const sealedMine = await sealed({ type: 'comment', vis: 'public', ownerId: bytes(MEMBER), epoch: 0, targetId: bytes(ID('issue4')) }, { body: SECRET })
+    const filler = Array.from({ length: 100 }, (_, i) => ({
+      $id: ID(`filler${i}`),
+      $ownerId: MEMBER,
+      $createdAt: next(),
+      $createdAtBlockHeight: 30,
+      repoId: REPO,
+      targetId: ID('issue4'),
+      vis: 'public',
+      epoch: 0,
+      asMember: MEMBER,
+      enc: sealedMine,
+    }))
+    collab['comment'] = [...(collab['comment'] ?? []), ...filler, { $id: ID('late-public'), $ownerId: STRANGER, $createdAt: next(), repoId: REPO, targetId: ID('issue4'), vis: 'public', body: 'on the second page' }]
+    const t = await loadIssueOrMembersOnly(mockSdk(store), PUBLIC, 4)
+    if (!isMembersOnlyTarget(t)) throw new Error('expected a members-only target')
+    // 2 from the fixture + 100 + 1, none cut at a page; nothing says "100+".
+    expect(t.comments).toBe(103)
+    expect(t.moreComments).toBeUndefined()
+    expect(t.timeline?.map((x) => (x.kind === 'comment' ? x.comment.body : x.kind))).toEqual(['P5B public reply', 'on the second page'])
+    expect(t.membersOnly).toHaveLength(101)
+    expect(JSON.stringify(t)).not.toContain(SECRET)
+  })
+
+  it('a full first page of a thread that takes no public reply and shows none is left at "100+", and not re-read for a reply', async () => {
+    const store = await converted()
+    const collab = store['COLLAB'] as Record<string, Doc[]>
+    // Issue #2 is members-only, written since the conversion: its comments are all unreadable here.
+    const sealedMine = await sealed({ type: 'comment', vis: 'public', ownerId: bytes(MEMBER), epoch: 0, targetId: bytes(ID('issue2')) }, { body: SECRET })
+    collab['comment'] = [
+      ...(collab['comment'] ?? []),
+      ...Array.from({ length: 100 }, (_, i) => ({
+        $id: ID(`full${i}`),
+        $ownerId: MEMBER,
+        $createdAt: next(),
+        $createdAtBlockHeight: 30,
+        repoId: REPO,
+        targetId: ID('issue2'),
+        vis: 'public',
+        epoch: 0,
+        asMember: MEMBER,
+        enc: sealedMine,
+      })),
+    ]
+    const sdk = mockSdk(store)
+    const first = await loadIssueOrMembersOnly(sdk, PUBLIC, 2)
+    if (!isMembersOnlyTarget(first)) throw new Error('expected a members-only target')
+    expect(first).toMatchObject({ comments: 100, moreComments: true })
+    let reads = 0
+    const load = async () => {
+      reads += 1
+      return loadIssueOrMembersOnly(sdk, PUBLIC, 2)
+    }
+    // A reply posted that this read cannot show: stop at once, not eight polls.
+    expect(await readTargetUntil(first, load, [ID('somewhere-past-the-page')], { aborted: false })).toBe(first)
+    expect(reads).toBe(0)
   })
 
   it('re-reads a target until a reply posted from it shows, and keeps the target when a re-read fails', async () => {

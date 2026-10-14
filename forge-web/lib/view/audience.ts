@@ -242,17 +242,28 @@ export function whilePrivateNote(member: boolean): string {
     : 'This conversation was written while this repo was private. Your reply is public: everyone can read it.'
 }
 
+/** A members access that may unlock or set up a key to read (a member who can't read yet). */
+export function memberCantRead(lane: MembersAccess | undefined): 'locked' | 'no-key' | 'no-key-shared' | null {
+  const a = lane?.access
+  return a === 'locked' || a === 'no-key' || a === 'no-key-shared' ? a : null
+}
+
 /**
  * Whether a reader who cannot open a thread of a repo whose visibility is `visibility` may reply
  * to it from its members-only page (DESIGN §4.10, L3): only a members-only thread written while
  * the repo (made public since) was private takes public replies, and the reply is public ("Public"
  * only, with {@link whilePrivateNote}). A thread written since takes members-only replies alone,
  * one to specific people only theirs, and a private repo none from a reader without its key.
+ * Not to a member who may yet read it: their key session still loading (`laneLoading`), or a key
+ * they have not unlocked, set up or been given (`lane`, {@link memberCantRead}); non-members,
+ * former members and a member holding no key for that old thread are offered it.
  */
 export function publicReplyOffered(
   visibility: 'public' | 'private',
   target: { readonly placeholder: { readonly audience: 'members' | 'specificPeople' }; readonly writtenWhilePrivate?: true },
+  reader: { readonly lane?: MembersAccess | undefined; readonly laneLoading?: boolean | undefined } = {},
 ): boolean {
+  if (reader.laneLoading === true || memberCantRead(reader.lane) !== null) return false
   return visibility === 'public' && target.writtenWhilePrivate === true && target.placeholder.audience === 'members'
 }
 

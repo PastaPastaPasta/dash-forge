@@ -46,7 +46,7 @@ import { publicReplyOffered, whilePrivateNote } from '@/lib/view/audience'
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
 const repo = { forge: { core: 'C', collab: 'C', community: 'C', group: 'G' }, repoId: 'R', ownerId: 'alice', name: 'demo', visibility: 'public' } as const
-const homeWith = (visibility: 'public' | 'private' = 'public'): RepoHome => ({ repo: { ...repo, visibility }, description: '' }) as unknown as RepoHome
+const homeWith = (visibility: 'public' | 'private' = 'public', over: Partial<RepoHome> = {}): RepoHome => ({ repo: { ...repo, visibility }, description: '', ...over }) as unknown as RepoHome
 
 const item = (over: Partial<MembersOnlyItem> = {}): MembersOnlyItem => ({
   type: 'issue',
@@ -184,6 +184,43 @@ describe('a public reply to a thread written while the repo was private', () => 
   })
 })
 
+describe('a member who may yet read the thread is not offered the Public-only composer', () => {
+  it.each(['locked', 'no-key', 'no-key-shared'] as const)('not while their access is %s', async (access) => {
+    await render(target(), homeWith('public', { lane: { access } as RepoHome['lane'] }))
+    expect(q('members-only-target')).not.toBeNull()
+    expect(q('members-only-reply-composer')).toBeNull()
+  })
+
+  it('not while their key session is still loading', async () => {
+    await render(target(), homeWith('public', { laneLoading: true }))
+    expect(q('members-only-reply-composer')).toBeNull()
+  })
+
+  it('but to a non-member, a former member, and a member holding no key for that old thread', async () => {
+    for (const lane of [undefined, { access: 'none' }, { access: 'former', session: {} }, { access: 'member', session: {} }]) {
+      act(() => root.unmount())
+      root = createRoot(host)
+      await render(target(), homeWith('public', lane === undefined ? {} : { lane: lane as RepoHome['lane'] }))
+      expect(q('members-only-reply-composer'), JSON.stringify(lane)).not.toBeNull()
+    }
+  })
+})
+
+describe('the quote check knows the replies this page shows', () => {
+  it('asks before a public reply repeats a members-only reply of the page', async () => {
+    const SECRET = 'The staging database password rotates on Friday at noon.'
+    const secret = { ...reply, id: 'MEM2', audience: 'members' as const, body: SECRET }
+    await render(target({ timeline: mergeTimeline([reply, secret], [], [], [], true) }))
+    type(`> ${SECRET}\nAgreed.`)
+    await act(async () => {
+      ;(q('members-only-reply-post') as HTMLButtonElement).click()
+    })
+    await flush()
+    expect(writes.posted).toEqual([])
+    expect(document.body.querySelector('[data-testid="quote-confirm"]')).not.toBeNull()
+  })
+})
+
 describe('publicReplyOffered', () => {
   it('only a public repo’s members-only thread written while it was private', () => {
     const t = { placeholder: { audience: 'members' as const }, writtenWhilePrivate: true as const }
@@ -191,5 +228,9 @@ describe('publicReplyOffered', () => {
     expect(publicReplyOffered('private', t)).toBe(false)
     expect(publicReplyOffered('public', { placeholder: { audience: 'members' } })).toBe(false)
     expect(publicReplyOffered('public', { ...t, placeholder: { audience: 'specificPeople' } })).toBe(false)
+    // a member who may yet read: loading, or locked / no key / none shared
+    expect(publicReplyOffered('public', t, { laneLoading: true })).toBe(false)
+    for (const access of ['locked', 'no-key', 'no-key-shared'] as const) expect(publicReplyOffered('public', t, { lane: { access } })).toBe(false)
+    for (const lane of [undefined, { access: 'none' as const }, { access: 'bot' as const }]) expect(publicReplyOffered('public', t, { lane })).toBe(true)
   })
 })

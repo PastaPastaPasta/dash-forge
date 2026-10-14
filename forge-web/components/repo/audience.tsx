@@ -87,6 +87,7 @@ import {
   type AudienceChoice,
   type ComposerAudience,
   type MembersCount,
+  memberCantRead,
 } from '@/lib/view/audience'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
@@ -925,12 +926,6 @@ export function TurnOnMembersSheet({ home, open, onClose }: { home: RepoHome; op
 // ---------------------------------------------------------------------------
 // What a reader who cannot open members-only content sees
 // ---------------------------------------------------------------------------
-
-/** A members access that may unlock or set up a key to read (a member who can't read yet). */
-function memberCantRead(lane: MembersAccess | undefined): 'locked' | 'no-key' | 'no-key-shared' | null {
-  const a = lane?.access
-  return a === 'locked' || a === 'no-key' || a === 'no-key-shared' ? a : null
-}
 
 /**
  * "Members-only comment · @alice · 2h ago" (DESIGN D14, §10); a message to specific people says

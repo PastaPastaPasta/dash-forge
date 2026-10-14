@@ -10,7 +10,7 @@
  * comment form reads (membership, the cost preview's first writes).
  */
 
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 
 import { MembersOnlyTargetPage, useMembersTexts, useQuoteGate } from '@/components/repo/audience'
 import { HiddenBanner, useThreadModeration } from '@/components/repo/moderation'
@@ -31,15 +31,13 @@ import type { RepoAddress } from '@/hooks/use-query-param'
 import { useSdk } from '@/hooks/use-sdk'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { ARCHIVED_REASON, type MembersOnlyTarget, type RepoHome } from '@/lib/view'
-import { publicReplyOffered, quotesMembersText, whilePrivateNote } from '@/lib/view/audience'
+import { notPublic, publicReplyOffered, quotesMembersText, whilePrivateNote } from '@/lib/view/audience'
 import { commentDraftKey, useDraftText } from '@/lib/view/draft-text'
 import { BODY_MAX, utf8Length } from '@/lib/view/issue-query'
 import { commentFirsts, createComment, LOCKED_REASON, lockedOut, readViewerPermissions, repoContractIds, repoKey } from '@/lib/repo'
 import { totalHidden } from '@/lib/repo/private-content'
 import type { Holdings } from '@/lib/rules'
 import { SupersededWriteError, UnconfirmedWriteError } from '@/lib/sdk'
-
-const NO_TEXTS: readonly string[] = []
 
 export function MembersOnlyThread({
   home,
@@ -57,7 +55,7 @@ export function MembersOnlyThread({
   return (
     <MembersOnlyTargetPage home={home} target={target}>
       <TargetReplies home={home} addr={addr} target={target} />
-      {publicReplyOffered(home.repo.visibility, target) ? <PublicReplyComposer home={home} target={target} kind={kind} onPosted={onPosted} /> : null}
+      {publicReplyOffered(home.repo.visibility, target, { lane: home.lane, laneLoading: home.laneLoading }) ? <PublicReplyComposer home={home} target={target} kind={kind} onPosted={onPosted} /> : null}
     </MembersOnlyTargetPage>
   )
 }
@@ -105,7 +103,9 @@ function PublicReplyComposer({ home, target, kind, onPosted }: { home: RepoHome;
     enabled: ready && sdk !== null && identity !== null,
   })
   // Members-only text this tab opened in the repo: a public reply that repeats it asks first (H8).
-  const membersTexts = useMembersTexts(home.repo.repoId, NO_TEXTS)
+  // ...and the members-only replies this page itself shows (a member who opened them, a thread page's `membersTextsOf`).
+  const pageTexts = useMemo(() => (target.timeline ?? []).flatMap((x) => (x.kind === 'comment' && notPublic(x.comment.audience) ? [x.comment.body] : [])), [target.timeline])
+  const membersTexts = useMembersTexts(home.repo.repoId, pageTexts)
   const quoteGate = useQuoteGate()
   const [comment, setComment, holdDraft] = useDraftText(commentDraftKey(home.repo, targetId, identity, 'public'), (text) => !quotesMembersText(text, membersTexts))
   const [posting, setPosting] = useState(false)

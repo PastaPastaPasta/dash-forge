@@ -313,7 +313,7 @@ describe("a repository made public with Code only browses by its index (p5b)", (
    * pack of the published refs and (`indexed`) its fragment at packRef 1, as the make-public code
    * step writes them; `extra` adds a plaintext pack pushed later and never indexed.
    */
-  async function sdkOf({ indexed = true, extra = false } = {}): Promise<EvoSDK> {
+  async function sdkOf({ indexed = true, extra = false, eraVersion = 1, repoId = REPO.repoId } = {}): Promise<EvoSDK> {
     const k0 = await EpochKeys.import(REPO_ID, 0, K0)
     const plainPack = (salt: number): Uint8Array => {
       const p = Uint8Array.from({ length: 600 }, (_, i) => (i * 7 + salt) % 251)
@@ -321,6 +321,8 @@ describe("a repository made public with Code only browses by its index (p5b)", (
       return p
     }
     const era = await sealPack(k0, plainPack(1))
+    // A header of a version this client does not open (the private era's pack, in a newer format).
+    if (eraVersion !== 1) era[4] = eraVersion
     const eraIndex = await sealPack(k0, fragment(0, [0x11, 0x12, 0x13]))
     const fresh = plainPack(2)
     const freshIndex = fragment(1, [0x21, 0x22])
@@ -337,7 +339,7 @@ describe("a repository made public with Code only browses by its index (p5b)", (
       $ownerId: b58(OWNER),
       $createdAt: height * 1000,
       $createdAtBlockHeight: height,
-      repoId: REPO.repoId,
+      repoId,
       packHash: bytesToHex(sha256(bytes)),
       kind,
       objectCount,
@@ -371,6 +373,16 @@ describe("a repository made public with Code only browses by its index (p5b)", (
     if (state.kind !== 'ready') return
     expect(state.context.locator.lookup(oidBytes(0x11))).toMatchObject({ packRef: 0 })
     expect(state.context.locator.lookup(oidBytes(0x22))).toMatchObject({ packRef: 1 })
+  })
+
+  it('a pack skipped for a newer format is not left unindexed: the clone may read it', async () => {
+    expect(await loadBrowseContext(await sdkOf({ eraVersion: 2 }), REPO)).toMatchObject({ kind: 'unindexed', reason: 'index-behind' })
+  })
+
+  it('a repo never made public does not set a skipped fragment aside: its index is unreachable', async () => {
+    const plain: RepoRef = { ...REPO, repoId: b58(id(0x13)) }
+    expect(knownConversion(plain.repoId)).toBeUndefined()
+    expect(await loadBrowseContext(await sdkOf({ repoId: plain.repoId }), plain)).toMatchObject({ kind: 'unindexed', reason: 'index-unreachable' })
   })
 
   it('a readable pack no fragment indexes still sends the repo to the fallback clone', async () => {
