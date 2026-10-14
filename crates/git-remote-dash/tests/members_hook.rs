@@ -94,6 +94,27 @@ fn the_hook_refuses_members_only_commits_to_other_remotes_and_lets_public_ones_t
     assert!(install.status.success(), "{install:?}");
     assert!(clone.join(".git/hooks/pre-push").exists());
 
+    // a remote that fetches from dash and pushes elsewhere (`pushurl`): its remote-tracking refs
+    // hold the members-only branch under its real name, and still the push is refused
+    ok(&clone, &["remote", "add", "origin", "dash://o/r"]);
+    ok(
+        &clone,
+        &[
+            "remote",
+            "set-url",
+            "--push",
+            "origin",
+            backup.to_str().unwrap(),
+        ],
+    );
+    ok(
+        &clone,
+        &["update-ref", "refs/remotes/origin/sec/fix", &members_only],
+    );
+    let pushurl = git(&clone, &["push", "origin", "sec/fix"]);
+    assert!(!pushurl.status.success(), "{pushurl:?}");
+    assert!(String::from_utf8_lossy(&pushurl.stderr).contains("E810"));
+
     // the public branch pushes
     ok(&clone, &["push", "-q", backup.to_str().unwrap(), "main"]);
     // --mirror sends sec/fix too: refused, nothing written for the members-only ref

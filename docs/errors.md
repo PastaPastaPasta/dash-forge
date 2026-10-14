@@ -575,7 +575,7 @@ error: E806 can't check for members-only commits: your encryption key isn't avai
   fix: dg auth unlock, then push again
 ```
 
-It has two triggers. A **push** to a public branch is refused when the repository has members-only content on, your key isn't available and this clone has no record of what it holds (`.git/dash/sealed-ledger`, which every clone made by a current `git-remote-dash` has). A **fetch** is refused when this clone has fetched members-only branches before and your key can't open them now: fetching only the public view would let `git fetch --prune` delete them. A record from a newer version of Forge that this one can't read is refused the same way.
+It has two triggers. A **push** to a public branch is refused when the repository has members-only branches, your key isn't available and this clone has no record of what it holds (`.git/dash/sealed-ledger`, which every clone made by a current `git-remote-dash` has). A **fetch** is refused when this clone has fetched members-only branches before and your key can't open them now: fetching only the public view would let `git fetch --prune` delete them. A push that would delete a members-only branch, or reuse its name for a public one, while your key isn't available is refused the same way: written without the key, it would publish the branch's name. A record from a newer version of Forge that this one can't read is refused the same way.
 
 **What to do:** unlock your encryption key with `dg auth unlock`, then run the command again. A key protected by a passphrase needs a terminal, or `DASH_FORGE_PASSPHRASE`. A clone that never held members-only commits can start its record with `dg doctor --init-ledger`.
 

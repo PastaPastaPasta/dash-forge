@@ -624,9 +624,10 @@ fn audiences_that_cannot_be_are_refused() {
         clone_default: Some(Members),
         ..Signals::default()
     };
+    // a clone default (often global) is no request where members-only content is off
     assert_eq!(
         decided("refs/heads/x", &default_members, &off, false),
-        Err(Refusal::MembersOff)
+        Ok(Public)
     );
     assert_eq!(
         decided("refs/heads/x", &Signals::default(), &off, false),
@@ -745,4 +746,36 @@ fn the_hook_input_is_parsed_and_null_ids_are_deletes() {
     assert!(is_null_oid(&lines[0].remote_oid));
     assert!(is_null_oid(&lines[1].local_oid));
     assert_eq!(lines[1].remote_ref, "refs/heads/b");
+}
+
+#[test]
+fn only_a_merge_with_a_parent_here_is_grafted_never_lost_history() {
+    let f = fixture();
+    // a clone holding only S2 (its parent S1 is not here): not a merge, nothing to graft
+    let only = tempfile::TempDir::new().unwrap();
+    init(only.path());
+    let s2_objects = git_in(
+        &f.path,
+        &["rev-list", "--objects", "--no-walk", &f.s2],
+        None,
+    );
+    let tree = git_in(&f.path, &["rev-parse", &format!("{}^{{tree}}", f.s2)], None);
+    let blobs = git_in(&f.path, &["ls-tree", "-r", "--object-only", &f.s2], None);
+    let mut keep: Vec<&str> = s2_objects
+        .lines()
+        .filter_map(|l| l.split(' ').next())
+        .collect();
+    keep.push(&tree);
+    keep.extend(blobs.lines());
+    let pack = git_bytes(
+        &f.path,
+        &["pack-objects", "--stdout", "-q"],
+        (keep.join("\n") + "\n").as_bytes(),
+    );
+    git_bytes(only.path(), &["index-pack", "--stdin"], &pack);
+    assert!(
+        commits_missing_parents(Some(only.path()), std::slice::from_ref(&f.s2))
+            .unwrap()
+            .is_empty()
+    );
 }

@@ -395,6 +395,10 @@ pub struct MembersUpdates {
     /// Members-only updates this reader could not open (no key, another epoch, a later envelope,
     /// late, malformed): counted, never folded.
     pub unreadable: usize,
+    /// The real non-null `newOid` of every members-only update this reader opened, those a
+    /// public name won over included (they still name members-only commits): the guard's
+    /// decryptable S.
+    pub opened_new_oids: BTreeSet<String>,
 }
 
 /// It holds members-only branch names and real commits: `Debug` shows only counts.
@@ -404,6 +408,7 @@ impl std::fmt::Debug for MembersUpdates {
             .field("names", &self.by_name.len())
             .field("alerts", &self.alerts.len())
             .field("unreadable", &self.unreadable)
+            .field("opened_new_oids", &self.opened_new_oids.len())
             .finish()
     }
 }
@@ -473,6 +478,9 @@ pub fn members_updates_of(
             let mut u = ref_update_from_doc(d, &hash_hex, protected);
             u.ref_name.clone_from(&real.name);
             u.new_oid = hex::encode(&real.new_oid);
+            if !crate::private::blind::is_null(&real.new_oid) {
+                out.opened_new_oids.insert(u.new_oid.clone());
+            }
             u.prev_oid = real
                 .prev_oid
                 .as_deref()
@@ -627,21 +635,7 @@ pub fn refs_view(state: &GitState, open: Option<DocOpener<'_>>) -> RefsView {
     let members = open.map(|open| {
         let configs = state.config_history();
         let updates = members_updates_of(state, &configs, open);
-        let sealed: BTreeSet<&str> = state
-            .ref_updates
-            .iter()
-            .chain(&state.protected_ref_updates)
-            .filter(|d| is_members_only_ref(d))
-            .map(|d| d.id.as_str())
-            .collect();
-        let decryptable: BTreeSet<String> = updates
-            .by_name
-            .values()
-            .flatten()
-            .filter(|u| sealed.contains(u.id.as_str()))
-            .map(|u| u.new_oid.clone())
-            .filter(|o| !o.is_empty() && o.bytes().any(|b| b != b'0'))
-            .collect();
+        let decryptable = updates.opened_new_oids.clone();
         let live = |s: &crate::rules::RefState| *s != crate::rules::RefState::Unborn;
         let public_live: BTreeSet<&str> = public
             .iter()

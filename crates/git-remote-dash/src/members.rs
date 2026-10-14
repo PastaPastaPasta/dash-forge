@@ -332,7 +332,10 @@ pub fn decide(
     let chosen = match asked {
         Some(a) => Some(a),
         None if facts.members_key && inherits()? => Some(Members),
-        None => s.clone_default.clone(),
+        // a clone default (often set globally) is no request for a repository without
+        // members-only content
+        None if facts.members_key => s.clone_default.clone(),
+        None => None,
     };
     Ok(match chosen {
         Some(Members) if !facts.members_key => Err(Refusal::MembersOff),
@@ -454,6 +457,37 @@ pub fn refusal_error(r: &Refusal, dst: &str, repo: &str) -> (UserError, &'static
 }
 
 const NOTE_NOTHING_SIGNED: &str = "checked before anything was signed or stored";
+
+/// E806 for a push that would change a branch this clone knows only as members-only (a delete,
+/// or a new public branch of that name) while the key that reads members-only branches is not
+/// available: written as public, it would publish the name.
+pub fn members_branch_locked(dst: &str) -> (UserError, &'static str) {
+    let name = short(dst);
+    (
+        UserError::new(
+            codes::CANNOT_CHECK_MEMBERS_ONLY,
+            format!("can't change {name}: it is a members-only branch and your encryption key isn't available"),
+        )
+        .cause("without the key this push would be written for everyone, which would publish the branch's name")
+        .fix("dg auth unlock, then push again (a key protected by a passphrase needs a terminal, or DASH_FORGE_PASSPHRASE)")
+        .note(NOTE_NOTHING_SIGNED),
+        "members-only branch: unlock your key first",
+    )
+}
+
+/// The refusal of `refs/replace/<M>` for a graft this helper wrote ([`graft_missing_parents`]).
+pub fn graft_refusal(dst: &str) -> (UserError, &'static str) {
+    (
+        UserError::new(
+            codes::PUBLISHES_MEMBERS_ONLY,
+            format!("{dst} is a graft this clone wrote over a members-only parent it can't read"),
+        )
+        .cause("it stands in for history this clone doesn't have, and is never pushed")
+        .fix("push the branches you mean to push by name, not every ref (`--mirror`, or `--all` with replace refs)")
+        .note(NOTE_NOTHING_SIGNED),
+        "a local graft",
+    )
+}
 
 /// `refs/heads/x` → `x`, `refs/tags/v1` → `v1`.
 pub fn short(r: &str) -> &str {
@@ -672,6 +706,26 @@ pub fn ledger_holds_members_only() -> bool {
     }
 }
 
+/// Whether serving only the public view to this fetch would drop branches the clone holds: a
+/// name under `refs/remotes/<remote>/` that no live public branch has (a members-only branch
+/// fetched before, which `git fetch --prune` would delete). Without a remote name (a URL fetch)
+/// it cannot tell, so it says yes (fail closed).
+pub fn public_view_drops_branches(remote: Option<&str>, public_live: &BTreeSet<&str>) -> bool {
+    let Some(remote) = remote.filter(|r| !r.is_empty() && !r.contains("://")) else {
+        return true;
+    };
+    let prefix = format!("refs/remotes/{remote}/");
+    let out = std::process::Command::new("git")
+        .args(["for-each-ref", "--format=%(refname)", &prefix])
+        .output();
+    let Ok(out) = out else { return true };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|r| r.strip_prefix(&prefix))
+        .filter(|b| *b != "HEAD")
+        .any(|b| !public_live.contains(format!("refs/heads/{b}").as_str()))
+}
+
 /// Append `commits` and `packs` (members-only, the members key's audience) to the clone's ledger,
 /// before the objects arrive or are published. A clone with no ledger gets one now: this helper
 /// records everything members-only it fetches or pushes from here on, and before members-only
@@ -747,6 +801,13 @@ pub fn remember_public_tips(tips: &[String]) {
     }
 }
 
+/// The public tips this clone's fetches of dash remotes listed ([`public_tips_path`]).
+pub fn known_public_tips() -> Vec<String> {
+    LocalRepo::common_dir()
+        .map(|c| read_public_tips(&c))
+        .unwrap_or_default()
+}
+
 fn read_public_tips(common: &Path) -> Vec<String> {
     std::fs::read_to_string(public_tips_path(common))
         .unwrap_or_default()
@@ -804,10 +865,10 @@ pub fn hooks_dir() -> Result<PathBuf> {
     })
 }
 
-/// Why members-only branches are not fetched into this clone yet, or `None` when they may be:
-/// the `pre-push` hook is in place (installed now in the repository's own hooks directory), and
-/// git runs this helper.
-pub fn members_fetch_blocked() -> Option<UserError> {
+/// Why this clone may not hold members-only branches yet (fetch them, or push the first one), or
+/// `None` when it may: the `pre-push` hook is in place (installed now in the repository's own
+/// hooks directory), and git runs this helper.
+pub fn hook_blocked() -> Option<UserError> {
     if let Some((first, me)) = helper_mismatch() {
         return Some(
             UserError::new(
@@ -919,7 +980,10 @@ pub fn pre_push(args: &[String], input: &mut dyn std::io::Read) -> Result<i32> {
     }
     let common = LocalRepo::common_dir()?;
     let g = GitGraph::here();
-    // what the remote already has, and what is public: neither is published by this push
+    // what is public, and what the remote already has (its tips in git's input): neither is
+    // published by this push. Never this clone's remote-tracking refs: a dash remote's members-only
+    // branches keep their real names there, and a remote may fetch from dash and push elsewhere
+    // (`pushurl`, `pushInsteadOf`).
     let mut known = read_public_tips(&common);
     known.extend(
         updates
@@ -927,7 +991,6 @@ pub fn pre_push(args: &[String], input: &mut dyn std::io::Read) -> Result<i32> {
             .map(|u| u.remote_oid.clone())
             .filter(|o| !is_null_oid(o)),
     );
-    known.extend(remote_tracking_tips(&remote));
     let batch: Vec<BatchRef> = updates
         .iter()
         .map(|u| BatchRef {
@@ -947,8 +1010,21 @@ pub fn pre_push(args: &[String], input: &mut dyn std::io::Read) -> Result<i32> {
             publish_private: None,
         },
     )?;
+    let grafts = written_grafts();
+    let graft_refs: Vec<&str> = updates
+        .iter()
+        .filter(|u| !is_null_oid(&u.local_oid))
+        .filter_map(|u| u.remote_ref.strip_prefix("refs/replace/"))
+        .filter(|x| grafts.contains(*x))
+        .collect();
+    for x in &graft_refs {
+        eprintln!(
+            "pre-push: {} refs/replace/{x} is a graft this clone wrote over a members-only parent it can't read; not pushing it to {remote}",
+            codes::MEMBERS_ONLY_TO_OTHER_REMOTE
+        );
+    }
     if outcome.verdict == Verdict::Pass {
-        return Ok(0);
+        return Ok(i32::from(!graft_refs.is_empty()));
     }
     for f in &outcome.findings {
         eprintln!(
@@ -968,30 +1044,11 @@ pub fn pre_push(args: &[String], input: &mut dyn std::io::Read) -> Result<i32> {
     Ok(1)
 }
 
-/// The tips of `refs/remotes/<remote>/*`: what this clone last saw on that remote.
-fn remote_tracking_tips(remote: &str) -> Vec<String> {
-    if remote.is_empty() || remote.contains('/') || remote.contains(':') {
-        return Vec::new();
-    }
-    let pattern = format!("refs/remotes/{remote}/");
-    std::process::Command::new("git")
-        .args(["for-each-ref", "--format=%(objectname)", &pattern])
-        .output()
-        .ok()
-        .map(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .filter(|l| is_hex_oid(l))
-                .map(str::to_owned)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 // --- fetch: grafts and the commit-graph -------------------------------------------------------
 
-/// The commits reachable from `wants` whose parents this clone does not hold, each with the
-/// parents it does hold (`rev-list --missing=print --parents`, replace refs off).
+/// The merges reachable from `wants` with a parent this clone does not hold and one it does, each
+/// with the parents it holds (`rev-list --missing=print --parents`, replace refs off). A commit
+/// none of whose parents is here is not one: that is lost history, never grafted over.
 pub fn commits_missing_parents(
     repo: Option<&Path>,
     wants: &[String],
@@ -1018,7 +1075,9 @@ pub fn commits_missing_parents(
             let mut it = l.split(' ');
             let c = it.next()?;
             let parents: Vec<&str> = it.collect();
-            parents.iter().any(|p| missing.contains(p)).then(|| {
+            let cut = parents.iter().any(|p| missing.contains(p))
+                && parents.iter().any(|p| !missing.contains(p));
+            cut.then(|| {
                 (
                     c.to_owned(),
                     parents
@@ -1055,6 +1114,16 @@ pub fn graft_missing_parents(
     if grafted.is_empty() {
         return Ok(grafted);
     }
+    // recorded, so a push never sends them (`refs/replace/*`, DESIGN §4.3)
+    let common = git_read_in(
+        repo,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        None,
+    )?;
+    let path = grafts_path(Path::new(String::from_utf8_lossy(&common).trim()));
+    let mut all = read_lines(&path);
+    all.extend(grafted.iter().cloned());
+    forge_core::cache::write(&path, lines(all.iter().map(String::as_str)).as_bytes());
     let pack_dir = objects_dir(repo)?.join("pack");
     for sha in packs {
         let marker = pack_dir.join(format!("pack-{sha}.promisor"));
@@ -1072,6 +1141,28 @@ pub fn graft_missing_parents(
         )?;
     }
     Ok(grafted)
+}
+
+/// `<common dir>/dash/grafts`: the commits this helper grafted over an unreadable members-only
+/// parent ([`graft_missing_parents`]), whose `refs/replace/<M>` a push never sends.
+fn grafts_path(common: &Path) -> PathBuf {
+    common.join("dash").join("grafts")
+}
+
+fn read_lines(path: &Path) -> BTreeSet<String> {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| is_hex_oid(l))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The commits this clone's helper grafted ([`grafts_path`]).
+pub fn written_grafts() -> BTreeSet<String> {
+    LocalRepo::common_dir()
+        .map(|d| read_lines(&grafts_path(&d)))
+        .unwrap_or_default()
 }
 
 fn objects_dir(repo: Option<&Path>) -> Result<PathBuf> {

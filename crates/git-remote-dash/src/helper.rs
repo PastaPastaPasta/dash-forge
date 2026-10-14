@@ -290,44 +290,55 @@ impl Helper {
     }
 
     /// The members key of this PUBLIC repository as this reader holds it, read once: the
-    /// identity is loaded only when one is set up (an anonymous clone stays anonymous), and a key
-    /// that cannot be read is a reason, never an error.
-    async fn members_keys(&mut self) -> Result<MembersKeys> {
+    /// identity is loaded only when one is set up (an anonymous clone stays anonymous), a key
+    /// sealed with a passphrase only when `prompt` (a push, or a clone that already holds
+    /// members-only commits), and a key that cannot be read is a reason, never an error.
+    async fn members_keys(&mut self, prompt: bool) -> Result<MembersKeys> {
         if let Some(k) = &self.members {
             return Ok(k.clone());
         }
         self.ensure_conn().await?;
         let conn = self.conn.as_ref().expect("conn populated");
-        let keys =
-            if conn.signer.is_none() && !key_source_configured(&self.url, conn.repo.owner_id()) {
-                MembersKeys::Anonymous
+        let keys = if conn.signer.is_none()
+            && !key_source_configured(&self.url, conn.repo.owner_id())
+        {
+            MembersKeys::Anonymous
+        } else if conn.signer.is_none()
+            && !prompt
+            && key_source_needs_passphrase(&self.url, conn.repo.owner_id())
+        {
+            // a plain fetch asks nobody for a passphrase only to learn whether they are a member
+            MembersKeys::Locked(
+                "your key is protected by a passphrase: fetch through dg, or set DASH_FORGE_PASSPHRASE"
+                    .to_owned(),
+            )
+        } else {
+            let loaded = if conn.signer.is_none() {
+                let why = "reading members-only branches opens them with your encryption key";
+                load_signer(&self.url, &conn.client, &conn.repo, why)
+                    .await
+                    .map(Some)
             } else {
-                let loaded = if conn.signer.is_none() {
-                    let why = "reading members-only branches opens them with your encryption key";
-                    load_signer(&self.url, &conn.client, &conn.repo, why)
-                        .await
-                        .map(Some)
-                } else {
-                    Ok(None)
-                };
-                match loaded {
-                    Err(e) => MembersKeys::Locked(brief(&format!("{e:#}"))),
-                    Ok(signer) => {
-                        if let Some(s) = signer {
-                            self.conn.as_mut().expect("conn populated").signer = Some(s);
+                Ok(None)
+            };
+            match loaded {
+                Err(e) => MembersKeys::Locked(brief(&format!("{e:#}"))),
+                Ok(signer) => {
+                    if let Some(s) = signer {
+                        self.conn.as_mut().expect("conn populated").signer = Some(s);
+                    }
+                    let conn = self.conn.as_ref().expect("conn populated");
+                    match conn.service().keyring(&conn.repo).await {
+                        Ok(kr) if !kr.resolution().keys.is_empty() => MembersKeys::Held(kr),
+                        Ok(kr) if kr.reader_role().is_some() => {
+                            MembersKeys::Locked("no key has been shared with you yet".to_owned())
                         }
-                        let conn = self.conn.as_ref().expect("conn populated");
-                        match conn.service().keyring(&conn.repo).await {
-                            Ok(kr) if !kr.resolution().keys.is_empty() => MembersKeys::Held(kr),
-                            Ok(kr) if kr.reader_role().is_some() => MembersKeys::Locked(
-                                "no key has been shared with you yet".to_owned(),
-                            ),
-                            Ok(_) => MembersKeys::Locked("you are not a member".to_owned()),
-                            Err(e) => MembersKeys::Locked(brief(&format!("{e:#}"))),
-                        }
+                        Ok(_) => MembersKeys::Locked("you are not a member".to_owned()),
+                        Err(e) => MembersKeys::Locked(brief(&format!("{e:#}"))),
                     }
                 }
-            };
+            }
+        };
         self.members = Some(keys.clone());
         Ok(keys)
     }
@@ -346,8 +357,17 @@ impl Helper {
         if public.members_only_updates == 0 {
             return Ok(public.public);
         }
-        let holds = members::ledger_holds_members_only();
-        let kr = match self.members_keys().await? {
+        // the fetch trigger of E806 (§11): the clone holds members-only commits, and the public
+        // view alone would drop branches it fetched before
+        let live: BTreeSet<&str> = public
+            .public
+            .iter()
+            .filter(|(_, s)| tip_oid(s).is_some())
+            .map(|(n, _)| n.as_str())
+            .collect();
+        let holds = members::ledger_holds_members_only()
+            && members::public_view_drops_branches(self.remote.as_deref(), &live);
+        let kr = match self.members_keys(for_push || holds).await? {
             MembersKeys::Held(kr) => kr,
             MembersKeys::Locked(why) if holds && !for_push => {
                 return Err(members::cannot_check_fetch(&why).into())
@@ -364,7 +384,7 @@ impl Helper {
             MembersKeys::Anonymous => return Ok(public.public),
         };
         if !for_push {
-            if let Some(blocked) = members::members_fetch_blocked() {
+            if let Some(blocked) = members::hook_blocked() {
                 if holds {
                     return Err(blocked.into());
                 }
@@ -416,15 +436,18 @@ impl Helper {
             owner: conn.repo.owner_id().to_owned(),
             ..PushView::default()
         };
-        out.default_branch = svc
-            .read_default_branch(&conn.repo)
-            .await?
-            .unwrap_or_else(|| "main".to_owned());
         if !out.members_key {
             return Ok(out);
         }
+        out.default_branch = svc
+            .read_default_branch(&conn.repo)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "main".to_owned());
         out.roles = svc.copy_roles(&conn.repo).await.ok();
-        if let MembersKeys::Held(kr) = self.members_keys().await? {
+        out.remote.clone_from(&self.remote);
+        if let MembersKeys::Held(kr) = self.members_keys(true).await? {
             let open = |k, d: &forge_core::platform::FetchedDocument| kr.open(k, d);
             let m = forge_core::refs::refs_view(&state, Some(&open))
                 .members
@@ -433,6 +456,7 @@ impl Helper {
             out.members_only = m.members_only;
             out.decryptable = Some(m.decryptable);
             out.keyring = Some(kr);
+            members::remember_public_tips(&out.public_tips());
         }
         Ok(out)
     }
@@ -478,6 +502,11 @@ impl Helper {
         // The sealed-object ledger, created empty on a clone or a fetch into a repository with
         // no refs ([`crate::ledger`]).
         crate::ledger::ensure_for_new_clone(options.cloning);
+        // every members-only commit the reader decrypts goes into the ledger even when nothing is
+        // downloaded (the wanted commits may have arrived some other way)
+        if let Some(m) = &self.members_fetch {
+            members::record(&m.decryptable, &[])?;
+        }
         // The local git odb is the cache — never re-download objects git already has
         // (architecture §6). For a plain (non-filter) fetch, if every wanted object is
         // already present locally there is nothing to transfer. (A promisor fetch still
@@ -765,10 +794,28 @@ impl Helper {
         if public_repo {
             decide_audiences(&mut planned, &view, &repo_label, options)?;
             guard_push(&mut planned, &view, options)?;
-            if planned.iter().all(|p| p.reject.is_some()) {
-                refused.extend(finalize_outcomes(planned, &remote_refs, dry_run));
-                return Ok(refused);
+            // the first members-only branch a clone holds needs the pre-push hook, as a fetch
+            // of one does
+            if !dry_run && planned.iter().any(|p| p.reject.is_none() && p.members()) {
+                if let Some(e) = members::hook_blocked() {
+                    say_refusal(&e);
+                    for p in planned
+                        .iter_mut()
+                        .filter(|p| p.reject.is_none() && p.members())
+                    {
+                        p.reject =
+                            Some("members-only branch: the pre-push hook isn't in place".into());
+                    }
+                }
             }
+        } else {
+            // a private repository has other members: members-only commits of a public one are
+            // not copied into it unpublished
+            guard_private_push(&mut planned, &remote_refs, options)?;
+        }
+        if planned.iter().all(|p| p.reject.is_some()) {
+            refused.extend(finalize_outcomes(planned, &remote_refs, dry_run));
+            return Ok(refused);
         }
         // The members key members-only refs are sealed under, read now (§5.3).
         let (lane, fresh_keys) = if public_repo && !dry_run && planned.iter().any(Planned::members)
@@ -856,6 +903,7 @@ impl Helper {
                 dry_run,
                 identity: conn.identity().id(),
                 sealed: std::cell::RefCell::default(),
+                members_sealed: std::cell::RefCell::default(),
                 history_cost: std::cell::Cell::new(history.as_ref().map(|h| h.prepared.cost())),
                 history_fallback: history
                     .as_ref()
@@ -914,6 +962,9 @@ impl Helper {
                 write_ref_updates(&svc, &conn.repo, &mut planned, progress, lane.as_ref()).await;
             if refs.is_ok() {
                 forget_sealed(sealed_cache.as_deref());
+                for p in ctx.iter().flat_map(|c| c.members_sealed.take()) {
+                    forget_sealed(Some(&p));
+                }
             }
             stored = publish_index_after_refs(ctx.as_ref(), pending_index).await;
             refs?;
@@ -2353,6 +2404,8 @@ struct PushView {
     roles: Option<forge_core::repo::RoleMap>,
     /// Its default branch (short name).
     default_branch: String,
+    /// The git remote pushed to (`origin`), when git named one.
+    remote: Option<String>,
 }
 
 impl PushView {
@@ -2388,17 +2441,13 @@ fn say_refusal(e: &UserError) {
     progress::report(&event);
 }
 
-/// Decide each accepted ref's audience (DESIGN D12, [`members::decide`]) and refuse, before
-/// anything is signed, the refs whose audience cannot be: E809, E811 (once per clone), a members-
-/// only branch in a repository without members-only content, or `-o public` on a members-only
-/// branch.
-fn decide_audiences(
+/// `-o members` / `-o public` (`None` when neither is given); `Err` when both are, which refuses
+/// the push.
+fn audience_option(
     planned: &mut [Planned],
-    view: &PushView,
-    repo_label: &str,
     options: &OptionState,
-) -> Result<()> {
-    let option = match (
+) -> std::result::Result<Option<Audience>, ()> {
+    match (
         options.has_push_option(members::OPTION_MEMBERS),
         options.has_push_option(members::OPTION_PUBLIC),
     ) {
@@ -2410,11 +2459,26 @@ fn decide_audiences(
             for p in planned.iter_mut().filter(|p| p.reject.is_none()) {
                 p.reject = Some("-o members and -o public together".into());
             }
-            return Ok(());
+            Err(())
         }
-        (true, false) => Some(Audience::Members),
-        (false, true) => Some(Audience::Public),
-        (false, false) => None,
+        (true, false) => Ok(Some(Audience::Members)),
+        (false, true) => Ok(Some(Audience::Public)),
+        (false, false) => Ok(None),
+    }
+}
+
+/// Decide each accepted ref's audience (DESIGN D12, [`members::decide`]) and refuse, before
+/// anything is signed, the refs whose audience cannot be: E809, E811 (once per clone), a members-
+/// only branch in a repository without members-only content, or `-o public` on a members-only
+/// branch.
+fn decide_audiences(
+    planned: &mut [Planned],
+    view: &PushView,
+    repo_label: &str,
+    options: &OptionState,
+) -> Result<()> {
+    let Ok(option) = audience_option(planned, options) else {
+        return Ok(());
     };
     let public_live: BTreeSet<&str> = view
         .public
@@ -2438,8 +2502,25 @@ fn decide_audiences(
     let clone_default = members::clone_default();
     let asked_before = members::asked_before();
     let mut asked = false;
+    // Without the key, a members-only branch is invisible here: a delete or a new branch of its
+    // name would be written for everyone. Its name is known to this clone from an earlier fetch.
+    let keyless = view.has_members_branch && view.decryptable.is_none();
+    let tracked_members_only = |dst: &str| -> bool {
+        let (Some(remote), Some(b)) = (view.remote.as_deref(), dst.strip_prefix("refs/heads/"))
+        else {
+            return false;
+        };
+        !public_live.contains(dst)
+            && LocalRepo::rev_parse(&format!("refs/remotes/{remote}/{b}")).is_some()
+    };
     for p in planned.iter_mut().filter(|p| p.reject.is_none()) {
         let dst = p.spec.dst.clone();
+        if keyless && tracked_members_only(&dst) {
+            let (e, wire) = members::members_branch_locked(&dst);
+            say_refusal(&e);
+            p.reject = Some(wire.to_owned());
+            continue;
+        }
         let existing = if view.members_only.contains(&dst) {
             Some(Audience::Members)
         } else if public_live.contains(dst.as_str()) {
@@ -2493,6 +2574,7 @@ fn decide_audiences(
 /// objects (the whole batch is refused), and the list of what `-o publish-private` publishes.
 fn guard_push(planned: &mut [Planned], view: &PushView, options: &OptionState) -> Result<()> {
     use forge_core::members_git::guard::{Note, Verdict};
+    refuse_written_grafts(planned);
     let batch: Vec<forge_core::members_git::plan::BatchRef> = planned
         .iter()
         .filter(|p| p.reject.is_none())
@@ -2561,6 +2643,91 @@ fn guard_push(planned: &mut [Planned], view: &PushView, options: &OptionState) -
                 eprintln!(
                     "dash: note: your encryption key isn't available; this clone's record says it never held members-only commits, so the push was checked against that"
                 );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Refuse `refs/replace/<M>` for every graft this helper wrote over an unreadable members-only
+/// parent ([`members::graft_missing_parents`]): a push never sends them (DESIGN §4.3).
+fn refuse_written_grafts(planned: &mut [Planned]) {
+    let grafts = members::written_grafts();
+    if grafts.is_empty() {
+        return;
+    }
+    for p in planned.iter_mut().filter(|p| p.reject.is_none()) {
+        let written = p
+            .spec
+            .dst
+            .strip_prefix("refs/replace/")
+            .is_some_and(|x| grafts.contains(x));
+        if written && p.new_oid.is_some() {
+            let (e, wire) = members::graft_refusal(&p.spec.dst);
+            say_refusal(&e);
+            p.reject = Some(wire.to_owned());
+        }
+    }
+}
+
+/// The guard over a push to a PRIVATE repository from a clone whose ledger records members-only
+/// commits of a public one (DESIGN D21 rev 4: a ref update is refused when its audience is wider
+/// than a members-only commit it adds; a private repository's members are another audience):
+/// every ref is checked as public against the repository's refs and the public tips this clone
+/// knows. Nothing to check for a clone that never held members-only commits.
+fn guard_private_push(
+    planned: &mut [Planned],
+    remote_refs: &[(String, RefState)],
+    options: &OptionState,
+) -> Result<()> {
+    use forge_core::members_git::guard::Verdict;
+    match members::read_ledger() {
+        forge_core::members_git::ledger::State::Absent => return Ok(()),
+        forge_core::members_git::ledger::State::Present(l) if l.is_empty() => return Ok(()),
+        _ => {}
+    }
+    refuse_written_grafts(planned);
+    let batch: Vec<forge_core::members_git::plan::BatchRef> = planned
+        .iter()
+        .filter(|p| p.reject.is_none())
+        .map(|p| forge_core::members_git::plan::BatchRef {
+            dst: p.spec.dst.clone(),
+            new: p.new_oid.clone(),
+            audience: Audience::Public,
+        })
+        .collect();
+    if batch.is_empty() {
+        return Ok(());
+    }
+    let mut known: Vec<String> = remote_refs.iter().filter_map(|(_, s)| tip_oid(s)).collect();
+    known.extend(members::known_public_tips());
+    let values: Vec<String> = options
+        .push_option_values(members::OPTION_PUBLISH_PRIVATE)
+        .map(str::to_owned)
+        .collect();
+    let publish = members::publish_private(&values);
+    let outcome = members::run_guard(false, None, &known, &batch, publish.as_deref())?;
+    let g = members::GitGraph::here();
+    match outcome.verdict {
+        Verdict::Pass => {
+            for line in members::publication_lines(&g, &outcome.published) {
+                eprintln!("{line}");
+            }
+        }
+        Verdict::Unavailable => {
+            say_refusal(&members::ledger_unreadable());
+            for p in planned.iter_mut().filter(|p| p.reject.is_none()) {
+                p.reject = Some("can't check for members-only commits".into());
+            }
+        }
+        Verdict::Refuse => {
+            let (e, lines) = members::publish_refusal(&g, &outcome, &batch, &BTreeMap::new(), 0);
+            for line in lines {
+                eprintln!("{line}");
+            }
+            say_refusal(&e);
+            for p in planned.iter_mut().filter(|p| p.reject.is_none()) {
+                p.reject = Some("would publish members-only commits".into());
             }
         }
     }
@@ -2714,6 +2881,7 @@ fn seal_members_pack(
         ctx.repo.id(),
         hex::encode(forge_core::private::keys::sha256(plain))
     ));
+    ctx.members_sealed.borrow_mut().push(path.clone());
     if let Ok(cached) = std::fs::read(&path) {
         let epoch = forge_core::private::PackHeader::parse(
             cached
@@ -2896,6 +3064,8 @@ struct PushContext<'a> {
     /// The sealed-pack cache path this push used ([`sealed_cache_path`]); dropped once the
     /// push's refs land ([`forget_sealed`]).
     sealed: std::cell::RefCell<Option<std::path::PathBuf>>,
+    /// The kept members-only packs of this push ([`seal_members_pack`]), dropped likewise.
+    members_sealed: std::cell::RefCell<Vec<std::path::PathBuf>>,
     /// What the history index this push publishes costs, if any (both of its artifacts, each
     /// priced as its own manifest): priced with the push. Becomes the fallback delta's when the
     /// cost guard declines a due full index.
@@ -4626,6 +4796,17 @@ fn key_source_configured(url: &DashUrl, owner_id: &str) -> bool {
     }
     matches!(url, DashUrl::Named { .. })
         && resolve_key_path(url, owner_id).is_ok_and(|p| p.exists())
+}
+
+/// Whether the key source a push would load is a file sealed with a passphrase and no
+/// `DASH_FORGE_PASSPHRASE` is set: loading it would ask on the terminal.
+fn key_source_needs_passphrase(url: &DashUrl, owner_id: &str) -> bool {
+    if HANDED_KEY.get().is_some()
+        || std::env::var_os("DASH_FORGE_PASSPHRASE").is_some_and(|v| !v.is_empty())
+    {
+        return false;
+    }
+    resolve_key_path(url, owner_id).is_ok_and(|p| forge_core::keystore::is_sealed_file(&p))
 }
 
 /// Resolve the identity key source: `DASH_FORGE_KEY` if set, else (for `dash://<owner>/…`)
