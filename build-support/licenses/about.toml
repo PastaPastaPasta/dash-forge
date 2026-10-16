@@ -1,0 +1,119 @@
+# cargo-about configuration: the third-party license notices shipped with the release archives
+# and the container images (build-support/licenses/generate.sh, .github/workflows/release.yml).
+#
+# The list below is the set of licenses the shipped dependency tree actually uses, in priority
+# order: for a dual-licensed crate (`MIT OR Apache-2.0`) cargo-about reproduces the first one
+# that is accepted. It matches deny.toml's [licenses] allow list (the CI policy gate) except
+# for MPL-2.0, which nothing we ship uses: a new MPL crate fails generation until someone has
+# read its terms. A crate whose license is not on the list fails the build instead of shipping
+# without a notice.
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "BSD-2-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "CC0-1.0",
+    "0BSD",
+    "BSL-1.0",
+    "CDLA-Permissive-2.0",
+    "MITNFA",
+]
+
+# The six release targets (release.yml's build matrix). A crate reachable only through a cfg
+# for some other target (uefi, wasm, wasi, ...) is not in any binary and gets no notice.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
+
+# Compile-time-only crates are not in the binaries. Dev-dependencies (tests) are not either.
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+
+# Our own crates are covered by LICENSE-MIT and LICENSE-APACHE, shipped beside this file.
+private = { ignore = true }
+
+# ---------------------------------------------------------------------------------------------
+# Crates whose manifest declares no license field. Crate-specific tables must come last.
+#
+# dashpay/platform (the Dash Platform SDK crates): MIT, "Copyright (c) 2017-2021 Dash Core
+# Group, Inc." (LICENSE.md at the repository root, two levels above each package). wasm-dpp2 is
+# only in the web app's wasm module (generate-wasm.sh); the others are in both builds. The checksum
+# is of that file; when a Platform bump changes it the clarification stops applying and
+# generation fails, so a new license is read before it ships. Re-check on every Platform tag.
+# ---------------------------------------------------------------------------------------------
+
+[dash-platform-macros.clarify]
+license = "MIT"
+
+[[dash-platform-macros.clarify.files]]
+path = '../../LICENSE.md'
+license = 'MIT'
+checksum = 'e504a118186ed7e3a0b319d4d72cc8f8107e6d854a95c8b1ba2aff5fb4563ff3'
+
+[dash-sdk.clarify]
+license = "MIT"
+
+[[dash-sdk.clarify.files]]
+path = '../../LICENSE.md'
+license = 'MIT'
+checksum = 'e504a118186ed7e3a0b319d4d72cc8f8107e6d854a95c8b1ba2aff5fb4563ff3'
+
+[dpp.clarify]
+license = "MIT"
+
+[[dpp.clarify.files]]
+path = '../../LICENSE.md'
+license = 'MIT'
+checksum = 'e504a118186ed7e3a0b319d4d72cc8f8107e6d854a95c8b1ba2aff5fb4563ff3'
+
+[drive-proof-verifier.clarify]
+license = "MIT"
+
+[[drive-proof-verifier.clarify.files]]
+path = '../../LICENSE.md'
+license = 'MIT'
+checksum = 'e504a118186ed7e3a0b319d4d72cc8f8107e6d854a95c8b1ba2aff5fb4563ff3'
+
+
+[wasm-dpp2.clarify]
+license = "MIT"
+
+[[wasm-dpp2.clarify.files]]
+path = '../../LICENSE.md'
+license = 'MIT'
+checksum = 'e504a118186ed7e3a0b319d4d72cc8f8107e6d854a95c8b1ba2aff5fb4563ff3'
+
+[rs-dapi-client.clarify]
+license = "MIT"
+
+[[rs-dapi-client.clarify.files]]
+path = '../../LICENSE.md'
+license = 'MIT'
+checksum = 'e504a118186ed7e3a0b319d4d72cc8f8107e6d854a95c8b1ba2aff5fb4563ff3'
+
+[simple-signer.clarify]
+license = "MIT"
+
+[[simple-signer.clarify.files]]
+path = '../../LICENSE.md'
+license = 'MIT'
+checksum = 'e504a118186ed7e3a0b319d4d72cc8f8107e6d854a95c8b1ba2aff5fb4563ff3'
+
+# dashpay/rs-bip37-bloom-filter (a git dependency of the Platform SDK): MIT, "Copyright (c) 2023
+# fominok" (LICENSE in the crate root).
+[bip37-bloom-filter.clarify]
+license = "MIT"
+
+[[bip37-bloom-filter.clarify.files]]
+path = 'LICENSE'
+license = 'MIT'
+checksum = 'ca3021fc8f301b5de9e418c275a85cf04766ce8ce3752741df958474c84938d2'

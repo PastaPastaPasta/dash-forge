@@ -1,10 +1,15 @@
 # The release image: the static x86_64-unknown-linux-musl forge-relay from the release build,
 # on distroless/static (CA certificates, a nonroot user, nothing else), pinned by digest.
 # Built by the `relay-image` job of .github/workflows/release.yml with the binary at
-# ./forge-relay (extracted from the checksummed release archive).
+# ./forge-relay and the archive's license files (LICENSE-MIT, LICENSE-APACHE,
+# THIRD-PARTY-LICENSES, licenses/) beside it, all extracted from the checksummed release archive.
 
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 COPY --chmod=0755 forge-relay /usr/local/bin/forge-relay
+# The project's licenses and the third-party notices (OpenSSL's and musl's are in licenses/),
+# where a Debian-style image keeps its documentation.
+COPY LICENSE-MIT LICENSE-APACHE THIRD-PARTY-LICENSES /usr/share/doc/dash-forge/
+COPY licenses/ /usr/share/doc/dash-forge/licenses/
 # The retry queue's state dir, owned by the runtime user (a named volume mounted here starts
 # with this ownership; the image has no shell to mkdir with, so an empty dir it already holds
 # is copied). See the README for the state-dir rules (explicit vs default, the fallback).
