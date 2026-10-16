@@ -36,6 +36,9 @@ import { useSdk } from '@/hooks/use-sdk'
 import { ACTIVE_NETWORK, NETWORKS, networkName, type Network } from '@/lib/constants'
 import { listShowcaseRepos, showcaseFor } from '@/lib/view/showcase'
 import { listReposByOwner, plural, resolveDpnsName, timeAgo, type DiscoveredRepo } from '@/lib/view'
+import { MIN_STARGAZERS } from '@/lib/repo/trending'
+import { curates } from '@/lib/view/curation'
+import { DOCS } from '@/lib/docs-links'
 import { rankedRepos, recentReposPage, recentlyUpdated, reposWithTopic, searchPrefix, searchRepos, PUSH_WINDOW_MS, TOPIC_PAGE, type RankedRepos } from '@/lib/view/discovery'
 import { MAX_TOPIC_CHARS, TOPIC_PATTERN } from '@/lib/repo/settings'
 import { trendingNote, trendingWindowStart, type TrendingWindow } from '@/lib/repo/trending'
@@ -58,6 +61,11 @@ const SCAN_REPOS_MAX = 20
 
 /** "Trending", "Most starred" and "Recently updated" show this many. */
 const TOP_N = 12
+
+/** What both star rankings say about their counts (ABU-02). */
+const UNWEIGHTED = 'Counts are unweighted: every identity counts once, however new.'
+const TRENDING_FLOOR = `A repo needs ${MIN_STARGAZERS} new stars to be listed. ${UNWEIGHTED}`
+const STARRED_FLOOR = `A repo needs ${MIN_STARGAZERS} stars to be listed. ${UNWEIGHTED}`
 
 export function ExploreClient(): JSX.Element {
   const { sdk, ready, network, status: sdkStatus, retry: retrySdk } = useSdk()
@@ -132,7 +140,17 @@ export function ExploreClient(): JSX.Element {
             <h1 className="flex items-center gap-2 text-2xl">
               <Compass className="h-6 w-6 text-fg-muted" aria-hidden /> Explore
             </h1>
-            <p className="mt-1 text-dense text-anvil-600 dark:text-anvil-300">Everything here is read from {networkName(NETWORKS[network])} and verified in your browser. No server ranks or filters it.</p>
+            <p className="mt-1 text-dense text-anvil-600 dark:text-anvil-300">Everything here is read from {networkName(NETWORKS[network])} and verified in your browser. No server ranks it.{' '}
+              {curates() ? (
+                <>
+                  This site hides some repos from these lists; they stay on Dash Platform, and other sites show them.{' '}
+                  <a href={DOCS.hostedCuration} target="_blank" rel="noreferrer noopener" className="hit-area text-forge-700 underline dark:text-forge-400" data-testid="explore-curation-link">
+                    What that means
+                  </a>
+                  .
+                </>
+              ) : null}
+            </p>
           </div>
         </header>
 
@@ -167,9 +185,9 @@ export function ExploreClient(): JSX.Element {
           testId="explore-trending"
           icon={Flame}
           state={trending}
-          empty={trendWindow === 'week' ? 'Nobody starred a repo in the last week.' : `Nobody has starred a repo since ${todayStart ?? '00:00 UTC'} yet.`}
+          empty={trendWindow === 'week' ? `No repo has ${MIN_STARGAZERS} new stars in the last week.` : `No repo has ${MIN_STARGAZERS} new stars since ${todayStart ?? '00:00 UTC'} yet.`}
           emptyAction={<TrendWindowToggle value={trendWindow} onChange={setTrendWindow} />}
-          note={trendNote}
+          note={`${trendNote} ${TRENDING_FLOOR}`}
           partial={missingNote}
         >
           {(d) => (
@@ -186,8 +204,8 @@ export function ExploreClient(): JSX.Element {
           testId="explore-most-starred"
           icon={Star}
           state={starred}
-          empty="No repo on this network has a star yet."
-          note="All time, over every star on the network, proved by the ranked star index."
+          empty={`No repo on this network has ${MIN_STARGAZERS} stars yet.`}
+          note={`All time, over every star on the network, proved by the ranked star index. ${STARRED_FLOOR}`}
           partial={missingNote}
         >
           {(d) => <RankedGrid repos={d.repos} unit="star" />}
@@ -200,8 +218,12 @@ export function ExploreClient(): JSX.Element {
           icon={GitFork}
           state={forked}
           empty="No repo on this network has been forked yet."
-          note="All time, over every fork on the network, proved by the ranked fork index."
-          partial={missingNote}
+          note="All time, ranked by how many different identities forked a repo, not by how many forks exist. A fork counts when it exists; forks are not checked for a push. Counts are unweighted."
+          partial={(d) =>
+            missingNote(d) ??
+            (d.approximate ? 'A repo with more than 100 forks is counted from its first 100, so its count is a lower bound.' : null) ??
+            (d.incomplete ? 'Only the most forked repos by raw fork count were examined, so one with fewer forks from more different owners may be missing.' : null)
+          }
         >
           {(d) => <RankedGrid repos={d.repos} unit="fork" />}
           {(d) => d.repos.length === 0}

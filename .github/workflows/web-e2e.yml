@@ -21,6 +21,7 @@ on:
     paths:
       - 'forge-web/**'
       - 'forge-contracts/deployments/**'
+      - 'forge-contracts/config/**'
       - '.github/workflows/web-e2e.yml'
   workflow_dispatch:
 
@@ -65,7 +66,7 @@ jobs:
           fi
           echo "Changed files:"
           printf '%s\n' "$files"
-          pattern='^(forge-web/|forge-contracts/deployments/|forge-contracts/scripts/seed-v2-fixture\.mjs$|\.github/workflows/web-e2e\.yml$)'
+          pattern='^(forge-web/|forge-contracts/deployments/|forge-contracts/config/|forge-contracts/scripts/seed-v2-fixture\.mjs$|\.github/workflows/web-e2e\.yml$)'
           if printf '%s\n' "$files" | grep -Eq "$pattern"; then
             echo "web=true" >> "$GITHUB_OUTPUT"
           else

@@ -21,6 +21,11 @@ export interface RunnerKeyRecord {
 
 export interface MirrorProgress {
   readonly github: GithubRepo | null
+  /**
+   * The person ticked the rights acknowledgement for this GitHub repository (LEG-10): the
+   * wizard writes nothing to Platform before it, and a different repository asks again.
+   */
+  readonly rightsAcknowledged: boolean
   /** The Forge repository the mirror writes to, once it exists (created here or picked). */
   readonly repo: { readonly repoId: string; readonly name: string } | null
   /** The storage profile's name, or `platform`. */
@@ -41,6 +46,7 @@ export interface MirrorProgress {
 
 export const EMPTY_PROGRESS: MirrorProgress = {
   github: null,
+  rightsAcknowledged: false,
   repo: null,
   storage: null,
   runnerKey: null,
@@ -62,7 +68,8 @@ const sameGithub = (a: GithubRepo | null, b: GithubRepo | null): boolean => a?.o
  */
 export function withAnswer(p: MirrorProgress, patch: Partial<MirrorProgress>): MirrorProgress {
   const next = { ...p, ...patch }
-  if ('github' in patch && !sameGithub(p.github, next.github)) return { ...next, repo: null, ...DOWNSTREAM }
+  // A different GitHub repository is acknowledged afresh, unless the patch carries the answer.
+  if ('github' in patch && !sameGithub(p.github, next.github)) return { ...next, rightsAcknowledged: 'rightsAcknowledged' in patch ? next.rightsAcknowledged : false, repo: null, ...DOWNSTREAM }
   const changed =
     ('repo' in patch && next.repo?.repoId !== p.repo?.repoId) ||
     ('storage' in patch && next.storage !== p.storage) ||
@@ -77,8 +84,8 @@ export function withAnswer(p: MirrorProgress, patch: Partial<MirrorProgress>): M
  * identity's answers). A repository checked before signing in wins over a saved one.
  */
 export function resumed(now: MirrorProgress, saved: MirrorProgress | null, openedAt: number): MirrorProgress {
-  if (saved === null) return { ...EMPTY_PROGRESS, github: now.github, startedAt: now.github !== null && now.startedAt ? now.startedAt : openedAt }
-  return now.github !== null ? withAnswer(saved, { github: now.github }) : saved
+  if (saved === null) return { ...EMPTY_PROGRESS, github: now.github, rightsAcknowledged: now.github !== null && now.rightsAcknowledged, startedAt: now.github !== null && now.startedAt ? now.startedAt : openedAt }
+  return now.github !== null ? withAnswer(saved, now.rightsAcknowledged ? { github: now.github, rightsAcknowledged: true } : { github: now.github }) : saved
 }
 
 /**

@@ -4,7 +4,8 @@
  * `/mirror` — mirror a GitHub repository into Dash Forge, end to end, from the browser
  * (`ux-dx-spec.md` §1(b), launch criterion 2: nothing to install, no Forge-run service):
  *
- *   1. the GitHub repository, checked public through GitHub's anonymous REST API;
+ *   1. the GitHub repository, checked public through GitHub's anonymous REST API, with its
+ *      licence and an explicit "I have the right to copy it" before anything is written (LEG-10);
  *   2. the Forge repository (created here, three documents, or an existing one of yours);
  *   3. storage: a bucket of your own (the storage wizard, with its CORS fix) or Platform;
  *   4. a runner key: a limited, group-bound key with its own budget and expiry, shown once as
@@ -51,7 +52,8 @@ const TITLES: Readonly<Record<StepId, string>> = {
 /** Which steps are answered. */
 function doneSteps(p: MirrorProgress): Readonly<Record<StepId, boolean>> {
   return {
-    github: p.github !== null,
+    // Answered only with the rights acknowledgement (LEG-10): nothing is written before it.
+    github: p.github !== null && p.rightsAcknowledged,
     repo: p.repo !== null,
     storage: p.storage !== null,
     key: p.runnerKey?.saved === true,
@@ -190,10 +192,12 @@ export function MirrorWizard(): JSX.Element {
   const firstsOrNone = firsts.data ?? { first: {}, rest: {} }
 
   const body = (s: StepId): React.ReactNode => {
-    if (s === 'github') return <GithubStep initial={progress.github} onDone={(github) => update({ github })} />
+    if (s === 'github') return <GithubStep initial={progress.github} onDone={(github) => update({ github, rightsAcknowledged: true })} />
     if (!signedIn || progress.github === null) {
       return identity === null ? <SignInGate /> : <p className="text-dense text-anvil-500 dark:text-anvil-400">Opening your progress…</p>
     }
+    // A step after GitHub never opens without the acknowledgement (a record saved before it).
+    if (!progress.rightsAcknowledged) return null
     const gh = progress.github
     switch (s) {
       case 'repo':

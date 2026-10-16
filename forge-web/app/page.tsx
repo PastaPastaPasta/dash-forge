@@ -22,8 +22,8 @@ import { NotDeployedState, isForgeDeployed } from '@/components/ui/network-badge
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useQuorumCheck } from '@/hooks/use-quorum-check'
-import { deriveConnectionTrust, mainnetCents, recentReposPage, type DiscoveredRepo } from '@/lib/view'
-import { isCurated, listShowcaseRepos, showcaseFor } from '@/lib/view/showcase'
+import { deriveConnectionTrust, mainnetCents, type DiscoveredRepo } from '@/lib/view'
+import { RECENT_PER_OWNER, landingRecent, listShowcaseRepos, recentFeed, showcaseFor } from '@/lib/view/showcase'
 import { creditsToDash, PUSH_COST_DASH, typicalIssueCredits } from '@/lib/sdk'
 import { ACTIVE_NETWORK, networkName } from '@/lib/constants'
 import { DOCS } from '@/lib/docs-links'
@@ -44,7 +44,7 @@ export default function LandingPage(): JSX.Element {
   const deployed = isForgeDeployed()
   // The page, not just its repos: whether its push lookup was complete decides what "pushed" can mean.
   const feedPage = useAsync(
-    () => recentReposPage(sdk!, { network, limit: 24 }),
+    () => recentFeed(sdk!, { network, limit: 24 }),
     [ready, network],
     { enabled: deployed && ready && sdk !== null },
   )
@@ -60,11 +60,15 @@ export default function LandingPage(): JSX.Element {
   const feed = { ...feedPage, data: feedPage.data?.repos ?? null }
   // A page whose push lookup was cut short or refused cannot tell "not pushed" from "not read".
   const pushesKnown = feedPage.data !== null && feedPage.data.pushesComplete && !feedPage.data.fallback
-  const recentAll = featured && showcase.loading ? null : (feed.data?.filter((r) => !shown.has(r.key)) ?? null)
-  // Only described, pushed repos unless the visitor asks for all of them (CJ-1).
+  // Only described, pushed repos unless the visitor asks for all of them (CJ-1), and at most two
+  // per owner either way (ABU-V-03): one identity creating repos in bulk must not own the front page.
   const [showAll, setShowAll] = useState(false)
-  const recent = recentAll === null || showAll ? recentAll : recentAll.filter((r) => isCurated(r, pushesKnown))
-  const hidden = recentAll === null || recent === null ? 0 : recentAll.length - recent.length
+  const waiting = feed.data === null || (featured && showcase.loading)
+  const listed = waiting || feed.data === null ? null : landingRecent(feed.data, { exclude: shown, pushesKnown, showAll })
+  const recent = listed?.shown ?? null
+  const hidden = listed?.notCurated ?? 0
+  const capped = listed?.capped ?? 0
+  const feedNotFeatured = waiting || feed.data === null ? null : feed.data.filter((r) => !shown.has(r.key))
   const faucet = faucetUrl()
   const testNetwork = ACTIVE_NETWORK.network !== 'mainnet'
 
@@ -211,7 +215,7 @@ export default function LandingPage(): JSX.Element {
               </Link>
             }
           />
-        ) : recentAll && recentAll.length === 0 ? (
+        ) : feedNotFeatured && feedNotFeatured.length === 0 ? (
           <p className="text-dense text-anvil-500 dark:text-anvil-400">The newest repos are the featured ones above.</p>
         ) : recent ? (
           <>
@@ -224,6 +228,14 @@ export default function LandingPage(): JSX.Element {
               <Button variant="ghost" size="sm" className="mt-3" onClick={() => setShowAll(true)} data-testid="show-all-recent">
                 Show all recent repos ({hidden} more)
               </Button>
+            ) : null}
+            {capped > 0 ? (
+              <p className="mt-3 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="recent-owner-cap">
+                At most {RECENT_PER_OWNER} repos per owner are shown here.{' '}
+                <Link href="/explore/" className="hit-area underline">
+                  Explore lists them all.
+                </Link>
+              </p>
             ) : null}
           </>
         ) : sdkStatus.phase === 'error' ? null : sdkStatus.phase === 'downloading' ? (

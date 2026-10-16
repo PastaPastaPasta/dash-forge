@@ -13,11 +13,13 @@ import type { MirrorProgress } from '@/lib/mirror/progress'
 
 type OnCreated = (r: unknown, value: string) => void
 
-const { A, B, FORGE, auth, created, shownTo, saves } = vi.hoisted(() => ({
+const { A, B, FORGE, auth, created, shownTo, saves, ack } = vi.hoisted(() => ({
   A: 'IdentityAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
   B: 'IdentityBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB',
   FORGE: { core: 'CoreContract111', collab: 'CollabContract111', community: 'CommunityContract111', group: 'Group111' },
   auth: { identity: null as string | null },
+  // Whether the saved record has the rights acknowledgement (a record saved before it has none).
+  ack: { value: true },
   // The last onCreated each identity's key step was rendered with (a key made in flight).
   created: {} as Record<string, OnCreated>,
   // Every render of the key step that was handed the value, by identity.
@@ -47,7 +49,7 @@ vi.mock('@/lib/mirror/progress', async (importOriginal) => {
   }
   return {
     ...m,
-    loadMirrorProgress: async () => saved,
+    loadMirrorProgress: async () => ({ ...saved, rightsAcknowledged: ack.value }),
     saveMirrorProgress: async (_net: string, id: string, p: MirrorProgress) => void saves.push([id, p]),
   }
 })
@@ -84,6 +86,7 @@ const keyStep = (): HTMLElement => host.querySelector<HTMLElement>('[data-testid
 const hasSecret = (): string | undefined => keyStep().dataset['hasSecret']
 
 beforeEach(() => {
+  ack.value = true
   shownTo.length = 0
   saves.length = 0
   host = document.createElement('div')
@@ -144,5 +147,21 @@ describe('MirrorWizard: the runner key value', () => {
     await renderAs(A)
     expect(hasSecret()).toBe('false')
     expect(shownTo).toEqual([])
+  })
+})
+
+describe('MirrorWizard: the rights acknowledgement (LEG-10)', () => {
+  it('holds every step after GitHub back for a record saved without it', async () => {
+    ack.value = false
+    await renderAs(A)
+    expect(host.querySelector('[data-testid="key-step"]')).toBeNull()
+    // The GitHub step is the open one, not the key step the record's other answers point at.
+    expect(host.querySelector('[data-testid="mirror-step-github"]')?.getAttribute('data-state')).toBe('active')
+  })
+
+  it('goes on to the answered steps once it is there', async () => {
+    await renderAs(A)
+    expect(host.querySelector('[data-testid="key-step"]')).not.toBeNull()
+    expect(host.querySelector('[data-testid="mirror-step-github"]')?.getAttribute('data-state')).toBe('done')
   })
 })

@@ -121,6 +121,10 @@ test('m1. signed out: GitHub is checked anonymously, and the next step asks to s
   await expect(found).toContainText('default branch main')
   expect(asked).toContain(`/repos/${GH.owner}/${GH.name}`)
   await shot(page, 'mirror-01-github-found')
+  // Nothing continues without the explicit "I have the right to copy it" (LEG-10).
+  await expect(found.getByTestId('mirror-license')).toBeVisible()
+  await expect(found.getByRole('button', { name: `Mirror ${GH.owner}/${GH.name}` })).toBeDisabled()
+  await found.getByTestId('mirror-rights').getByRole('checkbox').check()
   await found.getByRole('button', { name: `Mirror ${GH.owner}/${GH.name}` }).click()
   await expect(step(page, 'github')).toHaveAttribute('data-state', 'done')
   await expect(step(page, 'repo')).toHaveAttribute('data-state', 'active')
@@ -144,6 +148,7 @@ test('m2. signed in: repo, storage, runner key and workflow, with no write reach
 
   // 1. GitHub.
   await checkGithub(page, `${GH.owner}/${GH.name}`)
+  await page.getByTestId('mirror-github-found').getByTestId('mirror-rights').getByRole('checkbox').check()
   await page.getByTestId('mirror-github-found').getByRole('button', { name: /^Mirror / }).click()
 
   // 2. The Forge repo: the lowercased name is MAINTAINER's empty fixture, so it is reused.

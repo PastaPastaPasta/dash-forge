@@ -35,6 +35,7 @@ import { DOC, asIdentifierString, contractOf, readMemberRepoIds, toRepoDoc, type
 import { starShape } from '../repo/star-shape'
 import {
   FUSED_READ_AHEAD,
+  MIN_STARGAZERS,
   OWNER_STAR_LOOKUP_LIMIT,
   fusedTrending,
   ownerStarLookupOf,
@@ -48,6 +49,8 @@ import {
   type TrendingWindow,
 } from '../repo/trending'
 import { MAX_TOPIC_CHARS, TOPIC_PATTERN } from '../repo/settings'
+import { activeHidden, dropHidden, type Hidden } from './curation'
+import { mapPooled } from './pool'
 import { seedFromDomains } from './dpns'
 
 /** A repo row for the discovery feeds and profiles. */
@@ -239,7 +242,7 @@ export function pageWalk(where: readonly WhereClause[], order: { field: string; 
  * pushes in the same composite. If the composite surface is refused, the same page is read as
  * a plain query without counts (never one count request per repo).
  */
-async function readRepoPage<T extends string | number>(
+async function readRepoPageOnce<T extends string | number>(
   sdk: EvoSDK,
   forge: ForgeIds,
   network: Network,
@@ -247,7 +250,7 @@ async function readRepoPage<T extends string | number>(
   where: (after: Keyset<T> | null, strict: boolean) => WhereClause[],
   limit: number,
   after: Keyset<T> | null,
-): Promise<RepoPage<T>> {
+): Promise<RepoPage<T> & { readonly dropped: number }> {
   // The ids shown at the boundary are re-read and skipped. Once they would crowd out a page,
   // step strictly past the boundary instead, and say that the rest of that tie was skipped.
   const strict = after !== null && after.seen.length + limit > MAX_ROWS
@@ -276,7 +279,43 @@ async function readRepoPage<T extends string | number>(
   const cut = keysetPage<T>(rows, order.field, limit, requested, from)
   const { repos, pushesComplete } =
     res === null ? { repos: cut.rows.map((d) => fromRepoDoc(toRepoDoc(d))), pushesComplete: true } : reposOf(res, cut.rows, 0, network)
-  return { repos, next: cut.next, pushesComplete, fallback: res === null, skippedTies: strict }
+  // Hosted curation (docs/hosted-curation.md): dropped after the keyset cut, so paging is unchanged.
+  const shown = dropHidden(repos)
+  return { repos: shown, next: cut.next, pushesComplete, fallback: res === null, skippedTies: strict, dropped: repos.length - shown.length }
+}
+
+/** Most reads a page makes to fill itself past hidden repos. */
+const FILL_READS = 3
+
+/**
+ * {@link readRepoPageOnce}, read on while hidden repos left the page short and more follow: a
+ * page of hidden repos (one identity bulk-creating repos) must not read as the end of the list
+ * (docs/hosted-curation.md). Costs nothing when nothing on the page is hidden. The pages are
+ * joined, so a result may hold more than `limit` repos; `next` is where the last read ended.
+ */
+async function readRepoPage<T extends string | number>(
+  sdk: EvoSDK,
+  forge: ForgeIds,
+  network: Network,
+  order: { field: string; direction: 'asc' | 'desc' },
+  where: (after: Keyset<T> | null, strict: boolean) => WhereClause[],
+  limit: number,
+  after: Keyset<T> | null,
+): Promise<RepoPage<T>> {
+  let page = await readRepoPageOnce(sdk, forge, network, order, where, limit, after)
+  for (let i = 1; i < FILL_READS && page.dropped > 0 && page.repos.length < limit && page.next !== null && !page.skippedTies; i++) {
+    const more = await readRepoPageOnce(sdk, forge, network, order, where, limit - page.repos.length, page.next)
+    page = {
+      repos: [...page.repos, ...more.repos],
+      next: more.next,
+      pushesComplete: page.pushesComplete && more.pushesComplete,
+      fallback: page.fallback || more.fallback,
+      skippedTies: more.skippedTies,
+      dropped: page.dropped + more.dropped,
+    }
+  }
+  const { dropped: _dropped, ...rest } = page
+  return rest
 }
 
 /**
@@ -357,16 +396,24 @@ export async function searchRepos(
 /** Repos named exactly `name` (any owner), for the jump box: the first {@link NAMED_MAX}. */
 export const NAMED_MAX = 20
 
+/** Pages `/github.com/<owner>/<repo>` reads of same-named repos before it says "no mirror" (ABU-04). */
+export const MIRROR_NAMED_PAGES = 5
+
 /**
  * The repos named exactly `name`, any owner (a name is unique per owner only, so this is a
  * short page on the `name` index), and whether more owners use it. Empty for an invalid name.
+ * `pages` times {@link NAMED_MAX} repos (the jump box reads one page; a mirror lookup must not
+ * be hidden behind 20 look-alikes, so it reads {@link MIRROR_NAMED_PAGES}) in ONE read. One
+ * composite holds at most {@link MAX_ROWS} repos: past that `more` stays true.
  */
-export async function reposNamed(sdk: EvoSDK, name: string, opts: { network?: Network } = {}): Promise<{ repos: DiscoveredRepo[]; more: boolean }> {
+export async function reposNamed(sdk: EvoSDK, name: string, opts: { network?: Network; pages?: number } = {}): Promise<{ repos: DiscoveredRepo[]; more: boolean }> {
   const network = opts.network ?? DEFAULT_NETWORK
   const forge = forgeOf(network)
   const n = name.trim().toLowerCase()
   if (forge === null || !NAME_CHARS.test(n)) return { repos: [], more: false }
-  const page = await readRepoPage<string>(sdk, forge, network, { field: 'name', direction: 'asc' }, () => [['name', '==', n]], NAMED_MAX, null)
+  // One read of up to `pages` pages' worth (a composite page holds at most MAX_ROWS repos).
+  const want = Math.min(MAX_ROWS, NAMED_MAX * Math.max(1, opts.pages ?? 1))
+  const page = await readRepoPage<string>(sdk, forge, network, { field: 'name', direction: 'asc' }, () => [['name', '==', n]], want, null)
   return { repos: page.repos, more: page.next !== null }
 }
 
@@ -381,6 +428,16 @@ export interface RankedRepos {
   readonly missing: number
   /** Whether each repo's `pushedAt` is known (the push lookup was short, so complete). */
   readonly pushesComplete: boolean
+  /**
+   * Most forked: some repo had more forks than one read holds, so its count of distinct owners
+   * is a lower bound (the first {@link MAX_ROWS} forks).
+   */
+  readonly approximate?: boolean
+  /**
+   * Most forked: the groups examined were the most forked by raw count, and the window was full,
+   * so a repo with fewer forks from more owners may be missing.
+   */
+  readonly incomplete?: boolean
 }
 
 /**
@@ -390,6 +447,10 @@ export interface RankedRepos {
  * repos by id in one composite with their star and issue counts, owners' names and pushes. Two
  * requests, whatever the star count (this replaces the bounded 100-star read that ranked only
  * the repos those stars named).
+ *
+ * ABU-02: counts are unweighted (every identity counts once, however new), so a repo needs
+ * {@link MIN_STARGAZERS} (stargazers, or new ones in the window) to be ranked at all, and Most
+ * forked counts distinct fork owners ({@link rankedForked}). Repos this build hides are left out.
  *
  * On a fused-star contract consensus no longer keeps private repos and owners' own stars out
  * of Trending, so the read takes {@link FUSED_READ_AHEAD} times the rows and filters them here
@@ -401,35 +462,140 @@ export interface RankedRepos {
 export async function rankedRepos(
   sdk: EvoSDK,
   kind: TrendingWindow | 'most-starred' | 'most-forked',
-  opts: { network?: Network; limit?: number } = {},
+  opts: { network?: Network; limit?: number; minStargazers?: number } = {},
 ): Promise<RankedRepos> {
   const network = opts.network ?? DEFAULT_NETWORK
   const forge = forgeOf(network)
   if (forge === null) return { repos: [], missing: 0, pushesComplete: true }
   const limit = Math.min(opts.limit ?? 12, MAX_ROWS)
-  const fused = kind !== 'most-starred' && kind !== 'most-forked' && (await starShape(sdk, forge)) === 'fused'
-  const read = fused ? Math.min(limit * FUSED_READ_AHEAD, MAX_ROWS) : limit
-  const page =
-    kind === 'most-starred'
-      ? await readMostStarred(sdk, forge, limit)
-      : kind === 'most-forked'
-        ? await readMostForked(sdk, forge, limit)
-        : await readTrending(sdk, forge, kind, read)
-  const ids = page.entries.map((e) => e.group).filter((id) => id !== '')
+  if (kind === 'most-forked') return rankedForked(sdk, forge, network, limit)
+  const minStargazers = opts.minStargazers ?? MIN_STARGAZERS
+  const fused = kind !== 'most-starred' && (await starShape(sdk, forge)) === 'fused'
+  const ahead = fused ? Math.min(limit * FUSED_READ_AHEAD, MAX_ROWS) : limit
+  const page = kind === 'most-starred' ? await readMostStarred(sdk, forge, limit) : await readTrending(sdk, forge, kind, ahead)
+  // The ranking is by count, highest first: a repo below the floor ends the list (ABU-02: a few
+  // sock-puppet identities must not top it). Nothing past the floor is read.
+  const entries = page.entries.filter((e) => e.group !== '' && e.count >= minStargazers)
+  const ids = entries.map((e) => e.group)
   if (ids.length === 0) return { repos: [], missing: 0, pushesComplete: true }
-  const { byId, pushesComplete, ownerStars } = await reposById(sdk, forge, network, ids, { ownerStars: fused })
-  const missing = ids.filter((id) => !byId.has(id)).length
+  const got = await reposById(sdk, forge, network, ids, { ownerStars: fused })
+  const { pushesComplete, ownerStars } = got
+  // A hidden repo is not "missing": it was read and is left out (docs/hosted-curation.md).
+  const missing = ids.filter((id) => !got.byId.has(id)).length
+  const byId = withoutHidden(got.byId)
   if (fused) {
     const window = trendingWindowOf(kind as TrendingWindow, Date.now())
     const young = [...byId.values()].filter((r) => selfStarDecidable(r, window))
     const ownerStarred = await readOwnerStars(sdk, forge, young.map((r) => ({ repoId: r.key, ownerId: r.ownerId })), ownerStars)
-    return { repos: fusedTrending(page.entries, byId, ownerStarred, limit), missing, pushesComplete }
+    return { repos: fusedTrending(entries, byId, ownerStarred, limit, minStargazers), missing, pushesComplete }
   }
-  const repos = page.entries.flatMap((e) => {
+  const repos = entries.flatMap((e) => {
     const r = byId.get(e.group)
     return r === undefined ? [] : [{ ...r, rankCount: e.count }]
   })
   return { repos, missing, pushesComplete }
+}
+
+/** Most forked reads this many times the page's groups: the raw count is re-ranked below the page. */
+export const FORK_READ_AHEAD = 3
+
+/**
+ * The distinct owners of each parent's forks, from fork documents (`repo` rows with `forkOf`).
+ * The parent's own owner is left out: forking your own repo says nothing about it. So are the
+ * identities this build hides (docs/hosted-curation.md).
+ */
+export function forkOwnersByParent(
+  forks: readonly PlainDocument[],
+  parentOwners: ReadonlyMap<string, string>,
+  hidden: Hidden = activeHidden(),
+): Map<string, Set<string>> {
+  const owners = new Map<string, Set<string>>()
+  for (const d of forks) {
+    const parent = asIdentifierString(d['forkOf'])
+    const owner = asIdentifierString(d['$ownerId'])
+    if (parent === '' || owner === '' || owner === parentOwners.get(parent) || hidden.identities.has(owner)) continue
+    const held = owners.get(parent)
+    if (held === undefined) owners.set(parent, new Set([owner]))
+    else held.add(owner)
+  }
+  return owners
+}
+
+/** Fork reads in flight at once when a repo's forks were not all in the page's lookup. */
+const FORK_READ_PARALLEL = 8
+
+/**
+ * Most forked, ranked by distinct fork owners (ABU-02): the `repo.forkOf` ranked read counts fork
+ * documents, so one identity forking a repo 300 times topped it. The top {@link FORK_READ_AHEAD}
+ * times the page of groups is read, with their forks in the same composite as the repos (a
+ * lookup bound to the page), and re-ranked by how many different identities forked each. A
+ * fork's "has a ref update" is not required: that needs a read per fork that no index answers
+ * in bulk, so a fork counts when it exists.
+ *
+ * Two things make the result partial, and it says so:
+ * - the lookup holds at most {@link MAX_ROWS} forks. A repo whose forks were not all in it is
+ *   read on its own (one query, its first {@link MAX_ROWS} forks); past that its count is a
+ *   lower bound (`approximate`);
+ * - only the groups with the most forks by raw count are examined, so when that window is full
+ *   and its last raw count could still beat the shown ones, a repo with fewer forks from more
+ *   owners may be missing (`incomplete`).
+ */
+async function rankedForked(sdk: EvoSDK, forge: ForgeIds, network: Network, limit: number): Promise<RankedRepos> {
+  const read = Math.min(limit * FORK_READ_AHEAD, MAX_ROWS)
+  const page = await readMostForked(sdk, forge, read)
+  const ids = page.entries.map((e) => e.group).filter((id) => id !== '')
+  if (ids.length === 0) return { repos: [], missing: 0, pushesComplete: true }
+  const got = await reposById(sdk, forge, network, ids, { forks: true })
+  const missing = ids.filter((id) => !got.byId.has(id)).length
+  const byId = withoutHidden(got.byId)
+  const parentOwners = new Map([...got.byId.values()].map((r) => [r.key, r.ownerId]))
+  const raw = new Map(page.entries.map((e) => [e.group, e.count]))
+  const held = new Map<string, number>()
+  for (const d of got.forkRows ?? []) held.set(asIdentifierString(d['forkOf']), (held.get(asIdentifierString(d['forkOf'])) ?? 0) + 1)
+  // Groups the lookup did not hold whole (or all of them, when it was refused) are read on their
+  // own, a few at a time. A hidden repo is never listed, so its forks are not read.
+  const unheld = ids.filter((id) => byId.has(id) && (held.get(id) ?? 0) < (raw.get(id) ?? 0))
+  const own = await mapPooled(unheld, FORK_READ_PARALLEL, async (id) => ({
+    id,
+    documents: (
+      await queryDocumentsWithProof(sdk, {
+        dataContractId: forge.core,
+        documentTypeName: DOC.repo,
+        where: [['forkOf', '==', id]],
+        orderBy: [['forkOf', 'asc']],
+        limit: MAX_ROWS,
+      })
+    ).documents,
+  }))
+  const readOwn = new Set(unheld)
+  // This group's partial rows are replaced by the group's own read.
+  const rows = [...(got.forkRows ?? []).filter((d) => !readOwn.has(asIdentifierString(d['forkOf']))), ...own.flatMap((o) => o.documents)]
+  const approximate = own.some((o) => o.documents.length >= MAX_ROWS && (raw.get(o.id) ?? 0) > MAX_ROWS)
+  const owners = forkOwnersByParent(rows, parentOwners)
+  const ranked = page.entries.flatMap((e) => {
+    const r = byId.get(e.group)
+    const n = owners.get(e.group)?.size ?? 0
+    return r === undefined || n === 0 ? [] : [{ ...r, rankCount: n, tie: e.keyHex }]
+  })
+  // As Drive ranks: count descending, then group key descending.
+  ranked.sort((a, b) => b.rankCount - a.rankCount || (a.tie < b.tie ? 1 : a.tie > b.tie ? -1 : 0))
+  const shown = ranked.slice(0, limit)
+  // The window was full, and the group past it could hold as many owners as the last one shown.
+  const lastRaw = page.entries[page.entries.length - 1]?.count ?? 0
+  const incomplete = page.entries.length >= read && (shown.length < limit || lastRaw > (shown[limit - 1]?.rankCount ?? 0))
+  return {
+    repos: shown.map(({ tie: _tie, ...r }) => r),
+    missing,
+    pushesComplete: got.pushesComplete,
+    ...(approximate ? { approximate } : {}),
+    ...(incomplete ? { incomplete } : {}),
+  }
+}
+
+/** `byId` without the repos this build hides (docs/hosted-curation.md). */
+function withoutHidden(byId: ReadonlyMap<string, DiscoveredRepo>): Map<string, DiscoveredRepo> {
+  const kept = new Set(dropHidden([...byId.values()]).map((r) => r.key))
+  return new Map([...byId].filter(([id]) => kept.has(id)))
 }
 
 /**
@@ -442,7 +608,7 @@ export async function discoverReposById(sdk: EvoSDK, ids: readonly string[], opt
   const forge = forgeOf(network)
   if (forge === null || ids.length === 0) return new Map()
   if (ids.length > MAX_ROWS) throw new Error(`discoverReposById reads at most ${MAX_ROWS} repos`)
-  return (await reposById(sdk, forge, network, [...new Set(ids)])).byId
+  return withoutHidden((await reposById(sdk, forge, network, [...new Set(ids)])).byId)
 }
 
 /**
@@ -457,13 +623,29 @@ async function reposById(
   forge: ForgeIds,
   network: Network,
   ids: readonly string[],
-  opts: { ownerStars?: boolean } = {},
-): Promise<{ byId: Map<string, DiscoveredRepo>; pushesComplete: boolean; ownerStars: OwnerStarLookup | null }> {
+  opts: { ownerStars?: boolean; forks?: boolean } = {},
+): Promise<{ byId: Map<string, DiscoveredRepo>; pushesComplete: boolean; ownerStars: OwnerStarLookup | null; forkRows: PlainDocument[] | null }> {
   let rows: DiscoveredRepo[]
   let pushesComplete = true
   let ownerStars: OwnerStarLookup | null = null
+  let forkRows: PlainDocument[] | null = null
   const subQueries = repoSubs(forge, network, 'page', Date.now() - PUSH_WINDOW_MS)
+  let ownerStarsAt = -1
+  let forksAt = -1
+  if (opts.forks) {
+    forksAt = subQueries.length
+    // The forks of the page's repos (`repo.forkOf`), for counting distinct fork owners. The page
+    // walks `$id` descending, and a bound lookup must walk the same way.
+    subQueries.push({
+      dataContractId: forge.core,
+      documentType: DOC.repo,
+      bind: { source: 'page', sourceProperty: '$id', field: 'forkOf' },
+      orderBy: [['forkOf', 'desc']],
+      limit: MAX_ROWS,
+    })
+  }
   if (opts.ownerStars) {
+    ownerStarsAt = subQueries.length
     subQueries.push({
       dataContractId: forge.community,
       documentType: DOC.star,
@@ -490,14 +672,16 @@ async function reposById(
     )
     ;({ repos: rows, pushesComplete } = reposOf(res, res.page, 0, network))
     // A missing or wrong-kind sub-result is no lookup (every pair is read), not an empty one.
-    const lookup = res.subs[subQueries.length - 1]
+    const lookup = res.subs[ownerStarsAt]
     if (opts.ownerStars && res.subs.length === subQueries.length && lookup?.kind === 'documents') ownerStars = ownerStarLookupOf(lookup.documents)
+    const forkLookup = res.subs[forksAt]
+    if (opts.forks && res.subs.length === subQueries.length && forkLookup?.kind === 'documents') forkRows = forkLookup.documents
   } catch (e) {
     if (!isRefused(e)) throw e
     const plain = await queryDocumentsWithProof(sdk, { dataContractId: forge.core, documentTypeName: DOC.repo, where: [['$id', 'in', ids]], orderBy: [['$id', 'asc']], limit: ids.length })
     rows = plain.documents.map((d) => fromRepoDoc(toRepoDoc(d)))
   }
-  return { byId: new Map(rows.map((r) => [r.key, r])), pushesComplete, ownerStars }
+  return { byId: new Map(rows.map((r) => [r.key, r])), pushesComplete, ownerStars, forkRows }
 }
 
 /** How many tagged repos a topic page shows (the newest tags). */
@@ -538,7 +722,8 @@ export async function reposWithTopic(sdk: EvoSDK, topic: string, opts: { network
     const r = byId.get(id)
     return r === undefined ? [] : [r]
   })
-  return { repos, more, missing: ids.length - repos.length }
+  // Hidden repos are read and left out: not "missing" (docs/hosted-curation.md).
+  return { repos: dropHidden(repos), more, missing: ids.length - repos.length }
 }
 
 /**

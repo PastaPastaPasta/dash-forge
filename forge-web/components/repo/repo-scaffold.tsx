@@ -23,6 +23,8 @@ import { PrivateBanner } from '@/components/repo/private-banner'
 import { InviteBanner } from '@/components/repo/invite-banner'
 import { PrivateRepoState } from '@/components/repo/private-repo-state'
 import { RepoNotFound } from '@/components/repo/repo-not-found'
+import { HiddenNotice } from '@/components/hidden-notice'
+import { MirrorTrustProvider } from '@/components/repo/mirror-trust'
 import { failedRows, selectRef, type RepoHome, type RepoHomeRefs, type SelectedRef } from '@/lib/view'
 import { useRepoTrust } from '@/hooks/use-repo-trust'
 import { TrustFailureBanner } from '@/components/ui/trust-alert'
@@ -100,7 +102,8 @@ function ScaffoldBody({
   const { data, loading, error, cause, settled, ready, reload } = repoHome
   const { status: sdkStatus, retry: retrySdk } = useSdk()
   // A private repo is re-read through the viewer's decryption session (or shown as sealed).
-  const privateHome = usePrivateHome(data ?? null, addr)
+  // A repo this build hides is never opened: no membership, keys or content are read after it resolved.
+  const privateHome = usePrivateHome(data?.hidden ? null : (data ?? null), addr)
   const expiredLink = useExpiredLink()
 
   if (!addr.owner || (!addr.name && !addr.repoId)) {
@@ -156,6 +159,7 @@ function ScaffoldBody({
   }
 
   if (data === null) return <RepoNotFound addr={addr} />
+  if (data.hidden) return <HiddenNotice what="repo" repoId={data.repo.repoId} />
 
   if (privateHome?.error) {
     return (
@@ -211,7 +215,7 @@ function ScaffoldBody({
   }
 
   return (
-    <>
+    <MirrorTrustProvider home={home}>
       {offline}
       <RepoTrustBanner home={home} selected={selected} />
       <RepoHeader home={home} addr={addr} />
@@ -231,7 +235,7 @@ function ScaffoldBody({
           <div className="min-w-0">{children(home, reload)}</div>
         </div>
       )}
-    </>
+    </MirrorTrustProvider>
   )
 }
 

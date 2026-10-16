@@ -12,7 +12,12 @@ import type { DocumentQuery } from '../sdk'
 import type { CompositeQuery } from '../sdk/composite'
 import { resetStarShapes } from '../repo/star-shape'
 import { cachedDpnsName, clearDpnsCache } from './dpns'
+import type { Hidden } from './curation'
 import {
+  FORK_READ_AHEAD,
+  discoverReposById,
+  MIRROR_NAMED_PAGES,
+  forkOwnersByParent,
   keysetPage,
   pageWalk,
   rankedRepos,
@@ -25,6 +30,18 @@ import {
   searchRepos,
   type DiscoveredRepo,
 } from './discovery'
+
+// What this build hides, per test (the real list is empty): the filters take it from here.
+const hiddenNow = vi.hoisted(() => ({ value: { repos: new Set<string>(), identities: new Set<string>() } as Hidden }))
+vi.mock('./curation', async (orig) => {
+  const real = await orig<typeof import('./curation')>()
+  return {
+    ...real,
+    dropHidden: <T extends { key: string; ownerId: string }>(repos: readonly T[], hidden: Hidden = hiddenNow.value) => real.dropHidden(repos, hidden),
+    activeHidden: () => hiddenNow.value,
+    isHiddenRepo: (repoId: string, ownerId: string, hidden: Hidden = hiddenNow.value) => real.isHiddenRepo(repoId, ownerId, hidden),
+  }
+})
 
 // The unit-test build targets testnet, which has no forge-v2 deployment: read moutai's ids.
 vi.mock('../constants', async (orig) => {
@@ -197,6 +214,9 @@ function store(): Record<string, Record<string, Doc[]>> {
   }
 }
 
+/** `rankedRepos` with no stargazer floor: the ranking tests use small counts (the floor has its own tests). */
+const rank = (sdk: EvoSDK, kind: Parameters<typeof rankedRepos>[1], opts: Parameters<typeof rankedRepos>[2] = {}) => rankedRepos(sdk, kind, { minStargazers: 1, ...opts })
+
 const fresh = (): Seen => ({ composites: [], queries: [], counts: [], ranked: [] })
 const names = (rs: readonly DiscoveredRepo[]): string[] => rs.map((r) => r.slug)
 const requests = (s: Seen): number => s.composites.length + s.queries.length + s.counts.length + s.ranked.length
@@ -204,6 +224,7 @@ const requests = (s: Seen): number => s.composites.length + s.queries.length + s
 beforeEach(() => {
   clearDpnsCache()
   resetStarShapes()
+  hiddenNow.value = { repos: new Set(), identities: new Set() }
 })
 
 describe('searchPrefix / prefixUpperBound', () => {
@@ -396,7 +417,7 @@ describe('reposWithTopic (QW-073: Explore by topic)', () => {
 describe('rankedRepos (C-1: proved ranked reads)', () => {
   it('most starred: one ranked read over every star, then the repos in ONE composite', async () => {
     const seen = fresh()
-    const r = await rankedRepos(mockSdk(store(), seen), 'most-starred', { network: NET })
+    const r = await rank(mockSdk(store(), seen), 'most-starred', { network: NET })
     // ripgrep 3; jq and demo-05 tie at 1, the larger repo id first (Rjq… > Rdemo…)
     expect(names(r.repos)).toEqual(['ripgrep', 'jq', 'demo-05'])
     expect(r.repos.map((x) => x.rankCount)).toEqual([3, 1, 1])
@@ -413,7 +434,7 @@ describe('rankedRepos (C-1: proved ranked reads)', () => {
     const s = store()
     const many = (target: string, n: number) => Array.from({ length: n }, (_, i) => ({ $id: id(`S${target}${i}`), $ownerId: id(`U${i}`), repoId: id(target) }))
     s[FORGE.collab]!['star'] = [...many('Rdemo-01', 150), ...many('RripgrepB', 120), ...many('Rjq', 3)]
-    const r = await rankedRepos(mockSdk(s, fresh()), 'most-starred', { network: NET })
+    const r = await rank(mockSdk(s, fresh()), 'most-starred', { network: NET })
     expect(names(r.repos)).toEqual(['demo-01', 'ripgrep', 'jq'])
     expect(r.repos.map((x) => x.rankCount)).toEqual([150, 120, 3])
   })
@@ -422,8 +443,8 @@ describe('rankedRepos (C-1: proved ranked reads)', () => {
     const s = store()
     s[FORGE.collab]!['starBeat'] = [{ $id: id('B1'), $ownerId: id('U1'), repoId: id('Rjq') }]
     const seen = fresh()
-    const week = await rankedRepos(mockSdk(s, seen), 'week', { network: NET })
-    await rankedRepos(mockSdk(s, seen), 'today', { network: NET })
+    const week = await rank(mockSdk(s, seen), 'week', { network: NET })
+    await rank(mockSdk(s, seen), 'today', { network: NET })
     expect(names(week.repos)).toEqual(['jq'])
     expect(seen.ranked.map((q) => [q['documentTypeName'], (q['timeRange'] as { selector: string }[])[0]?.selector])).toEqual([
       ['starBeat', 'oldest'],
@@ -431,24 +452,84 @@ describe('rankedRepos (C-1: proved ranked reads)', () => {
     ])
   })
 
-  it('most forked ranks repo.forkOf and drops the null group of repos that are not forks', async () => {
+  it('most forked ranks by distinct fork owners, and drops the null group of repos that are not forks', async () => {
     const s = store()
-    const fork = (name: string, of: string) => ({ $id: id(`F${name}`), $ownerId: OWNER_B, $createdAt: NOW - 1000, name, visibility: 'public', description: '', forkOf: id(of) })
-    // Every stored repo without forkOf is the (largest) null group; jq has 2 forks, ripgrep 1.
-    s[FORGE.core]!['repo'] = [...s[FORGE.core]!['repo']!, fork('jq-a', 'Rjq'), fork('jq-b', 'Rjq'), fork('rg-a', 'RripgrepB')]
+    const fork = (name: string, of: string, owner: string) => ({ $id: id(`F${name}`), $ownerId: owner, $createdAt: NOW - 1000, name, visibility: 'public', description: '', forkOf: id(of) })
+    // jq: two owners (X1 twice, X2 once). ripgrep: one owner. spam: ONE identity, five forks.
+    s[FORGE.core]!['repo'] = [
+      ...s[FORGE.core]!['repo']!,
+      repo('spam', NOW - 5000),
+      fork('jq-a', 'Rjq', 'X1'),
+      fork('jq-b', 'Rjq', 'X1'),
+      fork('jq-c', 'Rjq', 'X2'),
+      fork('rg-a', 'RripgrepB', 'X3'),
+      ...[1, 2, 3, 4, 5].map((i) => fork(`spam-${i}`, 'Rspam', 'X9')),
+    ]
     const seen = fresh()
-    const r = await rankedRepos(mockSdk(s, seen), 'most-forked', { network: NET, limit: 2 })
-    expect(names(r.repos)).toEqual(['jq', 'ripgrep'])
+    const r = await rank(mockSdk(s, seen), 'most-forked', { network: NET, limit: 2 })
+    // By raw count spam (5) would lead; by distinct owners jq (2) does, and spam counts once.
+    expect(names(r.repos)).toHaveLength(2)
+    expect(names(r.repos)[0]).toBe('jq')
     expect(r.repos.map((x) => x.rankCount)).toEqual([2, 1])
-    expect(seen.ranked[0]).toMatchObject({ documentTypeName: 'repo', groupBy: 'forkOf', limit: 3 })
+    expect(r.approximate).toBeUndefined()
+    // It reads FORK_READ_AHEAD times the page of groups, so spam cannot crowd the real ones out.
+    expect(seen.ranked[0]).toMatchObject({ documentTypeName: 'repo', groupBy: 'forkOf', limit: 2 * FORK_READ_AHEAD + 1 })
+    // The ranked read, then ONE composite: the repos with their forks in a bound lookup.
     expect(requests(seen)).toBe(2)
+    expect(seen.composites[0]?.subQueries.some((q) => q.documentType === 'repo' && q.bind?.field === 'forkOf')).toBe(true)
+  })
+
+  it('most forked does not count a fork made by the repo’s own owner', async () => {
+    const s = store()
+    const fork = (name: string, of: string, owner: string) => ({ $id: id(`F${name}`), $ownerId: owner, $createdAt: NOW - 1000, name, visibility: 'public', description: '', forkOf: id(of) })
+    // ripgrep belongs to OWNER_B: its owner's fork is no vote for it.
+    s[FORGE.core]!['repo'] = [...s[FORGE.core]!['repo']!, fork('rg-self', 'RripgrepB', OWNER_B), fork('jq-a', 'Rjq', 'X1')]
+    const r = await rank(mockSdk(s, fresh()), 'most-forked', { network: NET })
+    expect(names(r.repos)).toEqual(['jq'])
+  })
+
+  it('most forked reads a repo’s forks on their own when the lookup could not hold them, and says when even that is cut', async () => {
+    const s = store()
+    const fork = (name: string, of: string, owner: string) => ({ $id: id(`F${name}`), $ownerId: owner, $createdAt: NOW - 1000, name, visibility: 'public', description: '', forkOf: id(of) })
+    // 150 forks of ripgrep by 150 different owners, 3 of jq: one composite holds 100 forks in all.
+    s[FORGE.core]!['repo'] = [
+      ...s[FORGE.core]!['repo']!,
+      ...Array.from({ length: 150 }, (_, i) => fork(`rg-${String(i).padStart(3, '0')}`, 'RripgrepB', id(`U${String(i).padStart(3, '0')}`))),
+      ...['X1', 'X2', 'X3'].map((o, i) => fork(`jq-${i}`, 'Rjq', o)),
+    ]
+    const seen = fresh()
+    const r = await rank(mockSdk(s, seen), 'most-forked', { network: NET })
+    const byName = new Map(r.repos.map((x) => [x.slug, x.rankCount]))
+    expect(byName.get('jq')).toBe(3)
+    // 150 forks, the first 100 read: a lower bound, and the result says so.
+    expect(byName.get('ripgrep')).toBe(100)
+    expect(r.approximate).toBe(true)
+    expect(seen.queries.some((q) => q.documentTypeName === 'repo' && JSON.stringify(q.where) === JSON.stringify([['forkOf', '==', id('RripgrepB')]]))).toBe(true)
+  })
+
+  it('most forked still counts distinct owners when the composite is refused (each repo’s forks read on its own)', async () => {
+    const s = store()
+    const fork = (name: string, of: string, owner: string) => ({ $id: id(`F${name}`), $ownerId: owner, $createdAt: NOW - 1000, name, visibility: 'public', description: '', forkOf: id(of) })
+    s[FORGE.core]!['repo'] = [...s[FORGE.core]!['repo']!, fork('jq-a', 'Rjq', 'X1'), fork('jq-b', 'Rjq', 'X1'), fork('jq-c', 'Rjq', 'X2')]
+    const base = mockSdk(s, fresh()) as unknown as { documents: Record<string, unknown> }
+    const refusing = {
+      ...base,
+      documents: {
+        ...base.documents,
+        composite: async () => {
+          throw new Error("grpc error: code: 'Client specified an invalid argument'")
+        },
+      },
+    } as unknown as EvoSDK
+    const r = await rank(refusing, 'most-forked', { network: NET })
+    expect(r.repos.map((x) => [x.slug, x.rankCount])).toEqual([['jq', 2]])
   })
 
   it('an empty ranking costs one request and shows nothing', async () => {
     const s = store()
     s[FORGE.collab]!['starBeat'] = []
     const seen = fresh()
-    const r = await rankedRepos(mockSdk(s, seen), 'week', { network: NET })
+    const r = await rank(mockSdk(s, seen), 'week', { network: NET })
     expect(r.repos).toEqual([])
     expect(requests(seen)).toBe(1)
   })
@@ -479,7 +560,7 @@ describe('rankedRepos on a fused-star contract (RC2 C1: O-08 applied on read)', 
 
   it('drops the private repo and owners\' stars on new repos, reading ahead, with no request of its own for the owner checks', async () => {
     const seen = fresh()
-    const r = await rankedRepos(mockSdk(fusedStore(), seen, { fused: true }), 'week', { network: NET })
+    const r = await rank(mockSdk(fusedStore(), seen, { fused: true }), 'week', { network: NET })
     // ripgrep keeps its owner's star (an old repo: when it was made is not known); hot loses its
     // owner's (3 → 2); solo's only star was its owner's; secret is private.
     expect(names(r.repos)).toEqual(['ripgrep', 'hot'])
@@ -502,7 +583,7 @@ describe('rankedRepos on a fused-star contract (RC2 C1: O-08 applied on read)', 
     // Each new repo: its owner's star and one stranger's. The stranger's is all that counts.
     s[FORGE.community]!['star'] = [...s[FORGE.community]!['star']!, ...many.flatMap((r) => [star(OWNER_A, String(r['$id'])), star('X9', String(r['$id']))])]
     const seen = fresh()
-    const r = await rankedRepos(mockSdk(s, seen, { fused: true }), 'week', { network: NET, limit: 12 })
+    const r = await rank(mockSdk(s, seen, { fused: true }), 'week', { network: NET, limit: 12 })
     expect(r.repos.filter((x) => x.slug.startsWith('fresh-')).map((x) => x.rankCount)).toEqual(Array(8).fill(1))
     expect(r.repos.find((x) => x.slug === 'hot')?.rankCount).toBe(2)
     expect(seen.queries).toHaveLength(0)
@@ -519,7 +600,7 @@ describe('rankedRepos on a fused-star contract (RC2 C1: O-08 applied on read)', 
       { $id: id('S0hot'), $ownerId: OWNER_A, repoId: id('Rhot') },
     ]
     const seen = fresh()
-    const r = await rankedRepos(mockSdk(s, seen, { fused: true }), 'week', { network: NET })
+    const r = await rank(mockSdk(s, seen, { fused: true }), 'week', { network: NET })
     expect(r.repos.find((x) => x.slug === 'hot')?.rankCount).toBe(2)
     expect(seen.queries.map((q) => q.where)).toContainEqual([['$ownerId', '==', OWNER_A], ['repoId', '==', id('Rhot')]])
   })
@@ -540,7 +621,7 @@ describe('rankedRepos on a fused-star contract (RC2 C1: O-08 applied on read)', 
 
   it('reads each pair on its own when the composite is refused', async () => {
     const seen = fresh()
-    const r = await rankedRepos(withoutComposite(mockSdk(fusedStore(), seen, { fused: true })), 'week', { network: NET })
+    const r = await rank(withoutComposite(mockSdk(fusedStore(), seen, { fused: true })), 'week', { network: NET })
     // The plain repos read has no counts, so the ranking is the ranked read's alone; the owner
     // of `hot` still does not count toward it.
     expect(r.repos.find((x) => x.slug === 'hot')?.rankCount).toBe(2)
@@ -548,20 +629,20 @@ describe('rankedRepos on a fused-star contract (RC2 C1: O-08 applied on read)', 
   })
 
   it('shows at most the limit after re-ranking', async () => {
-    const r = await rankedRepos(mockSdk(fusedStore(), fresh(), { fused: true }), 'today', { network: NET, limit: 1 })
+    const r = await rank(mockSdk(fusedStore(), fresh(), { fused: true }), 'today', { network: NET, limit: 1 })
     expect(names(r.repos)).toEqual(['ripgrep'])
   })
 
   it('counts a star as read when its owner check fails', async () => {
     // Only the per-pair read can fail: the composite's lookup is part of a proved read.
-    const r = await rankedRepos(withoutComposite(mockSdk(fusedStore(), fresh(), { fused: true, failQuery: 'star' })), 'week', { network: NET })
+    const r = await rank(withoutComposite(mockSdk(fusedStore(), fresh(), { fused: true, failQuery: 'star' })), 'week', { network: NET })
     expect(names(r.repos)).toEqual(['ripgrep', 'hot', 'solo'])
     expect(r.repos.map((x) => x.rankCount)).toEqual([3, 3, 1])
   })
 
   it('leaves Most starred as it was: no read-ahead, no owner checks', async () => {
     const seen = fresh()
-    await rankedRepos(mockSdk(fusedStore(), seen, { fused: true }), 'most-starred', { network: NET })
+    await rank(mockSdk(fusedStore(), seen, { fused: true }), 'most-starred', { network: NET })
     expect(seen.ranked[0]).toMatchObject({ documentTypeName: 'star', limit: 12 })
     expect(seen.ranked[0]).not.toHaveProperty('timeRange')
     expect(seen.queries).toHaveLength(0)
@@ -615,7 +696,7 @@ describe('the composite refused (an older node)', () => {
     expect(page.repos[0]?.stars).toBeNull()
   })
   it('most starred still ranks, reading the ranked repos with one plain query', async () => {
-    const r = await rankedRepos(refusing(), 'most-starred', { network: NET })
+    const r = await rank(refusing(), 'most-starred', { network: NET })
     expect(names(r.repos)).toEqual(['ripgrep', 'jq', 'demo-05'])
     expect(r.repos[0]?.stars).toBeNull()
   })
@@ -654,5 +735,242 @@ describe('reposNamed (the jump box)', () => {
     const seen = fresh()
     expect(await reposNamed(mockSdk(store(), seen), 'Not A Name!', { network: NET })).toEqual({ repos: [], more: false })
     expect(requests(seen)).toBe(0)
+  })
+})
+
+describe('forkOwnersByParent', () => {
+  const fork = (parent: string, owner: string) => ({ $id: `${parent}${owner}`, $ownerId: owner, forkOf: parent })
+  it('counts each owner once per parent and leaves out the parent’s own owner', () => {
+    const owners = forkOwnersByParent([fork('P', 'a'), fork('P', 'a'), fork('P', 'b'), fork('P', 'owner'), fork('Q', 'a')], new Map([['P', 'owner'], ['Q', 'qowner']]))
+    expect([...(owners.get('P') ?? [])].sort()).toEqual(['a', 'b'])
+    expect([...(owners.get('Q') ?? [])]).toEqual(['a'])
+  })
+  it('skips a row without a parent or an owner', () => {
+    expect(forkOwnersByParent([{ $id: 'x' }, { $id: 'y', forkOf: 'P' }], new Map()).size).toBe(0)
+  })
+})
+
+describe('the stargazer floor (ABU-02)', () => {
+  const stars = (target: string, n: number) => Array.from({ length: n }, (_, i) => ({ $id: id(`S${target}${i}`), $ownerId: id(`U${i}`), repoId: id(target) }))
+
+  it('Most starred lists a repo only from five stargazers, and reads no repo document below that', async () => {
+    const s = store()
+    s[FORGE.collab]!['star'] = [...stars('Rdemo-01', 5), ...stars('RripgrepB', 4), ...stars('Rjq', 1)]
+    const seen = fresh()
+    const r = await rankedRepos(mockSdk(s, seen), 'most-starred', { network: NET })
+    expect(names(r.repos)).toEqual(['demo-01'])
+    expect(r.repos[0]?.rankCount).toBe(5)
+    expect(seen.composites[0]).toMatchObject({ where: [['$id', 'in', [id('Rdemo-01')]]] })
+  })
+
+  it('an unfloored network costs one request: nothing reaches the floor, so nothing is read', async () => {
+    const seen = fresh()
+    const r = await rankedRepos(mockSdk(store(), seen), 'most-starred', { network: NET })
+    expect(r.repos).toEqual([])
+    expect(r.missing).toBe(0)
+    expect(requests(seen)).toBe(1)
+  })
+
+  it('Trending needs five new stargazers in the window', async () => {
+    const s = store()
+    s[FORGE.collab]!['starBeat'] = [...stars('Rjq', 4), ...stars('Rdemo-02', 5)]
+    const r = await rankedRepos(mockSdk(s, fresh()), 'week', { network: NET })
+    expect(names(r.repos)).toEqual(['demo-02'])
+  })
+
+  it('on a fused-star contract the owner’s own star does not help a repo over the floor', async () => {
+    const s = store()
+    s[FORGE.core]!['repo'] = [...s[FORGE.core]!['repo']!, repo('hot', NOW - 60_000), repo('hotter', NOW - 60_000)]
+    const star = (owner: string, target: string): Doc => ({ $id: id(`S${owner}${target}`), $ownerId: owner, repoId: id(target) })
+    // hot: its owner and four others (five, four without the owner). hotter: five others.
+    s[FORGE.community]!['star'] = [
+      ...[OWNER_A, 'X1', 'X2', 'X3', 'X4'].map((o) => star(o, 'Rhot')),
+      ...['X1', 'X2', 'X3', 'X4', 'X5'].map((o) => star(o, 'Rhotter')),
+    ]
+    const r = await rankedRepos(mockSdk(s, fresh(), { fused: true }), 'week', { network: NET })
+    expect(names(r.repos)).toEqual(['hotter'])
+    expect(r.repos[0]?.rankCount).toBe(5)
+  })
+})
+
+describe('hosted curation (docs/hosted-curation.md): hidden repos and identities leave every discovery read', () => {
+  const hide = (repos: string[] = [], identities: string[] = []): void => {
+    hiddenNow.value = { repos: new Set(repos), identities: new Set(identities) }
+  }
+
+  it('Recent and search drop a hidden repo and every repo of a hidden identity; paging is unchanged', async () => {
+    hide([id('Rdemo-59')], [OWNER_B])
+    const sdk = mockSdk(store(), fresh())
+    const page = await recentReposPage(sdk, { network: NET })
+    expect(names(page.repos)).not.toContain('demo-59')
+    // The hidden one left a gap, so the read went on and filled the page.
+    expect(page.repos).toHaveLength(24)
+    // The keyset is of the unfiltered pages, so the next page starts where the last read ended.
+    expect(page.next).not.toBeNull()
+    expect(names((await searchRepos(sdk, 'rip', { network: NET })).repos)).toEqual([])
+    expect(names((await searchRepos(sdk, 'jq', { network: NET })).repos)).toEqual(['jq'])
+  })
+
+  it('the jump box and the mirror lookup (reposNamed) do not see them', async () => {
+    hide([], [OWNER_A])
+    expect(names((await reposNamed(mockSdk(store(), fresh()), 'jq', { network: NET })).repos)).toEqual(['jq'])
+  })
+
+  it('ranked lists leave them out and do not call them unreadable', async () => {
+    hide([id('Rjq')])
+    const r = await rank(mockSdk(store(), fresh()), 'most-starred', { network: NET })
+    expect(names(r.repos)).toEqual(['ripgrep', 'demo-05'])
+    expect(r.missing).toBe(0)
+  })
+
+  it('a topic page leaves them out and does not call them unreadable', async () => {
+    hide([id('Rjq')])
+    const s = store()
+    s[FORGE.core]!['topic'] = ['Rjq', 'RripgrepB'].map((t, i) => ({ $id: id(`T${t}`), $ownerId: OWNER_A, $createdAt: i, repoId: id(t), name: 'cli', vis: 'public' }))
+    const r = await reposWithTopic(mockSdk(s, fresh()), 'cli', { network: NET })
+    expect(names(r.repos)).toEqual(['ripgrep'])
+    expect(r.missing).toBe(0)
+  })
+
+  it('the showcase read (discoverReposById) drops them even when an entry names one', async () => {
+    hide([id('Rjq')])
+    const got = await discoverReposById(mockSdk(store(), fresh()), [id('Rjq'), id('RripgrepB')], { network: NET })
+    expect([...got.values()].map((r) => r.slug)).toEqual(['ripgrep'])
+  })
+
+  it('hides nothing when the list is empty', async () => {
+    const page = await recentReposPage(mockSdk(store(), fresh()), { network: NET })
+    expect(page.repos).toHaveLength(24)
+  })
+})
+
+describe('reposNamed pages past the first twenty (ABU-04)', () => {
+  const many = (n: number): Record<string, Record<string, Doc[]>> => {
+    const s = store()
+    s[FORGE.core]!['repo'] = Array.from({ length: n }, (_, i) => ({ ...repo('dash', 1_000 + i, id(`O${i}`)), $id: id(`Rdash${String(i).padStart(3, '0')}`) }))
+    return s
+  }
+
+  it('reads one page for the jump box', async () => {
+    const seen = fresh()
+    const r = await reposNamed(mockSdk(many(45), seen), 'dash', { network: NET })
+    expect(r.repos).toHaveLength(20)
+    expect(r.more).toBe(true)
+    expect(seen.composites).toHaveLength(1)
+  })
+
+  it('reads up to MIRROR_NAMED_PAGES pages\' worth in ONE composite, and says "no more" only at the end', async () => {
+    const seen = fresh()
+    const r = await reposNamed(mockSdk(many(45), seen), 'dash', { network: NET, pages: MIRROR_NAMED_PAGES })
+    expect(r.repos).toHaveLength(45)
+    expect(new Set(r.repos.map((x) => x.key)).size).toBe(45)
+    expect(r.more).toBe(false)
+    expect(seen.composites).toHaveLength(1)
+    expect(seen.composites[0]?.limit).toBe(MIRROR_NAMED_PAGES * 20)
+  })
+
+  it('stops at what one composite holds and keeps saying "more"', async () => {
+    const r = await reposNamed(mockSdk(many(130), fresh()), 'dash', { network: NET, pages: MIRROR_NAMED_PAGES })
+    expect(r.repos).toHaveLength(MIRROR_NAMED_PAGES * 20)
+    expect(new Set(r.repos.map((x) => x.key)).size).toBe(MIRROR_NAMED_PAGES * 20)
+    expect(r.more).toBe(true)
+  })
+})
+
+describe('a page of hidden repos does not read as the end (docs/hosted-curation.md)', () => {
+  const hideOwner = (owner: string): void => {
+    hiddenNow.value = { repos: new Set(), identities: new Set([owner]) }
+  }
+  /** 40 newest repos by one identity, then the store's 60 others. */
+  function flooded(): Record<string, Record<string, Doc[]>> {
+    const s = store()
+    const spam = Array.from({ length: 40 }, (_, i) => ({ ...repo(`spam-${String(i).padStart(2, '0')}`, 1_000_000 + i, id('SPAMMER')), $id: id(`Rspam${String(i).padStart(2, '0')}`) }))
+    s[FORGE.core]!['repo'] = [...s[FORGE.core]!['repo']!, ...spam]
+    return s
+  }
+
+  it('Recent reads on past a first page that is all hidden, and still pages from where it ended', async () => {
+    hideOwner(id('SPAMMER'))
+    const seen = fresh()
+    const sdk = mockSdk(flooded(), seen)
+    const page = await recentReposPage(sdk, { network: NET })
+    // Page one (24 spam) is all hidden; the read went on and filled the page.
+    expect(page.repos.length).toBeGreaterThan(0)
+    expect(names(page.repos).some((n) => n.startsWith('spam-'))).toBe(false)
+    expect(seen.composites.length).toBeGreaterThan(1)
+    expect(page.next).not.toBeNull()
+    const next = await recentReposPage(sdk, { network: NET, after: page.next })
+    const all = [...names(page.repos), ...names(next.repos)]
+    expect(new Set(all).size).toBe(all.length)
+  })
+
+  it('costs nothing extra when nothing on the page is hidden', async () => {
+    const seen = fresh()
+    await recentReposPage(mockSdk(flooded(), seen), { network: NET })
+    expect(seen.composites).toHaveLength(1)
+  })
+
+  it('search reads on too', async () => {
+    hideOwner(id('SPAMMER'))
+    const page = await searchRepos(mockSdk(flooded(), fresh()), 'spam', { network: NET })
+    expect(page.repos).toEqual([])
+    const demo = await searchRepos(mockSdk(flooded(), fresh()), 'demo', { network: NET })
+    expect(demo.repos.length).toBeGreaterThan(0)
+  })
+
+  it('stops after a few reads rather than walking the whole network', async () => {
+    hideOwner(id('SPAMMER'))
+    const s = flooded()
+    s[FORGE.core]!['repo'] = Array.from({ length: 200 }, (_, i) => ({ ...repo(`spam-${String(i).padStart(3, '0')}`, 1_000_000 + i, id('SPAMMER')), $id: id(`Rspam${String(i).padStart(3, '0')}`) }))
+    const seen = fresh()
+    const page = await recentReposPage(mockSdk(s, seen), { network: NET })
+    expect(page.repos).toEqual([])
+    expect(seen.composites).toHaveLength(3)
+    expect(page.next).not.toBeNull()
+  })
+})
+
+describe('Most forked: hidden, incomplete and both lookups', () => {
+  const fork = (name: string, of: string, owner: string) => ({ $id: id(`F${name}`), $ownerId: owner, $createdAt: NOW - 1000, name, visibility: 'public', description: '', forkOf: id(of) })
+
+  it('leaves a hidden parent out and does not read its forks on their own', async () => {
+    hiddenNow.value = { repos: new Set([id('Rjq')]), identities: new Set() }
+    const s = store()
+    s[FORGE.core]!['repo'] = [...s[FORGE.core]!['repo']!, ...Array.from({ length: 150 }, (_, i) => fork(`jq-${String(i).padStart(3, '0')}`, 'Rjq', id(`U${String(i).padStart(3, '0')}`))), fork('rg-a', 'RripgrepB', 'X1')]
+    const seen = fresh()
+    const r = await rank(mockSdk(s, seen), 'most-forked', { network: NET })
+    expect(names(r.repos)).toEqual(['ripgrep'])
+    expect(r.missing).toBe(0)
+    expect(seen.queries.some((q) => JSON.stringify(q.where) === JSON.stringify([['forkOf', '==', id('Rjq')]]))).toBe(false)
+  })
+
+  it('does not count the forks of a hidden identity', async () => {
+    hiddenNow.value = { repos: new Set(), identities: new Set(['X9']) }
+    const s = store()
+    s[FORGE.core]!['repo'] = [...s[FORGE.core]!['repo']!, fork('rg-a', 'RripgrepB', 'X9'), fork('jq-a', 'Rjq', 'X1')]
+    const r = await rank(mockSdk(s, fresh()), 'most-forked', { network: NET })
+    expect(names(r.repos)).toEqual(['jq'])
+  })
+
+  it('says when the examined window was full and a repo past it could place', async () => {
+    const s = store()
+    // limit 1 reads 3 groups. Three junk repos each forked many times by ONE identity fill it;
+    // jq, forked by two identities, is past the window.
+    const junk = ['j1', 'j2', 'j3'].map((n) => repo(n, NOW - 5000))
+    s[FORGE.core]!['repo'] = [
+      ...s[FORGE.core]!['repo']!,
+      ...junk,
+      ...junk.flatMap((j, k) => Array.from({ length: 6 }, (_, i) => fork(`${j['name']}-f${i}`, `R${j['name']}`, `Z${k}`))),
+      fork('jq-a', 'Rjq', 'X1'),
+      fork('jq-b', 'Rjq', 'X2'),
+    ]
+    const r = await rank(mockSdk(s, fresh()), 'most-forked', { network: NET, limit: 1 })
+    expect(r.incomplete).toBe(true)
+  })
+
+  it('is complete when the window is not full', async () => {
+    const s = store()
+    s[FORGE.core]!['repo'] = [...s[FORGE.core]!['repo']!, fork('jq-a', 'Rjq', 'X1')]
+    expect((await rank(mockSdk(s, fresh()), 'most-forked', { network: NET })).incomplete).toBeUndefined()
   })
 })

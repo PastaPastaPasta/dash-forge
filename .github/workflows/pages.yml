@@ -28,6 +28,9 @@ on:
       - 'forge-web/**'
       # Bundled into the web app: lib/deployments.ts imports the per-network contract ids.
       - 'forge-contracts/deployments/**'
+      # Bundled into the web app: lib/view/curation.ts imports the hosted curation list, so an
+      # edit to it deploys (docs/hosted-curation.md).
+      - 'forge-contracts/config/**'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
