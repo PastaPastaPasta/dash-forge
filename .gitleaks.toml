@@ -1,0 +1,78 @@
+# gitleaks configuration, used by the `gitleaks` job in .github/workflows/security.yml.
+#
+# The default rule set stays on. This file adds one rule for Dash WIF private keys, which the
+# defaults do not know, and allowlists the files and values below for the two key rules
+# (`generic-api-key` and `dash-wif-private-key`) ONLY: every other rule still scans them. Each
+# entry says why it is safe.
+#
+# Historical commits are handled in .gitleaksignore (fingerprints), not here.
+
+title = "dash-forge gitleaks"
+
+[extend]
+useDefault = true
+
+# A Dash WIF-encoded private key: base58check, 52 characters starting with `c` (testnet,
+# compressed) or `X` (mainnet, compressed), or 51 starting with `9` / `7` (uncompressed).
+[[rules]]
+id = "dash-wif-private-key"
+description = "Dash WIF private key"
+regex = '''\b(?:[cX][1-9A-HJ-NP-Za-km-z]{51}|[97][1-9A-HJ-NP-Za-km-z]{50})\b'''
+entropy = 4.0
+keywords = ["wif"]
+
+[[allowlists]]
+description = "Fixed fixtures for the cross-client conformance suite and the secret scanner"
+targetRules = ["generic-api-key", "dash-wif-private-key"]
+paths = [
+    # Deterministic test vectors (symmetric keys, salts, HMAC keys, PGP key material, the
+    # public Dash Core WIF vectors) that the Rust and TypeScript clients both replay. They are
+    # published on purpose, derived from constants, and guard nothing.
+    '''forge-contracts/vectors/.*\.json''',
+    # The generator for those vectors.
+    '''forge-contracts/schema/vectors\.py''',
+    # Fixtures for the secret scanner's own tests: fake tokens and the public Dash Core WIF
+    # vectors, which must look real for the scanner to be tested.
+    '''tools/secret-scan-vectors/.*''',
+    '''forge-web/lib/secrets/secrets\.test\.ts''',
+]
+
+[[allowlists]]
+description = "Throwaway test-only WIFs"
+targetRules = ["generic-api-key", "dash-wif-private-key"]
+paths = [
+    # Testnet WIFs used as inputs to the WIF-parsing tests. They are generated for the tests and
+    # never held funds. This is a path rule, so it also covers older revisions of the file,
+    # which held different test keys; those keys are retired.
+    '''forge-web/lib/sdk/write\.test\.ts''',
+]
+
+[[allowlists]]
+description = "Well-known public example WIFs"
+targetRules = ["dash-wif-private-key"]
+regexes = [
+    # The testnet WIF of the secp256k1 key 0x11..11: a published constant, never funded. Used
+    # by the keystore, auth and git-remote-dash tests, which only need a well-formed WIF.
+    '''cN9spWsvaxA8taS7DFMxnk1yJD2gaF2PX1npuTpy3vuZFJdwavaw''',
+    # A testnet WIF from the Bitcoin documentation, used as an example in redaction tests.
+    '''cVt4o7BGAig1UXywgGSmARhxMdzP5qvQsxKkSsc1XEkw3tDTQFpy''',
+    # A mainnet WIF from Dash Core's src/test/data/key_io_valid.json (public test vectors).
+    '''XK9kG3y8JeDgSNrXdomWiCiBMs7D2eNJSrux1rx7GuGLWpMxEH3w''',
+]
+
+[[allowlists]]
+description = "Public identifiers that match the generic key pattern"
+targetRules = ["generic-api-key"]
+paths = [
+    # BLS quorum PUBLIC keys captured from a devnet, a fixture for the quorum-check tests.
+    '''forge-web/lib/view/fixtures/moutai-quorums\.json''',
+    '''forge-web/lib/view/quorum-check\.test\.ts''',
+    # OpenPGP key ids / fingerprints (public) in the signature-badge tests.
+    '''forge-web/components/repo/signature-badge\.test\.tsx''',
+    # Token ids are public Platform identifiers, not credentials.
+    '''spikes/S0\.7-token-acl/.*''',
+    # A doc comment naming the `key =` field, and a CLI test that passes the literal
+    # `allow-secret=` option value; neither holds a credential.
+    '''crates/forge-core/src/envelope\.rs''',
+    '''crates/git-remote-dash/src/options\.rs''',
+]

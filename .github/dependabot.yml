@@ -1,0 +1,121 @@
+# Dependabot version updates: weekly, grouped, at most 3 open pull requests per ecosystem
+# entry. Security updates are a repository setting (Settings > Advanced Security), not part of
+# this file.
+#
+# The Dash Platform SDK family is IGNORED everywhere: the Rust git dependencies, the
+# @dashevo/* npm packages and the crates they pull in move together, in lockstep with the
+# protocol version the network runs, by a single deliberate SDK bump (see the PLATFORM_TAG note
+# in the root Cargo.toml). A Dependabot bump of one of them would split the pins.
+version: 2
+updates:
+  # --- Rust -------------------------------------------------------------------------------
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      cargo-minor-patch:
+        patterns: ['*']
+        update-types: [minor, patch]
+    ignore:
+      # Dash Platform SDK family (git dependencies pinned by tag in the root Cargo.toml).
+      - dependency-name: dash-sdk
+      - dependency-name: dapi-grpc
+      - dependency-name: dpp
+      - dependency-name: drive
+      - dependency-name: drive-proof-verifier
+      - dependency-name: rs-dapi-client
+      - dependency-name: rs-sdk-trusted-context-provider
+      - dependency-name: simple-signer
+      - dependency-name: platform-encryption
+      - dependency-name: 'dash-platform-*'
+      - dependency-name: 'dashcore*'
+      - dependency-name: 'grovedb*'
+      - dependency-name: 'tenderdash-*'
+      - dependency-name: 'key-wallet*'
+
+  # Standalone contract validator (its own Cargo.lock, same SDK pin as the workspace).
+  - package-ecosystem: cargo
+    directory: /tools/contract-validate
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      cargo-minor-patch:
+        patterns: ['*']
+        update-types: [minor, patch]
+    ignore:
+      - dependency-name: dpp
+      - dependency-name: 'dash-platform-*'
+      - dependency-name: 'dashcore*'
+      - dependency-name: 'grovedb*'
+      - dependency-name: 'tenderdash-*'
+
+  # --- npm / pnpm -------------------------------------------------------------------------
+  # forge-web is a pnpm project (pnpm-lock.yaml); Dependabot's npm ecosystem reads it.
+  - package-ecosystem: npm
+    directory: /forge-web
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      web-minor-patch:
+        patterns: ['*']
+        update-types: [minor, patch]
+    ignore:
+      - dependency-name: '@dashevo/*'
+
+  - package-ecosystem: npm
+    directory: /tools/mint-identity
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      tooling-minor-patch:
+        patterns: ['*']
+        update-types: [minor, patch]
+    ignore:
+      - dependency-name: '@dashevo/*'
+
+  - package-ecosystem: npm
+    directory: /forge-contracts/sdk-v2
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      tooling-minor-patch:
+        patterns: ['*']
+        update-types: [minor, patch]
+    ignore:
+      - dependency-name: '@dashevo/*'
+
+  # --- GitHub Actions ---------------------------------------------------------------------
+  # Workflows, plus the two composite actions this repository publishes. The pins in them are
+  # full commit shas with a version comment; Dependabot updates both together.
+  - package-ecosystem: github-actions
+    directories:
+      - /
+      - /action
+      - /check-action
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      actions:
+        patterns: ['*']
+
+  # --- Docker -----------------------------------------------------------------------------
+  # Base images are pinned by digest in each Dockerfile.
+  - package-ecosystem: docker
+    directories:
+      - /crates/forge-relay
+      - /crates/forge-runner
+      - /services/forge-gateway
+      - /services/forge-notify
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      docker-base-images:
+        patterns: ['*']

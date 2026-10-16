@@ -1,0 +1,12 @@
+# gitleaks fingerprints that are not findings. One per line: <commit>:<file>:<rule>:<line>.
+# These are HISTORICAL commits only: the tree at HEAD is scanned without any ignore entry
+# (the allowlists in .gitleaks.toml are the only exceptions there). Full-history runs
+# (schedule, manual) read this file; a pull request or push scans just its own commits.
+
+# Old test fixtures: a test-only WIF in the git-remote-dash sealed-key test, since replaced by
+# the public 0x11..11 testnet constant listed in .gitleaks.toml.
+9e4a9e5f7e24d21a0cc0b84b452f3d6853305234:crates/git-remote-dash/tests/sealed_key.rs:dash-wif-private-key:18
+
+# A contract id (public by design) that matched the generic-api-key pattern when the token
+# history constant was introduced; the line no longer exists.
+1584371f39385bfd40ba0a7f9ab34f9c5e395c63:forge-web/lib/constants.ts:generic-api-key:35
