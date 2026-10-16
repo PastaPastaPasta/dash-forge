@@ -36,7 +36,8 @@
    "$createdAt"
   ],
   "has": {
-   "rangeCountable": false
+   "rangeCountable": false,
+   "unique": false
   }
  }
 ]

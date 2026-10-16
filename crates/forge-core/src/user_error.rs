@@ -1508,6 +1508,12 @@ const MAINNET_RULE_EXPLANATIONS: &[(&str, &str)] = &[
     // deleteConstraints (40147)
     ("ownerRowStays", "the owner's own Maintain access can't be removed"),
     ("keepVerdicts", "an approval or a change request stays on record; dismiss it instead"),
+    ("keepCompleted", "a finished check run stays on record"),
+    ("headsOnly", "a push grant covers branches only (refs/heads/...), never tags or other refs"),
+    // the testnet freeze's update guards: a role claim or kind outside what the gate admits
+    ("rClaim", "your role in this repository can't make this change (r)"),
+    ("mrClaim", "a repository key is shared only with maintainers, writers, triage members and readers"),
+    ("k_kinds", "this transition kind is not one the state rules know"),
 ];
 
 /// The rules whose meaning on one document type differs from [`RULE_EXPLANATIONS`]' entry.

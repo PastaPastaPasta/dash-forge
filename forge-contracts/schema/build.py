@@ -188,6 +188,9 @@ MAINNET_FLAGS = dict(
     mainnet_config_count=False,    # config.created rangeCountable: a count that proves a config read complete
     mainnet_event_by_kind=False,   # event index byKind (repoId, kind): one kind's events without the whole feed
     mainnet_explicit_config=False,  # every contract states its config (V2, unmoderated), so the sha256 covers it
+    mainnet_pinned_gates=False,    # role claims and the transition kinds pinned by frozen rules, not only by bounds an update may loosen
+    mainnet_grant_heads=False,     # B1: a prefix grant covers branches only (refs/heads/...)
+    mainnet_keep_checks=False,     # a completed check run outlives the merge it justified (deleteConstraints)
     # Declared, not built, and declined at the testnet freeze (FREEZE-SHEET.md): neither can be built on Platform 5
     # (archived lives on config, which no rule reads as newest; epoch writes need a cross-contract newest read).
     # Both stay permanent client rules.
@@ -206,7 +209,8 @@ MV_FLAGS = ('layout_meta', 'mainnet_aud', 'mainnet_one_way_visibility', 'mainnet
 MA2_FLAGS = ('mainnet_shorthand', 'mainnet_author_no_verdict', 'mainnet_enc_framing', 'mainnet_revision_guards',
              'mainnet_owner_row_stays', 'mainnet_keep_verdicts', 'mainnet_public_const', 'mainnet_public_stars')
 # The testnet freeze items: variants.py validates the full set with each of them left out alone.
-FREEZE_FLAGS = ('mainnet_chunk_role', 'mainnet_config_count', 'mainnet_event_by_kind', 'mainnet_explicit_config')
+FREEZE_FLAGS = ('mainnet_chunk_role', 'mainnet_config_count', 'mainnet_event_by_kind', 'mainnet_explicit_config',
+                'mainnet_pinned_gates', 'mainnet_grant_heads', 'mainnet_keep_checks')
 # What each flag needs: a `where` naming a property the other adds (else 40126 at registration), a
 # rule rewriting one the other adds, or (B1) the room only the four-contract layout leaves in
 # forge-core. build() refuses a combination that breaks one.
@@ -242,6 +246,11 @@ NEEDS = {
     'mainnet_public_const': ('mainnet_vis_via_repo', 'topic_public', 'mainnet_mirror_public'),
     # R-19 rewrites the role gate member roles add
     'mainnet_chunk_role': ('member_roles',),
+    # the pinned gates are the member-role claims and L4's wrap role; the anchor is B1's prefix rule;
+    # keepCompleted reads the status S1 freezes once completed
+    'mainnet_pinned_gates': ('member_roles', 'thread_lock', 'mainnet_bot_role'),
+    'mainnet_grant_heads': ('mainnet_bot_push',),
+    'mainnet_keep_checks': ('check_evidence_freeze',),
 }
 # The RC2 items with a flag: forge-contracts/schema/variants.py validates every combination.
 RC2_FLAGS = ('check_evidence_freeze', 'review_to_author', 'review_author', 'fused_star', 'event_as_maintainer',
@@ -1245,6 +1254,36 @@ def build(flags):
         # S2/S3 probe priced that shape at about +14 M credits). A `kind in [...]` query needs an
         # orderBy on `kind` (rs-drive single_in_path_query v0).
         ev_home['event']['indices'].append({"name": "byKind", "properties": [{"repoId": "asc"}, {"kind": "asc"}]})
+
+    if up['mainnet_pinned_gates']:
+        # A contract update may raise a `maximum`, lower a `minimum` and append to an `enum`
+        # (rs-json-schema-compatibility-validator rule_set.rs at v5.0.0-rc.3: `maximum` :281, `enum`
+        # :964; validate_update v1 holds only the integer width), and readonly stays false so that
+        # additive updates can land. So where a gate rests on a bound alone, one update signed by the
+        # deployer's CRITICAL key would open it, for good, on every repo: a reader's or a bot's `r`
+        # passing a writer leaf, a wrap to a bot, a transition kind no state rule knows. A rule can
+        # never change on update (10246), so each bound is restated as one.
+        tr = ld['transition']
+        tr['propertyConstraints']['e_mergeOid']['allOf'].append({"in": ["r", [1, 2]]})
+        # the 16th and last rule transition may have (system_limits v4): the kinds the state rules know
+        tr['propertyConstraints']['k_kinds'] = {"in": ["kind", sorted(tr['properties']['kind']['enum'])]}
+        assert len(tr['propertyConstraints']) <= 16, len(tr['propertyConstraints'])
+        for t in (ev_home['event'], ev_home['milestone'], cd['label']):
+            t.setdefault('propertyConstraints', {})['rClaim'] = {"in": ["r", [1, 2]]}
+        md['checkRun']['propertyConstraints']['rClaim'] = {"equal": ["r", 1]}
+        rk_home['repoKey'].setdefault('propertyConstraints', {})['mrClaim'] = {"in": ["mr", [1, 2, 3]]}
+
+    if up['mainnet_grant_heads']:
+        # B1: a prefix grant names branches, never tags or other refs (a release is a member's act,
+        # D18), so `refs/` or `refs/tags/` cannot be granted to a bot by mistake
+        cd['pushGrant']['propertyConstraints']['headsOnly'] = {"anyOf": [
+            {"absent": "prefix"}, {"startsWith": ["prefix", {"const": "refs/heads/"}]}]}
+
+    if up['mainnet_keep_checks']:
+        # A completed run outlives the merge it justified, as R-09 keeps verdicts: the merge audit
+        # reads check runs as they are now (deletion.md "deleteConstraints", judged on the stored
+        # document, 40147). A run still queued or in progress may go.
+        md['checkRun']['deleteConstraints'] = {"keepCompleted": {"notEqual": ["status", {"const": "completed"}]}}
 
     core['description'] = "Dash Forge v2 core: repositories, refs, packs, members, releases, labels, topics"
     collab['description'] = "Dash Forge v2 collaboration: issues, pull requests, transitions, comments, reviews, repo keys"

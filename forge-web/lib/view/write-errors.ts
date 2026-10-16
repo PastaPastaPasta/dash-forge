@@ -104,6 +104,11 @@ export const MAINNET_RULE_SENTENCES: Readonly<Record<string, string>> = {
   targetOnPublish: 'A public release points at the commit its tag points at, and an encrypted one at none.',
   ownerRowStays: "The owner's own Maintain access can't be removed.",
   keepVerdicts: 'An approval or a change request stays on record. Dismiss it instead.',
+  headsOnly: 'A push grant can cover branches only (refs/heads/…), never tags.',
+  keepCompleted: 'A finished check run stays on record.',
+  rClaim: "Your role in this repo can't make this change.",
+  mrClaim: 'A repository key is shared only with maintainers, writers, triage members and readers.',
+  k_kinds: "This kind of state change isn't one Forge knows.",
 }
 
 /** "You weren't charged." or what was: the second beat of every refusal. */

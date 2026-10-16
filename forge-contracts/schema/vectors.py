@@ -1037,6 +1037,10 @@ if F['mainnet_bot_push']:
     no('B1', 'a grant naming the bot row role (R-06: a where literal now)', 'pushGrant', 'additionalProperties', br=4)
     no('B1', 'a grant without until', 'pushGrant', 'required', until=DROP)
     no('B1', 'an empty prefix', 'pushGrant', 'minLength', prefix='')
+    if F['mainnet_grant_heads']:
+        for p in ('refs/tags/', 'refs/', 'r'):
+            no('B1', f'a prefix grant of {p} (branches only)', 'pushGrant', 'headsOnly', prefix=p)
+        ok('B1', 'a prefix grant of every branch', 'pushGrant', prefix='refs/heads/')
     BOT_PUSH = dict(signer=9, r=4, refName='refs/heads/bot/ci-bot/fix-1', pp=i(20), grantor=i(OWNER))
     BOT_SEALED = dict(signer=9, r=4, refName=DROP, pg=i(21), grantor=i(OWNER), **SEALED)
     ok('B1', "a bot's push under a prefix grant", 'refUpdate', **BOT_PUSH)
@@ -1093,9 +1097,10 @@ if CHUNK_ROLE:
     no('R-19', 'a chunk claiming a role (no r: the writer leaf names the roles)', 'chunk', 'additionalProperties', r=1)
     ok('R-19', 'a chunk without r', 'chunk')
 index('CFGN', 'a repo\'s configs are counted', 'config', 'created', True, properties=['repoId', '$createdAt'],
-      rangeCountable=F['mainnet_config_count'])
+      rangeCountable=F['mainnet_config_count'], unique=False)
 if F['mainnet_event_by_kind']:
-    index('EVK', "one kind's events of a repo", 'event', 'byKind', True, properties=['repoId', 'kind'])
+    index('EVK', "one kind's events of a repo", 'event', 'byKind', True, properties=['repoId', 'kind'],
+          unique=False, rangeCountable=False)
 else:
     index('EVK', 'no byKind index', 'event', 'byKind', False)
 
@@ -1109,6 +1114,11 @@ LIVE_ONLY = {('issue', 'dense'), ('patch', 'dense'), ('transition', 'c1_closedAf
 # Rules that read a referenced document (property-constraints.md "Values of a referenced document"):
 # no offline judge reads it, so a node is the only one (M-A2's mv-live.mjs cases)
 LIVE_ONLY |= {('refUpdate', 'grantPrefix'), ('review', 'authorNoVerdict')}
+# The testnet freeze's update guards (mainnet_pinned_gates) restate a schema bound as a rule, so that a
+# contract update loosening the bound changes nothing: under the registered schema the bound refuses
+# first, and no create can reach the rule. They are proved by an update on a scratch set (FREEZE-SHEET.md).
+UPDATE_GUARDS = {('transition', 'k_kinds'), ('checkRun', 'rClaim'), ('event', 'rClaim'), ('milestone', 'rClaim'),
+                 ('label', 'rClaim'), ('repoKey', 'mrClaim')}
 
 
 def uncovered():
@@ -1118,7 +1128,7 @@ def uncovered():
     for name, contract in build.build(F).items():
         for t, d in contract['documentSchemas'].items():
             for rule in d.get('propertyConstraints', {}):
-                if (t, rule) not in refused and (t, rule) not in LIVE_ONLY:
+                if (t, rule) not in refused and (t, rule) not in LIVE_ONLY | UPDATE_GUARDS:
                     out.append((name, t, rule))
     return out
 

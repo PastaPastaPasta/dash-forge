@@ -740,6 +740,10 @@ try {
     await ok(I, 'a public check run with text', O, 'checkRun', run(R, 'public', { summary: 'all green', detailsUrl: 'https://ci.example.com/2' }));
     const q = await ok(I, 'a queued public run', O, 'checkRun', { repoId: R, headOid: bytes(20, 3), name: 'm1-q', status: 'queued', outcome: 0, vis: 'public' });
     await replaceNo(I, 'a public run turned members-only later (aud immutable)', O, q, { aud: 1 }, [], [40128]);
+    // the testnet freeze: a completed run outlives the merge it justified; a queued one may go
+    const done = await ok('FZ', 'a completed failing run', O, 'checkRun', run(R, 'public', { conclusion: 'failure', outcome: 2 }));
+    if (done) await deleteNo('FZ', 'the runner deletes its completed run (keepCompleted)', O, done, [40147], 'keepCompleted');
+    if (q) await deleteOk('FZ', 'the runner deletes its queued run', O, q);
   }
 
   // ---------------- M2: the triage allow-list and kind 23 ----------------
@@ -820,6 +824,11 @@ try {
       }
     }
     await no(I, "the bot's chunk claiming a role (R-19: no r)", B, 'chunk', { repoId: R, packHash: bytes(32), seq: 0, d0: bytes(10), r: 4 }, SCHEMA);
+    // R-19: the `in [1, 4]` literal admits a role-1 writer and the maintainer too
+    await ok(I, "a role-1 writer's chunk (R-19)", W, 'chunk', { repoId: R, packHash: bytes(32), seq: 0, d0: bytes(10) });
+    await ok(I, "the owner's chunk (R-19, maintainer operand)", O, 'chunk', { repoId: R, packHash: bytes(32), seq: 0, d0: bytes(10) });
+    // the testnet freeze: a prefix grant covers branches only
+    for (const prefix of ['refs/tags/', 'refs/']) await no(I, `a prefix grant of ${prefix} (headsOnly)`, O, 'pushGrant', grant(B, { prefix }), [10422], 'headsOnly');
     // refusals
     await no(I, 'a bot ref update with no grant (r 4)', B, 'refUpdate', { repoId: R, refNameHash: refHash(`${PREFIX}y`), refName: `${PREFIX}y`, newOid: bytes(20, 1), vis: 'public', r: 4 }, [10422], 'botGrant');
     await no(I, 'a bot ref update outside its prefix (refs/heads/main; R-06 grantPrefix)', B, 'refUpdate', botRef('refs/heads/main', pGrant), [10422], 'grantPrefix');
