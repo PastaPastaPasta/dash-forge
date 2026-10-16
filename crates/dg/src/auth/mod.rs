@@ -722,8 +722,8 @@ pub async fn disable_key(
     disable_keys(client, master, &[key_id]).await
 }
 
-/// The most keys one identity update may disable (Platform's `MAX_KEYS_TO_DISABLE`, checked
-/// in the update's structure validation).
+/// The most keys one identity update may disable (Platform's `MAX_KEYS_TO_DISABLE` = 10, checked
+/// in the update's structure validation; the same in v5.0.0-beta.6 and v5.0.0-rc.1 to rc.3).
 pub const MAX_KEYS_PER_UPDATE: usize = 10;
 
 /// Disable `key_ids` (at most [`MAX_KEYS_PER_UPDATE`]) in ONE identity update, signed once by

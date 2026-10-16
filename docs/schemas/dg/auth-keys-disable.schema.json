@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/docs/schemas/dg/auth-keys-disable.schema.json",
   "title": "dg auth keys disable --json",
-  "description": "A key (or, with --all-limited, every limited key) disabled on the identity.",
+  "description": "A key (or, with --all-limited, every signing key but the master and the one in use) disabled on the identity.",
   "type": "object",
   "properties": {
     "schemaVersion": {
@@ -23,6 +23,30 @@
       "type": "array",
       "items": {
         "type": "integer"
+      }
+    },
+    "keys": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "keyId": {
+            "type": "integer"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "forge-limited",
+              "wallet-sign-in",
+              "ci-runner",
+              "other"
+            ]
+          }
+        },
+        "required": [
+          "keyId",
+          "kind"
+        ]
       }
     },
     "keptKeyId": {

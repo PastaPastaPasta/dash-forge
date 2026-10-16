@@ -315,16 +315,16 @@ async fn trusted_manifest(
         .fix(UNPUBLISHED_FIX)
         .into());
     }
-    Ok((
-        Manifest::parse(bytes)?,
-        format!(
-            "attested by {}'s CI, signed by {} on {SIGNER_REF} (`gh attestation verify --repo {} --signer-workflow {}` on the manifest checks the signature)",
-            signer.repo,
-            signer.workflow,
-            signer.repo,
-            signer.spec()
-        ),
-    ))
+    Ok((Manifest::parse(bytes)?, attested_line(signer)))
+}
+
+/// How the output describes an attestation whose certificate named `signer`. It says what was
+/// not checked: the certificate chain and the signature need `gh attestation verify`.
+fn attested_line(signer: &ExpectedSigner) -> String {
+    format!(
+        "attested by {}@{SIGNER_REF} (certificate fields; signature not checked here: run gh attestation verify)",
+        signer.spec()
+    )
 }
 
 const UNPUBLISHED_FIX: &str = "do not unlock a private repository there; use a release's IPFS build (docs/guides/verify-the-app.md)";
@@ -520,6 +520,15 @@ mod tests {
             "https://forge.example/sub/.well-known/security.txt"
         );
         assert!(site_root("ftp://x").is_err());
+    }
+
+    #[test]
+    fn the_success_line_says_the_signature_was_not_checked() {
+        let signer = ExpectedSigner::parse(DEFAULT_SIGNER_WORKFLOW).unwrap();
+        assert_eq!(
+            attested_line(&signer),
+            "attested by PastaPastaPasta/dash-forge/.github/workflows/pages.yml@refs/heads/master (certificate fields; signature not checked here: run gh attestation verify)"
+        );
     }
 
     #[test]

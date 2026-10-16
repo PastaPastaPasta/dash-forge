@@ -20,7 +20,7 @@ import { Spinner } from '@/components/ui/states'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import { DOCS } from '@/lib/docs-links'
 import { useCopy } from '@/hooks/use-copy'
-import { MAX_KEYS_PER_UPDATE, ROLE_TEXT, chunkKeyIds, disableRefusal, otherKeysToDisable, readKeyLabels, requestPersistence, storagePersistence, writeKeyLabel, type KeyRow, type StoragePersistence } from '@/lib/auth/devices'
+import { KIND_TEXT, MAX_KEYS_PER_UPDATE, ROLE_TEXT, chunkKeyIds, disableRefusal, otherKeysToDisable, readKeyLabels, requestPersistence, storagePersistence, writeKeyLabel, type KeyRow, type StoragePersistence } from '@/lib/auth/devices'
 import { keyKind } from '@/lib/auth/key-watch'
 import { IdentityUpdateNotSentError, WrongMasterKeyError } from '@/lib/auth/limited-key'
 import { KEY_DISABLE_CREDITS, previewCredits } from '@/lib/sdk'
@@ -76,7 +76,7 @@ export function DevicesKeys(): JSX.Element {
             <ShieldOff className="h-3.5 w-3.5" aria-hidden /> Disable all other keys
           </Button>
           <span className="text-[12px] text-anvil-600 dark:text-anvil-300">
-            Disables the {others.length} Forge {others.length === 1 ? 'key' : 'keys'} other than this browser&apos;s. Use it if Forge tells you to revoke keys.
+            Disables {others.length === 1 ? 'the 1 signing key' : `the ${others.length} signing keys`} other than this browser&apos;s, wallet sign-ins and other apps&apos; keys included. Use it if Forge tells you to revoke keys.
           </span>
         </div>
       ) : null}
@@ -289,17 +289,29 @@ function DisableOthersDialog({ rows, labels, onClose, onDone }: { rows: KeyRow[]
         }}
       >
         <p className="text-anvil-600 dark:text-anvil-300">
-          Your master key disables these {rows.length} {rows.length === 1 ? 'key' : 'keys'} on Platform. This browser&apos;s key, your master key, your
-          encryption key and keys of a wallet or other apps stay. The master key is used once and is not stored.
+          Your master key disables these {rows.length} {rows.length === 1 ? 'key' : 'keys'} on Platform: every signing key except this browser&apos;s own.
+          The master key is used once and is not stored. Your encryption, decryption and transfer keys stay.
         </p>
-        <ul className="max-h-40 space-y-1 overflow-auto rounded-md border border-anvil-200 px-3 py-2 dark:border-anvil-800" data-testid="disable-others-list">
+        <p className="rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-caution-700 dark:text-caution-400" data-testid="disable-others-warning">
+          Other apps that use this identity (a wallet sign-in, for one) will need to sign in again, and so will every other browser, computer and CI
+          runner.
+        </p>
+        <ul className="max-h-48 space-y-1 overflow-auto rounded-md border border-anvil-200 px-3 py-2 dark:border-anvil-800" data-testid="disable-others-list">
           {rows.map((r) => (
-            <li key={r.keyId} data-key-id={r.keyId}>
+            <li key={r.keyId} data-key-id={r.keyId} data-kind={r.kind}>
               <span className="font-mono">#{r.keyId}</span> {labels[r.keyId] ? <span className="font-medium">{labels[r.keyId]} </span> : null}
-              <span className="text-anvil-500 dark:text-anvil-400">{ROLE_TEXT[r.role]}</span>
+              <span className="font-medium">{KIND_TEXT[r.kind]}</span>
+              <span className="text-anvil-500 dark:text-anvil-400">: {r.bounds}</span>
             </li>
           ))}
         </ul>
+        <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="disable-others-encryption-note">
+          If a wallet sign-in or the web app may have copied keys, your encryption key may have been copied too. See{' '}
+          <a href={`${DOCS.identity}#replacing-it-after-a-lost-device`} target="_blank" rel="noreferrer noopener" className="underline">
+            replacing the encryption key
+          </a>
+          .
+        </p>
         {updates > 1 ? (
           <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
             Platform disables up to {MAX_KEYS_PER_UPDATE} keys per update, so this sends {updates} updates. If one fails, the keys already disabled stay

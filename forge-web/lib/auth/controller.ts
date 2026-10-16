@@ -1706,7 +1706,7 @@ export class AuthController {
     if (!identity) throw new Error(`identity ${session.identityId} not found on ${NETWORKS[this.network].key}`)
     const budgeted = identity.publicKeys.filter((k) => k.totalBudget !== undefined).map((k) => k.keyId)
     const budgets = budgeted.length ? await withPlatformRead(authSdk(sdk).identities.keysRemainingBudgets(session.identityId, budgeted), 'Reading key budgets') : new Map<number, bigint | null>()
-    return keyRows(identity.publicKeys, budgets, NETWORKS[this.network].v2 ?? undefined, this.browserKeyIds())
+    return keyRows(identity.publicKeys, budgets, NETWORKS[this.network].v2 ?? undefined, this.browserKeyIds(), session.keyId ?? null)
   }
 
   /** The keys this browser holds for the signed-in identity: its signing key and wallet grants. */
@@ -1740,21 +1740,24 @@ export class AuthController {
   }
 
   /**
-   * Disable every key of the identity that Devices & keys may disable ({@link otherKeysToDisable}:
-   * not this browser's own keys, the master or encryption key, nor a wallet's or another app's),
-   * with the master key. Up to {@link MAX_KEYS_PER_UPDATE} keys share one identity update, so
-   * more take more updates, each reported to `onProgress` once sent. A failure part-way throws
-   * with how many were done: the keys already disabled stay disabled, and running it again
-   * finishes the rest. Returns the ids disabled.
+   * Disable every enabled AUTHENTICATION key of the identity except the MASTER key and the one
+   * this browser signs with ({@link otherKeysToDisable}): Forge limited keys, wallet sign-ins and
+   * wallet grants (including those this browser holds), CI runner keys and other apps' keys. The
+   * master key signs. Up to {@link MAX_KEYS_PER_UPDATE} keys share one identity update, so more
+   * take more updates, each reported to `onProgress` once sent. A failure part-way throws with how
+   * many were done: the keys already disabled stay disabled, and running it again finishes the
+   * rest. Returns the ids disabled.
    */
   async disableOtherKeys(input: MasterInput, onProgress?: (done: number, total: number) => void): Promise<number[]> {
     return this.run(async () => {
       const session = this.state.session
       if (session === null) throw new Error('sign in first')
+      // Without the key this browser signs with, the list could include it.
+      if (session.keyId === undefined) throw new WriteAuthError("This tab can't tell which key it signs with, so it can't tell which keys are the others. Sign in again, then retry.")
       const forge = NETWORKS[this.network].v2
       if (!forge) throw new Error(`Dash Forge is not deployed on ${NETWORKS[this.network].key}`)
       const { identityId } = session
-      // Read now, after the master key is checked below: the list the dialog showed may be old.
+      // Read now: the list the dialog showed may be old.
       const ids = otherKeysToDisable(await this.identityKeys()).map((r) => r.keyId)
       if (ids.length === 0) return []
       const masterWif = await this.masterWifFor(identityId, input)
@@ -1764,7 +1767,7 @@ export class AuthController {
         await this.wordedMasterError(identityId, 'mnemonic' in input ? input.mnemonic : null, 'signed-in', async () => {
           for (const chunk of chunkKeyIds(ids)) {
             await this.charged(identityId, 'key:revoke', () => chunk[0] ?? null, () =>
-              disableIdentityKeys(sdk, { network: this.network, identityId, masterWif, keyIds: chunk, allowed: (k) => DISABLEABLE.has(keyRole(k, forge)) }),
+              disableIdentityKeys(sdk, { network: this.network, identityId, masterWif, keyIds: chunk, allowed: () => true }),
             )
             disabled.push(...chunk)
             onProgress?.(disabled.length, ids.length)

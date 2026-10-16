@@ -18,6 +18,9 @@ const WORDS = Array(12).fill('abandon').join(' ')
 const row = (keyId: number, role: KeyRow['role'], o: Partial<KeyRow> = {}): KeyRow => ({
   keyId,
   role,
+  kind: role === 'signing' || role === 'forge-contract' ? 'wallet' : role === 'forge' ? 'forge-limited' : 'other',
+  bounds: role === 'signing' ? 'any contract' : 'Forge contract group',
+  current: false,
   purpose: role === 'encryption' ? 1 : 0,
   level: role === 'master' ? 0 : 2,
   disabledAt: null,
@@ -30,20 +33,20 @@ const row = (keyId: number, role: KeyRow['role'], o: Partial<KeyRow> = {}): KeyR
 
 const rows: KeyRow[] = [
   row(0, 'master', { level: 0 }),
-  row(1, 'signing'),
+  row(1, 'signing'), // a wallet sign-in
   row(4, 'encryption'),
-  row(9, 'forge', { thisBrowser: true }),
+  row(9, 'forge', { thisBrowser: true, current: true }),
   row(10, 'forge'),
-  row(11, 'forge-contract'),
+  row(11, 'forge-contract'), // the iOS wallet's key
   row(12, 'forge', { disabledAt: 5 }),
-  row(14, 'other'),
+  row(14, 'other', { kind: 'other', bounds: 'contract group X' }),
 ]
 
 const auth = {
   identityKeys: vi.fn(async (): Promise<KeyRow[]> => rows),
   disableOtherKeys: vi.fn(async (_input: unknown, onProgress?: (done: number, total: number) => void): Promise<number[]> => {
-    onProgress?.(2, 2)
-    return [10, 11]
+    onProgress?.(4, 4)
+    return [1, 10, 11, 14]
   }),
 }
 
@@ -89,11 +92,18 @@ afterEach(() => {
 describe('Disable all other keys', () => {
   it('counts the keys it would disable and lists them in a confirm dialog', async () => {
     await render()
-    expect(host.querySelector('[data-testid="disable-others"]')!.textContent).toMatch(/Disables the 2 Forge keys other than this browser/)
+    expect(host.querySelector('[data-testid="disable-others"]')!.textContent).toMatch(/Disables the 4 signing keys other than this browser's, wallet sign-ins/)
     expect(document.querySelector('[data-testid="disable-others-dialog"]')).toBeNull()
     await act(async () => button(/Disable all other keys/).click())
     const listed = [...document.querySelectorAll('[data-testid="disable-others-list"] li')].map((li) => li.getAttribute('data-key-id'))
-    expect(listed).toEqual(['10', '11'])
+    // Wallet sign-ins and another app's key are listed too; this browser's key, the master and
+    // the encryption key are not.
+    expect(listed).toEqual(['1', '10', '11', '14'])
+    const kinds = [...document.querySelectorAll('[data-testid="disable-others-list"] li')].map((li) => li.getAttribute('data-kind'))
+    expect(kinds).toEqual(['wallet', 'forge-limited', 'wallet', 'other'])
+    expect(document.querySelector('[data-testid="disable-others-list"]')!.textContent).toMatch(/wallet sign-in: any contract/)
+    expect(document.querySelector('[data-testid="disable-others-warning"]')!.textContent).toMatch(/wallet sign-in, for one\) will need to sign in again/)
+    expect(document.querySelector('[data-testid="disable-others-encryption-note"] a')!.getAttribute('href')).toMatch(/#replacing-it-after-a-lost-device$/)
     expect(auth.disableOtherKeys).not.toHaveBeenCalled()
   })
 
@@ -102,7 +112,7 @@ describe('Disable all other keys', () => {
     await act(async () => button(/Disable all other keys/).click())
     act(() => button(/^Recovery phrase$/).click())
     act(() => type(document.querySelector('[data-testid="disable-others-dialog"] textarea')!, WORDS))
-    await act(async () => button(/Sign & disable 2 keys/).click())
+    await act(async () => button(/Sign & disable 4 keys/).click())
     expect(auth.disableOtherKeys).toHaveBeenCalledTimes(1)
     expect(auth.disableOtherKeys.mock.calls[0]![0]).toEqual({ mnemonic: WORDS })
     // The dialog closed and the page read the keys again.
@@ -116,13 +126,13 @@ describe('Disable all other keys', () => {
     await act(async () => button(/Disable all other keys/).click())
     act(() => button(/^Recovery phrase$/).click())
     act(() => type(document.querySelector('[data-testid="disable-others-dialog"] textarea')!, WORDS))
-    await act(async () => button(/Sign & disable 2 keys/).click())
+    await act(async () => button(/Sign & disable 4 keys/).click())
     expect(document.querySelector('[role="alert"]')!.textContent).toMatch(/Disabled 10 of 12 keys/)
     expect(document.querySelector<HTMLTextAreaElement>('[data-testid="disable-others-dialog"] textarea')!.value).toBe('')
   })
 
   it('offers nothing when no other key can be disabled', async () => {
-    auth.identityKeys.mockResolvedValueOnce(rows.filter((r) => r.keyId < 10))
+    auth.identityKeys.mockResolvedValueOnce(rows.filter((r) => [0, 4, 9, 12].includes(r.keyId)))
     await render()
     expect(host.querySelector('[data-testid="disable-others"]')).toBeNull()
   })
