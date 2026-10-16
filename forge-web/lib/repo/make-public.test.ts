@@ -184,6 +184,14 @@ describe('one cutoff, and the same refs', () => {
     expect(cutoffOf(0, 2)).toBe(0)
   })
 
+  it('cutoffOf stops below the run\'s own seal-off when a rotation raised the stated one', () => {
+    // the settings state epoch 2, the run recorded its own seal-off at 1: history stops below 1
+    expect(cutoffOf(2, 1)).toBe(1)
+    // with no record (another machine resumes the run) the stated epoch stands
+    expect(cutoffOf(2, null)).toBe(2)
+    expect(cutoffOf(2, undefined)).toBe(2)
+  })
+
   it('sameRefs compares names and tips, in any order', () => {
     const DEV = { name: 'refs/heads/dev', oid: 'b'.repeat(40) }
     expect(sameRefs([MAIN, DEV], [DEV, { ...MAIN, oid: MAIN.oid.toUpperCase() }])).toBe(true)
