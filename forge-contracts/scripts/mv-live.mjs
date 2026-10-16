@@ -250,8 +250,9 @@ function record(r) {
 }
 
 // The role every role-gated write claims unless the case names one: 1, what a maintainer, an
-// author or a role-1 writer sends.
-const ROLE_GATED = new Set(['refUpdate', 'packManifest', 'chunk', 'transition', 'event', 'checkRun', 'label', 'milestone']);
+// author or a role-1 writer sends. A chunk claims none (R-19, the testnet freeze): its writer leaf
+// names the roles it admits.
+const ROLE_GATED = new Set(['refUpdate', 'packManifest', 'transition', 'event', 'checkRun', 'label', 'milestone']);
 const CONTRACT = { repo: CORE, maintainer: CORE, writer: CORE, consent: CORE, refUpdate: CORE, protectedRefUpdate: CORE, config: CORE, release: CORE, packManifest: CORE, chunk: CORE, pushGrant: CORE, issue: COLLAB, patch: COLLAB, comment: COLLAB, review: COLLAB, transition: COLLAB, event: COMM, authorEvent: COMM, checkRun: COMM, runner: COMM, policy: COMM, milestone: COMM, star: COMM, watch: COMM, webhook: COMM, repoKey: META, ban: META, label: META, topic: META, packMirror: META, profile: META, follow: META };
 function withDefaults(type, data) {
   if (type === 'writer' && data.role === undefined) return { ...data, role: 1 };
@@ -739,6 +740,10 @@ try {
     await ok(I, 'a public check run with text', O, 'checkRun', run(R, 'public', { summary: 'all green', detailsUrl: 'https://ci.example.com/2' }));
     const q = await ok(I, 'a queued public run', O, 'checkRun', { repoId: R, headOid: bytes(20, 3), name: 'm1-q', status: 'queued', outcome: 0, vis: 'public' });
     await replaceNo(I, 'a public run turned members-only later (aud immutable)', O, q, { aud: 1 }, [], [40128]);
+    // the testnet freeze: a completed run outlives the merge it justified; a queued one may go
+    const done = await ok('FZ', 'a completed failing run', O, 'checkRun', run(R, 'public', { conclusion: 'failure', outcome: 2 }));
+    if (done) await deleteNo('FZ', 'the runner deletes its completed run (keepCompleted)', O, done, [40147], 'keepCompleted');
+    if (q) await deleteOk('FZ', 'the runner deletes its queued run', O, q);
   }
 
   // ---------------- M2: the triage allow-list and kind 23 ----------------
@@ -808,16 +813,22 @@ try {
     // R-06: the push names the grant and its granter; the grant's until and prefix are read from it
     const botRef = (name, g, extra = {}) => ({ repoId: R, refNameHash: refHash(name), refName: name, newOid: bytes(20, 9), vis: 'public', r: 4, pp: docRef(g), grantor: id(O.id), ...extra });
     await ok(I, 'the bot pushes refs/heads/bot/ci-bot/x under the prefix grant', B, 'refUpdate', botRef(`${PREFIX}x`, pGrant));
-    // its kind-0 pack, kind-1 browse index and kind-6 long body (Platform chunks, r 4)
+    // its kind-0 pack, kind-1 browse index and kind-6 long body (Platform chunks; a chunk claims no role
+    // since R-19: its writer leaf admits the bot's role-4 row by the literal `in [1, 4]`)
     for (const [kind, label] of [[0, 'pack'], [1, 'browse index'], [6, 'long body']]) {
       const ph = bytes(32);
-      const c = await ok(I, `the bot's chunk for its kind-${kind} ${label} (r 4)`, B, 'chunk', { repoId: R, packHash: ph, seq: 0, d0: bytes(200), r: 4 });
+      const c = await ok(I, `the bot's chunk for its kind-${kind} ${label}`, B, 'chunk', { repoId: R, packHash: ph, seq: 0, d0: bytes(200) });
       if (c) {
         await sleep(A_BLOCK);
         await ok(I, `the bot's kind-${kind} ${label} manifest (r 4)`, B, 'packManifest', { repoId: R, packHash: ph, kind, sizeBytes: 200, objectCount: kind === 0 ? 1 : 0, chunkCount: 1, storage: 0, r: 4 });
       }
     }
-    await no(I, "the bot's chunk claiming r 1", B, 'chunk', { repoId: R, packHash: bytes(32), seq: 0, d0: bytes(10), r: 1 }, [40127]);
+    await no(I, "the bot's chunk claiming a role (R-19: no r)", B, 'chunk', { repoId: R, packHash: bytes(32), seq: 0, d0: bytes(10), r: 4 }, SCHEMA);
+    // R-19: the `in [1, 4]` literal admits a role-1 writer and the maintainer too
+    await ok(I, "a role-1 writer's chunk (R-19)", W, 'chunk', { repoId: R, packHash: bytes(32), seq: 0, d0: bytes(10) });
+    await ok(I, "the owner's chunk (R-19, maintainer operand)", O, 'chunk', { repoId: R, packHash: bytes(32), seq: 0, d0: bytes(10) });
+    // the testnet freeze: a prefix grant covers branches only
+    for (const prefix of ['refs/tags/', 'refs/']) await no(I, `a prefix grant of ${prefix} (headsOnly)`, O, 'pushGrant', grant(B, { prefix }), [10422], 'headsOnly');
     // refusals
     await no(I, 'a bot ref update with no grant (r 4)', B, 'refUpdate', { repoId: R, refNameHash: refHash(`${PREFIX}y`), refName: `${PREFIX}y`, newOid: bytes(20, 1), vis: 'public', r: 4 }, [10422], 'botGrant');
     await no(I, 'a bot ref update outside its prefix (refs/heads/main; R-06 grantPrefix)', B, 'refUpdate', botRef('refs/heads/main', pGrant), [10422], 'grantPrefix');
@@ -828,8 +839,8 @@ try {
     await no(I, "another bot pushes under the bot's grant", B2, 'refUpdate', botRef(`${PREFIX}x`, pGrant), [40127]);
     await no(I, 'triage sends r 4 under the grant', T, 'refUpdate', botRef(`${PREFIX}x`, pGrant), WHERE_ANYOF);
     await no(I, 'the reader sends r 4 under the grant', RD, 'refUpdate', botRef(`${PREFIX}x`, pGrant), WHERE_ANYOF);
-    await no(I, 'triage uploads a chunk with r 4', T, 'chunk', { repoId: R, packHash: bytes(32), seq: 0, d0: bytes(10), r: 4 }, [40127]);
-    await no(I, 'triage uploads a chunk with its own r 2 (botChunk: r 1 or 4)', T, 'chunk', { repoId: R, packHash: bytes(32), seq: 0, d0: bytes(10), r: 2 }, [10422], 'botChunk');
+    await no(I, 'triage uploads a chunk (R-19: role 2 is not in [1, 4])', T, 'chunk', { repoId: R, packHash: bytes(32), seq: 0, d0: bytes(10) }, WHERE_ANYOF);
+    await no(I, 'the reader uploads a chunk (R-19: role 3 is not in [1, 4])', RD, 'chunk', { repoId: R, packHash: bytes(32), seq: 0, d0: bytes(10) }, WHERE_ANYOF);
     await no(I, 'a bot protected ref update', B, 'protectedRefUpdate', { repoId: R, refNameHash: refHash('refs/heads/main'), refName: 'refs/heads/main', newOid: bytes(20, 1), vis: 'public' }, [40120]);
     const bman = (kind, extra = {}) => ({ repoId: R, packHash: bytes(32), kind, sizeBytes: 100, objectCount: 0, chunkCount: 0, storage: 1, r: 4, ...extra });
     await no(I, 'a bot manifest of kind 3 (r 4)', B, 'packManifest', bman(3, { tips: bytes(20) }), [10422], 'botPack');
@@ -1211,7 +1222,7 @@ async function storeArtifact(item, label, who, repoId, data, kind, r, extra = {}
   for (let seq = 0; seq < n; seq++) {
     const real = data.subarray(seq * 3 * PART, (seq + 1) * 3 * PART);
     const slice = tripwire && seq > 0 ? randomBytes(real.length) : real;
-    const d = { repoId, packHash, seq, d0: slice.subarray(0, PART), r: r === 0 ? 1 : r };
+    const d = { repoId, packHash, seq, d0: slice.subarray(0, PART) };
     if (slice.length > PART) d.d1 = slice.subarray(PART, 2 * PART);
     if (slice.length > 2 * PART) d.d2 = slice.subarray(2 * PART);
     if (!(await ok(item, `${label}: chunk ${seq + 1} of ${n}`, who, 'chunk', d))) return null;

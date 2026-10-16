@@ -1500,7 +1500,6 @@ const MAINNET_RULE_EXPLANATIONS: &[(&str, &str)] = &[
     ("sealedNoText", "a members-only or private check run carries no summary, links, artifacts or external id"),
     ("maintKinds", "make-public bundles, environment snapshots and access notices are written by a maintainer (r 0)"),
     ("botPack", "a bot writes only packs, browse indexes and long texts, and never replaces others' packs"),
-    ("botChunk", "a chunk is written by a maintainer, a writer or a bot with push access"),
     ("botGrant", "a bot pushes only under a maintainer's push grant (an exact members-only branch, or a public branch prefix)"),
     ("grantPrefix", "the branch is outside the prefix the push grant allows"),
     ("ttl90", "a push grant ends after now and at most 90 days from now"),
@@ -1509,6 +1508,12 @@ const MAINNET_RULE_EXPLANATIONS: &[(&str, &str)] = &[
     // deleteConstraints (40147)
     ("ownerRowStays", "the owner's own Maintain access can't be removed"),
     ("keepVerdicts", "an approval or a change request stays on record; dismiss it instead"),
+    ("keepCompleted", "a finished check run stays on record"),
+    ("headsOnly", "a push grant covers branches only (refs/heads/...), never tags or other refs"),
+    // the testnet freeze's update guards: a role claim or kind outside what the gate admits
+    ("rClaim", "your role in this repository can't make this change (r)"),
+    ("mrClaim", "a repository key is shared only with maintainers, writers, triage members and readers"),
+    ("k_kinds", "this transition kind is not one the state rules know"),
 ];
 
 /// The rules whose meaning on one document type differs from [`RULE_EXPLANATIONS`]' entry.

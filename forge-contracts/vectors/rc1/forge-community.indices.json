@@ -36,5 +36,12 @@
   "name": "no starBeat type",
   "type": "starBeat",
   "expect": "absent"
+ },
+ {
+  "item": "EVK",
+  "name": "no byKind index",
+  "type": "event",
+  "index": "byKind",
+  "expect": "absent"
  }
 ]

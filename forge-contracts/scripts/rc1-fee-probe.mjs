@@ -28,6 +28,18 @@
 //   node forge-contracts/scripts/rc1-fee-probe.mjs --rc2 --devnet-name sakura --identity <file> [--n 4]
 //   node forge-contracts/scripts/rc1-fee-probe.mjs --rc2 --emit <dir>   # offline: the probe contracts
 //        and vectors, for `contract-validate --vectors <dir>/vectors <dir>/contracts/rc2-*.json`
+//
+// --freeze runs the testnet freeze gates (docs/contracts/forge-v2.md §9.1; lib/freeze-probe.mjs):
+// five probe contracts cut from `build.py --mainnet`, written with the same documents
+//   - event (EV-NONE, EV-KIND, EV-KINDT): no `byKind` index, `byKind (repoId, kind)` (the candidate;
+//     keep it at <= +15 % on an event write), and `byKind (repoId, kind, $createdAt)`. A label (kind 4)
+//     and a pin (kind 19) are each written first-of-its-kind in a fresh repo, then again later.
+//   - config (CFG-NONE, CFG-COUNT): `created` plain against `created` rangeCountable, a first config
+//     of a fresh repo and a later one.
+// Warm-up, rotation and the state file work as for --rc2 (a platform tool reads the printed JSON).
+//
+//   node forge-contracts/scripts/rc1-fee-probe.mjs --freeze --devnet-name sakura --identity <file> [--n 5]
+//   node forge-contracts/scripts/rc1-fee-probe.mjs --freeze --emit <dir>   # offline, like --rc2 --emit
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { randomBytes } from 'node:crypto';
@@ -35,32 +47,36 @@ import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PROTOCOL_VERSION, contractId, loadEvoSdk } from './deploy-v2.mjs';
 import { PROBES, RC2_DOCS, REVIEW_PROBES, bare, emitted, materialize, probeSchemas, schemaHash } from './lib/rc2-probe.mjs';
+import * as freezeProbe from './lib/freeze-probe.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = Object.fromEntries(process.argv.slice(2).reduce((acc, t, i, a) => (t.startsWith('--') ? [...acc, [t.slice(2), a[i + 1] && !a[i + 1].startsWith('--') ? a[i + 1] : true]] : acc), []));
 const devnetName = args['devnet-name'] || 'sakura';
 const N = Number(args.n ?? 4);
 const RC2 = Boolean(args.rc2);
-const statePath = String(args.state ?? join(homedir(), '.cache', 'dash-forge', `${RC2 ? 'rc2' : 'rc1'}-fee-probe-${devnetName}.json`));
+const FREEZE = Boolean(args.freeze);
+const statePath = String(args.state ?? join(homedir(), '.cache', 'dash-forge', `${FREEZE ? 'freeze' : RC2 ? 'rc2' : 'rc1'}-fee-probe-${devnetName}.json`));
 const log = (m) => console.error(`${new Date().toISOString().slice(11, 19)} ${m}`);
 const usage = (m) => {
-  console.error(`${m}\nusage: rc1-fee-probe.mjs [--rc2] --devnet-name <name> --identity <file> [--state <file>] [--n 4]\n       rc1-fee-probe.mjs --rc2 --emit <dir>`);
+  console.error(`${m}\nusage: rc1-fee-probe.mjs [--rc2|--freeze] --devnet-name <name> --identity <file> [--state <file>] [--n 4]\n       rc1-fee-probe.mjs --rc2|--freeze --emit <dir>`);
   process.exit(2);
 };
 const mean = (a) => a.reduce((x, y) => x + y, 0) / a.length;
 const median = (a) => [...a].sort((x, y) => x - y)[Math.floor(a.length / 2)];
+if (RC2 && FREEZE) usage('--rc2 and --freeze are separate runs');
 
 if (args.emit !== undefined) {
-  if (!RC2) usage('--emit needs --rc2');
+  if (!RC2 && !FREEZE) usage('--emit needs --rc2 or --freeze');
   if (args.emit === true) usage('--emit needs a directory');
   const dir = resolve(String(args.emit));
+  const lib = FREEZE ? { prefix: 'freeze', probes: freezeProbe.PROBES, schemas: freezeProbe.probeSchemas(), emitted: freezeProbe.emitted } : { prefix: 'rc2', probes: PROBES, schemas: probeSchemas(), emitted };
   for (const sub of ['contracts', 'vectors']) mkdirSync(join(dir, sub), { recursive: true });
-  for (const [probe, schema] of Object.entries(probeSchemas())) {
-    const { contract, vectors } = emitted(probe, schema);
-    writeFileSync(join(dir, 'contracts', `rc2-${probe}.json`), `${JSON.stringify(contract, null, 2)}\n`);
-    writeFileSync(join(dir, 'vectors', `rc2-${probe}.json`), `${JSON.stringify(vectors, null, 2)}\n`);
+  for (const [probe, schema] of Object.entries(lib.schemas)) {
+    const { contract, vectors } = lib.emitted(probe, schema);
+    writeFileSync(join(dir, 'contracts', `${lib.prefix}-${probe}.json`), `${JSON.stringify(contract, null, 2)}\n`);
+    writeFileSync(join(dir, 'vectors', `${lib.prefix}-${probe}.json`), `${JSON.stringify(vectors, null, 2)}\n`);
   }
-  log(`wrote contracts/rc2-{${PROBES.join(',')}}.json and their vectors/ to ${dir}`);
+  log(`wrote contracts/${lib.prefix}-{${lib.probes.join(',')}}.json and their vectors/ to ${dir}`);
   process.exit(0);
 }
 if (typeof args.identity !== 'string') usage('--identity <file> is required');
@@ -150,6 +166,59 @@ async function create(contract, type, data) {
   return sdk.documents.create({ document, ...high });
 }
 const write = (contract, type, data) => priced(() => create(contract, type, data));
+
+if (FREEZE) {
+  const { EVENT_PROBES, CONFIG_PROBES, FREEZE_DOCS } = freezeProbe;
+  const schemas = freezeProbe.probeSchemas();
+  for (const p of freezeProbe.PROBES) await register(p, schemas[p]);
+  // Each priced write of a probe, in order, over one fresh repo id: [measure, document]
+  const SEQUENCE = {
+    event: [['first label (first event of the repo)', 'label'], ['first pin (repo has events, no pin)', 'pin'], ['later label', 'label'], ['later pin', 'pin']],
+    config: [['first config of a repo', 'config'], ['later config of the repo', 'config']],
+  };
+  const groups = { event: EVENT_PROBES, config: CONFIG_PROBES };
+  const doc = (name, repoId) => freezeProbe.materialize(FREEZE_DOCS[name].doc, { repoId }, randomBytes);
+  // A type's first write costs more (its trees are created): one unmeasured write per document kind and probe first
+  for (const [group, probes] of Object.entries(groups)) {
+    for (const p of probes) for (const name of new Set(SEQUENCE[group].map(([, d]) => d))) await create(state[p], FREEZE_DOCS[name].type, doc(name, randomBytes(32)));
+  }
+  const costs = Object.fromEntries(Object.entries(groups).map(([group, probes]) => [group, Object.fromEntries(SEQUENCE[group].map(([measure]) => [measure, Object.fromEntries(probes.map((p) => [p, []]))]))]));
+  for (let i = 0; i < N; i++) {
+    for (const [group, probes] of Object.entries(groups)) {
+      // a rotated order each round, so a drift over the run cancels out
+      for (const p of probes.map((_, j) => probes[(i + j) % probes.length])) {
+        const repoId = randomBytes(32);
+        for (const [measure, name] of SEQUENCE[group]) costs[group][measure][p].push(await write(state[p], FREEZE_DOCS[name].type, doc(name, repoId)));
+        log(`round ${i + 1}/${N} ${p}: ${SEQUENCE[group].map(([m]) => costs[group][m][p].at(-1)).join(' / ')} credits`);
+      }
+    }
+  }
+  const BASE = { event: 'EV-NONE', config: 'CFG-NONE' };
+  const fees = {};
+  for (const [group, probes] of Object.entries(groups)) {
+    for (const [measure] of SEQUENCE[group]) {
+      const base = costs[group][measure][BASE[group]];
+      fees[`${group}: ${measure}`] = Object.fromEntries(probes.map((p) => {
+        const c = costs[group][measure][p];
+        const paired = median(c.map((x, i) => x - base[i]));
+        return [p, {
+          mean: Math.round(mean(c)),
+          median: median(c),
+          deltaMean: Math.round(mean(c) - mean(base)),
+          addedPercent: Number((100 * (mean(c) / mean(base) - 1)).toFixed(2)),
+          pairedMedianCredits: paired,
+          pairedMedianPercent: Number((100 * paired / mean(base)).toFixed(2)),
+          samples: c,
+        }];
+      }));
+    }
+  }
+  const worst = (p) => Math.max(...Object.entries(fees).filter(([k]) => k.startsWith('event:')).map(([, v]) => v[p].addedPercent));
+  const gates = { 'event byKind <= +15 % on every measured event write': worst('EV-KIND') <= 15, 'event byKind+$createdAt <= +15 % on every measured event write': worst('EV-KINDT') <= 15 };
+  for (const [k, v] of Object.entries(fees)) log(`${k}: ${Object.entries(v).map(([p, f]) => `${p} ${f.mean} (${f.addedPercent >= 0 ? '+' : ''}${f.addedPercent} %)`).join(', ')}`);
+  console.log(JSON.stringify({ identity: owner, network: `devnet-${devnetName}`, protocolVersion: version, probes: Object.fromEntries(freezeProbe.PROBES.map((p) => [p, { id: state[p], registrationCredits: state[`${p}RegistrationCredits`] }])), n: N, fees, gates }, null, 2));
+  process.exit(0);
+}
 
 if (RC2) {
   const schemas = probeSchemas();

@@ -43,6 +43,7 @@ AP.add_argument('--off', default='')
 AP.add_argument('--on', default='')
 AP.add_argument('--mainnet', action='store_true')
 AP.add_argument('--out')
+AP.add_argument('--guards', metavar='DIR', help='write the update-guard check (loosened contracts and their vectors) to DIR')
 ARGS = AP.parse_args() if __name__ == '__main__' else AP.parse_args([])
 if ARGS.mainnet:
     ARGS.on = ','.join(filter(None, [ARGS.on, *build.MAINNET_BUILT]))
@@ -125,6 +126,10 @@ def home(t):
 # RC2 member roles: a writer document carries its role, and every writer-gated type its claimed `r`
 # (1: the role a maintainer, an author, a runner or a role-1 writer sends)
 ROLE_GATED = build.ROLE_GATED
+# R-19 (the testnet freeze): a chunk claims no role; its writer leaf admits roles 1 and 4 by a literal
+CHUNK_ROLE = F['mainnet_chunk_role']
+if CHUNK_ROLE:
+    ROLE_GATED = {t: hi for t, hi in ROLE_GATED.items() if t != 'chunk'}
 if F['member_roles']:
     BASE['writer']['role'] = 1
     for _t in ROLE_GATED:
@@ -1033,6 +1038,10 @@ if F['mainnet_bot_push']:
     no('B1', 'a grant naming the bot row role (R-06: a where literal now)', 'pushGrant', 'additionalProperties', br=4)
     no('B1', 'a grant without until', 'pushGrant', 'required', until=DROP)
     no('B1', 'an empty prefix', 'pushGrant', 'minLength', prefix='')
+    if F['mainnet_grant_heads']:
+        for p in ('refs/tags/', 'refs/', 'r'):
+            no('B1', f'a prefix grant of {p} (branches only)', 'pushGrant', 'headsOnly', prefix=p)
+        ok('B1', 'a prefix grant of every branch', 'pushGrant', prefix='refs/heads/')
     BOT_PUSH = dict(signer=9, r=4, refName='refs/heads/bot/ci-bot/fix-1', pp=i(20), grantor=i(OWNER))
     BOT_SEALED = dict(signer=9, r=4, refName=DROP, pg=i(21), grantor=i(OWNER), **SEALED)
     ok('B1', "a bot's push under a prefix grant", 'refUpdate', **BOT_PUSH)
@@ -1053,9 +1062,13 @@ if F['mainnet_bot_push']:
         no('B1', f"a bot's kind-{k} manifest", 'packManifest', 'botPack', signer=9, r=4, kind=k)
     no('B1', "a bot's manifest superseding others", 'packManifest', 'botPack', signer=9, r=4, supersedes=b(2, 32))
     no('B1', 'packManifest claiming a reader (r 3)', 'packManifest', 'botPack', r=3)
-    ok('B1', "a bot's chunk", 'chunk', signer=9, r=4)
-    no('B1', 'chunk claiming a reader (r 3)', 'chunk', 'botChunk', r=3)
-    no('B1', 'chunk r 5', 'chunk', 'maximum', r=5)
+    if CHUNK_ROLE:
+        # R-19: the bot's chunk claims nothing; whose role-1 or role-4 row it is, the writer leaf proves on chain
+        ok('B1', "a bot's chunk", 'chunk', signer=9)
+    else:
+        ok('B1', "a bot's chunk", 'chunk', signer=9, r=4)
+        no('B1', 'chunk claiming a reader (r 3)', 'chunk', 'botChunk', r=3)
+        no('B1', 'chunk r 5', 'chunk', 'maximum', r=5)
 
 # ---------------- Platform beta.6 (phase M-A2; design/v5/PLATFORM-OPPORTUNITIES-5.0.0-beta.6.md) ----------------
 # R-02 (shorthands) is judged by every vector above: the shorthand build must agree with each.
@@ -1080,6 +1093,18 @@ if F['mainnet_enc_framing']:
         no('R-04', f'a sealed config framed 0x{v:02x}', 'config', 'encV2', defaultBranch=DROP, protectedPatterns=DROP, vis='private',
            **framed(v))
 
+# ---------------- The testnet freeze (dash-forge-qa design/FREEZE-SHEET.md) ----------------
+if CHUNK_ROLE:
+    no('R-19', 'a chunk claiming a role (no r: the writer leaf names the roles)', 'chunk', 'additionalProperties', r=1)
+    ok('R-19', 'a chunk without r', 'chunk')
+index('CFGN', 'a repo\'s configs are counted', 'config', 'created', True, properties=['repoId', '$createdAt'],
+      rangeCountable=F['mainnet_config_count'], unique=False)
+if F['mainnet_event_by_kind']:
+    index('EVK', "one kind's events of a repo", 'event', 'byKind', True, properties=['repoId', 'kind'],
+          unique=False, rangeCountable=False)
+else:
+    index('EVK', 'no byKind index', 'event', 'byKind', False)
+
 # Rules that read a total, a time or a height: judged on chain only (forge-contracts/scripts/rc1-live.mjs;
 # the mainnet set's in M-C).
 LIVE_ONLY = {('issue', 'dense'), ('patch', 'dense'), ('transition', 'c1_closedAfter'), ('transition', 'c2_openAfter'),
@@ -1090,6 +1115,13 @@ LIVE_ONLY = {('issue', 'dense'), ('patch', 'dense'), ('transition', 'c1_closedAf
 # Rules that read a referenced document (property-constraints.md "Values of a referenced document"):
 # no offline judge reads it, so a node is the only one (M-A2's mv-live.mjs cases)
 LIVE_ONLY |= {('refUpdate', 'grantPrefix'), ('review', 'authorNoVerdict')}
+# The testnet freeze's update guards (mainnet_pinned_gates) restate a schema bound as a rule, so that a
+# contract update loosening the bound changes nothing: under the registered schema the bound refuses
+# first, and no create can reach the rule. They are proved by an update on a scratch set (FREEZE-SHEET.md).
+UPDATE_GUARDS = {('transition', 'k_kinds'), ('checkRun', 'rClaim'), ('event', 'rClaim'), ('milestone', 'rClaim'),
+                 ('label', 'rClaim'), ('repoKey', 'mrClaim'),
+                 # a build without B1 (variants only): the push class's claims
+                 ('refUpdate', 'rClaim'), ('packManifest', 'rClaim'), ('chunk', 'rClaim')}
 
 
 def uncovered():
@@ -1099,8 +1131,57 @@ def uncovered():
     for name, contract in build.build(F).items():
         for t, d in contract['documentSchemas'].items():
             for rule in d.get('propertyConstraints', {}):
-                if (t, rule) not in refused and (t, rule) not in LIVE_ONLY:
+                if (t, rule) not in refused and (t, rule) not in LIVE_ONLY | UPDATE_GUARDS:
                     out.append((name, t, rule))
+    return out
+
+
+# The update guards' check (`--guards`): each bound the guards restate is loosened as an update could
+# loosen it (a raised maximum, an appended enum value), and a document only the loosened bound admits
+# must still be refused, by its guard. (type, property, loosened schema change, the value, the guard)
+GUARD_LOOSENINGS = [('transition', 'r', {'maximum': 4}, 3, 'e_mergeOid'),
+                    ('transition', 'kind', {'enum+': 5}, 5, 'k_kinds'),
+                    ('event', 'r', {'maximum': 4}, 3, 'rClaim'),
+                    ('milestone', 'r', {'maximum': 4}, 4, 'rClaim'),
+                    ('label', 'r', {'maximum': 4}, 3, 'rClaim'),
+                    ('checkRun', 'r', {'maximum': 4}, 2, 'rClaim'),
+                    ('repoKey', 'mr', {'maximum': 4}, 4, 'mrClaim')]
+
+
+def guard_check(out):
+    """Write <out>/contracts/<name>.json (the build with every guarded bound loosened) and
+    <out>/vectors/<name>.json (for each, the base document accepted and the loosened value refused by
+    its guard), for `contract-validate --vectors <out>/vectors <out>/contracts/...`."""
+    loose = build.build(F)
+    cases = []
+    for t, prop, change, value, rule in GUARD_LOOSENINGS:
+        schema = next(c['documentSchemas'][t] for c in loose.values() if t in c['documentSchemas'])
+        p = schema['properties'][prop]
+        if 'enum+' in change:
+            p['enum'] = p['enum'] + [change['enum+']]
+        else:
+            p.update(change)
+        base = {"type": t, "doc": doc(t)}
+        cases.append(dict(base, item='GUARD', name=f'{t} as registered', expect='ok'))
+        cases.append(dict(base, item='GUARD', name=f'{t}.{prop} = {value} once the bound is loosened', expect='refused',
+                          why=rule, doc=doc(t, **{prop: value})))
+    for sub_dir in ('contracts', 'vectors'):
+        os.makedirs(os.path.join(out, sub_dir), exist_ok=True)
+    for name, contract in loose.items():
+        open(os.path.join(out, 'contracts', f'{name}.json'), 'w').write(json.dumps(contract, indent=2) + '\n')
+        open(os.path.join(out, 'vectors', f'{name}.json'), 'w').write(dumps([c for c in cases if home(c['type']) == name]))
+    return len(cases)
+
+
+def unpinned_roles():
+    """(contract, type, property) whose role claim no rule bounds (mainnet_pinned_gates): its schema bound
+    alone holds it, and an update may loosen that."""
+    out = []
+    for name, contract in build.build(F).items():
+        for t, d in contract['documentSchemas'].items():
+            for prop in ('r', 'mr'):
+                if prop in d.get('properties', {}) and f'["{prop}", ' not in json.dumps(d.get('propertyConstraints', {})):
+                    out.append((name, t, prop))
     return out
 
 
@@ -1180,6 +1261,14 @@ def main():
     for m in unproved_roles():
         print('role claim r of %s.%s is proved by no writer leaf' % m)
         missing.append(m)
+    if F['mainnet_pinned_gates']:
+        for m in unpinned_roles():
+            print('role claim %s.%s.%s is bounded by no rule (mainnet_pinned_gates)' % m)
+            missing.append(m)
+    if ARGS.guards:
+        if not F['mainnet_pinned_gates']:
+            sys.exit('--guards checks the mainnet_pinned_gates rules: use it with --mainnet')
+        print(f'{guard_check(ARGS.guards)} update-guard cases written to {ARGS.guards}')
     if ARGS.check:
         stale = [p for f, p in paths.items() if not os.path.exists(p) or open(p).read() != dumps(sets[f])]
         stale += [os.path.join(OUT, f) for f in os.listdir(OUT) if f.endswith('.json') and f not in sets]

@@ -58,7 +58,7 @@ export function buildVariant(on) {
 
 const clone = (x) => JSON.parse(JSON.stringify(x));
 /** Drop every `refersTo` nested anywhere in a value (a def or a property). */
-function dropRefs(value) {
+export function dropRefs(value) {
   if (Array.isArray(value)) return value.map(dropRefs);
   if (value === null || typeof value !== 'object') return value;
   return Object.fromEntries(Object.entries(value).filter(([k]) => k !== 'refersTo').map(([k, v]) => [k, dropRefs(v)]));
