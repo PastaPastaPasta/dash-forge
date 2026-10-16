@@ -296,4 +296,24 @@ mod tests {
             .unwrap()
             .is_empty());
     }
+
+    /// A fixed input's bundle bytes, as `sha256` (the `packHash` a kind-7 manifest records):
+    /// forge-web's `epochKeyBundles` asserts the same digest (`lib/private/convert.test.ts`), so
+    /// a run started in `dg` is recognised as published by the web and the other way round.
+    #[test]
+    fn epoch_key_bundles_are_byte_identical_across_stacks() {
+        use sha2::{Digest as _, Sha256};
+        let repo = [7u8; 32];
+        let keys: BTreeMap<u32, EpochKey> = [(0u32, 0x10u8), (1, 0x21), (5, 0x35)]
+            .into_iter()
+            .map(|(e, b)| (e, EpochKey::from_bytes([b; 32])))
+            .collect();
+        let bundles = epoch_key_bundles(&repo, &keys).unwrap();
+        assert_eq!(bundles.len(), 1);
+        assert_eq!(bundles[0].len(), 7 + 3 * 69 + EPOCH_BUNDLE_NOTE.len());
+        assert_eq!(
+            hex::encode(Sha256::digest(&bundles[0])),
+            "740906d2c6534bbc3c7eaaa2b4a5e0321b3c2b4d710b5c9191d30d5953811757"
+        );
+    }
 }

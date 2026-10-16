@@ -13,7 +13,7 @@
  */
 
 import { constantTimeEqual } from './bytes'
-import { ENTRY_EPOCH_KEY, parseBundle, type Bundle } from './bundle'
+import { ENTRY_EPOCH_KEY, encodeBundle, parseBundle, type Bundle, type BundleEntry } from './bundle'
 import { V1 } from './doc'
 import { sortAlerts, type Anchor, type EpochAlert } from './epoch'
 import { bytesEqual, type PrivateId } from './ids'
@@ -153,4 +153,31 @@ export async function publishedKeys(
     }
   }
   return { keys, alerts: sortAlerts(alerts) }
+}
+
+/**
+ * The most epoch-key entries one make-public bundle of epoch keys carries: what fits one Platform
+ * chunk (14,700 B) beside its header and a full note, `(14,700 − 7 − 1,024) / 69`. More epochs
+ * below the seal-off epoch are published in several bundles (forge-core `MAX_EPOCH_ENTRIES`).
+ */
+export const MAX_EPOCH_ENTRIES = 198
+
+/** The note of every make-public bundle of epoch keys (forge-core `EPOCH_BUNDLE_NOTE`). */
+export const EPOCH_BUNDLE_NOTE = 'Everything written before this repository was made public.'
+
+/**
+ * The make-public bundles (§18.3) publishing `keys`, raw epoch keys of the repository `repoId`
+ * (mixed-visibility DESIGN §4.10 step 7): one 0x06 entry per epoch, in epoch order, at most
+ * {@link MAX_EPOCH_ENTRIES} per bundle; none when `keys` is empty. Deterministic and
+ * byte-identical to forge-core `epoch_key_bundles`, so "already published" is a manifest of the
+ * same `packHash` whichever client wrote it. The caller passes only epochs below the seal-off
+ * epoch (readers ignore any other) and wipes the keys and the bundles.
+ */
+export function epochKeyBundles(repoId: Uint8Array, keys: ReadonlyMap<number, Uint8Array>): Uint8Array[] {
+  const entries: BundleEntry[] = [...keys]
+    .sort(([a], [b]) => a - b)
+    .map(([revision, key]) => ({ kind: ENTRY_EPOCH_KEY, target: repoId, revision, key }))
+  const out: Uint8Array[] = []
+  for (let i = 0; i < entries.length; i += MAX_EPOCH_ENTRIES) out.push(encodeBundle(entries.slice(i, i + MAX_EPOCH_ENTRIES), EPOCH_BUNDLE_NOTE))
+  return out
 }

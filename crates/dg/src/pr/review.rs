@@ -418,6 +418,7 @@ pub async fn review(ctx: &Ctx, a: &PrReviewArgs) -> Result<()> {
     let asked = a.members || existing.as_ref().is_some_and(|d| d.members);
     let ask = crate::audience::Ask {
         members: asked && a.to.is_empty(),
+        public: false,
         to: &a.to,
     };
     let crate::audience::Requested { audience, to } = crate::audience::requested(
@@ -1177,6 +1178,7 @@ pub async fn comment(ctx: &Ctx, a: &PrCommentArgs) -> Result<()> {
         &s.repo,
         crate::audience::Ask {
             members: a.members,
+            public: a.public,
             to: &a.to,
         },
         Some(&view.patch.document_id),

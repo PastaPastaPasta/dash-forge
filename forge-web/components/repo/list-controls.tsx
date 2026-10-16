@@ -11,13 +11,13 @@ import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type React
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { usePathname, useSearchParams } from '@/hooks/use-route'
-import { ChevronDown, ChevronLeft, ChevronRight, Loader2, Lock, MessageSquare, Search, SlidersHorizontal } from 'lucide-react'
+import { ChevronDown, ChevronLeft, ChevronRight, Globe, Loader2, Lock, MessageSquare, Search, SlidersHorizontal } from 'lucide-react'
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import type { Network } from '@/lib/constants'
 import type { LabelDef } from '@/lib/repo'
 import { plural, resolveDpnsId } from '@/lib/view'
 import { dpnsAuthorCandidates, Q_MAX, resolveSearchNames, withQuery } from '@/lib/view/issue-query'
-import { countWithMembersOnly, membersOnlyTitle } from '@/lib/view/audience'
+import { countWithMembersOnly, membersOnlyTitle, writtenWhilePrivateLabel } from '@/lib/view/audience'
 import { formatCount as grouped } from '@/lib/view/text-limits'
 import type { RepoAddress } from '@/hooks/use-query-param'
 import { Button } from '@/components/ui/button'
@@ -807,12 +807,15 @@ export function RowLink({
   audience,
   membersOnly,
   type = 'issue',
+  writtenWhilePrivate = false,
 }: {
   href: string
   title: string
   audience?: 'members' | 'specificPeople'
   membersOnly?: true
   type?: 'issue' | 'patch'
+  /** Written while the repo (made public since) was private (DESIGN §4.10): said beside its title. */
+  writtenWhilePrivate?: boolean
 }): JSX.Element {
   return (
     <>
@@ -826,7 +829,15 @@ export function RowLink({
           title || '(untitled)'
         )}
       </Link>
-      {audience === 'members' && !membersOnly ? (
+      {writtenWhilePrivate && audience !== 'specificPeople' && !membersOnly ? (
+        <span
+          className="inline-flex items-center gap-1 rounded-full bg-anvil-100 px-1.5 py-0.5 text-[11px] font-medium text-anvil-700 dark:bg-anvil-800 dark:text-anvil-200"
+          data-testid="written-while-private"
+          data-audience={audience === 'members' ? 'members' : 'public'}
+        >
+          {audience === 'members' ? <Lock className="h-3 w-3" aria-hidden /> : <Globe className="h-3 w-3" aria-hidden />} {writtenWhilePrivateLabel(audience === 'members')}
+        </span>
+      ) : audience === 'members' && !membersOnly ? (
         <span className="inline-flex items-center gap-1 rounded-full bg-anvil-100 px-1.5 py-0.5 text-[11px] font-medium text-anvil-700 dark:bg-anvil-800 dark:text-anvil-200" data-testid="members-only-mark">
           <Lock className="h-3 w-3" aria-hidden /> Members only
         </span>

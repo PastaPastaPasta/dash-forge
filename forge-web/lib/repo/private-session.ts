@@ -121,6 +121,12 @@ export interface PrivateSession {
   readonly conversion: Conversion | null
   /** The epochs of `resolution.keys` only the published keys open (none of the reader's own). */
   readonly publishedEpochs: ReadonlySet<number>
+  /**
+   * Every epoch the published keys open, whether or not the reader holds it too
+   * (`EpochResolution.published`): what was written while the repo was private under one of
+   * them is public for everyone ("Public · written while private"). Empty for any other repo.
+   */
+  readonly publishedAll: ReadonlySet<number>
   /** Whether the session is closed (vault locked, key changed). */
   readonly closed: boolean
   /** End this session now (its keys and caches are dropped; its gate admits nothing). */
@@ -399,7 +405,8 @@ export async function loadPrivateSession(input: {
   // A bot's members-only posts (`enc` v0x05) open only from a current Bot row (§23); a bot is
   // never a key holder, so the resolution does not know it.
   const ctx = { ...openContextOf(resolution), bots: new IdSet(botsOf(members).map(decodeIdentifier)) }
-  const gate = sessionGate(repo, ctx, { converted: conversion !== null, published: input.published === true })
+  const publishedAll: ReadonlySet<number> = resolution.published ?? new Set<number>()
+  const gate = sessionGate(repo, ctx, { converted: conversion !== null, published: input.published === true, publishedAll })
 
   // The config timeline: every config that opens (§4.2 commitment first), as plaintext. Configs
   // under epochs this reader holds no key for are not in it, so protected-ref routing cannot see
@@ -465,6 +472,7 @@ export async function loadPrivateSession(input: {
     configRows,
     conversion,
     publishedEpochs: new Set([...resolution.keys.keys()].filter((e) => !resolved.keys.has(e))),
+    publishedAll,
     loadedAt: Date.now(),
     close: () => undefined,
     get closed() {

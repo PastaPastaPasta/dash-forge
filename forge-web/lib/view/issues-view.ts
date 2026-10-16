@@ -53,13 +53,14 @@ import { closeReasonOf, currentCloseReason, isLocked, stateCode, statusOfCode, t
 import { DEFAULT_NETWORK, type Network } from '../constants'
 import { compositeOf, docsAt, queryComposite, siblingOf } from '../sdk/composite'
 import { prefetchDpnsNames } from './dpns'
+import { readUntil } from './retry'
 import { withLongBodies, withLongBody, type LongBodyState } from './long-body'
 import type { Membership } from '../rules/v2'
 import type { RerunRequest } from '../rules/ci-rerun'
 import type { AgentRequest } from '../rules/agent-request'
 import { embargoCounts, embargoOf, type Embargo } from '../rules/embargo'
 import { contentGate } from '../repo/made-public'
-import { HiddenTally, admitAll, placeholderShown, publicationMarks, viewAudience, type BundleAlert, type PublicationMarks, type HiddenCounts, type LetterFacts, type MembersOnlyItem } from '../repo/private-content'
+import { HiddenTally, admitAll, placeholderShown, publicationMarks, viewAudience, type BundleAlert, type ContentGate, type PublicationMarks, type HiddenCounts, type LetterFacts, type MembersOnlyItem } from '../repo/private-content'
 import { queryAllDocuments, type PlainDocument } from '../sdk'
 import { compareKey, type Event } from '../rules'
 import { foldThreadMetaV2, type ThreadMeta } from '../rules/parity'
@@ -325,6 +326,27 @@ export interface MembersOnlyTarget {
   readonly comments: number
   /** The comment read came back full: there may be more than `comments` ("100+ comments"). */
   readonly moreComments?: true
+  /**
+   * The comments this reader can read, oldest first: a thread written while its repository (made
+   * public since) was private takes public replies (DESIGN §4.10, L3), which everyone reads. From
+   * the same page of comments `comments` counts.
+   */
+  readonly timeline?: readonly TimelineItem[]
+  /** Its members-only comments this reader cannot open, shown as placeholders (D14). */
+  readonly membersOnly?: readonly MembersOnlyEntry[]
+  /** Comments left out as unreadable, by reason (the placeholders among them included). */
+  readonly hidden?: HiddenCounts
+  /** What maintainers hid of `timeline` (RC2 MOD), as the thread page folds it. */
+  readonly moderation?: HiddenItems
+  /** What the reader rule read, for the page's bans (`useThreadModeration`). */
+  readonly moderationInput?: ModerationInput
+  /** The conversation is locked (RC1 R-15): consensus refuses a comment from a non-member. */
+  readonly locked?: boolean
+  /**
+   * It was written while its repository (made public since) was private (its own `vis` is
+   * `"private"`): it takes public replies from anyone (DESIGN §4.10, L3).
+   */
+  readonly writtenWhilePrivate?: true
 }
 
 /** Whether a thread read found a members-only issue or PR this reader cannot open. */
@@ -344,10 +366,119 @@ function membersOnlyEntries(tally: HiddenTally, reviews: readonly ReviewView[]):
 /** The comment sub-query's page size on a thread read: a full page may not be all of them. */
 const COMMENT_PAGE = 100
 
+/** The event sub-queries' page size on a thread read. */
+const EVENT_PAGE = 100
+
+/** What the members-only target page shows under a thread's row: its replies ({@link membersOnlyReplies}) and how it takes new ones. */
+type TargetReplies = Pick<MembersOnlyTarget, 'timeline' | 'membersOnly' | 'hidden' | 'moderation' | 'moderationInput' | 'locked' | 'writtenWhilePrivate'>
+
 /** The members-only target page of `placeholder` (a well-formed sealed issue or PR this reader cannot open). */
-function membersOnlyTarget(placeholder: MembersOnlyItem, number: number, transitions: readonly TransitionView[], comments: number): MembersOnlyTarget {
+function membersOnlyTarget(placeholder: MembersOnlyItem, number: number, transitions: readonly TransitionView[], read: TargetRead): MembersOnlyTarget {
   const status = statusOfCode(stateCode(transitions))
-  return { placeholder, number, open: status.open, merged: status.merged, comments, ...(comments >= COMMENT_PAGE ? { moreComments: true as const } : {}) }
+  return { placeholder, number, open: status.open, merged: status.merged, comments: read.comments, ...(read.more ? { moreComments: true as const } : {}), ...read.replies }
+}
+
+/**
+ * What {@link membersOnlyReplies} read: the thread's `comments` read, whether there may be `more`
+ * of them than that (a full page not completed: nothing in it could be read, and the thread takes
+ * no public reply), and the `replies` shown.
+ */
+interface TargetRead {
+  readonly replies: TargetReplies
+  readonly comments: number
+  readonly more: boolean
+}
+
+/** A target's rows of `type` in full, oldest first: the continuation of a full first page of a thread read. */
+function readTargetRows(sdk: EvoSDK, repo: RepoRef, type: string, id: string): Promise<PlainDocument[]> {
+  return queryAllDocuments(sdk, repoSource(repo).targetQuery(type, { where: [['targetId', '==', id]], orderBy: [['targetId', 'asc'], ['$createdAt', 'asc']] }))
+}
+
+/**
+ * The replies a reader who cannot open a thread still reads (DESIGN §4.10 L3, D14): its comments
+ * the gate admits (public ones: plaintext), and its members-only ones as placeholders, folded as
+ * the thread page folds them (long bodies, maintainers' hides; the page applies the repo's bans).
+ * From the rows the thread's one composite read already holds: its first page of comments, its
+ * events and the repo's members (read on their own only past a page of members, as the thread page
+ * does). A thread with no comment this reader can read reads nothing more.
+ */
+async function membersOnlyReplies(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  gate: ContentGate,
+  raw: PlainDocument,
+  rows: { readonly comments: readonly PlainDocument[]; readonly events: readonly PlainDocument[]; readonly authorEvents: readonly PlainDocument[]; readonly memberships: readonly Membership[] | null },
+  transitions: readonly TransitionView[],
+  network: Network,
+): Promise<TargetRead> {
+  const byTime = (a: PlainDocument, b: PlainDocument) => num(a, '$createdAt') - num(b, '$createdAt')
+  const thread = { id: str(raw, '$id'), author: str(raw, '$ownerId') }
+  // Its own `vis` stamp, in the clear: no key is needed to tell an old thread (§4.10).
+  const writtenWhilePrivate = repo.visibility === 'public' && str(raw, 'vis') === 'private'
+  let commentDocs = rows.comments
+  let tally = new HiddenTally()
+  let admitted = (await admitAll(gate, 'comment', [...commentDocs].sort(byTime), tally)).docs.map(toCommentView)
+  // A full first page may not be all of them: a thread with replies to show, or one that takes
+  // public ones (a later page may hold what this one lacks), is read to the end, as it is when opened.
+  const full = commentDocs.length >= COMMENT_PAGE
+  const completing = full && (admitted.length > 0 || writtenWhilePrivate)
+  if (completing) {
+    commentDocs = await readTargetRows(sdk, repo, DOC.comment, thread.id)
+    tally = new HiddenTally()
+    admitted = (await admitAll(gate, 'comment', [...commentDocs].sort(byTime), tally)).docs.map(toCommentView)
+  }
+  const base: TargetReplies = {
+    membersOnly: membersOnlyEntries(tally, []),
+    hidden: tally.value,
+    locked: isLocked(transitions),
+    ...(writtenWhilePrivate ? { writtenWhilePrivate: true as const } : {}),
+  }
+  const read = (replies: TargetReplies): TargetRead => ({ replies, comments: commentDocs.length, more: full && !completing })
+  const shownIds = [...admitted.map((c) => c.author), ...(base.membersOnly ?? []).map((e) => e.item.author)]
+  if (admitted.length === 0) {
+    if (shownIds.length > 0) await prefetchDpnsNames(sdk, shownIds, network).catch(() => undefined)
+    return read({ ...base, timeline: [] })
+  }
+  // The events (and a PR's author events) fold the moderation of what is shown: complete too.
+  const more = async (page: readonly PlainDocument[], type: string): Promise<readonly PlainDocument[]> => (page.length >= EVENT_PAGE ? readTargetRows(sdk, repo, type, thread.id) : page)
+  const [events, authorEvents] = await Promise.all([more(rows.events, DOC.event), more(rows.authorEvents, DOC.authorEvent)])
+  const log = await toLog(repo, [...events].sort(byTime), [...authorEvents].sort(byTime))
+  const [comments, members] = await Promise.all([
+    withLongBodies(sdk, repo, admitted),
+    rows.memberships ?? readMembershipsCached(sdk, repo, network).catch(() => null),
+    prefetchDpnsNames(sdk, shownIds, network).catch(() => undefined),
+  ])
+  const proved = hasHides(log.events) ? await hidesProved(sdk, repo).catch(() => false) : false
+  const modInput = moderationInput({ events: log.events, thread, owner: repo.ownerId, members: members ?? [], proved, comments, membersUnread: members === null })
+  return read({ ...base, timeline: mergeTimeline(comments, [], [], [], tally.total > 0), moderation: foldModeration(modInput), moderationInput: modInput })
+}
+
+/** Whether a members-only target's read already shows comment `id` (a reply this page posted, L-77). */
+export function targetShowsComment(t: MembersOnlyTarget, id: string): boolean {
+  return (t.timeline ?? []).some((x) => x.kind === 'comment' && x.comment.id === id)
+}
+
+/**
+ * The members-only target `first`, re-read by `load` until it shows every reply `ids` this page
+ * posted (L-77: a node a block behind answers without it), or opens as a thread. A re-read that
+ * fails keeps the target just read. Bounded as {@link readUntil}.
+ */
+export async function readTargetUntil<T>(
+  first: MembersOnlyTarget,
+  load: () => Promise<T | MembersOnlyTarget | null>,
+  ids: readonly string[],
+  signal: { readonly aborted: boolean },
+): Promise<T | MembersOnlyTarget | null> {
+  if (ids.length === 0) return first
+  // A read that says there are more comments than it shows (a full page it did not complete)
+  // cannot show the reply: no point reading it again.
+  const want = ids.map((id) => (t: T | MembersOnlyTarget) => !isMembersOnlyTarget(t) || t.moreComments === true || targetShowsComment(t, id))
+  return readUntil<T | MembersOnlyTarget>(() => load().catch(() => first), want, { signal, first })
+}
+
+/** The replies of `ids` a read `t` does not show yet (none once the thread opens). */
+export function repliesNotShown(t: unknown, ids: readonly string[]): string[] {
+  return isMembersOnlyTarget(t) ? ids.filter((id) => !targetShowsComment(t, id)) : []
 }
 
 /** A full issue detail: the folded issue + its merged timeline. */
@@ -510,8 +641,11 @@ export async function loadIssueOrMembersOnly(sdk: EvoSDK, repo: RepoRef, number:
     // A public repo's members-only issue this reader cannot open: its public facts (D14, D19).
     if (admitted.placeholder === undefined) return null
     const rows = docsAt(res, 2)
-    const transitions = rows.length < 100 ? rows.map(transitionOf) : await readTransitions(sdk, repo, str(raw, '$id'))
-    return membersOnlyTarget(admitted.placeholder, number, sortTransitions(transitions), docsAt(res, 0).length)
+    const transitions = sortTransitions(rows.length < 100 ? rows.map(transitionOf) : await readTransitions(sdk, repo, str(raw, '$id')))
+    const memberships = membershipsFromDocs(docsAt(res, 4).length < 100 ? docsAt(res, 4) : null, docsAt(res, 5).length < 100 ? docsAt(res, 5) : null)
+    if (memberships !== null) seedMemberships(repo, network, memberships, membersAtStart)
+    const replies = await membersOnlyReplies(sdk, repo, gate, raw, { comments: docsAt(res, 0), events: docsAt(res, 1), authorEvents: [], memberships }, transitions, network)
+    return membersOnlyTarget(admitted.placeholder, number, transitions, replies)
   }
   const doc = admitted.doc
   const id = str(doc, '$id')
@@ -809,8 +943,11 @@ export async function loadPullOrMembersOnly(
     // A public repo's members-only PR this reader cannot open: its public facts (D14, D19).
     if (admitted.placeholder === undefined) return null
     const rows = docsAt(res, 8)
-    const transitions = rows.length < 100 ? rows.map(transitionOf) : await readTransitions(sdk, repo, str(raw, '$id'))
-    return membersOnlyTarget(admitted.placeholder, number, sortTransitions(transitions), docsAt(res, 0).length)
+    const transitions = sortTransitions(rows.length < 100 ? rows.map(transitionOf) : await readTransitions(sdk, repo, str(raw, '$id')))
+    const memberships = membershipsFromDocs(docsAt(res, 5).length < 100 ? docsAt(res, 5) : null, docsAt(res, 6).length < 100 ? docsAt(res, 6) : null)
+    if (memberships !== null) seedMemberships(repo, network, memberships, membersAtStart)
+    const replies = await membersOnlyReplies(sdk, repo, gate, raw, { comments: docsAt(res, 0), events: docsAt(res, 1), authorEvents: docsAt(res, 2), memberships }, transitions, network)
+    return membersOnlyTarget(admitted.placeholder, number, transitions, replies)
   }
   const doc = admitted.doc
   const id = str(doc, '$id')

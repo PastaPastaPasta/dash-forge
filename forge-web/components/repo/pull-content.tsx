@@ -61,9 +61,9 @@ import { STATE_FILL, STATE_TEXT } from '@/lib/design/state'
 
 import type { PullThread, RepoHome, TimelineItem } from '@/lib/view'
 import type { HomeReloadOptions } from '@/hooks/use-repo'
-import { ACL_NAME, ARCHIVED_REASON, forkSourcePrefix, invalidateBrowseContext, isLive, isMembersOnlyTarget, isPublicRef, loadPullOrMembersOnly, loadPullThread, plural, policyOf, pullActions, type CommentView, type MembersOnlyTarget } from '@/lib/view'
+import { ACL_NAME, ARCHIVED_REASON, forkSourcePrefix, invalidateBrowseContext, isLive, isMembersOnlyTarget, isPublicRef, loadPullOrMembersOnly, loadPullThread, plural, policyOf, pullActions, readTargetUntil, repliesNotShown, type CommentView, type MembersOnlyTarget } from '@/lib/view'
 import { NO_LETTER_ASK, QUOTE_CONFIRM, forwardText, notPublic, publicLineQuestion, publicTextOf, quotesMembersText, type ComposerAudience, type LetterAsk } from '@/lib/view/audience'
-import { AudienceChip, AudienceMark, AudienceWarnings, MEMBERS_CARD, MEMBERS_CARD_HEADER, MembersOnlyTargetPage, closeWithComment, letterThreadOf, useAudienceWarnings, useComposerAudience, useMembersTexts, useQuoteGate, warningName } from '@/components/repo/audience'
+import { AudienceChip, AudienceMark, AudienceWarnings, MEMBERS_CARD, MEMBERS_CARD_HEADER, closeWithComment, letterThreadOf, useAudienceWarnings, useComposerAudience, useMembersTexts, useQuoteGate, warningName } from '@/components/repo/audience'
 import { commentDraftKey, commentEditDraftKey, discardedEdits, editDraftKey, useDraftText, useEditDraft } from '@/lib/view/draft-text'
 import { EditBase } from './edit-base'
 import { RulesAtMerge } from './rules-at-merge'
@@ -122,6 +122,7 @@ import { SupersededWriteError, UnconfirmedWriteError, previewCreate, previewCred
 import { commentEditDrops, pullSinceYourReview } from '@/lib/view/issues-view'
 import { totalHidden } from '@/lib/repo/private-content'
 import { ForwardButton } from '@/components/repo/letter-picker'
+import { MembersOnlyThread } from '@/components/repo/members-only-thread'
 import type { ParentLetter } from '@/lib/rules/letters'
 import { firstPushers, headUpdatePhrases, sourceBranchEvents, type HeadUpdatePhrase } from '@/lib/view/head-updates'
 import { inlineCommentIds, lineKey, repliesByRoot } from '@/lib/view/inline-threads'
@@ -300,15 +301,23 @@ export function PullContent({
   const current = useRef<{ aborted: boolean }>({ aborted: false })
   // Set by a refresh: from then on the base ref's history is read afresh, not the repo chrome's.
   const refreshed = useRef(false)
+  // Replies posted from the members-only page (a PR this reader cannot open), waited for alike.
+  const replies = useRef<string[]>([])
   const { data, loading, error, reload } = useAsync<PullThread | MembersOnlyTarget | null>(
     async () => {
       current.current.aborted = true
       const signal = { aborted: false }
       current.current = signal
       const want = [...expectations.current]
-      // A members-only PR this reader cannot open: its public facts, nothing to re-read for.
-      const opened = await retryWhileMissing(() => loadPullOrMembersOnly(sdk!, home.repo, number, network, { fresh: refreshed.current }), justCreated ? 8 : 0, undefined, signal)
-      if (opened === null || isMembersOnlyTarget(opened)) return opened
+      const loadOrTarget = () => loadPullOrMembersOnly(sdk!, home.repo, number, network, { fresh: refreshed.current })
+      const opened = await retryWhileMissing(loadOrTarget, justCreated ? 8 : 0, undefined, signal)
+      // A members-only PR this reader cannot open: its public facts, re-read only for a reply posted from it.
+      if (opened !== null && isMembersOnlyTarget(opened)) {
+        const t = await readTargetUntil(opened, loadOrTarget, replies.current, signal)
+        if (!signal.aborted) replies.current = repliesNotShown(t, replies.current)
+        return t
+      }
+      if (opened === null) return opened
       let latest: PullThread | null = opened
       const load = async (): Promise<PullThread | null> => {
         if (signal.aborted) return latest
@@ -340,7 +349,13 @@ export function PullContent({
   if (!Number.isFinite(number)) return <EmptyState icon={GitPullRequest} title="No PR addressed" body="Add &number= to the URL." />
   if (loading && !data) return <LoadingBlock label="Loading pull request" />
   if (error && !data) return <ErrorState message={error} onRetry={reload} />
-  if (isMembersOnlyTarget(data)) return <MembersOnlyTargetPage home={home} target={data} />
+  if (isMembersOnlyTarget(data)) {
+    const posted = (id: string): void => {
+      replies.current.push(id)
+      reload()
+    }
+    return <MembersOnlyThread home={home} addr={addr} target={data} onPosted={posted} />
+  }
   if (!data) return <TargetNotFound home={home} addr={addr} number={number} kind="pull" icon={GitPullRequest} title={`PR #${number} not found`} body="No pull request or issue with that number in this repo." />
   return <PullPage home={home} addr={addr} thread={data} refresh={refresh} refreshing={loading} reloadHome={reloadHome} />
 }
@@ -426,7 +441,7 @@ function PullPage({
   const postContext = { isMember, locked: thread.locked, role: viewerRole }
   // Why the viewer's approve or request changes was refused (DESIGN §10), with "Post as a comment".
   const [verdictRefused, setVerdictRefused] = useState<string | null>(null)
-  const composeBlock = archived ? ARCHIVED_REASON : lockedOut(postContext) ? LOCKED_REASON : privateComposeBlock(home, pull.audience ?? 'public')
+  const composeBlock = archived ? ARCHIVED_REASON : lockedOut(postContext) ? LOCKED_REASON : privateComposeBlock(home, pull.audience ?? 'public', pull.writtenWhilePrivate === true)
   const writeBlocked = composeBlock !== null
   // Who the composer's lock banner speaks to (a member keeps the composer).
   const lockViewer = lockViewerOf(viewer, holdings)
@@ -755,7 +770,13 @@ function PullPage({
     const t = letterThreadOf([pull])
     return forwarded === null ? t : { ...t, parents: [...t.parents, forwarded] }
   }, [pull, forwarded])
-  const audience = useComposerAudience(home, { parent: pull.audience ?? 'public', members: thread.members, maintainer: holdings.data?.maintain === true, thread: letterThread })
+  const audience = useComposerAudience(home, {
+    parent: pull.audience ?? 'public',
+    members: thread.members,
+    maintainer: holdings.data?.maintain === true,
+    thread: letterThread,
+    writtenWhilePrivate: pull.writtenWhilePrivate === true,
+  })
   const letterAsk = audience.audience === 'specificPeople' ? { letter: audience.letter, ...(forwarded !== null ? { letterParents: [forwarded] } : {}) } : {}
   // Members-only text on this page, and all this tab has opened in the repo: a public post that
   // repeats it asks first (product H8), and a draft that quotes it is never kept on disk.
@@ -1777,7 +1798,7 @@ function PullPage({
               <div className={cn('overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800', notPublic(pull.audience) && MEMBERS_CARD)}>
                 <div className={cn('flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 dark:border-anvil-800 dark:bg-anvil-900', notPublic(pull.audience) && MEMBERS_CARD_HEADER)}>
                   <Byline author={pull.author} createdAt={pull.createdAt} origin={origin} verb="opened this" />
-                  <AudienceMark audience={pull.audience} letter={pull.letter} />
+                  <AudienceMark audience={pull.audience} letter={pull.letter} writtenWhilePrivate={pull.writtenWhilePrivate} />
                   <EditedMarker createdAt={pull.createdAt} updatedAt={pull.updatedAt} />
                   <MadePublicBy marks={pull} />
                 </div>

@@ -11,12 +11,12 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { describe, expect, it } from 'vitest'
 
 import { base58Decode, base58Encode } from '../auth/base58'
-import { EpochKeys, sealMembersDoc, type PrivateDoc } from '../private'
+import { EpochKeys, sealDoc, sealMembersDoc, type PrivateDoc } from '../private'
 import { bytesToBase64, hexToBase64, type DocumentQuery } from '../sdk'
 import { asIdentifierString, type RepoRef } from '../repo/contract'
 import { invalidateRepoFeed, queryIssues, queryPulls } from '../repo'
 import { membersOnlyOf } from '../repo/members-only-counts'
-import { isMembersOnlyTarget, loadIssueOrMembersOnly, loadIssueThread, loadPullOrMembersOnly } from './issues-view'
+import { isMembersOnlyTarget, loadIssueOrMembersOnly, loadIssueThread, loadPullOrMembersOnly, readTargetUntil, repliesNotShown, targetShowsComment } from './issues-view'
 
 const ID = (name: string): string => base58Encode(sha256(new TextEncoder().encode(name)))
 const OWNER = ID('owner')
@@ -56,7 +56,10 @@ function mockSdk(store: Store): EvoSDK {
   return {
     documents: {
       query: async (q: DocumentQuery) => {
-        const rows = filtered(q).sort((a, b) => (a['$createdAt'] as number) - (b['$createdAt'] as number))
+        let rows = filtered(q).sort((a, b) => (a['$createdAt'] as number) - (b['$createdAt'] as number))
+        // A page continues after its cursor's row (ascending reads).
+        const after = rows.findIndex((d) => idOf(d['$id']) === idOf(q.startAfter))
+        if (q.startAfter !== undefined && after >= 0) rows = rows.slice(after + 1)
         const desc = (q.orderBy ?? []).some(([, dir]) => dir === 'desc')
         return new Map((desc ? rows.reverse() : rows).slice(0, q.limit ?? 100).map((d) => [String(d['$id']), d]))
       },
@@ -210,4 +213,164 @@ describe('an outsider reads a public repo with members-only content', () => {
     expect(page.membersOnly).toEqual({ open: 0, closed: 0 })
     invalidateRepoFeed(PUBLIC)
   })
+})
+
+/**
+ * A repository made public with Code only (DESIGN §4.10): issue #4 and PR #5 were written while it
+ * was private (sealed v0x01, stamped `vis: "private"`), and each took a public reply (plaintext)
+ * and a member's members-only one (v0x03) since. Issue #2 is members-only, written since.
+ */
+async function converted(): Promise<Store> {
+  const store = await fixture()
+  const keys = await EpochKeys.import(base58Decode(REPO), 0, new Uint8Array(KEY))
+  const old = async (type: 'issue' | 'patch', name: string, number: number, extra: Doc): Promise<Doc> => ({
+    $id: ID(name),
+    $ownerId: MEMBER,
+    $createdAt: next(),
+    $createdAtBlockHeight: 10,
+    repoId: REPO,
+    number,
+    vis: 'private',
+    epoch: 0,
+    ...extra,
+    enc: bytesToBase64(await sealDoc(keys, { type, ownerId: bytes(MEMBER), epoch: 0, number }, { title: SECRET, body: SECRET })),
+  })
+  const replies = async (target: string): Promise<Doc[]> => [
+    { $id: ID(`${target}-public`), $ownerId: STRANGER, $createdAt: next(), repoId: REPO, targetId: ID(target), vis: 'public', body: 'P5B public reply' },
+    {
+      $id: ID(`${target}-members`),
+      $ownerId: MEMBER,
+      $createdAt: next(),
+      $createdAtBlockHeight: 30,
+      repoId: REPO,
+      targetId: ID(target),
+      vis: 'public',
+      epoch: 0,
+      asMember: MEMBER,
+      enc: await sealed({ type: 'comment', vis: 'public', ownerId: bytes(MEMBER), epoch: 0, targetId: bytes(ID(target)) }, { body: SECRET }),
+    },
+  ]
+  const collab = store['COLLAB'] as Record<string, Doc[]>
+  collab['issue'] = [...(collab['issue'] ?? []), await old('issue', 'issue4', 4, {})]
+  collab['patch'] = [
+    ...(collab['patch'] ?? []),
+    await old('patch', 'patch5', 5, {}),
+  ]
+  collab['comment'] = [...(collab['comment'] ?? []), ...(await replies('issue4')), ...(await replies('patch5'))]
+  return store
+}
+
+describe('an outsider reads the replies under a thread it cannot open', () => {
+  it('a thread written while private: its public replies in full, its members-only ones as placeholders, marked as taking public replies', async () => {
+    const t = await loadIssueOrMembersOnly(mockSdk(await converted()), PUBLIC, 4)
+    expect(isMembersOnlyTarget(t)).toBe(true)
+    if (!isMembersOnlyTarget(t)) return
+    expect(t).toMatchObject({ number: 4, comments: 2, writtenWhilePrivate: true, locked: false })
+    expect(t.timeline?.map((x) => (x.kind === 'comment' ? [x.comment.author, x.comment.body] : x.kind))).toEqual([[STRANGER, 'P5B public reply']])
+    expect(t.membersOnly?.map((e) => [e.item.type, e.item.author])).toEqual([['comment', MEMBER]])
+    expect(t.moderation).toBeDefined()
+    expect(targetShowsComment(t, ID('issue4-public'))).toBe(true)
+    expect(JSON.stringify(t)).not.toContain(SECRET)
+  })
+
+  it('the same for a PR written while private', async () => {
+    const t = await loadPullOrMembersOnly(mockSdk(await converted()), PUBLIC, 5)
+    expect(isMembersOnlyTarget(t)).toBe(true)
+    if (!isMembersOnlyTarget(t)) return
+    expect(t.writtenWhilePrivate).toBe(true)
+    expect(t.timeline?.map((x) => (x.kind === 'comment' ? x.comment.body : x.kind))).toEqual(['P5B public reply'])
+    expect(t.membersOnly?.map((e) => e.item.author)).toEqual([MEMBER])
+    expect(JSON.stringify(t)).not.toContain(SECRET)
+  })
+
+  it('a members-only thread written since the conversion is not marked: it takes no public reply', async () => {
+    const t = await loadIssueOrMembersOnly(mockSdk(await converted()), PUBLIC, 2)
+    if (!isMembersOnlyTarget(t)) throw new Error('expected a members-only target')
+    expect(t.writtenWhilePrivate).toBeUndefined()
+    expect(t.timeline).toEqual([])
+  })
+
+  it('a full first page of comments is read to the end when the thread takes public replies (a later page may hold them)', async () => {
+    const store = await converted()
+    const collab = store['COLLAB'] as Record<string, Doc[]>
+    // 100 members-only comments the reader cannot open, then a public reply on the second page.
+    const sealedMine = await sealed({ type: 'comment', vis: 'public', ownerId: bytes(MEMBER), epoch: 0, targetId: bytes(ID('issue4')) }, { body: SECRET })
+    const filler = Array.from({ length: 100 }, (_, i) => ({
+      $id: ID(`filler${i}`),
+      $ownerId: MEMBER,
+      $createdAt: next(),
+      $createdAtBlockHeight: 30,
+      repoId: REPO,
+      targetId: ID('issue4'),
+      vis: 'public',
+      epoch: 0,
+      asMember: MEMBER,
+      enc: sealedMine,
+    }))
+    collab['comment'] = [...(collab['comment'] ?? []), ...filler, { $id: ID('late-public'), $ownerId: STRANGER, $createdAt: next(), repoId: REPO, targetId: ID('issue4'), vis: 'public', body: 'on the second page' }]
+    const t = await loadIssueOrMembersOnly(mockSdk(store), PUBLIC, 4)
+    if (!isMembersOnlyTarget(t)) throw new Error('expected a members-only target')
+    // 2 from the fixture + 100 + 1, none cut at a page; nothing says "100+".
+    expect(t.comments).toBe(103)
+    expect(t.moreComments).toBeUndefined()
+    expect(t.timeline?.map((x) => (x.kind === 'comment' ? x.comment.body : x.kind))).toEqual(['P5B public reply', 'on the second page'])
+    expect(t.membersOnly).toHaveLength(101)
+    expect(JSON.stringify(t)).not.toContain(SECRET)
+  })
+
+  it('a full first page of a thread that takes no public reply and shows none is left at "100+", and not re-read for a reply', async () => {
+    const store = await converted()
+    const collab = store['COLLAB'] as Record<string, Doc[]>
+    // Issue #2 is members-only, written since the conversion: its comments are all unreadable here.
+    const sealedMine = await sealed({ type: 'comment', vis: 'public', ownerId: bytes(MEMBER), epoch: 0, targetId: bytes(ID('issue2')) }, { body: SECRET })
+    collab['comment'] = [
+      ...(collab['comment'] ?? []),
+      ...Array.from({ length: 100 }, (_, i) => ({
+        $id: ID(`full${i}`),
+        $ownerId: MEMBER,
+        $createdAt: next(),
+        $createdAtBlockHeight: 30,
+        repoId: REPO,
+        targetId: ID('issue2'),
+        vis: 'public',
+        epoch: 0,
+        asMember: MEMBER,
+        enc: sealedMine,
+      })),
+    ]
+    const sdk = mockSdk(store)
+    const first = await loadIssueOrMembersOnly(sdk, PUBLIC, 2)
+    if (!isMembersOnlyTarget(first)) throw new Error('expected a members-only target')
+    expect(first).toMatchObject({ comments: 100, moreComments: true })
+    let reads = 0
+    const load = async () => {
+      reads += 1
+      return loadIssueOrMembersOnly(sdk, PUBLIC, 2)
+    }
+    // A reply posted that this read cannot show: stop at once, not eight polls.
+    expect(await readTargetUntil(first, load, [ID('somewhere-past-the-page')], { aborted: false })).toBe(first)
+    expect(reads).toBe(0)
+  })
+
+  it('re-reads a target until a reply posted from it shows, and keeps the target when a re-read fails', async () => {
+    const store = await converted()
+    const sdk = mockSdk(store)
+    const first = await loadIssueOrMembersOnly(sdk, PUBLIC, 4)
+    if (!isMembersOnlyTarget(first)) throw new Error('expected a members-only target')
+    const id = ID('issue4-new')
+    let reads = 0
+    const load = async () => {
+      reads += 1
+      if (reads === 1) throw new Error('node down')
+      const collab = store['COLLAB'] as Record<string, Doc[]>
+      collab['comment'] = [...(collab['comment'] ?? []), { $id: id, $ownerId: STRANGER, $createdAt: next(), repoId: REPO, targetId: ID('issue4'), vis: 'public', body: 'just posted' }]
+      return loadIssueOrMembersOnly(sdk, PUBLIC, 4)
+    }
+    expect(repliesNotShown(first, [id])).toEqual([id])
+    const t = await readTargetUntil(first, load, [id], { aborted: false })
+    expect(isMembersOnlyTarget(t) && targetShowsComment(t, id)).toBe(true)
+    expect(repliesNotShown(t, [id])).toEqual([])
+    // nothing posted: nothing re-read
+    expect(await readTargetUntil(first, load, [], { aborted: false })).toBe(first)
+  }, 10_000)
 })

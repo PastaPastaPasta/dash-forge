@@ -18,6 +18,27 @@ interface TypeShape {
   readonly indexes: ReadonlySet<string>
   readonly minimums: ReadonlyMap<string, number>
   readonly maxima: ReadonlyMap<string, number>
+  /**
+   * Each property its `immutable` list names, first entry wins: true when frozen outright (a bare
+   * name, or an entry without `when`), false when only under a `when` condition.
+   */
+  readonly immutable: ReadonlyMap<string, boolean>
+}
+
+/** The `immutable` list of a type's schema as {@link TypeShape.immutable} reads it (forge-core `immutable_when`). */
+function immutableOf(list: unknown): ReadonlyMap<string, boolean> {
+  const out = new Map<string, boolean>()
+  if (!Array.isArray(list)) return out
+  for (const entry of list) {
+    if (typeof entry === 'string') {
+      if (!out.has(entry)) out.set(entry, true)
+    } else if (entry !== null && typeof entry === 'object') {
+      const e = entry instanceof Map ? Object.fromEntries(entry as Map<string, unknown>) : (entry as Record<string, unknown>)
+      const property = e['property']
+      if (typeof property === 'string' && !out.has(property)) out.set(property, e['when'] === undefined || e['when'] === null)
+    }
+  }
+  return out
 }
 
 const shapes = new Map<string, Promise<ReadonlyMap<string, TypeShape>>>()
@@ -29,7 +50,7 @@ function shapeOf(sdk: EvoSDK, contractId: string): Promise<ReadonlyMap<string, T
   const read = (async () => {
     const contract = await sdk.contracts.fetch(contractId)
     if (!contract) throw new Error(`contract ${contractId} was not found`)
-    const schemas = contract.schemas as Record<string, { properties?: Record<string, unknown>; indices?: readonly { name?: unknown }[] } | undefined>
+    const schemas = contract.schemas as Record<string, { properties?: Record<string, unknown>; indices?: readonly { name?: unknown }[]; immutable?: unknown } | undefined>
     const boundOf = (p: unknown, bound: 'minimum' | 'maximum'): number | undefined => {
       const m = p !== null && typeof p === 'object' ? (p as Record<string, unknown>)[bound] : undefined
       return typeof m === 'number' ? m : typeof m === 'bigint' ? Number(m) : undefined
@@ -49,6 +70,7 @@ function shapeOf(sdk: EvoSDK, contractId: string): Promise<ReadonlyMap<string, T
           indexes: new Set((s?.indices ?? []).map((i) => i.name).filter((n): n is string => typeof n === 'string')),
           minimums: bounds(s, 'minimum'),
           maxima: bounds(s, 'maximum'),
+          immutable: immutableOf(s?.immutable),
         },
       ] as const),
     )
@@ -89,6 +111,25 @@ export async function contractPropertyMaximum(sdk: EvoSDK, contractId: string, d
  */
 export async function contractAdmitsBots(sdk: EvoSDK, coreId: string): Promise<boolean> {
   return ((await contractPropertyMaximum(sdk, coreId, 'writer', 'role')) ?? 0) >= 4
+}
+
+/**
+ * How `documentType`'s `immutable` list freezes `property`: `true` outright, `false` only under a
+ * `when` condition, null when it is not listed (or the type is unknown). Parity: forge-core
+ * `LoadedContract::immutable_when`.
+ */
+export async function contractImmutableWhen(sdk: EvoSDK, contractId: string, documentType: string, property: string): Promise<boolean | null> {
+  return (await shapeOf(sdk, contractId)).get(documentType)?.immutable.get(property) ?? null
+}
+
+/**
+ * Whether the registered forge-core `coreId` lets a private repo become public (mainnet C1:
+ * `repo.visibility` frozen only once public, `{"property": "visibility", "when": …}`). The live
+ * sakura contract freezes it outright, so a private repo stays private there. Parity: forge-core
+ * `RepoService::can_make_public`.
+ */
+export async function contractVisibilityOneWay(sdk: EvoSDK, coreId: string): Promise<boolean> {
+  return (await contractImmutableWhen(sdk, coreId, 'repo', 'visibility')) === false
 }
 
 /** Whether contract `contractId` declares the document type `documentType`. */

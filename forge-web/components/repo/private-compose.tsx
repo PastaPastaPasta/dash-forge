@@ -22,10 +22,11 @@ import { TextCounter } from '@/components/ui/text-counter'
 import { LongComposeNote, type LongCompose } from '@/components/repo/long-body'
 
 /** For a public repo: always null. For a private one: null when sealed writes can go ahead, else why not. */
-export function privateComposeBlock(home: RepoHome, thread: 'public' | 'members' | 'specificPeople' = 'public'): string | null {
+export function privateComposeBlock(home: RepoHome, thread: 'public' | 'members' | 'specificPeople' = 'public', writtenWhilePrivate = false): string | null {
   // A member removed since reads a members-only thread they held the key for, but can't reply:
-  // a public reply is refused there, and they can no longer write members-only content.
-  if (thread === 'members' && home.lane?.access === 'former') return FORMER_MEMBER_TEXT
+  // a public reply is refused there, and they can no longer write members-only content. A thread
+  // written while the repo (made public since) was private takes their public reply (DESIGN §4.10).
+  if (thread === 'members' && home.lane?.access === 'former' && !writtenWhilePrivate) return FORMER_MEMBER_TEXT
   return privateWriteBlock(home.repo, home.private)
 }
 

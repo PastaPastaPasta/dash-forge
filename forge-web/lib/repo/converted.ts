@@ -15,7 +15,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { decodeIdentifier } from '../auth/base58'
 import { PACK_KIND } from '../constants'
-import { addPublished, conversionOf, publishedKeys, type ConfigStamp, type Conversion, type EpochResolution, type PublishedBundle } from '../private'
+import { ENTRY_EPOCH_KEY, addPublished, bytesEqual, conversionOf, parseBundle, publishedKeys, type ConfigStamp, type Conversion, type EpochResolution, type PublishedBundle } from '../private'
 import type { PlainDocument } from '../sdk'
 import { withoutSessions, type RepoRef } from './contract'
 import { readManifestsOfKind, type PackManifest } from './packs'
@@ -78,7 +78,11 @@ export async function withPublishedKeys(
  * maintainers and the owner: anyone else's is never downloaded. A bundle no copy of which can be
  * read is left out: it publishes nothing.
  */
-export async function readMakePublicBundles(sdk: EvoSDK, repo: RepoRef, uploaders: ReadonlySet<string> = new Set([repo.ownerId])): Promise<PublishedBundle[]> {
+export async function readMakePublicBundles(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  uploaders: ReadonlySet<string> = new Set([repo.ownerId]),
+): Promise<(PublishedBundle & { /** When it was first recorded (ms). */ readonly at: number })[]> {
   if (repo.visibility !== 'public') return []
   const manifests = (await readManifestsOfKind(sdk, repo, PACK_KIND.MAKE_PUBLIC)).filter((m) => uploaders.has(m.uploader))
   if (manifests.length === 0) return []
@@ -91,7 +95,7 @@ export async function readMakePublicBundles(sdk: EvoSDK, repo: RepoRef, uploader
   // Loaded on demand: the browse plane reads through the session module this one feeds.
   const { loadStoredArtifactBytes } = await import('../view/browse-source')
   const plain = withoutSessions(repo)
-  const out: PublishedBundle[] = []
+  const out: (PublishedBundle & { readonly at: number })[] = []
   // In forge-core's order (by uploader, then by hash), so where two maintainers' entries name one
   // revision both stacks credit the same one.
   const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0)
@@ -99,10 +103,27 @@ export async function readMakePublicBundles(sdk: EvoSDK, repo: RepoRef, uploader
   for (const copies of order) {
     const first = copies[0] as PackManifest
     try {
-      out.push({ owner: decodeIdentifier(first.uploader), bytes: await loadStoredArtifactBytes(sdk, plain, { ...first, copies }) })
+      const bytes = await loadStoredArtifactBytes(sdk, plain, { ...first, copies })
+      out.push({ owner: decodeIdentifier(first.uploader), bytes, at: Math.min(...copies.map((m) => m.createdAt)) })
     } catch {
       // unreadable: it publishes nothing
     }
   }
   return out
+}
+
+/**
+ * Whether `bundles` (an owner's make-public bundles' bytes) publish epoch keys of `repoId`: the
+ * history of a repo made public with Everything (DESIGN §4.10 step 7). A bundle making single posts
+ * public (§4.6) is kind 7 too and publishes no such key; one that does not parse publishes nothing.
+ */
+export function publishesHistory(repoId: string, bundles: readonly Uint8Array[]): boolean {
+  const id = decodeIdentifier(repoId)
+  return bundles.some((bytes) => {
+    try {
+      return parseBundle(bytes).entries.some((e) => e.kind === ENTRY_EPOCH_KEY && bytesEqual(e.target, id))
+    } catch {
+      return false
+    }
+  })
 }

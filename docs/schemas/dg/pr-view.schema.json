@@ -197,6 +197,14 @@
     "readable": {
       "type": "boolean"
     },
+    "writtenWhilePrivate": {
+      "type": "boolean",
+      "description": "Whether this was written while the repository was private, before its owner made it public. Its `audience` stays `members`; `readableByEveryone` says whether it is public in effect. In a pull request's `reviews` and `comments`, each item carries the same two fields."
+    },
+    "readableByEveryone": {
+      "type": "boolean",
+      "description": "Whether everyone can read something written while the repository was private, because its owner made the earlier conversations public (Everything), not only its members (Code only)."
+    },
     "why": {
       "type": "string"
     },

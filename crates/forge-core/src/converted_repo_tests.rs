@@ -244,6 +244,11 @@ struct Read {
 /// The keys `reader` holds (the member a wrap of epoch 1; anyone else none), with the epoch keys
 /// the owner published.
 fn keys_of(repo: &Converted, reader: [u8; 32]) -> OpenContext {
+    resolution_of(repo, reader).open_context(&REPO)
+}
+
+/// [`keys_of`]'s resolution.
+fn resolution_of(repo: &Converted, reader: [u8; 32]) -> crate::private::EpochResolution {
     let wraps: Vec<WrapRow> = (reader == MEMBER)
         .then(|| WrapRow {
             id: [0xd1; 32],
@@ -273,7 +278,7 @@ fn keys_of(repo: &Converted, reader: [u8; 32]) -> OpenContext {
         "the seal-off epoch is never published"
     );
     resolution.add_published(&REPO, &repo.configs, published, alerts);
-    resolution.open_context(&REPO)
+    resolution
 }
 
 /// Read `repo` as `reader` would, the way the helper, the gateway and every other public reader
@@ -410,6 +415,34 @@ fn everything_anyone_opens_what_was_written_before_the_seal_off_and_nothing_afte
         open(&r.ctx, &repo.new_comment, "public"),
         Opened::Unreadable(Unreadable::NoKey)
     );
+}
+
+/// Which epochs are public in effect is what the owner published, whatever the reader holds: a
+/// member's own keys open the same old documents, which still read for everyone (Everything),
+/// while Code only publishes no key, so the old documents stay members-only for all.
+#[test]
+fn the_published_epochs_do_not_depend_on_the_keys_a_reader_holds() {
+    let src = tempfile::TempDir::new().unwrap();
+    let everything = build(true, src.path());
+    for reader in [STRANGER, MEMBER] {
+        let res = resolution_of(&everything, reader);
+        assert_eq!(res.published, BTreeSet::from([0]), "reader {reader:?}");
+        assert!(res.keys.contains_key(&0));
+    }
+    // the member holds epoch 1 too, which is never published
+    assert!(resolution_of(&everything, MEMBER).keys.contains_key(&1));
+    let src = tempfile::TempDir::new().unwrap();
+    let code_only = build(false, src.path());
+    for reader in [STRANGER, MEMBER] {
+        assert!(resolution_of(&code_only, reader).published.is_empty());
+    }
+    // a bundle from anyone but the owner publishes nothing
+    let src = tempfile::TempDir::new().unwrap();
+    let mut forged = build(true, src.path());
+    if let Some(b) = forged.bundle.as_mut() {
+        b.owner = MEMBER;
+    }
+    assert!(resolution_of(&forged, STRANGER).published.is_empty());
 }
 
 #[test]

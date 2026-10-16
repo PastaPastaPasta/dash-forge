@@ -3,7 +3,7 @@
 /**
  * The repo settings sections that write `config`, the `repo` document and `policy` (QA
  * D-503): General (default branch, description, topics), Branches (protected patterns with a
- * glob preview, the branch policy) and the Danger zone (archive). Every write goes through the
+ * glob preview, the branch policy) and the Danger zone (make a private repo public, archive). Every write goes through the
  * pre-sign cost preview and {@link ConfirmDialog}; a change that already holds signs nothing.
  *
  * What each control can promise:
@@ -90,6 +90,7 @@ import { CostPreview } from '@/components/ui/cost-preview'
 import { EnforcedBy } from '@/components/ui/enforced-by'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { ErrorState, LoadingBlock } from '@/components/ui/states'
+import { MakeRepoPublic } from '@/components/repo/make-repo-public'
 import { shortId } from '@/lib/utils'
 
 // ---------------------------------------------------------------------------------------------
@@ -174,9 +175,9 @@ function SealedNote({ command }: { command: string }): JSX.Element {
   return (
     <div role="note" className="mt-3 flex gap-2 rounded-md border border-anvil-200 bg-anvil-50 px-3 py-2 text-dense dark:border-anvil-800 dark:bg-anvil-900">
       <Lock className="mt-0.5 h-4 w-4 shrink-0 text-anvil-400" aria-hidden />
-      <span>
+      <span className="min-w-0">
         This repo is private, so its config is encrypted, and this browser can&apos;t encrypt it yet. Use the CLI, which does:{' '}
-        <code className="font-mono text-[12px]">{command}</code>
+        <code className="font-mono text-[12px] [overflow-wrap:anywhere]">{command}</code>
         {/* TODO(private-web): write sealed configs once the web holds epoch keys (PR #51's private session). */}
       </span>
     </div>
@@ -319,8 +320,8 @@ export function GeneralSettings({
 }
 
 /**
- * The repo's visibility, read-only (QW2-063): GitHub lists it in Settings, and here it is set once,
- * when the repo is created (the `repo` document's `visibility` is immutable).
+ * The repo's visibility, read-only (QW2-063): GitHub lists it in Settings. It is set when the repo
+ * is created; a public repo stays public, and a private one may be made public once (Danger zone).
  */
 export function VisibilityRow({ visibility }: { visibility: 'public' | 'private' }): JSX.Element {
   const isPrivate = visibility === 'private'
@@ -331,7 +332,7 @@ export function VisibilityRow({ visibility }: { visibility: 'public' | 'private'
       <p className="mt-1 flex items-center gap-1.5 text-dense text-anvil-800 dark:text-anvil-100">
         <Icon className="h-3.5 w-3.5 shrink-0 text-anvil-500 dark:text-anvil-400" aria-hidden />
         <span className="font-medium">{isPrivate ? 'Private' : 'Public'}</span>
-        <span className="text-anvil-500 dark:text-anvil-400">· set when the repo was created, and permanent</span>
+        <span className="text-anvil-500 dark:text-anvil-400">{isPrivate ? '· set when the repo was created' : '· set when the repo was created, and permanent'}</span>
       </p>
       <p className="mt-1 text-[12px] text-anvil-500 dark:text-anvil-400">
         {isPrivate
@@ -978,6 +979,8 @@ export function DangerZone({ home, maintainer, onSaved }: { home: RepoHome; main
   const archived = cfg.current.archived
   return (
     <Section id="danger" title="Danger zone" tone="danger" icon={<Archive className="h-4 w-4" aria-hidden />}>
+      <div className="space-y-3">
+      <MakeRepoPublic home={home} maintainer={maintainer} onSaved={onSaved} />
       <div className="flex flex-wrap items-center gap-3 rounded-lg border border-danger/40 p-4">
         <div className="min-w-0 flex-1">
           <p className="text-dense font-medium">{archived ? 'Unarchive this repository' : 'Archive this repository'}</p>
@@ -1006,6 +1009,7 @@ export function DangerZone({ home, maintainer, onSaved }: { home: RepoHome; main
             {archived ? 'Unarchive' : 'Archive'}
           </Button>
         ) : null}
+      </div>
       </div>
       {cfg.sealed ? (
         <SealedNote command={`dg repo ${archived ? 'unarchive' : 'archive'} ${home.repo.ownerId}/${home.repo.name}`} />

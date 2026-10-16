@@ -957,8 +957,10 @@ export async function readPull(
   // A members-only PR opened by a member names a members-only base by a keyed hash: its base is
   // keyed by name, as every opened ref is (`members-branches.ts`). One a maintainer made public
   // shows a base's name only when it is public (`made-public.ts`): a withheld base is read nowhere.
-  const opened = patchDoc[AUDIENCE_FIELD] === 'members'
+  // Written while the repo (made public since) was private and public now: still opened with a
+  // key, so its base is keyed as any opened ref is.
   const marks = publicationMarks(patchDoc)
+  const opened = patchDoc[AUDIENCE_FIELD] === 'members' || marks.writtenWhilePrivate === true
   if (repo.visibility === 'private' || base.retargeted || opened || marks.madePublicBy !== undefined) baseKeyHex = base.refName === '' ? '' : publicRefKey(base.refName)
   const baseRefNameHashRaw = /^[0-9a-f]{64}$/.test(baseKeyHex) ? hexToBase64(baseKeyHex) : ''
   // A members-only base: its history is the member's fold of its members-only updates. It is never

@@ -200,6 +200,10 @@ pub struct EpochResolution {
     pub repair: Option<Repair>,
     /// Current members (whose late content is still shown, §8.2).
     pub members: BTreeSet<[u8; 32]>,
+    /// The epochs whose keys the owner of a repository made public published, with every epoch
+    /// their chains reach (§18.3): readable by everyone, so a document sealed under one is
+    /// public in effect. Independent of the keys this reader holds itself. Empty otherwise.
+    pub published: BTreeSet<u32>,
 }
 
 impl std::fmt::Debug for EpochResolution {
@@ -333,6 +337,23 @@ impl EpochResolution {
         };
         let mut all: BTreeSet<Alert> = self.alerts.drain(..).chain(alerts).collect();
         let mut keys = std::mem::take(&mut self.keys);
+        // what the published keys reach alone, whatever the reader holds: a member's own keys
+        // open the same epochs, but those documents are public all the same
+        let mut reached = BTreeMap::new();
+        for (e, k) in &published {
+            if first.contains_key(e) {
+                reached.insert(*e, k.clone());
+                walk_chain(
+                    repo_id,
+                    *e,
+                    &first,
+                    &commits_to,
+                    &mut reached,
+                    &mut BTreeSet::new(),
+                );
+            }
+        }
+        self.published.extend(reached.keys().copied());
         for (e, k) in published {
             if keys.contains_key(&e) || !first.contains_key(&e) {
                 continue;
@@ -642,6 +663,7 @@ pub fn resolve_epochs(
         alerts,
         repair,
         members,
+        published: BTreeSet::new(),
     }
 }
 

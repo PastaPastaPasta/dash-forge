@@ -511,6 +511,7 @@ mod tests {
             members_only,
             audience,
             letter: None,
+            while_private: None,
         }
     }
 
@@ -527,6 +528,7 @@ mod tests {
             diff_hunk: None,
             audience: Audience::Public,
             letter: None,
+            while_private: None,
         }
     }
 

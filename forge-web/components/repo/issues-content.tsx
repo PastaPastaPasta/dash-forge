@@ -367,7 +367,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
                 )}
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-1.5">
-                    <RowLink href={repoHref('/repo/issue', addr, { number: String(issue.number) })} title={issue.title} {...(issue.audience ? { audience: issue.audience } : {})} {...(issue.membersOnly ? { membersOnly: true } : {})} />
+                    <RowLink href={repoHref('/repo/issue', addr, { number: String(issue.number) })} title={issue.title} {...(issue.audience ? { audience: issue.audience } : {})} {...(issue.membersOnly ? { membersOnly: true } : {})} writtenWhilePrivate={issue.writtenWhilePrivate === true} />
                     {issue.state.labels.map((l) => (
                       <LabelChipFilter key={l} name={l} def={labelDefs.get(l)} selected={query.labels} onChange={(labels) => change({ labels })} />
                     ))}

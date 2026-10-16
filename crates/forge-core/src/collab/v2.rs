@@ -270,6 +270,10 @@ pub const LETTER_TO_FIELD: &str = "$letterTo";
 /// The field an opened members-only PR's real head is put in (hex), when its blind checked
 /// against it (`private-repos.md` §19.4): for git only, never a fold input.
 pub const REAL_HEAD_FIELD: &str = "$realHead";
+/// The field an opened document is given when it was written while its repository was private
+/// and its epoch key is one the owner published (`private-repos.md` §18.3), so that everyone
+/// reads it: a `$` name, which no contract property can have.
+pub const PUBLISHED_KEY_FIELD: &str = "$publishedKey";
 /// The field an opened letter's group (tag 29) is put in (`1` Maintainers, `2` Writers and
 /// maintainers).
 pub const LETTER_GROUP_FIELD: &str = "$letterGroup";
@@ -574,8 +578,19 @@ fn open_with(
                 }
                 _ => *otherwise,
             };
+            // a document written while the repository was private, sealed under an epoch whose
+            // key the owner published, reads for everyone (§18.3): noted for the views
+            let published = written_private(&d)
+                && d.field_u64("epoch")
+                    .and_then(|e| u32::try_from(e).ok())
+                    .is_some_and(|e| kr.resolution().published.contains(&e));
             let placeholder = MembersOnly::of(&d, why);
-            private::open_doc(opened, d).ok_or(placeholder)
+            let mut doc = private::open_doc(opened, d).ok_or(placeholder)?;
+            if published {
+                doc.fields
+                    .insert(PUBLISHED_KEY_FIELD.into(), FieldValue::Bool(true));
+            }
+            Ok(doc)
         }
     }
 }
@@ -628,6 +643,28 @@ pub struct Target {
     pub author: String,
 }
 
+/// A document of a repository made public that was written while the repository was private
+/// (its own `vis` is `"private"`, `private-repos.md` §18.1), as a reader opens it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WhilePrivate {
+    /// Its epoch key is one the owner published (the "Everything" choice): everyone reads it,
+    /// so it is public in effect. Otherwise (the "Code only" choice) it stays members-only.
+    pub published: bool,
+}
+
+impl WhilePrivate {
+    /// Whether `d` was written while its repository was private, and if so whether everyone
+    /// can read it. `None` for a document stamped `"public"` or with no stamp. In a repository
+    /// that is private, every document is stamped `"private"`: the caller decides whether the
+    /// repository was made public.
+    #[must_use]
+    pub fn of(d: &FetchedDocument) -> Option<Self> {
+        written_private(d).then(|| Self {
+            published: d.field_bool(PUBLISHED_KEY_FIELD),
+        })
+    }
+}
+
 /// An `issue` document, flattened.
 #[derive(Debug, Clone)]
 pub struct Issue {
@@ -652,6 +689,8 @@ pub struct Issue {
     pub audience: Audience,
     /// An opened letter's people and group (`None` for anything else).
     pub letter: Option<LetterInfo>,
+    /// Written while its repository was private, when it was ([`WhilePrivate::of`]).
+    pub while_private: Option<WhilePrivate>,
 }
 
 impl Issue {
@@ -701,6 +740,8 @@ pub struct Patch {
     pub audience: Audience,
     /// An opened letter's people and group (`None` for anything else).
     pub letter: Option<LetterInfo>,
+    /// Written while its repository was private, when it was ([`WhilePrivate::of`]).
+    pub while_private: Option<WhilePrivate>,
     /// A members-only PR from a members-only branch, opened: the real commit behind its blinded
     /// `head_oid` (checked against the blind). For git (fetch, diff, checkout, merge) and
     /// display only: every fold and every write that copies the head uses `head_oid`.
@@ -796,6 +837,8 @@ pub struct Comment {
     pub audience: Audience,
     /// An opened letter's people and group (`None` for anything else).
     pub letter: Option<LetterInfo>,
+    /// Written while its repository was private, when it was ([`WhilePrivate::of`]).
+    pub while_private: Option<WhilePrivate>,
 }
 
 impl Comment {
@@ -835,6 +878,8 @@ pub struct Review {
     pub audience: Audience,
     /// An opened letter's people and group (`None` for anything else).
     pub letter: Option<LetterInfo>,
+    /// Written while its repository was private, when it was ([`WhilePrivate::of`]).
+    pub while_private: Option<WhilePrivate>,
 }
 
 /// A target's history: its state changes (`transition`) and its events, by the gate that
@@ -1473,6 +1518,7 @@ pub fn issue_from_doc(d: &FetchedDocument) -> Issue {
         upstream_number: upstream_number_of(d),
         audience: stored_audience(d),
         letter: LetterInfo::of(d),
+        while_private: WhilePrivate::of(d),
     }
 }
 
@@ -1498,6 +1544,7 @@ pub fn patch_from_doc(d: &FetchedDocument) -> Patch {
         upstream_number: upstream_number_of(d),
         audience: stored_audience(d),
         letter: LetterInfo::of(d),
+        while_private: WhilePrivate::of(d),
         real_head: d.field_str(REAL_HEAD_FIELD),
     }
 }
@@ -1556,6 +1603,7 @@ fn comment_from_doc(d: &FetchedDocument) -> Comment {
         diff_hunk: d.field_str(COMMENT_DIFF_HUNK),
         audience: stored_audience(d),
         letter: LetterInfo::of(d),
+        while_private: WhilePrivate::of(d),
     }
 }
 
@@ -1574,6 +1622,7 @@ fn review_from_doc(d: &FetchedDocument) -> Review {
         members_only: false,
         audience: stored_audience(d),
         letter: LetterInfo::of(d),
+        while_private: WhilePrivate::of(d),
     }
 }
 
@@ -10761,6 +10810,45 @@ mod mixed_read_tests {
         let new_reply = doc(vec![members_enc(), ("vis", FieldValue::text("public"))]);
         let q = thread_parents(p, &[&new_reply]);
         assert_eq!(q, ParentAudience::same(Audience::Members));
+    }
+
+    /// A document stamped `"private"` says it was written while its repository was private, and
+    /// whether its key was published (the note [`open_with`] puts on it); nothing else does.
+    #[test]
+    fn a_document_written_while_private_says_so() {
+        let old = doc(vec![members_enc(), ("vis", FieldValue::text("private"))]);
+        assert_eq!(
+            WhilePrivate::of(&old),
+            Some(WhilePrivate { published: false })
+        );
+        let mut published = old.clone();
+        published
+            .fields
+            .insert(PUBLISHED_KEY_FIELD.into(), FieldValue::Bool(true));
+        assert_eq!(
+            WhilePrivate::of(&published),
+            Some(WhilePrivate { published: true })
+        );
+        assert_eq!(
+            issue_from_doc(&published).while_private,
+            Some(WhilePrivate { published: true })
+        );
+        assert_eq!(
+            comment_from_doc(&old).while_private,
+            Some(WhilePrivate { published: false })
+        );
+        // a public-era or unstamped document is not, whatever else it carries
+        for vis in [Some("public"), None] {
+            let mut d = doc(vec![members_enc()]);
+            if let Some(v) = vis {
+                d.fields.insert("vis".into(), FieldValue::text(v));
+            }
+            d.fields
+                .insert(PUBLISHED_KEY_FIELD.into(), FieldValue::Bool(true));
+            assert_eq!(WhilePrivate::of(&d), None, "{vis:?}");
+            assert_eq!(patch_from_doc(&d).while_private, None, "{vis:?}");
+            assert_eq!(review_from_doc(&d).while_private, None, "{vis:?}");
+        }
     }
 
     /// Review item 2: every audience lookup fails closed: an event naming no target is an

@@ -17,7 +17,8 @@ import { CHUNK_PAYLOAD_MAX } from '../constants'
 import { ENTRY_EPOCH_KEY, EpochKeys, encodeBundle, sealDoc, sealPack, type PrivateDoc, type PrivateDocType } from '../private'
 import type { Membership } from '../rules/v2'
 import { bytesToBase64, type PlainDocument } from '../sdk'
-import { PackSkippedError, clearChunkCache, loadArtifactBytesProgress, skippedGitPacks } from '../view/browse-source'
+import { PackSkippedError, clearChunkCache, loadArtifactBytesProgress, loadBrowseContext, skippedGitPacks } from '../view/browse-source'
+import { serializeLocator } from '../browse/indexer'
 import { readAboutTotals, repoSizeOf } from '../view/repo-facts'
 import { invalidateSessionCache } from '../view/session-cache'
 import { mockSdk, newSeen, type Doc } from './drive-mock'
@@ -289,5 +290,103 @@ describe("a repository made public's size (R9)", () => {
   it('reads nothing more for a repo never made public', async () => {
     const plain: RepoRef = { ...REPO, repoId: b58(id(0x13)) }
     expect(await skippedGitPacks(sdkOf(), plain)).toBeNull()
+  })
+})
+
+describe("a repository made public with Code only browses by its index (p5b)", () => {
+  let configs: PlainDocument[]
+  beforeEach(async () => {
+    clearChunkCache()
+    invalidateSessionCache('')
+    configs = await timeline()
+    recordConversion(REPO, configs)
+  })
+
+  const oid = (n: number): string => n.toString(16).padStart(40, '0')
+  const oidBytes = (n: number): Uint8Array => Uint8Array.from((oid(n).match(/../g) ?? []).map((b) => parseInt(b, 16)))
+  /** A fragment over `packRef`: one row per object. */
+  const fragment = (packRef: number, oids: readonly number[]): Uint8Array =>
+    serializeLocator(oids.map((n) => ({ oidHex: oid(n), packRef, offset: 12 + n, length: 10, deltaDepth: 0 })))
+
+  /**
+   * The private era's git pack and its fragment, both sealed under epoch 0, then the plaintext
+   * pack of the published refs and (`indexed`) its fragment at packRef 1, as the make-public code
+   * step writes them; `extra` adds a plaintext pack pushed later and never indexed.
+   */
+  async function sdkOf({ indexed = true, extra = false, eraVersion = 1, repoId = REPO.repoId } = {}): Promise<EvoSDK> {
+    const k0 = await EpochKeys.import(REPO_ID, 0, K0)
+    const plainPack = (salt: number): Uint8Array => {
+      const p = Uint8Array.from({ length: 600 }, (_, i) => (i * 7 + salt) % 251)
+      p.set(new TextEncoder().encode('PACK'))
+      return p
+    }
+    const era = await sealPack(k0, plainPack(1))
+    // A header of a version this client does not open (the private era's pack, in a newer format).
+    if (eraVersion !== 1) era[4] = eraVersion
+    const eraIndex = await sealPack(k0, fragment(0, [0x11, 0x12, 0x13]))
+    const fresh = plainPack(2)
+    const freshIndex = fragment(1, [0x21, 0x22])
+    const later = plainPack(3)
+    const artifacts: [Uint8Array, number, number, number][] = [
+      [era, 0, 3, 20],
+      [eraIndex, 1, 3, 21],
+      [fresh, 0, 2, 50],
+      ...(indexed ? ([[freshIndex, 1, 2, 51]] as [Uint8Array, number, number, number][]) : []),
+      ...(extra ? ([[later, 0, 1, 60]] as [Uint8Array, number, number, number][]) : []),
+    ]
+    const manifests: Doc[] = artifacts.map(([bytes, kind, objectCount, height], i) => ({
+      $id: `m${i}`,
+      $ownerId: b58(OWNER),
+      $createdAt: height * 1000,
+      $createdAtBlockHeight: height,
+      repoId,
+      packHash: bytesToHex(sha256(bytes)),
+      kind,
+      objectCount,
+      storage: 0,
+      sizeBytes: bytes.length,
+      chunkCount: 1,
+    }))
+    const sdk = mockSdk({ CORE: { packManifest: manifests } }, newSeen()) as unknown as { documents: { query: (q: { documentTypeName: string; where?: readonly (readonly unknown[])[] }) => Promise<Map<string, unknown>> } }
+    const query = sdk.documents.query
+    const byHash = new Map(artifacts.map(([b]) => [bytesToHex(sha256(b)), b]))
+    sdk.documents.query = async (q) => {
+      if (q.documentTypeName !== 'chunk') return query(q)
+      const bytes = byHash.get(bytesToHex(base58Decode(String((q.where ?? []).find((w) => w[0] === 'packHash')?.[2] ?? ''))))
+      return bytes === undefined ? new Map() : new Map([['c0', { seq: 0, d0: bytesToBase64(bytes) }]])
+    }
+    return sdk as unknown as EvoSDK
+  }
+
+  it('sets the sealed fragment aside and leaves the sealed pack unindexed, not the whole index unreadable', async () => {
+    const state = await loadBrowseContext(await sdkOf(), REPO)
+    expect(state).toMatchObject({ kind: 'ready' })
+    if (state.kind !== 'ready') return
+    expect(state.context.locator.lookup(oidBytes(0x22))).toMatchObject({ packRef: 1 })
+    expect(state.context.locator.lookup(oidBytes(0x11))).toBeNull()
+  })
+
+  it('with the published keys (Everything) reads the sealed fragment too', async () => {
+    const keys = await published(configs, [encodeBundle([epochKey(0, K0)], '')])
+    const state = await loadBrowseContext(await sdkOf(), { ...REPO, published: keys })
+    expect(state).toMatchObject({ kind: 'ready' })
+    if (state.kind !== 'ready') return
+    expect(state.context.locator.lookup(oidBytes(0x11))).toMatchObject({ packRef: 0 })
+    expect(state.context.locator.lookup(oidBytes(0x22))).toMatchObject({ packRef: 1 })
+  })
+
+  it('a pack skipped for a newer format is not left unindexed: the clone may read it', async () => {
+    expect(await loadBrowseContext(await sdkOf({ eraVersion: 2 }), REPO)).toMatchObject({ kind: 'unindexed', reason: 'index-behind' })
+  })
+
+  it('a repo never made public does not set a skipped fragment aside: its index is unreachable', async () => {
+    const plain: RepoRef = { ...REPO, repoId: b58(id(0x13)) }
+    expect(knownConversion(plain.repoId)).toBeUndefined()
+    expect(await loadBrowseContext(await sdkOf({ repoId: plain.repoId }), plain)).toMatchObject({ kind: 'unindexed', reason: 'index-unreachable' })
+  })
+
+  it('a readable pack no fragment indexes still sends the repo to the fallback clone', async () => {
+    expect(await loadBrowseContext(await sdkOf({ indexed: false }), REPO)).toMatchObject({ kind: 'unindexed', reason: 'no-index' })
+    expect(await loadBrowseContext(await sdkOf({ extra: true }), REPO)).toMatchObject({ kind: 'unindexed', reason: 'index-behind' })
   })
 })

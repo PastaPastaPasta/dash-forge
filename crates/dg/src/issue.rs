@@ -47,6 +47,7 @@ pub async fn run(ctx: &Ctx, cmd: &IssueCommand) -> Result<()> {
         } => {
             let ask = crate::audience::Ask {
                 members: *members,
+                public: false,
                 to,
             };
             create(ctx, repo, title, body, ask).await
@@ -80,11 +81,13 @@ pub async fn run(ctx: &Ctx, cmd: &IssueCommand) -> Result<()> {
             body,
             reply_to,
             members,
+            public,
             to,
             job,
         } => {
             let ask = crate::audience::Ask {
                 members: *members,
+                public: *public,
                 to,
             };
             comment(
@@ -485,7 +488,11 @@ async fn list(ctx: &Ctx, args: &IssueListArgs) -> Result<()> {
                 let hid = h.map(|h| crate::fmt::hidden_row_mark(h, &who));
                 match r {
                     ListRow::Issue(v) => {
-                        let mark = crate::audience::suffix(&s.repo, v.issue.audience);
+                        let mark = crate::audience::suffix_of(
+                            &s.repo,
+                            v.issue.audience,
+                            v.issue.while_private,
+                        );
                         println!("{}{mark}", issue_line(v, *pinned, &hid.unwrap_or_default()));
                     }
                     ListRow::Sealed(x) => println!(
@@ -706,6 +713,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool, history: bo
     // carries `asMember`; every one is counted in the note under the timeline.
     let (placeholders, _) = crate::audience::shown(&s.repo, &members_only);
     let issue_audience = view.issue.audience;
+    let issue_era = view.issue.while_private;
     let created_at = view.issue.created_at;
     // Long bodies (forge-v2.md §6.3): the full text each field's trailer names, fetched and
     // checked; a text whose rest cannot be read keeps its first part and says why.
@@ -839,6 +847,8 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool, history: bo
             "documentId": id,
             "id": id,
             "audience": crate::audience::json(issue_audience),
+            "writtenWhilePrivate": crate::audience::written_while_private(&s.repo, issue_era),
+            "readableByEveryone": crate::audience::readable_by_everyone(&s.repo, issue_era),
             "letter": issue_letter.as_ref().map(crate::audience::letter_json),
             "readable": true,
             "createdAt": created_at,
@@ -852,7 +862,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool, history: bo
             "pinned": meta.pinned,
             "locked": locked,
             "madePublic": published.json(&id),
-            "comments": comments.iter().map(|c| json!({"id": c.document_id, "author": c.author, "body": c.body, "bodyIncomplete": incomplete.get(&c.document_id), "audience": crate::audience::json(c.audience), "letter": c.letter.as_ref().map(crate::audience::letter_json), "replyTo": c.reply_to, "createdAt": c.created_at, "madePublic": published.json(&c.document_id)})).collect::<Vec<_>>(),
+            "comments": comments.iter().map(|c| json!({"id": c.document_id, "author": c.author, "body": c.body, "bodyIncomplete": incomplete.get(&c.document_id), "audience": crate::audience::json(c.audience), "writtenWhilePrivate": crate::audience::written_while_private(&s.repo, c.while_private), "readableByEveryone": crate::audience::readable_by_everyone(&s.repo, c.while_private), "letter": c.letter.as_ref().map(crate::audience::letter_json), "replyTo": c.reply_to, "createdAt": c.created_at, "madePublic": published.json(&c.document_id)})).collect::<Vec<_>>(),
             "earlierVersions": earlier.iter().map(|(d, by)| json!({
                 "revision": d.revision,
                 "title": d.field_str("title"),
@@ -896,8 +906,10 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool, history: bo
                         .unwrap_or_default(),
                     who(&author)
                 );
-            } else if crate::audience::marked(&s.repo, issue_audience) {
-                println!("members-only: visible to members of {}", s.repo.display());
+            } else if let Some(line) =
+                crate::audience::reading(&s.repo, issue_audience, issue_era).header(&s.repo)
+            {
+                println!("{line}");
             }
             if let Some(line) = published.line(&id, issue_audience, &who) {
                 println!("{line}");
@@ -936,8 +948,10 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool, history: bo
                         // (id) · to bob and you:" for a letter, or who made it public
                         let mut mark = if let Some(l) = &c.letter {
                             format!(" · to {}", to(l))
-                        } else if crate::audience::marked(&s.repo, c.audience) {
-                            " · members-only".to_string()
+                        } else if let Some(words) =
+                            crate::audience::reading(&s.repo, c.audience, c.while_private).words()
+                        {
+                            format!(" · {words}")
                         } else {
                             published
                                 .line(&c.document_id, c.audience, &who)
@@ -2034,6 +2048,7 @@ mod tests {
             diff_hunk: None,
             audience: forge_core::rules::v2::Audience::Public,
             letter: None,
+            while_private: None,
         }
     }
 

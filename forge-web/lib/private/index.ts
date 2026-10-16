@@ -254,6 +254,9 @@ export {
 } from './bundle'
 export {
   CONVERTED_REPO_MIN_CLIENT_VERSION,
+  EPOCH_BUNDLE_NOTE,
+  MAX_EPOCH_ENTRIES,
+  epochKeyBundles,
   conversionOf,
   maybeSealed,
   openVis,

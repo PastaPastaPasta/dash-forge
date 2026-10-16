@@ -1052,6 +1052,7 @@ mod tests {
             diff_hunk: None,
             audience: forge_core::rules::v2::Audience::Public,
             letter: None,
+            while_private: None,
         }
     }
 

@@ -24,7 +24,9 @@
  *     where the registered forge-collab has the RC2 S2 `review.toAuthor` index, one feed of the
  *     reviews on every PR I opened (`patchId.$ownerId`), past the thread cap too;
  *   - each public repo I belong to: its maintainers' make-public bundles (`packManifest` kind 7),
- *     an item for each that made my posts public (`./inbox-made-public`, mixed-visibility §4.6).
+ *     an item for each that made my posts public (`./inbox-made-public`, mixed-visibility §4.6);
+ *   - each public repo I belong to (not as its owner), checked once: whether it was made public,
+ *     and when (`./inbox-repo-public`, mixed-visibility §4.10), "made this repo public".
  * A poll runs at most {@link ROUND_BUDGET} feeds, round-robin, so a big watch list is spread
  * over several minutes instead of bursting DAPI. My own documents never become items.
  *
@@ -48,6 +50,7 @@ import { isLegalRefName, refNameHashMatches } from '../rules/oid'
 import { base64ToHex, queryDocumentsWithProof, type DocumentQuery, type PlainDocument } from '../sdk'
 import { listReposByOwner } from './discovery'
 import { madePublicItems } from './inbox-made-public'
+import { repoPublicItems, type RepoPublicVerdict } from './inbox-repo-public'
 import { listParticipation, noteParticipation } from './participation'
 import {
   baseDoc,
@@ -168,7 +171,7 @@ export interface InboxPrefs {
 
 export const DEFAULT_PREFS: InboxPrefs = { stars: false, pushes: false }
 
-export type ItemKind = 'issue' | 'pull' | 'comment' | 'state' | 'review' | 'push' | 'madePublic'
+export type ItemKind = 'issue' | 'pull' | 'comment' | 'state' | 'review' | 'push' | 'madePublic' | 'repoPublic'
 
 /**
  * Why an item reached me beyond following its thread or repo (QW2-056); `author`: a review on a
@@ -206,6 +209,8 @@ export type Feed =
   | { readonly kind: 'myReviews'; readonly owner: string; readonly threads: readonly ThreadSub[] }
   /** A public repo I belong to: its make-public bundles, for the ones that made my posts public. */
   | { readonly kind: 'madePublic'; readonly repo: RepoLite }
+  /** A public repo I belong to, not checked yet: whether it was made public ({@link repoPublicItems}). */
+  | { readonly kind: 'repoPublic'; readonly repo: RepoLite }
 
 /** A feed's stable cursor key. */
 export function feedKey(f: Feed): string {
@@ -216,6 +221,8 @@ export function feedKey(f: Feed): string {
       return `${f.kind}:${f.type}:${f.repo.id}`
     case 'madePublic':
       return `madePublic:${f.repo.id}`
+    case 'repoPublic':
+      return `repoPublic:${f.repo.id}`
     case 'comments':
     case 'reviews':
       return `${f.kind}:${f.thread.id}`
@@ -224,12 +231,22 @@ export function feedKey(f: Feed): string {
   }
 }
 
+/** The roles whose repos are checked for having been made public: every member's but the owner's (who made it so) and a bot's. */
+const REPO_PUBLIC_REASONS: ReadonlySet<RepoReason> = new Set<RepoReason>(['maintainer', 'writer', 'triage', 'reader'])
+
 /**
  * Every feed a subscription set implies, threads first (they are the most personal). The reviews
  * on my PRs (`me`) are one feed where forge-collab has S2 `toAuthor`, else one per PR I opened.
  * `hideWatch`: the watched repos whose events are read for hides only ({@link hideWatchRepos}).
+ * `repoPublicChecked`: the repos already checked for having been made public (never again).
  */
-export function planFeeds(subs: Subscriptions, prefs: InboxPrefs, me?: string, hideWatch: ReadonlySet<string> = new Set()): Feed[] {
+export function planFeeds(
+  subs: Subscriptions,
+  prefs: InboxPrefs,
+  me?: string,
+  hideWatch: ReadonlySet<string> = new Set(),
+  repoPublicChecked: ReadonlySet<string> = new Set(),
+): Feed[] {
   const feeds: Feed[] = []
   const reviewsOnMine = subs.reviewIndexes?.toAuthor === true && me !== undefined
   for (const t of subs.threads) {
@@ -257,6 +274,8 @@ export function planFeeds(subs: Subscriptions, prefs: InboxPrefs, me?: string, h
     if (prefs.pushes) feeds.push({ kind: 'push', type: 'refUpdate', repo }, { kind: 'push', type: 'protectedRefUpdate', repo })
     // Only a member writes members-only posts there, so only a member's posts are made public.
     if (!repo.private && reason !== 'starred' && reason !== 'watched') feeds.push({ kind: 'madePublic', repo })
+    // A member's repo made public since: told once (mixed-visibility §4.10 step 6).
+    if (!repo.private && REPO_PUBLIC_REASONS.has(reason) && !repoPublicChecked.has(repo.id)) feeds.push({ kind: 'repoPublic', repo })
   }
   return feeds
 }
@@ -321,6 +340,9 @@ export function feedQuery(forge: ForgeIds, f: Feed, cursor: Cursor): DocumentQue
       return { dataContractId: forge.collab, documentTypeName: DOC.comment, where: [['targetId', '==', f.thread.id], after], ...shape }
     case 'reviews':
       return { dataContractId: forge.collab, documentTypeName: DOC.review, where: [['patchId', '==', f.thread.id], after], ...shape }
+    case 'repoPublic':
+      // Read whole by its check ({@link repoPublicItems}), never paged by a cursor.
+      return { dataContractId: contractOf(forge, DOC.config), documentTypeName: DOC.config, where: [['repoId', '==', f.repo.id]], orderBy: [['$createdAt', 'asc']], limit: PAGE }
     case 'madePublic':
       // The `kind` index (`repoId`, `kind`, `$createdAt`).
       return {
@@ -677,6 +699,9 @@ export function toItems(f: Feed, docs: readonly PlainDocument[], me: string, nam
     }
     case 'madePublic':
       // Its items need the bundles' bytes and posts read ({@link madePublicItems}, in the poll).
+      return []
+    case 'repoPublic':
+      // Its item needs the repo's configs read ({@link repoPublicItems}, in the poll).
       return []
     case 'myReviews': {
       // A review on a PR the feed cannot name yet is left for the poll to resolve
@@ -1128,7 +1153,9 @@ export async function pollOnce(
   }
   const stored = await loadItems(network, me)
   const hideWatch = hideWatchRepos(stored, now)
-  const feeds = planFeeds(subs, prefs, me, new Set(hideWatch.keys()))
+  // The repos already checked for having been made public: each is checked once, ever.
+  const checked: Record<string, RepoPublicVerdict> = { ...((await idbGet<Record<string, RepoPublicVerdict>>('inbox', `${p}repoPublic`)) ?? {}) }
+  const feeds = planFeeds(subs, prefs, me, new Set(hideWatch.keys()), new Set(Object.keys(checked)))
   // When each feed was first watched (planned, not first read: a round may reach it minutes
   // later). One record for all feeds; only feeds still watched are kept. A repo's events read
   // for hides only start from its oldest new issue or PR in the inbox.
@@ -1176,6 +1203,21 @@ export async function pollOnce(
     }
   }
   for (const f of round) {
+    // A repo checked once for having been made public, with no cursor: its verdict is kept.
+    if (f.kind === 'repoPublic') {
+      try {
+        const { items, verdict } = await repoPublicItems(sdk, forge, f.repo, me)
+        await store(items)
+        if (verdict !== null && !stopped()) {
+          checked[f.repo.id] = verdict
+          await idbPut('inbox', `${p}repoPublic`, checked)
+        }
+      } catch {
+        failed++
+      }
+      if (stopped()) break
+      continue
+    }
     const fk = feedKey(f)
     const key = `${p}cursor:${fk}`
     const start = initialCursor(f, seen[fk] ?? now)
@@ -1317,9 +1359,10 @@ export interface InboxThread {
   readonly unread: number
 }
 
-/** The thread an item belongs to. */
+/** The thread an item belongs to (a repo's being made public is its own, apart from its pushes). */
 export function threadKey(item: InboxItem): string {
-  return item.target ? `${item.repo.id}:${item.target.kind}:${item.target.number}` : `${item.repo.id}:push`
+  if (item.target) return `${item.repo.id}:${item.target.kind}:${item.target.number}`
+  return item.kind === 'repoPublic' ? `${item.repo.id}:repoPublic` : `${item.repo.id}:push`
 }
 
 /** `items` as threads, the one with the newest item first; each thread's items newest first. */

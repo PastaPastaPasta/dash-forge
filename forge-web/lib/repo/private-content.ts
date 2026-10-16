@@ -430,6 +430,21 @@ export interface PublishedVersion {
   readonly by: string
 }
 
+/**
+ * Where an admitted document of a repository made public says it was written while the
+ * repository was private (its own `vis` is `"private"`; `private-repos.md` §18.1, DESIGN §4.10;
+ * forge-core `WhilePrivate`): `true`. Sealed under an epoch whose key the owner published
+ * ("Everything"), it reads as public for everyone, members included, and carries no
+ * {@link AUDIENCE_FIELD}: "Public · written while private". Otherwise it stays members-only
+ * ({@link AUDIENCE_FIELD} `members`): "Members-only · written while private".
+ */
+export const WRITTEN_WHILE_PRIVATE = '$writtenWhilePrivate'
+
+/** Whether an admitted document was written while its repository (made public since) was private. */
+export function writtenWhilePrivate(doc: PlainDocument): boolean {
+  return doc[WRITTEN_WHILE_PRIVATE] === true
+}
+
 /** The maintainer who made an admitted document public, or null. */
 export function madePublicBy(doc: PlainDocument): string | null {
   const v = doc[MADE_PUBLIC_BY]
@@ -448,13 +463,23 @@ export interface PublicationMarks {
   readonly madePublicBy?: string
   /** Its author sealed it again after @m made it public: the maintainer (base58). */
   readonly editedAfterPublicBy?: string
+  /**
+   * It was written while its repository (made public since) was private ({@link
+   * WRITTEN_WHILE_PRIVATE}): "Public · written while private" with no audience, else
+   * "Members-only · written while private".
+   */
+  readonly writtenWhilePrivate?: true
 }
 
 /** The {@link PublicationMarks} of an admitted document. */
 export function publicationMarks(doc: PlainDocument): PublicationMarks {
   const by = madePublicBy(doc)
   const after = editedAfterPublicBy(doc)
-  return { ...(by !== null ? { madePublicBy: by } : {}), ...(after !== null ? { editedAfterPublicBy: after } : {}) }
+  return {
+    ...(by !== null ? { madePublicBy: by } : {}),
+    ...(after !== null ? { editedAfterPublicBy: after } : {}),
+    ...(writtenWhilePrivate(doc) ? { writtenWhilePrivate: true as const } : {}),
+  }
 }
 
 /** The earlier versions of an admitted issue maintainers made public. */
@@ -620,6 +645,23 @@ export interface LaneOptions {
    * none of them opens is members-only to it, as to any reader without a key ({@link publicGate}).
    */
   readonly published?: boolean
+  /**
+   * The epochs the owner of the repository made public published, with every epoch their chains
+   * reach (`EpochResolution.published`): a document written while it was private and sealed
+   * under one is public for everyone, whoever opens it ({@link WRITTEN_WHILE_PRIVATE}).
+   */
+  readonly publishedAll?: ReadonlySet<number>
+}
+
+/**
+ * Whether a stored members-only `doc` written while its repository (made public since) was
+ * private reads as public for everyone: written for its members (never a letter) and sealed under
+ * an epoch whose key the owner published ({@link LaneOptions.publishedAll}). The caller knows it
+ * was written while private (its `vis`, `storedPrivateDoc`).
+ */
+export function publicInEffect(doc: PlainDocument, publishedAll: ReadonlySet<number> | undefined): boolean {
+  if (publishedAll === undefined || publishedAll.size === 0 || docAudience(doc) !== 'members') return false
+  return doc['epoch'] != null && publishedAll.has(num(doc, 'epoch'))
 }
 
 /**
@@ -640,7 +682,11 @@ export function laneGate(repo: RepoRef, ctx: OpenContext, options: LaneOptions =
       const opened = await openContent(stored, ctx)
       if (opened.status === 'readable') {
         const out = asPlaintext(doc, opened.fields)
-        out[AUDIENCE_FIELD] = 'members'
+        // Written while the repository (made public since) was private: marked so, and public for
+        // everyone when its epoch key is one the owner published (DESIGN §4.10, "Everything").
+        const whilePrivate = options.converted === true && stored.vis === 'private'
+        if (whilePrivate) out[WRITTEN_WHILE_PRIVATE] = true
+        if (!(whilePrivate && publicInEffect(doc, options.publishedAll))) out[AUDIENCE_FIELD] = 'members'
         await learnHead(ctx, type, doc, opened.fields, out)
         return { ok: true, doc: out }
       }
