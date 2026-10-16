@@ -28,7 +28,7 @@ import { ENTRY_COMMENT, ENTRY_EPOCH_KEY, encodeBundle } from '../private'
 import { publishesHistory } from '../repo/converted'
 import { idbPut, resetMemoryStores } from '../idb'
 import { loadItems, planFeeds, pollOnce, threadKey, type Subscriptions } from './inbox'
-import { EVERYTHING_PUBLIC_WHAT, conversionAt, repoPublicItems, repoRefOf } from './inbox-repo-public'
+import { EVERYTHING_PUBLIC_WHAT, conversionAt, everythingItem, repoPublicItems, repoRefOf } from './inbox-repo-public'
 
 const id = (b: number): Uint8Array => new Uint8Array(32).fill(b)
 const FORGE = { core: 'CORE', collab: 'COLLAB', community: 'COLLAB', group: 'GROUP' }
@@ -70,11 +70,14 @@ describe('checking a repo I belong to', () => {
     expect(reads).not.toContain('repo')
   })
 
-  it('with everything written while private, when the owner published it', async () => {
+  it('with everything already published: still the conversion, at the marker, under its own id (the history item has another)', async () => {
     configs = [privateConfig(MIN, 1), publicConfig(7 * MIN, 7)]
     bundles = [history]
     const { items } = await repoPublicItems(sdk, FORGE, REPO, ME)
-    expect(items.map((i) => [i.id, i.what])).toEqual([[`repoPublic:${REPO.id}:everything`, 'made this repo public, with everything written while private']])
+    expect(items.map((i) => [i.id, i.what, i.at])).toEqual([[`repoPublic:${REPO.id}`, 'made this repo public', 7 * MIN]])
+    const later = everythingItem(REPO, 9 * MIN)
+    expect(later.id).toBe(`repoPublic:${REPO.id}:everything`)
+    expect(later.id).not.toBe(items[0]?.id)
   })
 
   it('flipped before its settings landed: at the repo document’s last change', async () => {

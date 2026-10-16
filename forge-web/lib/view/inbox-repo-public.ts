@@ -7,11 +7,10 @@
  *
  * - When: the conversion marker's `$createdAt` (the first public config, step 4), else the repo
  *   document's `$updatedAt` (the flip replaced it), else the seal-off rotation's.
- * - With "Everything" (owner bundles with entries publishing the repo's epoch keys, step 7, the
- *   last step) by then: "made this repo public, with everything written while private". When that
- *   step lands later, the repo's make-public feed (`./inbox-made-public`) adds "made everything
- *   written while private public" ({@link everythingItem}); one id per repo, so either way it is
- *   said once.
+ * - "Everything" (owner bundles with entries publishing the repo's epoch keys, step 7, the last
+ *   step) is its own item, from the repo's make-public feed (`./inbox-made-public`): "made
+ *   everything written while private public" ({@link everythingItem}) at the bundle's time. The
+ *   two items have their own ids, so whichever feed is read first, neither hides the other.
  *
  * Former members and authors whose words Everything made public are not told yet: they have no
  * subscription to the repo, and their thread subscriptions don't say which repo was made public.
@@ -22,7 +21,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import type { ForgeIds } from '../deployments'
 import { DOC, asIdentifierString, type RepoRef } from '../repo/contract'
 import { createdAtOf, markerAtOf, positiveAt } from '../repo/conversion-status'
-import { publishesHistory, readMakePublicBundles, repoConversion } from '../repo/converted'
+import { repoConversion } from '../repo/converted'
 import { contractOf, readAllRows } from '../repo/source'
 import { queryDocumentsWithProof, type PlainDocument } from '../sdk'
 import type { InboxItem } from './inbox'
@@ -31,22 +30,20 @@ import type { RepoLite } from './mine'
 /** What the check of one repo concluded: `never` made public (and never will be), `done` (said, or nothing to say). */
 export type RepoPublicVerdict = 'never' | 'done'
 
-/** The words of the item: "made this repo public", with Everything "…, with everything written while private". */
-export function repoPublicWhat(everything: boolean): string {
-  return everything ? 'made this repo public, with everything written while private' : 'made this repo public'
-}
+/** The words of the item. */
+export const REPO_PUBLIC_WHAT = 'made this repo public'
 
-/** The words of the item when Everything lands after the repo was made public. */
+/** The words of the item when the owner publishes everything written while private. */
 export const EVERYTHING_PUBLIC_WHAT = 'made everything written while private public'
 
-/** The item's id: one per repo for making it public, one for Everything (so neither is said twice). */
+/** The item's id: one per repo for making it public, another for Everything (each said once, neither hiding the other). */
 export function repoPublicItemId(repoId: string, everything: boolean): string {
   return everything ? `repoPublic:${repoId}:everything` : `repoPublic:${repoId}`
 }
 
 /** "@owner made this repo public" at `at` (pure). */
-export function repoPublicItem(repo: RepoLite, at: number, everything: boolean): InboxItem {
-  return { id: repoPublicItemId(repo.id, everything), kind: 'repoPublic', repo, what: repoPublicWhat(everything), actor: repo.ownerId, at, read: false }
+export function repoPublicItem(repo: RepoLite, at: number): InboxItem {
+  return { id: repoPublicItemId(repo.id, false), kind: 'repoPublic', repo, what: REPO_PUBLIC_WHAT, actor: repo.ownerId, at, read: false }
 }
 
 /** "@owner made everything written while private public" at `at`, when Everything follows the flip (pure). */
@@ -94,6 +91,5 @@ export async function repoPublicItems(sdk: EvoSDK, forge: ForgeIds, repo: RepoLi
   if (me === repo.ownerId) return { items: [], verdict: 'done' }
   const at = conversionAt(ref, configs, conversion.markerHeight === null ? await repoUpdatedAt(sdk, ref) : null)
   if (at === null) return { items: [], verdict: 'never' }
-  const bundles = await readMakePublicBundles(sdk, ref)
-  return { items: [repoPublicItem(repo, at, publishesHistory(repo.id, bundles.map((b) => b.bytes)))], verdict: 'done' }
+  return { items: [repoPublicItem(repo, at)], verdict: 'done' }
 }
