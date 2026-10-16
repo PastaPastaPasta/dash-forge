@@ -72,6 +72,7 @@ const SITE_TITLES: Readonly<Record<string, string>> = {
   '/github.com': 'Find a GitHub repo’s mirror',
   '/private': 'Private repositories',
   '/networks': 'Networks',
+  '/licenses': 'Third-party licenses',
 }
 
 const PROFILE_TITLES: Readonly<Record<string, (label: string) => string>> = {

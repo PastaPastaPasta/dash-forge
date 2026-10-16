@@ -90,6 +90,16 @@ jobs:
           grep -q '^Contact: ' out/.well-known/security.txt || { echo "::error::security.txt has no Contact field"; exit 1; }
           grep -q '^Expires: ' out/.well-known/security.txt || { echo "::error::security.txt has no Expires field"; exit 1; }
           grep -q '"\.well-known/security\.txt"' out/forge-manifest.json || { echo "::error::forge-manifest.json does not list .well-known/security.txt"; exit 1; }
+      # The third-party license notices (scripts/third-party-licenses.mjs, run by `pnpm build`,
+      # which fails on a gap) must reach the Pages artifact: the OpenPGP.js LGPL notice and the
+      # GPL and LGPL texts are served from here.
+      - name: Check the export publishes the license notices
+        run: |
+          for f in third-party-licenses.txt wasm-sdk-licenses.txt licenses/index.html licenses/LGPL-3.0.txt licenses/GPL-3.0.txt; do
+            test -s "out/$f" || { echo "::error::out/$f is missing from the export"; exit 1; }
+            grep -q "\"$f\"" out/forge-manifest.json || { echo "::error::forge-manifest.json does not list $f"; exit 1; }
+          done
+          grep -q 'OpenPGP.js' out/third-party-licenses.txt || { echo "::error::third-party-licenses.txt has no OpenPGP.js notice"; exit 1; }
       # `pnpm build` wrote out/forge-manifest.json: every file of this build with its SHA-256
       # (the previous builds' chunks merged in below are not in it). The attest job signs it.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

@@ -76,6 +76,9 @@ if (wasmVersion(evoOwnWasm) !== wasmVersion(pkgDir('@dashevo/wasm-sdk'))) {
   );
 }
 
+// The OpenPGP.js release in the lockfile's tree, for the /licenses page (its LGPL source pointer).
+const openpgpVersion = wasmVersion(pkgDir('openpgp'));
+
 const nextConfig = {
   trailingSlash: true,
   reactStrictMode: true,
@@ -91,6 +94,8 @@ const nextConfig = {
   env: {
     // The wasm's size, so the download can show a percentage whatever the host's encoding.
     FORGE_WASM_SDK_BYTES: String(fs.statSync(WASM_FILE).size),
+    // The OpenPGP.js version the app contains (app/licenses/page.tsx).
+    FORGE_OPENPGP_VERSION: openpgpVersion,
     // The build's commit ('' unless the build was told): the /mirror wizard pins the Mirror Action
     // and its binaries to it (else it asks GitHub for master's latest), and "About this build"
     // in the footer shows it (lib/build-info.ts).
