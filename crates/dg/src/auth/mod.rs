@@ -719,6 +719,24 @@ pub async fn disable_key(
     master: &BridgeIdentity,
     key_id: u32,
 ) -> Result<()> {
+    disable_keys(client, master, &[key_id]).await
+}
+
+/// The most keys one identity update may disable (Platform's `MAX_KEYS_TO_DISABLE` = 10, checked
+/// in the update's structure validation; the same in v5.0.0-beta.6 and v5.0.0-rc.1 to rc.3).
+pub const MAX_KEYS_PER_UPDATE: usize = 10;
+
+/// Disable `key_ids` (at most [`MAX_KEYS_PER_UPDATE`]) in ONE identity update, signed once by
+/// `master`'s MASTER key.
+pub async fn disable_keys(
+    client: &PlatformClient,
+    master: &BridgeIdentity,
+    key_ids: &[u32],
+) -> Result<()> {
+    anyhow::ensure!(
+        key_ids.len() <= MAX_KEYS_PER_UPDATE,
+        "one identity update disables at most {MAX_KEYS_PER_UPDATE} keys"
+    );
     client
         .update_identity_keys(
             &master.identity_id,
@@ -727,7 +745,7 @@ pub async fn disable_key(
                 .context("no master key")?
                 .private_key_wif,
             &[],
-            &[key_id],
+            key_ids,
         )
         .await?;
     Ok(())

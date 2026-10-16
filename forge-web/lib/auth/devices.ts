@@ -10,14 +10,34 @@
 import type { Network } from '../constants'
 import type { ForgeIds } from '../deployments'
 import type { WasmKey } from '../sdk/facade'
+import { contractKind, forgeContractIds } from '../deployments'
 import { keyScope } from './key-registration'
 
 /** What a key is, in the words Devices & keys uses. */
 export type KeyRole = 'master' | 'forge' | 'forge-contract' | 'signing' | 'encryption' | 'transfer' | 'other'
 
+/**
+ * What a key is, for "Disable all other keys": a Forge limited key, a wallet sign-in (no contract
+ * limits, or a Forge contract or group without a budget), a CI runner key (one document type of a
+ * Forge contract) or another app's key (or unknown). Matches `classify_key` in `dg auth keys`.
+ */
+export type KeyKind = 'forge-limited' | 'wallet' | 'ci-runner' | 'other'
+
+export const KIND_TEXT: Readonly<Record<KeyKind, string>> = {
+  'forge-limited': 'Forge limited key',
+  wallet: 'wallet sign-in',
+  'ci-runner': 'CI runner key',
+  other: 'other app or unknown',
+}
+
 export interface KeyRow {
   readonly keyId: number
   readonly role: KeyRole
+  readonly kind: KeyKind
+  /** What the key may sign for, in words. */
+  readonly bounds: string
+  /** The key this browser signs with right now (null session: none). */
+  readonly current: boolean
   readonly purpose: number
   readonly level: number
   /** When it was disabled (ms), or null while live. */
@@ -42,6 +62,41 @@ export function keyRole(k: Pick<WasmKey, 'purposeNumber' | 'securityLevelNumber'
   return scope.core && scope.collab && scope.community && scope.meta ? 'forge' : 'forge-contract'
 }
 
+type Bounded = Pick<WasmKey, 'contractBounds' | 'totalBudget'>
+interface BoundsJson {
+  readonly $type: string
+  readonly id: string
+  readonly documentTypeName?: string
+}
+const boundsOf = (k: Pick<WasmKey, 'contractBounds'>): BoundsJson | undefined => k.contractBounds?.toJSON() as BoundsJson | undefined
+
+/** What an AUTHENTICATION key is, from its bounds and budget (see {@link KeyKind}). */
+export function keyKindOf(k: Bounded, forge: ForgeIds | undefined): KeyKind {
+  const b = boundsOf(k)
+  if (b === undefined || b === null) return 'wallet'
+  if (forge === undefined) return 'other'
+  const hasBudget = k.totalBudget !== undefined
+  if (b.$type === 'contractGroup') return b.id === forge.group ? (hasBudget ? 'forge-limited' : 'wallet') : 'other'
+  const ours = forgeContractIds(forge).includes(b.id)
+  if (b.$type === 'singleContract') return ours ? 'wallet' : 'other'
+  if (b.$type === 'documentType') return ours ? 'ci-runner' : 'other'
+  return 'other'
+}
+
+/** A key's bounds in words. */
+export function boundsText(k: Pick<WasmKey, 'contractBounds'>, forge: ForgeIds | undefined): string {
+  const b = boundsOf(k)
+  if (b === undefined || b === null) return 'any contract'
+  const contract = (id: string): string => {
+    const kind = forge === undefined ? null : contractKind(forge, id)
+    return kind !== null ? `forge-${kind}` : `contract ${id}`
+  }
+  if (b.$type === 'contractGroup') return forge !== undefined && b.id === forge.group ? 'Forge contract group' : `contract group ${b.id}`
+  if (b.$type === 'singleContract') return contract(b.id)
+  if (b.$type === 'documentType') return `${b.documentTypeName ?? 'one kind of record'} records of ${contract(b.id)}`
+  return 'unknown bounds'
+}
+
 /** Roles Devices & keys may disable: keys bound to Forge, which nothing else signs with. */
 export const DISABLEABLE: ReadonlySet<KeyRole> = new Set(['forge', 'forge-contract'])
 
@@ -57,11 +112,14 @@ export const ROLE_TEXT: Readonly<Record<KeyRole, string>> = {
 }
 
 /** The rows for an identity's keys, newest first, live before disabled. */
-export function keyRows(keys: readonly WasmKey[], budgets: ReadonlyMap<number, bigint | null>, forge: ForgeIds | undefined, held: readonly number[]): KeyRow[] {
+export function keyRows(keys: readonly WasmKey[], budgets: ReadonlyMap<number, bigint | null>, forge: ForgeIds | undefined, held: readonly number[], current: number | null = null): KeyRow[] {
   return keys
     .map((k) => ({
       keyId: k.keyId,
       role: keyRole(k, forge),
+      kind: keyKindOf(k, forge),
+      bounds: boundsText(k, forge),
+      current: k.keyId === current,
       purpose: k.purposeNumber,
       level: k.securityLevelNumber,
       disabledAt: k.disabledAt === undefined ? null : Number(k.disabledAt),
@@ -86,6 +144,26 @@ export function disableRefusal(row: KeyRow): string | null {
   if (row.role === 'encryption') return 'Your private repos open with it. To replace it, see Lost a device? below.'
   if (!DISABLEABLE.has(row.role)) return `Not a Forge key: other apps may rely on it. Use dg auth keys disable ${row.keyId} --force.`
   return null
+}
+
+/**
+ * The keys "Disable all other keys" disables: every enabled AUTHENTICATION key except the MASTER
+ * key (it signs the update) and the key this browser signs with. Wallet sign-ins, contract-bound
+ * keys with or without a budget, CI runner keys and other apps' keys are all in; ENCRYPTION,
+ * DECRYPTION and TRANSFER keys stay. Matches `keys_to_disable` in `dg auth keys`.
+ */
+export function otherKeysToDisable(rows: readonly KeyRow[]): KeyRow[] {
+  return rows.filter((r) => r.disabledAt === null && r.purpose === 0 && r.level !== 0 && !r.current)
+}
+
+/** Most keys one identity update may disable (Platform's `MAX_KEYS_TO_DISABLE` = 10, the same in v5.0.0-beta.6 and v5.0.0-rc.1 to rc.3). */
+export const MAX_KEYS_PER_UPDATE = 10
+
+/** `ids` in groups of at most `size`, one identity update each. */
+export function chunkKeyIds(ids: readonly number[], size: number = MAX_KEYS_PER_UPDATE): number[][] {
+  const out: number[][] = []
+  for (let i = 0; i < ids.length; i += size) out.push(ids.slice(i, i + size))
+  return out
 }
 
 const labelsKey = (network: Network, identityId: string): string => `forge:key-labels:${network}:${identityId}`

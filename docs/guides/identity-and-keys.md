@@ -125,6 +125,7 @@ dg auth keys list                        # every key: purpose, level, budget lef
 dg auth keys add [--budget 0.25 --expires 180d] [--replace <id> | --keep-current]   # a new key for this computer; disables the one it replaces
 dg auth keys add --for-browser <request> [--replace <id>] [--with-encryption-key]   # a key for a browser tab, printed sealed to it
 dg auth keys disable <id>                # disable one (limited keys; --force for others)
+dg auth keys disable --all-limited       # disable every signing key except this computer's and the master, after listing them
 dg auth keys rotate --encryption [--keep-old]   # replace the ENCRYPTION key and move your private repos to it
 dg auth logout [--disable]               # forget the key here (and disable it on chain)
 ```
@@ -135,6 +136,8 @@ When to rotate:
 
 - a laptop or CI secret that held a key was lost or leaked: **disable that key**, and if it also held the encryption key (any `dg auth login` with private repos, a browser with private repos enabled), **replace the encryption key** too;
 - a limited key's budget is nearly spent or it is about to expire: `dg auth keys add` registers a fresh one and disables this computer's current key in the same update (`--replace <id>` names another key to disable, `--keep-current` keeps the current one live on chain, though this computer no longer stores it; `dg auth login … --replace <old id>` does the same at sign-in).
+
+Told to revoke your keys, or unsure which devices still hold one? Disable them all at once: [If Forge tells you to revoke keys](revoke-keys.md).
 
 A browser's own key is managed in the web app: **Settings → This browser's key** can top it up, renew it or revoke it ([below](#limited-keys)).
 
@@ -287,7 +290,7 @@ CI gets one pasteable value, `DASH_FORGE_KEY=dfk1:<network>:<identity id>:<key i
 
 ## Devices & keys
 
-**Settings → Devices & keys** lists every key on your identity as the network has it: what each is for (master, a Forge key with a budget and an expiry, a key for one Forge contract, encryption, transfer), what is left of its budget, when it expires, and which one this browser signs with. Name a key ("work laptop") to tell them apart; names stay in this browser. **Disable** turns off a lost device's key for good; your identity file or recovery phrase signs once (about 0.00002 DASH). The master key cannot be disabled, this browser's own key goes through **Revoke on Platform**, and the encryption key is not disabled here, because your private repos open with it: **Lost a device?** on the same page gives the `dg auth keys rotate --encryption` command that replaces it ([below](#replacing-it-after-a-lost-device)). Platform does not record when a key was last used: a budget that went down was used, and the page shows when this browser last wrote.
+**Settings → Devices & keys** lists every key on your identity as the network has it: what each is for (master, a Forge key with a budget and an expiry, a key for one Forge contract, encryption, transfer), what is left of its budget, when it expires, and which one this browser signs with. Name a key ("work laptop") to tell them apart; names stay in this browser. **Disable** turns off a lost device's key for good; your identity file or recovery phrase signs once (about 0.00002 DASH). **Disable all other keys** does it for every signing key except this browser's and the master, wallet sign-ins and other apps' keys included, 10 keys per update ([If Forge tells you to revoke keys](revoke-keys.md)). The master key cannot be disabled, this browser's own key goes through **Revoke on Platform**, and the encryption key is not disabled here, because your private repos open with it: **Lost a device?** on the same page gives the `dg auth keys rotate --encryption` command that replaces it ([below](#replacing-it-after-a-lost-device)). Platform does not record when a key was last used: a budget that went down was used, and the page shows when this browser last wrote.
 
 **New-key alert.** Each browser remembers which keys your identity had when it last looked. When you sign in or unlock and a key has appeared that this browser did not add, a red bar names it. Added it yourself (with `dg`, another browser, a CI runner)? Choose **It was me**. If not, choose **Review keys** and disable it: whoever holds your recovery phrase or master key can add keys, so a key you did not add is the first sign of a leak. A new **master** key means someone else may control the identity ([below](#rotating-and-disabling-keys)). The check reuses the identity read every sign-in makes; it costs nothing.
 

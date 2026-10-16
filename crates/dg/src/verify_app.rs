@@ -8,7 +8,9 @@
 //! - `--manifest <file or https URL>`: a manifest you got yourself, for example a release's
 //!   `forge-web-<version>.manifest.json` from `dg release download` (proof-checked on Platform);
 //! - otherwise a GitHub build-provenance attestation of the served manifest's SHA-256 by this
-//!   repository's CI (the Pages deploy, or a release). It is looked up through GitHub's API;
+//!   repository's CI. It is looked up through GitHub's API, and its signing certificate must
+//!   name this repository's Pages deploy workflow (`pages.yml`) on `master` (`--signer-workflow`
+//!   changes the workflow): a build attested by another workflow, ref or repository fails.
 //!   `gh attestation verify` checks the Sigstore signature too, and the output names that command.
 //!
 //! Then every file the trusted manifest lists is fetched from the site and hashed. Any file that
@@ -26,13 +28,13 @@ use serde_json::json;
 use forge_core::backends::sigv4::sha256_hex;
 use forge_core::user_error::{codes, UserError};
 
+use crate::attestation_signer::{
+    check_attestations, ExpectedSigner, SignerCheck, DEFAULT_SIGNER_WORKFLOW, SIGNER_REF,
+};
 use crate::context::Ctx;
 
 /// Where the site serves its manifest (`MANIFEST_NAME` in build-manifest.mjs).
 pub const MANIFEST_NAME: &str = "forge-manifest.json";
-
-/// The repository whose CI attests the published builds.
-const REPO: &str = "PastaPastaPasta/dash-forge";
 
 /// Files fetched at once.
 const CONCURRENCY: usize = 12;
@@ -80,6 +82,15 @@ pub struct VerifyAppArgs {
     /// this repository ever published passes, an older one included.
     #[arg(long, value_name = "SHA")]
     pub commit: Option<String>,
+    /// The workflow whose attestation vouches for the build (`<owner>/<repo>/.github/workflows/<file>`),
+    /// on refs/heads/master: the same as `gh attestation verify --signer-workflow`. A build
+    /// attested by any other workflow, ref or repository fails. Only for a fork's own deploys.
+    #[arg(
+        long,
+        value_name = "OWNER/REPO/WORKFLOW",
+        default_value = DEFAULT_SIGNER_WORKFLOW
+    )]
+    pub signer_workflow: String,
 }
 
 /// The site's root URL with a trailing slash, so file paths join under it.
@@ -152,13 +163,17 @@ async fn get(client: &reqwest::Client, url: reqwest::Url) -> Result<Option<Vec<u
     ))
 }
 
-/// How many attestations GitHub holds for `digest` (hex SHA-256) from [`REPO`]'s workflows.
-async fn attestations(client: &reqwest::Client, digest: &str) -> Result<usize> {
+/// The attestations (Sigstore bundles) GitHub holds for `digest` (hex SHA-256) in `repo`.
+async fn attestations(
+    client: &reqwest::Client,
+    repo: &str,
+    digest: &str,
+) -> Result<Vec<serde_json::Value>> {
     #[derive(Deserialize)]
     struct Listing {
         attestations: Vec<serde_json::Value>,
     }
-    let url = format!("https://api.github.com/repos/{REPO}/attestations/sha256:{digest}");
+    let url = format!("https://api.github.com/repos/{repo}/attestations/sha256:{digest}");
     let mut req = client
         .get(&url)
         .header("Accept", "application/vnd.github+json");
@@ -174,7 +189,7 @@ async fn attestations(client: &reqwest::Client, digest: &str) -> Result<usize> {
         .await
         .context("asking GitHub for the manifest's attestation")?;
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
-        return Ok(0);
+        return Ok(Vec::new());
     }
     let listing: Listing = resp
         .error_for_status()
@@ -182,7 +197,7 @@ async fn attestations(client: &reqwest::Client, digest: &str) -> Result<usize> {
         .json()
         .await
         .context("reading GitHub's attestation list")?;
-    Ok(listing.attestations.len())
+    Ok(listing.attestations)
 }
 
 /// The outcome of comparing what a site served with a trusted manifest.
@@ -240,12 +255,13 @@ pub fn compare(
 }
 
 /// The manifest to trust and where it came from: `--manifest`, else the served one (`served`,
-/// fetched from `manifest_url`) when GitHub holds an attestation of it from [`REPO`]'s CI.
+/// fetched from `manifest_url`) when GitHub holds an attestation of it signed by `signer`.
 async fn trusted_manifest(
     client: &reqwest::Client,
     args: &VerifyAppArgs,
     served: Option<&[u8]>,
     manifest_url: &reqwest::Url,
+    signer: &ExpectedSigner,
 ) -> Result<(Manifest, String)> {
     if let Some(m) = &args.manifest {
         let bytes = if m.starts_with("https://") || m.starts_with("http://") {
@@ -265,12 +281,14 @@ async fn trusted_manifest(
             .fix("pass the manifest of the build it should be with --manifest <file>")
             .into());
     };
-    if attestations(client, &sha256_hex(bytes)).await? == 0 {
+    let found = attestations(client, &signer.repo, &sha256_hex(bytes)).await?;
+    if found.is_empty() {
         let commit = Manifest::parse(bytes).ok().and_then(|m| m.commit);
         return Err(
             UserError::new(codes::INTEGRITY, "the site's build is not a published one")
                 .cause(format!(
-                    "GitHub has no attestation from {REPO} for the site's build manifest{}",
+                    "GitHub has no attestation from {} for the site's build manifest{}",
+                    signer.repo,
                     commit
                         .map(|c| format!(" (it says it is commit {c})"))
                         .unwrap_or_default()
@@ -279,10 +297,34 @@ async fn trusted_manifest(
                 .into(),
         );
     }
-    Ok((
-        Manifest::parse(bytes)?,
-        format!("attested by {REPO}'s CI (`gh attestation verify --repo {REPO}` on the manifest checks the signature)"),
-    ))
+    if let SignerCheck::NotSigned(reasons) = check_attestations(&found, signer) {
+        return Err(UserError::new(
+            codes::INTEGRITY,
+            "the site's build was not signed by the expected workflow",
+        )
+        .cause(format!(
+            "GitHub has {} for the site's build manifest, none signed by {} on {SIGNER_REF}: {}",
+            if found.len() == 1 {
+                "an attestation".to_string()
+            } else {
+                format!("{} attestations", found.len())
+            },
+            signer.spec(),
+            reasons.join("; ")
+        ))
+        .fix(UNPUBLISHED_FIX)
+        .into());
+    }
+    Ok((Manifest::parse(bytes)?, attested_line(signer)))
+}
+
+/// How the output describes an attestation whose certificate named `signer`. It says what was
+/// not checked: the certificate chain and the signature need `gh attestation verify`.
+fn attested_line(signer: &ExpectedSigner) -> String {
+    format!(
+        "attested by {}@{SIGNER_REF} (certificate fields; signature not checked here: run gh attestation verify)",
+        signer.spec()
+    )
 }
 
 const UNPUBLISHED_FIX: &str = "do not unlock a private repository there; use a release's IPFS build (docs/guides/verify-the-app.md)";
@@ -336,10 +378,18 @@ pub async fn run(ctx: &Ctx, args: &VerifyAppArgs) -> Result<()> {
         ))
         .timeout(std::time::Duration::from_secs(60))
         .build()?;
+    let signer = ExpectedSigner::parse(&args.signer_workflow)
+        .map_err(|e| crate::errors::usage(format!("--signer-workflow {e}")))?;
     let manifest_url = file_url(&root, MANIFEST_NAME)?;
     let served_bytes = get(&client, manifest_url.clone()).await?;
-    let (trusted, source) =
-        trusted_manifest(&client, args, served_bytes.as_deref(), &manifest_url).await?;
+    let (trusted, source) = trusted_manifest(
+        &client,
+        args,
+        served_bytes.as_deref(),
+        &manifest_url,
+        &signer,
+    )
+    .await?;
     if let Some(want) = args.commit.as_deref() {
         let got = trusted.commit.as_deref().unwrap_or("");
         if want.len() < 7 || !got.starts_with(&want.to_ascii_lowercase()) {
@@ -364,6 +414,7 @@ pub async fn run(ctx: &Ctx, args: &VerifyAppArgs) -> Result<()> {
                 Some(m) if m.starts_with("https://") || m.starts_with("http://") => "url",
                 Some(_) => "file",
             },
+            "signer": args.manifest.is_none().then(|| format!("{} on {SIGNER_REF}", signer.spec())),
             "commit": trusted.commit,
             "network": trusted.network,
             "variant": trusted.variant,
@@ -469,6 +520,15 @@ mod tests {
             "https://forge.example/sub/.well-known/security.txt"
         );
         assert!(site_root("ftp://x").is_err());
+    }
+
+    #[test]
+    fn the_success_line_says_the_signature_was_not_checked() {
+        let signer = ExpectedSigner::parse(DEFAULT_SIGNER_WORKFLOW).unwrap();
+        assert_eq!(
+            attested_line(&signer),
+            "attested by PastaPastaPasta/dash-forge/.github/workflows/pages.yml@refs/heads/master (certificate fields; signature not checked here: run gh attestation verify)"
+        );
     }
 
     #[test]
