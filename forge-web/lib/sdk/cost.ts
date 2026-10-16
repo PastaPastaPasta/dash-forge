@@ -244,6 +244,13 @@ const DEFAULT_DELETE_CREDITS = -20_000_000
  * all of it on mainnet (the schedule lasts about 50 years), but on testnet (1 h epochs) the deposit
  * is gone after about 83 days. Copy therefore says "refunds up to".
  */
+/**
+ * Unstarring the repo's last star gives back more (its count tree goes too): 23.3M measured on the
+ * C-1 shape, against 12.3M otherwise. A "refunds up to" for a last star, or for a star whose
+ * repo's count could not be read, uses this.
+ */
+export const LAST_STAR_DELETE_CREDITS = -23_300_000
+
 export const DELETE_CREDITS: Readonly<Record<string, number>> = {
   // C-1 measured 12.3M for an unstar that is not the repo's last (the ranked axis re-keys).
   star: -12_000_000,

@@ -30,7 +30,8 @@ import { Button } from '@/components/ui/button'
 import { beatAllowed, starBeatFirsts, starFirsts, starRelation, type RepoRef } from '@/lib/repo'
 import { starTerms } from '@/lib/repo/star-shape'
 import { trendingPref } from '@/lib/repo/trending'
-import { firstWriteRead, previewCreate, previewDelete, sumPreviews } from '@/lib/sdk'
+import { firstWriteRead, previewCreate, previewCredits, previewDelete, sumPreviews } from '@/lib/sdk'
+import { LAST_STAR_DELETE_CREDITS } from '@/lib/sdk/cost'
 import { creditsAsDash, priceLabel, refundLabel } from '@/lib/view/format'
 
 export function StarButton({
@@ -75,7 +76,9 @@ export function StarButton({
   // An upper bound: a beat is skipped when an earlier star of this repo already wrote one.
   const starCost = previewCreate('star', {}, first)
   const cost = priceBeat ? sumPreviews([starCost, previewCreate('starBeat', {}, beatFirst)]) : starCost
-  const refund = previewDelete('star')
+  // "Up to" is a ceiling: the repo's last star (or one whose count is unknown) refunds more.
+  const lastStar = count === null || count + star.delta <= 1
+  const refund = lastStar ? previewCredits(LAST_STAR_DELETE_CREDITS) : previewDelete('star')
   // Until the first-write reads answer, the price is the upper bound, and says so (QW-043).
   const upperBound = shape !== 'beat' || !firstWriteRead(first) || (beats && !firstWriteRead(beatFirst))
   const onClick = (): void => {
