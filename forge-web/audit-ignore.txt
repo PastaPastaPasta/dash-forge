@@ -1,0 +1,42 @@
+# Advisories that `pnpm audit --prod` (tools/audit/pnpm-audit.mjs) does not fail on.
+# One GHSA id per line; everything after a `#` is a comment. Only high and critical advisories
+# are checked at all, so only those are listed. Every entry needs a reason; re-read this file
+# whenever `next` or the Platform SDK pin moves.
+
+# --- Next.js 14.2.25: server-side advisories ---------------------------------------------------
+# forge-web is built with `output: 'export'` (next.config.js) and shipped as static files to
+# GitHub Pages, IPFS and the gateway. The Next.js server never runs in production: there is no
+# middleware, no `rewrites`, no Server Action, no `use server`, the image optimizer is off
+# (`images.unoptimized`) and the i18n router is not used. Each advisory below concerns one of
+# those server features. `next dev` is a developer-only server. Upgrading Next 14 -> 15.5.24 or
+# later clears all of them; that major upgrade is tracked separately from this audit job.
+GHSA-2xp9-vwfh-vxw4  # RCE in the Image Optimization API (AVIF): optimizer is off
+GHSA-p293-qw3h-jr36  # RCE on Windows-hosted Next servers: no Next server is hosted
+GHSA-36qx-fr4f-26g5  # Middleware / Proxy bypass with i18n: no middleware, no i18n
+GHSA-5j59-xgg2-r9c4  # DoS with Server Components: no server runtime
+GHSA-mwv6-3258-q52c  # DoS with Server Components: no server runtime
+GHSA-8h8q-6873-q5fj  # DoS with Server Components: no server runtime
+GHSA-q4gf-8mx6-v5v3  # DoS with Server Components: no server runtime
+GHSA-h25m-26qc-wcjf  # DoS via React Server Components deserialisation: no server runtime
+GHSA-89xv-2m56-2m9x  # SSRF in Server Actions on custom servers: no Server Actions
+GHSA-m99w-x7hq-7vfj  # DoS in App Router Server Actions: no Server Actions
+GHSA-c4j6-fc7j-m34r  # SSRF through WebSocket upgrades: no server
+GHSA-p9j2-gv94-2wf4  # SSRF in rewrites: no rewrites
+
+# --- postcss / nanoid / source-map-js, reached only through next ---------------------------------
+# Build-time CSS tooling bundled into `next build`. It runs over this repository's own CSS on a
+# developer or CI machine and is not part of the shipped static output. The advisories need an
+# attacker-controlled CSS file or source map as input (arbitrary .map read, event-loop DoS in
+# source-map parsing, nanoid with a zero size); the build only reads the repository's own CSS.
+# Cleared by the Next upgrade above, which carries postcss >= 8.5.18.
+GHSA-6g55-p6wh-862q  # postcss: sourceMappingURL file read, attacker-controlled CSS only
+GHSA-r28c-9q8g-f849  # postcss: previous source map auto-loading, attacker-controlled CSS only
+GHSA-2v37-7h3g-55p8  # nanoid: custom generator with size 0; postcss uses the default generator
+GHSA-68fv-2mgg-jv7q  # source-map-js: DoS on a crafted indexed source map, build time only
+
+# --- js-yaml 4.3.0 -----------------------------------------------------------------------------
+# Fixed in js-yaml 4.3.2. The rc.3 Platform SDK bump (PR #490, branch ci/sdk-rc3-lockstep) moves
+# forge-web to js-yaml 4.3.2 together with its lockfile, so the bump is not repeated here to
+# avoid a pnpm-lock.yaml conflict. REMOVE THESE TWO LINES WHEN THAT PR LANDS.
+GHSA-5p4m-2wfm-xmqj  # js-yaml quadratic CPU in !!omap resolution
+GHSA-2883-xcg3-v3hh  # js-yaml maxTotalMergeKeys CPU use
