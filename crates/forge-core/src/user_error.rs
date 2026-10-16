@@ -1500,7 +1500,6 @@ const MAINNET_RULE_EXPLANATIONS: &[(&str, &str)] = &[
     ("sealedNoText", "a members-only or private check run carries no summary, links, artifacts or external id"),
     ("maintKinds", "make-public bundles, environment snapshots and access notices are written by a maintainer (r 0)"),
     ("botPack", "a bot writes only packs, browse indexes and long texts, and never replaces others' packs"),
-    ("botChunk", "a chunk is written by a maintainer, a writer or a bot with push access"),
     ("botGrant", "a bot pushes only under a maintainer's push grant (an exact members-only branch, or a public branch prefix)"),
     ("grantPrefix", "the branch is outside the prefix the push grant allows"),
     ("ttl90", "a push grant ends after now and at most 90 days from now"),

@@ -97,7 +97,6 @@ export const MAINNET_RULE_SENTENCES: Readonly<Record<string, string>> = {
   sealedNoText: "A members-only or private check run can't show a summary, links or artifacts.",
   maintKinds: 'Only a maintainer can make posts public, save environments or send access notices.',
   botPack: 'A bot can push only code, browse indexes and long texts, and never replaces what others pushed.',
-  botChunk: 'Only a maintainer, a writer or a bot with push access can push this.',
   botGrant: "A bot can push only under a maintainer's push grant.",
   grantPrefix: 'This branch is outside the branches the push grant allows.',
   ttl90: 'A push grant has to end after now and within 90 days.',

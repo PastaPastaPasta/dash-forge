@@ -24,5 +24,19 @@
    "$ownerId",
    "$createdAt"
   ]
+ },
+ {
+  "item": "CFGN",
+  "name": "a repo's configs are counted",
+  "type": "config",
+  "index": "created",
+  "expect": "present",
+  "properties": [
+   "repoId",
+   "$createdAt"
+  ],
+  "has": {
+   "rangeCountable": false
+  }
  }
 ]

@@ -125,6 +125,10 @@ def home(t):
 # RC2 member roles: a writer document carries its role, and every writer-gated type its claimed `r`
 # (1: the role a maintainer, an author, a runner or a role-1 writer sends)
 ROLE_GATED = build.ROLE_GATED
+# R-19 (the testnet freeze): a chunk claims no role; its writer leaf admits roles 1 and 4 by a literal
+CHUNK_ROLE = F['mainnet_chunk_role']
+if CHUNK_ROLE:
+    ROLE_GATED = {t: hi for t, hi in ROLE_GATED.items() if t != 'chunk'}
 if F['member_roles']:
     BASE['writer']['role'] = 1
     for _t in ROLE_GATED:
@@ -1053,9 +1057,13 @@ if F['mainnet_bot_push']:
         no('B1', f"a bot's kind-{k} manifest", 'packManifest', 'botPack', signer=9, r=4, kind=k)
     no('B1', "a bot's manifest superseding others", 'packManifest', 'botPack', signer=9, r=4, supersedes=b(2, 32))
     no('B1', 'packManifest claiming a reader (r 3)', 'packManifest', 'botPack', r=3)
-    ok('B1', "a bot's chunk", 'chunk', signer=9, r=4)
-    no('B1', 'chunk claiming a reader (r 3)', 'chunk', 'botChunk', r=3)
-    no('B1', 'chunk r 5', 'chunk', 'maximum', r=5)
+    if CHUNK_ROLE:
+        # R-19: the bot's chunk claims nothing; whose role-1 or role-4 row it is, the writer leaf proves on chain
+        ok('B1', "a bot's chunk", 'chunk', signer=9)
+    else:
+        ok('B1', "a bot's chunk", 'chunk', signer=9, r=4)
+        no('B1', 'chunk claiming a reader (r 3)', 'chunk', 'botChunk', r=3)
+        no('B1', 'chunk r 5', 'chunk', 'maximum', r=5)
 
 # ---------------- Platform beta.6 (phase M-A2; design/v5/PLATFORM-OPPORTUNITIES-5.0.0-beta.6.md) ----------------
 # R-02 (shorthands) is judged by every vector above: the shorthand build must agree with each.
@@ -1079,6 +1087,17 @@ if F['mainnet_enc_framing']:
     for v in (1, 3, 5):
         no('R-04', f'a sealed config framed 0x{v:02x}', 'config', 'encV2', defaultBranch=DROP, protectedPatterns=DROP, vis='private',
            **framed(v))
+
+# ---------------- The testnet freeze (dash-forge-qa design/FREEZE-SHEET.md) ----------------
+if CHUNK_ROLE:
+    no('R-19', 'a chunk claiming a role (no r: the writer leaf names the roles)', 'chunk', 'additionalProperties', r=1)
+    ok('R-19', 'a chunk without r', 'chunk')
+index('CFGN', 'a repo\'s configs are counted', 'config', 'created', True, properties=['repoId', '$createdAt'],
+      rangeCountable=F['mainnet_config_count'])
+if F['mainnet_event_by_kind']:
+    index('EVK', "one kind's events of a repo", 'event', 'byKind', True, properties=['repoId', 'kind'])
+else:
+    index('EVK', 'no byKind index', 'event', 'byKind', False)
 
 # Rules that read a total, a time or a height: judged on chain only (forge-contracts/scripts/rc1-live.mjs;
 # the mainnet set's in M-C).

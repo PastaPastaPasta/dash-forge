@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Build the RC2 registration (forge-core, forge-collab, forge-community) from the base schemas,
-and with --mainnet the four-contract mainnet set (plus forge-meta, DESIGN rev 4.1 D44).
+"""Build the devnet registration (forge-core, forge-collab, forge-community) from the base schemas,
+and with --mainnet the four-contract set production networks register (testnet, then mainnet with the
+same bytes: plus forge-meta, DESIGN rev 4.1 D44).
 
   python3 forge-contracts/schema/build.py [--check] [--off flag,flag] [--on flag,flag] [--out <dir>]
                                           [--mainnet] [--validate <contract-validate>] [--gate <b7gate>]
@@ -101,7 +102,7 @@ FLAGS = dict(
     free_tightenings=True,      # INV-11: enc >= 29 B, config enc v2, unique protected patterns
     text_grammar=True,          # CL-7: titles and bodies hold a visible character
     label_grammar=True,         # CL-8: label names trimmed, no control characters (no cap)
-    social_counters=True,       # COMM-9 (provisional, step-8 fee gate): star/watch counts
+    social_counters=True,       # COMM-9 (fee gate passed, +2.07 %): star/watch counts
     # ---- RC2 (Platform v5.0.0-beta.1; design/v5/PLAN.md §3, owner decisions 2026-10-01). M1 is
     # no flag: it is in base/. S2, S3 and C1 are decided at registration by a fee probe on the v5
     # network (S2 and S3 each <= +10 % per review write, C1 <= 54.9 M credits per star): a probe
@@ -181,7 +182,15 @@ MAINNET_FLAGS = dict(
     mainnet_keep_verdicts=False,   # R-09: an approve or request changes is undeletable (deleteConstraints)
     mainnet_public_const=False,    # R-11: webhook, topic, packMirror: public-only by a `where` const, no vis stamp
     mainnet_public_stars=False,    # R-12 (owner decision: public only, self-stars allowed): star / watch public repos only
-    # Declared, not built: each needs a design pass and a re-cut test before it can be switched on.
+    # ---- The testnet freeze (dash-forge-qa design/FREEZE-SHEET.md, 2026-10-16): the now-or-never items taken
+    # at the first production registration. forge-v2.md §9.1 describes each.
+    mainnet_chunk_role=False,      # R-19: a chunk's writer leaf admits its roles by a literal; no `r`, no botChunk
+    mainnet_config_count=False,    # config.created rangeCountable: a count that proves a config read complete
+    mainnet_event_by_kind=False,   # event index byKind (repoId, kind): one kind's events without the whole feed
+    mainnet_explicit_config=False,  # every contract states its config (V2, unmoderated), so the sha256 covers it
+    # Declared, not built, and declined at the testnet freeze (FREEZE-SHEET.md): neither can be built on Platform 5
+    # (archived lives on config, which no rule reads as newest; epoch writes need a cross-contract newest read).
+    # Both stay permanent client rules.
     mainnet_consensus_archive=False,  # repo.archived refuses every gated write (client-rules #10)
     mainnet_epoch_writes=False,    # sealed writes only under the current epoch (client-rules §11-18)
 )
@@ -196,6 +205,8 @@ MV_FLAGS = ('layout_meta', 'mainnet_aud', 'mainnet_one_way_visibility', 'mainnet
 # mixed-visibility item on, and the mixed-visibility matrix with all of them on.
 MA2_FLAGS = ('mainnet_shorthand', 'mainnet_author_no_verdict', 'mainnet_enc_framing', 'mainnet_revision_guards',
              'mainnet_owner_row_stays', 'mainnet_keep_verdicts', 'mainnet_public_const', 'mainnet_public_stars')
+# The testnet freeze items: variants.py validates the full set with each of them left out alone.
+FREEZE_FLAGS = ('mainnet_chunk_role', 'mainnet_config_count', 'mainnet_event_by_kind', 'mainnet_explicit_config')
 # What each flag needs: a `where` naming a property the other adds (else 40126 at registration), a
 # rule rewriting one the other adds, or (B1) the room only the four-contract layout leaves in
 # forge-core. build() refuses a combination that breaks one.
@@ -229,6 +240,8 @@ NEEDS = {
     'mainnet_revision_guards': ('thread_lock',),
     'mainnet_owner_row_stays': ('member_consent',),
     'mainnet_public_const': ('mainnet_vis_via_repo', 'topic_public', 'mainnet_mirror_public'),
+    # R-19 rewrites the role gate member roles add
+    'mainnet_chunk_role': ('member_roles',),
 }
 # The RC2 items with a flag: forge-contracts/schema/variants.py validates every combination.
 RC2_FLAGS = ('check_evidence_freeze', 'review_to_author', 'review_author', 'fused_star', 'event_as_maintainer',
@@ -263,6 +276,11 @@ META_TYPES = {'forge-collab': ('repoKey', 'ban'), 'forge-core': ('label', 'topic
 # each off only with every RC2 item on, the largest build.
 RIDER_FLAGS = ('close_reason', 'review_hunk')
 TOPIC_CAP = 20
+
+# The contract config the four-contract set registers with (mainnet_explicit_config)
+CONTRACT_CONFIG = {"$formatVersion": "2", "canBeDeleted": False, "readonly": False, "keepsHistory": False,
+                   "documentsKeepHistoryContractDefault": False, "documentsMutableContractDefault": True,
+                   "documentsCanBeDeletedContractDefault": True, "sizedIntegerTypes": True}
 
 ID = {"type": "array", "byteArray": True, "minItems": 32, "maxItems": 32,
       "contentMediaType": "application/x.dash.dpp.identifier"}
@@ -1193,6 +1211,41 @@ def build(flags):
         for t in ('star', 'watch'):
             md[t]['properties']['repoId']['refersTo'].setdefault('where', {})['visibility'] = {"const": "public"}
 
+    # ======================= The testnet freeze (dash-forge-qa design/FREEZE-SHEET.md) =======================
+    # The last items a fresh registration can take: each changes an index, a rule or a required field of a
+    # type that exists, which no update can (§9). Book citations are at v5.0.0-rc.3 (book/src/contract-keywords/).
+    if up['mainnet_chunk_role']:
+        # R-19: no rule branches on a chunk's `r` (botChunk only bounds it), so the writer leaf names the
+        # roles it admits by a literal (refers-to.md "Conditions": `in`, two to thirty literals) and the
+        # claim goes: a role-1 writer, and with B1 a bot's role-4 row; a maintainer passes its own operand,
+        # as before. Clients stamp `r` only where the loaded contract declares it.
+        ch = cd['chunk']
+        assert ch['properties']['r']['position'] == max(p['position'] for p in ch['properties'].values()), ch
+        del ch['properties']['r']
+        ch['required'].remove('r')
+        ch.get('propertyConstraints', {}).pop('botChunk', None)
+        if ch.get('propertyConstraints') == {}:
+            del ch['propertyConstraints']
+        leaf = next(leaf for leaf in leaves(ch['ownerRefersTo']) if leaf['documentType'] == 'writer')
+        leaf['where']['role'] = {"in": [1, 4]} if up['mainnet_bot_push'] else {"const": 1}
+
+    if up['mainnet_config_count']:
+        # A count of a repo's configs (aggregates.md "Index rangeCountable": it makes the index countable),
+        # so a reader can prove its config read complete, and complete up to a time, against an
+        # independent number. config is immutable and never deleted, so the count only grows.
+        idx(cd['config'], 'created')['rangeCountable'] = True
+
+    if up['mainnet_event_by_kind']:
+        # One kind's events of a repo: pins (19, 20), milestone set and clear (17, 18), labels (4, 5),
+        # assignees (6, 7), hides (24, 25) and bypasses (23) each read as their own kinds, one
+        # `kind == k` query per kind in a composite request, not as a fold of the whole feed, which
+        # readers stop at 30 pages. A flood of one kind (hides of a spam wave) leaves the other kinds'
+        # reads as they were. No `$createdAt` level: every reader folds and sorts what it reads, and
+        # "changed since t" stays on `feed`; a timestamped level costs a value tree per write (the
+        # S2/S3 probe priced that shape at about +14 M credits). A `kind in [...]` query needs an
+        # orderBy on `kind` (rs-drive single_in_path_query v0).
+        ev_home['event']['indices'].append({"name": "byKind", "properties": [{"repoId": "asc"}, {"kind": "asc"}]})
+
     core['description'] = "Dash Forge v2 core: repositories, refs, packs, members, releases, labels, topics"
     collab['description'] = "Dash Forge v2 collaboration: issues, pull requests, transitions, comments, reviews, repo keys"
     comm['description'] = "Dash Forge v2 community: events, milestones, runners, check runs, policies, stars, webhooks"
@@ -1201,6 +1254,16 @@ def build(flags):
         contracts[META] = split_meta(contracts, f['mainnet_bot_push'])
     if up['mainnet_shorthand']:
         contracts = {n: shorthand(c) for n, c in contracts.items()}
+    if up['mainnet_explicit_config']:
+        # The testnet freeze: each contract states the config it registers with, so the file's sha256
+        # covers it and no SDK default decides it (book contract-keywords/contract-config.md at
+        # v5.0.0-rc.3: config V2 is every new contract's from protocol 14). Not readonly, so additive
+        # updates stay possible; never deleted; no contract history; no `moderation` key, so the
+        # contract is unmoderated and stays so (validate_config_update 2 refuses entering
+        # moderation). The document defaults are Platform's; every type that relies on one is listed
+        # in FREEZE-SHEET.md §5.
+        for c in contracts.values():
+            c['config'] = dict(CONTRACT_CONFIG)
     return contracts
 
 

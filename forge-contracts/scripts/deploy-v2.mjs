@@ -73,8 +73,9 @@
 //      is re-registered too (--only community --force-new --same-group).
 // All are signed with the deployer's CRITICAL authentication key (contract create needs
 // CRITICAL or HIGH; CRITICAL is used). The deployer owns the
-// contracts and the group; no moderation, not readonly (flip readonly in a later update once
-// the schema is final).
+// contracts and the group; no moderation, not readonly. Both are fixed at registration: an update
+// can never set readonly (rs-dpp data_contract/config/methods/validate_update/v0), and staying
+// writable is what lets later additive updates (new optional properties and types) land.
 //
 // Before anything is broadcast, the script checks the network runs protocol 14, rebuilds every
 // contract with full validation locally (the same rs-dpp as the network, compiled to wasm), and
