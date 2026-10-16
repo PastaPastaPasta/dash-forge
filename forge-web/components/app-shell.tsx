@@ -10,10 +10,13 @@ import type { ReactNode } from 'react'
 import { AppHeader } from '@/components/app-header'
 import { AppFooter } from '@/components/app-footer'
 import { DevnetNoticeBanner } from '@/components/devnet-notice-banner'
+import { NewBuildBanner } from '@/components/new-build-banner'
+import { PagesNoticeBanner } from '@/components/pages-notice-banner'
 import { NewKeyAlert } from '@/components/new-key-alert'
 import { ContractsMissingState } from '@/components/ui/contracts-missing'
 import { useContractsMissing } from '@/hooks/use-sdk'
 import { useOfflineNavigation } from '@/hooks/use-offline-navigation'
+import { PAGES_NOTICE } from '@/lib/pages-notice'
 import { LowFundsBanner } from '@/components/low-funds-banner'
 import { ClockSkewBanner } from '@/components/clock-skew-banner'
 import { LoginModal } from '@/components/login-modal'
@@ -45,7 +48,9 @@ export function AppShell({
         Skip to content
       </a>
       <AppHeader />
-      <DevnetNoticeBanner />
+      {/* The operator's notice (any network) takes the strip; the devnet-move notice shows when there is none. */}
+      {PAGES_NOTICE !== null ? <PagesNoticeBanner /> : <DevnetNoticeBanner />}
+      <NewBuildBanner />
       <NewKeyAlert />
       <ClockSkewBanner />
       <LowFundsBanner />
