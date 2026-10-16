@@ -19,7 +19,6 @@ id = "dash-wif-private-key"
 description = "Dash WIF private key"
 regex = '''\b(?:[cX][1-9A-HJ-NP-Za-km-z]{51}|[97][1-9A-HJ-NP-Za-km-z]{50})\b'''
 entropy = 4.0
-keywords = ["wif"]
 
 [[allowlists]]
 description = "Fixed fixtures for the cross-client conformance suite and the secret scanner"
