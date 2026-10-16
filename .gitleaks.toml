@@ -40,11 +40,14 @@ paths = [
 [[allowlists]]
 description = "Throwaway test-only WIFs"
 targetRules = ["generic-api-key", "dash-wif-private-key"]
-paths = [
-    # Testnet WIFs used as inputs to the WIF-parsing tests. They are generated for the tests and
-    # never held funds. This is a path rule, so it also covers older revisions of the file,
-    # which held different test keys; those keys are retired.
-    '''forge-web/lib/sdk/write\.test\.ts''',
+regexes = [
+    # The testnet WIFs forge-web/lib/sdk/write.test.ts feeds to the WIF-parsing tests. They were
+    # generated for these tests and never held funds. Matching by value (not by path) keeps the
+    # rules live for the rest of that file: a different key pasted into it is still reported.
+    '''cScuWdGax2opJ7A2CFMHirSmbs7jxgcyPegysz5JnN9zNhK9dK45''',
+    '''cQw3RkFcQYVEdMe1hVeKvvk6ngPerPDWvb97fhXyGVVPcX2tz1eV''',
+    '''cPKiTpJsoQnvEh6MXFPgcf22fcnsWoDENaAMMFtvSMngqMBuaAwX''',
+    '''cP7Yi3ghoSCbpQZosJMiHj6HUz5SSPNboSNBRh1a5RnGjZc9nggN''',
 ]
 
 [[allowlists]]

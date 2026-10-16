@@ -10,3 +10,12 @@
 # A contract id (public by design) that matched the generic-api-key pattern when the token
 # history constant was introduced; the line no longer exists.
 1584371f39385bfd40ba0a7f9ab34f9c5e395c63:forge-web/lib/constants.ts:generic-api-key:35
+
+# Old test fixtures, replaced: the WIF-parsing test inputs in forge-web/lib/sdk/write.test.ts as
+# first committed. The current file uses different, generated test keys, which are allowlisted
+# by value in .gitleaks.toml.
+cc8e2dd26389e76eca914fe07fe65201f5f340eb:forge-web/lib/sdk/write.test.ts:dash-wif-private-key:135
+cc8e2dd26389e76eca914fe07fe65201f5f340eb:forge-web/lib/sdk/write.test.ts:dash-wif-private-key:172
+cc8e2dd26389e76eca914fe07fe65201f5f340eb:forge-web/lib/sdk/write.test.ts:dash-wif-private-key:174
+cc8e2dd26389e76eca914fe07fe65201f5f340eb:forge-web/lib/sdk/write.test.ts:dash-wif-private-key:175
+cc8e2dd26389e76eca914fe07fe65201f5f340eb:forge-web/lib/sdk/write.test.ts:dash-wif-private-key:184
