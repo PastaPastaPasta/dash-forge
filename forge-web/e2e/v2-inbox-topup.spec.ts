@@ -101,7 +101,7 @@ test('t1. explore, signed in: my sections are honest', async ({ browser }) => {
 test('t2. inbox: empty first, then items from a starred repo, badge and mark read', async ({ browser }) => {
   const page = await signedIn(browser, 'CI-RUNNER', '/notifications/')
   await inboxReady(page)
-  await expect(page.getByText(/no email, no push and no\s+sync/i)).toBeVisible()
+  await expect(page.getByTestId('inbox-reach-note')).toContainText(/only arrive while a Forge tab is open/i)
   const empty = page.getByTestId('inbox-empty')
   if (await empty.isVisible()) {
     await expect(empty).toContainText('Notifications are computed in this browser from the chain. Nothing is sent to you; nothing leaves your device.')

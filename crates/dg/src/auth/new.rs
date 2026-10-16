@@ -637,6 +637,18 @@ fn backup_passphrase(args: &NewArgs) -> Result<Option<Secret>> {
     }
 }
 
+/// What the deposit buys, shown under the QR code. The small-push figure is with your own
+/// storage; packs on Platform add the calibrated per-MiB rate (the same `fmt::platform_rate` that
+/// `git push` quotes), so a newcomer who funds only the minimum is not surprised by a first push.
+fn price_hint() -> String {
+    format!(
+        "It becomes your Platform credits (about 0.001 DASH per issue, 0.005 per small push, \
+         plus {} of code stored on Platform, which is permanent).\n\
+         Pushing code? Add your own storage first, or deposit about 0.4 DASH per MiB.",
+        crate::fmt::platform_rate()
+    )
+}
+
 /// Show the deposit request (QR + address + amount), human or `--json` event.
 fn show_deposit(ctx: &Ctx, endpoints: &CoreEndpoints, address: &str, duffs: u64) {
     if ctx.json {
@@ -657,9 +669,7 @@ fn show_deposit(ctx: &Ctx, endpoints: &CoreEndpoints, address: &str, duffs: u64)
     eprintln!("{}", qr(address, duffs));
     eprintln!("  {address}");
     eprintln!();
-    eprintln!(
-        "It becomes your Platform credits (about 0.001 DASH per issue, 0.005 per small push)."
-    );
+    eprintln!("{}", price_hint());
     eprintln!(
         "dg watches for the deposit through the Dash network's own nodes (DAPI), and asks a \
          block explorer ({}) only if they cannot answer. Neither can take funds or keys.",
@@ -936,6 +946,20 @@ pub async fn run(ctx: &Ctx, args: &NewArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_price_hint_names_the_platform_storage_rate() {
+        let hint = price_hint();
+        assert!(hint.contains("0.005 per small push"), "{hint}");
+        assert!(hint.contains("DASH/MiB of code stored on Platform"), "{hint}");
+        assert!(
+            hint.contains("Add your own storage first, or deposit about 0.4 DASH per MiB"),
+            "{hint}"
+        );
+        // The rounded "about 0.4" in the sentence tracks the calibrated rate the line quotes.
+        let per_mib = credits_to_dash(forge_core::cost::push_fees::chunks(1024 * 1024));
+        assert_eq!(format!("{per_mib:.1}"), "0.4", "update the hint's rounded figure");
+    }
 
     #[test]
     fn the_qr_code_renders_as_text() {

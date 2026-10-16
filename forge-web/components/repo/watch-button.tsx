@@ -33,7 +33,7 @@ export function WatchButton({ repo }: { repo: RepoRef }): JSX.Element | null {
   if (repo.visibility === 'private' && !watching) return null
   const cost = previewCreate('watch', {})
   const refund = previewDelete('watch')
-  const price = watching ? `Unwatch · refunds at least ${creditsAsDash(-refund.credits)} DASH` : `Watch · ~${creditsAsDash(cost.credits)} DASH`
+  const price = watching ? `Unwatch · refunds up to ${creditsAsDash(-refund.credits)} DASH` : `Watch · ~${creditsAsDash(cost.credits)} DASH`
   return (
     <span className="inline-flex items-center gap-2">
       {watch.error ? (

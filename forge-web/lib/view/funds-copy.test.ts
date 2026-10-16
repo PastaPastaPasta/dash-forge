@@ -76,8 +76,8 @@ describe("a repo's creation is listed under the repo (QW-054)", () => {
 })
 
 describe('a refund beside its button names what gives it back (QW2-034)', () => {
-  it('reads "unstar +0.00012", not a bare "+0.00012"', () => {
-    expect(refundLabel('unstar', -12_000_000)).toBe('unstar +0.00012')
-    expect(refundLabel('unfollow', -23_000_000)).toBe('unfollow +0.00023')
+  it('reads "unstar up to +0.00012", not a bare "+0.00012" (ECON-02: a refund is a ceiling)', () => {
+    expect(refundLabel('unstar', -12_000_000)).toBe('unstar up to +0.00012')
+    expect(refundLabel('unfollow', -23_000_000)).toBe('unfollow up to +0.00023')
   })
 })

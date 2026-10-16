@@ -13,6 +13,8 @@ import {
   estimateCreateCredits,
   previewCreate,
   previewDelete,
+  pushCostPhrase,
+  pushStorageHint,
   previewReplace,
   REPLACE_MIN_CREDITS,
   sumPreviews,
@@ -183,6 +185,18 @@ describe('an edit is a range (QW3-037)', () => {
     // Bonsia: a comment's body 7.8M, the repo's description and topics 5.8M (quoted 18.8M, 19.9M).
     expect(edit.minCredits! * 0.75).toBeLessThanOrEqual(5_800_000)
     expect(edit.credits).toBeGreaterThanOrEqual(7_800_000)
+  })
+})
+
+describe('funding copy (ECON-06)', () => {
+  it('quotes the permanent per-MiB cost of code on Platform beside the per-push range', () => {
+    expect(pushCostPhrase()).toBe(
+      '0.004–0.0055 DASH per push with your own storage, up to 0.011 with packs on Platform, plus ~0.39 DASH per MiB of code stored on Platform (permanent)',
+    )
+  })
+
+  it('tells a newcomer to add storage first or fund about 0.4 DASH per MiB', () => {
+    expect(pushStorageHint()).toBe('Pushing code? Add your own storage first, or deposit about 0.4 DASH per MiB.')
   })
 })
 

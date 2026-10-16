@@ -236,9 +236,13 @@ const DEFAULT_BASE_CREDITS = 50_000_000
 const DEFAULT_DELETE_CREDITS = -20_000_000
 
 /**
- * What deleting a document gives back at least, in credits (negative = a refund). Measured on
- * moutai: unstar 22.0M (32.3M for the repo's last star), unfollow 23.5M (34.1M for the last),
- * revoking a writer 20.8M. The preview shows the smaller refund, so it never promises more.
+ * What deleting a document gives back, in credits (negative = a refund), measured right after
+ * the write. Measured on moutai: unstar 22.0M (32.3M for the repo's last star), unfollow 23.5M
+ * (34.1M for the last), revoking a writer 20.8M. The preview shows the smaller refund. It is a
+ * ceiling, not a floor (ECON-02): Platform spreads the storage deposit over 2,000 epochs
+ * (rs-dpp `FEE_DISTRIBUTION_TABLE`), so a later delete gets back less: within weeks it is nearly
+ * all of it on mainnet (the schedule lasts about 50 years), but on testnet (1 h epochs) the deposit
+ * is gone after about 83 days. Copy therefore says "refunds up to".
  */
 export const DELETE_CREDITS: Readonly<Record<string, number>> = {
   // C-1 measured 12.3M for an unstar that is not the repo's last (the ranked axis re-keys).
@@ -402,7 +406,17 @@ export function dashRange({ min, max }: { readonly min: number; readonly max: nu
  * per push" there, "a small push ≈ 0.004–0.011" on an empty repo).
  */
 export function pushCostPhrase(): string {
-  return `${dashRange(PUSH_COST_DASH.byo)} DASH per push with your own storage, up to ${PUSH_COST_DASH.platform.max} with packs on Platform`
+  return `${dashRange(PUSH_COST_DASH.byo)} DASH per push with your own storage, up to ${PUSH_COST_DASH.platform.max} with packs on Platform, plus ~${PUSH_COST_DASH.perMib} DASH per MiB of code stored on Platform (permanent)`
+}
+
+/**
+ * One line for the funding screens (the deposit step, /start): the default storage is Platform,
+ * where code is permanent and costs {@link PUSH_COST_DASH}.perMib per MiB, so a newcomer who
+ * funds only the minimum cannot push a real repository (ECON-06). "About 0.4" is `perMib` rounded
+ * to one decimal, the figure `dg auth new` says too.
+ */
+export function pushStorageHint(): string {
+  return `Pushing code? Add your own storage first, or deposit about ${PUSH_COST_DASH.perMib.toFixed(1)} DASH per MiB.`
 }
 
 /** A pre-sign cost preview for the confirm UI. */

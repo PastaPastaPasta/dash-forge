@@ -91,7 +91,7 @@ export function StarButton({
   // Signed in but the current state is not known yet (or could not be read): no action to offer.
   const unknown = signedIn && star.on === null
   const price = starred
-    ? `Unstar · refunds at least ${creditsAsDash(-refund.credits)} DASH`
+    ? `Unstar · refunds up to ${creditsAsDash(-refund.credits)} DASH`
     : `Star · ${priceLabel(cost.credits, upperBound)} DASH${trendingNote}`
 
   return (
