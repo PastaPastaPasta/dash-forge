@@ -55,8 +55,8 @@ services:
       # replaces the file would leave a single-file mount on the old one). Uncomment, create
       # ./deny/deny.txt, and set GATEWAY_DENY=/etc/forge-gateway/deny.txt in .env.
       # - ./deny:/etc/forge-gateway:ro
-    # Rotate the container log (docs/hosting/forge-gateway.md, "Privacy notice": logs are kept
-    # for 14 days at most). 5 files of 50 MB hold weeks of request lines.
+    # Rotate the container log by size: 5 files of 50 MB. That bounds the disk, not the age
+    # (docs/hosting/forge-gateway.md, "Logs": the privacy notice's retention is yours to meet).
     logging:
       driver: local
       options:

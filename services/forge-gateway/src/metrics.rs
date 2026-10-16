@@ -72,6 +72,10 @@ pub struct Gauges {
     pub cache_max_bytes: u64,
     /// `git-upload-pack`s streaming now.
     pub upload_packs_active: u64,
+    /// Entries of the operator's deny list in force.
+    pub deny_entries: u64,
+    /// 1 when the latest look at the deny list's file failed.
+    pub deny_unreadable: u64,
 }
 
 impl Metrics {
@@ -246,6 +250,16 @@ impl Metrics {
             "forge_gateway_upload_packs_active",
             "git-upload-packs streaming now.",
             g.upload_packs_active,
+        );
+        gauge(
+            "forge_gateway_deny_entries",
+            "Entries of the deny list in force (GATEWAY_DENY).",
+            g.deny_entries,
+        );
+        gauge(
+            "forge_gateway_deny_unreadable",
+            "1 when the latest look at the deny list file failed (the list in force may be out of date).",
+            g.deny_unreadable,
         );
         let (ok, failed) = self.upstream_times();
         let secs = |t: Option<SystemTime>| {

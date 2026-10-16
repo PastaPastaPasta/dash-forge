@@ -25,7 +25,7 @@ To run code that is not in a release, pin a commit you have reviewed in the URL 
 | `FORGE_SOURCE_REF` | empty | A reviewed dash-forge commit to build when no release is set or installable. One of the two is required. |
 | `FORGE_STORAGE_KIND` | `platform` | `s3` to put packs in your bucket (`FORGE_S3_ENDPOINT`, `_REGION`, `_BUCKET`, `_PUBLIC_URL`, `_PREFIX`, `_VIRTUAL_HOSTED`, and `FORGE_REPLICAS`), with the `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` variables. |
 | `FORGE_PUSH_CAP` | `"0.05"` | The hard cap in DASH for one code push. A push priced above it is refused before anything is stored. |
-| `FORGE_IMPORT` | `"false"` | `"true"` runs `forge-import` on scheduled and manual pipelines. |
+| `FORGE_IMPORT` | `"false"` | `"true"` runs `forge-import` on scheduled and manual pipelines. Setting it is your acknowledgement (`--i-have-the-rights`) that you may publish this project, and what its contributors wrote, permanently on Dash Platform. The job logs the licence GitLab reports and warns when there is none. |
 | `FORGE_SYNC` | `code,issues,prs,labels,releases` | What `forge-import` mirrors. |
 | `FORGE_COST_CAP` | `"0.05"` | The hard cap in DASH for one import run. |
 | `FORGE_FAIL_ON_PARTIAL` | `"false"` | `"true"` fails the import job when it ends partial (exit 4). By default a partial run is a warning. |

@@ -45,6 +45,8 @@ struct World {
     item_total: Option<u64>,
     /// Item count reads.
     item_count_reads: usize,
+    /// DPNS names cannot be read (an owner given by id still can).
+    fail_name_reads: bool,
     /// Members-only branches of the stub's source repository: Platform shows only their count,
     /// and `git-remote-dash` (as an anonymous reader) never lists or fetches them.
     sealed: Vec<String>,
@@ -66,6 +68,29 @@ impl Stub {
         let info = RepoInfo {
             repo_id: id.into(),
             owner_id: format!("O{owner}"),
+            name: name.into(),
+            public,
+        };
+        self.world().repos.insert(
+            (owner.into(), name.into()),
+            (info.clone(), src.to_path_buf()),
+        );
+        info
+    }
+
+    /// [`Self::add_id`] with the owner's identity id given.
+    fn add_with(
+        &self,
+        id: &str,
+        owner_id: &str,
+        owner: &str,
+        name: &str,
+        public: bool,
+        src: &Path,
+    ) -> RepoInfo {
+        let info = RepoInfo {
+            repo_id: id.into(),
+            owner_id: owner_id.into(),
             name: name.into(),
             public,
         };
@@ -109,15 +134,25 @@ impl Upstream for Stub {
         if w.down {
             return Err(anyhow!("Platform is down"));
         }
-        // The owner as a DPNS name (the key), or as the identity id.
+        // The owner as an identity id, or as a DPNS name (`alice`, `Alice.dash` and `a1ice` are
+        // one name, as on Platform); a repository name is lower-case.
+        let is_id = w.repos.values().any(|(i, _)| i.owner_id == owner);
+        if w.fail_name_reads && !is_id {
+            return Err(anyhow!("DPNS names cannot be read"));
+        }
+        let dpns = |s: &str| {
+            let lower = s.to_ascii_lowercase();
+            forge_core::platform::identity::dpns_normalize(
+                lower.strip_suffix(".dash").unwrap_or(&lower),
+            )
+        };
+        let name = name.to_ascii_lowercase();
         Ok(w.repos
-            .get(&(owner.to_string(), name.to_string()))
-            .or_else(|| {
-                w.repos
-                    .values()
-                    .find(|(i, _)| i.owner_id == owner && i.name == name)
+            .iter()
+            .find(|((o, n), (i, _))| {
+                *n == name && (i.owner_id == owner || (!is_id && dpns(o) == dpns(owner)))
             })
-            .map(|(i, _)| i.clone()))
+            .map(|(_, (i, _))| i.clone()))
     }
     async fn snapshot(&self, repo: &RepoInfo) -> Result<Option<Snapshot>> {
         {
@@ -1441,10 +1476,30 @@ async fn a_restart_after_a_network_reset_removes_the_mirrors_platform_lost() {
 // IPv6 /48 keys, the proxy-header notice and /readyz's version.
 // ---------------------------------------------------------------------------------------
 
+/// Valid Platform ids (32 bytes in base58): a deny list's bare entries must be ids.
+const ID_PROJ: &str = "29d2S7vB453rNYFdR5Ycwt7y9haRT5fwVwL9zTmBhfV2";
+const ID_ALICE: &str = "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3";
+const ID_OTHER: &str = "4Ss5JMkXAD9Z7cktFEdrqeMuT6jGMF1pVozTyPHZ6zT4";
+const ID_THING: &str = "5bV6jUfhDHCQVA1WfKBUnXUsboJgoKgkzkKcxr3joew5";
+const ID_BOB: &str = "6k78AbasGMFFrhG95Pj6jQbqkVt7FQMhVgemxJovWKR6";
+const ID_BOB_PROJ: &str = "7tj9biW3KRJ7EEWmVUGigHiouCTXhV2dzcyvwma7Cyu7";
+
+/// Alice (`ID_ALICE`) owns `proj` and `other`, Bob (`ID_BOB`) owns `thing`.
+fn deny_world(gw: &Gateway, src: &Path) {
+    gw.stub
+        .add_with(ID_PROJ, ID_ALICE, "alice", "proj", true, src);
+    gw.stub
+        .add_with(ID_OTHER, ID_ALICE, "alice", "other", true, src);
+    gw.stub
+        .add_with(ID_THING, ID_BOB, "bob", "thing", true, src);
+}
+
 #[tokio::test(flavor = "multi_thread")]
+#[allow(clippy::too_many_lines)] // one scenario, start to finish
 async fn the_deny_list_answers_451_deletes_the_mirror_and_reloads_without_a_restart() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("deny.txt");
+    std::fs::write(&file, "# no entries yet\n").unwrap();
     let path = file.clone();
     let gw = start(move |c| {
         c.deny_file = Some(path);
@@ -1452,26 +1507,39 @@ async fn the_deny_list_answers_451_deletes_the_mirror_and_reloads_without_a_rest
     })
     .await;
     let src = source(&gw.tmp);
-    let proj = gw.stub.add("alice", "proj", true, &src);
-    gw.stub.add("alice", "other", true, &src);
-    gw.stub.add("bob", "thing", true, &src);
+    deny_world(&gw, &src);
     assert!(gw.clone("/alice/proj.git", "c1").await.status.success());
     assert!(gw.clone("/alice/other.git", "c2").await.status.success());
-    let proj_dir = gw.tmp.join("data/mirrors/devnet-stub/Rprojalice.git");
+    let mirrors = gw.tmp.join("data/mirrors/devnet-stub");
+    let proj_dir = mirrors.join(format!("{ID_PROJ}.git"));
     assert!(proj_dir.exists());
-
-    // No file: nothing is denied. Written: applied without a restart.
     let deny = gw.state.deny();
-    assert!(deny.is_empty());
+    assert!(deny.is_empty() && deny.loaded());
+
+    // /readyz says how the list stands, and /metrics counts it.
+    let (_, _, body) = gw.get("/readyz").await;
+    let ready: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(ready["deny"]["state"], "ok");
+    assert_eq!(ready["deny"]["entries"], 0);
+
+    // Written: applied without a restart.
     std::fs::write(
         &file,
         "# notice 2026-10-16\nalice/proj # DPNS owner and name\n",
     )
     .unwrap();
     assert!(deny.reload_now());
+    let (_, _, body) = gw.get("/readyz").await;
+    let ready: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(ready["deny"]["entries"], 1);
+    let (_, _, metrics) = gw.get("/metrics").await;
+    assert!(
+        metrics.contains("forge_gateway_deny_entries 1"),
+        "{metrics}"
+    );
 
-    // Every route refuses with 451 and says `dash://` still works; the owner as the
-    // request wrote it is quoted back, and the refusal names the gateway as the blocker.
+    // The git, manifest, badge, feed and share routes refuse with 451 and say `dash://` still
+    // works; the refusal is not cacheable and names the gateway as the blocker.
     for path in [
         "/alice/proj.git/info/refs?service=git-upload-pack",
         "/alice/proj.git/forge-manifest.json",
@@ -1485,6 +1553,7 @@ async fn the_deny_list_answers_451_deletes_the_mirror_and_reloads_without_a_rest
     ] {
         let (s, headers, body) = request(&gw.base, path).await;
         assert_eq!(s, 451, "{path}: {body}");
+        assert_eq!(headers["cache-control"], "no-store", "{path}");
         if path.starts_with("/badge/") {
             assert!(body.contains("not served here"), "{path}: {body}");
         } else {
@@ -1492,25 +1561,35 @@ async fn the_deny_list_answers_451_deletes_the_mirror_and_reloads_without_a_rest
                 body.contains("git clone dash://alice/proj"),
                 "{path}: {body}"
             );
-        }
-        if !path.starts_with("/badge/") {
             assert_eq!(
                 headers["link"], "<https://gw.example>; rel=\"blocked-by\"",
                 "{path}"
             );
         }
     }
+    // `/<owner>/<name>` itself only redirects to the web app, which has its own policy.
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let r = client
+        .get(format!("{}/alice/proj", gw.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 302);
     let out = gw.clone("/alice/proj.git", "c3").await;
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("451"));
 
     // The sweep resolves the listed name to its repository and deletes the mirror and
-    // everything cached about it: the owner's id and the repository id alone would not have
-    // matched `alice/proj` otherwise.
+    // everything cached about it.
     assert_eq!(gw.state.enforce_deny().await, 1);
-    assert!(!gw.mirrors.known(&proj.repo_id));
+    assert!(!gw.mirrors.known(ID_PROJ));
     eventually("the mirror's files are deleted", || !proj_dir.exists()).await;
-    let (s, _, body) = gw.get("/Oalice/proj.git/forge-manifest.json").await;
+    let (s, _, body) = gw
+        .get(&format!("/{ID_ALICE}/proj.git/forge-manifest.json"))
+        .await;
     assert_eq!(s, 451, "named by its owner's id too: {body}");
     // The others are served.
     assert!(gw.clone("/alice/other.git", "c4").await.status.success());
@@ -1518,9 +1597,9 @@ async fn the_deny_list_answers_451_deletes_the_mirror_and_reloads_without_a_rest
     assert_eq!(s, 200);
 
     // By repository id: refused after the name resolved, and the mirror goes with the request.
-    let other_dir = gw.tmp.join("data/mirrors/devnet-stub/Rotheralice.git");
+    let other_dir = mirrors.join(format!("{ID_OTHER}.git"));
     assert!(other_dir.exists());
-    std::fs::write(&file, "Rotheralice\n").unwrap();
+    std::fs::write(&file, format!("{ID_OTHER}\n")).unwrap();
     assert!(deny.reload_now());
     let (s, _, body) = gw.get("/alice/other.git/forge-manifest.json").await;
     assert_eq!(s, 451, "{body}");
@@ -1529,18 +1608,26 @@ async fn the_deny_list_answers_451_deletes_the_mirror_and_reloads_without_a_rest
     assert!(gw.clone("/alice/proj.git", "c5").await.status.success());
 
     // By owner id: every repository of the identity.
-    std::fs::write(&file, "Obob\n").unwrap();
+    std::fs::write(&file, format!("{ID_BOB}\n")).unwrap();
     assert!(deny.reload_now());
     let (s, _, body) = gw.get("/badge/bob/thing/stars.svg").await;
     assert_eq!(s, 451, "{body}");
     let (s, _, _) = gw.get("/badge/alice/proj/stars.svg").await;
     assert_eq!(s, 200);
 
-    // A deleted file or an unreadable one keeps the list; an emptied one lifts it.
+    // A deleted file keeps the list and says it may be out of date; an emptied one lifts it.
     std::fs::remove_file(&file).unwrap();
     assert!(!deny.reload_now());
     let (s, _, _) = gw.get("/badge/bob/thing/stars.svg").await;
     assert_eq!(s, 451);
+    let (_, _, body) = gw.get("/readyz").await;
+    let ready: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(ready["deny"]["state"], "unreadable");
+    let (_, _, metrics) = gw.get("/metrics").await;
+    assert!(
+        metrics.contains("forge_gateway_deny_unreadable 1"),
+        "{metrics}"
+    );
     std::fs::write(&file, "# lifted\n").unwrap();
     assert!(deny.reload_now());
     let (s, _, _) = gw.get("/badge/bob/thing/stars.svg").await;
@@ -1559,24 +1646,119 @@ async fn the_deny_list_answers_451_deletes_the_mirror_and_reloads_without_a_rest
     );
 }
 
+/// M1: a listed `<DPNS name>/<name>` refuses the repository however the request spells it,
+/// before any background resolution has run: case, `.git`, `.dash`, homograph spellings, and
+/// the owner's id.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_listed_name_refuses_every_spelling_before_it_has_been_resolved() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("deny.txt");
+    std::fs::write(&file, "Alice/Proj.git\n").unwrap();
+    let path = file.clone();
+    let gw = start(move |c| c.deny_file = Some(path)).await;
+    let src = source(&gw.tmp);
+    deny_world(&gw, &src);
+    // A repository of the same name that is somebody else's.
+    gw.stub
+        .add_with(ID_BOB_PROJ, ID_BOB, "bob", "proj", true, &src);
+
+    // (No `enforce_deny` has run: nothing is resolved.)
+    for path in [
+        "alice/proj",
+        "ALICE/PROJ",
+        "Alice/Proj.git",
+        "alice.dash/proj",
+        "Alice.DASH/proj",
+        "a1ice/proj",
+        "a11ce/proj",
+    ] {
+        let (s, _, body) = gw
+            .get(&format!("/{path}.git/forge-manifest.json").replace(".git.git", ".git"))
+            .await;
+        assert_eq!(s, 451, "{path}: {body}");
+    }
+    // By the owner's id the name does not match; the server settles the entry first.
+    for path in [
+        format!("/{ID_ALICE}/proj.git/forge-manifest.json"),
+        format!("/{ID_ALICE}/PROJ.git/forge-manifest.json"),
+        format!("/badge/{ID_ALICE}/proj/stars.svg"),
+        format!("/feed/{ID_ALICE}/proj/releases.atom"),
+        format!("/og/{ID_ALICE}/proj"),
+    ] {
+        let (s, _, body) = gw.get(&path).await;
+        assert_eq!(s, 451, "{path}: {body}");
+    }
+    // Another owner's `proj` is served, and so is another name of alice's.
+    let (s, _, body) = gw
+        .get(&format!("/{ID_BOB}/proj.git/forge-manifest.json"))
+        .await;
+    assert_eq!(s, 200, "{body}");
+    let (s, _, body) = gw
+        .get(&format!("/{ID_ALICE}/other.git/forge-manifest.json"))
+        .await;
+    assert_eq!(s, 200, "{body}");
+}
+
+/// M1, failing closed: when the listed name cannot be settled, a repository of that name is
+/// not served.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_repository_that_may_be_a_listed_name_is_not_served_while_it_cannot_be_checked() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("deny.txt");
+    std::fs::write(&file, "alice/proj\n").unwrap();
+    let path = file.clone();
+    let gw = start(move |c| c.deny_file = Some(path)).await;
+    let src = source(&gw.tmp);
+    deny_world(&gw, &src);
+
+    // DPNS names cannot be read (the owner id still can).
+    gw.stub.world().fail_name_reads = true;
+    let (s, _, body) = gw
+        .get(&format!("/{ID_ALICE}/proj.git/forge-manifest.json"))
+        .await;
+    assert_eq!(s, 503, "{body}");
+    assert!(body.contains("deny list"), "{body}");
+    // Another name has nothing to settle.
+    let (s, _, _) = gw
+        .get(&format!("/{ID_ALICE}/other.git/forge-manifest.json"))
+        .await;
+    assert_eq!(s, 200);
+    // Readable again: the entry is settled, and the request is refused for what it is.
+    gw.stub.world().fail_name_reads = false;
+    let (s, _, body) = gw
+        .get(&format!("/{ID_ALICE}/proj.git/forge-manifest.json"))
+        .await;
+    assert_eq!(s, 451, "{body}");
+    // A repository of that name that is not the listed one is served once the entry is
+    // settled (it resolved to alice's).
+    gw.stub
+        .add_with(ID_BOB_PROJ, ID_BOB, "bob", "proj", true, &src);
+    let (s, _, body) = gw
+        .get(&format!("/{ID_BOB}/proj.git/forge-manifest.json"))
+        .await;
+    assert_eq!(s, 200, "{body}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_hidden_repository_gets_the_sites_card_and_is_still_served() {
     let tmp = tempfile::tempdir().unwrap();
     let stub = Stub::default();
     stub.world().time_ms = 1_000;
     let hidden = Hidden::parse(
-        r#"{"networks": {"devnet-stub": {
-            "hiddenRepos": [{ "id": "Rprojalice", "added": "2026-10-16", "note": "x" }],
-            "hiddenIdentities": [{ "id": "Obob", "added": "2026-10-16", "note": "y" }]
-        }}}"#,
+        &format!(
+            r#"{{"networks": {{"devnet-stub": {{
+            "hiddenRepos": [{{ "id": "{ID_PROJ}", "added": "2026-10-16", "note": "x" }}],
+            "hiddenIdentities": [{{ "id": "{ID_BOB}", "added": "2026-10-16", "note": "y" }}]
+        }}}}}}"#
+        ),
         "devnet-stub",
     )
     .unwrap();
     let (base, _, _) = serve_full(tmp.path(), &stub, |_| {}, Some(hidden)).await;
     let src = source(tmp.path());
-    stub.add("alice", "proj", true, &src);
-    stub.add("alice", "shown", true, &src);
-    stub.add("bob", "thing", true, &src);
+    stub.add_with(ID_PROJ, ID_ALICE, "alice", "proj", true, &src);
+    stub.add_with(ID_OTHER, ID_ALICE, "alice", "shown", true, &src);
+    stub.add_with(ID_THING, ID_BOB, "bob", "thing", true, &src);
 
     for path in ["/og/alice/proj", "/og/bob/thing", "/og/alice/proj/issues/7"] {
         let (s, _, body) = request(&base, path).await;
@@ -1616,6 +1798,41 @@ async fn a_hidden_repository_gets_the_sites_card_and_is_still_served() {
     .await
     .unwrap();
     assert!(out.status.success());
+}
+
+/// S3: a repository in backoff is fetched again as soon as its snapshot moves (a push, seen on
+/// a relay wake), and a wake that finds the snapshot that failed changes nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_snapshot_ends_a_backoff_and_the_same_one_does_not() {
+    let gw = start(|c| c.repo_max_bytes = 1 << 20).await;
+    let src = source(&gw.tmp);
+    let big = gw.stub.add("alice", "big", true, &src);
+    gw.stub.world().pack_bytes = 2 << 20;
+    assert!(matches!(
+        gw.refresh(&big).await,
+        Some(Unavailable::TooLarge { .. })
+    ));
+    let slot = gw.mirrors.slot(&big);
+    let reads = gw.stub.world().snapshots;
+
+    // A wake: the snapshot is read, found to be the one that failed, and nothing is fetched.
+    gw.mirrors.trigger_wake(&slot);
+    eventually("the snapshot is looked at", || {
+        gw.stub.world().snapshots == reads + 1
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(!slot.ready());
+    assert!(matches!(
+        gw.refresh(&big).await,
+        Some(Unavailable::TooLarge { .. })
+    ));
+
+    // A push changes the packs: the next wake fetches at once, backoff or not.
+    gw.stub.world().pack_bytes = 100;
+    gw.mirrors.trigger_wake(&slot);
+    eventually("the new snapshot is mirrored", || slot.ready()).await;
+    assert!(!slot.refresh_failing());
 }
 
 #[tokio::test(flavor = "multi_thread")]

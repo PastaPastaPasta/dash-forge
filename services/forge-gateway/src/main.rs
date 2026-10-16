@@ -97,6 +97,12 @@ async fn run() -> Result<()> {
         tracing::warn!("GATEWAY_TRUST_PROXY=cloudflare: the client address (the rate-limit key) is read from CF-Connecting-IP, which any client can forge unless this gateway is reachable only through Cloudflare, a tunnel included. Elsewhere set GATEWAY_TRUST_PROXY=none, or x-forwarded-for behind one proxy you run");
     }
     if let Some(file) = &cfg.deny_file {
+        // A takedown list that cannot be read must not be mistaken for an empty one.
+        anyhow::ensure!(
+            state.deny().loaded(),
+            "GATEWAY_DENY is set to {} but the file cannot be read (a missing or unreadable file, or one over 4 MiB): create it (an empty file is fine) or unset GATEWAY_DENY",
+            file.display()
+        );
         tracing::info!(file = %file.display(), entries = state.deny().len(), "deny list (GATEWAY_DENY)");
     }
     spawn_deny_enforcement(Arc::clone(&state));

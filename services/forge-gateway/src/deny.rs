@@ -6,31 +6,46 @@
 //! The file has one entry per line, `#` starts a comment:
 //!
 //! ```text
-//! 7xK3...repoId                  # a repository, by its id
-//! 5Ey9...ownerId                 # every repository of an identity
-//! alice/project                  # <owner id or DPNS name>/<repository name>
+//! 29d2S7vB453rNYFdR5Ycwt7y9haRT5fwVwL9zTmBhfV2   # a repository id, or an owner identity id
+//! alice/project                                  # <owner id or DPNS name>/<repository name>
 //! ```
 //!
-//! It is read when the gateway starts and again when its modification time or size changes
-//! (checked at most every [`CHECK_EVERY`], by whoever asks), so no restart is needed. A list that
-//! cannot be read or is too large is not applied and the last good one stays: a takedown
-//! never lapses because an editor left the file half-written. To lift every entry, empty the
-//! file (do not delete it).
+//! A bare entry is a base58 Platform id (a repository's, or an owner's: every repository of that
+//! identity). A `<owner>/<name>` entry names its owner by id or by DPNS name; names are compared
+//! the way Platform and forge-core compare them: a repository name lower-cased without `.git`
+//! ([`normalize_repo_name`]), a DPNS name without `.dash` in its homograph-safe form
+//! ([`dpns_normalize`]: `Alice`, `alice.dash` and `a1ice` are one name). A line that is neither is
+//! ignored and logged, so a typo never silently denies nothing.
 //!
-//! A name is matched as the request wrote it, and again as the ids it resolves to
-//! ([`DenyList::denies`]); [`DenyList::resolve_names`] resolves the listed names in the
-//! background, so `alice/project` also refuses the request that names the repository by its
-//! owner's id.
+//! It is read when the gateway starts and again when its modification time or size changes
+//! (checked at most every [`CHECK_EVERY`], by whoever asks, and only once the file has not been
+//! modified for [`SETTLE`], so a half-written file is never applied; write a temporary file in the
+//! same directory and `mv` it over). A list that cannot be read or is too large is not applied
+//! and the last good one stays: a takedown never lapses because an editor left the file
+//! half-written. To lift every entry, empty the file (do not delete it).
+//!
+//! A name entry whose owner is a DPNS name is also resolved to the repository it names
+//! ([`DenyList::resolve_names`], in the background), so a request that names the repository by
+//! its owner's id is refused too. Until that has run, [`DenyList::unsettled_for`] tells the
+//! server which entries it must settle before it serves a repository of that name
+//! ([`DenyList::settle`]), or answer `503`: the list fails closed.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
 
+use forge_core::platform::decode_identifier;
+use forge_core::platform::identity::dpns_normalize;
+use forge_core::rules::v2::normalize_repo_name;
+
 use crate::upstream::{RepoInfo, Upstream};
 
 /// How often the file's modification time is looked at (at most).
 pub const CHECK_EVERY: Duration = Duration::from_secs(5);
+
+/// A file modified more recently than this is not applied yet (it may be half-written).
+pub const SETTLE: Duration = Duration::from_secs(1);
 
 /// The largest deny file read.
 const MAX_FILE_BYTES: u64 = 4 << 20;
@@ -39,33 +54,61 @@ const MAX_FILE_BYTES: u64 = 4 << 20;
 const RESOLVE_PER_PASS: usize = 32;
 
 /// A name that could not be read is tried again after this; one that read as absent (the
-/// repository may not exist yet) after [`ABSENT_RETRY`].
+/// repository may not exist yet) after [`ABSENT_RETRY`]. A request for a repository of the
+/// listed name looks again sooner ([`ABSENT_RECHECK`]).
 const READ_RETRY: Duration = Duration::from_secs(60);
 const ABSENT_RETRY: Duration = Duration::from_secs(600);
+const ABSENT_RECHECK: Duration = Duration::from_secs(30);
+
+/// A listed owner: an identity id (exact), or a DPNS name in its homograph-safe form.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum Owner {
+    Id(String),
+    Name(String),
+}
+
+/// A listed `<owner>/<name>` as it is compared: the owner, and the repository name normalised.
+type Key = (Owner, String);
+
+/// `s` as an owner: a Platform id exactly, else a DPNS label (`.dash` dropped, homograph-safe).
+/// `None` when it is neither.
+fn owner_key(s: &str) -> Option<Owner> {
+    if decode_identifier(s).is_ok() {
+        return Some(Owner::Id(s.to_string()));
+    }
+    let lower = s.to_ascii_lowercase();
+    let label = lower.strip_suffix(".dash").unwrap_or(&lower);
+    let ok = !label.is_empty()
+        && label.len() <= 63
+        && label
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-');
+    ok.then(|| Owner::Name(dpns_normalize(label)))
+}
+
+/// `n` as a repository name: lower-cased, without `.git`, and valid. `None` when it is not.
+fn name_key(n: &str) -> Option<String> {
+    let lower = n.to_ascii_lowercase();
+    normalize_repo_name(lower.strip_suffix(".git").unwrap_or(&lower))
+}
+
+/// A listed name entry, as it is read from Platform.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamedEntry {
+    key: Key,
+    /// The owner as the file wrote it (an id or a DPNS name), for the read.
+    owner: String,
+    /// The repository name, normalised.
+    name: String,
+}
 
 /// A deny list's lines, parsed.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Entries {
     /// Repository ids and owner identity ids.
     ids: HashSet<String>,
-    /// `(owner, name)`: the owner an identity id or a DPNS name.
-    named: Vec<(String, String)>,
-}
-
-/// Whether `s` is an identifier as Platform writes one (base58, 32 to 50 characters) rather
-/// than a DPNS name.
-fn is_identifier(s: &str) -> bool {
-    (32..=50).contains(&s.len())
-        && s.bytes()
-            .all(|b| b.is_ascii_alphanumeric() && !b"0OIl".contains(&b))
-}
-
-fn token_ok(s: &str, max: usize) -> bool {
-    !s.is_empty()
-        && s.len() <= max
-        && !s.starts_with('.')
-        && s.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+    /// `<owner>/<name>` entries by their normalised key, with the owner as written.
+    named: HashMap<Key, String>,
 }
 
 impl Entries {
@@ -79,22 +122,21 @@ impl Entries {
             if line.is_empty() {
                 continue;
             }
-            match line.split_once('/') {
-                None if token_ok(line, 64) => {
-                    out.ids.insert(line.to_string());
-                }
-                Some((owner, name)) if token_ok(owner, 64) => {
-                    let name = name.strip_suffix(".git").unwrap_or(name);
-                    if token_ok(name, 100) {
-                        let entry = (owner.to_string(), name.to_string());
-                        if !out.named.contains(&entry) {
-                            out.named.push(entry);
-                        }
-                    } else {
-                        rejected.push(i + 1);
+            let ok = match line.split_once('/') {
+                None => decode_identifier(line)
+                    .is_ok()
+                    .then(|| out.ids.insert(line.to_string()))
+                    .is_some(),
+                Some((owner, name)) => match (owner_key(owner), name_key(name)) {
+                    (Some(o), Some(n)) => {
+                        out.named.entry((o, n)).or_insert_with(|| owner.to_string());
+                        true
                     }
-                }
-                _ => rejected.push(i + 1),
+                    _ => false,
+                },
+            };
+            if !ok {
+                rejected.push(i + 1);
             }
         }
         (out, rejected)
@@ -110,11 +152,19 @@ impl Entries {
         self.len() == 0
     }
 
-    /// Whether `owner/name`, as a request or a listing wrote them, is listed. A DPNS name
-    /// matches without regard to case; an id and a repository name exactly.
+    /// Whether `owner/name`, as a request or a repository record spells them, is listed.
     fn names(&self, owner: &str, name: &str) -> bool {
-        self.named.iter().any(|(o, n)| {
-            n == name && (o == owner || (!is_identifier(o) && o.eq_ignore_ascii_case(owner)))
+        match (owner_key(owner), name_key(name)) {
+            (Some(o), Some(n)) => self.named.contains_key(&(o, n)),
+            _ => false,
+        }
+    }
+
+    fn named_entries(&self) -> impl Iterator<Item = NamedEntry> + '_ {
+        self.named.iter().map(|(key, owner)| NamedEntry {
+            key: key.clone(),
+            owner: owner.clone(),
+            name: key.1.clone(),
         })
     }
 }
@@ -135,11 +185,13 @@ struct State {
     stamp: Option<(SystemTime, u64)>,
     entries: Arc<Entries>,
     /// Listed names resolved to repository ids.
-    resolved: HashMap<(String, String), Resolution>,
+    resolved: HashMap<Key, Resolution>,
     /// The ids in `resolved`, for the lookup.
     resolved_ids: HashSet<String>,
     generation: u64,
-    /// The file was found missing or unreadable (logged once per episode).
+    /// A good list has been applied.
+    loaded: bool,
+    /// The latest look at the file failed: the list in force may be out of date.
     unreadable: bool,
 }
 
@@ -148,15 +200,22 @@ struct State {
 pub struct DenyList {
     path: Option<PathBuf>,
     every: Duration,
+    settle: Duration,
     state: Mutex<State>,
 }
 
 impl DenyList {
     /// The list in `path` (`None`: nothing is denied), read now and re-read when it changes.
     pub fn new(path: Option<PathBuf>, every: Duration) -> Self {
+        Self::with_settle(path, every, SETTLE)
+    }
+
+    /// [`Self::new`] applying a changed file only once it has not been modified for `settle`.
+    pub fn with_settle(path: Option<PathBuf>, every: Duration, settle: Duration) -> Self {
         let list = Self {
             path,
             every,
+            settle,
             state: Mutex::default(),
         };
         list.reload_now();
@@ -172,11 +231,12 @@ impl DenyList {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Look at the file now, if its stamp moved apply it. `true` when the list changed.
+    /// Look at the file now, whatever its age: if its stamp moved, apply it. `true` when the
+    /// list changed.
     pub fn reload_now(&self) -> bool {
         let mut st = self.state();
         st.checked = Some(Instant::now());
-        self.load(&mut st)
+        self.load(&mut st, true)
     }
 
     /// Look at the file if it was last looked at more than `every` ago.
@@ -184,12 +244,12 @@ impl DenyList {
         let mut st = self.state();
         if self.path.is_some() && st.checked.is_none_or(|t| t.elapsed() >= self.every) {
             st.checked = Some(Instant::now());
-            self.load(&mut st);
+            self.load(&mut st, false);
         }
         st
     }
 
-    fn load(&self, st: &mut State) -> bool {
+    fn load(&self, st: &mut State, force: bool) -> bool {
         let Some(path) = &self.path else {
             return false;
         };
@@ -202,15 +262,18 @@ impl DenyList {
         };
         let meta = match std::fs::metadata(path) {
             Ok(m) => m,
-            // Not there (yet): nothing is denied until it is. The same state after a list was
-            // loaded keeps that list.
+            // Not there: nothing is denied until it is (a gateway refuses to start without
+            // it); the same state after a list was loaded keeps that list.
             Err(e) => return unreadable(st, e.to_string()),
         };
-        let stamp = (
-            meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
-            meta.len(),
-        );
+        let modified = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        let stamp = (modified, meta.len());
         if st.stamp == Some(stamp) {
+            st.unreadable = false;
+            return false;
+        }
+        // Modified a moment ago: perhaps still being written. Look again at the next check.
+        if !force && modified.elapsed().is_ok_and(|age| age < self.settle) {
             return false;
         }
         if meta.len() > MAX_FILE_BYTES {
@@ -226,11 +289,11 @@ impl DenyList {
         }
         tracing::info!(file = %path.display(), entries = entries.len(), "deny list loaded");
         st.unreadable = false;
+        st.loaded = true;
         st.stamp = Some(stamp);
         st.generation += 1;
         // What was resolved stays for the names still listed.
-        st.resolved
-            .retain(|k, _| entries.named.iter().any(|(o, n)| (o, n) == (&k.0, &k.1)));
+        st.resolved.retain(|k, _| entries.named.contains_key(k));
         st.resolved_ids = st
             .resolved
             .values()
@@ -238,6 +301,21 @@ impl DenyList {
             .collect();
         st.entries = Arc::new(entries);
         true
+    }
+
+    /// Whether a file is configured (`GATEWAY_DENY` is set).
+    pub fn configured(&self) -> bool {
+        self.path.is_some()
+    }
+
+    /// Whether a good list has been applied (always `false` without a file).
+    pub fn loaded(&self) -> bool {
+        self.state().loaded
+    }
+
+    /// Whether the latest look at the file failed, so the list in force may be out of date.
+    pub fn unreadable(&self) -> bool {
+        self.state_fresh().unreadable
     }
 
     /// Bumped each time the applied list changes.
@@ -274,50 +352,86 @@ impl DenyList {
                 || e.names(&info.owner_id, &info.name))
     }
 
+    /// The listed names that might stand for `info` but are not resolved yet: entries whose
+    /// owner is a DPNS name and whose repository name is `info`'s, with no read, a failed read,
+    /// or an absent repository when last read (looked at again after [`ABSENT_RECHECK`]).
+    /// The server settles them before it serves `info` ([`Self::settle`]).
+    pub fn unsettled_for(&self, info: &RepoInfo) -> Vec<NamedEntry> {
+        let st = self.state_fresh();
+        if st.entries.named.is_empty() {
+            return Vec::new();
+        }
+        let Some(name) = name_key(&info.name) else {
+            return Vec::new();
+        };
+        st.entries
+            .named_entries()
+            .filter(|e| matches!(e.key.0, Owner::Name(_)) && e.name == name)
+            .filter(|e| match st.resolved.get(&e.key) {
+                None => true,
+                Some(r) if !r.read => true,
+                Some(r) => r.repo_id.is_none() && r.at.elapsed() >= ABSENT_RECHECK,
+            })
+            .collect()
+    }
+
+    /// Read the repositories `entries` stand for. `false` when a read failed: the caller cannot
+    /// tell whether the repository is listed and must not serve it.
+    pub async fn settle(&self, upstream: &dyn Upstream, entries: Vec<NamedEntry>) -> bool {
+        let mut all_read = true;
+        for e in entries {
+            all_read &= self.read_entry(upstream, &e).await;
+        }
+        all_read
+    }
+
+    /// Read one listed name; `true` when the read worked.
+    async fn read_entry(&self, upstream: &dyn Upstream, e: &NamedEntry) -> bool {
+        let resolution = match upstream.resolve(&e.owner, &e.name).await {
+            Ok(info) => Resolution {
+                repo_id: info.map(|i| i.repo_id),
+                at: Instant::now(),
+                read: true,
+            },
+            Err(_) => Resolution {
+                repo_id: None,
+                at: Instant::now(),
+                read: false,
+            },
+        };
+        let read = resolution.read;
+        let mut st = self.state();
+        // The list may have changed while Platform was read.
+        if st.entries.named.contains_key(&e.key) {
+            if let Some(id) = &resolution.repo_id {
+                st.resolved_ids.insert(id.clone());
+            }
+            st.resolved.insert(e.key.clone(), resolution);
+        }
+        read
+    }
+
     /// Read the repositories the listed names stand for, so a request that names one by its
     /// owner's id is refused too. A few names a pass; the ones that could not be read, or are
     /// not there yet, are tried again later. `true` when a name resolved to a new repository.
     pub async fn resolve_names(&self, upstream: &dyn Upstream) -> bool {
-        let due: Vec<(String, String)> = {
+        let due: Vec<NamedEntry> = {
             let st = self.state_fresh();
             st.entries
-                .named
-                .iter()
-                .filter(|k| match st.resolved.get(*k) {
+                .named_entries()
+                .filter(|e| match st.resolved.get(&e.key) {
                     None => true,
                     Some(r) if !r.read => r.at.elapsed() >= READ_RETRY,
                     Some(r) => r.repo_id.is_none() && r.at.elapsed() >= ABSENT_RETRY,
                 })
                 .take(RESOLVE_PER_PASS)
-                .cloned()
                 .collect()
         };
-        let mut found = false;
-        for key in due {
-            let read = upstream.resolve(&key.0, &key.1).await;
-            let resolution = match read {
-                Ok(info) => Resolution {
-                    repo_id: info.map(|i| i.repo_id),
-                    at: Instant::now(),
-                    read: true,
-                },
-                Err(_) => Resolution {
-                    repo_id: None,
-                    at: Instant::now(),
-                    read: false,
-                },
-            };
-            let mut st = self.state();
-            // The list may have changed while Platform was read.
-            if !st.entries.named.contains(&key) {
-                continue;
-            }
-            if let Some(id) = &resolution.repo_id {
-                found |= st.resolved_ids.insert(id.clone());
-            }
-            st.resolved.insert(key, resolution);
+        let before = self.state().resolved_ids.len();
+        for e in &due {
+            self.read_entry(upstream, e).await;
         }
-        found
+        self.state().resolved_ids.len() > before
     }
 }
 
@@ -331,7 +445,10 @@ impl Default for DenyList {
 mod tests {
     use super::*;
 
-    const OWNER_ID: &str = "5Ey9uWQXnJcBq8d2YxgxJmzS6b7tK3mRnLpVfTaHcDeA";
+    /// Valid Platform ids (32 bytes in base58).
+    const OWNER_ID: &str = "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3";
+    const REPO_A: &str = "29d2S7vB453rNYFdR5Ycwt7y9haRT5fwVwL9zTmBhfV2";
+    const REPO_B: &str = "4Ss5JMkXAD9Z7cktFEdrqeMuT6jGMF1pVozTyPHZ6zT4";
 
     fn info(repo: &str, owner: &str, name: &str) -> RepoInfo {
         RepoInfo {
@@ -342,110 +459,201 @@ mod tests {
         }
     }
 
+    /// A list over `text` in a temporary file, applied at once.
+    fn list(text: &str) -> (DenyList, tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("deny");
+        std::fs::write(&file, text).unwrap();
+        (
+            DenyList::with_settle(Some(file.clone()), Duration::ZERO, Duration::ZERO),
+            dir,
+            file,
+        )
+    }
+
     #[test]
     fn lines_parse_into_ids_and_names() {
         let (e, rejected) = Entries::parse(&format!(
-            "# takedowns\n\n  RepoA  # notice 1\n{OWNER_ID}\nalice/proj.git\nalice/proj\nBob/Tool # again\nbad line\n/x\na/b/c\nalice/\n"
+            "# takedowns\n\n  {REPO_A}  # notice 1\n{OWNER_ID}\nalice/proj.git\nalice/proj\nBob/Tool # again\nbad line\n/x\na/b/c\nalice/\nRepoA\n{OWNER_ID}/thing\n"
         ));
         assert_eq!(
             e.ids,
-            HashSet::from(["RepoA".to_string(), OWNER_ID.to_string()])
+            HashSet::from([REPO_A.to_string(), OWNER_ID.to_string()])
         );
-        // `.git` is not part of a name, and a repeated entry is kept once.
+        // `.git` and case are not part of a name, a repeated entry is kept once, and an owner
+        // that is an id is kept exactly.
+        let keys: HashSet<Key> = e.named.keys().cloned().collect();
         assert_eq!(
-            e.named,
-            vec![
-                ("alice".to_string(), "proj".to_string()),
-                ("Bob".to_string(), "Tool".to_string())
-            ]
+            keys,
+            HashSet::from([
+                (Owner::Name(dpns_normalize("alice")), "proj".to_string()),
+                (Owner::Name(dpns_normalize("bob")), "tool".to_string()),
+                (Owner::Id(OWNER_ID.to_string()), "thing".to_string()),
+            ])
         );
-        assert_eq!(rejected, vec![8, 9, 10, 11]);
-        assert_eq!(e.len(), 4);
+        // A bare token that is not an id (S1) is rejected, not stored as one.
+        assert_eq!(rejected, vec![8, 9, 10, 11, 12]);
+        assert_eq!(e.len(), 5);
         assert!(Entries::parse("# nothing\n\n").0.is_empty());
     }
 
     #[test]
-    fn decisions_cover_ids_owners_and_names() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("deny");
-        std::fs::write(&file, format!("RepoA\n{OWNER_ID}\nalice/proj\n")).unwrap();
-        let list = DenyList::new(Some(file.clone()), Duration::ZERO);
-        assert_eq!(list.len(), 3);
+    fn names_match_however_platform_would_spell_them() {
+        let (l, _dir, _f) = list("Alice/Proj.git\n");
+        // Before any resolution has run: case, `.git`, `.dash` and homographs.
+        for (owner, name) in [
+            ("alice", "proj"),
+            ("ALICE", "PROJ"),
+            ("Alice", "proj.git"),
+            ("alice.dash", "proj"),
+            ("Alice.DASH", "Proj.GIT"),
+            ("a1ice", "proj"),
+            ("a11ce", "proj"),
+            ("aLiCe", "proj"),
+        ] {
+            assert!(l.denies_request(owner, name), "{owner}/{name}");
+        }
+        for (owner, name) in [
+            ("alice", "proj2"),
+            ("alice", "other"),
+            ("alic", "proj"),
+            ("mallory", "proj"),
+            ("alice", "-bad"),
+        ] {
+            assert!(!l.denies_request(owner, name), "{owner}/{name}");
+        }
+        // An id owner is exact, and is not folded like a name.
+        let (l, _dir, _f) = list(&format!("{OWNER_ID}/Thing\n"));
+        assert!(l.denies_request(OWNER_ID, "thing"));
+        assert!(l.denies_request(OWNER_ID, "THING.git"));
+        assert!(!l.denies_request(&OWNER_ID.to_ascii_lowercase(), "thing"));
+        // The record's own spelling is compared too: owner id and name from the repository.
+        assert!(l.denies(&info(REPO_A, OWNER_ID, "thing"), "alice", "thing"));
+        assert!(!l.denies(&info(REPO_A, OWNER_ID, "other"), "alice", "other"));
+    }
 
+    #[test]
+    fn decisions_cover_ids_owners_and_names() {
+        let (l, _dir, file) = list(&format!("{REPO_A}\n{OWNER_ID}\nalice/proj\n"));
+        assert_eq!(l.len(), 3);
         // By repository id, and by the owner's id.
-        assert!(list.denies(&info("RepoA", "O1", "x"), "O1", "x"));
-        assert!(list.denies(&info("RepoZ", OWNER_ID, "x"), OWNER_ID, "x"));
-        // By the name a request used, DPNS names without regard to case, repository names
-        // exactly.
-        assert!(list.denies_request("alice", "proj"));
-        assert!(list.denies_request("ALICE", "proj"));
-        assert!(!list.denies_request("alice", "Proj"));
-        assert!(!list.denies_request("alice", "other"));
-        assert!(!list.denies_request("mallory", "proj"));
-        assert!(list.denies(&info("RepoZ", "O2", "proj"), "alice", "proj"));
+        assert!(l.denies(&info(REPO_A, "O1", "x"), "O1", "x"));
+        assert!(l.denies(&info(REPO_B, OWNER_ID, "x"), OWNER_ID, "x"));
+        // By the name a request used.
+        assert!(l.denies(&info(REPO_B, "O2", "proj"), "alice", "proj"));
+        assert!(l.denies_request("ALICE", "proj"));
+        assert!(!l.denies_request("alice", "other"));
+        assert!(!l.denies_request("mallory", "proj"));
         // Anything else is served.
-        assert!(!list.denies(&info("RepoZ", "O2", "x"), "O2", "x"));
+        assert!(!l.denies(&info(REPO_B, "O2", "x"), "O2", "x"));
 
         // `<owner id>/<name>` refuses that repository, whatever the request called its owner.
         std::fs::write(&file, format!("{OWNER_ID}/thing\n")).unwrap();
-        assert!(list.reload_now());
-        assert!(list.denies(&info("RepoZ", OWNER_ID, "thing"), "alice", "thing"));
-        assert!(!list.denies(&info("RepoZ", OWNER_ID, "other"), "alice", "other"));
-        assert!(!list.denies(&info("RepoZ", "O2", "thing"), "bob", "thing"));
+        assert!(l.reload_now());
+        assert!(l.denies(&info(REPO_B, OWNER_ID, "thing"), "alice", "thing"));
+        assert!(!l.denies(&info(REPO_B, OWNER_ID, "other"), "alice", "other"));
+        assert!(!l.denies(&info(REPO_B, "O2", "thing"), "bob", "thing"));
+    }
+
+    #[test]
+    fn a_name_not_resolved_yet_is_unsettled_for_a_repository_of_that_name() {
+        let (l, _dir, _f) = list(&format!("alice/Proj\n{OWNER_ID}/thing\n"));
+        // The owner-id spelling of `alice/proj` is not caught by the names: the server must
+        // settle the entry before it serves a repository called `proj`.
+        let repo = info(REPO_B, "O2", "Proj");
+        assert!(!l.denies(&repo, "O2", "Proj"));
+        let pending = l.unsettled_for(&repo);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(
+            (pending[0].owner.as_str(), pending[0].name.as_str()),
+            ("alice", "proj")
+        );
+        // Another name has nothing pending, and an id-owner entry never does.
+        assert!(l.unsettled_for(&info(REPO_B, "O2", "other")).is_empty());
+        assert!(l.unsettled_for(&info(REPO_B, "O2", "thing")).is_empty());
     }
 
     #[test]
     fn the_file_is_reread_when_it_changes_and_survives_going_wrong() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("deny");
-        // Not there yet: nothing is denied, and creating it applies it.
-        let list = DenyList::new(Some(file.clone()), Duration::ZERO);
-        assert!(list.is_empty());
-        let g0 = list.generation();
-        std::fs::write(&file, "RepoA\n").unwrap();
-        assert!(list.denies(&info("RepoA", "O", "n"), "O", "n"));
-        assert!(list.generation() > g0);
+        // Not there yet: nothing is denied and nothing is loaded; creating it applies it.
+        let l = DenyList::with_settle(Some(file.clone()), Duration::ZERO, Duration::ZERO);
+        assert!(l.is_empty() && l.configured() && !l.loaded() && l.unreadable());
+        let g0 = l.generation();
+        std::fs::write(&file, format!("{REPO_A}\n")).unwrap();
+        assert!(l.denies(&info(REPO_A, "O", "n"), "O", "n"));
+        assert!(l.generation() > g0 && l.loaded() && !l.unreadable());
 
         // Changed: the new list replaces the old one.
-        std::fs::write(&file, "RepoB\nRepoCC\n").unwrap();
-        assert!(!list.denies(&info("RepoA", "O", "n"), "O", "n"));
-        assert!(list.denies(&info("RepoB", "O", "n"), "O", "n"));
+        std::fs::write(&file, format!("{REPO_B}\n{OWNER_ID}\n")).unwrap();
+        assert!(!l.denies(&info(REPO_A, "O", "n"), "O", "n"));
+        assert!(l.denies(&info(REPO_B, "O", "n"), "O", "n"));
 
-        // Deleted or too large: the last good list stays.
+        // Deleted or too large: the last good list stays, and the state says it is stale.
         std::fs::remove_file(&file).unwrap();
-        assert!(list.denies(&info("RepoB", "O", "n"), "O", "n"));
+        assert!(l.denies(&info(REPO_B, "O", "n"), "O", "n"));
+        assert!(l.unreadable());
         std::fs::write(
             &file,
             vec![b'a'; usize::try_from(MAX_FILE_BYTES).unwrap() + 1],
         )
         .unwrap();
-        assert!(list.denies(&info("RepoB", "O", "n"), "O", "n"));
+        assert!(l.denies(&info(REPO_B, "O", "n"), "O", "n"));
 
         // Emptied: nothing is denied.
         std::fs::write(&file, "# lifted\n").unwrap();
-        assert!(list.is_empty());
-        assert!(!list.denies(&info("RepoB", "O", "n"), "O", "n"));
+        assert!(l.is_empty() && !l.unreadable());
+        assert!(!l.denies(&info(REPO_B, "O", "n"), "O", "n"));
     }
 
     #[test]
     fn the_file_is_looked_at_once_per_interval() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("deny");
-        std::fs::write(&file, "RepoA\n").unwrap();
-        let list = DenyList::new(Some(file.clone()), Duration::from_secs(3600));
-        std::fs::write(&file, "RepoBB\n").unwrap();
+        std::fs::write(&file, format!("{REPO_A}\n")).unwrap();
+        let l = DenyList::with_settle(
+            Some(file.clone()),
+            Duration::from_secs(3600),
+            Duration::ZERO,
+        );
+        std::fs::write(&file, format!("{REPO_B}\n\n")).unwrap();
         // Within the interval the edit is not seen yet; `reload_now` sees it.
-        assert!(list.denies(&info("RepoA", "O", "n"), "O", "n"));
-        assert!(list.reload_now());
-        assert!(list.denies(&info("RepoBB", "O", "n"), "O", "n"));
+        assert!(l.denies(&info(REPO_A, "O", "n"), "O", "n"));
+        assert!(l.reload_now());
+        assert!(l.denies(&info(REPO_B, "O", "n"), "O", "n"));
+    }
+
+    #[test]
+    fn a_file_just_written_waits_until_it_has_settled() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("deny");
+        std::fs::write(&file, format!("{REPO_A}\n")).unwrap();
+        // The startup load does not wait; later periodic looks apply a file only once it has
+        // not been modified for the settle time.
+        let l = DenyList::with_settle(
+            Some(file.clone()),
+            Duration::ZERO,
+            Duration::from_secs(3600),
+        );
+        assert!(l.denies(&info(REPO_A, "O", "n"), "O", "n"));
+        std::fs::write(&file, format!("{REPO_B}\n\n")).unwrap();
+        assert!(
+            !l.denies(&info(REPO_B, "O", "n"), "O", "n"),
+            "possibly half-written"
+        );
+        assert!(l.denies(&info(REPO_A, "O", "n"), "O", "n"));
+        // An operator's explicit reload does not wait.
+        assert!(l.reload_now());
+        assert!(l.denies(&info(REPO_B, "O", "n"), "O", "n"));
     }
 
     #[test]
     fn no_file_denies_nothing() {
-        let list = DenyList::none();
-        assert!(list.is_empty());
-        assert!(!list.denies_request("alice", "proj"));
-        assert!(!list.denies(&info("R", "O", "n"), "O", "n"));
-        assert!(!list.reload_now());
+        let l = DenyList::none();
+        assert!(l.is_empty() && !l.configured() && !l.loaded());
+        assert!(!l.denies_request("alice", "proj"));
+        assert!(!l.denies(&info("R", "O", "n"), "O", "n"));
+        assert!(!l.reload_now());
     }
 }

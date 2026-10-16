@@ -361,6 +361,8 @@ impl AppState {
             cache_bytes,
             cache_max_bytes: self.cfg.cache_max_bytes,
             upload_packs_active: self.clone_per_client.active() as u64,
+            deny_entries: self.deny.len() as u64,
+            deny_unreadable: u64::from(self.deny.unreadable()),
         }
     }
 }
@@ -666,6 +668,7 @@ async fn resolve(state: &AppState, owner: &str, name: &str) -> Result<Target, Bo
         state.drop_denied(&info.repo_id);
         return Err(Box::new(denied(state, owner, name)));
     }
+    settle_deny(state, &info, owner, name).await?;
     let listed = state
         .allowed
         .lock()
@@ -684,6 +687,33 @@ async fn resolve(state: &AppState, owner: &str, name: &str) -> Result<Target, Bo
     })
 }
 
+/// A listed `<DPNS name>/<name>` that has not been resolved to its repository yet (the
+/// background pass has not run, or its read failed) could stand for `info`, named by its owner's
+/// id: settle it now, or do not serve what cannot be told from a listed repository.
+async fn settle_deny(
+    state: &AppState,
+    info: &RepoInfo,
+    owner: &str,
+    name: &str,
+) -> Result<(), Box<Response>> {
+    let unsettled = state.deny.unsettled_for(info);
+    if unsettled.is_empty() {
+        return Ok(());
+    }
+    let upstream = state.mirrors.upstream();
+    if !state.deny.settle(upstream.as_ref(), unsettled).await {
+        return Err(Box::new(text(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "this gateway cannot check its deny list against Dash Platform right now; try again shortly, or clone with dash:// (git-remote-dash reads Platform directly)\n",
+        )));
+    }
+    if state.deny.denies(info, owner, name) {
+        state.drop_denied(&info.repo_id);
+        return Err(Box::new(denied(state, owner, name)));
+    }
+    Ok(())
+}
+
 /// `451 Unavailable For Legal Reasons` (RFC 7725): this gateway does not serve `owner/name`.
 /// The operator decided that; Dash Platform still holds the repository, and `dash://` still
 /// reads it.
@@ -693,6 +723,10 @@ fn denied(state: &AppState, owner: &str, name: &str) -> Response {
         StatusCode::UNAVAILABLE_FOR_LEGAL_REASONS,
         format!("{owner}/{name} is not served by this gateway (451 Unavailable For Legal Reasons). That is this gateway's operator's decision, not a change to Dash Platform: the repository is still there, and `git clone dash://{owner}/{name}` (git-remote-dash) still works.\n"),
     );
+    // A cache in front (Cloudflare) must not keep the refusal: lifting the entry has to take
+    // effect at once.
+    r.headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     // RFC 7725 section 3: who blocks.
     let blocked_by = format!("<{}>; rel=\"blocked-by\"", state.cfg.public_base());
     if let Ok(v) = HeaderValue::from_str(&blocked_by) {
@@ -1133,6 +1167,14 @@ async fn badge_route(
             };
             let mut resp = respond(to_rendered(&b), 60);
             *resp.status_mut() = status;
+            if status == StatusCode::UNAVAILABLE_FOR_LEGAL_REASONS {
+                // The refusal's own headers: not cacheable, and who blocks.
+                resp.headers_mut()
+                    .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+                if let Some(link) = r.headers().get(header::LINK) {
+                    resp.headers_mut().insert(header::LINK, link.clone());
+                }
+            }
             return cors(resp);
         }
     };
@@ -1809,6 +1851,18 @@ async fn readyz(State(state): St) -> Response {
         "mirrors": g.mirrors,
         "mirrorsReady": g.mirrors_ready,
         "cacheBytes": g.cache_bytes,
+        // The operator's deny list: `off` (no GATEWAY_DENY), `ok`, or `unreadable` (the latest
+        // look at the file failed, so the list in force may be out of date).
+        "deny": {
+            "state": if !state.deny.configured() {
+                "off"
+            } else if g.deny_unreadable > 0 {
+                "unreadable"
+            } else {
+                "ok"
+            },
+            "entries": g.deny_entries,
+        },
         "version": {
             "crate": VERSION,
             "buildSha": BUILD_SHA.map(str::trim).filter(|s| !s.is_empty() && *s != "unknown"),

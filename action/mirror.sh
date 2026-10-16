@@ -132,7 +132,12 @@ esac
 if [ "$rights" = true ]; then
     cmd+=(--i-have-the-rights)
 elif [ "$INPUT_DRY_RUN" = false ]; then
-    die "$INPUT_GITHUB_REPO does not belong to ${GITHUB_REPOSITORY_OWNER:-the workflow owner}. A mirror publishes its content on Dash Platform permanently: commits (authors' names and emails), and any issues, PRs and comments with their authors' logins. If you may publish it, set 'i-have-the-rights: true'."
+    if [ "${INPUT_I_HAVE_THE_RIGHTS:-}" = false ]; then
+        why="i-have-the-rights is 'false'"
+    else
+        why="$INPUT_GITHUB_REPO does not belong to ${GITHUB_REPOSITORY_OWNER:-the workflow owner}"
+    fi
+    die "$why, so this run will not publish it. A mirror publishes its content on Dash Platform permanently: commits (authors' names and emails), and any issues, PRs and comments with their authors' logins. If you may publish $INPUT_GITHUB_REPO, set 'i-have-the-rights: true' on this step."
 fi
 # The account the licence notice compares the source's owner with.
 [ -z "${GITHUB_REPOSITORY_OWNER:-}" ] || export FORGE_IMPORT_ACCOUNT="$GITHUB_REPOSITORY_OWNER"

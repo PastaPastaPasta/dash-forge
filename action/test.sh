@@ -305,6 +305,7 @@ case="mirror i-have-the-rights false"
 if mirror DASH_FORGE_KEY=dfk1:a:b:1:w INPUT_DRY_RUN=false INPUT_I_HAVE_THE_RIGHTS=false; then
     fail "false still mirrored"
 fi
+expect log "i-have-the-rights is 'false'"
 
 case="mirror empty key"
 if mirror DASH_FORGE_KEY=''; then fail "accepted"; fi

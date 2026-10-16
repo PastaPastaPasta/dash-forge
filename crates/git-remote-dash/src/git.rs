@@ -128,21 +128,45 @@ pub struct Indexed {
     pub unchecked: Vec<String>,
 }
 
-/// The git setting that caps the size of a pack this helper indexes (bytes): `git index-pack`
-/// is then run with `--max-input-size`. Unset: no cap, as for any clone you make yourself. A
-/// service that fetches strangers' repositories (forge-gateway) sets it with `git -c`, which
-/// git forwards to the helper.
+/// The git setting that caps the size of a pack this helper indexes (bytes, or with git's
+/// `k`/`m`/`g` suffixes): `git index-pack` is then run with `--max-input-size`. Unset: no cap,
+/// as for any clone you make yourself. A service that fetches strangers' repositories
+/// (forge-gateway) sets it with `git -c`, which git forwards to the helper.
 pub const MAX_PACK_INPUT_KEY: &str = "dash.maxPackInput";
 
-/// [`MAX_PACK_INPUT_KEY`], as set. A value that is not a byte count is an error, never "no cap".
+/// [`MAX_PACK_INPUT_KEY`], as set, read once per process (a helper serves one git command).
+/// A value that is not a size is an error, never "no cap".
 fn max_pack_input() -> Result<Option<u64>> {
-    let Some(v) = config_get(MAX_PACK_INPUT_KEY) else {
-        return Ok(None);
-    };
-    v.trim()
+    static CAP: std::sync::OnceLock<std::result::Result<Option<u64>, String>> =
+        std::sync::OnceLock::new();
+    CAP.get_or_init(|| read_max_pack_input().map_err(|e| format!("{e:#}")))
+        .clone()
+        .map_err(|e| anyhow!(e))
+}
+
+fn read_max_pack_input() -> Result<Option<u64>> {
+    // `--type=int` lets git parse the suffixes and refuse anything else (exit 128); an unset key
+    // exits 1.
+    let out = git_output(
+        &["config", "--type=int", "--get", MAX_PACK_INPUT_KEY],
+        None,
+        false,
+        None,
+    )?;
+    match out.status.code() {
+        Some(1) => return Ok(None),
+        Some(0) => {}
+        _ => bail!(
+            "{MAX_PACK_INPUT_KEY} must be a size (bytes, or with a k, m or g suffix): {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ),
+    }
+    let value = String::from_utf8_lossy(&out.stdout);
+    value
+        .trim()
         .parse::<u64>()
         .map(Some)
-        .map_err(|_| anyhow!("{MAX_PACK_INPUT_KEY} must be a number of bytes, got {v:?}"))
+        .map_err(|_| anyhow!("{MAX_PACK_INPUT_KEY} must be a non-negative size, got {value:?}"))
 }
 
 /// The arguments of the checked `index-pack` run, with `--max-input-size` when `max_input` caps it.

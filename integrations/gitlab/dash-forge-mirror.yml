@@ -68,7 +68,10 @@ variables:
   # Hard cap in DASH for one code push: a push the helper prices above it is refused
   # before anything is stored or paid.
   FORGE_PUSH_CAP: "0.05"
-  # forge-import on scheduled and manual pipelines.
+  # forge-import on scheduled and manual pipelines. "true" is also your acknowledgement that
+  # you may publish this project permanently on Dash Platform (commits with their authors'
+  # names and emails, and the issues and comments with their authors' names): the job mirrors
+  # the project the pipeline runs in.
   FORGE_IMPORT: "false"
   FORGE_SYNC: code,issues,prs,labels,releases
   # Hard cap in DASH for one forge-import run.
@@ -246,7 +249,7 @@ forge-import:
       forge-import "$CI_PROJECT_PATH" --gitlab-url "$CI_SERVER_URL" "$@" \
         --repo "$FORGE_REPO" --sync "$FORGE_SYNC" \
         --state "$CI_PROJECT_DIR/.forge/state/state.json" --work-dir "$CI_PROJECT_DIR/.forge/work" \
-        --max-spend "$FORGE_COST_CAP" --yes --summary-json "$CI_PROJECT_DIR/.forge/summary.json" || rc=$?
+        --max-spend "$FORGE_COST_CAP" --yes --i-have-the-rights --summary-json "$CI_PROJECT_DIR/.forge/summary.json" || rc=$?
       rm -rf "$CI_PROJECT_DIR/.forge/work"
       # 0 ok, 4 partial (some items skipped or not readable; the next run retries them),
       # 3 the cost cap was reached, 1 error.
