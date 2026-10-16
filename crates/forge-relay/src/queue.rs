@@ -336,8 +336,8 @@ struct Disk {
     dir: PathBuf,
     shared: Arc<WriterShared>,
     thread: Option<std::thread::JoinHandle<()>>,
-    /// Held (locked) for the queue's lifetime; released when the file closes.
-    _lock: std::fs::File,
+    /// Held (locked) for the queue's lifetime; released explicitly in `drop`.
+    lock: std::fs::File,
 }
 
 impl Disk {
@@ -366,6 +366,11 @@ impl Drop for Disk {
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
+        // Unlock explicitly rather than rely on the close: `flock` belongs to the open file
+        // description, so a child spawned while the queue was open keeps the lock until its
+        // exec closes its copy of the descriptor, and a reopen right after would find
+        // the queue still locked.
+        let _ = self.lock.unlock();
     }
 }
 
@@ -652,7 +657,7 @@ impl RetryQueue {
                 dir,
                 shared,
                 thread: Some(thread),
-                _lock: lock,
+                lock,
             }),
             ..Self::in_memory(schedule)
         }
