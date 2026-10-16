@@ -6,73 +6,75 @@
 # of forge-web (evo-sdk, wasm-sdk), forge-contracts/sdk-v2 and tools/mint-identity, and the pnpm
 # minimumReleaseAgeExclude entries. A bump must move all of them together (see the bump steps in
 # Cargo.toml), because clients at different rs-dpp versions can disagree with each other and with
-# the network silently. Run from anywhere; CI runs it in ci.yml.
+# the network silently. Every source must be present: a pin that disappears fails as well as one
+# that differs. Run from anywhere; CI runs it in ci.yml.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 fail=0
-declare -a seen=()
+records=''
 
-# record <file> <version>: one pin, normalised without a leading "v"
-record() {
-  seen+=("${2#v}	$1")
-}
-
-# Cargo.toml: every platform.git dependency's tag, and the PLATFORM_TAG comment the bump note names
-while IFS= read -r tag; do record Cargo.toml "$tag"; done < <(
-  grep -E '^[a-z0-9-]+ = \{ git = "https://github.com/dashpay/platform.git"' Cargo.toml |
-    sed -E 's/.*tag = "([^"]+)".*/\1/')
-n=$(grep -cE '^[a-z0-9-]+ = \{ git = "https://github.com/dashpay/platform.git"' Cargo.toml || true)
-if [[ $n -ne 7 ]]; then
-  echo "Cargo.toml: expected 7 platform.git dependencies, found $n (update this check if that is intended)"
-  fail=1
-fi
-record 'Cargo.toml (PLATFORM_TAG)' "$(sed -nE 's/^# PLATFORM_TAG = (.*)$/\1/p' Cargo.toml)"
-
-while IFS= read -r tag; do record tools/contract-validate/Cargo.toml "$tag"; done < <(
-  grep -E 'git = "https://github.com/dashpay/platform.git"' tools/contract-validate/Cargo.toml |
-    sed -E 's/.*tag = "([^"]+)".*/\1/')
-
-# npm pins
-for spec in \
-  'forge-web/package.json @dashevo/evo-sdk' \
-  'forge-web/package.json @dashevo/wasm-sdk' \
-  'forge-contracts/sdk-v2/package.json @dashevo/evo-sdk' \
-  'tools/mint-identity/package.json @dashevo/evo-sdk'; do
-  read -r f pkg <<<"$spec"
-  v=$(node -e 'const p=require(process.argv[1]); console.log((p.dependencies||{})[process.argv[2]] ?? (p.devDependencies||{})[process.argv[2]] ?? "")' "./$f" "$pkg")
-  if [[ -z $v ]]; then
-    echo "$f: no $pkg dependency"
+# expect <label> <count> <versions, one per line>: the source must yield exactly <count> versions
+expect() {
+  local label=$1 want=$2 got
+  got=$(printf '%s\n' "$3" | grep -c . || true)
+  if [[ $got -ne $want ]]; then
+    echo "$label: expected $want Platform pin(s), found $got"
     fail=1
-  else
-    record "$f ($pkg)" "$v"
   fi
-done
-
-# pnpm's release-age exemption names the same versions
-while IFS= read -r v; do record forge-web/pnpm-workspace.yaml "$v"; done < <(
-  sed -nE "s/^  - '@dashevo\/(evo|wasm)-sdk@([^']+)'$/\2/p" forge-web/pnpm-workspace.yaml)
-
-# Lockfiles: what actually resolved
-lock_platform() { # <Cargo.lock> -> the tag of every platform.git source
-  grep -oE 'git\+https://github.com/dashpay/platform.git\?tag=[^#"]+' "$1" | sed 's/.*tag=//' | sort -u
+  while IFS= read -r v; do
+    [[ -n $v ]] && records+="${v#v}	$label"$'\n'
+  done <<<"$3"
 }
-while IFS= read -r v; do record Cargo.lock "$v"; done < <(lock_platform Cargo.lock)
-while IFS= read -r v; do record tools/contract-validate/Cargo.lock "$v"; done < <(
-  lock_platform tools/contract-validate/Cargo.lock)
-while IFS= read -r v; do record forge-web/pnpm-lock.yaml "$v"; done < <(
-  sed -nE "s/^  '@dashevo\/(evo|wasm)-sdk@([^']+)':$/\2/p" forge-web/pnpm-lock.yaml | sort -u)
-for f in forge-contracts/sdk-v2/package-lock.json tools/mint-identity/package-lock.json; do
-  record "$f" "$(node -e 'console.log(require(process.argv[1]).packages["node_modules/@dashevo/evo-sdk"]?.version ?? "")' "./$f")"
+
+platform_git='git = "https://github.com/dashpay/platform.git"'
+tags() { grep -F "$platform_git" "$1" | sed -E 's/.*tag = "([^"]+)".*/\1/' || true; }
+npm_pin() { # <package.json> <package>
+  node -e 'const p=require(process.argv[1]); console.log((p.dependencies||{})[process.argv[2]] ?? (p.devDependencies||{})[process.argv[2]] ?? "")' "./$1" "$2"
+}
+npm_lock() { # <package-lock.json> <package>
+  node -e 'console.log(require(process.argv[1]).packages["node_modules/"+process.argv[2]]?.version ?? "")' "./$1" "$2"
+}
+cargo_lock() { # <Cargo.lock> <package>: the tag of the platform.git source that package resolved to
+  awk -v pkg="$2" '$0 == "name = \"" pkg "\"" {hit=1; next} /^name = / {hit=0} hit && /^source = / {print; hit=0}' "$1" |
+    sed -nE 's/.*platform\.git\?tag=([^#"]+).*/\1/p'
+}
+pnpm_lock() { # <package>: the resolved versions of exactly that package in pnpm-lock.yaml's packages
+  sed -nE "s/^  '?$(sed 's/[/.]/\\&/g' <<<"$1")@([0-9][^':(]*)'?:\$/\1/p" forge-web/pnpm-lock.yaml | sort -u
+}
+
+expect Cargo.toml 7 "$(tags Cargo.toml)"
+expect 'Cargo.toml (PLATFORM_TAG)' 1 "$(sed -nE 's/^# PLATFORM_TAG = (.*)$/\1/p' Cargo.toml)"
+expect tools/contract-validate/Cargo.toml 1 "$(tags tools/contract-validate/Cargo.toml)"
+expect 'Cargo.lock (dash-sdk)' 1 "$(cargo_lock Cargo.lock dash-sdk)"
+expect 'Cargo.lock (dpp)' 1 "$(cargo_lock Cargo.lock dpp)"
+expect 'tools/contract-validate/Cargo.lock (dpp)' 1 "$(cargo_lock tools/contract-validate/Cargo.lock dpp)"
+# and no other platform crate may resolve to a different tag (each distinct tag counts once)
+for lock in Cargo.lock tools/contract-validate/Cargo.lock; do
+  expect "$lock (every platform.git source)" 1 \
+    "$(grep -oE 'platform\.git\?tag=[^#"]+' "$lock" | sed 's/.*tag=//' | sort -u)"
 done
 
-versions=$(printf '%s\n' "${seen[@]}" | cut -f1 | sort -u)
-if [[ $(printf '%s\n' "$versions" | grep -c .) -ne 1 ]]; then
+for pkg in @dashevo/evo-sdk @dashevo/wasm-sdk; do
+  expect "forge-web/package.json ($pkg)" 1 "$(npm_pin forge-web/package.json "$pkg")"
+  expect "forge-web/pnpm-lock.yaml ($pkg)" 1 "$(pnpm_lock "$pkg")"
+  expect "forge-web/pnpm-workspace.yaml ($pkg)" 1 \
+    "$(sed -nE "s/^  - '$(sed 's/[/.]/\\&/g' <<<"$pkg")@([^']+)'\$/\1/p" forge-web/pnpm-workspace.yaml)"
+done
+for dir in forge-contracts/sdk-v2 tools/mint-identity; do
+  expect "$dir/package.json (@dashevo/evo-sdk)" 1 "$(npm_pin "$dir/package.json" @dashevo/evo-sdk)"
+  for pkg in @dashevo/evo-sdk @dashevo/wasm-sdk; do
+    expect "$dir/package-lock.json ($pkg)" 1 "$(npm_lock "$dir/package-lock.json" "$pkg")"
+  done
+done
+
+versions=$(printf '%s' "$records" | cut -f1 | sort -u)
+if [[ $(printf '%s\n' "$versions" | grep -c .) -gt 1 ]]; then
   echo "Platform SDK pins disagree:"
-  printf '%s\n' "${seen[@]}" | sort | uniq -c | sed 's/^ */  /'
+  printf '%s' "$records" | sort | uniq -c | sed 's/^ */  /'
   fail=1
 fi
 if [[ $fail -ne 0 ]]; then
   exit 1
 fi
-echo "Platform SDK pinned at $versions in ${#seen[@]} places"
+echo "Platform SDK pinned at $versions in $(printf '%s' "$records" | grep -c .) places"
