@@ -1119,7 +1119,9 @@ LIVE_ONLY |= {('refUpdate', 'grantPrefix'), ('review', 'authorNoVerdict')}
 # contract update loosening the bound changes nothing: under the registered schema the bound refuses
 # first, and no create can reach the rule. They are proved by an update on a scratch set (FREEZE-SHEET.md).
 UPDATE_GUARDS = {('transition', 'k_kinds'), ('checkRun', 'rClaim'), ('event', 'rClaim'), ('milestone', 'rClaim'),
-                 ('label', 'rClaim'), ('repoKey', 'mrClaim')}
+                 ('label', 'rClaim'), ('repoKey', 'mrClaim'),
+                 # a build without B1 (variants only): the push class's claims
+                 ('refUpdate', 'rClaim'), ('packManifest', 'rClaim'), ('chunk', 'rClaim')}
 
 
 def uncovered():

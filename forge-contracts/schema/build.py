@@ -1272,6 +1272,14 @@ def build(flags):
             t.setdefault('propertyConstraints', {})['rClaim'] = {"in": ["r", [1, 2]]}
         md['checkRun']['propertyConstraints']['rClaim'] = {"equal": ["r", 1]}
         rk_home['repoKey'].setdefault('propertyConstraints', {})['mrClaim'] = {"in": ["mr", [1, 2, 3]]}
+        # The push class is bounded by B1's own rules (botGrant, botPack, botChunk); a build without B1
+        # bounds each claim by its schema range instead
+        if not up['mainnet_bot_push']:
+            for t in ('refUpdate', 'packManifest') + (() if up['mainnet_chunk_role'] else ('chunk',)):
+                r = cd[t]['properties']['r']
+                vals = list(range(r['minimum'], r['maximum'] + 1))
+                cd[t].setdefault('propertyConstraints', {})['rClaim'] = (
+                    {"equal": ["r", vals[0]]} if len(vals) == 1 else {"in": ["r", vals]})
 
     if up['mainnet_grant_heads']:
         # B1: a prefix grant names branches, never tags or other refs (a release is a member's act,

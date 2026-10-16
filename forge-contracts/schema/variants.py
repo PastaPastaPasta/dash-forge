@@ -37,9 +37,9 @@ R-11, R-12) ride on top: each mixed-visibility row turns on every one of them wh
 meets, and every combination of them is validated with every mixed-visibility item on (the MA2 rows),
 each held to the same room.
 
-The testnet freeze items (build.FREEZE_FLAGS: R-19, the config count, the event byKind index;
-dash-forge-qa design/FREEZE-SHEET.md) are on in every mainnet row, as --mainnet has them; the
-freeze rows validate the --mainnet set with each one left out alone, the fallback the sheet keeps.
+The testnet freeze items (build.FREEZE_FLAGS; dash-forge-qa design/FREEZE-SHEET.md) ride on every
+mainnet and M-A2 row whose items build.NEEDS lets them join, as the M-A2 items do; the freeze rows
+validate the --mainnet set with each one left out alone, the fallback the sheet keeps.
 
 A probe variant to register (and measure) is the same build:
   python3 forge-contracts/schema/build.py --off review_to_author --out /tmp/probe-s2
@@ -68,9 +68,11 @@ MA2_SHORT = {'mainnet_shorthand': 'SH', 'mainnet_author_no_verdict': 'R03', 'mai
              'mainnet_revision_guards': 'R05', 'mainnet_owner_row_stays': 'R08', 'mainnet_keep_verdicts': 'R09',
              'mainnet_public_const': 'R11', 'mainnet_public_stars': 'R12'}
 FZ_SHORT = {'mainnet_chunk_role': 'R19', 'mainnet_config_count': 'CFGN', 'mainnet_event_by_kind': 'EVK',
-            'mainnet_explicit_config': 'CFG'}
-# The mainnet flags that are neither mixed-visibility nor M-A2 items: on in every mainnet row, as --mainnet has them
-MAINNET_OTHERS = [k for k in build.MAINNET_BUILT if k not in build.MV_FLAGS and k not in build.MA2_FLAGS]
+            'mainnet_explicit_config': 'CFG', 'mainnet_pinned_gates': 'PIN', 'mainnet_grant_heads': 'HEADS',
+            'mainnet_keep_checks': 'KEEPCHK'}
+# The mainnet flags that are neither mixed-visibility, M-A2 nor freeze items: on in every mainnet row, as --mainnet has them
+MAINNET_OTHERS = [k for k in build.MAINNET_BUILT
+                  if k not in build.MV_FLAGS and k not in build.MA2_FLAGS and k not in build.FREEZE_FLAGS]
 
 
 def combinations():
@@ -98,17 +100,23 @@ def allowed(on):
     return all(not flags[f] or flags[d] for f, deps in build.NEEDS.items() for d in deps)
 
 
+def riders(on, flags):
+    """The `flags` that may ride on `on`, in order (each one NEEDS allows with those before it)."""
+    out = []
+    for f in flags:
+        if allowed(on + out + [f]):
+            out.append(f)
+    return out
+
+
 def mv_combinations():
-    """(the mixed-visibility items turned on, then every M-A2 item those allow) for every
+    """(the mixed-visibility items turned on, then every M-A2 and freeze item those allow) for every
     combination of MV_FLAGS that NEEDS allows."""
     for bits in itertools.product((False, True), repeat=len(build.MV_FLAGS)):
         on = [f for f, v in zip(build.MV_FLAGS, bits) if v]
         if allowed(on):
-            ma2 = []   # in MA2_FLAGS order, the shorthands (which R-04 needs) first
-            for f in build.MA2_FLAGS:
-                if allowed(on + ma2 + [f]):
-                    ma2.append(f)
-            yield on, ma2
+            ma2 = riders(on, build.MA2_FLAGS)   # in MA2_FLAGS order, the shorthands (which R-04 needs) first
+            yield on, ma2 + riders(on + ma2, build.FREEZE_FLAGS)
 
 
 def ma2_combinations():
@@ -189,7 +197,8 @@ def main():
                           ','.join(MAINNET_OTHERS + on + ma2), True)
               for on, ma2 in mv_combinations()]
         ma2 = [pool.submit(judge, validator, 'MA2+' + ('+'.join(MA2_SHORT[f] for f in on) or 'none'), '',
-                           ','.join(MAINNET_OTHERS + list(build.MV_FLAGS) + on), True)
+                           ','.join(MAINNET_OTHERS + list(build.MV_FLAGS) + on
+                                    + riders(list(build.MV_FLAGS) + on, build.FREEZE_FLAGS)), True)
                for on in ma2_combinations()]
         # The testnet freeze items: the --mainnet set with each of them left out alone
         fz = [pool.submit(judge, validator, f'MN-{FZ_SHORT[f]}', '', ','.join(g for g in build.MAINNET_BUILT if g != f), True)
