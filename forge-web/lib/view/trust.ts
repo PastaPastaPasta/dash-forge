@@ -15,6 +15,10 @@
  *                 check proofs, storage that did not answer).
  *  - `failed`     **Failed**: the check ran and the data was wrong.
  *
+ * Beside the rows sits a disclosure, not a fifth check: for a private repo, or one with
+ * members-only content, {@link PrivacyNote} says what is encrypted and what an outsider still
+ * sees. It carries no state and never moves the headline.
+ *
  * Pure: callers pass the connection, the quorum cross-check outcome, the attested ref and the
  * session's {@link ContentChecks}; no SDK, no React.
  */
@@ -67,6 +71,25 @@ export interface TipLink extends TrustLink {
   readonly heads: readonly RefHead[]
 }
 
+/** What a repo seals: everything (`private`), or only the items marked Members (`members-only`). */
+export type Sealed = 'private' | 'members-only'
+
+/**
+ * The card's disclosure for a repo with encrypted content. `not-deployed`: the network has no Forge
+ * contracts, so there is nothing to encrypt for (the card never claims privacy it cannot back).
+ */
+export interface PrivacyNote {
+  readonly kind: Sealed | 'not-deployed'
+  /** The row title. */
+  readonly title: string
+  /** The word beside it (a label, not a check state). */
+  readonly label: string
+  /** What is encrypted. */
+  readonly detail: string
+  /** What an outsider still sees. */
+  readonly note: string
+}
+
 export interface TrustReport {
   readonly network: Network
   /** How the network is named in copy: its key, so a devnet reads `devnet-moutai`. */
@@ -79,6 +102,8 @@ export interface TrustReport {
   readonly tip: TipLink
   readonly content: TrustLink
   readonly source: TrustLink
+  /** What the repo encrypts and what stays visible; null for a repo with nothing sealed. */
+  readonly privacy: PrivacyNote | null
   /** The card's headline: the most severe row (see {@link overallOf}). */
   readonly overall: TrustState
   /** The collapsed line: `Verified · refs by proof · 214 objects checked this session · from r2.dev`. */
@@ -113,6 +138,10 @@ export interface TrustInputs {
   readonly configuredUris?: readonly string[]
   /** The IPFS gateways this repo's reads try ({@link readGatewaysFor}); default: the reader's. */
   readonly gateways?: readonly string[]
+  /** What this repo encrypts, when it encrypts anything (a private repo, or members-only content on). */
+  readonly sealed?: Sealed
+  /** Whether the Forge contracts exist on this network; default: the network's deployment. */
+  readonly deployed?: boolean
 }
 
 /**
@@ -426,6 +455,41 @@ function deriveSource(input: TrustInputs, content: TrustLink): TrustLink {
   }
 }
 
+/** The visible-metadata sentence, shared by both kinds. Mirrors docs/security/private-repos.md §7. */
+const STILL_VISIBLE = 'Anyone can still see who the members are, how many things were written, when and by whom, and the sizes of what is stored.'
+
+/** The disclosure row, or null when the repo seals nothing and the network can. */
+export function derivePrivacy(network: Network, sealed: Sealed | undefined, deployed: boolean): PrivacyNote | null {
+  if (!deployed) {
+    return {
+      kind: 'not-deployed',
+      title: 'Private content',
+      label: 'Not deployed',
+      detail: `Private and members-only content is not available on Dash ${NETWORKS[network].key}: Dash Forge is not deployed there.`,
+      note: 'Nothing on this network is encrypted, so treat everything you see as public.',
+    }
+  }
+  if (sealed === 'private') {
+    return {
+      kind: 'private',
+      title: 'Private content',
+      label: 'Private',
+      detail: 'Everything in this repo is encrypted for its members: files, issues, pull requests and comments. Only a member\'s key opens them.',
+      note: `${STILL_VISIBLE} The repo's name and description are public. Sizes and timing are visible.`,
+    }
+  }
+  if (sealed === 'members-only') {
+    return {
+      kind: 'members-only',
+      title: 'Members-only content',
+      label: 'Members-only',
+      detail: 'Items marked Members are encrypted for the members. Everything else in this repo is public.',
+      note: `${STILL_VISIBLE} Sizes and timing of the members-only items are visible.`,
+    }
+  }
+  return null
+}
+
 /** The headline: "Checking…" while the chain check runs, else the worst row. */
 function overallOf(chain: TrustLink, rows: readonly TrustLink[]): TrustState {
   if (chain.checking) return 'pending'
@@ -452,6 +516,7 @@ export function deriveTrust(input: TrustInputs): TrustReport {
   const tip = deriveTip(input)
   const content = deriveContent(input.checks)
   const source = deriveSource(input, content)
+  const privacy = derivePrivacy(input.network, input.sealed, input.deployed ?? NETWORKS[input.network].v2 !== null)
   const overall = overallOf(chain, [chain, tip, content, source])
   return {
     network: input.network,
@@ -462,6 +527,7 @@ export function deriveTrust(input: TrustInputs): TrustReport {
     tip,
     content,
     source,
+    privacy,
     overall,
     summary:
       input.connection === 'offline'
