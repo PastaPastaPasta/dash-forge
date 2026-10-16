@@ -31,6 +31,16 @@ export function dgNetworkFlags(config: NetworkConfig): string {
   return config.devnetName !== null ? `--network devnet --devnet-name ${config.devnetName}` : `--network ${config.network}`
 }
 
+/**
+ * The clone line for a repository addressed by its document id (`dash://<repo id>`), with this
+ * build's network in the clone's config like {@link repoCommands}'s: used where no owner or name
+ * is shown (a repo this site does not show).
+ */
+export function cloneByIdCommand(repoId: string, config: NetworkConfig = ACTIVE_NETWORK): string {
+  const pairs = gitNetworkConfig(config)
+  return ['git clone', ...pairs.map(([k, v]) => `-c ${shellWord(`${k}=${v}`)}`), shellWord(`dash://${repoId}`)].join(' ')
+}
+
 export interface RepoCommands {
   /** `dash://owner/name`: the remote URL. */
   readonly remote: string

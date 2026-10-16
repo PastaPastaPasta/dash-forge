@@ -22,6 +22,8 @@ import Link from 'next/link'
 import { Building2, GitBranch, Link2, MapPin, Pencil, UserPlus, Users } from 'lucide-react'
 import type { DiscoveredRepo } from '@/lib/view'
 import { listReposByOwner, resolveDpnsName } from '@/lib/view'
+import { dropHidden, isHiddenIdentity } from '@/lib/view/curation'
+import { HiddenNotice } from '@/components/hidden-notice'
 import { DOC, contractOf, followFirsts, followRelation, isIdentifier, readFollowCounts, resolveOwner } from '@/lib/repo'
 import { writeContractKind } from '@/lib/layout'
 import { readProfile, type Profile } from '@/lib/repo/profile'
@@ -57,6 +59,8 @@ interface ProfileData {
   readonly repos: DiscoveredRepo[]
   /** Repos this identity is a maintainer or writer of (and does not own). */
   readonly memberOf: DiscoveredRepo[]
+  /** This build does not list the identity's repos (docs/hosted-curation.md); none were read. */
+  readonly hiddenRepos: boolean
   /** `null` when the count read failed — shown as unknown, never as a false 0. */
   readonly followers: number | null
   readonly following: number | null
@@ -139,15 +143,18 @@ export function ProfileContent({ identityId: address, byId = false }: { identity
       const forge = NETWORKS[network].v2
       const noCounts = { followers: null, following: null }
       const follows = forge !== null ? readFollowCounts(sdk!, forge, identityId).catch(() => noCounts) : noCounts
+      // A hidden identity's profile details and repos are not read or shown here
+      // (docs/hosted-curation.md); its name, follow counts and id still are.
+      const hiddenRepos = isHiddenIdentity(identityId)
       // An unreadable profile leaves the page as it was before profiles: never an error.
-      const profile = forge !== null ? readProfile(sdk!, forge, identityId).catch(() => 'unread' as const) : null
+      const profile = forge !== null && !hiddenRepos ? readProfile(sdk!, forge, identityId).catch(() => 'unread' as const) : null
       const [name, repos, counts, stored] = await Promise.all([
         resolveDpnsName(sdk!, identityId, network),
-        listReposByOwner(sdk!, identityId, { network, counts: true }),
+        hiddenRepos ? { owned: [], member: [] } : listReposByOwner(sdk!, identityId, { network, counts: true }),
         follows,
         profile,
       ])
-      return { identityId, name, repos: repos.owned, memberOf: repos.member, ...counts, profile: stored }
+      return { identityId, name, repos: dropHidden(repos.owned), memberOf: dropHidden(repos.member), hiddenRepos, ...counts, profile: stored }
     },
     [ready, address, byId, network],
     { enabled: isForgeDeployed() && ready && sdk !== null && address !== '' },
@@ -272,7 +279,7 @@ export function ProfileContent({ identityId: address, byId = false }: { identity
             href={identityHref(identityId, 'followers')}
           />
           <Count value={data.following} one="following" many="following" href={identityHref(identityId, 'following')} />
-          <Count value={data.repos.length} one="repo" />
+          {data.hiddenRepos ? null : <Count value={data.repos.length} one="repo" />}
         </div>
         <ProfileFacts fields={fields} />
         {data.profile !== null && data.profile !== 'unread' ? <ProfileBot identityId={identityId} profile={data.profile} /> : null}
@@ -304,7 +311,9 @@ export function ProfileContent({ identityId: address, byId = false }: { identity
       <div className="min-w-0 space-y-6">
         <div>
           <h2 className="mb-3 text-prose">Repositories</h2>
-          {data.repos.length === 0 ? (
+          {data.hiddenRepos ? (
+            <HiddenNotice what="identity" heading="h3" />
+          ) : data.repos.length === 0 ? (
             <EmptyState icon={GitBranch} title="No repos yet" body="This identity has not created any repos on this network." />
           ) : (
             <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
@@ -315,7 +324,7 @@ export function ProfileContent({ identityId: address, byId = false }: { identity
           )}
         </div>
 
-        {data.memberOf.length > 0 ? (
+        {!data.hiddenRepos && data.memberOf.length > 0 ? (
           <div>
             <h2 className="mb-3 text-prose">Member of</h2>
             <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">

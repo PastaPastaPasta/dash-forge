@@ -23,6 +23,8 @@ export const DOCS = {
   devnetMove: `${GUIDES}/devnet-move.md`,
   /** The normative private-repository design (key model, what is sealed, the threat model). */
   privateDesign: `${REPO_URL}/blob/master/docs/security/private-repos.md`,
+  /** What the hosted site hides from discovery and what that does and does not mean (not protocol moderation). */
+  hostedCuration: `${REPO_URL}/blob/master/docs/hosted-curation.md`,
   /** Every network Forge has run on, and what a devnet reset means. */
   networks: `${REPO_URL}/blob/master/docs/networks.md`,
 } as const

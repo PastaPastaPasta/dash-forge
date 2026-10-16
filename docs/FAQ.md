@@ -25,6 +25,8 @@ What someone *can* do:
 
 Not at the protocol level. Spam and abuse cost the sender fees, which is the only floor. Clients can still choose what to show: an issue's or PR's state counts only changes made by its author or by the repository's members, and anyone can build a client that filters more. No one can delete another person's documents.
 
+The site dashhq hosts does this too: it can leave a repository or identity out of its lists, and show "Not shown on this site" in place of a hidden repository's pages and a hidden identity's repositories and profile details. The data stays on Platform, `dash://` still works, and other builds still show it. [Hosted curation](hosted-curation.md) says how an entry is requested and added.
+
 ## What if forge.dashhq.org disappears?
 
 Nothing is lost. Your repositories live on Platform and in your storage, not on the website.

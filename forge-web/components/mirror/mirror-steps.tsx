@@ -40,11 +40,14 @@ import {
   defaultCostCap,
   dfk1,
   latestCommit,
+  LFS_NOTE,
+  licenseNotice,
   mirrorRepoInput,
   mirrorStorageOf,
   newSecretUrl,
   newWorkflowUrl,
   parseGithubRepo,
+  RIGHTS_ACKNOWLEDGEMENT,
   suggestForgeName,
   workflowRunsUrl,
   workflowSecrets,
@@ -83,6 +86,8 @@ export function GithubStep({ initial, onDone }: { initial: GithubRepo | null; on
   const [checking, setChecking] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [found, setFound] = useState<GithubRepo | null>(initial)
+  // The rights acknowledgement is per repository checked: another check asks again (LEG-10).
+  const [acknowledged, setAcknowledged] = useState(false)
   // `/mirror/?repo=owner/name` (from a GitHub address with no mirror yet) fills the box in, after
   // hydration so the static page and the first client render agree.
   useEffect(() => {
@@ -96,6 +101,7 @@ export function GithubStep({ initial, onDone }: { initial: GithubRepo | null; on
   const check = async (): Promise<void> => {
     setError(null)
     setFound(null)
+    setAcknowledged(false)
     setChecking(true)
     try {
       setFound(await checkGithubRepo(parseGithubRepo(text)))
@@ -138,12 +144,44 @@ export function GithubStep({ initial, onDone }: { initial: GithubRepo | null; on
           {found.description ? <p className="text-dense text-anvil-600 dark:text-anvil-300">{found.description}</p> : null}
           {found.archived ? <Hint tone="caution">Archived on GitHub: the mirror gets what is there now, and nothing new will arrive.</Hint> : null}
           {found.sizeKib === 0 ? <Hint tone="caution">GitHub reports it as empty: the first run has nothing to push until something is pushed there.</Hint> : null}
-          <Button variant="primary" onClick={() => onDone(found)}>
+          <LicenseLine repo={found} />
+          <Hint>{LFS_NOTE}</Hint>
+          <label className="flex items-start gap-2 text-dense" data-testid="mirror-rights">
+            <input type="checkbox" className="mt-0.5 h-4 w-4 accent-forge-700" checked={acknowledged} onChange={(e) => setAcknowledged(e.target.checked)} />
+            <span>{RIGHTS_ACKNOWLEDGEMENT}</span>
+          </label>
+          <Button variant="primary" disabled={!acknowledged} onClick={() => onDone(found)}>
             Mirror {found.owner}/{found.name}
           </Button>
         </div>
       ) : null}
     </>
+  )
+}
+
+/**
+ * The licence GitHub detected, and what to check before copying (LEG-10). The wizard never signs
+ * in to GitHub, so it cannot tell whether the repository is the person's own: it always asks.
+ */
+function LicenseLine({ repo }: { repo: GithubRepo }): JSX.Element {
+  const notice = licenseNotice(repo)
+  return (
+    <div className="space-y-1" data-testid="mirror-license">
+      {notice.unread ? (
+        <Hint tone="caution">This repository was checked before its licence was read. Check on GitHub again to see it.</Hint>
+      ) : notice.label !== null && !notice.warn ? (
+        <p className="text-dense text-anvil-600 dark:text-anvil-300">
+          Licence detected by GitHub: <span className="font-mono">{notice.label}</span>
+        </p>
+      ) : (
+        <Hint tone="caution">
+          {notice.label === null
+            ? 'GitHub detects no licence for this repository. Without one you may have no right to copy it.'
+            : 'GitHub detects a licence it cannot name for this repository. Read it before you copy.'}
+        </Hint>
+      )}
+      <Hint>Mirror a repository you own, or one whose licence lets you copy it. The copy, and every issue and comment in it, is public on Dash Platform and cannot be deleted from it.</Hint>
+    </div>
   )
 }
 

@@ -34,6 +34,7 @@ import {
   type RepoDoc,
 } from '../repo'
 import { normalizeRepoName } from '../rules/v2'
+import { isHiddenRepo } from './curation'
 import { seedFromDomains } from './dpns'
 import { isPublicRef } from './refs'
 import { noteRepoGateways } from './storage-status'
@@ -103,6 +104,19 @@ export interface RepoHome {
    * `null`: their branch keys couldn't be read; `members-branches.ts`).
    */
   readonly membersRefs?: { readonly unreadable: number; readonly noAccess: number | null }
+  /**
+   * This build does not show the repo (`curation.json`, docs/hosted-curation.md): the home holds
+   * only what the `repo` document says, and the repo scaffold shows "Not shown on this site"
+   * instead of any page. Finding the repo by `(owner, name)` reads its page chrome in one request
+   * (counts, refs, config), which is dropped unrendered; no browse index, further timeline or
+   * content is read for it.
+   */
+  readonly hidden?: true
+}
+
+/** The home of a repo this build hides: its document, and nothing of what was read to find it. */
+function hiddenHome(repo: RepoRef, v2: RepoDoc): RepoHome {
+  return { repo, v2, description: '', config: null, defaultBranch: v2.defaultBranch ?? 'main', branches: [], tags: [], starCount: null, backend: backendInfo(null), hidden: true }
 }
 
 /**
@@ -212,6 +226,7 @@ export async function loadRepoHome(
     if (ownerId === null) return null
     const chrome = await readRepoChrome(sdk, forge, ownerId, name, params.network)
     if (chrome === null) return null
+    if (isHiddenRepo(chrome.repo.repoId, chrome.repo.ownerId)) return hiddenHome(chrome.repo, chrome.doc)
     seedFromDomains(params.network, [ownerId], chrome.ownerDomains)
     if (chrome.read !== null) {
       onResolved?.(chrome.repo)
@@ -222,6 +237,7 @@ export async function loadRepoHome(
   }
   const resolved = await resolveAnyRepo(sdk, params)
   if (resolved === null) return null
+  if (isHiddenRepo(resolved.repo.repoId, resolved.repo.ownerId)) return hiddenHome(resolved.repo, resolved.doc)
   return composeHome(sdk, resolved.repo, resolved.doc, onResolved)
 }
 

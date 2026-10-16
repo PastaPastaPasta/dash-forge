@@ -567,7 +567,7 @@ A `CODEOWNERS` file names who owns which paths, in GitHub's format or GitLab's. 
 ```text
 # The last matching line wins.
 *            @alice
-/docs/       @bob 8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB
+/docs/       @bob ExampLeidentityExampLeidentityExampLeidentEx
 *.rs         @carol.dash
 ```
 

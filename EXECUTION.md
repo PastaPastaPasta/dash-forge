@@ -18,7 +18,7 @@ Session-continuity anchor. Docs in `docs/` are the spec; this file tracks build 
 - [x] Fixture identity pool minted (9 roles) → `~/.config/dash-forge/test-identities/` + 9 GitHub secrets
 - [ ] `brew install jj` (deferred to S0.9)
 
-Pool identity IDs: OWNER=2S… see files. TREASURY=8igVywVvFTf8aNoaLfS9KsURfAfdHGb3gEeo3vGupZPV (~0.6 tDASH remaining for top-ups). Fan-out fee fixed to 2000 duffs (node maxtxfee wall).
+Pool identity IDs: OWNER=2S… see files. TREASURY=(see the pool files) (~0.6 tDASH remaining for top-ups). Fan-out fee fixed to 2000 duffs (node maxtxfee wall).
 
 ## Stage 1 — Spikes S0.1–S0.9 → Design Freeze #1 ✅ COMPLETE — GO
 - [x] S0.6 contracts validate, single template 11.7KB (no split); non-byteArray arrays unsupported → JSON/packed

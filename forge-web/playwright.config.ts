@@ -19,7 +19,8 @@ const BASE_URL = `http://127.0.0.1:${PORT}`
 
 /** The devnet the build under test reads. Keep the default in step with e2e/helpers.ts. */
 const DEVNET = process.env.E2E_DEVNET || 'sakura'
-const BUILD_ENV = `NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=${DEVNET} `
+// MIN_STARGAZERS=1: trending.spec's seed has 3, 2 and 1 stargazers, under the hosted floor of 5.
+const BUILD_ENV = `NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=${DEVNET} NEXT_PUBLIC_MIN_STARGAZERS=1 `
 
 export default defineConfig({
   testDir: './e2e',

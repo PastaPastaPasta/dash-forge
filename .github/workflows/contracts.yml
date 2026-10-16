@@ -46,7 +46,7 @@ jobs:
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target-contract-validate
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # The committed schemas and vectors are exactly what forge-contracts/schema/ generates
       - name: Schemas and vectors match their generators
         run: |
@@ -65,7 +65,7 @@ jobs:
       # The toolchain platform v5.0.0-beta.6 pins (its rust-toolchain.toml)
       - name: Install Rust 1.98.1
         run: rustup toolchain install 1.98.1 --profile minimal
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ~/.cargo/registry

@@ -28,6 +28,9 @@ on:
       - 'forge-web/**'
       # Bundled into the web app: lib/deployments.ts imports the per-network contract ids.
       - 'forge-contracts/deployments/**'
+      # Bundled into the web app: lib/view/curation.ts imports the hosted curation list, so an
+      # edit to it deploys (docs/hosted-curation.md).
+      - 'forge-contracts/config/**'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
@@ -47,11 +50,11 @@ jobs:
       run:
         working-directory: forge-web
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: pnpm
@@ -77,6 +80,16 @@ jobs:
             [ -n "${!v}" ] || unset "$v"
           done
           pnpm build
+      # RFC 9116 security.txt: public/.well-known/security.txt must reach the export, and from
+      # there the Pages artifact. actions/upload-pages-artifact@v3 (used below) archives dot
+      # directories; v4 leaves dotfiles out, which would silently drop this file, and v5 and later
+      # keep them only with `include-hidden-files: true`. Moving that action past v3 needs that.
+      - name: Check the export publishes .well-known/security.txt
+        run: |
+          test -s out/.well-known/security.txt || { echo "::error::out/.well-known/security.txt is missing from the export"; exit 1; }
+          grep -q '^Contact: ' out/.well-known/security.txt || { echo "::error::security.txt has no Contact field"; exit 1; }
+          grep -q '^Expires: ' out/.well-known/security.txt || { echo "::error::security.txt has no Expires field"; exit 1; }
+          grep -q '"\.well-known/security\.txt"' out/forge-manifest.json || { echo "::error::forge-manifest.json does not list .well-known/security.txt"; exit 1; }
       # `pnpm build` wrote out/forge-manifest.json: every file of this build with its SHA-256
       # (the previous builds' chunks merged in below are not in it). The attest job signs it.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -95,7 +108,7 @@ jobs:
       # one full page load on its next navigation (Next compares build ids), which keeps the
       # signed-in session.
       - name: Restore the previous builds' static chunks
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: forge-web/.pages-static
           key: pages-static-${{ github.run_id }}-${{ github.run_attempt }}
@@ -163,12 +176,12 @@ jobs:
           mv "$own" .pages-static/gen1
           du -sh out .pages-static
       - name: Save this build's static chunks
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: forge-web/.pages-static
           key: pages-static-${{ github.run_id }}-${{ github.run_attempt }}
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
         with:
           path: forge-web/out
 
@@ -203,7 +216,24 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
+      # The deployed site must serve security.txt (RFC 9116): a dot directory can be lost between
+      # the export and the artifact. Reports only, like the check below: the deploy has happened.
+      - name: Check the live site serves .well-known/security.txt
+        continue-on-error: true
+        env:
+          PAGE_URL: ${{ steps.deployment.outputs.page_url }}
+        run: |
+          url="${PAGE_URL%/}/.well-known/security.txt"
+          if ! body="$(curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors -H 'User-Agent: Mozilla/5.0' "$url")"; then
+            echo "::warning title=security.txt not served::$url did not answer"
+            exit 0
+          fi
+          if printf '%s' "$body" | grep -q '^Contact: '; then
+            echo "$url serves a security.txt"
+          else
+            echo "::warning title=security.txt malformed::$url has no Contact field"
+          fi
       # forge.dashhq.org sits behind Cloudflare, whose Web Analytics injects a beacon script
       # that the page's CSP refuses (a console error on every page; QW3-040). That is a zone
       # setting this repository cannot change, so this only reports it (docs/hosting.md §6).

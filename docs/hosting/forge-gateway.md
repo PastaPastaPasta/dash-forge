@@ -185,6 +185,7 @@ GATEWAY_WAKE_SECRET_FILE=/run/secrets/wake
 | `GET /og/<owner>/<name>.png` | The repository's 1200×630 card. |
 | `GET /og/<owner>/<name>/issues/<n>.png`, `…/pull/<n>.png` | An issue's or pull request's card (the repository's when the item shows nothing). |
 | `GET /healthz`, `/readyz`, `/metrics` | Liveness, readiness (with the gateway's `version`), Prometheus metrics. |
+| `GET /.well-known/security.txt` | How to report a vulnerability ([RFC 9116](https://www.rfc-editor.org/rfc/rfc9116)): the Dash Forge project's contacts and policy, with this gateway's own `Canonical` URL when `GATEWAY_PUBLIC_URL` is https. If you run your own gateway and want reports about your deployment to reach you, answer this path at your proxy. |
 
 `<owner>` is an identity id or a DPNS name. A README badge: `[![checks](https://git-forge.dashhq.org/badge/alice/project/ci.svg)](https://forge.dashhq.org/alice/project)`.
 

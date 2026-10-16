@@ -60,7 +60,7 @@ jobs:
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 2
           persist-credentials: false
@@ -109,7 +109,7 @@ jobs:
         run: |
           echo "::error::the changes job ended '$CHANGES_RESULT'; refusing to skip this required check"
           exit 1
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # The storage fixture (RustFS + kubo + nginx, infra/docker-compose.yml), started
       # first: a fresh runner has no cached images, so this is what proves the pinned images
@@ -145,12 +145,12 @@ jobs:
           rustup show active-toolchain
           cargo --version && cargo clippy --version && cargo fmt --version
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       # forge-relay's `payloads_parse_with_go_github` test parses the relay's webhook bodies with
       # go-github (D-605). Its module is fetched here, with a timeout, so `cargo test` runs the
       # checker offline (GOPROXY=off) and a stalled proxy cannot hang the test step.
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: crates/forge-relay/testdata/webhook-parse/go.mod
           cache-dependency-path: crates/forge-relay/testdata/webhook-parse/go.sum
@@ -223,7 +223,7 @@ jobs:
         run: |
           echo "::error::the changes job ended '$CHANGES_RESULT'; refusing to skip this required check"
           exit 1
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # The Platform monorepo's paths exceed MAX_PATH under the default CARGO_HOME.
       - name: Shorten CARGO_HOME
         run: |
@@ -247,7 +247,7 @@ jobs:
             "$RUNNER_TEMP/rustup-init.exe" -y --default-toolchain none --profile minimal
           fi
           rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: check (Windows cfg paths)
         run: cargo check --locked -p forge-core -p dg -p git-remote-dash --all-targets
       - name: sealed-key unit tests

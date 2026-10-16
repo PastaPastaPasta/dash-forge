@@ -24,6 +24,7 @@ Task-oriented guides for using Dash Forge. For how it is built, see the [documen
 Also:
 
 - [FAQ](../FAQ.md): who hosts it, takedowns, moderation, mainnet timing, private repositories.
+- [Hosted curation](../hosted-curation.md): what dashhq's own site leaves out of its lists, and what that does not change.
 - [Error codes](../errors.md): what every `[Exxx]` means and how to fix it.
 - [Installing](../INSTALL.md) and [building from source](../BUILDING.md).
 - [The Mirror Action's reference](../../action/README.md), [the check action's](../../check-action/README.md) and [running a relay](../../crates/forge-relay/README.md).

@@ -109,7 +109,7 @@ A document query whose where-clauses fit none of the type's indexes is E201 too:
 
 **Invalid repository reference or `dash://` URL.** `dg` takes `owner/name`, where `owner` is the owner's base58 identity id or DPNS username (`alice`, `@alice`, `alice.dash`), a bare `name` for your own repositories, or the repository's id. The helper takes `dash://<owner>/<repo>` (identity id or DPNS username) or `dash://<repo id>`. A reference with more than one `/` (`alice/b/c`) is E203 too.
 
-**What to do:** use `owner/name`, e.g. `dg repo view alice/project` or `dg repo view 8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB/project`.
+**What to do:** use `owner/name`, e.g. `dg repo view alice/project` or `dg repo view ExampLeidentityExampLeidentityExampLeidentEx/project`.
 
 ## E204
 

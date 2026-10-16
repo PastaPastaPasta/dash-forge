@@ -120,6 +120,35 @@ async function checkHead(repo: GithubName, oid: string, fetchImpl: typeof fetch)
 const checked = new Map<string, Promise<MirrorCheck>>()
 
 /**
+ * The claims this session saw the source list (`backlink.kind === 'listed'`), by source label and
+ * repo id. A claim is verified only by this: the repo's own description proves nothing. The
+ * lists and bylines of a mirror say "Says it mirrors" / "unverified" until then (ABU-05), and
+ * `/github.com/<owner>/<repo>` opens a mirror by itself only when it is in this set or the
+ * showcase vouches for it (ABU-04). Kept for the session, like the checks.
+ */
+const verified = new Set<string>()
+const verifiedListeners = new Set<() => void>()
+const verifiedKey = (label: string, repoId: string): string => `${label.toLowerCase()}:${repoId}`
+
+/** Whether this session saw `label`'s back-link file list `repoId`. */
+export function isMirrorVerified(label: string | null, repoId: string): boolean {
+  return label !== null && verified.has(verifiedKey(label, repoId))
+}
+
+/** Tell `listener` when a claim becomes verified (for `useSyncExternalStore`); returns the unsubscribe. */
+export function subscribeMirrorVerified(listener: () => void): () => void {
+  verifiedListeners.add(listener)
+  return () => void verifiedListeners.delete(listener)
+}
+
+function noteVerified(label: string, repoId: string): void {
+  const key = verifiedKey(label, repoId)
+  if (verified.has(key)) return
+  verified.add(key)
+  for (const l of verifiedListeners) l()
+}
+
+/**
  * Check `repoId`'s claim to mirror `source`: the back-link file and, when `head` is given, the
  * source's default branch against this mirror's default branch `head`. Kept for the session per
  * repo and head; a failed answer is not kept.
@@ -141,6 +170,7 @@ export function checkMirrorClaim(
     checkedAt: Date.now(),
   }))
   checked.set(key, run)
+  void run.then((r) => (r.backlink.kind === 'listed' ? noteVerified(source.label, repoId) : undefined), () => undefined)
   // A failed check is asked again next time; a definite answer is kept for the session.
   const forget = (): void => {
     if (checked.get(key) === run) checked.delete(key)
@@ -157,4 +187,5 @@ export function checkedClaim(source: MirrorSource, repoId: string, head: { reado
 /** Forget every answer (tests). */
 export function clearMirrorChecks(): void {
   checked.clear()
+  verified.clear()
 }

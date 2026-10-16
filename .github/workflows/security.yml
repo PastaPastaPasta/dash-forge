@@ -1,0 +1,133 @@
+name: Security
+
+# Supply-chain and secret scanning. Three cheap jobs, none of which builds the workspace:
+#   cargo-deny  RustSec advisories, licences and git sources for the Rust dependency tree (deny.toml)
+#   pnpm-audit  advisories in the production dependencies of forge-web (ignore list:
+#               forge-web/audit-ignore.txt) and the npm packages
+#   gitleaks    secrets in the pushed commits and in the tree (.gitleaks.toml, .gitleaksignore)
+#
+# They are not part of the required checks. The advisory databases move on their own, so a
+# weekly run reports a new advisory even when nobody pushed.
+on:
+  pull_request:
+  push:
+    branches: [master]
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  # Release binaries are downloaded and checked against these sha256 sums, so a replaced
+  # release asset fails the job. Update version and sum together.
+  CARGO_DENY_VERSION: 0.20.2
+  CARGO_DENY_SHA256: 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
+  GITLEAKS_VERSION: 8.30.1
+  GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+
+jobs:
+  cargo-deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install cargo-deny
+        run: |
+          set -euo pipefail
+          base="cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl"
+          curl -fsSL -o "$RUNNER_TEMP/cargo-deny.tgz" \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/${base}.tar.gz"
+          echo "${CARGO_DENY_SHA256}  $RUNNER_TEMP/cargo-deny.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/cargo-deny.tgz" -C "$RUNNER_TEMP" "${base}/cargo-deny"
+          install -m 0755 "$RUNNER_TEMP/${base}/cargo-deny" /usr/local/bin/cargo-deny
+          cargo-deny --version
+      # advisories + licenses + sources (+ bans, which deny.toml keeps permissive)
+      - run: cargo-deny --locked check
+
+  pnpm-audit:
+    name: audit (forge-web, npm packages)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 11
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      # forge-web ships to users; high and critical advisories fail unless listed, with a
+      # reason, in forge-web/audit-ignore.txt. Reads pnpm-lock.yaml, so no install is needed.
+      - name: pnpm audit --prod (forge-web)
+        run: node tools/audit/pnpm-audit.mjs forge-web forge-web/audit-ignore.txt
+      # The npm packages are developer and CI tooling; none has an ignore list.
+      - name: npm audit --omit=dev (tools/mint-identity)
+        working-directory: tools/mint-identity
+        run: npm audit --omit=dev --audit-level=high
+      - name: npm audit --omit=dev (forge-contracts/sdk-v2)
+        working-directory: forge-contracts/sdk-v2
+        run: npm audit --omit=dev --audit-level=high
+
+  gitleaks:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The commit range below needs the history.
+          fetch-depth: 0
+          persist-credentials: false
+      # gitleaks-action needs a paid licence for organisation repositories, so the binary is
+      # installed from the project's release and checked against a pinned sha256.
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/gitleaks.tgz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP" gitleaks
+          install -m 0755 "$RUNNER_TEMP/gitleaks" /usr/local/bin/gitleaks
+          gitleaks version
+      # The tree as checked out: must be clean on every run.
+      - name: Scan the tree
+        run: gitleaks dir . --config .gitleaks.toml --redact --no-banner
+      # The commits being added: the PR's own commits, or the pushed range. A scheduled or
+      # manual run scans the whole history; findings in old commits are listed by fingerprint
+      # in .gitleaksignore.
+      - name: Scan the commits
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          range=""
+          case "$EVENT" in
+            pull_request) range="${PR_BASE}..${PR_HEAD}" ;;
+            push)
+              # A new branch has an all-zero "before"; scan the full history then.
+              if [ -n "$PUSH_BEFORE" ] && [ "$PUSH_BEFORE" != "0000000000000000000000000000000000000000" ]; then
+                range="${PUSH_BEFORE}..${PUSH_AFTER}"
+              fi ;;
+          esac
+          if [ -n "$range" ]; then
+            echo "scanning commits $range"
+            gitleaks git . --config .gitleaks.toml --redact --no-banner --log-opts="$range"
+          else
+            echo "scanning the full history"
+            gitleaks git . --config .gitleaks.toml --redact --no-banner
+          fi
