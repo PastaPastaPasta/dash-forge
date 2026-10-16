@@ -104,30 +104,30 @@ describe('base58', () => {
 })
 
 // ---------------------------------------------------------------------------
-// WIF (the DEPLOYER identity's real testnet key)
+// WIF (throwaway test-only keys, generated for these tests; they never held funds)
 // ---------------------------------------------------------------------------
 
-const DEPLOYER_HIGH_WIF = 'cUfRdreVMr1oWoeNW5jCDU4fSjaiZnUX1ZqteaQkZ4Jf9wPSwSxw'
-const DEPLOYER_HIGH_HEX = 'd34abcbaad8998865a852434f9b4270d7eaed560c9aad4411b6ac3ed37bfd540'
+const TEST_HIGH_WIF = 'cScuWdGax2opJ7A2CFMHirSmbs7jxgcyPegysz5JnN9zNhK9dK45'
+const TEST_HIGH_HEX = '9652323c84b0959fdea62053d999201e1882fbc59e5cb538d082759b06285fb9'
 
 describe('WIF parsing', () => {
   it('recognizes and decodes a testnet WIF', () => {
-    expect(isLikelyWif(DEPLOYER_HIGH_WIF)).toBe(true)
-    const decoded = decodeWif(DEPLOYER_HIGH_WIF)
+    expect(isLikelyWif(TEST_HIGH_WIF)).toBe(true)
+    const decoded = decodeWif(TEST_HIGH_WIF)
     expect(decoded.compressed).toBe(true)
     expect(decoded.prefix).toBe(0xef)
     expect(Array.from(decoded.privateKey)).toEqual(
-      Array.from(Buffer.from(DEPLOYER_HIGH_HEX, 'hex')),
+      Array.from(Buffer.from(TEST_HIGH_HEX, 'hex')),
     )
   })
 
   it('detects the network from the WIF prefix', () => {
-    expect(parsePrivateKey(DEPLOYER_HIGH_WIF).network).toBe('testnet')
+    expect(parsePrivateKey(TEST_HIGH_WIF).network).toBe('testnet')
   })
 
   it('normalizes hex to the matching WIF', () => {
-    expect(normalizeToWif(DEPLOYER_HIGH_HEX, 'testnet')).toBe(DEPLOYER_HIGH_WIF)
-    expect(normalizeToWif(DEPLOYER_HIGH_WIF, 'testnet')).toBe(DEPLOYER_HIGH_WIF)
+    expect(normalizeToWif(TEST_HIGH_HEX, 'testnet')).toBe(TEST_HIGH_WIF)
+    expect(normalizeToWif(TEST_HIGH_WIF, 'testnet')).toBe(TEST_HIGH_WIF)
   })
 
   it('rejects garbage', () => {
@@ -142,21 +142,21 @@ describe('WIF parsing', () => {
 describe('identity-file parsing', () => {
   const file = {
     network: 'testnet',
-    identityId: '8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB',
+    identityId: 'ExampLeidentityExampLeidentityExampLeidentEx',
     identityKeys: [
-      { id: 0, purpose: 'AUTHENTICATION', securityLevel: 'MASTER', keyType: 'ECDSA_SECP256K1', privateKeyWif: 'cR9HHQJuTYuziTEeUoQUA99Wqpd9MKxxBkZ84Mcj7Vho7gD9aP9j' },
-      { id: 1, purpose: 'AUTHENTICATION', securityLevel: 'HIGH', keyType: 'ECDSA_SECP256K1', privateKeyWif: DEPLOYER_HIGH_WIF },
-      { id: 2, purpose: 'AUTHENTICATION', securityLevel: 'CRITICAL', keyType: 'ECDSA_SECP256K1', privateKeyWif: 'cVviZkrc8ExqmH7bdihKmr2mceberJZ4Ab9szNGE8myfUdkoGjgT' },
-      { id: 4, purpose: 'ENCRYPTION', securityLevel: 'MEDIUM', keyType: 'ECDSA_SECP256K1', privateKeyWif: 'cPwWp6P9XrBaaP65qPwGsErRmYZ1bxL7H8CFJT5GY1NbvArG7T7T' },
+      { id: 0, purpose: 'AUTHENTICATION', securityLevel: 'MASTER', keyType: 'ECDSA_SECP256K1', privateKeyWif: 'cQw3RkFcQYVEdMe1hVeKvvk6ngPerPDWvb97fhXyGVVPcX2tz1eV' },
+      { id: 1, purpose: 'AUTHENTICATION', securityLevel: 'HIGH', keyType: 'ECDSA_SECP256K1', privateKeyWif: TEST_HIGH_WIF },
+      { id: 2, purpose: 'AUTHENTICATION', securityLevel: 'CRITICAL', keyType: 'ECDSA_SECP256K1', privateKeyWif: 'cPKiTpJsoQnvEh6MXFPgcf22fcnsWoDENaAMMFtvSMngqMBuaAwX' },
+      { id: 4, purpose: 'ENCRYPTION', securityLevel: 'MEDIUM', keyType: 'ECDSA_SECP256K1', privateKeyWif: 'cP7Yi3ghoSCbpQZosJMiHj6HUz5SSPNboSNBRh1a5RnGjZc9nggN' },
     ],
   }
 
   it('picks the CRITICAL auth key (the highest privilege a document write accepts)', () => {
     const parsed = parseIdentityFile(file)
-    expect(parsed.identityId).toBe('8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB')
+    expect(parsed.identityId).toBe('ExampLeidentityExampLeidentityExampLeidentEx')
     expect(parsed.network).toBe('testnet')
     expect(parsed.securityLevel).toBe('CRITICAL')
-    expect(parsed.signingKeyWif).toBe('cVviZkrc8ExqmH7bdihKmr2mceberJZ4Ab9szNGE8myfUdkoGjgT')
+    expect(parsed.signingKeyWif).toBe('cPKiTpJsoQnvEh6MXFPgcf22fcnsWoDENaAMMFtvSMngqMBuaAwX')
   })
 
   it('falls back to HIGH when no CRITICAL key is present', () => {
@@ -175,19 +175,19 @@ describe('identity-file parsing', () => {
     const hash160Only = {
       ...file,
       identityKeys: [
-        { id: 1, purpose: 'AUTHENTICATION', securityLevel: 'HIGH', keyType: 'ECDSA_HASH160', privateKeyWif: DEPLOYER_HIGH_WIF },
+        { id: 1, purpose: 'AUTHENTICATION', securityLevel: 'HIGH', keyType: 'ECDSA_HASH160', privateKeyWif: TEST_HIGH_WIF },
       ],
     }
     const parsed = parseIdentityFile(hash160Only)
     expect(parsed.securityLevel).toBe('HIGH')
-    expect(parsed.signingKeyWif).toBe(DEPLOYER_HIGH_WIF)
+    expect(parsed.signingKeyWif).toBe(TEST_HIGH_WIF)
   })
 
   it('rejects non-secp256k1 key types (BLS / EdDSA cannot sign with a WIF)', () => {
     const blsOnly = {
       ...file,
       identityKeys: [
-        { id: 1, purpose: 'AUTHENTICATION', securityLevel: 'HIGH', keyType: 'BLS12_381', privateKeyWif: DEPLOYER_HIGH_WIF },
+        { id: 1, purpose: 'AUTHENTICATION', securityLevel: 'HIGH', keyType: 'BLS12_381', privateKeyWif: TEST_HIGH_WIF },
       ],
     }
     expect(() => parseIdentityFile(blsOnly)).toThrow(/no usable AUTHENTICATION key/)

@@ -83,7 +83,7 @@ fn invalid_ref(input: &str, why: &str) -> anyhow::Error {
         format!("invalid repository reference {input:?}"),
     )
     .cause(why)
-    .fix("use `<owner>/<name>` with the owner's identity id or DPNS name, e.g. `alice/project`, `@alice/project` or `8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB/project`, a bare `<name>` for your own repositories, or the repo's id")
+    .fix("use `<owner>/<name>` with the owner's identity id or DPNS name, e.g. `alice/project`, `@alice/project` or `ExampLeidentityExampLeidentityExampLeidentEx/project`, a bare `<name>` for your own repositories, or the repo's id")
     .into()
 }
 
@@ -618,8 +618,8 @@ pub async fn hider_names<'a>(
 mod tests {
     use super::{document_id_arg, looks_like_identity_id, RepoRef};
 
-    // A real testnet identity id shape (DEPLOYER).
-    const ID: &str = "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB";
+    // A well-formed example identity id (44 base58 characters, 32 bytes).
+    const ID: &str = "ExampLeidentityExampLeidentityExampLeidentEx";
 
     /// QW2-076: a number where a comment id goes is E201 naming the argument, not E204.
     #[test]

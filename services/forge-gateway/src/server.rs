@@ -11,6 +11,7 @@
 //! | `GET /og/<owner>/<name>[/<short path>]` | share link: preview tags, then the web app |
 //! | `GET /og/<owner>/<name>.png`, `/og/<owner>/<name>/<issues\|pull>/<n>.png` | card images |
 //! | `GET /healthz`, `/readyz`, `/metrics` | liveness, readiness, Prometheus |
+//! | `GET /.well-known/security.txt` | how to report a vulnerability (RFC 9116) |
 //!
 //! `<owner>` is an identity id or a DPNS name, so `badge`, `feed`, `og`, `healthz`, `readyz`
 //! and `metrics` cannot be served as owners (DPNS names that equal them are reachable by id).
@@ -223,6 +224,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/healthz", get(|| async { "ok\n" }))
         .route("/readyz", get(readyz))
         .route("/metrics", get(metrics))
+        .route("/.well-known/security.txt", get(security_txt))
         .route("/badge/{owner}/{name}/{file}", get(badge_route))
         .route("/feed/{owner}/{name}/{file}", get(feed_route))
         .route("/og/{*path}", get(og_route))
@@ -1484,6 +1486,41 @@ async fn index(State(state): St) -> Response {
 </body></html>"#
     );
     ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], html).into_response()
+}
+
+/// Where to report a vulnerability, in the RFC 9116 `security.txt` format. The same fields as
+/// `forge-web/public/.well-known/security.txt` (a test keeps them equal); `Canonical` names this
+/// gateway's own public URL, and is left out when none is configured.
+async fn security_txt(State(state): St) -> Response {
+    Metrics::inc(&state.metrics.requests_other);
+    let body = security_txt_body(state.cfg.public_url.as_deref());
+    (
+        [
+            (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+            (header::CACHE_CONTROL, "public, max-age=3600"),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+/// The `security.txt` text; `public_url` is this gateway's `GATEWAY_PUBLIC_URL`.
+pub fn security_txt_body(public_url: Option<&str>) -> String {
+    let mut out = String::from(
+        "Contact: mailto:security@dashhq.org\n\
+         Contact: https://github.com/PastaPastaPasta/dash-forge/security/advisories/new\n\
+         Expires: 2027-10-16T00:00:00.000Z\n\
+         Preferred-Languages: en\n",
+    );
+    if let Some(u) = public_url.filter(|u| u.starts_with("https://")) {
+        let _ = writeln!(
+            out,
+            "Canonical: {}/.well-known/security.txt",
+            u.trim_end_matches('/')
+        );
+    }
+    out.push_str("Policy: https://github.com/PastaPastaPasta/dash-forge/blob/master/SECURITY.md\n");
+    out
 }
 
 async fn readyz(State(state): St) -> Response {

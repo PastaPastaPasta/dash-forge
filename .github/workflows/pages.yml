@@ -77,6 +77,16 @@ jobs:
             [ -n "${!v}" ] || unset "$v"
           done
           pnpm build
+      # RFC 9116 security.txt: public/.well-known/security.txt must reach the export, and from
+      # there the Pages artifact. actions/upload-pages-artifact@v3 (used below) archives dot
+      # directories; v4 leaves dotfiles out, which would silently drop this file, and v5 and later
+      # keep them only with `include-hidden-files: true`. Moving that action past v3 needs that.
+      - name: Check the export publishes .well-known/security.txt
+        run: |
+          test -s out/.well-known/security.txt || { echo "::error::out/.well-known/security.txt is missing from the export"; exit 1; }
+          grep -q '^Contact: ' out/.well-known/security.txt || { echo "::error::security.txt has no Contact field"; exit 1; }
+          grep -q '^Expires: ' out/.well-known/security.txt || { echo "::error::security.txt has no Expires field"; exit 1; }
+          grep -q '"\.well-known/security\.txt"' out/forge-manifest.json || { echo "::error::forge-manifest.json does not list .well-known/security.txt"; exit 1; }
       # `pnpm build` wrote out/forge-manifest.json: every file of this build with its SHA-256
       # (the previous builds' chunks merged in below are not in it). The attest job signs it.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -204,6 +214,23 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
+      # The deployed site must serve security.txt (RFC 9116): a dot directory can be lost between
+      # the export and the artifact. Reports only, like the check below: the deploy has happened.
+      - name: Check the live site serves .well-known/security.txt
+        continue-on-error: true
+        env:
+          PAGE_URL: ${{ steps.deployment.outputs.page_url }}
+        run: |
+          url="${PAGE_URL%/}/.well-known/security.txt"
+          if ! body="$(curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors -H 'User-Agent: Mozilla/5.0' "$url")"; then
+            echo "::warning title=security.txt not served::$url did not answer"
+            exit 0
+          fi
+          if printf '%s' "$body" | grep -q '^Contact: '; then
+            echo "$url serves a security.txt"
+          else
+            echo "::warning title=security.txt malformed::$url has no Contact field"
+          fi
       # forge.dashhq.org sits behind Cloudflare, whose Web Analytics injects a beacon script
       # that the page's CSP refuses (a console error on every page; QW3-040). That is a zone
       # setting this repository cannot change, so this only reports it (docs/hosting.md §6).

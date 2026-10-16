@@ -461,6 +461,13 @@ mod tests {
             file_url(&root, "a b%#?.txt").unwrap().as_str(),
             "https://forge.example/sub/a%20b%25%23%3F.txt"
         );
+        // A dot directory (the web app publishes .well-known/security.txt) is a plain path.
+        assert_eq!(
+            file_url(&root, ".well-known/security.txt")
+                .unwrap()
+                .as_str(),
+            "https://forge.example/sub/.well-known/security.txt"
+        );
         assert!(site_root("ftp://x").is_err());
     }
 

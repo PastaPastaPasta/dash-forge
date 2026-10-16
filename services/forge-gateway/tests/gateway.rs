@@ -1104,6 +1104,42 @@ async fn share_links_carry_their_path_to_the_web_app_and_nothing_else() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn security_txt_is_served_as_plain_text_and_matches_the_web_app() {
+    // Without a public URL there is no Canonical line (a gateway does not guess its own name).
+    let gw = start(|_| {}).await;
+    let (s, ct, body) = gw.get("/.well-known/security.txt").await;
+    assert_eq!(s, 200);
+    assert_eq!(ct, "text/plain; charset=utf-8");
+    assert!(body.contains("Contact: mailto:security@dashhq.org\n"));
+    assert!(body.contains(
+        "Contact: https://github.com/PastaPastaPasta/dash-forge/security/advisories/new\n"
+    ));
+    assert!(body.contains("\nExpires: "));
+    assert!(!body.contains("Canonical:"));
+
+    // With one, Canonical names it. Every other line is the web app's file, word for word.
+    let gw = start(|c| c.public_url = Some("https://git-forge.dashhq.org/".into())).await;
+    let (_, _, body) = gw.get("/.well-known/security.txt").await;
+    assert!(body.contains("\nCanonical: https://git-forge.dashhq.org/.well-known/security.txt\n"));
+    let web = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../forge-web/public/.well-known/security.txt"),
+    )
+    .unwrap();
+    let keep = |t: &str| {
+        t.lines()
+            .filter(|l| !l.starts_with("Canonical:"))
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(keep(&body), keep(&web));
+
+    // The dot-directory path is not a repository: an owner cannot start with a dot.
+    let (s, _, _) = gw.get("/.well-known/other").await;
+    assert_eq!(s, 404);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn limits_and_eviction() {
     let gw = start(|c| {
         c.rate_per_min = 5;
