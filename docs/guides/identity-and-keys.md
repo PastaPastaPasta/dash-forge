@@ -20,7 +20,7 @@ On Dash Forge, your account is a **Dash Platform identity**. No company holds it
 
 An identity is a record on Dash Platform with:
 
-- an **id**: a 42–44 character base58 string such as `8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB`. It appears in your repository addresses (`dash://<id>/<repo>`);
+- an **id**: a 42–44 character base58 string such as `ExampLeidentityExampLeidentityExampLeidentEx`. It appears in your repository addresses (`dash://<id>/<repo>`);
 - a set of **public keys**. Anything you write on Forge is signed by one of them, and Platform checks the signature;
 - a **credit balance** that pays Platform fees. 1 DASH = 100,000,000,000 credits.
 

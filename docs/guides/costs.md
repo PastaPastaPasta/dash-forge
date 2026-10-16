@@ -24,7 +24,7 @@ dg auth balance
 ```
 
 ```
-Identity: 8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB
+Identity: ExampLeidentityExampLeidentityExampLeidentEx
 Balance:  0.4821 DASH (48210000000 credits)
 ```
 
@@ -152,7 +152,7 @@ dg cost audit --since 30d
 ```
 
 ```
-Spend estimate for 8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB:
+Spend estimate for ExampLeidentityExampLeidentityExampLeidentEx:
   since:  2026-08-30 14:22:07 UTC
   total:  ~0.02585 DASH ≈ $0.78 across 38 document(s)
 

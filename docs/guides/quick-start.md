@@ -75,9 +75,9 @@ dg auth new --network devnet --devnet-name sakura
 3. `dg` waits for the deposit, locks it, registers the identity, and stores a **limited key** for this computer in your OS keychain: it can spend at most 0.25 DASH, only on Forge, for 180 days. The master key is not stored anywhere.
 
 ```
-✓ identity 8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB created on devnet-sakura
+✓ identity ExampLeidentityExampLeidentityExampLeidentEx created on devnet-sakura
   key #5: limited, 0.25 DASH budget, only on Dash Forge, expires in 180 day(s)
-  stored in macOS Keychain (dash-forge/devnet-sakura/8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB)
+  stored in macOS Keychain (dash-forge/devnet-sakura/ExampLeidentityExampLeidentityExampLeidentEx)
   balance 0.0499 DASH
 ```
 
@@ -104,14 +104,14 @@ dg auth login --network devnet --devnet-name sakura ~/Downloads/dash-identity-<i
 ```
 
 ```
-Registering a limited key for this computer on 8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB (devnet-sakura):
+Registering a limited key for this computer on ExampLeidentityExampLeidentityExampLeidentEx (devnet-sakura):
   it can spend at most 0.25 DASH, only on Dash Forge, until it expires in 180 day(s)
   one identity update, ~0.0005 DASH; the master key signs once and is not stored
 Register the key? [y/N] y
-✓ signed in as 8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB on devnet-sakura
+✓ signed in as ExampLeidentityExampLeidentityExampLeidentEx on devnet-sakura
   key #6: limited, 0.25 DASH budget, expires in 180 day(s)
   with encryption key #4: private repositories you are a member of open with it
-  stored in macOS Keychain (dash-forge/devnet-sakura/8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB)
+  stored in macOS Keychain (dash-forge/devnet-sakura/ExampLeidentityExampLeidentityExampLeidentEx)
   balance 0.0494 DASH
   the identity file is no longer needed here; keep it (or the words) offline
 ```
@@ -137,7 +137,7 @@ dg doctor --fix     # free, local fixes only: file modes, and a cost guard for g
 
 `dg doctor --fix` sets `git config --global dash.costWarnThreshold 0.05` if you have no threshold yet, so that a push asks before spending more than 0.05 DASH: a small push goes through (one with its packs on Platform is quoted about 0.012 DASH on bonsia), a megabyte of packs on Platform asks. It never spends anything.
 
-Your identity id is the long base58 string, such as `8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB`. You will use it in repository addresses. A DPNS username is optional: `dg auth name register <label>`. It needs your identity's master key once, so pass the identity file with `--master <file>` or type the 12-word recovery phrase when asked; the limited key `dg auth login` stored cannot sign it. A name with a digit other than 0 or 1 cost about 0.0007 DASH on bonsia (`dg` quotes an upper bound of 0.001). Names work everywhere a repository address does: `forge.dashhq.org/alice/project`, `git clone dash://alice/project` and `dg … alice/project`.
+Your identity id is the long base58 string, such as `ExampLeidentityExampLeidentityExampLeidentEx`. You will use it in repository addresses. A DPNS username is optional: `dg auth name register <label>`. It needs your identity's master key once, so pass the identity file with `--master <file>` or type the 12-word recovery phrase when asked; the limited key `dg auth login` stored cannot sign it. A name with a digit other than 0 or 1 cost about 0.0007 DASH on bonsia (`dg` quotes an upper bound of 0.001). Names work everywhere a repository address does: `forge.dashhq.org/alice/project`, `git clone dash://alice/project` and `dg … alice/project`.
 
 ---
 
@@ -174,15 +174,15 @@ dg init                   # = dg repo create --push, for this directory
 ```
 
 ```
-Creating 8hJm…/my-project on devnet-sakura
+Creating Exam…/my-project on devnet-sakura
   repo + maintainer + config     ~0.002 DASH
   packs → r2-main (1 of 1 must confirm); Platform: manifest + refs only
   (storage: git config dash.storage; recorded in the repository's public config, which readers and the web follow; `--storage <profile|platform>` records another)
 Proceed? [Y/n] y
-✓ created  https://forge.dashhq.org/8hJm…/my-project
-✓ remote 'origin' → dash://8hJm…/my-project
+✓ created  https://forge.dashhq.org/Exam…/my-project
+✓ remote 'origin' → dash://Exam…/my-project
 ✓ git config dash.storage=r2-main, dash.network=devnet, dash.devnetName=sakura
-dash: 8hJm…/my-project ← main (8f3e2a1, 312 objects, 1.2 MiB)
+dash: Exam…/my-project ← main (8f3e2a1, 312 objects, 1.2 MiB)
 dash: storage      → r2-main · Platform stores manifest + refs only, est 0.0066 DASH
 dash: r2-main      ████████████████ 1.2 MiB  verified   0.4 s
 dash: platform     manifest 4 · refUpdate 1     est 0.0066 DASH
@@ -190,13 +190,13 @@ dash: stored pack 6ce98e05facd (1.2 MiB, 312 objects)
 dash: pack 6ce98e05facd (1.2 MiB) stored on r2-main (1 verified)
 dash: updated main → 8f3e2a1
 dash: history index published (full, 42 paths, 1 commits)
-dash: done · Platform charged ≈0.0052 DASH · remaining 0.0426 DASH · https://forge.dashhq.org/8hJm…/my-project
-To dash://8hJm…/my-project
+dash: done · Platform charged ≈0.0052 DASH · remaining 0.0426 DASH · https://forge.dashhq.org/Exam…/my-project
+To dash://Exam…/my-project
  * [new branch]      main -> main
 branch 'main' set up to track 'origin/main'.
 ✓ main → 8f3e2a1   this push ~0.0052 DASH
   total ~0.0068 DASH (create ~0.0016 DASH + push ~0.0052 DASH) · balance 0.0426 DASH
-Open it: https://forge.dashhq.org/8hJm…/my-project
+Open it: https://forge.dashhq.org/Exam…/my-project
 ```
 
 (The charges are the ones measured on devnet sakura on 2026-10-01 for a first push to your own bucket; the size and paths are illustrative. On a testnet or devnet, DASH is test money and `dg` prints no dollar figures; only on mainnet does it add `≈ $…`. See [Costs](costs.md).)
@@ -263,12 +263,12 @@ git push -u origin main
 The helper prints what it will store, and where, before it pays for anything. It ends with what Platform charged:
 
 ```
-dash: 8hJm…/my-project ← main (8f3e2a1, 3 objects, 245 B)
+dash: Exam…/my-project ← main (8f3e2a1, 3 objects, 245 B)
 dash: storage      → r2-main · Platform stores manifest + refs only, est 0.0058 DASH
 dash: r2-main      ████████████████ 245 B  verified   0.2 s
 dash: platform     manifest 4 · refUpdate 1     est 0.0058 DASH
 dash: history index published (full, 3 paths, 2 commits)
-dash: done · Platform charged ≈0.0040 DASH · remaining 0.0390 DASH · https://forge.dashhq.org/8hJm…/my-project
+dash: done · Platform charged ≈0.0040 DASH · remaining 0.0390 DASH · https://forge.dashhq.org/Exam…/my-project
 ```
 
 (The numbers are illustrative. Yours depend on the size of the push; a later push costs a little less than the first, and the estimate is an upper bound. See [Costs](costs.md).)

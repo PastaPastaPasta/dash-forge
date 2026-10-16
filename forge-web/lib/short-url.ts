@@ -32,6 +32,8 @@ import { bareRoute } from './page-title'
  * top-level route in `app/`, plus the ones other launch work adds.
  */
 export const RESERVED_SEGMENTS: readonly string[] = [
+  // public/.well-known/security.txt (RFC 9116).
+  '.well-known',
   '_next',
   '404',
   'api',

@@ -1,0 +1,6 @@
+Contact: mailto:security@dashhq.org
+Contact: https://github.com/PastaPastaPasta/dash-forge/security/advisories/new
+Expires: 2027-10-16T00:00:00.000Z
+Preferred-Languages: en
+Canonical: https://forge.dashhq.org/.well-known/security.txt
+Policy: https://github.com/PastaPastaPasta/dash-forge/blob/master/SECURITY.md
