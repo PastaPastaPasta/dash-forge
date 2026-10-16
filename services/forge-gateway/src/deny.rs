@@ -37,6 +37,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use forge_core::platform::decode_identifier;
 use forge_core::platform::identity::dpns_normalize;
+use forge_core::resolve::looks_like_identity_id;
 use forge_core::rules::v2::normalize_repo_name;
 
 use crate::upstream::{RepoInfo, Upstream};
@@ -59,6 +60,10 @@ const RESOLVE_PER_PASS: usize = 32;
 const READ_RETRY: Duration = Duration::from_secs(60);
 const ABSENT_RETRY: Duration = Duration::from_secs(600);
 const ABSENT_RECHECK: Duration = Duration::from_secs(30);
+/// Inline settles (reads made for a request, [`DenyList::settle`]) in flight at once. A request
+/// that finds them all busy is refused with 503 without a read, so a flood of requests for a
+/// listed name while its reads fail is not passed on to Platform one for one.
+const INLINE_SETTLES: usize = 4;
 
 /// A listed owner: an identity id (exact), or a DPNS name in its homograph-safe form.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -73,7 +78,8 @@ type Key = (Owner, String);
 /// `s` as an owner: a Platform id exactly, else a DPNS label (`.dash` dropped, homograph-safe).
 /// `None` when it is neither.
 fn owner_key(s: &str) -> Option<Owner> {
-    if decode_identifier(s).is_ok() {
+    // As forge-core resolves an owner: an id is 40-44 base58 characters; anything else is a name.
+    if looks_like_identity_id(s) {
         return Some(Owner::Id(s.to_string()));
     }
     let lower = s.to_ascii_lowercase();
@@ -160,6 +166,19 @@ impl Entries {
         }
     }
 
+    /// The listed `<DPNS name>/<name>` entries for repository name `name` (normalised), filtered
+    /// before anything is cloned.
+    fn named_entries_called<'a>(&'a self, name: &'a str) -> impl Iterator<Item = NamedEntry> + 'a {
+        self.named
+            .iter()
+            .filter(move |((owner, n), _)| matches!(owner, Owner::Name(_)) && n == name)
+            .map(|(key, owner)| NamedEntry {
+                key: key.clone(),
+                owner: owner.clone(),
+                name: key.1.clone(),
+            })
+    }
+
     fn named_entries(&self) -> impl Iterator<Item = NamedEntry> + '_ {
         self.named.iter().map(|(key, owner)| NamedEntry {
             key: key.clone(),
@@ -202,6 +221,7 @@ pub struct DenyList {
     every: Duration,
     settle: Duration,
     state: Mutex<State>,
+    inline_settles: tokio::sync::Semaphore,
 }
 
 impl DenyList {
@@ -217,6 +237,7 @@ impl DenyList {
             every,
             settle,
             state: Mutex::default(),
+            inline_settles: tokio::sync::Semaphore::new(INLINE_SETTLES),
         };
         list.reload_now();
         list
@@ -365,8 +386,7 @@ impl DenyList {
             return Vec::new();
         };
         st.entries
-            .named_entries()
-            .filter(|e| matches!(e.key.0, Owner::Name(_)) && e.name == name)
+            .named_entries_called(&name)
             .filter(|e| match st.resolved.get(&e.key) {
                 None => true,
                 Some(r) if !r.read => true,
@@ -378,6 +398,9 @@ impl DenyList {
     /// Read the repositories `entries` stand for. `false` when a read failed: the caller cannot
     /// tell whether the repository is listed and must not serve it.
     pub async fn settle(&self, upstream: &dyn Upstream, entries: Vec<NamedEntry>) -> bool {
+        let Ok(_permit) = self.inline_settles.try_acquire() else {
+            return false;
+        };
         let mut all_read = true;
         for e in entries {
             all_read &= self.read_entry(upstream, &e).await;

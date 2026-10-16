@@ -696,16 +696,19 @@ async fn settle_deny(
     owner: &str,
     name: &str,
 ) -> Result<(), Box<Response>> {
+    let unavailable = || {
+        Box::new(text(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "this gateway cannot check its deny list against Dash Platform right now; try again shortly, or clone with dash:// (git-remote-dash reads Platform directly)\n",
+        ))
+    };
     let unsettled = state.deny.unsettled_for(info);
     if unsettled.is_empty() {
         return Ok(());
     }
     let upstream = state.mirrors.upstream();
     if !state.deny.settle(upstream.as_ref(), unsettled).await {
-        return Err(Box::new(text(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "this gateway cannot check its deny list against Dash Platform right now; try again shortly, or clone with dash:// (git-remote-dash reads Platform directly)\n",
-        )));
+        return Err(unavailable());
     }
     if state.deny.denies(info, owner, name) {
         state.drop_denied(&info.repo_id);

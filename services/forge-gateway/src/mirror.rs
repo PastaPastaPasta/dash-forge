@@ -54,27 +54,34 @@ const READING_PLATFORM: &str = "reading Platform: ";
 /// How often a repository waiting out its [`backoff`] has its snapshot looked at (at most), to
 /// see whether a new push replaced the one that failed.
 const PROBE_EVERY: Duration = Duration::from_secs(60);
+/// After this many failures in a row, a changed snapshot no longer skips the wait outright...
+const REPEAT_FAILURES: u32 = 3;
+/// ...but is tried at most this often.
+const REPEAT_RETRY: Duration = Duration::from_secs(300);
 
-/// The helper's error codes (`dash: error: … [E503]`, docs/errors.md) that blame Platform or
-/// the storage read, not the repository: unreachable, not deployed, an incomplete or timed-out
-/// read, packs or a recorded copy unreadable. A fetch failing with one of them is retried as
-/// before. Anything else the helper says (an integrity or object refusal, a pack git rejects)
-/// or no code at all (the fetch deadline passing: a host that stalls) is the repository's.
-const NOT_THE_REPOSITORYS: [&str; 6] = ["E503", "E507", "E701", "E702", "E703", "E704"];
+/// The helper's error codes (`dash: error: … [E701]`, docs/errors.md) that blame Platform, not
+/// the repository: unreachable, not deployed, an incomplete or timed-out read. A fetch failing
+/// with one of them is retried as before. Anything else the helper says, including E503 (the
+/// repository's packs unreadable: its storage is its owner's, so a host that never answers is the
+/// repository's doing), an integrity or object refusal, a pack git rejects, or no code at all (the
+/// fetch deadline passing), is the repository's.
+const NOT_THE_REPOSITORYS: [&str; 3] = ["E701", "E702", "E703"];
 
-/// The error code in a helper's message (`[E503]`), if it has one.
+/// The error code of the helper's head line (`dash: error: <message>  [E701]`, as
+/// `forge_core::user_error` renders it), if the message has one. Only the code that ends that
+/// line counts, so text quoted inside a message, or anything else git printed, cannot pose as one.
 fn error_code(message: &str) -> Option<&str> {
-    let mut rest = message;
-    while let Some(at) = rest.find("[E") {
-        let tail = &rest[at + 1..];
-        if let Some(code) = tail.get(..4) {
-            if code.as_bytes()[1..].iter().all(u8::is_ascii_digit) && tail.get(4..5) == Some("]") {
-                return Some(code);
-            }
-        }
-        rest = tail;
-    }
-    None
+    message
+        .lines()
+        .filter(|line| line.contains("dash: error:"))
+        .find_map(|line| {
+            let head = line.trim_end().strip_suffix(']')?;
+            let code = &head[head.rfind('[')? + 1..];
+            let well_formed = code.len() == 4
+                && code.starts_with('E')
+                && code.as_bytes()[1..].iter().all(u8::is_ascii_digit);
+            well_formed.then_some(code)
+        })
 }
 
 /// How long a repository whose own data failed `failures` refreshes in a row waits for the next
@@ -535,6 +542,16 @@ impl Mirrors {
             if probing && !wake && s.last_probe.is_some_and(|t| t.elapsed() < PROBE_EVERY) {
                 return;
             }
+            // A repository that keeps failing could push a new snapshot (one cheap write) before
+            // each attempt and so hold a refresh permit for a fetch deadline every minute: after
+            // a few failures in a row, a new snapshot is tried at most every few minutes, wake or
+            // not.
+            if probing
+                && s.failures >= REPEAT_FAILURES
+                && s.last_attempt.is_some_and(|t| t.elapsed() < REPEAT_RETRY)
+            {
+                return;
+            }
             s.refreshing = true;
             s.last_attempt = Some(Instant::now());
             (s.pinned, probing)
@@ -971,7 +988,7 @@ impl Mirrors {
     fn heavy_git(&self, dir: &Path) -> Command {
         let mut c = Command::new("sh");
         c.arg("-c")
-            .arg(r#"echo 500 > /proc/self/oom_score_adj 2>/dev/null; exec "$@""#)
+            .arg(r#"{ echo 500 > /proc/self/oom_score_adj; } 2>/dev/null; exec "$@""#)
             .arg("sh")
             .arg(&self.cfg.git);
         self.isolated(c, dir)
@@ -1313,14 +1330,30 @@ mod tests {
             format!("git failed (exit status: 128): dash: error: reading the packs [{code}]\n  cause: x")
         };
         assert_eq!(error_code(&helper("E503")), Some("E503"));
-        assert_eq!(error_code("a [note] then [E7x1] and [E504]"), Some("E504"));
-        assert_eq!(error_code("no code, [E50] short, [E5041] long"), None);
+        assert_eq!(
+            error_code("dash: error: a [note] then [E7x1] and [E504]"),
+            Some("E504")
+        );
+        assert_eq!(
+            error_code("dash: error: no code, [E50] short, [E5041] long"),
+            None
+        );
+        // Only the code ending the helper's head line counts, not one quoted in it or elsewhere.
+        assert_eq!(
+            error_code("dash: error: repo says [E701] here, really"),
+            None
+        );
+        assert_eq!(
+            error_code("remote: [E701]\ndash: error: bad pack [E504]"),
+            Some("E504")
+        );
+        assert_eq!(error_code("remote: hello [E701]"), None);
         // Platform or the storage read failing is nobody's fault; the rest is the repository's.
         for code in NOT_THE_REPOSITORYS {
             let e = Unavailable::Failed(helper(code));
             assert!(!blames_repo(&e), "{code}");
         }
-        for code in ["E504", "E511", "E101"] {
+        for code in ["E503", "E504", "E511", "E101"] {
             assert!(blames_repo(&Unavailable::Failed(helper(code))), "{code}");
         }
         // No code: git itself failed, or the fetch deadline passed (a host that stalls).

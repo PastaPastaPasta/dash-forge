@@ -79,7 +79,7 @@ fn checked_ids(entries: &[Entry], at: &str) -> Result<HashSet<String>, String> {
         if !is_date(&e.added) {
             return Err(format!("{at}.added must be a YYYY-MM-DD date"));
         }
-        if e.note.trim().is_empty() || e.note.chars().count() > 200 {
+        if e.note.trim().is_empty() || e.note.encode_utf16().count() > 200 {
             return Err(format!("{at}.note must be 1 to 200 characters"));
         }
         if !seen.insert(e.id.clone()) {
