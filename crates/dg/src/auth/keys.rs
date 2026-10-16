@@ -810,7 +810,7 @@ fn bounds_text(bounds: Option<&KeyBounds>, forge: Option<&ForgeIds>) -> String {
             id,
             document_type: Some(t),
         }) => {
-            format!("{t} documents of {}", contract(id))
+            format!("{t} records of {}", contract(id))
         }
     }
 }
@@ -1166,7 +1166,7 @@ mod tests {
         assert_eq!(t(Some(contract("X"))), "contract X");
         assert_eq!(
             t(Some(doc_type("COMMUNITY", "checkRun"))),
-            "checkRun documents of forge-community"
+            "checkRun records of forge-community"
         );
     }
 

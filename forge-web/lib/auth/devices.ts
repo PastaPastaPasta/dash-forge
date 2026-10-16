@@ -93,7 +93,7 @@ export function boundsText(k: Pick<WasmKey, 'contractBounds'>, forge: ForgeIds |
   }
   if (b.$type === 'contractGroup') return forge !== undefined && b.id === forge.group ? 'Forge contract group' : `contract group ${b.id}`
   if (b.$type === 'singleContract') return contract(b.id)
-  if (b.$type === 'documentType') return `${b.documentTypeName ?? 'one document type'} documents of ${contract(b.id)}`
+  if (b.$type === 'documentType') return `${b.documentTypeName ?? 'one kind of record'} records of ${contract(b.id)}`
   return 'unknown bounds'
 }
 

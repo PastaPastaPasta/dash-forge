@@ -110,7 +110,7 @@ describe('Devices & keys', () => {
     expect(t({ bounds: { $type: 'contractGroup', id: 'G2' } })).toBe('contract group G2')
     expect(t({ bounds: { $type: 'singleContract', id: 'L' } })).toBe('forge-collab')
     expect(t({ bounds: { $type: 'singleContract', id: 'X' } })).toBe('contract X')
-    expect(t({ bounds: { $type: 'documentType', id: 'C', documentTypeName: 'checkRun' } })).toBe('checkRun documents of forge-core')
+    expect(t({ bounds: { $type: 'documentType', id: 'C', documentTypeName: 'checkRun' } })).toBe('checkRun records of forge-core')
   })
 
   it('splits the keys into updates Platform accepts', () => {

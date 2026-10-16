@@ -47,7 +47,7 @@ Disabling 4 keys of 9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD:
   #1   wallet sign-in        any contract
   #5   Forge limited key     Forge contract group, expires in 41 days
   #7   wallet sign-in        forge-collab
-  #9   CI runner key         checkRun documents of forge-community
+  #9   CI runner key         checkRun records of forge-community
   kept: #11 (this computer signs with it), the master key, and encryption, decryption and transfer keys
   1 identity update (up to 10 keys each), signed by the master key
   Other apps that use this identity (a wallet sign-in, for one) will need to sign in again.
