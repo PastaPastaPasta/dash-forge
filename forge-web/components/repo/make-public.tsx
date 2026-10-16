@@ -59,12 +59,15 @@ export interface MakePublicWords {
  * The confirmation for making one's own `kind` post public (DESIGN §10). `quoted`: the quote
  * check's finding, from {@link useQuotedMembersPost}. `losesFile`: an inline comment, whose file
  * name can't be made public on this network (the mainnet contract keeps it: the caller passes false).
+ * `letter`: the post is a message to specific people, not a members-only one.
  */
-export function makePublicWords(kind: MembersPostKind, quoted: string | null, losesFile = false): MakePublicWords {
+export function makePublicWords(kind: MembersPostKind, quoted: string | null, losesFile = false, letter = false): MakePublicWords {
+  // A message to specific people was never members-only: earlier versions stay with its people (MIXE-16).
+  const earlier = letter ? 'Earlier versions stay with the people it was sent to.' : 'Earlier versions stay members-only.'
   const description =
     kind === 'review'
       ? "It's added as a public comment on your review. This can't be undone."
-      : "Everyone will be able to read it as you save it now. Earlier versions stay members-only. This can't be undone."
+      : `Everyone will be able to read it as you save it now. ${earlier} This can't be undone.`
   const parts = [description]
   if (losesFile) parts.push("Its file name can't be made public, so the comment will show without it.")
   // A PR's branch names are fixed when it is opened (the live contracts): its code stays members-only.

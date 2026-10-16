@@ -13,6 +13,7 @@ import { useState } from 'react'
 import { CalendarClock } from 'lucide-react'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Author } from '@/components/author'
+import { BetaBadge } from '@/components/ui/beta-badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { SidebarSection } from '@/components/repo/target-rail'
@@ -206,7 +207,7 @@ export function EmbargoPanel({
     withAddressee(composeCost(repo, 'event', { value: encodeEmbargo(value) }, {}, 'members'))
   const items = embargo === null ? [] : embargoChecklist(embargo, isIssue, facts)
   return (
-    <SidebarSection title="Publication" icon={CalendarClock}>
+    <SidebarSection title="Publication" icon={CalendarClock} badge={<BetaBadge feature="embargo" />}>
       <div className="space-y-2" data-testid="embargo-panel">
         <StateNote embargo={embargo} now={now} />
         {embargo !== null && embargo.state.state !== 'cancelled' ? (

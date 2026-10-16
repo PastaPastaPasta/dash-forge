@@ -112,6 +112,12 @@ describe('New-issue security hint', () => {
     expect(host.querySelector('[data-testid="security-hint-link"]')).toBeNull()
   })
 
+  it('on a repo where the writer can choose Members, says public issues are permanent and points to Members', async () => {
+    find.mockResolvedValue(null)
+    await render(<SecurityHint home={home('public', 'hint-members')} addr={addr} enabled membersOffered />)
+    expect(text()).toBe('Public issues are permanent; choose Members to keep it among members. Reporting a vulnerability? Contact a maintainer privately.')
+  })
+
   it('shows nothing on a private repo, where issues are not public, and reads nothing', async () => {
     await render(<SecurityHint home={home('private', 'hint-private')} addr={addr} enabled />)
     expect(text()).toBe('')
