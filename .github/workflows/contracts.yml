@@ -110,6 +110,14 @@ jobs:
           node forge-contracts/scripts/rc1-fee-probe.mjs --rc2 --emit "$RUNNER_TEMP/rc2-probe"
           "$CARGO_TARGET_DIR/release/contract-validate" --vectors "$RUNNER_TEMP/rc2-probe/vectors" \
             "$RUNNER_TEMP"/rc2-probe/contracts/rc2-*.json
+      # The testnet freeze's fee probes (rc1-fee-probe.mjs --freeze): the event and config probe
+      # contracts, cut from the --mainnet build, differ in the gated index alone and parse under v5
+      - name: Freeze fee-probe contracts validate
+        run: |
+          node --test forge-contracts/scripts/lib/freeze-probe.test.mjs
+          node forge-contracts/scripts/rc1-fee-probe.mjs --freeze --emit "$RUNNER_TEMP/freeze-probe"
+          "$CARGO_TARGET_DIR/release/contract-validate" --vectors "$RUNNER_TEMP/freeze-probe/vectors" \
+            "$RUNNER_TEMP"/freeze-probe/contracts/*.json
       # The seed and verify scripts, run against an in-memory chain: the rules that need chain
       # state (references, dense numbers, transitions, totals) are judged in JS, then rs-dpp
       # judges every document they write as an rc1 vector
