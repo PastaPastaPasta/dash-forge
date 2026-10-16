@@ -231,8 +231,11 @@ expect_reject mainnet-push-r-max-1 core '.documentSchemas.refUpdate.properties.r
 expect_reject mainnet-pack-r-max-1 core '.documentSchemas.packManifest.properties.r.maximum = 1' 'vectors disagree'
 # (and, with R-06, the grant's `where` literal role 4 no longer fits the writer row: 40126 at registration)
 expect_reject mainnet-writer-role-max-3 core '.documentSchemas.writer.properties.role.maximum = 3' 'vectors disagree|outside the values'
-expect_reject mainnet-wrap-mr-optional meta '.documentSchemas.repoKey.required -= ["mr"]' 'expected refused by required, got accepted'
-expect_reject mainnet-wrap-mr-admits-bot meta '.documentSchemas.repoKey.properties.mr.maximum = 4' 'expected refused by maximum, got accepted'
+# (the testnet freeze's mrClaim guard also refuses both, so the vector is refused for another reason)
+expect_reject mainnet-wrap-mr-optional meta '.documentSchemas.repoKey.required -= ["mr"]' 'expected refused by required'
+expect_reject mainnet-wrap-mr-admits-bot meta '.documentSchemas.repoKey.properties.mr.maximum = 4' 'expected refused by maximum'
+# with the guard (repoKey's only rule) gone as well, a loosened bound would admit a wrap to a bot
+expect_reject mainnet-wrap-mr-guard-dropped meta '.documentSchemas.repoKey.properties.mr.maximum = 4 | del(.documentSchemas.repoKey.propertyConstraints)' 'expected refused by maximum, got accepted'
 # C1, L1, M1: the conditional immutables are load-bearing in the replace vectors
 expect_reject mainnet-visibility-frozen-outright core '.documentSchemas.repo.immutable |= map(if type == "object" and .property == "visibility" then "visibility" else . end)' 'replace.json vectors disagree'
 expect_reject mainnet-visibility-free core '.documentSchemas.repo.immutable |= map(select(type == "string" or .property != "visibility"))' 'replace.json vectors disagree'

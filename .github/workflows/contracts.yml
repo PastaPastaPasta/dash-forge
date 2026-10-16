@@ -93,6 +93,13 @@ jobs:
             --validate "$CARGO_TARGET_DIR/release/contract-validate"
           "$CARGO_TARGET_DIR/release/contract-validate" --vectors "$RUNNER_TEMP/mainnet-vectors" \
             "$RUNNER_TEMP"/mainnet/forge-{core,collab,community,meta}.json
+      # The testnet freeze's update guards (mainnet_pinned_gates): with every guarded bound loosened as an
+      # update could loosen it, each document only the loosened bound admits is still refused, by its rule
+      - name: Update guards hold on loosened bounds
+        run: |
+          python3 forge-contracts/schema/vectors.py --mainnet --out "$RUNNER_TEMP/mainnet-vectors" --guards "$RUNNER_TEMP/guards"
+          "$CARGO_TARGET_DIR/release/contract-validate" --vectors "$RUNNER_TEMP/guards/vectors" \
+            "$RUNNER_TEMP"/guards/contracts/forge-{core,collab,community,meta}.json
       - name: Negative mutations are refused
         run: tools/contract-validate/negative.sh
       # RC2: S1, S2, S3, C1 and MOD are build.py flags decided at registration (fee probes), so every

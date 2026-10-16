@@ -43,6 +43,7 @@ AP.add_argument('--off', default='')
 AP.add_argument('--on', default='')
 AP.add_argument('--mainnet', action='store_true')
 AP.add_argument('--out')
+AP.add_argument('--guards', metavar='DIR', help='write the update-guard check (loosened contracts and their vectors) to DIR')
 ARGS = AP.parse_args() if __name__ == '__main__' else AP.parse_args([])
 if ARGS.mainnet:
     ARGS.on = ','.join(filter(None, [ARGS.on, *build.MAINNET_BUILT]))
@@ -1133,6 +1134,55 @@ def uncovered():
     return out
 
 
+# The update guards' check (`--guards`): each bound the guards restate is loosened as an update could
+# loosen it (a raised maximum, an appended enum value), and a document only the loosened bound admits
+# must still be refused, by its guard. (type, property, loosened schema change, the value, the guard)
+GUARD_LOOSENINGS = [('transition', 'r', {'maximum': 4}, 3, 'e_mergeOid'),
+                    ('transition', 'kind', {'enum+': 5}, 5, 'k_kinds'),
+                    ('event', 'r', {'maximum': 4}, 3, 'rClaim'),
+                    ('milestone', 'r', {'maximum': 4}, 4, 'rClaim'),
+                    ('label', 'r', {'maximum': 4}, 3, 'rClaim'),
+                    ('checkRun', 'r', {'maximum': 4}, 2, 'rClaim'),
+                    ('repoKey', 'mr', {'maximum': 4}, 4, 'mrClaim')]
+
+
+def guard_check(out):
+    """Write <out>/contracts/<name>.json (the build with every guarded bound loosened) and
+    <out>/vectors/<name>.json (for each, the base document accepted and the loosened value refused by
+    its guard), for `contract-validate --vectors <out>/vectors <out>/contracts/...`."""
+    loose = build.build(F)
+    cases = []
+    for t, prop, change, value, rule in GUARD_LOOSENINGS:
+        schema = next(c['documentSchemas'][t] for c in loose.values() if t in c['documentSchemas'])
+        p = schema['properties'][prop]
+        if 'enum+' in change:
+            p['enum'] = p['enum'] + [change['enum+']]
+        else:
+            p.update(change)
+        base = {"type": t, "doc": doc(t)}
+        cases.append(dict(base, item='GUARD', name=f'{t} as registered', expect='ok'))
+        cases.append(dict(base, item='GUARD', name=f'{t}.{prop} = {value} once the bound is loosened', expect='refused',
+                          why=rule, doc=doc(t, **{prop: value})))
+    for sub_dir in ('contracts', 'vectors'):
+        os.makedirs(os.path.join(out, sub_dir), exist_ok=True)
+    for name, contract in loose.items():
+        open(os.path.join(out, 'contracts', f'{name}.json'), 'w').write(json.dumps(contract, indent=2) + '\n')
+        open(os.path.join(out, 'vectors', f'{name}.json'), 'w').write(dumps([c for c in cases if home(c['type']) == name]))
+    return len(cases)
+
+
+def unpinned_roles():
+    """(contract, type, property) whose role claim no rule bounds (mainnet_pinned_gates): its schema bound
+    alone holds it, and an update may loosen that."""
+    out = []
+    for name, contract in build.build(F).items():
+        for t, d in contract['documentSchemas'].items():
+            for prop in ('r', 'mr'):
+                if prop in d.get('properties', {}) and f'["{prop}", ' not in json.dumps(d.get('propertyConstraints', {})):
+                    out.append((name, t, prop))
+    return out
+
+
 def unproved_roles():
     """(contract, type) whose `r` no writer leaf of its ownerRefersTo proves (`where {"role": "r"}`):
     the offline validator accepts such a contract, and only the live suite would notice."""
@@ -1209,6 +1259,14 @@ def main():
     for m in unproved_roles():
         print('role claim r of %s.%s is proved by no writer leaf' % m)
         missing.append(m)
+    if F['mainnet_pinned_gates']:
+        for m in unpinned_roles():
+            print('role claim %s.%s.%s is bounded by no rule (mainnet_pinned_gates)' % m)
+            missing.append(m)
+    if ARGS.guards:
+        if not F['mainnet_pinned_gates']:
+            sys.exit('--guards checks the mainnet_pinned_gates rules: use it with --mainnet')
+        print(f'{guard_check(ARGS.guards)} update-guard cases written to {ARGS.guards}')
     if ARGS.check:
         stale = [p for f, p in paths.items() if not os.path.exists(p) or open(p).read() != dumps(sets[f])]
         stale += [os.path.join(OUT, f) for f in os.listdir(OUT) if f.endswith('.json') and f not in sets]
