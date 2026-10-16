@@ -28,10 +28,19 @@ pub enum KeysCommand {
     /// the key is for a browser tab instead: dg prints it sealed to that tab, so the recovery
     /// phrase never goes into a web page.
     Add(AddArgs),
-    /// Disable a key on Platform. Needs the master key once.
+    /// Disable a key on Platform, or every limited key at once. Needs the master key once.
+    ///
+    /// `--all-limited` disables every Forge limited key of the identity (browsers, computers and
+    /// CI runners) except the one this computer signs with: it lists them first and asks to
+    /// confirm (`--yes` skips the question). One identity update disables up to 10 keys, so
+    /// more take more updates; run it again to finish after a failure.
     Disable {
         /// The key id (`dg auth keys list`).
-        id: u32,
+        #[arg(required_unless_present = "all_limited")]
+        id: Option<u32>,
+        /// Disable every limited key except the one this computer signs with.
+        #[arg(long, conflicts_with_all = ["id", "force"])]
+        all_limited: bool,
         /// The identity file with the master key (else you are asked for the words).
         #[arg(long, value_name = "FILE")]
         master: Option<PathBuf>,
@@ -116,9 +125,18 @@ pub async fn run(ctx: &Ctx, cmd: &KeysCommand) -> Result<()> {
     match cmd {
         KeysCommand::List => list(ctx).await,
         KeysCommand::Add(args) => add(ctx, args).await,
-        KeysCommand::Disable { id, master, force } => {
-            disable(ctx, *id, master.as_deref(), *force).await
-        }
+        KeysCommand::Disable {
+            id,
+            all_limited,
+            master,
+            force,
+        } => match (id, all_limited) {
+            (Some(id), false) => disable(ctx, *id, master.as_deref(), *force).await,
+            (None, true) => disable_all_limited(ctx, master.as_deref()).await,
+            _ => Err(crate::errors::usage(
+                "pass a key id, or --all-limited (not both)",
+            )),
+        },
         KeysCommand::Rotate {
             encryption: _,
             keep_old,
@@ -699,9 +717,251 @@ async fn disable(ctx: &Ctx, id: u32, master: Option<&std::path::Path>, force: bo
     Ok(())
 }
 
+/// What `--all-limited` needs to know about one key of the identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct KeyFacts {
+    id: u32,
+    disabled: bool,
+    /// The MASTER key, which can never be disabled.
+    master: bool,
+    /// A Forge key: a limited key (group-bound, with a budget) or a CI runner's (bound to one
+    /// document type): what `dg auth keys disable <id>` disables without `--force`.
+    forge: bool,
+}
+
+/// The ids `--all-limited` disables: every live Forge limited key except `signing`, the one this
+/// computer signs with, in id order. Disabled, master and non-Forge keys (encryption, a
+/// wallet's signing key, other apps') are never in it.
+fn limited_keys_to_disable(keys: &[KeyFacts], signing: Option<u32>) -> Vec<u32> {
+    let mut ids: Vec<u32> = keys
+        .iter()
+        .filter(|k| k.forge && !k.master && !k.disabled && Some(k.id) != signing)
+        .map(|k| k.id)
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+/// What `--all-limited` is about to do (human mode): the keys, the one kept, the updates.
+fn print_bulk_plan(
+    identity: &forge_core::platform::LoadedIdentity,
+    identity_id: &str,
+    targets: &[u32],
+    signing: Option<u32>,
+) {
+    println!(
+        "Disabling {} limited key{} of {identity_id}:",
+        targets.len(),
+        if targets.len() == 1 { "" } else { "s" },
+    );
+    for id in targets {
+        println!(
+            "  #{id:<3} {}{}",
+            if identity.key_doc_type(*id).is_some() {
+                "CI runner key"
+            } else {
+                "dash-forge key"
+            },
+            identity
+                .key_limits(*id)
+                .and_then(|l| l.expires_at)
+                .map_or(String::new(), |e| match expiry_text(e).as_str() {
+                    "expired" => ", expired".to_string(),
+                    when => format!(", expires {when}"),
+                })
+        );
+    }
+    match signing {
+        Some(k) => println!("  kept: #{k} (this computer signs with it), the master key and keys that are not Forge limited keys"),
+        None => println!("  kept: the master key and keys that are not Forge limited keys"),
+    }
+    let updates = targets.len().div_ceil(super::MAX_KEYS_PER_UPDATE);
+    println!(
+        "  {updates} identity update{} (up to {} keys each), signed by the master key",
+        if updates == 1 { "" } else { "s" },
+        super::MAX_KEYS_PER_UPDATE
+    );
+}
+
+/// `dg auth keys disable --all-limited`: list the limited keys, ask, then disable them with the
+/// master key in as few identity updates as Platform allows (10 keys per update).
+async fn disable_all_limited(ctx: &Ctx, master: Option<&std::path::Path>) -> Result<()> {
+    let current = ctx.load_bridge()?;
+    let client = ctx.connect().await?;
+    let identity = client.fetch_signer(&current).await?;
+    let signing = identity.signing_key_id(&current, ctx.network());
+    let infos = identity.public_keys();
+    let facts: Vec<KeyFacts> = infos
+        .iter()
+        .map(|k| KeyFacts {
+            id: k.id,
+            disabled: k.disabled,
+            master: k.security_level == "MASTER",
+            forge: identity.is_limited_key(k.id) || identity.key_doc_type(k.id).is_some(),
+        })
+        .collect();
+    let targets = limited_keys_to_disable(&facts, signing);
+    if targets.is_empty() {
+        ctx.emit(
+            json!({ "status": "nothing_to_disable", "keyIds": [], "keptKeyId": signing }),
+            || {
+                println!(
+                    "{} has no other limited keys to disable{}",
+                    current.identity_id,
+                    signing.map_or(String::new(), |k| format!(
+                        " (key #{k} is the one this computer signs with)"
+                    ))
+                );
+            },
+        );
+        return Ok(());
+    }
+    if !ctx.json {
+        print_bulk_plan(&identity, &current.identity_id, &targets, signing);
+    }
+    let full = master_identity(ctx, master, &current.identity_id)?;
+    ctx.confirm_or_cancel(&format!(
+        "Disable {} key{} of {}?",
+        targets.len(),
+        if targets.len() == 1 { "" } else { "s" },
+        current.identity_id
+    ))?;
+    let before = client.get_balance(&full.identity_id).await.unwrap_or(0);
+    let mut done: Vec<u32> = Vec::new();
+    for chunk in targets.chunks(super::MAX_KEYS_PER_UPDATE) {
+        if let Err(e) = super::disable_keys(&client, &full, chunk).await {
+            let ids = |v: &[u32]| {
+                v.iter()
+                    .map(|k| format!("#{k}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            return Err(e).with_context(|| {
+                format!(
+                    "disabled {} of {} keys{} before it stopped; run the same command again to finish",
+                    done.len(),
+                    targets.len(),
+                    if done.is_empty() { String::new() } else { format!(" ({})", ids(&done)) }
+                )
+            });
+        }
+        done.extend_from_slice(chunk);
+        if !ctx.json {
+            eprintln!("  disabled {} of {}", done.len(), targets.len());
+        }
+    }
+    let spent = crate::common::spent_since(&client, &full.identity_id, before).await;
+    let price = ctx.usd_price();
+    ctx.emit(
+        json!({
+            "status": "disabled",
+            "keyIds": done,
+            "keptKeyId": signing,
+            "updates": targets.len().div_ceil(super::MAX_KEYS_PER_UPDATE),
+            "cost": crate::fmt::cost_json(spent, price),
+        }),
+        || {
+            println!(
+                "✓ {} key{} disabled; they can no longer sign · {}",
+                done.len(),
+                if done.len() == 1 { "" } else { "s" },
+                crate::fmt::cost_line(spent, price)
+            );
+        },
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::network_flag;
+    use super::{limited_keys_to_disable, network_flag, KeyFacts, KeysCommand};
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Cli {
+        #[command(subcommand)]
+        cmd: KeysCommand,
+    }
+
+    fn key(id: u32) -> KeyFacts {
+        KeyFacts {
+            id,
+            disabled: false,
+            master: false,
+            forge: true,
+        }
+    }
+
+    #[test]
+    fn bulk_disable_picks_live_forge_keys_and_never_the_signing_key() {
+        let keys = [
+            KeyFacts {
+                master: true,
+                forge: false,
+                ..key(0)
+            },
+            // a wallet's signing key and the encryption key are not Forge limited keys
+            KeyFacts {
+                forge: false,
+                ..key(1)
+            },
+            KeyFacts {
+                forge: false,
+                ..key(4)
+            },
+            key(9),
+            key(5),
+            KeyFacts {
+                disabled: true,
+                ..key(6)
+            },
+            key(7),
+            key(5),
+        ];
+        assert_eq!(limited_keys_to_disable(&keys, Some(7)), [5, 9]);
+        assert_eq!(limited_keys_to_disable(&keys, None), [5, 7, 9]);
+        // a signing key that is not among them (or unknown) excludes nothing else
+        assert_eq!(limited_keys_to_disable(&keys, Some(42)), [5, 7, 9]);
+        assert!(limited_keys_to_disable(&[key(3)], Some(3)).is_empty());
+        // the master key is never chosen, even when it looks like a Forge key
+        assert!(limited_keys_to_disable(
+            &[KeyFacts {
+                master: true,
+                ..key(0)
+            }],
+            None
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn disable_takes_a_key_id_or_all_limited_but_not_both() {
+        let parse = |args: &[&str]| {
+            Cli::try_parse_from(std::iter::once("keys").chain(args.iter().copied())).map(|c| c.cmd)
+        };
+        assert!(matches!(
+            parse(&["disable", "7"]),
+            Ok(KeysCommand::Disable {
+                id: Some(7),
+                all_limited: false,
+                ..
+            })
+        ));
+        assert!(matches!(
+            parse(&["disable", "--all-limited"]),
+            Ok(KeysCommand::Disable {
+                id: None,
+                all_limited: true,
+                ..
+            })
+        ));
+        assert!(parse(&["disable"]).is_err());
+        assert!(parse(&["disable", "7", "--all-limited"]).is_err());
+        // --force widens a single disable; a bulk one never takes it
+        assert!(parse(&["disable", "--all-limited", "--force"]).is_err());
+        assert!(parse(&["disable", "7", "--force"]).is_ok());
+    }
 
     #[test]
     fn the_network_flag_matches_the_browser_command() {

@@ -6,6 +6,7 @@
 //! DASH (primary) / USD (secondary) estimate and prompt unless `--yes`.
 
 mod api;
+mod attestation_signer;
 mod audience;
 mod auth;
 mod bans;

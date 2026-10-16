@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { disableRefusal, keyRole, keyRows, readKeyLabels, writeKeyLabel } from './devices'
+import { MAX_KEYS_PER_UPDATE, chunkKeyIds, disableRefusal, keyRole, keyRows, otherKeysToDisable, readKeyLabels, writeKeyLabel } from './devices'
 import type { WasmKey } from '../sdk/facade'
 
 const forge = { core: 'C', collab: 'L', community: 'M', group: 'G' } as never
@@ -57,6 +57,39 @@ describe('Devices & keys', () => {
     expect(disableRefusal(master!)).toMatch(/master/)
     expect(disableRefusal(enc!)).toMatch(/Lost a device/)
     expect(disableRefusal(gone!)).toMatch(/Already/)
+  })
+
+  it('"Disable all other keys" takes every disableable key but this browser\'s', () => {
+    const g = { bounds: { $type: 'contractGroup', id: 'G' } }
+    const rows = keyRows(
+      [
+        key(0, { securityLevelNumber: 0 }), // master
+        key(1), // a wallet's signing key
+        key(4, { purposeNumber: 1 }), // encryption
+        key(9, g), // this browser
+        key(10, g),
+        key(11, g),
+        key(12, { bounds: { $type: 'singleContract', id: 'L' } }),
+        key(13, { ...g, disabledAt: 1n }), // already disabled
+        key(14, { bounds: { $type: 'contractGroup', id: 'OTHER' } }), // another app's
+      ],
+      new Map(),
+      forge,
+      [9],
+    )
+    expect(otherKeysToDisable(rows).map((r) => r.keyId).sort((a, b) => a - b)).toEqual([10, 11, 12])
+    // with nothing else to disable, the button has nothing to offer
+    expect(otherKeysToDisable(rows.filter((r) => r.keyId < 10))).toEqual([])
+  })
+
+  it('splits the keys into updates Platform accepts', () => {
+    expect(MAX_KEYS_PER_UPDATE).toBe(10)
+    expect(chunkKeyIds([])).toEqual([])
+    expect(chunkKeyIds([1, 2, 3])).toEqual([[1, 2, 3]])
+    const ids = Array.from({ length: 23 }, (_, i) => i + 1)
+    expect(chunkKeyIds(ids).map((c) => c.length)).toEqual([10, 10, 3])
+    expect(chunkKeyIds(ids).flat()).toEqual(ids)
+    expect(chunkKeyIds([1, 2, 3, 4], 2)).toEqual([[1, 2], [3, 4]])
   })
 
   it('keeps labels in this browser, per identity', () => {

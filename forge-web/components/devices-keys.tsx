@@ -20,7 +20,7 @@ import { Spinner } from '@/components/ui/states'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import { DOCS } from '@/lib/docs-links'
 import { useCopy } from '@/hooks/use-copy'
-import { ROLE_TEXT, disableRefusal, readKeyLabels, requestPersistence, storagePersistence, writeKeyLabel, type KeyRow, type StoragePersistence } from '@/lib/auth/devices'
+import { MAX_KEYS_PER_UPDATE, ROLE_TEXT, chunkKeyIds, disableRefusal, otherKeysToDisable, readKeyLabels, requestPersistence, storagePersistence, writeKeyLabel, type KeyRow, type StoragePersistence } from '@/lib/auth/devices'
 import { keyKind } from '@/lib/auth/key-watch'
 import { IdentityUpdateNotSentError, WrongMasterKeyError } from '@/lib/auth/limited-key'
 import { KEY_DISABLE_CREDITS, previewCredits } from '@/lib/sdk'
@@ -34,6 +34,7 @@ export function DevicesKeys(): JSX.Element {
   const [error, setError] = useState<string | null>(null)
   const [labels, setLabels] = useState<Record<number, string>>({})
   const [disabling, setDisabling] = useState<KeyRow | null>(null)
+  const [disablingOthers, setDisablingOthers] = useState(false)
   const load = useCallback(() => {
     setError(null)
     controller.identityKeys().then(setRows, (e: unknown) => setError(errorMessage(e)))
@@ -44,6 +45,7 @@ export function DevicesKeys(): JSX.Element {
     load()
   }, [identity, load])
   const isNew = (id: number): boolean => newKeys.some((k) => k.keyId === id)
+  const others = rows === null ? [] : otherKeysToDisable(rows)
 
   if (identity === null) return <></>
   return (
@@ -68,8 +70,29 @@ export function DevicesKeys(): JSX.Element {
         Labels stay in this browser. Platform doesn&apos;t record when a key was last used: a budget that went down was used, and this browser&apos;s last
         write is below.
       </p>
+      {others.length > 0 ? (
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-anvil-200 p-3 text-dense dark:border-anvil-800" data-testid="disable-others">
+          <Button size="sm" variant="danger" onClick={() => setDisablingOthers(true)} data-testid="keys-disable-others">
+            <ShieldOff className="h-3.5 w-3.5" aria-hidden /> Disable all other keys
+          </Button>
+          <span className="text-[12px] text-anvil-600 dark:text-anvil-300">
+            Disables the {others.length} Forge {others.length === 1 ? 'key' : 'keys'} other than this browser&apos;s. Use it if Forge tells you to revoke keys.
+          </span>
+        </div>
+      ) : null}
       <LostDevice />
       <ThisBrowser identity={identity} />
+      {disablingOthers ? (
+        <DisableOthersDialog
+          rows={others}
+          labels={labels}
+          onClose={() => setDisablingOthers(false)}
+          onDone={() => {
+            setDisablingOthers(false)
+            load()
+          }}
+        />
+      ) : null}
       {disabling !== null ? (
         <DisableKeyDialog
           row={disabling}
@@ -222,6 +245,81 @@ function DisableKeyDialog({ row, label, onClose, onDone }: { row: KeyRow; label:
           </Button>
           <Button type="submit" variant="danger" className="flex-1" loading={isLoading} disabled={!master.ready || isLoading}>
             <ShieldOff className="h-3.5 w-3.5" aria-hidden /> Sign once &amp; disable
+          </Button>
+        </div>
+      </form>
+    </Dialog>
+  )
+}
+
+/**
+ * "Disable all other keys": every Forge key of the identity except this browser's, in one confirm
+ * and one master-key signature per update (up to {@link MAX_KEYS_PER_UPDATE} keys each). The list
+ * is what the page showed; the controller reads the chain again before it sends anything.
+ */
+function DisableOthersDialog({ rows, labels, onClose, onDone }: { rows: KeyRow[]; labels: Record<number, string>; onClose: () => void; onDone: () => void }): JSX.Element {
+  const { identity, controller, isLoading } = useAuth()
+  const master = useMasterKeyInput(identity, { id: 'disable-others', fileLabel: 'Identity file to disable the keys with' })
+  const [submitError, setError] = useState<string | null>(null)
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null)
+  const error = master.error ?? submitError
+  const updates = chunkKeyIds(rows.map((r) => r.keyId)).length
+  const submit = async (): Promise<void> => {
+    if (!master.ready || isLoading) return
+    setError(null)
+    setProgress({ done: 0, total: rows.length })
+    try {
+      await controller.disableOtherKeys(master.take({ keep: true }), (done, total) => setProgress({ done, total }))
+      master.clear()
+      onDone()
+    } catch (e) {
+      if (!(e instanceof WrongMasterKeyError || e instanceof IdentityUpdateNotSentError)) master.clear()
+      setError(errorMessage(e))
+      setProgress(null)
+    }
+  }
+  return (
+    <Dialog open onClose={onClose} title="Disable all other keys" description="None of them can sign again, wherever it was copied.">
+      <form
+        className="space-y-4 text-dense"
+        data-testid="disable-others-dialog"
+        onSubmit={(e) => {
+          e.preventDefault()
+          void submit()
+        }}
+      >
+        <p className="text-anvil-600 dark:text-anvil-300">
+          Your master key disables these {rows.length} {rows.length === 1 ? 'key' : 'keys'} on Platform. This browser&apos;s key, your master key, your
+          encryption key and keys of a wallet or other apps stay. The master key is used once and is not stored.
+        </p>
+        <ul className="max-h-40 space-y-1 overflow-auto rounded-md border border-anvil-200 px-3 py-2 dark:border-anvil-800" data-testid="disable-others-list">
+          {rows.map((r) => (
+            <li key={r.keyId} data-key-id={r.keyId}>
+              <span className="font-mono">#{r.keyId}</span> {labels[r.keyId] ? <span className="font-medium">{labels[r.keyId]} </span> : null}
+              <span className="text-anvil-500 dark:text-anvil-400">{ROLE_TEXT[r.role]}</span>
+            </li>
+          ))}
+        </ul>
+        {updates > 1 ? (
+          <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
+            Platform disables up to {MAX_KEYS_PER_UPDATE} keys per update, so this sends {updates} updates. If one fails, the keys already disabled stay
+            disabled; run it again for the rest.
+          </p>
+        ) : null}
+        {master.element}
+        <ErrorBox error={error} />
+        <CostPreview cost={previewCredits(KEY_DISABLE_CREDITS * updates)} />
+        {progress !== null ? (
+          <p role="status" data-testid="disable-others-progress">
+            Disabled {progress.done} of {progress.total}…
+          </p>
+        ) : null}
+        <div className="flex gap-2">
+          <Button type="button" variant="outline" className="flex-1" onClick={onClose} disabled={progress !== null}>
+            Cancel
+          </Button>
+          <Button type="submit" variant="danger" className="flex-1" loading={isLoading} disabled={!master.ready || isLoading}>
+            <ShieldOff className="h-3.5 w-3.5" aria-hidden /> Sign &amp; disable {rows.length === 1 ? 'the key' : `${rows.length} keys`}
           </Button>
         </div>
       </form>

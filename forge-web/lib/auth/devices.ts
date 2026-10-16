@@ -88,6 +88,25 @@ export function disableRefusal(row: KeyRow): string | null {
   return null
 }
 
+/**
+ * The keys "Disable all other keys" disables: every live key this page may disable one by one
+ * ({@link disableRefusal} accepts it). That leaves out this browser's own keys, the master and
+ * encryption keys, and keys of a wallet or other apps.
+ */
+export function otherKeysToDisable(rows: readonly KeyRow[]): KeyRow[] {
+  return rows.filter((r) => disableRefusal(r) === null)
+}
+
+/** Most keys one identity update may disable (Platform's `MAX_KEYS_TO_DISABLE`). */
+export const MAX_KEYS_PER_UPDATE = 10
+
+/** `ids` in groups of at most `size`, one identity update each. */
+export function chunkKeyIds(ids: readonly number[], size: number = MAX_KEYS_PER_UPDATE): number[][] {
+  const out: number[][] = []
+  for (let i = 0; i < ids.length; i += size) out.push(ids.slice(i, i + size))
+  return out
+}
+
 const labelsKey = (network: Network, identityId: string): string => `forge:key-labels:${network}:${identityId}`
 
 /** The labels this browser gave the identity's keys ("work laptop"). Never sent anywhere. */

@@ -16,6 +16,7 @@ Task-oriented guides for using Dash Forge. For how it is built, see the [documen
 | [CI and check runs](ci.md) | enrol a CI runner with a key that can only report check runs, report results with `dg ci report`, and see them on commits and PRs |
 | [Self-host a CI runner](self-host-runner.md) | run a repository's `.forge/workflows` on your own machine with `forge-runner` (nektos/act in Docker), safely |
 | [Identity and keys](identity-and-keys.md) | understand your identity and limited keys, back it up, recover it, and keep keys safe |
+| [If Forge tells you to revoke keys](revoke-keys.md) | disable every limited key of your identity at once, from the terminal (`dg auth keys disable --all-limited`) or the web app (Devices & keys), and sign in again |
 | [What things cost](costs.md) | know what each action costs (measured), what comes back, and how to see it before you pay |
 | [Check that Forge isn't lying to you](verify-forge.md) | read the Verification card, verify proofs and hashes yourself, and run your own copy of the web app |
 | [Dash Forge moved to devnet sakura](devnet-move.md) | know what the move from bonsia lost (repos, issues, stars, identities, keys) and kept (your clone, your bucket), and how to re-push on sakura with `dg` |
