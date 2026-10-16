@@ -202,9 +202,52 @@ pub struct GlProject {
     /// The same for merge requests.
     #[serde(default)]
     pub merge_requests_access_level: Option<String>,
+    /// The detected licence (`license=true`; `null`: none).
+    #[serde(default)]
+    pub license: crate::source::Reported<GlLicense>,
+    /// The namespace (user or group) that owns the project.
+    #[serde(default)]
+    pub namespace: Option<GlNamespace>,
+}
+
+/// A project's detected licence.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct GlLicense {
+    /// SPDX-like key (`mit`).
+    #[serde(default)]
+    pub key: Option<String>,
+    /// Display name (`MIT License`).
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// A project's namespace.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct GlNamespace {
+    /// Full path (`group/subgroup`, or the user's name).
+    #[serde(default)]
+    pub full_path: String,
 }
 
 impl GlProject {
+    /// The licence GitLab reports, as a run shows it.
+    pub fn licence(&self) -> crate::source::License {
+        use crate::source::{License, Reported};
+        match &self.license {
+            Reported::Absent => License::Unreported,
+            Reported::Null => License::None,
+            Reported::Value(l) => License::Named(
+                l.name
+                    .as_deref()
+                    .or(l.key.as_deref())
+                    .map(str::trim)
+                    .filter(|n| !n.is_empty())
+                    .unwrap_or("unrecognised licence file")
+                    .to_string(),
+            ),
+        }
+    }
+
     /// Which of issues and merge requests GitLab shows only to project members
     /// (`private`, "Only project members").
     pub fn members_only(&self) -> Vec<&'static str> {
@@ -980,7 +1023,8 @@ impl GitlabClient {
     /// Project metadata (also proves the project exists and can be read). The only read
     /// whose refusal fails the run.
     pub fn project(&self) -> Result<GlProject> {
-        match self.get(&self.url(""), "the project")? {
+        // `license=true`: the licence is left out of the answer unless asked for.
+        match self.get(&format!("{}?license=true", self.url("")), "the project")? {
             Ok(r) => serde_json::from_slice(&r.body).context("parsing the project"),
             Err(d) => bail!("{}", d.explain("the project", &self.repo)),
         }
@@ -1208,6 +1252,24 @@ mod tests {
         assert_eq!(parsed.duplicate_of(), Some(2));
         let none: GlItem = serde_json::from_str(r#"{"iid": 3, "_links": null}"#).unwrap();
         assert_eq!(none.duplicate_of(), None);
+    }
+
+    /// LEG-10: the licence GitLab reports (`license=true`), and the owning namespace.
+    #[test]
+    fn the_licence_gitlab_reports_is_read_from_the_project_answer() {
+        use crate::source::License;
+        let project = |json: &str| serde_json::from_str::<GlProject>(json).unwrap();
+        let mit = project(
+            r#"{"license":{"key":"mit","name":"MIT License"},"namespace":{"full_path":"group/sub"}}"#,
+        );
+        assert_eq!(mit.licence(), License::Named("MIT License".into()));
+        assert_eq!(mit.namespace.unwrap().full_path, "group/sub");
+        assert_eq!(
+            project(r#"{"license":{"key":"mit"}}"#).licence(),
+            License::Named("mit".into())
+        );
+        assert_eq!(project(r#"{"license":null}"#).licence(), License::None);
+        assert_eq!(project(r#"{"id":1}"#).licence(), License::Unreported);
     }
 
     fn parse(s: &str, base: Option<&str>) -> Result<GitlabRepoRef> {

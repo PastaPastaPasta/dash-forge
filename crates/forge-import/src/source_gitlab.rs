@@ -70,6 +70,11 @@ impl Source for GitlabSource {
     fn meta(&self) -> Result<SourceMeta> {
         let p = self.gl.project()?;
         Ok(SourceMeta {
+            license: p.licence(),
+            owner: p
+                .namespace
+                .map(|n| n.full_path)
+                .filter(|path| !path.is_empty()),
             default_branch: p.default_branch.unwrap_or_default(),
             description: p.description,
         })

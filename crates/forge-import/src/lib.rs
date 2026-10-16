@@ -10,6 +10,8 @@
 //!   parallel lanes.
 //! * [`chain`] — what the sink reads from and writes to the destination.
 //! * [`gitsync`] — git data through the ordinary `git-remote-dash` push.
+//! * [`rights`] — the licence notice and the acknowledgement a real run needs before it writes.
+//! * [`lfs`] — Git LFS detection (the mirror holds pointer files only).
 //! * [`summary`] — the run summary (table and `--summary-json`).
 //! * [`snapshot`] — the source read, kept beside `--state` so a restarted run resumes writing.
 
@@ -23,9 +25,11 @@ pub mod gitlab;
 pub mod gitsync;
 pub mod hunk;
 pub mod importer;
+pub mod lfs;
 pub mod long_body;
 pub mod model;
 pub mod pipeline;
+pub mod rights;
 pub mod sealed_release;
 pub mod sink;
 pub mod snapshot;

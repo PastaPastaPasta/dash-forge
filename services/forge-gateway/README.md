@@ -22,10 +22,12 @@ Code map:
 | File | What |
 |---|---|
 | `src/upstream.rs` | The `Upstream` trait and its Platform implementation (proof-verified reads through forge-core). |
-| `src/mirror.rs` | The mirror store: refresh from a snapshot, the staging namespace, the manifest, LRU eviction. |
+| `src/mirror.rs` | The mirror store: refresh from a snapshot, the staging namespace, the manifest, LRU eviction, per-repository failure backoff, refresh permits. |
 | `src/git_http.rs` | Smart HTTP through `git http-backend`, streamed. |
 | `src/server.rs` | Routes, resolution, limits, badges, feeds, previews, health and metrics. |
-| `src/limits.rs`, `src/cache.rs` | Per-client token buckets and concurrency; the render cache. |
+| `src/limits.rs`, `src/cache.rs` | Per-client token buckets and concurrency (IPv6 by /64, costly work by /48); the render cache. |
+| `src/deny.rs` | `GATEWAY_DENY`: the operator's deny list (`451`), reloaded when its file changes. |
+| `src/curation.rs` | The curation list (`forge-contracts/config/curation.json`, shared with the web build): hidden repositories get the site's own link-preview card. |
 | `src/badge.rs`, `src/feed.rs`, `src/og.rs` | Badge SVG and shields JSON; Atom; share links and their preview cards (resvg). |
 | `src/wake.rs` | forge-relay wake stream client (`forge-wake-v1`). |
 | `tests/gateway.rs` | End to end with a stub upstream: plain `git` clones, fetches, push refused, private refused, Platform down, a repository proved gone, restarts, eviction, limits. |

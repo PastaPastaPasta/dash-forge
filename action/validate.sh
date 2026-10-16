@@ -61,6 +61,8 @@ case "${INPUT_INSTALL:-}" in true | source | false) ;; *) fail install "must be 
 bool build-cache "${INPUT_BUILD_CACHE:-true}"
 bool state-cache "${INPUT_STATE_CACHE:-}"
 bool fail-on-partial "${INPUT_FAIL_ON_PARTIAL:-false}"
+# Empty means "decide from who owns the repository" (mirror.sh).
+case "${INPUT_I_HAVE_THE_RIGHTS:-}" in '' | true | false) ;; *) fail i-have-the-rights "must be 'true', 'false' or empty" ;; esac
 bool s3-virtual-hosted "${INPUT_S3_VIRTUAL_HOSTED:-false}"
 if [ "${INPUT_S3_VIRTUAL_HOSTED:-false}" = true ] && [ "${INPUT_STORAGE_KIND:-}" != s3 ]; then
     fail s3-virtual-hosted "applies only to storage-kind s3"

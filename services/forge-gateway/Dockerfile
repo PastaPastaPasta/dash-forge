@@ -34,7 +34,8 @@ COPY services services
 COPY docs/errors.md docs/errors.md
 COPY forge-contracts/deployments forge-contracts/deployments
 COPY forge-contracts/config forge-contracts/config
-# `--version` names this commit when built with --build-arg DASH_FORGE_BUILD_SHA=$(git rev-parse HEAD).
+# `git-remote-dash --version` and the gateway's `/readyz` (`version.buildSha`) name this commit when
+# built with --build-arg DASH_FORGE_BUILD_SHA=$(git rev-parse HEAD).
 ARG DASH_FORGE_BUILD_SHA=unknown
 ENV DASH_FORGE_BUILD_SHA=${DASH_FORGE_BUILD_SHA}
 RUN cargo build --locked --release -p forge-gateway -p git-remote-dash --features forge-core/vendored-openssl \

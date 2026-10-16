@@ -45,6 +45,16 @@ pub struct Metrics {
     pub wakes: AtomicU64,
     /// Badge/feed/preview renders served from a stale cache because Platform failed.
     pub stale_renders: AtomicU64,
+    /// Requests refused with `451` because the operator's deny list names the repository.
+    pub denied: AtomicU64,
+    /// Mirrors deleted because the deny list names their repository.
+    pub mirrors_purged: AtomicU64,
+    /// Item cards answered with the repository's card because the item number is above the
+    /// repository's item count (no Platform read for the item).
+    pub items_beyond_count: AtomicU64,
+    /// Requests that arrived without `CF-Connecting-IP` while `GATEWAY_TRUST_PROXY` is
+    /// `cloudflare`.
+    pub proxy_header_missing: AtomicU64,
     /// When a Platform read last succeeded and last failed.
     upstream: Mutex<(Option<SystemTime>, Option<SystemTime>)>,
 }
@@ -62,6 +72,10 @@ pub struct Gauges {
     pub cache_max_bytes: u64,
     /// `git-upload-pack`s streaming now.
     pub upload_packs_active: u64,
+    /// Entries of the operator's deny list in force.
+    pub deny_entries: u64,
+    /// 1 when the latest look at the deny list's file failed.
+    pub deny_unreadable: u64,
 }
 
 impl Metrics {
@@ -92,7 +106,8 @@ impl Metrics {
     }
 
     /// Every counter: name, help and value.
-    fn counters(&self) -> [(&'static str, &'static str, &AtomicU64); 17] {
+    #[allow(clippy::too_many_lines)] // a table
+    fn counters(&self) -> [(&'static str, &'static str, &AtomicU64); 21] {
         [
             (
                 "forge_gateway_requests_git_total",
@@ -179,6 +194,26 @@ impl Metrics {
                 "Renders served stale because Platform failed.",
                 &self.stale_renders,
             ),
+            (
+                "forge_gateway_denied_total",
+                "Requests refused with 451 by the operator's deny list.",
+                &self.denied,
+            ),
+            (
+                "forge_gateway_mirrors_purged_total",
+                "Mirrors deleted because the deny list names their repository.",
+                &self.mirrors_purged,
+            ),
+            (
+                "forge_gateway_items_beyond_count_total",
+                "Item cards answered with the repository card: the number is above its item count.",
+                &self.items_beyond_count,
+            ),
+            (
+                "forge_gateway_proxy_header_missing_total",
+                "Requests without CF-Connecting-IP while GATEWAY_TRUST_PROXY is cloudflare.",
+                &self.proxy_header_missing,
+            ),
         ]
     }
 
@@ -215,6 +250,16 @@ impl Metrics {
             "forge_gateway_upload_packs_active",
             "git-upload-packs streaming now.",
             g.upload_packs_active,
+        );
+        gauge(
+            "forge_gateway_deny_entries",
+            "Entries of the deny list in force (GATEWAY_DENY).",
+            g.deny_entries,
+        );
+        gauge(
+            "forge_gateway_deny_unreadable",
+            "1 when the latest look at the deny list file failed (the list in force may be out of date).",
+            g.deny_unreadable,
         );
         let (ok, failed) = self.upstream_times();
         let secs = |t: Option<SystemTime>| {

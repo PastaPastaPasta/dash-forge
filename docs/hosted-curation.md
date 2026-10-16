@@ -55,7 +55,7 @@ Every entry carries its date and reason.
 
 ## The gateway
 
-Gateway support (index, cards, GATEWAY_DENY) is added separately.
+dashhq's gateway ([`git-forge.dashhq.org`](hosting/forge-gateway.md)) reads the same file, compiled into its image. Hiding changes only its link previews: a hidden repository's (or hidden identity's) share link and card are the site's own, naming nothing of it. Its clones, badges and feeds are still served. A different, operator-only list, `GATEWAY_DENY`, makes the gateway refuse a repository or owner outright with `451 Unavailable For Legal Reasons`, delete its cached mirror, and point at `git clone dash://…`. Both are the gateway operator's choice, not protocol moderation. The file format, reload behaviour and runbook are in [Takedowns and hidden repositories](hosting/forge-gateway.md#takedowns-and-hidden-repositories).
 
 ## Verifying what a build hides
 

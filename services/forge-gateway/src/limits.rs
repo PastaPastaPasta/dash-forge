@@ -1,5 +1,7 @@
 //! Abuse controls: per-client token buckets and per-client concurrency, keyed by the client's
-//! address (an IPv6 address by its /64, so one host cannot rotate through its prefix). The
+//! address (an IPv6 address by its /64, so one host cannot rotate through its prefix; the
+//! limits on costly work, clones and new mirrors, by its /48, because free tunnel brokers hand
+//! out a /48 and a /64 key would give each of its 65,536 subnets a fresh allowance). The
 //! addresses live in memory only, and are never logged. A bucket that is full again is dropped
 //! at the next sweep (at most one limiter period later), so an address is kept for at most two
 //! periods after its last request.
@@ -9,8 +11,17 @@ use std::net::IpAddr;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-/// The key a client is limited by.
+/// The key a client is limited by: an IPv4 address, or an IPv6 address's /64.
 pub fn client_key(ip: IpAddr) -> IpAddr {
+    key(ip, false)
+}
+
+/// The key the limits on costly work use: an IPv4 address, or an IPv6 address's /48.
+pub fn wide_client_key(ip: IpAddr) -> IpAddr {
+    key(ip, true)
+}
+
+fn key(ip: IpAddr, wide: bool) -> IpAddr {
     match ip {
         IpAddr::V4(_) => ip,
         IpAddr::V6(v6) => {
@@ -18,13 +29,17 @@ pub fn client_key(ip: IpAddr) -> IpAddr {
                 return IpAddr::V4(v4);
             }
             let s = v6.segments();
-            IpAddr::V6(std::net::Ipv6Addr::new(s[0], s[1], s[2], s[3], 0, 0, 0, 0))
+            let subnet = if wide { 0 } else { s[3] };
+            IpAddr::V6(std::net::Ipv6Addr::new(
+                s[0], s[1], s[2], subnet, 0, 0, 0, 0,
+            ))
         }
     }
 }
 
 /// A token bucket per client: `capacity` requests, refilled evenly over `period`.
 pub struct RateLimiter {
+    wide: bool,
     capacity: f64,
     per_sec: f64,
     period: Duration,
@@ -43,6 +58,7 @@ impl RateLimiter {
     pub fn new(capacity: u32, period: Duration) -> Self {
         let capacity = f64::from(capacity.max(1));
         Self {
+            wide: false,
             capacity,
             per_sec: capacity / period.as_secs_f64().max(0.001),
             period,
@@ -51,13 +67,20 @@ impl RateLimiter {
         }
     }
 
+    /// The same, per IPv6 /48 ([`wide_client_key`]): for costly work.
+    #[must_use]
+    pub fn wide(mut self) -> Self {
+        self.wide = true;
+        self
+    }
+
     /// Take one token for `ip`. `Err(wait)` when it has none: retry after `wait`.
     pub fn check(&self, ip: IpAddr) -> Result<(), Duration> {
         self.check_at(ip, Instant::now())
     }
 
     fn check_at(&self, ip: IpAddr, now: Instant) -> Result<(), Duration> {
-        let key = client_key(ip);
+        let key = key(ip, self.wide);
         let mut b = self.buckets.lock().unwrap_or_else(PoisonError::into_inner);
         let sweep = {
             let mut swept = self.swept.lock().unwrap_or_else(PoisonError::into_inner);
@@ -95,6 +118,7 @@ impl RateLimiter {
 
 /// At most `per_client` concurrent holders per client.
 pub struct ClientConcurrency {
+    wide: bool,
     per_client: usize,
     active: Arc<Mutex<HashMap<IpAddr, usize>>>,
 }
@@ -121,14 +145,22 @@ impl ClientConcurrency {
     /// `per_client` at once per client.
     pub fn new(per_client: usize) -> Self {
         Self {
+            wide: false,
             per_client: per_client.max(1),
             active: Arc::default(),
         }
     }
 
+    /// The same, per IPv6 /48 ([`wide_client_key`]).
+    #[must_use]
+    pub fn wide(mut self) -> Self {
+        self.wide = true;
+        self
+    }
+
     /// A slot for `ip`, or `None` when it already holds `per_client`.
     pub fn acquire(&self, ip: IpAddr) -> Option<ClientPermit> {
-        let key = client_key(ip);
+        let key = key(ip, self.wide);
         let mut a = self.active.lock().unwrap_or_else(PoisonError::into_inner);
         let n = a.entry(key).or_insert(0);
         if *n >= self.per_client {
@@ -210,6 +242,38 @@ mod tests {
         assert_eq!(client_key(a), client_key(b));
         let mapped: IpAddr = "::ffff:192.0.2.9".parse().unwrap();
         assert_eq!(client_key(mapped), "192.0.2.9".parse::<IpAddr>().unwrap());
+    }
+
+    #[test]
+    fn costly_work_is_limited_by_the_48() {
+        let a: IpAddr = "2001:db8:1:2::1".parse().unwrap();
+        let b: IpAddr = "2001:db8:1:9999::1".parse().unwrap();
+        let other: IpAddr = "2001:db8:2:2::1".parse().unwrap();
+        assert_ne!(client_key(a), client_key(b));
+        assert_eq!(wide_client_key(a), wide_client_key(b));
+        assert_ne!(wide_client_key(a), wide_client_key(other));
+        assert_eq!(
+            wide_client_key("::ffff:192.0.2.9".parse().unwrap()),
+            "192.0.2.9".parse::<IpAddr>().unwrap()
+        );
+
+        // One /48 shares a bucket, however many /64s it rotates through; the /64 limiter
+        // still tells them apart.
+        let t = Instant::now();
+        let wide = RateLimiter::new(1, Duration::from_secs(60)).wide();
+        assert!(wide.check_at(a, t).is_ok());
+        assert!(wide.check_at(b, t).is_err());
+        assert!(wide.check_at(other, t).is_ok());
+        let narrow = RateLimiter::new(1, Duration::from_secs(60));
+        assert!(narrow.check_at(a, t).is_ok());
+        assert!(narrow.check_at(b, t).is_ok());
+
+        let c = ClientConcurrency::new(1).wide();
+        let held = c.acquire(a).unwrap();
+        assert!(c.acquire(b).is_none());
+        assert!(c.acquire(other).is_some());
+        drop(held);
+        assert!(c.acquire(b).is_some());
     }
 
     #[test]

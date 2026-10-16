@@ -74,6 +74,7 @@ Run it once with `dry-run: 'true'` from the Actions tab (`workflow_dispatch`) to
 | `dry-run` | `false` | `true`: list, compare and estimate, and write nothing. |
 | `fail-on-partial` | `false` | `true`: fail the step when some items were skipped (`status: partial`). By default that is a warning, because the next run retries them. |
 | `github-repo` | `${{ github.repository }}` | The GitHub repository to mirror. |
+| `i-have-the-rights` | *(empty)* | Your acknowledgement that you may publish the mirrored repository's content permanently on Dash Platform (see [Rights](#rights-licence-and-git-lfs)). Empty: acknowledged when `github-repo` belongs to the account that owns the workflow's repository, so mirroring your own repository needs nothing. `true`: you may publish it; needed for a repository of another owner. `false`: never; a real run refuses. |
 | `version` | `0.1.0` | The Dash Forge release this Action version pins: the one it was cut with. Empty: `install: 'true'` builds from source. |
 | `install` | `true` | `true`: install release `version` with [`install.sh`](../install.sh) (the step fails if that release is not published), or, with `version` empty, build from source as `source` does. `source`: build `dg`, `git-remote-dash` and `forge-import` from the Action's own source, the ref after `@` in `uses:` (needs Rust and jq, which GitHub's ubuntu runners have; protoc is installed if missing on Linux x86_64 and arm64). `false`: use the binaries already on `PATH`. |
 | `build-cache` | `true` | A source build reuses its compiled dependencies from `actions/cache`, keyed by `Cargo.lock` and the toolchain. `false`: compile everything on every run. |
@@ -124,6 +125,12 @@ Packs are content-addressed, and a ref is written only when its tip differs. Eac
 2. **While writing.** If the actual spend reaches the cap, the run stops. What was written so far stays written, and the next run continues from there.
 
 `forge-import` enforces the cap itself, on every write, including the `git push`es it makes for code. A capped run fails the job with `status: cap_exceeded`. A limited runner key adds a hard limit that Platform itself enforces: whatever happens, a run cannot spend more than the key's remaining budget.
+
+## Rights, licence and Git LFS
+
+A mirror is permanent on Dash Platform and carries other people's words: commit authors' names and emails, and (with `issues`, `prs`) issues, comments and reviews with their authors' logins and text. Platform cannot delete any of it, and later edits or deletions on GitHub are not carried over. So a real run needs an acknowledgement that you may publish the source: the `i-have-the-rights` input. **Decision:** it is empty by default, and empty means *yes when the repository belongs to the account that owns the workflow's repository*, because the person running the Action on their own repository is the one who may publish it; the Action's default inputs therefore keep working for that, and the run logs that it took this as the acknowledgement. A `github-repo` of another owner is refused until you set `i-have-the-rights: 'true'`. A dry run needs neither.
+
+`forge-import` prints the licence GitHub reports for the source, and warns when it reports none or the source belongs to someone else. The job summary shows the licence as *Source licence*. If the default branch tracks files with Git LFS (a `.gitattributes` sets `filter=lfs`), the run warns and the job summary says the mirror holds the LFS pointer files only: the large files stay on GitHub, and Dash Forge does not mirror LFS objects.
 
 ## The job summary
 
