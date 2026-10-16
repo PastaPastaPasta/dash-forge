@@ -553,20 +553,38 @@ async function rankedForked(sdk: EvoSDK, forge: ForgeIds, network: Network, limi
   const held = new Map<string, number>()
   for (const d of got.forkRows ?? []) held.set(asIdentifierString(d['forkOf']), (held.get(asIdentifierString(d['forkOf'])) ?? 0) + 1)
   // Groups the lookup did not hold whole (or all of them, when it was refused) are read on their
-  // own, a few at a time. A hidden repo is never listed, so its forks are not read.
-  const unheld = ids.filter((id) => byId.has(id) && (held.get(id) ?? 0) < (raw.get(id) ?? 0))
-  const own = await mapPooled(unheld, FORK_READ_PARALLEL, async (id) => ({
-    id,
-    documents: (
-      await queryDocumentsWithProof(sdk, {
-        dataContractId: forge.core,
-        documentTypeName: DOC.repo,
-        where: [['forkOf', '==', id]],
-        orderBy: [['forkOf', 'asc']],
-        limit: MAX_ROWS,
-      })
-    ).documents,
-  }))
+  // own, a few at a time, most forks first. A hidden repo is never listed, so its forks are not
+  // read. A group whose raw fork count is below the `limit`-th best owner count known so far is
+  // skipped: its owners can be at most its forks, so it cannot place (and its partial rows are a
+  // lower bound that cannot place either).
+  const exact = new Map<string, number>()
+  const heldOwners = forkOwnersByParent(got.forkRows ?? [], parentOwners)
+  for (const id of ids) if (byId.has(id) && (held.get(id) ?? 0) >= (raw.get(id) ?? 0)) exact.set(id, heldOwners.get(id)?.size ?? 0)
+  const bar = (): number => [...exact.values()].sort((a, b) => b - a)[limit - 1] ?? 0
+  const pending = ids.filter((id) => byId.has(id) && !exact.has(id)).sort((a, b) => (raw.get(b) ?? 0) - (raw.get(a) ?? 0))
+  const unheld: string[] = []
+  const own: { id: string; documents: PlainDocument[] }[] = []
+  for (let at = 0; at < pending.length; at += FORK_READ_PARALLEL) {
+    const batch = pending.slice(at, at + FORK_READ_PARALLEL).filter((id) => (raw.get(id) ?? 0) >= bar())
+    if (batch.length === 0) break
+    const fetched = await mapPooled(batch, FORK_READ_PARALLEL, async (id) => ({
+      id,
+      documents: (
+        await queryDocumentsWithProof(sdk, {
+          dataContractId: forge.core,
+          documentTypeName: DOC.repo,
+          where: [['forkOf', '==', id]],
+          orderBy: [['forkOf', 'asc']],
+          limit: MAX_ROWS,
+        })
+      ).documents,
+    }))
+    for (const o of fetched) {
+      unheld.push(o.id)
+      own.push(o)
+      exact.set(o.id, forkOwnersByParent(o.documents, parentOwners).get(o.id)?.size ?? 0)
+    }
+  }
   const readOwn = new Set(unheld)
   // This group's partial rows are replaced by the group's own read.
   const rows = [...(got.forkRows ?? []).filter((d) => !readOwn.has(asIdentifierString(d['forkOf']))), ...own.flatMap((o) => o.documents)]

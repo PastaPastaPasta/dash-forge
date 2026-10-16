@@ -507,6 +507,24 @@ describe('rankedRepos (C-1: proved ranked reads)', () => {
     expect(seen.queries.some((q) => q.documentTypeName === 'repo' && JSON.stringify(q.where) === JSON.stringify([['forkOf', '==', id('RripgrepB')]]))).toBe(true)
   })
 
+  it('most forked skips the own-read of a repo whose fork count cannot place', async () => {
+    const s = store()
+    const fork = (name: string, of: string, owner: string) => ({ $id: id(`F${name}`), $ownerId: owner, $createdAt: NOW - 1000, name, visibility: 'public', description: '', forkOf: id(of) })
+    // p0: 110 forks by 110 owners. p1..p9: 3 forks each. With limit 1 nothing but p0 can place.
+    s[FORGE.core]!['repo'] = [
+      ...s[FORGE.core]!['repo']!,
+      ...Array.from({ length: 10 }, (_, i) => repo(`p${i}`, NOW - 6000 - i)),
+      ...Array.from({ length: 110 }, (_, i) => fork(`p0-${String(i).padStart(3, '0')}`, 'Rp0', id(`V${String(i).padStart(3, '0')}`))),
+      ...Array.from({ length: 9 }, (_, p) => [0, 1, 2].map((k) => fork(`p${p + 1}-${k}`, `Rp${p + 1}`, id(`W${p}${k}`)))).flat(),
+    ]
+    const seen = fresh()
+    const r = await rank(mockSdk(s, seen), 'most-forked', { network: NET, limit: 1 })
+    expect(names(r.repos)).toEqual(['p0'])
+    const ownReads = seen.queries.filter((q) => q.documentTypeName === 'repo' && JSON.stringify(q.where).includes('"forkOf","=="'))
+    // At most one batch of own-reads: once p0 is known, a 3-fork repo cannot beat it.
+    expect(ownReads.length).toBeLessThanOrEqual(8)
+  })
+
   it('most forked still counts distinct owners when the composite is refused (each repo’s forks read on its own)', async () => {
     const s = store()
     const fork = (name: string, of: string, owner: string) => ({ $id: id(`F${name}`), $ownerId: owner, $createdAt: NOW - 1000, name, visibility: 'public', description: '', forkOf: id(of) })

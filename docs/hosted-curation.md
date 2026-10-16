@@ -17,10 +17,10 @@ It is **not protocol moderation**:
 For a hidden repository id, or any repository owned by a hidden identity id, the dashhq web build:
 
 - leaves it out of the landing page (featured, recent), Explore (recent, search, topics, Trending, Most starred, Most forked and Recently updated), the jump box, and the `/github.com/<owner>/<repo>` mirror lookup;
-- shows "Not shown on this site" instead of any page of the repository. The notice gives a clone line that addresses the repository by its id (`dash://<repo id>`, with this build's network set) and says the repository still exists on Dash Platform. To know the owner, the build resolves the repository like any other page (one request that includes its counts and ref list), then drops what it read without rendering it. It does not open its code, issues or other content;
-- shows the same notice in place of a hidden identity's repository list on its profile page. The rest of the profile (name, follows) is unchanged, because it is not a repository.
+- shows "Not shown on this site" instead of any page of the repository. The notice gives a clone line that addresses the repository by its id (`dash://<repo id>`, with this build's network set) and says the repository still exists on Dash Platform. To know the owner, the build reads the repository like any other page (its name lookup and one request that includes its counts and ref list), then renders none of it. It does not open its code, issues or other content;
+- on a hidden identity's profile page, shows the same notice in place of its repository list and does not read or show its profile details (bio, links, bot info). Its name, follow counts and id still show.
 
-What it does not touch: a signed-in person's own "My repos", "Repos I maintain or write to" and "Starred" lists, and the notification inbox. Those are the person's own data, not discovery.
+What it does not touch: a signed-in person's own "My repos", "Repos I maintain or write to" and "Starred" lists, and the notification inbox. Those are the person's own data, not discovery. Links from visible pages are not rewritten either: a visible fork still names its hidden parent, and stargazer and follower lists can include hidden identities.
 
 Rankings are unweighted counts (see Explore): Most forked ignores forks made by hidden identities, but stars from hidden identities still count toward a visible repository's stars, because telling them apart would take a read per stargazer.
 

@@ -143,10 +143,11 @@ export function ProfileContent({ identityId: address, byId = false }: { identity
       const forge = NETWORKS[network].v2
       const noCounts = { followers: null, following: null }
       const follows = forge !== null ? readFollowCounts(sdk!, forge, identityId).catch(() => noCounts) : noCounts
-      // An unreadable profile leaves the page as it was before profiles: never an error.
-      const profile = forge !== null ? readProfile(sdk!, forge, identityId).catch(() => 'unread' as const) : null
-      // A hidden identity's repos are not read or listed here; the profile card is unchanged.
+      // A hidden identity's profile details and repos are not read or shown here
+      // (docs/hosted-curation.md); its name, follow counts and id still are.
       const hiddenRepos = isHiddenIdentity(identityId)
+      // An unreadable profile leaves the page as it was before profiles: never an error.
+      const profile = forge !== null && !hiddenRepos ? readProfile(sdk!, forge, identityId).catch(() => 'unread' as const) : null
       const [name, repos, counts, stored] = await Promise.all([
         resolveDpnsName(sdk!, identityId, network),
         hiddenRepos ? { owned: [], member: [] } : listReposByOwner(sdk!, identityId, { network, counts: true }),

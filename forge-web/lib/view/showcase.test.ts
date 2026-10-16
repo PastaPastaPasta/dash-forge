@@ -165,4 +165,14 @@ describe('recentFeed: read on while a flood leaves the feed short', () => {
     await recentFeed({} as EvoSDK, { network: 'devnet' })
     expect(feedReads).toHaveLength(1)
   })
+
+  it('says older repos follow when every row read was hidden, so the page is not called empty', async () => {
+    feedPages = [1, 2, 3].map((n) => ({ repos: [], next: { at: n, seen: [] } }))
+    const r = await recentFeed({} as EvoSDK, { network: 'devnet' })
+    expect(r.repos).toHaveLength(0)
+    expect(r.more).toBe(true)
+    feedReads.length = 0
+    feedPages = [{ repos: [], next: null }]
+    expect((await recentFeed({} as EvoSDK, { network: 'devnet' })).more).toBe(false)
+  })
 })

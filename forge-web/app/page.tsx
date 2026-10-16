@@ -202,6 +202,14 @@ export default function LandingPage(): JSX.Element {
         ) : null}
         {!deployed ? null : feed.error ? (
           <ErrorState message={feed.error} onRetry={feed.reload} />
+        ) : feed.data && feed.data.length === 0 && feedPage.data?.more ? (
+          <p className="text-dense text-anvil-500 dark:text-anvil-400" data-testid="landing-recent-hidden">
+            None of the newest repos are shown on this site.{' '}
+            <Link href="/explore/" className="hit-area text-forge-700 underline dark:text-forge-300">
+              Explore
+            </Link>{' '}
+            lists older ones.
+          </p>
         ) : feed.data && feed.data.length === 0 ? (
           <EmptyState
             icon={GitBranch}

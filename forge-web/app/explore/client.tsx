@@ -143,7 +143,7 @@ export function ExploreClient(): JSX.Element {
             <p className="mt-1 text-dense text-anvil-600 dark:text-anvil-300">Everything here is read from {networkName(NETWORKS[network])} and verified in your browser. No server ranks it.{' '}
               {curates() ? (
                 <>
-                  This site hides some repos from these lists; they stay on Dash Platform, and other sites show them.{' '}
+                  This site hides some repos from these lists; they stay on Dash Platform, and other sites and clients can show them.{' '}
                   <a href={DOCS.hostedCuration} target="_blank" rel="noreferrer noopener" className="hit-area text-forge-700 underline dark:text-forge-400" data-testid="explore-curation-link">
                     What that means
                   </a>
@@ -313,7 +313,7 @@ export function ExploreClient(): JSX.Element {
               <PagedGrid repos={d} pages={recent} what="repos" />
             </>
           )}
-          {(d) => d.length === 0}
+          {(d) => d.length === 0 && !recent.hasMore}
         </Section>
 
         <Section
@@ -424,7 +424,7 @@ function ExploreSearch({ on, network }: { on: boolean; network: Network }): JSX.
                 <PagedGrid repos={d} pages={search} what="results" />
               </>
             )}
-            {(d) => d.length === 0}
+            {(d) => d.length === 0 && !search.hasMore}
           </Section>
         )
       ) : null}
@@ -623,7 +623,13 @@ function FallbackNote({ pages }: { pages: RepoPages }): JSX.Element | null {
 function PagedGrid({ repos, pages, what }: { repos: readonly DiscoveredRepo[]; pages: RepoPages; what: string }): JSX.Element {
   return (
     <div className="space-y-3">
-      <RepoGrid repos={repos} />
+      {repos.length === 0 && pages.hasMore ? (
+        <p className="text-dense text-anvil-500 dark:text-anvil-400" data-testid="explore-page-hidden">
+          Nothing read so far is shown on this site (some repos are hidden here). Load more to keep reading.
+        </p>
+      ) : (
+        <RepoGrid repos={repos} />
+      )}
       {pages.error ? <ErrorState message={pages.error} onRetry={pages.loadMore} /> : pages.hasMore ? (
         <Button variant="outline" size="sm" onClick={pages.loadMore} loading={pages.loading}>
           Load more {what}

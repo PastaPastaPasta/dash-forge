@@ -112,7 +112,7 @@ const LANDING_PAGES = 3
 export async function recentFeed(
   sdk: EvoSDK,
   opts: { network: Network; limit?: number },
-): Promise<{ repos: DiscoveredRepo[]; pushesComplete: boolean; fallback: boolean }> {
+): Promise<{ repos: DiscoveredRepo[]; pushesComplete: boolean; fallback: boolean; more: boolean }> {
   const repos: DiscoveredRepo[] = []
   let pushesComplete = true
   let fallback = false
@@ -122,8 +122,10 @@ export async function recentFeed(
     repos.push(...page.repos)
     pushesComplete &&= page.pushesComplete
     fallback ||= page.fallback
-    if (page.next === null || landingRecent(repos, { pushesKnown: pushesComplete && !fallback, showAll: false }).shown.length >= LANDING_TARGET) break
     after = page.next
+    if (page.next === null || landingRecent(repos, { pushesKnown: pushesComplete && !fallback, showAll: false }).shown.length >= LANDING_TARGET) break
   }
-  return { repos, pushesComplete, fallback }
+  // `more`: older repos follow, so an empty result (every row read was hidden on this site) is not
+  // an empty network.
+  return { repos, pushesComplete, fallback, more: after !== null }
 }
