@@ -120,12 +120,12 @@ export function AppHeader(): JSX.Element {
           <span className="hidden text-prose font-semibold tracking-tight text-anvil-900 dark:text-anvil-50 lg:inline">Dash Forge</span>
         </Link>
 
-        {/* A devnet (resettable, test funds only) is flagged at every width, testnet from `sm` up; mainnet has no badge. It opens the Networks page. */}
+        {/* A test network (a devnet or the testnet: resettable, test funds only) is flagged at every width; mainnet has no badge. It opens the Networks page. */}
         {ACTIVE_NETWORK.network === 'mainnet' ? null : (
           <Link
             href="/networks/"
             data-testid="network-link"
-            className={cn('shrink-0 items-center rounded hover:opacity-80 coarse:min-h-11', ACTIVE_NETWORK.network === 'devnet' ? 'flex' : 'hidden sm:flex')}
+            className="flex shrink-0 items-center rounded hover:opacity-80 coarse:min-h-11"
           >
             <NetworkBadge compact />
           </Link>

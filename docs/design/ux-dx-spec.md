@@ -68,7 +68,7 @@ With no storage profile the command stops before creating anything: *"No storage
 ### 2.1 Principles
 - The **master key never lives in the browser**, unencrypted on disk, or in CI. It appears only in one-time ceremonies: registering limited keys, a DPNS name, an encryption key.
 - Daily use runs on **PV14 limited keys**: AUTHENTICATION, level HIGH, bound to the `dash-forge` contract group, with budget and expiry. Defaults: browser **0.05 DASH / 90 days**, CLI **0.25 DASH / 180 days**, CI runner **0.5 DASH / 365 days**, all editable at creation.
-- Nothing is sponsored; mainnet and testnet never show a faucet. Dev builds (`NEXT_PUBLIC_FORGE_DEV=1`, `dg --network devnet`) do.
+- Nothing is sponsored; mainnet never shows a faucet. A testnet build links the two public testnet faucets (`faucet.testnet.networks.dash.org`, then `faucet.thepasta.org`; OD-12), and a devnet build its own (`faucet.<name>.networks.dash.org`, also `dg --network devnet`).
 
 ### 2.2 Browser: getting an identity
 Sign-in sheet (replaces `login-modal.tsx`): three tiles plus an "Advanced" disclosure.

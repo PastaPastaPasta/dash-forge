@@ -2,9 +2,10 @@
  * Network badge + "not deployed" state — both driven by the build's network config.
  *
  *   - NetworkBadge: which network this build reads and writes. Shown in the header whenever
- *     the network is not mainnet: a devnet as `devnet · <name>` in the caution color
- *     (resettable, test funds only), and in the caution color too when forge-v2 is not
- *     deployed on the network.
+ *     the network is not mainnet: a devnet as `devnet · <name>`, a testnet as `testnet`, both in
+ *     the caution color (resettable, test funds only; WEB-17: a testnet is not "production-like"
+ *     until mainnet exists), and in the caution color too when forge-v2 is not deployed on the
+ *     network.
  *   - NotDeployedState: the one honest state for a network without forge-v2 — never a
  *     silent fallback to another network's contracts.
  */
@@ -25,6 +26,13 @@ export function networkLabel(config: NetworkConfig = ACTIVE_NETWORK): string {
     : config.network
 }
 
+/** The badge's tooltip, before the "not deployed" suffix: a test network says its DASH is test money. */
+export function networkBadgeTitle(config: NetworkConfig = ACTIVE_NETWORK): string {
+  return config.network === 'mainnet'
+    ? `Connected to ${config.key}.`
+    : `${networkName(config)}: a test network. Its DASH is free test money and it can be reset.`
+}
+
 export function NetworkBadge({
   config = ACTIVE_NETWORK,
   always = false,
@@ -41,8 +49,9 @@ export function NetworkBadge({
   if (config.network === 'mainnet' && !always) return null
   const deployed = isForgeDeployed(config)
   const devnet = config.network === 'devnet'
+  const testNetwork = config.network !== 'mainnet'
   // Contract ids live on a repo's Settings → Platform details, not in the header.
-  const where = devnet ? `${networkName(config)}: a test network. Its DASH is free and it can be reset.` : `Connected to ${config.key}.`
+  const where = networkBadgeTitle(config)
   const title = deployed ? where : `${where} Dash Forge isn't available here yet.`
   return (
     <span
@@ -50,7 +59,7 @@ export function NetworkBadge({
       data-testid="network-badge"
       className={cn(
         'whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-[11px] uppercase',
-        devnet || !deployed ? 'bg-caution/10 text-caution-700 dark:text-caution-400' : 'bg-dash/10 text-dash-600 dark:text-dash-400',
+        testNetwork || !deployed ? 'bg-caution/10 text-caution-700 dark:text-caution-400' : 'bg-dash/10 text-dash-600 dark:text-dash-400',
         className,
       )}
     >

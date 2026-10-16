@@ -3,7 +3,7 @@
 /**
  * `/start` — Getting started (QA wave bonsia, QW-013): what Dash Forge is, and the three things a
  * GitHub user has not met before (an identity instead of an account, credits that pay for writes,
- * and, on a devnet, free test DASH), then where to go next. The long form is in the user guides,
+ * and, on a test network, free test DASH), then where to go next. The long form is in the user guides,
  * linked at the end; the figures come from the same cost model the app quotes.
  */
 
@@ -13,12 +13,11 @@ import type { ReactNode } from 'react'
 import { AppShell } from '@/components/app-shell'
 import { SignInButton } from '@/components/sign-in-button'
 import { Button } from '@/components/ui/button'
-import { faucetUrl } from '@/components/top-up-sheet'
+import { TestNetworkNote } from '@/components/test-network-note'
 import { useAuth } from '@/contexts/auth-context'
 import { BROWSER_KEY_DEFAULTS } from '@/lib/auth'
-import { ACTIVE_NETWORK, networkName } from '@/lib/constants'
 import { DOCS } from '@/lib/docs-links'
-import { pushCostPhrase, typicalIssueCredits } from '@/lib/sdk'
+import { pushCostPhrase, pushStorageHint, typicalIssueCredits } from '@/lib/sdk'
 import { creditsAsDash } from '@/lib/view/format'
 
 function Section({ icon, title, children }: { icon: ReactNode; title: string; children: ReactNode }): JSX.Element {
@@ -44,8 +43,6 @@ function Guide({ href, children }: { href: string; children: ReactNode }): JSX.E
 
 export default function GettingStartedPage(): JSX.Element {
   const { identity } = useAuth()
-  const faucet = faucetUrl()
-  const devnet = ACTIVE_NETWORK.network === 'devnet'
   return (
     <AppShell>
       <div className="mx-auto max-w-2xl space-y-4" data-testid="getting-started">
@@ -74,17 +71,8 @@ export default function GettingStartedPage(): JSX.Element {
             price before you confirm.
           </p>
           <p>You add credits by sending DASH to your identity: a new identity is funded when it is made, and Settings → Top up adds more later.</p>
-          {devnet ? (
-            <p className="rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-caution-800 dark:text-caution-300" data-testid="start-devnet">
-              This site runs on <strong>{networkName()}</strong>, a test network. Its DASH is free test money with no value
-              {faucet ? (
-                <>
-                  , from the <Guide href={faucet}>faucet</Guide>
-                </>
-              ) : null}
-              , and the network can be reset.
-            </p>
-          ) : null}
+          <p data-testid="start-push-storage">{pushStorageHint()}</p>
+          <TestNetworkNote />
         </Section>
 
         <Section icon={<KeyRound className="h-4 w-4 text-fg-muted" aria-hidden />} title="Signing in gives this browser a limited key">

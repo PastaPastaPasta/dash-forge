@@ -7,7 +7,7 @@
  * the funds as they stand, QW-047). It says which budget blocks and by how much, and offers the
  * fix for that budget:
  * - the identity's balance: a top-up from this browser (a deposit address any Dash wallet or a
- *   devnet faucet can pay, QW-012), or a credit transfer from another identity;
+ *   test-network faucet can pay, QW-012), or a credit transfer from another identity;
  * - this key's budget: top up the same key (one master-key signature), or renew it;
  * - an expired or disabled key: renew it (a new key; the old one is disabled).
  */
@@ -21,17 +21,14 @@ import { CopyRow } from '@/components/ui/copy-row'
 import { KeyTopUpDialog } from '@/components/key-top-up-dialog'
 import { IdentityTopUpFlow } from '@/components/identity-top-up-flow'
 import { KeyFundsLine } from '@/components/funds-summary'
-import { ACTIVE_NETWORK } from '@/lib/constants'
+import { faucetUrls } from '@/lib/faucets'
 import { typicalIssueCredits } from '@/lib/sdk'
 import { issueCoverage, type KeyLimits } from '@/lib/view/funds'
 import { creditsAsDash, formatDate } from '@/lib/view/format'
 
-/** Where dev networks get test DASH (mainnet and testnet show no faucet, spec §2.1). */
+/** The first place this network gets test DASH (`lib/faucets.ts`: testnet and devnet have one, mainnet none). */
 export function faucetUrl(): string | null {
-  if (process.env.NEXT_PUBLIC_FORGE_DEV !== '1' && ACTIVE_NETWORK.network !== 'devnet') return null
-  if (ACTIVE_NETWORK.network === 'devnet') return `https://faucet.${ACTIVE_NETWORK.devnetName}.networks.dash.org`
-  if (ACTIVE_NETWORK.network === 'testnet') return 'https://faucet.thepasta.org'
-  return null
+  return faucetUrls()[0] ?? null
 }
 
 /**
@@ -86,7 +83,6 @@ export function TopUpSheet(): JSX.Element | null {
   if (identity === null) return null
   if (topUpKey) return <KeyTopUpDialog onClose={() => setTopUpKey(false)} />
   if (reason === null) return null
-  const faucet = faucetUrl()
   const keyProblem = reason.blocker !== 'balance'
   // A stored Forge browser key with a budget can take more budget in place.
   const canTopUpKey = reason.blocker === 'key-budget' && storage === 'vault' && keyLimits?.total != null
@@ -140,7 +136,7 @@ export function TopUpSheet(): JSX.Element | null {
         ) : (
           <>
             {/* From this browser: a deposit address any wallet (or the faucet) can pay (QW-012). */}
-            <IdentityTopUpFlow faucet={faucet} />
+            <IdentityTopUpFlow faucets={faucetUrls()} />
             <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="top-up-coverage">
               {issueCoverage(funds?.spendable ?? null, ISSUE_CREDITS, creditsAsDash)}
             </p>

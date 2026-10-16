@@ -111,8 +111,12 @@ export default function NetworksPage(): JSX.Element {
         </section>
 
         <p className="text-dense text-anvil-600 dark:text-anvil-400">
-          Moved from an earlier devnet? <External href={DOCS.devnetMove}>What a move keeps and how to push again</External>. The full history is
-          in <External href={DOCS.networks}>the networks record</External>.
+          {ACTIVE_NETWORK.network === 'devnet' ? (
+            <>
+              Moved from an earlier devnet? <External href={DOCS.devnetMove}>What a move keeps and how to push again</External>.{' '}
+            </>
+          ) : null}
+          The full history is in <External href={DOCS.networks}>the networks record</External>.
         </p>
       </div>
     </AppShell>
