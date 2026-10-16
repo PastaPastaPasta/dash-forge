@@ -442,7 +442,7 @@ describe('the privacy disclosure (FEAT-08)', () => {
   it('says what a private repo encrypts and what an outsider still sees', () => {
     const p = deriveTrust(inputs({ deployed: true, sealed: 'private' })).privacy!
     expect(p).toMatchObject({ kind: 'private', title: 'Private content', label: 'Private' })
-    expect(p.detail).toMatch(/encrypted for its members/)
+    expect(p.detail).toMatch(/encrypted for the members/); expect(p.note).toMatch(/label names, check-run names/)
     expect(p.note).toMatch(/who the members are/)
     expect(p.note).toMatch(/Sizes and timing are visible/)
   })

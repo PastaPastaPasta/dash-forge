@@ -45,7 +45,7 @@ describe('TrustPanel privacy row', () => {
     const row = host.querySelector('[data-testid="trust-privacy"]')!
     expect(row.getAttribute('data-kind')).toBe('private')
     expect(row.textContent).toContain('Private content')
-    expect(row.textContent).toContain('encrypted for its members')
+    expect(row.textContent).toContain('encrypted for the members')
     expect(row.textContent).toContain('Sizes and timing are visible')
   })
 

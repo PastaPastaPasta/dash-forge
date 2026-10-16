@@ -474,8 +474,8 @@ export function derivePrivacy(network: Network, sealed: Sealed | undefined, depl
       kind: 'private',
       title: 'Private content',
       label: 'Private',
-      detail: 'Everything in this repo is encrypted for its members: files, issues, pull requests and comments. Only a member\'s key opens them.',
-      note: `${STILL_VISIBLE} The repo's name and description are public. Sizes and timing are visible.`,
+      detail: 'Files, branch names, issues, pull requests, comments, reviews and releases are encrypted for the members. Only a member\'s key opens them.',
+      note: `${STILL_VISIBLE} The repo's name, description and topics are public, and so are label names, check-run names, assignees and webhook URLs. Sizes and timing are visible.`,
     }
   }
   if (sealed === 'members-only') {

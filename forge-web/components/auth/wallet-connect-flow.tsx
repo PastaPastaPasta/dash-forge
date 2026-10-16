@@ -375,7 +375,7 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
           {mobile ? 'Open it in the wallet again.' : 'Scan this second code with the wallet.'}
         </p>
       ) : null}
-      {step?.kind === 'request' ? <ScanOnlyHere /> : null}
+      {step?.kind === 'request' || isRegister ? <ScanOnlyHere /> : null}
       {uri ? (
         mobile ? (
           <>
@@ -444,8 +444,9 @@ export function WalletSupportNote(): JSX.Element {
   }
   return (
     <p data-testid="wallet-support" className="text-[12px] text-anvil-500 dark:text-anvil-400">
-      Works with a testnet development build of the Dash Wallet app: More → Tools → Connections → Scan QR. No released version has it yet. Each Forge
-      contract needs its own approval: repos and pushes first, then issues, pull requests and stars.
+      Works with a testnet development build of the Dash Wallet app: More → Tools → Connections → Scan QR. No released version has it yet. A wallet
+      whose key is bound to one contract (iOS) asks once per Forge contract: repos and pushes first, then issues, pull requests and
+      stars.
     </p>
   )
 }

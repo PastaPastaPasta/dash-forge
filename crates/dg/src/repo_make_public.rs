@@ -1330,7 +1330,7 @@ fn print_check(
 fn print_secrets(found: &[&Secret], everything: bool) {
     if found.is_empty() {
         if everything {
-            println!("    No secrets found in the code and the posts as they read now. Earlier edits, deleted comments, long posts kept in storage and releases aren't checked.");
+            println!("    No secrets found in the code and the posts as they read now. Earlier edits, deleted comments and long posts kept in storage aren't checked.");
         } else {
             println!("    No secrets found in what you're publishing.");
         }

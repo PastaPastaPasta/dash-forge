@@ -2742,7 +2742,7 @@ fn members_merge_refusal(number: u64, repo: &str) -> UserError {
         codes::USAGE,
         format!("PR #{number} is from a members-only branch: it is published, not merged"),
     )
-    .cause("a merge commit with members-only parents would leave the public branch without its history")
+    .cause("into a public base, a merge commit with members-only parents would leave the public branch without its history")
     .fix(format!(
         "dg publish --pr {number}     # into a public base: one new public commit; run it in a clone of {repo}"
     ))

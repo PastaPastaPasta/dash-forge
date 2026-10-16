@@ -36,11 +36,26 @@ describe('ScanOnlyHere', () => {
     expect(note.getAttribute('role')).toBe('note')
     expect(host.querySelector('[data-testid="scan-host"]')!.textContent).toBe(SITE_HOST)
     expect(note.textContent).toContain(`Scan only a code shown on ${SITE_HOST}.`)
-    expect(note.textContent).toContain('signs Forge writes as you')
-    expect(note.textContent).toContain('budget your wallet sets')
+    expect(note.textContent).toContain('can sign as you on Forge')
+    expect(note.textContent).toContain('no spending limit unless your wallet sets one')
     expect(note.textContent).toContain('encryption key that opens your private and members-only content')
-    expect(note.textContent).toContain('Only disabling the key undoes an approval')
+    expect(note.textContent).toContain('Disabling the key stops it signing')
+    expect(note.textContent).toContain('replace your encryption key too')
+    expect(note.textContent).not.toContain('CID')
     expect(host.querySelector('[data-testid="scan-warning-keys"]')!.getAttribute('href')).toBe('/settings/keys/')
+  })
+
+  it('on a copy served by CID, names the gateway host and points to checking the CID', () => {
+    const was = window.location.href
+    window.history.replaceState(null, '', '/')
+    Object.defineProperty(window, 'location', { configurable: true, value: { ...window.location, protocol: 'https:', hostname: 'bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi.ipfs.dweb.link', host: 'bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi.ipfs.dweb.link', pathname: '/' } })
+    try {
+      act(() => root.render(<ScanOnlyHere />))
+      expect(host.querySelector('[data-testid="scan-host"]')!.textContent).toContain('.ipfs.dweb.link')
+      expect(host.textContent).toContain('CID against the release')
+    } finally {
+      Object.defineProperty(window, 'location', { configurable: true, value: new URL(was) })
+    }
   })
 
   it('shows the host it is given (a self-hosted build)', () => {
