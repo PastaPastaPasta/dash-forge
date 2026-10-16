@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
-import { buildManifest, MANIFEST_NAME } from './build-manifest.mjs'
+import { noticeFingerprint as appFingerprint } from '../lib/new-build'
+import { buildManifest, MANIFEST_NAME, noticeFingerprint } from './build-manifest.mjs'
 
 describe('buildManifest', () => {
   it('hashes every file, sorted, and leaves itself out', () => {
@@ -29,6 +30,15 @@ describe('buildManifest', () => {
     expect(buildManifest(dir, {}).commit).toBeNull()
     expect(buildManifest(dir, { NEXT_PUBLIC_NETWORK: 'mainnet' }).variant).toBe('host')
     expect(buildManifest(dir, {})).not.toHaveProperty('notice')
-    expect(buildManifest(dir, { NEXT_PUBLIC_PAGES_NOTICE: ' Paused ' }).notice).toBe('paused')
+    expect(buildManifest(dir, { NEXT_PUBLIC_PAGES_NOTICE: ' Paused ', NEXT_PUBLIC_PAGES_NOTICE_TEXT: 'Why.' }).notice).toBe('paused\nWhy.\n')
+  })
+
+  it('fingerprints the operator notice exactly as the app compares it (lib/new-build.ts)', () => {
+    const cases: [string | undefined, string | undefined, string | undefined][] = [
+      [undefined, undefined, undefined],
+      [' Paused ', ' Why. ', 'https://x/a'],
+      ['advisory', '', ''],
+    ]
+    for (const [m, t, u] of cases) expect(noticeFingerprint(m, t, u)).toBe(appFingerprint(m, t, u))
   })
 })

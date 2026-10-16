@@ -14,12 +14,23 @@
  */
 
 import { BUILD_COMMIT, servedCid } from './build-info'
-import { PAGES_NOTICE } from './pages-notice'
 
 /** How often an open, visible tab asks (10 to 15 minutes; the focus check covers the rest). */
 export const CHECK_EVERY_MS = 12 * 60_000
 /** Focus and visibility events fire in bursts; ask at most this often. */
 export const MIN_GAP_MS = 60_000
+/**
+ * The operator notice as `scripts/build-manifest.mjs` records it (its `noticeFingerprint`, which
+ * this must match): '' when none, else the trimmed mode, text and link, one per line. A changed
+ * text or link counts as a new build too.
+ */
+export function noticeFingerprint(mode: string | undefined, text: string | undefined, url: string | undefined): string {
+  const m = (mode ?? '').trim().toLowerCase()
+  return m === '' ? '' : [m, (text ?? '').trim(), (url ?? '').trim()].join('\n')
+}
+
+const BUILD_NOTICE = noticeFingerprint(process.env.NEXT_PUBLIC_PAGES_NOTICE, process.env.NEXT_PUBLIC_PAGES_NOTICE_TEXT, process.env.NEXT_PUBLIC_PAGES_NOTICE_URL)
+
 /** A check that hangs must not leave detection stuck in flight for the tab's lifetime. */
 const FETCH_TIMEOUT_MS = 15_000
 
@@ -33,7 +44,7 @@ export async function checkForNewBuild(
   root: string,
   buildCommit: string = BUILD_COMMIT,
   fetchImpl: typeof fetch = fetch,
-  buildNotice: string | null = PAGES_NOTICE?.mode ?? null,
+  buildNotice: string = BUILD_NOTICE,
 ): Promise<BuildFreshness> {
   if (!/^[0-9a-f]{40}$/.test(buildCommit)) return 'unknown'
   try {
@@ -42,7 +53,7 @@ export async function checkForNewBuild(
     const manifest = (await res.json()) as { commit?: unknown; variant?: unknown; notice?: unknown }
     if (manifest.variant === 'ipfs') return 'unknown'
     if (typeof manifest.commit !== 'string' || !/^[0-9a-f]{40}$/.test(manifest.commit)) return 'unknown'
-    const notice = typeof manifest.notice === 'string' ? manifest.notice : null
+    const notice = typeof manifest.notice === 'string' ? manifest.notice : ''
     return manifest.commit === buildCommit && notice === buildNotice ? 'same' : 'newer'
   } catch {
     return 'unknown'

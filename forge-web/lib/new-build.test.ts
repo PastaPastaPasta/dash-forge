@@ -5,7 +5,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { CHECK_EVERY_MS, MIN_GAP_MS, checkForNewBuild, isImmutableCopy, watchForNewBuild } from './new-build'
+import { CHECK_EVERY_MS, MIN_GAP_MS, checkForNewBuild, isImmutableCopy, noticeFingerprint, watchForNewBuild } from './new-build'
 
 const A = 'a'.repeat(40)
 const B = 'b'.repeat(40)
@@ -27,9 +27,12 @@ describe('checkForNewBuild', () => {
   })
 
   it('the same commit with a different operator notice is newer: a pause redeploys the same commit', async () => {
-    expect(await checkForNewBuild(ROOT, A, serving({ commit: A, variant: 'host', notice: 'paused' }), null)).toBe('newer')
-    expect(await checkForNewBuild(ROOT, A, serving({ commit: A, variant: 'host' }), 'paused')).toBe('newer')
-    expect(await checkForNewBuild(ROOT, A, serving({ commit: A, variant: 'host', notice: 'paused' }), 'paused')).toBe('same')
+    const paused = noticeFingerprint('paused', 'A bug.', '')
+    expect(await checkForNewBuild(ROOT, A, serving({ commit: A, variant: 'host', notice: paused }), '')).toBe('newer')
+    expect(await checkForNewBuild(ROOT, A, serving({ commit: A, variant: 'host' }), paused)).toBe('newer')
+    expect(await checkForNewBuild(ROOT, A, serving({ commit: A, variant: 'host', notice: paused }), paused)).toBe('same')
+    // A new reason or link on the same mode is new too.
+    expect(await checkForNewBuild(ROOT, A, serving({ commit: A, variant: 'host', notice: noticeFingerprint('paused', 'Fixed soon.', '') }), paused)).toBe('newer')
   })
 
   it('resolves the manifest under a base path', async () => {

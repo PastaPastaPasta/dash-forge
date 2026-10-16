@@ -35,6 +35,20 @@ export function listFiles(dir, root = dir) {
 }
 
 /**
+ * The operator notice as the manifest records it and an open tab compares it
+ * (lib/new-build.ts `noticeFingerprint`, which must agree): '' when no mode is set, else the
+ * trimmed mode, text and link, one per line.
+ *
+ * @param {string | undefined} mode
+ * @param {string | undefined} text
+ * @param {string | undefined} url
+ */
+export function noticeFingerprint(mode, text, url) {
+  const m = (mode ?? '').trim().toLowerCase()
+  return m === '' ? '' : [m, (text ?? '').trim(), (url ?? '').trim()].join('\n')
+}
+
+/**
  * The manifest of the build in `dir`: the commit and network it was built for (from the build's
  * environment, as next.config.js reads them), whether it is the IPFS variant, and each file's
  * SHA-256 (hex), the manifest itself left out.
@@ -50,10 +64,10 @@ export function buildManifest(dir, env = process.env) {
   }
   const commit = /^[0-9a-f]{40}$/.test(env.FORGE_BUILD_COMMIT ?? '') ? env.FORGE_BUILD_COMMIT : null
   const network = env.NEXT_PUBLIC_NETWORK === 'devnet' && env.NEXT_PUBLIC_DEVNET_NAME ? `devnet-${env.NEXT_PUBLIC_DEVNET_NAME}` : (env.NEXT_PUBLIC_NETWORK ?? null)
-  // The operator notice (lib/pages-notice.ts), only when one is set, so a notice-free manifest is
+  // The operator notice (lib/pages-notice.ts: mode, text and link), only when one is set, so a notice-free manifest is
   // unchanged: an open tab compares it with its own, because pausing redeploys the same commit
   // (lib/new-build.ts).
-  const notice = (env.NEXT_PUBLIC_PAGES_NOTICE ?? '').trim().toLowerCase()
+  const notice = noticeFingerprint(env.NEXT_PUBLIC_PAGES_NOTICE, env.NEXT_PUBLIC_PAGES_NOTICE_TEXT, env.NEXT_PUBLIC_PAGES_NOTICE_URL)
   return {
     format: 1,
     commit,

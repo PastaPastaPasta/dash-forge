@@ -8,7 +8,7 @@
 
 import { ExternalLink } from 'lucide-react'
 import { AppShell } from '@/components/app-shell'
-import { faucetUrl } from '@/components/top-up-sheet'
+import { faucetHost, faucetUrls } from '@/lib/faucets'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import { DOCS } from '@/lib/docs-links'
 import { networkRows, type NetworkRow } from '@/lib/networks'
@@ -40,7 +40,7 @@ function External({ href, children }: { href: string; children: string }): JSX.E
 export default function NetworksPage(): JSX.Element {
   const rows = networkRows()
   const here = rows.find((r) => r.key === ACTIVE_NETWORK.key)
-  const faucet = faucetUrl()
+  const [faucet, ...otherFaucets] = faucetUrls()
   return (
     <AppShell>
       <div className="mx-auto max-w-3xl space-y-4" data-testid="networks">
@@ -64,6 +64,11 @@ export default function NetworksPage(): JSX.Element {
                 Its DASH is free test money{faucet ? (
                   <>
                     {' '}from the <External href={faucet}>faucet</External>
+                    {otherFaucets.map((url) => (
+                      <span key={url}>
+                        {' '}or <External href={url}>{faucetHost(url)}</External>
+                      </span>
+                    ))}
                   </>
                 ) : null}
                 . If the network is reset, its repositories and identities go with it; your git clones and your own storage are not
