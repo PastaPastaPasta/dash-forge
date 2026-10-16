@@ -951,14 +951,21 @@ mod tests {
     fn the_price_hint_names_the_platform_storage_rate() {
         let hint = price_hint();
         assert!(hint.contains("0.005 per small push"), "{hint}");
-        assert!(hint.contains("DASH/MiB of code stored on Platform"), "{hint}");
+        assert!(
+            hint.contains("DASH/MiB of code stored on Platform"),
+            "{hint}"
+        );
         assert!(
             hint.contains("Add your own storage first, or deposit about 0.4 DASH per MiB"),
             "{hint}"
         );
         // The rounded "about 0.4" in the sentence tracks the calibrated rate the line quotes.
         let per_mib = credits_to_dash(forge_core::cost::push_fees::chunks(1024 * 1024));
-        assert_eq!(format!("{per_mib:.1}"), "0.4", "update the hint's rounded figure");
+        assert_eq!(
+            format!("{per_mib:.1}"),
+            "0.4",
+            "update the hint's rounded figure"
+        );
     }
 
     #[test]
