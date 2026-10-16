@@ -311,9 +311,19 @@ fn question(plan: &MakePublicPlan) -> String {
             plan.id
         );
     }
+    post_question(&label(plan), plan.audience)
+}
+
+/// The question for one post: what stays of its earlier versions depends on who they were written
+/// for (a message to specific people was never members-only).
+fn post_question(label: &str, audience: Audience) -> String {
+    let earlier = if audience == Audience::SpecificPeople {
+        "Earlier versions stay with the people it was sent to."
+    } else {
+        "Earlier versions stay members-only."
+    };
     format!(
-        "Make your {} public? Everyone will be able to read it as you save it now. Earlier versions stay members-only. This can't be undone.",
-        label(plan)
+        "Make your {label} public? Everyone will be able to read it as you save it now. {earlier} This can't be undone."
     )
 }
 
@@ -406,4 +416,27 @@ async fn number_id(collab: &Collab<'_>, repo: &RepoRef, n: u32) -> Result<String
         format!("{} has no issue or pull request #{n}", repo.display()),
     )
     .into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_members_only_post_keeps_its_earlier_versions_members_only() {
+        assert_eq!(
+            post_question("comment 7bY", Audience::Members),
+            "Make your comment 7bY public? Everyone will be able to read it as you save it now. Earlier versions stay members-only. This can't be undone."
+        );
+    }
+
+    #[test]
+    fn a_letter_keeps_its_earlier_versions_with_its_people() {
+        let q = post_question("issue #3", Audience::SpecificPeople);
+        assert_eq!(
+            q,
+            "Make your issue #3 public? Everyone will be able to read it as you save it now. Earlier versions stay with the people it was sent to. This can't be undone."
+        );
+        assert!(!q.contains("members-only"));
+    }
 }

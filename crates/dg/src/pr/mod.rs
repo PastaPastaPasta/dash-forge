@@ -2727,25 +2727,32 @@ pub(crate) async fn post_merge_event(
 
 /// Refuse to merge a members-only pull request from a members-only branch (DESIGN §4.4, D10):
 /// into a public base it is published (`dg publish --pr`, a squash by default), never merged
-/// with members-only parents; into a members-only base, `dg` cannot merge it yet.
+/// with members-only parents; into a members-only base, `dg` cannot merge it yet, so the fix
+/// is git (and `dg publish` would only send the reader back here).
 fn refuse_members_merge(view: &PatchView, handle: &Repo, number: u64) -> Result<()> {
     if !view.patch.from_members_only_branch() {
         return Ok(());
     }
-    let repo = handle.display();
-    Err(UserError::new(
+    Err(members_merge_refusal(number, &handle.display()).into())
+}
+
+/// The refusal of [`refuse_members_merge`]: what to do for each kind of base.
+fn members_merge_refusal(number: u64, repo: &str) -> UserError {
+    UserError::new(
         codes::USAGE,
         format!("PR #{number} is from a members-only branch: it is published, not merged"),
     )
     .cause("a merge commit with members-only parents would leave the public branch without its history")
     .fix(format!(
-        "dg publish --pr {number}     # one new public commit; run it in a clone of {repo}"
+        "dg publish --pr {number}     # into a public base: one new public commit; run it in a clone of {repo}"
     ))
     .fix(format!(
-        "dg publish --pr {number} --history     # publish its commits as they are"
+        "dg publish --pr {number} --history     # into a public base: publish its commits as they are"
+    ))
+    .fix(format!(
+        "into a members-only base, merge PR #{number} with git (git merge, git push). Forge can't mark it merged yet"
     ))
     .note("nothing was written")
-    .into())
 }
 
 /// A merge is legal only from an open, ready PR (the contract's `c3_mergedAfter`: the sum
@@ -4509,6 +4516,20 @@ pub(crate) mod tests {
             log: forge_core::collab::v2::TargetLog::default(),
             patch,
         }
+    }
+
+    /// MIXE-13: the refusal sends a members-only base to git, not back to `dg publish`.
+    #[test]
+    fn a_members_only_pr_is_published_or_merged_with_git_never_in_a_circle() {
+        let e = members_merge_refusal(7, "alice/project");
+        let text = format!("{e:?}");
+        assert!(text.contains("PR #7 is from a members-only branch: it is published, not merged"));
+        assert!(text.contains("dg publish --pr 7"));
+        assert!(text.contains("into a public base"));
+        assert!(text.contains(
+            "into a members-only base, merge PR #7 with git (git merge, git push). Forge can't mark it merged yet"
+        ));
+        assert!(!text.contains("dg pr merge"));
     }
 
     /// QW-036: an open PR from the same source branch into the same base (after a retarget)
