@@ -61,11 +61,11 @@ jobs:
     env:
       E2E_DEVNET: sakura
     steps:
-      - uses: actions/checkout@v5
-      - uses: pnpm/action-setup@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
         with:
           version: 11
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
           cache: pnpm
@@ -83,7 +83,7 @@ jobs:
         env:
           E2E_SKIP_BUILD: '1'
         run: pnpm exec playwright test v2-reads.spec.ts fallback-browse.spec.ts zero-backend.spec.ts a11y.spec.ts
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: always()
         with:
           name: playwright-report
@@ -149,8 +149,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
           cache: npm
@@ -191,7 +191,7 @@ jobs:
       ID_COLLAB_JSON: ${{ secrets.FORGE_SAKURA_IDENTITY_COLLAB }}
       ID_CONTRIB_JSON: ${{ secrets.FORGE_SAKURA_IDENTITY_CONTRIB }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       # The local S3 store from the storage fixture the Rust workflow's `storage-it` step
       # uses (infra/docker-compose.yml): RustFS and its bucket setup only, since no CLI
@@ -222,9 +222,9 @@ jobs:
           sudo chmod +x /usr/local/bin/protoc
           protoc --version
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: e2e-cli
 
@@ -297,7 +297,7 @@ jobs:
         if: failure() || steps.storage.outcome == 'failure' || steps.storage_wait.outcome == 'failure'
         run: docker compose -f infra/docker-compose.yml logs --no-color --tail 200
 
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: always()
         with:
           name: cli-e2e-logs
@@ -318,7 +318,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       # The tenderdash proto-compiler needs a modern protoc (see cli-suite).
       - name: Install protoc
         env:
@@ -328,8 +328,8 @@ jobs:
             "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
           sudo unzip -q -o /tmp/protoc.zip -d /usr/local bin/protoc 'include/*'
           sudo chmod +x /usr/local/bin/protoc
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: e2e-cli
       - name: Build dg
