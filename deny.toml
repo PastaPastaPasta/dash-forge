@@ -36,6 +36,14 @@ ignore = [
     { id = "RUSTSEC-2026-0347", reason = "rustls bump arrives with the rc.3 SDK bump; remove when it lands" },
     { id = "RUSTSEC-2026-0348", reason = "rustls bump arrives with the rc.3 SDK bump; remove when it lands" },
     { id = "RUSTSEC-2026-0349", reason = "rustls bump arrives with the rc.3 SDK bump; remove when it lands" },
+
+    # zip 8.x, extraction only (SUID bits, symlink targets, permissions through symlinks); no 8.x release fixes
+    # them. Two users: forge-runner, which only writes archives (ZipWriter; ZipArchive in a test, never
+    # extract), and tenderdash-proto-compiler, a build-time dependency of the Platform SDK that extracts the
+    # tenderdash proto archive of the release it pins. Remove when the SDK moves to zip >= 9.
+    { id = "RUSTSEC-2026-0367", reason = "zip extract only: forge-runner never extracts; the SDK's build script extracts a pinned upstream archive" },
+    { id = "RUSTSEC-2026-0368", reason = "zip extract only: forge-runner never extracts; the SDK's build script extracts a pinned upstream archive" },
+    { id = "RUSTSEC-2026-0369", reason = "zip extract only: forge-runner never extracts; the SDK's build script extracts a pinned upstream archive" },
 ]
 
 [licenses]
