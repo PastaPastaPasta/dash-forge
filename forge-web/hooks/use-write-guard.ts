@@ -4,8 +4,8 @@
  * useWriteGuard — the checks every signing button runs before it signs, and what it does when
  * a write fails (`ux-dx-spec.md` §4):
  *
- * - before: while the devnet is moving (`NEXT_PUBLIC_DEVNET_NOTICE=moving`) every write is refused
- *   with the reason; else signed out opens the sign-in sheet; an empty balance, a spent or expired key, or
+ * - before: while writes are paused (the operator's `NEXT_PUBLIC_PAGES_NOTICE=paused`, or the devnet
+ *   is moving: `NEXT_PUBLIC_DEVNET_NOTICE=moving`) every write is refused with the reason; else signed out opens the sign-in sheet; an empty balance, a spent or expired key, or
  *   a write whose preview does not fit either budget (D-012: what Platform needs available,
  *   `CostPreview.admit`, not the raw estimate) opens the top-up sheet with the shortfall. A
  *   write to a Forge contract the session holds no key for (a wallet granted forge-core only)

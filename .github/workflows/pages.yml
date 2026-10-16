@@ -11,9 +11,16 @@ name: Deploy forge-web to Pages
 # every page) or `moving` (a banner that stays, and writes are paused: the window before the build
 # for the new devnet). `moving` only applies to a build for a devnet whose deployment file is marked
 # `retired` (lib/devnet-notice.ts), so leaving it set cannot pause writes on the devnet Forge moved
-# to (sakura). Changing the variable takes effect on the next deploy
+# to (sakura). PAGES_DEVNET_MOVE_TO (`testnet`, `mainnet` or `devnet-<name>`) names where an
+# `upcoming` move goes. Changing the variable takes effect on the next deploy
 # (run this workflow on master, or push to master); any other value fails the build. A tab opened before
 # the deploy keeps running the old build until it is reloaded, so it will not show the notice yet.
+#
+# The operator's switch works on every network (docs/hosting.md, "Pausing the site"): the
+# repository variable PAGES_NOTICE is unset (nothing), `advisory` (a banner that cannot be
+# dismissed, linking the advisory) or `paused` (the banner, and every write refused before anything
+# is signed). PAGES_NOTICE_TEXT is the reason shown, PAGES_NOTICE_URL the advisory's https address.
+# Set them, then run this workflow by workflow_dispatch; a typo fails the build.
 #
 # The optional services are switched on the same way, and stay hidden while their variable is
 # unset (docs/hosting/forge-gateway.md, docs/hosting/forge-notify.md): PAGES_GATEWAY_URL (and
@@ -63,6 +70,10 @@ jobs:
           NEXT_PUBLIC_DEVNET_NAME: ${{ (vars.PAGES_NETWORK || 'devnet') == 'devnet' && (vars.PAGES_DEVNET_NAME || 'sakura') || '' }}
           # Unset (below) when the variable is: no notice.
           NEXT_PUBLIC_DEVNET_NOTICE: ${{ vars.PAGES_DEVNET_NOTICE }}
+          NEXT_PUBLIC_DEVNET_MOVE_TO: ${{ vars.PAGES_DEVNET_MOVE_TO }}
+          NEXT_PUBLIC_PAGES_NOTICE: ${{ vars.PAGES_NOTICE }}
+          NEXT_PUBLIC_PAGES_NOTICE_TEXT: ${{ vars.PAGES_NOTICE_TEXT }}
+          NEXT_PUBLIC_PAGES_NOTICE_URL: ${{ vars.PAGES_NOTICE_URL }}
           # Unset (below) when the variable is: no HTTPS clone row, no email and push settings.
           NEXT_PUBLIC_GATEWAY_URL: ${{ vars.PAGES_GATEWAY_URL }}
           NEXT_PUBLIC_GATEWAY_LABEL: ${{ vars.PAGES_GATEWAY_LABEL }}
@@ -71,9 +82,10 @@ jobs:
           FORGE_BUILD_COMMIT: ${{ github.sha }}
         # An unset repository variable arrives as an empty string, which Next would inline as "".
         # Unset those instead, so the bytes match a rebuild that leaves them out
-        # (docs/guides/verify-the-app.md).
+        # (docs/guides/verify-the-app.md). That includes NEXT_PUBLIC_DEVNET_NAME, empty on every
+        # network but a devnet.
         run: |
-          for v in NEXT_PUBLIC_DEVNET_NOTICE NEXT_PUBLIC_GATEWAY_URL NEXT_PUBLIC_GATEWAY_LABEL NEXT_PUBLIC_NOTIFY_URL; do
+          for v in NEXT_PUBLIC_DEVNET_NAME NEXT_PUBLIC_DEVNET_NOTICE NEXT_PUBLIC_DEVNET_MOVE_TO NEXT_PUBLIC_PAGES_NOTICE NEXT_PUBLIC_PAGES_NOTICE_TEXT NEXT_PUBLIC_PAGES_NOTICE_URL NEXT_PUBLIC_GATEWAY_URL NEXT_PUBLIC_GATEWAY_LABEL NEXT_PUBLIC_NOTIFY_URL; do
             [ -n "${!v}" ] || unset "$v"
           done
           pnpm build
