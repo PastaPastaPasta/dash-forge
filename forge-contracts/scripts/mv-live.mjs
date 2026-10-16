@@ -58,6 +58,10 @@
 //   fees    the M-C fee probes: L3 (comment, review) and C4 (ref update, config) against the live
 //           set, a bot push against a writer push, label/topic/packMirror in forge-meta against
 //           the live forge-core (n rounds each after a warm-up write)
+//   guards  the testnet freeze's update guards (rClaim, mrClaim, k_kinds, e_mergeOid), run LAST and only
+//           on a scratch set that `deploy-v2.mjs --update all --contracts <dir>/contracts` already
+//           loosened (`vectors.py --mainnet --out <tmp> --guards <dir>`): documents only the loosened
+//           bounds admit, each refused 10422 by its guard, beside the controls the loosened set admits
 //   fees2   the M-A2 fee probes (R-03, R-04, R-06): an approval, a members-only comment and a bot
 //           push on this set against the same on --baseline <record>, a scratch registration of
 //           the rev 4.1 set (`build.py --mainnet` before M-A2), with a stranger's comment verdict
@@ -481,7 +485,7 @@ async function readBack(item, label, contract, type, doc) {
   }
 }
 // fees writes to the live set, and convert/everything are steps of one case: each runs only when named
-const EXPLICIT = new Set(['fees', 'fees2', 'convert', 'everything']);
+const EXPLICIT = new Set(['fees', 'fees2', 'convert', 'everything', 'guards']);
 const want = (group) => (only === null ? !EXPLICIT.has(group) : only.has(group));
 // A setup write that failed stops the run (with its report): the cases after it would mean nothing
 const need = (doc, what) => {
@@ -1002,10 +1006,78 @@ try {
   // ---------------- fees ----------------
   if (want('fees')) await feeProbes();
   if (want('fees2')) await feeProbes2();
+
+  // ---------------- the update guards (after a loosening update) ----------------
+  if (want('guards')) await updateGuards();
 } catch (e) {
   if (!(e instanceof InfraError)) throw e;
   stopped = e.message;
   log(`STOPPED: ${stopped}`);
+}
+
+/**
+ * The update guards (the testnet freeze, FREEZE-SHEET.md): run on a scratch set AFTER
+ * `deploy-v2.mjs --update all --contracts <dir>/contracts` applied the loosened build of
+ * `vectors.py --mainnet --guards <dir>`. The schema bounds the guards restate are then wider
+ * (event, milestone, label, transition `r` and checkRun `r` up to 4, repoKey `mr` up to 4, transition
+ * `kind` gains 5), so a document the loosened bound alone admits reaches the guard rule: a claim that
+ * the member's own writer row proves (`where {role: r}`) or that a runner row needs no row for.
+ * Each must be refused 10422 by its guard. Run it LAST: the update makes this set differ from the
+ * candidate.
+ */
+async function updateGuards() {
+  const I = 'GUARD';
+  // the registered contracts really are loosened (else a refusal here proves nothing)
+  const loosened = [
+    [COLLAB, 'transition', (p) => p.r.maximum === 4 && p.kind.enum.includes(5), 'r max 4, kind enum has 5'],
+    [COMM, 'event', (p) => p.r.maximum === 4, 'r max 4'],
+    [COMM, 'milestone', (p) => p.r.maximum === 4, 'r max 4'],
+    [COMM, 'checkRun', (p) => p.r.maximum === 4, 'r max 4'],
+    [META, 'label', (p) => p.r.maximum === 4, 'r max 4'],
+    [META, 'repoKey', (p) => p.mr.maximum === 4, 'mr max 4'],
+  ];
+  for (const [contract, type, test, what] of loosened) {
+    const c = (await sdk.contracts.fetch(contract)).toJSON();
+    record({ item: I, label: `${type} is loosened on chain (${what})`, expect: 'loosened', got: `version ${c.version}`, pass: Number(c.version) >= 2 && test(c.documentSchemas[type].properties) });
+  }
+  const g = await makeRepo(I, `mvg-${tag}`, 'public', [[W, 1], [T, 2], [RD, 3], [B, 4]]);
+  const Rg = g.R;
+  const issue = async (label) => {
+    const iss = need(await numbered(g, I, label, O, 'issue', { title: 'guards', vis: 'public' }), label);
+    return { iss, n: g.n };
+  };
+  const ev = ({ iss, n }, extra) => ({ repoId: Rg, targetId: docRef(iss), targetNumber: n, kind: 4, value: 'bug', ...extra });
+  const tr = ({ iss, n }, extra) => ({ repoId: Rg, targetId: docRef(iss), targetNumber: n, targetKind: 0, kind: 1, delta: 1, asAuthor: 0, ...extra });
+  const wrap = (who, mr) => ({ repoId: Rg, memberId: id(who.id), epoch: 0, recipientKeyId: who.encKeyId, senderKeyId: O.encKeyId, wrapped: bytes(48), mr });
+  const run = (extra) => ({ repoId: Rg, headOid: bytes(20, 2), name: `g-${randomBytes(2).toString('hex')}`, status: 'queued', outcome: 0, vis: 'public', ...extra });
+
+  // positive controls: the loosened set still admits every honest claim
+  const t1 = await issue('issue 1 (controls)');
+  await ok(I, "control: the writer's event, r 1", W, 'event', ev(t1, { r: 1 }));
+  await ok(I, "control: triage's event, r 2", T, 'event', ev(t1, { r: 2 }));
+  await ok(I, "control: triage's milestone, r 2", T, 'milestone', { repoId: Rg, title: `g-${tag}`, r: 2 });
+  await ok(I, "control: triage's label, r 2", T, 'label', { repoId: Rg, name: `g-${tag}`, r: 2 });
+  await ok(I, "control: a wrap to the reader, mr 3", O, 'repoKey', wrap(RD, 3));
+  await ok(I, "control: the writer's transition (close), r 1", W, 'transition', tr(t1, { r: 1 }));
+  await ok(I, 'control: the owner enrols the writer as a runner', O, 'runner', { repoId: Rg, memberId: id(W.id) });
+  await ok(I, "control: the writer-runner's check run, r 1", W, 'checkRun', run({ r: 1 }));
+
+  // the guards
+  await no(I, "a reader's (role 3) event with r 3", RD, 'event', ev(t1, { r: 3 }), [10422], 'rClaim');
+  await no(I, "a bot's (role 4) event with r 4", B, 'event', ev(t1, { r: 4 }), [10422], 'rClaim');
+  await no(I, "a bot's (role 4) milestone with r 4", B, 'milestone', { repoId: Rg, title: 'bot', r: 4 }, [10422], 'rClaim');
+  await no(I, "a reader's (role 3) label with r 3", RD, 'label', { repoId: Rg, name: `g-r3-${tag}`, r: 3 }, [10422], 'rClaim');
+  // (triage's row says role 2, so its r 3 would also fail the writer row's `where`: the property rules run
+  // before the reference check, so the guard answers first)
+  await no(I, "triage's (role 2) label with r 3", T, 'label', { repoId: Rg, name: `g-t3-${tag}`, r: 3 }, [10422], 'rClaim');
+  await no(I, "a reader's (role 3) check run with r 3", RD, 'checkRun', run({ r: 3 }), [10422], 'rClaim');
+  await no(I, "a writer-runner's check run with r 2", W, 'checkRun', run({ r: 2 }), [10422], 'rClaim');
+  await no(I, 'a wrap to a bot with mr 4', O, 'repoKey', wrap(B, 4), [10422], 'mrClaim');
+  await no(I, "a member's (writer) transition of kind 5", W, 'transition', tr(t1, { kind: 5, delta: 0, r: 1 }), [10422], 'k_kinds');
+  const t2 = await issue('issue 2 (the reader close)');
+  await no(I, "a reader's (role 3) transition with r 3", RD, 'transition', tr(t2, { r: 3 }), [10422], 'e_mergeOid');
+  // and the same reader's honest close is refused for what it is, not for the guard: it holds no r 1 row
+  await no(I, "a reader's transition claiming r 1", RD, 'transition', tr(t2, { r: 1 }), WHERE_ANYOF);
 }
 
 /**
