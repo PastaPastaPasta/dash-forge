@@ -222,14 +222,15 @@ If you set nothing, **packs go to Platform**. That is fine for small repositorie
 
 ## Refunds
 
-When a document is deleted, Platform refunds the part of its storage deposit that has not been used yet. Platform spreads the deposit over 2,000 epochs, so how long a refund lasts depends on the network's epoch length: The burned part never comes back. Only the identity that paid can get the refund, and only by deleting its own documents.
+When a document is deleted, Platform refunds the part of its storage deposit that has not been used yet. Platform spreads the deposit over 2,000 epochs, so how long a refund lasts depends on the network's epoch length (table below). The burned part never comes back. Only the identity that paid can get the refund, and only by deleting its own documents.
 
 | Network | Epoch | The deposit is spread over | Delete a document after… | …and get back about |
 |---|---|---|---|---|
 | Mainnet | about 9 days | about 50 years | weeks or months | nearly all of the deposit |
 | Testnet | 1 hour | **about 83 days** | 1 day / 7 days / 14 days / 30 days / 60 days | 97 % / 80 % / 64 % / 36 % / 7 % (nothing after about 83 days) |
+| Devnets | set per devnet | 2,000 of its epochs | depends on the devnet | depends on the devnet |
 
-So on testnet, delete early or not at all: a document you delete after a few weeks returns only part of its deposit, and after about 83 days none. That is why the web app and `dg` word every delete as "refunds **up to** X": X is what Platform would return right after the write, and the real refund is that much or less. The percentages come from Platform's fee distribution table (`FEE_DISTRIBUTION_TABLE` in rs-dpp), not from a Forge measurement.
+So on testnet, delete early or not at all: a document you delete after a few weeks returns only part of its deposit, and after about 83 days none. That is why the web app words every delete as "refunds **up to** X": X is what Platform would return right after the write, and the real refund is that much or less. The percentages come from Platform's fee distribution table (`FEE_DISTRIBUTION_TABLE` in rs-dpp), not from a Forge measurement.
 
 **What can be deleted, and so refunded:**
 

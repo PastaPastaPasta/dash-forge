@@ -267,7 +267,8 @@ function ChooseView({ onPick }: { onPick: (v: View) => void }): JSX.Element {
   const walletAvailable = useWalletAvailability(limitedKeys)
   const [advanced, setAdvanced] = useState(false)
   const creating = useCreationInProgress()
-  // While the devnet is moving, creating or importing an identity would be wiped with it.
+  // While writes are paused (a devnet move, or the operator's PAGES_NOTICE=paused), no identity is
+  // created, imported or given a wallet key here.
   const pausedReason = writesPausedReason()
   // No forge-v2 here means no contract group to bind a key to: nothing to sign in to.
   if (!limitedKeys) return <NotDeployedState />
@@ -287,6 +288,8 @@ function ChooseView({ onPick }: { onPick: (v: View) => void }): JSX.Element {
       }
       muted={!walletFirst}
       onClick={() => onPick('wallet')}
+      // The wallet broadcasts a key-adding update for Forge: paused with every other write.
+      pausedReason={pausedReason}
     />
   ) : null
   return (

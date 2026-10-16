@@ -50,11 +50,16 @@ export function buildManifest(dir, env = process.env) {
   }
   const commit = /^[0-9a-f]{40}$/.test(env.FORGE_BUILD_COMMIT ?? '') ? env.FORGE_BUILD_COMMIT : null
   const network = env.NEXT_PUBLIC_NETWORK === 'devnet' && env.NEXT_PUBLIC_DEVNET_NAME ? `devnet-${env.NEXT_PUBLIC_DEVNET_NAME}` : (env.NEXT_PUBLIC_NETWORK ?? null)
+  // The operator notice (lib/pages-notice.ts), only when one is set, so a notice-free manifest is
+  // unchanged: an open tab compares it with its own, because pausing redeploys the same commit
+  // (lib/new-build.ts).
+  const notice = (env.NEXT_PUBLIC_PAGES_NOTICE ?? '').trim().toLowerCase()
   return {
     format: 1,
     commit,
     network,
     variant: env.FORGE_IPFS_BUILD === '1' ? 'ipfs' : 'host',
+    ...(notice === '' ? {} : { notice }),
     files,
   }
 }

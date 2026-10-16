@@ -28,5 +28,7 @@ describe('buildManifest', () => {
     expect(Object.keys(m.files)).toEqual([...Object.keys(m.files)].sort())
     expect(buildManifest(dir, {}).commit).toBeNull()
     expect(buildManifest(dir, { NEXT_PUBLIC_NETWORK: 'mainnet' }).variant).toBe('host')
+    expect(buildManifest(dir, {})).not.toHaveProperty('notice')
+    expect(buildManifest(dir, { NEXT_PUBLIC_PAGES_NOTICE: ' Paused ' }).notice).toBe('paused')
   })
 })

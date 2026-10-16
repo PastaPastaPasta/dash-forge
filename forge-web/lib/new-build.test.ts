@@ -23,13 +23,19 @@ describe('checkForNewBuild', () => {
   it('a different commit: newer, asked with no-store at the site root', async () => {
     const f = serving({ commit: B, variant: 'host' })
     expect(await checkForNewBuild(ROOT, A, f)).toBe('newer')
-    expect(f).toHaveBeenCalledWith('https://forge.example.org/forge-manifest.json', { cache: 'no-store' })
+    expect(f).toHaveBeenCalledWith('https://forge.example.org/forge-manifest.json', expect.objectContaining({ cache: 'no-store' }))
+  })
+
+  it('the same commit with a different operator notice is newer: a pause redeploys the same commit', async () => {
+    expect(await checkForNewBuild(ROOT, A, serving({ commit: A, variant: 'host', notice: 'paused' }), null)).toBe('newer')
+    expect(await checkForNewBuild(ROOT, A, serving({ commit: A, variant: 'host' }), 'paused')).toBe('newer')
+    expect(await checkForNewBuild(ROOT, A, serving({ commit: A, variant: 'host', notice: 'paused' }), 'paused')).toBe('same')
   })
 
   it('resolves the manifest under a base path', async () => {
     const f = serving({ commit: A })
     await checkForNewBuild('https://x.github.io/dash-forge/', A, f)
-    expect(f).toHaveBeenCalledWith('https://x.github.io/dash-forge/forge-manifest.json', { cache: 'no-store' })
+    expect(f).toHaveBeenCalledWith('https://x.github.io/dash-forge/forge-manifest.json', expect.objectContaining({ cache: 'no-store' }))
   })
 
   it('learns nothing without a commit baked in (dev, git-less builds)', async () => {

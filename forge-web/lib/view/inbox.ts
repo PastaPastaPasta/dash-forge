@@ -88,7 +88,7 @@ export const POLL_MS = 60_000
 export function inboxReachNote(hasService: boolean, pollMs: number = POLL_MS): string {
   const lead = `Notifications only arrive while a Forge tab is open: this tab checks the chain every ${pollMs / 1000} s, and a closed tab hears nothing.`
   return hasService
-    ? `${lead} Email and push can be set up in Settings → Notifications. There is no sync to your other devices; each browser keeps its own read state.`
+    ? `This tab checks the chain every ${pollMs / 1000} s. With the tab closed, only email and push reach you; set them up in Settings → Notifications. There is no sync to your other devices; each browser keeps its own read state.`
     : `${lead} There is no email or push at launch, and no sync to your other devices; each browser keeps its own read state.`
 }
 /** How long a computed subscription set is reused. */

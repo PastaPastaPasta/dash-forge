@@ -556,8 +556,8 @@ describe('inboxReachNote (FEAT-05)', () => {
 
   it('points to Settings when the build has a notification service', () => {
     const note = inboxReachNote(true)
-    expect(note).toContain('only arrive while a Forge tab is open')
-    expect(note).toContain('Email and push can be set up in Settings')
+    expect(note).not.toContain('only arrive while a Forge tab is open')
+    expect(note).toContain('only email and push reach you; set them up in Settings')
     expect(note).not.toContain('no email')
   })
 })

@@ -187,7 +187,9 @@ gh variable delete PAGES_NOTICE_URL
 gh workflow run pages.yml --ref master
 ```
 
-Check the live site afterwards: the banner shows (or is gone), and a write button names the reason (or signs). A tab that was already open learns of the new build within about 12 minutes or when it is focused ("A new version is available", `forge-web/lib/new-build.ts`); until it reloads it runs the old build, so the pause is not instant for open tabs. Nothing forces them to reload yet.
+Check the live site afterwards: the banner shows (or is gone), and a write button names the reason (or signs). A tab that was already open learns of the new build within about 12 minutes or when it is focused ("A new version is available", `forge-web/lib/new-build.ts`). It compares the served `forge-manifest.json`'s commit and its `notice` field, so a pause redeployed from the same commit counts as new. Until it reloads, the tab runs the old build, so the pause is not instant for open tabs. Nothing forces them to reload yet.
+
+The switch covers this Pages build only. The IPFS release copies, `dg`, and CI or mirror runners ignore it.
 
 This switch is the lever for a bug in the client, not for a compromised site: a compromised build can ignore its own pause. If forge.dashhq.org itself serves wrong bytes, stop serving it at Cloudflare first (only the zone owner can; no maintenance rule is configured yet), then `gh workflow disable pages.yml`, investigate, fix, re-enable, check the result with `dg verify-app` and announce it. Unpublishing Pages without a replacement leaves nobody a copy to verify against, so do that last.
 
