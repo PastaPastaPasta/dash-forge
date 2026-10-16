@@ -14,6 +14,9 @@ test.beforeEach(quorumGuard)
  *   E2E_TRENDING_SEED=<file written by forge-contracts/scripts/seed-trending.mjs> \
  *   E2E_DEVNET=sakura pnpm exec playwright test trending.spec.ts
  *
+ * The build under test needs `NEXT_PUBLIC_MIN_STARGAZERS=1` (playwright.config.ts sets it when it
+ * builds): the seed's repos have 3, 2 and 1 stargazers, under the hosted floor of 5 (ABU-02).
+ *
  * The seed script mints nothing and writes as identities minted for the run (never the shared
  * fixtures): it creates repos, stars them from several identities (each star writing its
  * `starBeat`) so the ranking has a known shape, and records every beat it wrote with the

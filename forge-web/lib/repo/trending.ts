@@ -32,6 +32,19 @@ import { hasStar } from './writes'
  */
 export const TRENDING_DEFAULT = true
 
+/**
+ * The fewest stargazers (Most starred), or new stargazers in the window (Trending), a repo needs
+ * to be ranked (ABU-02). Counts are unweighted, so a handful of throwaway identities can top an
+ * unfloored list; the floor makes that cost more. No identity-footprint discount: that is one
+ * read per candidate.
+ */
+export const MIN_STARGAZERS = ((): number => {
+  // A build-time knob for the e2e seed (three stargazers at most, e2e/trending.spec.ts): the
+  // hosted build leaves it unset, so the floor is 5.
+  const set = Number(process.env.NEXT_PUBLIC_MIN_STARGAZERS)
+  return Number.isInteger(set) && set >= 1 ? set : 5
+})()
+
 /** The localStorage key of the preference. */
 export const TRENDING_PREF_KEY = 'forge.trending.v1'
 
@@ -234,18 +247,22 @@ export function trendingNote(shape: StarShape | null, span: TrendingWindow, nowM
  * The page is read {@link FUSED_READ_AHEAD} times deeper than it shows, so the tail is
  * approximate too: a repo just past the read whose count ties or tops a decremented row is not
  * seen, and a page whose read is mostly private repos shows fewer rows than `limit`.
+ *
+ * A row left with fewer than `min` stargazers (after the owner's star is taken out) is dropped
+ * ({@link MIN_STARGAZERS}).
  */
 export function fusedTrending<R extends TrendingRepo>(
   entries: readonly RankedEntry[],
   repos: ReadonlyMap<string, R>,
   ownerStarred: ReadonlySet<string>,
   limit: number,
+  min = 1,
 ): (R & { readonly rankCount: number })[] {
   const rows = entries.flatMap((e) => {
     const repo = repos.get(e.group)
     if (repo === undefined || repo.visibility !== 'public') return []
     const count = e.count - (ownerStarred.has(e.group) ? 1 : 0)
-    return count > 0 ? [{ repo, count, key: e.keyHex }] : []
+    return count > 0 && count >= min ? [{ repo, count, key: e.keyHex }] : []
   })
   rows.sort((a, b) => b.count - a.count || (a.key < b.key ? 1 : a.key > b.key ? -1 : 0))
   return rows.slice(0, limit).map(({ repo, count }) => ({ ...repo, rankCount: count }))

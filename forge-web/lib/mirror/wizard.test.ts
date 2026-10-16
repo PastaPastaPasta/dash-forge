@@ -20,6 +20,7 @@ import {
   suggestedRunnerBudget,
   dfk1,
   latestCommit,
+  licenseNotice,
   mirrorDescription,
   mirrorStorageOf,
   newSecretUrl,
@@ -82,6 +83,7 @@ describe('checkGithubRepo', () => {
       archived: false,
       fork: true,
       html_url: 'https://github.com/NewOwner/renamed',
+      license: { key: 'mit', name: 'MIT License', spdx_id: 'MIT' },
     })
     const repo = await checkGithubRepo({ owner: 'old', name: 'name' }, fetch)
     expect(urls).toEqual(['https://api.github.com/repos/old/name'])
@@ -94,7 +96,18 @@ describe('checkGithubRepo', () => {
       archived: false,
       fork: true,
       htmlUrl: 'https://github.com/NewOwner/renamed',
+      license: 'MIT',
     })
+  })
+
+  it('reads the licence GitHub detected: none, one it cannot name, or a standard one', async () => {
+    const read = async (license: unknown) => (await checkGithubRepo({ owner: 'a', name: 'b' }, answer(200, { full_name: 'a/b', private: false, license }).fetch)).license
+    expect(await read(null)).toBeNull()
+    expect(await read(undefined)).toBeNull()
+    expect(await read({ key: 'other', name: 'Other', spdx_id: 'NOASSERTION' })).toBe('Other')
+    // Whatever GitHub calls a licence it could not name, it is one the wizard cannot name either.
+    expect(await read({ key: 'x', name: 'Custom terms', spdx_id: 'NOASSERTION' })).toBe('Other')
+    expect(await read({ key: 'apache-2.0', name: 'Apache License 2.0', spdx_id: 'Apache-2.0' })).toBe('Apache-2.0')
   })
 
   it('treats null fields as empty', async () => {
@@ -335,5 +348,18 @@ describe('defaultCostCap', () => {
     // 10 MiB at 0.39 DASH/MiB: 3.9, a third over, plus the documents.
     expect(defaultCostCap('platform', 10 * 1024, 0.39)).toBe('5.32')
     expect(Number(defaultCostCap('s3', 0, 0.39))).toBeGreaterThan(ACTION_COST_CAP)
+  })
+})
+
+describe('licenseNotice (LEG-10)', () => {
+  it('shows a standard licence without a warning', () => {
+    expect(licenseNotice({ license: 'MIT' })).toEqual({ label: 'MIT', warn: false, unread: false })
+  })
+  it('warns when GitHub detected none, could not name it, or the repo was saved before it was read', () => {
+    expect(licenseNotice({ license: null })).toEqual({ label: null, warn: true, unread: false })
+    expect(licenseNotice({ license: 'Other' })).toEqual({ label: 'Other', warn: true, unread: false })
+  })
+  it('does not say "no licence" of a repository saved before the licence was read', () => {
+    expect(licenseNotice({})).toEqual({ label: null, warn: true, unread: true })
   })
 })

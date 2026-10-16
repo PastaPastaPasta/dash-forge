@@ -6,6 +6,7 @@ import { repoContractIds, repoKey } from '@/lib/repo'
 import { readMirrorSourceCached, type MirrorKind, type MirrorSource } from '@/lib/view/mirror-source'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
+import { useMirrorVerified } from '@/components/repo/mirror-trust'
 
 /**
  * The repo's mirror source (`lib/view/mirror-source`), or null while unknown or not a mirror.
@@ -22,14 +23,16 @@ export function useMirrorSource(home: RepoHome, kind: MirrorKind): MirrorSource 
 /**
  * The line an issue or PR list of a mirror shows: its rows are what the import copied, and
  * the source's own list holds the full history. The import records no upstream total, so no
- * count is claimed.
+ * count is claimed. The source is the owner's word until the source lists the repo, so the line
+ * says "Says it mirrors" until then, as the repo rail does (ABU-05).
  */
 export function MirrorNote({ home, kind }: { home: RepoHome; kind: MirrorKind }): JSX.Element | null {
   const source = useMirrorSource(home, kind)
+  const verified = useMirrorVerified(source?.label ?? null, home.repo.repoId)
   if (source === null) return null
   return (
-    <p role="note" className="mb-3 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="mirror-note">
-      Mirrored from {source.label} ·{' '}
+    <p role="note" className="mb-3 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="mirror-note" data-verified={String(verified)}>
+      {verified ? 'Mirrored from' : 'Says it mirrors'} {source.label} ·{' '}
       <a href={source.listUrl} target="_blank" rel="noopener noreferrer" className="hit-area inline-flex items-center gap-0.5 text-forge-700 hover:underline dark:text-forge-400">
         view the full history on {source.host} <ExternalLink className="h-3 w-3" aria-hidden />
       </a>

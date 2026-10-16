@@ -60,6 +60,7 @@
 | [Dash Forge moved to devnet sakura](docs/guides/devnet-move.md) | what the move from bonsia lost and kept, and how to re-push on sakura |
 | [Check that Forge isn't lying to you](docs/guides/verify-forge.md) | proofs, hashes, the Verification card, running your own web app |
 | [FAQ](docs/FAQ.md) · [Error codes](docs/errors.md) | |
+| [Hosted curation](docs/hosted-curation.md) | what dashhq's own site leaves out of its lists, and what that does not change |
 
 ---
 
