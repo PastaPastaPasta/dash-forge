@@ -15,6 +15,8 @@ use async_trait::async_trait;
 use forge_core::mirror::{compare, parse_ls_remote, Manifest, ManifestPack, Verdict};
 use forge_core::platform::ChainTip;
 use forge_core::repo::{RefRecord, RefTip};
+use forge_gateway::config::TrustProxy;
+use forge_gateway::curation::Hidden;
 use forge_gateway::metrics::Metrics;
 use forge_gateway::mirror::{Mirrors, Unavailable};
 use forge_gateway::upstream::{
@@ -39,6 +41,10 @@ struct World {
     items: BTreeMap<(&'static str, u32), (Item, bool)>,
     /// Item reads.
     item_reads: usize,
+    /// The repositories' issue + pull request count (default: the highest item number held).
+    item_total: Option<u64>,
+    /// Item count reads.
+    item_count_reads: usize,
     /// Members-only branches of the stub's source repository: Platform shows only their count,
     /// and `git-remote-dash` (as an anonymous reader) never lists or fetches them.
     sealed: Vec<String>,
@@ -103,8 +109,14 @@ impl Upstream for Stub {
         if w.down {
             return Err(anyhow!("Platform is down"));
         }
+        // The owner as a DPNS name (the key), or as the identity id.
         Ok(w.repos
             .get(&(owner.to_string(), name.to_string()))
+            .or_else(|| {
+                w.repos
+                    .values()
+                    .find(|(i, _)| i.owner_id == owner && i.name == name)
+            })
             .map(|(i, _)| i.clone()))
     }
     async fn snapshot(&self, repo: &RepoInfo) -> Result<Option<Snapshot>> {
@@ -221,6 +233,18 @@ impl Upstream for Stub {
             document_id: "Iss1".into(),
         }])
     }
+    async fn item_count(&self, repo: &RepoInfo) -> Result<u64> {
+        self.src(repo)?;
+        let mut w = self.world();
+        w.item_count_reads += 1;
+        let held = w
+            .items
+            .keys()
+            .map(|(_, n)| u64::from(*n))
+            .max()
+            .unwrap_or(0);
+        Ok(w.item_total.unwrap_or(held))
+    }
     async fn item(&self, repo: &RepoInfo, kind: ItemKind, number: u32) -> Result<Option<Item>> {
         self.src(repo)?;
         let mut w = self.world();
@@ -301,6 +325,7 @@ struct Gateway {
     base: String,
     stub: Stub,
     mirrors: Arc<Mirrors>,
+    state: Arc<AppState>,
     _tmp: tempfile::TempDir,
     tmp: PathBuf,
 }
@@ -309,11 +334,12 @@ async fn start(tune: impl FnOnce(&mut Config)) -> Gateway {
     let tmp = tempfile::tempdir().unwrap();
     let stub = Stub::default();
     stub.world().time_ms = 1_000;
-    let (base, mirrors) = serve(tmp.path(), &stub, tune).await;
+    let (base, mirrors, state) = serve_full(tmp.path(), &stub, tune, None).await;
     Gateway {
         base,
         stub,
         mirrors,
+        state,
         tmp: tmp.path().to_path_buf(),
         _tmp: tmp,
     }
@@ -322,6 +348,17 @@ async fn start(tune: impl FnOnce(&mut Config)) -> Gateway {
 /// A gateway over `<dir>/data` and `stub`, the mirrors a previous one left there loaded (a
 /// restart): its base URL and mirrors.
 async fn serve(dir: &Path, stub: &Stub, tune: impl FnOnce(&mut Config)) -> (String, Arc<Mirrors>) {
+    let (base, mirrors, _) = serve_full(dir, stub, tune, None).await;
+    (base, mirrors)
+}
+
+/// [`serve`], also returning the state, and with `hidden` as the curation list when given.
+async fn serve_full(
+    dir: &Path,
+    stub: &Stub,
+    tune: impl FnOnce(&mut Config),
+    hidden: Option<Hidden>,
+) -> (String, Arc<Mirrors>, Arc<AppState>) {
     let mut cfg = Config::for_tests(dir.join("data"));
     tune(&mut cfg);
     let cfg = Arc::new(cfg);
@@ -335,22 +372,23 @@ async fn serve(dir: &Path, stub: &Stub, tune: impl FnOnce(&mut Config)) -> (Stri
         .unwrap(),
     );
     mirrors.load_existing().await.unwrap();
-    let state = Arc::new(AppState::new(
-        Arc::clone(&cfg),
-        Arc::clone(&mirrors),
-        metrics,
-    ));
+    let mut state = AppState::new(Arc::clone(&cfg), Arc::clone(&mirrors), metrics);
+    if let Some(hidden) = hidden {
+        state = state.with_hidden(hidden);
+    }
+    let state = Arc::new(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
+    let served = Arc::clone(&state);
     tokio::spawn(async move {
         axum::serve(
             listener,
-            router(state).into_make_service_with_connect_info::<SocketAddr>(),
+            router(served).into_make_service_with_connect_info::<SocketAddr>(),
         )
         .await
         .unwrap();
     });
-    (format!("http://{addr}"), mirrors)
+    (format!("http://{addr}"), mirrors, state)
 }
 
 impl Gateway {
@@ -1360,4 +1398,423 @@ async fn a_restart_after_a_network_reset_removes_the_mirrors_platform_lost() {
         .tmp
         .join("data/mirrors/devnet-stub/Rkeptalice.git")
         .exists());
+}
+
+// ---------------------------------------------------------------------------------------
+// WS-G3: the deny list, curation, refresh backoff and permits, the item-count short-circuit,
+// IPv6 /48 keys, the proxy-header notice and /readyz's version.
+// ---------------------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_deny_list_answers_451_deletes_the_mirror_and_reloads_without_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("deny.txt");
+    let path = file.clone();
+    let gw = start(move |c| {
+        c.deny_file = Some(path);
+        c.public_url = Some("https://gw.example".into());
+    })
+    .await;
+    let src = source(&gw.tmp);
+    let proj = gw.stub.add("alice", "proj", true, &src);
+    gw.stub.add("alice", "other", true, &src);
+    gw.stub.add("bob", "thing", true, &src);
+    assert!(gw.clone("/alice/proj.git", "c1").await.status.success());
+    assert!(gw.clone("/alice/other.git", "c2").await.status.success());
+    let proj_dir = gw.tmp.join("data/mirrors/devnet-stub/Rprojalice.git");
+    assert!(proj_dir.exists());
+
+    // No file: nothing is denied. Written: applied without a restart.
+    let deny = gw.state.deny();
+    assert!(deny.is_empty());
+    std::fs::write(
+        &file,
+        "# notice 2026-10-16\nalice/proj # DPNS owner and name\n",
+    )
+    .unwrap();
+    assert!(deny.reload_now());
+
+    // Every route refuses with 451 and says `dash://` still works; the owner as the
+    // request wrote it is quoted back, and the refusal names the gateway as the blocker.
+    for path in [
+        "/alice/proj.git/info/refs?service=git-upload-pack",
+        "/alice/proj.git/forge-manifest.json",
+        "/badge/alice/proj/stars.svg",
+        "/badge/alice/proj/ci.json",
+        "/feed/alice/proj/releases.atom",
+        "/feed/alice/proj/commits.atom",
+        "/og/alice/proj",
+        "/og/alice/proj/issues/7",
+        "/og/alice/proj.png",
+    ] {
+        let (s, headers, body) = request(&gw.base, path).await;
+        assert_eq!(s, 451, "{path}: {body}");
+        if path.starts_with("/badge/") {
+            assert!(body.contains("not served here"), "{path}: {body}");
+        } else {
+            assert!(
+                body.contains("git clone dash://alice/proj"),
+                "{path}: {body}"
+            );
+        }
+        if !path.starts_with("/badge/") {
+            assert_eq!(
+                headers["link"], "<https://gw.example>; rel=\"blocked-by\"",
+                "{path}"
+            );
+        }
+    }
+    let out = gw.clone("/alice/proj.git", "c3").await;
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("451"));
+
+    // The sweep resolves the listed name to its repository and deletes the mirror and
+    // everything cached about it: the owner's id and the repository id alone would not have
+    // matched `alice/proj` otherwise.
+    assert_eq!(gw.state.enforce_deny().await, 1);
+    assert!(!gw.mirrors.known(&proj.repo_id));
+    eventually("the mirror's files are deleted", || !proj_dir.exists()).await;
+    let (s, _, body) = gw.get("/Oalice/proj.git/forge-manifest.json").await;
+    assert_eq!(s, 451, "named by its owner's id too: {body}");
+    // The others are served.
+    assert!(gw.clone("/alice/other.git", "c4").await.status.success());
+    let (s, _, _) = gw.get("/badge/bob/thing/stars.svg").await;
+    assert_eq!(s, 200);
+
+    // By repository id: refused after the name resolved, and the mirror goes with the request.
+    let other_dir = gw.tmp.join("data/mirrors/devnet-stub/Rotheralice.git");
+    assert!(other_dir.exists());
+    std::fs::write(&file, "Rotheralice\n").unwrap();
+    assert!(deny.reload_now());
+    let (s, _, body) = gw.get("/alice/other.git/forge-manifest.json").await;
+    assert_eq!(s, 451, "{body}");
+    eventually("the mirror is deleted", || !other_dir.exists()).await;
+    // The one listed before is served again: the list was replaced, not added to.
+    assert!(gw.clone("/alice/proj.git", "c5").await.status.success());
+
+    // By owner id: every repository of the identity.
+    std::fs::write(&file, "Obob\n").unwrap();
+    assert!(deny.reload_now());
+    let (s, _, body) = gw.get("/badge/bob/thing/stars.svg").await;
+    assert_eq!(s, 451, "{body}");
+    let (s, _, _) = gw.get("/badge/alice/proj/stars.svg").await;
+    assert_eq!(s, 200);
+
+    // A deleted file or an unreadable one keeps the list; an emptied one lifts it.
+    std::fs::remove_file(&file).unwrap();
+    assert!(!deny.reload_now());
+    let (s, _, _) = gw.get("/badge/bob/thing/stars.svg").await;
+    assert_eq!(s, 451);
+    std::fs::write(&file, "# lifted\n").unwrap();
+    assert!(deny.reload_now());
+    let (s, _, _) = gw.get("/badge/bob/thing/stars.svg").await;
+    assert_eq!(s, 200);
+
+    let (_, _, metrics) = gw.get("/metrics").await;
+    assert!(
+        metrics.contains("forge_gateway_mirrors_purged_total 2"),
+        "{metrics}"
+    );
+    assert!(
+        metrics
+            .lines()
+            .any(|l| l.starts_with("forge_gateway_denied_total ") && !l.ends_with(" 0")),
+        "{metrics}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hidden_repository_gets_the_sites_card_and_is_still_served() {
+    let tmp = tempfile::tempdir().unwrap();
+    let stub = Stub::default();
+    stub.world().time_ms = 1_000;
+    let hidden = Hidden::parse(
+        r#"{"networks": {"devnet-stub": {
+            "hiddenRepos": [{ "id": "Rprojalice", "added": "2026-10-16", "note": "x" }],
+            "hiddenIdentities": [{ "id": "Obob", "added": "2026-10-16", "note": "y" }]
+        }}}"#,
+        "devnet-stub",
+    )
+    .unwrap();
+    let (base, _, _) = serve_full(tmp.path(), &stub, |_| {}, Some(hidden)).await;
+    let src = source(tmp.path());
+    stub.add("alice", "proj", true, &src);
+    stub.add("alice", "shown", true, &src);
+    stub.add("bob", "thing", true, &src);
+
+    for path in ["/og/alice/proj", "/og/bob/thing", "/og/alice/proj/issues/7"] {
+        let (s, _, body) = request(&base, path).await;
+        assert_eq!(s, 200, "{path}: {body}");
+        assert_eq!(meta(&body, "og:title"), "Dash Forge", "{path}");
+        assert_eq!(meta(&body, "og:image"), "https://forge.dashhq.org/og.png");
+        assert!(!body.contains("A &lt;test"), "{path}: {body}");
+    }
+    // The card image is the site's, by redirect.
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    for path in ["/og/alice/proj.png", "/og/bob/thing/issues/1.png"] {
+        let r = client.get(format!("{base}{path}")).send().await.unwrap();
+        assert_eq!(r.status().as_u16(), 302, "{path}");
+        assert_eq!(r.headers()["location"], "https://forge.dashhq.org/og.png");
+    }
+    // Another repository keeps its own card.
+    let (_, _, body) = request(&base, "/og/alice/shown").await;
+    assert_eq!(meta(&body, "og:title"), "alice/shown");
+
+    // Hiding is not delisting: clones, badges and feeds go on.
+    for path in [
+        "/alice/proj.git/forge-manifest.json",
+        "/badge/alice/proj/stars.svg",
+        "/feed/alice/proj/releases.atom",
+        "/badge/bob/thing/stars.svg",
+    ] {
+        let (s, _, body) = request(&base, path).await;
+        assert_eq!(s, 200, "{path}: {body}");
+    }
+    let out = tokio::task::spawn_blocking({
+        let (url, dir) = (format!("{base}/alice/proj.git"), tmp.path().to_path_buf());
+        move || git(&dir, &["clone", "-q", &url, "hidden-clone"])
+    })
+    .await
+    .unwrap();
+    assert!(out.status.success());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_repository_whose_data_fails_backs_off_but_platform_failing_does_not() {
+    let gw = start(|c| c.repo_max_bytes = 1 << 20).await;
+    let src = source(&gw.tmp);
+    let big = gw.stub.add("alice", "big", true, &src);
+    gw.stub.world().pack_bytes = 2 << 20;
+
+    // Too large: refused, and not read again until the backoff ends (one snapshot, not one
+    // per request).
+    assert!(matches!(
+        gw.refresh(&big).await,
+        Some(Unavailable::TooLarge { .. })
+    ));
+    let reads = gw.stub.world().snapshots;
+    for _ in 0..3 {
+        assert!(matches!(
+            gw.refresh(&big).await,
+            Some(Unavailable::TooLarge { .. })
+        ));
+        let (s, _, body) = gw
+            .get("/alice/big.git/info/refs?service=git-upload-pack")
+            .await;
+        assert_eq!(s, 403, "{body}");
+    }
+    assert_eq!(
+        gw.stub.world().snapshots,
+        reads,
+        "no read while backing off"
+    );
+
+    // Platform down is nobody's fault: tried again at once, as before.
+    gw.stub.world().pack_bytes = 0;
+    let ok = gw.stub.add("alice", "ok", true, &src);
+    assert_eq!(gw.refresh(&ok).await, None);
+    gw.stub.world().down = true;
+    assert!(matches!(
+        gw.refresh(&ok).await,
+        Some(Unavailable::Failed(_))
+    ));
+    gw.stub.world().down = false;
+    assert_eq!(gw.refresh(&ok).await, None);
+}
+
+#[test]
+fn the_backoff_schedule_is_1_minute_5_minutes_30_minutes_then_6_hours() {
+    use forge_gateway::mirror::backoff;
+    let secs = |n| backoff(n).as_secs();
+    assert_eq!(
+        (secs(0), secs(1), secs(2), secs(3), secs(4), secs(40)),
+        (0, 60, 300, 1800, 6 * 3600, 6 * 3600)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pinned_mirrors_refresh_on_permits_that_unpinned_ones_cannot_take() {
+    let gw = start(|c| {
+        c.refresh_max = 1;
+        c.pinned_refresh_max = 1;
+    })
+    .await;
+    let src = source(&gw.tmp);
+    let pinned = gw.stub.add("alice", "pinned", true, &src);
+    let other = gw.stub.add("alice", "other", true, &src);
+
+    // A hostile unpinned repository holds every unpinned permit.
+    let hold = gw.mirrors.refresh_permits(false).acquire().await.unwrap();
+    let slot = gw.mirrors.slot(&other);
+    gw.mirrors.trigger(&slot);
+    gw.mirrors.pin(&pinned);
+    assert_eq!(gw.refresh(&pinned).await, None, "the pinned refresh runs");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!slot.ready(), "the unpinned one waits for its permit");
+    drop(hold);
+    eventually("the unpinned refresh runs", || slot.ready()).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unpinned_repositories_have_a_lower_size_cap_than_pinned_ones() {
+    let gw = start(|c| {
+        c.repo_max_bytes = 8 << 20;
+        c.unpinned_repo_max_bytes = 1 << 20;
+        c.cache_max_bytes = 64 << 20;
+    })
+    .await;
+    let src = source(&gw.tmp);
+    let stranger = gw.stub.add("alice", "stranger", true, &src);
+    let listed = gw.stub.add("alice", "listed", true, &src);
+    gw.stub.world().pack_bytes = 2 << 20;
+    let (s, _, body) = gw
+        .get("/alice/stranger.git/info/refs?service=git-upload-pack")
+        .await;
+    assert_eq!(s, 403, "{body}");
+    assert!(body.contains("larger than this gateway mirrors"), "{body}");
+    assert!(matches!(
+        gw.refresh(&stranger).await,
+        Some(Unavailable::TooLarge { cap, .. }) if cap == 1 << 20
+    ));
+    gw.mirrors.pin(&listed);
+    assert_eq!(
+        gw.refresh(&listed).await,
+        None,
+        "a --repos mirror gets the full cap"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_card_for_an_item_above_the_repositorys_count_reads_no_item() {
+    let gw = share_gateway().await;
+    // The stub's count is the highest item number (8): the card for 50 is the repository's.
+    let repo_png = reqwest::get(format!("{}/og/alice/proj.png", gw.base))
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap();
+    let reads = gw.stub.world().item_reads;
+    for n in [9, 50, 4_000_000_000_u32] {
+        let (s, _, body) = gw.get(&format!("/og/alice/proj/issues/{n}")).await;
+        assert_eq!(s, 200, "{body}");
+        assert_eq!(meta(&body, "og:title"), format!("Issue #{n} · alice/proj"));
+        assert_eq!(
+            meta(&body, "og:image"),
+            "https://gw.example/og/alice/proj.png"
+        );
+        let r = reqwest::get(format!("{}/og/alice/proj/pull/{n}.png", gw.base))
+            .await
+            .unwrap();
+        assert_eq!(r.status().as_u16(), 200);
+        assert_eq!(r.bytes().await.unwrap(), repo_png);
+    }
+    assert_eq!(gw.stub.world().item_reads, reads, "no item was read");
+    // One count read for the lot (cached per repository), none per number.
+    assert_eq!(gw.stub.world().item_count_reads, 1);
+    let (_, _, metrics) = gw.get("/metrics").await;
+    assert!(
+        metrics.contains("forge_gateway_items_beyond_count_total 6"),
+        "{metrics}"
+    );
+    // A number within the count is read as before.
+    let (_, _, body) = gw.get("/og/alice/proj/issues/7").await;
+    assert_eq!(
+        meta(&body, "og:title"),
+        "It &lt;breaks&gt; · Issue #7 · alice/proj"
+    );
+    assert_eq!(gw.stub.world().item_reads, reads + 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn costly_limits_key_ipv6_clients_by_their_48() {
+    let gw = start(|c| {
+        c.trust_proxy = TrustProxy::Cloudflare;
+        c.new_mirrors_per_hour = 1;
+    })
+    .await;
+    let src = source(&gw.tmp);
+    for name in ["a", "b", "c"] {
+        gw.stub.add("alice", name, true, &src);
+    }
+    let client = reqwest::Client::new();
+    let from = |ip: &'static str, path: &'static str| {
+        let (client, base) = (client.clone(), gw.base.clone());
+        async move {
+            client
+                .get(format!("{base}{path}"))
+                .header("cf-connecting-ip", ip)
+                .send()
+                .await
+                .unwrap()
+                .status()
+                .as_u16()
+        }
+    };
+    // The first new mirror from 2001:db8:1::/48 starts; a second /64 of it has no allowance
+    // of its own; another /48 does.
+    assert_eq!(
+        from("2001:db8:1:1::1", "/alice/a.git/forge-manifest.json").await,
+        200
+    );
+    assert_eq!(
+        from("2001:db8:1:2::1", "/alice/b.git/forge-manifest.json").await,
+        429
+    );
+    assert_eq!(
+        from("2001:db8:2:1::1", "/alice/c.git/forge-manifest.json").await,
+        200
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn readyz_reports_the_version() {
+    let gw = start(|_| {}).await;
+    let (s, _, body) = gw.get("/readyz").await;
+    assert_eq!(s, 200, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["version"]["crate"], env!("CARGO_PKG_VERSION"));
+    // The commit is named only when the build was told (DASH_FORGE_BUILD_SHA); never "unknown".
+    assert_ne!(v["version"]["buildSha"], "unknown");
+    assert_eq!(
+        v["version"]["buildSha"].as_str(),
+        option_env!("DASH_FORGE_BUILD_SHA")
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && *s != "unknown")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cloudflare_trust_without_the_header_is_counted() {
+    let gw = start(|c| c.trust_proxy = TrustProxy::Cloudflare).await;
+    let src = source(&gw.tmp);
+    gw.stub.add("alice", "proj", true, &src);
+    // Probes never count (the container's health check sends no header), nor does a request
+    // that has it.
+    let (s, _, _) = gw.get("/healthz").await;
+    assert_eq!(s, 200);
+    let r = reqwest::Client::new()
+        .get(format!("{}/badge/alice/proj/stars.svg", gw.base))
+        .header("cf-connecting-ip", "198.51.100.7")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 200);
+    let (_, _, metrics) = gw.get("/metrics").await;
+    assert!(
+        metrics.contains("forge_gateway_proxy_header_missing_total 0"),
+        "{metrics}"
+    );
+    for _ in 0..2 {
+        let (s, _, _) = gw.get("/badge/alice/proj/stars.svg").await;
+        assert_eq!(s, 200);
+    }
+    let (_, _, metrics) = gw.get("/metrics").await;
+    assert!(
+        metrics.contains("forge_gateway_proxy_header_missing_total 2"),
+        "{metrics}"
+    );
 }

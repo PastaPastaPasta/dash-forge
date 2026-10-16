@@ -8,10 +8,11 @@ use anyhow::{Context as _, Result};
 use clap::Parser as _;
 use forge_core::network::NetworkSettings;
 use forge_core::platform::PlatformClient;
+use forge_gateway::config::TrustProxy;
 use forge_gateway::metrics::Metrics;
 use forge_gateway::mirror::Mirrors;
 use forge_gateway::upstream::{PlatformUpstream, Upstream};
-use forge_gateway::{router, AppState, Config};
+use forge_gateway::{router, spawn_deny_enforcement, AppState, Config};
 
 fn main() -> Result<()> {
     unset_empty_settings();
@@ -88,8 +89,17 @@ async fn run() -> Result<()> {
         listen = %cfg.listen,
         mirrors = loaded,
         all_public = cfg.all_public,
+        version = env!("CARGO_PKG_VERSION"),
+        build = option_env!("DASH_FORGE_BUILD_SHA").unwrap_or("unknown"),
         "forge-gateway starting"
     );
+    if cfg.trust_proxy == TrustProxy::Cloudflare {
+        tracing::warn!("GATEWAY_TRUST_PROXY=cloudflare: the client address (the rate-limit key) is read from CF-Connecting-IP, which any client can forge unless this gateway is reachable only through Cloudflare, a tunnel included. Elsewhere set GATEWAY_TRUST_PROXY=none, or x-forwarded-for behind one proxy you run");
+    }
+    if let Some(file) = &cfg.deny_file {
+        tracing::info!(file = %file.display(), entries = state.deny().len(), "deny list (GATEWAY_DENY)");
+    }
+    spawn_deny_enforcement(Arc::clone(&state));
 
     for spec in &cfg.repos {
         spawn_listed(spec.trim().to_string(), &state, &mirrors, &upstream);
@@ -138,6 +148,10 @@ fn spawn_listed(
         let mut wait = Duration::from_secs(10);
         loop {
             match upstream.resolve(owner, name.trim_end_matches(".git")).await {
+                Ok(Some(info)) if state.deny().denies(&info, owner, &info.name) => {
+                    tracing::error!(repo = %spec, "in the deny list (GATEWAY_DENY): not mirrored");
+                    return;
+                }
                 Ok(Some(info)) if info.public => {
                     state.allow(&info);
                     let slot = mirrors.pin(&info);

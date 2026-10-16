@@ -10,7 +10,11 @@
 //! | `GET /feed/<owner>/<name>/<releases\|commits\|issues>.atom` | Atom feeds |
 //! | `GET /og/<owner>/<name>[/<short path>]` | share link: preview tags, then the web app |
 //! | `GET /og/<owner>/<name>.png`, `/og/<owner>/<name>/<issues\|pull>/<n>.png` | card images |
-//! | `GET /healthz`, `/readyz`, `/metrics` | liveness, readiness, Prometheus |
+//! | `GET /healthz`, `/readyz`, `/metrics` | liveness, readiness (with the version), Prometheus |
+//!
+//! A repository the operator's deny list names ([`crate::deny`]) answers `451` on every route
+//! above, and one the curation list hides ([`crate::curation`]) gets the site's own link-preview
+//! card.
 //!
 //! `<owner>` is an identity id or a DPNS name, so `badge`, `feed`, `og`, `healthz`, `readyz`
 //! and `metrics` cannot be served as owners (DPNS names that equal them are reachable by id).
@@ -37,6 +41,8 @@ use tokio::sync::Semaphore;
 use crate::badge::{self, Badge, Kind};
 use crate::cache::{Lookup, RenderCache, Rendered};
 use crate::config::{Config, TrustProxy};
+use crate::curation::Hidden;
+use crate::deny::{self, DenyList};
 use crate::feed::{self, Entry, Feed};
 use crate::git_http::{self, BackendRequest};
 use crate::limits::{ClientConcurrency, RateLimiter};
@@ -72,6 +78,22 @@ pub const STALE_HEADER: &str = "x-forge-stale";
 /// The most `owner/name` resolutions kept.
 const MAX_RESOLVED: usize = 50_000;
 
+/// How long a repository's item count is trusted when it covers the number asked for, and
+/// (shorter, so an item created a moment ago has a card soon) when it does not.
+const ITEM_COUNT_TTL: Duration = Duration::from_secs(60);
+const ITEM_COUNT_RECHECK: Duration = Duration::from_secs(5);
+
+/// The most repositories whose item counts are kept.
+const MAX_COUNTS: usize = 10_000;
+
+/// How often a request without the trusted proxy header is logged (at most).
+const PROXY_WARN_EVERY: Duration = Duration::from_secs(3600);
+
+/// This gateway's version, as `/readyz` reports it: the crate's, and the commit it was built
+/// from when the build said (`DASH_FORGE_BUILD_SHA`, the Dockerfile's build argument).
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+const BUILD_SHA: Option<&str> = option_env!("DASH_FORGE_BUILD_SHA");
+
 /// Entries in the feed.
 const FEED_ENTRIES: usize = 30;
 
@@ -84,9 +106,14 @@ type ResolveCache = Mutex<HashMap<(String, String), Resolved>>;
 /// Snapshot tips by repo id ([`AppState::tips`]).
 type TipsCache = Mutex<HashMap<String, (Instant, Arc<RepoTips>)>>;
 
+/// Item counts by repo id, and when they were read ([`AppState::item_total`]).
+type CountsCache = Mutex<HashMap<String, (Instant, u64)>>;
+
 /// A repository a request names, resolved.
 struct Target {
     info: RepoInfo,
+    /// The curation list hides it: its link previews are the site's own.
+    hidden: bool,
     /// Platform could not be read, so this is a resolution older than [`RESOLVE_TTL`] (and
     /// younger than [`RESOLVE_STALE_MAX`]).
     stale: bool,
@@ -121,8 +148,19 @@ pub struct AppState {
     /// Snapshot tips of repositories without a mirror, by repo id, for the render TTL: a badge
     /// for any `?branch=` costs at most one snapshot read per repository per TTL.
     tips: Arc<TipsCache>,
+    /// Item counts of repositories, for the render TTL at most.
+    counts: Arc<CountsCache>,
     fonts: Arc<resvg::usvg::fontdb::Database>,
     allowed: Mutex<HashSet<String>>,
+    /// The operator's deny list (`GATEWAY_DENY`).
+    deny: Arc<DenyList>,
+    /// What the curation list hides on this network.
+    hidden: Hidden,
+    /// When a request without the trusted proxy header was last logged.
+    proxy_warned: Mutex<Option<Instant>>,
+    /// The repositories a request met on the deny list, for the list generation noted: each is
+    /// purged once, not on every request for it.
+    denied_seen: Mutex<(u64, HashSet<String>)>,
 }
 
 impl AppState {
@@ -135,26 +173,40 @@ impl AppState {
         ));
         let resolved = Arc::<ResolveCache>::default();
         let tips = Arc::<TipsCache>::default();
+        let counts = Arc::<CountsCache>::default();
         {
-            // A repository proved gone answers 404 at once: nothing cached keeps it alive.
-            let (renders, resolved, tips) = (
+            // A repository proved gone (or deleted for the operator) answers 404 (or 451) at
+            // once: nothing cached keeps it alive.
+            let (renders, resolved, tips, counts) = (
                 Arc::clone(&renders),
                 Arc::clone(&resolved),
                 Arc::clone(&tips),
+                Arc::clone(&counts),
             );
-            mirrors.on_gone(move |repo| forget_repo(&renders, &resolved, &tips, &repo.repo_id));
+            mirrors.on_gone(move |repo| {
+                forget_repo(&renders, &resolved, &tips, &counts, &repo.repo_id);
+            });
         }
+        let hidden = Hidden::embedded(&mirrors.upstream().network());
         Self {
             rate: RateLimiter::new(cfg.rate_per_min, minute),
-            clone_rate: RateLimiter::new(cfg.clones_per_min, minute),
-            new_mirror_rate: RateLimiter::new(cfg.new_mirrors_per_hour, Duration::from_secs(3600)),
-            clone_per_client: ClientConcurrency::new(cfg.clones_per_client),
+            // Costly work is limited per IPv6 /48 (a /64 key would give a free tunnel's 65,536
+            // subnets one allowance each).
+            clone_rate: RateLimiter::new(cfg.clones_per_min, minute).wide(),
+            new_mirror_rate: RateLimiter::new(cfg.new_mirrors_per_hour, Duration::from_secs(3600))
+                .wide(),
+            clone_per_client: ClientConcurrency::new(cfg.clones_per_client).wide(),
             clones: Arc::new(Semaphore::new(cfg.clones_max.max(1))),
             renders,
             resolved,
             tips,
+            counts,
             fonts: og::fonts(cfg.font_dir.as_deref()),
             allowed: Mutex::default(),
+            deny: Arc::new(DenyList::new(cfg.deny_file.clone(), deny::CHECK_EVERY)),
+            hidden,
+            proxy_warned: Mutex::default(),
+            denied_seen: Mutex::default(),
             cfg,
             mirrors,
             metrics,
@@ -169,9 +221,134 @@ impl AppState {
             .insert(repo.repo_id.clone());
     }
 
+    /// Hide `hidden` instead of the compiled-in list (tests).
+    #[must_use]
+    pub fn with_hidden(mut self, hidden: Hidden) -> Self {
+        self.hidden = hidden;
+        self
+    }
+
+    /// The operator's deny list.
+    pub fn deny(&self) -> &Arc<DenyList> {
+        &self.deny
+    }
+
     /// Drop everything cached about `repo_id` (Platform proved it gone).
     fn forget(&self, repo_id: &str) {
-        forget_repo(&self.renders, &self.resolved, &self.tips, repo_id);
+        forget_repo(
+            &self.renders,
+            &self.resolved,
+            &self.tips,
+            &self.counts,
+            repo_id,
+        );
+    }
+
+    /// Delete the mirror of `repo_id` and forget everything cached about it. `true` when there
+    /// was a mirror.
+    fn purge(&self, repo_id: &str) -> bool {
+        let had = self.mirrors.purge(repo_id);
+        self.forget(repo_id);
+        had
+    }
+
+    /// A request met `repo_id` on the deny list: delete its mirror and drop what is cached about
+    /// it, the first time for each version of the list (a flood of requests for a denied
+    /// repository must not scan the caches each).
+    fn drop_denied(&self, repo_id: &str) {
+        let generation = self.deny.generation();
+        let first = {
+            let mut seen = self
+                .denied_seen
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if seen.0 != generation || seen.1.len() >= MAX_COUNTS {
+                *seen = (generation, HashSet::new());
+            }
+            seen.1.insert(repo_id.to_string())
+        };
+        if first || self.mirrors.known(repo_id) {
+            self.purge(repo_id);
+        }
+    }
+
+    /// Apply the deny list to what this gateway holds: resolve the names it lists to
+    /// repository ids, and delete the mirror (and every cached render) of each repository it
+    /// names. Run on a timer ([`spawn_deny_enforcement`]) so a change to the file takes effect
+    /// without a request for the repository. Returns how many mirrors were deleted.
+    pub async fn enforce_deny(&self) -> usize {
+        if self.deny.is_empty() {
+            return 0;
+        }
+        self.deny
+            .resolve_names(self.mirrors.upstream().as_ref())
+            .await;
+        self.mirrors
+            .all()
+            .into_iter()
+            .filter(|slot| {
+                self.deny
+                    .denies(&slot.repo, &slot.repo.owner_id, &slot.repo.name)
+            })
+            .map(|slot| usize::from(self.purge(&slot.repo.repo_id)))
+            .sum()
+    }
+
+    /// The repository's issue and pull request count: the last read within [`ITEM_COUNT_TTL`]
+    /// when it covers `number`, one within [`ITEM_COUNT_RECHECK`] when it does not, else read
+    /// now. `None` when Platform cannot be asked (the card is then built as it was before
+    /// counts).
+    async fn item_total(&self, info: &RepoInfo, number: u32) -> Option<u64> {
+        let cached = self
+            .counts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&info.repo_id)
+            .copied();
+        if let Some((at, total)) = cached {
+            let covers = u64::from(number) <= total;
+            let fresh = if covers {
+                ITEM_COUNT_TTL
+            } else {
+                ITEM_COUNT_RECHECK
+            };
+            if at.elapsed() < fresh {
+                return Some(total);
+            }
+        }
+        match self.mirrors.upstream().item_count(info).await {
+            Ok(total) => {
+                self.metrics.upstream(true);
+                let mut all = self.counts.lock().unwrap_or_else(PoisonError::into_inner);
+                if all.len() >= MAX_COUNTS {
+                    all.retain(|_, (at, _)| at.elapsed() < ITEM_COUNT_TTL);
+                    if all.len() >= MAX_COUNTS {
+                        all.clear();
+                    }
+                }
+                all.insert(info.repo_id.clone(), (Instant::now(), total));
+                Some(total)
+            }
+            Err(e) => {
+                self.metrics.upstream(false);
+                tracing::warn!(error = %format!("{e:#}"), "item count read failed");
+                None
+            }
+        }
+    }
+
+    /// Note a request without `CF-Connecting-IP` under `GATEWAY_TRUST_PROXY=cloudflare`: counted,
+    /// and logged now and then (at most once an hour).
+    fn note_missing_proxy_header(&self) {
+        Metrics::inc(&self.metrics.proxy_header_missing);
+        let mut last = self
+            .proxy_warned
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if last.is_none_or(|t| t.elapsed() >= PROXY_WARN_EVERY) {
+            *last = Some(Instant::now());
+            tracing::warn!("GATEWAY_TRUST_PROXY=cloudflare, but a request arrived without CF-Connecting-IP: every client behind that connection shares one rate-limit key. Set GATEWAY_TRUST_PROXY=none unless this gateway is reached only through Cloudflare (a tunnel), or x-forwarded-for behind a proxy you run");
+        }
     }
 
     fn gauges(&self) -> Gauges {
@@ -188,9 +365,32 @@ impl AppState {
 
 type St = State<Arc<AppState>>;
 
-/// Drop every cached resolution, render and snapshot tip of `repo_id`.
-fn forget_repo(renders: &RenderCache, resolved: &ResolveCache, tips: &TipsCache, repo_id: &str) {
+/// Apply the deny list every [`deny::CHECK_EVERY`] ([`AppState::enforce_deny`]), until the
+/// process ends.
+pub fn spawn_deny_enforcement(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(deny::CHECK_EVERY);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tick.tick().await;
+            state.enforce_deny().await;
+        }
+    });
+}
+
+/// Drop every cached resolution, render, snapshot tip and item count of `repo_id`.
+fn forget_repo(
+    renders: &RenderCache,
+    resolved: &ResolveCache,
+    tips: &TipsCache,
+    counts: &CountsCache,
+    repo_id: &str,
+) {
     renders.forget_repo(repo_id);
+    counts
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .remove(repo_id);
     resolved
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
@@ -280,6 +480,12 @@ async fn guard(State(state): St, req: Request<Body>, next: Next) -> Response {
     let path = req.uri().path().to_string();
     let method = req.method().clone();
     let probe = matches!(path.as_str(), "/healthz" | "/readyz" | "/metrics");
+    if !probe
+        && state.cfg.trust_proxy == TrustProxy::Cloudflare
+        && !req.headers().contains_key("cf-connecting-ip")
+    {
+        state.note_missing_proxy_header();
+    }
     if !probe {
         if let Err(wait) = state.rate.check(ip) {
             Metrics::inc(&state.metrics.rate_limited);
@@ -393,6 +599,10 @@ async fn resolve(state: &AppState, owner: &str, name: &str) -> Result<Target, Bo
     if !segment_ok(owner, 64) || !segment_ok(name, 100) {
         return Err(absent());
     }
+    // The operator's list first, by the name the request used: no Platform read for it.
+    if state.deny.denies_request(owner, name) {
+        return Err(Box::new(denied(state, owner, name)));
+    }
     let key = (owner.to_string(), name.to_string());
     let cached = state
         .resolved
@@ -446,6 +656,13 @@ async fn resolve(state: &AppState, owner: &str, name: &str) -> Result<Target, Bo
     let Some(info) = info else {
         return Err(absent());
     };
+    // Then by what the name resolved to (the repository's id, its owner, either spelling of
+    // its name), before the allow check: a listed repository is refused however it is asked
+    // for, and whatever mirror this gateway holds of it goes.
+    if state.deny.denies(&info, owner, name) {
+        state.drop_denied(&info.repo_id);
+        return Err(Box::new(denied(state, owner, name)));
+    }
     let listed = state
         .allowed
         .lock()
@@ -458,9 +675,27 @@ async fn resolve(state: &AppState, owner: &str, name: &str) -> Result<Target, Bo
         )));
     }
     Ok(Target {
+        hidden: state.hidden.hides(&info),
         info,
         stale: from_stale,
     })
+}
+
+/// `451 Unavailable For Legal Reasons` (RFC 7725): this gateway does not serve `owner/name`.
+/// The operator decided that; Dash Platform still holds the repository, and `dash://` still
+/// reads it.
+fn denied(state: &AppState, owner: &str, name: &str) -> Response {
+    Metrics::inc(&state.metrics.denied);
+    let mut r = text(
+        StatusCode::UNAVAILABLE_FOR_LEGAL_REASONS,
+        format!("{owner}/{name} is not served by this gateway (451 Unavailable For Legal Reasons). That is this gateway's operator's decision, not a change to Dash Platform: the repository is still there, and `git clone dash://{owner}/{name}` (git-remote-dash) still works.\n"),
+    );
+    // RFC 7725 section 3: who blocks.
+    let blocked_by = format!("<{}>; rel=\"blocked-by\"", state.cfg.public_base());
+    if let Ok(v) = HeaderValue::from_str(&blocked_by) {
+        r.headers_mut().insert(header::LINK, v);
+    }
+    r
 }
 
 /// The resolution a request may use while Platform cannot be read: the last one, if it is at
@@ -588,7 +823,7 @@ async fn info_refs(
             )
         }
     }
-    let Target { info, stale } = match resolve(&state, &owner, repo_name(&repo)).await {
+    let Target { info, stale, .. } = match resolve(&state, &owner, repo_name(&repo)).await {
         Ok(t) => t,
         Err(r) => return *r,
     };
@@ -640,7 +875,7 @@ async fn upload_pack(
     body: Body,
 ) -> Response {
     Metrics::inc(&state.metrics.requests_git);
-    let Target { info, stale } = match resolve(&state, &owner, repo_name(&repo)).await {
+    let Target { info, stale, .. } = match resolve(&state, &owner, repo_name(&repo)).await {
         Ok(t) => t,
         Err(r) => return *r,
     };
@@ -737,7 +972,7 @@ async fn manifest_route(
     Path((owner, repo)): Path<(String, String)>,
 ) -> Response {
     Metrics::inc(&state.metrics.requests_other);
-    let Target { info, stale } = match resolve(&state, &owner, repo_name(&repo)).await {
+    let Target { info, stale, .. } = match resolve(&state, &owner, repo_name(&repo)).await {
         Ok(t) => t,
         Err(r) => return cors(*r),
     };
@@ -886,10 +1121,12 @@ async fn badge_route(
         Err(r) => {
             // Platform failing (503) is not a missing repository (404).
             let status = r.status();
-            let b = if status == StatusCode::SERVICE_UNAVAILABLE {
-                Badge::unavailable(label)
-            } else {
-                Badge::new("dash forge", "repo not found", "lightgrey")
+            let b = match status {
+                StatusCode::SERVICE_UNAVAILABLE => Badge::unavailable(label),
+                StatusCode::UNAVAILABLE_FOR_LEGAL_REASONS => {
+                    Badge::new("dash forge", "not served here", "lightgrey")
+                }
+                _ => Badge::new("dash forge", "repo not found", "lightgrey"),
             };
             let mut resp = respond(to_rendered(&b), 60);
             *resp.status_mut() = status;
@@ -1044,7 +1281,7 @@ async fn feed_route(
             "feeds: releases.atom, commits.atom, issues.atom\n",
         );
     }
-    let Target { info, stale } = match resolve(&state, &owner, &name).await {
+    let Target { info, stale, .. } = match resolve(&state, &owner, &name).await {
         Ok(t) => t,
         Err(r) => return *r,
     };
@@ -1282,6 +1519,15 @@ async fn item_data(
     kind: ItemKind,
     n: u32,
 ) -> Option<(Option<Item>, Option<Duration>)> {
+    // Issues and pull requests share one dense sequence, so a number above the repository's
+    // count has no item and costs no read of one (a walk over fresh numbers would otherwise
+    // read each).
+    if let Some(total) = state.item_total(info, n).await {
+        if u64::from(n) > total {
+            Metrics::inc(&state.metrics.items_beyond_count);
+            return Some((None, None));
+        }
+    }
     let key = format!("og:{}:item:{}:{n}", info.repo_id, kind.segment());
     let up = state.mirrors.upstream();
     cached_data(state, key, || async move { up.item(info, kind, n).await }).await
@@ -1320,8 +1566,14 @@ async fn share_page(
                 // Resolved from before Platform stopped answering: cacheable briefly only.
                 ttl = ttl.min(60);
             }
+            if t.hidden {
+                // Curation: the site's own card, naming nothing of the repository.
+                return page_response(&og::Page::site(&web, url, target), ttl, None);
+            }
             t.info
         }
+        // The operator's refusal is said as it is, not dressed as a site card.
+        Err(r) if r.status() == StatusCode::UNAVAILABLE_FOR_LEGAL_REASONS => return *r,
         Err(r) => {
             let max_age = if r.status() == StatusCode::NOT_FOUND {
                 ttl
@@ -1377,9 +1629,26 @@ fn page_response(page: &og::Page, max_age: u64, stale: Option<Duration>) -> Resp
 /// `GET /og/<owner>/<name>.png`: the repository's card.
 async fn repo_png(state: &Arc<AppState>, owner: &str, name: &str) -> Response {
     match resolve(state, owner, name).await {
+        Ok(t) if t.hidden => site_card(state),
         Ok(t) => repo_png_of(state, t.info, owner, name).await,
         Err(r) => *r,
     }
+}
+
+/// The site's own card image (the web app's `og.png`), for a repository the curation list
+/// hides.
+fn site_card(state: &AppState) -> Response {
+    (
+        StatusCode::FOUND,
+        [
+            (header::LOCATION, format!("{}/og.png", state.cfg.web_base())),
+            (
+                header::CACHE_CONTROL,
+                format!("public, max-age={}", state.renders.ttl().as_secs()),
+            ),
+        ],
+    )
+        .into_response()
 }
 
 /// [`repo_png`] of the resolved `info`.
@@ -1426,6 +1695,7 @@ async fn item_png(
     n: u32,
 ) -> Response {
     let info = match resolve(state, owner, name).await {
+        Ok(t) if t.hidden => return site_card(state),
         Ok(t) => t.info,
         Err(r) => return *r,
     };
@@ -1480,7 +1750,7 @@ async fn index(State(state): St) -> Response {
 <pre>git clone {base}/&lt;owner&gt;/&lt;name&gt;.git</pre>
 <p>It is optional and never an authority: every repository's <code>forge-manifest.json</code> names the Platform documents behind each ref, and <code>dg verify-mirror {base}/&lt;owner&gt;/&lt;name&gt;.git</code> checks the mirror against Dash Platform with proofs. <code>git clone dash://&lt;owner&gt;/&lt;name&gt;</code> never needs this gateway.</p>
 <p>Badges: <code>/badge/&lt;owner&gt;/&lt;name&gt;/{{stars,ci,release,issues}}.svg</code>. Feeds: <code>/feed/&lt;owner&gt;/&lt;name&gt;/{{releases,commits,issues}}.atom</code>. Share links with a preview card: <code>/og/&lt;owner&gt;/&lt;name&gt;</code>, or any short path after it (<code>/og/&lt;owner&gt;/&lt;name&gt;/issues/7</code>, <code>/pull/7</code>), which opens the same page on the web app.</p>
-<p>Privacy: client addresses are held in memory for rate limiting only and are never logged. Private repositories are never served.</p>
+<p>Privacy: client addresses are held in memory for rate limiting only and are never logged. Private repositories are never served. The operator may delist a repository from this gateway (HTTP 451); that never changes what is on Dash Platform, and <code>git clone dash://&lt;owner&gt;/&lt;name&gt;</code> still reads it.</p>
 </body></html>"#
     );
     ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], html).into_response()
@@ -1501,6 +1771,10 @@ async fn readyz(State(state): St) -> Response {
         "mirrors": g.mirrors,
         "mirrorsReady": g.mirrors_ready,
         "cacheBytes": g.cache_bytes,
+        "version": {
+            "crate": VERSION,
+            "buildSha": BUILD_SHA.map(str::trim).filter(|s| !s.is_empty() && *s != "unknown"),
+        },
     });
     let status = if ready {
         StatusCode::OK

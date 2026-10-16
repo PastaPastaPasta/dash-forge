@@ -204,6 +204,9 @@ pub trait Upstream: Send + Sync + 'static {
     async fn releases(&self, repo: &RepoInfo) -> Result<Vec<ReleaseEntry>>;
     /// The newest issues no maintainer hid, newest first.
     async fn issues(&self, repo: &RepoInfo, limit: usize) -> Result<Vec<IssueEntry>>;
+    /// How many issues and pull requests the repository has (proved counts). They share one
+    /// dense sequence, so `n` is the number of an existing item only when `1 <= n <= count`.
+    async fn item_count(&self, repo: &RepoInfo) -> Result<u64>;
     /// Issue or pull request `number`, when everyone may read it: `None` when there is none,
     /// it is malformed, it is members-only (this reader is anonymous, so it cannot open it),
     /// or a maintainer hid it (or its author is banned). A preview card shows nothing of a
@@ -652,6 +655,13 @@ impl Upstream for PlatformUpstream {
                 document_id: v.issue.document_id.clone(),
             })
             .collect())
+    }
+
+    async fn item_count(&self, repo: &RepoInfo) -> Result<u64> {
+        let r = self.repo_ref(repo)?;
+        // The next dense number is the two totals plus one (`rules::transition::dense_number`).
+        let next = Collab::reader(&self.client).next_number(&r).await?;
+        Ok(u64::from(next).saturating_sub(1))
     }
 
     async fn item(&self, repo: &RepoInfo, kind: ItemKind, number: u32) -> Result<Option<Item>> {
