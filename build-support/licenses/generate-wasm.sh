@@ -49,6 +49,7 @@ trap 'rm -rf "$tmp"' EXIT
   echo "Platform tag: ${tag}"
   echo
   echo "Overview of licenses:"
-  cat "$tmp/body.txt"
+  # Some crates ship CRLF license files; the notice is LF throughout.
+  tr -d '\r' < "$tmp/body.txt"
 } > "$out"
 echo "generate-wasm: wrote $out (platform ${tag})"

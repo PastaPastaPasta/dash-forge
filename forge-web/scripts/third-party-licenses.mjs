@@ -246,7 +246,8 @@ export function pnpmLicenses(cwd) {
  * build-support/licenses/generate-wasm.sh), if they were listed for the Platform release the
  * installed @dashevo/wasm-sdk is built from. Throws when they were listed for another.
  */
-export function wasmNoticeFor(text, wasmSdkVersion) {
+export function wasmNoticeFor(raw, wasmSdkVersion) {
+  const text = `${normalize(raw)}\n`
   if (!text.split('\n').includes(`Platform tag: v${wasmSdkVersion}`)) {
     throw new Error(
       `scripts/third-party/wasm-sdk-licenses.txt is not for platform v${wasmSdkVersion}; regenerate it with build-support/licenses/generate-wasm.sh after moving the Platform tag`,

@@ -3,10 +3,10 @@ Rust crates in the Dash Platform SDK WebAssembly module
 
 wasm_sdk_bg.wasm (npm package @dashevo/wasm-sdk) is the wasm-sdk crate of
 github.com/dashpay/platform, tag v5.0.0-beta.6, compiled to WebAssembly together with the Rust
-crates below, grouped by licence, each with the licence text as the crate ships it.
+crates below, grouped by license, each with the license text as the crate ships it.
 Platform tag: v5.0.0-beta.6
 
-Overview of licences:
+Overview of licenses:
   * MIT License (MIT): 292 crates
   * Unicode License v3 (Unicode-3.0): 19 crates
   * Apache License 2.0 (Apache-2.0): 14 crates

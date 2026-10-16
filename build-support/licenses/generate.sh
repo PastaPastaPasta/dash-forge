@@ -36,7 +36,9 @@ about() {
   cargo-about generate --frozen --fail --workspace -c build-support/licenses/about.toml "$@"
 }
 about --format json -o "$tmp/crates.json"
-about -o "$out/THIRD-PARTY-LICENSES" build-support/licenses/about.hbs
+about -o "$tmp/third-party.txt" build-support/licenses/about.hbs
+# Some crates ship CRLF license files; the notice is LF throughout.
+tr -d '\r' < "$tmp/third-party.txt" > "$out/THIRD-PARTY-LICENSES"
 
 # A NOTICE file in a crate we ship must be reproduced; none exists today, so refuse to ship
 # without it when one appears (the template cannot include files cargo-about does not read).
