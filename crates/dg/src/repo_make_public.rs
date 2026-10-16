@@ -265,9 +265,14 @@ pub async fn run(ctx: &Ctx, a: &MakePublicArgs) -> Result<()> {
     }
     // a run that started Everything (some history published) finishes as Everything
     let history_started = match &conversion {
-        Some(c) => !history_bundles(&s, &public_view(&s.repo), &kr, c.seal_off_epoch)
-            .await?
-            .is_empty(),
+        Some(c) => !history_bundles(
+            &s,
+            &public_view(&s.repo),
+            &kr,
+            history_cutoff(c.seal_off_epoch, saved.as_ref().and_then(|sv| sv.seal_off)),
+        )
+        .await?
+        .is_empty(),
         None => false,
     };
     if history_started && flag_mode == Some(Mode::CodeOnly) {
@@ -404,6 +409,56 @@ async fn owner_bundles(s: &Session, public: &RepoRef) -> Result<BTreeSet<[u8; 32
         .filter(|m| m.kind == kind && m.owner_id == public.owner_id)
         .map(|m| m.pack_hash)
         .collect())
+}
+
+/// The epoch history is published below (DESIGN §4.10 step 7): the lower of the seal-off epoch
+/// the repository's settings state and the one this run rotated to, when it recorded one. A
+/// rotation by someone else between this run's seal-off and the flip raises the stated one; the
+/// run's own seal-off key, which members wrote under during the conversion, is still never
+/// published. The web runs the same rule (`cutoffOf`), so both build the same bundles.
+fn history_cutoff(stated: Option<u32>, recorded: Option<u32>) -> Option<u32> {
+    match (stated, recorded) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
+}
+
+/// The refusal of a run whose seal-off key is no longer the repository's current one.
+fn key_changed(label: &str) -> anyhow::Error {
+    UserError::new(
+        codes::ROTATION_PENDING,
+        format!("{label}'s key changed while this ran"),
+    )
+    .cause("another maintainer changed the key after this run's change")
+    .fix(format!(
+        "run it again: dg repo make-public {label} --resume"
+    ))
+    .note("the repo is still private")
+    .into()
+}
+
+/// `private`'s current key epoch, read fresh, giving a node a block behind a few seconds to show
+/// `seal_off`.
+async fn current_epoch_after(
+    s: &Session,
+    private: &RepoRef,
+    seal_off: Option<u32>,
+) -> Result<Option<u32>> {
+    let mut current = None;
+    for i in 0..5 {
+        if i > 0 {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
+        current = RepoService::new(&s.client, &s.identity, &s.bridge)
+            .keyring(private)
+            .await?
+            .resolution()
+            .current_epoch;
+        if current >= seal_off {
+            break;
+        }
+    }
+    Ok(current)
 }
 
 /// The history bundles (DESIGN §4.10 step 7) the owner of `public` recorded: those of its kind-7
@@ -1388,7 +1443,10 @@ async fn convert(r: Run<'_>, mut check: Check) -> Result<()> {
             s,
             &public,
             kr,
-            conversion.as_ref().and_then(|c| c.seal_off_epoch),
+            history_cutoff(
+                conversion.as_ref().and_then(|c| c.seal_off_epoch),
+                saved.as_ref().and_then(|sv| sv.seal_off),
+            ),
         )
         .await?
     } else {
@@ -1472,16 +1530,7 @@ async fn convert(r: Run<'_>, mut check: Check) -> Result<()> {
             fresh_kr = fresh_psvc.keyring(private).await?;
         }
         if fresh_kr.resolution().current_epoch != saved.seal_off {
-            return Err(UserError::new(
-                codes::ROTATION_PENDING,
-                format!("{label}'s key changed while this ran"),
-            )
-            .cause("another maintainer changed the key after this run's change")
-            .fix(format!(
-                "run it again: dg repo make-public {label} --resume"
-            ))
-            .note("the repo is still private")
-            .into());
+            return Err(key_changed(&label));
         }
         if mode == Mode::Everything {
             let again = Box::pin(preflight(
@@ -1508,6 +1557,11 @@ async fn convert(r: Run<'_>, mut check: Check) -> Result<()> {
             .config
             .as_ref()
             .map_or("main", |c| c.default_branch.as_str());
+        // The second check can take minutes: a rotation by another maintainer meanwhile would put
+        // the run's own seal-off key below the stated cutoff, so the key is read again, last.
+        if current_epoch_after(s, private, saved.seal_off).await? != saved.seal_off {
+            return Err(key_changed(&label));
+        }
         svc.make_repo_public(&s.repo, default_branch).await?;
         if !ctx.json {
             println!("{label} is public now. It can never be private again.");
@@ -1554,7 +1608,7 @@ async fn convert(r: Run<'_>, mut check: Check) -> Result<()> {
             seal_off_epoch: saved.seal_off,
             marker_height: None,
         });
-        let seal_off = c.seal_off_epoch.unwrap_or(0);
+        let seal_off = history_cutoff(c.seal_off_epoch, saved.seal_off).unwrap_or(0);
         let held = RepoService::new(&s.client, &s.identity, &s.bridge)
             .keyring(private)
             .await?
@@ -1709,6 +1763,18 @@ mod tests {
             .unwrap();
         assert!(out.status.success(), "git {args:?}");
         String::from_utf8(out.stdout).unwrap().trim().to_string()
+    }
+
+    /// History is published only below the lower of the stated and the recorded seal-off epoch,
+    /// so a rotation that slipped in before the flip never publishes this run's own seal-off key.
+    #[test]
+    fn history_stops_below_the_runs_own_seal_off() {
+        assert_eq!(history_cutoff(Some(4), Some(3)), Some(3));
+        assert_eq!(history_cutoff(Some(3), Some(3)), Some(3));
+        assert_eq!(history_cutoff(Some(3), Some(5)), Some(3));
+        assert_eq!(history_cutoff(Some(3), None), Some(3));
+        assert_eq!(history_cutoff(None, Some(2)), Some(2));
+        assert_eq!(history_cutoff(None, None), None);
     }
 
     /// Everything's widened scan reads an object no live branch holds (a branch deleted while
