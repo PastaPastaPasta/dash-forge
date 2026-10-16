@@ -32,7 +32,7 @@ jq_py() { python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print($2)
 
 import_run() { # import_run <log> <source> <sync>
   DASH_FORGE_KEY="$ID" RUST_LOG=error NO_COLOR=1 _tmo_for 900 "$IMPORT" "$2" --repo "$NAME" --sync "$3" \
-    --work-dir "${WORKROOT}/s31-work-$(basename "$2")" --max-spend 0.2 --yes --summary-json "$1.json" \
+    --work-dir "${WORKROOT}/s31-work-$(basename "$2")" --max-spend 0.2 --yes --i-have-the-rights --summary-json "$1.json" \
     >"$1.out" 2>"$1.err"
 }
 imported() { # imported <log> <source> <sync> — runs it, SKIPs on a flake, FAILs otherwise

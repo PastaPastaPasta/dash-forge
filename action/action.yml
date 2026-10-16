@@ -72,6 +72,9 @@ inputs:
   github-repo:
     description: "GitHub repository to mirror (owner/repo)."
     default: ${{ github.repository }}
+  i-have-the-rights:
+    description: "Your acknowledgement that you may publish the mirrored repository's content, permanently, on Dash Platform: its commits (authors' names and emails), and the issues, PRs and comments with their authors' logins. Empty (the default): acknowledged when github-repo belongs to the account that owns the workflow's repository, which is how you mirror your own repository. 'true': you may publish it (needed for a repository of another owner). 'false': never; the run refuses."
+    default: ""
   version:
     description: "Dash Forge release to install (the release this action version pins). Empty: install 'true' builds from source."
     default: "0.1.0"
@@ -125,6 +128,7 @@ runs:
         INPUT_BUILD_CACHE: ${{ inputs.build-cache }}
         INPUT_STATE_CACHE: ${{ inputs.state-cache }}
         INPUT_FAIL_ON_PARTIAL: ${{ inputs.fail-on-partial }}
+        INPUT_I_HAVE_THE_RIGHTS: ${{ inputs.i-have-the-rights }}
       run: bash "$GITHUB_ACTION_PATH/validate.sh"
 
     # A fresh directory per invocation: two mirrors in one job, or a failed earlier
@@ -239,6 +243,7 @@ runs:
         INPUT_DRY_RUN: ${{ inputs.dry-run }}
         INPUT_FAIL_ON_PARTIAL: ${{ inputs.fail-on-partial }}
         INPUT_GITHUB_REPO: ${{ inputs.github-repo }}
+        INPUT_I_HAVE_THE_RIGHTS: ${{ inputs.i-have-the-rights }}
         FORGE_BIN_DIR: ${{ inputs.install != 'false' && steps.paths.outputs.bin || '' }}
         FORGE_SUMMARY: ${{ steps.paths.outputs.summary }}
         FORGE_STATE: ${{ steps.paths.outputs.state }}

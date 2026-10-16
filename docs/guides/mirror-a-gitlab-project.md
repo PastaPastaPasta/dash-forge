@@ -53,10 +53,12 @@ The token is sent as `Authorization: Bearer`, only to that instance: the importe
 Start with a dry run. It reads everything, compares it with what the destination already holds, and prints what it would write and the estimate. Then run it with a cap:
 
 ```sh
-forge-import gitlab.com/acme/widget --max-spend 0.5 --state ./widget.sync.json
+forge-import gitlab.com/acme/widget --max-spend 0.5 --state ./widget.sync.json --i-have-the-rights
 ```
 
-The flags are the same as for GitHub: `--repo`, `--sync`, `--max-spend`, `--state`, `--dry-run`, `--limit`, `--concurrency`, `--yes`, `--summary-json`, and the network flags. See the [GitHub guide's table](mirror-a-github-repo.md#1-first-import). In `--sync`, `prs` means merge requests (`mrs` works too). `dg import gitlab.com/acme/widget` is the same engine.
+A real run needs `--i-have-the-rights` (or a "y" at a terminal): a mirror is permanent and carries other people's commits, comments and usernames. The run shows the licence GitLab reports for the project and warns when it has none. See [the GitHub guide](mirror-a-github-repo.md#1-first-import) for the whole notice. A project that tracks files with Git LFS is warned about: the mirror holds the pointer files only.
+
+The flags are the same as for GitHub: `--repo`, `--sync`, `--max-spend`, `--state`, `--dry-run`, `--limit`, `--concurrency`, `--yes`, `--i-have-the-rights`, `--summary-json`, and the network flags. See the [GitHub guide's table](mirror-a-github-repo.md#1-first-import). In `--sync`, `prs` means merge requests (`mrs` works too). `dg import gitlab.com/acme/widget` is the same engine.
 
 **Re-running is safe and cheap.** What is already mirrored is decided on chain, by the GitLab URL each document records (`https://gitlab.com/acme/widget/-/issues/12`, `…/-/merge_requests/3`, and `…#note_<id>` for a comment). A re-run writes only what is new and costs nothing when nothing changed. It is the same scheme as the GitHub importer.
 

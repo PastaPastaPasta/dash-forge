@@ -85,6 +85,20 @@ reject ann '::error'
 expect out 'status=partial'
 expect out 'spent-dash=0.013'
 
+# LEG-10 / FEAT-18: the source's licence and Git LFS reach the job summary.
+case=licence-and-lfs
+run_summary lfs-licence.json
+expect md 'Source licence: none detected'
+expect md '**Git LFS:**'
+expect md 'pointer files only'
+expect ann '::warning title=Forge mirror::github.com/alice/project reports no licence'
+expect ann '::warning title=Forge mirror::this repository tracks files with Git LFS'
+expect out 'status=ok'
+# A summary without them (an older forge-import) shows neither.
+run_summary ok.json
+reject md 'Source licence'
+reject md 'Git LFS'
+
 case=error
 run_summary error.json
 expect md '### Forge mirror failed'
@@ -172,6 +186,10 @@ bad INPUT_NETWORK=devnet INPUT_DEVNET_NAME='x@y'
 bad INPUT_INSTALL=yes
 good INPUT_INSTALL=true INPUT_VERSION=''
 good INPUT_BUILD_CACHE=false
+good INPUT_I_HAVE_THE_RIGHTS=true
+good INPUT_I_HAVE_THE_RIGHTS=false
+good INPUT_I_HAVE_THE_RIGHTS=''
+bad INPUT_I_HAVE_THE_RIGHTS=yes
 bad INPUT_BUILD_CACHE=maybe
 bad INPUT_COST_CAP=abc
 bad INPUT_COST_CAP=0
@@ -206,6 +224,7 @@ mirror() {
         INPUT_SYNC=code INPUT_STORAGE_KIND=platform INPUT_REPLICAS=1 INPUT_COST_CAP=0.25 \
         INPUT_DRY_RUN=true INPUT_S3_ENDPOINT='' INPUT_S3_BUCKET='' INPUT_S3_REGION='' \
         INPUT_S3_PUBLIC_URL='' INPUT_S3_PREFIX='' INPUT_PINNING_ENDPOINT='' GITHUB_TOKEN=ghtok \
+        GITHUB_REPOSITORY_OWNER=alice INPUT_I_HAVE_THE_RIGHTS='' \
         "$@" bash "$here/mirror.sh" >"$tmp/log" 2>&1
 }
 case="mirror dfk1"
@@ -253,6 +272,39 @@ fi
 for rc in 1 3; do
     if mirror DASH_FORGE_KEY=dfk1:a:b:1:w STUB_RC=$rc; then fail "exit $rc passed"; fi
 done
+
+# LEG-10: the rights acknowledgement. Your own repository needs nothing beyond running the
+# Action; another owner's needs the input; a dry run needs neither.
+case="mirror own repository is acknowledged"
+mirror DASH_FORGE_KEY=dfk1:a:b:1:w INPUT_DRY_RUN=false || fail "exited $?"
+expect args '--i-have-the-rights'
+expect env 'FORGE_IMPORT_ACCOUNT=alice'
+expect log 'running this Action is the acknowledgement'
+mirror DASH_FORGE_KEY=dfk1:a:b:1:w INPUT_DRY_RUN=false GITHUB_REPOSITORY_OWNER=Alice || fail "exited $?"
+expect args '--i-have-the-rights'
+mirror DASH_FORGE_KEY=dfk1:a:b:1:w INPUT_DRY_RUN=false INPUT_GITHUB_REPO=https://github.com/alice/project ||
+    fail "exited $?"
+expect args '--i-have-the-rights'
+
+case="mirror another owner's repository needs the input"
+if mirror DASH_FORGE_KEY=dfk1:a:b:1:w INPUT_DRY_RUN=false GITHUB_REPOSITORY_OWNER=bob; then
+    fail "accepted without the acknowledgement"
+fi
+expect log "set 'i-have-the-rights: true'"
+[ ! -e "$tmp/args" ] || fail "forge-import ran anyway"
+mirror DASH_FORGE_KEY=dfk1:a:b:1:w INPUT_DRY_RUN=false GITHUB_REPOSITORY_OWNER=bob \
+    INPUT_I_HAVE_THE_RIGHTS=true || fail "exited $?"
+expect args '--i-have-the-rights'
+expect env 'FORGE_IMPORT_ACCOUNT=bob'
+# A dry run writes nothing, so it needs no acknowledgement (and is not given one).
+mirror DASH_FORGE_KEY=dfk1:a:b:1:w INPUT_DRY_RUN=true GITHUB_REPOSITORY_OWNER=bob || fail "exited $?"
+reject args '--i-have-the-rights'
+expect args '--dry-run'
+
+case="mirror i-have-the-rights false"
+if mirror DASH_FORGE_KEY=dfk1:a:b:1:w INPUT_DRY_RUN=false INPUT_I_HAVE_THE_RIGHTS=false; then
+    fail "false still mirrored"
+fi
 
 case="mirror empty key"
 if mirror DASH_FORGE_KEY=''; then fail "accepted"; fi

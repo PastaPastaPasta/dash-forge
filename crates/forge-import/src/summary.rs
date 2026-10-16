@@ -144,6 +144,10 @@ pub struct Summary {
     pub key: KeyInfo,
     /// Non-fatal problems.
     pub warnings: Vec<String>,
+    /// The licence the source reports (`null`: the run did not get as far as reading it).
+    pub source_license: Option<String>,
+    /// The source tracks files with Git LFS: the mirror holds their pointer files only.
+    pub lfs_detected: bool,
     /// The error, when `status` is `error` or `cap_exceeded`.
     pub error: Option<String>,
     /// Part of what was asked for was left out (the warnings say what): the source refused to
@@ -168,6 +172,8 @@ impl Summary {
             balance_credits: None,
             key: KeyInfo::default(),
             warnings: Vec::new(),
+            source_license: None,
+            lfs_detected: false,
             error: None,
             incomplete: false,
         }
@@ -189,6 +195,9 @@ impl Summary {
         };
         eprintln!();
         eprintln!("{} → {} ({})", self.source, self.repo.url, self.network);
+        if let Some(l) = &self.source_license {
+            eprintln!("  source licence: {l}");
+        }
         eprintln!(
             "  {label}: {} ref updates · {} packs ({}) · {} issues · {} PRs · {} comments · \
              {} reviews · {} events · {} transitions · {} releases · {} labels",
@@ -328,6 +337,8 @@ mod tests {
             "key",
             "warnings",
             "error",
+            "sourceLicense",
+            "lfsDetected",
         ] {
             assert!(v.get(k).is_some(), "missing {k}");
         }

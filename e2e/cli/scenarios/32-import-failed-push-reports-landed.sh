@@ -42,7 +42,7 @@ import_run() { # import_run <log> [VAR=value…]  (the spend cap is $CAP)
     [[ $# -eq 0 ]] || export "$@"
     export DASH_FORGE_KEY="$ID" RUST_LOG=error NO_COLOR=1
     _tmo_for 900 "$IMPORT" "$SRC" --repo "$NAME" --sync code --work-dir "$WORK" \
-      --max-spend "$CAP" --yes ${IMPORT_DRY:+--dry-run} --summary-json "$log.json" >"$log.out" 2>"$log.err"
+      --max-spend "$CAP" --yes --i-have-the-rights ${IMPORT_DRY:+--dry-run} --summary-json "$log.json" >"$log.out" 2>"$log.err"
   )
 }
 must_fail() { # must_fail <log> <fault>

@@ -107,6 +107,36 @@ cmd=(forge-import "$INPUT_GITHUB_REPO" --repo "$INPUT_REPO" --sync "$INPUT_SYNC"
     --yes --summary-json "$FORGE_SUMMARY" "${net[@]}")
 [ "$INPUT_DRY_RUN" = false ] || cmd+=(--dry-run)
 
+# --- The rights acknowledgement ----------------------------------------------------------
+# A mirror is permanent on Dash Platform and carries other people's commits, comments and
+# logins. i-have-the-rights 'true' acknowledges it. Left empty, the owner of the workflow's
+# repository mirroring a repository of their own (the default github-repo) is the
+# acknowledgement; a repository of another owner needs the input. forge-import shows the
+# licence and warns (the job summary repeats it); a dry run needs no acknowledgement.
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+source_owner=${INPUT_GITHUB_REPO#https://}
+source_owner=${source_owner#github.com/}
+source_owner=${source_owner%%/*}
+rights=false
+case "${INPUT_I_HAVE_THE_RIGHTS:-}" in
+    true) rights=true ;;
+    false) ;;
+    *)
+        if [ -n "${GITHUB_REPOSITORY_OWNER:-}" ] &&
+            [ "$(lower "$source_owner")" = "$(lower "$GITHUB_REPOSITORY_OWNER")" ]; then
+            rights=true
+            echo "Mirroring $INPUT_GITHUB_REPO, which belongs to $GITHUB_REPOSITORY_OWNER, the owner of this workflow's repository: running this Action is the acknowledgement that you may publish it (input i-have-the-rights)."
+        fi
+        ;;
+esac
+if [ "$rights" = true ]; then
+    cmd+=(--i-have-the-rights)
+elif [ "$INPUT_DRY_RUN" = false ]; then
+    die "$INPUT_GITHUB_REPO does not belong to ${GITHUB_REPOSITORY_OWNER:-the workflow owner}. A mirror publishes its content on Dash Platform permanently: commits (authors' names and emails), and any issues, PRs and comments with their authors' logins. If you may publish it, set 'i-have-the-rights: true'."
+fi
+# The account the licence notice compares the source's owner with.
+[ -z "${GITHUB_REPOSITORY_OWNER:-}" ] || export FORGE_IMPORT_ACCOUNT="$GITHUB_REPOSITORY_OWNER"
+
 # Exit codes: 0 ok / dry run, 1 error, 3 cost cap reached, 4 partial (some items skipped;
 # the sync state did not advance, so the next run retries them). The Summary step runs
 # whatever happens here and explains the outcome.

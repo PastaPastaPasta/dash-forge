@@ -71,6 +71,55 @@ pub struct RepoMeta {
     /// Description.
     #[serde(default)]
     pub description: Option<String>,
+    /// The repository's licence (`null`: GitHub detected none).
+    #[serde(default)]
+    pub license: crate::source::Reported<GhLicense>,
+    /// Its owner.
+    #[serde(default)]
+    pub owner: Option<GhOwner>,
+}
+
+/// The licence GitHub detected (`GET /repos/{owner}/{repo}`).
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct GhLicense {
+    /// SPDX id; `NOASSERTION` for a licence file GitHub could not match.
+    #[serde(default)]
+    pub spdx_id: Option<String>,
+    /// Display name (`MIT License`, `Other`).
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// A repository's owner.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct GhOwner {
+    /// Login of the user or organization.
+    #[serde(default)]
+    pub login: String,
+}
+
+impl RepoMeta {
+    /// The licence GitHub reports, as a run shows it: the SPDX id when it has one, else the name
+    /// (`Other` for a licence file GitHub could not match).
+    pub fn licence(&self) -> crate::source::License {
+        use crate::source::{License, Reported};
+        let l = match &self.license {
+            Reported::Absent => return License::Unreported,
+            Reported::Null => return License::None,
+            Reported::Value(l) => l,
+        };
+        let spdx = l
+            .spdx_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && *s != "NOASSERTION");
+        let name = l.name.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        License::Named(
+            spdx.or(name)
+                .unwrap_or("unrecognised licence file")
+                .to_string(),
+        )
+    }
 }
 
 /// The login GitHub shows for a deleted account.
@@ -437,6 +486,16 @@ impl GithubClient {
                 serde_json::from_str(l).with_context(|| format!("parsing an element of {path}"))
             })
             .collect()
+    }
+
+    /// The login `gh`'s token acts as (`GET /user`); an error for a token that has none (an
+    /// Actions `GITHUB_TOKEN`).
+    pub fn login(&self) -> Result<String> {
+        #[derive(Deserialize)]
+        struct Me {
+            login: String,
+        }
+        Ok(self.get::<Me>("user", "the authenticated user")?.login)
     }
 
     /// Repository metadata (also proves the repo exists and `gh` works).
@@ -977,6 +1036,32 @@ pub fn unix_to_iso8601(secs: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// LEG-10: the licence GitHub reports, and the absence of one, are told apart from an answer
+    /// that does not mention it.
+    #[test]
+    fn the_licence_github_reports_is_read_from_the_repository_answer() {
+        use crate::source::License;
+        let meta = |json: &str| serde_json::from_str::<RepoMeta>(json).unwrap();
+        let mit = meta(
+            r#"{"default_branch":"main","license":{"spdx_id":"MIT","name":"MIT License"},"owner":{"login":"o"}}"#,
+        );
+        assert_eq!(mit.licence(), License::Named("MIT".into()));
+        assert_eq!(mit.owner.unwrap().login, "o");
+        // A licence file GitHub could not match: its name, never the placeholder id.
+        let other = meta(r#"{"license":{"spdx_id":"NOASSERTION","name":"Other"}}"#);
+        assert_eq!(other.licence(), License::Named("Other".into()));
+        assert_eq!(
+            meta(r#"{"license":{}}"#).licence(),
+            License::Named("unrecognised licence file".into())
+        );
+        // `null` is GitHub saying it found none; a missing key is not.
+        assert_eq!(meta(r#"{"license":null}"#).licence(), License::None);
+        assert_eq!(
+            meta(r#"{"default_branch":"main"}"#).licence(),
+            License::Unreported
+        );
+    }
 
     #[test]
     fn parses_slug_and_url_forms_and_refuses_junk() {
