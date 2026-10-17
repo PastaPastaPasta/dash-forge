@@ -93,7 +93,7 @@ A deposit only comes back when the document is deleted. Some documents can never
 
 ## What each action costs
 
-This is the one table of what Forge costs; the other guides link here. Measured on devnet moutai as the signing identity's balance change: Platform 4.2.0-beta.5, on **2026-09-27**, except the rows marked †, measured on the same network before the beta.5 reset (2026-09-24 to 2026-09-26). Mainnet uses the same fee formula. Every figure here was measured on a devnet; they are **to be re-measured on testnet (Platform 5.0.0-rc.3)**, which uses the same fee schedule.
+This is the one table of what Forge costs; the other guides link here. Measured on devnet moutai as the signing identity's balance change: Platform 4.2.0-beta.5, on **2026-09-27**, except the rows marked †, measured on the same network before the beta.5 reset (2026-09-24 to 2026-09-26). Mainnet uses the same fee formula. Every figure here was measured on a devnet; they are **to be re-measured on testnet (Platform 5.0.0-rc.4)**, which uses the same fee schedule.
 
 A write that is the first of its kind somewhere (a repository's first push or first issue, a ref's first update) creates index entries and costs more than the same write later. The ranges below go from later to first.
 
