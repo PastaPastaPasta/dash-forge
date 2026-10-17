@@ -185,7 +185,7 @@ A public repository can keep some of its discussion **members-only**: issues, co
 **The words.** Forge uses the same words in `dg`, the web app and these guides:
 
 - **Audiences:** Public, All members (short: Members), Maintainers, Writers and maintainers, Specific people. "Members-only" describes anything that isn't public. A post (an issue, comment or review) and an environment can have any of them.
-- **Roles:** Read, Triage, Write, Maintain, Owner, and Bot for an automated account (coming later). See [Members](#members).
+- **Roles:** Read, Triage, Write, Maintain, Owner, and Bot for an automated account, where the network's contracts have the role ([Bots and agents](bots.md)). See [Members](#members).
 - **Verbs:** **Publish** (code), **Make public** (a post, such as a comment) and **Make this repo public** (a whole private repository). Each widens the audience for good and can't be undone. An author makes their own posts public and a maintainer anyone's; the owner makes a whole private repository public ([above](#private-repositories)).
 - **Repository kinds:** **Public** and **Private**. "Private" means only a private repository, where everything is encrypted ([above](#private-repositories)).
 - **Access** is what a bot or a CI runner is given.
@@ -258,7 +258,7 @@ dg embargo run --wait --yes                                        # the release
 
 ## Issues
 
-Anyone with an identity and some credits can file an issue. Fees are the spam floor.
+Anyone with an identity and some credits can file an issue. On mainnet fees are the spam floor; on a test network credits are free, so they are not.
 
 **Security problems don't go in issues.** An issue is public and permanent. A repository says how to report a vulnerability in a `SECURITY.md` file, and Forge shows it as GitHub does: the repo header has a **Security policy** link, the file opens at `/<owner>/<repo>/security`, and the new-issue form points to it ("Issues are public and permanent. Reporting a vulnerability? Read the security policy."). Forge looks on the default branch in `.github/SECURITY.md`, then `SECURITY.md`, then `docs/SECURITY.md` (GitHub's order) and uses the first it finds. A repo without one says "Contact a maintainer privately." instead. A private repo's new-issue form shows no such line: its issues are visible only to its members. Forge has no report form of its own: put an email address and a PGP key in the file. `dg repo view` prints `Security policy: .github/SECURITY.md` when there is one. Run in a clone it reads the clone; elsewhere it fetches the default branch first, unless the repo is over 25 MiB, when it says so (`--json`: `securityPolicyChecked` is false and `securityPolicy` null). `--skip-security-policy` never fetches. Private repos are not read.
 
@@ -690,7 +690,7 @@ On forge.dashhq.org, signed in with a limited key ([Identity and keys](identity-
 | Merge a PR (see below) | |
 | Create a repository (public or private), or fork one, with a cost preview; sync a fork with its parent (fast-forward) | Syncing a fork whose branch has commits of its own (open the pull request it offers) |
 | Add and remove members (owner) | |
-| Read and write members-only issues, comments and reviews (members, after one unlock per tab), and turn members-only content on (maintainers) | Members-only pull requests and branches (not yet in Forge) |
+| Read and write members-only issues, comments and reviews, and send them to specific people (members, after one unlock per tab); make posts public (an author's own, a maintainer's anyone's); turn members-only content on (maintainers); read members-only branches and open, review and publish members-only pull requests; Settings → Environments | Starting or pushing a members-only branch (use `git push` after `dg branch new --members`); publishing a branch for fewer people than all members, and sharing one outside the members (use `dg`); members-only releases |
 | Publish a release with assets, creating its tag when it does not exist (maintainers) | |
 | Star repositories and follow people | |
 | See your repositories, issues, PRs and stars in **Explore**, and new activity in **Notifications** | |
@@ -719,7 +719,7 @@ The features below work, but they are **Beta**: expect rough edges, and try them
 |---|---|
 | **Narrower branches** (a branch only some members can read) | Set up and change them with `dg` (`dg branch audience`); the web lists them and says who each is for. When a role changes, the person making the change re-sends the key only for branches whose key they hold; the others are updated by the next person to push them. |
 | **Branch sharing** (`dg branch share <branch> --to @name`) | `dg` only; there is nothing in the web app. The recipient gets a snapshot of the branch as it is now. What is pushed to it later stays unreadable to them until you share again. |
-| **Bots and runners** | **Settings → Bots and runners** and `dg bot`. A bot reads members-only content only when someone asks it to, and it never receives the members key. |
+| **Bots and runners** | **Settings → Bots and runners** and `dg bot`. A bot reads members-only content only when someone asks it to, and it never receives the members key. The guide: [Bots and agents](bots.md). |
 | **Access notices and read letters** | What a bot may do is a notice everyone can read. A read letter opens one issue, pull request or branch, as it was when someone asked, for that one job. |
 | **Agents** (asking a bot to work on an issue or pull request) | The web app can ask on an issue or pull request. Sharing code with the bot needs a clone: use `dg bot ask`. |
 | **Bot push access** | A maintainer gives a bot push access to chosen branches until a date. Renew, suspend or remove it in **Settings → Bots and runners** or with `dg bot`. |

@@ -5,7 +5,7 @@
 - **We host nothing.** No Forge server, account or database. You bring an identity and, if you like, a bucket. The chain proves the rest.
 - **Nothing to trust.** Every read is checked against a Platform proof, and every byte against its hash. The [verification guide](docs/guides/verify-forge.md) says exactly what is checked, and what is still trusted.
 - **No takedowns.** The contracts have no moderation. Nobody can delete your history or ban your identity.
-- **Plain git.** `git clone dash://…` and `git push` work unchanged, and so does jj. `dg` feels like `gh`.
+- **Plain git.** `git clone dash://…` and `git push` work unchanged. `dg` feels like `gh`. jj talks to git remotes, so it is expected to work too, but it has not been tested since July 2026: [report issues](https://github.com/PastaPastaPasta/dash-forge/issues).
 
 ## Status
 
@@ -35,11 +35,11 @@
 
 ## What you can do
 
-- **Host and clone.** `git clone dash://<owner>/<name>`, `git push`, branches, tags, force-push, partial clones (`--filter=blob:none`), jj. Every push prints its cost before it pays, and a cost guard can make it ask.
+- **Host and clone.** `git clone dash://<owner>/<name>`, `git push`, branches, tags, force-push, partial clones (`--filter=blob:none`). Every push prints its cost before it pays, and a cost guard can make it ask.
 - **Bring your own storage.** Packs go to your S3-compatible bucket (R2, B2, AWS S3, MinIO), your IPFS node or pinning service, or Platform, with N-of-M replication. Set it up with `dg storage add` or the web app's storage wizard.
 - **Collaborate.** Writers and maintainers enforced at consensus, issues, labels, pull requests from a branch or a fork, reviews that count only from members on the current head, real merges (`dg pr merge`), releases with hash-checked assets, forks and stars.
 - **Mirror GitHub.** `forge-import` (or `dg import`) copies code, issues, PRs, releases and labels, and the [Mirror Action](action/README.md) keeps the copy in sync from GitHub Actions, idempotently and under a cost cap.
-- **Keep it private.** `dg repo create --private`: code, branch names and (soon) issues and PRs are encrypted to members' identity encryption keys, removing a member rotates the key, and the [collaborating guide](docs/guides/collaborating.md#private-repositories) lists exactly what stays visible (existence, name, members, sizes, timing, commit ids; release notes and labels are not encrypted in this release). The web app's private views follow.
+- **Keep it private.** `dg repo create --private`: code, branch names, issues, PRs and releases are encrypted to members' identity encryption keys, removing a member rotates the key, and the [collaborating guide](docs/guides/collaborating.md#private-repositories) lists exactly what stays visible (existence, name, members, sizes, timing, commit ids; label definitions, check runs and webhook URLs are not encrypted in this release). The web app's private views follow.
 - **Keep keys contained.** `dg auth` and the web app sign with *limited keys*: a budget, an expiry, and usable only on Forge's contracts, enforced by Platform. The master key signs only one-time steps and is not stored (unless you ask for `dg auth login --full-key`). CLI keys live in the OS keychain; browser keys in an encrypted vault (passkey or passphrase). CI gets one pasteable `dfk1:` runner key.
 - **Use the web app.** Browse code, commits and diffs; file and triage issues; review PRs; publish releases; manage members and storage; Explore and a local notifications inbox ([supported browsers](docs/FAQ.md#which-browsers-does-the-web-app-support)). Sign in by creating an identity in the browser, importing one, or scanning a QR code with Dash Wallet (today: Dash Wallet iOS on devnet, with limits; see [Identity and keys](docs/guides/identity-and-keys.md#signing-in-with-the-dash-wallet-app-what-works-today)).
 - **Check everything.** A Verification card on every repository page says what was proven and how, including a cross-check of the quorum keys against a second source.
@@ -65,7 +65,7 @@ Every guide (collaborating, identity and keys, costs, CI, verification and more)
 | Component | What it is |
 |---|---|
 | **forge protocol** | Data contracts. forge-v2 (Dash Platform v5): three shared contracts, forge-core, forge-collab and forge-community, in one contract group. Access control is membership documents checked at consensus ([forge-v2.md](docs/contracts/forge-v2.md)). |
-| **git-remote-dash** | Git remote helper (Rust). `git clone dash://<owner>/project` and `git push` just work. jj-compatible. |
+| **git-remote-dash** | Git remote helper (Rust). `git clone dash://<owner>/project` and `git push` just work. jj: expected to work, untested since July 2026. |
 | **dg** | `gh`-replacement CLI (Rust, same workspace): `auth` (identities, limited keys on the OS keychain, DPNS names), `init`, repos, forks, stars, issues, labels, PRs with real merges, releases with assets, members, storage profiles, webhooks, `import`, cost estimates, repack, reseed, doctor. |
 | **forge web** | Static SPA (TypeScript, wasm SDK, in-browser repo materialization) deployable to IPFS. Built: browsing, commit and PR diffs, issues, opening PRs, inline review comments and verdicts, forks, merges from the browser (fast-forward, squash, and merge commits when the two sides changed different paths; the merge's pack goes to your storage, or to Platform if you allow it), releases, members, the storage wizard, limited-key sign-in with an encrypted vault, in-browser identity creation, Dash Wallet sign-in, Explore and notifications. Not yet: rebase merges, a browser merge when both sides changed the same file (use `dg pr merge`), editing files in the browser, and searching file contents. |
 | **forge relay** | Interchangeable Rust daemon, run by users, bridging Platform events to GitHub-shaped webhooks (CI/notifications), with chain-encrypted secrets and a durable retry queue. Trust = availability only. |
@@ -106,16 +106,17 @@ network's ids. See [BUILDING.md § Networks](docs/BUILDING.md#networks).
 8. [Archive](docs/archive/README.md) — the forge-v1 design, plans, spike results and build log, and the earlier devnet notes. Historical; nothing there describes the current system.
 9. [E2E & production test plan](docs/testing/e2e-test-plan.md) — devnet identities and funds, the nightly suites, mainnet smoke.
 10. [Building from source](docs/BUILDING.md) — prerequisites, the pinned Platform SDK tag, local overrides. [Installing prebuilt binaries](docs/INSTALL.md) — install.sh, checksums + attestations, cargo binstall, cutting a release.
-11. [Mainnet runbook](docs/mainnet-runbook.md) — the rehearsed (not-yet-executed) mainnet deployment procedure.
+11. [Deploying Forge to a network](docs/deploying-to-a-network.md) — registering the four contracts on testnet and then mainnet: set, order, costs, custody, update rules (not yet executed on either).
 12. [Error codes](docs/errors.md) — every `dg` / `git-remote-dash` error code, its exit code and fix.
 13. [Product roadmap](docs/roadmap.md) — verified state, owner decisions, phased plan and execution tracker.
 14. [UX/DX specification](docs/design/ux-dx-spec.md) — launch journeys, identity, storage onboarding, cost, trust, CLI conventions; its §11 P0 backlog is the launch checklist.
+15. [Limits](docs/limits.md) — sizes, counts and caps, with where each comes from. [Bots and agents](docs/guides/bots.md) (beta) is in the [user guides](docs/guides/README.md).
 
 ### Verification
 
 The web app at **https://forge.dashhq.org** (GitHub Pages) runs on devnet sakura (Dash Platform v5.0.0-beta.6); [Networks](docs/networks.md) has the earlier devnets. The CLI end-to-end suite (`e2e/cli/`) and the Playwright specs (`forge-web/e2e/`) run nightly against sakura ("Devnet Nightly", from master's workflow file). See [e2e/README.md](e2e/README.md).
 
-Proven end-to-end on bonsia: `git clone dash://…` / `git push` byte-identical round-trip; a revoked writer's push and a non-member's push rejected at consensus; third-party "no trust in any server" verification; issue and PR lifecycles, including a PR from a fork with a real merge; the browser app rendering proof-verified data with the Verification card; `dg init` publishing to a bucket; an import re-run costing 0; relay deliveries surviving a restart; CLI↔web parity via the shared conformance vectors. See [forge-v2.md](docs/contracts/forge-v2.md) for the contract design and [mainnet-runbook.md](docs/mainnet-runbook.md) for the (not-yet-executed) mainnet deployment.
+Proven end-to-end on bonsia: `git clone dash://…` / `git push` byte-identical round-trip; a revoked writer's push and a non-member's push rejected at consensus; third-party "no trust in any server" verification; issue and PR lifecycles, including a PR from a fork with a real merge; the browser app rendering proof-verified data with the Verification card; `dg init` publishing to a bucket; an import re-run costing 0; relay deliveries surviving a restart; CLI↔web parity via the shared conformance vectors. See [forge-v2.md](docs/contracts/forge-v2.md) for the contract design and [deploying-to-a-network.md](docs/deploying-to-a-network.md) for the (not-yet-executed) testnet and mainnet registration.
 
 Components (all under this repo): `forge-contracts` · `forge-core` (Rust lib) · `git-remote-dash` · `dg` (CLI) · `forge-relay` · `forge-import` · `forge-web`.
 
@@ -123,4 +124,5 @@ Components (all under this repo): `forge-contracts` · `forge-core` (Rust lib) �
 
 - **Contributing:** how to build, test and send a change is in [CONTRIBUTING.md](CONTRIBUTING.md).
 - **Security:** report a vulnerability privately, as [SECURITY.md](SECURITY.md) describes. Don't open a public issue.
+- **Announcements and security:** new releases are announced in [GitHub Releases](https://github.com/PastaPastaPasta/dash-forge/releases), and security fixes in this repository's [security advisories](https://github.com/PastaPastaPasta/dash-forge/security/advisories); those are the record. A forum thread to follow them: TODO(owner): name the Dash forum thread.
 - **License:** Dash Forge is licensed under either of [Apache License 2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), at your option.
