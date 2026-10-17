@@ -107,4 +107,16 @@ describe('ContractsMissingState', () => {
     expect(link?.getAttribute('href')).toBe('https://github.com/PastaPastaPasta/dash-forge#readme')
     expect(link?.textContent).toBe('Dash Forge on GitHub')
   })
+
+  it('renders proved-None evidence under Details with the permanent missing-contract actions', () => {
+    const detail = `Platform proved contract ${forge.core} absent: ${RAW}`
+    act(() => root.render(<ContractsMissingState detail={detail} config={SAKURA} />))
+    expect(el.querySelector('[data-testid="contracts-missing"]')).not.toBeNull()
+    expect(el.querySelector('h2')?.textContent).toBe("Dash Forge isn't deployed on devnet sakura right now")
+    const details = el.querySelector('details')!
+    expect(details.open).toBe(false)
+    expect(details.textContent).toContain(detail)
+    expect(el.querySelector('button')?.textContent).toBe('Reload for a newer build')
+    expect(el.textContent).not.toContain('Try again')
+  })
 })

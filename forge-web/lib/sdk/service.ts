@@ -1,8 +1,8 @@
 /**
  * evo-sdk singleton service — the one Platform connection for the whole app.
  *
- * S0.3 (DECIDED): the ONLY WASM-viable connection is `EvoSDK.testnetTrusted()` /
- * `mainnetTrusted()` (or the trusted devnet equivalent) with `*WithProof` reads. `EvoSDK.testnet()` and `{proofs:false}`
+ * S0.3 (DECIDED): the WASM-viable connection uses `new EvoSDK({ network, trusted: true, ... })`
+ * with proof-verified reads. `EvoSDK.testnet()` and `{proofs:false}`
  * both crash WASM, so forge-web is trust-minimized (quorum keys from a known endpoint),
  * never "fully trustless". Proofs are always on (~0% per-query overhead).
  *
@@ -40,7 +40,7 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { noteClockOk, noteClockSkew } from './clock-skew'
 
-import { NETWORKS, type Network } from '../constants'
+import { dapiReadAddresses, NETWORKS, type Network } from '../constants'
 import { forgeContractIds } from '../deployments'
 import { userQuorumUrl } from '../quorum-url'
 import { dapiBudget, installDapiFetchGate } from './budget'
@@ -361,6 +361,11 @@ export class EvoSdkService {
     return this.missing
   }
 
+  private isForgeContract(contract: string | undefined): contract is string {
+    const forge = this.network !== null ? NETWORKS[this.network].v2 : null
+    return contract !== undefined && forge !== null && forgeContractIds(forge).includes(contract)
+  }
+
   /**
    * Only a fresh proved contract fetch can mark a recorded Forge contract absent app-wide.
    * In rc.4, raw contracts.fetch() calls getDataContract -> fetch_contract_seeding_cache ->
@@ -370,8 +375,7 @@ export class EvoSdkService {
    */
   private async noteMissing(contract: string | undefined, e: unknown): Promise<void> {
     if (this.missing !== null || this.confirming || contract === undefined || this.network === null) return
-    const forge = NETWORKS[this.network].v2
-    if (forge === null || !forgeContractIds(forge).includes(contract)) return
+    if (!this.isForgeContract(contract)) return
     const connection = this.current
     if (connection === null || this.clock.now() - this.presentAt < RECOVER_GAP_MS) return
     const epoch = this.epoch
@@ -397,11 +401,13 @@ export class EvoSdkService {
   /** Fresh calls on the normal SDK rotate nodes; an unproved refusal never establishes absence. */
   private async readWithContractRetry<T>(read: (sdk: EvoSDK) => Promise<T>, contract: string | undefined): Promise<T> {
     const epoch = this.epoch
+    const forgeContract = this.isForgeContract(contract)
     for (let attempt = 0; ; attempt++) {
       try {
         return await this.withRecovery(read)
       } catch (e) {
         if (!isContractMissingError(e) || this.epoch !== epoch) throw e
+        if (this.missing !== null && forgeContract) throw new Error(this.missing, { cause: e })
         const wait = CONTRACT_REFUSAL_WAITS_MS[attempt]
         if (wait === undefined) {
           await this.noteMissing(contract, e)
@@ -411,6 +417,7 @@ export class EvoSdkService {
         }
         await new Promise<void>((resolve) => this.clock.setTimeout(resolve, wait))
         if (this.epoch !== epoch) throw e
+        if (this.missing !== null && forgeContract) throw new Error(this.missing, { cause: e })
       }
     }
   }
@@ -1238,7 +1245,7 @@ export function withTimeout<T>(work: Promise<T>, ms: number, what: string, contr
 /** Build, connect and warm a trusted connection for `config`. */
 async function connectTrusted(config: EvoSdkConfig, carry: Carry, signal: AbortSignal): Promise<Connection> {
   // Every DAPI request this page makes goes through the shared request budget (`budget.ts`).
-  installDapiFetchGate(NETWORKS[config.network].dapiAddresses)
+  installDapiFetchGate(dapiReadAddresses(NETWORKS[config.network]))
   // In a browser, start the wasm download (a separate asset with its own stall timer,
   // wasm-fetch.ts) next to the SDK's JS chunk rather than after it. Both load on first data
   // need, never in the first-paint bundle. Elsewhere (Node, the live tests) the SDK's own
@@ -1287,7 +1294,7 @@ async function connectAndWarm(
   // EvoSDKOptions supports addresses AND trusted: true: connect() uses withAddresses then
   // withTrustedContext, retaining quorum verification while replacing the bootstrap list.
   // Mainnet's recorded endpoints are a quorum-key second source, not read endpoints.
-  const addresses = config.network === 'mainnet' ? [] : NETWORKS[config.network].dapiAddresses
+  const addresses = dapiReadAddresses(NETWORKS[config.network])
   const options = {
     settings: { timeoutMs: config.timeoutMs ?? 8000, banFailedAddress: false },
     ...(addresses.length > 0 ? { addresses: [...addresses] } : {}),

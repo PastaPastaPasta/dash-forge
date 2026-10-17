@@ -1,31 +1,27 @@
 import { test, expect, type Page, type Route } from '@playwright/test'
-import { collectPageErrors, E2E_DEVNET, E2E_NETWORK, repoUrl, shot } from './helpers'
+import { collectPageErrors, E2E_NETWORK, repoUrl } from './helpers'
 
-test.skip(E2E_NETWORK === 'testnet', 'simulates a devnet reset (a devnet is redeployed in place); testnet has no such state')
+test.skip(E2E_NETWORK === 'testnet', 'uses the devnet build and its bundled contract snapshots')
 
 /**
- * The network does not have this build's contracts (devnet moutai upgraded in place to Platform
- * v4.2.0-beta.7, 2026-09-29, which retired the old contracts): one clear app-wide state instead
- * of every view's "That read did not land" with a raw gRPC string and a Try again that can never
- * succeed. On a devnet the forge left (its deployment record marked `retired`: moutai, bonsia)
- * this is worded as the forge's move to devnet sakura, not a generic reset; on any other devnet
- * (the build under test: E2E_DEVNET) as a generic reset.
+ * Unproved contract-not-found refusals are retryable, even when every contacted node refuses.
+ * Hermetic: the quorum service returns empty lists and every DAPI request (including the
+ * fresh proved-contract fetch) gets gRPC InvalidArgument, "contract not found error: …".
+ * That cannot prove absence, so home, repo and explore retain "A node is behind; try again."
+ * and Try again, never the permanent contracts-missing state or reset/update advice.
+ * The bounded request count guards against automatic retry loops. A hermetic refusal mock
+ * cannot sign a proof of absence; proved-None classification and its UI are unit/component
+ * tested in lib/sdk/contract-missing.test.ts and components/ui/contracts-missing.test.tsx.
  *
- * Hermetic: nothing reaches the chain. The quorum service answers with empty quorum lists (an
- * error reply carries no proof, so no key is needed), and every DAPI call gets the refusal a
- * reset devnet sends for a read against a contract it no longer has: gRPC InvalidArgument,
- * "contract not found error: …". The build's bundled contract snapshots make the reads go out
- * without a contract fetch, exactly as on forge.dashhq.org.
- *
- *   E2E_SKIP_BUILD=1 E2E_PORT=<port> pnpm exec playwright test contracts-missing.spec.ts
+ *   pnpm exec playwright test e2e/contracts-missing.spec.ts --project chromium
  */
 
 const QUORUMS = /^https:\/\/quorums\.[a-z0-9-]+\.networks\.dash\.org\//
 const DAPI = /\/org\.dash\.platform\.dapi\.v0\.Platform\/\w+$/
 const DRIVE_MESSAGE = 'contract not found error: contract not found when querying from value with contract info'
-/** What the owner saw on forge.dashhq.org, inside the old error state. */
-const RAW =
-  'transport error: grpc error: code: \'Client specified an invalid argument\', message: "contract not found error: contract not found when querying from value with contract info"'
+// A page has at most two document reads, plus seeded-version and absence checks. Allow the
+// SDK's own transport retries inside each of the service's four attempts, but no retry loop.
+const MAX_REFUSALS_PER_PAGE = 40
 
 async function cors(route: Route): Promise<Record<string, string>> {
   return {
@@ -34,8 +30,8 @@ async function cors(route: Route): Promise<Record<string, string>> {
   }
 }
 
-/** Serve the chain a reset devnet is: quorums answer, every contract is gone. */
-async function resetDevnet(page: Page): Promise<{ refused: number }> {
+/** Refuse every read without proving anything about whether the contracts exist. */
+async function refuseContracts(page: Page): Promise<{ refused: number }> {
   const stats = { refused: 0 }
   await page.context().route(QUORUMS, async (route) => {
     const previous = new URL(route.request().url()).pathname.endsWith('/previous')
@@ -68,47 +64,37 @@ async function resetDevnet(page: Page): Promise<{ refused: number }> {
   return stats
 }
 
-const STATE = (page: Page) => page.getByTestId('contracts-missing')
-
-async function expectContractsMissing(page: Page): Promise<void> {
-  await expect(STATE(page)).toBeVisible({ timeout: 60_000 })
-  if (E2E_DEVNET === 'moutai' || E2E_DEVNET === 'bonsia') {
-    await expect(STATE(page).getByRole('heading')).toHaveText('Dash Forge moved to a new devnet')
-    await expect(STATE(page)).toContainText('devnet sakura')
-  } else {
-    await expect(STATE(page).getByRole('heading')).toHaveText(`Dash Forge isn't deployed on devnet ${E2E_DEVNET} right now`)
-    await expect(STATE(page)).toContainText('is a test network, and it was probably reset')
-  }
-  // Not the generic read failure, not the outage banner, and no endless retry.
-  await expect(page.getByText('That read did not land')).toHaveCount(0)
+async function expectRetryableRefusal(page: Page, stats: { refused: number }, previous = 0): Promise<void> {
+  await expect(page.getByText('A node is behind; try again.', { exact: true }).first()).toBeVisible({ timeout: 60_000 })
+  await expect(page.getByRole('button', { name: 'Try again', exact: true }).first()).toBeVisible()
+  await expect(page.getByTestId('contracts-missing')).toHaveCount(0)
   await expect(page.getByTestId('platform-unreachable')).toHaveCount(0)
-  await expect(page.getByRole('button', { name: 'Try again' })).toHaveCount(0)
-  // The raw error is behind Details only.
-  const raw = STATE(page).getByText(RAW, { exact: true })
-  await expect(raw).toBeHidden()
-  await STATE(page).getByText('Details', { exact: true }).click()
-  await expect(raw).toBeVisible()
+  await expect(page.getByText(/probably reset|Reload for a newer build|re-push your repos/)).toHaveCount(0)
+  // Let the remaining parallel reads and the longest backoff finish before checking the bound.
+  await page.waitForTimeout(2_000)
+  const refused = stats.refused - previous
+  expect(refused).toBeGreaterThan(0)
+  expect(refused).toBeLessThanOrEqual(MAX_REFUSALS_PER_PAGE)
+  await expect(page.getByTestId('contracts-missing')).toHaveCount(0)
 }
 
-test.describe("the network does not have this build's contracts", () => {
-  test('cm-1. home: one clear state, raw error under Details, no Try again', async ({ page }) => {
+test.describe('unproved contract refusals', () => {
+  test('cm-1. home keeps retry advice and bounds the refused requests', async ({ page }) => {
     const { errors } = collectPageErrors(page)
-    const stats = await resetDevnet(page)
+    const stats = await refuseContracts(page)
     await page.goto('/', { waitUntil: 'domcontentloaded' })
-    await expect(STATE(page)).toBeVisible({ timeout: 60_000 })
-    await shot(page, 'cm-1-home-contracts-missing')
-    await expectContractsMissing(page)
-    await shot(page, 'cm-1-home-contracts-missing-details')
-    expect(stats.refused).toBeGreaterThan(0)
+    await expectRetryableRefusal(page, stats)
     expect(errors, errors.join('\n')).toEqual([])
   })
 
-  test('cm-2. a repo page and explore show the same state, not their own read errors', async ({ page }) => {
-    await resetDevnet(page)
+  test('cm-2. repo and explore keep retry advice without claiming contracts are missing', async ({ page }) => {
+    const { errors } = collectPageErrors(page)
+    const stats = await refuseContracts(page)
     await page.goto(repoUrl('issues'), { waitUntil: 'domcontentloaded' })
-    await expectContractsMissing(page)
-    await shot(page, 'cm-2-repo-contracts-missing')
+    await expectRetryableRefusal(page, stats)
+    const repoRefusals = stats.refused
     await page.goto('/explore/', { waitUntil: 'domcontentloaded' })
-    await expectContractsMissing(page)
+    await expectRetryableRefusal(page, stats, repoRefusals)
+    expect(errors, errors.join('\n')).toEqual([])
   })
 })

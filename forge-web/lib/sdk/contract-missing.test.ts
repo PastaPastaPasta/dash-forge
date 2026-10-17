@@ -130,11 +130,31 @@ describe('EvoSdkService: missing-contract read retries and proved absence', () =
     expect(fetch).toHaveBeenCalledWith(forge.core)
     expect(service.contractsMissing).toBe(`Platform proved contract ${forge.core} absent: ${REFUSAL_MESSAGE}`)
     expect(notified).toHaveBeenCalledOnce()
-    await readError(sdk)
+    // Later reads reject after their first refusal without spending the retry backoff.
+    await expect(readCore(sdk)).rejects.toThrow(service.contractsMissing!)
+    expect(query).toHaveBeenCalledTimes(5)
     expect(fetch).toHaveBeenCalledOnce()
     expect(notified).toHaveBeenCalledOnce()
     service.cleanup()
     expect(service.contractsMissing).toBeNull()
+  })
+
+  it('a read already in backoff stops before its next SDK call when another read proves absence', async () => {
+    let finish: (value: unknown) => void = () => undefined
+    const proof = new Promise((resolve) => { finish = resolve })
+    const { service, sdk, query, fetch } = await connected({ proof: () => proof })
+    const first = readCore(sdk).catch((e: unknown) => e)
+    await vi.advanceTimersByTimeAsync(RETRY_BUDGET)
+    expect(fetch).toHaveBeenCalledOnce()
+    const second = readCore(sdk).catch((e: unknown) => e)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(query).toHaveBeenCalledTimes(5)
+    finish(undefined)
+    await first
+    await vi.advanceTimersByTimeAsync(CONTRACT_REFUSAL_WAITS_MS[0]!)
+    expect(await second).toMatchObject({ message: service.contractsMissing, cause: REFUSAL })
+    expect(query).toHaveBeenCalledTimes(5)
+    expect(fetch).toHaveBeenCalledOnce()
   })
 
   it('parallel exhausted reads share one in-flight proof check', async () => {

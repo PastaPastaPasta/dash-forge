@@ -11,7 +11,9 @@ const recorded = vi.hoisted(() => ({
   free: vi.fn(),
   snapshots: vi.fn(async () => ({})),
   emptyTestnet: false,
+  gate: vi.fn(),
 }))
+vi.mock('./budget', () => ({ installDapiFetchGate: recorded.gate, dapiBudget: { retryAfterMs: () => 0 } }))
 vi.mock('./wasm-fetch', () => ({ compileWasm: () => Promise.resolve({}), onWasmProgress: () => () => undefined }))
 vi.mock('./contract-seed', () => ({ loadContractSnapshots: recorded.snapshots }))
 vi.mock('../constants', async (importOriginal) => {
@@ -49,6 +51,7 @@ beforeEach(() => {
   recorded.fetch.mockReset().mockResolvedValue({})
   recorded.snapshots.mockClear()
   recorded.free.mockClear()
+  recorded.gate.mockClear()
 })
 afterEach(() => {
   services.splice(0).forEach((service) => service.cleanup())
@@ -76,6 +79,7 @@ describe('trusted SDK endpoint selection', () => {
     expect(options.version).toBeUndefined()
     expect(options.quorumUrl).toBe(custom ? 'https://quorums.example.test' : undefined)
     expect(options.settings).toEqual({ timeoutMs: 8000, banFailedAddress: false })
+    expect(recorded.gate).toHaveBeenCalledWith(testnetDeployment.dapiAddresses)
   })
 
   it.each([false, true])('keeps mainnet SDK seeds despite the deployment list, with custom quorum URL = %s', async (custom) => {
@@ -87,6 +91,7 @@ describe('trusted SDK endpoint selection', () => {
     expect(options).not.toHaveProperty('addresses')
     expect(options.quorumUrl).toBe(custom ? 'https://quorums.example.test' : undefined)
     expect(options.proofs).not.toBe(false)
+    expect(recorded.gate).toHaveBeenCalledWith([])
   })
 
   it('retains the SDK fallback for an empty testnet deployment list', async () => {
@@ -94,6 +99,7 @@ describe('trusted SDK endpoint selection', () => {
     await connect('testnet')
     expect(recorded.options[0]).toMatchObject({ network: 'testnet', trusted: true })
     expect(recorded.options[0]).not.toHaveProperty('addresses')
+    expect(recorded.gate).toHaveBeenCalledWith([])
   })
 
   it('retains the configured devnet addresses, name, and quorum context', async () => {
@@ -103,5 +109,6 @@ describe('trusted SDK endpoint selection', () => {
       addresses: NETWORKS.devnet.dapiAddresses,
       ...(NETWORKS.devnet.quorumBaseUrl !== null ? { quorumUrl: NETWORKS.devnet.quorumBaseUrl } : {}),
     })
+    expect(recorded.gate).toHaveBeenCalledWith(NETWORKS.devnet.dapiAddresses)
   })
 })
