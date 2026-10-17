@@ -5,23 +5,39 @@
 // empty map instead. Nothing is written.
 //
 //   node forge-contracts/scripts/rc1-empty-aggregates.mjs [--devnet-name sakura] [--report <file.json>]
+//   node forge-contracts/scripts/rc1-empty-aggregates.mjs --network testnet --record <scratch-record.json> [--report <file.json>]
+//
+// Target (lib/target.mjs): --network devnet|testnet|mainnet (default devnet), --devnet-name, and
+// --record <file> for a scratch registration. It reads only, but the release plan (WS-D, QA-14) keeps
+// every live suite off the production registrations: on testnet and mainnet the network's own record
+// is refused, so pass --record. A four-contract record is refused until the layout routing lands (QA-03).
 import { randomBytes } from 'node:crypto';
-import { readFileSync, writeFileSync } from 'node:fs';
-import { join, resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { writeFileSync } from 'node:fs';
 import { loadEvoSdk } from './deploy-v2.mjs';
+import { addressesFor, refuseProduction, requireThreeContract, resolveTarget, sdkOptions, threeContractIds } from './lib/target.mjs';
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = Object.fromEntries(process.argv.slice(2).reduce((acc, t, i, a) => (t.startsWith('--') ? [...acc, [t.slice(2), a[i + 1] && !a[i + 1].startsWith('--') ? a[i + 1] : true]] : acc), []));
-const devnetName = args['devnet-name'] || 'sakura';
-const dep = JSON.parse(readFileSync(join(ROOT, 'deployments', `devnet-${devnetName}.json`), 'utf8'));
-const CORE = dep.v2.forgeCore.contractId;
-const COLLAB = dep.v2.forgeCollab.contractId;
-const COMM = dep.v2.forgeCommunity.contractId;
+const usage = 'usage: rc1-empty-aggregates.mjs [--network devnet|testnet|mainnet] [--devnet-name sakura] [--record <scratch-record.json>] [--addresses <dapi,...>] [--report <file.json>]';
+if (args.help) {
+  console.log(usage);
+  process.exit(0);
+}
+let target;
+try {
+  target = resolveTarget(args);
+  refuseProduction(target);
+  requireThreeContract(target, 'rc1-empty-aggregates');
+} catch (e) {
+  console.error(`rc1-empty-aggregates: ${e.message}\n${usage}`);
+  process.exit(2);
+}
+const { core: CORE, collab: COLLAB, community: COMM } = threeContractIds(target.record);
+if (!CORE || !COLLAB || !COMM) throw new Error(`${target.recordFile} records no RC1 forge-v2 contracts (core, collab and community)`);
+const addresses = addressesFor(target, args);
 
 const evo = await loadEvoSdk();
 const connect = async () => {
-  const sdk = new evo.EvoSDK({ network: 'devnet', devnetName, trusted: true, addresses: dep.dapiAddresses, settings: { timeoutMs: 60000 } });
+  const sdk = new evo.EvoSDK(sdkOptions(target, { addresses, settings: { timeoutMs: 60000 } }));
   await sdk.connect();
   return sdk;
 };
@@ -110,7 +126,7 @@ await probe('forks of a repo (forkOf rangeCountable)', 'count', q(CORE, 'repo', 
 await probe('Explore: public repos since a time in the future (recent rangeCountable, range)', 'count', q(CORE, 'repo', [['visibility', '==', 'public'], ['$createdAt', '>', now + 86400000]]));
 
 const failed = results.filter((r) => !r.pass);
-const report = { network: `devnet-${devnetName}`, contracts: { core: CORE, collab: COLLAB, community: COMM }, ids: { repo: R, target: T, identity: A }, passed: results.length - failed.length, total: results.length, results };
+const report = { network: target.label, record: target.scratch ? target.recordFile : undefined, contracts: { core: CORE, collab: COLLAB, community: COMM }, ids: { repo: R, target: T, identity: A }, passed: results.length - failed.length, total: results.length, results };
 if (args.report) writeFileSync(String(args.report), `${JSON.stringify(report, null, 2)}\n`);
 console.log(JSON.stringify({ passed: report.passed, total: report.total, failed }, null, 2));
 process.exit(failed.length ? 1 : 0);

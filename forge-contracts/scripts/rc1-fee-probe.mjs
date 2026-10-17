@@ -3,6 +3,12 @@
 // between two small probe contracts that differ in that feature alone.
 //
 //   node forge-contracts/scripts/rc1-fee-probe.mjs --devnet-name sakura --identity <file> [--state <file.json>] [--n 3]
+//   node forge-contracts/scripts/rc1-fee-probe.mjs --network testnet --record <scratch-record.json> --identity <file> [...]
+//
+// Target (lib/target.mjs): --network devnet|testnet|mainnet (default devnet), --devnet-name, and
+// --record <file>, the scratch registration this measurement belongs to. The probes are contracts of
+// their own, but they are registered on the network for good, so on testnet and mainnet the network's
+// own (production) record is refused: pass --record (QA-14).
 //
 // Probe A copies RC1's chunk, star and checkRun types; probe B is the same without
 //   - chunk:    `documentsCountable`                          (D-3: kill switch above +5 %)
@@ -46,20 +52,19 @@ import { randomBytes } from 'node:crypto';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PROTOCOL_VERSION, contractId, loadEvoSdk } from './deploy-v2.mjs';
+import { addressesFor, assertNotJulyIdentity, refuseProduction, resolveTarget, sdkOptions } from './lib/target.mjs';
 import { PROBES, RC2_DOCS, REVIEW_PROBES, bare, emitted, materialize, probeSchemas, schemaHash } from './lib/rc2-probe.mjs';
 import * as freezeProbe from './lib/freeze-probe.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = Object.fromEntries(process.argv.slice(2).reduce((acc, t, i, a) => (t.startsWith('--') ? [...acc, [t.slice(2), a[i + 1] && !a[i + 1].startsWith('--') ? a[i + 1] : true]] : acc), []));
-const devnetName = args['devnet-name'] || 'sakura';
 const N = Number(args.n ?? 4);
 const RC2 = Boolean(args.rc2);
 const FREEZE = Boolean(args.freeze);
-const statePath = String(args.state ?? join(homedir(), '.cache', 'dash-forge', `${FREEZE ? 'freeze' : RC2 ? 'rc2' : 'rc1'}-fee-probe-${devnetName}.json`));
 const log = (m) => console.error(`${new Date().toISOString().slice(11, 19)} ${m}`);
-const usage = (m) => {
-  console.error(`${m}\nusage: rc1-fee-probe.mjs [--rc2|--freeze] --devnet-name <name> --identity <file> [--state <file>] [--n 4]\n       rc1-fee-probe.mjs --rc2|--freeze --emit <dir>`);
-  process.exit(2);
+const usage = (m, code = 2) => {
+  console.error(`${m}\nusage: rc1-fee-probe.mjs [--rc2|--freeze] [--network devnet|testnet|mainnet] [--devnet-name <name>] [--record <scratch-record.json>] [--addresses <dapi,...>] --identity <file> [--state <file>] [--n 4]\n       rc1-fee-probe.mjs --rc2|--freeze --emit <dir>`);
+  process.exit(code);
 };
 const mean = (a) => a.reduce((x, y) => x + y, 0) / a.length;
 const median = (a) => [...a].sort((x, y) => x - y)[Math.floor(a.length / 2)];
@@ -79,9 +84,18 @@ if (args.emit !== undefined) {
   log(`wrote contracts/${lib.prefix}-{${lib.probes.join(',')}}.json and their vectors/ to ${dir}`);
   process.exit(0);
 }
+if (args.help) usage('rc1-fee-probe.mjs measures what an index feature adds to a write (see the header)', 0);
+let target;
+try {
+  target = resolveTarget(args);
+  refuseProduction(target);
+} catch (e) {
+  usage(`rc1-fee-probe: ${e.message}`);
+}
 if (typeof args.identity !== 'string') usage('--identity <file> is required');
 if (!(N >= 1)) usage('--n must be at least 1');
-const dep = JSON.parse(readFileSync(join(ROOT, 'deployments', `devnet-${devnetName}.json`), 'utf8'));
+const statePath = String(args.state ?? join(homedir(), '.cache', 'dash-forge', `${FREEZE ? 'freeze' : RC2 ? 'rc2' : 'rc1'}-fee-probe-${target.label}.json`));
+const addresses = addressesFor(target, args);
 
 const load = (name) => JSON.parse(readFileSync(join(ROOT, 'contracts', `${name}.json`), 'utf8'));
 
@@ -106,11 +120,12 @@ function probe(withFeatures) {
 
 const evo = await loadEvoSdk();
 const { EvoSDK, DataContract, Document, IdentityPublicKey, IdentitySigner, PrivateKey } = evo;
-const sdk = new EvoSDK({ network: 'devnet', devnetName, trusted: true, addresses: dep.dapiAddresses, settings: { timeoutMs: 60000 } });
+const sdk = new EvoSDK(sdkOptions(target, { addresses, settings: { timeoutMs: 60000 } }));
 await sdk.connect();
 const version = sdk.version();
 
 const rec = JSON.parse(readFileSync(String(args.identity), 'utf8'));
+assertNotJulyIdentity(target, rec.identityId, String(args.identity));
 const keyOf = (level) => {
   const k = rec.identityKeys.find((x) => x.purpose === 'AUTHENTICATION' && x.securityLevel === level);
   const signer = new IdentitySigner();
@@ -216,7 +231,7 @@ if (FREEZE) {
   const worst = (p) => Math.max(...Object.entries(fees).filter(([k]) => k.startsWith('event:')).map(([, v]) => v[p].addedPercent));
   const gates = { 'event byKind <= +15 % on every measured event write': worst('EV-KIND') <= 15, 'event byKind+$createdAt <= +15 % on every measured event write': worst('EV-KINDT') <= 15 };
   for (const [k, v] of Object.entries(fees)) log(`${k}: ${Object.entries(v).map(([p, f]) => `${p} ${f.mean} (${f.addedPercent >= 0 ? '+' : ''}${f.addedPercent} %)`).join(', ')}`);
-  console.log(JSON.stringify({ identity: owner, network: `devnet-${devnetName}`, protocolVersion: version, probes: Object.fromEntries(freezeProbe.PROBES.map((p) => [p, { id: state[p], registrationCredits: state[`${p}RegistrationCredits`] }])), n: N, fees, gates }, null, 2));
+  console.log(JSON.stringify({ identity: owner, network: target.label, protocolVersion: version, probes: Object.fromEntries(freezeProbe.PROBES.map((p) => [p, { id: state[p], registrationCredits: state[`${p}RegistrationCredits`] }])), n: N, fees, gates }, null, 2));
   process.exit(0);
 }
 

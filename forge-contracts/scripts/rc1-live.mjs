@@ -5,6 +5,15 @@
 //
 //   (cd forge-contracts/sdk-v2 && npm ci)
 //   node forge-contracts/scripts/rc1-live.mjs --devnet-name sakura --identities <dir> [--report <file.json>] [--only <group,...>]
+//   node forge-contracts/scripts/rc1-live.mjs --network testnet --record <scratch-record.json> --identities <dir> [...]
+//
+// Target (lib/target.mjs): --network devnet|testnet|mainnet (default devnet; --devnet-name for a devnet,
+// default sakura) selects deployments/<network>.json as deploy-v2.mjs does, and --record <file> runs
+// against a scratch registration instead (outside forge-contracts/deployments/). On testnet and
+// mainnet the network's own record is the PRODUCTION registration: this suite writes repos, issues
+// and keys that can never be deleted, so it refuses to run there (QA-14). Run it on a scratch set.
+// It writes the three-contract RC1 layout; a four-contract record (forge-meta) is refused until the
+// layout routing lands (QA-03).
 //
 // <dir> holds owner/member/stranger/runner.identity.json (`QA_NETWORK=sakura qa mint rc1 <name>`).
 // Roles: `owner` owns the repos; `member` is a writer (after consenting), and for a moment a writer
@@ -56,22 +65,37 @@ import { createHash, randomBytes } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 import { loadEvoSdk } from './deploy-v2.mjs';
 import { CONTRACTS, FUSED_STAR, MEMBER_ROLES, withRole } from './lib/seed-io.mjs';
+import { addressesFor, assertNotJulyIdentity, refuseProduction, requireThreeContract, resolveTarget, sdkOptions, threeContractIds } from './lib/target.mjs';
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = Object.fromEntries(process.argv.slice(2).reduce((acc, t, i, a) => (t.startsWith('--') ? [...acc, [t.slice(2), a[i + 1] && !a[i + 1].startsWith('--') ? a[i + 1] : true]] : acc), []));
-const devnetName = args['devnet-name'] || 'sakura';
+const usage = 'usage: rc1-live.mjs [--network devnet|testnet|mainnet] [--devnet-name sakura] [--record <scratch-record.json>] --identities <dir> [--addresses <dapi,...>] [--report <file.json>] [--only <group,...>]';
+if (args.help) {
+  console.log(usage);
+  process.exit(0);
+}
 const only = args.only ? new Set(String(args.only).split(',')) : null;
 const log = (m) => console.error(`${new Date().toISOString().slice(11, 19)} ${m}`);
 
-const dep = JSON.parse(readFileSync(join(ROOT, 'deployments', `devnet-${devnetName}.json`), 'utf8'));
-const CORE = dep.v2?.forgeCore?.contractId;
-const COLLAB = dep.v2?.forgeCollab?.contractId;
-const COMM = dep.v2?.forgeCommunity?.contractId;
-if (!CORE || !COLLAB || !COMM) throw new Error(`devnet-${devnetName}.json records no RC1 forge-v2 contracts (core, collab and community)`);
+let target;
+try {
+  target = resolveTarget(args);
+  refuseProduction(target);
+  requireThreeContract(target, 'rc1-live');
+} catch (e) {
+  console.error(`rc1-live: ${e.message}\n${usage}`);
+  process.exit(2);
+}
+if (typeof args.identities !== 'string') {
+  console.error(`rc1-live: --identities <dir> is required\n${usage}`);
+  process.exit(2);
+}
+const { core: CORE, collab: COLLAB, community: COMM } = threeContractIds(target.record);
+if (!CORE || !COLLAB || !COMM) throw new Error(`${target.recordFile} records no RC1 forge-v2 contracts (core, collab and community)`);
+if (target.scratch) log(`scratch registration ${target.recordFile} on ${target.label}`);
+const addresses = addressesFor(target, args);
 // The RC2 items (schema/build.py flags) the registered schemas carry: the committed JSONs, which
 // are what deploy-v2.mjs registered (FUSED_STAR too)
 const EVIDENCE_FROZEN = CONTRACTS.community.documentSchemas.checkRun.immutable.some((e) => typeof e === 'object' && e.property === 'logUrl');
@@ -90,7 +114,7 @@ const UPDATE1 = 'packMirror' in CONTRACTS.core.documentSchemas;
 const evo = await loadEvoSdk();
 const { EvoSDK, Document, IdentityPublicKey, IdentitySigner, PrivateKey, Identifier } = evo;
 const connect = async () => {
-  const fresh = new EvoSDK({ network: 'devnet', devnetName, trusted: true, addresses: dep.dapiAddresses, settings: { timeoutMs: 60000 } });
+  const fresh = new EvoSDK(sdkOptions(target, { addresses, settings: { timeoutMs: 60000 } }));
   await fresh.connect();
   return fresh;
 };
@@ -101,6 +125,7 @@ const version = sdk.version();
 
 function loadIdentity(name) {
   const rec = JSON.parse(readFileSync(join(String(args.identities), `${name}.identity.json`), 'utf8'));
+  assertNotJulyIdentity(target, rec.identityId, `${name}.identity.json`);
   const k = rec.identityKeys.find((x) => x.purpose === 'AUTHENTICATION' && x.securityLevel === 'HIGH');
   const enc = rec.identityKeys.find((x) => x.purpose === 'ENCRYPTION');
   const identityKey = new IdentityPublicKey({ keyId: k.id, purpose: k.purpose, securityLevel: k.securityLevel, keyType: k.keyType, isReadOnly: false, data: Buffer.from(k.publicKeyHex, 'hex') });
@@ -820,7 +845,7 @@ if (want('update1') && UPDATE1) {
 const passed = results.filter((r) => r.pass && !r.infra).length;
 if (infraCases.length) infra = `${infraCases.length} case(s) without a verdict: ${infraCases.join('; ')}`;
 const feeSummary = Object.fromEntries(Object.entries(fees).map(([k, v]) => [k, Math.round(v.reduce((a, b) => a + b, 0) / v.length)]));
-const report = { network: `devnet-${devnetName}`, contracts: { core: CORE, collab: COLLAB, community: COMM }, run: tag, passed, total: results.length, infra, fees: feeSummary, results };
+const report = { network: target.label, record: target.scratch ? target.recordFile : undefined, contracts: { core: CORE, collab: COLLAB, community: COMM }, run: tag, passed, total: results.length, infra, fees: feeSummary, results };
 if (args.report) writeFileSync(String(args.report), `${JSON.stringify(report, null, 2)}\n`);
 console.log(JSON.stringify({ passed, total: results.length, infra, fees: feeSummary, failed: results.filter((r) => !r.pass) }, null, 2));
 process.exit(results.some((r) => !r.pass) ? 1 : infra ? 2 : 0);
