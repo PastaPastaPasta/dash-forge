@@ -15,7 +15,7 @@ What Forge cannot hold or do, in numbers, with where each number comes from. Som
 | One state transition (a signed write) | **20,480 bytes** (20 KiB) | Platform's `max_state_transition_size`; `ST_SIZE_LIMIT` in `crates/forge-core/src/pack.rs` |
 | One byte-array field | 4,900 bytes (Platform's hard cap is 5,120; the rest is document overhead) | `FIELD_MAX` in `pack.rs` |
 | One `chunk` document (git pack bytes on Platform) | 3 fields, **14,700 bytes** of pack per chunk (about 14.4 KiB); a full chunk leaves at least 5 KiB for headers | `DOC_PAYLOAD_MAX` in `pack.rs` |
-| A pack | no fixed cap in Forge's tools: on Platform it is split over as many chunks as it needs, each costing about 0.005 DASH on Platform. A manifest records its size, capped at 1 TiB (**frozen**) | [forge-v2.md §9](contracts/forge-v2.md#9-frozen-at-mainnet); [Costs](guides/costs.md) |
+| A pack | **1 TiB**: the cap on the size a manifest records (**frozen**). Forge's tools add no smaller cap; on Platform a pack is split over as many chunks as it needs, each costing about 0.005 DASH | [forge-v2.md §9](contracts/forge-v2.md#9-frozen-at-mainnet); [Costs](guides/costs.md) |
 | A contract (registration) | 20,480 bytes, and at least 2,000 bytes of headroom under that for the create transition | `deploy-v2.mjs` |
 | Pack download time | each copy gets `max(120 s, size ÷ 1 MiB/s)`; a manifest with no size allows 256 MiB | [Bring your own storage](guides/bring-your-own-storage.md) |
 | Read-back check after an upload | a full download and SHA-256 up to 16 MiB; larger packs get a size check and byte-exact head and tail ranges | same |

@@ -2,7 +2,7 @@
 
 **For the person who registers Forge's contracts on a network: testnet first, then mainnet.** The steps are the same on both; where they differ, this page says so.
 
-Registration is the one step in a Forge launch that cannot be undone. Contracts cannot be deleted, re-owned or changed beyond additive updates ([after registration](#7-after-registration-what-can-still-change)). Rehearse it on a scratch set first, and read this page to the end before you broadcast anything.
+Registration is the one step in a Forge launch that cannot be undone. Contracts cannot be deleted or re-owned, and an update may only add types and optional properties or loosen a few bounds ([after registration](#7-after-registration-what-can-still-change)). Rehearse it on a scratch set first, and read this page to the end before you broadcast anything.
 
 **Status.** Forge is registered on devnet sakura only. A network has a Forge deployment once `forge-contracts/deployments/<network>.json` holds a complete `v2` record; testnet's file holds only the network's DAPI addresses, its chain id and the `keyExchange` record (yappr's contract) until the registration commit lands, and mainnet's holds only DAPI addresses. Until then every client reports "not deployed" on that network ([E702](errors.md#e702)) and never falls back to another network's ids. [Networks](networks.md) says what runs where.
 

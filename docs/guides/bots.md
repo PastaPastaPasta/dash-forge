@@ -28,7 +28,7 @@ A bot can be the same identity as a CI runner: a runner that reports checks need
 
 ## Where it works
 
-A bot is a member with the **Bot** role, and its push access is a contract document of its own. Both exist only where the network's contracts have them: the four-contract production set, which testnet and mainnet are registered with ([Deploying Forge to a network](../deploying-to-a-network.md)). On a network registered with the three-contract devnet set (devnet sakura today), `--role bot` is refused before anything is signed. A bot there is an identity outside the members, it cannot push, and it cannot post members-only. The web app's **Settings → Bots and runners** says "Bots can't push to this repo yet." there. That page tells you what your network supports.
+A bot is a member with the **Bot** role, and its push access is a contract document of its own. Both exist only where the network's contracts have them: the four-contract production set, which is the set to be registered on testnet and mainnet ([Deploying Forge to a network](../deploying-to-a-network.md)); Forge is registered on devnet sakura only today. On a network registered with the three-contract devnet set (devnet sakura today), `--role bot` is refused before anything is signed. A bot there is an identity outside the members, it cannot push, and it cannot post members-only. The web app's **Settings → Bots and runners** says "Bots can't push to this repo yet." there. That page tells you what your network supports.
 
 | Part | `dg` | Web app |
 |---|---|---|
@@ -77,7 +77,7 @@ dg bot revoke <owner>/<repo> @ci-bot           # take it away
 | `--until YYYY-MM-DD` | when its access ends, through that day, UTC (default: it doesn't) |
 | `--note <text>` | a note everyone can read, up to 500 characters |
 
-Each save writes a new notice that replaces the bot's current one, and shows its price first. What everyone then reads is one line, for example: "@ci-bot can post here and read pull requests and issues it's asked about. Asked by writers and maintainers. Processed by Example AI. Until 30 Nov 2026."
+Each save writes a new notice that replaces the bot's current one, and shows its price first. What everyone then reads is one line, for example: "@ci-bot can post here and read pull requests and issues it's asked about. Asked by writers and maintainers. Processed by Example AI. Until 31 Dec 2026."
 
 You can't give access to the owner or a human member: they read members-only content themselves, and `dg` refuses before signing. **Taking access away is not retroactive:** the bot gets nothing new, but what it was already given stays with it. Change a secret that was in a thread you shared. The notice's rules are in [private-repos.md §22](../security/private-repos.md#22-bot-access-notices-requests-and-read-letters).
 
@@ -124,7 +124,7 @@ dg bot revoke  <owner>/<repo> @ci-bot --push                # only the push acce
 ```
 
 - **What a grant covers.** Every branch whose name starts with a prefix (`bot/ci-bot/` by default), one branch and any longer name that starts with it (`--push gh-pages` also covers `gh-pages-old`), or one members-only branch that is shared with the bot. A bot **never** pushes to a protected branch. A new repository protects its default branch and every tag; protect any other branch that must not move ([Repository settings](collaborating.md#repository-settings)).
-- **How long.** 30 days by default, or until `--until` when that is sooner, and at most 90 days. `dg bot renew` is offered from 14 days before the end.
+- **How long.** 30 days by default, or at the access's own `--until` when that is sooner, and at most 90 days. `--push-until` sets another date. `dg bot renew` is offered from 14 days before the end.
 - **Its rules.** Fast-forward only, and it deletes only branches it pushed itself. `--allow-force` lifts both; `--open-pr-only` lets it push new branches and open pull requests but never update an existing branch.
 - **What stays visible.** `dg branch` shows "pushed by @ci-bot (bot)", and `dg repo activity` marks each push. A push that went outside its access is marked as such.
 - **Limits.** A private repository has no bot push grants, and a members-key branch ("All members") can never be granted, because a bot never holds the members key. A grant stops working if the maintainer who gave it stops being a maintainer, or if the bot is removed and added again.

@@ -52,10 +52,10 @@ Run `dg cost estimate` in the repository to see the price before you push. Platf
 
 ## Not a member (E601), or your key can't sign (E302, E305)
 
-- **[E601](../errors.md#e601)**: your identity is not a writer of that repository. Run `dg collab accept <owner>/<repo>` once, then ask the owner to run `dg collab add <owner>/<repo> <your identity id> --role writer`. Or push to a repository of your own, or a fork.
+- **[E601](../errors.md#e601)**: your identity is not a writer of that repository (if you are one already, see the protected-branch note below). Run `dg collab accept <owner>/<repo>` once, then ask the owner to run `dg collab add <owner>/<repo> <your identity id> --role writer`. Or push to a repository of your own, or a fork.
 - **[E302](../errors.md#e302)**: that action needs your master key (adding keys, a username), which a limited key can't stand in for. Pass `--master <file>` or type the recovery phrase.
 - **[E305](../errors.md#e305)**: your limited key expired or was disabled. Register a fresh one with `dg auth login`.
-- A protected branch (a new repository protects its default branch and every tag) takes pushes from maintainers only. A writer's push to it is refused with [E601](../errors.md#e601).
+- A protected branch (a new repository protects its default branch and every tag) takes pushes from maintainers only. A writer's push to it is refused with [E601](../errors.md#e601), and adding writer access does not change that: ask for Maintain access, or push to an unprotected branch and open a pull request.
 
 ## The key is locked, or there is no keychain
 
@@ -65,7 +65,7 @@ Run `dg cost estimate` in the repository to see the price before you push. Platf
 
 ## It timed out (E704)
 
-[E704](../errors.md#e704): the write was sent but not confirmed in time, and **may still land**. For `git push`, run the push again: chunks are journaled and ref updates are idempotent, so nothing is paid twice. For other writes (an issue, a comment), check whether it landed before you run the command again. Two writers signing as one identity at once (two terminals, or `dg` and the web app) can pick the same nonce; one write is dropped, which also shows as a timeout. Write from one place at a time.
+[E704](../errors.md#e704): the write was sent but not confirmed in time, and **may still land**. For `git push`, first check whether the refs landed (`git ls-remote origin`). If they did, there is nothing to repeat. If not, run the push again: chunks are journaled, so they are not paid twice, and a pack already recorded is reused. A ref update that landed but is not visible yet can be sent again and cost another ref-update charge, so give it a minute before you retry. For other writes (an issue, a comment), check whether it landed before you run the command again. Two writers signing as one identity at once (two terminals, or `dg` and the web app) can pick the same nonce; one write is dropped, which also shows as a timeout. Write from one place at a time.
 
 ## A clone is shallow, or the history is refused (E205, E511)
 
@@ -79,6 +79,6 @@ Forge does not support Git LFS. A repository's LFS pointer files are ordinary gi
 ## Packs that can't be read (E503, E507)
 
 - **[E507](../errors.md#e507)**: an earlier push recorded this pack, and none of its copies can be read now. The push stops before paying. Restore that storage, or upload the pack again from this clone: `dg reseed <owner>/<repo> --from-local`.
-- **[E503](../errors.md#e503)** on a clone: every recorded copy of a pack needed failed. Anyone whose clone has the objects can restore the copies with `dg reseed <owner>/<repo> --from-local`. Add a gateway that has the pack to `[read] ipfs_gateways` in `storage.toml`.
+- **[E503](../errors.md#e503)** on a clone: every recorded copy of a pack needed by the clone failed. Anyone whose clone has the objects can restore the copies with `dg reseed <owner>/<repo> --from-local`. Add a gateway that has the pack to `[read] ipfs_gateways` in `storage.toml`.
 
 Still stuck? `RUST_LOG=debug dg …` prints more detail; then [open an issue](https://github.com/PastaPastaPasta/dash-forge/issues) with the output, after checking it for anything private.

@@ -39,7 +39,7 @@ The fixed cost per document is **not small**. A document pays for its index entr
 
 | Document | Fixed cost beyond its bytes | Where measured |
 |---|---|---|
-| `chunk` | 98M (the dashpay/dash import, 6,438 chunks in the tree) to about 115M; the quote allows **140M**, and it grows by about 7M per level of the network-wide chunk tree | beta.6 showcase imports; `CHUNK_FLAT` |
+| `chunk` | measured 69M (the network's first chunks, a shallow tree), 98M (the dashpay/dash import, 6,438 chunks in the tree), up to a fitted 110–115M at 2^16 chunks. It grows by about 7M per level of the network-wide chunk tree. The quote allows **140M**, an estimator allowance, not a measured minimum | beta.6 showcase imports; `CHUNK_FLAT` |
 | `packManifest` | first 109–110M, later 85–87M (quoted 112M / 90M) | moutai, bonsia |
 | `refUpdate` | first 88–90M, later 57–67M (quoted 92M) | same |
 | issue, comment, review, event | roughly 35–100M, which is 0.0004–0.001 DASH as a whole write | [guides/costs.md](guides/costs.md#what-each-action-costs) |
