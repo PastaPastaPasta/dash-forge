@@ -54,6 +54,20 @@ jobs:
           persist-credentials: false
       - run: tools/check-sdk-pins.sh
 
+  # Testnet is the primary network: user-facing docs and UI strings must not name devnet sakura
+  # outside the small allow-list at the top of the script (History sections, the networks page).
+  network-docs:
+    name: network docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: tools/check-network-docs.sh
+
   web:
     name: web
     runs-on: ubuntu-latest
