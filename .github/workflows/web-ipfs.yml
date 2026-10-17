@@ -7,6 +7,13 @@ name: Web app IPFS build
 # CID and CAR computed by the kubo image pinned by digest. The two CIDs, and the two CARs'
 # SHA-256s, must match. That is the same command anyone runs to check a release.
 #
+# If they ever differ, compare the two forge-web.manifest.json files (the artifacts of the
+# failed run): the files that differ say what varied. The one failure seen so far (four times
+# in eight days) was the SWC minifier naming a variable in webpack's runtime chunk differently,
+# fixed by minifying with Terser (forge-web/next.config.js, `swcMinify`). Do not "fix" a mismatch
+# by building both on one architecture: users check this build on their own machines, x86_64
+# and arm64.
+#
 # release.yml calls it on every run and publishes the CAR and the CID with the release. It is
 # never pinned anywhere by this workflow: users pin the build themselves.
 
