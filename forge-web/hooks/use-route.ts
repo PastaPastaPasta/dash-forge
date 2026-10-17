@@ -29,6 +29,17 @@ const shortened = new Map<string, string>()
 /** The same, by path alone: a short path names its canonical pathname whatever its query. */
 const shortenedPaths = new Map<string, string>()
 
+/** `route` (`pathname?search`) less the param a page just created reads once. */
+function withoutJustCreated(route: string): string {
+  const at = route.indexOf('?')
+  if (at < 0) return route
+  const params = new URLSearchParams(route.slice(at + 1))
+  if (!params.has(JUST_CREATED_PARAM)) return route
+  params.delete(JUST_CREATED_PARAM)
+  const rest = params.toString()
+  return rest ? `${route.slice(0, at)}?${rest}` : route.slice(0, at)
+}
+
 /** The canonical route (`pathname?search`, no base path) of the router's `pathname?search`. */
 export function canonicalRoute(pathname: string, search: string): string {
   const key = routeKey(pathname, search)
@@ -134,7 +145,9 @@ export function useShortAddressBar(visibility: string, ownerName: string | null 
     const here = `${window.location.pathname}${window.location.search}`
     if (here === href) return
     const [shortPath = '', shortSearch = ''] = short.split('?')
-    shortened.set(routeKey(shortPath, new URLSearchParams(shortSearch).toString()), canonical)
+    // What Back restores is read again from here, so the param a page reads once stays out of it
+    // (a restored `created=draft` would make the PR page wait for its draft mark a second time).
+    shortened.set(routeKey(shortPath, new URLSearchParams(shortSearch).toString()), withoutJustCreated(canonical))
     shortenedPaths.set(shortPath, at < 0 ? canonical : canonical.slice(0, at))
     window.history.replaceState(state, '', `${href}${window.location.hash}`)
   }, [visibility, ownerName, pathname, search])

@@ -140,6 +140,7 @@ import { foldMirroredReviews, mirroredCommentText, nestThreadReplies } from '@/l
 import { shownHunk } from '@/lib/view/diff-hunk'
 import { BODY_MAX, utf8Length } from '@/lib/view/issue-query'
 import { readUntil, retryWhileMissing } from '@/lib/view/retry'
+import { createdDraftGate, draftStillLanding, isJustCreatedPull } from '@/lib/view/created-pull'
 import { forgetShownOwnReviews, ownReviewScope, rememberOwnReview, unshownOwnReviews, type OwnReview } from '@/lib/view/own-reviews'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
@@ -291,7 +292,12 @@ export function PullContent({
 }): JSX.Element {
   const { sdk, ready, network } = useSdk(repoContractIds(home.repo))
   // Just opened here: a node one block behind answers "not found"; keep asking briefly.
-  const justCreated = useParam('created') === '1'
+  const createdParam = useParam('created')
+  const justCreated = isJustCreatedPull(createdParam)
+  // #559: a draft PR is the patch and then its draft transition; the first read after the create
+  // can fold the patch alone (Open). The page waits for the draft mark the create wrote, once.
+  const [draftGate] = useState(() => createdDraftGate(createdParam))
+  const [draftLanding, setDraftLanding] = useState(false)
   // After a write the page re-reads until the write shows (`refresh(expect)`). Expectations
   // accumulate until one read satisfies them all, so two quick writes are both waited for; a newer
   // read aborts the older one's polling (useAsync discards its result anyway).
@@ -304,11 +310,16 @@ export function PullContent({
   // Replies posted from the members-only page (a PR this reader cannot open), waited for alike.
   const replies = useRef<string[]>([])
   const { data, loading, error, reload } = useAsync<PullThread | MembersOnlyTarget | null>(
-    async () => {
+    async (stop) => {
       current.current.aborted = true
       const signal = { aborted: false }
       current.current = signal
-      const want = [...expectations.current]
+      // Unmounted or its deps changed: the bounded waits below stop at their next check.
+      stop.addEventListener('abort', () => {
+        signal.aborted = true
+      })
+      const draftPlan = draftGate.plan()
+      const want = [...expectations.current, ...(draftPlan ? [draftPlan.want] : [])]
       const loadOrTarget = () => loadPullOrMembersOnly(sdk!, home.repo, number, network, { fresh: refreshed.current })
       const opened = await retryWhileMissing(loadOrTarget, justCreated ? 8 : 0, undefined, signal)
       // A members-only PR this reader cannot open: its public facts, re-read only for a reply posted from it.
@@ -326,10 +337,13 @@ export function PullContent({
       }
       const first = opened
       // One read on a cold load; re-reads only while a write this page made has not shown (L-77).
-      const t = first === null ? null : await readUntil(load, want, { ...(waitFor.current ?? {}), signal, first })
+      const t = first === null ? null : await readUntil(load, want, { ...(waitFor.current ?? draftPlan?.wait ?? {}), signal, first })
       if (!signal.aborted && t !== null) {
         expectations.current = expectations.current.filter((w) => !w(t))
         if (expectations.current.length === 0) waitFor.current = null
+        // Asked for once: a later read (a comment, a conversion to ready) never waits for it again.
+        // If the wait ended without the draft mark, the page says so rather than show Open as fact.
+        if (draftPlan) setDraftLanding(draftGate.done(t))
       }
       return t
     },
@@ -341,13 +355,22 @@ export function PullContent({
       if (want) expectations.current.push(want)
       if (wait) waitFor.current = wait
       refreshed.current = true
+      // Any other write supersedes the create's draft mark (it may be converted to ready now).
+      draftGate.cancel()
+      setDraftLanding(false)
       reload()
     },
-    [reload],
+    [reload, draftGate],
   )
+  // "Refresh" on the draft-still-landing note: wait for the mark again (bounded).
+  const retryDraft = useCallback(() => {
+    draftGate.retry()
+    refreshed.current = true
+    reload()
+  }, [reload, draftGate])
 
   if (!Number.isFinite(number)) return <EmptyState icon={GitPullRequest} title="No PR addressed" body="Add &number= to the URL." />
-  if (loading && !data) return <LoadingBlock label="Loading pull request" />
+  if (loading && !data) return <LoadingBlock label={draftGate.plan() ? 'Opening your draft pull request' : 'Loading pull request'} />
   if (error && !data) return <ErrorState message={error} onRetry={reload} />
   if (isMembersOnlyTarget(data)) {
     const posted = (id: string): void => {
@@ -357,7 +380,7 @@ export function PullContent({
     return <MembersOnlyThread home={home} addr={addr} target={data} onPosted={posted} />
   }
   if (!data) return <TargetNotFound home={home} addr={addr} number={number} kind="pull" icon={GitPullRequest} title={`PR #${number} not found`} body="No pull request or issue with that number in this repo." />
-  return <PullPage home={home} addr={addr} thread={data} refresh={refresh} refreshing={loading} reloadHome={reloadHome} />
+  return <PullPage home={home} addr={addr} thread={data} refresh={refresh} refreshing={loading} reloadHome={reloadHome} draftLanding={draftLanding ? retryDraft : null} />
 }
 
 function PullPage({
@@ -367,6 +390,7 @@ function PullPage({
   refresh,
   refreshing,
   reloadHome,
+  draftLanding = null,
 }: {
   home: RepoHome
   addr: RepoAddress
@@ -374,6 +398,8 @@ function PullPage({
   refresh: (want?: (t: PullThread) => boolean, wait?: { attempts: number; delayMs: number; backoff: number; maxDelayMs: number }) => void
   refreshing: boolean
   reloadHome?: (options?: HomeReloadOptions) => void
+  /** Set when the create wrote a draft mark the node this page reads does not show yet: re-read for it. */
+  draftLanding?: (() => void) | null
 }): JSX.Element {
   const { sdk, ready, network } = useSdk(repoContractIds(home.repo))
   const { identity, signer, locked, lockedIdentity } = useAuth()
@@ -1775,6 +1801,16 @@ function PullPage({
             Your review is on Platform; {stillArriving.total - stillArriving.shown} of {stillArriving.total} of its comments are still arriving at the node this page reads.
           </span>
           <Button size="sm" variant="outline" onClick={() => arriving !== null && refresh((t) => reviewShows(t, arriving), SUBMIT_WAIT)}>
+            Refresh
+          </Button>
+        </div>
+      ) : null}
+      {draftLanding !== null && draftStillLanding(true, thread) && !refreshing ? (
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-caution/40 bg-caution/5 px-4 py-2 text-dense" role="status" data-testid="draft-landing">
+          <span className="min-w-0 flex-1">
+            You opened this pull request as a draft; the draft mark is on Platform, but the node this page reads doesn&apos;t show it yet, so it appears as open for now.
+          </span>
+          <Button size="sm" variant="outline" onClick={draftLanding}>
             Refresh
           </Button>
         </div>
