@@ -1,6 +1,9 @@
 import { test, expect, type Locator, type Page } from '@playwright/test'
-import { DEMO, E2E_DEVNET, expectLanded, repoUrl, shot, waitForRepoResolved } from './helpers'
+import { DEMO, E2E_DEVNET, expectLanded, repoUrl, shot, waitForRepoResolved, skipWithoutFixture } from './helpers'
 import { compareTagNames } from '../lib/repo/ref-order'
+
+// needs the read fixture seeded on this network (e2e/network.ts)
+skipWithoutFixture()
 
 /**
  * L-13/L-14 (the ref switcher's filter input, keyboard navigation and version-aware tag sort)

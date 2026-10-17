@@ -2,8 +2,12 @@ import { test, expect } from '@playwright/test'
 import { readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { atRoute, collectPageErrors, DEMO, E2E_DEVNET, ownerIs, routeOf, runAxe, shot } from './helpers'
+import { atRoute, collectPageErrors, DEMO, ownerIs, routeOf, runAxe, shot, skipWithoutFixture } from './helpers'
+import { E2E_NETWORK, E2E_TARGET_NAME, sdkOptions } from './network'
 import { quorumGuard } from './quorum-sync'
+
+// needs the read fixture seeded on this network (e2e/network.ts)
+skipWithoutFixture()
 
 // Not inside the devnet's quorum-service lag (#212): these tests wait a fixed time for a page's
 // Platform content.
@@ -81,8 +85,8 @@ test('x2. the header: New menu, jump box, and the landing links Explore', async 
 async function demoNumbers(): Promise<{ issues: Set<number>; pulls: Set<number> }> {
   const root = resolve(__dirname, '../..')
   const evo = await import(pathToFileURL(join(root, 'forge-web/node_modules/@dashevo/evo-sdk/dist/evo-sdk.module.js')).href)
-  const dep = JSON.parse(readFileSync(join(root, `forge-contracts/deployments/devnet-${E2E_DEVNET}.json`), 'utf8'))
-  const sdk = new evo.EvoSDK({ network: 'devnet', trusted: true, devnetName: E2E_DEVNET, addresses: dep.dapiAddresses })
+  const dep = JSON.parse(readFileSync(join(root, `forge-contracts/deployments/${E2E_TARGET_NAME}.json`), 'utf8'))
+  const sdk = new evo.EvoSDK(sdkOptions(E2E_NETWORK === 'devnet' ? dep.dapiAddresses : undefined))
   await sdk.connect()
   const docs = async (dataContractId: string, documentTypeName: string, where: unknown[]): Promise<Record<string, unknown>[]> => {
     const r: Map<string, { toJSON(v: number): Record<string, unknown> } | undefined> = await sdk.documents.query({ dataContractId, documentTypeName, where, limit: 100 })

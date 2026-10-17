@@ -1,6 +1,9 @@
 import { test, expect, type Page, type Route } from '@playwright/test'
 import { existsSync } from 'node:fs'
-import { DEMO, EMPTY, collectPageErrors, idFile, repoUrl, shot, signedIn, unlock } from './helpers'
+import { DEMO, EMPTY, collectPageErrors, idFile, repoUrl, shot, signedIn, unlock, skipWithoutFixture } from './helpers'
+
+// needs the read fixture seeded on this network (e2e/network.ts)
+skipWithoutFixture()
 
 /**
  * Network resilience, against the moutai read fixture (e2e/helpers.ts `DEMO`):

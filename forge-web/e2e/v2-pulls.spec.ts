@@ -1,6 +1,9 @@
 import { test, expect, type Locator, type Page } from '@playwright/test'
 import { existsSync, readFileSync } from 'node:fs'
-import { atRoute, DEMO, E2E_DEVNET, expectPlatformPreAllowed, fixtureWriteBlocked, idFile, routeOf, runAxe, shot, signedIn, unlock, waitForRepoResolved } from './helpers'
+import { atRoute, DEMO, E2E_DEVNET, expectPlatformPreAllowed, fixtureWriteBlocked, idFile, routeOf, runAxe, shot, signedIn, unlock, waitForRepoResolved, skipWithoutFixture } from './helpers'
+
+// needs the read fixture seeded on this network (e2e/network.ts)
+skipWithoutFixture()
 
 /**
  * Pull requests, forks and the browser merge engine, live on a devnet (real spend, about

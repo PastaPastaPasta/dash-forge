@@ -2,7 +2,10 @@ import { test, expect, type Browser, type Page } from '@playwright/test'
 import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { DEMO, E2E_DEVNET, shot } from './helpers'
+import { DEMO, E2E_DEVNET, shot, skipWithoutFixture } from './helpers'
+
+// needs the read fixture seeded on this network (e2e/network.ts)
+skipWithoutFixture()
 
 /**
  * Refused writes, retries and the write flow's guards, live on a devnet (D-007, D-008, D-012,

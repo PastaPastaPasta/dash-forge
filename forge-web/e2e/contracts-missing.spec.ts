@@ -1,5 +1,7 @@
 import { test, expect, type Page, type Route } from '@playwright/test'
-import { collectPageErrors, E2E_DEVNET, repoUrl, shot } from './helpers'
+import { collectPageErrors, E2E_DEVNET, E2E_NETWORK, repoUrl, shot } from './helpers'
+
+test.skip(E2E_NETWORK === 'testnet', 'simulates a devnet reset (a devnet is redeployed in place); testnet has no such state')
 
 /**
  * The network does not have this build's contracts (devnet moutai upgraded in place to Platform

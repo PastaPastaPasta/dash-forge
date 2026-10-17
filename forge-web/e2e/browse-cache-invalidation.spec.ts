@@ -3,7 +3,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { atRoute, countDocumentQueries, expectPlatformPreAllowed, idFile, idOrEmpty, shot, signedIn, waitForRepoResolved } from './helpers'
+import { atRoute, countDocumentQueries, expectPlatformPreAllowed, dgEnv, idFile, idOrEmpty, shot, signedIn, waitForRepoResolved } from './helpers'
 import { quorumGuard } from './quorum-sync'
 
 // Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
@@ -47,8 +47,7 @@ function env(who: string): NodeJS.ProcessEnv {
   return {
     ...process.env,
     DASH_FORGE_KEY: idFile(who),
-    DASH_FORGE_NETWORK: 'devnet',
-    DASH_FORGE_DEVNET_NAME: process.env['E2E_DEVNET'] || 'sakura',
+    ...dgEnv(),
     RUST_LOG: 'error',
     NO_COLOR: '1',
     PATH: `${BIN}:${process.env['PATH'] ?? ''}`,

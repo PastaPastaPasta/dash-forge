@@ -3,7 +3,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { idFile, idOf, shot, signedIn, unlock, waitForRepoResolved } from './helpers'
+import { dgEnv, idFile, idOf, shot, signedIn, unlock, waitForRepoResolved } from './helpers'
 
 /**
  * Repository settings, live on a devnet (QA D-503: no product path wrote `config` after a repo
@@ -47,8 +47,7 @@ function env(who: string): NodeJS.ProcessEnv {
   return {
     ...process.env,
     DASH_FORGE_KEY: idFile(who),
-    DASH_FORGE_NETWORK: 'devnet',
-    DASH_FORGE_DEVNET_NAME: process.env['E2E_DEVNET'] || 'sakura',
+    ...dgEnv(),
     RUST_LOG: 'error',
     NO_COLOR: '1',
     PATH: `${BIN}:${process.env['PATH'] ?? ''}`,

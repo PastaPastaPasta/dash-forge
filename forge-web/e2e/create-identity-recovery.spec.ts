@@ -2,7 +2,7 @@ import { test, expect, type Page, type Route } from '@playwright/test'
 import { existsSync, mkdirSync, rmdirSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { E2E_DEVNET, PASSPHRASE, nodeSdk, shot, unlock } from './helpers'
+import { E2E_DEVNET, E2E_NETWORK, PASSPHRASE, nodeSdk, shot, unlock } from './helpers'
 
 /**
  * L-06, live on a devnet (real spend: two 0.03 DASH deposits from the devnet funding key):
@@ -27,6 +27,7 @@ import { E2E_DEVNET, PASSPHRASE, nodeSdk, shot, unlock } from './helpers'
  */
 
 test.skip(process.env['E2E_WRITE'] !== '1', 'live devnet writes: set E2E_WRITE=1')
+test.skip(E2E_NETWORK === 'testnet', 'funds its identity from a devnet funding key (config.devnetConfig); no testnet port yet')
 test.describe.configure({ mode: 'serial', timeout: 30 * 60_000 })
 
 const ROOT = resolve(__dirname, '../..')

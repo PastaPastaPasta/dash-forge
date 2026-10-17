@@ -3,7 +3,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { atRoute, idFile, idOf, PASSPHRASE, shot, signedIn, stateFile, unlock, waitForRepoResolved } from './helpers'
+import { atRoute, dgEnv, idFile, idOf, PASSPHRASE, shot, signedIn, stateFile, unlock, waitForRepoResolved } from './helpers'
 import { quorumGuard } from './quorum-sync'
 
 // Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
@@ -63,8 +63,7 @@ function env(who: string): NodeJS.ProcessEnv {
     DASH_FORGE_NO_KEYCHAIN: '1',
     DASH_FORGE_STORAGE_CONFIG: join(HOME, 'storage.toml'),
     DASH_FORGE_KEY: idFile(who),
-    DASH_FORGE_NETWORK: 'devnet',
-    DASH_FORGE_DEVNET_NAME: process.env['E2E_DEVNET'] || 'sakura',
+    ...dgEnv(),
     E2E_S3_SECRET: 'minioadmin',
     GIT_AUTHOR_NAME: `G5G18 ${who}`,
     GIT_AUTHOR_EMAIL: `${who.toLowerCase()}@g5g18.invalid`,
