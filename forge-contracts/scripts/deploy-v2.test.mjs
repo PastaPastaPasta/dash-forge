@@ -33,7 +33,7 @@ function setup({ platform = {}, seed = TESTNET_SEED } = {}) {
   const identity = fake.writeIdentity(dir);
   const sumsFile = join(dir, 'signed-sums.txt');
   writeFileSync(sumsFile, formatSums(setSums(SETS.mainnet)));
-  const git = { head: () => 'a'.repeat(40), porcelain: () => '', buildCheck: () => ({ ok: true, output: '' }) };
+  const git = { head: () => 'a'.repeat(40), porcelain: () => '', pushed: () => true, buildCheck: () => ({ ok: true, output: '' }) };
   let tick = 0;
   const logs = [];
   const out = [];

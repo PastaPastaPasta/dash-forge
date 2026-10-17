@@ -111,9 +111,9 @@
 // hash_double("contract_group" || owner || nonce) (rs-dpp contract_group::generate_contract_group_id).
 // The JS below derives the group id itself because evo-sdk exposes no helper; the Rust validator
 // (tools/contract-validate) prints a known-answer vector that --self-test checks.
-import { readFileSync, writeFileSync, existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, openSync, closeSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { basename, dirname, relative, resolve, join, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
@@ -392,9 +392,13 @@ export { b58decode, b58encode, depPath, selfTest };
 export function setFileNames(dir = DEFAULT_CONTRACTS_DIR) {
   return ['forge-core', ...dependentsIn(dir).map((c) => c.schemaName)].map((n) => `${n}.json`);
 }
+/** `{ 'forge-core.json': <the file's bytes>, ... }`, read once: a run hashes and registers this copy. */
+export function readSet(dir = DEFAULT_CONTRACTS_DIR) {
+  return Object.fromEntries(setFileNames(dir).map((f) => [f, readFileSync(join(dir, f))]));
+}
 /** `{ 'forge-core.json': <sha256 of the file's bytes>, ... }`: what the owner signs at G2. */
-export function setSums(dir = DEFAULT_CONTRACTS_DIR) {
-  return Object.fromEntries(setFileNames(dir).map((f) => [f, sha256Hex(readFileSync(join(dir, f)))]));
+export function setSums(dir = DEFAULT_CONTRACTS_DIR, bytes = readSet(dir)) {
+  return Object.fromEntries(Object.entries(bytes).map(([f, b]) => [f, sha256Hex(b)]));
 }
 /** `sha256sum` format, one `<hex>  <name>` line per file. */
 export const formatSums = (sums) => Object.entries(sums).map(([f, h]) => `${h}  ${f}\n`).join('');
@@ -441,6 +445,8 @@ function defaultGit() {
   return {
     head: () => run('git', ['rev-parse', 'HEAD']).trim(),
     porcelain: (path) => run('git', ['status', '--porcelain', '--', path]).trim(),
+    // (the remote-tracking branches as last fetched: a commit on one of origin's is on origin)
+    pushed: (commit) => run('git', ['branch', '-r', '--contains', commit]).split('\n').some((b) => b.trim().startsWith('origin/')),
     buildCheck: () => {
       try {
         run('python3', [join(ROOT, 'schema', 'build.py'), '--check']);
@@ -472,6 +478,46 @@ export function loadSchema(name, substitutions = {}, text = readFileSync(join(RO
 export function schemaHash(json) {
   return sha256Hex(JSON.stringify(json));
 }
+// What a fetched contract shows of its schema, comparable with the JSON it was built from: sha256
+// of the documentSchemas and schemaDefs with every object's keys sorted (freeze-c1-check compares
+// the same blocks the same way; a node keeps neither key order nor the config as written).
+const canon = (v) => (Array.isArray(v) ? v.map(canon) : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, canon(v[k])])) : v);
+export function documentsHash(json) {
+  return sha256Hex(JSON.stringify(canon({ documentSchemas: json?.documentSchemas ?? {}, schemaDefs: json?.schemaDefs ?? {} })));
+}
+
+// The chain ids of the production networks (dashmate configs/defaults: testnet `dash-testnet-<n>`,
+// renumbered by a Platform reset; mainnet `evo1`)
+export const CHAIN_IDS = { testnet: /^dash-testnet-[0-9]+$/, mainnet: /^evo1$/ };
+/** A devnet name is one path segment of lower-case letters, digits and dashes (it names deployments/devnet-<name>.json). */
+export const DEVNET_NAME = /^[a-z0-9-]+$/;
+
+/**
+ * Take the lock next to a record: `<record>.lock`, created exclusively, so two runs never write
+ * one record. Returns its path (the caller removes it); a lock that is there already is refused.
+ */
+export function takeLock(recordFile, { now = () => new Date() } = {}) {
+  const lock = `${recordFile}.lock`;
+  mkdirSync(dirname(lock), { recursive: true });
+  let fd;
+  try {
+    fd = openSync(lock, 'wx');
+  } catch (e) {
+    if (e?.code !== 'EEXIST') throw e;
+    let held = '';
+    try { held = readFileSync(lock, 'utf8').trim(); } catch { /* removed meanwhile */ }
+    throw new Error(
+      `${lock} exists${held ? ` (${held})` : ''}: another deploy-v2 run is writing ${basename(recordFile)}. ` +
+        'If none is running (a run killed by a signal leaves its lock), check the record first (a contract left `broadcasting` is settled by the next run), then delete the lock by hand. Nothing was broadcast.'
+    );
+  }
+  try {
+    writeFileSync(fd, `pid ${process.pid} on ${hostname()} since ${now().toISOString()}\n`);
+  } finally {
+    closeSync(fd);
+  }
+  return lock;
+}
 
 // Whether --force-new supersedes a record. Only a completed registration from a different
 // schema is superseded. A `broadcasting` record is the new contract of an interrupted
@@ -500,10 +546,20 @@ function pickKey(rec, purpose, level) {
 
 /**
  * Run the script. `injected` replaces what a test cannot use: `evo` (the loaded evo-sdk module,
- * else loadEvoSdk()), `git` ({ head, porcelain, buildCheck }), `now`, `log`, `print` (stdout),
+ * else loadEvoSdk()), `git` ({ head, porcelain, pushed, buildCheck }), `now`, `log`, `print` (stdout),
  * `sdkId` (the record's `sdk`) and `deploymentsRoot` (the directory the networks' records live in).
+ * The record's lock (a run that writes takes one) is released however the run ends.
  */
 export async function main(argv = process.argv.slice(2), injected = {}) {
+  const locks = [];
+  try {
+    return await deploy(argv, injected, locks);
+  } finally {
+    for (const lock of locks) rmSync(lock, { force: true });
+  }
+}
+
+async function deploy(argv, injected, locks) {
   const log = injected.log ?? defaultLog;
   const now = injected.now ?? (() => new Date());
   const stamp = () => now().toISOString();
@@ -521,18 +577,26 @@ export async function main(argv = process.argv.slice(2), injected = {}) {
   const contractsDir = args.contracts !== undefined ? resolve(String(args.contracts)) : args.set !== undefined ? SETS[args.set] : DEFAULT_CONTRACTS_DIR;
   selfTest(contractsDir, log);
   if (args['self-test']) return;
-  const fileSums = setSums(contractsDir);
+  // The set's files are read once: the sums checked and recorded are of the bytes registered
+  const setBytes = readSet(contractsDir);
+  const fileSums = setSums(contractsDir, setBytes);
   if (args['print-sha256']) {
     print(formatSums(fileSums));
     return;
   }
   const DEPENDENTS = dependentsIn(contractsDir);
-  const load = (name, substitutions = {}) => loadSchema(name, substitutions, schemaText(name, contractsDir));
+  const RECORD_KEYS = ['forgeCore', ...DEPENDENTS.map((c) => c.key)];
+  const load = (name, substitutions = {}) => loadSchema(name, substitutions, setBytes[`${name}.json`].toString('utf8'));
   const GROUP_DESCRIPTION = groupDescription(['forge-core', ...DEPENDENTS.map((c) => c.schemaName)]);
 
   const network = args.network || 'devnet';
   const devnetName = network === 'devnet' ? (args['devnet-name'] || 'sakura') : undefined;
   if (!['devnet', 'testnet', 'mainnet'].includes(network)) throw new Error(`unknown network ${network}`);
+  if (devnetName !== undefined && !DEVNET_NAME.test(String(devnetName))) {
+    throw new Error(`--devnet-name ${devnetName}: lower-case letters, digits and dashes only (it names deployments/devnet-<name>.json)`);
+  }
+  // Testnet and mainnet are reached through SDK discovery only: a list of addresses could be anyone's nodes
+  if (network !== 'devnet' && args.addresses !== undefined) throw new Error(`--addresses is for a devnet; ${network} uses SDK discovery`);
   // Testnet and mainnet register a committed set (the four-contract one), never the devnets' three
   let setName = args.set ?? null;
   if (args.contracts === undefined) {
@@ -583,9 +647,14 @@ export async function main(argv = process.argv.slice(2), injected = {}) {
   // them), else SDK discovery; testnet and mainnet always use SDK discovery.
   const depFile = recordPath({ network, devnetName, record: args.record, set: setName ?? undefined, contractsDir, deploymentsRoot });
   const liveFile = depPath(network, devnetName, deploymentsRoot);
-  const dep = readDep(depFile);
   const scratch = depFile !== liveFile;
-  const production = !scratch && network !== 'devnet';
+  // Production is the live testnet or mainnet record, by --network and by the file itself
+  const productionFile = ['testnet', 'mainnet'].some((n) => canonical(depFile) === canonical(depPath(n, undefined, deploymentsRoot)));
+  if (productionFile && network === 'devnet') throw new Error(`${depFile} is a production record; --network devnet never writes it`);
+  const production = !scratch && (network !== 'devnet' || productionFile);
+  // One run at a time writes a record (a dry run writes nothing)
+  if (!dryRun) locks.push(takeLock(depFile, { now }));
+  const dep = readDep(depFile);
   const recordName = scratch ? depFile : `deployments/${basename(depFile)}`;
   // A scratch record without addresses borrows the network's (read only)
   const live = scratch ? readDep(liveFile) : dep;
@@ -633,6 +702,13 @@ export async function main(argv = process.argv.slice(2), injected = {}) {
     problems.push(`--expect-sha256 <file> is required to register on ${network}: the sums the owner signed (--print-sha256 prints them)`);
   }
   if (gitCommit === null && setName !== null) problems.push('git cannot report HEAD: the commit being registered cannot be recorded');
+  // The recorded commit must be one anyone can fetch: on a branch of origin
+  const gitCommitPushed = gitCommit === null ? null : (safe(() => git.pushed(gitCommit)) ?? null);
+  if (gitCommit !== null && setName !== null && gitCommitPushed !== true) {
+    problems.push(gitCommitPushed === false
+      ? `HEAD ${gitCommit.slice(0, 12)} is on no branch of origin: push it first, so the recorded gitCommit can be fetched`
+      : 'git cannot report whether HEAD is on origin: the recorded gitCommit cannot be shown to be fetchable');
+  }
   if (problems.length > 0) {
     if (production && !dryRun) throw new Error(`${network} registration refused, nothing was broadcast:\n  - ${problems.join('\n  - ')}`);
     for (const p of problems) log(`WARNING ${p}`);
@@ -673,12 +749,21 @@ export async function main(argv = process.argv.slice(2), injected = {}) {
     if (provedChain && statusChain && provedChain !== statusChain) {
       throw Object.assign(new Error(`proved chain id ${provedChain} differs from the node's status ${statusChain}`), { definite: true });
     }
+    if (!provedChain) throw new Error('the proof names no chain id');
     chainId ??= provedChain;
   } catch (e) {
     if (e?.definite) throw e;
+    // testnet and mainnet: the chain is proved, or nothing is registered on it
+    if (production) throw new Error(`could not prove the chain id of ${network} (${e?.message ?? e}); ${network} registration refused, nothing was broadcast`);
     log(`WARNING could not prove the chain id (${e?.message ?? e}); using the node's status`);
   }
-  if (chainId === null) log('WARNING the node reports no chain id: the record cannot pin one');
+  if (chainId === null) {
+    if (production) throw new Error(`the node reports no chain id: the ${network} record must pin one; nothing was broadcast`);
+    log('WARNING the node reports no chain id: the record cannot pin one');
+  }
+  if (production && !CHAIN_IDS[network].test(chainId)) {
+    throw new Error(`the node serves chain ${chainId}, which is not a ${network} chain id (${CHAIN_IDS[network].source}); nothing was broadcast`);
+  }
   const chainChanged = Boolean(dep.chainId && chainId && dep.chainId !== chainId);
   if (chainChanged) {
     if (!forceNew) {
@@ -759,10 +844,52 @@ export async function main(argv = process.argv.slice(2), injected = {}) {
 
     // ---- the nonce ledger (CNT-02): every transition the deployer signed, in order ----
     const ledger = () => (v2.nonceLedger ??= []);
-    const entryFor = (kind, key, nonceField, nonce) => v2.nonceLedger?.find((e) => e.kind === kind && e.key === key && e[nonceField] === String(nonce));
+    // The open (`broadcasting`) entry of a transition: the one a step settles
+    const entryFor = (kind, key, nonceField, nonce) => v2.nonceLedger?.find((e) => e.kind === kind && e.key === key && e[nonceField] === String(nonce) && e.status === 'broadcasting');
     const settle = (entry, patch) => { if (entry) Object.assign(entry, patch); };
-    // Rewrite the entry of a reservation at the same nonce, else append a new one
-    const writeEntry = (existing, entry) => { if (existing) Object.assign(existing, entry); else ledger().push(entry); };
+    // Rewrite the entry of a reservation at the same nonce (one still `broadcasting`), else append
+    // a new one. A settled entry (registered, updated, abandoned, superseded) is history: never rewritten.
+    const writeEntry = (nonceField, entry) => {
+      const same = (v2.nonceLedger ?? []).filter((e) => e.kind === entry.kind && e.key === entry.key && e[nonceField] === entry[nonceField]);
+      const settled = same.find((e) => e.status !== 'broadcasting' || e.supersededAt);
+      if (settled) {
+        throw new Error(`${entry.key}: the ledger already holds a ${settled.status}${settled.supersededAt ? ' (superseded)' : ''} ${entry.kind} at ${nonceField} ${entry[nonceField]}; a reservation never rewrites a settled entry. Nothing was broadcast.`);
+      }
+      if (same.length > 0) Object.assign(same[0], entry);
+      else ledger().push(entry);
+    };
+    // The highest identity nonce the record shows signed: the ledger (an abandoned reservation, and
+    // `key`'s own unlanded one, aside) and every other contract recorded registered (a devnet
+    // record may predate the ledger). The chain's nonce is never below it; a node that answers
+    // lower is behind, and a nonce chosen from its answer would be one already used.
+    const recordedLast = (key) => {
+      let last = 0n;
+      const see = (n) => { if (n !== undefined && BigInt(n) > last) last = BigInt(n); };
+      for (const e of v2.nonceLedger ?? []) {
+        if (e.identityNonce === undefined || e.status === 'abandoned') continue;
+        if (e.kind === 'dataContractCreate' && e.key === key && e.status === 'broadcasting') continue;
+        see(e.identityNonce);
+      }
+      for (const k of RECORD_KEYS) if (k !== key && v2[k]?.status === 'registered') see(v2[k].identityNonce);
+      return last;
+    };
+    // The deployer's identity nonce, from a node that has caught up with the record: a lagging
+    // node is asked again (as settledBalance does), then refused
+    async function caughtUpNonce(key) {
+      const floor = recordedLast(key);
+      let chain = await chainNonce();
+      for (let i = 0; identity && chain < floor && i < (injected.settleTries ?? 10); i++) {
+        await new Promise((r) => setTimeout(r, injected.settleMs ?? 2000));
+        chain = await chainNonce();
+      }
+      if (identity && chain < floor) {
+        throw new Error(
+          `${key}: the node reports the deployer's identity nonce as ${chain}, but the record shows nonce ${floor} signed: ` +
+            'the node is behind. Retry when it has caught up (or against other nodes). Nothing was broadcast.'
+        );
+      }
+      return chain;
+    }
     // The ledger's last identity nonce: a reservation whose contract never landed and whose nonce
     // the chain has passed is not counted (the nonce went elsewhere)
     const ledgerLast = (staleKey, chain) => {
@@ -776,7 +903,7 @@ export async function main(argv = process.argv.slice(2), injected = {}) {
     };
     // Before a create is reserved: nothing else may have signed with the deployer since the ledger's
     // last entry, unless the operator said what it was
-    function checkLedger(key, chain, staleReservation) {
+    async function checkLedger(key, chain, staleReservation) {
       // A devnet record without a ledger (sakura) starts one with this run. The live testnet or
       // mainnet record starts with a fresh deployer: whatever it signed before is unexplained.
       if (!production && !v2.nonceLedger?.some((e) => e.identityNonce !== undefined)) return;
@@ -795,6 +922,17 @@ export async function main(argv = process.argv.slice(2), injected = {}) {
       const stray = acknowledged.filter((n) => !unexplained.includes(n) && !used.has(n));
       if (stray.length > 0) {
         throw new Error(`--acknowledge-nonce ${stray.join(', ')}: only the nonces after the ledger's last (${last}) up to the chain's (${chain}) can be acknowledged`);
+      }
+      // A nonce that created a contract was a contract create (one of ours that landed unseen?), not
+      // something else's transition: it is never recorded as `external`
+      for (const n of unexplained.filter((x) => !used.has(x))) {
+        const id = contractId(ownerId, n);
+        if (await sdk.contracts.fetch(id)) {
+          throw new Error(
+            `--acknowledge-nonce ${n}: identity nonce ${n} created contract ${id}, the deployer's contract create at that nonce, so it is no external transition. ` +
+              `Check which reservation it is (${RECORD_KEYS.map((k) => `v2.${k}`).join(', ')}) and settle the record by hand. Nothing was broadcast.`
+          );
+        }
       }
       for (const n of unexplained) {
         if (!dryRun) ledger().push({ identityNonce: n.toString(), kind: 'external', note: String(args.note), at: stamp() });
@@ -819,10 +957,47 @@ export async function main(argv = process.argv.slice(2), injected = {}) {
 
     // A step whose recorded contract is on chain is finished; bring its record up to date
     // (a crash between broadcast and the final write leaves it `broadcasting`, without cost).
-    async function reconcile(key, currentHash) {
+    // Everything else in the record that names contract `id`: another contract's record, another
+    // create in the ledger, or (on this chain) a superseded record. A chain change archives the
+    // ledger, and the new chain's ids repeat the old ones, so the superseded lists count only
+    // while the record has never changed chain (a same-chain supersede also marks its ledger entry).
+    const claimsOn = (key, id) => {
+      const claims = RECORD_KEYS.filter((k) => k !== key && v2[k]?.contractId === id).map((k) => `v2.${k}`);
+      for (const e of v2.nonceLedger ?? []) {
+        if (e.kind === 'dataContractCreate' && e.contractId === id && e.status !== 'abandoned' && (e.key !== key || e.supersededAt)) {
+          claims.push(`the ledger's ${e.key} create at nonce ${e.identityNonce}${e.supersededAt ? ' (superseded)' : ''}`);
+        }
+      }
+      if (!v2.nonceLedgerSuperseded?.length) {
+        for (const k of RECORD_KEYS) if ((v2[`${k}Superseded`] ?? []).some((s) => s.contractId === id)) claims.push(`v2.${k}Superseded`);
+      }
+      return claims;
+    };
+
+    async function reconcile(key, json) {
+      const currentHash = schemaHash(json);
       const existing = v2[key];
       if (!existing?.contractId) return null;
+      const claims = claimsOn(key, existing.contractId);
+      if (claims.length > 0) {
+        throw new Error(
+          `${key}: the record names ${existing.contractId}, which ${claims.join(' and ')} also names: one nonce was reserved for two contracts ` +
+            '(a node answered a stale identity nonce). Settle the record by hand against the chain. Nothing was broadcast.'
+        );
+      }
       const onChain = await sdk.contracts.fetch(existing.contractId);
+      if (onChain && existing.status !== 'registered') {
+        // A reservation is completed only with the contract it built: the schema on chain must be
+        // the reservation's (a reservation without its own documentsHash is of the current schema, or unprovable)
+        const want = existing.documentsHash ?? (existing.schemaHash === currentHash ? documentsHash(json) : null);
+        const got = documentsHash(onChain.toJSON?.());
+        if (want === null || got !== want) {
+          throw new Error(
+            `${key}: ${existing.contractId} is on chain, but ${want === null ? 'the reservation records no schema it can be compared with' : `its schema (${got.slice(0, 12)}…) is not the reservation's (${want.slice(0, 12)}…)`}: ` +
+              'it is not the contract this reservation broadcast. Settle the record by hand against the chain. Nothing was broadcast.'
+          );
+        }
+      }
       if (onChain) {
         if (existing.schemaHash && existing.schemaHash !== currentHash) {
           // a scratch set is registered whole from its own schemas: a stale one is never reused
@@ -917,12 +1092,14 @@ export async function main(argv = process.argv.slice(2), injected = {}) {
     async function registerContract({ key, schemaName, substitutions, registerGroup, groupIdFor }) {
       const json = load(schemaName, substitutions);
       const hash = schemaHash(json);
-      const done = await reconcile(key, hash);
+      const done = await reconcile(key, json);
       if (done) return done;
       const reservation = v2[key]?.status === 'broadcasting' ? v2[key] : null;
 
-      const chain = await chainNonce();
-      checkLedger(key, chain, reservation !== null);
+      // (never below the record's last signed nonce: a node that answers lower is refused; a dry
+      // pass past its first create takes the next nonce after the one it would have spent, below)
+      const chain = dryRunNextNonce !== null ? await chainNonce() : await caughtUpNonce(key);
+      await checkLedger(key, chain, reservation !== null);
       const nonce = dryRunNextNonce ?? chain + 1n;
       if (dryRun) dryRunNextNonce = nonce + 1n;
       const id = contractId(ownerId, nonce);
@@ -938,7 +1115,8 @@ export async function main(argv = process.argv.slice(2), injected = {}) {
       transition.setContractGroupMemberships([{ contractGroupId: b58decode(groupId), member: 'contract' }]);
       const st = transition.toStateTransition();
       st.sign(privateKey, publicKey);
-      const size = st.toBytes().length;
+      const stBytes = st.toBytes();
+      const size = stBytes.length;
       const room = MAX_STATE_TRANSITION_SIZE - size;
       say(`${key}: id ${id}, nonce ${nonce}, group ${groupId}, signed create transition ${size} B (limit ${MAX_STATE_TRANSITION_SIZE}, room ${room} B)`);
       if (size > MAX_STATE_TRANSITION_SIZE) throw new Error(`${key}: transition exceeds max_state_transition_size`);
@@ -949,7 +1127,7 @@ export async function main(argv = process.argv.slice(2), injected = {}) {
         say(`WARNING ${message}`);
       }
       if (dryRun) {
-        report.steps.push({ key, contractId: id, nonce: nonce.toString(), contractGroupId: groupId, sizeBytes: size, roomBytes: room, schemaHash: hash, ...sourceOf(schemaName), dryRun: true });
+        report.steps.push({ key, contractId: id, nonce: nonce.toString(), contractGroupId: groupId, sizeBytes: size, roomBytes: room, schemaHash: hash, documentsHash: documentsHash(json), ...sourceOf(schemaName), dryRun: true });
         return id;
       }
 
@@ -965,8 +1143,11 @@ export async function main(argv = process.argv.slice(2), injected = {}) {
         roomBytes: room,
         schemaHash: hash,
         registeredSchemaHash: hash,
+        documentsHash: documentsHash(json),
         ...sourceOf(schemaName),
+        transitionSha256: sha256Hex(stBytes),
         gitCommit,
+        gitCommitPushed,
         balanceBefore: before.toString(),
       };
       // The ledger entry is written with the reservation. A reservation that never landed and
@@ -974,7 +1155,6 @@ export async function main(argv = process.argv.slice(2), injected = {}) {
       if (reservation && reservation.identityNonce !== nonce.toString()) {
         settle(entryFor('dataContractCreate', key, 'identityNonce', reservation.identityNonce), { status: 'abandoned', abandonedAt: stamp() });
       }
-      const stale = entryFor('dataContractCreate', key, 'identityNonce', nonce);
       const entry = {
         identityNonce: nonce.toString(),
         kind: 'dataContractCreate',
@@ -983,12 +1163,15 @@ export async function main(argv = process.argv.slice(2), injected = {}) {
         contractGroupId: groupId,
         registersGroup: Boolean(registerGroup),
         schemaHash: hash,
+        documentsHash: documentsHash(json),
         sourceSha256: fileSums[`${schemaName}.json`],
+        transitionSha256: sha256Hex(stBytes),
         gitCommit,
+        gitCommitPushed,
         status: 'broadcasting',
         at: stamp(),
       };
-      writeEntry(stale, entry);
+      writeEntry('identityNonce', entry);
       record();
 
       await sdk.stateTransitions.broadcastAndWait(st, PUT_SETTINGS);
@@ -1058,17 +1241,17 @@ export async function main(argv = process.argv.slice(2), injected = {}) {
       const nonce = ((BigInt((await sdk.identities.contractNonce(ownerId, rec.contractId)) ?? 0n)) & NONCE_MASK) + 1n;
       const st = new DataContractUpdateTransition(contract, nonce, PROTOCOL_VERSION).toStateTransition();
       st.sign(privateKey, publicKey);
-      const size = st.toBytes().length;
+      const stBytes = st.toBytes();
+      const size = stBytes.length;
       say(`${key}: update ${rec.contractId} v${chainVersion} -> v${version}, nonce ${nonce}, signed transition ${size} B (limit ${MAX_STATE_TRANSITION_SIZE})`);
       if (size > MAX_STATE_TRANSITION_SIZE) throw new Error(`${key}: update transition exceeds max_state_transition_size`);
       if (dryRun) return { key, contractId: rec.contractId, update: { from: chainVersion, to: version }, sizeBytes: size, schemaHash: hash, ...sourceOf(schemaName), dryRun: true };
       const before = await balance();
       stampTop();
       // (`identityNonce` below is the identity-contract nonce, as earlier records spell it)
-      rec.pendingUpdate = { version, identityNonce: nonce.toString(), sizeBytes: size, schemaHash: hash, previousSchemaHash: rec.schemaHash ?? null, ...sourceOf(schemaName), gitCommit, balanceBefore: before.toString() };
-      const open = entryFor('dataContractUpdate', key, 'contractNonce', nonce);
-      const entry = { contractNonce: nonce.toString(), kind: 'dataContractUpdate', key, contractId: rec.contractId, version, schemaHash: hash, previousSchemaHash: rec.schemaHash ?? null, sourceSha256: fileSums[`${schemaName}.json`], gitCommit, status: 'broadcasting', at: stamp() };
-      writeEntry(open, entry);
+      rec.pendingUpdate = { version, identityNonce: nonce.toString(), sizeBytes: size, transitionSha256: sha256Hex(stBytes), schemaHash: hash, previousSchemaHash: rec.schemaHash ?? null, ...sourceOf(schemaName), gitCommit, gitCommitPushed, balanceBefore: before.toString() };
+      const entry = { contractNonce: nonce.toString(), kind: 'dataContractUpdate', key, contractId: rec.contractId, version, schemaHash: hash, previousSchemaHash: rec.schemaHash ?? null, sourceSha256: fileSums[`${schemaName}.json`], transitionSha256: sha256Hex(stBytes), gitCommit, gitCommitPushed, status: 'broadcasting', at: stamp() };
+      writeEntry('contractNonce', entry);
       record();
       try {
         await sdk.stateTransitions.broadcastAndWait(st, PUT_SETTINGS);
@@ -1106,16 +1289,25 @@ export async function main(argv = process.argv.slice(2), injected = {}) {
 
     // --force-new for the set: supersede a forge-core registered from another schema (and so the
     // group it registered, and the contracts that name its id). After a chain change every
-    // recorded contract is superseded, whatever its schema or state: none is on this chain.
+    // recorded contract is superseded, whatever its schema or state: none is on this chain. They
+    // move at once, with the old ledger, before anything is registered on this chain (whose ids
+    // repeat the old chain's), so a rerun after a crash finds only this chain's records.
     let coreSuperseded = false;
-    if (forceNew && only === null && chainChanged && !dryRun) {
-      v2.nonceLedgerSuperseded = [...(v2.nonceLedgerSuperseded ?? []), { chainId: d.chainId, abandonedAt: stamp(), entries: v2.nonceLedger ?? [] }];
+    if (forceNew && only === null && chainChanged) {
+      const at = stamp();
+      v2.nonceLedgerSuperseded = [...(v2.nonceLedgerSuperseded ?? []), { chainId: d.chainId, abandonedAt: at, entries: v2.nonceLedger ?? [] }];
       delete v2.nonceLedger;
+      const moved = RECORD_KEYS.filter((key) => v2[key]);
+      for (const key of moved) moveToSuperseded(key, at); // (a dry pass works on a copy)
+      if (v2.contractGroup) moveToSuperseded('contractGroup', at);
+      delete v2.contractGroupId;
+      say(`${moved.join(', ') || 'nothing recorded'}: chain ${d.chainId} ${dryRun ? 'would be' : 'is'} superseded; registering a new set on ${chainId}`);
       d.chainId = chainId;
-    }
-    if (forceNew && only === null && v2.forgeCore?.contractId) {
+      coreSuperseded = true;
+      record();
+    } else if (forceNew && only === null && v2.forgeCore?.contractId) {
       const old = v2.forgeCore;
-      if (!chainChanged && !supersedes(old, schemaHash(load('forge-core')))) {
+      if (!supersedes(old, schemaHash(load('forge-core')))) {
         if (old.status === 'registered') say(`forgeCore: ${old.contractId} was registered from the current schema; --force-new has nothing to supersede`);
       } else if (dryRun) {
         coreSuperseded = true;
@@ -1141,7 +1333,7 @@ export async function main(argv = process.argv.slice(2), injected = {}) {
     let coreId;
     if (only !== null) {
       // forge-core must already be registered and on chain; this mode never registers it
-      coreId = await reconcile('forgeCore', schemaHash(load('forge-core')));
+      coreId = await reconcile('forgeCore', load('forge-core'));
       if (!coreId) throw new Error(`--only ${only}: forge-core is not registered on this network; run without --only first`);
     } else {
       coreId = await registerContract({
@@ -1172,17 +1364,20 @@ export async function main(argv = process.argv.slice(2), injected = {}) {
       if (dependents.includes(c)) break;
       if (!v2[c.key]?.contractId) continue;
       // Only a contract found on chain may be named (reconcile also settles an interrupted record)
-      const found = await reconcile(c.key, schemaHash(load(c.schemaName, substitutions)));
+      const found = await reconcile(c.key, load(c.schemaName, substitutions));
       if (!found) throw new Error(`--only ${only}: ${c.key} is recorded but not on chain; run --only ${c.only} first`);
       substitutions[placeholderFor(c.schemaName)] = found;
     }
     for (const { key, schemaName } of dependents) {
       if (forceNew && v2[key]?.contractId) {
         const old = v2[key];
-        if (!chainChanged && !supersedes(old, schemaHash(load(schemaName, substitutions)))) {
+        if (!supersedes(old, schemaHash(load(schemaName, substitutions)))) {
           if (old.status === 'registered') say(`${key}: ${old.contractId} was registered from the current schema; --force-new has nothing to supersede`);
         } else {
-          const refused = dependentSupersedeError({ key, schemaName, contractId: old.contractId, coreSuperseded, sameGroup: Boolean(args['same-group']) });
+          // One in another group than forge-core's is a member of the group an earlier --force-new
+          // superseded (a run that crashed before reaching it): the new one joins the new group
+          const ofOldGroup = Boolean(old.contractGroupId) && old.contractGroupId !== groupIdFinal;
+          const refused = dependentSupersedeError({ key, schemaName, contractId: old.contractId, coreSuperseded: coreSuperseded || ofOldGroup, sameGroup: Boolean(args['same-group']) });
           if (refused) throw new Error(refused);
           if (dryRun) {
             delete v2[key]; // (a dry pass works on a copy)
@@ -1225,10 +1420,13 @@ export async function main(argv = process.argv.slice(2), injected = {}) {
       v2.sdk = injected.sdkId ?? installedSdk();
       if (devnetName) v2.devnet = { name: devnetName, addresses: addresses ?? null };
       // The deployer (CNT-02, CNT-15): who signs, and what the escrowed identity file must be able to rebuild
+      // (another deployer's block, after a --force-new with a new identity, is archived, never merged)
+      const prior = v2.deployer?.identityId === ownerId ? v2.deployer : null;
+      if (v2.deployer && !prior) v2.deployerSuperseded = [...(v2.deployerSuperseded ?? []), { ...v2.deployer, supersededAt: stamp() }];
       v2.deployer = {
         identityId: ownerId,
-        assetLockTxid: v2.deployer?.assetLockTxid ?? rec.txid ?? null,
-        createdAtHeight: createdHeight ?? v2.deployer?.createdAtHeight ?? null,
+        assetLockTxid: prior?.assetLockTxid ?? rec.txid ?? null,
+        createdAtHeight: createdHeight ?? prior?.createdAtHeight ?? null,
         note: 'custody: offline escrow (OD-2); never signs anything but Forge contract registrations and updates',
       };
       if (production && (v2.deployer.assetLockTxid === null || v2.deployer.createdAtHeight === null)) {
