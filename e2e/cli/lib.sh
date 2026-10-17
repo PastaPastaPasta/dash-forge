@@ -382,6 +382,29 @@ skip_scenario() {
   exit 2
 }
 
+# na_scenario "reason": the scenario does not apply on this network (a ported check that does not
+# exist yet). Exit 3: run.sh lists it as N/A, outside the skip ceiling, so a gap is visible without
+# being counted as a flaky skip.
+na_scenario() {
+  printf '%sN/A%s   %s  — %s\n' "${C_DIM}" "${C_RST}" "${SCENARIO_NAME}" "$*" >&2
+  exit 3
+}
+na_unless_devnet() { [[ "$DASH_FORGE_NETWORK" == devnet ]] || na_scenario "not on ${DASH_FORGE_NETWORK}: $*"; }
+
+# require_mint_funding ["hint"]: a scenario that mints its own identity needs the network's funding
+# key (E2E_MINT_FUNDING, config.sh). On testnet a missing key FAILS the scenario: a silent skip there
+# once let a whole suite pass without minting anything (QA-05, QA-V-04). On a devnet it skips, and
+# run.sh's E2E_MAX_SKIPS ceiling bounds how many.
+require_mint_funding() {
+  [[ -r "$E2E_MINT_FUNDING" ]] && return 0
+  local why="no ${DASH_FORGE_NETWORK}${DASH_FORGE_DEVNET_NAME:+ ${DASH_FORGE_DEVNET_NAME}} funding key (${E2E_MINT_FUNDING})${1:+; $1}"
+  if [[ "$DASH_FORGE_NETWORK" == testnet ]]; then
+    printf '%sFAIL%s  %s  — %s\n' "${C_RED}" "${C_RST}" "${SCENARIO_NAME}" "$why" >&2
+    exit 1
+  fi
+  skip_scenario "$why"
+}
+
 # Seed a tiny throwaway git repo with N files + a tag in $1 (dir). Fresh, unrelated
 # history so the pushed pack is self-contained (few KB). Echoes the tip oid.
 seed_tiny_repo() { # seed_tiny_repo <dir> <branch> [tagname]

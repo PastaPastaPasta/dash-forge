@@ -21,6 +21,18 @@ on:
   # workflow that a path filter keeps from starting never reports it, which blocks the merge forever.
   # The `changes` job applies the path list at job level instead (INFR-V-03).
   pull_request:
+    paths:
+      - 'forge-contracts/contracts/**'
+      - 'forge-contracts/schema/**'
+      - 'forge-contracts/vectors/rc1/**'
+      - 'forge-contracts/scripts/**'
+      - 'forge-contracts/deployments/**'
+      - 'tools/contract-validate/**'
+      # the CLI suite's network rules (config.sh) are tested here, offline
+      - 'e2e/cli/config.sh'
+      - 'e2e/cli/lib.sh'
+      - 'e2e/cli/test-config.sh'
+      - '.github/workflows/contracts.yml'
   push:
     branches: [master]
     paths:
@@ -28,6 +40,10 @@ on:
       - 'tools/contract-validate/**'
       # (check-release-network.mjs --self-test parses the web build's network out of it)
       - 'forge-web/scripts/ipfs-release.sh'
+      # the CLI suite's network rules (config.sh) are tested here, offline
+      - 'e2e/cli/config.sh'
+      - 'e2e/cli/lib.sh'
+      - 'e2e/cli/test-config.sh'
       - '.github/workflows/contracts.yml'
   workflow_dispatch:
 
@@ -231,9 +247,12 @@ jobs:
           node forge-contracts/scripts/check-release-network.mjs --self-test
       # Offline: which network and record a live tool targets, and the production-write policy
       # (rc1-live, mv-live, rc1-empty-aggregates and rc1-fee-probe refuse the live testnet and
-      # mainnet records; QA-14), and mv-live's sealing helpers against the committed vectors
+      # mainnet records; QA-14), mv-live's sealing helpers against the committed vectors, and the CLI
+      # suite's testnet rules (no DEPLOYER, no July pool, the testnet funding wallet; QA-05)
       - name: Live tool targets and production refusals
         run: |
+          shellcheck -x e2e/cli/config.sh e2e/cli/test-config.sh
+          bash e2e/cli/test-config.sh
           node --test forge-contracts/scripts/lib/target.test.mjs
           node forge-contracts/scripts/mv-live.mjs --self-test
           for t in rc1-live mv-live rc1-empty-aggregates rc1-fee-probe; do

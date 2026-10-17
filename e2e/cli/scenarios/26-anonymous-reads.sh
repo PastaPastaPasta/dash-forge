@@ -25,6 +25,7 @@
 SCENARIO_NAME="26 anonymous reads: repo/issue/pr view and list, release download to a directory"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
 harness_init
+na_unless_devnet "records and asserts a devnet in its dg and git config; no testnet port yet"
 
 : "${MINT_DIR:=${E2E_REPO_ROOT}/tools/mint-identity}"
 : "${E2E_V2_OWNER:=${IDID_OWNER}}"  # the read fixture is OWNER-owned (make e2e-fixture)

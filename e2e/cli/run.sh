@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
 # run.sh — Dash Forge CLI end-to-end suite driver.
 #
-# Runs every scenario against LIVE devnet sakura (RC2 contracts; DASH_FORGE_DEVNET_NAME picks
-# another devnet), on the suite's reserved OWNER-owned repo (config.sh; created on the first
-# run). Prints a PASS/FAIL/SKIP matrix
-# and exits non-zero if ANY scenario FAILs. A scenario SKIPs only when a check flaked on every retry; one SKIP is reported
-# but tolerated, more than E2E_MAX_SKIPS fails the run.
+# Runs every scenario against a LIVE network on the suite's reserved OWNER-owned repo (config.sh;
+# created on the first run): devnet sakura by default (RC2 contracts; DASH_FORGE_DEVNET_NAME picks
+# another devnet), or Dash testnet with DASH_FORGE_NETWORK=testnet. Testnet is production: it runs with fresh
+# per-network identities only (config.sh refuses the July-era pool and the DEPLOYER role) and mints
+# from the QA testnet funding wallet. Prints a PASS/FAIL/SKIP/N/A matrix and exits non-zero if ANY
+# scenario FAILs.
+#
+# A scenario SKIPs only when a check flaked on every retry or a prerequisite is missing; scenarios
+# the harness drops for a missing local service count as SKIPs too. More than E2E_MAX_SKIPS
+# (default 3) fails the run: too few verdicts to count as a pass (QA-V-04). N/A is a scenario that
+# does not apply on this network yet (exit 3): listed, not counted.
 #
 # Usage:
 #   bash e2e/cli/run.sh                 # run all scenarios
@@ -15,10 +21,12 @@
 #   E2E_SCENARIO_TIMEOUT=900 …          # per-scenario timeout (seconds)
 #   E2E_SUITE_BUDGET=2400 …             # whole-suite budget incl. cleanup (seconds)
 #   E2E_ATTEMPTS=3 E2E_RETRY_PAUSE=20 … # flake retries per command, base pause
-#   E2E_MAX_SKIPS=1 …                   # SKIPs tolerated before the run fails
+#   E2E_MAX_SKIPS=3 …                   # SKIPs tolerated before the run fails (default 3)
+#   DASH_FORGE_NETWORK=testnet …        # production testnet (see config.sh for the rules)
 #   E2E_NO_CLEANUP=1 bash e2e/cli/run.sh# leave test branches on the remote
 #
 # Exit: 0 = no FAIL and at most E2E_MAX_SKIPS SKIPs; 1 otherwise.
+# Scenario exit codes: 0 PASS, 1 FAIL, 2 SKIP, 3 N/A.
 
 set -uo pipefail
 HARNESS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -87,12 +95,17 @@ if [[ $# -gt 0 ]]; then
   SCENARIOS=("${filtered[@]}")
 fi
 
-# 11 and 13 store on local RustFS (infra/docker-compose.yml). A runner without it does not
-# run them at all rather than spending the one tolerated SKIP on a missing service.
+# 11, 13 and 30 store on local RustFS (infra/docker-compose.yml). A runner without it does not
+# start them (each would only fail slowly).
+# They are not run, but they are counted as SKIPs below (a run without the service must not pass
+# silently on the scenarios that did run, QA-V-04).
+NO_INFRA=()
 if ! curl -fsS -m 3 -o /dev/null "http://127.0.0.1:9000/health/ready" 2>/dev/null; then
   kept=()
-  for s in "${SCENARIOS[@]}"; do [[ "$s" == 11-* || "$s" == 13-* || "$s" == 30-* ]] || kept+=("$s"); done
-  [[ ${#kept[@]} -ne ${#SCENARIOS[@]} ]] && info "the local S3 store (RustFS) is not up: not running 11-release-asset / 13-init-push / 30-release-yank-keeps-assets (make infra-up to include them)"
+  for s in "${SCENARIOS[@]}"; do
+    if [[ "$s" == 11-* || "$s" == 13-* || "$s" == 30-* ]]; then NO_INFRA+=("$s"); else kept+=("$s"); fi
+  done
+  [[ ${#NO_INFRA[@]} -gt 0 ]] && info "the local S3 store (RustFS) is not up: not running ${NO_INFRA[*]} (make infra-up to include them); they count as SKIPs"
   SCENARIOS=("${kept[@]}")
 fi
 
@@ -107,13 +120,16 @@ if [[ $# -eq 0 ]]; then
 fi
 
 declare -a NAMES RESULTS
-FAILED=0; PASSED=0; SKIPPED=0
+FAILED=0; PASSED=0; SKIPPED=0; NA=0
+for s in ${NO_INFRA[@]+"${NO_INFRA[@]}"}; do
+  NAMES+=("$s  (not run: the local S3 store is down)"); RESULTS+=("SKIP"); SKIPPED=$((SKIPPED+1))
+done
 if [[ $SETUP_JSON_OK -eq 0 ]]; then
   NAMES+=("suite setup: dg --json output matches docs/schemas"); RESULTS+=("FAIL"); FAILED=$((FAILED+1))
 fi
 
 printf '\n%s########  Dash Forge CLI e2e — run %s  ########%s\n' "${C_DIM}" "${RUN_ID}" "${C_RST}" >&2
-printf '%srepo: %s%s\n' "${C_DIM}" "${E2E_REMOTE}" "${C_RST}" >&2
+printf '%snetwork: %s%s   repo: %s%s\n' "${C_DIM}" "${DASH_FORGE_NETWORK}" "${DASH_FORGE_DEVNET_NAME:+ ${DASH_FORGE_DEVNET_NAME}}" "${E2E_REMOTE}" "${C_RST}" >&2
 
 # Every command inside a scenario is already bounded by E2E_TIMEOUT. On top of that each
 # scenario is bounded (a scenario is a dozen commands plus retries), and the whole suite
@@ -162,6 +178,7 @@ for s in "${SCENARIOS[@]}"; do
   case $rc in
     0) RESULTS+=("PASS"); PASSED=$((PASSED+1));;
     2) RESULTS+=("SKIP"); SKIPPED=$((SKIPPED+1));;
+    3) RESULTS+=("N/A"); NA=$((NA+1));;
     124|137)
       printf '%sFAIL%s  %s  — scenario exceeded %ss and was killed\n' "${C_RED}" "${C_RST}" "$s" "$limit" >&2
       RESULTS+=("FAIL"); FAILED=$((FAILED+1));;
@@ -183,17 +200,18 @@ printf '\n%s========  RESULT MATRIX  ========%s\n' "${C_DIM}" "${C_RST}" >&2
 for i in "${!NAMES[@]}"; do
   r="${RESULTS[$i]}"
   case "$r" in
-    PASS) col="${C_GRN}";; SKIP) col="${C_YEL}";; *) col="${C_RED}";;
+    PASS) col="${C_GRN}";; SKIP|N/A) col="${C_YEL}";; *) col="${C_RED}";;
   esac
   printf '  %s%-6s%s %s\n' "$col" "$r" "${C_RST}" "${NAMES[$i]}" >&2
 done
 printf '%s---------------------------------%s\n' "${C_DIM}" "${C_RST}" >&2
-printf '  passed=%d  skipped=%d  failed=%d\n' "$PASSED" "$SKIPPED" "$FAILED" >&2
+printf '  passed=%d  skipped=%d  n/a=%d  failed=%d\n' "$PASSED" "$SKIPPED" "$NA" "$FAILED" >&2
 
 # Every scenario retries its flakes (E2E_ATTEMPTS each), so a SKIP already means "flaked on
-# every attempt". One is tolerated as testnet weather; more than E2E_MAX_SKIPS means the
-# suite did not really run, and it fails rather than passing on the scenarios that did.
-: "${E2E_MAX_SKIPS:=1}"
+# every attempt" (or a missing prerequisite, or a scenario dropped for a missing service). A few are
+# tolerated as testnet weather; more than E2E_MAX_SKIPS (default 3) means the suite did not really
+# run, and it fails rather than passing on the scenarios that did (QA-V-04).
+: "${E2E_MAX_SKIPS:=3}"
 if [[ "$SKIPPED" -gt "$E2E_MAX_SKIPS" ]]; then
   printf '%sFAIL%s  %d scenarios SKIPPED (limit %d): too few verdicts for this run to count as a pass\n' \
     "${C_RED}" "${C_RST}" "$SKIPPED" "$E2E_MAX_SKIPS" >&2
