@@ -10,7 +10,7 @@ const recorded = vi.hoisted(() => ({
   fetch: vi.fn(async (_id: string): Promise<unknown> => ({})),
   free: vi.fn(),
   snapshots: vi.fn(async () => ({})),
-  mainnetAddresses: [] as string[],
+  emptyTestnet: false,
 }))
 vi.mock('./wasm-fetch', () => ({ compileWasm: () => Promise.resolve({}), onWasmProgress: () => () => undefined }))
 vi.mock('./contract-seed', () => ({ loadContractSnapshots: recorded.snapshots }))
@@ -20,9 +20,9 @@ vi.mock('../constants', async (importOriginal) => {
     ...actual,
     NETWORKS: {
       ...actual.NETWORKS,
-      // Master has no testnet Forge ids yet; the rehearsal adds them separately.
-      testnet: { ...actual.NETWORKS.testnet, v2: actual.NETWORKS.devnet.v2 },
-      mainnet: { ...actual.NETWORKS.mainnet, dapiAddresses: recorded.mainnetAddresses },
+      get testnet() {
+        return { ...actual.NETWORKS.testnet, dapiAddresses: recorded.emptyTestnet ? [] : actual.NETWORKS.testnet.dapiAddresses }
+      },
     },
   }
 })
@@ -32,7 +32,6 @@ vi.mock('@dashevo/evo-sdk', () => ({
     constructor(options: EvoSDKOptions) { recorded.options.push(options) }
     connect = async () => undefined
     contracts = { fetch: recorded.fetch, getLatestVersions: async () => new Map() }
-    documents = { query: async () => { throw new Error('contract not found error: contract not found for a document query') } }
     wasm = { free: recorded.free }
     version = () => 14
   },
@@ -40,13 +39,13 @@ vi.mock('@dashevo/evo-sdk', () => ({
 
 import testnetDeployment from '../../../forge-contracts/deployments/testnet.json'
 import { NETWORKS, type Network } from '../constants'
-import { EvoSdkService, MAX_CONTRACT_MISSING_NODES } from './service'
+import { EvoSdkService } from './service'
 
 const services: EvoSdkService[] = []
 beforeEach(() => {
   vi.useFakeTimers()
   recorded.options.length = 0
-  recorded.mainnetAddresses.length = 0
+  recorded.emptyTestnet = false
   recorded.fetch.mockReset().mockResolvedValue({})
   recorded.snapshots.mockClear()
   recorded.free.mockClear()
@@ -79,15 +78,21 @@ describe('trusted SDK endpoint selection', () => {
     expect(options.settings).toEqual({ timeoutMs: 8000, banFailedAddress: false })
   })
 
-  it('uses mainnet deployment endpoints when present', async () => {
-    recorded.mainnetAddresses.push('https://mainnet.example.test:1443')
+  it.each([false, true])('keeps mainnet SDK seeds despite the deployment list, with custom quorum URL = %s', async (custom) => {
+    if (custom) vi.stubGlobal('localStorage', { getItem: (key: string) => key === 'forge.quorumUrl.mainnet' ? 'https://quorums.example.test' : null })
+    expect(NETWORKS.mainnet.dapiAddresses).toHaveLength(10)
     await connect('mainnet')
-    expect(recorded.options[0]).toMatchObject({ network: 'mainnet', trusted: true, addresses: [...recorded.mainnetAddresses] })
+    const options = recorded.options[0]!
+    expect(options).toMatchObject({ network: 'mainnet', trusted: true })
+    expect(options).not.toHaveProperty('addresses')
+    expect(options.quorumUrl).toBe(custom ? 'https://quorums.example.test' : undefined)
+    expect(options.proofs).not.toBe(false)
   })
 
-  it('leaves SDK discovery/seeds available when the deployment list is empty', async () => {
-    await connect('mainnet')
-    expect(recorded.options[0]).toMatchObject({ network: 'mainnet', trusted: true })
+  it('retains the SDK fallback for an empty testnet deployment list', async () => {
+    recorded.emptyTestnet = true
+    await connect('testnet')
+    expect(recorded.options[0]).toMatchObject({ network: 'testnet', trusted: true })
     expect(recorded.options[0]).not.toHaveProperty('addresses')
   })
 
@@ -98,28 +103,5 @@ describe('trusted SDK endpoint selection', () => {
       addresses: NETWORKS.devnet.dapiAddresses,
       ...(NETWORKS.devnet.quorumBaseUrl !== null ? { quorumUrl: NETWORKS.devnet.quorumBaseUrl } : {}),
     })
-  })
-
-  it('pins corroborating connections to distinct deployment nodes, preserving custom quorum trust and skipping warm-up', async () => {
-    vi.stubGlobal('localStorage', { getItem: (key: string) => key === 'forge.quorumUrl.testnet' ? 'https://quorums.example.test' : null })
-    const service = await connect('testnet')
-    recorded.fetch.mockRejectedValue(new Error('contract not found error: contract not found for a document query'))
-    await expect(service.getSdk().documents.query({ dataContractId: NETWORKS.testnet.v2!.core } as never)).rejects.toBeDefined()
-    await vi.waitFor(() => expect(service.contractsMissing).not.toBeNull())
-    expect(recorded.options).toHaveLength(1 + MAX_CONTRACT_MISSING_NODES)
-    expect(recorded.options.slice(1).map((options) => options.addresses)).toEqual(
-      NETWORKS.testnet.dapiAddresses.slice(0, MAX_CONTRACT_MISSING_NODES).map((address) => [address]),
-    )
-    for (const options of recorded.options.slice(1)) {
-      expect(options).toMatchObject({ network: 'testnet', trusted: true, quorumUrl: 'https://quorums.example.test', settings: { retries: 0 } })
-      expect(options.proofs).not.toBe(false)
-      expect(options.version).toBeUndefined()
-    }
-    expect(recorded.snapshots).toHaveBeenCalledOnce()
-    expect(recorded.fetch).toHaveBeenCalledTimes(1 + MAX_CONTRACT_MISSING_NODES)
-    expect(recorded.free).toHaveBeenCalledTimes(MAX_CONTRACT_MISSING_NODES)
-    expect(service.generation).toBe(1)
-    expect(service.contractsMissing).toContain('3 nodes answered')
-    expect(service.contractsMissing).toContain('unproved refusals')
   })
 })

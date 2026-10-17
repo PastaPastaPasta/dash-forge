@@ -44,7 +44,7 @@ import { NETWORKS, type Network } from '../constants'
 import { forgeContractIds } from '../deployments'
 import { userQuorumUrl } from '../quorum-url'
 import { dapiBudget, installDapiFetchGate } from './budget'
-import { isContractMissingError } from './contract-missing'
+import { ContractReadRefusedError, isContractMissingError } from './contract-missing'
 import { isQuorumMiss, isStaleConnectionError } from './unreachable'
 import { loadContractSnapshots } from './contract-seed'
 import { followSdkVersion, setStaleContractHandler, shareInFlight, type StaleContractCause } from './query'
@@ -126,8 +126,8 @@ export const RECOVER_MAX_WAIT_MS = 15_000
 export const CONNECT_BACKOFF_MS: readonly number[] = [5_000, 15_000, 30_000, 60_000, 120_000]
 /** A connect (quorum prefetch + contract warm-up) that takes longer than this is abandoned. */
 export const CONNECT_TIMEOUT_MS = 60_000
-/** Distinct endpoints checked after an unproved missing-contract refusal. */
-export const MAX_CONTRACT_MISSING_NODES = 3
+/** Retry unproved refusals on the normal SDK rotation (four attempts, retaining stale recovery). */
+export const CONTRACT_REFUSAL_WAITS_MS: readonly number[] = [250, 500, 1000]
 /** After a write ends, how long a connection swap still waits (every node has seen it by then). */
 export const WRITE_SETTLE_MS = 15_000
 /** Download progress reaches the UI at most this often. */
@@ -175,8 +175,7 @@ const FACADE_NAMES = new Set([
   'moderationCharters',
 ])
 
-/** `probeAddress` builds a bare trusted connection, pinned to one node, without warm-up. */
-type Connector = (config: EvoSdkConfig, carry: Carry, signal: AbortSignal, probeAddress?: string) => Promise<Connection>
+type Connector = (config: EvoSdkConfig, carry: Carry, signal: AbortSignal) => Promise<Connection>
 
 export interface Clock {
   now(): number
@@ -283,7 +282,7 @@ export class EvoSdkService {
   /**
    * The evidence that a contract is missing from the network (a devnet reset,
    * or a build made for other contracts), or null. Once set, the app shows one state instead of
-   * every view failing on its own. Unproved refusals require multiple distinct nodes.
+   * every view failing on its own. Only a fresh proof of absence can set it.
    */
   private missing: string | null = null
   /** A fetch confirming {@link missing} is running. */
@@ -363,70 +362,57 @@ export class EvoSdkService {
   }
 
   /**
-   * A read of `contract` failed: if that is one of this build's forge contracts and the network
-   * says it does not exist, report it app-wide, once. Any other contract (a repo's, the wallet
-   * key exchange) stays the error of the view that read it.
-   *
-   * Drive's refusal carries no proof and comes from one node (one that is behind, or lying),
-   * so a proof-enabled fetch confirms it first. Another refusal triggers fresh connections
-   * pinned to at most three distinct configured endpoints; at least two must all refuse.
-   * Any success or other failure prevents that classification. One check at a time, with
-   * {@link RECOVER_GAP_MS} between inconclusive checks.
+   * Only a fresh proved contract fetch can mark a recorded Forge contract absent app-wide.
+   * In rc.4, raw contracts.fetch() calls getDataContract -> fetch_contract_seeding_cache ->
+   * DataContract::fetch_by_identifier: it makes a proved request, bypassing both bundled
+   * snapshots and the SDK contract cache. Undefined is proved None; a rejection proves nothing.
+   * Concurrent failures share one check; inconclusive checks have a cooldown.
    */
-  private noteMissing(contract: string | undefined, e: unknown): void {
+  private async noteMissing(contract: string | undefined, e: unknown): Promise<void> {
     if (this.missing !== null || this.confirming || contract === undefined || this.network === null) return
     const forge = NETWORKS[this.network].v2
-    if (forge === null || !forgeContractIds(forge).includes(contract) || !isContractMissingError(e)) return
+    if (forge === null || !forgeContractIds(forge).includes(contract)) return
     const connection = this.current
-    const config = this.config
-    if (connection === null || config === null || this.clock.now() - this.presentAt < RECOVER_GAP_MS) return
+    if (connection === null || this.clock.now() - this.presentAt < RECOVER_GAP_MS) return
     const epoch = this.epoch
-    const controller = new AbortController()
-    this.aborts.add(controller)
     this.confirming = true
-    void this.confirmMissing(connection, config, contract, controller.signal)
-      .catch(() => null)
-      .then((detail) => {
-        this.aborts.delete(controller)
-        if (this.epoch !== epoch) return
-        this.confirming = false
-        if (detail === null) {
-          this.presentAt = this.clock.now()
-          return
-        }
-        this.missing = `${detail}: ${messageOf(e)}`
-        this.notify()
-      })
-  }
-
-  /** A proved absence, or bounded corroboration of an otherwise unproved refusal. */
-  private async confirmMissing(connection: Connection, config: EvoSdkConfig, contract: string, signal: AbortSignal): Promise<string | null> {
     try {
+      // Call the raw SDK, never this.handle: one independent proof read after the retry budget.
       const found = await this.track(connection, (sdk) => sdk.contracts.fetch(contract))
-      return found === undefined ? `Platform proved contract ${contract} absent` : null
-    } catch (e) {
-      if (!isContractMissingError(e)) return null
-    }
-    // The initial refusal has no source address. Count only these explicitly pinned nodes,
-    // never multiple refusals from the original SDK's sticky rotation.
-    const addresses = [...new Set(NETWORKS[config.network].dapiAddresses)].slice(0, MAX_CONTRACT_MISSING_NODES)
-    for (const address of addresses) {
-      if (signal.aborted) return null
-      let probe: Connection | null = null
-      try {
-        probe = await this.connector({ ...config, contractIds: [] }, { outdated: this.outdated }, signal, address)
-        if (signal.aborted) return null
-        const found = await probe.sdk.contracts.fetch(contract)
-        return found === undefined ? `Platform proved contract ${contract} absent` : null
-      } catch (e) {
-        if (!isContractMissingError(e)) return null
-      } finally {
-        if (probe !== null) dispose(probe)
+      if (this.epoch !== epoch) return
+      if (found === undefined) {
+        this.missing = `Platform proved contract ${contract} absent: ${messageOf(e)}`
+        this.notify()
+      }
+    } catch {
+      // A refusal, transport failure, or failed proof is inconclusive, never a network reset.
+    } finally {
+      if (this.epoch === epoch) {
+        this.confirming = false
+        this.presentAt = this.clock.now()
       }
     }
-    return addresses.length >= 2
-      ? `${addresses.length} nodes answered that contract ${contract} does not exist (unproved refusals)`
-      : null
+  }
+
+  /** Fresh calls on the normal SDK rotate nodes; an unproved refusal never establishes absence. */
+  private async readWithContractRetry<T>(read: (sdk: EvoSDK) => Promise<T>, contract: string | undefined): Promise<T> {
+    const epoch = this.epoch
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.withRecovery(read)
+      } catch (e) {
+        if (!isContractMissingError(e) || this.epoch !== epoch) throw e
+        const wait = CONTRACT_REFUSAL_WAITS_MS[attempt]
+        if (wait === undefined) {
+          await this.noteMissing(contract, e)
+          if (this.epoch !== epoch) throw e
+          if (this.missing !== null) throw new Error(this.missing, { cause: e })
+          throw new ContractReadRefusedError(e)
+        }
+        await new Promise<void>((resolve) => this.clock.setTimeout(resolve, wait))
+        if (this.epoch !== epoch) throw e
+      }
+    }
   }
 
   /** Follow status and connection changes. Returns the unsubscribe. */
@@ -1014,10 +1000,7 @@ export class EvoSdkService {
               return (...args: unknown[]) => {
                 const contract = name === 'documents' || name === 'contracts' ? contractOf(args) : undefined
                 this.noteContract(contract)
-                return this.withRecovery((sdk) => call(sdk, args) as Promise<unknown>).catch((e: unknown) => {
-                  this.noteMissing(contract, e)
-                  throw e
-                })
+                return this.readWithContractRetry((sdk) => call(sdk, args) as Promise<unknown>, contract)
               }
             },
           },
@@ -1253,7 +1236,7 @@ export function withTimeout<T>(work: Promise<T>, ms: number, what: string, contr
 }
 
 /** Build, connect and warm a trusted connection for `config`. */
-async function connectTrusted(config: EvoSdkConfig, carry: Carry, signal: AbortSignal, probeAddress?: string): Promise<Connection> {
+async function connectTrusted(config: EvoSdkConfig, carry: Carry, signal: AbortSignal): Promise<Connection> {
   // Every DAPI request this page makes goes through the shared request budget (`budget.ts`).
   installDapiFetchGate(NETWORKS[config.network].dapiAddresses)
   // In a browser, start the wasm download (a separate asset with its own stall timer,
@@ -1270,7 +1253,7 @@ async function connectTrusted(config: EvoSdkConfig, carry: Carry, signal: AbortS
   const controller = new AbortController()
   if (signal.aborted) controller.abort()
   else signal.addEventListener('abort', () => controller.abort(), { once: true })
-  const work = connectAndWarm(evo.EvoSDK, config, carry, controller.signal, probeAddress)
+  const work = connectAndWarm(evo.EvoSDK, config, carry, controller.signal)
   // A connect that finishes after its deadline fired (or after a cleanup) has no taker.
   void work.then((c) => controller.signal.aborted && dispose(c), () => undefined)
   return withTimeout(work, CONNECT_TIMEOUT_MS, 'Connecting to Platform', controller)
@@ -1288,7 +1271,6 @@ async function connectAndWarm(
   config: EvoSdkConfig,
   carry: Carry,
   signal: AbortSignal,
-  probeAddress?: string,
 ): Promise<Connection> {
   // `banFailedAddress: false`: a failed attempt only drops the node from the SDK's sticky
   // rotation and the next attempt goes to another node (rs-dapi-client
@@ -1304,12 +1286,10 @@ async function connectAndWarm(
   // rc.4's trusted factory signatures accept only ConnectionOptions. The constructor's
   // EvoSDKOptions supports addresses AND trusted: true: connect() uses withAddresses then
   // withTrustedContext, retaining quorum verification while replacing the bootstrap list.
-  const addresses = probeAddress === undefined ? NETWORKS[config.network].dapiAddresses : [probeAddress]
+  // Mainnet's recorded endpoints are a quorum-key second source, not read endpoints.
+  const addresses = config.network === 'mainnet' ? [] : NETWORKS[config.network].dapiAddresses
   const options = {
-    settings: {
-      timeoutMs: config.timeoutMs ?? 8000, banFailedAddress: false,
-      ...(probeAddress !== undefined ? { retries: 0 } : {}),
-    },
+    settings: { timeoutMs: config.timeoutMs ?? 8000, banFailedAddress: false },
     ...(addresses.length > 0 ? { addresses: [...addresses] } : {}),
   }
   let sdk: EvoSDK
@@ -1337,9 +1317,6 @@ async function connectAndWarm(
   }
   await sdk.connect()
   step(signal, sdk)
-  // Corroboration must ask this endpoint, without seeding/preloading (or installing/swapping
-  // the connection, which could interfere with a writer's nonce cache).
-  if (probeAddress !== undefined) return { sdk, seeded: new Map() }
   // Seed the bundled contracts, then preload what is still missing, BEFORE the connection goes
   // live so callers never see an unwarmed SDK.
   const seeded = await seed(sdk, NETWORKS[config.network].key, carry.outdated)

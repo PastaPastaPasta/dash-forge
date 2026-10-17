@@ -2,7 +2,8 @@
  * "The contracts this build reads are not on the network": a devnet was reset, or a build names
  * contracts its network never had. Platform answers a read that names a missing contract with
  * an error, not an empty result. An unproved refusal can also come from a node that is behind;
- * the service corroborates it before reporting contracts missing app-wide.
+ * the service retries it and requires a fresh proof of absence before reporting contracts
+ * missing app-wide.
  *
  * wasm-sdk 4.2.0-beta.7 gives this no code of its own. Drive's refusal reaches JS as a
  * `WasmSdkError` of kind `DapiClientError` with `code` -1, and its gRPC status
@@ -22,4 +23,14 @@ const CONTRACT_MISSING = /contract not found (?:error|when querying|for a docume
 /** Whether `e` reports a missing contract (not necessarily a proved network-wide absence). */
 export function isContractMissingError(e: unknown): boolean {
   return CONTRACT_MISSING.test(errorMessage(e, ''))
+}
+
+/** A bounded read retry exhausted its refusals without establishing proved absence. */
+export class ContractReadRefusedError extends Error {
+  readonly isRetriable = true
+
+  constructor(cause: unknown) {
+    super('A node is behind; try again.', { cause })
+    this.name = 'ContractReadRefusedError'
+  }
 }

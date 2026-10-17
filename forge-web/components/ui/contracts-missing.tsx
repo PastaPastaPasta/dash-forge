@@ -1,10 +1,10 @@
 'use client'
 
 /**
- * "This build's contracts are not on the network": the network answered a read with "contract
- * not found" (`lib/sdk/contract-missing.ts`). On a devnet that means it was reset and Dash Forge
- * has not been deployed on it again yet; anywhere else, that this build names contracts its
- * network does not have. No retry can fix either, so this state offers none as its main action:
+ * "This build's contracts are not on the network": a fresh proof-verified contract fetch
+ * proved absence (`lib/sdk/service.ts`). A node's unproved refusal alone never reaches this
+ * state. A reset or a build naming another network's contracts may explain the absence.
+ * This state offers a newer build as its main action:
  * a reload picks up a new build once one is published. The raw error stays behind Details.
  *
  * Detected once, app-wide (`useContractsMissing` in hooks/use-sdk.ts): the app shell shows this
