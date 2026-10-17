@@ -60,7 +60,7 @@ test('restore proves the lock by its block, even on testnet, and registers the f
   const result = await restoreIdentity({ record, network: TESTNET, deps: s.deps });
   assert.equal(result.status, 'restored');
   assert.equal(result.identityId, record.identityId);
-  assert.deepEqual(s.names(), ['getTransaction', 'describeIdentity', 'obtainAssetLock', 'registerIdentity']);
+  assert.deepEqual(s.names(), ['describeIdentity', 'getTransaction', 'obtainAssetLock', 'registerIdentity']);
   assert.equal(s.calls[2][1].proof, 'chain');
   const reg = s.calls[3][1];
   assert.equal(reg.lock.type, 'chain');
@@ -105,8 +105,8 @@ test('already on this chain with the file\'s keys: nothing is registered; with o
   const result = await restoreIdentity({ record, network: TESTNET, deps: same.deps });
   assert.equal(result.status, 'already-restored');
   assert.equal(result.balance, 5);
-  assert.ok(!same.names().includes('registerIdentity'));
-  assert.ok(!same.names().includes('obtainAssetLock'));
+  // (describeIdentity is the override): Core is not asked, nothing is registered
+  assert.deepEqual(same.names(), []);
   const other = stubs({ describeIdentity: () => ({ identityId: record.identityId, balance: 5, keys: keys.map((k, i) => (i === 2 ? { ...k, dataHex: `03${'11'.repeat(32)}` } : k)) }) });
   await assert.rejects(restoreIdentity({ record, network: TESTNET, deps: other.deps }), /exists on this chain with other keys.*impossible: mint a new deployer and register a new set/s);
   assert.ok(!other.names().includes('registerIdentity'));
@@ -117,7 +117,7 @@ test('Core reset, an unmined lock, a consumed lock and an unreachable Core are t
   const run = (over) => { const s = stubs(over); return [restoreIdentity({ record, network: TESTNET, deps: s.deps }), s]; };
   let [p, s] = run({ getTransaction: () => { throw new InsightError('Failed to get transaction: 404 Not Found', 404); } });
   await assert.rejects(p, /does not know asset-lock tx e8b4\w+: Core was reset too.*A same-id restore is impossible/s);
-  assert.deepEqual(s.names(), []);
+  assert.deepEqual(s.names(), ['describeIdentity'], 'Platform is asked first; nothing registered');
   [p] = run({ getTransaction: () => { throw new Error(`Transaction ${TXID} not found`); } });
   await assert.rejects(p, /Core was reset too/);
   [p] = run({ getTransaction: () => ({ txid: TXID, confirmations: 0, blockheight: undefined }) });

@@ -434,7 +434,7 @@ export function writeDep(file, dep) {
   renameSync(tmp, file); // never leave a half-written record behind
 }
 
-export { b58decode, b58encode, depPath, selfTest };
+export { b58decode, b58encode, defaultGit, depPath, selfTest };
 
 // ---- the committed set's files: sums, record identity, git state ----
 /** The file names of the set in `dir`, in registration order: forge-core first, forge-meta last when the set has it. */
@@ -617,7 +617,8 @@ const SCHEMA_OF_KEY = Object.fromEntries([{ key: 'forgeCore', schemaName: 'forge
  * the ledger's creates and updates of them in ledger order (`ops`). `sums` are the recorded
  * sha256 of the files the creates were built from (what --expect-sha256 is checked against);
  * `skipped` the identity nonces the replay leaves as gaps (external, superseded, abandoned), and
- * `replayedNonces` the ones it sends again.
+ * `replayedNonces` the ones it sends again; `finished` when the record was restored from
+ * `fromChain` already.
  * `fromChain` must be the record's chainId, or the one the record's last restore came from (a
  * finished replay, run again).
  */
@@ -677,11 +678,13 @@ export function planReplay(dep, { recordKeys, fromChain, recordName = 'the recor
     }
   }
   const replayed = new Set(Object.values(createOf));
-  const skipped = ledger.filter((e) => e.identityNonce !== undefined && !replayed.has(e))
-    .map((e) => ({ identityNonce: e.identityNonce, kind: e.kind, ...(e.key ? { key: e.key } : {}), ...(e.status ? { status: e.status } : {}), ...(e.supersededAt ? { superseded: true } : {}), ...(e.note ? { note: e.note } : {}) }));
+  // (an external transition before an earlier restore was listed by that one already)
+  const since = lastRestore?.ledgerLength ?? 0;
+  const skipped = [...ledger.entries()].filter(([, e]) => e.identityNonce !== undefined && !replayed.has(e))
+    .map(([i, e]) => ({ identityNonce: e.identityNonce, kind: e.kind, ...(e.key ? { key: e.key } : {}), ...(e.status ? { status: e.status } : {}), ...(e.supersededAt ? { superseded: true } : {}), ...(e.note ? { note: e.note } : {}), ...(i < since ? { listedBefore: true } : {}) }));
   const sums = Object.fromEntries(keys.map((k) => [`${SCHEMA_OF_KEY[k]}.json`, v2[k].sourceSha256]));
   const replayedNonces = ops.filter((o) => o.kind === 'create').map((o) => o.entry.identityNonce);
-  return { group, keys, ops, sums, skipped, replayedNonces };
+  return { fromChain, group, keys, ops, sums, skipped, replayedNonces, finished };
 }
 
 /** The first nonce gap a replay of `creates` (ascending identity nonces) cannot make from `chain`, or null. */
@@ -850,7 +853,9 @@ async function deploy(argv, injected, locks) {
   const replay = Boolean(args.replay);
   if (args.replay !== undefined && args.replay !== true) throw new Error('--replay takes no value (the chain it restores from is --replay-from-chain <chain id>)');
   if (replay) {
-    if (only !== null || update !== null || forceNew || acknowledged.length > 0) throw new Error('--replay runs alone: no --only, --update, --force-new or --acknowledge-nonce');
+    if (only !== null || update !== null || forceNew || acknowledged.length > 0 || createdHeight !== null) {
+      throw new Error('--replay runs alone: no --only, --update, --force-new, --acknowledge-nonce or --deployer-created-height');
+    }
     if (args['replay-from-chain'] === undefined || args['replay-from-chain'] === true) {
       throw new Error("--replay needs --replay-from-chain <chain id>: the record's chainId, the chain the set was registered on (the reset one)");
     }
@@ -923,7 +928,9 @@ async function deploy(argv, injected, locks) {
   const safe = (fn) => { try { return fn(); } catch { return undefined; } };
   const gitCommit = safe(git.head) ?? null;
   const problems = [];
-  if (setName !== null) {
+  // (a replay rebuilds the recorded bytes, from git at the recorded commit, not the set's current
+  // files: those two gates do not apply to it; --expect-sha256 still checks the recorded sums)
+  if (setName !== null && !replay) {
     const dirty = safe(() => git.porcelain(repoPath(contractsDir)));
     if (dirty === undefined) problems.push(`git cannot report on ${repoPath(contractsDir)}: the set's files cannot be shown to match HEAD`);
     else if (dirty) problems.push(`the set's files differ from git HEAD; commit them first: what is registered must be in git (${dirty.split('\n')[0].trim()})`);
@@ -1080,7 +1087,7 @@ async function deploy(argv, injected, locks) {
     const v2 = d.v2;
     const record = () => { if (!dryRun) writeDep(depFile, d); };
     const report = { network: devnetName ? `devnet-${devnetName}` : network, ownerId, steps: [] };
-    if (dryRun) report.sha256 = fileSums;
+    if (dryRun) report.sha256 = replayPlan?.sums ?? fileSums;
     const used = new Set(); // acknowledged nonces this pass explained
 
     // The network's identity at the top of the record, then the chain it was registered on
@@ -1101,7 +1108,10 @@ async function deploy(argv, injected, locks) {
     const ledger = () => (v2.nonceLedger ??= []);
     // A transition's entries: a create by its identity nonce, an update by its contract and that
     // contract's own nonce (every contract's identity-contract nonce starts at 1)
-    const entriesAt = (kind, key, nonceField, nonce, id) => (v2.nonceLedger ?? []).filter((e) =>
+    // (After a same-id restore the entries before it are the old chain's, all settled: a nonce this
+    // chain reuses never meets them. v2.restores belongs to the current ledger and is archived with it.)
+    const restoredUpTo = () => v2.restores?.at(-1)?.ledgerLength ?? 0;
+    const entriesAt = (kind, key, nonceField, nonce, id) => (v2.nonceLedger ?? []).filter((e, i) => i >= restoredUpTo() &&
       e.kind === kind && e.key === key && e[nonceField] === String(nonce) && (kind !== 'dataContractUpdate' || e.contractId === id));
     // The open (`broadcasting`) entry of a transition: the one a step settles
     const entryFor = (...at) => entriesAt(...at).find((e) => e.status === 'broadcasting');
@@ -1122,11 +1132,11 @@ async function deploy(argv, injected, locks) {
     // After a same-id restore the chain holds, of the ledger before it, only the creates it replayed
     // (an external transition or a superseded contract of the old chain never happened on this one)
     const lastSigned = (counts) => {
-      const restore = v2.restores?.at(-1);
+      const replayed = v2.restores?.at(-1)?.replayedNonces ?? [];
       let last = 0n;
       for (const [i, e] of (v2.nonceLedger ?? []).entries()) {
         if (e.identityNonce === undefined || e.status === 'abandoned' || !counts(e)) continue;
-        if (restore?.ledgerLength !== undefined && i < restore.ledgerLength && !restore.replayedNonces?.includes(e.identityNonce)) continue;
+        if (i < restoredUpTo() && !(e.kind === 'dataContractCreate' && replayed.includes(e.identityNonce))) continue;
         if (BigInt(e.identityNonce) > last) last = BigInt(e.identityNonce);
       }
       return last;
@@ -1550,7 +1560,12 @@ async function deploy(argv, injected, locks) {
     // the first is signed; then the ledger's creates and updates of the live set are sent in its
     // order, each skipped when the chain already has it (a resumed replay).
     async function replayLedger() {
-      const { ops, group, keys, skipped, replayedNonces } = replayPlan;
+      const { ops, group, keys, skipped, replayedNonces, finished } = replayPlan;
+      // A record restored from fromChain already, on a network that was reset again: the chain to
+      // name now is the one the record moved to
+      if (finished && chainId !== d.chainId) {
+        throw replayError(`${recordName} was restored from ${replayPlan.fromChain} onto ${d.chainId}, and the network reports ${chainId}: name the record's chain, --replay-from-chain ${d.chainId}`);
+      }
       const frozenDir = scratch ? null : join(injected.registeredRoot ?? join(ROOT, 'contracts', 'registered'), basename(depFile, '.json'));
       const ids = Object.fromEntries(keys.map((k) => [placeholderFor(SCHEMA_OF_KEY[k]), v2[k].contractId]));
       // 1. Check everything first
@@ -1616,14 +1631,42 @@ async function deploy(argv, injected, locks) {
         }
         say(`WARNING the devnet still reports chain ${chainId} (a devnet keeps its chain id across a reset); ${missing.join(', ')} not on it: replaying`);
       }
+      // The restored deployer signs nothing but the replay (an identity create and a top-up use no
+      // identity nonce): its nonce is the last replayed create already on chain, 0 on a fresh restore.
+      // Anything else signed with it here never enters the ledger (CNT-02), so it stops the replay.
       const chain = await chainNonce();
+      const sent = steps.filter((s) => s.kind === 'create' && onChain[s.key]).reduce((m, s) => (s.nonce > m ? s.nonce : m), 0n);
+      if (identity && chain !== sent) {
+        throw replayError(`the restored deployer's identity nonce is ${chain} on this chain, but the replay has sent creates up to nonce ${sent}: something else signed with it, which the ledger cannot record. Find out what it was before going on`);
+      }
       const gap = nonceGapProblem(steps.filter((s) => s.kind === 'create' && !onChain[s.key]), chain);
       if (gap) {
         throw replayError(`${gap}. A same-id restore is impossible; register a new set instead (--force-new --abandon-live-set ${network})`);
       }
       for (const e of skipped) say(`identity nonce ${e.identityNonce}: ${e.kind}${e.key ? ` ${e.key}` : ''}${e.superseded ? ' (superseded)' : e.status ? ` (${e.status})` : ''}${e.note ? `: ${e.note}` : ''}: not replayed (a gap)`);
-      const external = skipped.filter((e) => e.kind === 'external');
+      const external = skipped.filter((e) => e.kind === 'external' && !e.listedBefore);
       if (external.length > 0) say(`WARNING ${external.length} external transition(s) of the old chain are not redone (${external.map((e) => `nonce ${e.identityNonce}: ${e.note ?? '?'}`).join('; ')}): redo any that still matter (a key rotation) by hand`);
+
+      // What it costs: what each step cost when it was registered, with a 20 % margin. A restored
+      // deployer holds its asset lock's credits only (no top-ups), and a set stopped half way is
+      // worse than one not started.
+      let need = 0n;
+      const unpriced = [];
+      for (const s of steps) {
+        if (s.kind === 'create' ? onChain[s.key] : Number(onChain[s.key]?.version ?? 0) >= s.entry.version) continue;
+        const cost = s.kind === 'create' ? v2[s.key].costCredits : v2[s.key].updates?.find((u) => u.version === s.entry.version)?.costCredits;
+        if (cost === undefined || cost === null) unpriced.push(`${s.key}${s.kind === 'update' ? ` v${s.entry.version}` : ''}`);
+        else need += BigInt(cost);
+      }
+      need = (need * 12n) / 10n;
+      const held = await balance();
+      const dash = (credits) => (Number(credits) / CREDITS_PER_DASH).toFixed(4);
+      say(`the replay needs about ${dash(need)} DASH (the recorded costs + 20 %${unpriced.length ? `; no recorded cost for ${unpriced.join(', ')}` : ''}); the deployer holds ${dash(held)} DASH`);
+      if (held < need) {
+        const shortfall = `the deployer holds ${dash(held)} DASH, under the ${dash(need)} DASH the replay needs: top it up first (node tools/mint-identity/mint.mjs topup --identity <restored deployer> --amount ${(Number(need - held) / CREDITS_PER_DASH + 0.1).toFixed(1)})`;
+        if (!dryRun) throw replayError(shortfall);
+        say(`WARNING ${shortfall}`);
+      }
 
       // 3. Send them, in the ledger's order
       const description = v2.contractGroup?.description ?? GROUP_DESCRIPTION;
@@ -1765,8 +1808,9 @@ async function deploy(argv, injected, locks) {
     let coreSuperseded = false;
     if (chainChanged || deployerChanged) {
       const at = stamp();
-      v2.nonceLedgerSuperseded = [...(v2.nonceLedgerSuperseded ?? []), { chainId: d.chainId, ...(deployerChanged ? { deployer: recordedDeployer } : {}), abandonedAt: at, entries: v2.nonceLedger ?? [] }];
+      v2.nonceLedgerSuperseded = [...(v2.nonceLedgerSuperseded ?? []), { chainId: d.chainId, ...(deployerChanged ? { deployer: recordedDeployer } : {}), abandonedAt: at, entries: v2.nonceLedger ?? [], ...(v2.restores?.length ? { restores: v2.restores } : {}) }];
       delete v2.nonceLedger; // (so the archived entries are not marked supersededAt)
+      delete v2.restores; // (its ledger positions are the archived ledger's)
       const moved = RECORD_KEYS.filter((key) => v2[key]);
       for (const key of moved) moveToSuperseded(key, at); // (a dry pass works on a copy)
       if (v2.contractGroup) moveToSuperseded('contractGroup', at);
@@ -1935,7 +1979,7 @@ async function deploy(argv, injected, locks) {
   report.deployment = depFile;
   if (dryRun) {
     log('sha256 of the set (what the owner signs; --expect-sha256 checks it):');
-    for (const line of formatSums(fileSums).trimEnd().split('\n')) log(`  ${line}`);
+    for (const line of formatSums(replayPlan?.sums ?? fileSums).trimEnd().split('\n')) log(`  ${line}`);
   }
   print(`${JSON.stringify(report, null, 2)}\n`);
   return report;

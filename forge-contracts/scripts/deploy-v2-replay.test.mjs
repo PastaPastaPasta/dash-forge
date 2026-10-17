@@ -131,11 +131,18 @@ test('refusals before anything is broadcast', async () => {
   const wrong = join(t.dir, 'wrong-sums.txt');
   writeFileSync(wrong, formatSums({ ...setSums(SETS.mainnet), 'forge-meta.json': '0'.repeat(64) }));
   await assert.rejects(t.run(['--network', 'testnet', '--set', 'mainnet', '--identity', t.identity, '--expect-sha256', wrong, '--replay', '--replay-from-chain', OLD]), /forge-meta\.json: sha256 .* is not the signed/);
-  t.git.porcelain = () => ' M forge-contracts/contracts/mainnet/forge-core.json';
-  await assert.rejects(t.run(t.replay()), /differ from git HEAD/);
-  t.git.porcelain = () => '';
+  t.git.pushed = () => false;
+  await assert.rejects(t.run(t.replay()), /testnet replay refused.*is on no branch of origin/s);
+  t.git.pushed = () => true;
+  await assert.rejects(t.run(t.replay('--deployer-created-height', '5')), /--replay runs alone/);
   assert.equal(t.fake.broadcasts, 4);
   assert.equal(t.raw(), before);
+  // the set's current files are not what a replay sends (it rebuilds the recorded bytes from git):
+  // a dirty set directory or a stale build does not stop it
+  t.git.porcelain = () => ' M forge-contracts/contracts/mainnet/forge-core.json';
+  t.git.buildCheck = () => ({ ok: false, output: 'stale: forge-contracts/contracts/mainnet/forge-core.json' });
+  await t.run(t.replay());
+  assert.equal(t.fake.broadcasts, 8);
 });
 
 test('the sums checked are the recorded ones: a set changed since registration still replays what was registered', async () => {

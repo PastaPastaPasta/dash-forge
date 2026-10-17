@@ -98,6 +98,17 @@ export async function restoreIdentity({ record, network, expectId, log = () => {
   };
   log(`[restore] ${identityId}: asset lock ${txid}:0 (${network.name})`);
 
+  // Platform first: already there with the same keys means restored (by an earlier run), with no
+  // need to ask Core; other keys means someone else spent the escrowed asset lock on this chain.
+  const existing = await d.describeIdentity(identityId);
+  if (existing) {
+    if (!sameKeys(existing, role)) {
+      throw new Error(`identity ${identityId} exists on this chain with other keys than the file's: its asset lock was consumed by another registration. ${FRESH}`);
+    }
+    log(`[restore] ${identityId} is already on this chain with the file's keys; nothing to do`);
+    return { status: 'already-restored', identityId, balance: existing.balance, coreHeight: null, role };
+  }
+
   // Core must still know the transaction, mined: a Core reset (or another network) loses it
   let tx;
   try {
@@ -109,17 +120,6 @@ export async function restoreIdentity({ record, network, expectId, log = () => {
   }
   if (tx?.blockheight === undefined) {
     throw new Error(`asset-lock tx ${txid} is not mined on Core ${network.name}: an escrowed lock was mined long ago, so Core was reset (or this is another network). ${FRESH}`);
-  }
-
-  // Already there: the same keys means restored (by an earlier run); other keys means someone else
-  // spent the escrowed asset lock on this chain
-  const existing = await d.describeIdentity(identityId);
-  if (existing) {
-    if (!sameKeys(existing, role)) {
-      throw new Error(`identity ${identityId} exists on this chain with other keys than the file's: its asset lock was consumed by another registration. ${FRESH}`);
-    }
-    log(`[restore] ${identityId} is already on this chain with the file's keys; nothing to do`);
-    return { status: 'already-restored', identityId, balance: existing.balance, coreHeight: tx.blockheight, role };
   }
 
   // A chain-lock proof, always (an old InstantSend lock is refused); its id is checked again by the SDK
