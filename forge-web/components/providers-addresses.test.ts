@@ -24,5 +24,6 @@ it.each(['testnet', 'mainnet', 'devnet'] as const)('installs the %s gate with re
   await import('./providers')
   expect(gate).toHaveBeenCalledOnce()
   expect(gate).toHaveBeenCalledWith(network === 'mainnet' ? [] : actual.NETWORKS[network].dapiAddresses)
-  if (network === 'mainnet') expect(actual.NETWORKS.mainnet.dapiAddresses).toHaveLength(10)
+  // [] on mainnet is a choice, not an empty list: the recorded addresses exist.
+  if (network === 'mainnet') expect(actual.NETWORKS.mainnet.dapiAddresses.length).toBeGreaterThan(0)
 })

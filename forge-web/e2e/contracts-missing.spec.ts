@@ -19,8 +19,10 @@ test.skip(E2E_NETWORK === 'testnet', 'uses the devnet build and its bundled cont
 const QUORUMS = /^https:\/\/quorums\.[a-z0-9-]+\.networks\.dash\.org\//
 const DAPI = /\/org\.dash\.platform\.dapi\.v0\.Platform\/\w+$/
 const DRIVE_MESSAGE = 'contract not found error: contract not found when querying from value with contract info'
-// A page has at most two document reads, plus seeded-version and absence checks. Allow the
-// SDK's own transport retries inside each of the service's four attempts, but no retry loop.
+// Explore is the busiest page: featured, trending (with its star-shape read), most starred and
+// most forked in parallel, about 4-6 Forge reads. Each read is refused at most four times (the
+// transport does not retry InvalidArgument), plus one shared absence check and the seeded-version
+// revalidation: about 20-30 refusals. 40 leaves room without allowing a retry loop.
 const MAX_REFUSALS_PER_PAGE = 40
 
 async function cors(route: Route): Promise<Record<string, string>> {
@@ -75,6 +77,9 @@ async function expectRetryableRefusal(page: Page, stats: { refused: number }, pr
   const refused = stats.refused - previous
   expect(refused).toBeGreaterThan(0)
   expect(refused).toBeLessThanOrEqual(MAX_REFUSALS_PER_PAGE)
+  // No automatic retry loop: nothing more is refused while the page sits on the advice.
+  await page.waitForTimeout(6_000)
+  expect(stats.refused - previous, 'refusals after the advice settled').toBe(refused)
   await expect(page.getByTestId('contracts-missing')).toHaveCount(0)
 }
 

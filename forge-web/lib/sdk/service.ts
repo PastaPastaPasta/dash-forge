@@ -412,7 +412,7 @@ export class EvoSdkService {
         if (wait === undefined) {
           await this.noteMissing(contract, e)
           if (this.epoch !== epoch) throw e
-          if (this.missing !== null) throw new Error(this.missing, { cause: e })
+          if (this.missing !== null && forgeContract) throw new Error(this.missing, { cause: e })
           throw new ContractReadRefusedError(e)
         }
         await new Promise<void>((resolve) => this.clock.setTimeout(resolve, wait))
