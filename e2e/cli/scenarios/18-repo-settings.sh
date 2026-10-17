@@ -42,6 +42,18 @@ main_tip() { # the remote's refs/heads/main, read as OWNER
   git_dash_retry "$ID_OWNER" "$LOG-ls" ls-remote "$REMOTE" refs/heads/main >/dev/null 2>&1
   cut -f1 "$LOG-ls.out" | head -1
 }
+merge_landed() { # merge_landed <merge-output-prefix> <pr-number>
+  local out="$1" number="$2" _attempt
+  [[ "$(jq_py "$out.json" 'd["merged"]')" == True ]] && return 0
+  # A successful merge can report merge_recorded while its immediate read lags.
+  # Poll the PR state without repeating the merge or paying for another write.
+  for _attempt in $(seq 1 8); do
+    dg_read_retry "$ID_OWNER" "$out-view.json" "$out-view.err" --json pr view "$REPO" "$number" \
+      && [[ "$(jq_py "$out-view.json" 'd["state"]')" == merged ]] && return 0
+    sleep 3
+  done
+  return 1
+}
 
 step "OWNER creates ${NAME}, pushes main + trunk, adds COLLAB as a writer"
 _retry "$LOG-create.err" _dg_read "$ID_OWNER" "$LOG-create.json" "$LOG-create.err" \
@@ -107,7 +119,7 @@ else
   bad "writer's merge failed without the protected-base E601"
 fi
 dg_write "$ID_OWNER" "$LOG-omerge" pr merge "$REPO" "$N" || fail_with "$LOG-omerge" "maintainer merge"
-check "the maintainer's merge lands" assert_eq "True" "$(jq_py "$LOG-omerge.json" 'd["merged"]')"
+check "the maintainer's merge lands" merge_landed "$LOG-omerge" "$N"
 moved=1; for _ in $(seq 1 8); do [[ "$(main_tip)" == "$HEAD_OID" ]] && { moved=0; break; }; sleep 3; done
 check "main is the PR head (a protectedRefUpdate by the maintainer)" test "$moved" -eq 0
 
@@ -158,7 +170,7 @@ check "the refusal says Platform does not enforce it" grep -q 'Forge apps enforc
 dg_write "$ID_COLLAB" "$LOG-pover" pr merge "$REPO" "$N2" --override-policy
 check "a writer cannot override the policy (E601)" refused_with E601 "$LOG-pover"
 dg_write "$ID_OWNER" "$LOG-omerge2" pr merge "$REPO" "$N2" --override-policy || fail_with "$LOG-omerge2" "maintainer override merge"
-check "the maintainer's override merge lands" assert_eq "True" "$(jq_py "$LOG-omerge2.json" 'd["merged"]')"
+check "the maintainer's override merge lands" merge_landed "$LOG-omerge2" "$N2"
 
 step "archive: the helper refuses a member's push (E606); unarchive clears it"
 dg_write "$ID_OWNER" "$LOG-arch" repo archive "$REPO" || fail_with "$LOG-arch" "archive"
@@ -185,7 +197,7 @@ git_dash_retry "$ID_OWNER" "$LOG-f3push" -C "$SRC" push -o allow-archived "$REMO
   || fail_with "$LOG-pr3" "pr create (--allow-archived)"
 N3="$(jq_py "$LOG-pr3.json" 'd["number"]')"
 dg_write "$ID_OWNER" "$LOG-amerge" --allow-archived pr merge "$REPO" "$N3" --override-policy || fail_with "$LOG-amerge" "merge into an archived repo with --allow-archived"
-check "--allow-archived merges into an archived repo (the push carries -o allow-archived)" assert_eq "True" "$(jq_py "$LOG-amerge.json" 'd["merged"]')"
+check "--allow-archived merges into an archived repo (the push carries -o allow-archived)" merge_landed "$LOG-amerge" "$N3"
 dg_write "$ID_OWNER" "$LOG-unarch" repo unarchive "$REPO" || fail_with "$LOG-unarch" "unarchive"
 check "unarchived" assert_eq "unarchived" "$(jq_py "$LOG-unarch.json" 'd["status"]')"
 
