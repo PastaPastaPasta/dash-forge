@@ -34,6 +34,12 @@ services:
       - smtp_password
     volumes:
       - notify-data:/data
+    # Rotate the container log: 5 files of 50 MB.
+    logging:
+      driver: local
+      options:
+        max-size: "50m"
+        max-file: "5"
     stop_grace_period: 30s
     deploy:
       resources:

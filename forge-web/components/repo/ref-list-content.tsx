@@ -36,6 +36,7 @@ import { useAsync } from '@/hooks/use-async'
 import { useSdk } from '@/hooks/use-sdk'
 import { useHandle } from '@/components/repo/bot-handle'
 import { NO_ACCESS_TEXT, narrowWho, narrowerText } from '@/lib/repo/branch-ring'
+import { BetaBadge } from '@/components/ui/beta-badge'
 import { Oid } from '@/components/ui/oid'
 import { EmptyState } from '@/components/ui/states'
 import { RefDate, TagCommit, useTagPeeler } from '@/components/repo/tag-commit'
@@ -351,9 +352,12 @@ export function RefListContent({
                       {shortName}
                     </Link>
                     {narrower !== undefined ? (
-                      <span className="shrink-0 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="narrower-ref-audience">
-                        {narrowerText(narrower.audience, narrower.people)}
-                      </span>
+                      <>
+                        <span className="shrink-0 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="narrower-ref-audience">
+                          {narrowerText(narrower.audience, narrower.people)}
+                        </span>
+                        <BetaBadge feature="narrowerBranches" />
+                      </>
                     ) : null}
                     {isDiverged(ref) ? (
                       <span className="rounded-full border border-caution/40 bg-caution/5 px-2 py-0.5 text-[11px] text-caution-700 dark:text-caution-400">

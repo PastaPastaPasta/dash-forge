@@ -1,0 +1,8 @@
+{
+  "$comment": "Hosted-surface curation for dashhq's builds (docs/hosted-curation.md). Not protocol moderation: hidden repos stay on Platform and dash:// still works.",
+  "networks": {
+    "testnet": { "hiddenRepos": [], "hiddenIdentities": [] },
+    "devnet-sakura": { "hiddenRepos": [], "hiddenIdentities": [] },
+    "mainnet": { "hiddenRepos": [], "hiddenIdentities": [] }
+  }
+}

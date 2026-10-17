@@ -26,7 +26,16 @@ services:
       GATEWAY_ALL_PUBLIC: ${GATEWAY_ALL_PUBLIC:-true}
       GATEWAY_REPOS: ${GATEWAY_REPOS:-}
       GATEWAY_CACHE_MAX: ${GATEWAY_CACHE_MAX:-20G}
-      GATEWAY_REPO_MAX: ${GATEWAY_REPO_MAX:-2G}
+      # Keep GATEWAY_REPO_MAX well below the memory limit at the bottom of this file:
+      # git-remote-dash holds a pack in memory while it indexes it. A repository nobody listed
+      # in GATEWAY_REPOS is held to the lower GATEWAY_UNPINNED_REPO_MAX.
+      GATEWAY_REPO_MAX: ${GATEWAY_REPO_MAX:-512M}
+      GATEWAY_UNPINNED_REPO_MAX: ${GATEWAY_UNPINNED_REPO_MAX:-256M}
+      # Repositories and owners this gateway refuses with 451 Unavailable For Legal Reasons
+      # (one entry per line; re-read when the file changes). Optional: leave it empty for none.
+      # Mount the file's directory (see volumes below), set the path in .env, e.g.
+      # GATEWAY_DENY=/etc/forge-gateway/deny.txt
+      GATEWAY_DENY: ${GATEWAY_DENY:-}
       # Abuse controls.
       GATEWAY_TRUST_PROXY: ${GATEWAY_TRUST_PROXY:-cloudflare}
       GATEWAY_RATE_PER_MIN: ${GATEWAY_RATE_PER_MIN:-240}
@@ -42,6 +51,17 @@ services:
       RUST_LOG: ${RUST_LOG:-info}
     volumes:
       - gateway-data:/data
+      # The deny list's directory, read-only (a directory, not the file: an editor that
+      # replaces the file would leave a single-file mount on the old one). Uncomment, create
+      # ./deny/deny.txt, and set GATEWAY_DENY=/etc/forge-gateway/deny.txt in .env.
+      # - ./deny:/etc/forge-gateway:ro
+    # Rotate the container log by size: 5 files of 50 MB. That bounds the disk, not the age
+    # (docs/hosting/forge-gateway.md, "Logs": the privacy notice's retention is yours to meet).
+    logging:
+      driver: local
+      options:
+        max-size: "50m"
+        max-file: "5"
     # A relay's wake secret, when GATEWAY_WAKE_URL is set: put it in ./wake-secret, readable
     # by the container's user (uid 10002), uncomment both blocks and set
     # GATEWAY_WAKE_SECRET_FILE=/run/secrets/wake in .env.

@@ -68,7 +68,7 @@ step "1. an import publishes its browse index"
 NAME="$(printf 'e2e-idx-%s' "$RUN_ID" | tr '[:upper:]' '[:lower:]')"
 if ! ( export DASH_FORGE_KEY="$ID" RUST_LOG=error NO_COLOR=1
        _tmo_for 1800 "$IMPORT" "$E2E_S33_SOURCE" --repo "$NAME" --sync code --work-dir "$WORKROOT/s33-work" \
-         --max-spend 2.5 --yes --summary-json "$LOG-1.json" >"$LOG-1.out" 2>"$LOG-1.err" ); then
+         --max-spend 2.5 --yes --i-have-the-rights --summary-json "$LOG-1.json" >"$LOG-1.out" 2>"$LOG-1.err" ); then
   cat "$LOG-1.err" >&2; is_flake "$LOG-1.err" && skip_scenario "forge-import flaked"
   bad "the import failed"; finish_scenario
 fi

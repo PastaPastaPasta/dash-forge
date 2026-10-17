@@ -478,9 +478,7 @@ async fn star(ctx: &Ctx, repo: &str, on: bool, trending: bool) -> Result<()> {
             cost_line(crate::quote::STAR + crate::quote::STAR_BEAT, price)
         ),
         (true, false) => format!("Star {name}? (one document, {})", cost_line(crate::quote::STAR, price)),
-        // RC2's fused star has no `starBeat`, so no week count outlives the star.
-        (false, _) if fused => format!("Unstar {name}? (one document, refunded)"),
-        (false, _) => format!("Unstar {name}? (one document, refunded; a Trending count stays until its week ends)"),
+        (false, _) => unstar_question(&name, fused),
     })?;
     let before = collab.star_count(handle).await.ok();
     // A new star pays; an unstar is refunded, so only a star's spend is measured.
@@ -542,6 +540,19 @@ async fn star(ctx: &Ctx, repo: &str, on: bool, trending: bool) -> Result<()> {
     Ok(())
 }
 
+/// What a deleted document gives back: part of its storage fee (the deposit is spread over the
+/// network's epochs, so the share falls with the document's age; ECON-02), never "refunded" whole.
+const DELETE_REFUND: &str = "part of its storage fee is refunded";
+
+/// The unstar confirmation. RC2's fused star has no `starBeat`, so no week count outlives it.
+fn unstar_question(name: &str, fused: bool) -> String {
+    if fused {
+        format!("Unstar {name}? (one document, {DELETE_REFUND})")
+    } else {
+        format!("Unstar {name}? (one document, {DELETE_REFUND}; a Trending count stays until its week ends)")
+    }
+}
+
 /// Watch or stop watching `repo` (forge-community `watch`, indexOnly).
 async fn watch(ctx: &Ctx, repo: &str, on: bool) -> Result<()> {
     // Not a write to the repo: an archived repo can be watched, as it can be starred.
@@ -557,7 +568,7 @@ async fn watch(ctx: &Ctx, repo: &str, on: bool) -> Result<()> {
         if on {
             cost_line(crate::quote::WATCH, price)
         } else {
-            "refunded".to_string()
+            DELETE_REFUND.to_string()
         }
     ))?;
     let collab = s.collab();
@@ -1134,6 +1145,19 @@ async fn backend_set(ctx: &Ctx, repo: &str, mode: u8, label: &str) -> Result<()>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ECON-02: a delete gives back part of the storage fee, so no prompt says "refunded" alone.
+    #[test]
+    fn delete_prompts_say_part_of_the_fee_is_refunded() {
+        assert_eq!(
+            unstar_question("alice/project", true),
+            "Unstar alice/project? (one document, part of its storage fee is refunded)"
+        );
+        assert_eq!(
+            unstar_question("alice/project", false),
+            "Unstar alice/project? (one document, part of its storage fee is refunded; a Trending count stays until its week ends)"
+        );
+    }
 
     /// A repo with `files` committed (a path ending in `->target` is a symlink to `target`).
     fn repo_with(files: &[(&str, &str)]) -> (tempfile::TempDir, String) {

@@ -109,7 +109,7 @@ import { applyTemplate, type IssueTemplate } from '@/lib/view/issue-templates'
 import { formBody, initialFormValues, missingAnswers, type FormValue } from '@/lib/view/issue-forms'
 import { capabilitiesOf, whoCan } from '@/lib/rules/roles'
 import { newIssueDraftKey, useDraftState } from '@/lib/view/draft-text'
-import { quotesMembersText } from '@/lib/view/audience'
+import { membersChoiceOffered, quotesMembersText } from '@/lib/view/audience'
 
 /** The Issues list's search grammar (`lib/view/issue-query`). */
 const ISSUE_GRAMMAR: ListGrammar<IssueListQuery> = { text: searchText, parse: parseSearchText, unresolved: unresolvedQualifiers, submitBase: searchSubmitBase }
@@ -628,7 +628,7 @@ function ComposeIssueDialog({
     >
       <div className="space-y-3">
         {open ? <MirrorComposeHint home={home} /> : null}
-        <SecurityHint home={home} addr={addr} enabled={open} />
+        <SecurityHint home={home} addr={addr} enabled={open} membersOffered={membersChoiceOffered(audience.choice)} />
         {open && chooser !== null ? (
           <>
             <TemplatePicker templates={chooser.templates} selected={template} onPick={pick} blank={chooser.blankIssuesEnabled ? 'Blank issue' : null} label="Issue template" />

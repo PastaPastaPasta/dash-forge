@@ -72,6 +72,9 @@ inputs:
   github-repo:
     description: "GitHub repository to mirror (owner/repo)."
     default: ${{ github.repository }}
+  i-have-the-rights:
+    description: "Your acknowledgement that you may publish the mirrored repository's content, permanently, on Dash Platform: its commits (authors' names and emails), and the issues, PRs and comments with their authors' logins. Empty (the default): acknowledged when github-repo belongs to the account that owns the workflow's repository, which is how you mirror your own repository. 'true': you may publish it (needed for a repository of another owner). 'false': never; the run refuses."
+    default: ""
   version:
     description: "Dash Forge release to install (the release this action version pins). Empty: install 'true' builds from source."
     default: "0.1.0"
@@ -125,6 +128,7 @@ runs:
         INPUT_BUILD_CACHE: ${{ inputs.build-cache }}
         INPUT_STATE_CACHE: ${{ inputs.state-cache }}
         INPUT_FAIL_ON_PARTIAL: ${{ inputs.fail-on-partial }}
+        INPUT_I_HAVE_THE_RIGHTS: ${{ inputs.i-have-the-rights }}
       run: bash "$GITHUB_ACTION_PATH/validate.sh"
 
     # A fresh directory per invocation: two mirrors in one job, or a failed earlier
@@ -172,7 +176,7 @@ runs:
     - name: Restore the Dash Forge build cache
       id: build-cache
       if: steps.install.outputs.method == 'source' && inputs.build-cache == 'true'
-      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: |
           ~/.cargo/registry/index/
@@ -195,7 +199,7 @@ runs:
 
     - name: Save the Dash Forge build cache
       if: steps.install.outputs.method == 'source' && inputs.build-cache == 'true' && steps.build-cache.outputs.cache-hit != 'true'
-      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: |
           ~/.cargo/registry/index/
@@ -210,7 +214,7 @@ runs:
       # network + destination + source. A state saved before a forge-collab re-registration is
       # restored but not used: forge-import keys its state by the collab contract id and does a
       # full scan when that differs (D-918).
-      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: ${{ steps.paths.outputs.dir }}/state
         key: forge-mirror-state@${{ inputs.network }}@${{ steps.validate.outputs.devnet-name }}@${{ inputs.repo }}@${{ inputs.github-repo }}@${{ github.run_id }}-${{ github.run_attempt }}
@@ -239,6 +243,7 @@ runs:
         INPUT_DRY_RUN: ${{ inputs.dry-run }}
         INPUT_FAIL_ON_PARTIAL: ${{ inputs.fail-on-partial }}
         INPUT_GITHUB_REPO: ${{ inputs.github-repo }}
+        INPUT_I_HAVE_THE_RIGHTS: ${{ inputs.i-have-the-rights }}
         FORGE_BIN_DIR: ${{ inputs.install != 'false' && steps.paths.outputs.bin || '' }}
         FORGE_SUMMARY: ${{ steps.paths.outputs.summary }}
         FORGE_STATE: ${{ steps.paths.outputs.state }}
@@ -269,7 +274,7 @@ runs:
 
     - name: Save sync state
       if: steps.state.outputs.exists == 'true'
-      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: ${{ steps.paths.outputs.dir }}/state
         key: forge-mirror-state@${{ inputs.network }}@${{ steps.validate.outputs.devnet-name }}@${{ inputs.repo }}@${{ inputs.github-repo }}@${{ github.run_id }}-${{ github.run_attempt }}

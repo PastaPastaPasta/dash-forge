@@ -12,6 +12,7 @@ import type { GithubRepo } from './wizard'
 const gh = (name: string): GithubRepo => ({ owner: 'alice', name, description: '', defaultBranch: 'main', sizeKib: 1, archived: false, fork: false, htmlUrl: '' })
 const DONE: MirrorProgress = {
   github: gh('project'),
+  rightsAcknowledged: true,
   repo: { repoId: 'R1', name: 'project' },
   storage: 'r2-main',
   runnerKey: { keyId: 6, budgetCredits: '1', expiresAt: 1, saved: true },
@@ -29,7 +30,13 @@ describe('withAnswer', () => {
   })
 
   it('clears the Forge repository, workflow and wait for another GitHub repository', () => {
-    expect(withAnswer(DONE, { github: gh('other') })).toEqual({ ...DONE, github: gh('other'), repo: null, ...DOWNSTREAM })
+    expect(withAnswer(DONE, { github: gh('other') })).toEqual({ ...DONE, github: gh('other'), rightsAcknowledged: false, repo: null, ...DOWNSTREAM })
+  })
+
+  it('asks for the rights acknowledgement again for another GitHub repository, unless the answer comes with it', () => {
+    expect(withAnswer(DONE, { github: gh('other') }).rightsAcknowledged).toBe(false)
+    expect(withAnswer(DONE, { github: gh('other'), rightsAcknowledged: true }).rightsAcknowledged).toBe(true)
+    expect(withAnswer(DONE, { github: gh('project') }).rightsAcknowledged).toBe(true)
   })
 
   it('clears the workflow and the wait when the repository, storage or runner key changes', () => {
@@ -52,14 +59,20 @@ describe('withAnswer', () => {
 
 describe('resumed', () => {
   it("starts over for an identity with nothing saved, never carrying another identity's answers", () => {
-    expect(resumed(DONE, null, 999)).toEqual({ ...EMPTY_PROGRESS, github: gh('project'), startedAt: 100 })
+    expect(resumed(DONE, null, 999)).toEqual({ ...EMPTY_PROGRESS, github: gh('project'), rightsAcknowledged: true, startedAt: 100 })
     expect(resumed(EMPTY_PROGRESS, null, 999)).toEqual({ ...EMPTY_PROGRESS, startedAt: 999 })
   })
 
   it('resumes the saved record, and a repository checked before signing in wins over it', () => {
     expect(resumed(EMPTY_PROGRESS, DONE, 999)).toBe(DONE)
     expect(resumed({ ...EMPTY_PROGRESS, github: gh('project') }, DONE, 999)).toEqual(DONE)
-    expect(resumed({ ...EMPTY_PROGRESS, github: gh('other') }, DONE, 999)).toEqual({ ...DONE, github: gh('other'), repo: null, ...DOWNSTREAM })
+    expect(resumed({ ...EMPTY_PROGRESS, github: gh('other') }, DONE, 999)).toEqual({ ...DONE, github: gh('other'), rightsAcknowledged: false, repo: null, ...DOWNSTREAM })
+  })
+
+  it('carries the acknowledgement of a repository checked before signing in, and asks again for another', () => {
+    const acked = { ...EMPTY_PROGRESS, github: gh('other'), rightsAcknowledged: true }
+    expect(resumed(acked, DONE, 999)).toEqual({ ...DONE, github: gh('other'), rightsAcknowledged: true, repo: null, ...DOWNSTREAM })
+    expect(resumed({ ...EMPTY_PROGRESS, github: gh('project') }, { ...DONE, rightsAcknowledged: false }, 999).rightsAcknowledged).toBe(false)
   })
 })
 

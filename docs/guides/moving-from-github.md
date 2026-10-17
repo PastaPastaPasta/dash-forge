@@ -117,15 +117,17 @@ github.com/alice/project → dash://5NGj…/project (devnet-sakura)
 **Try a few items**, then look at the result on the web:
 
 ```sh
-forge-import alice/project --network devnet --devnet-name sakura --limit 5 --max-spend 0.1 --yes
+forge-import alice/project --network devnet --devnet-name sakura --limit 5 --max-spend 0.1 --yes --i-have-the-rights
 ```
 
 **Then import everything**, with a cap a little above the estimate and a state file for later runs:
 
 ```sh
 forge-import alice/project --network devnet --devnet-name sakura \
-  --max-spend 0.5 --state ./project.sync.json --yes --summary-json ./import.json
+  --max-spend 0.5 --state ./project.sync.json --yes --i-have-the-rights --summary-json ./import.json
 ```
+
+`--i-have-the-rights` says you may publish what you are importing: a real run needs it (or a "y" at a terminal), and prints the licence the source reports first. `--yes` only confirms the cost. A dry run needs neither.
 
 `--max-spend` is a hard cap: the importer refuses to start above it and stops before the write that would cross it; a re-run with a higher cap finishes the job without writing anything twice. The [GitHub mirror guide](mirror-a-github-repo.md#1-first-import) lists every flag and how a run ends. For GitLab, name the project as `gitlab.com/<group>/<project>` with a `GITLAB_TOKEN` ([GitLab guide](mirror-a-gitlab-project.md)).
 

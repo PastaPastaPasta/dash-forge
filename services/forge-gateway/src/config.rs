@@ -5,6 +5,7 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use clap::{Parser, ValueEnum};
 
@@ -63,9 +64,23 @@ pub struct Config {
     #[arg(long, env = "GATEWAY_CACHE_MAX", default_value = "20G", value_parser = parse_size)]
     pub cache_max_bytes: u64,
 
-    /// The largest repository mirrored (the sum of its recorded git packs).
-    #[arg(long, env = "GATEWAY_REPO_MAX", default_value = "2G", value_parser = parse_size)]
+    /// The largest repository mirrored (the sum of its recorded git packs). Keep it well below
+    /// the container's memory limit: `git-remote-dash` holds one pack in memory while it
+    /// indexes it.
+    #[arg(long, env = "GATEWAY_REPO_MAX", default_value = "512M", value_parser = parse_size)]
     pub repo_max_bytes: u64,
+
+    /// The largest repository mirrored on demand, when it is not in `--repos` (lower than
+    /// `--repo-max` when that is higher): a stranger's repository costs the gateway a fetch it
+    /// did not choose.
+    #[arg(long, env = "GATEWAY_UNPINNED_REPO_MAX", default_value = "256M", value_parser = parse_size)]
+    pub unpinned_repo_max_bytes: u64,
+
+    /// A file of repositories and owners this gateway refuses with `451 Unavailable For Legal
+    /// Reasons`: one entry per line (a repo id, `<owner id or DPNS name>/<name>`, or an owner
+    /// identity id), `#` comments. Optional; re-read when the file changes.
+    #[arg(long, env = "GATEWAY_DENY")]
+    pub deny_file: Option<PathBuf>,
 
     /// How often a warm mirror is checked against Platform (seconds).
     #[arg(long, env = "GATEWAY_POLL_SECS", default_value_t = 120)]
@@ -112,6 +127,11 @@ pub struct Config {
     #[arg(long, env = "GATEWAY_REFRESH_MAX", default_value_t = 2)]
     pub refresh_max: usize,
 
+    /// Refreshes of `--repos` mirrors running at once, on permits of their own: repositories
+    /// anyone can ask for never take them.
+    #[arg(long, env = "GATEWAY_PINNED_REFRESH_MAX", default_value_t = 1)]
+    pub pinned_refresh_max: usize,
+
     /// How long a request waits for a cold mirror before answering `503 Retry-After`.
     #[arg(long, env = "GATEWAY_COLD_WAIT_SECS", default_value_t = 20)]
     pub cold_wait_secs: u64,
@@ -119,6 +139,12 @@ pub struct Config {
     /// The longest one refresh's `git fetch` may run (seconds).
     #[arg(long, env = "GATEWAY_FETCH_TIMEOUT_SECS", default_value_t = 1800)]
     pub fetch_timeout_secs: u64,
+
+    /// The slowest transfer an on-demand mirror's fetch may average (bytes per second, same
+    /// suffixes as `--cache-max`; 0 turns it off): the fetch of a repository of `n` declared
+    /// bytes is stopped after `60 s + n / rate`, instead of after `--fetch-timeout-secs`.
+    #[arg(long, env = "GATEWAY_FETCH_MIN_RATE", default_value = "256K", value_parser = parse_size)]
+    pub fetch_min_rate: u64,
 
     /// The longest one `git-upload-pack` response may stream (seconds).
     #[arg(long, env = "GATEWAY_SERVE_TIMEOUT_SECS", default_value_t = 900)]
@@ -156,6 +182,7 @@ impl Config {
         self.wake_secret_file = some_path(self.wake_secret_file);
         self.helper_dir = some_path(self.helper_dir);
         self.font_dir = some_path(self.font_dir);
+        self.deny_file = some_path(self.deny_file);
         self.repos.retain(|r| !r.trim().is_empty());
         if self.wake_url.is_some() && self.wake_secret_file.is_none() {
             return Err(
@@ -172,6 +199,27 @@ impl Config {
             }
         }
         Ok(self)
+    }
+
+    /// The largest repository this gateway mirrors: `--repo-max` for a `--repos` one, and at
+    /// most `--unpinned-repo-max` for any other.
+    pub fn repo_cap(&self, pinned: bool) -> u64 {
+        if pinned {
+            self.repo_max_bytes
+        } else {
+            self.repo_max_bytes.min(self.unpinned_repo_max_bytes)
+        }
+    }
+
+    /// How long the fetch of a mirror of `bytes` declared bytes may run: `--fetch-timeout-secs`
+    /// for a pinned one; for any other, the time its bytes take at `--fetch-min-rate` plus a
+    /// minute for the start, when that is less.
+    pub fn fetch_deadline(&self, bytes: u64, pinned: bool) -> Duration {
+        let cap = Duration::from_secs(self.fetch_timeout_secs);
+        if pinned || self.fetch_min_rate == 0 {
+            return cap;
+        }
+        Duration::from_secs(60 + bytes / self.fetch_min_rate).min(cap)
     }
 
     /// The public base URL, without a trailing slash.
@@ -250,6 +298,34 @@ mod tests {
         let mut c = Config::parse_from(["forge-gateway"]);
         c.cache_max_bytes = 1;
         assert!(c.checked().is_err());
+    }
+
+    #[test]
+    fn unpinned_repositories_get_the_smaller_cap_and_a_rate_floor() {
+        let mut c = Config::parse_from(["forge-gateway"]);
+        assert_eq!(c.repo_max_bytes, 512 << 20);
+        assert_eq!(c.repo_cap(true), 512 << 20);
+        assert_eq!(c.repo_cap(false), 256 << 20);
+        // A lower `--repo-max` wins for both.
+        c.repo_max_bytes = 100 << 20;
+        assert_eq!(c.repo_cap(false), 100 << 20);
+        // 64 MiB at 256 KiB/s is 256 s, plus a minute; pinned ones get the full timeout.
+        assert_eq!(
+            c.fetch_deadline(64 << 20, false),
+            Duration::from_secs(60 + 256)
+        );
+        assert_eq!(c.fetch_deadline(64 << 20, true), Duration::from_mins(30));
+        // Never longer than the timeout; 0 turns the floor off.
+        assert_eq!(c.fetch_deadline(u64::MAX, false), Duration::from_mins(30));
+        c.fetch_min_rate = 0;
+        assert_eq!(c.fetch_deadline(1 << 20, false), Duration::from_mins(30));
+    }
+
+    #[test]
+    fn an_empty_deny_path_is_absent() {
+        let mut c = Config::parse_from(["forge-gateway"]);
+        c.deny_file = Some(PathBuf::new());
+        assert!(c.checked().unwrap().deny_file.is_none());
     }
 
     #[test]

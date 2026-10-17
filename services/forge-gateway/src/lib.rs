@@ -22,6 +22,8 @@
 pub mod badge;
 pub mod cache;
 pub mod config;
+pub mod curation;
+pub mod deny;
 pub mod feed;
 pub mod git_http;
 pub mod limits;
@@ -33,4 +35,4 @@ pub mod upstream;
 pub mod wake;
 
 pub use config::Config;
-pub use server::{router, AppState};
+pub use server::{router, spawn_deny_enforcement, AppState};

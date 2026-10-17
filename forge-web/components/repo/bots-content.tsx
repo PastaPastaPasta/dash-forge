@@ -49,6 +49,7 @@ import { useAuth } from '@/contexts/auth-context'
 import { useDpnsName } from '@/hooks/use-dpns-name'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { Author } from '@/components/author'
+import { BetaBadge } from '@/components/ui/beta-badge'
 import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/input'
 import { ConfirmDialog } from '@/components/confirm-dialog'
@@ -121,7 +122,7 @@ function Bots({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Elemen
       </Link>
       <div>
         <h2 id="bots-title" className="flex items-center gap-2 text-prose">
-          <Bot className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden /> Bots and runners
+          <Bot className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden /> Bots and runners <BetaBadge feature="bots" />
         </h2>
         {data !== null && !canEdit ? (
           <p className="mt-1 text-dense text-anvil-600 dark:text-anvil-300" data-testid="bots-edit-hint">
@@ -486,7 +487,9 @@ function AccessDialog({ home, bot, previous, onClose, onSaved }: { home: RepoHom
       successNote="Saved"
     >
       <fieldset className="space-y-2 text-dense" data-testid="access-form">
-        <legend className="mb-1 font-medium text-anvil-800 dark:text-anvil-100">{handle} may</legend>
+        <legend className="mb-1 font-medium text-anvil-800 dark:text-anvil-100">
+          {handle} may <BetaBadge feature="accessNotices" />
+        </legend>
         {ABILITIES.map(([m, label]) => (
           <label key={m} className="flex items-start gap-2">
             <input type="checkbox" className="mt-1" checked={draft.may.has(m)} onChange={(e) => toggle(m, e.target.checked)} data-testid={`may-${m}`} />

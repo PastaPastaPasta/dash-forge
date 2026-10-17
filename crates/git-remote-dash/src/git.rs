@@ -128,16 +128,66 @@ pub struct Indexed {
     pub unchecked: Vec<String>,
 }
 
+/// The git setting that caps the size of a pack this helper indexes (bytes, or with git's
+/// `k`/`m`/`g` suffixes): `git index-pack` is then run with `--max-input-size`. Unset: no cap,
+/// as for any clone you make yourself. A service that fetches strangers' repositories
+/// (forge-gateway) sets it with `git -c`, which git forwards to the helper.
+pub const MAX_PACK_INPUT_KEY: &str = "dash.maxPackInput";
+
+/// [`MAX_PACK_INPUT_KEY`], as set, read once per process (a helper serves one git command).
+/// A value that is not a size is an error, never "no cap".
+fn max_pack_input() -> Result<Option<u64>> {
+    static CAP: std::sync::OnceLock<std::result::Result<Option<u64>, String>> =
+        std::sync::OnceLock::new();
+    CAP.get_or_init(|| read_max_pack_input().map_err(|e| format!("{e:#}")))
+        .clone()
+        .map_err(|e| anyhow!(e))
+}
+
+fn read_max_pack_input() -> Result<Option<u64>> {
+    // `--type=int` lets git parse the suffixes and refuse anything else (exit 128); an unset key
+    // exits 1.
+    let out = git_output(
+        &["config", "--type=int", "--get", MAX_PACK_INPUT_KEY],
+        None,
+        false,
+        None,
+    )?;
+    match out.status.code() {
+        Some(1) => return Ok(None),
+        Some(0) => {}
+        _ => bail!(
+            "{MAX_PACK_INPUT_KEY} must be a size (bytes, or with a k, m or g suffix): {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ),
+    }
+    let value = String::from_utf8_lossy(&out.stdout);
+    value
+        .trim()
+        .parse::<u64>()
+        .map(Some)
+        .map_err(|_| anyhow!("{MAX_PACK_INPUT_KEY} must be a non-negative size, got {value:?}"))
+}
+
+/// The arguments of the checked `index-pack` run, with `--max-input-size` when `max_input` caps it.
+fn index_pack_args(max_input: Option<u64>) -> Vec<String> {
+    let mut args: Vec<String> = ["index-pack", "--stdin", "--fix-thin"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    args.push(fsck::index_pack_checks().to_string());
+    if let Some(n) = max_input {
+        args.push(format!("--max-input-size={n}"));
+    }
+    args
+}
+
 /// `git index-pack --stdin --fix-thin` of `pack_bytes`, with the object checks
 /// ([`fsck::index_pack_checks`]), in `cwd` (the repo git spawned the helper for when `None`).
 /// A refused object is E511.
 fn index_checked(pack_bytes: &[u8], cwd: Option<&Path>) -> Result<Indexed> {
-    let args = [
-        "index-pack",
-        "--stdin",
-        "--fix-thin",
-        fsck::index_pack_checks(),
-    ];
+    let args = index_pack_args(max_pack_input()?);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let out = git_output(&args, cwd, cwd.is_some(), Some(pack_bytes))?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -543,9 +593,22 @@ impl Drop for ScratchRepo {
 
 #[cfg(test)]
 mod tests {
-    use super::{names_missing_object, names_this_remote, objects_missing, run_git, ScratchRepo};
+    use super::{
+        index_pack_args, names_missing_object, names_this_remote, objects_missing, run_git,
+        ScratchRepo,
+    };
     use forge_core::user_error::{codes, UserError};
     use std::path::Path;
+
+    #[test]
+    fn a_pack_size_cap_becomes_index_packs_max_input_size() {
+        let plain = index_pack_args(None);
+        assert_eq!(&plain[..3], ["index-pack", "--stdin", "--fix-thin"]);
+        assert!(!plain.iter().any(|a| a.starts_with("--max-input-size")));
+        let capped = index_pack_args(Some(268_435_456));
+        assert_eq!(capped.last().unwrap(), "--max-input-size=268435456");
+        assert_eq!(capped.len(), plain.len() + 1);
+    }
 
     /// Write `body` into `repo` as a loose object of `kind`, without git's checks.
     fn put(repo: &Path, kind: &str, body: &[u8]) -> String {

@@ -2775,6 +2775,15 @@ def converted_vectors():
       [(CONVERTED_OWNER, everything[:5] + b"\x00\x09" + everything[7:])], dict(keys={}, alerts=[]))
     k("note_not_utf8_ignored", "a note that is not UTF-8 makes the bundle malformed.", CONVERTED_OWNER, 2,
       [(CONVERTED_OWNER, bundle_bytes([(ENTRY_EPOCH_KEY, repoId, 0, K0)], b"\xff"))], dict(keys={}, alerts=[]))
+    k("race_rotation_before_flip", "another maintainer's rotation landed between the owner's seal-off rotation (epoch "
+      "1) and the flip, so the stated seal-off epoch is 2. The owner's bundle holds the epochs below the run's own "
+      "seal-off epoch, {0}: only K_0 is published, and the key of epoch 1 stays unpublished.", CONVERTED_OWNER, 2,
+      [(CONVERTED_OWNER, bundle_bytes([(ENTRY_EPOCH_KEY, repoId, 0, K0)]))], dict(keys={"0": H(K0)}, alerts=[]))
+    k("race_bundle_with_window_key", "the same repository when a bundle carries {0, 1}: the reader's rule is 'below "
+      "the stated seal-off epoch', so it honours both keys. Pinned current behaviour of the reader; it would become "
+      "[0] if the rule is tightened.", CONVERTED_OWNER, 2,
+      [(CONVERTED_OWNER, bundle_bytes([(ENTRY_EPOCH_KEY, repoId, 0, K0), (ENTRY_EPOCH_KEY, repoId, 1, K1)]))],
+      dict(keys={"0": H(K0), "1": H(K1)}, alerts=[]))
     k("not_converted", "no seal-off epoch (the repository was never private, or no private epoch exists): nothing "
       "counts.", CONVERTED_OWNER, None, [(CONVERTED_OWNER, everything)], dict(keys={}, alerts=[]))
 

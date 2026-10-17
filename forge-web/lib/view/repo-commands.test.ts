@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest'
 
 import { resolveNetworks } from '@/lib/constants'
 import { DEPLOYMENTS } from '@/lib/deployments'
-import { repoCommands, shellWord } from './repo-commands'
+import { cloneByIdCommand, repoCommands, shellWord } from './repo-commands'
 
 const OWNER = '8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB'
 
@@ -33,6 +33,13 @@ describe('repoCommands', () => {
     expect(t.gitClone).toBe(`git clone -c dash.network=testnet dash://${OWNER}/p`)
     expect(t.setNetwork).toBe('git config dash.network testnet')
     expect(repoCommands(OWNER, 'p', network({ network: 'mainnet' })).dgClone).toBe(`dg repo clone ${OWNER}/p --network mainnet`)
+  })
+
+  it('addresses a repo by its id with the build’s network, for a repo whose owner and name are not shown', () => {
+    const ID = 'Hynz8VtPiEBXn7VcMLCLCPgNo4uVK2KKveGn5P4CvinW'
+    expect(cloneByIdCommand(ID, network({ network: 'devnet', devnetName: 'sakura' }))).toBe(`git clone -c dash.network=devnet -c dash.devnetName=sakura dash://${ID}`)
+    expect(cloneByIdCommand(ID, network({ network: 'testnet' }))).toBe(`git clone -c dash.network=testnet dash://${ID}`)
+    expect(cloneByIdCommand(ID, network({ network: 'mainnet' }))).toBe(`git clone -c dash.network=mainnet dash://${ID}`)
   })
 
   it('quotes a crafted owner or name, and leaves real ones bare', () => {

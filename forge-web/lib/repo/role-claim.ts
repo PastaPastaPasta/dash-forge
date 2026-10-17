@@ -21,6 +21,8 @@ import { contractOf } from './source'
 
 /** The claimed-role property of the gated types. */
 export const ROLE_CLAIM = 'r'
+/** The writer document's role property (RC2 member roles). */
+const WRITER_ROLE = 'role'
 
 /**
  * The `{ r }` a write of `documentType` holding `data` by `auth` carries (empty for a type that
@@ -38,12 +40,15 @@ export async function roleClaim(
   data: Readonly<Record<string, unknown>>,
 ): Promise<{ readonly r?: number }> {
   if (!isRoleGated(documentType)) return {}
-  if (!(await contractHasProperty(sdk, contractOf(repo.forge, documentType), documentType, ROLE_CLAIM))) return {}
+  // R-19 (the testnet freeze): a chunk on the four-contract set claims no role, since its gate names
+  // the roles it admits by a literal, but the signer's role is still checked before signing.
+  const claims = await contractHasProperty(sdk, contractOf(repo.forge, documentType), documentType, ROLE_CLAIM)
+  if (!claims && !(documentType === DOC.chunk && (await contractHasProperty(sdk, contractOf(repo.forge, DOC.writer), DOC.writer, WRITER_ROLE)))) return {}
   // The author's operand admits it whatever the signer's role: no membership read is needed.
   if (documentType === DOC.transition && Number(data['asAuthor'] ?? 0) > 0) return { r: 1 }
   const claim = async (): Promise<{ readonly r?: number }> => {
     const r = claimedRole(documentType, data, (await readRoleOracle(sdk, repo, auth.network)).currentRole(auth.identityId))
-    return r === null ? {} : { r: await manifestClaim(sdk, repo, documentType, data, r) }
+    return r === null || !claims ? {} : { r: await manifestClaim(sdk, repo, documentType, data, r) }
   }
   try {
     return await claim()

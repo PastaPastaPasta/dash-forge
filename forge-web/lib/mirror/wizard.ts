@@ -34,6 +34,11 @@ export interface GithubRepo extends GithubName {
   readonly archived: boolean
   readonly fork: boolean
   readonly htmlUrl: string
+  /**
+   * The licence GitHub detected: its SPDX id (`MIT`), or its name when it is not a standard one
+   * (`Other`); null when GitHub detected none. Absent in progress saved before this was read.
+   */
+  readonly license?: string | null
 }
 
 /** `action/validate.sh` `github-repo`: owner (GitHub's rules) and repository name. */
@@ -117,8 +122,48 @@ export async function checkGithubRepo(repo: GithubName, fetchImpl: typeof fetch 
     archived: body['archived'] === true,
     fork: body['fork'] === true,
     htmlUrl: typeof body['html_url'] === 'string' ? body['html_url'] : githubUrl({ owner, name }),
+    license: licenseOf(body['license']),
   }
 }
+
+/** GitHub's `license` object as the id or name the wizard shows; null for none. */
+function licenseOf(v: unknown): string | null {
+  if (typeof v !== 'object' || v === null) return null
+  const l = v as Record<string, unknown>
+  const spdx = typeof l['spdx_id'] === 'string' ? l['spdx_id'] : ''
+  // GitHub names a licence it recognises as none of its known ones `NOASSERTION`, whatever it calls it.
+  if (spdx === 'NOASSERTION') return 'Other'
+  if (spdx !== '') return spdx
+  return typeof l['name'] === 'string' && l['name'] !== '' ? l['name'] : 'Other'
+}
+
+/** What the wizard says about the repository's licence before it copies anything (LEG-10). */
+export interface LicenseNotice {
+  /** The licence to show, or null when there is none to name. */
+  readonly label: string | null
+  /** Copying may not be allowed: GitHub detected no licence, or one it could not name. */
+  readonly warn: boolean
+  /** The repository was checked before the licence was read (saved progress): it says nothing yet. */
+  readonly unread: boolean
+}
+
+/** The licence line for `repo`: a standard licence is shown plainly; none or `Other` warns; unread asks to check again. */
+export function licenseNotice(repo: Pick<GithubRepo, 'license'>): LicenseNotice {
+  const l = repo.license
+  if (l === undefined) return { label: null, warn: true, unread: true }
+  if (l === null) return { label: null, warn: true, unread: false }
+  return { label: l, warn: l.toLowerCase() === 'other', unread: false }
+}
+
+/**
+ * The words a person agrees to before the wizard writes anything (LEG-10). The wizard cannot know
+ * who owns the GitHub repository (it never signs in to GitHub), so it asks rather than infers.
+ */
+export const RIGHTS_ACKNOWLEDGEMENT =
+  "I have the right to copy this repository's code and its issues, pull requests and comments, and I understand the copy on Dash Platform is public and cannot be deleted."
+
+/** Git LFS is not part of the mirror (FEAT-18); the wizard fetches no repo contents to see whether a repo uses it. */
+export const LFS_NOTE = 'Git LFS files are not mirrored: a file stored in LFS appears as its small pointer file, not its content.'
 
 /** The latest commit id of `ref` in a public repository (the Dash Forge pin, when the build has none). */
 export async function latestCommit(repo: GithubName, ref: string, fetchImpl: typeof fetch = fetch): Promise<string> {

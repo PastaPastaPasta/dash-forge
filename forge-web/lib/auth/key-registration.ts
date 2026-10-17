@@ -82,25 +82,37 @@ export function scopeCovers(scope: KeyScope, forge: ForgeIds, contractId: string
   return kind !== null && scope[kind]
 }
 
+/** Which wallet grants a session still lacks. */
+type Grants = { readonly collab: boolean; readonly community: boolean; readonly meta?: boolean }
+
 /**
- * The Forge contract a session still needs a wallet grant for (a shipped wallet grants one
- * contract per approval): forge-collab first, then forge-community, then forge-meta on a
- * four-contract set; null when all are covered. The keys panel's fallback; a refused write names
- * its own contract.
+ * The Forge contracts a session still needs a wallet grant for (a shipped wallet grants one
+ * contract per approval), in the order they are asked: forge-collab, forge-community, then
+ * forge-meta on a four-contract set. Empty when all are covered or the grants are unknown.
  */
-export function nextGrant(grants: { readonly collab: boolean; readonly community: boolean; readonly meta?: boolean } | null | undefined): ForgeContractKind | null {
-  if (!grants) return null
-  if (!grants.collab) return 'collab'
-  if (!grants.community) return 'community'
-  return grants.meta === false ? 'meta' : null
+export function missingGrants(grants: Grants | null | undefined): readonly ForgeContractKind[] {
+  if (!grants) return []
+  const out: ForgeContractKind[] = []
+  if (!grants.collab) out.push('collab')
+  if (!grants.community) out.push('community')
+  if (grants.meta === false) out.push('meta')
+  return out
+}
+
+/**
+ * The first of {@link missingGrants}; null when all are covered. The keys panel's fallback; a
+ * refused write names its own contract.
+ */
+export function nextGrant(grants: Grants | null | undefined): ForgeContractKind | null {
+  return missingGrants(grants)[0] ?? null
 }
 
 /** What a wallet grant for each contract lets this browser sign (the grant sheet's copy). */
-export const GRANT_COPY: Readonly<Record<ForgeContractKind, { readonly title: string; readonly what: string }>> = {
-  core: { title: 'Approve repositories and pushes', what: 'Repositories and pushes' },
-  collab: { title: 'Approve issues and pull requests', what: 'Issues, pull requests and reviews' },
-  community: { title: 'Approve stars, watches and follows', what: 'Stars, watches, follows and branch policies' },
-  meta: { title: 'Approve labels, topics and profiles', what: 'Labels, topics, bans, profiles and follows' },
+export const GRANT_COPY: Readonly<Record<ForgeContractKind, { readonly title: string; readonly what: string; readonly name: string }>> = {
+  core: { title: 'Approve repositories and pushes', what: 'Repositories and pushes', name: 'Forge repositories' },
+  collab: { title: 'Approve issues and pull requests', what: 'Issues, pull requests and reviews', name: 'Forge collaboration' },
+  community: { title: 'Approve stars, watches and follows', what: 'Stars, watches, follows and branch policies', name: 'Forge community' },
+  meta: { title: 'Approve labels, topics and profiles', what: 'Labels, topics, bans, profiles and follows', name: 'Forge labels and profiles' },
 }
 
 /** Whether `contractId` is one of Forge's contracts. */

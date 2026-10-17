@@ -56,7 +56,7 @@ import { checkWalletKey, hasNoLimits, isForgeContract, keyScope, scopeCovers, ty
 import { PRIVATE_REPOS_FLOW, adoptEncryptionKey, encryptionMaterialFromFile, importEncryptionKey, wipeMaterial, type EncryptionMaterial } from './encryption-key'
 import { openHandoffReply, parseHandoffPayload, type HandoffRequest } from './key-handoff'
 import { acknowledgeKeys, checkKeys, forgetKeySnapshot, type WatchedKey } from './key-watch'
-import { DISABLEABLE, keyRole, keyRows, type KeyRow } from './devices'
+import { DISABLEABLE, chunkKeyIds, keyRole, keyRows, otherKeysToDisable, type KeyRow } from './devices'
 import { hexToBytes } from '@noble/hashes/utils.js'
 import {
   WrongMasterKeyError,
@@ -939,7 +939,7 @@ export class AuthController {
       // the old copy the replacement could not carry over is not "lost" (QW-052).
       const session = await this.adopt(identityId, key, protection, material !== null ? { ...committed, encryptionKeyDropped: false } : committed)
       if (material !== null) {
-        this.step('Enabling private repos')
+        this.step('Setting up members-only content')
         await this.enableEncryption(identityId, material)
       }
       return session
@@ -1052,7 +1052,7 @@ export class AuthController {
       // over is reported only if that one cannot be kept either (below).
       const session = await this.adopt(identityId, key, protection, bringsEncryption ? { ...committed, encryptionKeyDropped: false } : committed)
       if (bringsEncryption && payload.encryptionKey !== undefined && core !== undefined) {
-        this.step('Enabling private repos')
+        this.step('Setting up members-only content')
         try {
           await adoptEncryptionKey(sdk, this.network, identityId, core, hexToBytes(payload.encryptionKey.privateKeyHex))
         } catch (e) {
@@ -1191,7 +1191,7 @@ export class AuthController {
     options: WalletEncryption,
   ): Promise<{ readonly outcome: WalletEncryptionOutcome | null; readonly notice: string | null }> {
     if (!options.encryptionKeys?.length) return { outcome: null, notice: null }
-    this.step('Enabling private repos')
+    this.step('Setting up members-only content')
     try {
       const sdk = await this.getSdk()
       const outcome = await adoptWalletEncryptionKey(sdk, this.network, identityId, forge.core, options.encryptionKeys, options.justRegistered === true ? { attempts: 5 } : {})
@@ -1706,7 +1706,7 @@ export class AuthController {
     if (!identity) throw new Error(`identity ${session.identityId} not found on ${NETWORKS[this.network].key}`)
     const budgeted = identity.publicKeys.filter((k) => k.totalBudget !== undefined).map((k) => k.keyId)
     const budgets = budgeted.length ? await withPlatformRead(authSdk(sdk).identities.keysRemainingBudgets(session.identityId, budgeted), 'Reading key budgets') : new Map<number, bigint | null>()
-    return keyRows(identity.publicKeys, budgets, NETWORKS[this.network].v2 ?? undefined, this.browserKeyIds())
+    return keyRows(identity.publicKeys, budgets, NETWORKS[this.network].v2 ?? undefined, this.browserKeyIds(), session.keyId ?? null)
   }
 
   /** The keys this browser holds for the signed-in identity: its signing key and wallet grants. */
@@ -1736,6 +1736,53 @@ export class AuthController {
       )
       if (this.state.newKeys?.some((k) => k.keyId === keyId)) this.setState({ newKeys: this.state.newKeys.filter((k) => k.keyId !== keyId) })
       return sent
+    })
+  }
+
+  /**
+   * Disable every enabled AUTHENTICATION key of the identity except the MASTER key and the one
+   * this browser signs with ({@link otherKeysToDisable}): Forge limited keys, wallet sign-ins and
+   * wallet grants (including those this browser holds), CI runner keys and other apps' keys. The
+   * master key signs. Up to {@link MAX_KEYS_PER_UPDATE} keys share one identity update, so more
+   * take more updates, each reported to `onProgress` once sent. A failure part-way throws with how
+   * many were done: the keys already disabled stay disabled, and running it again finishes the
+   * rest. Returns the ids disabled.
+   */
+  async disableOtherKeys(input: MasterInput, onProgress?: (done: number, total: number) => void): Promise<number[]> {
+    return this.run(async () => {
+      const session = this.state.session
+      if (session === null) throw new Error('sign in first')
+      // Without the key this browser signs with, the list could include it.
+      if (session.keyId === undefined) throw new WriteAuthError("This tab can't tell which key it signs with, so it can't tell which keys are the others. Sign in again, then retry.")
+      const forge = NETWORKS[this.network].v2
+      if (!forge) throw new Error(`Dash Forge is not deployed on ${NETWORKS[this.network].key}`)
+      const { identityId } = session
+      // Read now: the list the dialog showed may be old.
+      const ids = otherKeysToDisable(await this.identityKeys()).map((r) => r.keyId)
+      if (ids.length === 0) return []
+      const masterWif = await this.masterWifFor(identityId, input)
+      const sdk = await this.getSdk()
+      const disabled: number[] = []
+      try {
+        await this.wordedMasterError(identityId, 'mnemonic' in input ? input.mnemonic : null, 'signed-in', async () => {
+          for (const chunk of chunkKeyIds(ids)) {
+            await this.charged(identityId, 'key:revoke', () => chunk[0] ?? null, () =>
+              disableIdentityKeys(sdk, { network: this.network, identityId, masterWif, keyIds: chunk, allowed: () => true }),
+            )
+            disabled.push(...chunk)
+            onProgress?.(disabled.length, ids.length)
+          }
+        })
+      } catch (e) {
+        if (disabled.length === 0 || e instanceof WrongMasterKeyError) throw e
+        throw new Error(`Disabled ${disabled.length} of ${ids.length} keys, then it stopped: ${errorMessage(e)}. Run it again to disable the rest.`, { cause: e })
+      } finally {
+        if (disabled.length > 0 && this.state.newKeys?.length) {
+          const gone = new Set(disabled)
+          this.setState({ newKeys: this.state.newKeys.filter((k) => !gone.has(k.keyId)) })
+        }
+      }
+      return disabled
     })
   }
 

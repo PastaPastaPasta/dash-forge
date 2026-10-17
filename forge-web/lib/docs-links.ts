@@ -21,8 +21,12 @@ export const DOCS = {
   enforcement: `${GUIDES}/collaborating.md#who-enforces-what`,
   /** What the move to a new devnet (bonsia to sakura) loses and keeps, and how to re-push (the devnet notice). */
   devnetMove: `${GUIDES}/devnet-move.md`,
+  /** Which mixed-visibility features are beta, and the limits that apply to all of them (the Beta badge's link). */
+  knownLimitations: `${GUIDES}/collaborating.md#known-limitations`,
   /** The normative private-repository design (key model, what is sealed, the threat model). */
   privateDesign: `${REPO_URL}/blob/master/docs/security/private-repos.md`,
+  /** What the hosted site hides from discovery and what that does and does not mean (not protocol moderation). */
+  hostedCuration: `${REPO_URL}/blob/master/docs/hosted-curation.md`,
   /** Every network Forge has run on, and what a devnet reset means. */
   networks: `${REPO_URL}/blob/master/docs/networks.md`,
 } as const

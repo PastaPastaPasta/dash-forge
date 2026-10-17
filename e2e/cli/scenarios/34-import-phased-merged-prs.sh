@@ -41,7 +41,7 @@ jq_py() { python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print($2)
 import_run() { # import_run <log> <sync> <work-dir> [extra args]
   local log=$1 sync=$2 work=$3; shift 3
   DASH_FORGE_KEY="$ID" RUST_LOG=error NO_COLOR=1 _tmo_for 900 "$IMPORT" "$SRC" --repo "$NAME" --sync "$sync" \
-    --work-dir "$work" --max-spend 0.2 --yes --summary-json "$log.json" "$@" >"$log.out" 2>"$log.err"
+    --work-dir "$work" --max-spend 0.2 --yes --i-have-the-rights --summary-json "$log.json" "$@" >"$log.out" 2>"$log.err"
 }
 imported() { # imported <log> <sync> <work-dir> — runs it, SKIPs on a flake, FAILs otherwise
   import_run "$@" && return 0
@@ -87,7 +87,7 @@ step "5. issues and PRs before any code (a second repo)"
 NAME2="$(printf 'e2e-phase2-%s' "$RUN_ID" | tr '[:upper:]' '[:lower:]')"
 STATE2="${WORKROOT}/s34-state2.json"
 DASH_FORGE_KEY="$ID" RUST_LOG=error NO_COLOR=1 _tmo_for 900 "$IMPORT" "$SRC" --repo "$NAME2" --sync issues,prs \
-  --work-dir "${WORKROOT}/s34-early" --state "$STATE2" --max-spend 0.2 --yes --summary-json "$LOG-early.json" \
+  --work-dir "${WORKROOT}/s34-early" --state "$STATE2" --max-spend 0.2 --yes --i-have-the-rights --summary-json "$LOG-early.json" \
   >"$LOG-early.out" 2>"$LOG-early.err" || { cat "$LOG-early.err" >&2; is_flake "$LOG-early.err" && skip_scenario "forge-import flaked"; bad "the early issues/PRs run failed"; finish_scenario; }
 check "every merged PR counted unproved (${merged_gh})" assert_eq "$merged_gh" "$(jq_py "$LOG-early.json" 'd["counts"].get("unprovedMerges")')"
 check "the warning names the rule (D-501)" test "$(grep -c 'D-501' "$LOG-early.json")" -ge 1

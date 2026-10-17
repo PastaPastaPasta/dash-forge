@@ -13,10 +13,11 @@
  * anyone can list their own repo in a look-alike source. Otherwise the order is stars, then age
  * (the older first).
  *
- * When the owner is no Forge identity (not an id, not a DPNS name) and one mirror is clear
- * (`matchUpstream`: the only claim among every repo of that name, or the one the showcase vouches
- * for), `/dashpay/dash` simply opens it, on the same page (CJ-3). A real Forge user's address is
- * never handed to a repo that merely claims to mirror a GitHub repo of the same name.
+ * When the owner is no Forge identity (not an id, not a DPNS name) and one mirror is vouched for
+ * (`matchUpstream`: the one the showcase vouches for, or the one the source's back-link file
+ * listed when the viewer checked, never a claim alone: ABU-04), `/dashpay/dash` simply opens it,
+ * on the same page (CJ-3). A real Forge user's address is never handed to a repo that merely
+ * claims to mirror a GitHub repo of the same name.
  */
 
 import { useEffect, useState } from 'react'
@@ -32,7 +33,7 @@ import { isIdentityId } from '@/lib/utils'
 import { resolveDpnsId } from '@/lib/view/dpns'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { useSdk } from '@/hooks/use-sdk'
-import { reposNamed, type DiscoveredRepo } from '@/lib/view/discovery'
+import { MIRROR_NAMED_PAGES, reposNamed, type DiscoveredRepo } from '@/lib/view/discovery'
 import { checkMirrorClaim, githubRepoOf, type MirrorCheck } from '@/lib/view/mirror-check'
 import { mirrorSourceOfDescription, type MirrorSource } from '@/lib/view/mirror-source'
 import { matchUpstream } from '@/lib/view/upstream-alias'
@@ -95,7 +96,7 @@ function ClaimText({ s, check }: { s: Suggestion; check: MirrorCheck | undefined
 export function RepoNotFound({ addr }: { addr: RepoAddress }): JSX.Element {
   const { sdk, ready, network } = useSdk()
   const name = addr.name.trim().toLowerCase()
-  const found = useAsync(() => reposNamed(sdk!, name, { network }), [ready, name, network], { enabled: ready && sdk !== null && name !== '' })
+  const found = useAsync(() => reposNamed(sdk!, name, { network, pages: MIRROR_NAMED_PAGES }), [ready, name, network], { enabled: ready && sdk !== null && name !== '' })
   // The answers for this address only: another missing address starts unchecked.
   const [checked, setChecked] = useState<{ readonly name: string; readonly checks: ReadonlyMap<string, MirrorCheck> }>({ name, checks: new Map() })
   const checks = checked.name === name ? checked.checks : NO_CHECKS
@@ -191,7 +192,7 @@ export function RepoNotFound({ addr }: { addr: RepoAddress }): JSX.Element {
               <Button variant="outline" size="sm" onClick={checkClaims} loading={checking} data-testid="suggestions-check">
                 Check mirror claims with GitHub
               </Button>
-              <span>Anyone can say their repo is a mirror. A source confirms it by listing the repo in its {'.dash-forge.json'}. Optional; your browser asks github.com.</span>
+              <span>Anyone can say their repo is a mirror. A source confirms it by listing the repo in its {'.dash-forge.json'}. Optional; your browser asks github.com. If it confirms exactly one for a GitHub address, this page opens it.</span>
             </div>
           ) : null}
           {found.data?.more ? (

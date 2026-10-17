@@ -63,9 +63,15 @@ impl Source for GithubSource {
     fn meta(&self) -> Result<SourceMeta> {
         let m = self.gh.repo_meta()?;
         Ok(SourceMeta {
+            license: m.licence(),
+            owner: m.owner.map(|o| o.login).filter(|l| !l.is_empty()),
             default_branch: m.default_branch,
             description: m.description,
         })
+    }
+
+    fn account(&self) -> Option<String> {
+        crate::rights::account_from_env().or_else(|| self.gh.login().ok())
     }
 
     fn collect(

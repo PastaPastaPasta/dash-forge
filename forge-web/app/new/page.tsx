@@ -66,6 +66,7 @@ import { useAsync } from '@/hooks/use-async'
 import { toast } from '@/hooks/use-toasts'
 import type { Visibility } from '@/lib/rules/v2'
 import { errorMessage } from '@/lib/utils'
+import { PRIVATE_BROWSER_LIMITS } from '@/lib/view/private-limits'
 import { onRadioGroupKeyDown, radioTabIndex } from '@/components/ui/radio-group'
 
 const STEPS: readonly { step: CreateRepoStep; label: string; privateLabel?: string }[] = [
@@ -422,6 +423,9 @@ export default function NewRepoPage(): JSX.Element {
                   <li key={f}>{f}</li>
                 ))}
               </ul>
+              <p className="mt-2" data-testid="private-browser-limits">
+                {PRIVATE_BROWSER_LIMITS}
+              </p>
               {description.trim() ? <p className="mt-2 text-caution-700 dark:text-caution-400">{PUBLIC_DESCRIPTION_NOTE}</p> : null}
               {needsUnlock ? (
                 <div className="mt-2">

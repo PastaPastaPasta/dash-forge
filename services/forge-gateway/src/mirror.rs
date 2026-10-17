@@ -13,7 +13,13 @@
 //!    more than is served), and repacks with a bitmap index when packs pile up.
 //!
 //! A failed refresh changes nothing: the mirror keeps serving its last snapshot, whose manifest
-//! says how old it is. A refresh that finds the repository proved gone ([`Unavailable::Gone`]:
+//! says how old it is. A repository whose own data fails (its size, its packs, a fetch that
+//! stalls) is not fetched again while the snapshot that failed is unchanged: each failure
+//! lengthens the wait ([`backoff`]), a look at its snapshot (a few proved reads, at most a
+//! minute apart, or at once on a relay wake) tells whether it moved, and a new push is fetched
+//! at once. So a hostile repository cannot keep refresh permits busy. Platform or a storage
+//! read failing is nobody's fault and is retried as before. `--repos` mirrors refresh on
+//! permits of their own. A refresh that finds the repository proved gone ([`Unavailable::Gone`]:
 //! its `repo` document or the forge contracts absent) removes the mirror instead, and tells the
 //! [`Mirrors::on_gone`] listeners, so the repository answers `404` like any unknown one.
 
@@ -38,8 +44,90 @@ use crate::upstream::{RepoInfo, Snapshot, Upstream};
 /// The hidden namespace a fetch lands in (never advertised: `uploadpack.hideRefs`).
 pub const STAGING: &str = "refs/forge-gateway/";
 
-/// How long a failed first refresh is reported before a request retries it.
+/// How long a failed first refresh is reported before a request retries it, when the failure
+/// was Platform's (see [`backoff`] for the repository's own).
 const RETRY_AFTER_FAILURE: Duration = Duration::from_secs(60);
+
+/// What the gateway's own failure to read Platform starts with: not the repository's fault.
+const READING_PLATFORM: &str = "reading Platform: ";
+
+/// How often a repository waiting out its [`backoff`] has its snapshot looked at (at most), to
+/// see whether a new push replaced the one that failed.
+const PROBE_EVERY: Duration = Duration::from_secs(60);
+/// After this many failures in a row, a changed snapshot no longer skips the wait outright...
+const REPEAT_FAILURES: u32 = 3;
+/// ...but is tried at most this often.
+const REPEAT_RETRY: Duration = Duration::from_secs(300);
+
+/// The helper's error codes (`dash: error: … [E701]`, docs/errors.md) that blame Platform, not
+/// the repository: unreachable, not deployed, an incomplete or timed-out read. A fetch failing
+/// with one of them is retried as before. Anything else the helper says, including E503 (the
+/// repository's packs unreadable: its storage is its owner's, so a host that never answers is the
+/// repository's doing), an integrity or object refusal, a pack git rejects, or no code at all (the
+/// fetch deadline passing), is the repository's.
+const NOT_THE_REPOSITORYS: [&str; 3] = ["E701", "E702", "E703"];
+
+/// The error code of the helper's head line (`dash: error: <message>  [E701]`, as
+/// `forge_core::user_error` renders it), if the message has one. Only the code that ends that
+/// line counts, so text quoted inside a message, or anything else git printed, cannot pose as one.
+fn error_code(message: &str) -> Option<&str> {
+    message
+        .lines()
+        .filter(|line| line.contains("dash: error:"))
+        .find_map(|line| {
+            let head = line.trim_end().strip_suffix(']')?;
+            let code = &head[head.rfind('[')? + 1..];
+            let well_formed = code.len() == 4
+                && code.starts_with('E')
+                && code.as_bytes()[1..].iter().all(u8::is_ascii_digit);
+            well_formed.then_some(code)
+        })
+}
+
+/// How long a repository whose own data failed `failures` refreshes in a row waits for the next
+/// one: 1 minute, 5 minutes, 30 minutes, then 6 hours. A success resets it.
+pub fn backoff(failures: u32) -> Duration {
+    Duration::from_secs(match failures {
+        0 => 0,
+        1 => 60,
+        2 => 300,
+        3 => 1800,
+        _ => 6 * 3600,
+    })
+}
+
+/// The longest a `--repos` mirror waits: it is the operator's own, and an outage of its storage
+/// should not park it for hours.
+const PINNED_BACKOFF_MAX: Duration = Duration::from_mins(30);
+
+/// Whether a refresh failed because of the repository (its packs, its storage, its size), not
+/// Platform: only those count towards [`backoff`].
+fn blames_repo(e: &Unavailable) -> bool {
+    match e {
+        Unavailable::TooLarge { .. } => true,
+        Unavailable::Failed(why) => {
+            !why.starts_with(READING_PLATFORM)
+                && error_code(why).is_none_or(|c| !NOT_THE_REPOSITORYS.contains(&c))
+        }
+        Unavailable::Pending | Unavailable::Gone => false,
+    }
+}
+
+/// The git settings that keep a fetch's and a repack's memory bounded however hostile the
+/// pack: set in each mirror's config at creation, and passed on every fetch and repack so a
+/// mirror made before they existed has them too.
+const MEMORY_LIMITS: [(&str, &str); 2] = [
+    ("pack.windowMemory", "128m"),
+    ("core.bigFileThreshold", "32m"),
+];
+
+/// [`MEMORY_LIMITS`] as `-c` arguments.
+fn memory_args() -> Vec<String> {
+    MEMORY_LIMITS
+        .iter()
+        .flat_map(|(k, v)| ["-c".to_string(), format!("{k}={v}")])
+        .collect()
+}
 
 /// Repack once a mirror holds more packs than this.
 const REPACK_AFTER_PACKS: usize = 8;
@@ -54,6 +142,36 @@ const SERVED_SAVE_EVERY: Duration = Duration::from_secs(600);
 
 /// How long a mirror proved gone waits for the clones it is serving before its files go.
 const GONE_DRAIN: Duration = Duration::from_secs(3600);
+
+/// How a refresh ended, when it did not fail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Refreshed {
+    /// The mirror serves the snapshot read (`true`: its refs moved).
+    Done(bool),
+    /// The repository is in backoff and its snapshot is the one that failed: nothing was done.
+    StillFailing,
+}
+
+/// A digest of what a snapshot asks the gateway to fetch: its tips and its packs. Two refreshes
+/// with the same fingerprint fail the same way.
+fn fingerprint(snap: &Snapshot) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    snap.tips().hash(&mut h);
+    for p in &snap.packs {
+        (&p.pack_hash, p.size_bytes).hash(&mut h);
+    }
+    h.finish()
+}
+
+/// Why a mirror was removed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Removal {
+    /// Platform proved its repository gone.
+    Gone,
+    /// The operator's deny list names it.
+    Denied,
+}
 
 /// Why a mirror cannot be served.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,6 +216,16 @@ struct SlotState {
     size: u64,
     serving: usize,
     pinned: bool,
+    /// Refreshes in a row that failed because of the repository ([`blames_repo`]).
+    failures: u32,
+    /// No refresh starts before this ([`backoff`]), unless the snapshot has moved.
+    backoff_until: Option<Instant>,
+    /// What the snapshot of the refresh under way looked like ([`fingerprint`]).
+    attempt_fp: Option<u64>,
+    /// The snapshot that last failed for the repository's own reasons.
+    failed_fp: Option<u64>,
+    /// When the snapshot of a repository in backoff was last looked at.
+    last_probe: Option<Instant>,
 }
 
 impl Slot {
@@ -164,6 +292,8 @@ pub struct Mirrors {
     home: PathBuf,
     slots: Mutex<HashMap<String, Arc<Slot>>>,
     refreshes: Semaphore,
+    /// Permits for the `--repos` mirrors alone.
+    pinned_refreshes: Semaphore,
     trash_seq: AtomicU64,
     gone_listeners: Mutex<Vec<GoneListener>>,
 }
@@ -199,6 +329,7 @@ impl Mirrors {
         std::fs::create_dir_all(&home)?;
         Ok(Self {
             refreshes: Semaphore::new(cfg.refresh_max.max(1)),
+            pinned_refreshes: Semaphore::new(cfg.pinned_refresh_max.max(1)),
             cfg,
             upstream,
             metrics,
@@ -317,6 +448,11 @@ impl Mirrors {
                     size: 0,
                     serving: 0,
                     pinned: false,
+                    failures: 0,
+                    backoff_until: None,
+                    attempt_fp: None,
+                    failed_fp: None,
+                    last_probe: None,
                 }),
                 done: Notify::new(),
             })
@@ -374,22 +510,58 @@ impl Mirrors {
         })
     }
 
-    /// Start a refresh of `slot` in the background unless one is running.
+    /// The permits a refresh takes: a `--repos` mirror's own, or the shared ones.
+    pub fn refresh_permits(&self, pinned: bool) -> &Semaphore {
+        if pinned {
+            &self.pinned_refreshes
+        } else {
+            &self.refreshes
+        }
+    }
+
+    /// Start a refresh of `slot` in the background unless one is running. A repository waiting
+    /// out the [`backoff`] of its failures only has its snapshot looked at, at most once a
+    /// minute, and is fetched again if that has moved.
     pub fn trigger(self: &Arc<Self>, slot: &Arc<Slot>) {
-        {
+        self.start(slot, false);
+    }
+
+    /// [`Self::trigger`] for a relay wake (a push): a repository in backoff has its snapshot
+    /// looked at now, not at the next minute.
+    pub fn trigger_wake(self: &Arc<Self>, slot: &Arc<Slot>) {
+        self.start(slot, true);
+    }
+
+    fn start(self: &Arc<Self>, slot: &Arc<Slot>, wake: bool) {
+        let (pinned, probing) = {
             let mut s = slot.state();
             if s.refreshing {
                 return;
             }
+            let probing = s.backoff_until.is_some_and(|t| Instant::now() < t);
+            if probing && !wake && s.last_probe.is_some_and(|t| t.elapsed() < PROBE_EVERY) {
+                return;
+            }
+            // A repository that keeps failing could push a new snapshot (one cheap write) before
+            // each attempt and so hold a refresh permit for a fetch deadline every minute: after
+            // a few failures in a row, a new snapshot is tried at most every few minutes, wake or
+            // not.
+            if probing
+                && s.failures >= REPEAT_FAILURES
+                && s.last_attempt.is_some_and(|t| t.elapsed() < REPEAT_RETRY)
+            {
+                return;
+            }
             s.refreshing = true;
             s.last_attempt = Some(Instant::now());
-        }
+            (s.pinned, probing)
+        };
         let this = Arc::clone(self);
         let slot = Arc::clone(slot);
         tokio::spawn(async move {
             let outcome = {
-                let _permit = this.refreshes.acquire().await;
-                this.refresh(&slot).await
+                let _permit = this.refresh_permits(pinned).acquire().await;
+                this.refresh(&slot, probing).await
             };
             if outcome == Err(Unavailable::Gone) {
                 // Still marked refreshing: no eviction or other refresh of this slot meanwhile.
@@ -399,11 +571,29 @@ impl Mirrors {
                 let mut s = slot.state();
                 s.refreshing = false;
                 match &outcome {
-                    Ok(()) => {
+                    Ok(Refreshed::Done(_)) => {
                         s.last_ok = Some(Instant::now());
                         s.last_err = None;
+                        s.failures = 0;
+                        s.backoff_until = None;
+                        s.failed_fp = None;
                     }
-                    Err(e) => s.last_err = Some(e.clone()),
+                    // The snapshot that failed is still the one served: nothing was fetched,
+                    // and the wait goes on.
+                    Ok(Refreshed::StillFailing) => s.last_probe = Some(Instant::now()),
+                    Err(e) => {
+                        if blames_repo(e) {
+                            s.failures = s.failures.saturating_add(1);
+                            let mut wait = backoff(s.failures);
+                            if s.pinned {
+                                wait = wait.min(PINNED_BACKOFF_MAX);
+                            }
+                            s.backoff_until = Some(Instant::now() + wait);
+                            s.failed_fp = s.attempt_fp;
+                            s.last_probe = Some(Instant::now());
+                        }
+                        s.last_err = Some(e.clone());
+                    }
                 }
             }
             slot.done.notify_waiters();
@@ -451,7 +641,8 @@ impl Mirrors {
             return Ok(());
         }
         {
-            // A first refresh that failed a moment ago is not retried for every request.
+            // A first refresh that failed a moment ago is not retried for every request (one
+            // in backoff is only looked at, see `trigger`).
             let s = slot.state();
             if let (false, Some(e), Some(t)) = (s.refreshing, &s.last_err, s.last_attempt) {
                 if t.elapsed() < RETRY_AFTER_FAILURE {
@@ -538,11 +729,31 @@ impl Mirrors {
             .await;
     }
 
-    /// Remove `slot`, whose repository Platform proved gone: no longer served or polled, its
-    /// files deleted once the clones it is serving end, and the [`Self::on_gone`] listeners
-    /// told. A slot that is no longer the current one for its repository (evicted meanwhile)
-    /// owns no directory: only the listeners are told.
+    /// Remove `slot`, whose repository Platform proved gone ([`Self::remove`]).
     fn forget(&self, slot: &Arc<Slot>) {
+        self.remove(slot, Removal::Gone);
+    }
+
+    /// Delete the mirror of `repo_id` (the operator's deny list names it), whatever it is
+    /// doing: `true` when there was one. A refresh under way ends without recreating it.
+    pub fn purge(&self, repo_id: &str) -> bool {
+        let Some(slot) = self.slots().get(repo_id).cloned() else {
+            return false;
+        };
+        self.remove(&slot, Removal::Denied);
+        true
+    }
+
+    /// Every mirror known, ready or not.
+    pub fn all(&self) -> Vec<Arc<Slot>> {
+        self.slots().values().cloned().collect()
+    }
+
+    /// Remove `slot`: no longer served or polled, its files deleted once the clones it is
+    /// serving end, and the [`Self::on_gone`] listeners told. A slot that is no longer the
+    /// current one for its repository (evicted meanwhile) owns no directory: only the
+    /// listeners are told.
+    fn remove(&self, slot: &Arc<Slot>, why: Removal) {
         let removed = {
             let mut slots = self.slots();
             let current = slots
@@ -552,11 +763,23 @@ impl Mirrors {
                 let mut s = slot.state();
                 s.manifest = None;
                 s.size = 0;
-                s.last_err = Some(Unavailable::Gone);
+                s.last_err = Some(match why {
+                    Removal::Gone => Unavailable::Gone,
+                    Removal::Denied => {
+                        Unavailable::Failed("removed by the gateway's operator".into())
+                    }
+                });
                 s.pinned
             };
             if pinned {
-                tracing::error!(repo = %slot.repo.repo_id, name = %slot.repo.name, "a repository in GATEWAY_REPOS is gone from Platform; it is no longer mirrored (restart the gateway once it exists again)");
+                match why {
+                    Removal::Gone => {
+                        tracing::error!(repo = %slot.repo.repo_id, name = %slot.repo.name, "a repository in GATEWAY_REPOS is gone from Platform; it is no longer mirrored (restart the gateway once it exists again)");
+                    }
+                    Removal::Denied => {
+                        tracing::warn!(repo = %slot.repo.repo_id, name = %slot.repo.name, "a repository in GATEWAY_REPOS is in the deny list; it is no longer mirrored");
+                    }
+                }
             }
             if current {
                 slots.remove(&slot.repo.repo_id);
@@ -571,8 +794,16 @@ impl Mirrors {
             })
         };
         if removed.is_some() {
-            Metrics::inc(&self.metrics.mirrors_gone);
-            tracing::info!(repo = %slot.repo.repo_id, "Platform proved the repository gone; mirror removed");
+            match why {
+                Removal::Gone => {
+                    Metrics::inc(&self.metrics.mirrors_gone);
+                    tracing::info!(repo = %slot.repo.repo_id, "Platform proved the repository gone; mirror removed");
+                }
+                Removal::Denied => {
+                    Metrics::inc(&self.metrics.mirrors_purged);
+                    tracing::info!(repo = %slot.repo.repo_id, "the deny list names the repository; mirror deleted");
+                }
+            }
         }
         for f in self
             .gone_listeners
@@ -594,13 +825,15 @@ impl Mirrors {
         }
     }
 
-    /// Refresh `slot` now (serialised per mirror).
-    async fn refresh(&self, slot: &Slot) -> Result<(), Unavailable> {
+    /// Refresh `slot` now (serialised per mirror). `probing`: the repository is waiting out a
+    /// backoff, so a snapshot that is the one that failed is left alone.
+    async fn refresh(&self, slot: &Slot, probing: bool) -> Result<Refreshed, Unavailable> {
         let _lock = slot.refresh.lock().await;
         let started = Instant::now();
-        let outcome = self.refresh_locked(slot).await;
+        let outcome = self.refresh_locked(slot, probing).await;
         match &outcome {
-            Ok(changed) => {
+            Ok(Refreshed::StillFailing) | Err(Unavailable::Gone) => {}
+            Ok(Refreshed::Done(changed)) => {
                 Metrics::inc(&self.metrics.refresh_ok);
                 if *changed {
                     Metrics::inc(&self.metrics.refresh_changed);
@@ -612,26 +845,20 @@ impl Mirrors {
                     "mirror refreshed"
                 );
             }
-            Err(Unavailable::Gone) => {}
             Err(e) => {
                 Metrics::inc(&self.metrics.refresh_failed);
                 tracing::warn!(repo = %slot.repo.repo_id, error = ?e, "mirror refresh failed; serving the last snapshot");
             }
         }
-        outcome.map(|_| ())
+        outcome
     }
 
-    async fn refresh_locked(&self, slot: &Slot) -> Result<bool, Unavailable> {
+    async fn refresh_locked(&self, slot: &Slot, probing: bool) -> Result<Refreshed, Unavailable> {
         // A slot evicted or removed meanwhile owns no directory: a refresh would make one
         // nothing tracks.
-        if !self
-            .slots()
-            .get(&slot.repo.repo_id)
-            .is_some_and(|c| std::ptr::eq(Arc::as_ptr(c), slot))
-        {
-            return Err(Unavailable::Failed(
-                "the mirror was dropped meanwhile".into(),
-            ));
+        let dropped = || Unavailable::Failed("the mirror was dropped meanwhile".into());
+        if !self.is_current(slot) {
+            return Err(dropped());
         }
         let snap = match self.upstream.snapshot(&slot.repo).await {
             Ok(Some(s)) => {
@@ -644,15 +871,26 @@ impl Mirrors {
             }
             Err(e) => {
                 self.metrics.upstream(false);
-                return Err(Unavailable::Failed(format!("reading Platform: {e:#}")));
+                return Err(Unavailable::Failed(format!("{READING_PLATFORM}{e:#}")));
             }
         };
+        let fp = fingerprint(&snap);
+        let pinned = {
+            let mut s = slot.state();
+            s.attempt_fp = Some(fp);
+            if probing && s.failed_fp == Some(fp) {
+                return Ok(Refreshed::StillFailing);
+            }
+            s.pinned
+        };
         let bytes = snap.pack_bytes();
-        if bytes > self.cfg.repo_max_bytes {
-            return Err(Unavailable::TooLarge {
-                bytes,
-                cap: self.cfg.repo_max_bytes,
-            });
+        let cap = self.cfg.repo_cap(pinned);
+        if bytes > cap {
+            return Err(Unavailable::TooLarge { bytes, cap });
+        }
+        // The snapshot took a while: the mirror may have been removed (a deny) meanwhile.
+        if !self.is_current(slot) {
+            return Err(dropped());
         }
         let fail = |e: anyhow::Error| Unavailable::Failed(format!("{e:#}"));
         let created = self.ensure_repo(&slot.dir).await.map_err(fail)?;
@@ -672,7 +910,7 @@ impl Mirrors {
                 .await
                 .map_err(fail)?;
             if !missing.is_empty() {
-                self.fetch(slot).await.map_err(fail)?;
+                self.fetch(slot, bytes, cap, pinned).await.map_err(fail)?;
                 let still = self
                     .missing(&slot.dir, wanted.values())
                     .await
@@ -699,7 +937,14 @@ impl Mirrors {
         let mut s = slot.state();
         s.manifest = Some(Arc::new(manifest));
         s.size = size;
-        Ok(changed)
+        Ok(Refreshed::Done(changed))
+    }
+
+    /// Whether `slot` is still the mirror of its repository.
+    fn is_current(&self, slot: &Slot) -> bool {
+        self.slots()
+            .get(&slot.repo.repo_id)
+            .is_some_and(|c| std::ptr::eq(Arc::as_ptr(c), slot))
     }
 
     fn manifest(
@@ -732,7 +977,24 @@ impl Mirrors {
 
     /// A `git` command run in `dir` with the gateway's isolated environment.
     pub fn git(&self, dir: &Path) -> Command {
-        let mut c = Command::new(&self.cfg.git);
+        self.isolated(Command::new(&self.cfg.git), dir)
+    }
+
+    /// [`Self::git`] for the work that can take a lot of memory (a fetch, which runs
+    /// git-remote-dash and `index-pack`, and a repack). It is started through `sh`, which first
+    /// raises its own `oom_score_adj` (an unprivileged process may), and every process it starts
+    /// inherits that: when memory runs out the kernel picks these before the gateway and its
+    /// clones. Where there is no `/proc` (not Linux) the write fails quietly and nothing changes.
+    fn heavy_git(&self, dir: &Path) -> Command {
+        let mut c = Command::new("sh");
+        c.arg("-c")
+            .arg(r#"{ echo 500 > /proc/self/oom_score_adj; } 2>/dev/null; exec "$@""#)
+            .arg("sh")
+            .arg(&self.cfg.git);
+        self.isolated(c, dir)
+    }
+
+    fn isolated(&self, mut c: Command, dir: &Path) -> Command {
         c.current_dir(dir)
             .env("HOME", &self.home)
             .env("GIT_CONFIG_NOSYSTEM", "1")
@@ -780,6 +1042,8 @@ impl Mirrors {
             ("repack.writeBitmaps", "true"),
             ("pack.writeBitmapHashCache", "true"),
             ("fetch.writeFetchHEAD", "false"),
+            MEMORY_LIMITS[0],
+            MEMORY_LIMITS[1],
         ] {
             let mut c = self.git(&tmp);
             c.args(["config", k, v]);
@@ -839,14 +1103,19 @@ impl Mirrors {
             .collect())
     }
 
-    /// Fetch every ref's objects through `git-remote-dash` into the staging namespace.
-    async fn fetch(&self, slot: &Slot) -> Result<()> {
+    /// Fetch every ref's objects through `git-remote-dash` into the staging namespace. The
+    /// helper indexes each pack with `index-pack --max-input-size=<cap>` (`dash.maxPackInput`),
+    /// and the fetch ends at [`Config::fetch_deadline`] for `bytes` declared bytes.
+    async fn fetch(&self, slot: &Slot, bytes: u64, cap: u64, pinned: bool) -> Result<()> {
         let src = self.upstream.fetch_source(&slot.repo);
-        let mut c = self.git(&slot.dir);
+        let mut c = self.heavy_git(&slot.dir);
         for k in &src.env_remove {
             c.env_remove(k);
         }
         c.envs(src.env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+        c.args(memory_args())
+            .arg("-c")
+            .arg(format!("dash.maxPackInput={cap}"));
         c.args([
             "fetch",
             "--quiet",
@@ -856,7 +1125,7 @@ impl Mirrors {
         ])
         .arg(&src.url)
         .arg(format!("+refs/*:{STAGING}r/*"));
-        self.run(c, Duration::from_secs(self.cfg.fetch_timeout_secs))
+        self.run(c, self.cfg.fetch_deadline(bytes, pinned))
             .await
             .context("git fetch")?;
         Ok(())
@@ -946,7 +1215,8 @@ impl Mirrors {
         if packs <= REPACK_AFTER_PACKS && bitmaps > 0 {
             return;
         }
-        let mut c = self.git(dir);
+        let mut c = self.heavy_git(dir);
+        c.args(memory_args());
         c.args(["repack", "-a", "-d", "-b", "-q"]);
         if let Err(e) = self
             .run(c, Duration::from_secs(self.cfg.fetch_timeout_secs))
@@ -1053,6 +1323,74 @@ pub async fn dir_size(dir: PathBuf) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn helper_errors_are_classified_by_their_codes() {
+        let helper = |code: &str| {
+            format!("git failed (exit status: 128): dash: error: reading the packs [{code}]\n  cause: x")
+        };
+        assert_eq!(error_code(&helper("E503")), Some("E503"));
+        assert_eq!(
+            error_code("dash: error: a [note] then [E7x1] and [E504]"),
+            Some("E504")
+        );
+        assert_eq!(
+            error_code("dash: error: no code, [E50] short, [E5041] long"),
+            None
+        );
+        // Only the code ending the helper's head line counts, not one quoted in it or elsewhere.
+        assert_eq!(
+            error_code("dash: error: repo says [E701] here, really"),
+            None
+        );
+        assert_eq!(
+            error_code("remote: [E701]\ndash: error: bad pack [E504]"),
+            Some("E504")
+        );
+        assert_eq!(error_code("remote: hello [E701]"), None);
+        // Platform or the storage read failing is nobody's fault; the rest is the repository's.
+        for code in NOT_THE_REPOSITORYS {
+            let e = Unavailable::Failed(helper(code));
+            assert!(!blames_repo(&e), "{code}");
+        }
+        for code in ["E503", "E504", "E511", "E101"] {
+            assert!(blames_repo(&Unavailable::Failed(helper(code))), "{code}");
+        }
+        // No code: git itself failed, or the fetch deadline passed (a host that stalls).
+        assert!(blames_repo(&Unavailable::Failed(
+            "git fetch: git timed out after 316s".into()
+        )));
+    }
+
+    #[test]
+    fn only_the_repositorys_own_failures_count_towards_the_backoff() {
+        assert!(blames_repo(&Unavailable::TooLarge { bytes: 2, cap: 1 }));
+        assert!(blames_repo(&Unavailable::Failed(
+            "git fetch: git failed".into()
+        )));
+        assert!(!blames_repo(&Unavailable::Failed(format!(
+            "{READING_PLATFORM}timeout"
+        ))));
+        assert!(!blames_repo(&Unavailable::Pending));
+        assert!(!blames_repo(&Unavailable::Gone));
+        // The schedule only grows, and `--repos` mirrors are capped below its last step.
+        assert!(backoff(1) < backoff(2) && backoff(2) < backoff(3) && backoff(3) < backoff(4));
+        assert!(PINNED_BACKOFF_MAX < backoff(4));
+    }
+
+    #[test]
+    fn a_fetch_runs_under_memory_limits() {
+        let args = memory_args();
+        assert_eq!(
+            args,
+            [
+                "-c",
+                "pack.windowMemory=128m",
+                "-c",
+                "core.bigFileThreshold=32m"
+            ]
+        );
+    }
 
     #[test]
     fn only_well_formed_refs_are_served() {

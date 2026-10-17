@@ -20,6 +20,14 @@ describe('makePublicWords', () => {
     })
   })
 
+  it('says earlier versions stay with the people a message to specific people was sent to', () => {
+    expect(makePublicWords('comment', null, false, true).description).toBe(
+      "Everyone will be able to read it as you save it now. Earlier versions stay with the people it was sent to. This can't be undone.",
+    )
+    expect(makePublicWords('issue', null, false, true).description).not.toContain('members-only')
+    expect(makePublicWords('pull request', null, false, true).description).toContain('stay with the people it was sent to')
+  })
+
   it('asks "anyway" when the text quotes someone else’s members-only words', () => {
     const quoted = "Your comment quotes @bob's members-only comment. Everyone will be able to read the quoted text."
     const w = makePublicWords('comment', quoted)

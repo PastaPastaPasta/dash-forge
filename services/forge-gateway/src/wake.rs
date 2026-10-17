@@ -176,7 +176,8 @@ pub async fn run(url: String, secret: Vec<u8>, mirrors: Arc<Mirrors>, metrics: A
                 for r in &answer.repos {
                     if let Some((owner, name)) = r.name.split_once('/') {
                         for slot in mirrors.find(owner, name) {
-                            mirrors.trigger(&slot);
+                            // A push: a repository waiting out a backoff is looked at now.
+                            mirrors.trigger_wake(&slot);
                         }
                     }
                 }

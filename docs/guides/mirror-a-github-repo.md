@@ -30,12 +30,14 @@ Open **[forge.dashhq.org/mirror](https://forge.dashhq.org/mirror/)**, or **New �
 
 | Step | What happens | On chain |
 |---|---|---|
-| 1. GitHub repository | Your browser asks GitHub's public REST API, without signing in, whether the repository exists and is public. There is no GitHub OAuth app. | nothing |
+| 1. GitHub repository | Your browser asks GitHub's public REST API, without signing in, whether the repository exists and is public. There is no GitHub OAuth app. The step shows the licence GitHub detected, warns when there is none, and notes that Git LFS files are not mirrored. It asks you to confirm that you have the right to copy the code and the issue and pull request content before it goes on. | nothing |
 | 2. Forge repository | The name is suggested from GitHub, and the description is `… (mirror of github.com/<owner>/<repo>)`, which the web uses to link back. A repository of yours with that name is reused at no cost. | three documents, about 0.002 DASH |
 | 3. Storage | Pick a saved bucket, or add one with the [storage wizard](bring-your-own-storage.md). R2 or S3 is recommended. The step shows the CORS policy to paste, and also offers Dash Platform, priced for this repository's size. | nothing |
 | 4. Runner key | This registers a limited key on your identity: bound to Forge's contracts, with a budget (default 0.5 DASH) and an expiry (default 365 days). Your identity file or recovery phrase signs once and are not stored. The key is shown **once**, as the `DASH_FORGE_KEY` value to paste into GitHub. It belongs to the repository's owner, so the Action needs no membership. | one identity update, about 0.0003–0.0005 DASH |
 | 5. Workflow file | The wizard lists the secrets to add first (`DASH_FORGE_KEY`, plus `S3_ACCESS_KEY_ID` and `S3_SECRET_ACCESS_KEY` for a bucket), with copy buttons and a link to GitHub's *New repository secret* page. It then builds [the workflow below](#the-workflow) with every input filled in: code and releases, as the Action syncs by default. **Mirror issues and pull requests too** adds them and their triggers; leave it off on a busy repository, since anyone who can open an issue or a PR can then make a run spend. The suggested `cost-cap` is above the Action's own default of 0.05 DASH because the first run writes every branch, tag and release: 0.1 DASH with your own storage, more for packs on Platform, sized for the repository. Lower it once the mirror is up. **Create this file on GitHub** opens GitHub's new-file page with it filled in. | nothing |
 | 6. First run | Committing the file starts the first run. The page checks Platform every 10 seconds until the mirror's branches appear, then links to the repository. | the run, under its cost cap, paid through the runner key |
+
+**What the copy is.** The mirror is a copy at the time of each run. Later edits and deletions on GitHub (a rewritten comment, a deleted issue) are not propagated, and imported issues, pull requests and comments stay on Dash Platform, which cannot delete them. Mirror only what you have the right to copy.
 
 The wizard pins the Action to one Dash Forge commit, the one the site was built from (`uses: PastaPastaPasta/dash-forge/action@<commit>`), and sets `install: 'source'`, so the Action builds the three tools from that same commit. Progress is saved in the browser, so a closed tab picks up where it stopped. A key is never saved.
 
@@ -83,8 +85,12 @@ forge-import alice/project --network devnet --devnet-name sakura --dry-run
 Then run it with a spending cap:
 
 ```sh
-forge-import alice/project --network devnet --devnet-name sakura --max-spend 0.5 --state ./alice-project.sync.json
+forge-import alice/project --network devnet --devnet-name sakura --max-spend 0.5 --state ./alice-project.sync.json --i-have-the-rights
 ```
+
+**Before it writes: the rights acknowledgement.** A mirror is permanent on Dash Platform and carries other people's words: commit authors' names and emails travel in the pack objects, and issues, PRs, comments and reviews carry their authors' logins and text. Platform cannot delete any of it, and an author's later edit or deletion on GitHub is not carried over. So a real run prints what it is about to publish, together with the licence GitHub reports for the source (`MIT`, `none detected`, or not reported) and, when it can tell, whether the source belongs to the account in use, and then needs your say-so: `--i-have-the-rights`, or a "y" typed at a terminal. With no terminal and no flag it refuses, naming the flag. `--yes` confirms the cost only; it is not the acknowledgement. A dry run needs neither. The run warns when the source has no licence or belongs to someone else (the account in use is `gh`'s login, or `FORGE_IMPORT_ACCOUNT` when you set it). If you are not the owner and the licence does not allow it, do not mirror it. Dash Forge cannot take a mirror down; an owner's removal request can only be honoured on dashhq's hosted surfaces (`docs/hosted-curation.md`).
+
+**Git LFS.** If the default branch's `.gitattributes` sets `filter=lfs`, the run warns that the mirror holds the LFS pointer files only: the large files stay on GitHub, and Dash Forge does not mirror LFS objects. The summary JSON says so too (`lfsDetected`).
 
 Unlike `git` and `dg`, the standalone `forge-import` does not read the network `dg auth` recorded: without `--network` (or `DASH_FORGE_NETWORK` / `DASH_FORGE_DEVNET_NAME`) it uses testnet, which has no Forge deployment ([E702](../errors.md#e702)). `dg import alice/project` takes the same core flags and uses `dg`'s network and identity defaults.
 
@@ -99,7 +105,8 @@ Useful flags (see `forge-import --help`):
 | `--dry-run` | Price only. |
 | `--include-label-definitions` | A private destination only: mirror the label definitions too. Their names, colours and descriptions are not encrypted, so they are left out by default; the labels set on issues and PRs are encrypted either way. |
 | `--limit <n>` | At most `n` issues and PRs (the oldest), for a cheap trial. Only those items and their comments are read, so a trial on a repository with thousands of issues takes a few requests. |
-| `--yes` | No confirmation prompt, for CI. |
+| `--yes` | No confirmation of the cost, for CI. |
+| `--i-have-the-rights` | You may publish the source's content: you own it, or its licence or its owners allow it. Required for a real run (see above); without it the run asks at a terminal and refuses elsewhere. |
 | `--concurrency <n>` | How many issues and PRs have their comments, reviews, labels and state written at once (default 8, at most 16). Issues and PRs themselves are always created one at a time, in GitHub's order, so their numbers match. `1` writes one document at a time. See [large repositories](#large-repositories). |
 | `--summary-json <file>` | Write the run summary (counts, spend, key budget) as JSON. `forge-import` only. |
 | `--work-dir <dir>` | Keep the bare git mirror between runs instead of a temporary directory. `forge-import` only. |
@@ -127,8 +134,8 @@ A run with `--limit` that left items out does not advance `--state` either, and 
 **Importing in phases.** A large repository can be imported in steps: the code first, then the issues and PRs, each with its own cap and state file:
 
 ```sh
-forge-import alice/project --sync code,releases,labels --work-dir ./project.git --state ./project-code.sync.json --max-spend 100
-forge-import alice/project --sync issues,prs,labels --work-dir ./project.git --state ./project-collab.sync.json --max-spend 5
+forge-import alice/project --sync code,releases,labels --work-dir ./project.git --state ./project-code.sync.json --max-spend 100 --i-have-the-rights
+forge-import alice/project --sync issues,prs,labels --work-dir ./project.git --state ./project-collab.sync.json --max-spend 5 --i-have-the-rights
 ```
 
 **Run the code pass first.** A merged PR is recorded as merged only when a base tip already on chain contains its merge commit. A pass without `code` checks that itself and pushes nothing. It fetches the merged PRs' base branches from the source: into the `--work-dir` mirror when a code run left one there, or else commits only, into a temporary repository that is removed after the run (never inside `--work-dir`). If the base branch's tip on chain does not contain the merge yet, the PR is recorded as closed. The same happens when the base could not be fetched. The run warns for each such PR, the summary counts them (`unprovedMerges`), and `--state` keeps their numbers: the next run reads them again whatever changed, and turns each close into a merge once the code is on chain (one small event per PR; nothing else is written again). A PR whose base branch was deleted at the source can never be proved; it stays closed, and is not revisited. Nor can a PR mirrored before its base branch was on chain at all: a merge counts only into a base that was a branch when the PR was opened on Forge ([forge-v2 §6](../contracts/forge-v2.md)), which is why the code must come first.
@@ -286,7 +293,7 @@ Run the same import again whenever you like, from cron or another CI system, wit
 
 ```sh
 # crontab -e: every 15 minutes, code and issues, never more than 0.02 DASH a run
-*/15 * * * * DASH_FORGE_KEY=/srv/mirror/ci-identity.json forge-import alice/project --repo <owner id>/project --network devnet --devnet-name sakura --state /srv/mirror/project.sync.json --work-dir /srv/mirror/project.git --max-spend 0.02 --yes --summary-json /srv/mirror/last-run.json
+*/15 * * * * DASH_FORGE_KEY=/srv/mirror/ci-identity.json forge-import alice/project --repo <owner id>/project --network devnet --devnet-name sakura --state /srv/mirror/project.sync.json --work-dir /srv/mirror/project.git --max-spend 0.02 --yes --i-have-the-rights --summary-json /srv/mirror/last-run.json
 ```
 
 If you only want code, plain git does it with no importer at all:

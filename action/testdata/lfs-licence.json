@@ -1,0 +1,7 @@
+{"status":"ok","network":"devnet-sakura","source":"github.com/alice/project",
+ "repo":{"owner":"8hJmcHWTowner","name":"project","id":"Repo1","url":"dash://8hJmcHWTowner/project","created":false},
+ "counts":{"refs":1,"packs":1,"packBytes":1048576},
+ "estimateCredits":1000000000,"spentCredits":900000000,"creditsPerDash":100000000000,"balanceCredits":40000000000,
+ "key":{"id":3,"budgetCredits":50000000000,"remainingCredits":45000000000,"expiresAt":4102444800000},
+ "sourceLicense":"none detected","lfsDetected":true,
+ "warnings":["github.com/alice/project reports no licence: nothing says others may copy and republish it, and a mirror on Dash Platform cannot be taken back","this repository tracks files with Git LFS (a .gitattributes sets filter=lfs): the mirror holds the LFS pointer files only"]}

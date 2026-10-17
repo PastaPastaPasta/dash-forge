@@ -48,6 +48,10 @@ pub struct ImportConfig {
     pub dry_run: bool,
     /// No confirmation prompt.
     pub yes: bool,
+    /// The person running this says they may publish the source's content
+    /// (`--i-have-the-rights`); without it a real run asks at a terminal, or refuses
+    /// ([`crate::rights`]).
+    pub acknowledge_rights: bool,
     /// Cap on issues + PRs (0 = all).
     pub limit: usize,
     /// The network.
@@ -102,6 +106,10 @@ async fn run_inner<'a>(
     let meta = src
         .meta()
         .with_context(|| format!("reading {}", src.display()))?;
+    let rights = crate::rights::assess(&summary.source, &meta, src.account().as_deref());
+    eprint!("{}", rights.notice());
+    summary.source_license = Some(rights.licence.clone());
+    summary.warnings.extend(rights.warnings.iter().cloned());
     let signer_id = signer.map(Signer::id);
     let spec = cfg.dest.clone().unwrap_or_else(|| src.default_name());
     let mut dest = dest::resolve(client, signer_id.as_deref(), &spec).await?;
@@ -166,6 +174,10 @@ async fn run_inner<'a>(
     let pushes = planned_pushes(cfg.classes, collab_src.open_pulls.as_deref());
     if cfg.classes.code {
         src.sync_mirror(&work).context("mirroring the git data")?;
+        if crate::lfs::detect(&work, &meta.default_branch) {
+            summary.lfs_detected = true;
+            summary.warnings.push(crate::lfs::WARNING.to_string());
+        }
         if let Some(open) = &collab_src.open_pulls {
             crate::gitsync::sync_pull_heads(&work, open, src.pull_head_prefix())
                 .context("preparing the open pull requests' heads")?;
@@ -325,6 +337,7 @@ async fn run_inner<'a>(
     let signer = signer.expect("load_opt returns a signer outside a dry run");
     let key_left = signer.key_info(client).await.remaining_credits;
     budget.check_funds(required, signer.identity.balance(), key_left)?;
+    crate::rights::require(&rights, cfg.acknowledge_rights)?;
     dest::confirm(cfg.yes, estimate)?;
     budget.start(signer.identity.balance());
     outcome.ledger = Some(Ledger::new(client, Some(signer.id()), false, budget));

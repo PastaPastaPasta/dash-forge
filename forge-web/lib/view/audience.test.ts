@@ -11,6 +11,7 @@ import {
   QUOTE_CONFIRM,
   aboutDash,
   audienceChoice,
+  membersChoiceOffered,
   audienceLabel,
   audienceWarnings,
   countWithMembersOnly,
@@ -254,5 +255,24 @@ describe('counts and lines', () => {
   it('lists what a removed member could read, with room for other features', () => {
     expect(removalReads(true)).toEqual(['Members-only issues, comments and reviews posted so far'])
     expect(removalReads(false, ['7 production secrets'])).toEqual(['7 production secrets'])
+  })
+})
+
+describe('membersChoiceOffered: the new-issue hint points to Members only where it can be picked', () => {
+  const offered = (lane: Parameters<typeof audienceChoice>[0]['lane'], maintainer = false): boolean =>
+    membersChoiceOffered(audienceChoice({ visibility: 'public', parent: 'public', lane, maintainer }))
+
+  it('is true for a member of a repo with members-only content on, even before they unlock', () => {
+    expect(offered({ access: 'locked' })).toBe(true)
+    expect(offered({ access: 'no-key' })).toBe(true)
+    expect(offered({ access: 'no-key-shared' })).toBe(true)
+  })
+
+  it('is false for an outsider, a repo that must still turn it on, a former member and a bot', () => {
+    expect(offered(undefined)).toBe(false)
+    expect(offered({ access: 'none' }, true)).toBe(false)
+    expect(offered({ access: 'none' })).toBe(false)
+    expect(offered({ access: 'bot' })).toBe(false)
+    expect(membersChoiceOffered(null)).toBe(false)
   })
 })

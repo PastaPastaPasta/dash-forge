@@ -3,8 +3,10 @@
 /**
  * The Forge mirror of `github.com/<owner>/<name>` (CJ-3). One read of the `repo.name` index finds
  * the repos with that name; the ones whose owner describes them as that repo's mirror are the
- * candidates (`lib/view/upstream-alias.ts`). One clear mirror opens straight away (with the rest
- * of a GitHub path, the same view of it); several are listed; none explains how to mirror it.
+ * candidates (`lib/view/upstream-alias.ts`), read past the first 20 (ABU-04). A mirror the
+ * network's showcase vouches for, or one the source's back-link file listed, opens straight away
+ * (with the rest of a GitHub path, the same view of it); a claim alone never does: the claims are
+ * listed as "says it mirrors", and the visitor picks. None explains how to mirror it.
  */
 
 import { useEffect } from 'react'
@@ -20,7 +22,7 @@ import { useAsync } from '@/hooks/use-async'
 import { repoHref, useParam } from '@/hooks/use-query-param'
 import { useSdk } from '@/hooks/use-sdk'
 import { BASE_PATH, shortRepoPath } from '@/lib/short-url'
-import { NAMED_MAX, reposNamed, type DiscoveredRepo } from '@/lib/view/discovery'
+import { MIRROR_NAMED_PAGES, reposNamed, type DiscoveredRepo } from '@/lib/view/discovery'
 import { mapsToRepoPage, matchUpstream, SHOWCASE_IDS } from '@/lib/view/upstream-alias'
 
 /** The short-URL shim is not in the IPFS variant, so a GitHub sub-path opens the mirror's home there. */
@@ -47,7 +49,7 @@ export function UpstreamAliasClient(): JSX.Element {
   const { sdk, ready, network, status, retry } = useSdk()
   const deployed = isForgeDeployed()
   const valid = owner !== '' && name !== ''
-  const found = useAsync(() => reposNamed(sdk!, name.toLowerCase(), { network }), [ready, name, network], {
+  const found = useAsync(() => reposNamed(sdk!, name.toLowerCase(), { network, pages: MIRROR_NAMED_PAGES }), [ready, name, network], {
     enabled: deployed && valid && ready && sdk !== null,
   })
   const match = found.data ? matchUpstream(owner, name, found.data) : null
@@ -90,7 +92,7 @@ export function UpstreamAliasClient(): JSX.Element {
         icon={GitBranch}
         heading="h1"
         title={`No mirror of ${source} found yet`}
-        body={`None of the first ${NAMED_MAX} repos named ${name.toLowerCase()} mirrors it. Search to see the rest.`}
+        body={`None of the repos named ${name.toLowerCase()} read so far mirrors it. Search to see the rest.`}
         action={
           <Link href={`/explore/?q=${encodeURIComponent(name.toLowerCase())}`}>
             <Button variant="primary">Search repos named {name.toLowerCase()}</Button>
@@ -129,7 +131,7 @@ export function UpstreamAliasClient(): JSX.Element {
         Repos that say they mirror {source}
       </h1>
       <p className="text-dense text-anvil-600 dark:text-anvil-300">
-        Anyone can describe a repo as a mirror, so check who owns one before you rely on it.
+        Anyone can describe a repo as a mirror, so check who owns one before you rely on it. Open one to check its claim with GitHub.
       </p>
       <ul className="divide-y divide-anvil-200 rounded-lg border border-anvil-200 dark:divide-anvil-800 dark:border-anvil-800">
         {mirrors.map((m) => (
@@ -142,7 +144,13 @@ export function UpstreamAliasClient(): JSX.Element {
             >
               {m.slug}
             </Link>
-            {SHOWCASE_IDS.has(m.key) ? <span className="text-anvil-500 dark:text-anvil-400">featured on this site</span> : null}
+            {SHOWCASE_IDS.has(m.key) ? (
+              <span className="text-anvil-500 dark:text-anvil-400" data-testid="alias-featured">featured on this site</span>
+            ) : match?.verified.has(m.key) ? (
+              <span className="text-verify-700 dark:text-verify-400" data-testid="alias-confirmed">listed by {source}</span>
+            ) : (
+              <span className="text-anvil-500 dark:text-anvil-400" data-testid="alias-claim">says it mirrors {source}</span>
+            )}
           </li>
         ))}
       </ul>

@@ -54,6 +54,7 @@ import {
   EVERYTHING_LATER_FIRST_LINE,
   EVERYTHING_LATER_TEXT,
   EVERYTHING_LATER_TITLE,
+  EVERYTHING_RELEASES,
   EVERYTHING_TEXT,
   KEEPS_WORKING,
   MAKE_PUBLIC_FIRST_LINE,
@@ -95,6 +96,7 @@ import { useAsync } from '@/hooks/use-async'
 import { useSdk } from '@/hooks/use-sdk'
 import { useSettledDpnsName } from '@/hooks/use-dpns-name'
 import { usePrivateWrite } from '@/hooks/use-private-write'
+import { BetaBadge } from '@/components/ui/beta-badge'
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
@@ -182,7 +184,9 @@ export function MakeRepoPublic({ home, maintainer, onSaved }: { home: RepoHome; 
       return (
         <div className="flex flex-wrap items-center gap-3 rounded-lg border border-danger/40 p-4" data-testid="make-public-everything-row">
           <div className="min-w-0 flex-1">
-            <p className="text-dense font-medium">{EVERYTHING_LATER_TITLE}</p>
+            <p className="text-dense font-medium">
+              {EVERYTHING_LATER_TITLE} <BetaBadge feature="makeRepoPublic" />
+            </p>
             <p className="text-[12px] text-anvil-500 dark:text-anvil-400">{EVERYTHING_LATER_TEXT}</p>
           </div>
           <Button variant="danger" disabled={inFlight || !labelReady} onClick={() => open({ kind: 'everything' })} data-testid="make-public-everything-open">
@@ -197,7 +201,9 @@ export function MakeRepoPublic({ home, maintainer, onSaved }: { home: RepoHome; 
     return (
       <div className="flex flex-wrap items-center gap-3 rounded-lg border border-danger/40 p-4" data-testid="make-public-row">
         <div className="min-w-0 flex-1">
-          <p className="text-dense font-medium">Make this repo public</p>
+          <p className="text-dense font-medium">
+            Make this repo public <BetaBadge feature="makeRepoPublic" />
+          </p>
           <p className="text-[12px] text-anvil-500 dark:text-anvil-400">{rowText}</p>
         </div>
         {isOwner ? (
@@ -1021,7 +1027,9 @@ function CheckForm({
         )}
 
         <ModeOption groupName={groupName} mode="everything" chosen={mode} onMode={onMode} disabled={!modeAllowed('everything')}>
-          <p className="text-anvil-600 dark:text-anvil-300">{EVERYTHING_TEXT}</p>
+          <p className="text-anvil-600 dark:text-anvil-300">
+            {EVERYTHING_TEXT} {EVERYTHING_RELEASES}
+          </p>
           <p data-testid="make-public-everything-counts">{thatIs}</p>
           {unread !== null ? <p className="text-anvil-600 dark:text-anvil-300">{unread}</p> : null}
           {wordsBy !== null ? <p data-testid="make-public-words-by">{wordsBy}</p> : null}

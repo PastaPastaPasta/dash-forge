@@ -112,7 +112,7 @@ const sdk = {
   },
 } as unknown as EvoSDK
 
-const { IdentityUpdateNotSentError, WrongMasterKeyError, registerLimitedKey, revokeLimitedKey } = await import('./limited-key')
+const { IdentityUpdateNotSentError, WrongMasterKeyError, disableIdentityKeys, registerLimitedKey, revokeLimitedKey } = await import('./limited-key')
 const vault = await import('./vault')
 const idb = await import('../idb')
 
@@ -213,6 +213,22 @@ describe('a master key of another identity is refused before anything is sent (Q
     expect(chain.updates).toEqual([])
     await expect(revokeLimitedKey(sdk, { network: NET, identityId: ID, masterWif: wifOf(1), keyId: 5 })).resolves.toBe(true)
     expect(chain.updates).toEqual([{ add: [], disable: [5] }])
+  })
+})
+
+describe('disabling several keys in one identity update', () => {
+  const allowAll = (): boolean => true
+  it('sends one update naming each live key, skipping one that is already disabled', async () => {
+    keys.push(browserKey(6, decodeWif(wifOf(6)).privateKey), browserKey(7, decodeWif(wifOf(7)).privateKey), { ...browserKey(8, decodeWif(wifOf(8)).privateKey), disabledAt: 1n })
+    await expect(disableIdentityKeys(sdk, { network: NET, identityId: ID, masterWif: wifOf(1), keyIds: [5, 6, 7, 8], allowed: allowAll })).resolves.toBe(true)
+    expect(chain.updates).toEqual([{ add: [], disable: [5, 6, 7] }])
+  })
+
+  it('refuses the master key and a key the caller does not allow, before sending anything', async () => {
+    await expect(disableIdentityKeys(sdk, { network: NET, identityId: ID, masterWif: wifOf(1), keyIds: [0], allowed: allowAll })).rejects.toThrow(/refusing/)
+    await expect(disableIdentityKeys(sdk, { network: NET, identityId: ID, masterWif: wifOf(1), keyIds: [5], allowed: () => false })).rejects.toThrow(/refusing/)
+    await expect(disableIdentityKeys(sdk, { network: NET, identityId: ID, masterWif: wifOf(9), keyIds: [5], allowed: allowAll })).rejects.toBeInstanceOf(WrongMasterKeyError)
+    expect(chain.updates).toEqual([])
   })
 })
 

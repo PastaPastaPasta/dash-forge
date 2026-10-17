@@ -1,0 +1,146 @@
+# cargo-deny policy, run by the `cargo-deny` job in .github/workflows/security.yml.
+#
+#   cargo deny check            # all checks
+#   cargo deny check licenses   # one check
+#
+# The Dash Platform SDK is a pinned git dependency, so the tree is large; the allow lists
+# below were generated from what the workspace actually resolves, not from a template.
+
+[graph]
+# Only the targets we ship. Platform-specific crates (windows-*, wasm) for other targets
+# would otherwise add licences and advisories that never reach a build.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
+
+[advisories]
+# RustSec database. A vulnerability, an unmaintained crate or a yanked version fails the job.
+version = 2
+yanked = "deny"
+ignore = [
+    # rsa (Marvin attack, timing side channel in PKCS#1 v1.5 decryption). No fixed release
+    # exists. It arrives through the `pgp` crate, which forge-core uses only to VERIFY OpenPGP
+    # signatures with a public key (rules/signature.rs); no RSA private-key operation is done.
+    { id = "RUSTSEC-2023-0071", reason = "no fix available; only public-key signature verification reaches rsa through pgp" },
+
+    # rustls 0.23.44. The fix is rustls >= 0.23.46, which needs `cargo update -p rustls`.
+    # The Platform SDK bump to rc.3 (PR ci/sdk-rc3-lockstep) carries that lockfile change,
+    # so these are listed here rather than bumped in this PR to avoid a Cargo.lock conflict.
+    # Remove when the rc.3 bump lands.
+    { id = "RUSTSEC-2026-0285", reason = "rustls bump arrives with the rc.3 SDK bump; remove when it lands" },
+    { id = "RUSTSEC-2026-0346", reason = "rustls bump arrives with the rc.3 SDK bump; remove when it lands" },
+    { id = "RUSTSEC-2026-0347", reason = "rustls bump arrives with the rc.3 SDK bump; remove when it lands" },
+    { id = "RUSTSEC-2026-0348", reason = "rustls bump arrives with the rc.3 SDK bump; remove when it lands" },
+    { id = "RUSTSEC-2026-0349", reason = "rustls bump arrives with the rc.3 SDK bump; remove when it lands" },
+
+    # zip 8.x, extraction only (SUID bits, symlink targets, permissions through symlinks); no 8.x release fixes
+    # them. Two users: forge-runner, which only writes archives (ZipWriter; ZipArchive in a test, never
+    # extract), and tenderdash-proto-compiler, a build-time dependency of the Platform SDK that extracts the
+    # tenderdash proto archive of the release it pins. Remove when the SDK moves to zip >= 9.
+    { id = "RUSTSEC-2026-0367", reason = "zip extract only: forge-runner never extracts; the SDK's build script extracts a pinned upstream archive" },
+    { id = "RUSTSEC-2026-0368", reason = "zip extract only: forge-runner never extracts; the SDK's build script extracts a pinned upstream archive" },
+    { id = "RUSTSEC-2026-0369", reason = "zip extract only: forge-runner never extracts; the SDK's build script extracts a pinned upstream archive" },
+]
+
+[licenses]
+version = 2
+# The licences the workspace actually ships. Anything else fails the job until reviewed.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "MPL-2.0",
+    "CC0-1.0",
+    "0BSD",                # quoted_printable (via lettre)
+    "BSL-1.0",             # lhash (via tenderdash-abci)
+    "CDLA-Permissive-2.0", # webpki-roots: the Mozilla root store data
+    "MITNFA",              # hex_lit (via dashcore): MIT with a no-false-attribution clause
+]
+confidence-threshold = 0.9
+exceptions = []
+
+# Crates whose manifest declares no licence field. Each lives in a dashpay repository whose
+# licence is stated in the comment above its entries; cargo-deny cannot read the repository
+# licence, so the expression is declared here. Re-check these when the Platform tag moves
+# (the entries are keyed by crate name, so they keep applying across versions).
+
+# dashpay/platform: MIT (LICENSE.md at the repository root).
+[[licenses.clarify]]
+crate = "dash-platform-macros"
+expression = "MIT"
+license-files = []
+
+[[licenses.clarify]]
+crate = "dash-sdk"
+expression = "MIT"
+license-files = []
+
+[[licenses.clarify]]
+crate = "dpp"
+expression = "MIT"
+license-files = []
+
+[[licenses.clarify]]
+crate = "drive-proof-verifier"
+expression = "MIT"
+license-files = []
+
+[[licenses.clarify]]
+crate = "json-schema-compatibility-validator"
+expression = "MIT"
+license-files = []
+
+[[licenses.clarify]]
+crate = "rs-dapi-client"
+expression = "MIT"
+license-files = []
+
+[[licenses.clarify]]
+crate = "simple-signer"
+expression = "MIT"
+license-files = []
+
+# dashpay/rs-tenderdash-abci: its sibling crates tenderdash-abci and tenderdash-proto declare
+# Apache-2.0 in their manifests; this build-time compiler crate omits the field.
+[[licenses.clarify]]
+crate = "tenderdash-proto-compiler"
+expression = "Apache-2.0"
+license-files = []
+
+# dashpay/rs-bip37-bloom-filter: MIT (LICENSE at the repository root).
+[[licenses.clarify]]
+crate = "bip37-bloom-filter"
+expression = "MIT"
+license-files = []
+
+[bans]
+# Duplicate versions are common in the SDK's dependency tree and are not a security signal.
+multiple-versions = "allow"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# Git dependencies are allowed only from the dashpay organisation: the Platform SDK pinned by
+# tag in the root Cargo.toml, plus the repositories the SDK itself pulls in (their revisions
+# are pinned in Cargo.lock). A new git source anywhere else fails the job.
+allow-git = [
+    "https://github.com/dashpay/agora-blsful",
+    "https://github.com/dashpay/grovedb",
+    "https://github.com/dashpay/jsonschema-rs",
+    "https://github.com/dashpay/platform",
+    "https://github.com/dashpay/rs-bip37-bloom-filter",
+    "https://github.com/dashpay/rs-tenderdash-abci",
+    "https://github.com/dashpay/rust-dashcore",
+    "https://github.com/dashpay/vsss-rs",
+]

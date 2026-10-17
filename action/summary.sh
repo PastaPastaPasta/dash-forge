@@ -122,6 +122,14 @@ esac
     [ -z "$balance" ] || printf '| Identity balance | %s DASH |\n' "$(to_dash "$balance")"
 } >>"$md"
 
+# What the mirror publishes, and what it cannot hold: the source's licence as its API reports
+# it, and Git LFS (the mirror has the pointer files only).
+license=$(str .sourceLicense)
+[ -z "$license" ] || printf '\nSource licence: %s\n' "$(cell "$license")" >>"$md"
+if [ "$(jq -r '(try .lfsDetected catch null) == true' "$json")" = true ]; then
+    printf '\n> **Git LFS:** this repository tracks files with Git LFS. The mirror holds the pointer files only; the large files stay on the source and are not mirrored.\n' >>"$md"
+fi
+
 # Annotations.
 if [ -z "$budget" ]; then
     annotate warning "Not a limited key" "DASH_FORGE_KEY has no spending budget, so a leak could spend the identity's whole balance. Use a limited runner key (budget 0.5 DASH, expiry 365 days) instead."

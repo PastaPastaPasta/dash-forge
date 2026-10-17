@@ -97,7 +97,6 @@ export const MAINNET_RULE_SENTENCES: Readonly<Record<string, string>> = {
   sealedNoText: "A members-only or private check run can't show a summary, links or artifacts.",
   maintKinds: 'Only a maintainer can make posts public, save environments or send access notices.',
   botPack: 'A bot can push only code, browse indexes and long texts, and never replaces what others pushed.',
-  botChunk: 'Only a maintainer, a writer or a bot with push access can push this.',
   botGrant: "A bot can push only under a maintainer's push grant.",
   grantPrefix: 'This branch is outside the branches the push grant allows.',
   ttl90: 'A push grant has to end after now and within 90 days.',
@@ -105,6 +104,11 @@ export const MAINNET_RULE_SENTENCES: Readonly<Record<string, string>> = {
   targetOnPublish: 'A public release points at the commit its tag points at, and an encrypted one at none.',
   ownerRowStays: "The owner's own Maintain access can't be removed.",
   keepVerdicts: 'An approval or a change request stays on record. Dismiss it instead.',
+  headsOnly: 'A push grant can cover branches only (refs/heads/…), never tags.',
+  keepCompleted: 'A finished check run stays on record.',
+  rClaim: "Your role in this repo can't make this change.",
+  mrClaim: 'A repository key is shared only with maintainers, writers, triage members and readers.',
+  k_kinds: "This kind of state change isn't one Forge knows.",
 }
 
 /** "You weren't charged." or what was: the second beat of every refusal. */
