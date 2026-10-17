@@ -13,10 +13,14 @@ import { E2E_DEVNET, E2E_NETWORK, PASSPHRASE, nodeSdk, shot, unlock } from './he
  * when Platform recorded it, and must not make the user pay again when it did not.
  *
  * cr-1. The identity lands, but its proof cannot be checked: every quorum list fetched while the
- *       sheet says "Registering…" and before the broadcast (the connection renewed right before
- *       the create) comes back emptied, as after a rotation the prefetch did not see. So
- *       wasm-sdk's `identityCreate` fails with "Quorum not found in cache" after the broadcast,
- *       exactly as in L-06. The flow reads the identity, finds it, and finishes.
+ *       sheet says "Registering…" (the connection renewed right before the create, and the key
+ *       wasm-sdk fetches for the answer's proof after the broadcast) comes back emptied, as after
+ *       a rotation the prefetch did not see. So `identityCreate` fails on the proof after the
+ *       broadcast, as in L-06. The flow reads the identity, finds it, and finishes. Lists fetched
+ *       once the sheet says it is checking (the probe's reconnect) are real. Platform 5.0.0-beta.6
+ *       (#5313) fetches a missing quorum key itself, so emptying only the lists before the
+ *       broadcast no longer fails the create: the injection must bite after it too, and the test
+ *       asserts that it did.
  * cr-2. The broadcast never reaches Platform (every node answers DEADLINE_EXCEEDED). The flow
  *       finds no identity and an unused asset lock, and offers "Try again with the same
  *       deposit"; with the network back, that creates the identity from the same lock, with no
@@ -35,6 +39,8 @@ const QUORUMS = /^https:\/\/quorums\.[a-z0-9-]+\.networks\.dash\.org\//
 const BROADCAST = /\/org\.dash\.platform\.dapi\.v0\.Platform\/broadcastStateTransition$/
 const REGISTERING = 'Registering your identity…'
 const CHECKING = 'Checking whether Platform recorded your identity…'
+/** How many quorum lists cr-1 empties after the broadcast, at most. */
+const MAX_EMPTIED_AFTER_BROADCAST = 8
 
 function fundingKeyFile(): string {
   const keyFile = process.env['FORGE_DEVNET_FUNDING_KEY_FILE'] ?? ''
@@ -160,12 +166,15 @@ test('cr-1. the create lands but its proof names a quorum the SDK lacks: the flo
   const page = await context.newPage()
   await recordStages(page)
   // Decided per request, from the page: a quorum list fetched while the sheet says
-  // "Registering…" and before the broadcast (the renewal right before the create) comes back
-  // with every key removed. Lists fetched after the broadcast (the probe's reconnect) are real.
-  const quorum = { emptied: 0, broadcasts: 0 }
+  // "Registering…" (the renewal right before the create, and the proof check after the
+  // broadcast) comes back with every key removed. Lists fetched once the sheet is checking
+  // whether Platform recorded the identity (the probe's reconnect) are real.
+  const quorum = { emptied: 0, emptiedAfterBroadcast: 0, broadcasts: 0 }
   await context.route(QUORUMS, async (route: Route) => {
-    if (quorum.broadcasts > 0 || (await stageNow(page)) !== REGISTERING) return route.continue()
+    // The cap keeps an SDK that retries its fetch from holding the sheet at "Registering…" for good.
+    if ((await stageNow(page)) !== REGISTERING || quorum.emptiedAfterBroadcast >= MAX_EMPTIED_AFTER_BROADCAST) return route.continue()
     quorum.emptied++
+    if (quorum.broadcasts > 0) quorum.emptiedAfterBroadcast++
     const response = await route.fetch()
     const json = (await response.json()) as { data: unknown }
     const data = Array.isArray(json.data) ? [] : { ...(json.data as object), quorums: [] }
@@ -188,6 +197,9 @@ test('cr-1. the create lands but its proof names a quorum the SDK lacks: the flo
   await shot(page, 'cr-1-02-signed-in')
   expect(quorum.emptied).toBeGreaterThanOrEqual(2)
   expect(quorum.broadcasts).toBeGreaterThanOrEqual(1)
+  // The injection must have bitten after the broadcast: otherwise the SDK verified the proof, the
+  // create simply succeeded, and the recovery path below was never reached.
+  expect(quorum.emptiedAfterBroadcast, 'no quorum list was emptied after the broadcast: the create was verified, not failed').toBeGreaterThanOrEqual(1)
   expect(seen.stages).toContain(REGISTERING)
   expect(seen.stages).toContain(CHECKING)
   expect(seen.errors).toEqual([])

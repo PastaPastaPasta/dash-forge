@@ -1,6 +1,7 @@
 import { test, expect, type Page, type Route } from '@playwright/test'
 import { existsSync } from 'node:fs'
-import { EMPTY, E2E_DEVNET, PASSPHRASE, fixtureWriteBlocked, idFile, runAxe, shot, signedIn, unlock, skipWithoutFixture } from './helpers'
+import { EMPTY, E2E_DEVNET, E2E_NETWORK, PASSPHRASE, fixtureWriteBlocked, idFile, runAxe, shot, signedIn, unlock, skipWithoutFixture } from './helpers'
+import { E2E_TARGET_NAME } from './network'
 
 // needs the read fixture seeded on this network (e2e/network.ts)
 skipWithoutFixture()
@@ -103,7 +104,7 @@ function savedStorageChoice(page: Page): Promise<string | null> {
         }
         req.onerror = () => resolve(null)
       }),
-    `mirror-wizard:devnet-${E2E_DEVNET}:${EMPTY.owner}`,
+    `mirror-wizard:${E2E_TARGET_NAME}:${EMPTY.owner}`,
   )
 }
 
@@ -165,7 +166,7 @@ test('m2. signed in: repo, storage, runner key and workflow, with no write reach
   await page.getByLabel('Forge repository name').fill('mirror-e2e-never-created')
   await expect(step(page, 'repo').getByTestId('cost-preview')).toBeVisible({ timeout: 60_000 })
   await expect(step(page, 'repo').getByRole('button', { name: /Sign & create mirror-e2e-never-created/ })).toBeEnabled()
-  await expect(step(page, 'repo')).toContainText('The e2e mirror source (mirror of github.com/mirror-e2e/Forge-V2-Empty)')
+  await expect(step(page, 'repo')).toContainText(`The e2e mirror source (mirror of github.com/${GH.owner}/${GH.name})`)
   await page.getByLabel('Forge repository name').fill(EMPTY.name)
   await existing.getByRole('button', { name: `Mirror into ${EMPTY.name}` }).click()
 
@@ -241,8 +242,9 @@ test('m2. signed in: repo, storage, runner key and workflow, with no write reach
   const yaml = await page.getByTestId('mirror-yaml').locator('pre').innerText()
   for (const line of [
     `repo: 'dash://${EMPTY.owner}/${EMPTY.name}'`,
-    "network: 'devnet'",
-    `devnet-name: '${E2E_DEVNET}'`,
+    `network: '${E2E_NETWORK}'`,
+    // The devnet's name is named on a devnet only.
+    ...(E2E_NETWORK === 'devnet' ? [`devnet-name: '${E2E_DEVNET}'`] : []),
     "storage-kind: 's3'",
     `s3-endpoint: '${R2.endpoint}'`,
     `s3-bucket: '${R2.bucket}'`,
@@ -257,6 +259,7 @@ test('m2. signed in: repo, storage, runner key and workflow, with no write reach
   }
   // Never a secret's value.
   expect(yaml).not.toContain('E2EACCESSKEYID')
+  if (E2E_NETWORK !== 'devnet') expect(yaml).not.toContain('devnet-name')
   const href = await page.getByTestId('mirror-create-workflow').getAttribute('href')
   const url = new URL(href ?? '')
   expect(url.origin + url.pathname).toBe(`https://github.com/${GH.owner}/${GH.name}/new/main`)

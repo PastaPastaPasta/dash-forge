@@ -185,6 +185,8 @@ test.describe('writes', () => {
     if ((await assignees.locator('li').count()) === 0) {
       await owner.getByRole('button', { name: /edit assignees/i }).click()
       await owner.locator(`[data-testid="assignee-option"][data-identity="${F1COLLAB}"]`).click()
+      // The picker only drafts a choice: Apply closes it and asks for the one confirm.
+      await owner.getByRole('group', { name: 'Choose assignees' }).getByRole('button', { name: 'Apply', exact: true }).click()
       await confirm(owner, /sign & assign/i)
     }
     await expect(assignees.locator('li')).toHaveCount(1, { timeout: 90_000 })

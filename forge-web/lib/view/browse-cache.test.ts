@@ -215,11 +215,31 @@ describe('browse cache: a push the cached context did not see (L-08)', () => {
   })
 })
 
-/** Wait until the background revalidation behind the cache has settled. */
-async function settledRefresh(repo: { manifestReads: () => number }, reads: number): Promise<void> {
-  await vi.waitFor(() => expect(repo.manifestReads()).toBe(reads))
+/**
+ * Wait until the background revalidation behind the cache has settled. Its manifest listing is
+ * the first thing it reads, but the work after it (the new index fragment's chunk read, which
+ * waits a macrotask of its own, then the context built from it) takes as many event-loop turns as
+ * the machine gives it: a fixed number of microtask and timer turns is not a wait for it, and a
+ * slow turn leaves the old state in the cache. So `settled` names what the cache holds once the
+ * revalidation has landed (a poll that throws until it does); pass it whenever the test reads that.
+ * Without one, only the manifest listing is waited for and the rest is drained best-effort, which
+ * is enough where the revalidation changes nothing the test then reads.
+ */
+async function settledRefresh(repo: { manifestReads: () => number }, reads: number, settled?: () => void): Promise<void> {
+  await vi.waitFor(() => expect(repo.manifestReads()).toBe(reads), { timeout: 5_000 })
+  if (settled !== undefined) {
+    await vi.waitFor(settled, { timeout: 5_000 })
+    return
+  }
   for (let i = 0; i < 20; i++) await Promise.resolve()
   await new Promise((r) => setTimeout(r, 0))
+}
+
+/** The reader the cache holds for `REPO` now (throws while it holds none that is ready). */
+function cachedReader() {
+  const state = peekBrowseState(REPO.repoId)
+  if (state?.kind !== 'ready') throw new Error(`the cache holds ${state?.kind ?? 'nothing'}, not a ready context`)
+  return state.context.reader
 }
 
 describe('browse cache: versions and generations', () => {
@@ -234,7 +254,9 @@ describe('browse cache: versions and generations', () => {
     repo.reset()
     // Stale-while-revalidate: the old state is served, the refresh runs behind it.
     expect(await readerOf(repo.sdk)).toBe(before)
-    await settledRefresh(repo, 1)
+    // Wait for the revalidation to land (the cache holds the newer context), not for a number of
+    // event-loop turns: only then does "no bump" say anything about the replacement.
+    await settledRefresh(repo, 1, () => expect(cachedReader()).not.toBe(before))
     expect(browseGeneration(REPO.repoId)).toBe(gen)
     // The next view gets the newer context.
     expect(await readerOf(repo.sdk)).not.toBe(before)
@@ -279,7 +301,7 @@ describe('browse cache: versions and generations', () => {
     vi.setSystemTime(Date.now() + 31_000)
     repo.reset()
     await loadBrowseContextCached(repo.sdk, REPO)
-    await settledRefresh(repo, 1)
+    await settledRefresh(repo, 1, () => expect(peekBrowseState(REPO.repoId)?.kind).toBe('ready'))
     expect((await loadBrowseContextCached(repo.sdk, REPO)).kind).toBe('ready')
   })
 
