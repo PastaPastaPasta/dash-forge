@@ -7,10 +7,10 @@
 // every document it writes against RC1 without a network.
 
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { b58decode, b58encode, loadEvoSdk } from '../deploy-v2.mjs';
+import { b58decode, b58encode, canonical, loadEvoSdk, scratchRecordError } from '../deploy-v2.mjs';
 
 export { b58decode, b58encode };
 
@@ -92,9 +92,34 @@ export function parseArgs(argv, multi = []) {
 }
 
 /**
+ * CONT-V-01: a script writes to the live testnet or mainnet contract set only when told so by name.
+ * The set is live when the record is deployments/<network>.json, or a scratch copy that names that
+ * record's forge-core or contract group (the same test deploy-v2 applies to a scratch --record). The
+ * flag is `--production <network>`, equal to the network the run connects to; `DASH_FORGE_NETWORK`
+ * alone never authorizes a write. Rule suites and rehearsals use a scratch record
+ * (`--deployment <scratch.json>`, OD-17); only the labelled fixture or smoke with FORGE-QA
+ * identities (QA-14) writes the live set.
+ */
+export function assertWriteTarget({ network, file, dep }, a, root = ROOT, script = basename(process.argv[1] ?? 'this script')) {
+  for (const live of ['testnet', 'mainnet']) {
+    const liveFile = resolve(root, 'deployments', `${live}.json`);
+    const liveDep = existsSync(liveFile) ? JSON.parse(readFileSync(liveFile, 'utf8')) : {};
+    const isLive = canonical(resolve(file)) === canonical(liveFile) || scratchRecordError(dep, liveDep) !== null;
+    if (isLive && !(a.production === live && network === live)) {
+      throw new Error(
+        `${script} writes permanent documents to the live ${live} set (${relative(root, resolve(file))}). Rule suites and ` +
+          `rehearsals use a scratch record (--deployment <scratch.json>, OD-17). For the labelled fixture or smoke with ` +
+          `FORGE-QA identities only (QA-14), connect to ${live} and pass --production ${live}.`
+      );
+    }
+  }
+}
+
+/**
  * The network to write to: `--network` / `--devnet-name`, else `DASH_FORGE_NETWORK` /
  * `DASH_FORGE_DEVNET_NAME`, else devnet sakura. Its contract ids come from
- * `deployments/<network>.json` (or `--deployment <file>`), which must record all three RC1
+ * `deployments/<network>.json` (or `--deployment <file>`; the live testnet or mainnet set needs
+ * `--production <network>`, `assertWriteTarget`), which must record all three RC1
  * contracts (and forge-meta's, on a four-contract set). moutai is refused: it runs the beta.6 contracts, which refuse every RC1 document.
  */
 export function resolveNetwork(a, env = process.env) {
@@ -106,6 +131,7 @@ export function resolveNetwork(a, env = process.env) {
   }
   const file = a.deployment ?? join(ROOT, 'deployments', `${key}.json`);
   const dep = JSON.parse(readFileSync(file, 'utf8'));
+  assertWriteTarget({ network, file, dep }, a);
   const ids = {
     core: dep.v2?.forgeCore?.contractId,
     collab: dep.v2?.forgeCollab?.contractId,

@@ -360,7 +360,7 @@ function depPath(network, devnetName, deploymentsRoot = DEPLOYMENTS_ROOT) {
   return join(deploymentsRoot, `${network === 'devnet' ? `devnet-${devnetName}` : network}.json`);
 }
 /** A path with its deepest existing directory resolved (symlinks) and folded to lower case (APFS and NTFS fold case). */
-function canonical(path) {
+export function canonical(path) {
   let dir = dirname(path);
   const rest = [basename(path)];
   while (!existsSync(dir) && dirname(dir) !== dir) {

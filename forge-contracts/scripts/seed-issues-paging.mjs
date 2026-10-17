@@ -8,7 +8,11 @@
 //     [--network devnet --devnet-name sakura] [--deployment <file>] [--pace-ms 700]
 //
 // Writes RC1 documents; needs `npm ci` in forge-contracts/sdk-v2 (the evo-sdk it pins). The
-// network defaults to DASH_FORGE_NETWORK / DASH_FORGE_DEVNET_NAME, else devnet sakura. The repo
+// network defaults to DASH_FORGE_NETWORK / DASH_FORGE_DEVNET_NAME, else devnet sakura.
+// CONT-V-01: on testnet or mainnet it runs against a scratch --deployment record only; the live
+// deployments/<network>.json (or a copy naming its forge-core or group) is written only with
+// --production <network>, for the labelled FORGE-QA fixture or smoke (QA-14). DASH_FORGE_NETWORK alone never does.
+// The repo
 // is the identity's: when it does not exist yet the seed creates it (public, the owner its
 // maintainer), as `dg repo create issues-paging --storage platform` would.
 //

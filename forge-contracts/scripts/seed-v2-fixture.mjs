@@ -11,6 +11,9 @@
 // MAINTAINER, COLLAB and CONTRIB in --identities (default
 // ~/.config/dash-forge/test-identities/<network>/). The network defaults to
 // DASH_FORGE_NETWORK / DASH_FORGE_DEVNET_NAME, else devnet sakura.
+// CONT-V-01: on testnet or mainnet it runs against a scratch --deployment record only; the live
+// deployments/<network>.json (or a copy naming its forge-core or group) is written only with
+// --production <network>, for the labelled FORGE-QA fixture or smoke (QA-14). DASH_FORGE_NETWORK alone never does.
 //
 // It writes:
 //   * repo `forge-v2-demo` owned by OWNER, OWNER and MAINTAINER as maintainers and COLLAB as a
