@@ -5,9 +5,9 @@
 # is a refusal (below), which exits the harness before anything is signed.
 #
 # Networks (DASH_FORGE_NETWORK):
-#   devnet (default)  devnet SAKURA, where the RC2 contracts are registered (2026-10-13, after
-#                     sakura's third Platform reset, onto 5.0.0-beta.6; the forge-v2 contracts once on
-#                     devnets moutai and bonsia are gone, and this build cannot read them anyway).
+#   devnet (default)  devnet SAKURA, where the release's four-contract set (contracts/mainnet) is
+#                     registered (2026-10-17, on 5.0.0-beta.6; it replaced the three-contract set of
+#                     2026-10-13; the forge-v2 contracts once on devnets moutai and bonsia are gone).
 #                     DASH_FORGE_DEVNET_NAME picks another devnet.
 #   testnet           Dash testnet, a PRODUCTION network (release plan WS-D; QA-05, QA-14). Everything
 #                     the suite writes there is permanent. See "testnet" below.

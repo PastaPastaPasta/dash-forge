@@ -17,7 +17,9 @@
 // a devnet runs, the default on a devnet), `mainnet` forge-contracts/contracts/mainnet (the four
 // contracts, build.py --mainnet). It writes the network's own record, deployments/<network>.json,
 // which records the set it was registered from (`v2.contractsSet`): a later run naming another set
-// is refused, so a four-contract record can never be updated from the three-contract files.
+// is refused, so a four-contract record can never be updated from the three-contract files. On a
+// devnet, --force-new without --only moves the record to the named set: a new set in a new group,
+// every recorded contract superseded (how sakura moved to the release's four-contract set).
 // Testnet and mainnet always need --set mainnet.
 //
 // --contracts <dir> registers the contract JSON in <dir> instead: a scratch set such as the
@@ -933,8 +935,11 @@ async function deploy(argv, injected, locks) {
 
   // Refusals on the record, before anything connects (each names the file)
   const recorded = recordedSet(dep);
-  if (setName !== null && recorded !== null && recorded !== setName) {
-    throw new Error(`${recordName} was registered from the "${recorded}" set; --set ${setName} would register or update a different set into it. Use --set ${recorded}, or a scratch --record for another set.`);
+  // A devnet record moves to another committed set only as a whole new set (--force-new without
+  // --only): every recorded contract and the group are superseded, whatever their schema
+  const setChanged = setName !== null && recorded !== null && recorded !== setName;
+  if (setChanged && !(forceNew && only === null && !production)) {
+    throw new Error(`${recordName} was registered from the "${recorded}" set; --set ${setName} would register or update a different set into it. Use --set ${recorded}, or a scratch --record for another set${production ? '' : ` (or --force-new without --only: a new ${setName} set in a new group, superseding every recorded contract)`}.`);
   }
   if (dep.network !== undefined && dep.network !== network) throw new Error(`${recordName} records network ${dep.network}, not ${network}`);
   if (devnetName && dep.devnetName !== undefined && dep.devnetName !== devnetName) throw new Error(`${recordName} records devnet ${dep.devnetName}, not ${devnetName}`);
@@ -1144,7 +1149,7 @@ async function deploy(argv, injected, locks) {
         Object.assign(d, Object.fromEntries(missing.map((k) => [k, want[k]])), rest);
       }
       // (set at the first write, so a crash after the first contract still names the set it is registering)
-      if (setName !== null) v2.contractsSet ??= setName;
+      if (setName !== null) v2.contractsSet = setChanged ? setName : (v2.contractsSet ?? setName);
       else v2.contractsDir ??= repoPath(contractsDir);
     };
 
@@ -1873,6 +1878,18 @@ async function deploy(argv, injected, locks) {
       const why = chainChanged ? `chain ${d.chainId}` : `deployer ${recordedDeployer}`;
       say(`${moved.join(', ') || 'nothing recorded'} of ${why} ${dryRun ? 'would be' : 'is'} superseded; registering a new set${chainChanged ? ` on ${chainId}` : ''}`);
       if (chainChanged) d.chainId = chainId;
+      coreSuperseded = true;
+      record();
+    } else if (setChanged) {
+      // (same deployer, same chain: the ledger stays, so its nonces still count)
+      const at = stamp();
+      const moved = RECORD_KEYS.filter((key) => v2[key]);
+      for (const key of moved) moveToSuperseded(key, at); // (a dry pass works on a copy)
+      if (v2.contractGroup) moveToSuperseded('contractGroup', at);
+      delete v2.contractGroupId;
+      // (named before the first write, so a rerun after a crash here still knows the set it is registering)
+      v2.contractsSet = setName;
+      say(`${moved.join(', ') || 'nothing recorded'} of the "${recorded}" set ${dryRun ? 'would be' : 'is'} superseded; registering a new "${setName}" set in a new group`);
       coreSuperseded = true;
       record();
     } else if (forceNew && only === null && v2.forgeCore?.contractId) {
