@@ -6,7 +6,12 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 
 import { OfflineChain } from './offline-chain.mjs';
-import { CONTRACTS, CONTRACT_OF, FUSED_STAR, META_TYPES, ROOT, MEMBER_ROLES, TRANSITION, VIS, b58encode, contractOn, documentReader, documentWriter, idBytes, membership, transition } from './seed-io.mjs';
+import { CONTRACTS, CONTRACT_OF, META_TYPES, ROOT, TRANSITION, VIS, b58encode, contractOn, documentReader, documentWriter, idBytes, membership, shapeOfSet, transition } from './seed-io.mjs';
+
+// The default set's shape, as the seeds read it from the loaded contract.
+const SHAPE = shapeOfSet({ contracts: CONTRACTS, contractOf: CONTRACT_OF });
+const FUSED_STAR = SHAPE.fusedStar;
+const MEMBER_ROLES = SHAPE.memberRoles;
 
 const person = (name) => ({ name, id: b58encode(createHash('sha256').update(name).digest()) });
 const OWNER = person('owner');
@@ -25,7 +30,7 @@ async function repoChain() {
   // retries: 0 -- the offline chain is synchronous and deterministic, so a 10422/40101 here is
   // always the real rule verdict, never a lagging node's stale read; retrying would only make
   // every refusal test wait out documentWriter's retry pause for nothing.
-  const write = documentWriter({ sdk }, evo, { ids: chain.ids }, noReconnect, { retries: 0 });
+  const write = documentWriter({ sdk }, evo, { ids: chain.ids }, noReconnect, { shape: SHAPE, retries: 0 });
   const repoId = (await write(OWNER, 'repo', { name: 'r', visibility: VIS })).id.toBase58();
   const R = idBytes(repoId);
   await write(OWNER, 'maintainer', membership(R, OWNER.id, OWNER.id));
@@ -112,7 +117,7 @@ test('transitions move only from the state their rules name', async () => {
 test('a rerun adopts what landed: by a unique index, or by the target of a transition', async () => {
   const { chain, write, R, repoId } = await repoChain();
   const evo = chain.evo();
-  const read = documentReader({ sdk: new evo.EvoSDK() }, { ids: chain.ids }, 0, noReconnect);
+  const read = documentReader({ sdk: new evo.EvoSDK() }, { ids: chain.ids }, 0, noReconnect, SHAPE);
   const i1 = issue(R, 1);
   const id = (await write(OWNER, 'issue', i1)).id.toBase58();
   assert.equal(await read.existing(OWNER, 'issue', i1), id);
@@ -164,7 +169,7 @@ test('a retry after a write that landed resolves to it, not to a second write', 
       },
     },
   };
-  const write = documentWriter({ sdk: flaky }, evo, { ids: chain.ids }, noReconnect, { pauseMs: 0 });
+  const write = documentWriter({ sdk: flaky }, evo, { ids: chain.ids }, noReconnect, { shape: SHAPE, pauseMs: 0 });
   const id = (await write(OWNER, 'issue', issue(R, 1))).id.toBase58();
   assert.equal(calls, 2);
   assert.equal(chain.live('issue').length, 1);
@@ -175,7 +180,7 @@ test('a document goes to the contract that holds its type', async () => {
   const chain = new OfflineChain();
   const evo = chain.evo();
   const sdk = new evo.EvoSDK();
-  const wrong = documentWriter({ sdk }, evo, { ids: { ...chain.ids, community: chain.ids.collab } }, noReconnect);
+  const wrong = documentWriter({ sdk }, evo, { ids: { ...chain.ids, community: chain.ids.collab } }, noReconnect, { shape: SHAPE });
   await assert.rejects(wrong(OWNER, 'star', { repoId: Buffer.alloc(32, 1) }), /star is in forge-community, not forge-collab/);
 });
 
@@ -224,7 +229,7 @@ test('a four-contract set routes the moved types to forge-meta', async () => {
   const chain = new OfflineChain({ contractsDir: join(ROOT, 'contracts', 'mainnet') });
   assert.deepEqual(Object.keys(chain.ids), ['core', 'collab', 'community', 'meta']);
   const evo = chain.evo();
-  const write = documentWriter({ sdk: new evo.EvoSDK() }, evo, { ids: chain.ids }, noReconnect, { retries: 0 });
+  const write = documentWriter({ sdk: new evo.EvoSDK() }, evo, { ids: chain.ids }, noReconnect, { shape: shapeOfSet(chain.set), retries: 0 });
   const R = idBytes((await write(OWNER, 'repo', { name: 'r', visibility: VIS })).id.toBase58());
   for (const type of META_TYPES) assert.equal(contractOn(chain.ids, type), 'meta', type);
   await write(OWNER, 'topic', { repoId: R, name: 't0', vis: VIS });
@@ -235,4 +240,68 @@ test('a four-contract set routes the moved types to forge-meta', async () => {
   doc.data = { repoId: R, name: 't1', vis: VIS };
   assert.throws(() => chain.create({ document: doc }), /topic is in forge-meta, not forge-core/);
   assert.deepEqual(Object.keys((await sdk.contracts.fetch(chain.ids.meta)).getDocumentTypes()).sort(), [...META_TYPES].sort());
+});
+
+// The four-contract set's own forms: identifiers are `type: "identifier"` (the reader finds a
+// document by one), `topic` no longer declares `vis`, and a member's `asMember` proves a role.
+test('a four-contract set: identifier lookups, no topic vis, and asMember with the signer\'s role', async () => {
+  const chain = new OfflineChain({ contractsDir: join(ROOT, 'contracts', 'mainnet') });
+  const evo = chain.evo();
+  const sdk = new evo.EvoSDK();
+  const shape = shapeOfSet(chain.set);
+  const write = documentWriter({ sdk }, evo, { ids: chain.ids }, noReconnect, { shape, retries: 0 });
+  const read = documentReader({ sdk }, { ids: chain.ids }, 0, noReconnect, shape);
+  const repoId = (await write(OWNER, 'repo', { name: 'r', visibility: VIS })).id.toBase58();
+  const R = idBytes(repoId);
+  await write(OWNER, 'maintainer', membership(R, OWNER.id, OWNER.id));
+  assert.ok(await read.first('maintainer', [['repoId', '==', repoId], ['memberId', '==', OWNER.id]]), 'a maintainer is found by its identifier values');
+  // a topic written with vis (as the RC1 seeds do) goes out without it
+  await write(OWNER, 'topic', { repoId: R, name: 't0', vis: VIS });
+  assert.equal('vis' in chain.live('topic')[0].view, false);
+  // a maintainer's asMember carries no mRole; a role-1 writer's carries 1
+  await write(OTHER, 'consent', { repoId: R });
+  await write(OWNER, 'writer', membership(R, OWNER.id, OTHER.id));
+  const asMember = (who) => ({ repoId: R, number: chain.live('issue').length + 1, tk: 0, title: 't', vis: VIS, asMember: idBytes(who.id) });
+  await write(OWNER, 'issue', asMember(OWNER));
+  await write(OTHER, 'issue', asMember(OTHER));
+  const [byOwner, byWriter] = chain.live('issue');
+  assert.equal(byOwner.view.mRole, undefined);
+  assert.equal(byWriter.view.mRole, 1);
+  // a non-member's asMember is refused by the chain, not papered over
+  await assert.rejects(write(person('stranger'), 'issue', asMember(person('stranger'))), refusedWith(40120, 'issue.asMember'));
+});
+
+// A lagging node just after an enrolment answers the role read without the writer row: `mRole` is
+// left out, the member gate refuses (40120), and the write reads the role afresh and rebuilds once.
+test('a stale role read is re-read once when the member gate refuses', async () => {
+  const chain = new OfflineChain({ contractsDir: join(ROOT, 'contracts', 'mainnet') });
+  const evo = chain.evo();
+  const sdk = new evo.EvoSDK();
+  const shape = shapeOfSet(chain.set);
+  const plain = documentWriter({ sdk }, evo, { ids: chain.ids }, noReconnect, { shape, retries: 0 });
+  const R = idBytes((await plain(OWNER, 'repo', { name: 'r', visibility: VIS })).id.toBase58());
+  await plain(OWNER, 'maintainer', membership(R, OWNER.id, OWNER.id));
+  await plain(OTHER, 'consent', { repoId: R });
+  await plain(OWNER, 'writer', membership(R, OWNER.id, OTHER.id));
+  const asMember = { repoId: R, number: 1, tk: 0, title: 't', vis: VIS, asMember: idBytes(OTHER.id) };
+
+  let writerReads = 0;
+  const lagging = {
+    version: () => sdk.version(),
+    documents: {
+      ...sdk.documents,
+      query: async (q) => (q.documentTypeName === 'writer' && ++writerReads === 1 ? new Map() : sdk.documents.query(q)),
+    },
+  };
+  const write = documentWriter({ sdk: lagging }, evo, { ids: chain.ids }, noReconnect, { shape, retries: 0, roleLagMs: 0 });
+  await write(OTHER, 'issue', asMember);
+  assert.equal(writerReads, 2, 'the role was read, then read again after the refusal');
+  assert.equal(chain.live('issue').length, 1);
+  assert.equal(chain.live('issue')[0].view.mRole, 1);
+
+  // a refusal that stands (a non-member) is retried once at most, then thrown
+  writerReads = -100;
+  const stranger = person('stranger');
+  await assert.rejects(write(stranger, 'issue', { ...asMember, number: 2, asMember: idBytes(stranger.id) }), refusedWith(40120, 'issue.asMember'));
+  assert.equal(chain.live('issue').length, 1);
 });

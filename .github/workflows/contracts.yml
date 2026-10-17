@@ -203,6 +203,16 @@ jobs:
             forge-contracts/contracts/forge-core.json \
             forge-contracts/contracts/forge-collab.json \
             forge-contracts/contracts/forge-community.json
+      # The same scripts against the four-contract mainnet set (the one testnet registers): they
+      # feature-detect what the loaded contracts declare (asMember with mRole, no topic vis, a
+      # release's targetOid, forge-meta routing), write each document on a first run and nothing
+      # on the rerun, and rs-dpp judges every document they wrote
+      - name: Seed scripts write mainnet-set documents
+        run: |
+          node forge-contracts/scripts/seed-offline.mjs --contracts forge-contracts/contracts/mainnet \
+            --out "$RUNNER_TEMP/seed-vectors-mainnet"
+          "$CARGO_TARGET_DIR/release/contract-validate" --vectors "$RUNNER_TEMP/seed-vectors-mainnet" \
+            forge-contracts/contracts/mainnet/forge-{core,collab,community,meta}.json
       # Offline: the deploy script's id derivation matches the validator's known answer, and every
       # schema it registers loads with forge-core's id substituted (no SDK, no network)
       - name: Deploy script self-test
