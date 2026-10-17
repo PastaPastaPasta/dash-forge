@@ -47,7 +47,7 @@ import { parseLongBody } from '../rules/long-body'
 import { queryDocumentsWithProof, type PlainDocument, type WriteAuth, type WriteResult } from '../sdk'
 import { estimateChunkCredits } from '../sdk/cost'
 import { storeArtifact } from '../storage/upload'
-import { asIdentifierString, withoutSessions, type RepoRef } from './contract'
+import { DOC, asIdentifierString, withoutSessions, type RepoRef } from './contract'
 import { invalidateRepoFeed } from './issues'
 import { LONG_BODY_MANIFEST_CREDITS } from './long-body'
 import { MakePublicRefusedError } from './make-public-writes'
@@ -156,7 +156,7 @@ export async function canMakeOthersPublic(sdk: EvoSDK, repo: RepoRef, identity: 
 
 /** The signer's members-key session (null: no encryption key in this browser). Closed by the caller. */
 async function keySession(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef): Promise<PrivateSession | null> {
-  const ops = await encryptionOps(sdk, auth.network, auth.identityId, repo.forge.collab)
+  const ops = await encryptionOps(sdk, auth.network, auth.identityId, contractOf(repo.forge, DOC.repoKey))
   if (ops === null) return null
   return loadPrivateSessionUncached(sdk, withoutSessions(repo), auth.network, auth.identityId, sessionUnwrapper(ops))
 }

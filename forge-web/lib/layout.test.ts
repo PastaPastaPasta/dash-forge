@@ -48,6 +48,8 @@ describe('the layout follows the deployment record', () => {
   it('the write chokepoint routes the moved types to forge-meta on a four-contract set', () => {
     expect(rc1WriteProblem(FOUR, 'META', 'label', { name: 'x' })).toBeNull()
     expect(rc1WriteProblem(FOUR, 'CORE', 'label', { name: 'x' })).toMatch(/forge-meta/)
+    expect(rc1WriteProblem(FOUR, 'META', 'repoKey', {})).toBeNull()
+    expect(rc1WriteProblem(FOUR, 'COLLAB', 'repoKey', {})).toMatch(/forge-meta/)
     expect(rc1WriteProblem(FOUR, 'META', 'issue', { number: 1, vis: 'public' })).toMatch(/forge-collab/)
     expect(rc1WriteProblem(FOUR, 'META', 'topic', { name: 'x', vis: 'private' })).toMatch(/public/)
     expect(rc1WriteProblem(THREE, 'CORE', 'label', { name: 'x' })).toBeNull()
