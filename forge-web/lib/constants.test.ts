@@ -88,6 +88,9 @@ describe('resolveNetworks', () => {
     expect(networks.devnet.dapiAddresses).toContain('https://68.67.122.86:1443')
     expect(networks.devnet.dapiAddresses).toContain('https://68.67.122.241:1443')
     expect(quorumEndpoint(networks.devnet)).toBe('https://quorums.sakura.networks.dash.org')
+    // the chain id the file records reaches the quorum cross-check; a network that records none has null
+    expect(networks.devnet.chainId).toBe('dash-devnet-sakura')
+    expect(resolveNetworks({}, { testnet: { dapiAddresses: [] } }).networks.testnet.chainId).toBeNull()
     // The RC2 registration adds the `v2` record (with forge-core network.rs); until then, none.
     expect(networks.devnet.v2).toEqual(forgeV2Ids(DEPLOYMENTS['devnet-sakura']))
   })
