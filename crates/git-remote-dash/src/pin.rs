@@ -106,9 +106,11 @@ pub fn guard(
         return Err(moved(url, remote, &section, &recorded, now).into());
     }
     eprintln!(
-        "dash: WARNING: {} now resolves to repository {} (owner {}), not {} (owner {}) as \
+        "dash: WARNING: {}: {} now resolves to repository {} (owner {}), not {} (owner {}) as \
          when this clone was made. {ALLOW_REPIN_GIT_KEY} is set, so it is re-pinned to the \
-         new repository.",
+         new repository; `git remote set-url <remote> dash://<repo id>` would have kept the \
+         one you cloned.",
+        recorded.change(&now.owner_id),
         display(url),
         now.repo_id,
         now.owner_id,
@@ -155,13 +157,7 @@ fn moved(
     was: &Recorded,
     now: &Pin,
 ) -> UserError {
-    let keep = match (remote, &was.repo_id) {
-        (Some(r), Some(id)) => {
-            format!("keep using the pinned repository: `git remote set-url {r} dash://{id}`; or, ")
-        }
-        _ => String::new(),
-    };
-    UserError::new(
+    let u = UserError::new(
         codes::INTEGRITY,
         format!(
             "{} now names a different repository than the one this clone was made from",
@@ -169,17 +165,25 @@ fn moved(
         ),
     )
     .cause(format!(
-        "pinned on {}: repository {} (owner {}); now: repository {} (owner {}). The owner's \
+        "{}: pinned on {}: repository {} (owner {}); now: repository {} (owner {}). The owner's \
          DPNS name may have changed hands, or the network was reset: fetching could mix in \
          someone else's history, and pushing would send your commits to them",
+        was.change(&now.owner_id),
         now.network,
         shown(was.repo_id.as_deref()),
         shown(was.owner_id.as_deref()),
         now.repo_id,
         now.owner_id
-    ))
-    .fix(format!(
-        "{keep}if you trust the change, run the same git command once with \
+    ));
+    let u = match (remote, &was.repo_id) {
+        (Some(r), Some(id)) => u.fix(format!(
+            "switch the remote to the repository you cloned, by its id, which no name can \
+             take over: `git remote set-url {r} dash://{id}` (recommended)"
+        )),
+        _ => u,
+    };
+    u.fix(format!(
+        "only if you know why the owner changed, run the same git command once with \
          `git -c {ALLOW_REPIN_GIT_KEY}=true …`, which re-pins it (or drop the pin: \
          `git config --remove-section '{section}'`)"
     ))

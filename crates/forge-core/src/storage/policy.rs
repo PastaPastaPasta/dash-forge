@@ -149,6 +149,35 @@ pub fn parse_git_bool(key: &str, value: &str) -> Result<bool> {
     }
 }
 
+/// The push cost guard's threshold when `dash.costWarnThreshold` is unset, in DASH (UX spec
+/// §4 rule 4). 0.05: a tiny push with its packs on Platform is quoted ~0.012 DASH on bonsia
+/// (charged ~0.009), so the old 0.01 stopped every such push without a terminal (QW-080). A
+/// megabyte of packs still asks.
+pub const DEFAULT_COST_WARN_THRESHOLD_DASH: f64 = 0.05;
+
+/// With no `dash.storage`, a push storing more than this many pack bytes on Platform (permanent
+/// and not deletable) asks first, whatever the threshold says.
+pub const UNCONFIGURED_PLATFORM_ASK_BYTES: u64 = 1 << 20;
+
+/// Parse `dash.costWarnThreshold`: a DASH amount, or `off` / `none` to turn the guard's
+/// threshold off. `Ok(None)` is off; unset (no value at all) is the caller's default,
+/// [`DEFAULT_COST_WARN_THRESHOLD_DASH`]. `0` is a real threshold: every paid push asks.
+pub fn parse_cost_warn_threshold(value: &str) -> Result<Option<f64>> {
+    let v = value.trim();
+    if v.eq_ignore_ascii_case("off") || v.eq_ignore_ascii_case("none") {
+        return Ok(None);
+    }
+    v.parse::<f64>()
+        .ok()
+        .filter(|x| x.is_finite() && *x >= 0.0)
+        .map(Some)
+        .ok_or_else(|| {
+            Error::Config(format!(
+                "dash.costWarnThreshold must be a DASH amount like 0.05, or `off` (got {value:?})"
+            ))
+        })
+}
+
 impl StoragePolicy {
     /// Platform only, one replica (the default when nothing is configured).
     pub fn platform_only() -> Self {
@@ -321,6 +350,19 @@ impl ResolvedPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cost_warn_threshold_parsing() {
+        assert_eq!(parse_cost_warn_threshold("0.05").unwrap(), Some(0.05));
+        assert_eq!(parse_cost_warn_threshold(" 0 ").unwrap(), Some(0.0));
+        assert_eq!(parse_cost_warn_threshold("off").unwrap(), None);
+        assert_eq!(parse_cost_warn_threshold("OFF").unwrap(), None);
+        assert_eq!(parse_cost_warn_threshold("none").unwrap(), None);
+        for bad in ["", "-1", "nan", "inf", "cheap"] {
+            let e = parse_cost_warn_threshold(bad).unwrap_err().to_string();
+            assert!(e.contains("`off`"), "{bad:?}: {e}");
+        }
+    }
 
     fn profiles() -> StorageProfiles {
         StorageProfiles::parse(

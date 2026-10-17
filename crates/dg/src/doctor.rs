@@ -29,7 +29,7 @@ use forge_core::network::{
 };
 use forge_core::platform::{Network, PlatformClient};
 use forge_core::storage::cors::probe_preflight;
-use forge_core::storage::policy::git_config_scoped;
+use forge_core::storage::policy::{git_config_scoped, parse_cost_warn_threshold};
 use forge_core::storage::{Profile, StoragePolicy, StorageProfiles};
 use forge_core::user_error::{codes, redact, UserError};
 
@@ -42,9 +42,8 @@ use crate::fmt::{credits_to_dash, dash_amount};
 /// repo-local `dash.*` one).
 const MIN_GIT: (u32, u32) = (2, 26);
 
-/// The spec's default push cost guard (UX spec §4 rule 4), in DASH. 0.05: on bonsia a tiny
-/// push with its packs on Platform is quoted ~0.012 DASH (charged ~0.009), so the old 0.01
-/// stopped every such push without a terminal (QW-080). A megabyte of packs still asks.
+/// The push cost guard's threshold when `dash.costWarnThreshold` is unset, as a git config
+/// value (the helper's default: [`DEFAULT_COST_WARN_THRESHOLD_DASH`]).
 const DEFAULT_COST_WARN_THRESHOLD: &str = "0.05";
 
 /// Balance below which writes will soon fail (UX spec §4 "Low").
@@ -83,8 +82,6 @@ enum AutoFix {
     PrivateDir(PathBuf),
     /// Tighten a file to mode 0600.
     PrivateFile(PathBuf),
-    /// `git config --global <key> <value>` for a key that is unset everywhere.
-    GitConfigGlobal(&'static str, String),
 }
 
 impl AutoFix {
@@ -92,7 +89,6 @@ impl AutoFix {
         match self {
             AutoFix::PrivateDir(p) => format!("mkdir -p -m 700 {}", p.display()),
             AutoFix::PrivateFile(p) => format!("chmod 600 {}", p.display()),
-            AutoFix::GitConfigGlobal(k, v) => format!("git config --global {k} {v}"),
         }
     }
 
@@ -103,21 +99,6 @@ impl AutoFix {
                 set_mode(p, 0o700)
             }
             AutoFix::PrivateFile(p) => set_mode(p, 0o600),
-            AutoFix::GitConfigGlobal(k, v) => {
-                // Re-check: never overwrite a value that appeared since the check ran.
-                if git_config_scoped(k).is_some() {
-                    return Ok(());
-                }
-                let out = Command::new("git")
-                    .args(["config", "--global", k, v.as_str()])
-                    .output()
-                    .map_err(|e| e.to_string())?;
-                if out.status.success() {
-                    Ok(())
-                } else {
-                    Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
-                }
-            }
         }
     }
 }
@@ -853,6 +834,13 @@ async fn check_network(ctx: &Ctx) -> Vec<Check> {
         _ => format!("{network}, {source} (DAPI: built-in seed list; quorums: {quorums})"),
     };
     let mut out = vec![Check::ok("target", target)];
+    if let Some(notice) = forge_core::network::retired_notice(network) {
+        out.push(Check::warn(
+            "deployment",
+            notice,
+            format!("switch networks: `{}`", deployed_network_flags()),
+        ));
+    }
 
     // DAPI + proof verification: fetch forge-core, or — with no forge-v2 on this network
     // (the contracts row fails for that) — the DPNS system contract.
@@ -1343,28 +1331,28 @@ fn cost_guard_check(threshold: Option<&str>, confirm: Option<&str>) -> Check {
     }
     let mode = confirm.map(|c| c.trim().to_ascii_lowercase());
     // `auto` when unset or empty (`confirm_check` passed the rest).
+    let unset = threshold.is_none();
     let mode = match mode.as_deref() {
         Some("always" | "true" | "yes") => "always",
         Some("never" | "false" | "no") => "never",
         Some("refuse") => "refuse",
         _ => "auto",
     };
-    let threshold = match threshold {
-        Some(v)
-            if v.trim()
-                .parse::<f64>()
-                .is_ok_and(|x| x.is_finite() && x >= 0.0) =>
-        {
-            Some(v.trim())
-        }
-        Some(v) => {
+    // Unset is the helper's default threshold; `off` turns it off; anything else must parse.
+    let threshold = match threshold.map(parse_cost_warn_threshold) {
+        None => Some(DEFAULT_COST_WARN_THRESHOLD),
+        Some(Ok(Some(_))) => threshold.map(str::trim),
+        Some(Ok(None)) => None,
+        Some(Err(_)) => {
             return Check::fail(
                 "cost guard",
-                format!("dash.costWarnThreshold = {v:?} is not a DASH amount: every push fails"),
+                format!(
+                    "dash.costWarnThreshold = {:?} is not a DASH amount or `off`: every push fails",
+                    threshold.unwrap_or_default()
+                ),
                 format!("git config dash.costWarnThreshold {DEFAULT_COST_WARN_THRESHOLD}"),
             )
         }
-        None => None,
     };
     match (mode, threshold) {
         ("never", Some(t)) => Check::ok(
@@ -1382,19 +1370,22 @@ fn cost_guard_check(threshold: Option<&str>, confirm: Option<&str>) -> Check {
         ),
         ("refuse", None) => Check::warn(
             "cost guard",
-            "dash.confirm=refuse caps nothing: dash.costWarnThreshold is unset, so no push is refused",
+            "dash.confirm=refuse caps nothing: dash.costWarnThreshold is off, so no push is refused",
             format!("git config --global dash.costWarnThreshold {DEFAULT_COST_WARN_THRESHOLD}"),
         ),
-        (_, Some(t)) => Check::ok("cost guard", format!("pushes above {t} DASH ask first")),
+        (_, Some(t)) => Check::ok(
+            "cost guard",
+            if unset {
+                format!("pushes above {t} DASH ask first (the default; dash.costWarnThreshold is unset)")
+            } else {
+                format!("pushes above {t} DASH ask first")
+            },
+        ),
         (_, None) => Check::warn(
             "cost guard",
-            "dash.costWarnThreshold is unset: pushes never ask before spending",
+            "dash.costWarnThreshold is off: pushes never ask because of their price",
             format!("git config --global dash.costWarnThreshold {DEFAULT_COST_WARN_THRESHOLD}"),
-        )
-        .auto(AutoFix::GitConfigGlobal(
-            "dash.costWarnThreshold",
-            DEFAULT_COST_WARN_THRESHOLD.into(),
-        )),
+        ),
     }
 }
 
@@ -1624,7 +1615,24 @@ mod tests {
             detail(Some("0.05"), Some("refuse")),
             "pushes above 0.05 DASH fail without asking (dash.confirm=refuse)"
         );
-        assert!(detail(None, Some("refuse")).contains("caps nothing"));
+        // Unset is the default threshold, not "no guard"; `off` is the way to turn it off.
+        assert_eq!(
+            detail(None, None),
+            "pushes above 0.05 DASH ask first (the default; dash.costWarnThreshold is unset)"
+        );
+        assert_eq!(
+            detail(None, Some("refuse")),
+            "pushes above 0.05 DASH fail without asking (dash.confirm=refuse)"
+        );
+        assert_eq!(cost_guard_check(None, None).status, Status::Ok);
+        assert!(detail(Some("off"), Some("refuse")).contains("caps nothing"));
+        let off = cost_guard_check(Some("off"), None);
+        assert_eq!(off.status, Status::Warn);
+        assert!(off.detail.contains("is off"), "{}", off.detail);
+        assert!(off.auto.is_none());
+        // The `--fix`-style value shown to users is the helper's default.
+        let default = forge_core::storage::policy::DEFAULT_COST_WARN_THRESHOLD_DASH;
+        assert!((DEFAULT_COST_WARN_THRESHOLD.parse::<f64>().unwrap() - default).abs() < 1e-12);
         assert!(detail(Some("x"), Some("never")).contains("is not a DASH amount"));
         // An invalid mode fails every push: the row says so, not "ask first".
         let bad = cost_guard_check(Some("0.05"), Some("maybe"));
@@ -1651,7 +1659,7 @@ mod tests {
     #[test]
     fn the_default_cost_guard_admits_a_small_platform_push() {
         use forge_core::cost::push_fees::{estimate_push, history_index, PushShape};
-        let threshold: f64 = DEFAULT_COST_WARN_THRESHOLD.parse().unwrap();
+        let threshold = forge_core::storage::policy::DEFAULT_COST_WARN_THRESHOLD_DASH;
         // The remote helper compares the guard with the push's quote plus the history index it
         // publishes with it (a first one, stored on Platform, ~1–2 KB).
         let history = history_index(2_000, false, 0, true, true);

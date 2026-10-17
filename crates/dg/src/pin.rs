@@ -34,9 +34,10 @@ pub fn check(owner: &str, name: &str, network: &str, repo: &Repo) -> Result<()> 
         Verdict::Ok => Ok(()),
         Verdict::Allowed => {
             eprintln!(
-                "warning: {owner}/{name} now resolves to repository {} (owner {}), not the {} \
+                "warning: {}: {owner}/{name} now resolves to repository {} (owner {}), not the {} \
                  (owner {}) this clone pinned; {ALLOW_REPIN_GIT_KEY} is set, so dg goes on with \
                  the new one (a `git fetch` re-pins the clone)",
+                recorded.change(repo.owner_id()),
                 repo.id(),
                 repo.owner_id(),
                 repo_pin::shown(recorded.repo_id.as_deref()),
@@ -80,22 +81,27 @@ fn moved(
     was: &Recorded,
     (now_id, now_owner): (&str, &str),
 ) -> UserError {
-    let keep = was.repo_id.as_deref().map_or_else(String::new, |id| {
-        format!("keep using the pinned repository: name it by its id (`-R {id}`, or `{id}` where the command takes `<owner>/<name>`); or, ")
+    let keep = was.repo_id.as_deref().map(|id| {
+        format!("keep using the pinned repository by its id, which no name can take over: `-R {id}` (or `{id}` where the command takes `<owner>/<name>`), and `git remote set-url <remote> dash://{id}` (recommended)")
     });
-    UserError::new(
+    let u = UserError::new(
         codes::INTEGRITY,
         format!("{owner}/{name} now names a different repository than the one this clone pinned"),
     )
     .cause(format!(
-        "pinned on {network}: repository {} (owner {}); now: repository {} (owner {}). The owner's DPNS name may have changed hands, or the network was reset: reading it could show someone else's repository, and writing would send your issue, comment or pull request to them",
+        "{}: pinned on {network}: repository {} (owner {}); now: repository {} (owner {}). The owner's DPNS name may have changed hands, or the network was reset: reading it could show someone else's repository, and writing would send your issue, comment or pull request to them",
+        was.change(now_owner),
         repo_pin::shown(was.repo_id.as_deref()),
         repo_pin::shown(was.owner_id.as_deref()),
         now_id,
         now_owner
-    ))
-    .fix(format!(
-        "{keep}if you trust the change, run `git -c {ALLOW_REPIN_GIT_KEY}=true fetch` once, which re-pins this clone (or drop the pin: `git config --remove-section '{section}'`)"
+    ));
+    let u = match keep {
+        Some(k) => u.fix(k),
+        None => u,
+    };
+    u.fix(format!(
+        "only if you know why the owner changed, run `git -c {ALLOW_REPIN_GIT_KEY}=true fetch` once, which re-pins this clone (or drop the pin: `git config --remove-section '{section}'`)"
     ))
     .note("checked before anything was signed; nothing was written or paid")
 }
@@ -170,8 +176,18 @@ mod tests {
         let cause = u.cause.as_deref().unwrap();
         assert!(cause.contains("repository R1 (owner O1)"), "{cause}");
         assert!(cause.contains("now: repository R2 (owner O2)"), "{cause}");
+        assert!(
+            cause.starts_with("the repository's owner identity changed"),
+            "{cause}"
+        );
         assert!(u.fix[0].contains("`-R R1`"), "{u:?}");
-        assert!(u.fix[0].contains("dash.allowRepin=true fetch"), "{u:?}");
+        assert!(u.fix[0].contains("dash://R1"), "{u:?}");
+        assert!(u.fix[0].contains("recommended"), "{u:?}");
+        assert!(
+            u.fix[1].contains("only if you know why the owner changed"),
+            "{u:?}"
+        );
+        assert!(u.fix[1].contains("dash.allowRepin=true fetch"), "{u:?}");
         assert!(u.note.as_deref().unwrap().contains("nothing was written"));
     }
 }

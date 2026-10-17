@@ -97,6 +97,21 @@ impl CoreEndpoints {
         }
     }
 
+    /// With the InstantSend RPC chosen by the user (`--islock-rpc`, `config.toml`): a URL, or
+    /// `off` / `none` to prove with chain locks only. `None` or blank keeps the network's
+    /// default (testnet's is a third-party service, `trpc.digitalcash.dev`).
+    #[must_use]
+    pub fn with_islock_rpc(mut self, choice: Option<&str>) -> Self {
+        match choice.map(str::trim).filter(|c| !c.is_empty()) {
+            None => {}
+            Some(c) if c.eq_ignore_ascii_case("off") || c.eq_ignore_ascii_case("none") => {
+                self.islock_rpc = None;
+            }
+            Some(url) => self.islock_rpc = Some(url.trim_end_matches('/').to_string()),
+        }
+        self
+    }
+
     /// The explorer's host, for messages ("asks insight.dash.org").
     pub fn insight_host(&self) -> String {
         reqwest::Url::parse(&self.insight)
@@ -711,5 +726,32 @@ mod tests {
             d.insight,
             "https://insight.moutai.networks.dash.org/insight-api"
         );
+    }
+
+    #[test]
+    fn the_islock_rpc_is_the_users_choice() {
+        let default = CoreEndpoints::for_network(&Network::Testnet, None);
+        assert_eq!(
+            default.islock_rpc.as_deref(),
+            Some("https://trpc.digitalcash.dev")
+        );
+        // Unset or blank: the network's default.
+        assert_eq!(default.clone().with_islock_rpc(None), default);
+        assert_eq!(default.clone().with_islock_rpc(Some("  ")), default);
+        // A URL replaces it (trailing slash dropped); `off` means chain locks only.
+        let own = default
+            .clone()
+            .with_islock_rpc(Some("https://rpc.example/"));
+        assert_eq!(own.islock_rpc.as_deref(), Some("https://rpc.example"));
+        assert!(default
+            .clone()
+            .with_islock_rpc(Some("OFF"))
+            .islock_rpc
+            .is_none());
+        assert!(default.with_islock_rpc(Some("none")).islock_rpc.is_none());
+        // It also turns InstantSend on where the network has no default.
+        let m = CoreEndpoints::for_network(&Network::Mainnet, None)
+            .with_islock_rpc(Some("https://rpc.example"));
+        assert!(m.islock_rpc.is_some());
     }
 }
