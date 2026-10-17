@@ -79,6 +79,18 @@ export const INBOX_EMPTY = 'Notifications are computed in this browser from the 
 
 /** Poll interval while a tab is open and visible. */
 export const POLL_MS = 60_000
+
+/**
+ * What the Notifications page says about reach (FEAT-05): the inbox is computed by an open Forge
+ * tab, so a reviewer who closes it hears nothing. `hasService`: this build names a notification
+ * service (`NEXT_PUBLIC_NOTIFY_URL`), which adds email and push from Settings.
+ */
+export function inboxReachNote(hasService: boolean, pollMs: number = POLL_MS): string {
+  const lead = `Notifications only arrive while a Forge tab is open: this tab checks the chain every ${pollMs / 1000} s, and a closed tab hears nothing.`
+  return hasService
+    ? `This tab checks the chain every ${pollMs / 1000} s. With the tab closed, only email and push reach you; set them up in Settings → Notifications. There is no sync to your other devices; each browser keeps its own read state.`
+    : `${lead} There is no email or push at launch, and no sync to your other devices; each browser keeps its own read state.`
+}
 /** How long a computed subscription set is reused. */
 export const SUBS_TTL_MS = 15 * 60_000
 export const MAX_REPOS = 20

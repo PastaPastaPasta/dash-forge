@@ -1054,7 +1054,7 @@ const writeLocks = new Map<string, Promise<unknown>>()
  */
 export const WRITER_WAIT_MS = 10 * 60_000
 
-/** Forge left this devnet (`NEXT_PUBLIC_DEVNET_NOTICE=moving` on a retired devnet): nothing is signed or sent now. */
+/** Writes are paused (`NEXT_PUBLIC_PAGES_NOTICE=paused` on any network, or `NEXT_PUBLIC_DEVNET_NOTICE=moving` on a retired devnet): nothing is signed or sent now. */
 export class WritesPausedError extends Error {
   constructor(reason: string) {
     super(reason)

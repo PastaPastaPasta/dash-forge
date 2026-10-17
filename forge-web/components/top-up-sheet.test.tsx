@@ -30,10 +30,11 @@ vi.mock('@/contexts/auth-context', () => ({
 }))
 // The flow itself is covered in lib/auth/identity-top-up.test.ts.
 vi.mock('@/components/identity-top-up-flow', () => ({
-  IdentityTopUpFlow: ({ faucet }: { faucet: string | null }) => <div data-testid="identity-top-up" data-faucet={faucet ?? ''} />,
+  IdentityTopUpFlow: ({ faucets }: { faucets: readonly string[] }) => <div data-testid="identity-top-up" data-faucet={faucets.join(' ')} />,
 }))
 
-const { TopUpSheet } = await import('./top-up-sheet')
+const { TopUpSheet, faucetUrl } = await import('./top-up-sheet')
+const { FaucetLinks } = await import('./faucet-links')
 const { FundsPill } = await import('./funds-pill')
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -81,5 +82,31 @@ describe('the top-up sheet', () => {
     // The balance does not cap a key with less left than it (QW2-035).
     expect(q('[data-testid="key-funds-line"]')!.textContent).not.toMatch(/capped/)
     expect(q('[data-testid="top-up-coverage"]')!.textContent).toMatch(/covers about \d+\.$/)
+  })
+
+  // The test build reads the default network, testnet: its faucets show without NEXT_PUBLIC_FORGE_DEV (WEB-05).
+  it('a testnet build offers both testnet faucets, the official one first (WEB-05, OD-12)', () => {
+    expect(faucetUrl()).toBe('https://faucet.testnet.networks.dash.org')
+    act(() => useUiStore.getState().openTopUp())
+    expect(q('[data-testid="identity-top-up"]')!.dataset['faucet']).toBe(
+      'https://faucet.testnet.networks.dash.org https://faucet.thepasta.org',
+    )
+  })
+})
+
+describe('FaucetLinks', () => {
+  it('links the first faucet as the main link and the others as "or <host>"', () => {
+    act(() => root.render(<FaucetLinks urls={['https://faucet.testnet.networks.dash.org', 'https://faucet.thepasta.org']} suffix=" (paste the address above)" />))
+    const links = [...document.querySelectorAll<HTMLAnchorElement>('[data-testid="faucet-links"] a')]
+    expect(links.map((a) => a.href)).toEqual(['https://faucet.testnet.networks.dash.org/', 'https://faucet.thepasta.org/'])
+    expect(links[0]!.textContent).toBe('Get test DASH from the testnet faucet')
+    expect(q('[data-testid="faucet-links"]')!.textContent).toBe(
+      'Get test DASH from the testnet faucet (paste the address above) or faucet.thepasta.org',
+    )
+  })
+
+  it('renders nothing when the network has no faucet (mainnet)', () => {
+    act(() => root.render(<FaucetLinks urls={[]} />))
+    expect(q('[data-testid="faucet-links"]')).toBeNull()
   })
 })

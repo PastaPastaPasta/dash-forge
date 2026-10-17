@@ -48,9 +48,9 @@ Writing requires a `maintainer` or `writer` membership document, which consensus
 
 Mechanics (verified: `fee/epoch/distribution.rs::calculate_storage_fee_refund_amount_and_leftovers`, `drive/document/delete`):
 
-- The 27,000/byte deposit is **spread across 2,000 epochs** (50 eras × 40 epochs; 1 epoch ≈ 18 days) per a fixed distribution table.
+- The 27,000/byte deposit is **spread across 2,000 epochs** (50 eras × 40 epochs) per a fixed distribution table (`FEE_DISTRIBUTION_TABLE`). On mainnet an epoch is about 9 days, so the schedule lasts about 50 years; on testnet an epoch is 1 hour, so it lasts about 83 days.
 - On document deletion, **every epoch share from `current_epoch + 1` onward is refunded** to the identity that paid (the document owner). Only the share already consumed by elapsed epochs — plus rounding leftovers — is kept.
-- Delete within weeks-to-months of writing → recover the overwhelming majority of the deposit (the elapsed slice of a 50-year schedule). The refund lands as identity credits, immediately spendable on the next push.
+- On mainnet, delete within weeks-to-months of writing → recover the overwhelming majority of the deposit (the elapsed slice of a 50-year schedule). On testnet the same schedule runs in about 83 days (a delete after 1 day gets back about 97 %, after 7 days about 80 %, after 30 days about 36 %, after about 83 days nothing), so UI copy says "refunds up to". The refund lands as identity credits, immediately spendable on the next push.
 - Processing fees (the ~412 credits/byte + bases) are never refunded — that's the true "cost of churn."
 
 Constraints:

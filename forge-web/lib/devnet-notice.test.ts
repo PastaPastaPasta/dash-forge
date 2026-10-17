@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 
 import type { NetworkConfig } from './constants'
-import { devnetNoticeCopy, devnetNoticeDismissKey, devnetNoticeFor, parseDevnetNotice, writesPausedReason } from './devnet-notice'
+import { FORGE_HOME, devnetNoticeCopy, devnetNoticeDismissKey, devnetNoticeFor, parseDevnetNotice, parseMoveTo, writesPausedReason } from './devnet-notice'
+import { parsePagesNotice } from './pages-notice'
 
 const BONSIA: NetworkConfig = {
   network: 'devnet',
@@ -56,7 +57,56 @@ describe('writesPausedReason', () => {
   })
 })
 
+describe('writesPausedReason with the operator pause', () => {
+  const paused = parsePagesNotice({ mode: 'paused', text: 'Fixing a signing bug.', url: undefined })
+  const advisory = parsePagesNotice({ mode: 'advisory', text: undefined, url: undefined })
+
+  it('the operator pause turns writes off on any network, with its reason', () => {
+    expect(writesPausedReason(null, paused)).toBe('Writing is paused: Fixing a signing bug.')
+    expect(writesPausedReason('upcoming', paused)).toBe('Writing is paused: Fixing a signing bug.')
+  })
+
+  it('an advisory alone pauses nothing, and the devnet notice still applies beside it', () => {
+    expect(writesPausedReason(null, advisory)).toBeNull()
+    expect(writesPausedReason('moving', advisory)).toMatch(/^Writing is paused: this devnet was retired/)
+  })
+
+  it('the operator pause wins over the devnet move wording', () => {
+    expect(writesPausedReason('moving', paused)).toBe('Writing is paused: Fixing a signing bug.')
+  })
+})
+
+describe('parseMoveTo (WEB-16)', () => {
+  it('is none when unset or empty', () => {
+    expect(parseMoveTo(undefined)).toBeNull()
+    expect(parseMoveTo('')).toBeNull()
+  })
+
+  it('names testnet, mainnet or another devnet', () => {
+    expect(parseMoveTo('testnet')?.label).toBe('testnet')
+    expect(parseMoveTo(' Mainnet ')?.label).toBe('mainnet')
+    expect(parseMoveTo('devnet-sakura')?.label).toBe('devnet sakura')
+  })
+
+  it('a typo fails the build', () => {
+    expect(() => parseMoveTo('test-net')).toThrow(/NEXT_PUBLIC_DEVNET_MOVE_TO "test-net"/)
+    expect(() => parseMoveTo('devnet-')).toThrow(/NEXT_PUBLIC_DEVNET_MOVE_TO/)
+  })
+})
+
 describe('copy and dismissal', () => {
+  it('upcoming names a testnet destination when the build has one', () => {
+    expect(devnetNoticeCopy('upcoming', 'sakura', parseMoveTo('testnet')).lead).toBe('sakura is moving to testnet soon.')
+    expect(devnetNoticeCopy('upcoming', 'sakura', null).lead).toBe('sakura is moving to a new devnet soon.')
+  })
+
+  it('moving names where Forge is, devnet or not', () => {
+    const c = devnetNoticeCopy('moving', 'sakura', null, { label: 'testnet', platform: null })
+    expect(c.lead).toBe('Dash Forge moved to testnet; sakura was retired.')
+    expect(c.body).toContain('Once the testnet build is live')
+    expect(FORGE_HOME.label).toBe('devnet sakura')
+  })
+
   it('upcoming says what is wiped and what to do', () => {
     const c = devnetNoticeCopy('upcoming', 'bonsia')
     expect(c.lead).toBe('bonsia is moving to a new devnet soon.')
