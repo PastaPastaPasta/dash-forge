@@ -43,7 +43,8 @@ export async function roleClaim(
   // R-19 (the testnet freeze): a chunk on the four-contract set claims no role, since its gate names
   // the roles it admits by a literal, but the signer's role is still checked before signing.
   const claims = await contractHasProperty(sdk, contractOf(repo.forge, documentType), documentType, ROLE_CLAIM)
-  if (!claims && !(documentType === DOC.chunk && (await contractHasProperty(sdk, contractOf(repo.forge, DOC.writer), DOC.writer, WRITER_ROLE)))) return {}
+  const checksRole = claims || (documentType === DOC.chunk && (await contractHasProperty(sdk, contractOf(repo.forge, DOC.writer), DOC.writer, WRITER_ROLE)))
+  if (!checksRole) return {}
   // The author's operand admits it whatever the signer's role: no membership read is needed.
   if (documentType === DOC.transition && Number(data['asAuthor'] ?? 0) > 0) return { r: 1 }
   const claim = async (): Promise<{ readonly r?: number }> => {

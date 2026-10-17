@@ -10,8 +10,8 @@
 import type { Network } from '../constants'
 import type { ForgeIds } from '../deployments'
 import type { WasmKey } from '../sdk/facade'
-import { contractKind, forgeContractIds } from '../deployments'
-import { keyScope } from './key-registration'
+import { contractKind } from '../deployments'
+import { isForgeContract, keyScope } from './key-registration'
 
 /** What a key is, in the words Devices & keys uses. */
 export type KeyRole = 'master' | 'forge' | 'forge-contract' | 'signing' | 'encryption' | 'transfer' | 'other'
@@ -77,7 +77,7 @@ export function keyKindOf(k: Bounded, forge: ForgeIds | undefined): KeyKind {
   if (forge === undefined) return 'other'
   const hasBudget = k.totalBudget !== undefined
   if (b.$type === 'contractGroup') return b.id === forge.group ? (hasBudget ? 'forge-limited' : 'wallet') : 'other'
-  const ours = forgeContractIds(forge).includes(b.id)
+  const ours = isForgeContract(forge, b.id)
   if (b.$type === 'singleContract') return ours ? 'wallet' : 'other'
   if (b.$type === 'documentType') return ours ? 'ci-runner' : 'other'
   return 'other'
