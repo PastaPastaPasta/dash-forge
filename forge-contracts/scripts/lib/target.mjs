@@ -274,22 +274,21 @@ export function sdkOptions(target, { addresses, settings } = {}) {
   return options;
 }
 
-/** The three-contract (core, collab, community) ids of a record, as rc1-live reads them. */
-export function threeContractIds(rec) {
-  return { core: rec.v2?.forgeCore?.contractId, collab: rec.v2?.forgeCollab?.contractId, community: rec.v2?.forgeCommunity?.contractId };
-}
-
 /**
- * rc1-live and rc1-empty-aggregates write the three-contract RC1 layout. A four-contract record
- * (forge-meta, the mainnet set) moves seven types out of forge-core; those tools do not route
- * them yet (QA-03), so they stop here instead of failing case by case.
+ * The forge-v2 contract ids a record names, by contract: core, collab and community, and meta on a
+ * four-contract record (forge-meta, the mainnet set). Throws when one of the three is missing, or a
+ * forge-meta entry has no id (a half-finished deploy). rc1-live and rc1-empty-aggregates route each
+ * document type by what the fetched contracts declare, so either layout works (QA-03).
  */
-export function requireThreeContract(target, tool) {
-  if (!target.fourContract) return;
-  throw new Error(
-    `${target.recordFile} records a four-contract set (forge-meta is registered). ${tool} writes the three-contract RC1 ` +
-      'layout and has no routing for the types the mainnet set moves to forge-meta (QA-03, not landed yet). Use mv-live.mjs for a four-contract set.',
-  );
+export function contractIds(target) {
+  const v2 = target.record?.v2 ?? {};
+  const ids = { core: v2.forgeCore?.contractId, collab: v2.forgeCollab?.contractId, community: v2.forgeCommunity?.contractId };
+  if (!ids.core || !ids.collab || !ids.community) throw new Error(`${target.recordFile} records no forge-v2 contracts (forge-core, forge-collab and forge-community under v2)`);
+  if (v2.forgeMeta !== undefined) {
+    if (!v2.forgeMeta?.contractId) throw new Error(`${target.recordFile} records forge-meta without a contract id: a half-finished deploy`);
+    ids.meta = v2.forgeMeta.contractId;
+  }
+  return ids;
 }
 
 /**

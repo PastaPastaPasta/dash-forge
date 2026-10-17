@@ -7,12 +7,16 @@
 //     written so far (40120);
 //   * every `propertyConstraints` rule that reads a total (`countOf` / `sumOf`: dense,
 //     c1..c6, lockGate, platformChunks, oneLive, atMost20), counting the new document (10422);
-//   * `distinctFrom` (10419) and unique indices (40105).
-// The JSON schema, `maxBytes` and every other rule are left to rs-dpp: `seed-offline.mjs` writes
-// each document as an rc1 vector for `contract-validate --vectors`.
+//   * every rule that reads the time (`$createdAt` / `$updatedAt`: notFuture), against the clock;
+//   * `distinctFrom` (10419) and unique indices (40105);
+//   * a delete: `canBeDeleted` (10404) and `deleteConstraints` (40147).
+// The JSON schema, `maxBytes`, `immutable` and every other rule are left to rs-dpp: `seed-offline.mjs`
+// and `rc1-live.mjs --offline` write each document as an rc1 vector for `contract-validate --vectors`.
 //
-// Documents are created as the scripts call `documents.create`. Reads (`query`, `count`,
-// `ranked`) answer from the same store with `==` filters only.
+// Documents are created and replaced as the scripts call `documents.create` / `replace`. Reads
+// (`query`, `count`, `ranked`, and the proved forms rc1-live.mjs and rc1-empty-aggregates.mjs read:
+// `queryWithProof`, `countWithProof`, `sumWithProof`, `averageWithProof`, grouped or not) answer from the same store with `==`, `in` and
+// range filters.
 
 import { createHash } from 'node:crypto';
 
@@ -60,6 +64,8 @@ function normalize(v) {
 const hexOfId = (b58) => b58decode(b58).toString('hex');
 const get = (view, path) => path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), view);
 const compare = (p, q) => (p < q ? -1 : p > q ? 1 : 0);
+/** Whether a rule reads chain state the vectors cannot give it: a total (`countOf` / `sumOf`) or the time. */
+export const readsChainState = (expr) => /"(countOf|sumOf|\$createdAt|\$updatedAt)"/.test(JSON.stringify(expr));
 
 /**
  * A document's data in the rc1 vector notation: identifiers as base58 `$id`, other bytes as `$hex`.
@@ -81,6 +87,7 @@ export function vectorDoc(type, data, set = DEFAULT_SET) {
 class Refusal extends Error {
   constructor(code, rule, detail) {
     super(`${code} ${rule}: ${detail}`);
+    this.name = 'Refusal';
     this.code = code;
     this.rule = rule;
   }
@@ -219,15 +226,17 @@ export class OfflineChain {
   /**
    * The first chain-state rule `doc` breaks, as a Refusal, or null. The checks run in the
    * chain's order: the rules (by name), distinctFrom, unique indices, ownerRefersTo, then each
-   * property's references.
+   * property's references. `replacing` is the stored document a replace writes over: it is not
+   * counted beside its new revision.
    */
-  judge(doc) {
+  judge(doc, replacing = undefined) {
     const { type, view } = doc;
     const schema = this.lookup.schemaOf(type);
-    const pool = (t) => [...this.live(t), ...(t === type ? [doc] : [])];
+    const others = (t) => this.live(t).filter((d) => d !== replacing);
+    const pool = (t) => [...others(t), ...(t === type ? [doc] : [])];
     for (const [rule, expr] of Object.entries(schema.propertyConstraints ?? {}).sort(([p], [q]) => (p < q ? -1 : p > q ? 1 : 0))) {
-      const text = JSON.stringify(expr);
-      if (!text.includes('"countOf"') && !text.includes('"sumOf"')) continue;
+      // (rs-dpp judges the rest offline; a total or the time needs the chain)
+      if (!readsChainState(expr)) continue;
       if (!this.evaluate(expr, view, pool)) return new Refusal(10422, rule, `${type} breaks ${rule}`);
     }
     const props = Object.entries(schema.properties ?? {})
@@ -240,7 +249,7 @@ export class OfflineChain {
       if (!index.unique) continue;
       const keys = index.properties.map((p) => Object.keys(p)[0]);
       if (keys.some((k) => get(view, k) === undefined)) continue;
-      if (this.live(type).some((t) => keys.every((k) => get(t.view, k) === get(view, k)))) {
+      if (others(type).some((t) => keys.every((k) => get(t.view, k) === get(view, k)))) {
         return new Refusal(40105, `${type}.${index.name}`, 'a document with these values exists');
       }
     }
@@ -270,12 +279,13 @@ export class OfflineChain {
       ...normalize(document.data),
       $id: hexOfId(id),
       $ownerId: hexOfId(owner),
+      $revision: 1,
       $createdAt: Date.now(),
       $updatedAt: Date.now(),
       $createdAtBlockHeight: height,
       $updatedAtBlockHeight: height,
     };
-    const doc = { id, type, owner, data: document.data, view, seq: this.docs.length };
+    const doc = { id, type, contractId, owner, data: document.data, view, revision: 1, seq: this.docs.length };
     const why = expectedRefusal();
     const refusal = this.judge(doc);
     this.records.push({ script: this.script, type, owner, data: document.data, why, refusal });
@@ -287,6 +297,39 @@ export class OfflineChain {
     return this.view(doc);
   }
 
+  /**
+   * A replace of a stored document by its owner, as the next revision: the chain-state rules are
+   * judged on the new data (`immutable` is rs-dpp's, judged on a replace vector).
+   */
+  replace({ document }) {
+    const id = document.id?.toBase58?.() ?? document.meta?.id;
+    const doc = this.docs.find((d) => d.id === id && !d.deleted);
+    if (!doc) throw new Refusal(40101, 'replace', `no document ${id} to replace`);
+    if (document.meta.owner !== doc.owner) throw new Refusal(40102, 'replace', 'only the owner replaces a document');
+    const revision = doc.revision + 1;
+    if (document.revision !== undefined && Number(document.revision) !== revision) throw new Refusal(40103, 'replace', `revision ${document.revision}, expected ${revision}`);
+    const height = this.height++;
+    const next = { ...doc, data: document.data, revision, view: { ...doc.view, ...normalize(document.data), $revision: revision, $updatedAt: Date.now(), $updatedAtBlockHeight: height } };
+    for (const k of Object.keys(doc.data)) if (!(k in document.data)) delete next.view[k];
+    const refusal = this.judge({ ...next, view: next.view }, doc);
+    if (refusal) throw refusal;
+    Object.assign(doc, next);
+    return this.view(doc);
+  }
+
+  /** A delete by the owner: refused when the type cannot be deleted (10404) or a `deleteConstraints` rule fails (40147, DocumentDeleteConstraintViolatedError). */
+  delete({ document }) {
+    const id = document.id?.toBase58?.() ?? document.id;
+    const doc = this.docs.find((d) => d.id === id && !d.deleted);
+    if (!doc) throw new Refusal(40101, 'delete', `no document ${id} to delete`);
+    const schema = this.lookup.schemaOf(doc.type);
+    if (schema.canBeDeleted === false) throw new Refusal(10404, `${doc.type}.canBeDeleted`, `a ${doc.type} can not be deleted`);
+    for (const [rule, expr] of Object.entries(schema.deleteConstraints ?? {})) {
+      if (!this.evaluate(expr, doc.view, (t) => this.live(t))) throw new Refusal(40147, rule, `this ${doc.type} can not be deleted`);
+    }
+    doc.deleted = true;
+  }
+
   view(doc) {
     const json = () => {
       const out = { $id: doc.id, $ownerId: doc.owner, $createdAt: doc.view.$createdAt };
@@ -295,20 +338,38 @@ export class OfflineChain {
       }
       return out;
     };
-    return { id: { toBase58: () => doc.id }, toJSON: json };
+    // As evo-sdk's Document#toObject: the data with bytes as bytes, and what Document.fromObject
+    // needs to rebuild it as the next revision (`$revision`)
+    // (a snapshot: a later replace does not change a document already read)
+    const { data, revision } = doc;
+    const object = () => ({ __meta: { type: doc.type, contractId: doc.contractId, owner: doc.owner, id: doc.id }, ...data, $revision: BigInt(revision) });
+    return { id: { toBase58: () => doc.id }, toJSON: json, toObject: object };
+  }
+
+  /**
+   * A query operand as the chain stores it: an identifier from base58, a byte array from base64
+   * (or base58, which the SDK takes for a 32-byte field too: the one that gives the field's size).
+   */
+  operand(type, f, v) {
+    if (this.lookup.isIdentifier(type, f)) return hexOfId(v);
+    if (!this.lookup.isBytes(type, f)) return v;
+    if (typeof v !== 'string') return Buffer.from(v).toString('hex');
+    const s = this.lookup.propSchema(type, f);
+    const size = s.size ?? (s.minItems === s.maxItems ? s.minItems : undefined);
+    const b64 = Buffer.from(v, 'base64');
+    if (size === undefined || b64.length === size) return b64.toString('hex');
+    return b58decode(v).toString('hex');
   }
 
   select({ dataContractId, documentTypeName, where = [], orderBy = [], startAfter, limit }) {
     const type = this.typeIn(dataContractId, documentTypeName);
-    const operand = (f, v) => {
-      if (this.lookup.isIdentifier(type, f)) return hexOfId(v);
-      if (this.lookup.isBytes(type, f)) return Buffer.from(v, 'base64').toString('hex');
-      return v;
-    };
+    const test = { '==': (p, q) => p === q, '>': (p, q) => p > q, '>=': (p, q) => p >= q, '<': (p, q) => p < q, '<=': (p, q) => p <= q };
     let rows = this.live(type).filter((d) =>
       where.every(([f, op, v]) => {
-        if (op !== '==') throw new Error(`offline chain: where operator ${op} is not modelled`);
-        return get(d.view, f) === operand(f, v);
+        const got = get(d.view, f);
+        if (op === 'in') return v.map((x) => this.operand(type, f, x)).includes(got);
+        if (!test[op]) throw new Error(`offline chain: where operator ${op} is not modelled`);
+        return got !== undefined && test[op](got, this.operand(type, f, v));
       }),
     );
     for (const [f, dir] of [...orderBy].reverse()) {
@@ -317,6 +378,25 @@ export class OfflineChain {
     }
     if (startAfter) rows = rows.slice(rows.findIndex((d) => d.id === startAfter) + 1);
     return limit ? rows.slice(0, limit) : rows;
+  }
+
+  /**
+   * A proved aggregate's map: one entry per `groupBy` value (absent groups absent), keyed as the
+   * node keys it (hex: an identifier's or byte array's bytes, an integer's big-endian bytes, one
+   * byte below 256) in key order, or one entry for an ungrouped query. `value(rows)` folds a group.
+   */
+  aggregate(q, value) {
+    const type = this.typeIn(q.dataContractId, q.documentTypeName);
+    const rows = this.select({ ...q, orderBy: [], limit: undefined });
+    const groups = new Map();
+    const keyOf = (d) => (q.groupBy ?? []).map((f) => {
+      const v = get(d.view, f);
+      if (typeof v === 'number') return v < 256 ? v.toString(16).padStart(2, '0') : BigInt(v).toString(16).padStart(16, '0');
+      return this.lookup.isIdentifier(type, f) || this.lookup.isBytes(type, f) ? v : Buffer.from(String(v)).toString('hex');
+    }).join('');
+    for (const d of rows) groups.set(keyOf(d), [...(groups.get(keyOf(d)) ?? []), d]);
+    if ((q.groupBy ?? []).length === 0 && groups.size === 0) groups.set('', []);
+    return new Map([...groups].sort(([p], [q]) => compare(p, q)).map(([k, g]) => [k, value(g)]));
   }
 
   /** The evo-sdk module stand-in: the classes and the `EvoSDK` the scripts construct. */
@@ -330,25 +410,26 @@ export class OfflineChain {
         this.data = {};
       }
       toObject() {
-        return { __meta: this.meta };
+        return { __meta: this.meta, ...this.data, ...(this.revision !== undefined ? { $revision: this.revision } : {}) };
       }
-      static fromObject({ __meta, ...data }) {
+      static fromObject({ __meta, $revision, ...data }) {
         const d = new Document({ documentTypeName: __meta.type, dataContractId: __meta.contractId, ownerId: __meta.owner }, __meta.id);
         d.data = data;
+        d.revision = $revision;
         return d;
       }
     }
+    const sum = (rows, prop) => rows.reduce((s, d) => s + BigInt(d.view[prop] ?? 0), 0n);
     const documents = {
       create: async (args) => chain.create(args),
       query: async (q) => new Map(chain.select(q).map((d) => [d.id, chain.view(d)])),
       count: async (q) => new Map([['count', BigInt(chain.select(q).length)]]),
-      delete: async ({ document }) => {
-        const id = document.id?.toBase58?.() ?? document.id;
-        const doc = chain.docs.find((d) => d.id === id && !d.deleted);
-        if (!doc) throw new Error(`offline chain: no document ${id} to delete`);
-        if (chain.lookup.schemaOf(doc.type).canBeDeleted === false) throw new Error(`offline chain: a ${doc.type} cannot be deleted`);
-        doc.deleted = true;
-      },
+      replace: async (args) => chain.replace(args),
+      delete: async (args) => chain.delete(args),
+      queryWithProof: async (q) => ({ data: new Map(chain.select(q).map((d) => [d.id, chain.view(d)])) }),
+      countWithProof: async (q) => ({ data: chain.aggregate(q, (g) => BigInt(g.length)) }),
+      sumWithProof: async (q, prop) => ({ data: chain.aggregate(q, (g) => sum(g, prop)) }),
+      averageWithProof: async (q, prop) => ({ data: chain.aggregate(q, (g) => ({ count: BigInt(g.length), sum: sum(g, prop) })) }),
       ranked: async ({ dataContractId, documentTypeName, groupBy }) => {
         const counts = new Map();
         for (const d of chain.select({ dataContractId, documentTypeName })) {
@@ -370,11 +451,17 @@ export class OfflineChain {
       get contracts() {
         return { fetch: async (id) => ({ version: 1, schemas: chain.set.contracts[chain.contractName(id)].documentSchemas, getDocumentTypes: () => chain.set.contracts[chain.contractName(id)].documentSchemas }) };
       }
+      /** Identities are not modelled: every balance is the same, so no fee is measured offline. */
+      get identities() {
+        return { balance: async () => 0n };
+      }
     }
     class IdentityPublicKey {}
     class IdentitySigner {
       addKey() {}
     }
-    return { EvoSDK, Document, IdentityPublicKey, IdentitySigner, PrivateKey: { fromWIF: () => ({}) } };
+    const identifier = (b58) => ({ toBase58: () => b58, toBytes: () => new Uint8Array(b58decode(b58)) });
+    const Identifier = { fromBase58: identifier, fromBytes: (bytes) => identifier(b58encode(Buffer.from(bytes))) };
+    return { EvoSDK, Document, Identifier, IdentityPublicKey, IdentitySigner, PrivateKey: { fromWIF: () => ({}) } };
   }
 }

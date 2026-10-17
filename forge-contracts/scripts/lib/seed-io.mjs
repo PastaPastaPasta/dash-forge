@@ -107,7 +107,7 @@ export function withRole(type, data) {
 }
 
 /** The document schemas of a fetched contract, as the clients read them (`contract.schemas`). */
-function documentSchemasOf(fetched, id) {
+export function documentSchemasOf(fetched, id) {
   const schemas = fetched?.schemas ?? fetched?.toJSON?.().documentSchemas ?? fetched?.getDocumentTypes?.();
   if (!schemas || typeof schemas !== 'object') throw new Error(`contract ${id} was not found or carries no document schemas`);
   return schemas;
