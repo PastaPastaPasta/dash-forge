@@ -242,10 +242,11 @@ jobs:
       # four-contract registration and its record, resume after a crash, the nonce ledger, the set,
       # network and chain refusals, the testnet/mainnet preconditions and --force-new guard, the
       # same-id restore (--replay) after a Platform reset; and
-      # the snapshot script's record and target rules. No SDK, no network, no key.
+      # the snapshot script's record and target rules; and the P4 registration script's refusals and edits
+      # (p4-registration.mjs, run once after the owner's registration). No SDK, no network, no key.
       - name: Deploy script offline tests
         run: |
-          node --test forge-contracts/scripts/deploy-v2.test.mjs forge-contracts/scripts/deploy-v2-replay.test.mjs forge-contracts/scripts/snapshot-contracts.test.mjs
+          node --test forge-contracts/scripts/deploy-v2.test.mjs forge-contracts/scripts/deploy-v2-replay.test.mjs forge-contracts/scripts/snapshot-contracts.test.mjs forge-contracts/scripts/p4-registration.test.mjs
       # Offline: the seed-list refresher (M-DAPI, CONT-12) against a captured /masternodes body:
       # only protocol-14 nodes, the stale-node rules, and the shape of every recorded seed list.
       # The live probe is `refresh-dapi.mjs --network testnet --check`, run by hand or nightly.
