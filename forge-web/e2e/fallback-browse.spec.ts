@@ -8,7 +8,11 @@ import {
   repoUrl,
   shot,
   waitForRepoResolved,
+  skipWithoutFixture,
 } from './helpers'
+
+// needs the read fixture seeded on this network (e2e/network.ts)
+skipWithoutFixture()
 
 /**
  * In-browser fallback clone, on the forge-v2 read fixture (e2e/helpers.ts `DEMO`).

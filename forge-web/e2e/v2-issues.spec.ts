@@ -1,7 +1,9 @@
 import { test, expect, type Page, type Request } from '@playwright/test'
 import { existsSync } from 'node:fs'
-import { E2E_DEVNET, expectLanded, idFile, repoUrl, routeOf, shot, signedIn, waitForRepoResolved } from './helpers'
+import { E2E_DEVNET, expectLanded, idFile, repoUrl, routeOf, shot, signedIn, waitForRepoResolved, E2E_NETWORK } from './helpers'
 import { quorumGuard } from './quorum-sync'
+
+test.skip(E2E_NETWORK === 'testnet' && !process.env['E2E_F1_OWNER'], 'the issues-paging and f1-scratch repos are seeded per devnet (seed-issues-paging.mjs); testnet has none yet: set E2E_F1_OWNER and E2E_F1_COLLAB')
 
 // Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
 test.beforeEach(quorumGuard)

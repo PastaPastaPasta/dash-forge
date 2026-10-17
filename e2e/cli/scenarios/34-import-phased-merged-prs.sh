@@ -30,6 +30,7 @@ fi
 
 SRC=PastaPastaPasta/dash-fork-checker
 ID="${E2E_IMPORT_IDENTITY:-$ID_OWNER}"
+require_not_july "$ID"
 OWNER_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["identityId"])' "$ID")"
 NAME="$(printf 'e2e-phase-%s' "$RUN_ID" | tr '[:upper:]' '[:lower:]')"
 REPO="${OWNER_ID}/${NAME}"

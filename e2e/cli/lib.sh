@@ -268,7 +268,7 @@ git_dash_retry() { # git_dash_retry <identity_file> <logfile> <git args...>
 
 # --- shared remote-branch cleanup registry -----------------------------------
 # Scenarios register any branch/tag they create; run.sh (or the owning scenario)
-# deletes the ones still on the remote via DEPLOYER at the end.
+# deletes the ones still on the remote via OWNER (ID_OWNER) at the end.
 register_ref() { # register_ref <refname e.g. refs/heads/e2e/RUN/foo>
   [[ -n "${WORKROOT:-}" ]] || return 0
   printf '%s\n' "$1" >>"${WORKROOT}/cleanup-refs.txt"
@@ -276,7 +276,7 @@ register_ref() { # register_ref <refname e.g. refs/heads/e2e/RUN/foo>
 
 cleanup_refs() {
   [[ -n "${WORKROOT:-}" && -f "${WORKROOT}/cleanup-refs.txt" ]] || return 0
-  step "cleanup: deleting registered test refs (DEPLOYER)"
+  step "cleanup: deleting registered test refs (OWNER)"
   local scratch="${WORKROOT}/cleanup-repo"
   rm -rf "$scratch"; git init -q "$scratch" 2>/dev/null
   # Only refs the remote still advertises are deleted: a delete of an absent ref is NOT a
@@ -383,6 +383,45 @@ finish_scenario() {
 skip_scenario() {
   printf '%sSKIP%s  %s  — %s\n' "${C_YEL}" "${C_RST}" "${SCENARIO_NAME}" "$*" >&2
   exit 2
+}
+
+# na_scenario "reason": the scenario does not apply on this network (a ported check that does not
+# exist yet). Exit 3 and a marker file (E2E_NA_MARKER, set per scenario by run.sh): run.sh lists it
+# as N/A, outside the skip ceiling, only when the marker exists. An exit 3 from anything else (a
+# dg command's own code leaking out of a scenario) is a FAIL.
+na_scenario() {
+  printf '%sN/A%s   %s  — %s\n' "${C_DIM}" "${C_RST}" "${SCENARIO_NAME}" "$*" >&2
+  [[ -z "${E2E_NA_MARKER:-}" ]] || : >"$E2E_NA_MARKER"
+  exit 3
+}
+na_unless_devnet() { [[ "$DASH_FORGE_NETWORK" == devnet ]] || na_scenario "not on ${DASH_FORGE_NETWORK}: $*"; }
+
+# require_not_july <identity file>: on testnet, refuse an identity file of the July-era pool (public keys,
+# QA-05). config.sh checks OWNER, COLLAB and CONTRIB; a scenario that takes an identity from an
+# override (E2E_S25_IDENTITY, E2E_CI_RUNNER, ...) calls this on it. A no-op on a devnet.
+require_not_july() {
+  [[ "$DASH_FORGE_NETWORK" == testnet ]] || return 0
+  local id
+  id="$(_idid "$1")"
+  case " $JULY_POOL_IDS " in
+    *" ${id:-none} "*)
+      printf '%sFAIL%s  %s  — %s is the July-era testnet identity %s (public keys, QA-05); mint a fresh one\n' "${C_RED}" "${C_RST}" "${SCENARIO_NAME}" "$1" "$id" >&2
+      exit 1 ;;
+  esac
+}
+
+# require_mint_funding ["hint"]: a scenario that mints its own identity needs the network's funding
+# key (E2E_MINT_FUNDING, config.sh). On testnet a missing key FAILS the scenario: a silent skip there
+# once let a whole suite pass without minting anything (QA-05, QA-V-04). On a devnet it skips, and
+# run.sh's E2E_MAX_SKIPS ceiling bounds how many.
+require_mint_funding() {
+  [[ -r "$E2E_MINT_FUNDING" ]] && return 0
+  local why="no ${DASH_FORGE_NETWORK}${DASH_FORGE_DEVNET_NAME:+ ${DASH_FORGE_DEVNET_NAME}} funding key (set E2E_MINT_FUNDING to a readable WIF file; got '${E2E_MINT_FUNDING:-}')${1:+; $1}"
+  if [[ "$DASH_FORGE_NETWORK" == testnet ]]; then
+    printf '%sFAIL%s  %s  — %s\n' "${C_RED}" "${C_RST}" "${SCENARIO_NAME}" "$why" >&2
+    exit 1
+  fi
+  skip_scenario "$why"
 }
 
 # Seed a tiny throwaway git repo with N files + a tag in $1 (dir). Fresh, unrelated

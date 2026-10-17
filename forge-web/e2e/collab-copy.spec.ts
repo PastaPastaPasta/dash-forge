@@ -1,7 +1,10 @@
 import { test, expect, type Browser, type Page } from '@playwright/test'
 import { existsSync } from 'node:fs'
 
-import { expectLanded, idFile, idOrEmpty, loadSeedPulls, repoUrl, shot, signedIn, waitForRepoResolved } from './helpers'
+import { expectLanded, idFile, idOrEmpty, loadSeedPulls, repoUrl, shot, signedIn, waitForRepoResolved, skipWithoutFixture } from './helpers'
+
+// needs the read fixture seeded on this network (e2e/network.ts)
+skipWithoutFixture()
 
 /**
  * G17 (L-36, L-37, L-38): plurals, the follower / following lists, PR and issue copy, and the

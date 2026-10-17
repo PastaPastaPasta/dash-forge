@@ -25,6 +25,7 @@
 SCENARIO_NAME="24 fresh home: dg auth login → dg init → plain git push → dg repo clone (network from config.toml)"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
 harness_init
+na_unless_devnet "records and asserts a devnet in its dg and git config; no testnet port yet"
 
 : "${MINT_DIR:=${E2E_REPO_ROOT}/tools/mint-identity}"
 DEVNET="$DASH_FORGE_DEVNET_NAME"

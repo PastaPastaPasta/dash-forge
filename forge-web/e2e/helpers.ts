@@ -1,23 +1,44 @@
 import AxeBuilder from '@axe-core/playwright'
-import { expect, type Browser, type Locator, type Page, type ConsoleMessage, type Request } from '@playwright/test'
+import { expect, test, type Browser, type Locator, type Page, type ConsoleMessage, type Request } from '@playwright/test'
 import { homedir } from 'node:os'
 import { existsSync, mkdirSync, readFileSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import { canonicalOfShort } from '../lib/short-url'
+import {
+  E2E_NETWORK,
+  E2E_TARGET_NAME,
+  JULY_POOL_IDS,
+  deploymentFilePath,
+  dgEnv,
+  noFixtureReason,
+  sdkOptions,
+  skipsWithoutFixture,
+  skipsWithoutRegistration,
+} from './network'
 import { E2E_DEVNET, loadSeedPulls, seedRepo, type SeedPulls } from './seed-summary'
-export { E2E_DEVNET, loadSeedPulls, type SeedPulls }
+export { E2E_DEVNET, E2E_NETWORK, dgEnv, loadSeedPulls, type SeedPulls }
 
 /**
- * Stands in for a fixture owner when this devnet has no committed seed summary: a readable
+ * Stands in for a fixture owner when this network has no committed seed summary: a readable
  * value that no identity id can be, so a spec that needs the fixture fails naming the cause.
  */
-const UNSEEDED = `no-seed-summary-for-devnet-${E2E_DEVNET}`
+const UNSEEDED = `no-seed-summary-for-${E2E_TARGET_NAME}`
+
+/**
+ * Skip the spec file when the network under test has no read fixture (testnet until the
+ * registration commits `fixtures/testnet.json`; e2e/network.ts). Call it at the top of a spec that
+ * reads {@link DEMO}, {@link EMPTY} or {@link MAINTAINER}; lib/e2e-network.test.ts fails a spec
+ * that uses them without it. A no-op on a devnet with a committed fixture.
+ */
+export function skipWithoutFixture(): void {
+  test.skip(skipsWithoutFixture(), noFixtureReason())
+}
 
 /**
  * The MAINTAINER test identity: a maintainer of {@link DEMO} and the owner of {@link EMPTY}, as
- * the seed summary (`forge-contracts/deployments/fixtures/devnet-<E2E_DEVNET>.json`) records it.
+ * the seed summary (`forge-contracts/deployments/fixtures/<devnet-<E2E_DEVNET>|testnet>.json`) records it.
  */
 export const MAINTAINER = seedRepo('empty')?.owner ?? UNSEEDED
 
@@ -62,12 +83,30 @@ export function repoUrl(
 
 const ROOT = resolve(__dirname, '../..')
 
-/** The deployment record the build under test is made from (DAPI addresses, contract ids). */
+/** True when the deployment record of the network under test registers the forge-v2 contracts. */
+export function hasRegistration(): boolean {
+  try {
+    return Boolean(deployment().v2?.forgeCore?.contractId)
+  } catch {
+    return false
+  }
+}
+
+/** Skip the spec file until the network's deployment record carries a forge-v2 registration (testnet before the registration PR). */
+export function skipWithoutRegistration(): void {
+  test.skip(skipsWithoutRegistration(hasRegistration()), `forge-contracts/deployments/${E2E_TARGET_NAME}.json records no forge-v2 registration yet`)
+}
+
+/**
+ * The deployment record the build under test is made from (DAPI addresses, contract ids):
+ * `devnet-<E2E_DEVNET>.json`, or `testnet.json` with E2E_NETWORK=testnet (whose `v2` is absent until
+ * the registration commits it, so a spec reading it needs {@link skipWithoutFixture} too).
+ */
 export function deployment(): {
   dapiAddresses: string[]
   v2: { forgeCore: { contractId: string; contractGroupId: string }; forgeCollab: { contractId: string } }
 } {
-  return JSON.parse(readFileSync(join(ROOT, `forge-contracts/deployments/devnet-${E2E_DEVNET}.json`), 'utf8'))
+  return JSON.parse(readFileSync(deploymentFilePath(undefined, ROOT), 'utf8'))
 }
 
 /**
@@ -77,7 +116,7 @@ export function deployment(): {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function nodeSdk(): Promise<any> {
   const evo = await import(pathToFileURL(join(ROOT, 'forge-web/node_modules/@dashevo/evo-sdk/dist/evo-sdk.module.js')).href)
-  const sdk = new evo.EvoSDK({ network: 'devnet', trusted: true, devnetName: E2E_DEVNET, addresses: deployment().dapiAddresses })
+  const sdk = new evo.EvoSDK(sdkOptions(E2E_NETWORK === 'devnet' ? deployment().dapiAddresses : undefined))
   await sdk.connect()
   return sdk
 }
@@ -404,10 +443,32 @@ export async function runAxe(page: import('@playwright/test').Page, label: strin
  */
 const IDENTITY_DIR = process.env['E2E_IDENTITY_DIR'] || ''
 
-/** A devnet test identity file (~/.config/dash-forge/test-identities/devnet-<name>/, or E2E_IDENTITY_DIR). */
+const IDENTITIES_HOME = join(homedir(), '.config/dash-forge/test-identities')
+
+/**
+ * Testnet signs as no July-era identity (their keys are public, QA-05): neither one of the nine
+ * ids, nor a file sitting directly in test-identities/ (where the July pool lives).
+ */
+function refuseJulyIdentity(file: string): void {
+  if (E2E_NETWORK !== 'testnet') return
+  if (dirname(resolve(file)) === IDENTITIES_HOME) {
+    throw new Error(`${file}: the July-era testnet pool lives directly in ${IDENTITIES_HOME}; use E2E_IDENTITY_DIR or ${join(IDENTITIES_HOME, 'testnet-scratch')}`)
+  }
+  if (!existsSync(file)) return
+  const id = String((JSON.parse(readFileSync(file, 'utf8')) as { identityId?: string }).identityId ?? '')
+  if (JULY_POOL_IDS.includes(id)) throw new Error(`${file}: identity ${id} is a July-era testnet identity whose keys are public (QA-05); mint a fresh one`)
+}
+
+/**
+ * A test identity file: E2E_IDENTITY_DIR, else `~/.config/dash-forge/test-identities/devnet-<name>/`
+ * on a devnet and `.../testnet-scratch/` on testnet (never the July pool in test-identities/ itself).
+ */
 export function idFile(name: string): string {
-  if (IDENTITY_DIR) return join(IDENTITY_DIR, `${name}.identity.json`)
-  return join(homedir(), '.config/dash-forge/test-identities', `devnet-${E2E_DEVNET}`, `${name}.identity.json`)
+  const file = IDENTITY_DIR
+    ? join(IDENTITY_DIR, `${name}.identity.json`)
+    : join(IDENTITIES_HOME, E2E_NETWORK === 'testnet' ? 'testnet-scratch' : `devnet-${E2E_DEVNET}`, `${name}.identity.json`)
+  refuseJulyIdentity(file)
+  return file
 }
 
 /** The identity id recorded in {@link idFile}. */
@@ -449,7 +510,7 @@ export const PASSPHRASE = 'e2e passphrase for the vault'
 export function stateFile(name: string): string {
   // A spec's own identities (E2E_IDENTITY_DIR) must not reuse a fixture's saved vault.
   const who = IDENTITY_DIR ? `${name}-${idOf(name).slice(0, 8)}` : name
-  return join(__dirname, '.playwright', 'auth', `devnet-${E2E_DEVNET}-${who}.json`)
+  return join(__dirname, '.playwright', 'auth', `${E2E_TARGET_NAME}-${who}.json`)
 }
 
 /**
@@ -537,18 +598,18 @@ export async function expectLocked(page: Page): Promise<void> {
 }
 
 /**
- * The kept session record this origin holds for devnet (the IndexedDB row a reload picks up;
+ * The kept session record this origin holds for the network under test (the IndexedDB row a reload picks up;
  * lib/auth/session-resume.ts), or null when nothing is kept. Rejects on an IndexedDB error.
  */
 export function readKeptSession(page: Page): Promise<Record<string, unknown> | null> {
   return page.evaluate(
-    () =>
+    (network) =>
       new Promise<Record<string, unknown> | null>((resolve, reject) => {
         const req = indexedDB.open('dash-forge')
         req.onerror = () => reject(req.error)
         req.onsuccess = () => {
           const db = req.result
-          const get = db.transaction('vault').objectStore('vault').get('session:devnet')
+          const get = db.transaction('vault').objectStore('vault').get(`session:${network}`)
           get.onerror = () => {
             db.close()
             reject(get.error)
@@ -559,6 +620,7 @@ export function readKeptSession(page: Page): Promise<Record<string, unknown> | n
           }
         }
       }),
+    E2E_NETWORK,
   )
 }
 

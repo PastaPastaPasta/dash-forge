@@ -1,8 +1,12 @@
 import { test, expect } from '@playwright/test'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { collectPageErrors, countDocumentQueries, E2E_DEVNET, nodeSdk, shot } from './helpers'
+import { collectPageErrors, countDocumentQueries, E2E_DEVNET, nodeSdk, shot, skipWithoutRegistration } from './helpers'
+import { E2E_TARGET_NAME } from './network'
 import { quorumGuard } from './quorum-sync'
+
+// needs the forge-v2 registration recorded for this network (e2e/network.ts)
+skipWithoutRegistration()
 
 // Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
 test.beforeEach(quorumGuard)
@@ -78,7 +82,7 @@ test('t1. Trending this week matches a recount of the seeded stars in the window
 
   // The network's own answer, read in Node (independent of the app).
   const sdk = await nodeSdk()
-  const dep = JSON.parse(readFileSync(join(__dirname, '..', '..', 'forge-contracts', 'deployments', `devnet-${E2E_DEVNET}.json`), 'utf8'))
+  const dep = JSON.parse(readFileSync(join(__dirname, '..', '..', 'forge-contracts', 'deployments', `${E2E_TARGET_NAME}.json`), 'utf8'))
   const ranked = await sdk.documents.ranked({
     // starBeat is forge-community's since the RC1 split (a pre-split record has only forge-collab).
     dataContractId: (dep.v2.forgeCommunity ?? dep.v2.forgeCollab).contractId,

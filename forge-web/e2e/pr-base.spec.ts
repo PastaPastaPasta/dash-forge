@@ -1,5 +1,8 @@
 import { test, expect } from '@playwright/test'
-import { EMPTY, repoUrl, shot, waitForRepoResolved } from './helpers'
+import { EMPTY, repoUrl, shot, waitForRepoResolved, skipWithoutFixture } from './helpers'
+
+// needs the read fixture seeded on this network (e2e/network.ts)
+skipWithoutFixture()
 
 /**
  * D-501: a pull request can only be opened against a branch the repo has. Read-only against

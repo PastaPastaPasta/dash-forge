@@ -22,6 +22,7 @@ harness_init
 
 RUNNER="${E2E_CI_RUNNER:-${E2E_IDENTITY_DIR}/CI-RUNNER.identity.json}"
 [[ -f "$RUNNER" ]] || skip_scenario "no runner identity at $RUNNER (set E2E_CI_RUNNER)"
+require_not_july "$RUNNER"
 RUNNER_ID="$(_idid "$RUNNER")"
 REPO="${E2E_OWNER_ID}/${E2E_REPO_NAME}"
 LOG="${WORKROOT}/s35"

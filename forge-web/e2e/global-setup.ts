@@ -14,16 +14,20 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 
+import { E2E_DEVNET } from './network'
+
 export function refreshSpecKeys(authDir: string, identityDir: string, devnet: string, now = Date.now()): string[] {
   if (identityDir === '' || !existsSync(authDir) || !existsSync(identityDir)) return []
-  // The saved vault of identity X is `devnet-<devnet>-<NAME>-<first 8 of its id>.json`.
+  // The saved vault of identity X is `devnet-<devnet>-<NAME>-<first 8 of its id>.json` (`testnet-…` on testnet: devnet ''),
+  // the name e2e/helpers.ts `stateFile` gives it.
+  const target = devnet === '' ? 'testnet' : `devnet-${devnet}`
   const prefixes = new Set<string>()
   for (const f of readdirSync(identityDir)) {
     const m = /^([A-Z0-9_]+)\.identity\.json$/.exec(f)
     if (m === null) continue
     try {
       const id = String((JSON.parse(readFileSync(join(identityDir, f), 'utf8')) as { identityId?: string }).identityId ?? '')
-      if (id !== '') prefixes.add(`devnet-${devnet}-${m[1]}-${id.slice(0, 8)}.json`)
+      if (id !== '') prefixes.add(`${target}-${m[1]}-${id.slice(0, 8)}.json`)
     } catch {
       /* not an identity file */
     }
@@ -41,7 +45,7 @@ export function refreshSpecKeys(authDir: string, identityDir: string, devnet: st
 
 export default function globalSetup(): void {
   if (process.env['E2E_KEEP_KEYS'] === '1') return
-  const moved = refreshSpecKeys(join(__dirname, '.playwright', 'auth'), process.env['E2E_IDENTITY_DIR'] || '', process.env['E2E_DEVNET'] || 'sakura')
+  const moved = refreshSpecKeys(join(__dirname, '.playwright', 'auth'), process.env['E2E_IDENTITY_DIR'] || '', E2E_DEVNET)
   // eslint-disable-next-line no-console -- the run log says which keys were renewed
   if (moved.length > 0) console.log(`[e2e] fresh browser keys this run: moved ${moved.length} saved vault(s) aside (${moved.join(', ')})`)
 }

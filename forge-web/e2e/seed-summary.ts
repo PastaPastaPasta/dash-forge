@@ -12,12 +12,11 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs'
-import { join, resolve } from 'node:path'
 
-/** The devnet the build under test (or the live test) reads. Keep in step with playwright.config.ts. */
-export const E2E_DEVNET = process.env['E2E_DEVNET'] || 'sakura'
+import { E2E_DEVNET, fixtureFilePath, noFixtureReason } from './network'
 
-const ROOT = resolve(__dirname, '../..')
+/** The devnet the build under test (or the live test) reads; '' on testnet (E2E_NETWORK, e2e/network.ts). */
+export { E2E_DEVNET }
 
 /** The DEMO fixture's PR numbers, dense and shared with its issues (seed-v2-fixture.mjs). */
 export interface SeedPulls {
@@ -40,7 +39,7 @@ let cached: SeedPulls | null = null
 /** The summary files to read, in order: `$FORGE_SEED_SUMMARY` if set, then the committed one. */
 function summaryPaths(): string[] {
   const envPath = process.env['FORGE_SEED_SUMMARY']
-  const defaultPath = join(ROOT, `forge-contracts/deployments/fixtures/devnet-${E2E_DEVNET}.json`)
+  const defaultPath = fixtureFilePath()
   return envPath ? [envPath, defaultPath] : [defaultPath]
 }
 
@@ -82,7 +81,7 @@ export function seedRepo(which: 'demo' | 'empty'): { readonly owner: string; rea
 
 /**
  * The DEMO fixture's `pulls` numbers. Reads, in order, `$FORGE_SEED_SUMMARY` if set, then
- * `forge-contracts/deployments/fixtures/devnet-<E2E_DEVNET>.json` (repo-root relative); the
+ * `forge-contracts/deployments/fixtures/<devnet-<E2E_DEVNET>|testnet>.json` (repo-root relative); the
  * first one that exists on disk wins. Never reads `~/.cache` (that is the seeder's own
  * resumable-run state, not its committed output).
  *
@@ -107,6 +106,6 @@ export function loadSeedPulls(): SeedPulls {
     return pulls
   }
   throw new Error(
-    `no seed summary found — tried ${tried.join(', ')}: the seed summary must carry \`pulls\`. Set $FORGE_SEED_SUMMARY to seed-v2-fixture.mjs's JSON output, or commit forge-contracts/deployments/fixtures/devnet-${E2E_DEVNET}.json`,
+    `no seed summary found — tried ${tried.join(', ')}: the seed summary must carry \`pulls\`. Set $FORGE_SEED_SUMMARY to seed-v2-fixture.mjs's JSON output, or commit ${fixtureFilePath()} (${noFixtureReason()})`,
   )
 }

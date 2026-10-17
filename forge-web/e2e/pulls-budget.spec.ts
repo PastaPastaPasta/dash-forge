@@ -1,6 +1,9 @@
 import { test, expect, type Browser, type Page, type Request } from '@playwright/test'
-import { collectPageErrors, DAPI_METHOD, decodeDocumentsRequest, E2E_DEVNET, loadSeedPulls, repoUrl, shot, showcaseRepo, waitForRepoResolved } from './helpers'
+import { collectPageErrors, DAPI_METHOD, decodeDocumentsRequest, E2E_DEVNET, loadSeedPulls, repoUrl, shot, showcaseRepo, waitForRepoResolved, skipWithoutFixture } from './helpers'
 import { quorumGuard } from './quorum-sync'
+
+// needs the read fixture seeded on this network (e2e/network.ts)
+skipWithoutFixture()
 
 // Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
 test.beforeEach(quorumGuard)

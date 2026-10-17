@@ -1,7 +1,10 @@
 import { test, expect } from '@playwright/test'
 import { SNAPSHOT_KEYS } from '../lib/sdk/contract-seed'
-import { E2E_DEVNET, collectPageErrors, countDapi, loadSeedPulls, repoUrl as url, shot, waitForRepoResolved } from './helpers'
+import { E2E_DEVNET, collectPageErrors, countDapi, loadSeedPulls, repoUrl as url, shot, waitForRepoResolved, skipWithoutFixture } from './helpers'
 import { quorumGuard } from './quorum-sync'
+
+// needs the read fixture seeded on this network (e2e/network.ts)
+skipWithoutFixture()
 
 // Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
 test.beforeEach(quorumGuard)

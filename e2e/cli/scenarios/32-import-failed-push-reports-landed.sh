@@ -28,6 +28,7 @@ if ! command -v gh >/dev/null || { [[ -z "${GH_TOKEN:-}" ]] && ! gh auth token >
 fi
 
 ID="${E2E_IMPORT_IDENTITY:-$ID_OWNER}"
+require_not_july "$ID"
 NAME="$(printf 'e2e-imp-fail-%s' "$RUN_ID" | tr '[:upper:]' '[:lower:]')"
 SRC=sindresorhus/is-wsl
 WORK="${WORKROOT}/s32-work"
