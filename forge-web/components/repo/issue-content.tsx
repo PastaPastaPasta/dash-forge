@@ -653,8 +653,9 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
               </div>
             </div>
           ) : (
-            <div className="flex items-start gap-3">
-              <h1 className="flex-1 text-2xl">
+            <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
+              {/* on a phone the title takes the row and the actions wrap below it, not past the page's edge */}
+              <h1 className="min-w-0 basis-full break-words text-2xl sm:flex-1">
                 {issue.title || '(untitled)'} <span className="font-mono font-normal text-anvil-500 dark:text-anvil-400" data-testid="issue-number">{numberLabel(issue.number, shownUpstreamNumber(issue, home.repo, members))}</span>
               </h1>
               {isAuthor ? (
