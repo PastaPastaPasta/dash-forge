@@ -6,11 +6,13 @@
 # races), plus the shared CONTRIB as a reader who never joins.
 #
 #   1. P_OWNER `dg repo create --private`, pushes main and a feature branch, adds P_MEMBER
-#   2. P_OWNER opens an issue and a PR (feature → main); with dense numbering (issues and PRs
+#   2. P_OWNER opens an issue and a PR (feature → main) and defines a label (a definition is
+#      plaintext, §7; `issue label add` refuses an undefined label); with dense numbering (issues and PRs
 #      share one number sequence per repo) the PR is not #1 — both scripts read their numbers
 #      back from `dg ... create`'s own JSON rather than assuming any. P_MEMBER comments on the
 #      issue, labels it, and approves the PR with a body
-#   3. the stored documents carry no plaintext title, body, branch name, path or label name:
+#   3. the stored documents carry no plaintext title, body, branch name, path or label put on
+#      an issue (the label's definition is not among them):
 #      every one has `epoch` + `enc`, and the PR's base hash is not sha256("refs/heads/main")
 #   4. P_MEMBER reads the issue (title, body, comment, label) and the PR (title, base, approval);
 #      CONTRIB (never a member) is refused (E307) and lists nothing readable
@@ -98,6 +100,12 @@ if dg_as "$P_OWNER" -y --json issue create "$REPO" --title "$ISSUE_TITLE" --body
   ok "opened issue #$ISSUE and PR #$PR"
 else
   cat "$LOG-issue.err" "$LOG-issue.json" "$LOG-pr.err" "$LOG-pr.json" >&2; bad "opening failed"; finish_scenario
+fi
+# `dg issue label add` refuses a label the repository does not define (E102). A definition is
+# plaintext even here (docs/security/private-repos.md §7: names and descriptions are not
+# encrypted in this release); the label put on an issue is what is sealed (the event value).
+if ! dg_as "$P_OWNER" -y --json label create "$REPO" "$LABEL" >"$LOG-ldef.json" 2>"$LOG-ldef.err"; then
+  cat "$LOG-ldef.err" "$LOG-ldef.json" >&2; bad "label definition failed"; finish_scenario
 fi
 if dg_as "$P_MEMBER" -y --json issue comment "$REPO" "$ISSUE" --body "member comment ${RUN_ID}" >"$LOG-com.json" 2>"$LOG-com.err" \
    && dg_as "$P_MEMBER" -y --json issue label "$REPO" "$ISSUE" --add "$LABEL" >"$LOG-lab.json" 2>"$LOG-lab.err" \

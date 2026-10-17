@@ -7,7 +7,8 @@
 #   4. COLLAB (not the author, not a member) tries to close it:
 #        a. dg refuses before signing                      -> E601, nothing paid
 #        b. with the pre-check off, consensus refuses the `transition` -> 40120 on $ownerId
-#   5. OWNER (maintainer) labels it and comments           -> label reads back
+#   5. OWNER (maintainer) defines a label (`issue label add` refuses an undefined one, E102),
+#      labels the issue and comments                      -> label reads back
 #   6. OWNER closes it as a member (a transition, asAuthor 0) -> reads closed
 #
 # COLLAB is left a non-member here (scenario 04 always ends with it revoked).
@@ -19,6 +20,7 @@ harness_init
 REPO="${E2E_OWNER_ID}/${E2E_REPO_NAME}"
 LOG="${WORKROOT}/s09"
 TITLE="e2e ${RUN_ID} issue"
+LABEL="e2e09-${RUN_ID: -8}"  # unique per run and scenario (22 lists by its own label): the suite repo is shared
 
 jq_py() { python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print($2)" "$1"; }
 
@@ -88,11 +90,14 @@ else
 fi
 check "still open" wait_open "$N" true
 
-step "OWNER (maintainer) labels and comments"
-if dg_write "$ID_OWNER" "$LOG-label" issue label "$REPO" "$N" --add e2e; then
+step "OWNER (maintainer) defines a label, labels and comments"
+if ! dg_write "$ID_OWNER" "$LOG-ldef" label create "$REPO" "$LABEL" --color "#1d76db" --description "e2e scenario 09"; then
+  cat "$LOG-ldef.json" >&2; bad "label create failed"
+fi
+if dg_write "$ID_OWNER" "$LOG-label" issue label "$REPO" "$N" --add "$LABEL"; then
   labeled() {
     dg_read_retry "$ID_OWNER" "$LOG-lv.json" "$LOG-lv.err" --json issue view "$REPO" "$N" \
-      && [[ "$(jq_py "$LOG-lv.json" '",".join(d["labels"])')" == *e2e* ]]
+      && [[ "$(jq_py "$LOG-lv.json" '",".join(d["labels"])')" == "$LABEL" ]]
   }
   lab=1; for _ in $(seq 1 10); do labeled && { lab=0; break; }; sleep 3; done
   check "label reads back" test "$lab" -eq 0
@@ -112,5 +117,8 @@ if dg_write "$ID_OWNER" "$LOG-mclose" issue close "$REPO" "$N"; then
 else
   cat "$LOG-mclose.json" >&2; bad "member close failed"
 fi
+
+# Leave the shared suite repo without this run's label definition.
+dg_write "$ID_OWNER" "$LOG-ldel" label delete "$REPO" "$LABEL" || { cat "$LOG-ldel.json" >&2; bad "label delete failed"; }
 
 finish_scenario

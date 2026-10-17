@@ -403,6 +403,18 @@ seed_tiny_repo() { # seed_tiny_repo <dir> <branch> [tagname]
   git -C "$dir" rev-parse HEAD
 }
 
+# A release is published for a tag the repository already has: `dg release create --tag <t>`
+# stops with E102 ("<t> is not a tag of <repo>", checked before anything is signed or paid)
+# otherwise. push_release_tag pushes a one-commit annotated tag for a scenario to publish a
+# release for. The caller registers `refs/tags/<tag>` for clean-up when the repo is the suite
+# repo (a repo made for the run needs none).
+push_release_tag() { # push_release_tag <identity_file> <remote> <tag> <logfile>
+  local id="$1" remote="$2" tag="$3" logf="$4" src
+  src="${WORKROOT}/$(basename "$logf")-tagsrc"
+  seed_tiny_repo "$src" "e2e-tag-seed" "$tag" >/dev/null
+  git_dash_retry "$id" "$logf" -C "$src" push "$remote" "refs/tags/${tag}:refs/tags/${tag}"
+}
+
 # --- forge-v2-demo read fixture: PR numbers under dense numbering ------------
 # Issues and PRs on a forge-v2 repo share one number sequence (docs/contracts/forge-v2.md
 # §6: patch "sharing the issues' number sequence"), so on the seeded `forge-v2-demo` fixture

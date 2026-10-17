@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Scenario 30: republishing a release carries forward what it does not change (D-504).
 #
+#   0. OWNER pushes the tag e2e-<run>-y (a release needs an existing tag, E102 otherwise).
 #   1. OWNER publishes release e2e-<run>-y with a name, notes and one asset (on RustFS).
 #   2. `dg release create --tag e2e-<run>-y --yanked`, with no --asset/--name/--notes: the new
 #      revision is yanked and keeps the asset, name and notes (before: 0 assets, so a yank
@@ -85,6 +86,16 @@ PY
   done
   return 1
 }
+
+step "0. push the tag ${TAG} (a release is published for a tag the repo has: E102 otherwise)"
+if push_release_tag "$ID_OWNER" "$E2E_REMOTE" "$TAG" "$LOG-tag"; then
+  register_ref "refs/tags/${TAG}"
+  ok "tag pushed"
+else
+  cat "$LOG-tag.err" >&2
+  is_flake "$LOG-tag.err" && skip_scenario "tag push flaked"
+  bad "tag push failed"; finish_scenario
+fi
 
 step "1. publish ${TAG} with a name, notes and an asset"
 publish "$LOG-create" --name "e2e ${RUN_ID}" --notes "first notes" --asset "$ASSET" --storage rustfs
