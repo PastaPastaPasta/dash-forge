@@ -53,7 +53,7 @@ test('g1. Explore search finds the fixture repo by a name prefix, in one request
   test.info().annotations.push({ type: 'dapi', description: JSON.stringify(Object.fromEntries(dapi)) })
 
   // The box submits into ?q=: a new term replaces the results; an impossible one says so.
-  const box = page.getByRole('searchbox', { name: /search repos by name/i })
+  const box = page.getByRole('searchbox', { name: /search repositories by the start of their name/i })
   await expect(box).toHaveValue('forge-v2-dem')
   await box.fill('no such repo!')
   await box.press('Enter')
