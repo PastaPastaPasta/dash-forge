@@ -80,7 +80,7 @@ import {
 } from './writes'
 import { retryWhileMissing } from '../view/retry'
 import { shortId } from '../utils'
-import { announcePostKeys, missingPostKeys, postKeyLettersCost, sdkPostKeyIo, sendPostKeys, type PostKeysSent } from './bot-keys'
+import { announcePostKeys, missingPostKeys, postKeyChecks, postKeyLettersCost, sdkPostKeyIo, sendPostKeys, type PostKeysSent } from './bot-keys'
 
 
 /** An identity as the messages name it: its first 7 and last 5 characters. */
@@ -1731,9 +1731,11 @@ export async function givePostKey(c: PrivateWriteContext, botId: string, intent:
 }
 
 /**
- * The bots of the repo with no post key for the current key from this signer yet (the banner's
- * check): `ready` can be sent one now, `keyless` have no encryption key yet. Empty when there are
- * none or the signer is not a maintainer.
+ * The bots of the repo with no post key for the current key (the banner's check): `ready` can be
+ * sent one now, `keyless` have no encryption key yet. A bot is `ready` only when no letter on chain
+ * could have given it the key (this signer's own do not, and no other maintainer has stored one
+ * since the key was stated: their letters can't be opened here, and a bot one of them keyed
+ * posts fine). Empty when there are none or the signer is not a maintainer.
  */
 export async function missingBotKeys(c: PrivateWriteContext): Promise<{ readonly ready: string[]; readonly keyless: string[] }> {
   return withFreshSession(c, async (s) => {
@@ -1744,10 +1746,16 @@ export async function missingBotKeys(c: PrivateWriteContext): Promise<{ readonly
     const bots = await withPostAccess(c.sdk, c.repo, botsOf(s.members))
     if (bots.length === 0) return { ready: [], keyless: [] }
     const io = sdkPostKeyIo(c.sdk, c.auth, c.repo, c.network, c.ops.keyIds, 'post-keys:check', epoch === null ? undefined : s.resolution.anchors.get(epoch)?.statedHeight)
-    const missing = await missingPostKeys(io, keys, bots)
+    // (the owner keys bots too, and is not listed as a maintainer member)
+    const maintainers = new Set([c.repo.ownerId, ...s.members.filter((m) => m.role === 'maintainer').map((m) => m.identity)])
+    const { missing, unknown } = await postKeyChecks(io, keys, bots, maintainers)
     const ready: string[] = []
     const keyless: string[] = []
-    for (const id of missing) ((await io.recipientKey(id)) === null ? keyless : ready).push(id)
+    // a bot another maintainer may have keyed (`unknown`) is only reported when it has no encryption key to be sent one with
+    for (const id of [...missing, ...unknown]) {
+      if ((await io.recipientKey(id)) === null) keyless.push(id)
+      else if (missing.includes(id)) ready.push(id)
+    }
     return { ready, keyless }
   })
 }
