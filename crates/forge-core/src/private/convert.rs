@@ -197,6 +197,20 @@ pub fn published_keys(
     (keys, alerts)
 }
 
+/// The epoch history is published below (DESIGN §4.10 step 7): the lower of the seal-off epoch
+/// the repository's settings state (`stated`) and the one a run rotated to and recorded
+/// (`recorded`), when it recorded one. A rotation by someone else between a run's seal-off and
+/// the flip raises the stated one; the run's own seal-off key, which members wrote under during
+/// the conversion, is still never published. The web runs the same rule (`cutoffOf`), so both
+/// build the same bundles.
+#[must_use]
+pub fn history_cutoff(stated: Option<u32>, recorded: Option<u32>) -> Option<u32> {
+    match (stated, recorded) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
+}
+
 /// The most epoch-key entries one make-public bundle of epoch keys carries: what fits one
 /// Platform chunk (14,700 B) beside its header and a full note, `(14,700 − 7 − 1,024) / 69`. A
 /// repository with more epochs below its seal-off epoch is published in several bundles.
@@ -265,6 +279,18 @@ mod tests {
         // between the flip and the first public config: every manifest is checked
         let early = Conversion::of(true, &configs[..3], |_| true).unwrap();
         assert!(early.may_be_sealed(u64::MAX));
+    }
+
+    /// History is published only below the lower of the stated and the recorded seal-off epoch,
+    /// so a rotation that slipped in before the flip never publishes a run's own seal-off key.
+    #[test]
+    fn history_stops_below_the_runs_own_seal_off() {
+        assert_eq!(history_cutoff(Some(4), Some(3)), Some(3));
+        assert_eq!(history_cutoff(Some(3), Some(3)), Some(3));
+        assert_eq!(history_cutoff(Some(3), Some(5)), Some(3));
+        assert_eq!(history_cutoff(Some(3), None), Some(3));
+        assert_eq!(history_cutoff(None, Some(2)), Some(2));
+        assert_eq!(history_cutoff(None, None), None);
     }
 
     #[test]
