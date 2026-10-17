@@ -4,6 +4,10 @@
 import * as evoSdk from '@dashevo/evo-sdk';
 import { hash160 } from './hash.mjs';
 
+// The wasm module loads on the first connect, but an InstantSend lock (testnet) derives the
+// identity id from its AssetLockProof before anything connects: load it up front.
+await evoSdk.ensureInitialized();
+
 const PUT_SETTINGS = { connectTimeoutMs: 10000, timeoutMs: 40000, retries: 3 };
 
 // One connected SDK per network name, reused across calls.
