@@ -4862,11 +4862,8 @@ pub enum BroadcastOutcome {
 /// so a crashed push resumes by re-executing the same [`SignedTransition`] rather than
 /// re-signing.
 ///
-// TODO(push-pipeline): the disk-backed journal (`.git/dash/journal/<packHash>.json`)
-// and its `JournalStore` filesystem impl land with the pack push pipeline. Today the
-// in-memory [`WriteEngine::execute`] retry loop already delivers the core guarantee
-// (re-broadcast the same bytes; AlreadyExists = success); this type + [`PushJournal`]
-// fix the on-disk shape.
+/// The disk-backed store is `FileJournalStore` in `git-remote-dash`
+/// (`.git/dash/journal/<packHash>.json`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WriteIntent {

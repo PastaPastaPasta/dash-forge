@@ -49,7 +49,7 @@ FEATURE="feature/greet"
 LOG="${WORKROOT}/s21"
 STATE="${WORKROOT}/s21-state.json"
 # Measured 22 on moutai (2026-09-27; 7 of them getDataContract). TODO(P-5): the contract memo
-# and delta caches bring this down; tighten the budget when they land.
+# and delta caches bring this down; tighten the budget when they land (tracked: release-audit HYGI-21).
 : "${E2E_PR_VIEW_BUDGET:=30}"
 
 jq_py() { python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print($2)" "$1"; }
@@ -209,7 +209,7 @@ check "the squash tree is the PR head's" assert_eq "$(git -C "$WORK" rev-parse "
 check "authored by the contributor (QW4-008)" assert_eq "E2E Contrib <contrib@e2e.test>" "$(git -C "$VER" log -1 --format='%an <%ae>')"
 check "committed by the merger, not the contributor" test "$(git -C "$VER" log -1 --format='%ce')" != "contrib@e2e.test"
 
-step "request budget: dg pr view (TODO(P-5): tighten once the contract memo lands)"
+step "request budget: dg pr view (TODO(P-5): tighten once the contract memo lands; tracked: release-audit HYGI-21)"
 DASH_FORGE_KEY="$S_OWNER" RUST_LOG="dapi_client::dispatch=trace" NO_COLOR=1 _tmo "$DG" --json pr view "$REPO" "$N" --comments >"$LOG-budget.json" 2>"$LOG-budget.err"
 REQS="$(grep -c 'dispatching request to DAPI endpoint' "$LOG-budget.err" || true)"
 info "dg pr view: ${REQS} DAPI requests (budget ${E2E_PR_VIEW_BUDGET})"
