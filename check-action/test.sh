@@ -75,7 +75,10 @@ default_of() {
 }
 [[ "$(default_of network)" == testnet ]] || fail "network defaults to '$(default_of network)'"
 [[ -z "$(default_of devnet-name)" ]] || fail "devnet-name defaults to '$(default_of devnet-name)', not empty"
-[[ -f "$here/../forge-contracts/deployments/$(default_of network).json" ]] || fail "no deployment file for the default network"
+# The default network has a forge-v2 deployment recorded. Expected to fail on testnet until the
+# registration PR adds `v2` to forge-contracts/deployments/testnet.json.
+jq -e .v2 "$here/../forge-contracts/deployments/$(default_of network).json" >/dev/null ||
+  fail "no forge-v2 deployment recorded for the default network (expected until the registration PR lands)"
 workspace_version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' "$here/../Cargo.toml")
 [[ -n "$workspace_version" && "$(default_of version)" == "$workspace_version" ]] ||
   fail "version defaults to '$(default_of version)', not the workspace version '$workspace_version'"

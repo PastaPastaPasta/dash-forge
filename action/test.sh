@@ -142,7 +142,7 @@ validate() {
         INPUT_REPO=alice/project INPUT_GITHUB_REPO=alice/project INPUT_NETWORK=mainnet \
         INPUT_DEVNET_NAME='' INPUT_SYNC=code,releases INPUT_STORAGE_KIND=platform \
         INPUT_REPLICAS=1 INPUT_COST_CAP=0.05 INPUT_DRY_RUN=false INPUT_INSTALL=true \
-        INPUT_STATE_CACHE=true INPUT_VERSION=0.2.0 INPUT_S3_ENDPOINT='' INPUT_S3_BUCKET='' \
+        INPUT_STATE_CACHE=true INPUT_VERSION=0.1.0 INPUT_S3_ENDPOINT='' INPUT_S3_BUCKET='' \
         INPUT_S3_REGION='' INPUT_S3_PUBLIC_URL='' INPUT_S3_PREFIX='' INPUT_PINNING_ENDPOINT='' \
         "$@" bash "$here/validate.sh" >"$tmp/val" 2>&1
 }
@@ -323,8 +323,10 @@ default_of() {
 [ "$(default_of network)" = testnet ] || fail "network defaults to '$(default_of network)'"
 devnet_default=$(default_of devnet-name)
 [ -z "$devnet_default" ] || fail "devnet-name defaults to '$devnet_default', not empty"
-[ -f "$here/../forge-contracts/deployments/$(default_of network).json" ] ||
-    fail "no deployment file for the default network '$(default_of network)'"
+# The default network has a forge-v2 deployment recorded. Expected to fail on testnet until the
+# registration PR adds `v2` to forge-contracts/deployments/testnet.json.
+jq -e .v2 "$here/../forge-contracts/deployments/$(default_of network).json" >/dev/null ||
+    fail "no forge-v2 deployment recorded for the default network '$(default_of network)' (expected until the registration PR lands)"
 [ "$(default_of install)" = true ] || fail "install defaults to '$(default_of install)'"
 # The release this Action version pins is the one cut from this commit: the workspace version.
 workspace_version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' "$here/../Cargo.toml")
@@ -389,12 +391,12 @@ expect iout 'method=source'
 expect iout 'cache-key=dash-forge-build@Linux-X64@'
 expect ilog '::notice title=Dash Forge install::No Dash Forge release is pinned'
 case="install plan: a pinned release is downloaded, never probed for"
-install_forge plan INPUT_VERSION=0.2.0 || fail "exited $?"
+install_forge plan INPUT_VERSION=0.1.0 || fail "exited $?"
 expect iout 'method=release'
 reject iout 'cache-key'
 [ ! -e "$tmp/curl" ] || fail "probed for a release"
 case="install plan: source, whatever the version"
-install_forge plan INPUT_INSTALL=source INPUT_VERSION=0.2.0 || fail "exited $?"
+install_forge plan INPUT_INSTALL=source INPUT_VERSION=0.1.0 || fail "exited $?"
 expect iout 'method=source'
 case="install plan: no rust-toolchain.toml still makes a key"
 mkdir -p "$tmp/src/action"

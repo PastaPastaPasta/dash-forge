@@ -126,7 +126,7 @@ dg verify-app https://forge.dashhq.org
 
 ```
 Site:      https://forge.dashhq.org/
-Build:     commit 0f605099596192a525f99c6cbafab4e54b29cee4 (testnet, host build)
+Build:     commit <40-character commit id> (<network>, host build)
 Manifest:  attested by PastaPastaPasta/dash-forge/.github/workflows/pages.yml@refs/heads/master (certificate fields; signature not checked here: run gh attestation verify)
 Files:     174 of 174 match
 ```

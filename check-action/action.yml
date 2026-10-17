@@ -48,9 +48,11 @@ inputs:
   devnet-name:
     description: "Devnet name, required when network is devnet (lowercase letters, digits and -) and ignored otherwise."
     default: ""
+  # The P4 version bump sets Cargo.toml, the package.json files and both action defaults (this one
+  # and the Mirror Action's) together: to 0.2.0-rc.1 for the pre-release, then 0.2.0.
   version:
     description: "Dash Forge release to install (the release this action version pins, kept equal to the workspace version). Empty: install 'true' builds dg from source."
-    default: "0.2.0"
+    default: "0.1.0"
   install:
     description: "true: install release `version`, or build dg from this action's own source (the ref in uses:) when `version` is empty. source: always build from source. false: use the dg already on PATH."
     default: "true"

@@ -41,6 +41,6 @@ Dash Wallet sign-in is built, for testnet. It needs a Dash Wallet build that inc
 
 ## Which network
 
-The guides use **Dash testnet**, a test network, throughout; [forge.dashhq.org](https://forge.dashhq.org) runs on it too, and `dg` and `git-remote-dash` default to it, so no network flag is needed. Fees quoted as measured on a devnet are from devnets, and testnet's fees follow the same schedule. Mainnet has no Forge deployment yet. [Networks](../networks.md) has the details and the history.
+The guides use **Dash testnet**, a test network, throughout; [forge.dashhq.org](https://forge.dashhq.org) runs on it too, and `dg` and `git-remote-dash` default to it, so no network flag is needed. Fees quoted as measured on a devnet are from devnets, and testnet's fees are expected to follow the same schedule. <!-- TODO(P4-registration): confirm once ECON-05 calibrates the testnet fees. --> Mainnet has no Forge deployment yet. [Networks](../networks.md) has the details and the history.
 
 The product specification the planned features come from is [`docs/design/ux-dx-spec.md`](../design/ux-dx-spec.md) and [`docs/roadmap.md`](../roadmap.md).

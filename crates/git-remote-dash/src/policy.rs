@@ -376,7 +376,7 @@ pub fn check_affordable(
             forge_core::user_error::TOP_UP_URL
         ));
         let u = if testnet {
-            u.fix("on testnet the faucet at https://faucet.thepasta.org funds an identity")
+            u.fix("on testnet the faucets at https://faucet.testnet.networks.dash.org and https://faucet.thepasta.org fund an identity")
         } else {
             u
         };
@@ -695,6 +695,7 @@ mod tests {
         assert_eq!((u.code, u.exit_code()), ("E401", 4));
         let text = u.render("dash: ", false);
         assert!(text.contains("estimated at 0.5000 DASH"), "{text}");
+        assert!(text.contains("faucet.testnet.networks.dash.org"), "{text}");
         assert!(text.contains("faucet.thepasta.org"), "{text}");
         assert!(text.contains(NOTE_NOTHING_STORED), "{text}");
         let mainnet = check_affordable(est, Some(0), None, false, NOTE_NOTHING_STORED).unwrap_err();

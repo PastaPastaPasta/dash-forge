@@ -182,8 +182,9 @@ protocol 13 until protocol 14 activates there ([mainnet-runbook.md](mainnet-runb
 devnet is a development network: pass `--network devnet --devnet-name <name>` (or just
 `--devnet-name <name>`), or record it once with
 `dg auth login --network devnet --devnet-name <name>`, which saves the network in
-`~/.config/dash-forge/config.toml`. Without a network flag, `dg auth new` and `dg auth login`
-record testnet.
+`~/.config/dash-forge/config.toml`. A fresh install records testnet. Where `config.toml` already
+records another network, `dg auth new` and `dg auth login` keep it unless you pass
+`--network testnet`, which overrides it and records testnet.
 
 **Devnet sakura** (Platform 5.0.0-beta.6 since its third Platform reset on 2026-10-13, chain id `dash-devnet-sakura`) replaced bonsia on
 2026-10-01 and is Forge's developer network: it is where the contracts were developed and where

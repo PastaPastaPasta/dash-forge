@@ -71,8 +71,10 @@ dg auth new
 ```
 
 1. `dg` shows a **12-word recovery phrase**. Write the words down, in order, and keep them offline: they are the identity, and nobody can recover it without them. It asks you to type three of them back. The words are shown only in a terminal. Scripted, piped or in CI, `dg auth new` never prints them: pass `--backup-file <new file>` and they go only to that file (0600, sealed under a passphrase, `DASH_FORGE_PASSPHRASE` without a terminal or with `--json`). Without that flag it refuses before it creates anything.
-2. It shows a deposit address as a QR code and as text. Send 0.05 DASH to it from any Dash testnet wallet, or get free test DASH from the testnet faucet at <https://faucet.testnet.networks.dash.org> (a second one, <https://faucet.thepasta.org>, is run by the project owner, not by Forge: it gives 1 test DASH a request, with a soft limit of about 3 an hour). A repository costs about 0.0016 DASH. `dg` locks **everything** the address receives into the identity's credits, so send only what you want to spend on Forge: a faucet's whole payout becomes credits, where the sample below sent 0.05.
+2. It shows a deposit address as a QR code and as text. Send 0.05 DASH to it from any Dash testnet wallet, or get free test DASH from the testnet faucet at <https://faucet.testnet.networks.dash.org> (a second, community faucet is <https://faucet.thepasta.org>: it gives 1 test DASH a request, with a soft limit of about 3 an hour). A repository costs about 0.0016 DASH. `dg` locks **everything** the address receives into the identity's credits, so send only what you want to spend on Forge: a faucet's whole payout becomes credits, where the sample below sent 0.05.
 3. `dg` waits for the deposit, locks it, registers the identity, and stores a **limited key** for this computer in your OS keychain: it can spend at most 0.25 DASH, only on Forge, for 180 days. The master key is not stored anywhere.
+
+<!-- TODO(P4-registration): re-capture the sample outputs in this guide (steps 2, 3, 5 and 6) from a real testnet run; they were edited by hand from devnet runs. -->
 
 ```
 ✓ identity ExampLeidentityExampLeidentityExampLeidentEx created on testnet
@@ -88,7 +90,7 @@ The deposit is proven with an InstantSend lock where the network offers one (tes
 **Other ways in.** All of these derive the same keys from the same 12 words, so an identity made in one opens in the others:
 
 - **In the web app**: on [forge.dashhq.org](https://forge.dashhq.org), **Sign in → Create a new identity**. It shows 12 words, checks three of them, protects this browser's key with a passkey or a passphrase, and shows a deposit QR code. One registration creates the identity and a limited key for this browser.
-- **With the Dash bridge**: <https://bridge.thepasta.org/?network=testnet>, then **Download Key Backup**. The bridge is run by the project owner, not by Forge.
+- **With the Dash bridge**: <https://bridge.thepasta.org/?network=testnet>, then **Download Key Backup**. The bridge is a separate service, not part of Forge.
 
 To sign the *browser* in with an identity you already have, the web app also offers **Use my Dash wallet** (scan a QR code with Dash Wallet and approve). With today's wallets that needs a testnet build of Dash Wallet that includes DashConnect; [Identity and keys](identity-and-keys.md#signing-in-with-the-dash-wallet-app-what-works-today) says which wallets and networks work, and the caveats.
 

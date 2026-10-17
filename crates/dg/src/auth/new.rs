@@ -722,7 +722,7 @@ fn show_deposit(ctx: &Ctx, endpoints: &CoreEndpoints, address: &str, duffs: u64)
 }
 
 /// Where to get test DASH for the deposit: the testnet faucets (the Dash network's own first,
-/// then the one `faucet.thepasta.org` runs), or "the network's faucet" on a devnet. Nothing on
+/// then the one `faucet.thepasta.org` runs), or the devnet's own faucet on a devnet. Nothing on
 /// mainnet, which has no faucet.
 fn faucet_hint(network: &forge_core::network::Network) -> Option<String> {
     use forge_core::network::Network;
@@ -732,7 +732,9 @@ fn faucet_hint(network: &forge_core::network::Network) -> Option<String> {
              (or https://faucet.thepasta.org), and send it to this address."
                 .to_string(),
         ),
-        Network::Devnet { .. } => Some("Devnet: fund it from the devnet's faucet.".to_string()),
+        Network::Devnet { name, .. } => Some(format!(
+            "Devnet: fund it from the devnet's faucet, https://faucet.{name}.networks.dash.org."
+        )),
         Network::Mainnet => None,
     }
 }
@@ -1040,6 +1042,10 @@ mod tests {
         })
         .unwrap();
         assert!(devnet.starts_with("Devnet:"), "{devnet}");
+        assert!(
+            devnet.contains("https://faucet.examplenet.networks.dash.org"),
+            "{devnet}"
+        );
         assert!(!devnet.contains("mint-identity"), "{devnet}");
         assert_eq!(faucet_hint(&Network::Mainnet), None);
     }
