@@ -1268,7 +1268,8 @@ async function sameBlockEdit(I, r) {
   const fresh = await connect();
   const before = document.id.toBase58();
   const created = fresh.documents.create({ document, identityKey: W.identityKey, signer: W.signer });
-  for (let i = 0; i < 40 && document.id.toBase58() === before; i++) await sleep(50);
+  // up to 15 s: on testnet the nonce read before it can take well over the 2 s a devnet needs
+  for (let i = 0; i < 300 && document.id.toBase58() === before; i++) await sleep(50);
   const docIdentifier = document.id;
   const edited = Document.fromObject({ ...document.toObject(), title: 'edited in the same block', $revision: 2n }, version);
   const replaced = fresh.documents.replace({ document: edited, identityKey: W.identityKey, signer: W.signer });
