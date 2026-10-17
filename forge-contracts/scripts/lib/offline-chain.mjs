@@ -21,6 +21,14 @@ import { CONTRACTS, CONTRACT_OF, b58decode, b58encode, contractsIn, expectedRefu
 const IDENTIFIER = 'application/x.dash.dpp.identifier';
 const SYSTEM_IDS = new Set(['$id', '$ownerId']);
 
+/**
+ * An identifier property: the RC1 byte array tagged with the identifier media type, or the
+ * four-contract set's `type: "identifier"`.
+ */
+const identifierSchema = (s) => s?.contentMediaType === IDENTIFIER || s?.type === 'identifier';
+/** A byte-array property that is not an identifier: RC1 `byteArray`, or the mainnet set's `type: "bytes"`. */
+const bytesSchema = (s) => s?.byteArray === true || s?.type === 'bytes';
+
 /** The default set: the three devnet contracts (`contracts/forge-*.json`). */
 const DEFAULT_SET = { contracts: CONTRACTS, contractOf: CONTRACT_OF };
 
@@ -34,8 +42,9 @@ function lookups({ contracts, contractOf }) {
     return contracts[contractOf[type]].schemaDefs[ref.replace('#/$defs/', '')];
   };
   const propSchema = (type, prop) => resolveRef(type, schemaOf(type).properties?.[prop]);
-  const isIdentifier = (type, prop) => SYSTEM_IDS.has(prop) || propSchema(type, prop)?.contentMediaType === IDENTIFIER;
-  return { schemaOf, resolveRef, propSchema, isIdentifier };
+  const isIdentifier = (type, prop) => SYSTEM_IDS.has(prop) || identifierSchema(propSchema(type, prop));
+  const isBytes = (type, prop) => bytesSchema(propSchema(type, prop));
+  return { schemaOf, resolveRef, propSchema, isIdentifier, isBytes };
 }
 
 /** Bytes as lowercase hex, so identifiers and hashes compare as plain strings. */
@@ -57,7 +66,7 @@ export function vectorDoc(type, data, set = DEFAULT_SET) {
   const { resolveRef, propSchema } = lookups(set);
   const enc = (schema, v) => {
     if (v instanceof Uint8Array) {
-      return schema?.contentMediaType === IDENTIFIER ? { $id: b58encode(v) } : { $hex: Buffer.from(v).toString('hex') };
+      return identifierSchema(schema) ? { $id: b58encode(v) } : { $hex: Buffer.from(v).toString('hex') };
     }
     if (Array.isArray(v)) return v.map((x) => enc(resolveRef(type, schema?.items), x));
     if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, enc(resolveRef(type, schema?.properties?.[k]), x)]));
@@ -144,7 +153,7 @@ export class OfflineChain {
     const holds = (k, v, e) => {
       if (typeof e === 'string') return v === get(view, e);
       const prop = this.lookup.propSchema(ref.documentType, k);
-      if (prop?.byteArray || this.lookup.isIdentifier(ref.documentType, k)) throw unmodelled(e);
+      if (bytesSchema(prop) || this.lookup.isIdentifier(ref.documentType, k)) throw unmodelled(e);
       if ('const' in e) return v === e.const;
       if ('in' in e) return e.in.includes(v);
       if ('greaterThanOrEqual' in e) {
@@ -290,7 +299,7 @@ export class OfflineChain {
     const type = this.typeIn(dataContractId, documentTypeName);
     const operand = (f, v) => {
       if (this.lookup.isIdentifier(type, f)) return hexOfId(v);
-      if (this.lookup.propSchema(type, f)?.byteArray) return Buffer.from(v, 'base64').toString('hex');
+      if (this.lookup.isBytes(type, f)) return Buffer.from(v, 'base64').toString('hex');
       return v;
     };
     let rows = this.live(type).filter((d) =>
@@ -356,7 +365,7 @@ export class OfflineChain {
         return documents;
       }
       get contracts() {
-        return { fetch: async (id) => ({ version: 1, getDocumentTypes: () => chain.set.contracts[chain.contractName(id)].documentSchemas }) };
+        return { fetch: async (id) => ({ version: 1, schemas: chain.set.contracts[chain.contractName(id)].documentSchemas, getDocumentTypes: () => chain.set.contracts[chain.contractName(id)].documentSchemas }) };
       }
     }
     class IdentityPublicKey {}

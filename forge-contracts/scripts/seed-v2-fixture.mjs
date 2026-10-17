@@ -6,7 +6,9 @@
 //        [--identities <dir>] [--state <file>] [--summary <file>] [--deployment <file>]
 //
 // Writes the RC1 documents (contracts/forge-{core,collab,community}.json; the rules are in
-// docs/contracts/forge-v2.md). Needs `npm ci` in forge-contracts/sdk-v2 (the evo-sdk it pins),
+// docs/contracts/forge-v2.md), in the form the deployed contracts declare: on the four-contract mainnet
+// set (contracts/mainnet) a writer's `asMember` carries its `mRole`, `topic` carries no `vis`, and the
+// release records its tag's tip (`targetOid`); lib/seed-io.mjs `shapeData` decides from the loaded contract. Needs `npm ci` in forge-contracts/sdk-v2 (the evo-sdk it pins),
 // the three-contract deployment in deployments/<network>.json, and the test identities OWNER,
 // MAINTAINER, COLLAB and CONTRIB in --identities (default
 // ~/.config/dash-forge/test-identities/<network>/). The network defaults to
@@ -68,7 +70,7 @@ import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import {
-  EVENT, FUSED_STAR, ROOT, TRANSITION, VIS, checkOutcome, idBytes, loadIdentity, log, membership, openSession, parseArgs,
+  EVENT, ROOT, TRANSITION, VIS, checkOutcome, idBytes, loadIdentity, log, membership, openSession, parseArgs,
   contractOn, runIfMain, transition, until,
 } from './lib/seed-io.mjs';
 
@@ -199,7 +201,7 @@ function split(data) {
 
 export async function main(argv, injected) {
   const a = parseArgs(argv);
-  const { net, evo, write, read, retry } = await openSession(a, injected);
+  const { net, evo, write, read, retry, shape } = await openSession(a, injected);
   const { key, ids } = net;
 
   const idDir = a.identities ?? join(homedir(), '.config/dash-forge/test-identities', key);
@@ -392,9 +394,12 @@ export async function main(argv, injected) {
   await create('ref:main:2', MAINTAINER, 'protectedRefUpdate', ref('refs/heads/main', commits.c2, commits.c1));
   await create('ref:feature', COLLAB, 'refUpdate', ref('refs/heads/feature/greeting', commits.c3));
   await create('ref:tag', OWNER, 'refUpdate', ref(`refs/tags/${RELEASE_TAG}`, commits.c1));
-  // A publish counts +1 toward the tag's one live release (`oneLive`).
+  // A publish counts +1 toward the tag's one live release (`oneLive`). Where the contract declares
+  // `release.targetOid` (mainnet), a public publish records the tag's tip as the writer read it
+  // (`targetOnPublish`), the commit the tag's refUpdate above names.
   await create('release', OWNER, 'release', {
     repoId: R, tagName: RELEASE_TAG, name: RELEASE_TAG, notes: 'The first tagged commit of the fixture.', assets: '[]', vis: VIS, delta: 1,
+    ...(shape.declares('release', 'targetOid') ? { targetOid: oid(commits.c1) } : {}),
   });
 
   // --- issues -------------------------------------------------------------------------
@@ -509,7 +514,7 @@ export async function main(argv, injected) {
   // may not beat its own repo. CONTRIB also watches the repo.
   await createIndexOnly('star:contrib', CONTRIB, 'star', { repoId: R });
   // (with RC2's fused star the star itself is the trending entry, and there is no starBeat)
-  if (!FUSED_STAR) await createIndexOnly('starBeat:contrib', CONTRIB, 'starBeat', { repoId: R, vis: VIS, repoOwner: idBytes(OWNER.id) });
+  if (!shape.fusedStar) await createIndexOnly('starBeat:contrib', CONTRIB, 'starBeat', { repoId: R, vis: VIS, repoOwner: idBytes(OWNER.id) });
   await createIndexOnly('watch:contrib', CONTRIB, 'watch', { repoId: R });
   // Topics (forge-core, the repo owner's): Explore by topic counts `fixture` and `forge-v2`.
   await create('topic:fixture', OWNER, 'topic', { repoId: R, name: 'fixture', vis: VIS });

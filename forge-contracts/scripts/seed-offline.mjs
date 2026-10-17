@@ -22,9 +22,10 @@
 //
 // --contracts <dir> runs the same scripts against another contract set: forge-contracts/contracts/
 // mainnet, the four-contract set testnet registers (the chain gets a forge-meta id and the scripts
-// write the moved types there). The scripts still write RC1 (devnet) document shapes, so a run on
-// that set is expected to fail on mainnet-only rules until they are ported (WS-D); the failure list
-// is the port's worklist. Without the flag the three devnet contracts run, as CI does.
+// write the moved types there). The scripts feature-detect what the loaded contracts declare
+// (`shapeData`), so one script serves both layouts: on that set a writer's `asMember` carries
+// `mRole`, `topic` carries no `vis`, a public release names `targetOid`. CI runs both sets, and
+// judges the documents of each with rs-dpp (--out).
 
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

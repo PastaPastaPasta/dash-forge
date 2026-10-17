@@ -5,7 +5,8 @@
 //   node forge-contracts/scripts/seed-explore-filler.mjs --identity <explore-filler.identity.json> \
 //        [--count 25] [--network devnet --devnet-name sakura] [--deployment <file>] [--pace-ms 700]
 //
-// Writes RC1 documents; needs `npm ci` in forge-contracts/sdk-v2 (the evo-sdk it pins). The
+// Writes RC1 documents, in the form the deployed contracts declare (the three-contract devnet set, or the
+// four-contract mainnet set: lib/seed-io.mjs `shapeData`); needs `npm ci` in forge-contracts/sdk-v2 (the evo-sdk it pins). The
 // network defaults to DASH_FORGE_NETWORK / DASH_FORGE_DEVNET_NAME, else devnet sakura.
 // CONT-V-01: on testnet or mainnet it runs against a scratch --deployment record only; the live
 // deployments/<network>.json (or a copy naming its forge-core or group) is written only with
