@@ -111,8 +111,8 @@ function run(argv) {
   const level = final ? 'error' : 'warning';
   for (const f of findings) console.log(`::${level}::${f}`);
   const row = findings.length === 0
-    ? `| release network | deployed (v${a.version}${final ? ', final' : ''}) |`
-    : `| release network | ${final ? 'REFUSED' : 'not ready for a final release'}: ${findings.length} finding(s) |`;
+    ? `- release network: deployed (v${a.version}${final ? ', final' : ''})`
+    : `- release network: ${final ? 'REFUSED' : 'not ready for a final release'} (${findings.length} finding(s); see the annotations)`;
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${row}\n`);
   if (findings.length === 0) console.log(`release network check: ok (v${a.version}, publish=${a.publish})`);
   return final && findings.length > 0 ? 1 : 0;
