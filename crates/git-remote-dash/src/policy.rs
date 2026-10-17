@@ -152,6 +152,11 @@ impl PushPolicy {
 /// The cost-guard refusal note when nothing at all has been stored yet.
 pub const NOTE_NOTHING_STORED: &str = "nothing was stored or paid for";
 
+/// The note when a later pack of the same push is stopped: an earlier one is already stored
+/// and paid for (a push with a public pack and members-only packs uploads them in turn).
+pub const NOTE_EARLIER_PACK_STORED: &str =
+    "an earlier pack of this push is already stored and paid for; nothing further was written";
+
 /// The note when the guard stops the Platform fallback: the external copies that confirmed
 /// are already stored (and kept), but Platform was not paid.
 pub const NOTE_NOTHING_PAID_ON_PLATFORM: &str =
@@ -164,14 +169,27 @@ pub enum Guard {
     Proceed,
     /// Ask the user on the terminal.
     Ask(String),
-    /// Refuse: no terminal to ask on. Carries the cause (one line).
-    Refuse(String),
+    /// Refuse: no terminal to ask on. Carries the cause (one line) and why it needed a yes.
+    Refuse(String, Why),
+}
+
+/// Why the guard needed a yes: the fix differs (raising the threshold does not help a push
+/// that is stopped for storing permanently on Platform).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Why {
+    /// The estimate is above `dash.costWarnThreshold`.
+    Threshold,
+    /// More than 1 MiB of packs would go to Platform with `dash.storage` unset.
+    UnchosenStorage,
+    /// `dash.confirm = always`.
+    Always,
 }
 
 /// Decide whether a push estimated at `credits` may proceed. `unchosen_platform_bytes`: the
 /// pack bytes this push stores on Platform although `dash.storage` is unset (0 when storage is
 /// chosen, or the push stores no pack); over [`UNCONFIGURED_PLATFORM_ASK_BYTES`] it asks even
-/// under the threshold, in `auto` mode only (the unattended modes carry an explicit cap).
+/// under the threshold, in `auto` mode only: `refuse` is a hard cap set by the caller (its
+/// threshold), and `never` accepts any price.
 pub fn guard(
     credits: u64,
     threshold_dash: Option<f64>,
@@ -207,21 +225,30 @@ pub fn guard(
             _ => format!("This push costs about {} DASH.", dash(credits)),
         })
     } else {
-        Guard::Refuse(match threshold_dash {
-            Some(t) if over => format!(
-                "this push would cost ~{} DASH, above dash.costWarnThreshold ({t})",
-                dash(credits)
+        match threshold_dash {
+            Some(t) if over => Guard::Refuse(
+                format!(
+                    "this push would cost ~{} DASH, above dash.costWarnThreshold ({t})",
+                    dash(credits)
+                ),
+                Why::Threshold,
             ),
-            _ if unchosen => format!(
-                "this push would store {} on Platform (~{} DASH), permanently, and dash.storage is not set",
-                human_bytes(unchosen_platform_bytes),
-                dash(credits)
+            _ if unchosen => Guard::Refuse(
+                format!(
+                    "this push would store {} on Platform (~{} DASH), permanently, and dash.storage is not set",
+                    human_bytes(unchosen_platform_bytes),
+                    dash(credits)
+                ),
+                Why::UnchosenStorage,
             ),
-            _ => format!(
-                "this push would cost ~{} DASH and dash.confirm = always",
-                dash(credits)
+            _ => Guard::Refuse(
+                format!(
+                    "this push would cost ~{} DASH and dash.confirm = always",
+                    dash(credits)
+                ),
+                Why::Always,
             ),
-        })
+        }
     }
 }
 
@@ -300,7 +327,7 @@ pub fn enforce_pack(
         unchosen_platform_bytes,
     ) {
         Guard::Proceed => Ok(()),
-        Guard::Refuse(cause) => Err(refusal(&cause, platform_bytes).note(note)),
+        Guard::Refuse(cause, why) => Err(refusal(&cause, why, platform_bytes).note(note)),
         Guard::Ask(q) => match ask_on_tty(&q) {
             Ok(true) => Ok(()),
             Ok(false) => Err(UserError::new(
@@ -332,6 +359,7 @@ pub fn check_affordable(
     balance: Option<u64>,
     budget_left: Option<u64>,
     testnet: bool,
+    note: &str,
 ) -> std::result::Result<(), UserError> {
     if let Some(have) = balance.filter(|b| est_credits > *b) {
         let u = UserError::new(
@@ -354,7 +382,8 @@ pub fn check_affordable(
         };
         return Err(u
             .fix("or push a smaller change, or store packs on your own storage (`dg storage add`)")
-            .note(NOTE_NOTHING_STORED));
+            .fix("the estimate is an upper bound: a balance only just above the real cost can still be refused, and a small top-up fixes it")
+            .note(note));
     }
     if let Some(left) = budget_left.filter(|b| est_credits > *b) {
         return Err(UserError::new(
@@ -370,9 +399,8 @@ pub fn check_affordable(
             "register a key with a bigger budget (uses your master key once): `dg auth keys add --budget {}`",
             budget_suggestion(est_credits)
         ))
-        .note(format!(
-            "{NOTE_NOTHING_STORED}; the identity's balance is untouched"
-        )));
+        .fix("the estimate is an upper bound: a budget only just above the real cost can still be refused, and a bigger key budget fixes it")
+        .note(format!("{note}; the identity's balance is untouched")));
     }
     Ok(())
 }
@@ -383,16 +411,39 @@ fn budget_suggestion(est_credits: u64) -> String {
 }
 
 /// E801: the cost guard needed a yes and had no terminal to ask on (spec §7.3 example 3).
-pub fn refusal(cause: &str, platform_bytes: bool) -> UserError {
+/// The fix follows `why`: a threshold can be raised, but a push stopped for storing on
+/// Platform with no `dash.storage` is fixed by choosing storage (or accepting Platform).
+pub fn refusal(cause: &str, why: Why, platform_bytes: bool) -> UserError {
     let u = UserError::new(codes::COST_GUARD, "push stopped by the cost guard")
         .cause(format!("{cause}; no terminal to confirm on"));
-    let u = if platform_bytes {
-        u.fix("add storage (`dg storage add`, then `dg storage use`) so packs go to your bucket, or run `git -c dash.confirm=never push` to accept the price")
-    } else {
-        u.fix("run `git -c dash.confirm=never push` to accept the price")
+    let u = match why {
+        Why::UnchosenStorage => u
+            .fix("add storage (`dg storage add`, then `dg storage use`) so packs go to your bucket")
+            .fix("or say Platform is what you want: `git config dash.storage platform`")
+            .fix("or accept the price for this push: `git -c dash.confirm=never push`"),
+        Why::Threshold | Why::Always => {
+            let u = if platform_bytes {
+                u.fix("add storage (`dg storage add`, then `dg storage use`) so packs go to your bucket, or run `git -c dash.confirm=never push` to accept the price")
+            } else {
+                u.fix("run `git -c dash.confirm=never push` to accept the price")
+            };
+            if why == Why::Threshold {
+                u.fix("raise `git config dash.costWarnThreshold` (DASH), or set it to `off`")
+            } else {
+                u
+            }
+        }
     };
-    u.fix("raise `git config dash.costWarnThreshold` (DASH), or set it to `off`")
-        .note(NOTE_NOTHING_STORED)
+    u.note(NOTE_NOTHING_STORED)
+}
+
+/// Whether `credits` is above this push's `dash.costWarnThreshold` in a mode that weighs it:
+/// the one case where a cheaper plan (the history-index delta) can change the answer.
+pub fn over_threshold(credits: u64, policy: &PushPolicy) -> bool {
+    matches!(policy.confirm, ConfirmMode::Auto | ConfirmMode::Refuse)
+        && policy
+            .cost_warn_threshold
+            .is_some_and(|t| credits_to_dash(credits) > t)
 }
 
 #[cfg(test)]
@@ -421,21 +472,21 @@ mod tests {
         // Refuse never asks, even with a terminal; under the threshold it proceeds.
         assert!(matches!(
             g(one_dash, Some(0.1), ConfirmMode::Refuse, true),
-            Guard::Refuse(_)
+            Guard::Refuse(..)
         ));
         assert_eq!(
             g(one_dash / 100, Some(0.1), ConfirmMode::Refuse, true),
             Guard::Proceed
         );
         // Over, no terminal → refuse with the fix.
-        let Guard::Refuse(cause) = g(one_dash, Some(0.1), ConfirmMode::Auto, false) else {
+        let Guard::Refuse(cause, why) = g(one_dash, Some(0.1), ConfirmMode::Auto, false) else {
             panic!("expected refuse");
         };
         assert!(
             cause.contains("above dash.costWarnThreshold (0.1)"),
             "{cause}"
         );
-        let u = refusal(&cause, true);
+        let u = refusal(&cause, why, true);
         assert_eq!((u.code, u.exit_code()), ("E801", 8));
         let text = u.render("dash: ", false);
         assert!(
@@ -444,7 +495,8 @@ mod tests {
         );
         assert!(text.contains("no terminal to confirm on"), "{text}");
         assert!(text.contains("dg storage add"), "{text}");
-        assert!(!refusal(&cause, false).fix[0].contains("dg storage add"));
+        assert_eq!(why, Why::Threshold);
+        assert!(!refusal(&cause, why, false).fix[0].contains("dg storage add"));
         // never → proceed regardless; always → ask even when cheap.
         assert_eq!(
             g(one_dash, Some(0.1), ConfirmMode::Never, false),
@@ -525,14 +577,24 @@ mod tests {
         assert!(q.contains("permanently") && q.contains("1.0 MiB"), "{q}");
         assert!(q.contains("dash.storage is not set"), "{q}");
         // No terminal → refuse (E801) with the storage fix.
-        let Guard::Refuse(cause) = big(ConfirmMode::Auto, false, 3 * mib) else {
+        let Guard::Refuse(cause, why) = big(ConfirmMode::Auto, false, 3 * mib) else {
             panic!("expected refuse");
         };
         assert!(cause.contains("3.0 MiB on Platform"), "{cause}");
-        let u = refusal(&cause, true);
+        let u = refusal(&cause, why, true);
         assert_eq!((u.code, u.exit_code()), ("E801", 8));
-        assert!(u.render("dash: ", false).contains("dg storage add"));
-        // The unattended modes carry an explicit cap, and `never` accepts: no extra ask.
+        assert_eq!(why, Why::UnchosenStorage);
+        let text = u.render("dash: ", false);
+        // The fix is storage (or Platform on purpose, or accepting the price), never the threshold.
+        for want in [
+            "dg storage add",
+            "dash.storage platform",
+            "dash.confirm=never",
+        ] {
+            assert!(text.contains(want), "{want}: {text}");
+        }
+        assert!(!text.contains("costWarnThreshold"), "{text}");
+        // `refuse` is the caller's hard cap (its threshold) and `never` accepts any price: no extra ask.
         assert_eq!(big(ConfirmMode::Never, false, 3 * mib), Guard::Proceed);
         assert_eq!(big(ConfirmMode::Refuse, false, 3 * mib), Guard::Proceed);
         // Nothing to pay, nothing to ask.
@@ -569,6 +631,33 @@ mod tests {
     }
 
     #[test]
+    fn only_a_priced_out_push_may_fall_back_to_the_cheaper_history_delta() {
+        let policy = |confirm, threshold| PushPolicy {
+            resolved: StoragePolicy::platform_only()
+                .resolve(&StorageProfiles::default())
+                .unwrap(),
+            cost_warn_threshold: threshold,
+            storage_configured: false,
+            confirm,
+            allow_private_uri: false,
+        };
+        let one = forge_core::cost::CREDITS_PER_DASH;
+        assert!(over_threshold(one, &policy(ConfirmMode::Auto, Some(0.1))));
+        assert!(over_threshold(one, &policy(ConfirmMode::Refuse, Some(0.1))));
+        // Under the threshold (the storage rule declined), no threshold, `always`, `never`.
+        assert!(!over_threshold(
+            one / 100,
+            &policy(ConfirmMode::Auto, Some(0.1))
+        ));
+        assert!(!over_threshold(one, &policy(ConfirmMode::Auto, None)));
+        assert!(!over_threshold(
+            one,
+            &policy(ConfirmMode::Always, Some(0.1))
+        ));
+        assert!(!over_threshold(one, &policy(ConfirmMode::Never, Some(0.1))));
+    }
+
+    #[test]
     fn the_default_threshold_applies_when_unset() {
         let one_dash = forge_core::cost::CREDITS_PER_DASH;
         let t = Some(DEFAULT_COST_WARN_THRESHOLD_DASH);
@@ -587,30 +676,41 @@ mod tests {
         let dash1 = forge_core::cost::CREDITS_PER_DASH;
         let est = dash1 / 2;
         // Affordable on both counts, or nothing readable / no budget: proceed.
-        assert!(check_affordable(est, Some(dash1), Some(dash1), false).is_ok());
-        assert!(check_affordable(est, Some(est), Some(est), false).is_ok());
-        assert!(check_affordable(est, None, None, false).is_ok());
-        assert!(check_affordable(est, Some(dash1), None, true).is_ok());
+        assert!(
+            check_affordable(est, Some(dash1), Some(dash1), false, NOTE_NOTHING_STORED).is_ok()
+        );
+        assert!(check_affordable(est, Some(est), Some(est), false, NOTE_NOTHING_STORED).is_ok());
+        assert!(check_affordable(est, None, None, false, NOTE_NOTHING_STORED).is_ok());
+        assert!(check_affordable(est, Some(dash1), None, true, NOTE_NOTHING_STORED).is_ok());
         // The balance is short: E401, with the top-up (and the faucet on testnet).
-        let u = check_affordable(est, Some(est - 1), Some(dash1), true).unwrap_err();
+        let u = check_affordable(est, Some(est - 1), Some(dash1), true, NOTE_NOTHING_STORED)
+            .unwrap_err();
+        assert!(u.render("dash: ", false).contains("upper bound"));
+        // A later pack of a push whose first pack is paid does not claim nothing was paid.
+        let later =
+            check_affordable(est, Some(0), None, false, NOTE_EARLIER_PACK_STORED).unwrap_err();
+        let text = later.render("dash: ", false);
+        assert!(!text.contains("nothing was stored or paid for"), "{text}");
+        assert!(text.contains("already stored and paid for"), "{text}");
         assert_eq!((u.code, u.exit_code()), ("E401", 4));
         let text = u.render("dash: ", false);
         assert!(text.contains("estimated at 0.5000 DASH"), "{text}");
         assert!(text.contains("faucet.thepasta.org"), "{text}");
         assert!(text.contains(NOTE_NOTHING_STORED), "{text}");
-        let mainnet = check_affordable(est, Some(0), None, false).unwrap_err();
+        let mainnet = check_affordable(est, Some(0), None, false, NOTE_NOTHING_STORED).unwrap_err();
         assert!(!mainnet.render("dash: ", false).contains("faucet"));
         // The key's budget is short: E402, naming `dg auth keys add --budget`.
-        let u = check_affordable(est, Some(dash1), Some(est - 1), false).unwrap_err();
+        let u = check_affordable(est, Some(dash1), Some(est - 1), false, NOTE_NOTHING_STORED)
+            .unwrap_err();
         assert_eq!(u.code, "E402");
         let text = u.render("dash: ", false);
         assert!(text.contains("dg auth keys add --budget 1"), "{text}");
         // Both short: the balance is the more basic problem.
-        let u = check_affordable(est, Some(0), Some(0), false).unwrap_err();
+        let u = check_affordable(est, Some(0), Some(0), false, NOTE_NOTHING_STORED).unwrap_err();
         assert_eq!(u.code, "E401");
         // A spent budget (Some(0)) refuses any paid push.
         assert_eq!(
-            check_affordable(1, Some(dash1), Some(0), false)
+            check_affordable(1, Some(dash1), Some(0), false, NOTE_NOTHING_STORED)
                 .unwrap_err()
                 .code,
             "E402"

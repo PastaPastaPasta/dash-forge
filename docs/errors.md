@@ -266,7 +266,7 @@ Nothing was signed in either case.
 
 **What to do:** top up the identity from any Dash wallet at <https://bridge.thepasta.org>. `dg auth balance` shows the balance. Reading, cloning and browsing are free and still work.
 
-**Before a push uploads.** `git push` reads your balance and checks it against its estimate (an upper bound) before it stores anything, so an unaffordable push stops here with nothing paid. On testnet, <https://faucet.thepasta.org> funds an identity.
+**Before a push uploads.** `git push` reads your balance and checks it against its estimate (an upper bound) before it stores anything, so an unaffordable push stops here before it stores anything. (A push with a public pack and members-only packs checks before each pack: if an earlier pack was already stored, the note says so.) The estimate is an upper bound, so a balance only just above the real cost can still be refused: top up a little more. On testnet, <https://faucet.thepasta.org> funds an identity.
 
 ## E402
 
@@ -274,7 +274,7 @@ Nothing was signed in either case.
 
 **What to do:** register a fresh limited key (uses the master key once): `dg auth login <identity file>` or `dg auth login --mnemonic`, with a larger `--budget` if you need one. `dg auth keys add --budget <DASH>` adds one to a signed-in identity.
 
-**Before a push uploads.** When the signing key has a budget, `git push` reads what is left and compares it with the estimate (an upper bound) before it stores anything, so a push the key cannot afford stops here with nothing paid.
+**Before a push uploads.** When the signing key has a budget, `git push` reads what is left and compares it with the estimate (an upper bound) before it stores anything, so a push the key cannot afford stops here before it stores anything. The estimate is an upper bound, so a budget only just above the real cost can still be refused: register a key with a bigger budget (`dg auth keys add --budget <DASH>`).
 
 ## E501
 
@@ -519,7 +519,7 @@ A devnet name that does not exist is reported here too, because a lookup failure
 
 **Stopped by the cost guard.** This push costs more than `dash.costWarnThreshold` (0.05 DASH when unset), or it would store more than 1 MiB of packs permanently on Platform while `dash.storage` is unset, or `dash.confirm = always`, and there is no terminal to confirm on (CI, a GUI client). The helper never assumes yes.
 
-**What to do:** add your own storage (`dg storage add`, then `dg storage use`) so packs go to your bucket and only the manifest and refs are paid on Platform. Or accept the price for this push with `git -c dash.confirm=never push`, or raise `dash.costWarnThreshold` (`off` turns the threshold off).
+**What to do:** add your own storage (`dg storage add`, then `dg storage use`) so packs go to your bucket and only the manifest and refs are paid on Platform. Or accept the price for this push with `git -c dash.confirm=never push`. If the price is what stopped it, you can also raise `dash.costWarnThreshold` (`off` turns the threshold off). If it was the 1 MiB rule (`dash.storage` unset), raising the threshold does not help: choose storage, or say Platform is what you want with `git config dash.storage platform`.
 
 ## E802
 

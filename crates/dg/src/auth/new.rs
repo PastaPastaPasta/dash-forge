@@ -352,14 +352,20 @@ async fn broadcast(
 
 /// The funding endpoints for this run: the network's, with the explorer from `--explorer` and
 /// the InstantSend RPC from `--islock-rpc`, else `islock_rpc` in config.toml.
-fn endpoints_for(ctx: &Ctx, args: &NewArgs) -> CoreEndpoints {
-    let islock = args.islock_rpc.clone().or_else(|| {
-        crate::config::Config::load()
-            .ok()
-            .and_then(|c| c.islock_rpc)
-    });
+/// A value that is not an https URL (or `off`) is a usage error, before anything is done.
+fn endpoints_for(ctx: &Ctx, args: &NewArgs) -> Result<CoreEndpoints> {
+    let (islock, from) = match &args.islock_rpc {
+        Some(v) => (Some(v.clone()), "--islock-rpc"),
+        None => (
+            crate::config::Config::load()
+                .ok()
+                .and_then(|c| c.islock_rpc),
+            "islock_rpc in config.toml",
+        ),
+    };
     CoreEndpoints::for_network(ctx.network(), args.explorer.as_deref())
         .with_islock_rpc(islock.as_deref())
+        .map_err(|e| crate::errors::usage(format!("{from}: {e}")))
 }
 
 /// Whether Platform refused an InstantSend proof in a way a chain-lock proof of the same
@@ -473,7 +479,7 @@ fn duffs_to_dash(duffs: u64) -> f64 {
 
 /// `--restart`: drop the unfinished journal, asking first if its address may hold funds.
 async fn discard(ctx: &Ctx, args: &NewArgs, j: &Journal) -> Result<()> {
-    let insight = Insight::new(&endpoints_for(ctx, args));
+    let insight = Insight::new(&endpoints_for(ctx, args)?);
     // Neither source answering is "unknown", not "empty": ask. DAPI's history also misses an
     // unconfirmed payment, so a zero is only trusted when the explorer agrees.
     let held = match ctx.connect().await {
@@ -725,7 +731,7 @@ async fn fund_and_lock(
     keys: &NewIdentityKeys,
     j: &mut Journal,
 ) -> Result<(SignedAssetLock, LockProof)> {
-    let endpoints = endpoints_for(ctx, args);
+    let endpoints = endpoints_for(ctx, args)?;
     let insight = Insight::new(&endpoints);
     let lock = if let (Some(txid), Some(raw)) = (&j.lock_txid, &j.lock_raw) {
         SignedAssetLock {
@@ -872,7 +878,7 @@ async fn register(
             ctx,
             "  Platform refused the InstantSend proof; proving with a chain lock instead",
         );
-        let insight = Insight::new(&endpoints_for(ctx, args));
+        let insight = Insight::new(&endpoints_for(ctx, args)?);
         let chain = prove_chain(ctx, client, &insight, lock, Instant::now()).await?;
         if identity_id_for(&chain)? != identity_id {
             anyhow::bail!(
@@ -910,6 +916,7 @@ pub async fn run(ctx: &Ctx, args: &NewArgs) -> Result<()> {
     }
     check_backup_file(&args.backup, !args.resume)?;
     deposit_duffs(args.amount)?;
+    endpoints_for(ctx, args)?;
     let spec = key_spec(ctx, &args.limits, CLI_KEY_BUDGET_DASH, CLI_KEY_DAYS)?;
     if let Some(label) = &args.name {
         let (valid, contested) = identity::dpns_label_kind(label);

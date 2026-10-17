@@ -132,7 +132,7 @@ Then check everything:
 
 ```sh
 dg auth status      # identity, key, budget left, expiry, balance, where the key is stored
-dg doctor --fix     # free, local fixes only: file modes, and a cost guard for git push
+dg doctor --fix     # free, local fixes only: file modes and config directories
 ```
 
 `git push` has a cost guard that is on by default: a push estimated above 0.05 DASH asks before it spends. A small push goes through (one with its packs on Platform is quoted about 0.012 DASH on bonsia), a megabyte of packs on Platform asks. `dg doctor` shows the guard in its `cost guard` row. `dg doctor --fix` only makes local fixes and never spends anything.

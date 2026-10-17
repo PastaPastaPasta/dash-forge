@@ -11,8 +11,8 @@
 //! policy, cost guard, network agreement with `dg`).
 //!
 //! `--fix` applies only local, reversible, free fixes: create the config directories with
-//! mode 0700, tighten an identity file to 0600, and set git config keys that are unset (the
-//! spec's default cost guard). git needs no network fix for the network `dg auth` saved: the
+//! mode 0700 and tighten an identity file to 0600 (the cost guard needs none: it is on by
+//! default). git needs no network fix for the network `dg auth` saved: the
 //! helper reads it from `config.toml`. Doctor reports git config or environment values that
 //! override it, with the command that fixes them in the right scope.
 //! It never overwrites a value the user set and never signs or broadcasts anything.
@@ -1287,6 +1287,7 @@ fn check_git_config(ctx: &Ctx) -> Vec<Check> {
     out.push(cost_guard_check(
         get("dash.costWarnThreshold").as_deref(),
         get("dash.confirm").as_deref(),
+        get("dash.storage").is_none_or(|v| v.trim().is_empty()),
     ));
 
     // This repository's storage policy (only meaningful inside a git repository).
@@ -1324,7 +1325,7 @@ fn check_git_config(ctx: &Ctx) -> Vec<Check> {
 /// The `cost guard` row: what a push does before it spends, from `dash.costWarnThreshold` and
 /// `dash.confirm` together, as git-remote-dash's guard decides it (QW4-055: the row read the
 /// threshold alone, "pushes above 0.05 DASH ask first", whatever dash.confirm said).
-fn cost_guard_check(threshold: Option<&str>, confirm: Option<&str>) -> Check {
+fn cost_guard_check(threshold: Option<&str>, confirm: Option<&str>, storage_unset: bool) -> Check {
     // A mode the helper rejects fails every push, whatever the threshold says.
     if let Some(c) = confirm.and_then(confirm_check) {
         return c;
@@ -1375,15 +1376,18 @@ fn cost_guard_check(threshold: Option<&str>, confirm: Option<&str>) -> Check {
         ),
         (_, Some(t)) => Check::ok(
             "cost guard",
-            if unset {
-                format!("pushes above {t} DASH ask first (the default; dash.costWarnThreshold is unset)")
-            } else {
-                format!("pushes above {t} DASH ask first")
-            },
+            format!(
+                "pushes above {t} DASH ask first{}{}",
+                if unset { " (the default; dash.costWarnThreshold is unset)" } else { "" },
+                if storage_unset { "; so do packs over 1 MiB on Platform, since dash.storage is unset" } else { "" },
+            ),
         ),
         (_, None) => Check::warn(
             "cost guard",
-            "dash.costWarnThreshold is off: pushes never ask because of their price",
+            format!(
+                "dash.costWarnThreshold is off: pushes never ask because of their price{}",
+                if storage_unset { " (packs over 1 MiB on Platform still ask, since dash.storage is unset)" } else { "" },
+            ),
             format!("git config --global dash.costWarnThreshold {DEFAULT_COST_WARN_THRESHOLD}"),
         ),
     }
@@ -1599,7 +1603,7 @@ mod tests {
     /// QW4-055: the cost guard row follows dash.confirm, not the threshold alone.
     #[test]
     fn the_cost_guard_row_follows_dash_confirm() {
-        let detail = |t: Option<&str>, c: Option<&str>| cost_guard_check(t, c).detail;
+        let detail = |t: Option<&str>, c: Option<&str>| cost_guard_check(t, c, false).detail;
         assert_eq!(
             detail(Some("0.05"), None),
             "pushes above 0.05 DASH ask first"
@@ -1624,9 +1628,9 @@ mod tests {
             detail(None, Some("refuse")),
             "pushes above 0.05 DASH fail without asking (dash.confirm=refuse)"
         );
-        assert_eq!(cost_guard_check(None, None).status, Status::Ok);
+        assert_eq!(cost_guard_check(None, None, false).status, Status::Ok);
         assert!(detail(Some("off"), Some("refuse")).contains("caps nothing"));
-        let off = cost_guard_check(Some("off"), None);
+        let off = cost_guard_check(Some("off"), None, false);
         assert_eq!(off.status, Status::Warn);
         assert!(off.detail.contains("is off"), "{}", off.detail);
         assert!(off.auto.is_none());
@@ -1635,7 +1639,16 @@ mod tests {
         assert!((DEFAULT_COST_WARN_THRESHOLD.parse::<f64>().unwrap() - default).abs() < 1e-12);
         assert!(detail(Some("x"), Some("never")).contains("is not a DASH amount"));
         // An invalid mode fails every push: the row says so, not "ask first".
-        let bad = cost_guard_check(Some("0.05"), Some("maybe"));
+        let bad = cost_guard_check(Some("0.05"), Some("maybe"), false);
+        // With no dash.storage the row also says that a megabyte of packs on Platform asks.
+        let unset = cost_guard_check(None, None, true).detail;
+        assert!(unset.contains("packs over 1 MiB on Platform"), "{unset}");
+        assert!(cost_guard_check(Some("off"), None, true)
+            .detail
+            .contains("still ask"));
+        assert!(!cost_guard_check(Some("0.05"), Some("never"), true)
+            .detail
+            .contains("1 MiB"));
         assert_eq!(bad.status, Status::Fail);
         assert!(bad.detail.contains("every push fails"), "{}", bad.detail);
     }
@@ -1654,8 +1667,8 @@ mod tests {
         assert!(c.detail.contains("refuse"), "{}", c.detail);
     }
 
-    /// The guard `dg doctor --fix` sets lets a small push through without asking, packs on
-    /// Platform included (its quote is an upper bound), and still asks before a megabyte.
+    /// The default guard lets a small push through without asking, packs on Platform included
+    /// (its quote is an upper bound), and still asks before a megabyte.
     #[test]
     fn the_default_cost_guard_admits_a_small_platform_push() {
         use forge_core::cost::push_fees::{estimate_push, history_index, PushShape};

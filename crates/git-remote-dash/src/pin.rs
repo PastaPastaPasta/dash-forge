@@ -105,11 +105,17 @@ pub fn guard(
     if !allow_repin()? {
         return Err(moved(url, remote, &section, &recorded, now).into());
     }
+    let keep = match (&recorded.repo_id, remote) {
+        (Some(id), Some(r)) => {
+            format!("; `git remote set-url {r} dash://{id}` would have kept the one you cloned")
+        }
+        (Some(id), None) => format!("; the URL `dash://{id}` would have kept the one you cloned"),
+        _ => String::new(),
+    };
     eprintln!(
         "dash: WARNING: {}: {} now resolves to repository {} (owner {}), not {} (owner {}) as \
          when this clone was made. {ALLOW_REPIN_GIT_KEY} is set, so it is re-pinned to the \
-         new repository; `git remote set-url <remote> dash://<repo id>` would have kept the \
-         one you cloned.",
+         new repository{keep}.",
         recorded.change(&now.owner_id),
         display(url),
         now.repo_id,
@@ -183,9 +189,10 @@ fn moved(
         _ => u,
     };
     u.fix(format!(
-        "only if you know why the owner changed, run the same git command once with \
+        "{}, run the same git command once with \
          `git -c {ALLOW_REPIN_GIT_KEY}=true …`, which re-pins it (or drop the pin: \
-         `git config --remove-section '{section}'`)"
+         `git config --remove-section '{section}'`)",
+        was.repin_lead_in(&now.owner_id)
     ))
 }
 
@@ -372,6 +379,10 @@ mod tests {
         let user = err.downcast_ref::<UserError>().expect("a UserError");
         assert_eq!(user.code, codes::INTEGRITY);
         let text = format!("{user} {:?}", user.fix);
+        assert!(
+            text.contains("only if you know why the owner changed"),
+            "{text}"
+        );
         for want in [
             "R1",
             "R2",

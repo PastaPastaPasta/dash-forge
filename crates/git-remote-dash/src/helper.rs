@@ -1427,6 +1427,7 @@ impl Helper {
                     .and_then(|h| h.prepared.fallback())
                     .map(PreparedHistory::cost),
                 history_on_fallback: std::cell::Cell::new(false),
+                stored_a_pack: std::cell::Cell::new(false),
                 funds: {
                     let signer = conn
                         .signer
@@ -4059,19 +4060,20 @@ async fn upload_members_pack(
         &ctx.identity,
         &job.meta.pack_hash,
     );
-    let quote = estimate
-        .total()
-        .saturating_sub(resumed_credits(ctx, &job, &jpath));
+    let resumed = resumed_chunks(ctx, &job, &jpath);
+    resumed.say(ctx, job.chunk_count);
+    let quote = estimate.total().saturating_sub(resumed.credits);
     policy::enforce_pack(
         quote,
-        job.bytes.len() as u64,
+        (job.bytes.len() as u64).saturating_sub(resumed.bytes),
         ctx.policy,
         resolved.platform,
-        policy::NOTE_NOTHING_STORED,
+        ctx.refusal_note(),
     )?;
     ctx.require_funds(quote).await?;
     let externals = external_targets(ctx)?;
     let replication = store_pack(ctx, &job, &externals, &jpath).await?;
+    ctx.stored_a_pack.set(true);
     record_pack_kind(
         ctx,
         &job,
@@ -4405,6 +4407,9 @@ struct PushContext<'a> {
     /// The cost guard declined the full index and the fallback delta is priced instead: the
     /// push publishes the delta.
     history_on_fallback: std::cell::Cell<bool>,
+    /// A pack of this push is already stored (and paid for): a later pack's refusal must not
+    /// say nothing was paid.
+    stored_a_pack: std::cell::Cell<bool>,
     /// What the pre-flight affordability check reads ([`PushContext::require_funds`]).
     funds: Funds<'a>,
 }
@@ -4464,6 +4469,15 @@ impl PushContext<'_> {
         self.progress.note(line);
     }
 
+    /// The note for a refusal before the next pack: whether an earlier pack was already paid.
+    fn refusal_note(&self) -> &'static str {
+        if self.stored_a_pack.get() {
+            policy::NOTE_EARLIER_PACK_STORED
+        } else {
+            policy::NOTE_NOTHING_STORED
+        }
+    }
+
     /// Refuse, before anything is uploaded, a push the identity or its signing key cannot
     /// pay for (E401 / E402): one proved balance read, plus one budget read for a key that
     /// has a budget. A figure that cannot be read does not block the push.
@@ -4489,7 +4503,13 @@ impl PushContext<'_> {
             },
             None => None,
         };
-        policy::check_affordable(est_credits, balance, budget_left, f.testnet)?;
+        policy::check_affordable(
+            est_credits,
+            balance,
+            budget_left,
+            f.testnet,
+            self.refusal_note(),
+        )?;
         Ok(())
     }
 }
@@ -4565,7 +4585,16 @@ async fn upload_push_pack(
 
     // What goes where, and what it costs, BEFORE anything is paid for.
     let estimate = job.estimate(ctx, resolved.platform);
-    let (text, event) = progress::targets_line(resolved, estimate.total());
+    let jpath = crate::journal::journal_path(
+        ctx.git_dir,
+        ctx.repo.id(),
+        &ctx.identity,
+        &job.meta.pack_hash,
+    );
+    // A resumed push quotes (and guards, and checks funds for) only the chunks still to upload.
+    let resumed = resumed_chunks(ctx, &job, &jpath);
+    let (text, event) =
+        progress::targets_line(resolved, estimate.total().saturating_sub(resumed.credits));
     progress.emit(&text, &event);
     let platform_writes = |est: &push_fees::PushEstimate, stores_pack: bool| {
         progress::platform_line(&PlatformWrites {
@@ -4594,42 +4623,26 @@ async fn upload_push_pack(
             history,
         }));
     }
-    let jpath = crate::journal::journal_path(
-        ctx.git_dir,
-        ctx.repo.id(),
-        &ctx.identity,
-        &job.meta.pack_hash,
-    );
-    // A resumed push quotes (and guards, and checks funds for) only the chunks still to upload.
-    let already_paid = resumed_credits(ctx, &job, &jpath);
-    let remaining = |e: &push_fees::PushEstimate| e.total().saturating_sub(already_paid);
-    // A declined due full history index: ask again with its cheaper delta (review L8).
-    let note = policy::NOTE_NOTHING_STORED;
+    resumed.say(ctx, job.chunk_count);
+    let remaining = |e: &push_fees::PushEstimate| e.total().saturating_sub(resumed.credits);
+    let remaining_bytes = (job.bytes.len() as u64).saturating_sub(resumed.bytes);
+    // A declined due full history index: ask again with its cheaper delta (review L8), but only
+    // when the price is what declined (not the unchosen-storage rule, which the delta leaves).
+    let note = ctx.refusal_note();
     let mut quote = remaining(&estimate);
-    let guarded = policy::enforce_pack(
-        quote,
-        job.bytes.len() as u64,
-        ctx.policy,
-        resolved.platform,
-        note,
-    );
+    let guarded = policy::enforce_pack(quote, remaining_bytes, ctx.policy, resolved.platform, note);
     if let Err(e) = guarded {
-        if !take_history_fallback(ctx) {
+        if !policy::over_threshold(quote, ctx.policy) || !take_history_fallback(ctx) {
             return Err(e.into());
         }
         let delta = job.estimate(ctx, resolved.platform);
         quote = remaining(&delta);
-        policy::enforce_pack(
-            quote,
-            job.bytes.len() as u64,
-            ctx.policy,
-            resolved.platform,
-            note,
-        )?;
+        policy::enforce_pack(quote, remaining_bytes, ctx.policy, resolved.platform, note)?;
     }
     ctx.require_funds(quote).await?;
 
     let replication = store_pack(ctx, &job, &externals, &jpath).await?;
+    ctx.stored_a_pack.set(true);
     let stored_on_platform = replication.has_platform();
     let actual_estimate = job.estimate(ctx, stored_on_platform);
     let (text, event) = platform_writes(&actual_estimate, stored_on_platform);
@@ -4968,27 +4981,42 @@ impl<'a> PackJob<'a> {
     }
 }
 
-/// The credits of the pack chunks an interrupted push already stored on Platform (its journal),
-/// when this push stores the pack there: the part of the quote a resume does not pay again
-/// (ECON-12). Says "resuming: N of M chunks already stored" when there are any.
-fn resumed_credits(ctx: &PushContext<'_>, job: &PackJob<'_>, jpath: &std::path::Path) -> u64 {
-    if !ctx.policy.resolved.platform {
-        return 0;
-    }
-    let journal = crate::journal::load_or_new(jpath, &job.meta.pack_hash, job.chunk_count);
-    let (stored, credits) = stored_chunk_credits(job.bytes.len() as u64, &journal);
-    if stored > 0 {
-        ctx.say(&format!(
-            "resuming: {stored} of {} chunks already stored",
-            job.chunk_count
-        ));
-    }
-    credits
+/// What an interrupted push already stored of this pack on Platform (its journal), when this
+/// push stores the pack there: the part of the quote and of the bytes a resume does not pay
+/// again (ECON-12).
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Resumed {
+    /// Chunks the journal confirms.
+    chunks: u32,
+    /// What those chunks cost.
+    credits: u64,
+    /// Their bytes.
+    bytes: u64,
 }
 
-/// How many of a `pack_len`-byte pack's chunks `journal` records as stored, and what those
-/// chunks cost (every chunk is full except the last, as [`split`] cuts them).
-fn stored_chunk_credits(pack_len: u64, journal: &forge_core::platform::PushJournal) -> (u32, u64) {
+impl Resumed {
+    /// "resuming: N of M chunks already stored", when there are any.
+    fn say(&self, ctx: &PushContext<'_>, total_chunks: u32) {
+        if self.chunks > 0 {
+            ctx.say(&format!(
+                "resuming: {} of {total_chunks} chunks already stored",
+                self.chunks
+            ));
+        }
+    }
+}
+
+fn resumed_chunks(ctx: &PushContext<'_>, job: &PackJob<'_>, jpath: &std::path::Path) -> Resumed {
+    if !ctx.policy.resolved.platform {
+        return Resumed::default();
+    }
+    let journal = crate::journal::load_or_new(jpath, &job.meta.pack_hash, job.chunk_count);
+    stored_chunks(job.bytes.len() as u64, &journal)
+}
+
+/// Which of a `pack_len`-byte pack's chunks `journal` records as stored, what they cost and
+/// their bytes (every chunk is full except the last, as [`split`] cuts them).
+fn stored_chunks(pack_len: u64, journal: &forge_core::platform::PushJournal) -> Resumed {
     let payload = forge_core::pack::DOC_PAYLOAD_MAX as u64;
     let seqs: BTreeSet<u32> = journal
         .uploaded
@@ -4996,14 +5024,15 @@ fn stored_chunk_credits(pack_len: u64, journal: &forge_core::platform::PushJourn
         .map(|e| e.seq)
         .filter(|seq| u64::from(*seq) * payload < pack_len)
         .collect();
-    let credits = seqs
+    let lens: Vec<u64> = seqs
         .iter()
-        .map(|seq| {
-            let start = u64::from(*seq) * payload;
-            push_fees::chunks(payload.min(pack_len - start))
-        })
-        .sum();
-    (u32::try_from(seqs.len()).unwrap_or(u32::MAX), credits)
+        .map(|seq| payload.min(pack_len - u64::from(*seq) * payload))
+        .collect();
+    Resumed {
+        chunks: u32::try_from(lens.len()).unwrap_or(u32::MAX),
+        credits: lens.iter().map(|l| push_fees::chunks(*l)).sum(),
+        bytes: lens.iter().sum(),
+    }
 }
 
 /// The objects the browse index this push publishes will cover: the pack's own, or, when
@@ -7392,23 +7421,30 @@ mod tests {
         // Three chunks: two full and a 100-byte tail.
         let len = 2 * payload + 100;
         let mut journal = PushJournal::new("00", 3);
-        assert_eq!(super::stored_chunk_credits(len, &journal), (0, 0));
+        assert_eq!(
+            super::stored_chunks(len, &journal),
+            super::Resumed::default()
+        );
         let entry = |seq| JournalEntry {
             seq,
             document_id: format!("d{seq}"),
         };
         journal.uploaded = vec![entry(0), entry(2), entry(0), entry(9)];
         // Seq 0 (a duplicate counts once), the tail, and a seq past the pack (ignored).
-        let (n, credits) = super::stored_chunk_credits(len, &journal);
+        let r = super::stored_chunks(len, &journal);
+        let (n, credits) = (r.chunks, r.credits);
         assert_eq!(n, 2);
+        assert_eq!(r.bytes, payload + 100);
         assert_eq!(
             credits,
             forge_core::cost::push_fees::chunks(payload) + forge_core::cost::push_fees::chunks(100)
         );
         // Everything stored: the whole chunk part of the quote.
         journal.uploaded = (0..3).map(entry).collect();
-        let (n, credits) = super::stored_chunk_credits(len, &journal);
+        let r = super::stored_chunks(len, &journal);
+        let (n, credits) = (r.chunks, r.credits);
         assert_eq!(n, 3);
+        assert_eq!(r.bytes, len);
         assert_eq!(credits, forge_core::cost::push_fees::chunks(len));
     }
 }

@@ -65,6 +65,17 @@ impl Recorded {
         self.owner_id.as_deref().is_some_and(|o| o != owner_id)
     }
 
+    /// The lead-in of the fix that re-pins: the owner changing is a reason to be careful, any
+    /// other move is "trust the change".
+    #[must_use]
+    pub fn repin_lead_in(&self, owner_id: &str) -> &'static str {
+        if self.owner_changed(owner_id) {
+            "only if you know why the owner changed"
+        } else {
+            "if you trust the change"
+        }
+    }
+
     /// What changed, for the head of a refusal or warning.
     #[must_use]
     pub fn change(&self, owner_id: &str) -> &'static str {
@@ -98,6 +109,9 @@ mod tests {
         assert!(pinned.change("O1").contains("another repository"));
         // A pin with no owner recorded cannot say the owner changed.
         assert!(!Recorded::default().owner_changed("O2"));
+        // The re-pin advice is only "if you know why the owner changed" when it did.
+        assert!(pinned.repin_lead_in("O2").contains("why the owner changed"));
+        assert_eq!(pinned.repin_lead_in("O1"), "if you trust the change");
     }
 
     const OWNER: &str = "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB";

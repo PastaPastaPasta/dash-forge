@@ -100,16 +100,21 @@ impl CoreEndpoints {
     /// With the InstantSend RPC chosen by the user (`--islock-rpc`, `config.toml`): a URL, or
     /// `off` / `none` to prove with chain locks only. `None` or blank keeps the network's
     /// default (testnet's is a third-party service, `trpc.digitalcash.dev`).
-    #[must_use]
-    pub fn with_islock_rpc(mut self, choice: Option<&str>) -> Self {
+    ///
+    /// A URL must be https (plain http only to a loopback host: the RPC sees the asset-lock
+    /// txid, so it must not travel in clear over the network). Anything else is an error.
+    pub fn with_islock_rpc(mut self, choice: Option<&str>) -> Result<Self> {
         match choice.map(str::trim).filter(|c| !c.is_empty()) {
             None => {}
             Some(c) if c.eq_ignore_ascii_case("off") || c.eq_ignore_ascii_case("none") => {
                 self.islock_rpc = None;
             }
-            Some(url) => self.islock_rpc = Some(url.trim_end_matches('/').to_string()),
+            Some(url) => {
+                check_islock_rpc_url(url)?;
+                self.islock_rpc = Some(url.trim_end_matches('/').to_string());
+            }
         }
-        self
+        Ok(self)
     }
 
     /// The explorer's host, for messages ("asks insight.dash.org").
@@ -118,6 +123,32 @@ impl CoreEndpoints {
             .ok()
             .and_then(|u| u.host_str().map(str::to_string))
             .unwrap_or_else(|| self.insight.clone())
+    }
+}
+
+/// An InstantSend RPC URL is acceptable when it parses, names a host, and is https (or http to
+/// a loopback host).
+fn check_islock_rpc_url(url: &str) -> Result<()> {
+    let bad = |why: &str| {
+        Error::Config(format!(
+            "the InstantSend RPC {url:?} is not usable: {why} (give an https:// URL, or `off`)"
+        ))
+    };
+    let parsed = reqwest::Url::parse(url).map_err(|e| bad(&e.to_string()))?;
+    let host = parsed.host_str().filter(|h| !h.is_empty());
+    let Some(host) = host else {
+        return Err(bad("it names no host"));
+    };
+    let loopback = host.eq_ignore_ascii_case("localhost")
+        || host
+            .trim_matches(['[', ']'])
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback());
+    match parsed.scheme() {
+        "https" => Ok(()),
+        "http" if loopback => Ok(()),
+        "http" => Err(bad("plain http is only allowed to localhost")),
+        other => Err(bad(&format!("the scheme {other:?} is not https"))),
     }
 }
 
@@ -736,22 +767,32 @@ mod tests {
             Some("https://trpc.digitalcash.dev")
         );
         // Unset or blank: the network's default.
-        assert_eq!(default.clone().with_islock_rpc(None), default);
-        assert_eq!(default.clone().with_islock_rpc(Some("  ")), default);
+        let with = |c: Option<&str>| default.clone().with_islock_rpc(c);
+        assert_eq!(with(None).unwrap(), default);
+        assert_eq!(with(Some("  ")).unwrap(), default);
         // A URL replaces it (trailing slash dropped); `off` means chain locks only.
-        let own = default
-            .clone()
-            .with_islock_rpc(Some("https://rpc.example/"));
+        let own = with(Some("https://rpc.example/")).unwrap();
         assert_eq!(own.islock_rpc.as_deref(), Some("https://rpc.example"));
-        assert!(default
-            .clone()
-            .with_islock_rpc(Some("OFF"))
-            .islock_rpc
-            .is_none());
-        assert!(default.with_islock_rpc(Some("none")).islock_rpc.is_none());
+        assert!(with(Some("OFF")).unwrap().islock_rpc.is_none());
+        assert!(with(Some("none")).unwrap().islock_rpc.is_none());
+        // Plain http only to a loopback host; anything that is not a URL is refused early.
+        assert!(with(Some("http://localhost:8080/rpc")).is_ok());
+        assert!(with(Some("http://127.0.0.1:9999")).is_ok());
+        assert!(with(Some("http://[::1]:9999")).is_ok());
+        for bad in [
+            "http://rpc.example",
+            "ftp://rpc.example",
+            "rpc.example",
+            "https://",
+            "x y",
+        ] {
+            let e = with(Some(bad)).unwrap_err().to_string();
+            assert!(e.contains("InstantSend RPC"), "{bad}: {e}");
+        }
         // It also turns InstantSend on where the network has no default.
         let m = CoreEndpoints::for_network(&Network::Mainnet, None)
-            .with_islock_rpc(Some("https://rpc.example"));
+            .with_islock_rpc(Some("https://rpc.example"))
+            .unwrap();
         assert!(m.islock_rpc.is_some());
     }
 }

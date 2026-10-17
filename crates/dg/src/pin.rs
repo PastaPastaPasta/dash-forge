@@ -36,12 +36,18 @@ pub fn check(owner: &str, name: &str, network: &str, repo: &Repo) -> Result<()> 
             eprintln!(
                 "warning: {}: {owner}/{name} now resolves to repository {} (owner {}), not the {} \
                  (owner {}) this clone pinned; {ALLOW_REPIN_GIT_KEY} is set, so dg goes on with \
-                 the new one (a `git fetch` re-pins the clone)",
+                 the new one (a `git fetch` re-pins the clone){}",
                 recorded.change(repo.owner_id()),
                 repo.id(),
                 repo.owner_id(),
                 repo_pin::shown(recorded.repo_id.as_deref()),
                 repo_pin::shown(recorded.owner_id.as_deref()),
+                recorded
+                    .repo_id
+                    .as_deref()
+                    .map_or_else(String::new, |id| format!(
+                        "; `-R {id}` keeps using the one you cloned"
+                    )),
             );
             Ok(())
         }
@@ -82,7 +88,7 @@ fn moved(
     (now_id, now_owner): (&str, &str),
 ) -> UserError {
     let keep = was.repo_id.as_deref().map(|id| {
-        format!("keep using the pinned repository by its id, which no name can take over: `-R {id}` (or `{id}` where the command takes `<owner>/<name>`), and `git remote set-url <remote> dash://{id}` (recommended)")
+        format!("keep using the pinned repository by its id, which no name can take over: `-R {id}` (or `{id}` where the command takes `<owner>/<name>`), and `git remote set-url {} dash://{id}` (recommended)", crate::storage::dash_remote_name().unwrap_or_else(|| "origin".into()))
     });
     let u = UserError::new(
         codes::INTEGRITY,
@@ -101,7 +107,8 @@ fn moved(
         None => u,
     };
     u.fix(format!(
-        "only if you know why the owner changed, run `git -c {ALLOW_REPIN_GIT_KEY}=true fetch` once, which re-pins this clone (or drop the pin: `git config --remove-section '{section}'`)"
+        "{}, run `git -c {ALLOW_REPIN_GIT_KEY}=true fetch` once, which re-pins this clone (or drop the pin: `git config --remove-section '{section}'`)",
+        was.repin_lead_in(now_owner)
     ))
     .note("checked before anything was signed; nothing was written or paid")
 }
