@@ -93,7 +93,8 @@ const nextConfig = {
   // arm64 and on amd64, whatever the CPU limit, so it is not a difference between the two
   // architectures: the same job can come out either way. Terser is single-threaded JavaScript
   // that mangles in a fixed order, so one input gives one output on any machine. It costs about
-  // 1% more JavaScript (0.8% gzipped).
+  // 1% more JavaScript (0.8% gzipped). Next 15 drops the option, so the guard below fails the
+  // build rather than letting an upgrade quietly bring SWC back.
   swcMinify: false,
   images: {
     // Static export cannot use the Next.js image optimizer.
@@ -201,6 +202,12 @@ const nextConfig = {
       },
     ]
   },
+}
+
+// swcMinify: false (reproducibility, below) exists only in Next 14.
+{
+  const nextMajor = Number(require('next/package.json').version.split('.')[0]);
+  if (nextMajor !== 14) throw new Error(`next ${nextMajor}: swcMinify: false is gone; keep the IPFS build reproducible another way (forge-web/next.config.js)`);
 }
 
 module.exports = nextConfig

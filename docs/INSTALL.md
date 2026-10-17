@@ -219,7 +219,10 @@ cargo install --locked --path crates/git-remote-dash
    attestation stored next to it; its job summary prints the digest to deploy by, see
    [Deploy a release](hosting/forge-gateway.md#deploy-a-release)). Approving only the first
    publishes the release without the images; the image jobs can be approved later from the
-   same run.
+   same run. After the first push of each image, make the package public (owner, once:
+   GitHub → Packages → forge-relay / forge-gateway → Package settings → Change visibility):
+   ghcr creates new packages private, so `docker pull` and `gh attestation verify oci://…`
+   fail for everyone else until then.
 4. **Record the web app on Forge (owner, by hand).** The release also carries the web app's
    reproducible IPFS build (`forge-web-<version>.car` and `.cid`, built on two runners that
    must agree). Writing the matching Forge release on Forge's own mirror needs the owner's

@@ -21,10 +21,12 @@ name: Release
 #     run (master's also seeds the build cache).
 #
 # Least privilege: the workflow default is `contents: read`, and every build, test and
-# checksum job runs with only that. `publish` alone gets `contents: write` (create the
-# release), `id-token: write` (Sigstore OIDC) and `attestations: write`; it runs only when
-# actually publishing, checks out no code and runs no build tooling — it downloads the
-# archives and SHA256SUMS, re-verifies them, attests and uploads them.
+# checksum job runs with only that. `publish` gets `contents: write` (create the release),
+# `id-token: write` (Sigstore OIDC) and `attestations: write`; it checks out no code and runs no
+# build tooling — it downloads the archives and SHA256SUMS, re-verifies them, attests and
+# uploads them. The image pushes get `packages: write` (and the gateway push `id-token` and
+# `attestations` to attest its image). All of these run only when actually publishing, behind
+# the `release` environment.
 #
 # Apple code signing / notarization is deliberately out of scope for now; docs/INSTALL.md
 # says so and explains Gatekeeper.
@@ -541,6 +543,10 @@ jobs:
   relay-image:
     name: forge-relay image
     needs: [plan, checksums]
+    # Explicit: an `if:` without a status function means success() of EVERY upstream job, so a
+    # skip_ipfs run (web-ipfs skipped on purpose) would skip this and everything after it.
+    # checksums itself only succeeds on the allowed paths.
+    if: ${{ !cancelled() && needs.checksums.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
@@ -590,7 +596,7 @@ jobs:
   relay-image-push:
     name: push forge-relay image
     needs: [plan, relay-image, publish]
-    if: needs.plan.outputs.publish == 'true'
+    if: ${{ !cancelled() && needs.plan.outputs.publish == 'true' && needs.relay-image.result == 'success' && needs.publish.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment: release
@@ -681,7 +687,7 @@ jobs:
   gateway-image-push:
     name: push forge-gateway image
     needs: [plan, gateway-image, publish]
-    if: needs.plan.outputs.publish == 'true'
+    if: ${{ !cancelled() && needs.plan.outputs.publish == 'true' && needs.gateway-image.result == 'success' && needs.publish.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment: release
@@ -707,9 +713,10 @@ jobs:
           IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/forge-gateway"
           gunzip -c image/forge-gateway-image.tar.gz | docker load
           printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
-          docker push "${IMAGE}:${VERSION}" | tee push.log
-          digest=$(sed -n 's/.*digest: \(sha256:[0-9a-f]\{64\}\).*/\1/p' push.log | tail -n 1)
-          [ -n "$digest" ] || { echo "::error::no digest in the docker push output"; exit 1; }
+          docker push "${IMAGE}:${VERSION}"
+          # The registry's digest of what was just pushed (not parsed from push's progress output).
+          digest=$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          printf '%s\n' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$' || { echo "::error::no digest for ${IMAGE}:${VERSION}: $digest"; exit 1; }
           # A pre-release does not move :latest.
           case "$VERSION" in
             *-*) ;;
@@ -732,13 +739,13 @@ jobs:
         if: always()
         run: docker logout ghcr.io
 
-  # The only job with write permissions, and it exists only when publishing. It checks out
-  # no code and runs no build tooling: it re-verifies the downloaded archives against
-  # SHA256SUMS, attests them, and creates the release.
+  # Runs only when publishing. It checks out no code and runs no build tooling: it re-verifies
+  # the downloaded archives against SHA256SUMS, attests them, and creates the release.
   publish:
     name: attest + publish
     needs: [plan, checksums]
-    if: needs.plan.outputs.publish == 'true'
+    # Explicit for the same reason as relay-image: checksums succeeding is the gate.
+    if: ${{ !cancelled() && needs.plan.outputs.publish == 'true' && needs.checksums.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     # Gate for publishing. Its protection (required reviewers, a `v*` deployment tag rule)
