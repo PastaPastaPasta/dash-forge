@@ -14,8 +14,8 @@
 // and `rc1-live.mjs --offline` write each document as an rc1 vector for `contract-validate --vectors`.
 //
 // Documents are created and replaced as the scripts call `documents.create` / `replace`. Reads
-// (`query`, `count`, `ranked`, and the proved forms rc1-live.mjs reads: `queryWithProof`,
-// `countWithProof`, `sumWithProof`, grouped or not) answer from the same store with `==`, `in` and
+// (`query`, `count`, `ranked`, and the proved forms rc1-live.mjs and rc1-empty-aggregates.mjs read:
+// `queryWithProof`, `countWithProof`, `sumWithProof`, `averageWithProof`, grouped or not) answer from the same store with `==`, `in` and
 // range filters.
 
 import { createHash } from 'node:crypto';
@@ -419,6 +419,7 @@ export class OfflineChain {
         return d;
       }
     }
+    const sum = (rows, prop) => rows.reduce((s, d) => s + BigInt(d.view[prop] ?? 0), 0n);
     const documents = {
       create: async (args) => chain.create(args),
       query: async (q) => new Map(chain.select(q).map((d) => [d.id, chain.view(d)])),
@@ -427,7 +428,8 @@ export class OfflineChain {
       delete: async (args) => chain.delete(args),
       queryWithProof: async (q) => ({ data: new Map(chain.select(q).map((d) => [d.id, chain.view(d)])) }),
       countWithProof: async (q) => ({ data: chain.aggregate(q, (g) => BigInt(g.length)) }),
-      sumWithProof: async (q, prop) => ({ data: chain.aggregate(q, (g) => g.reduce((s, d) => s + BigInt(d.view[prop] ?? 0), 0n)) }),
+      sumWithProof: async (q, prop) => ({ data: chain.aggregate(q, (g) => sum(g, prop)) }),
+      averageWithProof: async (q, prop) => ({ data: chain.aggregate(q, (g) => ({ count: BigInt(g.length), sum: sum(g, prop) })) }),
       ranked: async ({ dataContractId, documentTypeName, groupBy }) => {
         const counts = new Map();
         for (const d of chain.select({ dataContractId, documentTypeName })) {

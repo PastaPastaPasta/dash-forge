@@ -13,8 +13,8 @@ name: Contracts
 # under forge-contracts/contracts/mainnet/ (`build.py --mainnet` writes it, `build.py --check` compares
 # it: forge-meta and the mixed-visibility items of dash-forge-qa design/mixed-visibility/DESIGN.md
 # rev 4.1 §8.3) gets the same checks, and variants.py runs every combination of its items. Last,
-# every seed and verify script runs against an in-memory chain (seed-offline.mjs), and each document
-# it writes is judged the same way. The job is behind a `changes` gate so `contract-validate` can be a required
+# every seed and verify script, and the RC1 rule suite's case table (rc1-live.mjs --offline), runs
+# against an in-memory chain on both sets, and each document they write is judged the same way. The job is behind a `changes` gate so `contract-validate` can be a required
 # check (a skipped run satisfies it; a failed gate does not).
 on:
   # No `paths:` filter on pull_request: `contract-validate` is meant to be a REQUIRED check, and a
@@ -213,6 +213,24 @@ jobs:
             --out "$RUNNER_TEMP/seed-vectors-mainnet"
           "$CARGO_TARGET_DIR/release/contract-validate" --vectors "$RUNNER_TEMP/seed-vectors-mainnet" \
             forge-contracts/contracts/mainnet/forge-{core,collab,community,meta}.json
+      # The RC1 rule suite's case table (rc1-live.mjs --offline) on the devnet set and on the
+      # four-contract mainnet set testnet registers (QA-03): it routes each type by what the loaded
+      # contracts hold and shapes each document as they declare; the in-memory chain judges every case
+      # that needs chain state, and rs-dpp judges every document it writes (the refusals by a rule or
+      # the schema included). rc1-empty-aggregates routes its probes on both sets the same way.
+      - name: RC1 rule suite case table on both sets
+        run: |
+          node forge-contracts/scripts/rc1-live.mjs --offline --out "$RUNNER_TEMP/rc1-offline"
+          "$CARGO_TARGET_DIR/release/contract-validate" --vectors "$RUNNER_TEMP/rc1-offline" \
+            forge-contracts/contracts/forge-core.json \
+            forge-contracts/contracts/forge-collab.json \
+            forge-contracts/contracts/forge-community.json
+          node forge-contracts/scripts/rc1-live.mjs --offline --contracts forge-contracts/contracts/mainnet \
+            --out "$RUNNER_TEMP/rc1-offline-mainnet"
+          "$CARGO_TARGET_DIR/release/contract-validate" --vectors "$RUNNER_TEMP/rc1-offline-mainnet" \
+            forge-contracts/contracts/mainnet/forge-{core,collab,community,meta}.json
+          node forge-contracts/scripts/rc1-empty-aggregates.mjs --offline
+          node forge-contracts/scripts/rc1-empty-aggregates.mjs --offline --contracts forge-contracts/contracts/mainnet
       # Offline: the deploy script's id derivation matches the validator's known answer, and every
       # schema it registers loads with forge-core's id substituted (no SDK, no network)
       - name: Deploy script self-test
