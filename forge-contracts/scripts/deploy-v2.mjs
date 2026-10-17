@@ -82,12 +82,17 @@
 // for every step before the first is signed; then each recorded update. Superseded, abandoned and
 // external entries are not replayed: they leave nonce gaps, each at most MAX_NONCE_GAP (24),
 // else a same-id restore is impossible and a new set is the only way (--force-new
-// --abandon-live-set). An external transition (a key rotation) is not redone; the run lists it.
+// --abandon-live-set). An external transition (a key rotation) is not redone; the run lists it at
+// the end, to redo only then (anything the restored deployer signs before the replay finishes takes
+// a nonce the replay needs).
 // --replay-from-chain echoes the record's chainId. The production refusals about what is sent
 // apply (HEAD on origin, a proved chain id, room; not the set directory's state or build.py
 // --check, since the recorded bytes come from git), --expect-sha256 is checked against the
 // recorded sums (the ones the owner signed at registration), the deployer's balance must cover
-// the recorded costs + 20 %, and the restored deployer must have signed nothing but the replay.
+// the recorded costs + 20 % (a step without one is refused there), and the restored deployer must
+// have signed nothing but the replay. The sums cover the creates only: an update is pinned by the
+// record, so on testnet and mainnet the record and registered/<network>/ must match HEAD, and every
+// commit the replay reads must be on origin.
 // A rerun resumes: a contract on chain at its recorded id is not sent again. The end appends v2.restores and moves `chainId` to the
 // new chain; ids, ledger entries and registeredSchemaHash are unchanged.
 //
@@ -689,6 +694,27 @@ export function planReplay(dep, { recordKeys, fromChain, recordName = 'the recor
   return { fromChain, group, keys, ops, sums, skipped, replayedNonces, finished };
 }
 
+/**
+ * The ledger's identity-nonce entries, one list per chain the deployer signed on. A same-id
+ * restore (v2.restores[i], at ledger position `ledgerLength`) starts a new chain: of the entries
+ * before it, only the creates it replayed are on that chain; an external transition or a superseded
+ * contract of the old chain never happened there, so a later transition may take its nonce again.
+ * deploy-v2's nonce checks read the last list; the record self-check (lib/deployments-check.mjs)
+ * checks that each list is a straight line.
+ */
+export function ledgerChains(v2) {
+  const ledger = v2?.nonceLedger ?? [];
+  const withNonce = (from, to) => ledger.slice(from, to).filter((e) => e.identityNonce !== undefined);
+  const bounds = (v2?.restores ?? []).map((r) => r.ledgerLength).filter((n) => Number.isInteger(n));
+  const chains = [withNonce(0, bounds[0] ?? ledger.length)];
+  bounds.forEach((at, i) => {
+    const replayed = new Set(v2.restores[i].replayedNonces ?? []);
+    const carried = ledger.slice(0, at).filter((e) => e.kind === 'dataContractCreate' && e.status === 'registered' && replayed.has(e.identityNonce));
+    chains.push([...carried, ...withNonce(at, bounds[i + 1] ?? ledger.length)]);
+  });
+  return chains;
+}
+
 /** The first nonce gap a replay of `creates` (ascending identity nonces) cannot make from `chain`, or null. */
 export function nonceGapProblem(creates, chain) {
   let prev = BigInt(chain);
@@ -953,6 +979,22 @@ async function deploy(argv, injected, locks) {
       ? `HEAD ${gitCommit.slice(0, 12)} is on no branch of origin: push it first, so the recorded gitCommit can be fetched`
       : 'git cannot report whether HEAD is on origin: the recorded gitCommit cannot be shown to be fetchable');
   }
+  // A replay sends what the record says, and the signed sums cover only the creates: an update's
+  // bytes are pinned by the record alone. So the record and the frozen copies must be the committed
+  // ones (refused in production), and every commit the replay reads must be on origin.
+  if (replayPlan) {
+    const frozen = join(injected.registeredRoot ?? join(ROOT, 'contracts', 'registered'), basename(depFile, '.json'));
+    for (const path of production ? [repoPath(depFile), repoPath(frozen)] : []) {
+      const dirty = safe(() => git.porcelain(path));
+      if (dirty === undefined) problems.push(`git cannot report on ${path}: the record a replay follows cannot be shown to be the committed one`);
+      else if (dirty) problems.push(`${path} differs from git HEAD: a replay follows the committed record (nothing else pins its updates); commit or restore it first (${dirty.split('\n')[0].trim()})`);
+    }
+    const commits = [...new Set(replayPlan.ops.map((o) => (o.kind === 'create' ? dep.v2[o.key].gitCommit ?? o.entry.gitCommit : o.entry.gitCommit)).filter(Boolean))];
+    for (const c of commits) {
+      const pushed = safe(() => git.pushed(c));
+      if (pushed !== true) problems.push(pushed === false ? `the replay reads commit ${c.slice(0, 12)}, which is on no branch of origin` : `git cannot report whether commit ${c.slice(0, 12)}, which the replay reads, is on origin`);
+    }
+  }
   if (problems.length > 0) {
     if (production && !dryRun) throw new Error(`${network} ${replay ? 'replay' : 'registration'} refused, nothing was broadcast:\n  - ${problems.join('\n  - ')}`);
     for (const p of problems) log(`WARNING ${p}`);
@@ -1134,11 +1176,9 @@ async function deploy(argv, injected, locks) {
     // After a same-id restore the chain holds, of the ledger before it, only the creates it replayed
     // (an external transition or a superseded contract of the old chain never happened on this one)
     const lastSigned = (counts) => {
-      const replayed = v2.restores?.at(-1)?.replayedNonces ?? [];
       let last = 0n;
-      for (const [i, e] of (v2.nonceLedger ?? []).entries()) {
-        if (e.identityNonce === undefined || e.status === 'abandoned' || !counts(e)) continue;
-        if (i < restoredUpTo() && !(e.kind === 'dataContractCreate' && replayed.includes(e.identityNonce))) continue;
+      for (const e of ledgerChains(v2).at(-1)) {
+        if (e.status === 'abandoned' || !counts(e)) continue;
         if (BigInt(e.identityNonce) > last) last = BigInt(e.identityNonce);
       }
       return last;
@@ -1639,15 +1679,22 @@ async function deploy(argv, injected, locks) {
       const chain = await chainNonce();
       const sent = steps.filter((s) => s.kind === 'create' && onChain[s.key]).reduce((m, s) => (s.nonce > m ? s.nonce : m), 0n);
       if (identity && chain !== sent) {
-        throw replayError(`the restored deployer's identity nonce is ${chain} on this chain, but the replay has sent creates up to nonce ${sent}: something else signed with it, which the ledger cannot record. Find out what it was before going on`);
+        const next = steps.find((s) => s.kind === 'create' && !onChain[s.key]);
+        if (next && chain >= next.nonce) {
+          throw replayError(`the restored deployer's identity nonce is already ${chain} on this chain, at or past ${next.key}'s recorded nonce ${next.nonce}: something was signed with it before the replay (a key rotation, a transfer), so ${next.key} can never get its recorded id. A same-id restore is now impossible; register a new set instead (--force-new --abandon-live-set ${network})`);
+        }
+        throw replayError(`the restored deployer's identity nonce is ${chain} on this chain, but the replay has sent creates up to nonce ${sent}: something else signed with it, which the ledger cannot record. Find out what it was before going on, and sign nothing but the replay with the deployer until it has finished`);
       }
       const gap = nonceGapProblem(steps.filter((s) => s.kind === 'create' && !onChain[s.key]), chain);
       if (gap) {
         throw replayError(`${gap}. A same-id restore is impossible; register a new set instead (--force-new --abandon-live-set ${network})`);
       }
-      for (const e of skipped) say(`identity nonce ${e.identityNonce}: ${e.kind}${e.key ? ` ${e.key}` : ''}${e.superseded ? ' (superseded)' : e.status ? ` (${e.status})` : ''}${e.note ? `: ${e.note}` : ''}: not replayed (a gap)`);
+      for (const e of skipped) {
+        // (after an earlier restore, an entry of a chain before it whose nonce a replayed create took again)
+        const reused = replayedNonces.includes(e.identityNonce);
+        say(`identity nonce ${e.identityNonce}: ${e.kind}${e.key ? ` ${e.key}` : ''}${e.superseded ? ' (superseded)' : e.status ? ` (${e.status})` : ''}${e.note ? `: ${e.note}` : ''}: not replayed (${reused ? 'an earlier chain\'s; a replayed create takes the nonce' : 'a gap'})`);
+      }
       const external = skipped.filter((e) => e.kind === 'external' && !e.listedBefore);
-      if (external.length > 0) say(`WARNING ${external.length} external transition(s) of the old chain are not redone (${external.map((e) => `nonce ${e.identityNonce}: ${e.note ?? '?'}`).join('; ')}): redo any that still matter (a key rotation) by hand`);
 
       // What it costs: what each step cost when it was registered, with a 20 % margin. A restored
       // deployer holds its asset lock's credits only (no top-ups), and a set stopped half way is
@@ -1659,6 +1706,10 @@ async function deploy(argv, injected, locks) {
         const cost = s.kind === 'create' ? v2[s.key].costCredits : v2[s.key].updates?.find((u) => u.version === s.entry.version)?.costCredits;
         if (cost === undefined || cost === null) unpriced.push(`${s.key}${s.kind === 'update' ? ` v${s.entry.version}` : ''}`);
         else need += BigInt(cost);
+      }
+      // (a step without a recorded cost cannot be priced: production refuses rather than guess low)
+      if (unpriced.length > 0 && production && !dryRun) {
+        throw replayError(`no recorded cost for ${unpriced.join(', ')}, so the balance the replay needs cannot be checked; a set stopped half way is worse than one not started`);
       }
       need = (need * 12n) / 10n;
       const held = await balance();
@@ -1787,6 +1838,8 @@ async function deploy(argv, injected, locks) {
       v2.contractGroup = { ...(v2.contractGroup ?? {}), admins, verifiedAt: at };
       record();
       say(`same-id restore done: ${keys.join(', ')} and group ${group} are on ${chainId ?? 'this chain'} at their recorded ids`);
+      // Only now: anything the deployer signed before the replay had finished would have taken a nonce it needed
+      if (external.length > 0) say(`WARNING ${external.length} external transition(s) of the old chain were not redone (${external.map((e) => `nonce ${e.identityNonce}: ${e.note ?? '?'}`).join('; ')}): now that the replay has finished, redo any that still matter (a key rotation) by hand, then record it (--acknowledge-nonce <n> --note)`);
       report.replay = { fromChainId: v2.restores.at(-1).fromChainId, toChainId: chainId, replayed: keys, updatesReplayed };
       report.contractGroupId = group;
       return report;

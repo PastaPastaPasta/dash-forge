@@ -258,6 +258,14 @@ on the old chain): `deploy-v2.mjs --replay --dry-run` prints what the replay nee
 `node mint.mjs topup --identity <restored file> --amount <DASH>` adds the rest. Platform
 is asked first, so an identity that is already restored exits 0 without reading Core.
 
+Until the replay has finished, a top-up is the only thing to do with the restored
+identity. `transfer --from <restored>` or a key rotation spends an identity nonce
+that the replay needs for a contract, and the same-id restore is then impossible.
+Redo an old key rotation only after the replay. A rerun of `restore` after such a
+rotation reports other keys on chain: the identity is restored, and the file with
+the new keys is the current one. Restoring from a `<name>.restored.identity.json`
+(after a second reset) keeps that file as it is.
+
 It writes `<name>.restored.identity.json` next to the input (or `--out`; 0600, never
 over an existing file, which is left as is when it holds the same identity) and prints
 the id, balance and asset-lock height, never the mnemonic or a key.

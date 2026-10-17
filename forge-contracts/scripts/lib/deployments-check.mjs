@@ -7,7 +7,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 
-import { DEFAULT_CONTRACTS_DIR, SETS, contractGroupId, contractId, dependentsIn, loadSchema, placeholderFor, schemaHash } from '../deploy-v2.mjs';
+import { DEFAULT_CONTRACTS_DIR, SETS, contractGroupId, contractId, dependentsIn, ledgerChains, loadSchema, placeholderFor, schemaHash } from '../deploy-v2.mjs';
 
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const KEYS = { forgeCore: 'forge-core', forgeCollab: 'forge-collab', forgeCommunity: 'forge-community', forgeMeta: 'forge-meta' };
@@ -52,7 +52,8 @@ export function recordProblems({ name, dep, registeredRoot = join(DEFAULT_CONTRA
         if (c.registeredSchemaHash !== hash) bad(`${key}.registeredSchemaHash is not the hash of registered/${name}/${schemaName}.v1.json with the recorded ids`);
       }
     }
-    // the ledger: identity nonces strictly increase, and every live contract has its registered create entry
+    // the ledger: identity nonces strictly increase on each chain (a same-id restore starts a new one,
+    // carrying only the creates it replayed), and every live contract has its registered create entry
     // (a devnet record may predate the ledger, or have been updated by deploy-v2 since: only a production record
     // must hold a ledger that starts with its registrations)
     const ledger = v2.nonceLedger;
@@ -60,11 +61,13 @@ export function recordProblems({ name, dep, registeredRoot = join(DEFAULT_CONTRA
     if (!Array.isArray(ledger)) {
       if (production) bad('v2.nonceLedger is missing from a record that names its set');
     } else {
-      let last = 0n;
-      for (const e of ledger.filter((x) => x.identityNonce !== undefined && x.status !== 'abandoned')) {
-        const n = BigInt(e.identityNonce);
-        if (n <= last) bad(`v2.nonceLedger: identity nonce ${n} does not follow ${last}`);
-        last = n;
+      for (const [i, chain] of ledgerChains(v2).entries()) {
+        let last = 0n;
+        for (const e of chain.filter((x) => x.status !== 'abandoned')) {
+          const n = BigInt(e.identityNonce);
+          if (n <= last) bad(`v2.nonceLedger: identity nonce ${n} does not follow ${last}${i > 0 ? ` (on the chain of v2.restores[${i - 1}])` : ''}`);
+          last = n;
+        }
       }
       for (const [key] of production ? live : []) {
         const c = v2[key];

@@ -12,8 +12,9 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { after, test } from 'node:test';
 
-import { MAX_NONCE_GAP, SETS, contractGroupId, contractId, defaultGit, formatSums, main, nonceGapProblem, planReplay, replaySource, setSums } from './deploy-v2.mjs';
+import { MAX_NONCE_GAP, SETS, contractGroupId, contractId, defaultGit, formatSums, ledgerChains, main, nonceGapProblem, planReplay, replaySource, setSums } from './deploy-v2.mjs';
 import { createFakePlatform } from './lib/fake-platform.mjs';
+import { recordProblems } from './lib/deployments-check.mjs';
 
 const REPO = resolve(import.meta.dirname, '..', '..');
 const KEYS = ['forgeCore', 'forgeCollab', 'forgeCommunity', 'forgeMeta'];
@@ -141,7 +142,7 @@ test('refusals before anything is broadcast', async () => {
   assert.equal(t.raw(), before);
   // the set's current files are not what a replay sends (it rebuilds the recorded bytes from git):
   // a dirty set directory or a stale build does not stop it
-  t.git.porcelain = () => ' M forge-contracts/contracts/mainnet/forge-core.json';
+  t.git.porcelain = (path) => (path.includes('contracts/mainnet') ? ' M forge-contracts/contracts/mainnet/forge-core.json' : '');
   t.git.buildCheck = () => ({ ok: false, output: 'stale: forge-contracts/contracts/mainnet/forge-core.json' });
   await t.run(t.replay());
   assert.equal(t.fake.broadcasts, 8);
@@ -214,7 +215,7 @@ test('an external transition and an abandoned reservation leave a gap the replay
     ['1', 'dataContractCreate', 'abandoned'],
     ['1', 'external', 'IdentityUpdate: rotated CRITICAL (INC-10)'],
   ]);
-  assert.ok(t.logs.some((m) => /WARNING 1 external transition\(s\) of the old chain are not redone .*rotated CRITICAL/.test(m)));
+  assert.ok(t.logs.some((m) => /WARNING 1 external transition\(s\) of the old chain were not redone .*rotated CRITICAL.*now that the replay has finished, redo/.test(m)));
 });
 
 test('after a restore, the old chain\'s transitions past the last replayed nonce do not count', async () => {
@@ -236,6 +237,24 @@ test('after a restore, the old chain\'s transitions past the last replayed nonce
   assert.equal(after.v2.forgeMeta.identityNonce, '5');
   assert.equal(after.v2.forgeMeta.contractId, contractId(t.fake.ownerId, 5n));
   assert.deepEqual(after.v2.nonceLedger.slice(-2).map((e) => [e.identityNonce, e.kind]), [['5', 'external'], ['5', 'dataContractCreate']]);
+  // the record self-check (contracts CI runs it on every committed record) holds it: each chain is a straight line
+  const check = (dep) => recordProblems({ name: 'testnet', dep, registeredRoot: t.registeredRoot });
+  assert.deepEqual(check(after), []);
+  assert.deepEqual(ledgerChains(after.v2).map((c) => c.map((e) => `${e.identityNonce}:${e.kind}`)), [
+    ['1:dataContractCreate', '2:dataContractCreate', '3:dataContractCreate', '4:dataContractCreate', '5:external'],
+    ['1:dataContractCreate', '2:dataContractCreate', '3:dataContractCreate', '4:dataContractCreate', '5:dataContractCreate'],
+  ]);
+  // a nonce repeated on one chain is still a broken record
+  const broken = structuredClone(after);
+  broken.v2.nonceLedger.push({ identityNonce: '5', kind: 'external', note: 'x', at: 'x' });
+  assert.deepEqual(check(broken), ['testnet: v2.nonceLedger: identity nonce 5 does not follow 5 (on the chain of v2.restores[0])']);
+  // a second reset: the old chain's external at 5 is an earlier chain's (a replayed create takes 5), not a gap
+  t.fake.reset('dash-testnet-53');
+  t.logs.length = 0;
+  await t.run(t.prod('--replay', '--replay-from-chain', NEW));
+  assert.ok(t.logs.some((m) => /identity nonce 5: external: IdentityUpdate: rotated CRITICAL: not replayed \(an earlier chain's; a replayed create takes the nonce\)/.test(m)));
+  assert.ok(t.logs.some((m) => /identity nonce 4: dataContractCreate forgeMeta \(superseded\): not replayed \(a gap\)/.test(m)));
+  assert.deepEqual(check(t.read()), []);
 });
 
 test('the nonce window: forge-core at nonce 24 replays, at 25 the restore is impossible', async () => {
@@ -320,7 +339,7 @@ test('recorded updates are replayed after their create, in ledger order, to the 
   core.documentSchemas.replayProbe = structuredClone(core.documentSchemas[firstType]);
   writeFileSync(join(v2dir, 'forge-core.json'), `${JSON.stringify(core, null, 2)}\n`);
   const scratch = join(t.dir, 'scratch.json');
-  const argv = (dir, ...extra) => ['--network', 'testnet', '--contracts', dir, '--record', scratch, '--identity', t.identity, ...extra];
+  const argv = (dir, ...extra) => ['--network', 'testnet', '--scratch-on', 'testnet', '--contracts', dir, '--record', scratch, '--identity', t.identity, ...extra];
   await t.run(argv(v1));
   await t.run(argv(v2dir, '--update', 'core'));
   const before = JSON.parse(readFileSync(scratch, 'utf8'));
@@ -418,14 +437,24 @@ test('the restored deployer must have signed nothing else: an unrecorded transit
   await t.run(t.prod());
   t.fake.reset(NEW);
   t.fake.externalTransition();
-  await assert.rejects(t.run(t.replay()), /identity nonce is 1 on this chain, but the replay has sent creates up to nonce 0: something else signed with it/);
+  await assert.rejects(t.run(t.replay()), /identity nonce is already 1 on this chain, at or past forgeCore's recorded nonce 1.*now impossible/s);
   assert.equal(t.fake.broadcasts, 4);
   // the same part way through a replay
   t.fake.reset(NEW);
   t.fake.failIn(2, 'before');
   await assert.rejects(t.run(t.replay()), /connection lost/);
   t.fake.externalTransition();
-  await assert.rejects(t.run(t.replay()), /identity nonce is 2 on this chain, but the replay has sent creates up to nonce 1/);
+  await assert.rejects(t.run(t.replay()), /identity nonce is already 2 on this chain, at or past forgeCollab's recorded nonce 2/);
+  // below the next recorded nonce (a gap the ledger left) the ids are still reachable, but the
+  // transition is not in the ledger: stop and find out
+  const g = setup();
+  g.fake.failNext('before');
+  await assert.rejects(g.run(g.prod()), /connection lost/);
+  g.fake.externalTransition();
+  await g.run(g.prod('--acknowledge-nonce', '1', '--note', 'a transfer'));
+  g.fake.reset(NEW);
+  g.fake.externalTransition();
+  await assert.rejects(g.run(g.replay()), /identity nonce is 1 on this chain, but the replay has sent creates up to nonce 0: something else signed with it.*Find out what it was/s);
 });
 
 test('a second reset: the chain to name is the one the record moved to; old externals are not listed again', async () => {
@@ -480,7 +509,7 @@ test('creates and updates replay interleaved as recorded; a crash during an upda
   const v3 = setCopy('i3', { probe: 'replayProbe2' });
   const scratch = join(t.dir, 'interleaved.json');
   const read = () => JSON.parse(readFileSync(scratch, 'utf8'));
-  const argv = (dir, ...extra) => ['--network', 'testnet', '--contracts', dir, '--record', scratch, '--identity', t.identity, ...extra];
+  const argv = (dir, ...extra) => ['--network', 'testnet', '--scratch-on', 'testnet', '--contracts', dir, '--record', scratch, '--identity', t.identity, ...extra];
   await t.run(argv(v1)); // forge-core, forge-collab, forge-community
   const coreId = read().v2.forgeCore.contractId;
   // something used forge-core's identity-contract nonce first, so the update is at contract nonce 2
@@ -525,4 +554,64 @@ test('the real git path: replaySource reads a file at a commit and refuses one g
   assert.throws(() => replaySource({ what: 'forgeCore create', sourceFile: path, gitCommit: '0'.repeat(40), sourceSha256: sha }, git),
     /--replay: git cannot show 000000000000:forge-contracts\/contracts\/mainnet\/forge-core\.json \(.+\); fetch origin first\. Nothing was broadcast\./);
   assert.throws(() => replaySource({ what: 'forgeCore create', sourceFile: path, gitCommit: 'HEAD', sourceSha256: '1'.repeat(64) }, git), /not the bytes registered/);
+});
+
+test('a production replay follows the committed record: a dirty record or frozen copy, or a commit not on origin, is refused', async () => {
+  const t = setup();
+  await t.run(t.prod());
+  t.fake.reset(NEW);
+  const dirtyAt = (needle) => (path) => (path.includes(needle) ? ` M ${needle}` : '');
+  t.git.porcelain = dirtyAt('testnet.json');
+  await assert.rejects(t.run(t.replay()), /testnet replay refused.*testnet\.json differs from git HEAD: a replay follows the committed record/s);
+  t.git.porcelain = dirtyAt('registered/testnet');
+  await assert.rejects(t.run(t.replay()), /registered\/testnet differs from git HEAD/);
+  t.git.porcelain = () => '';
+  // the review's repro: an update of forge-core hand-added to the record, from a commit only this machine has
+  const rec = t.read();
+  const core = JSON.parse(readFileSync(join(SETS.mainnet, 'forge-core.json'), 'utf8'));
+  core.documentSchemas.injected = structuredClone(core.documentSchemas[Object.keys(core.documentSchemas)[0]]);
+  const evil = Buffer.from(`${JSON.stringify(core, null, 2)}\n`);
+  const { loadSchema, schemaHash, placeholderFor } = await import('./deploy-v2.mjs');
+  const ids = Object.fromEntries(KEYS.map((k, i) => [placeholderFor(NAMES[i]), rec.v2[k].contractId]));
+  const h = schemaHash(loadSchema('forge-core', ids, evil.toString('utf8')));
+  rec.v2.nonceLedger.push({ contractNonce: '1', kind: 'dataContractUpdate', key: 'forgeCore', contractId: rec.v2.forgeCore.contractId, version: 2, schemaHash: h,
+    previousSchemaHash: rec.v2.forgeCore.schemaHash, sourceSha256: createHash('sha256').update(evil).digest('hex'), gitCommit: 'b'.repeat(40), status: 'updated', at: 'x' });
+  rec.v2.forgeCore.updates = [{ version: 2, sourceFile: 'forge-contracts/contracts/mainnet/forge-core.json', status: 'updated', costCredits: '1' }];
+  Object.assign(rec.v2.forgeCore, { version: 2, schemaHash: h });
+  t.write(rec);
+  const show = t.git.show;
+  t.git.show = (c, p) => (c === 'b'.repeat(40) ? evil : show(c, p));
+  t.git.pushed = (c) => c === 'a'.repeat(40);
+  await assert.rejects(t.run(t.replay()), /the replay reads commit bbbbbbbbbbbb, which is on no branch of origin/);
+  assert.equal(t.fake.broadcasts, 4);
+  assert.equal(t.fake.state.contracts.size, 0, 'nothing reached the new chain');
+});
+
+test('signing with the restored deployer before the replay finishes makes the restore impossible, and the replay says so', async () => {
+  const t = setup();
+  await t.run(t.prod());
+  const rec = t.read();
+  rec.v2.nonceLedger.push({ identityNonce: '5', kind: 'external', note: 'IdentityUpdate: rotated CRITICAL', at: 'x' });
+  t.write(rec);
+  t.fake.reset(NEW);
+  await t.run(t.replay('--dry-run'));
+  // the dry run lists the rotation as not replayed, but does not ask to redo it yet
+  assert.ok(t.logs.some((m) => /identity nonce 5: external: IdentityUpdate: rotated CRITICAL: not replayed \(a gap\)/.test(m)));
+  assert.ok(!t.logs.some((m) => /redo/.test(m)));
+  t.fake.externalTransition(); // re-rotated too early: it took nonce 1
+  await assert.rejects(t.run(t.replay()), /identity nonce is already 1 on this chain, at or past forgeCore's recorded nonce 1: .*forgeCore can never get its recorded id\. A same-id restore is now impossible; register a new set instead \(--force-new --abandon-live-set testnet\)/s);
+  assert.equal(t.fake.broadcasts, 4);
+});
+
+test('a production replay refuses a step without a recorded cost', async () => {
+  const t = setup();
+  await t.run(t.prod());
+  t.fake.reset(NEW);
+  const rec = t.read();
+  delete rec.v2.forgeCommunity.costCredits;
+  t.write(rec);
+  await t.run(t.replay('--dry-run'));
+  assert.ok(t.logs.some((m) => /no recorded cost for forgeCommunity/.test(m)));
+  await assert.rejects(t.run(t.replay()), /no recorded cost for forgeCommunity, so the balance the replay needs cannot be checked/);
+  assert.equal(t.fake.broadcasts, 4);
 });

@@ -499,8 +499,9 @@ async function cmdRestore(args) {
   if ([str(args.network), record.network].includes('mainnet')) throw new Error('mainnet restore is not supported by mint-identity yet (it has no mainnet network)');
   const network = networkForRecord(args, record, file);
   // Written next to the input unless --out says otherwise; an existing file is kept (and must hold this identity)
-  const out = resolve(str(args.out) ?? join(dirname(resolve(file)), `${basename(file).replace(/(\.identity)?\.json$/, '')}.restored.identity.json`));
-  if (out === resolve(file)) throw new Error('--out must not be the escrowed file itself');
+  const out = resolve(str(args.out) ?? join(dirname(resolve(file)), `${basename(file).replace(/(\.restored)?(\.identity)?\.json$/, '')}.restored.identity.json`));
+  // (the default for a file restored once already, X.restored.identity.json, is that file: it is kept as is)
+  if (str(args.out) && out === resolve(file)) throw new Error('--out must not be the escrowed file itself');
   const kept = existsSync(out) ? readJson(out) : null;
   if (kept && kept.identityId !== record.identityId) throw new Error(`${out} exists and holds another identity; pass another --out`);
   const result = await restoreIdentity({ record, network, expectId: str(args['expect-id']), log });

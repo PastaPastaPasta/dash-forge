@@ -103,7 +103,10 @@ export async function restoreIdentity({ record, network, expectId, log = () => {
   const existing = await d.describeIdentity(identityId);
   if (existing) {
     if (!sameKeys(existing, role)) {
-      throw new Error(`identity ${identityId} exists on this chain with other keys than the file's: its asset lock was consumed by another registration. ${FRESH}`);
+      throw new Error(
+        `identity ${identityId} exists on this chain with other keys than the file's. If its keys were rotated here after an earlier restore, it is restored already and nothing is to be done (its file is the one with the new keys). ` +
+          `Otherwise its asset lock was consumed by another registration: ${FRESH}`
+      );
     }
     log(`[restore] ${identityId} is already on this chain with the file's keys; nothing to do`);
     return { status: 'already-restored', identityId, balance: existing.balance, coreHeight: null, role };
