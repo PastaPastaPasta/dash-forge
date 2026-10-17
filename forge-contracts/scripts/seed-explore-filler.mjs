@@ -5,7 +5,7 @@
 //   node forge-contracts/scripts/seed-explore-filler.mjs --identity <explore-filler.identity.json> \
 //        [--count 25] [--network devnet --devnet-name sakura] [--deployment <file>] [--pace-ms 700]
 //
-// Writes RC1 documents; needs `npm ci` in forge-contracts/sdk-v2 (evo-sdk 5.0.0-beta.1). The
+// Writes RC1 documents; needs `npm ci` in forge-contracts/sdk-v2 (the evo-sdk it pins). The
 // network defaults to DASH_FORGE_NETWORK / DASH_FORGE_DEVNET_NAME, else devnet sakura. Each repo
 // is what `dg repo create <name> --storage platform` writes for a public repo with nothing
 // pushed: the repo and its owner's own maintainer enrolment.
