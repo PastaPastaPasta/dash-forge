@@ -358,6 +358,7 @@ export async function probeQuorumService(
   endpoint: string,
   dapiAddresses: readonly string[],
   deps: Pick<CrossCheckDeps, 'fetch' | 'timeoutMs' | 'random' | 'now'> = {},
+  chainId: string | null = null,
 ): Promise<void> {
   const full: Required<CrossCheckDeps> = {
     fetch: deps.fetch ?? ((input, init) => fetch(input, init)),
@@ -373,7 +374,7 @@ export async function probeQuorumService(
     throw new QuorumProbeError('no-answer')
   }
   if (keys.length === 0) throw new QuorumProbeError('no-answer')
-  const second = dapiAddresses.length > 0 ? await secondSource(dapiAddresses, full, null) : null
+  const second = dapiAddresses.length > 0 ? await secondSource(dapiAddresses, full, chainId) : null
   if (second === null) return
   const verdict = compareQuorumKeys(keys, second.keys)
   if (verdict.kind === 'mismatch') throw new QuorumProbeError('keys-differ')

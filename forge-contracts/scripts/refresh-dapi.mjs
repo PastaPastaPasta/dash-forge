@@ -245,6 +245,9 @@ export async function main(argv, deps = {}) {
   const network = args.network;
   if (!NETWORKS.includes(network)) throw new Error(`--network ${network ?? '(missing)'}: expected testnet or mainnet`);
   if (args.write && args.check) throw new Error('--write and --check are exclusive');
+  // Only probed nodes may be recorded: a node can pass the candidate filter and still be unusable
+  // from the SDK (testnet's 85.209.243.x answer raw grpc-web, but evo-sdk rc.3 bans them).
+  if (args.write && args['no-probe']) throw new Error('--write records only probed nodes: drop --no-probe');
   const opts = {
     network,
     minDrive: typeof args['min-drive'] === 'string' ? args['min-drive'] : DEFAULTS.minDrive,

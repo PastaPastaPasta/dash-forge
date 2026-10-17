@@ -22,6 +22,7 @@ on:
       - 'forge-contracts/schema/**'
       - 'forge-contracts/vectors/rc1/**'
       - 'forge-contracts/scripts/**'
+      - 'forge-contracts/deployments/**'
       - 'tools/contract-validate/**'
       - '.github/workflows/contracts.yml'
   push:
@@ -31,6 +32,7 @@ on:
       - 'forge-contracts/schema/**'
       - 'forge-contracts/vectors/rc1/**'
       - 'forge-contracts/scripts/**'
+      - 'forge-contracts/deployments/**'
       - 'tools/contract-validate/**'
       - '.github/workflows/contracts.yml'
   workflow_dispatch:

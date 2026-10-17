@@ -30,6 +30,7 @@
     "https://68.67.122.28:1443",
     "https://68.67.122.29:1443"
   ],
+  "chainId": "dash-testnet-51",
   "keyExchange": {
     "contractId": "7UaqHGBJBbRLJ4fUWS45cnud8PPUugJWoGTt1SKwHJ2P",
     "ownerId": "hbGEcFcXKJ2W9Di24ekiozTWfFszrjqkxbjfEep3D8A",

@@ -183,3 +183,7 @@ test('the testnet list keeps enough seeds that --write would have accepted it', 
   const { dapiAddresses } = JSON.parse(readFileSync(join(HERE, '..', '..', 'deployments', 'testnet.json'), 'utf8'));
   assert.ok(dapiAddresses.length >= 8, `testnet records ${dapiAddresses.length} seeds`);
 });
+
+test('--write refuses an unprobed list', async () => {
+  await assert.rejects(main(['--network', 'testnet', '--write', '--no-probe'], { fetchFn: async () => { throw new Error('no fetch expected'); } }), /--write records only probed nodes/);
+});
