@@ -90,8 +90,9 @@ pub(crate) fn config_value(remote: Option<&str>, remote_key: &str, key: &str) ->
 impl PushPolicy {
     /// Load the policy for a push through `remote` (the git remote name, when named).
     pub fn load(remote: Option<&str>) -> Result<Self> {
+        let storage = config_value(remote, "dashStorage", "storage");
         let raw = StoragePolicy::from_git_values(
-            config_value(remote, "dashStorage", "storage").as_deref(),
+            storage.as_deref(),
             config_value(remote, "dashReplicas", "replicas").as_deref(),
             config_value(remote, "dashPlatformFallback", "platformFallback").as_deref(),
         )?;
@@ -108,8 +109,7 @@ impl PushPolicy {
                 Some(v) => parse_cost_warn_threshold(&v)?,
                 None => Some(DEFAULT_COST_WARN_THRESHOLD_DASH),
             };
-        let storage_configured =
-            config_value(remote, "dashStorage", "storage").is_some_and(|v| !v.trim().is_empty());
+        let storage_configured = storage.is_some_and(|v| !v.trim().is_empty());
         let confirm = config_value(remote, "dashConfirm", "confirm")
             .map(|v| ConfirmMode::parse(&v))
             .transpose()?
@@ -252,13 +252,16 @@ pub fn guard(
     }
 }
 
-/// Ask `question` on `/dev/tty`; `Ok(true)` only for an explicit yes.
-pub fn ask_on_tty(question: &str) -> Result<bool> {
-    let mut tty = std::fs::OpenOptions::new()
+fn open_tty() -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .open("/dev/tty")
-        .map_err(|e| anyhow!("opening /dev/tty: {e}"))?;
+}
+
+/// Ask `question` on `/dev/tty`; `Ok(true)` only for an explicit yes.
+pub fn ask_on_tty(question: &str) -> Result<bool> {
+    let mut tty = open_tty().map_err(|e| anyhow!("opening /dev/tty: {e}"))?;
     write!(tty, "{question} Proceed? [y/N] ")?;
     tty.flush()?;
     let mut line = String::new();
@@ -271,11 +274,7 @@ pub fn ask_on_tty(question: &str) -> Result<bool> {
 
 /// Whether a controlling terminal is available.
 pub fn have_tty() -> bool {
-    std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open("/dev/tty")
-        .is_ok()
+    open_tty().is_ok()
 }
 
 /// Run the guard end to end: `Ok(())` to proceed, the user-facing refusal otherwise.

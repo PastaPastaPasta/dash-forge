@@ -26,8 +26,10 @@ export interface GuidedStep {
   readonly of: number
 }
 
+type Grants = Parameters<typeof missingGrants>[0]
+
 /** The sequence for a session that just signed in; null when no grant is missing. */
-export function startGuidedGrants(grants: Parameters<typeof missingGrants>[0]): GuidedGrants | null {
+export function startGuidedGrants(grants: Grants): GuidedGrants | null {
   const wanted = missingGrants(grants)
   return wanted.length === 0 ? null : { wanted, passed: [] }
 }
@@ -36,7 +38,7 @@ export function startGuidedGrants(grants: Parameters<typeof missingGrants>[0]): 
  * The next contract to ask for, or null when the sequence is over. A grant that arrived by
  * other means (another tab, an earlier step that covered two contracts) is not asked again.
  */
-export function guidedStep(state: GuidedGrants, grants: Parameters<typeof missingGrants>[0]): GuidedStep | null {
+export function guidedStep(state: GuidedGrants, grants: Grants): GuidedStep | null {
   const missing = missingGrants(grants)
   const index = state.wanted.findIndex((k) => missing.includes(k) && !state.passed.includes(k))
   const kind = state.wanted[index]

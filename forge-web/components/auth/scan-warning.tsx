@@ -11,7 +11,7 @@
 import Link from 'next/link'
 import { ShieldAlert } from 'lucide-react'
 import { useUiStore } from '@/hooks/use-ui-store'
-import { servedCid } from '@/lib/build-info'
+import { isImmutableCopy } from '@/lib/new-build'
 import { SITE_HOST } from '@/lib/site'
 import { DOCS } from '@/lib/docs-links'
 
@@ -21,7 +21,7 @@ import { DOCS } from '@/lib/docs-links'
  * pointer to checking the CID against the release.
  */
 function hostToCheck(): { host: string; ipfs: boolean } {
-  if (typeof window !== 'undefined' && (process.env.FORGE_IPFS_BUILD === '1' || servedCid(window.location) !== null)) {
+  if (typeof window !== 'undefined' && isImmutableCopy(window.location)) {
     return { host: window.location.host, ipfs: true }
   }
   return { host: SITE_HOST, ipfs: false }
