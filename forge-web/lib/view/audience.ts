@@ -99,6 +99,16 @@ export function membersSentence(c: MembersCount): string {
 export type MembersOption = 'ok' | 'turn-on' | 'ask-maintainer' | 'no-key' | 'locked' | 'no-key-shared' | 'former' | 'bot'
 
 /**
+ * Whether a composer's Members option is on offer to a viewer who can choose it, with members-only
+ * content on in the repo: they are a member, whatever state their key is in (unlock or set one up
+ * first). Not when it is still to be turned on, or the viewer is no member, a former one or a bot.
+ */
+export function membersChoiceOffered(choice: Pick<AudienceChoice, 'members'> | null): boolean {
+  const m = choice?.members
+  return m === 'ok' || m === 'locked' || m === 'no-key' || m === 'no-key-shared'
+}
+
+/**
  * Why the specific-people options (Maintainers, Writers and maintainers, Specific people…)
  * cannot be picked right now, or `ok`: `no-key`, this browser holds no encryption key; `locked`,
  * this tab must unlock first; `cant-reply`, a thread of messages to specific people this viewer

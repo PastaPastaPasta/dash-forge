@@ -8,13 +8,14 @@
  * alone): chain data, branch tip, file contents, where the bytes came from. Every state comes
  * from {@link deriveTrust} over checks that actually ran this session (roadmap invariant 4),
  * never from what the app intends to check. The footer always states how far to trust the
- * app itself.
+ * app itself. A repo with encrypted content adds a disclosure row under them (what is
+ * encrypted, what an outsider still sees); it is not a check and has no state.
  */
 
 import { useEffect, useId, useState } from 'react'
-import { ChevronRight, Loader2 } from 'lucide-react'
+import { ChevronRight, Loader2, Lock } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { shortOid, timeAgo, TRUST_ROW_TITLE, type TrustLink, type TrustReport } from '@/lib/view'
+import { shortOid, timeAgo, TRUST_ROW_TITLE, type PrivacyNote, type TrustLink, type TrustReport } from '@/lib/view'
 import { Author } from '@/components/author'
 import { TRUST_META } from './verification-chip'
 
@@ -58,6 +59,23 @@ function Row({ title, link, children }: { title: string; link: TrustLink; childr
       {link.note ? (
         <p className="mt-1 text-[11px] leading-snug text-anvil-500 dark:text-anvil-400">{link.note}</p>
       ) : null}
+    </li>
+  )
+}
+
+/** The disclosure for a repo with encrypted content: a label, what is sealed and what is not. */
+function PrivacyRow({ note }: { note: PrivacyNote }): JSX.Element {
+  return (
+    <li data-testid="trust-privacy" data-kind={note.kind} className="border-b border-anvil-200 py-2.5 last:border-b-0 last:pb-0 dark:border-anvil-750">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-dense font-medium text-anvil-800 dark:text-anvil-100">{note.title}</span>
+        <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-anvil-600 dark:text-anvil-300">
+          <Lock className="h-3 w-3" aria-hidden />
+          {note.label}
+        </span>
+      </div>
+      <p className="mt-0.5 text-[12px] leading-snug text-anvil-600 dark:text-anvil-300">{note.detail}</p>
+      <p className="mt-1 text-[11px] leading-snug text-anvil-500 dark:text-anvil-400">{note.note}</p>
     </li>
   )
 }
@@ -139,6 +157,7 @@ export function TrustPanel({ report }: { report: TrustReport }): JSX.Element {
             </Row>
             <Row title={TRUST_ROW_TITLE.content} link={report.content} />
             <Row title={TRUST_ROW_TITLE.source} link={report.source} />
+            {report.privacy ? <PrivacyRow note={report.privacy} /> : null}
           </ol>
           <p className="rounded border border-anvil-200 bg-white px-2.5 py-2 text-[11px] leading-snug text-anvil-500 dark:border-anvil-750 dark:bg-anvil-900 dark:text-anvil-400">
             <HostingNote />

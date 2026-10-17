@@ -124,7 +124,7 @@ Sizes: S ≈ days, M ≈ 1–2 weeks, L ≈ 3+ weeks of focused work. Phase 0 co
 ### Phase 3 — Private repos (L) · *gate: an outsider with full bucket + chain access learns nothing but sizes and timing*
 - [x] Design (security-reviewed): a per-repo content key that encrypts packs and the private collab docs. The key is wrapped per member to their identity encryption key (ECDH, PV14 `encryptedFor` envelope where it fits). Key rotation on member removal re-wraps and re-encrypts future pushes; past content stays readable to past members (stated plainly).
 - [x] Encrypted packs in the user's bucket and on Platform; encrypted issue/PR bodies; ref names hashed.
-- [ ] CLI and web decrypt paths; the trust panel shows the "private" state. *Partial: the decrypt paths are done. The trust panel has no "private" state yet.*
+- [x] CLI and web decrypt paths; the trust panel shows the "private" state. *The Verification card has a "Private content" / "Members-only content" row (what is encrypted, what an outsider still sees, and "Not deployed" where the Forge contracts are missing); it is a disclosure, not a check.*
 
 ### Phase 4 — Adoptable (L) · *gate: public beta on testnet/moutai*
 - [x] Release pipeline: `dg` + `git-remote-dash` binaries for Linux, macOS and Windows as GitHub Release assets (unsigned on macOS for now), plus a checksummed install script, `cargo binstall`, and a Docker image for the relay that users run themselves. *Done: `release.yml`, `install.sh`, binstall metadata and the relay image; v0.1.0 (2026-10-04) is the first release ([notes](releases/v0.1.0.md), [CHANGELOG](../CHANGELOG.md), [versioning](VERSIONING.md)).*
@@ -154,7 +154,7 @@ Work:
 - [ ] **Wallet side (upstream, dashpay):** request group-scoped grants (the Forge contract group) and publish to the PV14 system contract on protocol 14 / mainnet. File issues and PRs against `dashpay/dash-wallet` and `dashpay/dashwallet-ios`, with a spec note agreed with the App Connect authors. Until they ship, Forge supports the legacy contract on testnet. *Partial: drafts are in `docs/upstream/`; none is filed yet.*
 - [ ] **Test on real devices.** A scripted e2e with a simulated wallet responder (both formats), plus a manual check with the Dash Wallet Android testnet build and the iOS simulator (`run-ios-simulator`), recorded as evidence. *Partial: the scripted responder covers the legacy format only, App Connect has only a mocked unit test, and there is no real-device run yet.*
 
-**Gate:** a user on Dash Wallet (Android or iOS) signs in to Forge on testnet or moutai by scanning one QR code and does a write, with no key file anywhere. On mainnet this is gated on the wallets supporting group-scoped grants on protocol 14.
+**Gate:** a user on Dash Wallet (Android or iOS) signs in to Forge on testnet or moutai by scanning a QR code and does a write, with no key file anywhere. Until wallets grant group-bound keys it is one approval per Forge contract (up to four on iOS, each first one with a second code to register the key; Android's unbound key covers them all), which the web app asks for in one guided sequence right after the first sign-in. On mainnet this is gated on the wallets supporting group-scoped grants on protocol 14.
 
 ### Phase 5 — Daily-driver parity (L) · *gate: a maintainer runs a real project from the web app for a month*
 - [x] Line-level commit/PR diffs, inline review comments, approve/request-changes, re-review on new heads.
@@ -188,7 +188,7 @@ Landed:
 Launch checklist (`ux-dx-spec.md` §11 P0), where it stands: done 1–9, 11–16 and 18–20 (8: the web spend ledger and `dg cost audit`'s identity spend estimate are both done; forge-v2 keeps no on-chain ledger, so `dg cost audit` totals from proved document counts × each type's flat create cost rather than reconciling a local ledger against actuals) · partial: 10 (the Verification card has no "private" or "not deployed" state, and the CLI does not cross-check two quorum sources) and 17 (done: v0.1.0 is the first release).
 
 Next:
-- **Open:** the trust panel's "private" state, and a final security sign-off on private repos (launch criterion 6; [docs/security/private-repos.md](security/private-repos.md) §13 lists contract changes required before mainnet registration) · the wallet-side changes D-L needs on mainnet (group-scoped, limited grants through App Connect; a signed responder), drafted for dashpay in `docs/upstream/` (not yet filed) · the D-L gate (a real Dash Wallet sign-in on a device, then a write) is not yet run · 7 green nights in a row (Phase 0), then 14 (launch criterion 4).
+- **Open:** a final security sign-off on private repos (launch criterion 6; [docs/security/private-repos.md](security/private-repos.md) §13 lists contract changes required before mainnet registration) · the wallet-side changes D-L needs on mainnet (group-scoped, limited grants through App Connect; a signed responder), drafted for dashpay in `docs/upstream/` (not yet filed) · the D-L gate (a real Dash Wallet sign-in on a device, then a write) is not yet run · 7 green nights in a row (Phase 0), then 14 (launch criterion 4).
 - **Not started:** web file editing · in-repo content search · a `packMirror` document type (a later contract update).
 - **Networks:** register forge-v2 on testnet when PV14 reaches it, and move the nightly and a testnet web build there; mainnet after PV14 (Phase 6, D-D, D-J).
 
@@ -197,7 +197,7 @@ Launch UX/DX is specified in [docs/design/ux-dx-spec.md](design/ux-dx-spec.md) �
 ## 7. Launch criteria (what "real users would want it" means)
 
 Public beta ships when all of these hold on **mainnet**:
-1. A user signs in with their mobile Dash wallet by scanning one QR code (D-L).
+1. A user signs in with their mobile Dash wallet by scanning a QR code (D-L): one approval per Forge contract until wallets grant group-bound keys, then one.
 2. A GitHub user with their own bucket goes from nothing to a continuously synced mirror that can't be taken down in **under 10 minutes**, without building from source and without any Forge-run service.
 3. The **survivability drill** passes in CI: any single host, bucket, gateway, relay or domain can disappear and clone and browse still work.
 4. Nothing in the UI claims more than was verified. The nightly has been green for 14 days.

@@ -115,6 +115,8 @@ export {
   TRUST_ROW_TITLE,
   worstOf,
   type ConnectionTrust,
+  type PrivacyNote,
+  type Sealed,
   type TipLink,
   type TrustFailure,
   type TrustInputs,

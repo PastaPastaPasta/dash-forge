@@ -4,7 +4,9 @@
  * The sign-in sheet (`ux-dx-spec.md` §2.2). Three tiles plus an Advanced disclosure:
  *
  *   1. Use my Dash wallet — the DashConnect key exchange (shown only when a response contract
- *      exists here; first only where Dash Wallet answers, i.e. testnet, else last);
+ *      exists here; first only where Dash Wallet answers, i.e. testnet, else last). A wallet
+ *      approves one Forge contract per scan, so a finished sign-in walks through the rest in one
+ *      guided sequence ("Step 2 of 3"), each step skippable (FEAT-04, lib/auth/guided-grants.ts);
  *   2. Create a new identity — mnemonic + backup quiz + deposit QR, registered with a limited
  *      key inside the IdentityCreate;
  *   3. Import an identity file (or mnemonic) — the master key signs one IdentityUpdate that
@@ -37,6 +39,7 @@ import { otherIdentityFileMessage } from '@/lib/auth/controller'
 import { useConfirmAction } from '@/components/ui/confirm-action'
 import { ACTIVE_NETWORK, networkName } from '@/lib/constants'
 import { GRANT_COPY } from '@/lib/auth/key-registration'
+import { guidedStep, guidedStepTitle, passGuidedStep, startGuidedGrants, type GuidedGrants } from '@/lib/auth/guided-grants'
 import { NotDeployedState } from '@/components/ui/network-badge'
 import { BROWSER_KEY_DEFAULTS, lifetimeLabel, limitsFor, masterMaterialFromFile, type VaultInfo } from '@/lib/auth'
 import { AlreadyStoredError, UnlockNeededError } from '@/lib/auth/controller'
@@ -60,13 +63,19 @@ export function LoginModal(): JSX.Element {
   const requested = useUiStore((s) => s.loginView)
   // The contract the grant view asks the wallet for, as the opener named it (captured in the
   // store when the sheet opened, so a grant landing mid-flow does not switch the target)
-  const grantKind = useUiStore((s) => s.loginGrantFor) ?? 'collab'
-  const grantFor = ACTIVE_NETWORK.v2?.[grantKind]
-  const grantTitle = GRANT_COPY[grantKind].title
+  const requestedGrant = useUiStore((s) => s.loginGrantFor) ?? 'collab'
   const intent = useUiStore((s) => s.loginIntent)
   const close = useUiStore((s) => s.closeLogin)
-  const { vaults, vaultsLoaded, vaultsError, reloadVaults, limitedKeys } = useAuth()
+  const { vaults, vaultsLoaded, vaultsError, reloadVaults, limitedKeys, grants } = useAuth()
   const [view, setView] = useState<View | null>(null)
+  // The guided grants after a wallet sign-in (FEAT-04): `walletDone` waits for the new session's
+  // grants to land, `guide` is the sequence once it runs. Neither outlives the sheet.
+  const [walletDone, setWalletDone] = useState(false)
+  const [guide, setGuide] = useState<GuidedGrants | null>(null)
+  const guided = guide !== null && grants !== null ? guidedStep(guide, grants) : null
+  const grantKind = guided?.kind ?? requestedGrant
+  const grantFor = ACTIVE_NETWORK.v2?.[grantKind]
+  const grantTitle = guided ? guidedStepTitle(guided, GRANT_COPY[guided.kind].name) : GRANT_COPY[grantKind].title
   const [unlockFor, setUnlockFor] = useState<string | null>(null)
   // The locked key a dg handoff replaces (Unlock → "Replace this key with dg").
   const [dgReplace, setDgReplace] = useState<HandoffTarget | null>(null)
@@ -81,6 +90,8 @@ export function LoginModal(): JSX.Element {
     if (!open) {
       opened.current = null
       setView(null)
+      setWalletDone(false)
+      setGuide(null)
       return
     }
     if (opened.current === null) {
@@ -99,6 +110,24 @@ export function LoginModal(): JSX.Element {
       setView((v) => (v === 'choose' ? 'unlock' : v))
     }
   }, [open, requested, hasVault, vaultsLoaded, vaultsError, reloadVaults])
+
+  // A wallet sign-in finished: ask for the grants it did not cover in one sequence, or close when
+  // it covered them all (an unbounded key, or a three-contract set).
+  useEffect(() => {
+    if (!open || !walletDone || grants === null) return
+    setWalletDone(false)
+    const start = startGuidedGrants(grants)
+    if (start === null) {
+      close()
+      return
+    }
+    setGuide(start)
+    setView('grant')
+  }, [open, walletDone, grants, close])
+  // The sequence is over (every step done or skipped): the sheet closes.
+  useEffect(() => {
+    if (open && guide !== null && grants !== null && guided === null) close()
+  }, [open, guide, grants, guided, close])
 
   // The last stored key was forgotten from the Unlock view: nothing is left to unlock, so the
   // sheet offers the ways to sign in (QW2-027), not "Unlock the key this browser already holds".
@@ -186,10 +215,37 @@ export function LoginModal(): JSX.Element {
       ) : null}
       {view === 'dg' ? limitedKeys ? <DgHandoffFlow onDone={close} {...(dgReplace !== null ? { target: dgReplace } : {})} /> : <NotDeployedState /> : null}
       {view === 'create' ? <CreateIdentityFlow onDone={close} /> : null}
-      {view === 'wallet' ? <WalletConnectFlow onDone={close} /> : null}
-      {view === 'grant' ? <WalletConnectFlow mode="grant" contractId={grantFor} onDone={close} /> : null}
+      {view === 'wallet' ? <WalletConnectFlow onDone={() => setWalletDone(true)} /> : null}
+      {view === 'grant' ? (
+        <>
+          {/* Keyed by contract: the next step starts a new request, never the last one's QR. */}
+          <WalletConnectFlow key={grantKind} mode="grant" contractId={grantFor} onDone={() => (guide !== null && guided ? setGuide(passGuidedStep(guide, guided.kind)) : close())} />
+          {guide !== null && guided ? <GuidedSkip step={guided} onSkip={() => setGuide(passGuidedStep(guide, guided.kind))} onSkipAll={close} /> : null}
+        </>
+      ) : null}
       {view === 'advanced' ? <AdvancedView onDone={close} /> : null}
     </Dialog>
+  )
+}
+
+/** Skip this approval, or the rest: a skipped one is asked for when a write first needs it. */
+function GuidedSkip({ step, onSkip, onSkipAll }: { step: { readonly step: number; readonly of: number }; onSkip: () => void; onSkipAll: () => void }): JSX.Element {
+  return (
+    <div className="mt-3 space-y-2 border-t border-anvil-200 pt-3 dark:border-anvil-800" data-testid="guided-skip">
+      <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
+        Your wallet approves one Forge contract per scan. Skip a step and Forge asks again when you first need it.
+      </p>
+      <div className="flex flex-wrap gap-2">
+        <Button variant="outline" size="sm" onClick={onSkip} data-testid="guided-skip-step">
+          Skip this step
+        </Button>
+        {step.step < step.of ? (
+          <Button variant="outline" size="sm" onClick={onSkipAll} data-testid="guided-skip-rest">
+            Skip the rest
+          </Button>
+        ) : null}
+      </div>
+    </div>
   )
 }
 

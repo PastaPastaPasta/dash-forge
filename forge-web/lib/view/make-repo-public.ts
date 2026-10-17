@@ -22,7 +22,10 @@ export const CODE_ONLY_STAYS = 'Issues, pull requests, reviews and other branche
 
 /** Under Everything, before its counts. */
 export const EVERYTHING_TEXT =
-  'Everything members could ever read until now: every issue, pull request, comment and review, every earlier edit, deleted and hidden comments, every branch ever pushed, releases, old settings, imported authors and links, and requests sent to bots.'
+  'Everything members could ever read until now: every issue, pull request, comment and review, every earlier edit, deleted and hidden comments, every branch ever pushed, old settings, imported authors and links, and requests sent to bots.'
+
+/** After {@link EVERYTHING_TEXT}: private-era sealed releases are not opened with the published keys (MIXE-12). */
+export const EVERYTHING_RELEASES = 'Releases made while the repo was private stay hidden.'
 
 export const KEEPS_WORKING = 'Members-only content keeps working afterwards, without a pause.'
 
@@ -40,7 +43,6 @@ export function everythingCounts(check: Pick<MakePublicCheck, 'census' | 'allRef
       [check.allRefs.length, 'live branch or tag', 'live branches and tags'],
       [check.deleted, 'deleted branch', 'deleted branches'],
       [check.forced, 'force-push', 'force-pushes'],
-      [c?.releases ?? 0, 'release', 'releases'],
       [c?.botRequests ?? 0, 'request sent to bots', 'requests sent to bots'],
     ] as const
   )

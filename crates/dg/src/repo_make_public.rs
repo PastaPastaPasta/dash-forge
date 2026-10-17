@@ -1144,7 +1144,6 @@ fn everything_counts(check: &Check) -> String {
         ),
         (check.deleted, "deleted branch", "deleted branches"),
         (check.forced, "force-push", "force-pushes"),
-        (c.releases, "release", "releases"),
         (
             c.bot_requests,
             "request sent to bots",
@@ -1276,7 +1275,7 @@ fn print_check(
             }
             if modes.contains(&Mode::Everything) {
                 println!("  Everything (--everything)");
-                println!("    Everything members could ever read until now: every issue, pull request, comment and review, every earlier edit, deleted and hidden comments, every branch ever pushed, releases, old settings, imported authors and links, and requests sent to bots.");
+                println!("    Everything members could ever read until now: every issue, pull request, comment and review, every earlier edit, deleted and hidden comments, every branch ever pushed, old settings, imported authors and links, and requests sent to bots. Releases made while the repo was private stay hidden.");
                 println!("    That is {}.", everything_counts(check));
                 if c.unread > 0 {
                     println!("    {} you can't read yourself aren't counted.", plural(c.unread, "post"));
@@ -1331,7 +1330,7 @@ fn print_check(
 fn print_secrets(found: &[&Secret], everything: bool) {
     if found.is_empty() {
         if everything {
-            println!("    No secrets found in the code and the posts as they read now. Earlier edits, deleted comments, long posts kept in storage and releases aren't checked.");
+            println!("    No secrets found in the code and the posts as they read now. Earlier edits, deleted comments and long posts kept in storage aren't checked.");
         } else {
             println!("    No secrets found in what you're publishing.");
         }

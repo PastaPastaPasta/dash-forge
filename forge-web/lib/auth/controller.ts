@@ -939,7 +939,7 @@ export class AuthController {
       // the old copy the replacement could not carry over is not "lost" (QW-052).
       const session = await this.adopt(identityId, key, protection, material !== null ? { ...committed, encryptionKeyDropped: false } : committed)
       if (material !== null) {
-        this.step('Enabling private repos')
+        this.step('Setting up members-only content')
         await this.enableEncryption(identityId, material)
       }
       return session
@@ -1052,7 +1052,7 @@ export class AuthController {
       // over is reported only if that one cannot be kept either (below).
       const session = await this.adopt(identityId, key, protection, bringsEncryption ? { ...committed, encryptionKeyDropped: false } : committed)
       if (bringsEncryption && payload.encryptionKey !== undefined && core !== undefined) {
-        this.step('Enabling private repos')
+        this.step('Setting up members-only content')
         try {
           await adoptEncryptionKey(sdk, this.network, identityId, core, hexToBytes(payload.encryptionKey.privateKeyHex))
         } catch (e) {
@@ -1191,7 +1191,7 @@ export class AuthController {
     options: WalletEncryption,
   ): Promise<{ readonly outcome: WalletEncryptionOutcome | null; readonly notice: string | null }> {
     if (!options.encryptionKeys?.length) return { outcome: null, notice: null }
-    this.step('Enabling private repos')
+    this.step('Setting up members-only content')
     try {
       const sdk = await this.getSdk()
       const outcome = await adoptWalletEncryptionKey(sdk, this.network, identityId, forge.core, options.encryptionKeys, options.justRegistered === true ? { attempts: 5 } : {})

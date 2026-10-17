@@ -135,7 +135,7 @@ type Pending =
   | { kind: 'editComment'; id: string; body: string }
   | { kind: 'deleteComment'; id: string }
   /** The author makes the issue (`id` null) or their comment `id` public; `quoted`: the quote check's warning (DESIGN §4.6). */
-  | { kind: 'makePublic'; id: string | null; quoted: string | null }
+  | { kind: 'makePublic'; id: string | null; quoted: string | null; letter: boolean }
   /**
    * A maintainer hides (or unhides) a comment, or with `item` null the issue (RC2 MOD); hiding the
    * issue may also close and lock it, as separate writes after the hide.
@@ -670,7 +670,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
               ) : null}
               {isAuthor && (issue.audience === 'members' || issue.audience === 'specificPeople') && home.repo.visibility === 'public' ? (
                 <MakePublicButton
-                  onClick={() => setPending({ kind: 'makePublic', id: null, quoted: quotedPost(`${issue.title}\n${issue.body}`, issue.author, 'issue') })}
+                  onClick={() => setPending({ kind: 'makePublic', id: null, quoted: quotedPost(`${issue.title}\n${issue.body}`, issue.author, 'issue'), letter: issue.audience === 'specificPeople' })}
                   disabled={guard.disabledReason !== null || archived || longEditBlock(issue.long) !== null}
                   title={longEditBlock(issue.long) ?? undefined}
                 />
@@ -787,7 +787,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                 // DESIGN §4.6: the author's own members-only comment, or one to specific people, on a public repo.
                 onMakePublic:
                   (item.comment.audience === 'members' || item.comment.audience === 'specificPeople') && home.repo.visibility === 'public'
-                    ? (id) => setPending({ kind: 'makePublic', id, quoted: quotedPost(item.comment.body, item.comment.author, 'comment') })
+                    ? (id) => setPending({ kind: 'makePublic', id, quoted: quotedPost(item.comment.body, item.comment.author, 'comment'), letter: item.comment.audience === 'specificPeople' })
                     : undefined,
                 // Someone else's members-only comment: a maintainer's bundle (DESIGN §4.6).
                 onMakeOthersPublic:
@@ -1038,7 +1038,7 @@ function confirmText(pending: Pending, number: number, open: boolean, isMember: 
     case 'editComment':
       return { title: 'Edit comment', description: 'You pay only for what changed. Earlier versions stay in its history.', label: 'Sign & save' }
     case 'makePublic':
-      return makePublicWords(pending.id === null ? 'issue' : 'comment', pending.quoted)
+      return makePublicWords(pending.id === null ? 'issue' : 'comment', pending.quoted, false, pending.letter)
     case 'deleteComment':
       return {
         title: 'Delete comment',
