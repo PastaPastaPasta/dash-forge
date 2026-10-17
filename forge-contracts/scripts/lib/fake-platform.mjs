@@ -48,6 +48,7 @@ export function createFakePlatform({ chainId = 'dash-testnet-51', identityFile =
     broadcasts: 0,
     sdkOptions: [],
     failure: null, // { mode: 'before' | 'after' }
+    failAt: null, // { at, mode }: the at-th broadcast (counted from the start) fails so
     forceAdmins: null, // when set, the next group registered has these admins
     updateWaitThrows: true, // evo-sdk's wait refuses a contract update's proof ("affected state only")
     lag: null, // while lagging: { nonce }, the deployer's identity nonce as of an earlier block
@@ -171,8 +172,9 @@ export function createFakePlatform({ chainId = 'dash-testnet-51', identityFile =
       this.stateTransitions = {
         broadcastAndWait: async (st) => {
           state.broadcasts += 1;
-          const failure = state.failure;
+          let failure = state.failure;
           state.failure = null;
+          if (state.failAt?.at === state.broadcasts) { failure = state.failAt; state.failAt = null; }
           if (failure?.mode === 'before') throw new Error('connection lost before the node accepted the transition');
           const nonceBefore = deployer()?.nonce ?? 0n;
           land(st);
@@ -206,6 +208,8 @@ export function createFakePlatform({ chainId = 'dash-testnet-51', identityFile =
     },
     /** The next broadcast fails: 'before' (never lands) or 'after' (lands, then the caller sees an error). */
     failNext: (mode) => { state.failure = { mode }; },
+    /** The n-th broadcast from now fails ('before' or 'after', as failNext). */
+    failIn: (n, mode) => { state.failAt = { at: state.broadcasts + n, mode }; },
     /** Something other than deploy-v2 signs with the deployer: its identity nonce moves. */
     externalTransition: (count = 1) => { deployer().nonce += BigInt(count); },
     /**

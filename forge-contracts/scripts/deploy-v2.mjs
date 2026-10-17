@@ -703,7 +703,10 @@ export function replaySource({ what, sourceFile, gitCommit, sourceSha256, frozen
   if (!/^[0-9a-f]{64}$/.test(String(sourceSha256))) throw new Error(`--replay: ${what} records no sourceSha256. Nothing was broadcast.`);
   if (frozen && existsSync(frozen)) return check(readFileSync(frozen), repoPath(frozen));
   if (!sourceFile) throw new Error(`--replay: ${what} records no sourceFile. Nothing was broadcast.`);
-  if (sourceFile.startsWith('/')) return check(readFileSync(sourceFile), sourceFile);
+  if (sourceFile.startsWith('/')) {
+    if (!existsSync(sourceFile)) throw new Error(`--replay: ${what} was registered from ${sourceFile}, which is gone (a scratch set outside the repository). Nothing was broadcast.`);
+    return check(readFileSync(sourceFile), sourceFile);
+  }
   if (!gitCommit) throw new Error(`--replay: ${what} records no gitCommit to read ${sourceFile} at. Nothing was broadcast.`);
   let bytes;
   try {
@@ -741,8 +744,9 @@ function pickKey(rec, purpose, level) {
 
 /**
  * Run the script. `injected` replaces what a test cannot use: `evo` (the loaded evo-sdk module,
- * else loadEvoSdk()), `git` ({ head, porcelain, pushed, buildCheck }), `now`, `log`, `print` (stdout),
- * `sdkId` (the record's `sdk`) and `deploymentsRoot` (the directory the networks' records live in).
+ * else loadEvoSdk()), `git` ({ head, porcelain, pushed, buildCheck, show }), `now`, `log`, `print` (stdout),
+ * `sdkId` (the record's `sdk`), `deploymentsRoot` (the directory the networks' records live in) and
+ * `registeredRoot` (contracts/registered, where --replay looks for a network's frozen copies).
  * The record's lock (a run that writes takes one) is released however the run ends.
  */
 export async function main(argv = process.argv.slice(2), injected = {}) {
@@ -1541,7 +1545,7 @@ async function deploy(argv, injected, locks) {
     // order, each skipped when the chain already has it (a resumed replay).
     async function replayLedger() {
       const { ops, group, keys, skipped, fromChain } = replayPlan;
-      const frozenDir = scratch ? null : join(ROOT, 'contracts', 'registered', basename(depFile, '.json'));
+      const frozenDir = scratch ? null : join(injected.registeredRoot ?? join(ROOT, 'contracts', 'registered'), basename(depFile, '.json'));
       const ids = Object.fromEntries(keys.map((k) => [placeholderFor(SCHEMA_OF_KEY[k]), v2[k].contractId]));
       // 1. Check everything first
       const steps = [];
