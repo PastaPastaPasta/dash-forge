@@ -160,7 +160,9 @@ UPDATE1_FLAGS = ('release_target_oid', 'config_moved_to', 'pack_mirror', 'transi
 # must reproduce it, so an edit to an earlier flag cannot silently change what an update is validated against
 # (`--check`). 'set' is 'mainnet' (the four-contract set, MAINNET_BUILT on) or 'devnet' (the three-contract set).
 # A post-registration flag must be added to that network's `since` in the SAME PR that adds the flag, or
-# `--check` fails (the same discipline as UPDATE1_FLAGS above). Empty until the registration commit adds
+# `--check` fails (the same discipline as UPDATE1_FLAGS above). `since` can only name flags that were OFF at
+# registration; a flag that was on and is later turned off cannot be expressed (--check fails loudly). Empty until
+# the registration commit adds
 #   'testnet': {'set': 'mainnet', 'since': ()}
 NETWORK_REGISTRATIONS = {}
 # ---- Mainnet-only (a fresh registration may add them; an update never can: rules, references and

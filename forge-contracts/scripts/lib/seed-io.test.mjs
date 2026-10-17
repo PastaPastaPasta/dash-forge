@@ -78,6 +78,13 @@ test('a scratch record is free; one naming the live forge-core or group is the l
   assert.throws(() => guard(dir, 'testnet', sameCore), /live testnet set/);
   const sameGroup = write(join(dir, 'scratch', 'group.json'), { v2: { contractGroupId: LIVE.v2.contractGroupId } });
   assert.throws(() => guard(dir, 'testnet', sameGroup), /live testnet set/);
+  // naming any one live contract is enough, a superseded one included
+  const sameCollab = write(join(dir, 'scratch', 'collab.json'), { v2: { forgeCore: { contractId: 'Other' }, forgeCollab: { contractId: 'LiveCollab' } } });
+  write(join(dir, 'deployments', 'testnet.json'), { ...LIVE, v2: { ...LIVE.v2, forgeCollab: { contractId: 'LiveCollab' }, forgeMetaSuperseded: [{ contractId: 'OldMeta' }] } });
+  assert.throws(() => guard(dir, 'testnet', sameCollab), /live testnet set/);
+  const oldMeta = write(join(dir, 'scratch', 'meta.json'), { v2: { forgeMeta: { contractId: 'OldMeta' } } });
+  assert.throws(() => guard(dir, 'testnet', oldMeta), /live testnet set/);
+  write(join(dir, 'deployments', 'testnet.json'), LIVE);
   // a symlink to the live record is the live record
   const link = join(dir, 'scratch', 'link.json');
   symlinkSync(join(dir, 'deployments', 'testnet.json'), link);

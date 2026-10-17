@@ -53,16 +53,20 @@ export function recordProblems({ name, dep, registeredRoot = join(DEFAULT_CONTRA
       }
     }
     // the ledger: identity nonces strictly increase, and every live contract has its registered create entry
+    // (a devnet record may predate the ledger, or have been updated by deploy-v2 since: only a production record
+    // must hold a ledger that starts with its registrations)
     const ledger = v2.nonceLedger;
-    if (!Array.isArray(ledger)) bad('v2.nonceLedger is missing from a record that names its set');
-    else {
+    const production = PRODUCTION.includes(name);
+    if (!Array.isArray(ledger)) {
+      if (production) bad('v2.nonceLedger is missing from a record that names its set');
+    } else {
       let last = 0n;
       for (const e of ledger.filter((x) => x.identityNonce !== undefined && x.status !== 'abandoned')) {
         const n = BigInt(e.identityNonce);
         if (n <= last) bad(`v2.nonceLedger: identity nonce ${n} does not follow ${last}`);
         last = n;
       }
-      for (const [key] of live) {
+      for (const [key] of production ? live : []) {
         const c = v2[key];
         if (c.identityNonce !== undefined && !ledger.some((e) => e.kind === 'dataContractCreate' && e.key === key && e.identityNonce === c.identityNonce && e.contractId === c.contractId && e.status === 'registered')) {
           bad(`v2.nonceLedger has no registered create entry for ${key} at identity nonce ${c.identityNonce}`);

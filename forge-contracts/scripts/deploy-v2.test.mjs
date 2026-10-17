@@ -552,6 +552,8 @@ test('a scratch registration refuses any identity the live record names, and pas
     'a superseded deployer': { ...TESTNET_SEED, v2: { deployer: { identityId: OTHER }, deployerSuperseded: [{ identityId: mine }] } },
     'a contract owner': { ...TESTNET_SEED, v2: { deployer: { identityId: OTHER }, forgeCollab: { ownerId: mine } } },
     'the group owner': { ...TESTNET_SEED, v2: { contractGroup: { owner: mine } } },
+    'an archived ledger\'s deployer': { ...TESTNET_SEED, v2: { nonceLedgerSuperseded: [{ chainId: 'dash-testnet-50', deployer: mine, entries: [] }] } },
+    'a group admin': { ...TESTNET_SEED, v2: { contractGroup: { owner: OTHER, admins: [mine] } } },
     'the key-exchange owner': { ...TESTNET_SEED, keyExchange: { ...TESTNET_SEED.keyExchange, ownerId: mine } },
   };
   for (const [what, seed] of Object.entries(seeds)) {

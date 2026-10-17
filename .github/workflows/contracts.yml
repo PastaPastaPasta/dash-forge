@@ -42,6 +42,8 @@ on:
     paths:
       - 'forge-contracts/**'
       - 'tools/contract-validate/**'
+      # (check-release-network.mjs --self-test parses the web build's network out of it)
+      - 'forge-web/scripts/ipfs-release.sh'
       - '.github/workflows/contracts.yml'
   workflow_dispatch:
 
@@ -67,7 +69,7 @@ jobs:
         with:
           fetch-depth: 2
           persist-credentials: false
-      - name: Did this PR touch the contracts, their tools or this workflow?
+      - name: Did this PR touch the contracts, their tools, the release network or this workflow?
         id: filter
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -85,7 +87,7 @@ jobs:
           fi
           echo "Changed files:"
           printf '%s\n' "$files"
-          pattern='^(forge-contracts/|tools/contract-validate/|\.github/workflows/contracts\.yml$)'
+          pattern='^(forge-contracts/|tools/contract-validate/|forge-web/scripts/ipfs-release\.sh$|\.github/workflows/contracts\.yml$)'
           if printf '%s\n' "$files" | grep -Eq "$pattern"; then
             echo "contracts=true" >> "$GITHUB_OUTPUT"
           else

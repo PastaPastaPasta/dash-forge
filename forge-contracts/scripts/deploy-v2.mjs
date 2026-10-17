@@ -465,17 +465,20 @@ export function recordedSet(dep) {
 }
 /**
  * Every identity a record names, as a Map of id -> where (`v2.deployer.identityId`): any `ownerId`,
- * `identityId` or `owner` string anywhere in it (the deployer, each contract's and the group's owner,
- * superseded ones, the key-exchange owner).
+ * `identityId`, `owner` or `deployer` string, and any group admin, anywhere in it (the deployer, each
+ * contract's and the group's owner, superseded ones, an archived ledger's deployer, the key-exchange owner).
  */
 export function recordedIdentities(dep) {
   const found = new Map();
+  const note = (id, where) => { if (typeof id === 'string' && id && !found.has(id)) found.set(id, where); };
   const walk = (v, path) => {
     if (Array.isArray(v)) v.forEach((x, i) => walk(x, `${path}[${i}]`));
     else if (v && typeof v === 'object') {
       for (const [k, x] of Object.entries(v)) {
-        if (typeof x === 'string' && ['ownerId', 'identityId', 'owner'].includes(k) && !found.has(x)) found.set(x, `${path ? `${path}.` : ''}${k}`);
-        else walk(x, path ? `${path}.${k}` : k);
+        const here = path ? `${path}.${k}` : k;
+        if (['ownerId', 'identityId', 'owner', 'deployer'].includes(k)) note(x, here);
+        else if (k === 'admins' && Array.isArray(x)) x.forEach((id, i) => note(id, `${here}[${i}]`));
+        else walk(x, here);
       }
     }
   };

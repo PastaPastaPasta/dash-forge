@@ -91,20 +91,31 @@ export function parseArgs(argv, multi = []) {
   return out;
 }
 
+/** Every contract and group id a record names (live, superseded): a record sharing any of them with the live set writes to it. */
+function contractIdsIn(dep) {
+  const v2 = dep?.v2 ?? {};
+  const records = ['forgeCore', 'forgeCollab', 'forgeCommunity', 'forgeMeta'].flatMap((k) => [v2[k], ...(v2[`${k}Superseded`] ?? [])]);
+  return new Set([...records.map((r) => r?.contractId), v2.contractGroupId, v2.contractGroup?.id].filter(Boolean));
+}
+
 /**
  * CONT-V-01: a script writes to the live testnet or mainnet contract set only when told so by name.
- * The set is live when the record is deployments/<network>.json, or a scratch copy that names that
- * record's forge-core or contract group (the same test deploy-v2 applies to a scratch --record). The
+ * The set is live when the record is deployments/<network>.json, or a copy that names any contract or
+ * contract group of that record (deploy-v2 refuses the forge-core and group case for a scratch --record). The
  * flag is `--production <network>`, equal to the network the run connects to; `DASH_FORGE_NETWORK`
  * alone never authorizes a write. Rule suites and rehearsals use a scratch record
  * (`--deployment <scratch.json>`, OD-17); only the labelled fixture or smoke with FORGE-QA
  * identities (QA-14) writes the live set.
  */
 export function assertWriteTarget({ network, file, dep }, a, root = ROOT, script = basename(process.argv[1] ?? 'this script')) {
+  // (a symlinked file is its target: canonical() resolves directories only)
+  const real = (p) => canonical(existsSync(p) ? realpathSync(p) : p);
   for (const live of ['testnet', 'mainnet']) {
     const liveFile = resolve(root, 'deployments', `${live}.json`);
     const liveDep = existsSync(liveFile) ? JSON.parse(readFileSync(liveFile, 'utf8')) : {};
-    const isLive = canonical(resolve(file)) === canonical(liveFile) || scratchRecordError(dep, liveDep) !== null;
+    const liveIds = contractIdsIn(liveDep);
+    const isLive = real(resolve(file)) === real(liveFile) || scratchRecordError(dep, liveDep) !== null
+      || [...contractIdsIn(dep)].some((id) => liveIds.has(id));
     if (isLive && !(a.production === live && network === live)) {
       throw new Error(
         `${script} writes permanent documents to the live ${live} set (${relative(root, resolve(file))}). Rule suites and ` +

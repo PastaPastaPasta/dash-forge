@@ -50,7 +50,7 @@ export function freeze({ network, record, out, repoRoot = REPO_ROOT, registeredR
   for (const [key, name] of KEYS) {
     const c = v2[key];
     if (!c) continue;
-    if (c.status !== 'registered' && c.status !== 'updated') throw new Error(`${key} is ${c.status} in ${relative(repoRoot, recordFile)}: finish the registration first`);
+    if (c.status !== 'registered') throw new Error(`${key} is ${c.status} in ${relative(repoRoot, recordFile)}: finish the registration first`);
     if (!c.sourceFile || !c.sourceSha256 || !c.registeredSchemaHash) throw new Error(`${key} records no sourceFile, sourceSha256 and registeredSchemaHash: it was not registered by deploy-v2 --set`);
     const source = resolve(repoRoot, c.sourceFile);
     const bytes = readFileSync(source);
