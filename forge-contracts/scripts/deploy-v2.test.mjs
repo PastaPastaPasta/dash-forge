@@ -274,12 +274,12 @@ test('--force-new on the live testnet record needs --abandon-live-set testnet', 
 test('--force-new on a scratch record has no guard', async () => {
   const t = setup();
   const scratch = join(t.dir, 'scratch', 'rehearsal.json');
-  const argv = ['--network', 'testnet', '--set', 'mainnet', '--identity', t.identity, '--record', scratch];
+  const argv = ['--network', 'testnet', '--set', 'mainnet', '--identity', t.identity, '--record', scratch, '--scratch-on', 'testnet'];
   await t.run([...argv, '--force-new']);
   assert.equal(JSON.parse(readFileSync(scratch, 'utf8')).v2.contractsSet, 'mainnet');
   assert.deepEqual(t.read(), TESTNET_SEED, 'the live testnet record is untouched');
   // a scratch record may not be under deployments/
-  await assert.rejects(t.run([...argv.slice(0, -1), join(t.deploymentsRoot, 'rehearsal.json')]), /scratch record lives outside/);
+  await assert.rejects(t.run([...argv.slice(0, 7), join(t.deploymentsRoot, 'rehearsal.json'), ...argv.slice(8)]), /scratch record lives outside/);
 });
 
 test('a record of another chain stops the run before anything is broadcast', async () => {
@@ -484,7 +484,7 @@ test('a bare --contracts is a scratch set even when it names a committed directo
   // with its own record (and its own deployer) it is a scratch registration and leaves the live record alone
   const t2 = setup();
   const scratch = join(t2.dir, 'scratch.json');
-  await t2.run(['--network', 'testnet', '--identity', t2.identity, '--contracts', SETS.mainnet, '--record', scratch]);
+  await t2.run(['--network', 'testnet', '--identity', t2.identity, '--contracts', SETS.mainnet, '--record', scratch, '--scratch-on', 'testnet']);
   assert.equal(JSON.parse(readFileSync(scratch, 'utf8')).v2.contractsDir, 'forge-contracts/contracts/mainnet');
   assert.deepEqual(t2.read(), TESTNET_SEED);
 });
@@ -513,11 +513,58 @@ test('a scratch registration on testnet may not use the live deployer', async ()
   const before = t.raw();
   const broadcasts = t.fake.broadcasts;
   await assert.rejects(
-    t.run(['--network', 'testnet', '--set', 'mainnet', '--identity', t.identity, '--record', join(t.dir, 'rehearsal.json')]),
-    /is the deployer of deployments\/testnet\.json; a scratch registration on testnet uses its own deployer identity/
+    t.run(['--network', 'testnet', '--set', 'mainnet', '--identity', t.identity, '--record', join(t.dir, 'rehearsal.json'), '--scratch-on', 'testnet']),
+    /is recorded in deployments\/testnet\.json \(v2\.forgeCore\.ownerId\); a scratch registration on testnet uses its own throwaway deployer identity/
   );
   assert.equal(t.fake.broadcasts, broadcasts);
   assert.equal(t.raw(), before);
+});
+
+test('a scratch registration on testnet or mainnet names the network (L6)', async () => {
+  const t = setup();
+  const scratch = join(t.dir, 'scratch', 'rehearsal.json');
+  const argv = ['--network', 'testnet', '--set', 'mainnet', '--identity', t.identity, '--record', scratch];
+  // without the flag, with the wrong network, and as a dry run: refused before anything connects
+  for (const extra of [[], ['--scratch-on', 'mainnet'], ['--dry-run']]) {
+    await assert.rejects(t.run([...argv, ...extra]), /registers a SCRATCH set on testnet.*never the production deployer.*re-run with --scratch-on testnet.*Nothing was broadcast/s);
+  }
+  await assert.rejects(t.run([...argv, '--scratch-on']), /--scratch-on takes a value/);
+  assert.equal(t.fake.broadcasts, 0);
+  assert.equal(existsSync(scratch), false);
+  // with it: allowed, loudly
+  t.logs.length = 0;
+  await t.run([...argv, '--scratch-on', 'testnet']);
+  assert.equal(JSON.parse(readFileSync(scratch, 'utf8')).v2.forgeCore.ownerId, t.fake.ownerId);
+  assert.ok(t.logs.some((m) => /WARNING SCRATCH registration on testnet.*must NEVER use the production deployer/.test(m)));
+  assert.ok(t.logs.some((m) => /records no deployer yet, so .* cannot be checked/.test(m)), 'an empty live record cannot vouch for the identity');
+  // the flag does not belong anywhere else: the live record, or a devnet
+  await assert.rejects(t.run(t.prod('--scratch-on', 'testnet')), /--scratch-on testnet goes with a scratch --record on testnet or mainnet; this run writes the live testnet record/);
+  await assert.rejects(t.run(['--network', 'devnet', '--devnet-name', 'test', '--identity', t.identity, '--scratch-on', 'testnet']), /goes with a scratch --record on testnet or mainnet; this run/);
+});
+
+test('a scratch registration refuses any identity the live record names, and passes another', async () => {
+  const OTHER = b58encode(Buffer.alloc(32, 7));
+  const scratchArgs = (t) => ['--network', 'testnet', '--set', 'mainnet', '--identity', t.identity, '--record', join(t.dir, 'rehearsal.json'), '--scratch-on', 'testnet'];
+  // the identity is a superseded deployer, a contract owner or the key-exchange owner of the live record: refused
+  const probe = setup();
+  const mine = probe.fake.ownerId;
+  const seeds = {
+    'a superseded deployer': { ...TESTNET_SEED, v2: { deployer: { identityId: OTHER }, deployerSuperseded: [{ identityId: mine }] } },
+    'a contract owner': { ...TESTNET_SEED, v2: { deployer: { identityId: OTHER }, forgeCollab: { ownerId: mine } } },
+    'the group owner': { ...TESTNET_SEED, v2: { contractGroup: { owner: mine } } },
+    'the key-exchange owner': { ...TESTNET_SEED, keyExchange: { ...TESTNET_SEED.keyExchange, ownerId: mine } },
+  };
+  for (const [what, seed] of Object.entries(seeds)) {
+    const t = setup({ seed });
+    await assert.rejects(t.run(scratchArgs(t)), /is recorded in deployments\/testnet\.json \(.*\); a scratch registration on testnet uses its own throwaway deployer/, what);
+    assert.equal(t.fake.broadcasts, 0, what);
+  }
+  // a live record that names another deployer: a different identity may rehearse, with the warning but not the "no deployer yet" one
+  const t = setup({ seed: { ...TESTNET_SEED, v2: { deployer: { identityId: OTHER } } } });
+  await t.run(scratchArgs(t));
+  assert.ok(t.logs.some((m) => /WARNING SCRATCH registration on testnet/.test(m)));
+  assert.ok(!t.logs.some((m) => /records no deployer yet/.test(m)));
+  assert.equal(t.read().v2.deployer.identityId, OTHER, 'the live record is untouched');
 });
 
 test('a recorded group is checked before anything new enrols in it', async () => {
