@@ -27,6 +27,8 @@ serde = { workspace = true }
 serde_json.workspace = true
 toml = "0.8"
 hex = "0.4"
+# `dg verify-app` decodes the certificate in a build attestation's Sigstore bundle.
+base64 = "0.22"
 # `dg auth new` shows the deposit address as a terminal QR code (text renderer only).
 qrcode = { version = "0.14", default-features = false }
 zeroize = "1"

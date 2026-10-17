@@ -101,13 +101,49 @@ pub fn parse(spec: &str, gitlab: &GitlabOptions) -> Result<Box<dyn Source>> {
     })
 }
 
-/// What the destination repository is created with.
+/// A JSON field as an API reports it: with a value, as `null`, or not at all (with
+/// `#[serde(default)]`). A licence the API does not mention is not a repository without one.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Reported<T> {
+    /// The key is missing.
+    #[default]
+    Absent,
+    /// `null`.
+    Null,
+    /// A value.
+    Value(T),
+}
+
+impl<'de, T: serde::Deserialize<'de>> serde::Deserialize<'de> for Reported<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(Option::<T>::deserialize(d)?.map_or(Self::Null, Self::Value))
+    }
+}
+
+/// The licence a source's API reports for the repository.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum License {
+    /// The API did not say.
+    #[default]
+    Unreported,
+    /// The API reports none.
+    None,
+    /// The licence it reports: an SPDX id when it has one, else its name.
+    Named(String),
+}
+
+/// What the destination repository is created with, and what the run tells the person who
+/// publishes it ([`crate::rights`]).
 #[derive(Debug, Clone, Default)]
 pub struct SourceMeta {
     /// The source's default branch (empty: `main`).
     pub default_branch: String,
     /// The source's description, if any.
     pub description: Option<String>,
+    /// The licence the source reports.
+    pub license: License,
+    /// The account that owns the source (GitHub's owner login, GitLab's namespace path).
+    pub owner: Option<String>,
 }
 
 /// A repository to import from.
@@ -121,6 +157,13 @@ pub trait Source {
 
     /// Repository metadata; also proves the source exists and can be read.
     fn meta(&self) -> Result<SourceMeta>;
+
+    /// The account the run reads the source as (the login behind `gh`'s token, say), when it
+    /// can be told: compared with the source's owner, so a run that mirrors someone else's
+    /// repository says so. [`crate::rights::ACCOUNT_ENV`] names it when the source cannot.
+    fn account(&self) -> Option<String> {
+        crate::rights::account_from_env()
+    }
 
     /// The collaboration data: issues and PRs/MRs with their threads and state, labels,
     /// releases, and the open PRs/MRs whose heads the git push mirrors. With `since` (ISO

@@ -39,6 +39,13 @@ pub struct ImportArgs {
     /// Price only; write nothing.
     #[arg(long)]
     pub dry_run: bool,
+    /// Confirm you may publish the source's content: that you own it, or its licence or its
+    /// owners allow it. A mirror is permanent on Dash Platform and carries other people's
+    /// commits (names and emails), comments and logins, and later edits or deletions at the
+    /// source are not carried over. Required for a real run; without it `dg` asks at a
+    /// terminal and refuses elsewhere. `--yes` confirms the cost only.
+    #[arg(long)]
+    pub i_have_the_rights: bool,
     /// A private destination: mirror the label definitions too. Their names, colours and
     /// descriptions are not encrypted, so by default they are left out (the labels set on
     /// issues and PRs are encrypted either way).
@@ -144,6 +151,7 @@ pub async fn import(ctx: &Ctx, a: &ImportArgs) -> Result<()> {
         max_spend: max_spend(a.max_spend)?,
         dry_run: a.dry_run,
         yes: ctx.yes,
+        acknowledge_rights: a.i_have_the_rights,
         limit: a.limit,
         network: ctx.target.clone(),
         key: ctx.identity_path.clone(),

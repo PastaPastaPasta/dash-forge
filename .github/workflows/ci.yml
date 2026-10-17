@@ -40,6 +40,20 @@ jobs:
         if: runner.os == 'Linux'
         run: dash tests/install/test-install.sh
 
+  # The Platform SDK version is pinned in six manifests and four lockfiles; a bump that misses
+  # one builds clients at different rs-dpp versions (HYGI-18).
+  sdk-pins:
+    name: sdk pins agree
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: tools/check-sdk-pins.sh
+
   web:
     name: web
     runs-on: ubuntu-latest

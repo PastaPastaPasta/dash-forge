@@ -25,11 +25,12 @@ import type { Milestone } from '@/lib/rules/parity'
 import { onRadioGroupKeyDown, radioTabIndex } from '@/components/ui/radio-group'
 import { whoCan } from '@/lib/rules/roles'
 
-export function SidebarSection({ title, icon: Icon, children }: { title: string; icon: LucideIcon; children: React.ReactNode }): JSX.Element {
+export function SidebarSection({ title, icon: Icon, badge, children }: { title: string; icon: LucideIcon; badge?: React.ReactNode; children: React.ReactNode }): JSX.Element {
   return (
     <section className="border-b border-anvil-200 pb-4 dark:border-anvil-800">
       <h2 className="mb-2 flex items-center gap-1.5 text-[12px] font-semibold uppercase tracking-wide text-anvil-500 dark:text-anvil-400">
         <Icon className="h-3.5 w-3.5" aria-hidden /> {title}
+        {badge}
       </h2>
       {children}
     </section>

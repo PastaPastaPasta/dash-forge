@@ -58,6 +58,10 @@
 //   fees    the M-C fee probes: L3 (comment, review) and C4 (ref update, config) against the live
 //           set, a bot push against a writer push, label/topic/packMirror in forge-meta against
 //           the live forge-core (n rounds each after a warm-up write)
+//   guards  the testnet freeze's update guards (rClaim, mrClaim, k_kinds, e_mergeOid), run LAST and only
+//           on a scratch set that `deploy-v2.mjs --update all --contracts <dir>/contracts` already
+//           loosened (`vectors.py --mainnet --out <tmp> --guards <dir>`): documents only the loosened
+//           bounds admit, each refused 10422 by its guard, beside the controls the loosened set admits
 //   fees2   the M-A2 fee probes (R-03, R-04, R-06): an approval, a members-only comment and a bot
 //           push on this set against the same on --baseline <record>, a scratch registration of
 //           the rev 4.1 set (`build.py --mainnet` before M-A2), with a stranger's comment verdict
@@ -250,8 +254,9 @@ function record(r) {
 }
 
 // The role every role-gated write claims unless the case names one: 1, what a maintainer, an
-// author or a role-1 writer sends.
-const ROLE_GATED = new Set(['refUpdate', 'packManifest', 'chunk', 'transition', 'event', 'checkRun', 'label', 'milestone']);
+// author or a role-1 writer sends. A chunk claims none (R-19, the testnet freeze): its writer leaf
+// names the roles it admits.
+const ROLE_GATED = new Set(['refUpdate', 'packManifest', 'transition', 'event', 'checkRun', 'label', 'milestone']);
 const CONTRACT = { repo: CORE, maintainer: CORE, writer: CORE, consent: CORE, refUpdate: CORE, protectedRefUpdate: CORE, config: CORE, release: CORE, packManifest: CORE, chunk: CORE, pushGrant: CORE, issue: COLLAB, patch: COLLAB, comment: COLLAB, review: COLLAB, transition: COLLAB, event: COMM, authorEvent: COMM, checkRun: COMM, runner: COMM, policy: COMM, milestone: COMM, star: COMM, watch: COMM, webhook: COMM, repoKey: META, ban: META, label: META, topic: META, packMirror: META, profile: META, follow: META };
 function withDefaults(type, data) {
   if (type === 'writer' && data.role === undefined) return { ...data, role: 1 };
@@ -480,7 +485,7 @@ async function readBack(item, label, contract, type, doc) {
   }
 }
 // fees writes to the live set, and convert/everything are steps of one case: each runs only when named
-const EXPLICIT = new Set(['fees', 'fees2', 'convert', 'everything']);
+const EXPLICIT = new Set(['fees', 'fees2', 'convert', 'everything', 'guards']);
 const want = (group) => (only === null ? !EXPLICIT.has(group) : only.has(group));
 // A setup write that failed stops the run (with its report): the cases after it would mean nothing
 const need = (doc, what) => {
@@ -739,6 +744,10 @@ try {
     await ok(I, 'a public check run with text', O, 'checkRun', run(R, 'public', { summary: 'all green', detailsUrl: 'https://ci.example.com/2' }));
     const q = await ok(I, 'a queued public run', O, 'checkRun', { repoId: R, headOid: bytes(20, 3), name: 'm1-q', status: 'queued', outcome: 0, vis: 'public' });
     await replaceNo(I, 'a public run turned members-only later (aud immutable)', O, q, { aud: 1 }, [], [40128]);
+    // the testnet freeze: a completed run outlives the merge it justified; a queued one may go
+    const done = await ok('FZ', 'a completed failing run', O, 'checkRun', run(R, 'public', { conclusion: 'failure', outcome: 2 }));
+    if (done) await deleteNo('FZ', 'the runner deletes its completed run (keepCompleted)', O, done, [40147], 'keepCompleted');
+    if (q) await deleteOk('FZ', 'the runner deletes its queued run', O, q);
   }
 
   // ---------------- M2: the triage allow-list and kind 23 ----------------
@@ -808,16 +817,22 @@ try {
     // R-06: the push names the grant and its granter; the grant's until and prefix are read from it
     const botRef = (name, g, extra = {}) => ({ repoId: R, refNameHash: refHash(name), refName: name, newOid: bytes(20, 9), vis: 'public', r: 4, pp: docRef(g), grantor: id(O.id), ...extra });
     await ok(I, 'the bot pushes refs/heads/bot/ci-bot/x under the prefix grant', B, 'refUpdate', botRef(`${PREFIX}x`, pGrant));
-    // its kind-0 pack, kind-1 browse index and kind-6 long body (Platform chunks, r 4)
+    // its kind-0 pack, kind-1 browse index and kind-6 long body (Platform chunks; a chunk claims no role
+    // since R-19: its writer leaf admits the bot's role-4 row by the literal `in [1, 4]`)
     for (const [kind, label] of [[0, 'pack'], [1, 'browse index'], [6, 'long body']]) {
       const ph = bytes(32);
-      const c = await ok(I, `the bot's chunk for its kind-${kind} ${label} (r 4)`, B, 'chunk', { repoId: R, packHash: ph, seq: 0, d0: bytes(200), r: 4 });
+      const c = await ok(I, `the bot's chunk for its kind-${kind} ${label}`, B, 'chunk', { repoId: R, packHash: ph, seq: 0, d0: bytes(200) });
       if (c) {
         await sleep(A_BLOCK);
         await ok(I, `the bot's kind-${kind} ${label} manifest (r 4)`, B, 'packManifest', { repoId: R, packHash: ph, kind, sizeBytes: 200, objectCount: kind === 0 ? 1 : 0, chunkCount: 1, storage: 0, r: 4 });
       }
     }
-    await no(I, "the bot's chunk claiming r 1", B, 'chunk', { repoId: R, packHash: bytes(32), seq: 0, d0: bytes(10), r: 1 }, [40127]);
+    await no(I, "the bot's chunk claiming a role (R-19: no r)", B, 'chunk', { repoId: R, packHash: bytes(32), seq: 0, d0: bytes(10), r: 4 }, SCHEMA);
+    // R-19: the `in [1, 4]` literal admits a role-1 writer and the maintainer too
+    await ok(I, "a role-1 writer's chunk (R-19)", W, 'chunk', { repoId: R, packHash: bytes(32), seq: 0, d0: bytes(10) });
+    await ok(I, "the owner's chunk (R-19, maintainer operand)", O, 'chunk', { repoId: R, packHash: bytes(32), seq: 0, d0: bytes(10) });
+    // the testnet freeze: a prefix grant covers branches only
+    for (const prefix of ['refs/tags/', 'refs/']) await no(I, `a prefix grant of ${prefix} (headsOnly)`, O, 'pushGrant', grant(B, { prefix }), [10422], 'headsOnly');
     // refusals
     await no(I, 'a bot ref update with no grant (r 4)', B, 'refUpdate', { repoId: R, refNameHash: refHash(`${PREFIX}y`), refName: `${PREFIX}y`, newOid: bytes(20, 1), vis: 'public', r: 4 }, [10422], 'botGrant');
     await no(I, 'a bot ref update outside its prefix (refs/heads/main; R-06 grantPrefix)', B, 'refUpdate', botRef('refs/heads/main', pGrant), [10422], 'grantPrefix');
@@ -828,8 +843,8 @@ try {
     await no(I, "another bot pushes under the bot's grant", B2, 'refUpdate', botRef(`${PREFIX}x`, pGrant), [40127]);
     await no(I, 'triage sends r 4 under the grant', T, 'refUpdate', botRef(`${PREFIX}x`, pGrant), WHERE_ANYOF);
     await no(I, 'the reader sends r 4 under the grant', RD, 'refUpdate', botRef(`${PREFIX}x`, pGrant), WHERE_ANYOF);
-    await no(I, 'triage uploads a chunk with r 4', T, 'chunk', { repoId: R, packHash: bytes(32), seq: 0, d0: bytes(10), r: 4 }, [40127]);
-    await no(I, 'triage uploads a chunk with its own r 2 (botChunk: r 1 or 4)', T, 'chunk', { repoId: R, packHash: bytes(32), seq: 0, d0: bytes(10), r: 2 }, [10422], 'botChunk');
+    await no(I, 'triage uploads a chunk (R-19: role 2 is not in [1, 4])', T, 'chunk', { repoId: R, packHash: bytes(32), seq: 0, d0: bytes(10) }, WHERE_ANYOF);
+    await no(I, 'the reader uploads a chunk (R-19: role 3 is not in [1, 4])', RD, 'chunk', { repoId: R, packHash: bytes(32), seq: 0, d0: bytes(10) }, WHERE_ANYOF);
     await no(I, 'a bot protected ref update', B, 'protectedRefUpdate', { repoId: R, refNameHash: refHash('refs/heads/main'), refName: 'refs/heads/main', newOid: bytes(20, 1), vis: 'public' }, [40120]);
     const bman = (kind, extra = {}) => ({ repoId: R, packHash: bytes(32), kind, sizeBytes: 100, objectCount: 0, chunkCount: 0, storage: 1, r: 4, ...extra });
     await no(I, 'a bot manifest of kind 3 (r 4)', B, 'packManifest', bman(3, { tips: bytes(20) }), [10422], 'botPack');
@@ -991,10 +1006,78 @@ try {
   // ---------------- fees ----------------
   if (want('fees')) await feeProbes();
   if (want('fees2')) await feeProbes2();
+
+  // ---------------- the update guards (after a loosening update) ----------------
+  if (want('guards')) await updateGuards();
 } catch (e) {
   if (!(e instanceof InfraError)) throw e;
   stopped = e.message;
   log(`STOPPED: ${stopped}`);
+}
+
+/**
+ * The update guards (the testnet freeze, FREEZE-SHEET.md): run on a scratch set AFTER
+ * `deploy-v2.mjs --update all --contracts <dir>/contracts` applied the loosened build of
+ * `vectors.py --mainnet --guards <dir>`. The schema bounds the guards restate are then wider
+ * (event, milestone, label, transition `r` and checkRun `r` up to 4, repoKey `mr` up to 4, transition
+ * `kind` gains 5), so a document the loosened bound alone admits reaches the guard rule: a claim that
+ * the member's own writer row proves (`where {role: r}`) or that a runner row needs no row for.
+ * Each must be refused 10422 by its guard. Run it LAST: the update makes this set differ from the
+ * candidate.
+ */
+async function updateGuards() {
+  const I = 'GUARD';
+  // the registered contracts really are loosened (else a refusal here proves nothing)
+  const loosened = [
+    [COLLAB, 'transition', (p) => p.r.maximum === 4 && p.kind.enum.includes(5), 'r max 4, kind enum has 5'],
+    [COMM, 'event', (p) => p.r.maximum === 4, 'r max 4'],
+    [COMM, 'milestone', (p) => p.r.maximum === 4, 'r max 4'],
+    [COMM, 'checkRun', (p) => p.r.maximum === 4, 'r max 4'],
+    [META, 'label', (p) => p.r.maximum === 4, 'r max 4'],
+    [META, 'repoKey', (p) => p.mr.maximum === 4, 'mr max 4'],
+  ];
+  for (const [contract, type, test, what] of loosened) {
+    const c = (await sdk.contracts.fetch(contract)).toJSON();
+    record({ item: I, label: `${type} is loosened on chain (${what})`, expect: 'loosened', got: `version ${c.version}`, pass: Number(c.version) >= 2 && test(c.documentSchemas[type].properties) });
+  }
+  const g = await makeRepo(I, `mvg-${tag}`, 'public', [[W, 1], [T, 2], [RD, 3], [B, 4]]);
+  const Rg = g.R;
+  const issue = async (label) => {
+    const iss = need(await numbered(g, I, label, O, 'issue', { title: 'guards', vis: 'public' }), label);
+    return { iss, n: g.n };
+  };
+  const ev = ({ iss, n }, extra) => ({ repoId: Rg, targetId: docRef(iss), targetNumber: n, kind: 4, value: 'bug', ...extra });
+  const tr = ({ iss, n }, extra) => ({ repoId: Rg, targetId: docRef(iss), targetNumber: n, targetKind: 0, kind: 1, delta: 1, asAuthor: 0, ...extra });
+  const wrap = (who, mr) => ({ repoId: Rg, memberId: id(who.id), epoch: 0, recipientKeyId: who.encKeyId, senderKeyId: O.encKeyId, wrapped: bytes(48), mr });
+  const run = (extra) => ({ repoId: Rg, headOid: bytes(20, 2), name: `g-${randomBytes(2).toString('hex')}`, status: 'queued', outcome: 0, vis: 'public', ...extra });
+
+  // positive controls: the loosened set still admits every honest claim
+  const t1 = await issue('issue 1 (controls)');
+  await ok(I, "control: the writer's event, r 1", W, 'event', ev(t1, { r: 1 }));
+  await ok(I, "control: triage's event, r 2", T, 'event', ev(t1, { r: 2 }));
+  await ok(I, "control: triage's milestone, r 2", T, 'milestone', { repoId: Rg, title: `g-${tag}`, r: 2 });
+  await ok(I, "control: triage's label, r 2", T, 'label', { repoId: Rg, name: `g-${tag}`, r: 2 });
+  await ok(I, "control: a wrap to the reader, mr 3", O, 'repoKey', wrap(RD, 3));
+  await ok(I, "control: the writer's transition (close), r 1", W, 'transition', tr(t1, { r: 1 }));
+  await ok(I, 'control: the owner enrols the writer as a runner', O, 'runner', { repoId: Rg, memberId: id(W.id) });
+  await ok(I, "control: the writer-runner's check run, r 1", W, 'checkRun', run({ r: 1 }));
+
+  // the guards
+  await no(I, "a reader's (role 3) event with r 3", RD, 'event', ev(t1, { r: 3 }), [10422], 'rClaim');
+  await no(I, "a bot's (role 4) event with r 4", B, 'event', ev(t1, { r: 4 }), [10422], 'rClaim');
+  await no(I, "a bot's (role 4) milestone with r 4", B, 'milestone', { repoId: Rg, title: 'bot', r: 4 }, [10422], 'rClaim');
+  await no(I, "a reader's (role 3) label with r 3", RD, 'label', { repoId: Rg, name: `g-r3-${tag}`, r: 3 }, [10422], 'rClaim');
+  // (triage's row says role 2, so its r 3 would also fail the writer row's `where`: the property rules run
+  // before the reference check, so the guard answers first)
+  await no(I, "triage's (role 2) label with r 3", T, 'label', { repoId: Rg, name: `g-t3-${tag}`, r: 3 }, [10422], 'rClaim');
+  await no(I, "a reader's (role 3) check run with r 3", RD, 'checkRun', run({ r: 3 }), [10422], 'rClaim');
+  await no(I, "a writer-runner's check run with r 2", W, 'checkRun', run({ r: 2 }), [10422], 'rClaim');
+  await no(I, 'a wrap to a bot with mr 4', O, 'repoKey', wrap(B, 4), [10422], 'mrClaim');
+  await no(I, "a member's (writer) transition of kind 5", W, 'transition', tr(t1, { kind: 5, delta: 0, r: 1 }), [10422], 'k_kinds');
+  const t2 = await issue('issue 2 (the reader close)');
+  await no(I, "a reader's (role 3) transition with r 3", RD, 'transition', tr(t2, { r: 3 }), [10422], 'e_mergeOid');
+  // and the same reader's honest close is refused for what it is, not for the guard: it holds no r 1 row
+  await no(I, "a reader's transition claiming r 1", RD, 'transition', tr(t2, { r: 1 }), WHERE_ANYOF);
 }
 
 /**
@@ -1211,7 +1294,7 @@ async function storeArtifact(item, label, who, repoId, data, kind, r, extra = {}
   for (let seq = 0; seq < n; seq++) {
     const real = data.subarray(seq * 3 * PART, (seq + 1) * 3 * PART);
     const slice = tripwire && seq > 0 ? randomBytes(real.length) : real;
-    const d = { repoId, packHash, seq, d0: slice.subarray(0, PART), r: r === 0 ? 1 : r };
+    const d = { repoId, packHash, seq, d0: slice.subarray(0, PART) };
     if (slice.length > PART) d.d1 = slice.subarray(PART, 2 * PART);
     if (slice.length > 2 * PART) d.d2 = slice.subarray(2 * PART);
     if (!(await ok(item, `${label}: chunk ${seq + 1} of ${n}`, who, 'chunk', d))) return null;

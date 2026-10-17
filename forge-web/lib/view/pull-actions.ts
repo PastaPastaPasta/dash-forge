@@ -34,6 +34,7 @@ import { linkedIssues, type Approvals, type ChecksState, type CodeOwnerStatus, t
 import type { MergeContent } from '../rules/merge-content'
 import type { PullView } from '../repo'
 import type { ProvedVerdicts } from '../repo/verdicts'
+import { PRIVATE_MERGE_REASON } from './private-limits'
 import { branchName, plural } from './format'
 
 /** What the viewer may do from the PR page, and why not when not. */
@@ -316,7 +317,7 @@ export interface MergeButtonInputs {
 
 export function mergeButton(i: MergeButtonInputs): MergeButton {
   if (!i.canMerge) return { kind: 'hidden' }
-  if (!i.isPublic) return { kind: 'unavailable', reason: 'Private repositories are merged with `dg pr merge` for now.' }
+  if (!i.isPublic) return { kind: 'unavailable', reason: PRIVATE_MERGE_REASON }
   if (i.refProblem !== null) return { kind: 'unavailable', reason: i.refProblem }
   if (i.baseProtected && !i.isMaintainer) return { kind: 'protected', label: 'Protected branch — maintainers only' }
   if (i.narrow) return { kind: 'mobile', label: 'Use a desktop browser for this step' }

@@ -14,6 +14,9 @@
  *    one, or is not the one this device already holds. A key without a budget or expiry is
  *    flagged, and a passkey is the default protection.
  *
+ * The QR step opens with {@link ScanOnlyHere}: the request does not say who shows it, so the
+ * user is told to scan only a code on this site's own address (SECU-08).
+ *
  * Dash Wallet answers on testnet only (`walletSignInSupported`); elsewhere the sheet says so.
  *
  * `mode="grant"` asks the signed-in identity's wallet for a key on another contract (a shipped
@@ -37,6 +40,7 @@ import { Field, Input } from '@/components/ui/input'
 import { Qr } from '@/components/ui/qr'
 import { ErrorBox, useProtection } from '@/components/auth/protection-fields'
 import { Waiting } from '@/components/auth/step-status'
+import { ScanOnlyHere } from '@/components/auth/scan-warning'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import {
   REQUEST_TTL_MS,
@@ -50,7 +54,8 @@ import {
   type PollStatus,
   type WalletAnswer,
 } from '@/lib/auth/app-connect'
-import { isUnlimited, keyRegistrationUri, scopeCovers, type WalletKey } from '@/lib/auth/key-registration'
+import { GRANT_COPY, isUnlimited, keyRegistrationUri, scopeCovers, type WalletKey } from '@/lib/auth/key-registration'
+import { contractKind } from '@/lib/deployments'
 import { responderProfile, type ResponderProfile } from '@/lib/auth/responder-profile'
 import { isAbort } from '@/lib/sdk/facade'
 import { PHASE_TEXT, connectPlatform, withPlatformRead } from '@/lib/auth/connect'
@@ -85,6 +90,8 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
   scopeRef.current = unlockScope
   const forge = ACTIVE_NETWORK.v2
   const target = contractId ?? forge?.core ?? ''
+  /** What a grant for `target` covers, for the copy (a grant is for one Forge contract). */
+  const grantWhat = GRANT_COPY[(forge && contractKind(forge, target)) || 'collab'].what
   const [step, setStep] = useState<Step | null>(null)
   const [status, setStatus] = useState<PollStatus>('waiting')
   const [error, setError] = useState<string | null>(null)
@@ -211,7 +218,7 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
           if (mode === 'grant') {
             // The key that covers what was asked for (a wallet may grant several, or the wrong one).
             const key = keys.find((k) => scopeCovers(k.scope, forge, target))
-            if (!key) throw new Error("The wallet's answer does not cover issues and pull requests. Try again, or sign in with your identity file.")
+            if (!key) throw new Error(`The wallet's answer does not cover ${grantWhat.toLowerCase()}. Try again, or sign in with your identity file.`)
             // Its first approval registered an encryption key too: the sign-in keeps it.
             await latest.current.addWalletGrant(answer.identityId, key, target, { encryptionKeys: answer.encryptionKeys, justRegistered: answer.kind === 'register' })
             if (signal.aborted) return
@@ -237,7 +244,7 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
       dropGrant()
     }
     // `attempt` restarts the whole request (a new ephemeral key and QR).
-  }, [attempt, forge, target, mode, grantFor, dropGrant])
+  }, [attempt, forge, target, mode, grantFor, dropGrant, grantWhat])
 
   const restart = useCallback(() => setAttempt((a) => a + 1), [])
 
@@ -360,7 +367,7 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
     <div className="space-y-3" data-testid={isRegister ? 'wallet-register' : 'wallet-request'}>
       {supported ? null : supportNote}
       {mode === 'grant' && !isRegister ? (
-        <p className="text-dense">Approve issues, pull requests, reviews and stars for this identity in your wallet.</p>
+        <p className="text-dense">Approve {grantWhat.toLowerCase()} for this identity in your wallet.</p>
       ) : null}
       {isRegister ? (
         <p className="text-dense">
@@ -368,6 +375,7 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
           {mobile ? 'Open it in the wallet again.' : 'Scan this second code with the wallet.'}
         </p>
       ) : null}
+      {step?.kind === 'request' || isRegister ? <ScanOnlyHere /> : null}
       {uri ? (
         mobile ? (
           <>
@@ -436,8 +444,8 @@ export function WalletSupportNote(): JSX.Element {
   }
   return (
     <p data-testid="wallet-support" className="text-[12px] text-anvil-500 dark:text-anvil-400">
-      Works with a testnet development build of the Dash Wallet app: More → Tools → Connections → Scan QR. No released version has it yet. The first
-      approval covers repos and pushes. Issues, pull requests and stars may ask again.
+      Works with a testnet development build of the Dash Wallet app: More → Tools → Connections → Scan QR. No released version has it yet. On iOS, each
+      Forge contract needs its own approval.
     </p>
   )
 }

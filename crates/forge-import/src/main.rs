@@ -35,6 +35,7 @@ struct Cli {
 }
 
 #[derive(Debug, clap::Args)]
+#[allow(clippy::struct_excessive_bools)] // independent command-line flags
 struct RunArgs {
     /// Destination forge-v2 repository: `owner/name`, `dash://owner/name`, a repo id, or a
     /// bare name (yours). Created when missing and you are the owner. Default: the source's
@@ -76,9 +77,17 @@ struct RunArgs {
     #[arg(long)]
     include_label_definitions: bool,
 
-    /// Do not ask for confirmation.
+    /// Do not ask for confirmation of the cost.
     #[arg(long, short = 'y')]
     yes: bool,
+
+    /// Confirm you may publish the source's content: that you own it, or its licence or its
+    /// owners allow it. A mirror is permanent on Dash Platform and carries other people's
+    /// commits (names and emails), comments and logins, and later edits or deletions at the
+    /// source are not carried over. Required for a real run; without it the run asks at a
+    /// terminal and refuses elsewhere. A dry run needs nothing.
+    #[arg(long)]
+    i_have_the_rights: bool,
 
     /// Mirror at most this many issues and PRs (0 = all); for cheap trials.
     #[arg(long, default_value_t = 0)]
@@ -223,6 +232,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 max_spend: r.max_spend.map(dash_to_credits).transpose()?,
                 dry_run: r.dry_run,
                 yes: r.yes,
+                acknowledge_rights: r.i_have_the_rights,
                 limit: r.limit,
                 network: target(&r.net)?,
                 key: key(&r.net),
@@ -257,6 +267,7 @@ mod tests {
             "--max-spend",
             "0.05",
             "--yes",
+            "--i-have-the-rights",
             "--summary-json",
             "/tmp/sum.json",
             "--network",
@@ -265,10 +276,20 @@ mod tests {
             "moutai",
         ])
         .unwrap();
+        assert!(cli.run.i_have_the_rights && cli.run.yes);
         assert_eq!(cli.source.as_deref(), Some("o/r"));
         assert_eq!(cli.run.max_spend, Some(0.05));
         assert!(cli.command.is_none());
         assert_eq!(cli.run.concurrency, forge_import::pipeline::DEFAULT_LANES);
+    }
+
+    #[test]
+    fn the_acknowledgement_is_its_own_flag_and_off_by_default() {
+        // `--yes` confirms the cost; it is not the acknowledgement.
+        let cli = Cli::try_parse_from(["forge-import", "o/r", "--yes"]).unwrap();
+        assert!(cli.run.yes && !cli.run.i_have_the_rights);
+        let cli = Cli::try_parse_from(["forge-import", "o/r", "--i-have-the-rights"]).unwrap();
+        assert!(cli.run.i_have_the_rights && !cli.run.yes);
     }
 
     #[test]

@@ -85,8 +85,12 @@ forge-import alice/project --network devnet --devnet-name sakura --dry-run
 Then run it with a spending cap:
 
 ```sh
-forge-import alice/project --network devnet --devnet-name sakura --max-spend 0.5 --state ./alice-project.sync.json
+forge-import alice/project --network devnet --devnet-name sakura --max-spend 0.5 --state ./alice-project.sync.json --i-have-the-rights
 ```
+
+**Before it writes: the rights acknowledgement.** A mirror is permanent on Dash Platform and carries other people's words: commit authors' names and emails travel in the pack objects, and issues, PRs, comments and reviews carry their authors' logins and text. Platform cannot delete any of it, and an author's later edit or deletion on GitHub is not carried over. So a real run prints what it is about to publish, together with the licence GitHub reports for the source (`MIT`, `none detected`, or not reported) and, when it can tell, whether the source belongs to the account in use, and then needs your say-so: `--i-have-the-rights`, or a "y" typed at a terminal. With no terminal and no flag it refuses, naming the flag. `--yes` confirms the cost only; it is not the acknowledgement. A dry run needs neither. The run warns when the source has no licence or belongs to someone else (the account in use is `gh`'s login, or `FORGE_IMPORT_ACCOUNT` when you set it). If you are not the owner and the licence does not allow it, do not mirror it. Dash Forge cannot take a mirror down; an owner's removal request can only be honoured on dashhq's hosted surfaces (`docs/hosted-curation.md`).
+
+**Git LFS.** If the default branch's `.gitattributes` sets `filter=lfs`, the run warns that the mirror holds the LFS pointer files only: the large files stay on GitHub, and Dash Forge does not mirror LFS objects. The summary JSON says so too (`lfsDetected`).
 
 Unlike `git` and `dg`, the standalone `forge-import` does not read the network `dg auth` recorded: without `--network` (or `DASH_FORGE_NETWORK` / `DASH_FORGE_DEVNET_NAME`) it uses testnet, which has no Forge deployment ([E702](../errors.md#e702)). `dg import alice/project` takes the same core flags and uses `dg`'s network and identity defaults.
 
@@ -101,7 +105,8 @@ Useful flags (see `forge-import --help`):
 | `--dry-run` | Price only. |
 | `--include-label-definitions` | A private destination only: mirror the label definitions too. Their names, colours and descriptions are not encrypted, so they are left out by default; the labels set on issues and PRs are encrypted either way. |
 | `--limit <n>` | At most `n` issues and PRs (the oldest), for a cheap trial. Only those items and their comments are read, so a trial on a repository with thousands of issues takes a few requests. |
-| `--yes` | No confirmation prompt, for CI. |
+| `--yes` | No confirmation of the cost, for CI. |
+| `--i-have-the-rights` | You may publish the source's content: you own it, or its licence or its owners allow it. Required for a real run (see above); without it the run asks at a terminal and refuses elsewhere. |
 | `--concurrency <n>` | How many issues and PRs have their comments, reviews, labels and state written at once (default 8, at most 16). Issues and PRs themselves are always created one at a time, in GitHub's order, so their numbers match. `1` writes one document at a time. See [large repositories](#large-repositories). |
 | `--summary-json <file>` | Write the run summary (counts, spend, key budget) as JSON. `forge-import` only. |
 | `--work-dir <dir>` | Keep the bare git mirror between runs instead of a temporary directory. `forge-import` only. |
@@ -129,8 +134,8 @@ A run with `--limit` that left items out does not advance `--state` either, and 
 **Importing in phases.** A large repository can be imported in steps: the code first, then the issues and PRs, each with its own cap and state file:
 
 ```sh
-forge-import alice/project --sync code,releases,labels --work-dir ./project.git --state ./project-code.sync.json --max-spend 100
-forge-import alice/project --sync issues,prs,labels --work-dir ./project.git --state ./project-collab.sync.json --max-spend 5
+forge-import alice/project --sync code,releases,labels --work-dir ./project.git --state ./project-code.sync.json --max-spend 100 --i-have-the-rights
+forge-import alice/project --sync issues,prs,labels --work-dir ./project.git --state ./project-collab.sync.json --max-spend 5 --i-have-the-rights
 ```
 
 **Run the code pass first.** A merged PR is recorded as merged only when a base tip already on chain contains its merge commit. A pass without `code` checks that itself and pushes nothing. It fetches the merged PRs' base branches from the source: into the `--work-dir` mirror when a code run left one there, or else commits only, into a temporary repository that is removed after the run (never inside `--work-dir`). If the base branch's tip on chain does not contain the merge yet, the PR is recorded as closed. The same happens when the base could not be fetched. The run warns for each such PR, the summary counts them (`unprovedMerges`), and `--state` keeps their numbers: the next run reads them again whatever changed, and turns each close into a merge once the code is on chain (one small event per PR; nothing else is written again). A PR whose base branch was deleted at the source can never be proved; it stays closed, and is not revisited. Nor can a PR mirrored before its base branch was on chain at all: a merge counts only into a base that was a branch when the PR was opened on Forge ([forge-v2 §6](../contracts/forge-v2.md)), which is why the code must come first.
@@ -288,7 +293,7 @@ Run the same import again whenever you like, from cron or another CI system, wit
 
 ```sh
 # crontab -e: every 15 minutes, code and issues, never more than 0.02 DASH a run
-*/15 * * * * DASH_FORGE_KEY=/srv/mirror/ci-identity.json forge-import alice/project --repo <owner id>/project --network devnet --devnet-name sakura --state /srv/mirror/project.sync.json --work-dir /srv/mirror/project.git --max-spend 0.02 --yes --summary-json /srv/mirror/last-run.json
+*/15 * * * * DASH_FORGE_KEY=/srv/mirror/ci-identity.json forge-import alice/project --repo <owner id>/project --network devnet --devnet-name sakura --state /srv/mirror/project.sync.json --work-dir /srv/mirror/project.git --max-spend 0.02 --yes --i-have-the-rights --summary-json /srv/mirror/last-run.json
 ```
 
 If you only want code, plain git does it with no importer at all:
