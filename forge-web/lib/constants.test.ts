@@ -68,7 +68,7 @@ describe('resolveNetworks', () => {
     expect(networks.devnet.dapiAddresses).toContain('https://68.67.122.84:1443')
   })
 
-  it('exposes the forge-v2 ids devnet-moutai.json records, and none for testnet', () => {
+  it('exposes the forge-v2 ids devnet-moutai.json records, and the testnet ids once testnet is registered', () => {
     const file = onDisk('devnet-moutai')
     const { networks } = resolveNetworks({ devnetName: 'moutai' }, DEPLOYMENTS)
     expect(networks.devnet.v2).toEqual({
@@ -77,7 +77,8 @@ describe('resolveNetworks', () => {
       community: file.v2.forgeCommunity?.contractId ?? file.v2.forgeCollab.contractId,
       group: file.v2.contractGroupId,
     })
-    expect(networks.testnet.v2).toBeNull()
+    // null while testnet.json records no registered forge-v2 set, its ids afterwards (the P4 registration)
+    expect(networks.testnet.v2).toEqual(forgeV2Ids(DEPLOYMENTS.testnet))
   })
 
   it('resolves devnet sakura: its 13 DAPI nodes and quorum service, with no contracts until its registration', () => {

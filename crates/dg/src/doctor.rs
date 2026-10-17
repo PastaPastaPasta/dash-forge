@@ -24,7 +24,7 @@ use anyhow::Result;
 use serde_json::{json, Value};
 
 use forge_core::network::{
-    NetworkSettings, NetworkTarget, ENV_DAPI_ADDRESSES, ENV_DEVNET_NAME, ENV_NETWORK,
+    ForgeIds, NetworkSettings, NetworkTarget, ENV_DAPI_ADDRESSES, ENV_DEVNET_NAME, ENV_NETWORK,
     GIT_NETWORK_KEYS,
 };
 use forge_core::platform::{Network, PlatformClient};
@@ -904,6 +904,19 @@ fn contract_rows(network: &mut Vec<Check>, recorded: Check) -> Vec<Check> {
     }
 }
 
+/// The contract ids of a forge-v2 set as the doctor row prints them: `core= collab= community=`,
+/// and ` meta=` on a four-contract set (CLIE-19).
+fn contract_ids(ids: &ForgeIds) -> String {
+    let meta = ids
+        .meta
+        .as_ref()
+        .map_or_else(String::new, |m| format!(" meta={m}"));
+    format!(
+        "core={} collab={} community={}{meta}",
+        ids.core, ids.collab, ids.community
+    )
+}
+
 /// Where the forge-v2 contract ids for `target` come from.
 fn deployment_source(target: &NetworkTarget) -> String {
     format!("forge-contracts/deployments/{}.json", target.network.key())
@@ -944,10 +957,8 @@ async fn check_forge_v2(client: &PlatformClient, target: &NetworkTarget) -> Opti
         Check::ok(
             "forge-v2",
             format!(
-                "core={} collab={} community={} proof-verified and enrolled in group {} (source: {})",
-                ids.core,
-                ids.collab,
-                ids.community,
+                "{} proof-verified and enrolled in group {} (source: {})",
+                contract_ids(ids),
                 ids.group,
                 deployment_source(target)
             ),
@@ -993,10 +1004,8 @@ fn check_contracts(target: &NetworkTarget, fresh_install: bool) -> Check {
         Ok(ids) => Check::ok(
             "forge-v2",
             format!(
-                "core={} collab={} community={} group={} (source: {})",
-                ids.core,
-                ids.collab,
-                ids.community,
+                "{} group={} (source: {})",
+                contract_ids(ids),
                 ids.group,
                 deployment_source(target)
             ),
@@ -1922,11 +1931,32 @@ mod tests {
         assert!(c.fix.is_some());
     }
 
+    /// A devnet whose key has no deployment file, found dynamically so the tests below keep
+    /// holding once more networks (testnet, mainnet) are registered (CLIE-11).
+    fn undeployed_network() -> NetworkTarget {
+        let name = (0..1000)
+            .map(|i| format!("wsbnone{i}"))
+            .find(|n| {
+                forge_core::network::deployment(&format!("devnet-{n}"))
+                    .unwrap()
+                    .is_none()
+            })
+            .unwrap();
+        NetworkSettings {
+            network: Some("devnet".into()),
+            devnet_name: Some(name),
+            ..Default::default()
+        }
+        .resolve()
+        .unwrap()
+    }
+
     #[test]
-    fn a_fresh_install_warns_instead_of_failing_on_testnet() {
+    fn a_fresh_install_warns_on_an_undeployed_network() {
         // L-33: the quick start's first `dg doctor` (nothing configured) exited 1 with E104.
-        let testnet = NetworkSettings::default().resolve().unwrap();
-        let c = check_contracts(&testnet, true);
+        let target = undeployed_network();
+        assert!(target.v2.is_none());
+        let c = check_contracts(&target, true);
         assert_eq!(c.status, Status::Warn, "{}", c.detail);
         assert!(
             c.fix
@@ -1937,8 +1967,50 @@ mod tests {
             "{:?}",
             c.fix
         );
-        // Chosen explicitly (`--network testnet`), it is still the failure it was.
-        assert_eq!(check_contracts(&testnet, false).status, Status::Fail);
+        // Chosen explicitly (`--network ...`), it is still the failure it was.
+        assert_eq!(check_contracts(&target, false).status, Status::Fail);
+    }
+
+    #[test]
+    fn the_testnet_contracts_row_follows_its_record() {
+        // Fail while testnet has no forge-v2 record, Ok once the registration commit adds it.
+        let testnet = NetworkSettings::default().resolve().unwrap();
+        let deployed = forge_core::network::deployment("testnet")
+            .unwrap()
+            .is_some_and(|d| d.v2.is_some());
+        assert_eq!(testnet.v2.is_some(), deployed);
+        let c = check_contracts(&testnet, false);
+        let want = if deployed { Status::Ok } else { Status::Fail };
+        assert_eq!(c.status, want, "{}", c.detail);
+        if deployed {
+            assert!(
+                c.detail
+                    .contains("source: forge-contracts/deployments/testnet.json"),
+                "{}",
+                c.detail
+            );
+        }
+    }
+
+    #[test]
+    fn the_contract_ids_row_names_forge_meta_on_a_four_contract_set() {
+        let three = ForgeIds::test_forge();
+        assert_eq!(three.meta, None);
+        assert!(
+            !contract_ids(&three).contains("meta="),
+            "{}",
+            contract_ids(&three)
+        );
+        let four = ForgeIds::test_forge_meta();
+        let row = contract_ids(&four);
+        assert!(row.contains(" meta=META"), "{row}");
+        assert!(
+            row.starts_with(&format!(
+                "core={} collab={} community={}",
+                four.core, four.collab, four.community
+            )),
+            "{row}"
+        );
     }
 
     #[test]

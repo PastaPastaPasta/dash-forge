@@ -5,14 +5,28 @@
 //! put a `pre-push` hook and a ledger in the source repository's shared `.git` that way and broke
 //! every worktree's push to GitHub.
 //!
-//! Offline: the network is one with no forge-v2 deployment, so the helper stops at its first
-//! Platform read (E702), after everything it used to write before connecting.
+//! Offline: the network is a devnet with no deployment file (chosen at run time, so registering
+//! testnet or mainnet cannot change it), so the helper stops at its first Platform read (E702),
+//! after everything it used to write before connecting.
 
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
 const HELPER: &str = env!("CARGO_BIN_EXE_git-remote-dash");
 const URL: &str = "dash://8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB/project";
+
+/// A devnet name whose `devnet-<name>` deployment file does not exist, so the helper has no
+/// forge-v2 contracts there whatever else gets registered.
+fn undeployed_devnet() -> String {
+    (0..1000)
+        .map(|i| format!("wsbnone{i}"))
+        .find(|n| {
+            forge_core::network::deployment(&format!("devnet-{n}"))
+                .unwrap()
+                .is_none()
+        })
+        .unwrap()
+}
 
 /// git in `dir` with no user or system config, an empty HOME, the built helper first on `PATH`,
 /// and a network the helper fails on before any Platform read.
@@ -37,7 +51,8 @@ fn git(dir: &Path, home: &Path, args: &[&str]) -> Output {
         .env("GIT_AUTHOR_EMAIL", "t@e.x")
         .env("GIT_COMMITTER_NAME", "t")
         .env("GIT_COMMITTER_EMAIL", "t@e.x")
-        .env("DASH_FORGE_NETWORK", "mainnet")
+        .env("DASH_FORGE_NETWORK", "devnet")
+        .env("DASH_FORGE_DEVNET_NAME", undeployed_devnet())
         .env("DASH_FORGE_NO_KEYCHAIN", "1")
         .env("PATH", path)
         .stdin(Stdio::null())

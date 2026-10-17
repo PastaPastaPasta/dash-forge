@@ -4,8 +4,9 @@
 # config, with the OS keychain off and NO DASH_FORGE_NETWORK in the environment: the only
 # network source is what `dg auth login` records.
 #
-#   0. L-33: a fresh `dg doctor` exits 0 and says no network is chosen yet (it used to probe
-#      testnet and exit 1 with E104).
+#   0. L-33: a fresh `dg doctor` exits 0 and, while testnet has no forge-v2 deployment, says no
+#      network is chosen yet (it used to probe testnet and exit 1 with E104). Once testnet is
+#      deployed, the default network is a working one and the row just targets it.
 #   1. `dg auth login --network devnet --devnet-name <devnet> <file>` records the network (a
 #      limited key goes to a passphrase-sealed file).
 #   2. L-24: `dg doctor` outside a repository reports git using the same network.
@@ -15,8 +16,10 @@
 #   5. L-21: `dg repo clone <owner>/<name> <dir>` clones (it used to only print a command),
 #      records the network in the clone, and `cd <dir> && git log` shows both commits.
 #   6. Anonymous: a second empty home with no dg config clones with the web page's
-#      `git clone -c dash.network=… dash://…` line; a bare `git clone` there fails with E702
-#      whose fix is git config, not dg flags.
+#      `git clone -c dash.network=… dash://…` line. While testnet is undeployed a bare `git clone`
+#      there fails with E702 whose fix is git config, not dg flags. Once testnet is deployed the
+#      bare clone reaches testnet instead (it is not "isn't deployed"), so the E702 checks run on an explicit
+#      devnet that has no deployment, and its fix names testnet (CLIE-11).
 #
 # Writes one new repository per run (`e2e-fresh-<run-id>`, about 0.0013 DASH plus two small
 # Platform-stored pushes) under an identity minted for the run (E2E_FRESH_IDENTITY skips the
@@ -29,6 +32,13 @@ na_unless_devnet "records and asserts a devnet in its dg and git config; no test
 
 : "${MINT_DIR:=${E2E_REPO_ROOT}/tools/mint-identity}"
 DEVNET="$DASH_FORGE_DEVNET_NAME"
+# Whether the committed testnet record has a registered forge-v2 set decides what a client with
+# nothing configured does: the default network (testnet) has no Forge (undeployed) or has it.
+TESTNET_DEPLOYED=false
+if jq -e '(.v2.contractGroupId // "") != "" and ([.v2.forgeCore, .v2.forgeCollab, .v2.forgeCommunity, .v2.forgeMeta] | map(select(. != null)) | (length >= 2) and all(.status == "registered"))' \
+     "${E2E_REPO_ROOT}/forge-contracts/deployments/testnet.json" >/dev/null 2>&1; then
+  TESTNET_DEPLOYED=true
+fi
 LOG="${WORKROOT}/s23"
 IDS="${WORKROOT}/s23-ids"
 mkdir -p "$IDS" && chmod 700 "$IDS"
@@ -88,10 +98,15 @@ step "0. L-33: a fresh dg doctor warns, and exits 0"
 run "$LOG-doctor0.json" "$LOG-doctor0.err" "$H" "$H/home" -- _tmo "$DG" --json doctor
 check "exits 0" assert_eq "0" "$?"
 ROW='[c for s in d["sections"] for c in s["checks"] if s["name"] == "network"][0]'
-check "network row: no network chosen yet" \
-  assert_contains "$(jq_py "$LOG-doctor0.json" "${ROW}[\"detail\"]")" "no network chosen yet"
-check "its fix is dg auth new on a deployed network" \
-  assert_contains "$(jq_py "$LOG-doctor0.json" "${ROW}[\"fix\"]")" "dg auth new --network devnet --devnet-name"
+if $TESTNET_DEPLOYED; then
+  check "network row: the default, testnet, is the target (not 'no network chosen')" \
+    assert_contains "$(jq_py "$LOG-doctor0.json" "${ROW}[\"detail\"]")" "testnet, the default"
+else
+  check "network row: no network chosen yet" \
+    assert_contains "$(jq_py "$LOG-doctor0.json" "${ROW}[\"detail\"]")" "no network chosen yet"
+  check "its fix is dg auth new on a deployed network" \
+    assert_contains "$(jq_py "$LOG-doctor0.json" "${ROW}[\"fix\"]")" "dg auth new --network devnet --devnet-name"
+fi
 
 step "1. dg auth login records the network"
 # A write (it registers a key): run once, never retried.
@@ -171,8 +186,22 @@ else
 fi
 run "$LOG-bare.out" "$LOG-bare.err" "$A" "$ANON" -- _tmo git clone "$REMOTE" bare-clone
 check "a bare clone with nothing configured fails" test $? -ne 0
-check "with E702" assert_file_contains "$LOG-bare.err" "[E702]"
-check "whose fix is git config, not dg flags" assert_file_contains "$LOG-bare.err" "git config --global dash.network devnet"
-check "and never --devnet-name" assert_not_file_contains "$LOG-bare.err" "--devnet-name"
+if $TESTNET_DEPLOYED; then
+  # The bare clone reaches testnet, where this devnet repository does not exist: it fails, but
+  # not with the "forge-v2 isn't deployed on <network>" text of a network with no deployment.
+  check "a bare clone reaches testnet (not 'isn't deployed')" assert_not_file_contains "$LOG-bare.err" "isn't deployed on"
+  # That text (E702) is what a network with no deployment says: an explicit devnet that has none.
+  NONE="wsbnone$$"
+  run "$LOG-none.out" "$LOG-none.err" "$A" "$ANON" -- _tmo git clone -c dash.network=devnet -c "dash.devnetName=${NONE}" "$REMOTE" none-clone
+  check "a clone on a devnet with no deployment fails" test $? -ne 0
+  check "with E702, forge-v2 not deployed there" assert_file_contains "$LOG-none.err" "isn't deployed on devnet-${NONE}"
+  check "and the code E702" assert_file_contains "$LOG-none.err" "[E702]"
+  check "whose fix is git config, naming testnet" assert_file_contains "$LOG-none.err" "git config --global dash.network testnet"
+  check "and never --devnet-name" assert_not_file_contains "$LOG-none.err" "--devnet-name"
+else
+  check "with E702" assert_file_contains "$LOG-bare.err" "[E702]"
+  check "whose fix is git config, not dg flags" assert_file_contains "$LOG-bare.err" "git config --global dash.network devnet"
+  check "and never --devnet-name" assert_not_file_contains "$LOG-bare.err" "--devnet-name"
+fi
 
 finish_scenario
