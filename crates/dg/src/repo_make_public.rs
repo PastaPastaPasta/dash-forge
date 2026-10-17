@@ -1667,7 +1667,15 @@ fn push_public(
     todo: &[&(String, String)],
     allowed: &BTreeSet<String>,
 ) -> Result<()> {
-    let mut args: Vec<String> = vec!["push".into(), "-o".into(), "public".into()];
+    // Step 1's typed confirmation already covered the cost, and the flip cannot be undone: the
+    // helper's cost guard must not stop this push with E801 (or wait on a terminal) now.
+    let mut args: Vec<String> = vec![
+        "-c".into(),
+        "dash.confirm=never".into(),
+        "push".into(),
+        "-o".into(),
+        "public".into(),
+    ];
     for f in allowed {
         args.push("-o".into());
         args.push(format!("{}={f}", forge_secrets::ALLOW_PUSH_OPTION));

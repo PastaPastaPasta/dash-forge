@@ -157,7 +157,7 @@ step "4. plain git push on a terminal: git-remote-dash asks once"
 printf 'tty push %s\n' "$RUN_ID" >"$SRC/tty.txt"
 git -C "$SRC" add tty.txt && git -C "$SRC" commit -q -m "tty push ${RUN_ID}"
 TIP2="$(git -C "$SRC" rev-parse HEAD)"
-( cd "$SRC" && RUST_LOG=error NO_COLOR=1 run_tty "$LOG-push.tty" git push )
+( cd "$SRC" && RUST_LOG=error NO_COLOR=1 run_tty "$LOG-push.tty" git -c dash.confirm=never push )
 RC=$?
 check "git push exit 0" assert_eq "0" "$RC"
 check "the helper asked for the passphrase once" assert_eq "1" "$(prompts "$LOG-push.tty")"

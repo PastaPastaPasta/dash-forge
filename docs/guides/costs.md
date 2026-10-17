@@ -252,12 +252,12 @@ The audit trail grows forever: each ref update costs about 0.0006–0.0009 DASH 
 ## Seeing costs before you pay
 
 - **`dg` asks first.** Every command that writes asks before it writes (`[y/N]`; `dg init` and `dg repo create` ask `Proceed? [Y/n]` after showing the price) unless you pass `--yes`. `dg repo create`, `dg repack` and `dg repo reindex` show their price before the question. For other commands, use `dg cost estimate` before you write (in a repository it quotes a first push of it to `--backend platform`, `s3`, `ipfs`, `https` or `mixed`) and `dg cost prices` / `dg cost audit` to see the reference table or what you've already spent. With `--json` or no terminal, `dg` refuses to write without `--yes` ([`E802`](../errors.md#e802)).
-- **`git push` prints its estimate** before it writes to Platform, and what Platform actually charged when it is done. The estimate prices every write as the first of its kind, so it is an upper bound: 1.08–1.27x the charge on a first import of 1 MiB or more, up to about 1.4x on a tiny first push and 1.7x on a small later one. To make it ask:
+- **`git push` prints its estimate** before it writes to Platform, and what Platform actually charged when it is done. The estimate prices every write as the first of its kind, so it is an upper bound: 1.08–1.27x the charge on a first import of 1 MiB or more, up to about 1.4x on a tiny first push and 1.7x on a small later one. It asks before spending more than 0.05 DASH by default, and before storing more than 1 MiB on Platform when `dash.storage` is unset (Platform packs are permanent). To change that:
   ```sh
-  git config --global dash.costWarnThreshold 0.05   # ask above 0.05 DASH (what dg doctor --fix sets)
+  git config --global dash.costWarnThreshold 0.1    # ask above 0.1 DASH (default 0.05; `off` disables the threshold)
   git config --global dash.confirm auto             # auto | always | never | refuse
   ```
-  Without a terminal (CI), a push over the threshold stops with [`E801`](../errors.md#e801) rather than spending.
+  Without a terminal (CI), a push over the threshold stops with [`E801`](../errors.md#e801) rather than spending. Before it uploads anything, a push also checks that your balance and your key's remaining budget cover the estimate ([`E401`](../errors.md#e401) / [`E402`](../errors.md#e402)); a push resumed after an interruption quotes only the chunks left.
 - **`forge-import --dry-run`** estimates a whole GitHub import, and `--max-spend` caps it.
 - **`dg init` and `dg repo create`** stop before creating anything when no storage is chosen, and quote what Platform storage would cost for this repository ([E508](../errors.md#e508)).
 - **The web app** shows the price on every button that signs (repository, issue, comment, state change, review, member, star, release, key top-up), with refunds for deletes. After each write a toast shows the actual balance change. **Settings → Spend** keeps a local ledger in this browser: month and all-time totals by repository, and estimates that missed by more than 25 %.

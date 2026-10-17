@@ -132,10 +132,10 @@ Then check everything:
 
 ```sh
 dg auth status      # identity, key, budget left, expiry, balance, where the key is stored
-dg doctor --fix     # free, local fixes only: file modes, and a cost guard for git push
+dg doctor --fix     # free, local fixes only: file modes and config directories
 ```
 
-`dg doctor --fix` sets `git config --global dash.costWarnThreshold 0.05` if you have no threshold yet, so that a push asks before spending more than 0.05 DASH: a small push goes through (one with its packs on Platform is quoted about 0.012 DASH on bonsia), a megabyte of packs on Platform asks. It never spends anything.
+`git push` has a cost guard that is on by default: a push estimated above 0.05 DASH asks before it spends. A small push goes through (one with its packs on Platform is quoted about 0.012 DASH on bonsia), a megabyte of packs on Platform asks. `dg doctor` shows the guard in its `cost guard` row. `dg doctor --fix` only makes local fixes and never spends anything.
 
 Your identity id is the long base58 string, such as `ExampLeidentityExampLeidentityExampLeidentEx`. You will use it in repository addresses. A DPNS username is optional: `dg auth name register <label>`. It needs your identity's master key once, so pass the identity file with `--master <file>` or type the 12-word recovery phrase when asked; the limited key `dg auth login` stored cannot sign it. A name with a digit other than 0 or 1 cost about 0.0007 DASH on bonsia (`dg` quotes an upper bound of 0.001). Names work everywhere a repository address does: `forge.dashhq.org/alice/project`, `git clone dash://alice/project` and `dg … alice/project`.
 
@@ -273,10 +273,11 @@ dash: done · Platform charged ≈0.0040 DASH · remaining 0.0390 DASH · https:
 
 (The numbers are illustrative. Yours depend on the size of the push; a later push costs a little less than the first, and the estimate is an upper bound. See [Costs](costs.md).)
 
-A repository without `dash.storage` stores its pack bytes on Dash Platform, which costs about **0.33 DASH per MiB** measured (`git push` quotes up to 0.39, an upper bound; [Costs](costs.md)). If you set a cost guard (`dg doctor --fix` does), a push asks before it spends more than 0.05 DASH. To choose another threshold:
+A repository without `dash.storage` stores its pack bytes on Dash Platform, which costs about **0.33 DASH per MiB** measured (`git push` quotes up to 0.39, an upper bound; [Costs](costs.md)). A push asks before it spends more than 0.05 DASH, and before it stores more than 1 MiB on Platform when `dash.storage` is unset (a pack stored on Platform cannot be deleted). To choose another threshold, or turn it off:
 
 ```sh
 git config --global dash.costWarnThreshold 0.1
+git config --global dash.costWarnThreshold off
 ```
 
 Everything else is plain git: branches, tags, force-push, `git fetch`, `git clone --filter=blob:none`. jj works too. Shallow clones (`--depth`) are not supported and fail with [E205](../errors.md#e205).
