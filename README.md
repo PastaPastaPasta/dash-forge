@@ -5,7 +5,7 @@
 - **We host nothing.** No Forge server, account or database. You bring an identity and, if you like, a bucket. The chain proves the rest.
 - **Nothing to trust.** Every read is checked against a Platform proof, and every byte against its hash. The [verification guide](docs/guides/verify-forge.md) says exactly what is checked, and what is still trusted.
 - **No takedowns.** The contracts have no moderation. Nobody can delete your history or ban your identity.
-- **Plain git.** `git clone dash://…` and `git push` work unchanged. `dg` feels like `gh`. jj talks to git remotes, so it is expected to work too, but it has not been tested since July 2026: [report issues](https://github.com/PastaPastaPasta/dash-forge/issues).
+- **Plain git.** `git clone dash://…` and `git push` work unchanged. `dg` feels like `gh`. jj push and fetch work too (tested on testnet in October 2026, jj 0.46), with one catch for identity-id owners: see the [quick start](docs/guides/quick-start.md#jj).
 
 ## Status
 
@@ -65,7 +65,7 @@ Every guide (collaborating, identity and keys, costs, CI, verification and more)
 | Component | What it is |
 |---|---|
 | **forge protocol** | Data contracts. forge-v2 (Dash Platform v5): three shared contracts, forge-core, forge-collab and forge-community, in one contract group. Access control is membership documents checked at consensus ([forge-v2.md](docs/contracts/forge-v2.md)). |
-| **git-remote-dash** | Git remote helper (Rust). `git clone dash://<owner>/project` and `git push` just work. jj: expected to work, untested since July 2026. |
+| **git-remote-dash** | Git remote helper (Rust). `git clone dash://<owner>/project` and `git push` just work. jj: push and fetch work (tested on testnet in October 2026, jj 0.46); add the remote with git, not jj, when the owner is an identity id ([quick start](docs/guides/quick-start.md#jj)). |
 | **dg** | `gh`-replacement CLI (Rust, same workspace): `auth` (identities, limited keys on the OS keychain, DPNS names), `init`, repos, forks, stars, issues, labels, PRs with real merges, releases with assets, members, storage profiles, webhooks, `import`, cost estimates, repack, reseed, doctor. |
 | **forge web** | Static SPA (TypeScript, wasm SDK, in-browser repo materialization) deployable to IPFS. Built: browsing, commit and PR diffs, issues, opening PRs, inline review comments and verdicts, forks, merges from the browser (fast-forward, squash, and merge commits when the two sides changed different paths; the merge's pack goes to your storage, or to Platform if you allow it), releases, members, the storage wizard, limited-key sign-in with an encrypted vault, in-browser identity creation, Dash Wallet sign-in, Explore and notifications. Not yet: rebase merges, a browser merge when both sides changed the same file (use `dg pr merge`), editing files in the browser, and searching file contents. |
 | **forge relay** | Interchangeable Rust daemon, run by users, bridging Platform events to GitHub-shaped webhooks (CI/notifications), with chain-encrypted secrets and a durable retry queue. Trust = availability only. |
