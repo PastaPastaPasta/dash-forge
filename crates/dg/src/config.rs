@@ -7,7 +7,7 @@
 //! ```toml
 //! network = "devnet"            # testnet | mainnet | devnet
 //! devnet_name = "sakura"        # devnet only
-//! dapi_addresses = "68.67.122.86,68.67.122.87"     # devnet only; default: deployments file
+//! dapi_addresses = "68.67.122.86,68.67.122.87"     # testnet/devnet; default: deployments file
 //! trending = false              # `dg repo star` does not count toward Trending (default: true)
 //! islock_rpc = "https://trpc.digitalcash.dev"   # InstantSend lock source for `dg auth new`;
 //!                                               # "off" proves with chain locks only
@@ -27,7 +27,7 @@ pub struct Config {
     /// Devnet name (`sakura`) when `network = "devnet"`. Overridden by `--devnet-name`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub devnet_name: Option<String>,
-    /// Comma-separated devnet DAPI addresses. Overridden by `--dapi-addresses`.
+    /// Comma-separated testnet/devnet DAPI addresses. Overridden by `--dapi-addresses`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dapi_addresses: Option<String>,
     /// The default key source: an identity file path, or `keychain:dash-forge/<network>/<id>`

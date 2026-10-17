@@ -27,7 +27,7 @@ include!(concat!(env!("OUT_DIR"), "/deployments.rs"));
 pub const ENV_NETWORK: &str = "DASH_FORGE_NETWORK";
 /// Env var: the devnet name (`moutai`), used when the network is `devnet`.
 pub const ENV_DEVNET_NAME: &str = "DASH_FORGE_DEVNET_NAME";
-/// Env var: comma-separated devnet DAPI addresses (`host`, `host:port` or a full URL).
+/// Env var: comma-separated testnet/devnet DAPI addresses (`host`, `host:port` or a full URL).
 pub const ENV_DAPI_ADDRESSES: &str = "DASH_FORGE_DAPI_ADDRESSES";
 /// Env var: an explicit quorum service base URL for a devnet.
 pub const ENV_QUORUM_URL: &str = "DASH_FORGE_QUORUM_URL";
@@ -583,6 +583,9 @@ pub struct NetworkTarget {
     /// `dash.quorumUrl`): a self-hosted one, for when Dash's is down or blocked. A devnet keeps
     /// its own in [`Network::Devnet`].
     pub quorum_url: Option<String>,
+    /// Explicit testnet DAPI override; `None` uses the embedded deployment list.
+    /// Mainnet always keeps the SDK seeds; devnet addresses live in [`Network::Devnet`].
+    pub testnet_dapi_override: Option<Vec<String>>,
 }
 
 impl NetworkTarget {
@@ -593,17 +596,22 @@ impl NetworkTarget {
             network,
             v2,
             quorum_url: None,
+            testnet_dapi_override: None,
         })
     }
 
-    /// The configured devnet endpoints, or the embedded deployment's endpoints on testnet
-    /// and mainnet. An empty list selects SDK seeds (testnet/mainnet) or discovery (devnet).
+    /// The selected testnet/devnet endpoints. An empty testnet list selects SDK seeds;
+    /// an empty devnet list selects quorum-service discovery. Mainnet keeps SDK seeds.
     pub fn dapi_addresses(&self) -> Result<Vec<String>> {
         match &self.network {
+            Network::Testnet => match &self.testnet_dapi_override {
+                Some(addresses) => Ok(addresses.clone()),
+                None => Ok(deployment("testnet")?
+                    .map(|d| d.dapi_addresses)
+                    .unwrap_or_default()),
+            },
             Network::Devnet { dapi_addresses, .. } => Ok(dapi_addresses.clone()),
-            network => Ok(deployment(&network.key())?
-                .map(|d| d.dapi_addresses)
-                .unwrap_or_default()),
+            Network::Mainnet => Ok(Vec::new()),
         }
     }
 
@@ -650,6 +658,10 @@ impl NetworkTarget {
         for (k, v) in &mut vars {
             if *k == ENV_QUORUM_URL {
                 *v = self.quorum_base_url();
+            } else if *k == ENV_DAPI_ADDRESSES {
+                if let Some(addresses) = &self.testnet_dapi_override {
+                    *v = addresses.join(",");
+                }
             }
         }
         vars
@@ -664,7 +676,7 @@ pub struct NetworkSettings {
     pub network: Option<String>,
     /// Devnet name (only read when the resolved kind is `devnet`).
     pub devnet_name: Option<String>,
-    /// Comma-separated DAPI addresses (devnet only).
+    /// Comma-separated DAPI addresses (testnet and devnet).
     pub dapi_addresses: Option<String>,
     /// Quorum service base URL (any network; a devnet's default comes from its deployment).
     pub quorum_base_url: Option<String>,
@@ -949,6 +961,14 @@ impl NetworkSettings {
                 )))
             }
         };
+        let testnet_dapi_override = if network == Network::Testnet {
+            self.dapi_addresses
+                .as_deref()
+                .map(parse_dapi_addresses)
+                .transpose()?
+        } else {
+            None
+        };
         let v2 = recorded.and_then(|d| d.v2);
         let quorum_url = match network {
             Network::Devnet { .. } => None,
@@ -958,6 +978,7 @@ impl NetworkSettings {
             network,
             v2,
             quorum_url,
+            testnet_dapi_override,
         })
     }
 }
@@ -1466,7 +1487,7 @@ mod tests {
     }
 
     #[test]
-    fn devnet_fields_are_ignored_for_testnet() {
+    fn testnet_ignores_devnet_name_but_honors_address_override() {
         let t = NetworkSettings {
             network: Some("testnet".into()),
             devnet_name: Some("moutai".into()),
@@ -1476,6 +1497,56 @@ mod tests {
         .resolve()
         .unwrap();
         assert_eq!(t.network, Network::Testnet);
+        assert_eq!(t.dapi_addresses().unwrap(), ["https://10.0.0.1:1443"]);
+    }
+
+    #[test]
+    fn testnet_addresses_from_flags_git_and_env_override_the_deployment() {
+        for settings in [
+            NetworkSettings::from_flags(
+                Some("testnet".into()),
+                None,
+                Some("127.0.0.1:2443".into()),
+            ),
+            NetworkSettings::from_git_config(|key| {
+                (key == "dash.dapiAddresses").then(|| "127.0.0.1:2443".into())
+            }),
+            NetworkSettings::from_lookup(
+                |key| (key == ENV_DAPI_ADDRESSES).then(|| "127.0.0.1:2443".into()),
+                ENV_KEYS,
+            ),
+        ] {
+            let target = settings.resolve().unwrap();
+            assert_eq!(target.dapi_addresses().unwrap(), ["https://127.0.0.1:2443"]);
+            let child = target.env_vars();
+            assert_eq!(
+                child
+                    .iter()
+                    .find(|(key, _)| *key == ENV_DAPI_ADDRESSES)
+                    .unwrap()
+                    .1,
+                "https://127.0.0.1:2443"
+            );
+        }
+    }
+
+    #[test]
+    fn mainnet_ignores_deployment_and_override_addresses() {
+        let target = NetworkSettings {
+            network: Some("mainnet".into()),
+            dapi_addresses: Some("127.0.0.1:2443".into()),
+            ..Default::default()
+        }
+        .resolve()
+        .unwrap();
+        // The recorded addresses are a web quorum-key second source, not CLI seeds.
+        assert!(!deployment("mainnet")
+            .unwrap()
+            .unwrap()
+            .dapi_addresses
+            .is_empty());
+        assert!(target.testnet_dapi_override.is_none());
+        assert!(target.dapi_addresses().unwrap().is_empty());
     }
 
     #[test]

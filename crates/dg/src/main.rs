@@ -128,8 +128,8 @@ pub struct Cli {
     #[arg(long, global = true, value_name = "NAME")]
     pub devnet_name: Option<String>,
 
-    /// Devnet DAPI addresses, comma-separated `host[:port]` (default port 1443). Defaults
-    /// to the built-in list for that devnet.
+    /// Testnet/devnet DAPI addresses, comma-separated `host[:port]` (default port 1443). Defaults
+    /// to the network's embedded deployment list.
     #[arg(long, global = true, value_name = "ADDRS")]
     pub dapi_addresses: Option<String>,
 

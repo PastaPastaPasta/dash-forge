@@ -116,14 +116,14 @@ pub enum Error {
         network: String,
     },
 
-    /// A proof of absence or matching unproved refusals from multiple nodes for a recorded
-    /// Forge contract. Refusals alone do not establish network-wide absence.
+    /// Platform proved a recorded Forge contract absent. Unproved node refusals alone
+    /// must remain retryable Platform errors.
     #[error("forge contracts not found on {network}: {detail}")]
     ContractsMissing {
         /// The network as a person reads it (`devnet sakura`, `mainnet`); `user_error` tells a
         /// devnet by the `devnet ` prefix.
         network: String,
-        /// What was observed: a proof of absence, or the number of nodes that refused it.
+        /// The missing contract and its proof of absence.
         detail: String,
     },
 

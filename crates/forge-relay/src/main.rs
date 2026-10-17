@@ -78,8 +78,8 @@ struct RunArgs {
     #[arg(long = "devnet-name")]
     devnet_name: Option<String>,
 
-    /// Devnet DAPI addresses, comma-separated `host[:port]` (default port 1443). Defaults
-    /// to the list in `forge-contracts/deployments/devnet-<name>.json`.
+    /// Testnet/devnet DAPI addresses, comma-separated `host[:port]` (default port 1443). Defaults
+    /// to the network's embedded deployment list.
     #[arg(long = "dapi-addresses")]
     dapi_addresses: Option<String>,
 

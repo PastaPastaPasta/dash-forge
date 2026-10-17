@@ -210,7 +210,7 @@ prints the network, the forge-core, forge-collab and forge-community ids, and wh
 
 ### Selecting a network
 
-| Tool | Network | Devnet name | Devnet DAPI addresses |
+| Tool | Network | Devnet name | DAPI addresses (testnet/devnet) |
 |---|---|---|---|
 | `dg` (flags) | `--network testnet\|mainnet\|devnet` | `--devnet-name sakura` | `--dapi-addresses a,b` |
 | `dg` (`~/.config/dash-forge/config.toml`) | `network` | `devnet_name` | `dapi_addresses` |
@@ -245,8 +245,16 @@ A devnet's quorum keys come from `https://quorums.<name>.networks.dash.org`. Ove
 URL with `--quorum-url`, `DASH_FORGE_QUORUM_URL` or git config `dash.quorumUrl` (forge-web:
 `NEXT_PUBLIC_QUORUM_URL` at build time, or Settings → Quorum service), or with
 `quorumBaseUrl` in the deployment file. The same settings choose another quorum service on
-testnet and mainnet, where it must be `https://`. The
-devnet's DAPI addresses are taken from the first of these that is set:
+testnet and mainnet, where it must be `https://`.
+
+On testnet, Rust clients take DAPI addresses from `--dapi-addresses`, config
+(`dapi_addresses` / `dash.dapiAddresses`) or `DASH_FORGE_DAPI_ADDRESSES`, following the
+precedence above. Without an override they use `dapiAddresses` in `deployments/testnet.json`;
+an empty list falls back to the SDK seeds. This override is useful if the deployment's
+node list changes before the next release. Mainnet keeps the SDK's built-in seeds.
+`dg doctor` reports which list is in use.
+
+A devnet's DAPI addresses are taken from the first of these that is set:
 
 1. the flag, config or env setting;
 2. `dapiAddresses` in `deployments/devnet-<name>.json`, else the `v2.devnet.addresses` that
@@ -256,6 +264,7 @@ devnet's DAPI addresses are taken from the first of these that is set:
 Each address is `host`, `host:port` or `https://host:port`. The port defaults to 1443.
 
 ```sh
+dg --network testnet --dapi-addresses 127.0.0.1:1443 doctor  # explicit testnet override
 dg --devnet-name sakura doctor                       # sakura, addresses from devnet-sakura.json
 dg --network devnet --devnet-name sakura --dapi-addresses 68.67.122.86,68.67.122.87 repo list
 git config dash.network devnet && git config dash.devnetName sakura   # per repo
