@@ -182,12 +182,15 @@ _dg_read() {
 # recognize (and ignore) them. A clone's destination is cleared first when it is under
 # WORKROOT: git refuses a non-empty one, which is how 07's retry used to FAIL after a
 # killed first attempt instead of retrying.
+# The helper's cost guard is on by default (asks above 0.05 DASH, and before more than 1 MiB
+# goes to Platform with no dash.storage), and these runs are unattended: `dash.confirm=never`
+# accepts the price, as `dg --yes` does, so no push stops at E801 or waits on /dev/tty.
 git_dash() {
   local id="$1" logf="$2"; shift 2
   local dest="${!#}"
   [[ " $* " == *" clone "* && -n "${WORKROOT:-}" && "$dest" == "${WORKROOT}/"* ]] && rm -rf "$dest"
   DASH_FORGE_KEY="$id" RUST_LOG="${RUST_LOG:-warn}" NO_COLOR=1 \
-    _tmo git "$@" >"${logf}.out" 2>"${logf}.err"
+    _tmo git -c dash.confirm=never "$@" >"${logf}.out" 2>"${logf}.err"
 }
 
 # --- error classification ----------------------------------------------------

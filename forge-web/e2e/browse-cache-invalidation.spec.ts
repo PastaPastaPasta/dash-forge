@@ -61,7 +61,7 @@ function dg(who: string, ...args: string[]): Record<string, unknown> {
 
 /** `git push` as `who`; throws with the helper's output on failure. */
 function push(who: string, refspec: string): void {
-  const r = spawnSync('git', ['push', REMOTE, refspec], { env: { ...env(who), RUST_LOG: 'warn' }, cwd: SRC, encoding: 'utf8', timeout: 300_000 })
+  const r = spawnSync('git', ['-c', 'dash.confirm=never', 'push', REMOTE, refspec], { env: { ...env(who), RUST_LOG: 'warn' }, cwd: SRC, encoding: 'utf8', timeout: 300_000 })
   if (r.status !== 0) throw new Error(`push ${refspec} as ${who} failed:\n${r.stdout}${r.stderr}`)
 }
 

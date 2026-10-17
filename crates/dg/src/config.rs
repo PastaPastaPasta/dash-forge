@@ -9,6 +9,8 @@
 //! devnet_name = "sakura"        # devnet only
 //! dapi_addresses = "68.67.122.86,68.67.122.87"     # devnet only; default: deployments file
 //! trending = false              # `dg repo star` does not count toward Trending (default: true)
+//! islock_rpc = "https://trpc.digitalcash.dev"   # InstantSend lock source for `dg auth new`;
+//!                                               # "off" proves with chain locks only
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -41,6 +43,11 @@ pub struct Config {
     /// `--no-trending` overrides it for one star.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trending: Option<bool>,
+    /// The JSON-RPC (`getislocks`) `dg auth new` asks for an InstantSend proof of its asset
+    /// lock, or `off` for chain locks only. Unset: the network's default (testnet's is the
+    /// third-party `https://trpc.digitalcash.dev`). Overridden by `dg auth new --islock-rpc`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub islock_rpc: Option<String>,
 }
 
 /// The config directory: `$XDG_CONFIG_HOME/dash-forge`, else `~/.config/dash-forge`.

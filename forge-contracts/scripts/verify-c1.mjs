@@ -26,7 +26,7 @@
 //      the seeded order: MEMBER and THIRD beat the first repo, MEMBER the second.
 // Writes only to repos it creates (`c1-verify-<run>`), about 0.02 DASH per identity.
 import {
-  FUSED_STAR, VIS, checkOutcome, contractOn, expectRefused, idBytes, loadIdentity, log, membership, openSession, parseArgs, refusalOf, runIfMain, until,
+  VIS, checkOutcome, contractOn, expectRefused, idBytes, loadIdentity, log, membership, openSession, parseArgs, refusalOf, runIfMain, until,
 } from './lib/seed-io.mjs';
 
 const MOVED = {
@@ -38,7 +38,7 @@ const MOVED = {
 export async function main(argv, injected) {
   const a = parseArgs(argv);
   if (!a.owner || !a.member || !a.third) throw new Error('usage: --owner <A> --member <B> --third <C>');
-  const { net, evo, write: create, read, retry } = await openSession(a, injected);
+  const { net, evo, write: create, read, retry, shape } = await openSession(a, injected);
   const { ids } = net;
   const OWNER = loadIdentity(evo, a.owner, 'OWNER');
   const MEMBER = loadIdentity(evo, a.member, 'MEMBER');
@@ -124,9 +124,9 @@ export async function main(argv, injected) {
   check('count on topic.byName counts the tagged repo', counted);
 
   // 7. ranked trending with `oldest`: two beats on the first repo, one on the second
-  const beatType = FUSED_STAR ? 'star' : 'starBeat';
+  const beatType = shape.fusedStar ? 'star' : 'starBeat';
   for (const [w, id] of [[MEMBER, R], [THIRD, R], [MEMBER, idBytes(repo2Id)]]) {
-    await create(w, beatType, FUSED_STAR ? { repoId: id } : { repoId: id, vis: VIS, repoOwner: idBytes(OWNER.id) });
+    await create(w, beatType, shape.fusedStar ? { repoId: id } : { repoId: id, vis: VIS, repoOwner: idBytes(OWNER.id) });
   }
   // The scratch repos' rows of the ranking, in ranked order: [repoId, count].
   let mine = [];
