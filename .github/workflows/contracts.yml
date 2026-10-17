@@ -21,22 +21,6 @@ on:
   # workflow that a path filter keeps from starting never reports it, which blocks the merge forever.
   # The `changes` job applies the path list at job level instead (INFR-V-03).
   pull_request:
-    paths:
-      - 'forge-contracts/contracts/**'
-      - 'forge-contracts/schema/**'
-      - 'forge-contracts/vectors/rc1/**'
-      - 'forge-contracts/scripts/**'
-      - 'forge-contracts/deployments/**'
-      - 'tools/contract-validate/**'
-      - '.github/workflows/contracts.yml'
-  push:
-    branches: [master]
-    paths:
-      - 'forge-contracts/contracts/**'
-      - 'forge-contracts/schema/**'
-      - 'forge-contracts/vectors/rc1/**'
-      - 'forge-contracts/scripts/**'
-      - 'forge-contracts/deployments/**'
   push:
     branches: [master]
     paths:
