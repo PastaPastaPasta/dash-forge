@@ -8,13 +8,15 @@
 //   node mint.mjs balance --identity <file>
 //   node mint.mjs verify --dir <dir>
 //   node mint.mjs transfer --from <file> --to <file> [--amount 0.2]
+//   node mint.mjs restore --identity <escrowed file> [--network ...] [--expect-id <id>] [--out <file>]
+//                 (after a Platform reset that kept Core: the same identity id from its asset lock)
 //
 // Funding: --funding faucet (testnet default) | fund-from-key (devnet default;
 // --funding-key-file <path> or FORGE_DEVNET_FUNDING_WIF) | manual (alias --skip-faucet).
 //
 // See README.md for the full flag reference, rate-limit strategy, and security notes.
 import { existsSync, readFileSync, readdirSync, unlinkSync } from 'node:fs';
-import { resolve, join } from 'node:path';
+import { resolve, join, dirname, basename } from 'node:path';
 import { resolveNetwork, networkFromName, dashToDuffs } from './src/config.mjs';
 import { ChainClient } from './src/chain.mjs';
 import { depositBalance, waitForDeposit } from './src/deposit.mjs';
@@ -36,6 +38,7 @@ import { resolveMnemonicArg } from './src/mnemonic-arg.mjs';
 import { generateKeyPair, getPublicKey, publicKeyToAddress } from './src/keys.mjs';
 import { privateKeyToWif, wifToPrivateKey } from './src/bytes.mjs';
 import * as platform from './src/platform.mjs';
+import { restoreIdentity } from './src/restore.mjs';
 
 const POOL_ROLES = ['OWNER', 'MAINTAINER', 'COLLAB', 'CONTRIB', 'FROZEN', 'CI-RUNNER', 'RELAY', 'DEPLOYER', 'TREASURY'];
 const FUNDING_MODES = ['faucet', 'fund-from-key', 'manual'];
@@ -488,7 +491,30 @@ async function cmdTransfer(args) {
   return { network: network.name, from: sender.identityId, to: recipient.identityId, amountCredits, senderBalance: balance };
 }
 
-const COMMANDS = { pool: cmdPool, topup: cmdTopup, balance: cmdBalance, verify: cmdVerify, transfer: cmdTransfer };
+// --- re-create an escrowed identity after a Platform reset (same id, from its asset lock) ---
+async function cmdRestore(args) {
+  const file = str(args.identity);
+  if (!file) throw new Error('--identity <escrowed identity file> is required');
+  const record = readJson(file);
+  if ([str(args.network), record.network].includes('mainnet')) throw new Error('mainnet restore is not supported by mint-identity yet (it has no mainnet network)');
+  const network = networkForRecord(args, record, file);
+  // Written next to the input unless --out says otherwise; an existing file is kept (and must hold this identity)
+  const out = resolve(str(args.out) ?? join(dirname(resolve(file)), `${basename(file).replace(/(\.restored)?(\.identity)?\.json$/, '')}.restored.identity.json`));
+  // (the default for a file restored once already, X.restored.identity.json, is that file: it is kept as is)
+  if (str(args.out) && out === resolve(file)) throw new Error('--out must not be the escrowed file itself');
+  const kept = existsSync(out) ? readJson(out) : null;
+  if (kept && kept.identityId !== record.identityId) throw new Error(`${out} exists and holds another identity; pass another --out`);
+  const result = await restoreIdentity({ record, network, expectId: str(args['expect-id']), log });
+  if (!kept) {
+    writeIdentityFile(out, { ...buildIdentityBackup(result.role, network), created: record.created ?? null, restoredAt: new Date().toISOString() });
+    log(`[restore] Wrote ${out}`);
+  } else {
+    log(`[restore] ${out} already holds ${record.identityId}; left as is`);
+  }
+  return { network: network.name, identityId: result.identityId, status: result.status, balance: result.balance, assetLockTxid: record.txid, assetLockHeight: result.coreHeight, file: out };
+}
+
+const COMMANDS = { pool: cmdPool, topup: cmdTopup, balance: cmdBalance, verify: cmdVerify, transfer: cmdTransfer, restore: cmdRestore };
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
