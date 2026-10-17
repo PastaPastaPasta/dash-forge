@@ -37,6 +37,17 @@ LOG="${WORKROOT}/s10"
 jq_py() { python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print($2)" "$1"; }
 dg_write() { local id="$1" out="$2"; shift 2; dg_as "$id" --yes --json "$@" >"${out}.json" 2>"${out}.err"; }
 fail_with() { cat "$1.err" "$1.json" >&2 2>/dev/null; is_flake "$1.err" && skip_scenario "$2 flaked"; bad "$2 failed"; finish_scenario; }
+merge_landed() { # merge_landed <merge oid>: wait for the recorded merge and base tip to read back
+  local oid="$1" _attempt
+  # A successful merge may report merge_recorded while its immediate read lags a block.
+  # Confirm it with reads only; never repeat the merge or pay for another write.
+  for _attempt in $(seq 1 8); do
+    dg_read_retry "$ID_OWNER" "$LOG-merged-view.json" "$LOG-merged-view.err" --json pr view "$REPO" "$N" \
+      && [[ "$(jq_py "$LOG-merged-view.json" 'd["state"] + " " + (d["baseTip"] or "")')" == "merged $oid" ]] && return 0
+    sleep 3
+  done
+  return 1
+}
 
 step "OWNER pushes the base branch ${BASE}"
 seed_tiny_repo "$SRC" "$BASE" >/dev/null
@@ -129,10 +140,9 @@ check "exactly OWNER's approval counts" test "$ap" -eq 0
 step "OWNER merges (merge commit, push to base, merge transition)"
 if dg_write "$ID_OWNER" "$LOG-merge" pr merge "$REPO" "$N"; then
   cat "$LOG-merge.err" >&2
-  check "reads merged" assert_eq "True" "$(jq_py "$LOG-merge.json" 'd["merged"]')"
   MERGE="$(jq_py "$LOG-merge.json" 'd["mergeOid"]')"
+  check "reads merged with the merge commit on the base" merge_landed "$MERGE"
   check "the steps ran in order" assert_eq "fetch,merge,push,record" "$(jq_py "$LOG-merge.json" '",".join(s["step"] for s in d["steps"])')"
-  check "the merge commit is on the base" assert_eq "True" "$(jq_py "$LOG-merge.json" 'd["mergeOnBase"]')"
   step "the base tip is a merge of the old base and the PR head"
   VER="${WORKROOT}/s10-verify"
   git_dash_retry "$ID_OWNER" "$LOG-vclone" clone -q --no-checkout -b "$BASE" "$E2E_REMOTE" "$VER" || fail_with "$LOG-vclone" "verify clone"
