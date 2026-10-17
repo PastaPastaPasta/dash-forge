@@ -53,6 +53,7 @@ import {
   workflowSecrets,
   workflowYaml,
   type GithubRepo,
+  type LicenseNotice,
   type MirrorStorage,
   type UsableMirrorStorage,
 } from '@/lib/mirror/wizard'
@@ -164,24 +165,29 @@ export function GithubStep({ initial, onDone }: { initial: GithubRepo | null; on
  * in to GitHub, so it cannot tell whether the repository is the person's own: it always asks.
  */
 function LicenseLine({ repo }: { repo: GithubRepo }): JSX.Element {
-  const notice = licenseNotice(repo)
   return (
     <div className="space-y-1" data-testid="mirror-license">
-      {notice.unread ? (
-        <Hint tone="caution">This repository was checked before its licence was read. Check on GitHub again to see it.</Hint>
-      ) : notice.label !== null && !notice.warn ? (
-        <p className="text-dense text-anvil-600 dark:text-anvil-300">
-          Licence detected by GitHub: <span className="font-mono">{notice.label}</span>
-        </p>
-      ) : (
-        <Hint tone="caution">
-          {notice.label === null
-            ? 'GitHub detects no licence for this repository. Without one you may have no right to copy it.'
-            : 'GitHub detects a licence it cannot name for this repository. Read it before you copy.'}
-        </Hint>
-      )}
+      <LicenseStatus notice={licenseNotice(repo)} />
       <Hint>Mirror a repository you own, or one whose licence lets you copy it. The copy, and every issue and comment in it, is public on Dash Platform and cannot be deleted from it.</Hint>
     </div>
+  )
+}
+
+function LicenseStatus({ notice }: { notice: LicenseNotice }): JSX.Element {
+  if (notice.unread) return <Hint tone="caution">This repository was checked before its licence was read. Check on GitHub again to see it.</Hint>
+  if (notice.label !== null && !notice.warn) {
+    return (
+      <p className="text-dense text-anvil-600 dark:text-anvil-300">
+        Licence detected by GitHub: <span className="font-mono">{notice.label}</span>
+      </p>
+    )
+  }
+  return (
+    <Hint tone="caution">
+      {notice.label === null
+        ? 'GitHub detects no licence for this repository. Without one you may have no right to copy it.'
+        : 'GitHub detects a licence it cannot name for this repository. Read it before you copy.'}
+    </Hint>
   )
 }
 

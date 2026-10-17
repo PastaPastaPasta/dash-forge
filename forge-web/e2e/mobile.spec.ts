@@ -1,7 +1,10 @@
 import { test, expect, devices, type Browser, type Page } from '@playwright/test'
 import { existsSync, readFileSync } from 'node:fs'
-import { atRoute, expectLanded, loadSeedPulls, PASSPHRASE, repoUrl, waitForRepoResolved } from './helpers'
+import { atRoute, expectLanded, loadSeedPulls, PASSPHRASE, repoUrl, waitForRepoResolved, skipWithoutFixture } from './helpers'
 import { quorumGuard } from './quorum-sync'
+
+// needs the read fixture seeded on this network (e2e/network.ts)
+skipWithoutFixture()
 
 // Not inside the devnet's quorum-service lag (#212): these tests wait a fixed time for a page's
 // Platform content.

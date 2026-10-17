@@ -1,6 +1,9 @@
 import { test, expect, type Page } from '@playwright/test'
-import { atRoute, DEMO, ownerIs, repoUrl, waitForRepoResolved } from './helpers'
+import { atRoute, DEMO, ownerIs, repoUrl, waitForRepoResolved, skipWithoutFixture } from './helpers'
 import { quorumGuardLong, quorumHeldMs } from './quorum-sync'
+
+// needs the read fixture seeded on this network (e2e/network.ts)
+skipWithoutFixture()
 
 // Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
 test.beforeEach(quorumGuardLong)

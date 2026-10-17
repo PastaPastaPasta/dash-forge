@@ -7,7 +7,8 @@
 //
 //   (cd forge-contracts/sdk-v2 && npm ci)
 //   node forge-contracts/scripts/mv-live.mjs --record <scratch-record.json> --identities <dir> \
-//        [--devnet-name sakura] [--report <file.json>] [--only <group,...>] [--n 4] [--state <file>]
+//        [--network devnet|testnet] [--devnet-name sakura] [--report <file.json>] [--only <group,...>] [--n 4] [--state <file>]
+//   node forge-contracts/scripts/mv-live.mjs --network testnet --live-target --identities <dir>   # the smoke subset, see below
 //   node forge-contracts/scripts/mv-live.mjs --self-test     # offline: the sealing helpers against
 //                                                            # tools/private-repos-vectors constants
 //
@@ -17,11 +18,32 @@
 // 3, 4 and 4; `stranger` is never a member. A group that changes a role does it on a repo of its
 // own.
 //
-// The scratch record must not be the network's live deployment (its forge-core and group are
-// refused). The live set is only read, except by the `fees` group, which writes the same
-// documents to a repo of its own on the live contracts to compare what a write costs there, and
+// Target (lib/target.mjs): --network devnet|testnet (default devnet; --devnet-name for a
+// devnet, default sakura) names the network and its record, deployments/<network>.json as
+// deploy-v2.mjs resolves it; --record is the scratch registration under test. The scratch record
+// must not be the network's live deployment (its forge-core and group are refused, and a copy of the
+// live record counts as live).
+//
+// Production policy (release plan WS-D, QA-14): on testnet and mainnet the network's own record is the
+// PRODUCTION registration, and what is written there can never be deleted. The full suite runs only
+// on a scratch registration. It refuses the live record unless --live-target is given, and then runs
+// only the `smoke` group, below. The `fees` group writes to the live contracts to compare costs, so
+// it runs on a devnet only, never on testnet or mainnet (use fees2 with --baseline, or
+// rc1-fee-probe, on scratch sets). On a devnet the live set is only read, except by `fees` and
 // one `layout` case: a group-bound key signing a live forge-community `watch` of a repo that does
-// not exist, which the signature check refuses (20014) and which could not land anyway (40120).
+// not exist, which the signature check refuses (20014) and which could not land anyway (40120);
+// that case is not run on testnet or mainnet.
+//
+// --live-target (the C6 smoke of the release plan, qa.md C6): one accepted and one refused write per
+// rule family it covers, into repos the owner identity creates for the run (`forge-qa-smoke-<run>`),
+// with the `owner` and `stranger` identities only (mint them labelled FORGE-QA, FORGE-QA-OUTSIDER;
+// the July pool is refused). Covered: L1 (aud), L2 (mRole verdicts), C2 (role schema), D44 (forge-meta
+// labels). TODO for the lead, families not yet in `smoke` because each needs more identities or a
+// longer setup than an owner and a stranger: C1/L3/C4 (a converted repo: needs the convert flow),
+// C2/L4 accepted side and bot wraps (bot), C3 (maintainer-only manifest kinds), M1 (members-only
+// check runs), M2 (triage allow-list: triage), M3, M4, B1 (bot push grants: bot, maint2), the R-xx
+// items of `ma2`, and fixed repos instead of a fresh repo per run (QA-14 asks for fixed repos:
+// needs a lookup by owner and name before create).
 //
 // Groups (DESIGN §8.2 rows; §8.3 items):
 //   l1      L1 `aud` (rows 1-3): a stranger's members-only post, any stranger write to a private
@@ -62,6 +84,8 @@
 //           on a scratch set that `deploy-v2.mjs --update all --contracts <dir>/contracts` already
 //           loosened (`vectors.py --mainnet --out <tmp> --guards <dir>`): documents only the loosened
 //           bounds admit, each refused 10422 by its guard, beside the controls the loosened set admits
+//   smoke   the live-target subset (see --live-target above): owner and stranger only, also runnable on a
+//           scratch set to rehearse it
 //   fees2   the M-A2 fee probes (R-03, R-04, R-06): an approval, a members-only comment and a bot
 //           push on this set against the same on --baseline <record>, a scratch registration of
 //           the rev 4.1 set (`build.py --mainnet` before M-A2), with a stranger's comment verdict
@@ -84,13 +108,12 @@ import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEvoSdk } from './deploy-v2.mjs';
+import { addressesFor, assertNotJulyIdentity, assertScratchBaseline, checkFlags, refuseMainnet, refuseProduction, resolveTarget, sdkOptions } from './lib/target.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = Object.fromEntries(process.argv.slice(2).reduce((acc, t, i, a) => (t.startsWith('--') ? [...acc, [t.slice(2), a[i + 1] && !a[i + 1].startsWith('--') ? a[i + 1] : true]] : acc), []));
-const devnetName = args['devnet-name'] || 'sakura';
 // fees2's comparison set: another scratch record (the rev 4.1 build), written to like this one
 const baselineFile = args.baseline ? realpathSync(String(args.baseline)) : null;
-const only = args.only ? new Set(String(args.only).split(',')) : null;
 const N = Number(args.n ?? 4);
 const log = (m) => console.error(`${new Date().toISOString().slice(11, 19)} ${m}`);
 // ---------------- sealing (docs/security/private-repos.md §2-§4, §18.3) ----------------
@@ -166,17 +189,49 @@ if (args['self-test']) {
   process.exit(bad.length ? 1 : 0);
 }
 
-if (!args.record || !args.identities) {
-  console.error('usage: mv-live.mjs --record <scratch-record.json> --identities <dir> [--devnet-name sakura] [--addresses <dapi,...>] [--report <file>] [--only <groups>] [--n 4] [--state <file>]\n       mv-live.mjs --self-test');
+const usage = 'usage: mv-live.mjs --record <scratch-record.json> --identities <dir> [--network devnet|testnet] [--devnet-name sakura] [--addresses <dapi,...>] [--report <file>] [--only <groups>] [--n 4] [--state <file>]\n       mv-live.mjs --network testnet --live-target --identities <dir> [--report <file>]   # the smoke subset on the live registration\n       mv-live.mjs --self-test';
+if (args.help) {
+  console.log(usage);
+  process.exit(0);
+}
+let target;
+try {
+  checkFlags(process.argv.slice(2), { values: ['network', 'devnet-name', 'record', 'identities', 'addresses', 'report', 'only', 'n', 'state', 'baseline'], bools: ['live-target', 'self-test', 'help'] });
+  refuseMainnet(args.network, 'mv-live');
+  target = resolveTarget(args, { liveTargetFlag: true });
+  if (!target.liveTarget) {
+    if (!target.scratch) {
+      throw new Error(target.production
+        ? `refusing to run against a live registration (no --record): ${target.liveFile} is the live ${target.network} registration, and this suite writes permanent documents (QA-14). Pass --record <scratch-record.json>, or --live-target for the smoke subset`
+        : '--record <scratch-record.json> is required');
+    }
+    refuseProduction(target, 'The smoke subset on the live registration needs --live-target (no --record).');
+  }
+} catch (e) {
+  console.error(`mv-live: ${e.message}\n${usage}`);
+  process.exit(2);
+}
+if (typeof args.identities !== 'string') {
+  console.error(`mv-live: --identities <dir> is required\n${usage}`);
+  process.exit(2);
+}
+const { network, live, liveTarget, record: rec, recordFile: recPath } = target;
+const PRODUCTION = target.network !== 'devnet';
+// --live-target runs the smoke group and nothing else
+const LIVE_SMOKE = new Set(['smoke']);
+const only = liveTarget ? LIVE_SMOKE : args.only ? new Set(String(args.only).split(',')) : null;
+if (liveTarget) {
+  const bad = args.only ? String(args.only).split(',').filter((g) => !LIVE_SMOKE.has(g)) : [];
+  if (bad.length) {
+    console.error(`mv-live: --live-target runs only the ${[...LIVE_SMOKE].join(', ')} group, not ${bad.join(', ')}; every other group (fees included) needs a scratch registration (--record)\n${usage}`);
+    process.exit(2);
+  }
+}
+if (PRODUCTION && args.only && String(args.only).split(',').includes('fees')) {
+  console.error(`mv-live: the fees group writes to the live contracts of ${network} to compare costs; it never runs on ${network} (QA-14). Use fees2 --baseline <scratch record> or rc1-fee-probe on scratch sets\n${usage}`);
   process.exit(2);
 }
 
-// The scratch set, and the live set (read only; the fees group writes documents to it)
-const liveFile = join(ROOT, 'deployments', `devnet-${devnetName}.json`);
-const live = JSON.parse(readFileSync(liveFile, 'utf8'));
-const recPath = realpathSync(String(args.record));
-if (recPath.toLowerCase().startsWith(realpathSync(join(ROOT, 'deployments')).toLowerCase())) throw new Error('--record must be a scratch record, not a file under forge-contracts/deployments/');
-const rec = JSON.parse(readFileSync(recPath, 'utf8'));
 const CORE = rec.v2?.forgeCore?.contractId;
 const COLLAB = rec.v2?.forgeCollab?.contractId;
 const COMM = rec.v2?.forgeCommunity?.contractId;
@@ -184,13 +239,16 @@ const META = rec.v2?.forgeMeta?.contractId;
 const GROUP = rec.v2?.contractGroup?.id ?? rec.v2?.forgeCore?.contractGroupId;
 if (!CORE || !COLLAB || !COMM || !META || !GROUP) throw new Error(`${recPath} records no four-contract set (forge-core, -collab, -community, -meta and the group)`);
 const LIVE = { core: live.v2?.forgeCore?.contractId, collab: live.v2?.forgeCollab?.contractId, community: live.v2?.forgeCommunity?.contractId };
-if (CORE === LIVE.core || GROUP === (live.v2?.contractGroup?.id ?? live.v2?.forgeCore?.contractGroupId)) throw new Error('the scratch record names the live forge-core or group');
-const addresses = args.addresses ? String(args.addresses).split(',') : rec.dapiAddresses ?? live.dapiAddresses;
+// A scratch record carrying any id of a production registration was refused above (target.production); a devnet's copy of its own live set is refused here
+if (!liveTarget && target.copiesLive) throw new Error('the scratch record carries an id of the live registration (a contract, the group, or a superseded one)');
+if (liveTarget) log(`LIVE TARGET ${target.label}: smoke writes to ${CORE} are permanent and public; owner and stranger identities from ${args.identities}`);
+else if (target.scratch) log(`scratch registration ${recPath} on ${target.label}`);
+const addresses = addressesFor(target, args);
 
 const evo = await loadEvoSdk();
 const { EvoSDK, Document, IdentityPublicKey, IdentityPublicKeyInCreation, IdentitySigner, PrivateKey, Identifier, ContractBounds } = evo;
 const connect = async () => {
-  const fresh = new EvoSDK({ network: 'devnet', devnetName, trusted: true, addresses, settings: { timeoutMs: 60000 } });
+  const fresh = new EvoSDK(sdkOptions(target, { addresses, settings: { timeoutMs: 60000 } }));
   await fresh.connect();
   return fresh;
 };
@@ -202,6 +260,7 @@ const version = sdk.version();
 const identityFile = (name) => join(String(args.identities), `${name}.identity.json`);
 function loadIdentity(name) {
   const rec = JSON.parse(readFileSync(identityFile(name), 'utf8'));
+  assertNotJulyIdentity(target, rec.identityId, identityFile(name));
   const k = rec.identityKeys.find((x) => x.purpose === 'AUTHENTICATION' && x.securityLevel === 'HIGH');
   const enc = rec.identityKeys.find((x) => x.purpose === 'ENCRYPTION');
   const identityKey = new IdentityPublicKey({ keyId: k.id, purpose: k.purpose, securityLevel: k.securityLevel, keyType: k.keyType, isReadOnly: false, data: Buffer.from(k.publicKeyHex, 'hex') });
@@ -209,13 +268,15 @@ function loadIdentity(name) {
   signer.addKey(PrivateKey.fromWIF(k.privateKeyWif));
   return { name, id: rec.identityId, identityKey, signer, encKeyId: enc?.id };
 }
+// --live-target uses two identities (the smoke needs no more); the groups that use the others do not run
+const maybe = (name) => (liveTarget ? null : loadIdentity(name));
 const O = loadIdentity('owner');
-const M2 = loadIdentity('maint2');
-const W = loadIdentity('writer');
-const T = loadIdentity('triage');
-const RD = loadIdentity('reader');
-const B = loadIdentity('bot');
-const B2 = loadIdentity('bot2');
+const M2 = maybe('maint2');
+const W = maybe('writer');
+const T = maybe('triage');
+const RD = maybe('reader');
+const B = maybe('bot');
+const B2 = maybe('bot2');
 const S = loadIdentity('stranger');
 
 const id = (b58) => Buffer.from(Identifier.fromBase58(String(b58)).toBytes());
@@ -484,8 +545,8 @@ async function readBack(item, label, contract, type, doc) {
     record({ item, label, expect: 'read back', got: `error ${codeOf(e)}`, note: String(e?.message ?? e).slice(0, 300), pass: false });
   }
 }
-// fees writes to the live set, and convert/everything are steps of one case: each runs only when named
-const EXPLICIT = new Set(['fees', 'fees2', 'convert', 'everything', 'guards']);
+// fees writes to the live set, convert/everything are steps of one case, smoke is the live-target subset: each runs only when named
+const EXPLICIT = new Set(['fees', 'fees2', 'convert', 'everything', 'guards', 'smoke']);
 const want = (group) => (only === null ? !EXPLICIT.has(group) : only.has(group));
 // A setup write that failed stops the run (with its report): the cases after it would mean nothing
 const need = (doc, what) => {
@@ -992,9 +1053,14 @@ try {
       const fo2 = await ok(I, "a forge-meta write (label) signed by the writer's group-bound key", W, 'label', { repoId: R, name: `g-${tag}`, r: 1 }, bound);
       await readBack(I, 'the group-key label read back', META, 'label', fo2);
       await ok(I, 'a forge-core write (ref update) signed by the same key', W, 'refUpdate', { repoId: R, refNameHash: refHash('refs/heads/g'), refName: 'refs/heads/g', newOid: bytes(20, 1), vis: 'public' }, bound);
-      await no(I, 'the same key signing for a contract outside the group (the live forge-community)', W, 'watch', { repoId: bytes(32) }, [20014], undefined, { ...bound, contract: LIVE.community });
+      // addresses the network's live forge-community: not on testnet or mainnet (QA-14), nor where there is none
+      if (PRODUCTION || !LIVE.community) record({ item: I, label: 'the same key signing for a contract outside the group (the live forge-community)', expect: 'a devnet with a live set', got: `NOT RUN on ${target.label}: it addresses the live forge-community`, pass: true, notRun: true });
+      else await no(I, 'the same key signing for a contract outside the group (the live forge-community)', W, 'watch', { repoId: bytes(32) }, [20014], undefined, { ...bound, contract: LIVE.community });
     }
   }
+
+  // ---------------- smoke: the live-target subset ----------------
+  if (want('smoke')) await liveSmoke();
 
   // ---------------- M-A2: the Platform beta.6 items ----------------
   if (want('ma2')) await platformBeta6();
@@ -1237,10 +1303,11 @@ async function sameBlockEdit(I, r) {
 async function feeProbes2() {
   const I = 'FEE2';
   if (!baselineFile) throw new Error('--only fees2 needs --baseline <scratch record of the rev 4.1 set>');
-  if (baselineFile.toLowerCase().startsWith(realpathSync(join(ROOT, 'deployments')).toLowerCase())) throw new Error('--baseline must be a scratch record');
-  const bl = JSON.parse(readFileSync(baselineFile, 'utf8')).v2 ?? {};
+  const baseline = JSON.parse(readFileSync(baselineFile, 'utf8'));
+  assertScratchBaseline(baselineFile, baseline, target, { deploymentsDir: join(ROOT, 'deployments') });
+  const bl = baseline.v2 ?? {};
   const BL = { [CORE]: bl.forgeCore?.contractId, [COLLAB]: bl.forgeCollab?.contractId, [COMM]: bl.forgeCommunity?.contractId, [META]: bl.forgeMeta?.contractId };
-  if (Object.values(BL).some((v) => !v) || BL[CORE] === CORE || BL[CORE] === LIVE.core) throw new Error(`${baselineFile} is no other four-contract scratch set`);
+  if (Object.values(BL).some((v) => !v) || BL[CORE] === CORE) throw new Error(`${baselineFile} is no other four-contract scratch set`);
   const onBase = (type) => ({ contract: BL[CONTRACT[type]] });
   const PREFIX = 'refs/heads/bot/ci-bot/';
   const setUp = async (where, opts) => {
@@ -1428,11 +1495,39 @@ async function groupBoundKey(who) {
 }
 
 /**
+ * The live-target smoke (C6): one accepted and one refused write per rule family it covers, by the
+ * owner and the stranger alone, into a repo the owner creates for this run. Every case is one the
+ * full groups already judge on scratch sets (l1, l2, layout); the TODO list of families left out
+ * is in the header. Run it on a scratch set first (--only smoke --record ...).
+ */
+async function liveSmoke() {
+  const I = 'SMOKE';
+  const sm = need(await makeRepo(I, `forge-qa-smoke-${tag}`, 'public'), 'the smoke repo');
+  // L1 aud: a public issue lands; a stranger's members-only issue (aud 1, no asMember) is refused
+  await numbered(sm, I, "L1: the owner's public issue", O, 'issue', { title: 'FORGE-QA smoke', vis: 'public' });
+  await numbered(sm, I, "L1: a stranger's members-only issue (aud 1, no asMember)", S, 'issue', { vis: 'public', aud: 1, enc: sealed(), epoch: 0 }, [10422], 'audMember');
+  // L2 mRole: an outsider's verdict 4 lands; a stranger's approve (verdict 1) is refused
+  const pr = need(await numbered(sm, I, "L2: the owner's PR", O, 'patch', { vis: 'public', title: 'FORGE-QA smoke PR', ...prData(sm) }), 'the smoke PR');
+  const rv = (verdict, extra = {}) => ({ repoId: sm.R, patchId: docRef(pr), verdict, commitOid: bytes(20, 2), vis: 'public', ...extra });
+  await ok(I, "L2: a stranger's outside approval (verdict 4)", S, 'review', rv(4, { body: 'FORGE-QA smoke' }));
+  await no(I, "L2: a stranger's approve (verdict 1, no asMember)", S, 'review', rv(1), [10422], 'memberVerdict');
+  // C2: a writer row of role 5 is outside the schema (refused before it can land; no accepted side without a second identity)
+  await no(I, 'C2: a writer row of role 5', O, 'writer', { repoId: sm.R, memberId: id(S.id), vis: 'public', consentBy: id(S.id), role: 5 }, SCHEMA);
+  // D44 forge-meta: the owner's label lands in forge-meta; a stranger's is refused (no maintainer row)
+  const label = await ok('D44', "D44: the owner's label (forge-meta)", O, 'label', { repoId: sm.R, name: `smoke-${tag}`, color: '#00ff00', r: 1 });
+  await readBack('D44', 'D44: the label read back from forge-meta', META, 'label', label);
+  await no('D44', "D44: a stranger's label", S, 'label', { repoId: sm.R, name: `s-${tag}`, r: 1 }, [40120]);
+}
+
+/**
  * The M-C fee probes: the same documents written to the scratch set and to the live set (or two
  * forms on the scratch set), after one unpriced warm-up write of each, in alternating rounds.
  */
 async function feeProbes() {
   const I = 'FEE';
+  // it writes to the network's live contracts: never on testnet or mainnet (QA-14), and not without a live set
+  if (PRODUCTION) throw new Error(`the fees group writes to the live contracts of ${network}; it never runs there (QA-14)`);
+  if (!LIVE.core || !LIVE.collab || !LIVE.community) throw new Error(`the fees group compares against the live set, and ${target.liveFile} records none`);
   // the live contract of each type: the live forge-core still holds label, topic and packMirror
   const LIVE_OF = { [CORE]: LIVE.core, [COLLAB]: LIVE.collab, [COMM]: LIVE.community, [META]: LIVE.core };
   const onLive = (type) => ({ contract: LIVE_OF[CONTRACT[type]] });
@@ -1489,7 +1584,7 @@ async function feeProbes() {
   }
 }
 
-const passed = results.filter((r) => r.pass && !r.infra).length;
+const passed = results.filter((r) => r.pass && !r.infra && !r.notRun).length;
 const infra = infraCases.length ? `${infraCases.length} case(s) without a verdict: ${infraCases.join('; ')}` : stopped;
 const stats = (v) => {
   const s = [...v].sort((a, b) => a - b);
@@ -1501,7 +1596,7 @@ const feeDeltas = Object.fromEntries(['comment', 'review', 'refUpdate', 'config'
   .concat([['refUpdate: bot push vs writer push (%)', delta('refUpdate: bot push (scratch)', 'refUpdate: writer push (scratch)')]])
   .concat(['approval', 'comment', 'review (verdict 3)', 'public comment', 'bot push'].map((t) => [`${t}: M-A2 vs rev 4.1 (%)`, delta(`${t}: m-a2`, `${t}: rev 4.1`)]))
   .filter(([, v]) => v !== null));
-const report = { network: `devnet-${devnetName}`, scratch: { core: CORE, collab: COLLAB, community: COMM, meta: META, group: GROUP }, live: LIVE, run: tag, passed, total: results.length, infra, fees: feeSummary, feeDeltas, results };
+const report = { network: target.label, liveTarget, scratch: { core: CORE, collab: COLLAB, community: COMM, meta: META, group: GROUP }, live: LIVE, run: tag, passed, total: results.length, infra, fees: feeSummary, feeDeltas, results };
 if (args.report) writeFileSync(String(args.report), `${JSON.stringify(report, null, 2)}\n`);
 console.log(JSON.stringify({ passed, total: results.length, infra, fees: feeSummary, feeDeltas, failed: results.filter((r) => !r.pass) }, null, 2));
 process.exit(results.some((r) => !r.pass) ? 1 : infra ? 2 : 0);

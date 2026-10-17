@@ -1,6 +1,9 @@
 import { test, expect, type Page } from '@playwright/test'
 import { existsSync } from 'node:fs'
-import { fixtureWriteBlocked, idFile, idOrEmpty, loadSeedPulls, repoUrl, shot, signedIn, unlock } from './helpers'
+import { fixtureWriteBlocked, idFile, idOrEmpty, loadSeedPulls, repoUrl, shot, signedIn, unlock, skipWithoutFixture } from './helpers'
+
+// needs the read fixture seeded on this network (e2e/network.ts)
+skipWithoutFixture()
 
 /**
  * forge-v2 WRITES, live on a devnet (real spend, a few thousandths of a DASH per run):

@@ -93,13 +93,13 @@ A deposit only comes back when the document is deleted. Some documents can never
 
 ## What each action costs
 
-This is the one table of what Forge costs; the other guides link here. Measured on devnet moutai as the signing identity's balance change: Platform 4.2.0-beta.5, on **2026-09-27**, except the rows marked †, measured on the same network before the beta.5 reset (2026-09-24 to 2026-09-26). Testnet and mainnet use the same fee formula. <!-- TODO(P4-registration): re-measure these rows on testnet once the contracts are registered there. -->
+This is the one table of what Forge costs; the other guides link here. Measured on devnet moutai as the signing identity's balance change: Platform 4.2.0-beta.5, on **2026-09-27**, except the rows marked †, measured on the same network before the beta.5 reset (2026-09-24 to 2026-09-26). Mainnet uses the same fee formula. Every figure here was measured on a devnet; they are **to be re-measured on testnet (Platform 5.0.0-rc.3)**, which uses the same fee schedule. <!-- TODO(P4-registration): re-measure these rows on testnet once the contracts are registered there; confirm the fee schedule once ECON-05 calibrates it. -->
 
 A write that is the first of its kind somewhere (a repository's first push or first issue, a ref's first update) creates index entries and costs more than the same write later. The ranges below go from later to first.
 
 | Action | Cost |
 |---|---|
-| Create a repository | **~0.0016 DASH** on bonsia (0.0013 on moutai): three small documents (`repo`, your `maintainer` membership, the first `config`). A private one: ~0.0020 DASH (it adds your key and the first anchor) |
+| Create a repository | **~0.0027 DASH** for a public one with the default settings: ~0.0016 DASH on bonsia (0.0013 on moutai) for three small documents (`repo`, your `maintainer` membership, the first `config`), plus ~0.0011 DASH because members-only content is turned on from the start (`--no-members-only` skips it; [below](#members-only-and-private-content)). A private one: ~0.0020 DASH (it adds your key and the first anchor) |
 | Push to **your own bucket** | **~0.004–0.0055 DASH** on bonsia: the pack's and its browse index's manifests, the history index's, and one ref update. Measured on bonsia (2026-09-30): 0.0052 DASH for the first push to a repository, ~0.0040 after. (On moutai: 0.0028 and 0.0021) |
 | Push with packs **on Platform** | **~0.004–0.011 DASH** for a tiny push on bonsia: 0.0040 for a tag and 0.0052 for a branch, 0.0102–0.0104 (first) and 0.0088 when it moves the default branch, whose history index is stored as a chunk too (quoted up to 0.012). Plus **~0.33 DASH per MiB** of packed data (`git push` quotes up to 0.39); the storage is permanent. Measured on moutai: 200 KiB 0.070 DASH, 1.5 MiB 0.50 DASH |
 | Push to a **private** repository, packs on Platform | 20 KiB: 0.0112 DASH (first push); a tiny follow-up: 0.0022 DASH; three new branches at once: 0.0078 DASH. The packs are sealed, so they are a little larger |
@@ -113,7 +113,7 @@ A write that is the first of its kind somewhere (a repository's first push or fi
 | Close, reopen, label, merge event | ~0.0004–0.0006 DASH (a close measured 0.00059 DASH; a merge event 0.00058 DASH on beta.6) |
 | Review | ~0.00035–0.0004 DASH |
 | Release (the document; assets go to your storage) | ~0.0007 DASH |
-| Add a member / remove one | ~0.0004 DASH / refunds ~0.0002 DASH |
+| Add a member / remove one | ~0.0004 DASH / refunds ~0.0002 DASH, **in a repository without members-only content**. With it on, both cost more and scale with the member count: [Members-only and private content](#members-only-and-private-content) |
 | Star / unstar | **~0.00046 DASH** (45.5 M credits), or ~0.00057 DASH for a repository's first star (57.1 M), measured on a devnet. The price includes the star's Trending count. The web app quotes an upper bound before you star. Unstarring refunds part of it |
 | Counting a star toward **Trending** | **Nothing extra.** The star's price includes it, and there is nothing to turn off: on the devnet this was measured on, the web app shows no Trending setting, and `--no-trending` and `trending = false` do nothing there (`dg` says so). <!-- TODO(P4-registration): confirm for the testnet contracts. --> |
 | Profile (display name, bio, avatar, links) | **~0.00037 DASH** for a first profile with about 120 bytes of text, as the identity's first forge-community write (a devnet, 2026-10-02); an edit ~0.00002 DASH. Deleting it refunds part of the deposit |
@@ -122,6 +122,26 @@ A write that is the first of its kind somewhere (a repository's first push or fi
 | Mirror a GitHub repository, first run † | depends on its size; the Mirror Action's first live run of a small repository (`dash-faucet`, packs on Platform) cost **~0.078 DASH**, and a repository with 2 PRs, 15 comments and 7 reviews cost 0.112 DASH. A re-run with nothing new costs **0** |
 | Top up a browser key's budget † | ~0.00002 DASH |
 | Clone, fetch, browse, read issues, download a zip | **free** |
+
+### Members-only and private content
+
+New public repositories turn members-only content on, and a private repository is encrypted from the start, so these rows are the ones most repositories pay. Each is **per key share**: the key is wrapped to every member who holds it, one document each. Measured on a devnet (`forge-web/lib/view/audience.ts` `ENABLE_ANCHOR_CREDITS` and `ENABLE_WRAP_CREDITS`; `dg`'s `keys::enable_estimate`).
+
+| Action | Cost |
+|---|---|
+| Turn members-only content on (in a new repository, while you are the only member) | **~0.0011 DASH**: one anchor (~0.0004) and your key share (~0.0007) |
+| Turn it on in an existing repository | ~0.0004 DASH plus ~0.0007 DASH per member who gets the key (~0.004 DASH for 5 members) |
+| Add a member | the membership write (~0.0004 DASH) plus ~0.0007 DASH to share the key |
+| **Remove a member** | the delete, plus a **key change**: ~0.0007 DASH per **remaining** member and ~0.0006 DASH more. It does not refund: removing one member from a 50-member repository (49 remain) costs ~0.035 DASH |
+| Change a member between Write, Triage and Read | the membership write only; the key stays |
+| Post a members-only issue, comment or review | 0 to 8 % more than the same thing in public |
+| Post one to specific people | ~8 % more than a members-only one for 2 people, and a little more for each extra person |
+| Make a post public (a maintainer's bundle) | ~0.0022 DASH per write |
+| A publication date for a fix (an embargo record) | ~0.0007 DASH |
+| Save an environment change | ~0.0025 DASH |
+| Give a bot access, or change it | a few thousandths of a DASH: a manifest and one small chunk (twice that in a private repository, which also writes the bot its own copy). The dialog quotes it |
+
+Removal is the one that surprises organisations: its cost grows with the number of members, and every removal pays it again. Add people in batches, and remove them only when you must. [Who can read what](../security/audiences.md#what-it-costs) explains what each step does.
 
 **How Trending counts.** Trending on Explore ranks repositories by their **new stargazers in the last week** (or today, which is the UTC day so far: the windows start at 00:00 UTC), read with a proof from the star's weekly window index. Every new star counts. An unstar is refunded, but the star keeps counting in the windows it was in until they pass; starring the same repository again inside one of them counts once. Explore leaves private repositories and an owner's star of their own repository out of Trending when it reads the ranking. No index gives a star's time back, so it can only take the owner's star out of a repository created inside the window (less than a week old): an owner's star of an older repository may count, by one.
 
@@ -199,7 +219,7 @@ Sizes and fees below were computed with `forge-core`'s own code from a full clon
 
 `dg repo reindex <repo>`, run inside a clone that has the default branch's tip, publishes the index for a repository pushed before it existed, or a v2 index over a v1 one, and quotes its price before asking. A push that stores no new pack, such as a retry of a recorded one, publishes none; `dg repo reindex` fills that in.
 
-**Why a repository is cheap.** Every repository lives in one shared pair of contracts, forge-core and forge-collab, registered once per network (for about 1.16 DASH, paid by the deployer, not by you). A new repository is then just three documents. The first version of Forge gave each repository its own contract, and contract registration fees made that cost about 1.18 DASH per repository; it was removed on 2026-09-26.
+**Why a repository is cheap.** Every repository lives in a few shared contracts (forge-core, forge-collab, forge-community and, on the production set, forge-meta), registered once per network by the deployer, not by you: about 1.86 DASH for the four, measured on a devnet ([Deploying Forge to a network](../deploying-to-a-network.md#4-what-it-costs)). A new repository is then just three documents. The first version of Forge gave each repository its own contract, and contract registration fees made that cost about 1.18 DASH per repository; it was removed on 2026-09-26.
 
 Packs are git packfiles: delta-compressed and deflated, typically 20–35% of the size of a checkout. Forge never stores raw files.
 

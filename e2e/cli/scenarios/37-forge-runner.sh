@@ -25,6 +25,7 @@ harness_init
 
 RUNNER="${E2E_CI_RUNNER:-${E2E_IDENTITY_DIR}/CI-RUNNER.identity.json}"
 [[ -f "$RUNNER" ]] || skip_scenario "no runner identity at $RUNNER (set E2E_CI_RUNNER)"
+require_not_july "$RUNNER"
 RUNNER_BIN="${BIN_DIR}/forge-runner"
 [[ -x "$RUNNER_BIN" ]] || skip_scenario "no forge-runner at $RUNNER_BIN (cargo build -p forge-runner)"
 command -v act >/dev/null || skip_scenario "act is not installed"

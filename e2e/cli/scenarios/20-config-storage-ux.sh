@@ -20,6 +20,7 @@
 SCENARIO_NAME="20 config.toml errors (E204), storage remove keychain cleanup, dead-copy clone (E503)"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
 harness_init
+na_unless_devnet "records and asserts a devnet in its dg and git config; no testnet port yet"
 
 : "${E2E_UX_IDENTITY:=$ID_OWNER}"
 UX_OWNER="$(_idid "$E2E_UX_IDENTITY")"

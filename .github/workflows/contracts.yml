@@ -240,3 +240,26 @@ jobs:
         run: |
           node --test forge-contracts/scripts/lib/deployments.test.mjs forge-contracts/scripts/lib/freeze-registered.test.mjs
           node forge-contracts/scripts/check-release-network.mjs --self-test
+      # Offline: which network and record a live tool targets, and the production-write policy
+      # (rc1-live, mv-live, rc1-empty-aggregates and rc1-fee-probe refuse the live testnet record,
+      # a --record without the scratch stamp, and mainnet altogether; QA-14), mv-live's sealing helpers against the committed vectors, and the CLI
+      # suite's testnet rules (no DEPLOYER, no July pool, an explicit funding key; QA-05, HYGI-12)
+      - name: Live tool targets and production refusals
+        run: |
+          shellcheck -x -P e2e/cli e2e/cli/config.sh e2e/cli/test-config.sh e2e/cli/run.sh
+          bash e2e/cli/test-config.sh
+          node --test forge-contracts/scripts/lib/target.test.mjs
+          node forge-contracts/scripts/mv-live.mjs --self-test
+          for t in "rc1-live --identities /nonexistent" "mv-live --identities /nonexistent" "rc1-empty-aggregates" "rc1-fee-probe --identity /nonexistent"; do
+            read -r tool rest <<<"$t"
+            # shellcheck disable=SC2086 # the words of one tool's command line
+            out=$(node "forge-contracts/scripts/$tool.mjs" --network testnet $rest 2>&1 || true)
+            grep -q 'refusing to run against a live registration' <<<"$out" || { echo "$tool did not refuse the live testnet record: $out"; exit 1; }
+          done
+          # none of the four runs on mainnet for now (real DASH, no plan), --live-target included
+          for t in "rc1-live --identities /nonexistent" "mv-live --identities /nonexistent" "mv-live --live-target --identities /nonexistent" "rc1-empty-aggregates" "rc1-fee-probe --identity /nonexistent"; do
+            read -r tool rest <<<"$t"
+            # shellcheck disable=SC2086 # the words of one tool's command line
+            out=$(node "forge-contracts/scripts/$tool.mjs" --network mainnet $rest 2>&1 || true)
+            grep -q 'network mainnet is not supported for' <<<"$out" || { echo "$tool did not refuse mainnet: $out"; exit 1; }
+          done

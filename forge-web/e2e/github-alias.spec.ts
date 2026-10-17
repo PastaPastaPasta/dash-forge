@@ -1,7 +1,10 @@
 import { test, expect } from '@playwright/test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { atRoute, collectPageErrors, deployment, nodeSdk, ownerIs, shot } from './helpers'
+import { atRoute, collectPageErrors, deployment, nodeSdk, ownerIs, shot, skipWithoutRegistration } from './helpers'
+
+// needs the forge-v2 registration recorded for this network (e2e/network.ts)
+skipWithoutRegistration()
 
 /**
  * CJ-3: a GitHub address opens its Forge mirror, signed out, reads only.

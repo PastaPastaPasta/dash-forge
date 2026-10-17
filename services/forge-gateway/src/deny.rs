@@ -108,6 +108,17 @@ pub struct NamedEntry {
     name: String,
 }
 
+impl NamedEntry {
+    /// The entry of one `named` map item.
+    fn of((key, owner): (&Key, &String)) -> Self {
+        Self {
+            key: key.clone(),
+            owner: owner.clone(),
+            name: key.1.clone(),
+        }
+    }
+}
+
 /// A deny list's lines, parsed.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Entries {
@@ -129,10 +140,13 @@ impl Entries {
                 continue;
             }
             let ok = match line.split_once('/') {
-                None => decode_identifier(line)
-                    .is_ok()
-                    .then(|| out.ids.insert(line.to_string()))
-                    .is_some(),
+                None => {
+                    let is_id = decode_identifier(line).is_ok();
+                    if is_id {
+                        out.ids.insert(line.to_string());
+                    }
+                    is_id
+                }
                 Some((owner, name)) => match (owner_key(owner), name_key(name)) {
                     (Some(o), Some(n)) => {
                         out.named.entry((o, n)).or_insert_with(|| owner.to_string());
@@ -172,19 +186,11 @@ impl Entries {
         self.named
             .iter()
             .filter(move |((owner, n), _)| matches!(owner, Owner::Name(_)) && n == name)
-            .map(|(key, owner)| NamedEntry {
-                key: key.clone(),
-                owner: owner.clone(),
-                name: key.1.clone(),
-            })
+            .map(NamedEntry::of)
     }
 
     fn named_entries(&self) -> impl Iterator<Item = NamedEntry> + '_ {
-        self.named.iter().map(|(key, owner)| NamedEntry {
-            key: key.clone(),
-            owner: owner.clone(),
-            name: key.1.clone(),
-        })
+        self.named.iter().map(NamedEntry::of)
     }
 }
 
@@ -410,19 +416,15 @@ impl DenyList {
 
     /// Read one listed name; `true` when the read worked.
     async fn read_entry(&self, upstream: &dyn Upstream, e: &NamedEntry) -> bool {
-        let resolution = match upstream.resolve(&e.owner, &e.name).await {
-            Ok(info) => Resolution {
-                repo_id: info.map(|i| i.repo_id),
-                at: Instant::now(),
-                read: true,
-            },
-            Err(_) => Resolution {
-                repo_id: None,
-                at: Instant::now(),
-                read: false,
-            },
+        let (repo_id, read) = match upstream.resolve(&e.owner, &e.name).await {
+            Ok(info) => (info.map(|i| i.repo_id), true),
+            Err(_) => (None, false),
         };
-        let read = resolution.read;
+        let resolution = Resolution {
+            repo_id,
+            at: Instant::now(),
+            read,
+        };
         let mut st = self.state();
         // The list may have changed while Platform was read.
         if st.entries.named.contains_key(&e.key) {

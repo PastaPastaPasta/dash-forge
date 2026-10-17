@@ -178,7 +178,7 @@ Every binary and the web app target one of **testnet**, **mainnet**, or a **name
 Testnet is the default of the CLI tools and the network Forge runs on: Dash Platform v5
 (protocol 14) activated there on 2026-10-15 (chain id `dash-testnet-51`), and forge-v2 is
 registered there (`testnet.json`'s `v2` record; the ids are TODO(P4-registration)). Mainnet runs
-protocol 13 until protocol 14 activates there ([mainnet-runbook.md](mainnet-runbook.md)). A
+protocol 13 until protocol 14 activates there ([deploying-to-a-network.md](deploying-to-a-network.md)). A
 devnet is a development network: pass `--network devnet --devnet-name <name>` (or just
 `--devnet-name <name>`), or record it once with
 `dg auth login --network devnet --devnet-name <name>`, which saves the network in

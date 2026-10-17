@@ -1,6 +1,9 @@
 import { test, expect, type Locator, type Page } from '@playwright/test'
-import { DEMO, EMPTY, expectLanded, loadSeedPulls, repoUrl, runAxe } from './helpers'
+import { DEMO, EMPTY, expectLanded, loadSeedPulls, repoUrl, runAxe, skipWithoutFixture } from './helpers'
 import { quorumGuard } from './quorum-sync'
+
+// needs the read fixture seeded on this network (e2e/network.ts)
+skipWithoutFixture()
 
 /**
  * Accessibility via axe-core (WCAG 2.1 A/AA), on the forge-v2 read fixture (e2e/helpers.ts

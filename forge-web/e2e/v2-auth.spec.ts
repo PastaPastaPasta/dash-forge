@@ -2,7 +2,10 @@ import { test, expect } from '@playwright/test'
 import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { E2E_DEVNET, PASSPHRASE, deployment, idFile, importIdentity, nodeSdk, shot, unlock } from './helpers'
+import { E2E_DEVNET, PASSPHRASE, deployment, idFile, importIdentity, nodeSdk, shot, unlock, hasRegistration, skipWithoutRegistration } from './helpers'
+
+// needs the forge-v2 registration recorded for this network (e2e/network.ts)
+skipWithoutRegistration()
 
 /**
  * Limited-key sign-in, live on a devnet (real spend):
@@ -26,7 +29,7 @@ test.describe.configure({ mode: 'serial', timeout: 30 * 60_000 })
 
 const ROOT = resolve(__dirname, '../..')
 /** The group the app binds keys to: the one in the deployment file it is built with. */
-const GROUP: string = deployment().v2.forgeCore.contractGroupId
+const GROUP: string = hasRegistration() ? deployment().v2.forgeCore.contractGroupId : ''
 
 /** Read an identity's keys straight from Platform (evo-sdk in Node), independent of the app. */
 async function onChainKeys(identityId: string): Promise<{ id: number; level: string; budget: bigint | null; expiresAt: number | null; bound: string | null; remaining: bigint | null }[]> {

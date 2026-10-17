@@ -1,6 +1,9 @@
 import { test, expect, type Page } from '@playwright/test'
 import { existsSync } from 'node:fs'
-import { EMPTY, fixtureWriteBlocked, idFile, runAxe, shot, signedIn, stateFile, unlock } from './helpers'
+import { EMPTY, fixtureWriteBlocked, idFile, runAxe, shot, signedIn, stateFile, unlock, skipWithoutFixture } from './helpers'
+
+// needs the read fixture seeded on this network (e2e/network.ts)
+skipWithoutFixture()
 
 /**
  * The storage wizard (`/settings/storage`) against the local S3 store of infra/docker-compose.yml

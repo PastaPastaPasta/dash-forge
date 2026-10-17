@@ -3,7 +3,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { atRoute, idFile, idOf, routeOf, runAxe, shot, signedIn, unlock, waitForRepoResolved } from './helpers'
+import { atRoute, dgEnv, idFile, idOf, routeOf, runAxe, shot, signedIn, unlock, waitForRepoResolved } from './helpers'
 
 /**
  * The PR page's information architecture, drafts and head sync (review-parity spec §7 PR 3),
@@ -47,8 +47,7 @@ function env(who: string): NodeJS.ProcessEnv {
   return {
     ...process.env,
     DASH_FORGE_KEY: idFile(who),
-    DASH_FORGE_NETWORK: 'devnet',
-    DASH_FORGE_DEVNET_NAME: process.env['E2E_DEVNET'] || 'sakura',
+    ...dgEnv(),
     RUST_LOG: 'error',
     NO_COLOR: '1',
     PATH: `${BIN}:${process.env['PATH'] ?? ''}`,

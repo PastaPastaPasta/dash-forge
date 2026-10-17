@@ -7,7 +7,7 @@ Dash Forge runs on Dash Platform. Each network has its own identities, repositor
 | Network | Status | Notes |
 |---|---|---|
 | **Testnet** | Live since TODO(P4-registration: registration date) | Dash Platform v5 (protocol 14), chain id `dash-testnet-51`. [forge.dashhq.org](https://forge.dashhq.org) and the guides use it. Test DASH is free from the [testnet faucet](https://faucet.testnet.networks.dash.org), or from [faucet.thepasta.org](https://faucet.thepasta.org). Contract group and contract ids: TODO(P4-registration), recorded in [`forge-contracts/deployments/testnet.json`](../forge-contracts/deployments/testnet.json). <!-- TODO(owner-approved-text): the testnet durability statement goes here. --> |
-| **Mainnet** | Not yet | Forge is registered on mainnet after Dash Platform v5 activates there ([runbook](mainnet-runbook.md)). |
+| **Mainnet** | Not yet | Forge is registered on mainnet after Dash Platform v5 activates there ([runbook](deploying-to-a-network.md)). |
 | **Devnet** (developers only) | Optional | A named development network, such as `sakura`, for people building Forge or testing against a Platform build that testnet does not run yet. [Devnet sakura](#history) is the one Forge used before testnet. A devnet can be reset, and everything on it would go with it except your git clones and your own storage. |
 
 `dg` and `git-remote-dash` default to testnet, so no network flag is needed. To use a devnet, pass `--network devnet --devnet-name <name>`. On a network with no Forge deployment (mainnet today), `dg`, `git-remote-dash` and the web app stop with a "not deployed" error ([E702](errors.md#e702)).

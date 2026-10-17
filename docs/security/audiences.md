@@ -60,7 +60,7 @@ Who something is for is fixed when it is posted. Editing a members-only comment 
 | **Owner** and people with **Maintain** access | yes |
 | People with **Write** or **Triage** access | yes |
 | People with **Read** access | yes. On a public repository the Read role exists for exactly this: someone who should read the members-only discussion and comment, without pushing, approving or merging. |
-| A **Bot** | **no**, by default. A bot is an automated account. It can post comments and reviews, can't push, approve or merge, and reads members-only content only when someone asks it to. Bots arrive later. |
+| A **Bot** | **no**, by default. A bot is an automated account. It can post comments and reviews, can't approve or merge, pushes only to branches a maintainer allows, and reads members-only content only when someone asks it to, one thread at a time ([Bots and agents](../guides/bots.md)). It needs the Bot role, which networks registered with the production contract set have. |
 | A CI runner | **no**, by default. A runner's key reports check runs and is not a membership. If you give the runner's identity the Read role, it reads everything members-only, like anyone else with Read access. |
 | Someone added later | in an All members audience, yes: everything, including what was posted before they joined. In an environment, its current values once it is saved again for them (Forge does that when it adds them), never earlier ones. |
 | Someone removed | what was posted **before** the removal, for good. Nothing posted afterwards. Encryption can't take back what was already shared. |
@@ -73,6 +73,7 @@ What each role can do:
 - **Write:** can also push, approve and merge.
 - **Maintain:** can also change settings, protected branches, releases and environments.
 - **Owner:** everything above, and adds and removes members.
+- **Bot:** an automated account. See [Bots and agents](../guides/bots.md).
 
 Removing a member changes the key, so what is posted afterwards is unreadable to them. Adding a member shares the key with them. Both happen in `dg collab add` and `dg collab remove`, which show the cost first ([Collaborating](../guides/collaborating.md#members-only-content-in-a-public-repository)).
 
@@ -324,7 +325,7 @@ Forge uses the same words in `dg`, the web app and these pages.
 | **Specific people** | A list the writer picks, up to 16 people for a message. |
 | **members-only** | Anything that isn't public. "A members-only comment." |
 
-**Roles:** **Read**, **Triage**, **Write**, **Maintain**, **Owner** and **Bot** (an automated account; coming later). What each can do is [above](#who-can-read-members-only-content).
+**Roles:** **Read**, **Triage**, **Write**, **Maintain**, **Owner** and **Bot** (an automated account, where the network's contracts have the role). What each can do is [above](#who-can-read-members-only-content).
 
 **Verbs**
 

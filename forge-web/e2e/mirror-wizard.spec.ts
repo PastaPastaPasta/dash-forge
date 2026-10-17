@@ -1,6 +1,9 @@
 import { test, expect, type Page, type Route } from '@playwright/test'
 import { existsSync } from 'node:fs'
-import { EMPTY, E2E_DEVNET, PASSPHRASE, fixtureWriteBlocked, idFile, runAxe, shot, signedIn, unlock } from './helpers'
+import { EMPTY, E2E_DEVNET, PASSPHRASE, fixtureWriteBlocked, idFile, runAxe, shot, signedIn, unlock, skipWithoutFixture } from './helpers'
+
+// needs the read fixture seeded on this network (e2e/network.ts)
+skipWithoutFixture()
 
 /**
  * The `/mirror` wizard up to the workflow file, with every write mocked (item 16,

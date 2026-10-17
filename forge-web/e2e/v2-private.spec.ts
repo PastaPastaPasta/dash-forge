@@ -19,7 +19,10 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { expect, test, type Browser, type Locator, type Page } from '@playwright/test'
-import { deployment, E2E_DEVNET, idFile, idOrEmpty, nodeSdk, PASSPHRASE, stateFile, unlock, waitForRepoResolved } from './helpers'
+import { deployment, dgEnv, idFile, idOrEmpty, nodeSdk, PASSPHRASE, stateFile, unlock, waitForRepoResolved, skipWithoutRegistration } from './helpers'
+
+// needs the forge-v2 registration recorded for this network (e2e/network.ts)
+skipWithoutRegistration()
 
 const RUN = Date.now().toString(36)
 const NAME = `forge-v2-private-${RUN}`
@@ -114,8 +117,7 @@ function cli(role: 'OWNER' | 'CONTRIB', cmd: string, args: string[], cwd?: strin
     env: {
       ...process.env,
       PATH: `${BIN}:${process.env['PATH']}`,
-      DASH_FORGE_NETWORK: 'devnet',
-      DASH_FORGE_DEVNET_NAME: E2E_DEVNET,
+      ...dgEnv(),
       DASH_FORGE_KEY: idFile(role),
       RUST_LOG: 'error',
       NO_COLOR: '1',

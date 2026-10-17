@@ -2,7 +2,11 @@ import { test, expect, type Page } from '@playwright/test'
 import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { DEMO, E2E_DEVNET, PASSPHRASE, shot } from './helpers'
+import { DEMO, E2E_NETWORK, PASSPHRASE, shot, skipWithoutFixture } from './helpers'
+import { deploymentFilePath, sdkOptions } from './network'
+
+// needs the read fixture seeded on this network (e2e/network.ts)
+skipWithoutFixture()
 
 /**
  * A key renewal interrupted after its identity update was broadcast, live on a devnet (D-016):
@@ -38,8 +42,8 @@ let sdkPromise: Promise<any> | null = null
 function nodeSdk(): Promise<any> {
   sdkPromise ??= (async () => {
     const evo = await import(pathToFileURL(join(ROOT, 'forge-web/node_modules/@dashevo/evo-sdk/dist/evo-sdk.module.js')).href)
-    const dep = JSON.parse(readFileSync(join(ROOT, `forge-contracts/deployments/devnet-${E2E_DEVNET}.json`), 'utf8'))
-    const sdk = new evo.EvoSDK({ network: 'devnet', trusted: true, devnetName: E2E_DEVNET, addresses: dep.dapiAddresses })
+    const dep = JSON.parse(readFileSync(deploymentFilePath(undefined, ROOT), 'utf8'))
+    const sdk = new evo.EvoSDK(sdkOptions(E2E_NETWORK === 'devnet' ? dep.dapiAddresses : undefined))
     await sdk.connect()
     return sdk
   })()

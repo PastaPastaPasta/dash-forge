@@ -3,7 +3,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { answerStorageQuestion, atRoute, expectPlatformPreAllowed, idFile, idOf, routeOf, runAxe, shot, signedIn, unlock, waitForRepoResolved } from './helpers'
+import { answerStorageQuestion, atRoute, expectPlatformPreAllowed, dgEnv, idFile, idOf, routeOf, runAxe, shot, signedIn, unlock, waitForRepoResolved } from './helpers'
 
 /**
  * The full GitHub-style review round trip in the browser (review-parity spec §7 PRs 3–6), two
@@ -54,8 +54,7 @@ function env(who: string): NodeJS.ProcessEnv {
   return {
     ...process.env,
     DASH_FORGE_KEY: idFile(who),
-    DASH_FORGE_NETWORK: 'devnet',
-    DASH_FORGE_DEVNET_NAME: process.env['E2E_DEVNET'] || 'sakura',
+    ...dgEnv(),
     RUST_LOG: 'error',
     NO_COLOR: '1',
     PATH: `${BIN}:${process.env['PATH'] ?? ''}`,

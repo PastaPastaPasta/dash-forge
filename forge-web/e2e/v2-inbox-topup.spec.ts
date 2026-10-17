@@ -2,7 +2,11 @@ import { test, expect, type Page } from '@playwright/test'
 import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { E2E_DEVNET, SCREENSHOT_DIR, idFile, idOrEmpty, runAxe, shot, signedIn, unlock } from './helpers'
+import { SCREENSHOT_DIR, idFile, idOrEmpty, runAxe, shot, signedIn, unlock, skipWithoutRegistration } from './helpers'
+import { E2E_NETWORK, E2E_TARGET_NAME, sdkOptions } from './network'
+
+// needs the forge-v2 registration recorded for this network (e2e/network.ts)
+skipWithoutRegistration()
 
 /**
  * Signed in as CI-RUNNER, live on a devnet (real spend, ~0.0003 DASH plus a key if the stored
@@ -43,8 +47,8 @@ let sdkPromise: Promise<{ sdk: NodeSdk; collab: string; core: string }> | null =
 function nodeSdk(): Promise<{ sdk: NodeSdk; collab: string; core: string }> {
   sdkPromise ??= (async () => {
     const evo = await import(pathToFileURL(join(ROOT, 'forge-web/node_modules/@dashevo/evo-sdk/dist/evo-sdk.module.js')).href)
-    const dep = JSON.parse(readFileSync(join(ROOT, `forge-contracts/deployments/devnet-${E2E_DEVNET}.json`), 'utf8'))
-    const sdk = new evo.EvoSDK({ network: 'devnet', trusted: true, devnetName: E2E_DEVNET, addresses: dep.dapiAddresses })
+    const dep = JSON.parse(readFileSync(join(ROOT, `forge-contracts/deployments/${E2E_TARGET_NAME}.json`), 'utf8'))
+    const sdk = new evo.EvoSDK(sdkOptions(E2E_NETWORK === 'devnet' ? dep.dapiAddresses : undefined))
     await sdk.connect()
     return { sdk: sdk as NodeSdk, collab: String(dep.v2.forgeCollab.contractId), core: String(dep.v2.forgeCore.contractId) }
   })()

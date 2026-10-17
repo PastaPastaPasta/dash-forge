@@ -92,7 +92,7 @@ forge-import alice/project --max-spend 0.5 --state ./alice-project.sync.json --i
 
 **Git LFS.** If the default branch's `.gitattributes` sets `filter=lfs`, the run warns that the mirror holds the LFS pointer files only: the large files stay on GitHub, and Dash Forge does not mirror LFS objects. The summary JSON says so too (`lfsDetected`).
 
-Unlike `git` and `dg`, the standalone `forge-import` does not read the network `dg auth` recorded: without `--network` (or `DASH_FORGE_NETWORK` / `DASH_FORGE_DEVNET_NAME`) it uses testnet, which has no Forge deployment ([E702](../errors.md#e702)). `dg import alice/project` takes the same core flags and uses `dg`'s network and identity defaults.
+Unlike `git` and `dg`, the standalone `forge-import` does not read the network `dg auth` recorded: without `--network` (or `DASH_FORGE_NETWORK` / `DASH_FORGE_DEVNET_NAME`) it uses testnet, the network Forge runs on. `dg import alice/project` takes the same core flags and uses `dg`'s network and identity defaults.
 
 Useful flags (see `forge-import --help`):
 

@@ -6,7 +6,8 @@
 # Checked (the user-facing surface):
 #   - README.md, CONTRIBUTING.md, SECURITY.md, docs/INSTALL.md, docs/FAQ.md, docs/VERSIONING.md,
 #     docs/errors.md, docs/networks.md, docs/hosting.md, docs/hosted-curation.md,
-#     docs/mainnet-runbook.md, docs/security/audiences.md, docs/guides/, docs/hosting/,
+#     docs/mainnet-runbook.md, docs/deploying-to-a-network.md, docs/limits.md,
+#     docs/security/audiences.md, docs/guides/, docs/hosting/,
 #     .github/ISSUE_TEMPLATE/
 #   - the READMEs of the crates and services (crates/*/README.md, services/*/README.md)
 #   - the Actions, their READMEs and the GitLab template (action/, check-action/, integrations/gitlab/),
@@ -32,7 +33,8 @@ cd "$(dirname "$0")/.."
 docs=$(git ls-files -- \
   README.md CONTRIBUTING.md SECURITY.md \
   docs/INSTALL.md docs/FAQ.md docs/VERSIONING.md docs/errors.md docs/networks.md docs/hosting.md \
-  docs/hosted-curation.md docs/mainnet-runbook.md docs/security/audiences.md \
+  docs/hosted-curation.md docs/mainnet-runbook.md docs/deploying-to-a-network.md docs/limits.md \
+  docs/security/audiences.md \
   'docs/guides/*.md' 'docs/hosting/*.md' '.github/ISSUE_TEMPLATE/*' \
   'crates/*/README.md' 'services/*/README.md' \
   action/README.md action/action.yml check-action/README.md check-action/action.yml \

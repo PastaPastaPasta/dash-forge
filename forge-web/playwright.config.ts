@@ -1,14 +1,17 @@
 import { defineConfig, devices } from '@playwright/test'
 
+import { buildEnv } from './e2e/network'
+
 /**
  * Playwright config for the Forge Web e2e suite.
  *
  * Tests run headless Chromium against the LOCAL static build (`out/`) served on
  * port 4321 — same bytes deployed to GitHub Pages / IPFS, but local for speed and
  * request-interception control. The build targets a forge-v2 **devnet** (`E2E_DEVNET`,
- * default `sakura`), so the specs exercise real on-chain data: the read fixture that
- * `forge-contracts/scripts/seed-v2-fixture.mjs` seeds there (e2e/helpers.ts `DEMO`).
- * The read fixture lives on the devnet, not on testnet, so a testnet build has no fixture to read.
+ * default `sakura`) or, with `E2E_NETWORK=testnet`, Dash testnet (e2e/network.ts), so the specs
+ * exercise real on-chain data: the read fixture that `forge-contracts/scripts/seed-v2-fixture.mjs`
+ * seeds there (e2e/helpers.ts `DEMO`). Testnet has no fixture until the registration commits
+ * `fixtures/testnet.json`: the specs that read it skip (`skipWithoutFixture`), the rest run.
  *
  * The WASM SDK loads lazily post-paint and connects to the devnet's DAPI, so data pages
  * need a generous timeout; the per-test timeout is bumped accordingly.
@@ -17,10 +20,8 @@ import { defineConfig, devices } from '@playwright/test'
 const PORT = Number(process.env.E2E_PORT ?? 4321)
 const BASE_URL = `http://127.0.0.1:${PORT}`
 
-/** The devnet the build under test reads. Keep the default in step with e2e/helpers.ts. */
-const DEVNET = process.env.E2E_DEVNET || 'sakura'
-// MIN_STARGAZERS=1: trending.spec's seed has 3, 2 and 1 stargazers, under the hosted floor of 5.
-const BUILD_ENV = `NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=${DEVNET} NEXT_PUBLIC_MIN_STARGAZERS=1 `
+/** The build's NEXT_PUBLIC_* environment for E2E_NETWORK / E2E_DEVNET (e2e/network.ts, shared with the specs). */
+const BUILD_ENV = buildEnv()
 
 export default defineConfig({
   testDir: './e2e',

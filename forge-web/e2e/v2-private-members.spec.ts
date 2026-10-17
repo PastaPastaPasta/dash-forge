@@ -10,8 +10,11 @@
  */
 
 import { expect, test } from '@playwright/test'
-import { deployment, idOrEmpty, nodeSdk, signedIn, waitForRepoResolved } from './helpers'
+import { deployment, idOrEmpty, nodeSdk, signedIn, waitForRepoResolved, skipWithoutRegistration } from './helpers'
 import type { Page } from '@playwright/test'
+
+// needs the forge-v2 registration recorded for this network (e2e/network.ts)
+skipWithoutRegistration()
 
 // Who signs in and whose newest private-smoke repo is read (E2E_IDENTITY_DIR, else the fixture pool).
 const OWNER = idOrEmpty('OWNER')
