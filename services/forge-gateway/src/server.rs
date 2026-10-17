@@ -664,10 +664,7 @@ async fn resolve(state: &AppState, owner: &str, name: &str) -> Result<Target, Bo
     // Then by what the name resolved to (the repository's id, its owner, either spelling of
     // its name), before the allow check: a listed repository is refused however it is asked
     // for, and whatever mirror this gateway holds of it goes.
-    if state.deny.denies(&info, owner, name) {
-        state.drop_denied(&info.repo_id);
-        return Err(Box::new(denied(state, owner, name)));
-    }
+    refuse_if_denied(state, &info, owner, name)?;
     settle_deny(state, &info, owner, name).await?;
     let listed = state
         .allowed
@@ -710,6 +707,17 @@ async fn settle_deny(
     if !state.deny.settle(upstream.as_ref(), unsettled).await {
         return Err(unavailable());
     }
+    refuse_if_denied(state, info, owner, name)
+}
+
+/// `451` when the deny list names `info`, which a request named `owner/name`; whatever this
+/// gateway holds of it goes ([`AppState::drop_denied`]).
+fn refuse_if_denied(
+    state: &AppState,
+    info: &RepoInfo,
+    owner: &str,
+    name: &str,
+) -> Result<(), Box<Response>> {
     if state.deny.denies(info, owner, name) {
         state.drop_denied(&info.repo_id);
         return Err(Box::new(denied(state, owner, name)));

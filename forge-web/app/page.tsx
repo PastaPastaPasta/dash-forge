@@ -63,12 +63,12 @@ export default function LandingPage(): JSX.Element {
   // Only described, pushed repos unless the visitor asks for all of them (CJ-1), and at most two
   // per owner either way (ABU-V-03): one identity creating repos in bulk must not own the front page.
   const [showAll, setShowAll] = useState(false)
-  const waiting = feed.data === null || (featured && showcase.loading)
-  const listed = waiting || feed.data === null ? null : landingRecent(feed.data, { exclude: shown, pushesKnown, showAll })
+  const settledFeed = featured && showcase.loading ? null : feed.data
+  const listed = settledFeed === null ? null : landingRecent(settledFeed, { exclude: shown, pushesKnown, showAll })
   const recent = listed?.shown ?? null
   const hidden = listed?.notCurated ?? 0
   const capped = listed?.capped ?? 0
-  const feedNotFeatured = waiting || feed.data === null ? null : feed.data.filter((r) => !shown.has(r.key))
+  const feedNotFeatured = settledFeed === null ? null : settledFeed.filter((r) => !shown.has(r.key))
   const faucet = faucetUrl()
   const testNetwork = ACTIVE_NETWORK.network !== 'mainnet'
 

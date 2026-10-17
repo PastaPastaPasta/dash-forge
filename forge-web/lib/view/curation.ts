@@ -50,14 +50,24 @@ function isDate(s: unknown): s is string {
   return typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(`${s}T00:00:00Z`))
 }
 
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+
+/** Throws when `rest` (what is left of an object after its known fields) is not empty. */
+function rejectUnknown(rest: Record<string, unknown>, at: string): void {
+  const fields = Object.keys(rest)
+  if (fields.length > 0) throw new Error(`curation.json: ${at} has unknown fields: ${fields.join(', ')}`)
+}
+
 function parseEntries(raw: unknown, where: string): CurationEntry[] {
   if (!Array.isArray(raw)) throw new Error(`curation.json: ${where} must be an array`)
   const seen = new Set<string>()
   return raw.map((e, i) => {
     const at = `${where}[${i}]`
-    if (typeof e !== 'object' || e === null || Array.isArray(e)) throw new Error(`curation.json: ${at} must be an object`)
-    const { id, added, note, ...rest } = e as Record<string, unknown>
-    if (Object.keys(rest).length > 0) throw new Error(`curation.json: ${at} has unknown fields: ${Object.keys(rest).join(', ')}`)
+    if (!isRecord(e)) throw new Error(`curation.json: ${at} must be an object`)
+    const { id, added, note, ...rest } = e
+    rejectUnknown(rest, at)
     if (!isId(id)) throw new Error(`curation.json: ${at}.id is not a base58 identifier`)
     if (!isDate(added)) throw new Error(`curation.json: ${at}.added must be a YYYY-MM-DD date`)
     if (typeof note !== 'string' || note.trim() === '' || note.length > 200) throw new Error(`curation.json: ${at}.note must be 1 to 200 characters`)
@@ -71,12 +81,12 @@ function parseEntries(raw: unknown, where: string): CurationEntry[] {
 export function parseCuration(raw: unknown): CurationFile {
   if (typeof raw !== 'object' || raw === null) throw new Error('curation.json: must be an object')
   const networks = (raw as Record<string, unknown>)['networks']
-  if (typeof networks !== 'object' || networks === null || Array.isArray(networks)) throw new Error('curation.json: "networks" must be an object')
+  if (!isRecord(networks)) throw new Error('curation.json: "networks" must be an object')
   const out: Record<string, NetworkCuration> = {}
   for (const [key, value] of Object.entries(networks)) {
-    if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error(`curation.json: networks.${key} must be an object`)
-    const { hiddenRepos, hiddenIdentities, ...rest } = value as Record<string, unknown>
-    if (Object.keys(rest).length > 0) throw new Error(`curation.json: networks.${key} has unknown fields: ${Object.keys(rest).join(', ')}`)
+    if (!isRecord(value)) throw new Error(`curation.json: networks.${key} must be an object`)
+    const { hiddenRepos, hiddenIdentities, ...rest } = value
+    rejectUnknown(rest, `networks.${key}`)
     out[key] = {
       hiddenRepos: parseEntries(hiddenRepos, `networks.${key}.hiddenRepos`),
       hiddenIdentities: parseEntries(hiddenIdentities, `networks.${key}.hiddenIdentities`),
@@ -112,7 +122,6 @@ export function isHiddenIdentity(identityId: string, hidden: Hidden = activeHidd
 
 /** `repos` without the hidden ones and the ones of hidden identities. */
 export function dropHidden<T extends { readonly key: string; readonly ownerId: string }>(repos: readonly T[], hidden: Hidden = activeHidden()): T[] {
-  if (hidden.repos.size === 0 && hidden.identities.size === 0) return [...repos]
   return repos.filter((r) => !isHiddenRepo(r.key, r.ownerId, hidden))
 }
 
