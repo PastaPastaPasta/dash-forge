@@ -11,6 +11,8 @@
 #   3. Into a second new repo, push with DASH_FORGE_NO_BROWSE_INDEX=1 (no browse artifacts):
 #      no history index. `dg repo reindex --git-dir <clone>` publishes a full one (and the
 #      locator), measured spend positive and small; a second reindex finds nothing to do.
+#   4. Add 128 distinct paths to the first repo so a one-file change is cheaper as a delta;
+#      the following push must report delta=true (the tiny-base control above stays full).
 #
 # Needs an identity with ~1 DASH (E2E_S36_IDENTITY, or minted from the devnet's funding key
 # E2E_MINT_FUNDING under `lockf $E2E_MINT_LOCK`, config.sh). Two small new repos per run.
@@ -138,5 +140,31 @@ check "one history index manifest" assert_eq "1" "$(history_tips "$OWNER_ID/$BAR
 reindex_json "$OWNER_ID/$BARE" "$SRC" "$LOG-3b" || { cat "$LOG-3b.err" >&2; bad "second reindex failed"; }
 check "a second reindex finds nothing to do" assert_eq "indexed covered" \
   "$(jq_py "$LOG-3b.json" 'd["status"] + " " + d["history"]')"
+
+step "4. a one-file change over a larger base pays as a delta"
+# Distinct paths keep the compressed full index large enough for the delta to pay.
+# Reuse the first repo, after the tiny-base/backfill checks, so this adds no repository.
+python3 - "$SRC" <<'PY'
+import hashlib, pathlib, sys
+root = pathlib.Path(sys.argv[1]) / "history-base"
+root.mkdir()
+for i in range(128):
+    name = hashlib.sha256(str(i).encode()).hexdigest() + ".txt"
+    (root / name).write_text(f"history fixture {i}\n")
+PY
+git -C "$SRC" add -- history-base && git -C "$SRC" commit -q -m "larger history base"
+if ! GIT_DASH_JSON=1 git_dash "$ID" "$LOG-4" -C "$SRC" push "dash://$OWNER_ID/$NAME" main:main; then
+  cat "$LOG-4.err" >&2; is_flake "$LOG-4.err" && skip_scenario "push flaked"
+  bad "the larger-base push failed"; finish_scenario
+fi
+check "the larger base publishes a full index of 6 commits" assert_eq "commits=6 delta=false" \
+  "$(event_of "$LOG-4.err" historyIndex commits delta)"
+commit_in "$SRC" README.md "one changed file" "one-file change over the larger base"
+if ! GIT_DASH_JSON=1 git_dash "$ID" "$LOG-5" -C "$SRC" push "dash://$OWNER_ID/$NAME" main:main; then
+  cat "$LOG-5.err" >&2; is_flake "$LOG-5.err" && skip_scenario "push flaked"
+  bad "the delta push failed"; finish_scenario
+fi
+check "the one-file change publishes a delta of 7 commits" assert_eq "commits=7 delta=true" \
+  "$(event_of "$LOG-5.err" historyIndex commits delta)"
 
 finish_scenario
