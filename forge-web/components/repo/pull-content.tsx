@@ -110,7 +110,7 @@ import {
   type VerdictInput,
 } from '@/lib/repo'
 import { checksPhrase, expectedChecks, readCheckRuns, requiredSources, summarizeChecks, type ChecksSummary } from '@/lib/repo/checks'
-import { branchShown, headSync, readBranchState, readBranchTip, readBranchUpdates, type BranchWrite } from '@/lib/repo/source-branch'
+import { branchShown, branchWriteSeen, headSync, headUpdateRefusal, readBranchState, readBranchTip, readBranchUpdates, type BranchWrite } from '@/lib/repo/source-branch'
 import { probeBranch, refStateKey } from '@/lib/repo/head-probe'
 import type { Event, EventKind, Holdings, RefState } from '@/lib/rules'
 import { POST_AS_COMMENT, ROLE_LABEL, capabilitiesOf, memberMayWriteEvent, verdictRefusal } from '@/lib/rules/roles'
@@ -580,7 +580,7 @@ function PullPage({
   const [branchWrite, setBranchWrite] = useState<BranchWrite | null>(null)
   const [checkingDependents, setCheckingDependents] = useState(false)
   // Once a read shows the write, the read alone speaks again (later changes by others included).
-  if (branchWrite !== null && readSync !== null && readSync.kind === (branchWrite.to === 'deleted' ? 'deleted' : 'in-sync')) setBranchWrite(null)
+  if (branchWriteSeen(readSync, branchWrite, gitHead)) setBranchWrite(null)
   const sync = branchShown(readSync, branchWrite, pull.sourceRefName, gitHead)
   // ---- new pushes (#453) ------------------------------------------------------------------------
   // An open PR notices a push while it is shown: one light probe a minute while the tab is
@@ -612,6 +612,8 @@ function PullPage({
   const refreshForPush = (): void => {
     const found = newPush.found
     newPush.dismiss()
+    // Refresh asks the reads again: a browser commit's mask (#556) must not outlive it
+    setBranchWrite((w) => (w?.to === 'committed' ? null : w))
     const head = pull.headOid.toLowerCase()
     refresh(found?.headMoved === true ? (t) => t.pull.headOid.toLowerCase() !== head : undefined)
     reloadHome?.()
@@ -987,7 +989,17 @@ function PullPage({
     // A members-only branch is pushed with git: the web commits nothing to it (suggestions, Update branch).
     signedIn: identity !== null && guard.disabledReason === null && !archived && !membersSource,
     branchAhead: sync?.kind === 'ahead',
-    onCommitted: (c) => refresh((t) => t.pull.headOid === c),
+    onCommitted: (c) => {
+      // The browser commit moved the source branch: re-read it with the PR (a same-repo branch is
+      // read from the repo home), and until a read shows the new tip, a lagging read at the old
+      // one must not offer to move the PR head back to it (#556).
+      // (keepSession: a commit changes refs, not members or keys; a new session would re-key and
+      // remount the page, dropping this record and the runner's result)
+      if (pull.sourceRefName !== null) setBranchWrite({ ref: pull.sourceRefName, head: c, to: 'committed', from: gitHead })
+      refresh((t) => t.pull.headOid === c)
+      reloadHome?.({ keepSession: true })
+      if (crossRepo) sourceState.reload()
+    },
   })
   const sourceWrite = suggest.branchWrite
   const branchRun = useMemo(() => ({ at: suggest.runner.at, view: suggest.runner.view }), [suggest.runner.at, suggest.runner.view])
@@ -1188,10 +1200,22 @@ function PullPage({
         refresh((t) => t.ciReruns.some((x) => x.id === r.documentId))
         return
       }
-      case 'head':
+      case 'head': {
+        // Judged again at the click, from a fresh ref read (a members-only branch's tip is the home's
+        // fold, re-read only with the home): the banner may show a tip the branch has since left
+        // (after a browser commit, an Update PR head to it moved the PR backward, #556).
+        const name = pull.sourceRefName
+        const tip = await currentSourceTip()
+        const refusal = headUpdateRefusal({ proposed: p.oid, tip, head: gitHead, branch: name === null ? 'The source branch' : shortBranch(name) })
+        if (refusal !== null) {
+          if (crossRepo) sourceState.reload()
+          else reloadHome?.({ keepSession: true })
+          throw new Error(refusal)
+        }
         await post('headUpdate', intent, { oidHex: p.oid })
         refresh((t) => t.pull.headOid === p.oid)
         return
+      }
       case 'request':
         await post(p.remove ? 'reviewRequestRemove' : 'reviewRequest', intent, { refId: p.who })
         refresh((t) => t.review.requestedReviewers.some((r) => r.identity === p.who) !== p.remove)
@@ -1507,12 +1531,17 @@ function PullPage({
   const reopenBlocked = !open && !merged && closedBranch?.restore === true ? `Restore the ${shortBranch(pull.sourceRefName ?? '')} branch first: a pull request reopens with its branch.` : null
   // The repo holding the source branch, for the merge box's last-moment re-read (QW3-013).
   const branchRepo = sourceRef ?? (crossRepo ? null : repo)
-  const checkSourceBranch = async (): Promise<string | null> => {
+  const currentSourceTip = async (): Promise<string | null> => {
     const name = pull.sourceRefName
     if (!sdk || name === null || branchRepo === null) return null
     // A members-only branch is never read by its public hash (the nodes would learn `sha256(name)`):
     // its tip is the member's fold, read with the home.
-    const tip = membersSource ? (tipOidOf(home.branches.find((b) => b.refName === name)) ?? null) : await readBranchTip(sdk, branchRepo, name)
+    return membersSource ? (tipOidOf(home.branches.find((b) => b.refName === name)) ?? null) : await readBranchTip(sdk, branchRepo, name)
+  }
+  const checkSourceBranch = async (): Promise<string | null> => {
+    const name = pull.sourceRefName
+    if (!sdk || name === null || branchRepo === null) return null
+    const tip = await currentSourceTip()
     if (tip === null || tip.toLowerCase() === gitHead.toLowerCase()) return null
     // Show the banner with its "Update PR head" (a same-repo branch is read from the repo home).
     if (crossRepo) sourceState.reload()
