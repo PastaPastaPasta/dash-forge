@@ -22,6 +22,7 @@ on:
       - 'forge-contracts/schema/**'
       - 'forge-contracts/vectors/rc1/**'
       - 'forge-contracts/scripts/**'
+      - 'forge-contracts/deployments/**'
       - 'tools/contract-validate/**'
       - '.github/workflows/contracts.yml'
   push:
@@ -31,6 +32,7 @@ on:
       - 'forge-contracts/schema/**'
       - 'forge-contracts/vectors/rc1/**'
       - 'forge-contracts/scripts/**'
+      - 'forge-contracts/deployments/**'
       - 'tools/contract-validate/**'
       - '.github/workflows/contracts.yml'
   workflow_dispatch:
@@ -152,3 +154,8 @@ jobs:
       - name: Deploy script offline tests
         run: |
           node --test forge-contracts/scripts/deploy-v2.test.mjs forge-contracts/scripts/snapshot-contracts.test.mjs
+      # Offline: the seed-list refresher (M-DAPI, CONT-12) against a captured /masternodes body:
+      # only protocol-14 nodes, the stale-node rules, and the shape of every recorded seed list.
+      # The live probe is `refresh-dapi.mjs --network testnet --check`, run by hand or nightly.
+      - name: Seed-list refresher
+        run: node --test forge-contracts/scripts/lib/refresh-dapi.test.mjs

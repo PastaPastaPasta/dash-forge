@@ -49,6 +49,11 @@ export interface NetworkConfig {
   readonly dapiAddresses: readonly string[]
   /** Devnet quorum service URL; null = `https://quorums.<name>.networks.dash.org`. */
   readonly quorumBaseUrl: string | null
+  /**
+   * The Platform chain id the deployment file records (`dash-devnet-sakura`, `dash-testnet-51`);
+   * null when it records none. The quorum cross-check does not take a DAPI answer from another chain.
+   */
+  readonly chainId?: string | null
   /** DPNS system contract id — supplies human-readable identity names. */
   readonly dpnsContractId: string
   /**
@@ -169,6 +174,7 @@ export function resolveNetworks(
           ? parseDapiAddresses(envAddresses)
           : parseDapiAddresses(recordedDapiAddresses(file).join(',')),
       quorumBaseUrl: envQuorum ?? nonEmpty(file?.quorumBaseUrl),
+      chainId: nonEmpty(file?.chainId),
       dpnsContractId: DPNS_CONTRACT_ID,
       v2: forgeV2Ids(file),
       retired: file?.retired === true,
