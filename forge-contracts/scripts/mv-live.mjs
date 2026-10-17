@@ -7,7 +7,7 @@
 //
 //   (cd forge-contracts/sdk-v2 && npm ci)
 //   node forge-contracts/scripts/mv-live.mjs --record <scratch-record.json> --identities <dir> \
-//        [--network devnet|testnet|mainnet] [--devnet-name sakura] [--report <file.json>] [--only <group,...>] [--n 4] [--state <file>]
+//        [--network devnet|testnet] [--devnet-name sakura] [--report <file.json>] [--only <group,...>] [--n 4] [--state <file>]
 //   node forge-contracts/scripts/mv-live.mjs --network testnet --live-target --identities <dir>   # the smoke subset, see below
 //   node forge-contracts/scripts/mv-live.mjs --self-test     # offline: the sealing helpers against
 //                                                            # tools/private-repos-vectors constants
@@ -18,7 +18,7 @@
 // 3, 4 and 4; `stranger` is never a member. A group that changes a role does it on a repo of its
 // own.
 //
-// Target (lib/target.mjs): --network devnet|testnet|mainnet (default devnet; --devnet-name for a
+// Target (lib/target.mjs): --network devnet|testnet (default devnet; --devnet-name for a
 // devnet, default sakura) names the network and its record, deployments/<network>.json as
 // deploy-v2.mjs resolves it; --record is the scratch registration under test. The scratch record
 // must not be the network's live deployment (its forge-core and group are refused, and a copy of the
@@ -108,7 +108,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEvoSdk } from './deploy-v2.mjs';
-import { addressesFor, assertNotJulyIdentity, checkFlags, refuseProduction, resolveTarget, sdkOptions } from './lib/target.mjs';
+import { addressesFor, assertNotJulyIdentity, assertScratchBaseline, checkFlags, refuseMainnet, refuseProduction, resolveTarget, sdkOptions } from './lib/target.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = Object.fromEntries(process.argv.slice(2).reduce((acc, t, i, a) => (t.startsWith('--') ? [...acc, [t.slice(2), a[i + 1] && !a[i + 1].startsWith('--') ? a[i + 1] : true]] : acc), []));
@@ -189,7 +189,7 @@ if (args['self-test']) {
   process.exit(bad.length ? 1 : 0);
 }
 
-const usage = 'usage: mv-live.mjs --record <scratch-record.json> --identities <dir> [--network devnet|testnet|mainnet] [--devnet-name sakura] [--addresses <dapi,...>] [--report <file>] [--only <groups>] [--n 4] [--state <file>]\n       mv-live.mjs --network testnet --live-target --identities <dir> [--report <file>]   # the smoke subset on the live registration\n       mv-live.mjs --self-test';
+const usage = 'usage: mv-live.mjs --record <scratch-record.json> --identities <dir> [--network devnet|testnet] [--devnet-name sakura] [--addresses <dapi,...>] [--report <file>] [--only <groups>] [--n 4] [--state <file>]\n       mv-live.mjs --network testnet --live-target --identities <dir> [--report <file>]   # the smoke subset on the live registration\n       mv-live.mjs --self-test';
 if (args.help) {
   console.log(usage);
   process.exit(0);
@@ -197,8 +197,8 @@ if (args.help) {
 let target;
 try {
   checkFlags(process.argv.slice(2), { values: ['network', 'devnet-name', 'record', 'identities', 'addresses', 'report', 'only', 'n', 'state', 'baseline'], bools: ['live-target', 'self-test', 'help'] });
+  refuseMainnet(args.network, 'mv-live');
   target = resolveTarget(args, { liveTargetFlag: true });
-  if (target.liveTarget && target.network === 'mainnet') throw new Error('--live-target runs on testnet (and devnets) only: the smoke subset on mainnet is the mainnet runbook\'s step, not this tool\'s yet');
   if (!target.liveTarget) {
     if (!target.scratch) {
       throw new Error(target.production
@@ -239,8 +239,8 @@ const META = rec.v2?.forgeMeta?.contractId;
 const GROUP = rec.v2?.contractGroup?.id ?? rec.v2?.forgeCore?.contractGroupId;
 if (!CORE || !COLLAB || !COMM || !META || !GROUP) throw new Error(`${recPath} records no four-contract set (forge-core, -collab, -community, -meta and the group)`);
 const LIVE = { core: live.v2?.forgeCore?.contractId, collab: live.v2?.forgeCollab?.contractId, community: live.v2?.forgeCommunity?.contractId };
-// A scratch record naming the live forge-core or group was refused above for testnet and mainnet (target.copiesLive); a devnet's is refused here
-if (!liveTarget && (CORE === LIVE.core || GROUP === (live.v2?.contractGroup?.id ?? live.v2?.forgeCore?.contractGroupId))) throw new Error('the scratch record names the live forge-core or group');
+// A scratch record carrying any id of a production registration was refused above (target.production); a devnet's copy of its own live set is refused here
+if (!liveTarget && target.copiesLive) throw new Error('the scratch record carries an id of the live registration (a contract, the group, or a superseded one)');
 if (liveTarget) log(`LIVE TARGET ${target.label}: smoke writes to ${CORE} are permanent and public; owner and stranger identities from ${args.identities}`);
 else if (target.scratch) log(`scratch registration ${recPath} on ${target.label}`);
 const addresses = addressesFor(target, args);
@@ -1303,10 +1303,11 @@ async function sameBlockEdit(I, r) {
 async function feeProbes2() {
   const I = 'FEE2';
   if (!baselineFile) throw new Error('--only fees2 needs --baseline <scratch record of the rev 4.1 set>');
-  if (baselineFile.toLowerCase().startsWith(realpathSync(join(ROOT, 'deployments')).toLowerCase())) throw new Error('--baseline must be a scratch record');
-  const bl = JSON.parse(readFileSync(baselineFile, 'utf8')).v2 ?? {};
+  const baseline = JSON.parse(readFileSync(baselineFile, 'utf8'));
+  assertScratchBaseline(baselineFile, baseline, target, { deploymentsDir: join(ROOT, 'deployments') });
+  const bl = baseline.v2 ?? {};
   const BL = { [CORE]: bl.forgeCore?.contractId, [COLLAB]: bl.forgeCollab?.contractId, [COMM]: bl.forgeCommunity?.contractId, [META]: bl.forgeMeta?.contractId };
-  if (Object.values(BL).some((v) => !v) || BL[CORE] === CORE || BL[CORE] === LIVE.core) throw new Error(`${baselineFile} is no other four-contract scratch set`);
+  if (Object.values(BL).some((v) => !v) || BL[CORE] === CORE) throw new Error(`${baselineFile} is no other four-contract scratch set`);
   const onBase = (type) => ({ contract: BL[CONTRACT[type]] });
   const PREFIX = 'refs/heads/bot/ci-bot/';
   const setUp = async (where, opts) => {

@@ -14,9 +14,16 @@
 //     record in deployments/;
 //   - on testnet and mainnet that record is the PRODUCTION registration, whose repos, issues and
 //     keys can never be deleted. A rule suite never runs against it: `refuseProduction` throws;
-//   - a "scratch" record that carries the live forge-core or contract group is a copy of the live
-//     registration, and counts as live;
+//   - a "scratch" record that carries ANY id of a live registration (a contract, the contract group,
+//     or a superseded one of either; testnet.json and mainnet.json both, whatever the --network) is a
+//     copy of (or a splice with) the live registration, and counts as live;
+//   - on testnet and mainnet a `--record` must carry the stamp deploy-v2 writes for a scratch
+//     registration (`--contracts <dir> --record <file>` writes `v2.contractsDir`; a committed
+//     `--set` run, the live record, writes `v2.contractsSet`). A record without it is not a scratch
+//     record: a stale local copy of the live record, or an empty `{}`, would otherwise pass;
 //   - a devnet's record is not production: devnets are reset and re-registered.
+//   - rc1-live, rc1-empty-aggregates, rc1-fee-probe and mv-live (--live-target included) refuse
+//     --network mainnet entirely for now (`refuseMainnet`): real DASH, and no mainnet plan.
 //
 // Pure functions over the filesystem (the deployments directory is a parameter), so the policy is
 // tested offline (target.test.mjs).
@@ -78,21 +85,59 @@ export function canonical(path) {
 }
 export const isUnderDir = (path, dir) => canonical(resolve(path)).startsWith(`${canonical(dir)}${sep}`);
 
-const groupOf = (rec) => rec?.v2?.contractGroupId ?? rec?.v2?.contractGroup?.id ?? rec?.v2?.forgeCore?.contractGroupId;
-/** Every id that identifies a registered set: its contracts (core, collab, community, meta) and its contract group. */
+/** The records deploy-v2 keeps a retired registration under: `v2.<key>Superseded` (a list of the old entries). */
+export const SUPERSEDED_KEYS = ['forgeCoreSuperseded', 'forgeCollabSuperseded', 'forgeCommunitySuperseded', 'forgeMetaSuperseded', 'contractGroupSuperseded'];
+/**
+ * Every id that identifies a registered set: its contracts (core, collab, community, meta), every
+ * place a record may name its contract group (`v2.contractGroupId`, `v2.contractGroup.id`,
+ * `v2.forgeCore.contractGroupId`), and the same in each superseded entry (a retired contract or
+ * group is still part of the registration's history and is still readable).
+ */
 export function setIds(rec) {
   const v2 = rec?.v2 ?? {};
-  return [v2.forgeCore, v2.forgeCollab, v2.forgeCommunity, v2.forgeMeta].map((c) => c?.contractId).concat(groupOf(rec)).filter(Boolean);
+  const ids = [v2.forgeCore, v2.forgeCollab, v2.forgeCommunity, v2.forgeMeta].flatMap((c) => [c?.contractId, c?.contractGroupId]);
+  ids.push(v2.contractGroupId, v2.contractGroup?.id);
+  for (const key of SUPERSEDED_KEYS) {
+    for (const old of Array.isArray(v2[key]) ? v2[key] : []) ids.push(old?.contractId, old?.contractGroupId, old?.id);
+  }
+  return ids.filter((id) => typeof id === 'string' && id !== '');
 }
 /** True when `rec` names any contract or the contract group of `live`: a copy of (or a splice with) the live registration. */
 export function sharesLiveSet(rec, live) {
   const theirs = new Set(setIds(live));
   return setIds(rec).some((id) => theirs.has(id));
 }
+/**
+ * The production registration (deployments/testnet.json or mainnet.json, whichever the network)
+ * that `rec` shares an id with, as `{ network, file }`; null when none. Every production record is
+ * compared, not just the target network's: a mainnet copy passed as `--network testnet --record`
+ * is still the live mainnet registration.
+ */
+export function productionOverlap(rec, deploymentsDir = DEFAULT_DEPLOYMENTS_DIR) {
+  for (const network of PRODUCTION_NETWORKS) {
+    const file = liveRecordPath(deploymentsDir, network);
+    if (!existsSync(file)) continue;
+    if (sharesLiveSet(rec, readJson(file, `the ${network} record`))) return { network, file };
+  }
+  return null;
+}
 /** A four-contract record (forge-meta registered): the mainnet-set layout. */
 export const isFourContract = (rec) => Boolean(rec?.v2?.forgeMeta?.contractId);
 
-function readJson(file, what) {
+/**
+ * Why `rec` is not a scratch registration, or null when it is. deploy-v2 stamps a scratch run
+ * (`--contracts <dir> --record <file>`) with `v2.contractsDir` and a committed-set run (the live
+ * record) with `v2.contractsSet`. A record without the first, or with the second, was not written
+ * by a scratch run.
+ */
+export function scratchStampError(rec) {
+  const v2 = rec?.v2;
+  if (v2?.contractsSet !== undefined) return `it carries v2.contractsSet (${JSON.stringify(v2.contractsSet)}): the stamp of a committed-set run, i.e. a live registration`;
+  if (typeof v2?.contractsDir !== 'string' || v2.contractsDir === '') return 'it has no v2.contractsDir, the stamp `deploy-v2.mjs --contracts <dir> --record <file>` writes';
+  return null;
+}
+
+export function readJson(file, what) {
   if (!existsSync(file)) throw new Error(`${what} ${file} does not exist`);
   try {
     return JSON.parse(readFileSync(file, 'utf8'));
@@ -109,7 +154,7 @@ function readJson(file, what) {
  * @param {string} [opts.deploymentsDir]
  * @param {boolean} [opts.liveTargetFlag]  the tool has a `--live-target` mode: the record is then the
  *        network's own registration (no `--record`), and the tool owns what it may do there
- * @returns {{network, devnetName, label, liveFile, live, recordFile, record, scratch, liveTarget, copiesLive, production, fourContract}}
+ * @returns {{network, devnetName, label, liveFile, live, recordFile, record, scratch, liveTarget, copiesLive, overlap, production, fourContract}}
  *          `production` is true when the record is a testnet or mainnet LIVE registration (or a copy)
  */
 export function resolveTarget(args, { deploymentsDir = DEFAULT_DEPLOYMENTS_DIR, liveTargetFlag = false } = {}) {
@@ -144,11 +189,25 @@ export function resolveTarget(args, { deploymentsDir = DEFAULT_DEPLOYMENTS_DIR, 
     if (record.network !== undefined && record.network !== network) {
       throw new Error(`--record ${args.record} records network ${record.network}, not ${network}`);
     }
+    if (devnetName !== undefined && record.devnetName !== undefined && record.devnetName !== devnetName) {
+      throw new Error(`--record ${args.record} records devnet ${record.devnetName}, not ${devnetName}`);
+    }
+    if (PRODUCTION_NETWORKS.includes(network)) {
+      const why = scratchStampError(record);
+      if (why) {
+        throw new Error(
+          `--record ${args.record} is not a scratch record: ${why}. On ${network} a scratch registration is made with ` +
+            `\`deploy-v2.mjs --network ${network} --contracts <dir> --record <scratch.json>\`; a copy of ${liveFile} is the live registration.`,
+        );
+      }
+    }
   }
-  // A scratch record that carries the network's forge-core or group is the live registration under another name
+  // A scratch record that carries any id of the network's own registration, or of either production
+  // registration, is a live registration under another name
   const copiesLive = scratch && sharesLiveSet(record, live);
-  const production = PRODUCTION_NETWORKS.includes(network) && (!scratch || copiesLive);
-  return { network, devnetName, label, liveFile, live, recordFile, record, scratch, liveTarget, copiesLive, production, fourContract: isFourContract(record) };
+  const overlap = scratch ? productionOverlap(record, deploymentsDir) : null;
+  const production = (PRODUCTION_NETWORKS.includes(network) && (!scratch || copiesLive)) || overlap !== null;
+  return { network, devnetName, label, liveFile, live, recordFile, record, scratch, liveTarget, copiesLive, overlap, production, fourContract: isFourContract(record) };
 }
 
 /**
@@ -158,15 +217,45 @@ export function resolveTarget(args, { deploymentsDir = DEFAULT_DEPLOYMENTS_DIR, 
  */
 export function refuseProduction(target, hint = '') {
   if (!target.production) return;
-  const what = target.copiesLive
-    ? `${target.recordFile} carries the live ${target.network} forge-core or contract group (a copy of ${target.liveFile})`
-    : `${target.liveFile} is the live ${target.network} registration`;
+  const what = target.overlap
+    ? `${target.recordFile} carries an id of the live ${target.overlap.network} registration (a copy of, or a splice with, ${target.overlap.file})`
+    : target.copiesLive
+      ? `${target.recordFile} carries an id of the live ${target.network} registration (a copy of, or a splice with, ${target.liveFile})`
+      : `${target.liveFile} is the live ${target.network} registration`;
   throw new Error(
     `refusing to run against a live registration: ${what}. Repos, issues, keys and packs written there can never be deleted. ` +
       'Rule suites run only on a scratch registration: register one outside deployments/ ' +
       `(\`python3 forge-contracts/schema/build.py --mainnet --out <dir>\`, then \`deploy-v2.mjs --network ${target.network} --contracts <dir> --record <scratch.json>\`) ` +
       `and pass \`--record <scratch.json>\`.${hint ? ` ${hint}` : ''}`,
   );
+}
+
+/**
+ * rc1-live, rc1-empty-aggregates, rc1-fee-probe and mv-live (--live-target included) refuse mainnet
+ * for now: there is no mainnet plan for them, and a mainnet write spends real DASH and is permanent.
+ * `network` is the parsed --network value.
+ */
+export function refuseMainnet(network, tool) {
+  if (network === 'mainnet') {
+    throw new Error(`--network mainnet is not supported for ${tool}: there is no mainnet plan for it yet, and a mainnet write spends real DASH and is permanent (use --network devnet|testnet with a scratch --record)`);
+  }
+}
+
+/**
+ * fees2's `--baseline` must be a scratch registration other than the one under test: not a file of
+ * deployments/, stamped as scratch on testnet/mainnet, and sharing no id with the live registration
+ * of this network, either production registration, or the set under test.
+ */
+export function assertScratchBaseline(baselineFile, baseline, target, { deploymentsDir = DEFAULT_DEPLOYMENTS_DIR } = {}) {
+  if (isUnderDir(baselineFile, deploymentsDir)) throw new Error(`--baseline ${baselineFile} must be a scratch record outside forge-contracts/deployments/`);
+  if (PRODUCTION_NETWORKS.includes(target.network)) {
+    const why = scratchStampError(baseline);
+    if (why) throw new Error(`--baseline ${baselineFile} is not a scratch record: ${why}`);
+  }
+  if (sharesLiveSet(baseline, target.live)) throw new Error(`--baseline ${baselineFile} carries an id of the live ${target.label} registration (${target.liveFile})`);
+  const overlap = productionOverlap(baseline, deploymentsDir);
+  if (overlap) throw new Error(`--baseline ${baselineFile} carries an id of the live ${overlap.network} registration (${overlap.file})`);
+  if (sharesLiveSet(baseline, target.record)) throw new Error(`--baseline ${baselineFile} shares an id with the set under test (${target.recordFile}): it must be another scratch set`);
 }
 
 /** The DAPI addresses to connect to: --addresses, else (devnets only) the record's, else the network's. Testnet and mainnet use SDK discovery. */

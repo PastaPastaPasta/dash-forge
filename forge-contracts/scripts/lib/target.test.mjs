@@ -8,26 +8,37 @@ import { depPath } from '../deploy-v2.mjs';
 import {
   DEFAULT_DEPLOYMENTS_DIR,
   JULY_POOL_IDS,
+  SUPERSEDED_KEYS,
   addressesFor,
   assertNotJulyIdentity,
+  assertScratchBaseline,
   checkFlags,
   liveRecordPath,
+  productionOverlap,
+  refuseMainnet,
   refuseProduction,
   requireThreeContract,
   resolveTarget,
+  scratchStampError,
   sdkOptions,
+  setIds,
   sharesLiveSet,
   validateDevnetName,
 } from './target.mjs';
 
 const threeContracts = (core = 'CORE', group = 'GROUP') => ({
-  v2: { forgeCore: { contractId: core, contractGroupId: group }, forgeCollab: { contractId: 'COLLAB' }, forgeCommunity: { contractId: 'COMM' }, contractGroupId: group },
+  v2: { forgeCore: { contractId: core, contractGroupId: group }, forgeCollab: { contractId: `${core}_COLLAB` }, forgeCommunity: { contractId: `${core}_COMM` }, contractGroupId: group },
 });
 const fourContracts = (core = 'CORE4', group = 'GROUP4') => {
   const r = threeContracts(core, group);
-  r.v2.forgeMeta = { contractId: 'META' };
+  r.v2.forgeMeta = { contractId: `${core}_META` };
   return r;
 };
+
+// what `deploy-v2.mjs --contracts <dir> --record <file>` stamps on a scratch registration
+const scratched = (rec) => ({ ...rec, v2: { ...rec.v2, contractsDir: 'forge-contracts/contracts/mainnet' } });
+// what a committed-set (--set) run writes: the live record
+const committed = (rec) => ({ ...rec, v2: { ...rec.v2, contractsSet: 'mainnet' } });
 
 let dir; // a stand-in forge-contracts/
 let deployments;
@@ -43,12 +54,15 @@ before(() => {
   write(join(deployments, 'devnet-sakura.json'), { network: 'devnet', dapiAddresses: ['https://10.0.0.1:1443'], ...threeContracts('SAKURA_CORE', 'SAKURA_GROUP') });
   write(join(deployments, 'devnet-other.json'), { network: 'devnet', dapiAddresses: ['https://10.0.0.2:1443'], ...threeContracts('OTHER_CORE', 'OTHER_GROUP') });
   write(join(deployments, 'testnet.json'), { dapiAddresses: ['https://stale:1443'], keyExchange: {} }); // before the registration
-  write(join(deployments, 'mainnet.json'), { network: 'mainnet', ...fourContracts('MAIN_CORE', 'MAIN_GROUP') });
-  write(join(scratchDir, 'scratch-testnet.json'), { network: 'testnet', ...fourContracts('SCRATCH_CORE', 'SCRATCH_GROUP') });
-  write(join(scratchDir, 'scratch-testnet-3.json'), { network: 'testnet', ...threeContracts('S3_CORE', 'S3_GROUP') });
-  write(join(scratchDir, 'wrong-network.json'), { network: 'devnet', ...fourContracts('W_CORE', 'W_GROUP') });
-  write(join(scratchDir, 'mainnet-copy.json'), { network: 'mainnet', ...fourContracts('MAIN_CORE', 'ANOTHER_GROUP') });
-  write(join(scratchDir, 'group-copy.json'), { ...fourContracts('NEW_CORE', 'MAIN_GROUP') });
+  write(join(deployments, 'mainnet.json'), committed({ network: 'mainnet', ...fourContracts('MAIN_CORE', 'MAIN_GROUP') }));
+  write(join(scratchDir, 'scratch-testnet.json'), scratched({ network: 'testnet', ...fourContracts('SCRATCH_CORE', 'SCRATCH_GROUP') }));
+  write(join(scratchDir, 'scratch-testnet-3.json'), scratched({ network: 'testnet', ...threeContracts('S3_CORE', 'S3_GROUP') }));
+  write(join(scratchDir, 'wrong-network.json'), scratched({ network: 'devnet', ...fourContracts('W_CORE', 'W_GROUP') }));
+  write(join(scratchDir, 'mainnet-copy.json'), scratched({ network: 'mainnet', ...fourContracts('MAIN_CORE', 'ANOTHER_GROUP') }));
+  write(join(scratchDir, 'group-copy.json'), scratched({ ...fourContracts('NEW_CORE', 'MAIN_GROUP') }));
+  write(join(scratchDir, 'stale-live-copy.json'), { dapiAddresses: ['https://stale:1443'], ...committed({ network: 'mainnet', ...fourContracts('F2_CORE', 'F2_GROUP') }) });
+  write(join(scratchDir, 'empty.json'), {});
+  write(join(scratchDir, 'token-only.json'), { network: 'testnet', v2: { permissionTokens: {} } });
   symlinkSync(deployments, join(scratchDir, 'link-to-deployments'));
 });
 after(() => rmSync(dir, { recursive: true, force: true }));
@@ -129,7 +143,7 @@ describe('--record', () => {
     const copy = resolveTarget({ network: 'mainnet', record: join(scratchDir, 'mainnet-copy.json') }, opts());
     assert.equal(copy.copiesLive, true);
     assert.equal(copy.production, true);
-    assert.throws(() => refuseProduction(copy), /carries the live mainnet forge-core or contract group/);
+    assert.throws(() => refuseProduction(copy), /carries an id of the live mainnet registration/);
     const group = resolveTarget({ network: 'mainnet', record: join(scratchDir, 'group-copy.json') }, opts());
     assert.equal(group.production, true);
     assert.ok(sharesLiveSet(group.record, group.live));
@@ -139,14 +153,14 @@ describe('--record', () => {
     mkdirSync(dep2);
     const live = { network: 'mainnet', ...fourContracts('M2_CORE', 'M2_GROUP') };
     write(join(dep2, 'mainnet.json'), live);
-    const spliced = { network: 'mainnet', ...fourContracts('S2_CORE', 'S2_GROUP') };
+    const spliced = scratched({ network: 'mainnet', ...fourContracts('S2_CORE', 'S2_GROUP') });
     spliced.v2.forgeCommunity.contractId = live.v2.forgeCommunity.contractId; // fresh core and group, the live community
     write(join(scratchDir, 'splice.json'), spliced);
     const t = resolveTarget({ network: 'mainnet', record: join(scratchDir, 'splice.json') }, { deploymentsDir: dep2 });
     assert.equal(t.copiesLive, true);
     assert.equal(t.production, true);
     // and a fully fresh set is not
-    write(join(scratchDir, 'fresh.json'), { network: 'mainnet', ...(() => { const r = fourContracts('F_CORE', 'F_GROUP'); r.v2.forgeCollab.contractId = 'F_COLLAB'; r.v2.forgeCommunity.contractId = 'F_COMM'; r.v2.forgeMeta.contractId = 'F_META'; return r; })() });
+    write(join(scratchDir, 'fresh.json'), scratched({ network: 'mainnet', ...(() => { const r = fourContracts('F_CORE', 'F_GROUP'); r.v2.forgeCollab.contractId = 'F_COLLAB'; r.v2.forgeCommunity.contractId = 'F_COMM'; r.v2.forgeMeta.contractId = 'F_META'; return r; })() }));
     assert.equal(resolveTarget({ network: 'mainnet', record: join(scratchDir, 'fresh.json') }, { deploymentsDir: dep2 }).production, false);
   });
   test('a scratch record on a devnet may be a copy: a devnet is not production', () => {
@@ -154,6 +168,153 @@ describe('--record', () => {
     const t = resolveTarget({ record: join(scratchDir, 'sakura-copy.json') }, opts());
     assert.equal(t.copiesLive, true);
     assert.equal(t.production, false);
+  });
+});
+
+describe('the scratch stamp (fail closed on testnet and mainnet)', () => {
+  test('a record without v2.contractsDir is not a scratch record', () => {
+    for (const [network, file] of [['testnet', 'empty.json'], ['testnet', 'token-only.json'], ['mainnet', 'empty.json']]) {
+      assert.throws(() => resolveTarget({ network, record: join(scratchDir, file) }, opts()), /is not a scratch record: it has no v2\.contractsDir/);
+    }
+  });
+  test('a stale copy of the live record (v2.contractsSet) is refused whatever its ids', () => {
+    assert.throws(() => resolveTarget({ network: 'mainnet', record: join(scratchDir, 'stale-live-copy.json') }, opts()), /is not a scratch record: it carries v2\.contractsSet/);
+  });
+  test('contractsSet beside contractsDir is refused too', () => {
+    write(join(scratchDir, 'both.json'), { network: 'testnet', v2: { contractsDir: 'x', contractsSet: 'mainnet' } });
+    assert.throws(() => resolveTarget({ network: 'testnet', record: join(scratchDir, 'both.json') }, opts()), /is not a scratch record/);
+  });
+  test('scratchStampError', () => {
+    assert.equal(scratchStampError({ v2: { contractsDir: 'x' } }), null);
+    assert.match(scratchStampError({}), /no v2\.contractsDir/);
+    assert.match(scratchStampError({ v2: { contractsDir: '' } }), /no v2\.contractsDir/);
+    assert.match(scratchStampError({ v2: { contractsDir: 7 } }), /no v2\.contractsDir/);
+    assert.match(scratchStampError({ v2: { contractsSet: 'devnet' } }), /contractsSet/);
+  });
+  test('a devnet scratch record needs no stamp', () => {
+    write(join(scratchDir, 'devnet-scratch.json'), { network: 'devnet', ...threeContracts('D_CORE', 'D_GROUP') });
+    const t = resolveTarget({ record: join(scratchDir, 'devnet-scratch.json') }, opts());
+    assert.equal(t.scratch, true);
+    assert.equal(t.production, false);
+  });
+  test('a devnet record naming another devnet is refused', () => {
+    write(join(scratchDir, 'other-devnet.json'), { network: 'devnet', devnetName: 'other', ...threeContracts('O2_CORE', 'O2_GROUP') });
+    assert.throws(() => resolveTarget({ record: join(scratchDir, 'other-devnet.json') }, opts()), /records devnet other, not sakura/);
+    assert.equal(resolveTarget({ 'devnet-name': 'other', record: join(scratchDir, 'other-devnet.json') }, opts()).devnetName, 'other');
+  });
+});
+
+describe('what counts as the live set', () => {
+  const full = () => {
+    const r = fourContracts('L_CORE', 'L_GROUP');
+    r.v2.contractGroup = { id: 'L_GROUP_OBJ' };
+    r.v2.forgeCore.contractGroupId = 'L_GROUP_CORE';
+    r.v2.forgeCoreSuperseded = [{ contractId: 'OLD_CORE', contractGroupId: 'OLD_CORE_GROUP' }];
+    r.v2.forgeCollabSuperseded = [{ contractId: 'OLD_COLLAB' }];
+    r.v2.forgeCommunitySuperseded = [{ contractId: 'OLD_COMM' }];
+    r.v2.forgeMetaSuperseded = [{ contractId: 'OLD_META' }];
+    r.v2.contractGroupSuperseded = [{ id: 'OLD_GROUP' }];
+    return r;
+  };
+  test('setIds collects every group field and every superseded list', () => {
+    const ids = new Set(setIds(full()));
+    for (const id of ['L_CORE', 'L_CORE_COLLAB', 'L_CORE_COMM', 'L_CORE_META', 'L_GROUP', 'L_GROUP_OBJ', 'L_GROUP_CORE', 'OLD_CORE', 'OLD_CORE_GROUP', 'OLD_COLLAB', 'OLD_COMM', 'OLD_META', 'OLD_GROUP']) {
+      assert.ok(ids.has(id), `${id} missing`);
+    }
+    assert.equal(SUPERSEDED_KEYS.length, 5);
+  });
+  test('each id alone makes a record share the set', () => {
+    const live = full();
+    const probes = [
+      (r) => { r.v2.contractGroup = { id: 'L_GROUP_OBJ' }; },
+      (r) => { r.v2.forgeCore.contractGroupId = 'L_GROUP_CORE'; },
+      (r) => { r.v2.contractGroupId = 'L_GROUP'; },
+      (r) => { r.v2.forgeCoreSuperseded = [{ contractId: 'OLD_CORE' }]; },
+      (r) => { r.v2.forgeCoreSuperseded = [{ contractGroupId: 'OLD_CORE_GROUP' }]; },
+      (r) => { r.v2.forgeCollabSuperseded = [{ contractId: 'OLD_COLLAB' }]; },
+      (r) => { r.v2.forgeCommunitySuperseded = [{ contractId: 'OLD_COMM' }]; },
+      (r) => { r.v2.forgeMetaSuperseded = [{ contractId: 'OLD_META' }]; },
+      (r) => { r.v2.contractGroupSuperseded = [{ id: 'OLD_GROUP' }]; },
+    ];
+    for (const [i, set] of probes.entries()) {
+      const fresh = fourContracts(`X${i}_CORE`, `X${i}_GROUP`);
+      assert.equal(sharesLiveSet(fresh, live), false, `probe ${i} starts disjoint`);
+      set(fresh);
+      assert.equal(sharesLiveSet({ v2: fresh.v2 }, live), true, `probe ${i}`);
+      // and it goes both ways: the live record's superseded ids count when the scratch carries them live
+      assert.equal(sharesLiveSet(live, { v2: fresh.v2 }), true, `probe ${i} reversed`);
+    }
+  });
+  test('a record is compared against EVERY production record, whatever --network', () => {
+    // testnet.json is the pre-registration stub; mainnet.json holds the MAIN_* set: a mainnet copy passed as testnet
+    write(join(scratchDir, 'mainnet-as-testnet.json'), scratched({ network: 'testnet', ...fourContracts('MAIN_CORE', 'FRESH_G') }));
+    const t = resolveTarget({ network: 'testnet', record: join(scratchDir, 'mainnet-as-testnet.json') }, opts());
+    assert.equal(t.copiesLive, false); // not the testnet registration...
+    assert.equal(t.overlap?.network, 'mainnet'); // ...but the mainnet one
+    assert.equal(t.production, true);
+    assert.throws(() => refuseProduction(t), /carries an id of the live mainnet registration/);
+    assert.deepEqual(productionOverlap(t.record, deployments), { network: 'mainnet', file: join(deployments, 'mainnet.json') });
+    assert.equal(productionOverlap(fourContracts('NOBODY', 'NOBODY_G'), deployments), null);
+  });
+  test('the testnet registration is compared too', () => {
+    const dep3 = join(dir, 'dep3');
+    mkdirSync(dep3);
+    write(join(dep3, 'testnet.json'), committed({ network: 'testnet', ...fourContracts('T3_CORE', 'T3_GROUP') }));
+    write(join(dep3, 'mainnet.json'), committed({ network: 'mainnet', ...fourContracts('M3_CORE', 'M3_GROUP') }));
+    const spliced = scratched({ network: 'mainnet', ...fourContracts('S3X_CORE', 'S3X_GROUP') });
+    spliced.v2.forgeMetaSuperseded = [{ contractId: 'T3_CORE_META' }];
+    write(join(scratchDir, 'testnet-meta-in-mainnet.json'), spliced);
+    const t = resolveTarget({ network: 'mainnet', record: join(scratchDir, 'testnet-meta-in-mainnet.json') }, { deploymentsDir: dep3 });
+    assert.equal(t.overlap?.network, 'testnet');
+    assert.equal(t.production, true);
+  });
+});
+
+describe('mainnet is refused by the live tools', () => {
+  test('refuseMainnet', () => {
+    assert.throws(() => refuseMainnet('mainnet', 'rc1-live'), /--network mainnet is not supported for rc1-live.*real DASH/);
+    for (const n of [undefined, 'devnet', 'testnet', true]) assert.doesNotThrow(() => refuseMainnet(n, 'rc1-live'));
+  });
+});
+
+describe('fees2 --baseline', () => {
+  const live = () => resolveTarget({ network: 'testnet', record: join(scratchDir, 'scratch-testnet.json') }, opts());
+  const baseline = (core) => scratched({ network: 'testnet', ...fourContracts(core, `${core}_G`) });
+  test('another scratch set passes', () => {
+    assert.doesNotThrow(() => assertScratchBaseline(join(scratchDir, 'b.json'), baseline('BASE'), live(), { deploymentsDir: deployments }));
+  });
+  test('a file of deployments/ is refused, by symlink and by case-less prefix', () => {
+    assert.throws(() => assertScratchBaseline(join(deployments, 'mainnet.json'), baseline('BASE'), live(), { deploymentsDir: deployments }), /outside forge-contracts\/deployments/);
+    assert.throws(() => assertScratchBaseline(join(scratchDir, 'link-to-deployments', 'x.json'), baseline('BASE'), live(), { deploymentsDir: deployments }), /outside forge-contracts\/deployments/);
+    // a sibling directory sharing the prefix is not under deployments/
+    assert.doesNotThrow(() => assertScratchBaseline(join(dir, 'deployments-old', 'x.json'), baseline('BASE'), live(), { deploymentsDir: deployments }));
+  });
+  test('an unstamped or live-stamped baseline on testnet is refused', () => {
+    assert.throws(() => assertScratchBaseline(join(scratchDir, 'b.json'), { v2: { ...baseline('B2').v2, contractsDir: undefined } }, live(), { deploymentsDir: deployments }), /not a scratch record/);
+    assert.throws(() => assertScratchBaseline(join(scratchDir, 'b.json'), committed(baseline('B2')), live(), { deploymentsDir: deployments }), /not a scratch record/);
+  });
+  test('any live core, collab, community, meta or group (superseded too) is refused', () => {
+    const t = resolveTarget({ network: 'testnet', record: join(scratchDir, 'scratch-testnet.json') }, opts());
+    for (const mutate of [
+      (v2) => { v2.forgeCommunity = { contractId: 'MAIN_CORE_COMM' }; },
+      (v2) => { v2.forgeMeta = { contractId: 'MAIN_CORE_META' }; },
+      (v2) => { v2.forgeCollab = { contractId: 'MAIN_CORE_COLLAB' }; },
+      (v2) => { v2.contractGroupId = 'MAIN_GROUP'; },
+      (v2) => { v2.forgeCommunitySuperseded = [{ contractId: 'MAIN_CORE_COMM' }]; },
+    ]) {
+      const b = baseline('BASE2');
+      mutate(b.v2);
+      assert.throws(() => assertScratchBaseline(join(scratchDir, 'b.json'), b, t, { deploymentsDir: deployments }), /carries an id of the live mainnet registration/);
+    }
+  });
+  test('the live registration of the target network is refused (a devnet)', () => {
+    const t = resolveTarget({}, opts());
+    const b = { v2: { ...threeContracts('SAKURA_CORE', 'BASE_G').v2 } };
+    assert.throws(() => assertScratchBaseline(join(scratchDir, 'b.json'), b, t, { deploymentsDir: deployments }), /live devnet-sakura registration/);
+  });
+  test('the set under test is refused as its own baseline', () => {
+    const t = live();
+    assert.throws(() => assertScratchBaseline(join(scratchDir, 'b.json'), scratched({ network: 'testnet', ...fourContracts('SCRATCH_CORE', 'SCRATCH_GROUP') }), t, { deploymentsDir: deployments }), /shares an id with the set under test/);
   });
 });
 

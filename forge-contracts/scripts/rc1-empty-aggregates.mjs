@@ -7,17 +7,17 @@
 //   node forge-contracts/scripts/rc1-empty-aggregates.mjs [--devnet-name sakura] [--report <file.json>]
 //   node forge-contracts/scripts/rc1-empty-aggregates.mjs --network testnet --record <scratch-record.json> [--report <file.json>]
 //
-// Target (lib/target.mjs): --network devnet|testnet|mainnet (default devnet), --devnet-name, and
+// Target (lib/target.mjs): --network devnet|testnet (default devnet), --devnet-name, and
 // --record <file> for a scratch registration. It reads only, but the release plan (WS-D, QA-14) keeps
 // every live suite off the production registrations: on testnet and mainnet the network's own record
 // is refused, so pass --record. A four-contract record is refused until the layout routing lands (QA-03).
 import { randomBytes } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { loadEvoSdk } from './deploy-v2.mjs';
-import { addressesFor, checkFlags, refuseProduction, requireThreeContract, resolveTarget, sdkOptions, threeContractIds } from './lib/target.mjs';
+import { addressesFor, checkFlags, refuseMainnet, refuseProduction, requireThreeContract, resolveTarget, sdkOptions, threeContractIds } from './lib/target.mjs';
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((acc, t, i, a) => (t.startsWith('--') ? [...acc, [t.slice(2), a[i + 1] && !a[i + 1].startsWith('--') ? a[i + 1] : true]] : acc), []));
-const usage = 'usage: rc1-empty-aggregates.mjs [--network devnet|testnet|mainnet] [--devnet-name sakura] [--record <scratch-record.json>] [--addresses <dapi,...>] [--report <file.json>]';
+const usage = 'usage: rc1-empty-aggregates.mjs [--network devnet|testnet] [--devnet-name sakura] [--record <scratch-record.json>] [--addresses <dapi,...>] [--report <file.json>]';
 if (args.help) {
   console.log(usage);
   process.exit(0);
@@ -25,6 +25,7 @@ if (args.help) {
 let target;
 try {
   checkFlags(process.argv.slice(2), { values: ['network', 'devnet-name', 'record', 'addresses', 'report'], bools: ['help'] });
+  refuseMainnet(args.network, 'rc1-empty-aggregates');
   target = resolveTarget(args);
   refuseProduction(target);
   requireThreeContract(target, 'rc1-empty-aggregates');

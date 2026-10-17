@@ -5,7 +5,7 @@
 //   node forge-contracts/scripts/rc1-fee-probe.mjs --devnet-name sakura --identity <file> [--state <file.json>] [--n 3]
 //   node forge-contracts/scripts/rc1-fee-probe.mjs --network testnet --record <scratch-record.json> --identity <file> [...]
 //
-// Target (lib/target.mjs): --network devnet|testnet|mainnet (default devnet), --devnet-name, and
+// Target (lib/target.mjs): --network devnet|testnet (default devnet), --devnet-name, and
 // --record <file>, the scratch registration this measurement belongs to. The probes are contracts of
 // their own, but they are registered on the network for good, so on testnet and mainnet the network's
 // own (production) record is refused: pass --record (QA-14).
@@ -52,7 +52,7 @@ import { randomBytes } from 'node:crypto';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PROTOCOL_VERSION, contractId, loadEvoSdk } from './deploy-v2.mjs';
-import { addressesFor, assertNotJulyIdentity, checkFlags, refuseProduction, resolveTarget, sdkOptions } from './lib/target.mjs';
+import { addressesFor, assertNotJulyIdentity, checkFlags, refuseMainnet, refuseProduction, resolveTarget, sdkOptions } from './lib/target.mjs';
 import { PROBES, RC2_DOCS, REVIEW_PROBES, bare, emitted, materialize, probeSchemas, schemaHash } from './lib/rc2-probe.mjs';
 import * as freezeProbe from './lib/freeze-probe.mjs';
 
@@ -63,7 +63,7 @@ const RC2 = Boolean(args.rc2);
 const FREEZE = Boolean(args.freeze);
 const log = (m) => console.error(`${new Date().toISOString().slice(11, 19)} ${m}`);
 const usage = (m, code = 2) => {
-  console.error(`${m}\nusage: rc1-fee-probe.mjs [--rc2|--freeze] [--network devnet|testnet|mainnet] [--devnet-name <name>] [--record <scratch-record.json>] [--addresses <dapi,...>] --identity <file> [--state <file>] [--n 4]\n       rc1-fee-probe.mjs --rc2|--freeze --emit <dir>`);
+  console.error(`${m}\nusage: rc1-fee-probe.mjs [--rc2|--freeze] [--network devnet|testnet] [--devnet-name <name>] [--record <scratch-record.json>] [--addresses <dapi,...>] --identity <file> [--state <file>] [--n 4]\n       rc1-fee-probe.mjs --rc2|--freeze --emit <dir>`);
   process.exit(code);
 };
 const mean = (a) => a.reduce((x, y) => x + y, 0) / a.length;
@@ -88,6 +88,7 @@ if (args.help) usage('rc1-fee-probe.mjs measures what an index feature adds to a
 let target;
 try {
   checkFlags(process.argv.slice(2), { values: ['network', 'devnet-name', 'record', 'addresses', 'identity', 'state', 'n', 'emit'], bools: ['rc2', 'freeze', 'help'] });
+  refuseMainnet(args.network, 'rc1-fee-probe');
   target = resolveTarget(args);
   refuseProduction(target);
 } catch (e) {
