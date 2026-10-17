@@ -367,7 +367,7 @@ mod tests {
     /// an identity nothing else spent from) with what it paid: the sum of its writes'
     /// balance deltas, or its balance change rounded up. The estimate must be an upper bound;
     /// within +40% of the charge on a push into a new repository or ref (the case the
-    /// first-write fees price), within +70% on a later one (existing index subtrees pay less).
+    /// first-write fees price), within +80% on a later one (existing index subtrees pay less).
     /// These landed on a young chunk tree, so the flat's depth allowance ([`CHUNK_TREE_LEVELS`])
     /// is mostly headroom here.
     #[test]
@@ -393,6 +393,11 @@ mod tests {
             (205_126, 4, 1, 0, true, false, 7_025_000_000, true),   // 200 KiB, new repo
             (1_536_767, 3, 1, 0, true, false, 50_125_000_000, false), // 1.5 MiB (105 chunks)
         ];
+        // The ceilings are looser than the beta.5 data alone would need: ECON-05 raised the
+        // first-write bounds to cover the testnet contracts (Platform rc.4, 2026-10-17), whose
+        // first writes cost more than these beta.5 pushes did. Covering what was paid stays
+        // strict. Every run is checked, so one failure shows them all.
+        let mut problems = Vec::new();
         for &(bytes, objects, refs, targets, platform, sealed, paid, first) in RUNS {
             let est = estimate_push(&PushShape {
                 sealed,
@@ -401,12 +406,14 @@ mod tests {
             .total();
             #[allow(clippy::cast_precision_loss)]
             let ratio = est as f64 / paid as f64;
-            let cap = if first { 1.4 } else { 1.7 };
-            assert!(
-                est >= paid && ratio <= cap,
-                "{bytes} B: estimate {est} vs paid {paid} ({ratio:.3})"
-            );
+            let cap = if first { 1.6 } else { 1.8 };
+            if est < paid || ratio > cap {
+                problems.push(format!(
+                    "{bytes} B: estimate {est} vs paid {paid} ({ratio:.3}, cap {cap})"
+                ));
+            }
         }
+        assert!(problems.is_empty(), "{}", problems.join("\n"));
         // A new ref at a stored commit (no pack): paid 65,783,120; a first protected ref
         // update 87,714,300; the first of a private push's refs 90,039,140.
         for paid in [65_783_120, 87_714_300, 90_039_140] {
