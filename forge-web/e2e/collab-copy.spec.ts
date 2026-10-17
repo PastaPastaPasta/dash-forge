@@ -1,6 +1,7 @@
 import { test, expect, type Browser, type Page } from '@playwright/test'
 import { existsSync } from 'node:fs'
 
+import { identityHref } from '../lib/view/profile-links'
 import { expectLanded, idFile, idOrEmpty, loadSeedPulls, repoUrl, shot, signedIn, waitForRepoResolved, skipWithoutFixture } from './helpers'
 
 // needs the read fixture seeded on this network (e2e/network.ts)
@@ -84,7 +85,7 @@ test.describe('follow lists and cost hints (own identities)', () => {
   test.skip(process.env['E2E_WRITE'] !== '1', 'the follow set-up is a live devnet write: set E2E_WRITE=1')
 
   test('g17-3. profile counts link to the follower and following lists (L-36)', async ({ browser }) => {
-    const page = await followerPage(browser, `/u/?name=${FOLLOWED}`)
+    const page = await followerPage(browser, identityHref(FOLLOWED))
     await ensureFollowing(page)
 
     // FOLLOWED's profile: "1 follower" (singular), and it links to the list naming FOLLOWER.
@@ -93,21 +94,21 @@ test.describe('follow lists and cost hints (own identities)', () => {
     await expect(page.getByRole('link', { name: /^\d+ following$/ })).toBeVisible()
     await expect(page.locator('main')).not.toContainText(/\b1 followers\b/)
     await followers.click()
-    await page.waitForURL(/\/u\/followers\/?\?name=/)
+    await page.waitForURL(/\/u\/followers\/?\?id=/)
     await expect(page.getByRole('heading', { name: 'Followers' })).toBeVisible({ timeout: 60_000 })
     await expect(page.getByTestId('follow-list').locator(`[data-identity="${FOLLOWER}"]`)).toBeVisible({ timeout: 60_000 })
     await shot(page, 'g17-03-followers')
 
     // FOLLOWER's following list names FOLLOWED; the pill links back to its profile.
-    await page.goto(`/u/following/?name=${FOLLOWER}`, { waitUntil: 'domcontentloaded' })
+    await page.goto(identityHref(FOLLOWER, 'following'), { waitUntil: 'domcontentloaded' })
     await expect(page.getByRole('heading', { name: 'Following' })).toBeVisible({ timeout: 90_000 })
     const row = page.getByTestId('follow-list').locator(`[data-identity="${FOLLOWED}"]`)
     await expect(row).toBeVisible({ timeout: 60_000 })
-    await expect(row.locator('a')).toHaveAttribute('href', new RegExp(`/u/?\\?name=${FOLLOWED}`))
+    await expect(row.locator('a')).toHaveAttribute('href', new RegExp(`/u/?\\?id=${FOLLOWED}`))
     await shot(page, 'g17-03-following')
 
     // FOLLOWED follows nobody: the empty state, not an error.
-    await page.goto(`/u/following/?name=${FOLLOWED}`, { waitUntil: 'domcontentloaded' })
+    await page.goto(identityHref(FOLLOWED, 'following'), { waitUntil: 'domcontentloaded' })
     await expect(page.getByText('Not following anyone yet')).toBeVisible({ timeout: 90_000 })
   })
 

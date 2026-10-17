@@ -72,10 +72,11 @@ test('w2. owner adds COLLAB as a writer, once COLLAB accepted the invitation', a
 
   const page = await signedIn(browser, 'OWNER', repoPath('settings'))
   await page.getByLabel('Identity ID').fill(COLLAB)
-  await page.getByRole('radio', { name: 'writer' }).click()
-  await page.getByRole('button', { name: /^add$/i }).click()
+  await page.getByRole('radio', { name: 'Write', exact: true }).click()
+  // The member form's Add comes first; a pending-invitation row below it has an Add of its own.
+  await page.getByRole('button', { name: /^add$/i }).first().click()
   await confirmWrite(page, /sign & add/i)
-  await expect(page.getByText('WRITER', { exact: true })).toBeVisible({ timeout: 60_000 })
+  await expect(page.getByTestId('role-badge').filter({ hasText: /^Write$/i })).toBeVisible({ timeout: 60_000 })
   await shot(page, 'v2w-02-writer')
 })
 
@@ -135,7 +136,7 @@ test('w6. owner approves the fixture PR, then removes the writer', async ({ brow
   await unlock(settings)
   await settings.getByRole('button', { name: /^remove$/i }).first().click()
   await confirmWrite(settings, /sign & remove/i)
-  await expect(settings.getByText('WRITER', { exact: true })).toHaveCount(0, { timeout: 60_000 })
+  await expect(settings.getByTestId('role-badge').filter({ hasText: /^Write$/i })).toHaveCount(0, { timeout: 60_000 })
 
   // The ledger lives in IndexedDB on this device, so it survives the reload.
   await settings.getByRole('banner').getByRole('button', { name: 'Account menu' }).click()
@@ -156,20 +157,22 @@ test('w7. star, unstar, star, unstar in a row (create and index-only delete shar
     await page.getByRole('button', { name: /starred/i }).click()
     await expect(page.getByRole('button', { name: /^star/i })).toContainText('0', { timeout: 90_000 })
   }
-  // No write error surfaced (Next's route announcer is an empty alert region; ignore it).
-  await expect(page.getByRole('alert').filter({ hasText: /\S/ })).toHaveCount(0)
+  // No write error surfaced. Only the page's own alerts count: the security notice about keys added
+  // by another context (a reused QA vault) is a role=alert above <main>, and Next's route
+  // announcer is an empty alert region.
+  await expect(page.locator('main').getByRole('alert').filter({ hasText: /\S/ })).toHaveCount(0)
 })
 
 test('w8. grant, revoke, grant, revoke a writer in a row', async ({ browser }) => {
   const page = await signedIn(browser, 'OWNER', repoPath('settings'))
   for (let round = 0; round < 2; round++) {
     await page.getByLabel('Identity ID').fill(COLLAB)
-    await page.getByRole('radio', { name: 'writer' }).click()
-    await page.getByRole('button', { name: /^add$/i }).click()
+    await page.getByRole('radio', { name: 'Write', exact: true }).click()
+    await page.getByRole('button', { name: /^add$/i }).first().click()
     await confirmWrite(page, /sign & add/i)
-    await expect(page.getByText('WRITER', { exact: true })).toBeVisible({ timeout: 60_000 })
+    await expect(page.getByTestId('role-badge').filter({ hasText: /^Write$/i })).toBeVisible({ timeout: 60_000 })
     await page.getByRole('button', { name: /^remove$/i }).first().click()
     await confirmWrite(page, /sign & remove/i)
-    await expect(page.getByText('WRITER', { exact: true })).toHaveCount(0, { timeout: 60_000 })
+    await expect(page.getByTestId('role-badge').filter({ hasText: /^Write$/i })).toHaveCount(0, { timeout: 60_000 })
   }
 })

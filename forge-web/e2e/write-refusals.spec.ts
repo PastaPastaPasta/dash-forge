@@ -258,10 +258,20 @@ test('r5. follow asks with its price; an over-long comment is blocked (D-048, D-
   const issue = await signedInWithKey(browser, await limitedKey(500_000_000n), `/repo/issue/?owner=${(await env()).identityId}&name=${SCRATCH}&number=1`)
   const box = issue.getByLabel('Comment', { exact: true })
   await expect(box).toBeVisible({ timeout: 90_000 })
+  // A 6,000-byte comment is no longer refused: past the field, a maintainer's or writer's whole text
+  // is stored as a repository artifact (long-body.tsx), and the note says so with the extra cost.
+  // This identity owns the scratch repo.
   await box.fill('€'.repeat(2000))
-  const counter = issue.getByTestId('text-counter').first()
-  await expect(counter).toHaveAttribute('data-over', 'true')
-  await expect(counter).toContainText('6,000 bytes')
+  const note = issue.getByTestId('long-body-note')
+  await expect(note).toContainText('6,000 bytes')
+  await expect(note).toContainText('the whole text is stored as a repository artifact on Platform')
+  await expect(note).toContainText('DASH more')
+  await expect(issue.getByRole('button', { name: /^comment$/i })).toBeEnabled()
+  // What is refused is a text past the most one text holds (LONG_BODY_MAX_BYTES, 256 KiB).
+  await box.fill('€'.repeat(90_000))
+  const refused = issue.getByTestId('long-body-refused')
+  await expect(refused).toContainText('270,000 bytes')
+  await expect(refused).toContainText('262,144 bytes')
   await expect(issue.getByRole('button', { name: /^comment$/i })).toBeDisabled()
   await expect(issue.getByTestId('funds-pill')).toBeVisible()
   await shot(issue, `${SHOTS}-r5-comment-too-long`)

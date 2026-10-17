@@ -103,14 +103,15 @@ test('c3. contributor opens a PR from the fork, diff shown before submit', async
   await eventually(page, () => expect(page.locator('#pr-head optgroup[label="Your forks"] option', { hasText: FORK }).first()).toBeAttached({ timeout: 45_000 }))
   // Labelled owner-first, `<owner>/<fork>:<branch>` (QW4-030).
   await head.selectOption((await page.locator('#pr-head option', { hasText: `${FORK}:feature/greeting` }).first().getAttribute('value')) ?? '')
-  await expect(page.getByLabel('Base')).toHaveValue('refs/heads/main')
+  await expect(page.getByLabel('Base', { exact: true })).toHaveValue('refs/heads/main')
   // The diff renders before anything is signed, and the title is the head commit's subject.
   await expect(page.getByText('src/main.rs').first()).toBeVisible({ timeout: 90_000 })
   await expect(page.getByText(/hello, \{name\}/).first()).toBeVisible({ timeout: 90_000 })
   await expect(page.getByLabel('Title', { exact: true })).toHaveValue(PR_TITLE)
   await page.getByLabel('Description', { exact: true }).fill(`Opened from the browser by v2-pulls (${RUN}).`)
   await expect(page.getByTestId('cost-preview').first()).toContainText('DASH')
-  await expect(page.getByText(/git push dash:\/\//)).toBeVisible()
+  // The push hint lists one command per fork the contributor owns, so a presence check takes the first.
+  await expect(page.getByText(/git push dash:\/\//).first()).toBeVisible()
   expect(await runAxe(page, 'new PR')).toEqual([])
   await shot(page, 'c-new-pr')
   await page.getByRole('button', { name: /create pull request/i }).click()

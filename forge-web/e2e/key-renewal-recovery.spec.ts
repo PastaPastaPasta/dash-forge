@@ -94,7 +94,8 @@ async function importFile(p: Page, passphrase: string, fromTile = true): Promise
   await p.getByRole('dialog').locator('input[type="file"]').setInputFiles(ID_FILE)
   await p.getByLabel('Passphrase', { exact: true }).fill(passphrase)
   await p.getByLabel('Repeat passphrase').fill(passphrase)
-  await p.getByRole('button', { name: /create this browser's key/i }).click()
+  // From "Renew key" the same form's button says Renew (components/login-modal.tsx).
+  await p.getByRole('button', { name: fromTile ? /create this browser's key/i : /renew this browser's key/i }).click()
 }
 
 test.beforeAll(async ({ browser }) => {

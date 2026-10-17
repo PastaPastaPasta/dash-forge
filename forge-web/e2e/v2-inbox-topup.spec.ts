@@ -96,7 +96,8 @@ test('t1. explore, signed in: my sections are honest', async ({ browser }) => {
     await expect(section.locator('[data-empty], a[href*="/repo"]').first()).toBeVisible({ timeout: 90_000 })
     await expect(section.getByText(/did not land/)).toHaveCount(0)
   }
-  await expect(page.getByTestId('explore-assigned-to-me-or-mentioning-me')).toContainText('have no index')
+  // The scoped scan's note: it covers recent issues and pull requests, and says comments are not searched.
+  await expect(page.getByTestId('explore-assigned-to-me-or-mentioning-me')).toContainText("Comments aren't searched yet.")
   await shot(page, 'd-explore-signed-in')
   const serious = await runAxe(page, 'explore-signed-in')
   expect(serious, serious.map((v) => `${v.id}: ${v.help}`).join('\n')).toEqual([])
