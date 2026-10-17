@@ -34,6 +34,14 @@
 //! repository are kept under `$XDG_STATE_HOME/dash-forge/make-public/<repo id>/` (mode 0700):
 //! the work repository holds the code written while private, so it is removed after a check and
 //! after a run that finishes.
+//!
+//! The seal-off epoch is the run's boundary, fixed when its rotation first lands: nothing at or
+//! after it is ever published. Readers and every other client take the boundary from the chain,
+//! where it is the newest key stated while the repo was private, so the flip happens only while
+//! the run's own seal-off key is the current one. Once another rotation follows it, the run can
+//! no longer be finished with that boundary ([`SealOff::Passed`]): it never rotates again (that
+//! would move the boundary later), and only a new run the owner starts on purpose
+//! (`--start-over`) can make the repo public.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead as _, Read as _, Write as _};
@@ -91,6 +99,12 @@ pub struct MakePublicArgs {
     /// Finish a run that stopped: any maintainer once the repo is public, the owner for the rest.
     #[arg(long)]
     pub resume: bool,
+    /// Start a new run instead of the one this computer recorded, which can't be finished: the
+    /// repo's key changed after it began. The new run's own key change is the new boundary, so
+    /// with Everything what members wrote since then becomes public too. Only while the repo is
+    /// still private.
+    #[arg(long, conflicts_with = "resume")]
+    pub start_over: bool,
     /// Publish a possible secret the check found anyway (its fingerprint; repeat it for more).
     #[arg(long = "allow-secret", value_name = "FINGERPRINT")]
     pub allow_secret: Vec<String>,
@@ -114,6 +128,14 @@ impl Mode {
             Mode::Everything => "Everything",
         }
     }
+
+    /// The mode's flag.
+    fn flag(self) -> &'static str {
+        match self {
+            Mode::CodeOnly => "--code-only",
+            Mode::Everything => "--everything",
+        }
+    }
 }
 
 /// The run's choices, kept between runs ([`state_dir`]).
@@ -126,6 +148,11 @@ struct Saved {
     refs: Vec<(String, String)>,
     /// The epoch the seal-off rotation created (step 2), once it ran.
     seal_off: Option<u32>,
+    /// The current epoch when the seal-off rotation began, kept before it is signed: a rotation
+    /// that landed but whose answer was lost is then found again ([`recorded_seal_off`]),
+    /// never made a second time.
+    #[serde(default)]
+    seal_off_from: Option<u32>,
 }
 
 /// Where a run keeps its choices and its work repository.
@@ -199,6 +226,9 @@ struct Check {
     notes: Vec<String>,
     /// The refs Code only publishes, with their tips.
     code_refs: Vec<(String, String)>,
+    /// Refs of the owner's earlier choice left out: their recorded tip is not the tip they had
+    /// before the run's boundary, nor an earlier commit of it.
+    dropped: Vec<String>,
     /// Every live ref written while private, with its tip (what Everything publishes).
     all_refs: Vec<(String, String)>,
     /// Branches deleted while private, and force-pushes (published with Everything).
@@ -235,7 +265,7 @@ pub async fn run(ctx: &Ctx, a: &MakePublicArgs) -> Result<()> {
     let owner = s.repo.owner_id.as_str();
     let svc = RepoService::new(&s.client, &s.identity, &s.bridge);
     let conversion = if s.repo.visibility == Visibility::Public {
-        match svc.conversion(&s.repo).await? {
+        match svc.anchored_conversion(&s.repo).await? {
             Some(c) => Some(c),
             None => {
                 return Err(UserError::new(
@@ -263,6 +293,84 @@ pub async fn run(ctx: &Ctx, a: &MakePublicArgs) -> Result<()> {
     if !is_maintainer(&kr, &me, owner) {
         return Err(not_the_owner(&s, &a.repo).await);
     }
+    // This computer's record of a run not made public yet: continued while its seal-off key is
+    // the current one, never once another rotation followed it, and set aside only on purpose.
+    let label = safe(&a.repo).into_owned();
+    // A node behind the run's rotation is waited for a few seconds first (a rotation that
+    // landed unrecorded shows as `from + 1`); one that landed but was never recorded is then
+    // found again: only ever earlier.
+    let (mut current, mut burned) = (
+        kr.resolution().current_epoch,
+        kr.resolution().burned.clone(),
+    );
+    let target = saved
+        .as_ref()
+        .and_then(|sv| wait_target(sv.seal_off, sv.seal_off_from));
+    if conversion.is_none() && !a.check && target.is_some() && current < target {
+        (current, burned) = current_epoch_after(&s, &private, target).await?;
+    }
+    let mut saved = saved;
+    if let Some(sv) = saved.as_mut() {
+        sv.seal_off = recorded_seal_off(sv.seal_off, sv.seal_off_from, current, &burned);
+    }
+    let mut passed_here = None;
+    let mut start_over = None;
+    let saved = if conversion.is_some() {
+        if a.start_over {
+            return Err(start_over_refused(
+                &label,
+                format!("{label} is public already: its run can only be finished"),
+            ));
+        }
+        saved
+    } else {
+        let state = seal_off_state(saved.as_ref().and_then(|sv| sv.seal_off), current);
+        match keep_record(state, a.start_over) {
+            // said before the check and the confirmation, not after them
+            Ok(true) if matches!(state, SealOff::Behind(_)) && !a.check && me == owner => {
+                return Err(platform_behind(&label));
+            }
+            Ok(true) => saved,
+            Ok(false) => {
+                if let SealOff::Passed(e) = state {
+                    start_over = Some(StartOver {
+                        epoch: e,
+                        height: kr.resolution().anchors.get(&e).map(|an| an.height),
+                        ref_updates: psvc.ref_updates_sealed_from(&private, e).await?,
+                    });
+                }
+                None
+            }
+            // a check signs nothing, and anyone but the owner is refused before any step
+            Err(SealOff::Passed(e)) if a.check || me != owner => {
+                passed_here = Some(e);
+                saved
+            }
+            Err(SealOff::Passed(_)) => {
+                let m = flag_mode
+                    .or(saved.as_ref().map(|sv| sv.mode))
+                    .unwrap_or(Mode::Everything);
+                return Err(seal_off_passed(&label, m));
+            }
+            Err(_) if saved.is_none() => {
+                return Err(UserError::new(
+                    codes::USAGE,
+                    format!("this computer has no run making {label} public to start over"),
+                )
+                .fix(format!(
+                    "make it public: dg repo make-public {label} --code-only (or --everything)"
+                ))
+                .note("nothing was written")
+                .into())
+            }
+            Err(_) => {
+                return Err(start_over_refused(
+                    &label,
+                    format!("the run making {label} public can still be finished"),
+                ))
+            }
+        }
+    };
     // a run that started Everything (some history published) finishes as Everything
     let history_started = match &conversion {
         Some(c) => !history_bundles(
@@ -296,7 +404,17 @@ pub async fn run(ctx: &Ctx, a: &MakePublicArgs) -> Result<()> {
         .as_ref()
         .filter(|sv| Some(sv.mode) == mode && a.refs.is_empty())
         .map(|sv| sv.refs.clone());
-    let check = Box::pin(preflight(
+    // what the run publishes stops at its boundary: the check reads only what was sealed below it
+    // (a check of a record whose boundary is passed shows what a new run would publish)
+    let recorded = saved
+        .as_ref()
+        .and_then(|sv| sv.seal_off)
+        .filter(|_| passed_here.is_none());
+    let below = match &conversion {
+        Some(c) => history_cutoff(c.seal_off_epoch, recorded),
+        None => recorded,
+    };
+    let mut check = Box::pin(preflight(
         &s,
         &psvc,
         &kr,
@@ -305,8 +423,14 @@ pub async fn run(ctx: &Ctx, a: &MakePublicArgs) -> Result<()> {
         a,
         mode,
         chosen.as_deref(),
+        below,
     ))
     .await?;
+    if passed_here.is_some() {
+        check.notes.push(format!(
+            "The run this computer recorded can't be finished: the repo's key changed after its own key change. To make the repo public, start a new run: dg repo make-public {label} --start-over (with --code-only or --everything)."
+        ));
+    }
     if a.check || (mode.is_none() && conversion.is_none()) {
         if a.check || !ctx.json {
             print_check(
@@ -359,6 +483,8 @@ pub async fn run(ctx: &Ctx, a: &MakePublicArgs) -> Result<()> {
             saved,
             mode,
             history_started,
+            start_over,
+            checked_below: below,
             a,
             dir: &dir,
         },
@@ -411,42 +537,190 @@ async fn owner_bundles(s: &Session, public: &RepoRef) -> Result<BTreeSet<[u8; 32
         .collect())
 }
 
-/// The refusal of a run whose seal-off key is no longer the repository's current one.
-fn key_changed(label: &str) -> anyhow::Error {
+/// Where a run that is not public yet stands with its seal-off rotation (step 2), from this
+/// computer's record of it and the repository's current key epoch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SealOff {
+    /// No seal-off rotation recorded: the run makes one.
+    Rotate,
+    /// The recorded rotation is the current key: kept, never made again.
+    Keep(u32),
+    /// A node doesn't show the recorded rotation yet: never rotate again, wait for it.
+    Behind(u32),
+    /// Another rotation followed the recorded one. The run's boundary stays where it is, so this
+    /// run can't be finished: flipping now would state a later boundary.
+    Passed(u32),
+}
+
+/// The run's seal-off epoch: the one recorded, else, when a rotation began from epoch `from` and
+/// its answer was lost, the first epoch after `from` that is not burned, once the key read now
+/// (`current`) shows one. That can only be the run's own rotation or an earlier boundary than
+/// it. `None` while none shows: the rotation is made (or resumed, with the same key).
+fn recorded_seal_off(
+    recorded: Option<u32>,
+    from: Option<u32>,
+    current: Option<u32>,
+    burned: &BTreeSet<u32>,
+) -> Option<u32> {
+    recorded.or_else(|| {
+        let (from, current) = (from?, current?);
+        (from.checked_add(1)?..=current).find(|e| !burned.contains(e))
+    })
+}
+
+/// The key epoch a read waits a few seconds for before deciding (a node may be a block behind):
+/// the recorded seal-off epoch, else `from + 1`, which a rotation that landed unrecorded shows as.
+fn wait_target(seal_off: Option<u32>, from: Option<u32>) -> Option<u32> {
+    seal_off.or(from.and_then(|f| f.checked_add(1)))
+}
+
+/// What step 2 does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Step2 {
+    /// The recorded seal-off rotation is the current key: kept.
+    Keep(u32),
+    /// No seal-off rotation yet: make it.
+    Rotate,
+    /// Stop: a node is behind, or the run's boundary is passed.
+    Stop(SealOff),
+}
+
+/// Step 2 for the run's seal-off epoch `seal_off` ([`recorded_seal_off`]) and the key epoch
+/// `current` read now.
+fn step2(seal_off: Option<u32>, current: Option<u32>) -> Step2 {
+    match seal_off_state(seal_off, current) {
+        SealOff::Keep(e) => Step2::Keep(e),
+        SealOff::Rotate => Step2::Rotate,
+        st => Step2::Stop(st),
+    }
+}
+
+/// Whether the flip may go ahead: the key read right before it (`now`) is still the run's own
+/// seal-off key, so the boundary the flip states is the run's.
+fn may_flip(seal_off: Option<u32>, now: Option<u32>) -> Result<(), SealOff> {
+    match seal_off_state(seal_off, now) {
+        SealOff::Keep(_) => Ok(()),
+        st => Err(st),
+    }
+}
+
+/// [`SealOff`] for the seal-off epoch `recorded` (this computer's record) and the key epoch
+/// `current` read now. A recorded seal-off epoch is never replaced.
+fn seal_off_state(recorded: Option<u32>, current: Option<u32>) -> SealOff {
+    match recorded {
+        None => SealOff::Rotate,
+        Some(e) if current == Some(e) => SealOff::Keep(e),
+        Some(e) if current.is_some_and(|c| c > e) => SealOff::Passed(e),
+        Some(e) => SealOff::Behind(e),
+    }
+}
+
+/// What `run` does with the record of a run not made public yet, where it stands at `state`:
+/// keep it (`Ok(true)`), set it aside for a new run (`Ok(false)`: `--start-over`, only once the
+/// record's boundary is passed; a record whose rotation may have landed is never set aside), or
+/// refuse (`Err`: a passed record without `--start-over`, or
+/// `--start-over` while the run can still be finished).
+fn keep_record(state: SealOff, start_over: bool) -> Result<bool, SealOff> {
+    match (state, start_over) {
+        (SealOff::Passed(_), true) => Ok(false),
+        (SealOff::Passed(_), false) | (_, true) => Err(state),
+        (_, false) => Ok(true),
+    }
+}
+
+/// The refusal of a run whose seal-off rotation another rotation followed ([`SealOff::Passed`]).
+fn seal_off_passed(label: &str, mode: Mode) -> anyhow::Error {
     UserError::new(
         codes::ROTATION_PENDING,
-        format!("{label}'s key changed while this ran"),
+        format!("{label}'s key changed again after this run's key change"),
     )
-    .cause("another maintainer changed the key after this run's change")
+    .cause(match mode {
+        Mode::Everything => "another maintainer changed the key since; finishing this run would publish what members wrote after it began, which is meant to stay members-only",
+        Mode::CodeOnly => "another maintainer changed the key since; finishing this run would let a later Everything publish what members wrote after it began, which is meant to stay members-only",
+    })
     .fix(format!(
-        "run it again: dg repo make-public {label} --resume"
+        "to make it public with that included, start a new run: dg repo make-public {label} {} --start-over",
+        mode.flag()
     ))
     .note("the repo is still private")
     .into()
 }
 
-/// `private`'s current key epoch, read fresh, giving a node a block behind a few seconds to show
-/// `seal_off`.
+/// The refusal of a run whose seal-off rotation a node doesn't show yet ([`SealOff::Behind`]).
+fn platform_behind(label: &str) -> anyhow::Error {
+    UserError::new(
+        codes::ROTATION_PENDING,
+        "Platform hasn't caught up with this run's key change yet",
+    )
+    .fix(format!(
+        "run it again in a minute: dg repo make-public {label} --resume"
+    ))
+    .note("the repo is still private")
+    .into()
+}
+
+/// Whether the check a run made can't stand for its boundary `seal_off`: it ran below another
+/// one, or before a rotation that was begun earlier (`resumed`) was found. A fresh run's own
+/// rotation comes after its check, so everything its check saw was written before it.
+fn checked_before_boundary(checked: Option<u32>, seal_off: Option<u32>, resumed: bool) -> bool {
+    seal_off != checked && (resumed || checked.is_some())
+}
+
+/// The refusal of a run that found its boundary only after its check ([`checked_before_boundary`]).
+fn run_again(label: &str) -> anyhow::Error {
+    UserError::new(
+        codes::ROTATION_PENDING,
+        format!("this run found its own key change for {label} only after its check"),
+    )
+    .fix(format!(
+        "run it again, to check what becomes public below it: dg repo make-public {label} --resume"
+    ))
+    .note("the repo is still private")
+    .into()
+}
+
+/// The refusal of a run stopped at `st` before the flip: its boundary is passed, or a node is
+/// behind.
+fn stopped(label: &str, mode: Mode, st: SealOff) -> anyhow::Error {
+    match st {
+        SealOff::Passed(_) => seal_off_passed(label, mode),
+        _ => platform_behind(label),
+    }
+}
+
+/// `--start-over` refused (`message`): the repo is public already, or the run can still be
+/// finished.
+fn start_over_refused(label: &str, message: String) -> anyhow::Error {
+    UserError::new(codes::USAGE, message)
+        .fix(format!("finish it: dg repo make-public {label} --resume"))
+        .note("nothing was written")
+        .into()
+}
+
+/// `private`'s current key epoch and its burned epochs, read fresh, giving a node a block behind
+/// a few seconds to show `seal_off`.
 async fn current_epoch_after(
     s: &Session,
     private: &RepoRef,
     seal_off: Option<u32>,
-) -> Result<Option<u32>> {
-    let mut current = None;
+) -> Result<(Option<u32>, BTreeSet<u32>)> {
+    let mut now = (None, BTreeSet::new());
     for i in 0..5 {
         if i > 0 {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         }
-        current = RepoService::new(&s.client, &s.identity, &s.bridge)
+        let kr = RepoService::new(&s.client, &s.identity, &s.bridge)
             .keyring(private)
-            .await?
-            .resolution()
-            .current_epoch;
-        if current >= seal_off {
+            .await?;
+        now = (
+            kr.resolution().current_epoch,
+            kr.resolution().burned.clone(),
+        );
+        if now.0 >= seal_off {
             break;
         }
     }
-    Ok(current)
+    Ok(now)
 }
 
 /// The history bundles (DESIGN §4.10 step 7) the owner of `public` recorded: those of its kind-7
@@ -500,7 +774,10 @@ fn public_view(repo: &RepoRef) -> RepoRef {
 }
 
 /// Step 0: everything the dialog shows, read without signing. `chosen` is the owner's earlier
-/// choice of refs, when this run continues it.
+/// choice of refs, when this run continues it. `below` is the run's boundary once it has one
+/// (its seal-off epoch, or once public [`history_cutoff`]): the refs and the code are read from
+/// what was sealed below it alone, as the web reads them, so nothing written during or after
+/// the conversion is published.
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 async fn preflight(
     s: &Session,
@@ -511,6 +788,7 @@ async fn preflight(
     a: &MakePublicArgs,
     mode: Option<Mode>,
     chosen: Option<&[(String, String)]>,
+    below: Option<u32>,
 ) -> Result<Check> {
     let mut out = Check::default();
     let res = kr.resolution();
@@ -547,17 +825,19 @@ async fn preflight(
             );
         }
     }
-    let below = conversion
-        .and_then(|c| c.seal_off_epoch)
+    let published_below = below
+        .or(conversion.and_then(|c| c.seal_off_epoch))
         .or(res.current_epoch.map(|e| e + 1))
         .unwrap_or(0);
-    if (0..below).any(|e| res.anchors.contains_key(&e) && !kr.readable_epochs().contains(&e)) {
+    if (0..published_below)
+        .any(|e| res.anchors.contains_key(&e) && !kr.readable_epochs().contains(&e))
+    {
         out.notes.push(
             "Some history written while private can't be published: nobody holds its key any more. It stays unreadable to everyone.".into(),
         );
     }
     // the private era's refs and settings
-    for (name, state) in &psvc.read_refs(private).await? {
+    for (name, state) in &psvc.read_refs_below(private, below).await? {
         match tip_of(state) {
             Some(tip) => out.all_refs.push((name.clone(), tip)),
             None if *state == RefState::Unborn => out.deleted += 1,
@@ -569,11 +849,16 @@ async fn preflight(
     let default_ref = git::full_ref(&cfg.default_branch);
     out.config = Some(cfg);
     // the work repository: every private-era pack this member opens
-    let (work, unfetched) = work_repo(psvc, private, &out.all_refs).await?;
+    let (work, unfetched) = work_repo(psvc, private, &out.all_refs, below).await?;
     out.unfetched = unfetched;
     // Code only: the refs the owner chose, the refs picked, or the default branch and its tags
     out.code_refs = if let Some(chosen) = chosen {
-        chosen.to_vec()
+        // a recorded choice holds only what the refs were before the boundary
+        let (kept, dropped) = within_boundary(chosen, &out.all_refs, |a, b| {
+            git::is_ancestor(&work, &peeled(&work, a), &peeled(&work, b))
+        });
+        out.dropped = dropped;
+        kept
     } else if a.refs.is_empty() {
         default_code_refs(&work, &out.all_refs, &default_ref)
     } else {
@@ -643,6 +928,30 @@ async fn preflight(
     };
     (out.pack_bytes, out.objects) = pack_size(&work, &pack_tips)?;
     Ok(out)
+}
+
+/// The refs of `chosen` (an earlier choice, with the tips it recorded) that `all_refs` (the refs
+/// as they were before the run's boundary) still holds at that tip or a later one
+/// (`is_ancestor(recorded, tip)`), and the names of the rest: a recorded tip written at or after
+/// the boundary is never published.
+fn within_boundary(
+    chosen: &[(String, String)],
+    all_refs: &[(String, String)],
+    is_ancestor: impl Fn(&str, &str) -> bool,
+) -> (Vec<(String, String)>, Vec<String>) {
+    let mut kept = Vec::new();
+    let mut dropped = Vec::new();
+    for (name, tip) in chosen {
+        let ok = all_refs
+            .iter()
+            .any(|(n, t)| n == name && (t == tip || is_ancestor(tip, t)));
+        if ok {
+            kept.push((name.clone(), tip.clone()));
+        } else {
+            dropped.push(name.clone());
+        }
+    }
+    (kept, dropped)
 }
 
 /// Code only's default: the default branch (`default_ref`) and the tags on it, from `all_refs`.
@@ -732,13 +1041,15 @@ fn peeled(dir: &Path, oid: &str) -> String {
 }
 
 /// The work repository, and how many stored copies of the private era's code it could not fetch:
-/// a bare repository holding every private-era pack this member opens (so Everything's scan sees
+/// a bare repository holding every private-era pack this member opens (sealed below `below`,
+/// when given) (so Everything's scan sees
 /// every old object, deleted branches included) and the live refs. A run that could not fetch
 /// some reads them all again.
 async fn work_repo(
     psvc: &RepoService<'_>,
     private: &RepoRef,
     refs: &[(String, String)],
+    below: Option<u32>,
 ) -> Result<(PathBuf, usize)> {
     let state = state_dir(private)?;
     private_dir(&state)?;
@@ -755,7 +1066,7 @@ async fn work_repo(
     let missing = refs.iter().any(|(_, t)| !git::has_object(&dir, t));
     let unfetched = if missing || unfetched_before.is_none_or(|n| n > 0) {
         let read = psvc
-            .open_git_packs(private, |bytes| {
+            .open_git_packs(private, below, |bytes| {
                 index_pack(&dir, bytes).map_err(|e| forge_core::Error::Io(format!("{e:#}")))
             })
             .await?;
@@ -1349,8 +1660,44 @@ struct Run<'r> {
     saved: Option<Saved>,
     mode: Mode,
     history_started: bool,
+    /// `--start-over` in place of a recorded run whose boundary was passed: what it replaces.
+    start_over: Option<StartOver>,
+    /// The boundary the check ran below (none: everything up to now).
+    checked_below: Option<u32>,
     a: &'r MakePublicArgs,
     dir: &'r Path,
+}
+
+/// The recorded run a `--start-over` replaces: its seal-off epoch, that epoch's anchor's block
+/// height, and how many ref updates were sealed under it or later (what a new run's boundary
+/// adds).
+#[derive(Debug, Clone, Copy)]
+struct StartOver {
+    epoch: u32,
+    height: Option<u64>,
+    ref_updates: usize,
+}
+
+impl StartOver {
+    fn json(self) -> Value {
+        json!({ "replacedSealOffEpoch": self.epoch, "blockHeight": self.height, "refUpdatesSince": self.ref_updates })
+    }
+
+    /// What starting over adds, said before the confirmation (with `--yes` too).
+    fn line(self, mode: Mode) -> String {
+        let at = self
+            .height
+            .map_or_else(String::new, |h| format!(", block {h}"));
+        let adds = match mode {
+            Mode::Everything => "With Everything, what members wrote since then becomes public too",
+            Mode::CodeOnly => "With Code only it stays members-only for now, but a later Everything would make it public",
+        };
+        format!(
+            "This starts over: the earlier run's key change (key epoch {}{at}) no longer marks where publishing stops. {adds}: about {} since then (posts aren't counted).",
+            self.epoch,
+            plural_with(self.ref_updates, "branch or tag update", "branch and tag updates"),
+        )
+    }
 }
 
 /// Steps 1–7.
@@ -1367,6 +1714,8 @@ async fn convert(r: Run<'_>, mut check: Check) -> Result<()> {
         saved,
         mode,
         history_started,
+        start_over,
+        checked_below,
         a,
         dir,
     } = r;
@@ -1424,6 +1773,16 @@ async fn convert(r: Run<'_>, mut check: Check) -> Result<()> {
         .filter(|(n, _)| members_only.contains(n) && !public_refs.contains_key(n))
         .map(|(n, _)| n.clone())
         .collect();
+    if !ctx.json {
+        for n in &check.dropped {
+            println!(
+                "Not published: {}: it changed after this run's key change.",
+                safe(short_ref(n))
+            );
+        }
+    }
+    let dropped = check.dropped.clone();
+
     let publishes_history = mode == Mode::Everything && is_owner;
     let recorded = if flipped && publishes_history {
         history_bundles(
@@ -1464,7 +1823,20 @@ async fn convert(r: Run<'_>, mut check: Check) -> Result<()> {
                 conversion.as_ref(),
             );
         }
-        typed_confirmation(ctx, &a.repo).map_err(discard)?;
+        match start_over {
+            Some(so) => {
+                // said with --yes too: what a new boundary adds is never skipped (on stderr under
+                // --json, which reports it as `startOver`)
+                if ctx.json {
+                    eprintln!("{}", so.line(mode));
+                } else {
+                    println!("{}", so.line(mode));
+                }
+                typed_words(ctx, &format!("start over making {} public", a.repo))
+                    .map_err(discard)?;
+            }
+            None => typed_confirmation(ctx, &a.repo).map_err(discard)?,
+        }
     } else {
         ctx.confirm_or_cancel(&format!(
             "Continue making {label} public ({}): about {}, plus storing the code ({} on Platform)?",
@@ -1481,6 +1853,7 @@ async fn convert(r: Run<'_>, mut check: Check) -> Result<()> {
         mode,
         refs: Vec::new(),
         seal_off: None,
+        seal_off_from: None,
     });
     saved.mode = mode;
     saved.refs.clone_from(&wanted);
@@ -1490,19 +1863,46 @@ async fn convert(r: Run<'_>, mut check: Check) -> Result<()> {
         steps.push(json!({ "step": "sealOff", "status": "done" }));
         steps.push(json!({ "step": "flip", "status": "done" }));
     } else {
-        let current = kr.resolution().current_epoch;
-        if saved.seal_off.is_some() && saved.seal_off == current {
-            steps.push(json!({ "step": "sealOff", "status": "done", "epoch": current }));
-        } else {
-            let rotation =
-                forge_core::keyring::rotate(&crate::keys::signer(s), private, &[]).await?;
-            saved.seal_off = Some(rotation.epoch);
-            saved.save(dir)?;
-            if !ctx.json {
-                println!("Everything members write from now on stays members-only.");
+        // The recorded seal-off rotation is this run's boundary for good: kept while it is the
+        // current key, and never replaced by a second one (the key is read again: the check
+        // and the confirmation can take minutes). One that landed unrecorded is found again.
+        // a rotation that landed unrecorded shows as `from + 1`: a node behind is waited for
+        let resumed = saved.seal_off.is_none() && saved.seal_off_from.is_some();
+        let (current, burned) =
+            current_epoch_after(s, private, wait_target(saved.seal_off, saved.seal_off_from))
+                .await?;
+        saved.seal_off = recorded_seal_off(saved.seal_off, saved.seal_off_from, current, &burned);
+        match step2(saved.seal_off, current) {
+            Step2::Keep(e) => {
+                saved.save(dir)?;
+                steps.push(json!({ "step": "sealOff", "status": "done", "epoch": e }));
             }
-            steps.push(json!({ "step": "sealOff", "status": "written", "epoch": rotation.epoch }));
+            Step2::Rotate => {
+                // kept before signing: an answer lost after the rotation lands is found again
+                saved.seal_off_from = current;
+                saved.save(dir)?;
+                let rotation =
+                    forge_core::keyring::rotate(&crate::keys::signer(s), private, &[]).await?;
+                forge_core::keyring::test_fault("make-public-before-seal-off-record")?;
+                saved.seal_off = Some(rotation.epoch);
+                saved.save(dir)?;
+                if !ctx.json {
+                    println!("Everything members write from now on stays members-only.");
+                }
+                steps.push(
+                    json!({ "step": "sealOff", "status": "written", "epoch": rotation.epoch }),
+                );
+            }
+            Step2::Stop(st) => return Err(stopped(&label, mode, st)),
         }
+        // The check ran before the run knew its boundary (a rotation that landed unrecorded,
+        // found only now): what it chose may hold refs written at or after it. The next run
+        // checks below it.
+        if checked_before_boundary(checked_below, saved.seal_off, resumed) {
+            saved.save(dir)?;
+            return Err(run_again(&label));
+        }
+        forge_core::keyring::test_fault("make-public-after-seal-off")?;
         // What Everything publishes is final now (everything below the seal-off rotation): check
         // it again, since members may have written or pushed since the first check.
         let mut fresh_psvc = RepoService::new(&s.client, &s.identity, &s.bridge);
@@ -1516,8 +1916,8 @@ async fn convert(r: Run<'_>, mut check: Check) -> Result<()> {
             fresh_psvc = RepoService::new(&s.client, &s.identity, &s.bridge);
             fresh_kr = fresh_psvc.keyring(private).await?;
         }
-        if fresh_kr.resolution().current_epoch != saved.seal_off {
-            return Err(key_changed(&label));
+        if let Err(st) = may_flip(saved.seal_off, fresh_kr.resolution().current_epoch) {
+            return Err(stopped(&label, mode, st));
         }
         if mode == Mode::Everything {
             let again = Box::pin(preflight(
@@ -1529,6 +1929,7 @@ async fn convert(r: Run<'_>, mut check: Check) -> Result<()> {
                 a,
                 Some(mode),
                 Some(wanted.as_slice()),
+                saved.seal_off,
             ))
             .await?;
             if let Err(e) = gate(&again, mode, &allowed, &label) {
@@ -1544,11 +1945,13 @@ async fn convert(r: Run<'_>, mut check: Check) -> Result<()> {
             .config
             .as_ref()
             .map_or("main", |c| c.default_branch.as_str());
-        // The second check can take minutes: a rotation by another maintainer meanwhile would put
-        // the run's own seal-off key below the stated cutoff, so the key is read again, last.
-        if current_epoch_after(s, private, saved.seal_off).await? != saved.seal_off {
-            return Err(key_changed(&label));
+        // The second check can take minutes: a rotation by another maintainer meanwhile would make
+        // the flip state a later boundary than this run's, so the key is read again, last.
+        let (now, _) = current_epoch_after(s, private, saved.seal_off).await?;
+        if let Err(st) = may_flip(saved.seal_off, now) {
+            return Err(stopped(&label, mode, st));
         }
+        forge_core::keyring::test_fault("make-public-before-flip")?;
         svc.make_repo_public(&s.repo, default_branch).await?;
         if !ctx.json {
             println!("{label} is public now. It can never be private again.");
@@ -1557,10 +1960,20 @@ async fn convert(r: Run<'_>, mut check: Check) -> Result<()> {
     }
     // 4. the first public settings
     let fresh = RepoService::new(&s.client, &s.identity, &s.bridge);
-    let marker = fresh
-        .conversion(&public)
-        .await?
-        .and_then(|c| c.marker_height);
+    let stated = fresh.anchored_conversion(&public).await?;
+    let marker = stated.and_then(|c| c.marker_height);
+    let stated = stated.and_then(|c| c.seal_off_epoch);
+    // The boundary the repo states is not this run's own (a key change landed right before the
+    // flip, or this computer's record is not the run's): the history this computer publishes
+    // still stops at the lower one, and the record is kept so a later run here does too.
+    let keep_boundary = saved.seal_off.is_some() && stated != saved.seal_off;
+    if keep_boundary {
+        eprintln!(
+            "note: {label}'s settings state another boundary (key epoch {}) than this run's own key change (key epoch {}). The history published from this computer stops at the lower one; finish the run here, and check the result with dg repo make-public {label} --check",
+            stated.map_or_else(|| "none".into(), |e| e.to_string()),
+            saved.seal_off.map_or_else(|| "none".into(), |e| e.to_string()),
+        );
+    }
     if marker.is_none() {
         let cfg = check.config.unwrap_or_default();
         fresh.write_converted_config(&public, &cfg).await?;
@@ -1574,7 +1987,13 @@ async fn convert(r: Run<'_>, mut check: Check) -> Result<()> {
     if todo.is_empty() {
         steps.push(json!({ "step": "code", "status": "done" }));
     } else {
-        let (work, _) = work_repo(psvc, private, &wanted).await?;
+        let (work, _) = work_repo(
+            psvc,
+            private,
+            &wanted,
+            history_cutoff(stated, saved.seal_off),
+        )
+        .await?;
         push_public(ctx, &s.repo, &work, &todo, &allowed)?;
         steps.push(json!({ "step": "code", "status": "written", "refs": todo.iter().map(|(n, _)| n).collect::<Vec<_>>() }));
     }
@@ -1591,10 +2010,13 @@ async fn convert(r: Run<'_>, mut check: Check) -> Result<()> {
     // 7. the history
     let mut finished = true;
     if mode == Mode::Everything {
-        let c = fresh.conversion(&public).await?.unwrap_or(Conversion {
-            seal_off_epoch: saved.seal_off,
-            marker_height: None,
-        });
+        let c = fresh
+            .anchored_conversion(&public)
+            .await?
+            .unwrap_or(Conversion {
+                seal_off_epoch: saved.seal_off,
+                marker_height: None,
+            });
         let seal_off = history_cutoff(c.seal_off_epoch, saved.seal_off).unwrap_or(0);
         let held = RepoService::new(&s.client, &s.identity, &s.bridge)
             .keyring(private)
@@ -1621,7 +2043,12 @@ async fn convert(r: Run<'_>, mut check: Check) -> Result<()> {
     }
     let spent = s.spent_since(before).await;
     if finished {
-        let _ = std::fs::remove_dir_all(dir);
+        if keep_boundary {
+            // the boundary record alone: the work repository holds the private era's code
+            let _ = std::fs::remove_dir_all(dir.join("work.git"));
+        } else {
+            let _ = std::fs::remove_dir_all(dir);
+        }
     }
     ctx.emit(
         json!({
@@ -1629,7 +2056,9 @@ async fn convert(r: Run<'_>, mut check: Check) -> Result<()> {
             "repo": s.repo.display(),
             "mode": mode,
             "steps": steps,
-            "notPublished": left_out,
+            "notPublished": left_out.iter().chain(&dropped).collect::<Vec<_>>(),
+            "startOver": start_over.map(StartOver::json),
+            "boundaryKept": keep_boundary,
             "cost": cost_json(spent, price),
         }),
         || {
@@ -1716,7 +2145,11 @@ async fn public_state(
 
 /// Step 1: the owner types `make <repo> public` (or passes `--yes`).
 fn typed_confirmation(ctx: &Ctx, repo: &str) -> Result<()> {
-    let words = format!("make {repo} public");
+    typed_words(ctx, &format!("make {repo} public"))
+}
+
+/// The owner types `words` (or passes `--yes`).
+fn typed_words(ctx: &Ctx, words: &str) -> Result<()> {
     if ctx.yes {
         return Ok(());
     }
@@ -1825,6 +2258,7 @@ mod tests {
             mode: Mode::CodeOnly,
             refs: vec![("refs/heads/main".into(), "ab".repeat(20))],
             seal_off: Some(3),
+            seal_off_from: None,
         };
         saved.save(dir.path()).unwrap();
         let back = Saved::load(dir.path(), &repo).unwrap().unwrap();
@@ -1835,5 +2269,553 @@ mod tests {
             ..repo
         };
         assert!(Saved::load(dir.path(), &other).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_recorded_seal_off_is_kept_waited_for_or_passed_never_replaced() {
+        assert_eq!(seal_off_state(None, Some(4)), SealOff::Rotate);
+        assert_eq!(seal_off_state(None, None), SealOff::Rotate);
+        assert_eq!(seal_off_state(Some(4), Some(4)), SealOff::Keep(4));
+        assert_eq!(seal_off_state(Some(4), Some(3)), SealOff::Behind(4));
+        assert_eq!(seal_off_state(Some(4), None), SealOff::Behind(4));
+        assert_eq!(seal_off_state(Some(4), Some(5)), SealOff::Passed(4));
+        assert_eq!(seal_off_state(Some(4), Some(9)), SealOff::Passed(4));
+        // the record: kept, set aside only by --start-over once passed, else refused
+        assert_eq!(keep_record(SealOff::Keep(4), false), Ok(true));
+        assert_eq!(keep_record(SealOff::Behind(4), false), Ok(true));
+        assert_eq!(keep_record(SealOff::Rotate, false), Ok(true));
+        assert_eq!(
+            keep_record(SealOff::Passed(4), false),
+            Err(SealOff::Passed(4))
+        );
+        assert_eq!(keep_record(SealOff::Passed(4), true), Ok(false));
+        assert_eq!(keep_record(SealOff::Rotate, true), Err(SealOff::Rotate));
+        assert_eq!(keep_record(SealOff::Keep(4), true), Err(SealOff::Keep(4)));
+        assert_eq!(
+            keep_record(SealOff::Behind(4), true),
+            Err(SealOff::Behind(4))
+        );
+    }
+
+    /// A record written before `seal_off_from` existed reads as none.
+    #[test]
+    fn an_older_record_reads_without_the_rotation_start() {
+        let old = r#"{"repoId":"R","mode":"everything","refs":[],"sealOff":2}"#;
+        let saved: Saved = serde_json::from_str(old).unwrap();
+        assert_eq!((saved.seal_off, saved.seal_off_from), (Some(2), None));
+    }
+
+    #[test]
+    fn a_rotation_that_landed_unrecorded_is_found_again_never_later() {
+        let none = BTreeSet::new();
+        // recorded: kept whatever the key reads
+        assert_eq!(recorded_seal_off(Some(3), Some(1), Some(9), &none), Some(3));
+        // not anchored yet: the rotation is resumed
+        assert_eq!(recorded_seal_off(None, Some(2), Some(2), &none), None);
+        assert_eq!(recorded_seal_off(None, None, Some(2), &none), None);
+        // it landed: the first epoch after the start, even after more rotations
+        assert_eq!(recorded_seal_off(None, Some(2), Some(3), &none), Some(3));
+        assert_eq!(recorded_seal_off(None, Some(2), Some(5), &none), Some(3));
+        // a burned epoch carries nothing: the first one that isn't
+        let burned = BTreeSet::from([3]);
+        assert_eq!(recorded_seal_off(None, Some(2), Some(4), &burned), Some(4));
+        assert_eq!(recorded_seal_off(None, Some(2), Some(3), &burned), None);
+        // step 2 and the flip
+        assert_eq!(step2(Some(3), Some(3)), Step2::Keep(3));
+        assert_eq!(step2(None, Some(3)), Step2::Rotate);
+        assert_eq!(step2(Some(3), Some(4)), Step2::Stop(SealOff::Passed(3)));
+        assert_eq!(step2(Some(3), Some(2)), Step2::Stop(SealOff::Behind(3)));
+        assert_eq!(may_flip(Some(3), Some(3)), Ok(()));
+        assert_eq!(may_flip(Some(3), Some(4)), Err(SealOff::Passed(3)));
+        assert_eq!(may_flip(None, Some(4)), Err(SealOff::Rotate));
+        // a check made before a resumed rotation was found, or below another boundary, can't
+        // stand; a fresh run's own rotation comes after its check
+        assert!(checked_before_boundary(None, Some(3), true));
+        assert!(checked_before_boundary(Some(2), Some(3), false));
+        assert!(!checked_before_boundary(Some(3), Some(3), true));
+        assert!(!checked_before_boundary(None, Some(3), false));
+    }
+
+    #[test]
+    fn a_recorded_choice_holds_only_what_the_refs_were_before_the_boundary() {
+        let r = |n: &str, t: &str| (n.to_string(), t.to_string());
+        let all = [r("refs/heads/main", "b"), r("refs/tags/v1", "t")];
+        // b's history is a, b; c came after the boundary
+        let ancestor = |x: &str, y: &str| (x, y) == ("a", "b");
+        let chosen = [
+            r("refs/heads/main", "a"),
+            r("refs/tags/v1", "t"),
+            r("refs/heads/late", "z"),
+        ];
+        let (kept, dropped) = within_boundary(&chosen, &all, ancestor);
+        assert_eq!(kept, [r("refs/heads/main", "a"), r("refs/tags/v1", "t")]);
+        assert_eq!(dropped, ["refs/heads/late"]);
+        let (kept, dropped) = within_boundary(&[r("refs/heads/main", "c")], &all, ancestor);
+        assert!(kept.is_empty());
+        assert_eq!(dropped, ["refs/heads/main"]);
+    }
+
+    /// The seal-off boundary across a concurrent key rotation and resumes, over a chain held in
+    /// memory: the configs each rotation states (what readers and every client derive the
+    /// boundary from, [`Conversion::of`]) and the current epoch. A run decides through the same
+    /// functions as [`run`] and [`convert`]: [`recorded_seal_off`] and [`keep_record`] at the
+    /// start, [`step2`], what others do meanwhile, [`may_flip`], then the history below
+    /// [`history_cutoff`].
+    mod boundary {
+        use super::*;
+        use forge_core::private::convert::ConfigStamp;
+
+        struct Chain {
+            stamps: Vec<ConfigStamp>,
+            current: u32,
+            public: bool,
+            /// The epochs whose keys the owner published.
+            published: BTreeSet<u32>,
+            /// Every push: the ref, its new tip, the epoch it was sealed under.
+            pushes: Vec<(String, String, u32)>,
+            /// The refs and tips this computer's record holds (Code only's choice).
+            chosen: Option<Vec<(String, String)>>,
+            /// The refs the flip published, with their tips.
+            code: BTreeMap<String, String>,
+        }
+
+        impl Chain {
+            /// A private repo at epoch 0.
+            fn new() -> Self {
+                let mut c = Self {
+                    stamps: Vec::new(),
+                    current: 0,
+                    public: false,
+                    published: BTreeSet::new(),
+                    pushes: Vec::new(),
+                    chosen: None,
+                    code: BTreeMap::new(),
+                };
+                c.state(0);
+                c
+            }
+
+            /// A member pushes `tip` to `name`, sealed under the current epoch.
+            fn push(&mut self, name: &str, tip: &str) {
+                self.pushes.push((name.into(), tip.into(), self.current));
+            }
+
+            /// Each ref's newest tip sealed below `below` (every push, with none).
+            fn refs_below(&self, below: Option<u32>) -> Vec<(String, String)> {
+                let mut out: BTreeMap<String, String> = BTreeMap::new();
+                for (n, t, e) in &self.pushes {
+                    if below.is_none_or(|b| *e < b) {
+                        out.insert(n.clone(), t.clone());
+                    }
+                }
+                out.into_iter().collect()
+            }
+
+            /// `a` was pushed to the same ref as `b`, no later.
+            fn is_ancestor(&self, a: &str, b: &str) -> bool {
+                let at = |t: &str| self.pushes.iter().position(|(_, p, _)| p == t);
+                match (at(a), at(b)) {
+                    (Some(i), Some(j)) => i <= j && self.pushes[i].0 == self.pushes[j].0,
+                    _ => false,
+                }
+            }
+
+            /// Whether `tip` was pushed at epoch `from` or later.
+            fn pushed_from(&self, tip: &str, from: u32) -> bool {
+                self.pushes.iter().any(|(_, t, e)| t == tip && *e >= from)
+            }
+
+            fn state(&mut self, epoch: u32) {
+                let n = u8::try_from(self.stamps.len()).unwrap();
+                self.stamps.push(ConfigStamp {
+                    id: [n; 32],
+                    epoch: Some(epoch),
+                    private: !self.public,
+                    height: u64::from(n) + 1,
+                });
+            }
+
+            /// A key rotation (anyone's): its anchor is stamped as the repo is.
+            fn rotate(&mut self) -> u32 {
+                self.current += 1;
+                self.state(self.current);
+                self.current
+            }
+
+            fn conversion(&self) -> Option<Conversion> {
+                Conversion::of(self.public, &self.stamps, |e| e <= self.current)
+            }
+        }
+
+        /// One computer's record: the seal-off epoch, and the epoch its rotation began from.
+        #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+        struct Rec {
+            seal_off: Option<u32>,
+            from: Option<u32>,
+        }
+
+        impl Rec {
+            fn sealed(e: u32) -> Self {
+                Self {
+                    seal_off: Some(e),
+                    from: None,
+                }
+            }
+        }
+
+        #[derive(Debug, PartialEq, Eq)]
+        enum Outcome {
+            /// Refused before anything more was signed.
+            Refused(SealOff),
+            /// Not the owner: refused while private.
+            NotOwner,
+            /// The seal-off rotation landed, but its answer was lost.
+            Lost,
+            /// The run found its boundary only after its check: run it again.
+            RunAgain,
+            /// Public, the history published below the cutoff (the owner) or left to them.
+            Public { cutoff: u32 },
+        }
+
+        /// How a run goes.
+        #[derive(Clone, Copy, Default)]
+        #[allow(clippy::struct_excessive_bools)] // independent switches of the model
+        struct Opts {
+            owner: bool,
+            start_over: bool,
+            /// The rotation lands, then its answer is lost.
+            lose_answer: bool,
+            /// A node a block behind answers the first read of each step.
+            lag: bool,
+            /// A node behind answers the run's first read even after the wait.
+            stale_start: bool,
+            /// The owner names the refs again (`--ref`) rather than continuing the record's.
+            named: bool,
+        }
+
+        const OWNER: Opts = Opts {
+            owner: true,
+            start_over: false,
+            lose_answer: false,
+            lag: false,
+            stale_start: false,
+            named: false,
+        };
+
+        /// The key epoch a step reads: a node behind shows the one before, until the read waits
+        /// for [`wait_target`] and gets the chain's.
+        fn read(chain: &Chain, rec: Rec, lag: bool) -> u32 {
+            let shown = if lag {
+                chain.current.saturating_sub(1)
+            } else {
+                chain.current
+            };
+            match wait_target(rec.seal_off, rec.from) {
+                Some(t) if shown < t => chain.current,
+                _ => shown,
+            }
+        }
+
+        /// One run on a computer whose record is `rec`; `between` is what others do after step 2
+        /// and before the flip.
+        fn run_once(
+            chain: &mut Chain,
+            rec: &mut Rec,
+            o: Opts,
+            between: impl FnOnce(&mut Chain),
+        ) -> Outcome {
+            let none = BTreeSet::new();
+            if !chain.public {
+                if !o.owner {
+                    return Outcome::NotOwner;
+                }
+                // `run`: the record found again and checked against the key read at the start
+                let now = Some(if o.stale_start {
+                    chain.current.saturating_sub(1)
+                } else {
+                    read(chain, *rec, o.lag)
+                });
+                rec.seal_off = recorded_seal_off(rec.seal_off, rec.from, now, &none);
+                match keep_record(seal_off_state(rec.seal_off, now), o.start_over) {
+                    Ok(true) => {}
+                    Ok(false) => *rec = Rec::default(),
+                    Err(st) => return Outcome::Refused(st),
+                }
+                // the check: below the boundary known now; a recorded choice within it
+                let checked = rec.seal_off;
+                let all = chain.refs_below(checked);
+                let wanted = match chain.chosen.clone().filter(|_| !o.named) {
+                    Some(c) => within_boundary(&c, &all, |a, b| chain.is_ancestor(a, b)).0,
+                    None => all,
+                };
+                chain.chosen = Some(wanted.clone());
+                let resumed = rec.seal_off.is_none() && rec.from.is_some();
+                // `convert` step 2
+                let now = Some(read(chain, *rec, o.lag));
+                rec.seal_off = recorded_seal_off(rec.seal_off, rec.from, now, &none);
+                match step2(rec.seal_off, now) {
+                    Step2::Keep(_) => {}
+                    Step2::Rotate => {
+                        rec.from = Some(chain.current);
+                        let e = chain.rotate();
+                        if o.lose_answer {
+                            return Outcome::Lost;
+                        }
+                        rec.seal_off = Some(e);
+                    }
+                    Step2::Stop(st) => return Outcome::Refused(st),
+                }
+                if checked_before_boundary(checked, rec.seal_off, resumed) {
+                    return Outcome::RunAgain;
+                }
+                between(chain);
+                if let Err(st) = may_flip(rec.seal_off, Some(chain.current)) {
+                    return Outcome::Refused(st);
+                }
+                chain.public = true;
+                chain.code = wanted.into_iter().collect();
+            }
+            // step 7: the history, below the lower of the stated and the recorded seal-off
+            let stated = chain.conversion().unwrap().seal_off_epoch;
+            let cutoff = history_cutoff(stated, rec.seal_off).unwrap();
+            if o.owner {
+                chain.published.extend(0..cutoff);
+            }
+            Outcome::Public { cutoff }
+        }
+
+        /// Nothing at or after `boundary` was published.
+        fn sealed_from(chain: &Chain, boundary: u32) {
+            assert!(
+                chain.published.iter().all(|&e| e < boundary),
+                "published {:?}, boundary {boundary}",
+                chain.published
+            );
+        }
+
+        /// Lost answer, a node behind at the start, a member push after the boundary, then Code
+        /// only resumes: nothing pushed at or after the boundary is published.
+        #[test]
+        fn a_check_made_before_the_boundary_was_found_is_never_published() {
+            let mut chain = Chain::new();
+            chain.push("refs/heads/main", "a0");
+            let mut rec = Rec::default();
+            let lose = Opts {
+                lose_answer: true,
+                ..OWNER
+            };
+            assert_eq!(run_once(&mut chain, &mut rec, lose, |_| {}), Outcome::Lost);
+            // members push under the run's own key change (epoch 1)
+            chain.push("refs/heads/main", "a1");
+            chain.push("refs/heads/feature", "f1");
+            // the owner names the refs again; a node behind answers the first read
+            let named = Opts {
+                stale_start: true,
+                named: true,
+                ..OWNER
+            };
+            assert_eq!(
+                run_once(&mut chain, &mut rec, named, |_| {}),
+                Outcome::RunAgain
+            );
+            assert_eq!((rec.seal_off, chain.public), (Some(1), false));
+            // the record kept that check's choice; a resume drops what it can't stand for
+            let out = run_once(&mut chain, &mut rec, OWNER, |_| {});
+            assert_eq!(out, Outcome::Public { cutoff: 1 });
+            assert!(
+                chain.code.values().all(|t| !chain.pushed_from(t, 1)),
+                "published {:?}",
+                chain.code
+            );
+            // named again on a fresh copy: what main was before the boundary
+            let mut again = Chain::new();
+            again.push("refs/heads/main", "a0");
+            let mut r = Rec::default();
+            let _ = run_once(&mut again, &mut r, lose, |_| {});
+            again.push("refs/heads/main", "a1");
+            let _ = run_once(&mut again, &mut r, named, |_| {});
+            let renamed = Opts {
+                named: true,
+                ..OWNER
+            };
+            assert_eq!(
+                run_once(&mut again, &mut r, renamed, |_| {}),
+                Outcome::Public { cutoff: 1 }
+            );
+            assert_eq!(
+                again.code,
+                BTreeMap::from([("refs/heads/main".to_string(), "a0".to_string())])
+            );
+        }
+
+        #[test]
+        fn resume_after_a_concurrent_rotation_keeps_the_original_boundary() {
+            let mut chain = Chain::new();
+            let mut rec = Rec::default();
+            // the run seals off at 1; another maintainer rotates to 2 before the flip
+            let first = run_once(&mut chain, &mut rec, OWNER, |c| {
+                c.rotate();
+            });
+            assert_eq!(first, Outcome::Refused(SealOff::Passed(1)));
+            assert_eq!(rec.seal_off, Some(1));
+            // the resume neither rotates again nor flips: the boundary stays 1
+            let resumed = run_once(&mut chain, &mut rec, OWNER, |_| {});
+            assert_eq!(resumed, Outcome::Refused(SealOff::Passed(1)));
+            assert_eq!(
+                (rec.seal_off, chain.current, chain.public),
+                (Some(1), 2, false)
+            );
+            sealed_from(&chain, 1);
+            // only a new run the owner starts on purpose makes it public, with its own boundary
+            let again = Opts {
+                start_over: true,
+                ..OWNER
+            };
+            let fresh = run_once(&mut chain, &mut rec, again, |_| {});
+            assert_eq!(fresh, Outcome::Public { cutoff: 3 });
+        }
+
+        #[test]
+        fn two_clients_resuming_never_publish_past_the_original_boundary() {
+            let mut chain = Chain::new();
+            let mut here = Rec::default();
+            let mut elsewhere = Rec::default();
+            let first = run_once(&mut chain, &mut here, OWNER, |c| {
+                c.rotate();
+            });
+            assert_eq!(first, Outcome::Refused(SealOff::Passed(1)));
+            // a maintainer can't continue it while private, and the owner here can't either
+            let maint = Opts {
+                owner: false,
+                ..OWNER
+            };
+            assert_eq!(
+                run_once(&mut chain, &mut elsewhere, maint, |_| {}),
+                Outcome::NotOwner
+            );
+            assert_eq!(
+                run_once(&mut chain, &mut here, OWNER, |_| {}),
+                Outcome::Refused(SealOff::Passed(1))
+            );
+            assert!(!chain.public);
+            sealed_from(&chain, 1);
+            // start-over is refused while this computer's run can still be finished
+            let mut kept = Rec::sealed(chain.rotate());
+            let again = Opts {
+                start_over: true,
+                ..OWNER
+            };
+            let st = run_once(&mut chain, &mut kept, again, |_| {});
+            assert_eq!(st, Outcome::Refused(SealOff::Keep(3)));
+        }
+
+        #[test]
+        fn an_interrupted_run_after_a_second_rotation_never_moves_its_boundary() {
+            let mut chain = Chain::new();
+            let mut rec = Rec::default();
+            // interrupted right after its seal-off at 1 (the key read before the flip never came)
+            assert_eq!(step2(rec.seal_off, Some(chain.current)), Step2::Rotate);
+            rec = Rec::sealed(chain.rotate());
+            // two more rotations by others
+            chain.rotate();
+            chain.rotate();
+            for _ in 0..2 {
+                let out = run_once(&mut chain, &mut rec, OWNER, |_| {});
+                assert_eq!(out, Outcome::Refused(SealOff::Passed(1)));
+            }
+            assert_eq!(
+                (rec.seal_off, chain.current, chain.public),
+                (Some(1), 3, false)
+            );
+            sealed_from(&chain, 1);
+            // a node that doesn't show the run's rotation yet: wait, never rotate again
+            let mut ahead = Rec::sealed(4);
+            let out = run_once(&mut chain, &mut ahead, OWNER, |_| {});
+            assert_eq!(out, Outcome::Refused(SealOff::Behind(4)));
+            assert_eq!(chain.current, 3);
+        }
+
+        #[test]
+        fn a_client_resuming_from_the_chain_alone_reads_the_original_boundary() {
+            // a concurrent rotation, then the resume: never flipped, so the chain states no
+            // later boundary for any client to read
+            let mut concurrent = Chain::new();
+            let mut r = Rec::default();
+            let _ = run_once(&mut concurrent, &mut r, OWNER, |c| {
+                c.rotate();
+            });
+            let _ = run_once(&mut concurrent, &mut r, OWNER, |_| {});
+            assert!(
+                concurrent.conversion().is_none(),
+                "flipped past its boundary"
+            );
+
+            // a run sealed off at 1 and flipped, interrupted before the history
+            let mut chain = Chain::new();
+            let rec = Rec::sealed(chain.rotate());
+            assert_eq!(may_flip(rec.seal_off, Some(chain.current)), Ok(()));
+            chain.public = true;
+            // members rotate after the flip: public anchors never move the stated boundary
+            chain.rotate();
+            chain.rotate();
+            assert_eq!(chain.conversion().unwrap().seal_off_epoch, Some(1));
+            // a third client with no record (a maintainer), then the owner on another computer
+            let mut none = Rec::default();
+            let maint = Opts {
+                owner: false,
+                ..OWNER
+            };
+            assert_eq!(
+                run_once(&mut chain, &mut none, maint, |_| {}),
+                Outcome::Public { cutoff: 1 }
+            );
+            assert!(chain.published.is_empty(), "the history is the owner's");
+            assert_eq!(
+                run_once(&mut chain, &mut none, OWNER, |_| {}),
+                Outcome::Public { cutoff: 1 }
+            );
+            assert_eq!(chain.published, BTreeSet::from([0]));
+            sealed_from(&chain, 1);
+        }
+
+        #[test]
+        fn a_seal_off_that_landed_but_was_never_recorded_is_never_made_twice() {
+            let mut chain = Chain::new();
+            let mut rec = Rec::default();
+            let lose = Opts {
+                lose_answer: true,
+                ..OWNER
+            };
+            // the rotation to 1 lands, then its answer is lost
+            assert_eq!(run_once(&mut chain, &mut rec, lose, |_| {}), Outcome::Lost);
+            assert_eq!((rec.seal_off, rec.from, chain.current), (None, Some(0), 1));
+            // the resume finds it again: no second rotation, the boundary is 1
+            let out = run_once(&mut chain, &mut rec, OWNER, |_| {});
+            assert_eq!(out, Outcome::Public { cutoff: 1 });
+            assert_eq!(chain.current, 1);
+            sealed_from(&chain, 1);
+
+            // lost, and a node a block behind answers the resume: it is waited for, never
+            // rotated around
+            let mut chain = Chain::new();
+            let mut rec = Rec::default();
+            assert_eq!(run_once(&mut chain, &mut rec, lose, |_| {}), Outcome::Lost);
+            let behind = Opts { lag: true, ..OWNER };
+            let out = run_once(&mut chain, &mut rec, behind, |_| {});
+            assert_eq!(out, Outcome::Public { cutoff: 1 });
+            assert_eq!(chain.current, 1);
+
+            // lost, then another maintainer rotates: the boundary is still the run's own
+            let mut chain = Chain::new();
+            let mut rec = Rec::default();
+            assert_eq!(run_once(&mut chain, &mut rec, lose, |_| {}), Outcome::Lost);
+            chain.rotate();
+            let out = run_once(&mut chain, &mut rec, OWNER, |_| {});
+            assert_eq!(out, Outcome::Refused(SealOff::Passed(1)));
+            assert_eq!(
+                (rec.seal_off, chain.current, chain.public),
+                (Some(1), 2, false)
+            );
+        }
     }
 }

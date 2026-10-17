@@ -185,6 +185,11 @@ export function resumeCommand(label: string): string {
   return `dg repo make-public ${label} --resume`
 }
 
+/** The command that starts a run again in place of one that can't be finished (`--start-over`). */
+export function startOverCommand(label: string, mode: MakePublicMode): string {
+  return `dg repo make-public ${label} ${mode === 'codeOnly' ? '--code-only' : '--everything'} --start-over`
+}
+
 /** What a maintainer reads when only the owner's history step is left. */
 export function ownerHistoryLine(label: string): string {
   return `The owner publishes the history: they finish it here or with ${resumeCommand(label)}.`

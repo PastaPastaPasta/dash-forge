@@ -406,7 +406,9 @@ pub struct CreateOptions {
     pub allow_private_uri: bool,
     /// Create a private repository: contents (code, ref names, issues, PRs, comments,
     /// reviews) are encrypted to its members. Needs an encryption key on your identity
-    /// (`dg auth keys add --encryption`). Visibility cannot be changed later.
+    /// (`dg auth keys add --encryption`). Its owner can make it public later, once and for good,
+    /// with `dg repo make-public` (code only or everything); a public repository can never become
+    /// private.
     #[arg(long)]
     pub private: bool,
     /// Leave the default branch and tags unprotected. By default a new repository protects

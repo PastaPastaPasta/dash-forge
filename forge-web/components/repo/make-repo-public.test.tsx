@@ -44,6 +44,7 @@ vi.mock('@/lib/repo/make-public-run', () => ({ runMakePublic: (...a: unknown[]) 
 const readMakePublicStatus = vi.fn()
 vi.mock('@/lib/repo/make-public-status', () => ({ readMakePublicStatus: (...a: unknown[]) => readMakePublicStatus(...a) }))
 
+import { COPY } from '@/lib/repo/make-public'
 import { MakeRepoPublic } from './make-repo-public'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -82,7 +83,7 @@ function aCheck(over: Partial<MakePublicCheck> = {}): MakePublicCheck {
 const STEPS: readonly MakePublicStep[] = ['sealOff', 'flip', 'config', 'code', 'notify', 'history']
 function aStatus(over: Partial<Omit<MakePublicStatus, 'steps'>> & { steps?: Partial<Record<MakePublicStep, StepState>> } = {}): MakePublicStatus {
   const steps = Object.fromEntries(STEPS.map((s) => [s, over.steps?.[s] ?? 'todo'])) as Record<MakePublicStep, StepState>
-  return { phase: 'private', converted: false, doneCount: 0, totalSteps: 7, lastStepAt: null, record: null, mode: null, ...over, steps }
+  return { phase: 'private', converted: false, doneCount: 0, totalSteps: 7, lastStepAt: null, record: null, sealOffPassed: false, mode: null, ...over, steps }
 }
 
 function home(visibility: 'private' | 'public' = 'private'): RepoHome {
@@ -430,6 +431,54 @@ describe('Finish', () => {
     expect(q('[data-testid="make-public-step"][data-step="history"]')?.textContent).toContain('Waiting for the owner')
     expect(tid('make-public-owner-history')?.textContent).toBe('The owner publishes the history: they finish it here or with dg repo make-public carol/ledger --resume.')
     expect(tid('make-public-finish')).toBeNull()
+  })
+})
+
+describe('a recorded run whose own key change another rotation followed', () => {
+  const passed = (): MakePublicStatus =>
+    aStatus({ phase: 'private', record: { mode: 'everything', refs: [MAIN], sealOff: 4, sealOffAt: Date.UTC(2026, 9, 1) }, sealOffPassed: true, doneCount: 1, steps: { sealOff: 'todo' } })
+
+  it('offers no Finish; the owner starts again: what it adds said, its own words typed', async () => {
+    readMakePublicStatus.mockResolvedValue(passed())
+    makePublicCheck.mockResolvedValue(aCheck())
+    runMakePublic.mockResolvedValue({ finished: true, notPublished: [] })
+    await renderRow()
+    expect(tid('make-public-finish')).toBeNull()
+    expect(tid('make-public-seal-off-passed')?.textContent).toBe(COPY.sealOffPassed('everything'))
+    expect(tid('make-public-interrupted')?.textContent).not.toContain('continue later')
+    expect(tid('make-public-interrupted')?.textContent).toContain('or: dg repo make-public carol/ledger --everything --start-over')
+    await click(tid('make-public-start-over'))
+    expect(document.querySelector('[role="dialog"] h2')?.textContent).toBe('Make carol/ledger public?')
+    await click(tid('make-public-mode-everything'))
+    expect(tid('make-public-start-over-line')?.textContent).toBe(COPY.startOver(Date.UTC(2026, 9, 1), 'everything'))
+    expect(tid('make-public-start-over-line')?.textContent).toContain('(2026-10-01)')
+    // the usual words don't start over
+    type(tid<HTMLInputElement>('make-public-words'), 'make carol/ledger public')
+    expect(confirmButton().disabled).toBe(true)
+    type(tid<HTMLInputElement>('make-public-words'), 'start over making carol/ledger public')
+    await click(confirmButton())
+    expect(runMakePublic.mock.calls[0]![1]).toMatchObject({ mode: 'everything', startOver: true, confirmation: 'start over making carol/ledger public' })
+    expect(runMakePublic.mock.calls[0]![1]).not.toHaveProperty('resume')
+  })
+
+  it('a maintainer reads why, with nothing to run', async () => {
+    viewer.id = 'maint'
+    readMakePublicStatus.mockResolvedValue(passed())
+    await renderRow()
+    expect(tid('make-public-seal-off-passed')).not.toBeNull()
+    expect(tid('make-public-finish')).toBeNull()
+    expect(tid('make-public-start-over')).toBeNull()
+  })
+
+  it('a run that kept its boundary record says so when done', async () => {
+    converted.value = true
+    readMakePublicStatus.mockResolvedValue(
+      aStatus({ phase: 'made', converted: true, record: { mode: 'codeOnly', refs: [MAIN], sealOff: 4 }, doneCount: 3, steps: { sealOff: 'done', flip: 'done', history: 'skipped' } }),
+    )
+    runMakePublic.mockResolvedValue({ finished: true, notPublished: [], boundaryKept: true })
+    await renderRow({ visibility: 'public' })
+    await click(tid('make-public-finish'))
+    expect(tid('make-public-boundary-kept')?.textContent).toBe(COPY.boundaryKept)
   })
 })
 

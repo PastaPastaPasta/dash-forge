@@ -37,7 +37,9 @@ import {
   estimateMakePublic,
   loadMakePublicRecord,
   namedCodeRefs,
+  recordedSealOff,
   refsOfRecord,
+  withinBoundary,
   type MakePublicCensus,
   type MakePublicCheck,
   type MakePublicMode,
@@ -84,10 +86,15 @@ export async function readVisibility(sdk: EvoSDK, repo: RepoRef): Promise<'publi
   return doc['visibility'] === 'public' ? 'public' : 'private'
 }
 
-/** The conversion facts of `repo` read now (forge-core `RepoService::conversion`): null unless public and once private. */
-export async function readConversion(sdk: EvoSDK, repo: RepoRef): Promise<Conversion | null> {
+/**
+ * The conversion facts of `repo` read now (forge-core `RepoService::conversion`): null unless public
+ * and once private. `anchored` says which epochs have an anchor (a session's resolution), so a
+ * private config stating an epoch that never existed can't raise the seal-off epoch, as readers
+ * take it; without it every stated epoch counts.
+ */
+export async function readConversion(sdk: EvoSDK, repo: RepoRef, anchored?: (epoch: number) => boolean): Promise<Conversion | null> {
   const pub = publicViewOf(repo)
-  return repoConversion(pub, await readAllRows(sdk, pub, DOC.config))
+  return repoConversion(pub, await readAllRows(sdk, pub, DOC.config), anchored)
 }
 
 /**
@@ -489,7 +496,12 @@ export async function inspect(c: PrivateWriteContext, session: PrivateSession, o
   const sorted = byName(allRefs)
   // Code only: the refs the owner chose, the refs named, or the default branch and its tags
   let codeRefs: MakePublicRef[]
-  if (opts.chosen !== undefined) codeRefs = [...opts.chosen]
+  if (opts.chosen !== undefined) {
+    // a recorded choice holds only what the refs were before the boundary
+    const within = await withinBoundary(opts.chosen, sorted, (a, b) => isAncestorIn(store, a, b))
+    codeRefs = within.kept
+    for (const name of within.dropped) notes.push(COPY.changedSince(shortRef(name)))
+  }
   else if (opts.refs !== undefined && opts.refs.length > 0) codeRefs = namedCodeRefs(sorted, opts.refs)
   else codeRefs = await defaultCodeRefs(sorted, `refs/heads/${defaultBranch}`, (tag, tip) => isAncestorIn(store, tag, tip))
   if (mode === 'codeOnly' && conversion === null && codeRefs.length === 0) blockers.push(new MakePublicError(COPY.noCode, 'E201'))
@@ -593,15 +605,17 @@ export async function makePublicCheck(
   } = {},
 ): Promise<MakePublicCheck> {
   const visibility = await readVisibility(c.sdk, c.repo)
-  const conversion = visibility === 'public' ? await readConversion(c.sdk, c.repo) : null
-  if (visibility === 'public' && conversion === null) throw new MakePublicError(COPY.publicAlready, 'E201')
   const record = await loadMakePublicRecord(c.network, c.auth.identityId, c.repo.repoId)
   const chosen = record !== null && opts.mode !== undefined && record.mode === opts.mode && (opts.refs ?? []).length === 0 ? refsOfRecord(record) : undefined
   const session = await privateSessionFor(c)
   try {
+    const r = session.resolution
+    const conversion = visibility === 'public' ? await readConversion(c.sdk, c.repo, (e) => r.anchors.has(e)) : null
+    if (visibility === 'public' && conversion === null) throw new MakePublicError(COPY.publicAlready, 'E201')
     // the run's cutoff (`make-public-run.ts`): the lower of the stated and recorded seal-off epochs
-    // once public; while private, the recorded one while it is still the current epoch
-    const recorded = record?.sealOff ?? null
+    // once public; while private, the recorded one while it is still the current epoch (one that
+    // landed unrecorded found again)
+    const recorded = record === null ? null : recordedSealOff(record.sealOff, record.sealOffFrom, r.currentEpoch, r.burned)
     const below = conversion !== null ? cutoffOf(conversion.sealOffEpoch, recorded) : recorded !== null && recorded === session.resolution.currentEpoch ? recorded : undefined
     const { check } = await inspect(c, session, {
       conversion,

@@ -14,7 +14,9 @@
  *   private, the cost, and the typed words. Make public turns it into the step list.
  * - **Interrupted**: a run that stopped (flipped and unfinished, or this browser's record of one
  *   that stopped before the flip) shows a panel here, at `#danger`, with Finish (any maintainer
- *   after the flip; the history step stays the owner's) and the `dg … --resume` alternative.
+ *   after the flip; the history step stays the owner's) and the `dg … --resume` alternative. A run
+ *   recorded here whose own key change another rotation followed can't be finished: the panel says
+ *   so and offers the owner Start again (a new run, the typed words asked) and `dg … --start-over`.
  *
  * Closing the dialog mid-run aborts between steps; what landed stays, and the panel offers Finish
  * once the step under way settles (`make-public-inflight.ts`: never two runs side by side).
@@ -33,6 +35,7 @@ import {
   MAKE_PUBLIC_STEPS,
   MAKE_PUBLIC_WORDS,
   MakePublicError,
+  START_OVER_WORDS,
   gateMakePublic,
   secretsOf,
   uniqueSecrets,
@@ -82,6 +85,7 @@ import {
   refChoices,
   resumeCommand,
   runErrorText,
+  startOverCommand,
   secretLine,
   staysPrivateLine,
   unreadLine,
@@ -111,8 +115,11 @@ import { cn, shortId } from '@/lib/utils'
 
 /** What the dialog starts with. */
 type Start =
-  /** The owner makes a private repo public: the check, then the choice. */
-  | { readonly kind: 'new' }
+  /**
+   * The owner makes a private repo public: the check, then the choice (`startOver`: in place of this
+   * browser's recorded run, which can't be finished).
+   */
+  | { readonly kind: 'new'; readonly startOver?: { readonly at: number | null; readonly mode: MakePublicMode } }
   /** Finish a run this browser has no record of: the check, then a choice limited to `allowed`. */
   | { readonly kind: 'choose'; readonly allowed: Readonly<Record<MakePublicMode, boolean>> }
   /** Finish the run this browser recorded: straight to the steps. */
@@ -280,8 +287,12 @@ function InterruptedPanel({
   const steps = status.steps
   const historyByOwner = !isOwner && steps.history === 'owner'
   const onlyOwnerLeft = historyByOwner && (['config', 'code', 'notify'] as const).every((s) => steps[s] === 'done')
+  // A run whose own key change another rotation followed can't be finished, only started again
+  // (decided from the keys as the run reads them).
+  const record = status.record
+  const passed = !flipped && status.sealOffPassed && record !== null
   // Before the flip only the owner continues; after it any maintainer, the history aside.
-  const canFinish = (isOwner || flipped) && !onlyOwnerLeft
+  const canFinish = (isOwner || flipped) && !onlyOwnerLeft && !passed
   const finish = (): void => {
     const record = status.record
     if (record !== null) {
@@ -298,7 +309,7 @@ function InterruptedPanel({
         <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-caution-700 dark:text-caution-400" aria-hidden />
         <div className="min-w-0 flex-1 space-y-1">
           <p className="text-dense font-medium [overflow-wrap:anywhere]">{interruptedLine(label)}</p>
-          <p className="text-[12px] text-anvil-600 dark:text-anvil-300">{progressLine(label, status.doneCount)}</p>
+          {passed ? null : <p className="text-[12px] text-anvil-600 dark:text-anvil-300">{progressLine(label, status.doneCount)}</p>}
           {inFlight ? (
             <p className="flex items-center gap-1.5 text-[12px] text-anvil-600 dark:text-anvil-300" aria-live="polite" data-testid="make-public-still-working">
               <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" aria-hidden />
@@ -318,7 +329,22 @@ function InterruptedPanel({
           {ownerHistoryLine(label)}
         </p>
       ) : null}
+      {passed ? (
+        <p className="text-[12px] text-caution-800 dark:text-caution-300" data-testid="make-public-seal-off-passed">
+          {COPY.sealOffPassed(record.mode)}
+        </p>
+      ) : null}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        {passed && isOwner ? (
+          <>
+            <Button variant="danger" disabled={!labelReady || inFlight} onClick={() => onFinish({ kind: 'new', startOver: { at: record.sealOffAt ?? null, mode: record.mode } })} data-testid="make-public-start-over">
+              Start again…
+            </Button>
+            <span className="min-w-0 text-[12px] text-anvil-500 dark:text-anvil-400 [overflow-wrap:anywhere]">
+              or: <code className="font-mono">{startOverCommand(label, record.mode)}</code>
+            </span>
+          </>
+        ) : null}
         {canFinish ? (
           <Button variant="danger" disabled={!labelReady || inFlight} onClick={finish} data-testid="make-public-finish">
             Finish
@@ -589,6 +615,7 @@ function MakePublicDialog({
             repoLabel: label,
             ...(upload.upload !== null ? { upload: upload.upload } : {}),
             ...(resume ? { resume: true } : {}),
+            ...(start.kind === 'new' && start.startOver !== undefined ? { startOver: true } : {}),
             onCheck: (what) => {
               if (!ctl.signal.aborted) setRun((r) => (r === null ? r : { ...r, checking: what }))
             },
@@ -654,7 +681,8 @@ function MakePublicDialog({
   const blockerOf = (m: MakePublicMode): MakePublicError | null => (check === null ? null : gateMakePublic(check, m, secretsOf(check, m).map((s) => s.fingerprint)))
   const findings = check !== null && mode !== null ? uniqueSecrets([...secretsOf(check, mode), ...extraSecrets]) : extraSecrets
   const unacked = findings.filter((s) => s.refuses && !allowed.has(s.fingerprint.toLowerCase()))
-  const typedWords = MAKE_PUBLIC_WORDS(label)
+  const startOver = start.kind === 'new' ? start.startOver : undefined
+  const typedWords = startOver !== undefined ? START_OVER_WORDS(label) : MAKE_PUBLIC_WORDS(label)
   /** Why Make public is disabled, or null when it isn't. */
   const why = ((): string | null => {
     if (!hasContext) return 'Unlock this tab to continue.'
@@ -752,6 +780,11 @@ function MakePublicDialog({
               <Globe className="mt-0.5 h-4 w-4 shrink-0 text-verify-700 dark:text-verify-400" aria-hidden />
               {o.finished ? doneLine(label, run.mode) : doneButHistoryLine(label)}
             </p>
+            {o.boundaryKept === true ? (
+              <p className="text-[12px] [overflow-wrap:anywhere]" data-testid="make-public-boundary-kept">
+                {COPY.boundaryKept}
+              </p>
+            ) : null}
             {notPublished !== null ? (
               <p className="text-[12px] [overflow-wrap:anywhere]" data-testid="make-public-not-published">
                 {notPublished}
@@ -848,6 +881,11 @@ function MakePublicDialog({
         {check !== null ? storageNote : null}
         {check !== null ? (
           <div className="space-y-1.5">
+            {startOver !== undefined ? (
+              <p className="text-caution-800 dark:text-caution-300 [overflow-wrap:anywhere]" data-testid="make-public-start-over-line">
+                {COPY.startOver(startOver.at, mode ?? startOver.mode)}
+              </p>
+            ) : null}
             <label htmlFor={wordsId} className="block font-medium text-anvil-800 dark:text-anvil-100 [overflow-wrap:anywhere]">
               {COPY.words(typedWords)}
             </label>
