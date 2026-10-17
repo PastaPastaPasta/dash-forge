@@ -77,6 +77,16 @@ pub fn comment(body_bytes: u64) -> u64 {
     collab_doc_credits(CollabDoc::Comment, COMMENT_FIXED_BYTES + body_bytes)
 }
 
+/// A review's fixed properties: `repoId`, `patchId`, verdict, comment count and role.
+/// Rounded up, in addition to the importer's document system overhead.
+const REVIEW_FIXED_BYTES: u64 = 96;
+
+/// A `review` with `text_bytes` of summary, priced as the PR's and contract's first.
+/// ECON-05 testnet rc.4: review-0 charged 75.30M for a 9-byte summary.
+pub fn review(text_bytes: u64) -> u64 {
+    collab_doc_credits(CollabDoc::Review, REVIEW_FIXED_BYTES + text_bytes)
+}
+
 /// The bytes a `label` or `milestone` definition stores beyond its text: `repoId`, the claimed
 /// role `r`, the flags and a milestone's due date. Rounded up.
 const DEFINITION_FIXED_BYTES: u64 = 64;
@@ -274,6 +284,12 @@ mod tests {
         assert!(event(6, false) >= 76_225_420 + 12_000_000);
         assert!(event(6, false) <= (76_225_420 + 12_000_000) * 110 / 100);
         assert!(label_definition(13) >= 50_530_880);
+        // review-0: `dg pr review --comment --body calibrate`, first contract write.
+        assert!(review(9) >= 75_303_740);
+        assert!(review(9) <= 75_303_740 * 110 / 100);
+        // review-comment-0: `dg pr comment --body calibrate --file README.md --line 1`.
+        assert!(comment(9 + 9) >= 73_027_280);
+        assert!(comment(9 + 9) <= 73_027_280 * 130 / 100);
     }
 
     /// QW4-046 / QW4-049 / QW4-039: the quotes cover what sakura (Platform 5.0.0-beta.1, QA wave

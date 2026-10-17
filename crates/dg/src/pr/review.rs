@@ -39,7 +39,6 @@ use forge_core::rules::v2::{Audience, ContentKind};
 use forge_core::user_error::{codes, UserError};
 
 use super::inline::{read_body_file, InlineSpec};
-use super::{estimate, Est};
 use crate::common::{number_arg, Session};
 use crate::context::Ctx;
 use crate::fmt::{cost_json, cost_line, safe, short};
@@ -697,17 +696,17 @@ fn first_line(s: &str) -> String {
     }
 }
 
-/// The documents a submit writes and their estimate (review-parity §6: review 34.9M, comment
-/// 47.3M, each + 27.5k per text byte).
+/// The documents a submit still needs to write, using calibrated first-write quotes for
+/// reviews and comments (including anchored paths). Landed documents are not priced again.
 fn submit_estimate(d: &ReviewDraft) -> u64 {
     let pending: u64 = d
         .comments
         .iter()
         .filter(|c| c.landed_id.is_none())
-        .map(|c| estimate(Est::Comment, c.spec.body.len() + c.spec.path.len()))
+        .map(|c| crate::quote::comment((c.spec.body.len() + c.spec.path.len()) as u64))
         .sum();
     let review = if d.review_id.is_none() {
-        estimate(Est::Review, d.summary.len())
+        crate::quote::review(d.summary.len() as u64)
     } else {
         0
     };
@@ -1195,8 +1194,8 @@ pub async fn comment(ctx: &Ctx, a: &PrCommentArgs) -> Result<()> {
         &body,
         audience,
     )?;
-    let field_bytes = usize::try_from(planned.field_bytes()).unwrap_or(usize::MAX);
-    let est = estimate(Est::Comment, field_bytes + path_len) + planned.extra_credits(&s.repo);
+    let est = crate::quote::comment(planned.field_bytes() + path_len as u64)
+        + planned.extra_credits(&s.repo);
     ctx.confirm_or_cancel(&format!(
         "Post a {}{kind} comment on PR #{}{to}? (one document, {}{})",
         crate::audience::prefix(&s.repo, audience),
@@ -1417,6 +1416,17 @@ mod tests {
     }
 
     #[test]
+    fn submitted_review_quote_covers_testnet_review_and_inline_comment() {
+        let mut d = draft(1);
+        d.summary = "calibrate".into();
+        d.comments[0].spec.body = "calibrate".into();
+        d.comments[0].spec.path = "README.md".into();
+        assert!(submit_estimate(&d) >= 75_303_740 + 73_027_280);
+        d.comments[0].landed_id = Some("c".into());
+        assert!(submit_estimate(&d) >= 75_303_740);
+    }
+
+    #[test]
     fn only_documents_still_to_write_are_estimated() {
         let mut d = draft(2);
         let full = submit_estimate(&d);
@@ -1425,7 +1435,7 @@ mod tests {
         assert!(submit_estimate(&d) < full);
         assert_eq!(
             submit_estimate(&d),
-            estimate(Est::Comment, 1 + 1),
+            crate::quote::comment(1 + 1),
             "one comment of 1-byte body and 1-byte path left"
         );
     }
