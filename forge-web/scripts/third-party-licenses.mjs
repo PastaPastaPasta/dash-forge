@@ -81,6 +81,24 @@ export function packagesOf(list) {
   return out.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : a.version < b.version ? -1 : a.version > b.version ? 1 : 0))
 }
 
+/**
+ * `packages` without the platform-specific prebuilt binaries: packages whose package.json limits
+ * them to an OS, CPU or libc (`os`, `cpu`, `libc`), such as Next's SWC compiler or fsevents.
+ * They run only at build time, are never in the site, and differ by machine, so listing them
+ * would make an x86_64 and an arm64 build write different notices (and different IPFS CIDs).
+ */
+export function withoutPlatformBinaries(packages, readManifest = (dir) => JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))) {
+  return packages.filter((p) => {
+    let manifest
+    try {
+      manifest = readManifest(p.dir)
+    } catch {
+      return true
+    }
+    return !['os', 'cpu', 'libc'].some((field) => manifest?.[field] !== undefined)
+  })
+}
+
 /** The license texts a package ships: `[{ file, text }]`, sorted by file name. */
 export function licenseTexts(dir) {
   return readdirSync(dir)
@@ -142,8 +160,9 @@ export function openpgpNotice(version, repository) {
 
 This application uses OpenPGP.js to read OpenPGP keys and check OpenPGP signatures. OpenPGP.js
 is free software under the GNU Lesser General Public License, version 3 or (at your option) any
-later version. It is included here unmodified, as the file it is published as, in a JavaScript
-chunk of its own that the application loads on demand.
+later version. The application's build (webpack and the Next.js minifier) bundles the published
+release into a JavaScript chunk of its own that the application loads on demand. The minifier
+does not keep the release's license banner; this notice and the files it names stand in for it.
 
   License texts   licenses/LGPL-3.0.txt and licenses/GPL-3.0.txt (the LGPL is the GPL plus extra
                   permissions, so both accompany this application), served beside this file.
@@ -152,8 +171,25 @@ chunk of its own that the application loads on demand.
                   package https://registry.npmjs.org/openpgp/-/openpgp-${version}.tgz
   Copyright       the OpenPGP.js authors. The package's own LICENSE file is reproduced below.
 
-OpenPGP.js's build embeds noble-ciphers, noble-curves and noble-hashes (MIT, Copyright (c) Paul
-Miller); their notices stay in its file headers.
+OpenPGP.js's published build embeds noble-ciphers, noble-curves and noble-hashes by Paul Miller,
+under the MIT license. The minifier drops their banners too, so their notice is here:
+
+  Copyright (c) Paul Miller (https://paulmillr.com)
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy of this software
+  and associated documentation files (the "Software"), to deal in the Software without
+  restriction, including without limitation the rights to use, copy, modify, merge, publish,
+  distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the
+  Software is furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all copies or
+  substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING
+  BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+  NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+  DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 You may modify OpenPGP.js and use the modified version with this application. The application
 is open source (${REPO_URL}, under the MIT and
@@ -177,11 +213,11 @@ compiled into the module carry their own licenses, listed in wasm-sdk-licenses.t
  * a package that ships no license text.
  *
  * @param {Record<string, any[]>} list
- * @param {{ thirdPartyDir?: string }} [opts]
+ * @param {{ thirdPartyDir?: string, readManifest?: (dir: string) => any }} [opts]
  */
 export function renderNotices(list, opts = {}) {
   const thirdPartyDir = opts.thirdPartyDir ?? join(HERE, 'third-party')
-  const packages = packagesOf(list)
+  const packages = withoutPlatformBinaries(packagesOf(list), opts.readManifest)
   const openpgp = packages.find((p) => p.name === 'openpgp')
   if (!openpgp) throw new Error('openpgp is not in the production tree; update third-party-licenses.mjs (the LGPL notice)')
 

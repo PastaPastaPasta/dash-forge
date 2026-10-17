@@ -78,7 +78,7 @@ export default function LicensesPage(): JSX.Element {
               This app uses OpenPGP.js {v} to read OpenPGP keys and check OpenPGP signatures. OpenPGP.js is free software under the GNU Lesser General Public License, version 3 or any later
               version.
             </p>
-            <p>It is the published release, unmodified, in a file of its own that the app loads only when it needs it.</p>
+            <p>The app’s build bundles the published release into a file of its own that the app loads only when it needs it. The minifier drops the release’s license banner; this page and the notice file stand in for it.</p>
             <p>
               You may change it and use your version with this app. The app is open source and its web build is reproducible, so you can swap OpenPGP.js in the lockfile or with a pnpm patch and
               rebuild (<Outside href={verifyGuideUrl()}>how to rebuild and check the app</Outside>).

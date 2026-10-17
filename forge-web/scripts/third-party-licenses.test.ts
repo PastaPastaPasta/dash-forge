@@ -38,6 +38,16 @@ function fixture() {
 }
 
 describe('renderNotices', () => {
+  it('leaves out platform-specific build binaries, so every machine writes the same notice', () => {
+    const { root, list } = fixture()
+    const x64 = structuredClone(list)
+    x64.MIT!.push(entry('@next/swc-linux-x64-gnu', '14.2.25', pkg(root, '@next/swc-linux-x64-gnu', '14.2.25', { LICENSE: 'MIT swc' }, { os: ['linux'], cpu: ['x64'] })))
+    const arm = structuredClone(list)
+    arm.MIT!.push(entry('@next/swc-linux-arm64-gnu', '14.2.25', pkg(root, '@next/swc-linux-arm64-gnu', '14.2.25', { LICENSE: 'MIT swc' }, { os: ['linux'], cpu: ['arm64'], libc: ['glibc'] })))
+    expect(renderNotices(x64)).toBe(renderNotices(arm))
+    expect(renderNotices(x64)).not.toContain('@next/swc')
+  })
+
   it('names every package once with its license text, and states where OpenPGP.js comes from', () => {
     const { list } = fixture()
     const text = renderNotices(list)
