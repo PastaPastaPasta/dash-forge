@@ -4,7 +4,7 @@
 
 Registration is the one step in a Forge launch that cannot be undone. Contracts cannot be deleted, re-owned or changed beyond additive updates ([after registration](#7-after-registration-what-can-still-change)). Rehearse it on a scratch set first, and read this page to the end before you broadcast anything.
 
-**Status.** Forge is registered on devnet sakura only. A network has a Forge deployment once `forge-contracts/deployments/<network>.json` holds a complete `v2` record; testnet's and mainnet's files hold only the network's addresses and chain id until the registration commit lands. Until then every client reports "not deployed" on that network ([E702](errors.md#e702)) and never falls back to another network's ids. [Networks](networks.md) says what runs where.
+**Status.** Forge is registered on devnet sakura only. A network has a Forge deployment once `forge-contracts/deployments/<network>.json` holds a complete `v2` record; testnet's file holds only the network's DAPI addresses, its chain id and the `keyExchange` record (yappr's contract) until the registration commit lands, and mainnet's holds only DAPI addresses. Until then every client reports "not deployed" on that network ([E702](errors.md#e702)) and never falls back to another network's ids. [Networks](networks.md) says what runs where.
 
 1. [What is registered](#1-what-is-registered)
 2. [Before you register](#2-before-you-register)
@@ -23,10 +23,10 @@ Four contracts, in one contract group (`dash-forge`) that has an owner and **no 
 
 | Order | Contract | What it holds |
 |---|---|---|
-| 1 | `forge-core` | repositories, members, packs, refs, releases, config. Its create transition also creates the contract group. |
+| 1 | `forge-core` | repositories, members (`writer`, `maintainer`, `consent`), packs, refs, releases, config, `pushGrant`. Its create transition also creates the contract group. |
 | 2 | `forge-collab` | issues, pull requests, reviews, comments, transitions |
-| 3 | `forge-community` | stars, events, profiles, check runs, policies, runners |
-| 4 | `forge-meta` | the fourth contract of the production set ([forge-v2.md §2](contracts/forge-v2.md#forge-meta-mainnet-set-only)) |
+| 3 | `forge-community` | `authorEvent`, `checkRun`, `event`, `milestone`, `policy`, `runner`, `star`, `watch`, `webhook` |
+| 4 | `forge-meta` | `ban`, `follow`, `label`, `packMirror`, `profile`, `repoKey`, `topic` ([forge-v2.md §2](contracts/forge-v2.md#forge-meta-mainnet-set-only)) |
 
 The order is fixed. Each contract takes the deployer's next identity nonce, the contract and group ids derive from those nonces, and each later contract's schema names the ids of the ones registered before it. [forge-v2.md §8](contracts/forge-v2.md#8-deploying) has the details.
 
@@ -83,7 +83,7 @@ Fees are credits (1 DASH = 10^11 credits) and are the same on every network of t
 | forge-meta | 6,890 B | 0.3636 |
 | **The four** | | **about 1.86** |
 
-Measured on devnet sakura, on Platform 5.0.0-beta.6, with the committed four-contract set (release-audit TEST-14, `testnet.md`). The three-contract devnet set cost about 1.73 (sakura's `costCredits` record). Fees did not change between beta.6 and the testnet's rc.3 release, and testnet's fee multiplier is 1 as on sakura, so expect the same on testnet; **to be re-measured on testnet** by the rehearsal, which prints each step's cost. Fund the deployer with about 2.5 DASH on testnet to leave room for a failed run and a restore (the restore replays the recorded costs plus 20 %).
+Measured on devnet sakura, on Platform 5.0.0-beta.6, with the committed four-contract set (measured during the release rehearsal). The three-contract devnet set cost about 1.73 (sakura's `costCredits` record). Fees did not change between beta.6 and the testnet's rc.3 release, and testnet's fee multiplier is 1 as on sakura, so expect the same on testnet; **to be re-measured on testnet** by the rehearsal, which prints each step's cost. Fund the deployer with about 2.5 DASH on testnet to leave room for a failed run and a restore (the restore replays the recorded costs plus 20 %).
 
 On mainnet the same set costs the same number of DASH, in real money. A dry run costs nothing.
 
@@ -126,11 +126,11 @@ Flags used on this page, all in `forge-contracts/scripts/deploy-v2.mjs`: `--set`
         --contracts forge-contracts/contracts/mainnet --network <network> --report <c1.json>
    ```
 
-   It checks config (writable, no moderation, `$formatVersion` 2), each `documentSchemas` and `schemaDefs` block key for key, the owner, version 1 and the recorded group. It is read-only and exits 1 on any mismatch. **Any mismatch stops the launch:** see [§8](#8-when-something-goes-wrong). Also check the group's owner and that it has no admins, and that all four are members.
+   It checks each contract's owner, version, config (writable, no moderation, `$formatVersion` 2), document types, `documentSchemas`, `schemaDefs` and `schemaHash` against the JSON. It is read-only and exits 1 on any mismatch. **Any mismatch stops the launch:** see [§8](#8-when-something-goes-wrong). **It does not check the contract group.** Check that by hand: the group's owner is the deployer, it has no admins, and all four contracts are members of it (`getContractGroupInfo` and the recorded `v2.contractGroup`; `dg doctor` below also checks enrolment).
 2. **Freeze what was registered.** `node forge-contracts/scripts/freeze-registered.mjs --network <network>` checks each recorded source against its recorded hashes and writes the bytes registered to `forge-contracts/contracts/registered/<network>/<name>.v1.json`. It prints the `NETWORK_REGISTRATIONS` line `forge-contracts/schema/build.py` needs. From then on `validate-registered.sh` checks every later change as an additive update of those files.
 3. **Snapshot the contracts for the web app.** `node forge-contracts/scripts/snapshot-contracts.mjs --network <network>` writes `forge-contracts/deployments/contracts/<network>.json`, which seeds the SDK's contract cache. Add `<network>` to the web app's contract-seed list; `lib/sdk/contract-seed.test.ts` fails while the snapshot and the record disagree.
 4. **Wire the clients.** `forge-core` embeds every `deployments/*.json` at build time (`crates/forge-core/build.rs`), so committing the record is the whole Rust change. For `forge-web`, the network must be in `forge-web/lib/deployments.ts` (the `deployments bundle` unit test fails until it is) and the build uses `NEXT_PUBLIC_NETWORK=<network>`. See [BUILDING.md § Networks](BUILDING.md#networks).
-5. **Check with `dg doctor --network <network>`.** The `contracts` check names forge-core, forge-collab, forge-community and forge-meta, the record as the source, and verifies they are enrolled in the group.
+5. **Check with `dg doctor --network <network>`.** Its `forge-v2` rows print the core, collab and community ids and the group, and verify enrolment in the group. forge-meta is checked too, but is named only when its check fails; a dedicated meta row is not there yet (CLIE-19, when available).
 6. **Seed the labelled fixture and the showcase** with the QA identity, never a user's: `forge-contracts/deployments/fixtures/<network>.json` for the read tests, and `SHOWCASE` in `forge-web/lib/view/showcase.ts` for the landing page.
 
 **Key exchange.** Mobile-wallet sign-in reads a key-exchange contract. Testnet uses yappr's, which the shipped wallets pin (recorded in `testnet.json` as `keyExchange`, "not deployed by Forge"). Mainnet's record names none; sign-in there needs one, and registering Forge's own copy is an owner decision (`deploy-key-exchange.mjs` refuses testnet and mainnet).
@@ -149,18 +149,21 @@ Merging this PR changes what clients can reach. Rebuild and release every client
 
 ## 7. After registration: what can still change
 
-Platform 5.0.0-rc.3 accepts an update to a contract only if it is additive. The owner can add **new document types** (with their own indexes) and **new optional properties**, as long as the contract stays under the transition size limit. Everything else is frozen:
+Platform 5.0.0-rc.3 accepts an update to a contract only within these rules. The owner can add **new document types** (with their own indexes) and **new optional properties**, as long as the contract stays under the transition size limit. A few schema bounds can also be loosened (last row). The rest is held:
 
-| Frozen | Upstream |
+| Rule | Upstream |
 |---|---|
-| Contract config: `readonly` (an update that sets it, or touches a readonly contract, is refused), `keepsHistory`, `canBeDeleted`, the per-document defaults; moderation can be neither enabled nor dropped | `rs-dpp/src/data_contract/config/methods/validate_update/v0/mod.rs:17-131` (`v2` adds the moderation rule) |
-| Each document type's config: `creationRestrictionMode`, `tradeMode`, `transferable`, `canBeDeleted`, `documentsKeepHistory`, `documentsMutable`, the encryption bounded keys, `signatureSecurityLevelRequirement`, count and sum flags | `rs-dpp/src/data_contract/document_type/methods/validate_update/common/mod.rs:111-401` |
-| Index definitions (`validate_index_definitions_unchanged`), integer widths and encodings, action fees; `immutable` may only tighten | `rs-dpp/src/data_contract/document_type/methods/validate_update/v1/mod.rs:43-193` |
-| Required fields: only a property the update adds may use `requiredSince` | `rs-dpp/src/data_contract/methods/validate_update/v1/mod.rs:91-115` |
-| The contract's owner | `rs-dpp/src/data_contract/methods/validate_update/v0/mod.rs:110-133` |
-| Schema keyword compatibility: a property may be added, an `enum` may gain values at the end, `required` may not grow | `rs-json-schema-compatibility-validator/src/rules/rule_set.rs` |
+| Contract config: `readonly` (an update that sets it, or touches a readonly contract, is refused), `keepsHistory`, `canBeDeleted`, the per-document defaults are held; moderation can be neither enabled nor dropped | `rs-dpp/src/data_contract/config/methods/validate_update/v0/mod.rs:17-131` (`v2` adds the moderation rule) |
+| Each document type's config: `creationRestrictionMode`, `tradeMode`, `transferable`, `canBeDeleted`, `documentsKeepHistory`, `documentsMutable`, the encryption bounded keys, `signatureSecurityLevelRequirement`, count and sum flags are held | `rs-dpp/src/data_contract/document_type/methods/validate_update/common/mod.rs:111-401` |
+| Index definitions (`validate_index_definitions_unchanged`), integer widths and encodings, action fees are held; `immutable` may only tighten | `rs-dpp/src/data_contract/document_type/methods/validate_update/v1/mod.rs:43-193` |
+| Required fields on an existing type (`validate_required_fields_update`): none can be dropped, and no system field or existing property can become required. A new property can be required if it carries `requiredSince` equal to the new contract version | `rs-dpp/src/data_contract/document_type/methods/validate_update/v1/mod.rs:763` |
+| The contract's owner cannot change | `rs-dpp/src/data_contract/methods/validate_update/common/mod.rs:44-55` |
+| Schema keywords: a property may be added and an `enum` may gain values at the end | `rs-json-schema-compatibility-validator/src/rules/rule_set.rs` |
+| **Bounds can be loosened**: `maximum`, `maxLength` and `maxItems` raised, `minimum` lowered, a `pattern` dropped. The integer width and the byte-array encoding are held | same file |
 
-The first four rows are cited from the `v5.0.0-rc.3` audit; the required-fields row is from [forge-v2.md §9.1](contracts/forge-v2.md#91-update-1-and-the-mainnet-only-flags) (checked at beta.1). Line numbers drift between releases, so re-check them against the tag you register on; the paths are stable. [forge-v2.md §9](contracts/forge-v2.md#9-frozen-at-mainnet) lists what this means for Forge, type by type.
+So a rule or gate that rests on a bound alone is not frozen by Platform. The production set restates each such gate as a frozen rule, so an update cannot loosen it ([forge-v2.md §9.1](contracts/forge-v2.md#91-update-1-and-the-mainnet-only-flags), `mainnet_pinned_gates`; [forge-v2.md §4](contracts/forge-v2.md#4-non-deletable-audit-types)). Patterns are not update-proof: clients validate every grammar themselves.
+
+The rows are cited from the `v5.0.0-rc.3` release audit. Line numbers drift between releases, so re-check them against the tag you register on; the paths are stable. [forge-v2.md §9](contracts/forge-v2.md#9-frozen-at-mainnet) lists what this means for Forge, type by type.
 
 - **Check an update before you pay.** `tools/contract-validate <file> --expect-update contracts/registered/<network>/<name>.v1.json` fails when Platform would refuse the update. CI runs the same check on every pull request (`validate-registered.sh`, behind the `contract-validate` context).
 - **Apply it.** `deploy-v2.mjs --update core|collab|community|meta|all` sends a `DataContractUpdate` (same id, same group, every document kept) and records it; rehearse it on the scratch set first.

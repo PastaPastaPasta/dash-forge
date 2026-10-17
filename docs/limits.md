@@ -31,7 +31,7 @@ What Forge cannot hold or do, in numbers, with where each number comes from. Som
 | An issue, comment or release-notes body | **5,120 bytes** on Platform (less in a private repository, where the title and other encrypted text share the space) | [Collaborating](guides/collaborating.md#issues) |
 | A longer text | up to **256 KiB**, posted by a maintainer or writer; the field keeps its first part and names an artifact. Triage, Read and non-members stay within 5,120 bytes | [forge-v2.md §6.3](contracts/forge-v2.md#63-long-bodies-a-text-longer-than-its-field-client-convention-p1-9) |
 | A members-only post | 5,120 bytes less 61 bytes of envelope; a bot's reply is cut to at most 4,800 | [private-repos.md §23](security/private-repos.md#23-bots-members-only-posts-enc-v0x05) |
-| An inline comment's diff hunk | 1,024 bytes (**frozen**) | [forge-v2.md §9](contracts/forge-v2.md#9-frozen-at-mainnet) |
+| An inline comment's diff hunk | 1,024 bytes (it can be raised by an update, never lowered) | [forge-v2.md §9](contracts/forge-v2.md#9-frozen-at-mainnet) |
 | A repository name | 1 to 63 characters: lowercase letters, digits, `.`, `_` and `-`, starting with a letter or digit ([E202](errors.md#e202)) | `docs/errors.md` |
 | Topics on a repository | 20, each 1 to 30 characters (**frozen**) | [Collaborating](guides/collaborating.md#repository-settings) |
 | Protected-branch patterns | 8 | same |

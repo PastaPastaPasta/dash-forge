@@ -69,7 +69,8 @@ Run `dg cost estimate` in the repository to see the price before you push. Platf
 
 ## A clone is shallow, or the history is refused (E205, E511)
 
-- **[E205](../errors.md#e205)**: `dash://` cannot serve shallow clones (`--depth`, `--shallow-since`). Use a partial clone for a light checkout: `git clone --filter=blob:none dash://…`.- **[E511](../errors.md#e511)**: an object in the history failed git's own checks (a path that looks like `.git`, a hostile `.gitmodules`). The push stops before anything is stored or paid for. The `cause:` line names each object and the check. If every refused check is an author or committer line check, upgrade git: **git 2.44 or newer** ignores those, and an older git refuses every old history that has one.
+- **[E205](../errors.md#e205)**: `dash://` cannot serve shallow clones (`--depth`, `--shallow-since`). Use a partial clone for a light checkout: `git clone --filter=blob:none dash://…`.
+- **[E511](../errors.md#e511)**: an object in the history failed git's own checks (a path that looks like `.git`, a hostile `.gitmodules`). The push stops before anything is stored or paid for. The `cause:` line names each object and the check. If every refused check is an author or committer line check, upgrade git: **git 2.44 or newer** ignores those, and an older git refuses every old history that has one.
 
 ## Large files and LFS
 

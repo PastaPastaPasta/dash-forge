@@ -22,7 +22,7 @@ This page covers adding a bot, its access notice, asking it to work on an issue 
 | Posts comments and reviews | yes | yes, if its access allows it. It can't approve or merge. | no, only reports check runs |
 | Pushes | by role | only to branches a maintainer allows, for a limited time | no |
 | Gets the members key | yes | **never** | never |
-| Who sets it up | the owner adds members | the owner adds it, a maintainer gives it access | a maintainer, `dg ci runner add` |
+| Who sets it up | the owner adds members | the owner adds it, a maintainer gives it access | the owner, `dg ci runner add` |
 
 A bot can be the same identity as a CI runner: a runner that reports checks needs `dg ci runner add` as well ([CI and check runs](ci.md)).
 
@@ -46,7 +46,7 @@ A bot is added like any member, with the Bot role. It accepts first, then the ow
 ```sh
 dg collab accept <owner>/<repo>                                # as the bot's identity
 dg collab add    <owner>/<repo> @ci-bot --role bot             # as the owner
-dg ci runner add <owner>/<repo> @ci-bot                        # only if it reports check runs
+dg ci runner add <owner>/<repo> @ci-bot                        # as the owner, only if it reports check runs
 ```
 
 The bot needs an **encryption key** on its identity (`dg auth keys add --encryption`) to receive anything members-only: a post key, a read letter or a shared branch. Without one it still works on everything public.

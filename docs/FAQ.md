@@ -44,7 +44,7 @@ You, directly, and only for what you write. Platform fees come from your identit
 
 ## How much does it cost?
 
-Measured on devnets (to be re-measured on testnet): creating a repository costs about **0.0027 DASH**, which is 0.0016 for the repository and 0.0011 for the members-only key that new public repositories get by default. A push to your own bucket costs about **0.004–0.0055 DASH**. An issue costs about 0.0008–0.0012 DASH. Storing packs on Platform costs about 0.33 DASH per MiB. On devnet moutai, a fork of a small repository cost about 0.01 DASH, and a first GitHub mirror of a small repository about 0.08 DASH. On a devnet all of it is paid in free test Dash. The full table is in [Costs](guides/costs.md).
+Measured on devnets (to be re-measured on testnet): creating a repository costs about **0.0027 DASH**, which is 0.0016 for the repository and 0.0011 for the members-only key that new public repositories get by default. A push to your own bucket costs about **0.004–0.0055 DASH**. An issue costs about 0.0006–0.001 DASH. Storing packs on Platform costs about 0.33 DASH per MiB. On devnet moutai, a fork of a small repository cost about 0.01 DASH, and a first GitHub mirror of a small repository about 0.08 DASH. On a devnet all of it is paid in free test Dash. The full table is in [Costs](guides/costs.md).
 
 ## What happened to devnet bonsia?
 
@@ -94,11 +94,11 @@ Each line says why: **by design** (the protocol or the no-server rule rules it o
 | **Deleting a repository, issue or pull request** | by design | They are permanent, and the contracts have no moderation. Archive the repository, close the issue or PR |
 | **Editing files in the browser** | later | Edit in a clone and push |
 | **Browser merges for private repositories** | later | `dg pr merge` (the browser merges public repositories) |
-| **Notifications beyond an open tab** | by design | There is no server to send email or push. The web app's **Notifications** work while a tab is open; a webhook can feed your own notifier |
-| **Search across repositories beyond a name prefix** | by design | Repository search finds name prefixes, topics and owners. Issues, pull requests and code are searched inside one repository, in the browser or with `dg search`. A user-run index may come later |
+| **Notifications beyond an open tab** | by design | There is no hosted notification service. The web app's **Notifications** work while a tab is open. Anyone can run [forge-notify](hosting/forge-notify.md) for email or Web Push, and a webhook can feed your own notifier |
+| **Search across repositories beyond a name prefix** | by design | Repository search finds name prefixes, topics and owners. Issues and pull requests are searched inside one repository, in the browser or with `dg search issues` and `dg search prs`; `dg search repos` finds repositories. Code search is in the browser only. A user-run index may come later |
 | **Git LFS objects** | later | Not supported; keep large binaries out of git or attach them to releases, which go to your own storage. Large files through pointers to your bucket are on the roadmap |
 
-Also not available, and by design: hosted CI (bring a [runner](guides/self-host-runner.md)), `https://` clone URLs, shallow clones, and GitHub Pages. [Moving from GitHub or GitLab](guides/moving-from-github.md#10-github-features-with-no-forge-equivalent) lists every GitHub feature with no equivalent.
+Also not available, and by design: hosted CI (bring a [runner](guides/self-host-runner.md)), pushing over `https://`, shallow clones, and GitHub Pages. Read-only `https://` clones of public repositories work through the optional [gateway](hosting/forge-gateway.md). [Moving from GitHub or GitLab](guides/moving-from-github.md#10-github-features-with-no-forge-equivalent) lists every GitHub feature with no equivalent.
 
 ## Can I use a username instead of the long identity id?
 

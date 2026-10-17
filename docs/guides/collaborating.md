@@ -180,7 +180,7 @@ Not supported for private repositories yet ([`E207`](../errors.md#e207)): forks 
 
 ## Members-only content in a public repository
 
-A public repository can keep some of its discussion **members-only**: issues, comments and reviews that only its members can read, beside everything public. Its code, branches and pull requests stay public. Everyone can still see that something was posted, by whom and when. [Who can read what](../security/audiences.md) explains the audiences, exactly what stays public, and what can still leak.
+A public repository can keep some of its discussion **members-only**: issues, comments and reviews that only its members can read, beside everything public. Its code is public; branches and pull requests can be members-only too ([Who can read what](../security/audiences.md#members-only-branches-and-pull-requests)). Everyone can still see that something was posted, by whom and when. [Who can read what](../security/audiences.md) explains the audiences, exactly what stays public, and what can still leak.
 
 **The words.** Forge uses the same words in `dg`, the web app and these guides:
 
