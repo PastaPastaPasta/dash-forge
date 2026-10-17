@@ -109,7 +109,7 @@ function readJson(file, what) {
  * @param {string} [opts.deploymentsDir]
  * @param {boolean} [opts.liveTargetFlag]  the tool has a `--live-target` mode: the record is then the
  *        network's own registration (no `--record`), and the tool owns what it may do there
- * @returns {{network, devnetName, label, liveFile, live, recordFile, record, scratch, liveTarget, production, fourContract}}
+ * @returns {{network, devnetName, label, liveFile, live, recordFile, record, scratch, liveTarget, copiesLive, production, fourContract}}
  *          `production` is true when the record is a testnet or mainnet LIVE registration (or a copy)
  */
 export function resolveTarget(args, { deploymentsDir = DEFAULT_DEPLOYMENTS_DIR, liveTargetFlag = false } = {}) {

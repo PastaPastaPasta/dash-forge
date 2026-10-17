@@ -81,7 +81,6 @@ J="$TMP/h-july"
 for role in OWNER COLLAB CONTRIB; do stub "$J/.config/dash-forge/test-identities" "$role" "$JULY_FIRST"; done
 expect_refused "testnet with the directory of the July pool" "directory of the July-era testnet pool" \
   "$J" DASH_FORGE_NETWORK=testnet "E2E_IDENTITY_DIR=$J/.config/dash-forge/test-identities" -- true
-mkdir -p "$J/.config/dash-forge/test-identities/via-link"
 ln -s "$J/.config/dash-forge/test-identities" "$TMP/link-to-pool"
 expect_refused "testnet with a symlink to the directory of the July pool" "directory of the July-era testnet pool" \
   "$J" DASH_FORGE_NETWORK=testnet "E2E_IDENTITY_DIR=$TMP/link-to-pool" -- true
@@ -94,22 +93,23 @@ expect_ok "a devnet does not check the July list" "devnet" \
   "$H" DASH_FORGE_NETWORK=devnet "E2E_IDENTITY_DIR=$TMP/elsewhere" -- 'echo devnet'
 
 echo "lib.sh require_mint_funding"
-rmf() { # rmf <network> -> prints "rc=<n>"
-  env -i PATH="$PATH" HOME="$TMP/h-testnet" DASH_FORGE_NETWORK="$1" E2E_MINT_FUNDING="$TMP/no-such-funding.wif" "E2E_IDENTITY_DIR=$TMP/h-testnet/.config/dash-forge/test-identities/testnet-scratch" \
-    bash -c 'SCENARIO_NAME=t; source "'"$REPO"'/e2e/cli/lib.sh"; require_mint_funding "or set X"; echo reached' 2>&1
+# libsh <HOME> <snippet> [VAR=value ...]: runs the snippet after sourcing lib.sh in a clean environment; prints its output, then rc=<status>
+libsh() {
+  local home="$1" snippet="$2"; shift 2
+  env -i PATH="$PATH" HOME="$home" "$@" bash -c 'SCENARIO_NAME=t; source "'"$REPO"'/e2e/cli/lib.sh"; '"$snippet" 2>&1
   echo "rc=$?"
 }
-out="$(rmf testnet)"
+out="$(libsh "$TMP/h-testnet" 'require_mint_funding "or set X"; echo reached' DASH_FORGE_NETWORK=testnet "E2E_MINT_FUNDING=$TMP/no-such-funding.wif" "E2E_IDENTITY_DIR=$TMP/h-testnet/.config/dash-forge/test-identities/testnet-scratch")"
 [[ "$out" == *"FAIL"* && "$out" == *"no testnet funding key"* && "$out" == *"rc=1" && "$out" != *reached* ]] && pass "testnet: a missing funding key fails the scenario" || fail "testnet missing funding: $out"
 H="$TMP/h-devnet2"; fresh_pool "$H/.config/dash-forge/test-identities/devnet-sakura"
-out="$(env -i PATH="$PATH" HOME="$H" E2E_MINT_FUNDING="$TMP/no-such-funding.wif" bash -c 'SCENARIO_NAME=t; source "'"$REPO"'/e2e/cli/lib.sh"; require_mint_funding "or set X"; echo reached' 2>&1; echo "rc=$?")"
+out="$(libsh "$H" 'require_mint_funding "or set X"; echo reached' "E2E_MINT_FUNDING=$TMP/no-such-funding.wif")"
 [[ "$out" == *"SKIP"* && "$out" == *"no devnet sakura funding key"* && "$out" == *"rc=2" && "$out" != *reached* ]] && pass "devnet: a missing funding key skips (exit 2)" || fail "devnet missing funding: $out"
 echo present >"$TMP/funding.wif"
-out="$(env -i PATH="$PATH" HOME="$H" E2E_MINT_FUNDING="$TMP/funding.wif" bash -c 'SCENARIO_NAME=t; source "'"$REPO"'/e2e/cli/lib.sh"; require_mint_funding; echo reached' 2>&1; echo "rc=$?")"
+out="$(libsh "$H" 'require_mint_funding; echo reached' "E2E_MINT_FUNDING=$TMP/funding.wif")"
 [[ "$out" == *reached* && "$out" == *"rc=0" ]] && pass "a present funding key continues" || fail "present funding: $out"
-out="$(env -i PATH="$PATH" HOME="$H" bash -c 'SCENARIO_NAME=t; source "'"$REPO"'/e2e/cli/lib.sh"; na_unless_devnet "x"; echo reached' 2>&1; echo "rc=$?")"
+out="$(libsh "$H" 'na_unless_devnet "x"; echo reached')"
 [[ "$out" == *reached* ]] && pass "na_unless_devnet continues on a devnet" || fail "na on devnet: $out"
-out="$(env -i PATH="$PATH" HOME="$TMP/h-testnet" DASH_FORGE_NETWORK=testnet bash -c 'SCENARIO_NAME=t; source "'"$REPO"'/e2e/cli/lib.sh"; na_unless_devnet "x"; echo reached' 2>&1; echo "rc=$?")"
+out="$(libsh "$TMP/h-testnet" 'na_unless_devnet "x"; echo reached' DASH_FORGE_NETWORK=testnet)"
 [[ "$out" == *"N/A"* && "$out" == *"rc=3" && "$out" != *reached* ]] && pass "na_unless_devnet exits 3 on testnet" || fail "na on testnet: $out"
 
 echo "the July list agrees with forge-contracts/scripts/lib/target.mjs"

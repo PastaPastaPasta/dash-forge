@@ -216,8 +216,8 @@ if (typeof args.identities !== 'string') {
 const { network, live, liveTarget, record: rec, recordFile: recPath } = target;
 const PRODUCTION = target.network !== 'devnet';
 // --live-target runs the smoke group and nothing else
-const only = liveTarget ? new Set(['smoke']) : args.only ? new Set(String(args.only).split(',')) : null;
 const LIVE_SMOKE = new Set(['smoke']);
+const only = liveTarget ? LIVE_SMOKE : args.only ? new Set(String(args.only).split(',')) : null;
 if (liveTarget) {
   const bad = args.only ? String(args.only).split(',').filter((g) => !LIVE_SMOKE.has(g)) : [];
   if (bad.length) {

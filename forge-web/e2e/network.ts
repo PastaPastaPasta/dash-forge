@@ -59,8 +59,6 @@ export const E2E_NETWORK: E2ENetwork = TARGET.network
 export const E2E_DEVNET: string = TARGET.devnet
 /** `devnet-<name>` or `testnet`: the file stem of the deployment record and the fixture summary. */
 export const E2E_TARGET_NAME: string = TARGET.name
-/** Printable: `devnet sakura`, `testnet`. */
-export const E2E_NETWORK_LABEL: string = TARGET.network === 'devnet' ? `devnet ${TARGET.devnet}` : 'testnet'
 
 const REPO_ROOT = resolve(__dirname, '../..')
 
