@@ -587,9 +587,9 @@ test('a lagging node: a stale identity nonce is refused, never trusted, and the 
   // a node that catches up while the run waits is used
   const t3 = setup();
   t3.fake.lagAfter(1);
-  const nonce = t3.fake.evo.EvoSDK;
+  const RealSdk = t3.fake.evo.EvoSDK;
   let asked = 0;
-  const evo = { ...t3.fake.evo, EvoSDK: class extends nonce { constructor(o) { super(o); const real = this.identities.nonce; this.identities.nonce = async (id) => { if (t3.fake.state.lag && ++asked > 1) t3.fake.catchUp(); return real(id); }; } } };
+  const evo = { ...t3.fake.evo, EvoSDK: class extends RealSdk { constructor(o) { super(o); const real = this.identities.nonce; this.identities.nonce = async (id) => { if (t3.fake.state.lag && ++asked > 1) t3.fake.catchUp(); return real(id); }; } } };
   await t3.run(t3.prod(), { evo });
   assert.deepEqual(KEYS.map((k) => t3.read().v2[k].identityNonce), ['1', '2', '3', '4']);
 });
@@ -674,6 +674,89 @@ test('a new deployer after a reset: v2.deployer is its own, the old one archived
   assert.equal(v2.deployer.assetLockTxid, 'cd'.repeat(32));
   assert.equal(v2.deployer.createdAtHeight, null, 'the old deployer\'s height is not carried over');
   assert.deepEqual(without(v2.deployerSuperseded[0], 'supersededAt'), old);
+  assert.equal(v2.nonceLedgerSuperseded[0].entries.length, 4);
+  assert.equal(v2.nonceLedgerSuperseded[0].deployer, t.fake.ownerId);
+});
+
+test('another deployer on the same chain: refused, or with --force-new a new set and a ledger of its own', async () => {
+  const t = setup();
+  await t.run(t.prod());
+  const f2 = createFakePlatform({ identityFile: fakeIdentityFile({ identityId: b58encode(Buffer.alloc(32, 6)), txid: 'ef'.repeat(32) }) });
+  const dir2 = mkdtempSync(join(tmpdir(), 'deploy-v2-test-id3-'));
+  dirs.push(dir2);
+  const argv = ['--network', 'testnet', '--set', 'mainnet', '--identity', f2.writeIdentity(dir2), '--expect-sha256', t.sumsFile];
+  const before = t.raw();
+  await assert.rejects(t.run(argv, { evo: f2.evo }), new RegExp(`was registered by ${t.fake.ownerId}; ${f2.ownerId} can only register a new set into it`));
+  await assert.rejects(t.run([...argv, '--update', 'core'], { evo: f2.evo }), /can only register a new set into it/);
+  assert.equal(t.raw(), before);
+  await t.run([...argv, '--force-new', '--abandon-live-set', 'testnet'], { evo: f2.evo });
+  const v2 = t.read().v2;
+  // the new deployer's nonces start at 1: the old deployer's ledger is archived, not counted
+  assert.deepEqual(KEYS.map((k) => [v2[k].ownerId, v2[k].identityNonce]), KEYS.map((_, i) => [f2.ownerId, String(i + 1)]));
+  assert.deepEqual(v2.nonceLedger.map((e) => e.identityNonce), ['1', '2', '3', '4']);
+  assert.equal(v2.nonceLedgerSuperseded[0].deployer, t.fake.ownerId);
+  assert.deepEqual(KEYS.map((k) => v2[`${k}Superseded`].length), [1, 1, 1, 1]);
+});
+
+test('an update after a same-chain supersede: each contract\'s update nonces are its own', async () => {
+  const t = setup();
+  await t.run(t.prod());
+  const stale = (key) => { const r = t.read(); r.v2[key].schemaHash = '0'.repeat(64); writeFileSync(t.testnetFile, JSON.stringify(r, null, 2)); };
+  stale('forgeCollab');
+  await t.run(t.prod('--update', 'collab'));
+  stale('forgeCollab');
+  await t.run(t.prod('--only', 'collab', '--force-new', '--same-group', '--abandon-live-set', 'testnet'));
+  stale('forgeCollab');
+  await t.run(t.prod('--update', 'collab'));
+  const v2 = t.read().v2;
+  const updates = v2.nonceLedger.filter((e) => e.kind === 'dataContractUpdate');
+  assert.deepEqual(updates.map((e) => [e.contractId, e.contractNonce, e.status]), [
+    [v2.forgeCollabSuperseded[0].contractId, '1', 'updated'],
+    [v2.forgeCollab.contractId, '1', 'updated'],
+  ]);
+});
+
+test('--force-new with a dependent reservation that never landed: it is abandoned with the old set', async () => {
+  const t = setup();
+  // forge-core lands at nonce 1, forge-collab's broadcast (nonce 2) never does
+  const RealSdk = t.fake.evo.EvoSDK;
+  let n = 0;
+  const evo = { ...t.fake.evo, EvoSDK: class extends RealSdk { constructor(o) { super(o); const b = this.stateTransitions.broadcastAndWait; this.stateTransitions.broadcastAndWait = async (st) => { if (++n === 2) t.fake.failNext('before'); return b(st); }; } } };
+  await assert.rejects(t.run(t.prod(), { evo }), /connection lost/);
+  const reserved = t.read().v2.forgeCollab;
+  assert.equal(reserved.status, 'broadcasting');
+  const tampered = t.read();
+  tampered.v2.forgeCore.schemaHash = '0'.repeat(64);
+  writeFileSync(t.testnetFile, JSON.stringify(tampered, null, 2));
+  await t.run(t.prod('--force-new', '--abandon-live-set', 'testnet'));
+  const v2 = t.read().v2;
+  assert.deepEqual(KEYS.map((k) => v2[k].identityNonce), ['2', '3', '4', '5'], 'the abandoned nonce 2 is reused by the new forge-core');
+  assert.equal(v2.forgeCollabSuperseded, undefined, 'a reservation that never landed is not a superseded contract');
+  assert.deepEqual(v2.nonceLedger.map((e) => [e.identityNonce, e.key, e.status]), [
+    ['1', 'forgeCore', 'registered'], ['2', 'forgeCollab', 'abandoned'], ['2', 'forgeCore', 'registered'],
+    ['3', 'forgeCollab', 'registered'], ['4', 'forgeCommunity', 'registered'], ['5', 'forgeMeta', 'registered'],
+  ]);
+  assert.equal(v2.nonceLedger[1].contractId, reserved.contractId);
+});
+
+test('--acknowledge-nonce accepts the record\'s own key-exchange contract', async () => {
+  const t = setup();
+  await t.run(t.prod());
+  // deploy-key-exchange.mjs signed nonce 5 with the deployer and recorded its contract
+  const id = contractId(t.fake.ownerId, 5n);
+  t.fake.state.contracts.set(id, { json: { id, documentSchemas: {} }, ownerId: t.fake.ownerId, version: 1, contractNonce: 0n });
+  t.fake.externalTransition();
+  const rec = t.read();
+  rec.v2.forgeMeta.schemaHash = '0'.repeat(64);
+  writeFileSync(t.testnetFile, JSON.stringify(rec, null, 2));
+  const meta = ['--only', 'meta', '--force-new', '--same-group', '--abandon-live-set', 'testnet', '--acknowledge-nonce', '5', '--note', 'key exchange'];
+  await assert.rejects(t.run(t.prod(...meta)), /identity nonce 5 created contract \w+, a contract create of the deployer's \(not the record's keyExchange\)/);
+  rec.keyExchange = { ...rec.keyExchange, contractId: id };
+  writeFileSync(t.testnetFile, JSON.stringify(rec, null, 2));
+  await t.run(t.prod(...meta));
+  const v2 = t.read().v2;
+  assert.equal(v2.forgeMeta.identityNonce, '6');
+  assert.deepEqual(v2.nonceLedger.at(-2), { identityNonce: '5', kind: 'external', note: 'key exchange', at: v2.nonceLedger.at(-2).at });
 });
 
 test('rerunning a --force-new that crashed part way registers the rest, without --same-group', async () => {
@@ -684,9 +767,9 @@ test('rerunning a --force-new that crashed part way registers the rest, without 
   writeFileSync(t.testnetFile, JSON.stringify(tampered, null, 2));
   const argv = t.prod('--force-new', '--abandon-live-set', 'testnet');
   // the new forge-core lands, the new forge-collab's broadcast never does
-  const real = t.fake.evo.EvoSDK;
+  const RealSdk = t.fake.evo.EvoSDK;
   let n = 0;
-  const evo = { ...t.fake.evo, EvoSDK: class extends real { constructor(o) { super(o); const b = this.stateTransitions.broadcastAndWait; this.stateTransitions.broadcastAndWait = async (st) => { if (++n === 2) t.fake.failNext('before'); return b(st); }; } } };
+  const evo = { ...t.fake.evo, EvoSDK: class extends RealSdk { constructor(o) { super(o); const b = this.stateTransitions.broadcastAndWait; this.stateTransitions.broadcastAndWait = async (st) => { if (++n === 2) t.fake.failNext('before'); return b(st); }; } } };
   await assert.rejects(t.run(argv, { evo }), /connection lost/);
   await t.run(argv);
   const v2 = t.read().v2;
