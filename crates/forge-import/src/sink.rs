@@ -43,7 +43,7 @@ use forge_core::repo::credits_to_dash;
 use forge_core::rules::v2::{
     next_transition, Actor, ClosedAs, StateAction, TransitionMove, TransitionTarget, Visibility,
 };
-use forge_core::rules::{EventKind, MergeBaseTips};
+use forge_core::rules::{EventKind, MergeBaseTips, RefState};
 use forge_core::scope::RepoRef;
 
 use crate::budget::{collab_doc_credits, Budget, CollabDoc};
@@ -478,8 +478,8 @@ pub struct Sink<'a, C: Chain> {
     /// The signer (copied from the ledger: read on every item).
     signer: Option<String>,
     dry_run: bool,
-    /// The git data a merge commit's ancestry is checked in, when this run has any (see
-    /// [`Sink::merge_proof`]).
+    /// The git data for merge proofs and a local fallback for public release targets, when
+    /// this run has any (see [`Sink::merge_proof`]).
     mirror: Option<ProofRepo>,
     caches: Mutex<Caches>,
     /// Lanes for the items' dependent writes (1: one write at a time).
@@ -812,7 +812,7 @@ impl<'a, C: Chain> Sink<'a, C> {
         self
     }
 
-    /// Check merge commits against the git data in `proof` (see [`Sink::merge_proof`]).
+    /// Use `proof` for merge checks and a local fallback for public release targets.
     #[must_use]
     pub fn with_mirror(mut self, proof: Option<ProofRepo>) -> Self {
         self.mirror = proof;
@@ -1605,6 +1605,44 @@ impl<'a, C: Chain> Sink<'a, C> {
         Ok(())
     }
 
+    /// Destination tag values, read once per release pass. As in `dg release create`, only
+    /// resolved refs are usable; a read failure must not be hidden by the local fallback.
+    async fn release_targets(&self) -> Result<BTreeMap<String, String>> {
+        let Some(repo) = &self.repo else {
+            return Ok(BTreeMap::new());
+        };
+        Ok(self
+            .chain
+            .refs(repo)
+            .await
+            .context("reading the destination's release tag refs")?
+            .into_iter()
+            .filter_map(|(name, state)| match state {
+                RefState::Resolved { oid, .. } => Some((name, oid)),
+                _ => None,
+            })
+            .collect())
+    }
+
+    /// Record the tag ref's own value: annotated tags name tag objects. Prefer the
+    /// destination over a stale mirror. When the selected value is the local tag, require
+    /// it to peel to a commit so a tree/blob tag cannot substitute. With no matching local
+    /// tag, use the destination's resolved value as `dg release create` does.
+    fn release_target(&self, tag_ref: &str, on_chain: Option<&String>) -> Option<String> {
+        let local = self.mirror.as_ref().and_then(|mirror| {
+            crate::gitsync::local_ref_oid(&mirror.dir, tag_ref).map(|oid| (mirror, oid))
+        });
+        let target = on_chain
+            .cloned()
+            .or_else(|| local.as_ref().map(|(_, oid)| oid.clone()))?;
+        if let Some((mirror, oid)) = local {
+            if oid == target {
+                crate::gitsync::local_tip(&mirror.dir, tag_ref)?;
+            }
+        }
+        Some(target)
+    }
+
     /// Mirror the releases. Each asset records the SHA-256 readers verify it against: the
     /// source's digest, the hash already recorded for the same file, or one computed from
     /// its bytes ([`crate::assets`], D-517). A release recorded by an older import with no
@@ -1638,6 +1676,7 @@ impl<'a, C: Chain> Sink<'a, C> {
                 .collect(),
             None => BTreeMap::new(),
         };
+        let targets = self.release_targets().await?;
         let fetch = crate::assets::Https::default();
         let mut budget = crate::assets::RUN_BYTES;
         let dry = self.dry_run;
@@ -1683,6 +1722,22 @@ impl<'a, C: Chain> Sink<'a, C> {
             {
                 continue;
             }
+            let tag_ref = format!("refs/tags/{}", r.tag_name);
+            let target_oid = self.release_target(&tag_ref, targets.get(&tag_ref));
+            // `targetOnPublish` requires a target only for new publishes (delta +1) on
+            // the four-contract layout. Edits and older contracts can omit it.
+            if target_oid.is_none()
+                && !existing.contains_key(&r.tag_name)
+                && self.repo.as_ref().is_some_and(|r| r.forge().meta.is_some())
+            {
+                self.ledger().skip(format!(
+                    "release {} not mirrored this run: {tag_ref} has no usable release target \
+                     (unresolved, or its local tag does not peel to a commit); sync code to \
+                     publish the tag first",
+                    r.tag_name
+                ));
+                continue;
+            }
             // Counted and warned for the releases this run writes (a re-run that finds them
             // unchanged says nothing again).
             let unhashed = assets_in.iter().filter(|a| a.sha256.is_empty()).count();
@@ -1705,6 +1760,7 @@ impl<'a, C: Chain> Sink<'a, C> {
                 notes,
                 yanked: Some(false),
                 assets: assets_in,
+                target_oid,
                 ..ReleaseInput::default()
             };
             self.write_release(r, &input, assets.len()).await?;

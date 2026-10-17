@@ -500,9 +500,14 @@ pub fn is_ancestor(git_dir: &Path, ancestor: &str, tip: &str) -> bool {
 
 /// The commit `ref_name` points at in the mirror, if it exists there.
 pub fn local_tip(git_dir: &Path, ref_name: &str) -> Option<String> {
+    local_ref_oid(git_dir, &format!("{ref_name}^{{commit}}"))
+}
+
+/// A ref's own value (or a revision expression), without peeling annotated tags. Local only.
+pub fn local_ref_oid(git_dir: &Path, ref_name: &str) -> Option<String> {
     let out = local_git(git_dir)
         .args(["rev-parse", "--verify", "--quiet"])
-        .arg(format!("{ref_name}^{{commit}}"))
+        .arg(ref_name)
         .output()
         .ok()?;
     let oid = String::from_utf8_lossy(&out.stdout).trim().to_string();

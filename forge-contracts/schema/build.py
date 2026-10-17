@@ -141,7 +141,7 @@ FLAGS = dict(
     # (forge-v2.md §9): new optional properties and new document types with their own indexes. No
     # rule, index, reference or required field on an existing type. Each flag off reproduces the
     # registered v1 schema (registered/<contract>.v1.json, checked by --check).
-    release_target_oid=True,     # release.targetOid: the commit the tag named at publish (optional, never requiredSince)
+    release_target_oid=True,     # release.targetOid: the tag ref's value at publish (optional, never requiredSince)
     config_moved_to=True,        # config.movedTo: the successor repository's id (TS-11 succession)
     pack_mirror=True,            # packMirror: anyone records an external copy of a listed pack (TS-10, RECUT O-2)
     transition_closed_by_pr=True,  # transition.closedByPr: the PR number whose merge closed this issue
@@ -860,7 +860,8 @@ def build(flags):
         if up[k]:
             sys.exit(f'{k} is declared, not built: see docs/contracts/forge-v2.md §9.1')
     if up['release_target_oid']:
-        # The commit the tag named when this revision was written. Optional, not `requiredSince`:
+        # The tag ref's value when this revision was written (an annotated tag's object).
+        # Optional, not `requiredSince`:
         # a sealed revision must not carry it in plaintext and an unpublish names no commit, and a
         # requiredSince property is required of every later create (book contract-keywords/
         # required-since.md: "Every post created or replaced under version 3 or later must have"),

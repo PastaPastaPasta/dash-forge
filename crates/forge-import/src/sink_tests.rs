@@ -23,11 +23,12 @@ use forge_core::collab::{CommentAnchor, Imported, Label, Release, ReleaseInput};
 use forge_core::history::Freshness;
 use forge_core::network::ForgeIds;
 use forge_core::rules::v2::{CloseReason, ClosedAs, TransitionMove, Visibility};
-use forge_core::rules::{EventKind, MergeBaseTips};
+use forge_core::rules::{EventKind, MergeBaseTips, RefState};
 use forge_core::scope::RepoRef;
 
 use crate::budget::Budget;
 use crate::chain::{Chain, Current, Written};
+use crate::gitsync::ProofRepo;
 use crate::model::{SrcCloseReason, SrcCollab, SrcComment, SrcPatch, SrcReview, SrcTarget};
 use crate::pipeline::lock;
 use crate::sink::{Ledger, Sink};
@@ -69,6 +70,10 @@ struct State {
     /// written, in order.
     releases: Vec<Release>,
     release_inputs: Vec<ReleaseInput>,
+    /// Destination refs, independent of the local mirror (which may not exist).
+    refs: Vec<(String, RefState)>,
+    ref_reads: usize,
+    refs_fail: bool,
     /// Each comment's `replyTo` and `reviewId` as written (document ids), by source URL, and
     /// each review's `commentCount`.
     links: BTreeMap<String, (Option<String>, Option<String>)>,
@@ -374,6 +379,15 @@ impl Chain for &Recorded {
         Ok(self.st().releases.clone())
     }
 
+    async fn refs(&self, _: &RepoRef) -> forge_core::Result<Vec<(String, RefState)>> {
+        let mut st = self.st();
+        st.ref_reads += 1;
+        if st.refs_fail {
+            return Err(forge_core::Error::Platform("ref read failed".into()));
+        }
+        Ok(st.refs.clone())
+    }
+
     async fn merge_base(
         &self,
         _: &RepoRef,
@@ -572,10 +586,20 @@ impl Chain for &Recorded {
     /// A public release: the newest revision of a tag replaces the last, as readers fold them.
     async fn create_release(
         &self,
-        _: &RepoRef,
+        repo: &RepoRef,
         input: &ReleaseInput,
     ) -> forge_core::Result<String> {
         let mut st = self.st();
+        if repo.forge.meta.is_some()
+            && !st.releases.iter().any(|r| r.tag_name == input.tag_name)
+            && input.target_oid.is_none()
+        {
+            return Err(forge_core::Error::RuleRefused {
+                document_type: "release".into(),
+                rule: "targetOnPublish".into(),
+                detail: "a public publish must name its target commit".into(),
+            });
+        }
         st.release_inputs.push(input.clone());
         st.releases.retain(|r| r.tag_name != input.tag_name);
         let document_id = format!("release-{}", st.release_inputs.len());
@@ -590,7 +614,7 @@ impl Chain for &Recorded {
             created_at: 1,
             delta: 0,
             sealed: None,
-            target_oid: None,
+            target_oid: input.target_oid.clone(),
         });
         Ok(document_id)
     }
@@ -799,7 +823,15 @@ fn sink(chain: &Recorded, dry_run: bool, budget: Budget, lanes: usize) -> Sink<'
 async fn import(chain: &Recorded, src: &SrcCollab, lanes: usize, cap: Option<u64>) -> Run {
     let mut budget = Budget::new(cap);
     budget.start(chain.st().balance);
-    let sink = sink(chain, false, budget, lanes);
+    let mirror = src.releases.as_ref().map(|releases| {
+        let tags: Vec<_> = releases
+            .iter()
+            .map(|r| (r.tag_name.as_str(), false))
+            .collect();
+        release_mirror(&tags)
+    });
+    let sink = sink(chain, false, budget, lanes)
+        .with_mirror(mirror.as_ref().map(|(_, proof, _)| proof.clone()));
     let result = sink.sync(src).await;
     let ledger = sink.into_ledger();
     Run {
@@ -1080,6 +1112,362 @@ async fn refused_items_are_skipped_and_the_run_carries_on() {
         results.push(logs);
     }
     assert_eq!(results[0], results[1]);
+}
+
+fn git(dir: &std::path::Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@t")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@t")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git {args:?}: {out:?}");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// Both tag forms point to the first commit, not HEAD. Expected targets are the ref values:
+/// the commit for a lightweight tag, the tag object for an annotated tag.
+fn release_mirror(
+    tags: &[(&str, bool)],
+) -> (tempfile::TempDir, ProofRepo, BTreeMap<String, String>) {
+    let dir = tempfile::tempdir().unwrap();
+    git(dir.path(), &["init", "-q", "-b", "main"]);
+    git(
+        dir.path(),
+        &["commit", "-q", "--allow-empty", "-m", "tag target"],
+    );
+    let target = git(dir.path(), &["rev-parse", "HEAD"]);
+    let mut targets = BTreeMap::new();
+    for (tag, annotated) in tags {
+        if *annotated {
+            git(dir.path(), &["tag", "-a", "-m", "release", tag]);
+            assert_ne!(git(dir.path(), &["rev-parse", tag]), target);
+        } else {
+            git(dir.path(), &["tag", tag]);
+        }
+        targets.insert(
+            (*tag).into(),
+            git(dir.path(), &["rev-parse", &format!("refs/tags/{tag}")]),
+        );
+    }
+    git(
+        dir.path(),
+        &["commit", "-q", "--allow-empty", "-m", "later"],
+    );
+    let proof = ProofRepo {
+        dir: dir.path().to_path_buf(),
+        pushed: true,
+        unfetched: BTreeMap::new(),
+    };
+    (dir, proof, targets)
+}
+
+fn release_refs(targets: &BTreeMap<String, String>) -> Vec<(String, RefState)> {
+    targets
+        .iter()
+        .map(|(tag, oid)| {
+            (
+                format!("refs/tags/{tag}"),
+                RefState::Resolved {
+                    oid: oid.clone(),
+                    author: SIGNER.into(),
+                    created_at: 1,
+                },
+            )
+        })
+        .collect()
+}
+
+fn release_source(tags: &[&str]) -> SrcCollab {
+    SrcCollab {
+        releases: Some(
+            tags.iter()
+                .map(|tag| crate::model::SrcRelease {
+                    tag_name: (*tag).into(),
+                    name: (*tag).into(),
+                    notes: String::new(),
+                    assets: Vec::new(),
+                    omitted: Vec::new(),
+                    source_url: format!("https://github.com/o/r/releases/tag/{tag}"),
+                    published: None,
+                })
+                .collect(),
+        ),
+        ..SrcCollab::default()
+    }
+}
+
+/// Without a destination ref, local tags must peel to commits but the recorded target is
+/// the ref value. Annotated tags retain their objects, matching provenance and verification.
+#[tokio::test(start_paused = true)]
+async fn public_releases_record_unpeeled_tag_targets_on_four_contracts() {
+    let (_dir, proof, targets) = release_mirror(&[("v1", false), ("v2", true)]);
+    let mut repo = repo();
+    repo.forge = ForgeIds::test_forge_meta();
+    let chain = Recorded::new();
+    let sink = Sink::new(&chain, Some(repo), Ledger::offline(false)).with_mirror(Some(proof));
+    let mut src = release_source(&["v2", "v1"]);
+    sink.sync(&src).await.unwrap();
+    assert_eq!(chain.st().release_inputs.len(), 2);
+    assert_eq!(chain.st().release_inputs[0].tag_name, "v1");
+    assert_eq!(chain.st().release_inputs[1].tag_name, "v2");
+    for r in src.releases.as_mut().unwrap() {
+        r.notes = "updated notes".into();
+    }
+    sink.sync(&src).await.unwrap();
+    sink.sync(&src).await.unwrap();
+    let ledger = sink.into_ledger();
+    assert_eq!(
+        ledger.counts.releases, 4,
+        "two publishes, two edits, then no writes"
+    );
+    assert!(ledger.warnings.is_empty(), "{:?}", ledger.warnings);
+    let st = chain.st();
+    assert_eq!(st.release_inputs.len(), 4);
+    assert!(st
+        .release_inputs
+        .iter()
+        .all(|r| r.target_oid.as_ref() == targets.get(&r.tag_name)));
+    assert!(st
+        .releases
+        .iter()
+        .all(|r| r.target_oid.as_ref() == targets.get(&r.tag_name)));
+}
+
+/// A releases-only run has no mirror; a prs,releases run has a treeless proof repository
+/// fetched with --no-tags. Both use destination refs, including annotated tag objects.
+#[tokio::test(start_paused = true)]
+async fn destination_release_targets_work_without_local_tags() {
+    let (_dir, source_repo, targets) = release_mirror(&[("v1", false), ("v2", true)]);
+    git(
+        &source_repo.dir,
+        &["config", "uploadpack.allowFilter", "true"],
+    );
+    let proof_dir = tempfile::tempdir().unwrap();
+    let dir = proof_dir.path().join("proof.git");
+    let unfetched = crate::gitsync::fetch_proof_bases(
+        &dir,
+        &format!("file://{}", source_repo.dir.display()),
+        &["refs/heads/main".into()],
+        true,
+        None,
+    )
+    .unwrap();
+    assert!(unfetched.is_empty());
+    assert_eq!(crate::gitsync::local_ref_oid(&dir, "refs/tags/v1"), None);
+    assert_eq!(crate::gitsync::local_ref_oid(&dir, "refs/tags/v2"), None);
+    let proof = ProofRepo {
+        dir,
+        pushed: false,
+        unfetched,
+    };
+    for mirror in [None, Some(proof)] {
+        let chain = Recorded::new();
+        chain.st().refs = release_refs(&targets);
+        let mut repo = repo();
+        repo.forge = ForgeIds::test_forge_meta();
+        let mut src = release_source(&["v2", "v1"]);
+        if mirror.is_some() {
+            src.targets = source(4).targets; // includes merged PR #4
+        }
+        let sink = Sink::new(&chain, Some(repo), Ledger::offline(false)).with_mirror(mirror);
+        sink.sync(&src).await.unwrap();
+        let ledger = sink.into_ledger();
+        assert_eq!(ledger.counts.releases, 2);
+        assert!(ledger.warnings.iter().all(|w| !w.starts_with("release ")));
+        let st = chain.st();
+        assert_eq!(st.ref_reads, 1, "refs are read once for all releases");
+        assert_eq!(st.items.len(), src.targets.len());
+        assert!(st
+            .release_inputs
+            .iter()
+            .all(|r| r.target_oid.as_ref() == targets.get(&r.tag_name)));
+    }
+}
+
+/// A work mirror can predate a tag move, or contain a push that did not land. The actual
+/// destination tag values take precedence over local ones in either case.
+#[tokio::test(start_paused = true)]
+async fn destination_tag_values_take_precedence_over_the_mirror() {
+    let (_dir, proof, old) = release_mirror(&[("v1", false), ("v2", true)]);
+    git(&proof.dir, &["tag", "-f", "v1", "HEAD"]);
+    git(
+        &proof.dir,
+        &["tag", "-f", "-a", "-m", "new target", "v2", "HEAD"],
+    );
+    let targets: BTreeMap<_, _> = old
+        .keys()
+        .map(|tag| {
+            (
+                tag.clone(),
+                git(&proof.dir, &["rev-parse", &format!("refs/tags/{tag}")]),
+            )
+        })
+        .collect();
+    let chain = Recorded::new();
+    let mut repo = repo();
+    repo.forge = ForgeIds::test_forge_meta();
+    for stale in [true, false] {
+        let on_chain = if stale { &targets } else { &old };
+        let local = if stale { &old } else { &targets };
+        for (tag, oid) in local {
+            assert_ne!(Some(oid), on_chain.get(tag));
+            git(
+                &proof.dir,
+                &["update-ref", &format!("refs/tags/{tag}"), oid],
+            );
+        }
+        chain.st().refs = release_refs(on_chain);
+        let sink = Sink::new(&chain, Some(repo.clone()), Ledger::offline(false))
+            .with_mirror(Some(proof.clone()));
+        let mut src = release_source(&["v2", "v1"]);
+        // The second pass edits both releases so it resolves their targets again.
+        for r in src.releases.as_mut().unwrap() {
+            r.notes = format!("stale mirror: {stale}");
+        }
+        sink.sync(&src).await.unwrap();
+        let ledger = sink.into_ledger();
+        assert_eq!(ledger.counts.releases, 2);
+        assert!(ledger.warnings.is_empty(), "{:?}", ledger.warnings);
+        assert!(chain
+            .st()
+            .releases
+            .iter()
+            .all(|r| r.target_oid.as_ref() == on_chain.get(&r.tag_name)));
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn three_contract_release_import_without_a_tag_keeps_working() {
+    let chain = Recorded::new();
+    let sink = sink(&chain, false, Budget::new(None), 1);
+    sink.sync(&release_source(&["v1"])).await.unwrap();
+    let ledger = sink.into_ledger();
+    assert_eq!(ledger.counts.releases, 1);
+    assert_eq!(ledger.counts.skipped, 0);
+    assert!(ledger.warnings.is_empty());
+    assert!(chain.st().release_inputs[0].target_oid.is_none());
+}
+
+/// The targetOnPublish gate does not apply to edits: both notes updates and asset hash
+/// backfills still land if the tag is gone and there is no local mirror.
+#[tokio::test(start_paused = true)]
+async fn public_release_edits_do_not_require_a_resolvable_tag() {
+    for notes_changed in [true, false] {
+        let chain = Recorded::new();
+        let mut repo = repo();
+        repo.forge = ForgeIds::test_forge_meta();
+        let asset = forge_core::collab::ReleaseAsset {
+            name: "file".into(),
+            sha256: "ab".repeat(32),
+            size_bytes: 1,
+            uris: vec!["https://example.org/file".into()],
+            uri: None,
+        };
+        let mut prior = asset.clone();
+        if !notes_changed {
+            prior.sha256.clear(); // an older import omitted the digest
+        }
+        (&chain)
+            .create_release(
+                &repo,
+                &ReleaseInput {
+                    tag_name: "v1".into(),
+                    name: "v1".into(),
+                    notes: "old".into(),
+                    assets: vec![prior],
+                    target_oid: Some("11".repeat(20)),
+                    ..ReleaseInput::default()
+                },
+            )
+            .await
+            .unwrap();
+        let mut src = release_source(&["v1"]);
+        let release = &mut src.releases.as_mut().unwrap()[0];
+        release.notes = if notes_changed { "updated" } else { "old" }.into();
+        release.assets = vec![asset];
+        let sink = Sink::new(&chain, Some(repo), Ledger::offline(false));
+        sink.sync(&src).await.unwrap();
+        sink.sync(&src).await.unwrap();
+        let ledger = sink.into_ledger();
+        assert_eq!(ledger.counts.releases, 1, "one edit, then unchanged");
+        assert_eq!(ledger.counts.skipped, 0);
+        assert!(ledger.warnings.is_empty(), "{:?}", ledger.warnings);
+        let st = chain.st();
+        assert_eq!(st.release_inputs.len(), 2);
+        assert!(st.release_inputs[1].target_oid.is_none());
+        assert_eq!(
+            st.releases[0].notes,
+            if notes_changed { "updated" } else { "old" }
+        );
+        assert_eq!(st.releases[0].assets[0].sha256, "ab".repeat(32));
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_destination_ref_read_is_not_hidden_by_the_mirror() {
+    let (_dir, proof, _) = release_mirror(&[("v1", false)]);
+    let chain = Recorded::new();
+    chain.st().refs_fail = true;
+    let sink = sink(&chain, false, Budget::new(None), 1).with_mirror(Some(proof));
+    let err = sink.sync(&release_source(&["v1"])).await.unwrap_err();
+    assert!(format!("{err:#}").contains("ref read failed"));
+    assert!(chain.st().release_inputs.is_empty());
+}
+
+/// Missing git data skips just that release with a reason. A same-named branch or a tag
+/// pointing to a tree/blob cannot substitute for a commit; a later valid release still lands.
+#[tokio::test(start_paused = true)]
+async fn unresolved_release_tags_are_warned_and_skipped() {
+    let (_dir, proof, _) = release_mirror(&[("good", false)]);
+    git(&proof.dir, &["branch", "missing"]);
+    let tree = git(&proof.dir, &["rev-parse", "HEAD^{tree}"]);
+    git(&proof.dir, &["tag", "tree-tag", &tree]);
+    let blob = git(&proof.dir, &["hash-object", "-w", "--stdin"]);
+    git(&proof.dir, &["tag", "blob-tag", &blob]);
+    for (mirror, refs_on_chain) in [
+        (None, false),
+        (Some(proof.clone()), false),
+        (Some(proof), true),
+    ] {
+        let chain = Recorded::new();
+        if refs_on_chain {
+            let dir = &mirror.as_ref().unwrap().dir;
+            let targets = ["good", "tree-tag", "blob-tag"]
+                .into_iter()
+                .map(|tag| {
+                    (
+                        tag.to_string(),
+                        git(dir, &["rev-parse", &format!("refs/tags/{tag}")]),
+                    )
+                })
+                .collect();
+            chain.st().refs = release_refs(&targets);
+        }
+        let mut repo = repo();
+        repo.forge = ForgeIds::test_forge_meta();
+        let has_mirror = mirror.is_some();
+        let sink = Sink::new(&chain, Some(repo), Ledger::offline(false)).with_mirror(mirror);
+        sink.sync(&release_source(&[
+            "good", "tree-tag", "blob-tag", "missing",
+        ]))
+        .await
+        .unwrap();
+        let ledger = sink.into_ledger();
+        let written = u64::from(has_mirror);
+        assert_eq!(ledger.counts.releases, written);
+        assert_eq!(ledger.counts.skipped, 4 - written);
+        assert_eq!(chain.st().release_inputs.len() as u64, written);
+        for warning in &ledger.warnings {
+            assert!(warning.contains("not mirrored this run"), "{warning}");
+            assert!(warning.contains("no usable release target"), "{warning}");
+            assert!(warning.contains("refs/tags/"), "{warning}");
+        }
+    }
 }
 
 /// A public release whose notes were emptied at the source is written again with no notes (a
