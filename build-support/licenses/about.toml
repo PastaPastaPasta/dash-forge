@@ -1,0 +1,438 @@
+# cargo-about configuration: the third-party license notices shipped with the release archives
+# and the container images (build-support/licenses/generate.sh, .github/workflows/release.yml).
+#
+# The list below is the set of licenses the shipped dependency tree actually uses, in priority
+# order: for a dual-licensed crate (`MIT OR Apache-2.0`) cargo-about reproduces the first one
+# that is accepted. It matches deny.toml's [licenses] allow list (the CI policy gate) except
+# for MPL-2.0, which nothing we ship uses: a new MPL crate fails generation until someone has
+# read its terms. A crate whose license is not on the list fails the build instead of shipping
+# without a notice.
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "BSD-2-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "CC0-1.0",
+    "0BSD",
+    "BSL-1.0",
+    "CDLA-Permissive-2.0",
+    "MITNFA",
+]
+
+# The six release targets (release.yml's build matrix). A crate reachable only through a cfg
+# for some other target (uefi, wasm, wasi, ...) is not in any binary and gets no notice.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
+
+# Compile-time-only crates are not in the binaries. Dev-dependencies (tests) are not either.
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+
+# chrono's LICENSE.txt holds both its MIT and Apache-2.0 texts in one file (cargo-about built-in).
+workarounds = ["chrono"]
+
+# Our own workspace crates are covered by LICENSE-MIT and LICENSE-APACHE, shipped beside the
+# notice. They are left out of it by name (render.jq, from generate.sh), not through
+# `private.ignore`, which needs `publish = false` in each crate.
+
+# ---------------------------------------------------------------------------------------------
+# Crates whose manifest declares no license field. Crate-specific tables must come last.
+#
+# dashpay/platform (the Dash Platform SDK crates): MIT, "Copyright (c) 2017-2021 Dash Core
+# Group, Inc." (LICENSE.md at the repository root, two levels above each package). wasm-dpp2 is
+# only in the web app's wasm module (generate-wasm.sh); the others are in both builds. The checksum
+# is of that file; when a Platform bump changes it the clarification stops applying and
+# generation fails, so a new license is read before it ships. Re-check on every Platform tag.
+# ---------------------------------------------------------------------------------------------
+
+[dash-platform-macros.clarify]
+license = "MIT"
+
+[[dash-platform-macros.clarify.files]]
+path = '../../LICENSE.md'
+license = 'MIT'
+checksum = 'e504a118186ed7e3a0b319d4d72cc8f8107e6d854a95c8b1ba2aff5fb4563ff3'
+
+[dash-sdk.clarify]
+license = "MIT"
+
+[[dash-sdk.clarify.files]]
+path = '../../LICENSE.md'
+license = 'MIT'
+checksum = 'e504a118186ed7e3a0b319d4d72cc8f8107e6d854a95c8b1ba2aff5fb4563ff3'
+
+[dpp.clarify]
+license = "MIT"
+
+[[dpp.clarify.files]]
+path = '../../LICENSE.md'
+license = 'MIT'
+checksum = 'e504a118186ed7e3a0b319d4d72cc8f8107e6d854a95c8b1ba2aff5fb4563ff3'
+
+[drive-proof-verifier.clarify]
+license = "MIT"
+
+[[drive-proof-verifier.clarify.files]]
+path = '../../LICENSE.md'
+license = 'MIT'
+checksum = 'e504a118186ed7e3a0b319d4d72cc8f8107e6d854a95c8b1ba2aff5fb4563ff3'
+
+
+[wasm-dpp2.clarify]
+license = "MIT"
+
+[[wasm-dpp2.clarify.files]]
+path = '../../LICENSE.md'
+license = 'MIT'
+checksum = 'e504a118186ed7e3a0b319d4d72cc8f8107e6d854a95c8b1ba2aff5fb4563ff3'
+
+[rs-dapi-client.clarify]
+license = "MIT"
+
+[[rs-dapi-client.clarify.files]]
+path = '../../LICENSE.md'
+license = 'MIT'
+checksum = 'e504a118186ed7e3a0b319d4d72cc8f8107e6d854a95c8b1ba2aff5fb4563ff3'
+
+[simple-signer.clarify]
+license = "MIT"
+
+[[simple-signer.clarify.files]]
+path = '../../LICENSE.md'
+license = 'MIT'
+checksum = 'e504a118186ed7e3a0b319d4d72cc8f8107e6d854a95c8b1ba2aff5fb4563ff3'
+
+# dashpay/rs-bip37-bloom-filter (a git dependency of the Platform SDK): MIT, "Copyright (c) 2023
+# fominok" (LICENSE in the crate root).
+[bip37-bloom-filter.clarify]
+license = "MIT"
+
+[[bip37-bloom-filter.clarify.files]]
+path = 'LICENSE'
+license = 'MIT'
+checksum = 'ca3021fc8f301b5de9e418c275a85cf04766ce8ce3752741df958474c84938d2'
+
+# wasm-sdk is the crate the web app's wasm module is built from (publish = false, no license field).
+[wasm-sdk.clarify]
+license = "MIT"
+
+[[wasm-sdk.clarify.files]]
+path = '../../LICENSE.md'
+license = 'MIT'
+checksum = 'e504a118186ed7e3a0b319d4d72cc8f8107e6d854a95c8b1ba2aff5fb4563ff3'
+
+# Other dashpay/platform crates that declare MIT but ship no license file: the same LICENSE.md.
+
+[dash-async.clarify]
+license = "MIT"
+
+[[dash-async.clarify.files]]
+path = '../../LICENSE.md'
+license = 'MIT'
+checksum = 'e504a118186ed7e3a0b319d4d72cc8f8107e6d854a95c8b1ba2aff5fb4563ff3'
+
+[dash-context-provider.clarify]
+license = "MIT"
+
+[[dash-context-provider.clarify.files]]
+path = '../../LICENSE.md'
+license = 'MIT'
+checksum = 'e504a118186ed7e3a0b319d4d72cc8f8107e6d854a95c8b1ba2aff5fb4563ff3'
+
+[dash-platform-queries.clarify]
+license = "MIT"
+
+[[dash-platform-queries.clarify.files]]
+path = '../../LICENSE.md'
+license = 'MIT'
+checksum = 'e504a118186ed7e3a0b319d4d72cc8f8107e6d854a95c8b1ba2aff5fb4563ff3'
+
+[data-contracts.clarify]
+license = "MIT"
+
+[[data-contracts.clarify.files]]
+path = '../../LICENSE.md'
+license = 'MIT'
+checksum = 'e504a118186ed7e3a0b319d4d72cc8f8107e6d854a95c8b1ba2aff5fb4563ff3'
+
+[dpp-json-convertible-derive.clarify]
+license = "MIT"
+
+[[dpp-json-convertible-derive.clarify.files]]
+path = '../../LICENSE.md'
+license = 'MIT'
+checksum = 'e504a118186ed7e3a0b319d4d72cc8f8107e6d854a95c8b1ba2aff5fb4563ff3'
+
+[platform-encryption.clarify]
+license = "MIT"
+
+[[platform-encryption.clarify.files]]
+path = '../../LICENSE.md'
+license = 'MIT'
+checksum = 'e504a118186ed7e3a0b319d4d72cc8f8107e6d854a95c8b1ba2aff5fb4563ff3'
+
+[platform-serialization.clarify]
+license = "MIT"
+
+[[platform-serialization.clarify.files]]
+path = '../../LICENSE.md'
+license = 'MIT'
+checksum = 'e504a118186ed7e3a0b319d4d72cc8f8107e6d854a95c8b1ba2aff5fb4563ff3'
+
+[platform-serialization-derive.clarify]
+license = "MIT"
+
+[[platform-serialization-derive.clarify.files]]
+path = '../../LICENSE.md'
+license = 'MIT'
+checksum = 'e504a118186ed7e3a0b319d4d72cc8f8107e6d854a95c8b1ba2aff5fb4563ff3'
+
+[platform-value.clarify]
+license = "MIT"
+
+[[platform-value.clarify.files]]
+path = '../../LICENSE.md'
+license = 'MIT'
+checksum = 'e504a118186ed7e3a0b319d4d72cc8f8107e6d854a95c8b1ba2aff5fb4563ff3'
+
+[platform-version.clarify]
+license = "MIT"
+
+[[platform-version.clarify.files]]
+path = '../../LICENSE.md'
+license = 'MIT'
+checksum = 'e504a118186ed7e3a0b319d4d72cc8f8107e6d854a95c8b1ba2aff5fb4563ff3'
+
+[platform-versioning.clarify]
+license = "MIT"
+
+[[platform-versioning.clarify.files]]
+path = '../../LICENSE.md'
+license = 'MIT'
+checksum = 'e504a118186ed7e3a0b319d4d72cc8f8107e6d854a95c8b1ba2aff5fb4563ff3'
+
+[rs-sdk-trusted-context-provider.clarify]
+license = "MIT"
+
+[[rs-sdk-trusted-context-provider.clarify.files]]
+path = '../../LICENSE.md'
+license = 'MIT'
+checksum = 'e504a118186ed7e3a0b319d4d72cc8f8107e6d854a95c8b1ba2aff5fb4563ff3'
+
+# dashpay/grovedb: MIT, "Copyright (c) 2021 Dash Core Group" (LICENSE.md at the repository root,
+# one level above each of these crates; the other grovedb crates ship a file of their own).
+
+[grovedb-bulk-append-tree.clarify]
+license = "MIT"
+
+[[grovedb-bulk-append-tree.clarify.files]]
+path = '../LICENSE.md'
+license = 'MIT'
+checksum = '92dedeee3e2e0d4882ec801cd277777337421c18ae8977dc5948bd694fbe235f'
+
+[grovedb-dense-fixed-sized-merkle-tree.clarify]
+license = "MIT"
+
+[[grovedb-dense-fixed-sized-merkle-tree.clarify.files]]
+path = '../LICENSE.md'
+license = 'MIT'
+checksum = '92dedeee3e2e0d4882ec801cd277777337421c18ae8977dc5948bd694fbe235f'
+
+[grovedb-element.clarify]
+license = "MIT"
+
+[[grovedb-element.clarify.files]]
+path = '../LICENSE.md'
+license = 'MIT'
+checksum = '92dedeee3e2e0d4882ec801cd277777337421c18ae8977dc5948bd694fbe235f'
+
+[grovedb-epoch-based-storage-flags.clarify]
+license = "MIT"
+
+[[grovedb-epoch-based-storage-flags.clarify.files]]
+path = '../LICENSE.md'
+license = 'MIT'
+checksum = '92dedeee3e2e0d4882ec801cd277777337421c18ae8977dc5948bd694fbe235f'
+
+[grovedb-query.clarify]
+license = "MIT"
+
+[[grovedb-query.clarify.files]]
+path = '../LICENSE.md'
+license = 'MIT'
+checksum = '92dedeee3e2e0d4882ec801cd277777337421c18ae8977dc5948bd694fbe235f'
+
+[grovedb-version.clarify]
+license = "MIT"
+
+[[grovedb-version.clarify.files]]
+path = '../LICENSE.md'
+license = 'MIT'
+checksum = '92dedeee3e2e0d4882ec801cd277777337421c18ae8977dc5948bd694fbe235f'
+
+[grovedb-visualize.clarify]
+license = "MIT"
+
+[[grovedb-visualize.clarify.files]]
+path = '../LICENSE.md'
+license = 'MIT'
+checksum = '92dedeee3e2e0d4882ec801cd277777337421c18ae8977dc5948bd694fbe235f'
+
+# ---------------------------------------------------------------------------------------------
+# Crates that ship a license file cargo-about could not match, so it would have printed the
+# generic SPDX text with a "<year> <copyright holders>" placeholder. Clarified against the file,
+# by checksum, so the real copyright lines are reproduced. (generate.sh fails if any crate that
+# ships a license file still gets placeholder text.)
+# ---------------------------------------------------------------------------------------------
+
+[curve25519-dalek.clarify]
+license = "BSD-3-Clause"
+
+[[curve25519-dalek.clarify.files]]
+path = 'LICENSE'
+license = 'BSD-3-Clause'
+checksum = 'cca0bd3c4fcdba74145ef9d49c62337e2c9fbf9368288f11d0547f1b0273219f'
+
+[libm.clarify]
+license = "MIT"
+
+[[libm.clarify.files]]
+path = 'LICENSE.txt'
+license = 'MIT'
+checksum = '3823dda7cf046602f4b4e77ec8e227863dc4736037cc85bb33d9f19febe16bb7'
+
+[uint-zigzag.clarify]
+license = "Apache-2.0"
+
+[[uint-zigzag.clarify.files]]
+path = 'LICENSE'
+license = 'Apache-2.0'
+checksum = 'c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4'
+
+[windows-core.clarify]
+license = "MIT OR Apache-2.0"
+
+[[windows-core.clarify.files]]
+path = 'license-mit'
+license = 'MIT'
+checksum = 'c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383'
+
+[[windows-core.clarify.files]]
+path = 'license-apache-2.0'
+license = 'Apache-2.0'
+checksum = 'c16f8dcf1a368b83be78d826ea23de4079fe1b4469a0ab9ee20563f37ff3d44b'
+
+[windows-implement.clarify]
+license = "MIT OR Apache-2.0"
+
+[[windows-implement.clarify.files]]
+path = 'license-mit'
+license = 'MIT'
+checksum = 'c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383'
+
+[[windows-implement.clarify.files]]
+path = 'license-apache-2.0'
+license = 'Apache-2.0'
+checksum = 'c16f8dcf1a368b83be78d826ea23de4079fe1b4469a0ab9ee20563f37ff3d44b'
+
+[windows-interface.clarify]
+license = "MIT OR Apache-2.0"
+
+[[windows-interface.clarify.files]]
+path = 'license-mit'
+license = 'MIT'
+checksum = 'c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383'
+
+[[windows-interface.clarify.files]]
+path = 'license-apache-2.0'
+license = 'Apache-2.0'
+checksum = 'c16f8dcf1a368b83be78d826ea23de4079fe1b4469a0ab9ee20563f37ff3d44b'
+
+[windows-link.clarify]
+license = "MIT OR Apache-2.0"
+
+[[windows-link.clarify.files]]
+path = 'license-mit'
+license = 'MIT'
+checksum = 'c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383'
+
+[[windows-link.clarify.files]]
+path = 'license-apache-2.0'
+license = 'Apache-2.0'
+checksum = 'c16f8dcf1a368b83be78d826ea23de4079fe1b4469a0ab9ee20563f37ff3d44b'
+
+[windows-registry.clarify]
+license = "MIT OR Apache-2.0"
+
+[[windows-registry.clarify.files]]
+path = 'license-mit'
+license = 'MIT'
+checksum = 'c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383'
+
+[[windows-registry.clarify.files]]
+path = 'license-apache-2.0'
+license = 'Apache-2.0'
+checksum = 'c16f8dcf1a368b83be78d826ea23de4079fe1b4469a0ab9ee20563f37ff3d44b'
+
+[windows-result.clarify]
+license = "MIT OR Apache-2.0"
+
+[[windows-result.clarify.files]]
+path = 'license-mit'
+license = 'MIT'
+checksum = 'c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383'
+
+[[windows-result.clarify.files]]
+path = 'license-apache-2.0'
+license = 'Apache-2.0'
+checksum = 'c16f8dcf1a368b83be78d826ea23de4079fe1b4469a0ab9ee20563f37ff3d44b'
+
+[windows-strings.clarify]
+license = "MIT OR Apache-2.0"
+
+[[windows-strings.clarify.files]]
+path = 'license-mit'
+license = 'MIT'
+checksum = 'c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383'
+
+[[windows-strings.clarify.files]]
+path = 'license-apache-2.0'
+license = 'Apache-2.0'
+checksum = 'c16f8dcf1a368b83be78d826ea23de4079fe1b4469a0ab9ee20563f37ff3d44b'
+
+[windows-sys.clarify]
+license = "MIT OR Apache-2.0"
+
+[[windows-sys.clarify.files]]
+path = 'license-mit'
+license = 'MIT'
+checksum = 'c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383'
+
+[[windows-sys.clarify.files]]
+path = 'license-apache-2.0'
+license = 'Apache-2.0'
+checksum = 'c16f8dcf1a368b83be78d826ea23de4079fe1b4469a0ab9ee20563f37ff3d44b'
+
+# Only in the web app's wasm module (generate-wasm.sh); the manifest says "MIT/Apache-2.0".
+[tonic-web-wasm-client.clarify]
+license = "MIT OR Apache-2.0"
+
+[[tonic-web-wasm-client.clarify.files]]
+path = 'LICENSE_MIT'
+license = 'MIT'
+checksum = 'c9dafdccf917011d1f3d9eb1db657527c5721948253044ce15e847c69a65180b'
+
+[[tonic-web-wasm-client.clarify.files]]
+path = 'LICENSE_APACHE'
+license = 'Apache-2.0'
+checksum = '62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a'

@@ -101,6 +101,12 @@ jobs:
             exit 1
           fi
           cmp "$a/forge-web.car" "$b/forge-web.car" || { echo "::error::same CID, different CAR bytes"; exit 1; }
+          # The third-party license notices (forge-web/scripts/third-party-licenses.mjs) are in the
+          # site: the build lists every file it made in its manifest.
+          for f in third-party-licenses.txt wasm-sdk-licenses.txt licenses/index.html licenses/LGPL-3.0.txt licenses/GPL-3.0.txt; do
+            jq -e --arg f "$f" '.files[$f] != null' "$a/forge-web.manifest.json" >/dev/null \
+              || { echo "::error::the web build has no $f (license notices)"; exit 1; }
+          done
           echo "### Reproducible: both builds are \`$cid\`" >> "$GITHUB_STEP_SUMMARY"
           mkdir web-ipfs
           cp "$a/forge-web.cid" "$a/forge-web.car" "$a/forge-web.manifest.json" web-ipfs/

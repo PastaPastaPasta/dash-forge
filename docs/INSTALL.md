@@ -17,6 +17,9 @@ Dash Forge. Each archive contains:
 | `forge-relay`, `forge-import` | the relay daemon and the GitHub importer (optional) |
 | `forge-runner` | the self-hosted CI runner (optional; [guide](guides/self-host-runner.md)); not in the Windows archive |
 | `completions/` | shell completions for `dg` (bash, zsh, fish, PowerShell) |
+| `LICENSE-MIT`, `LICENSE-APACHE` | Dash Forge's own licenses: use either one |
+| `THIRD-PARTY-LICENSES` | the licenses of the open-source Rust crates built into the binaries |
+| `licenses/` | the licenses of OpenSSL (Linux archives) and of musl libc (the musl archive), which are built into those binaries |
 
 ## Supported platforms
 
@@ -208,8 +211,11 @@ cargo install --locked --path crates/git-remote-dash
 2. Tag the merge commit `v<version>` and push the tag. `release.yml` then does the rest:
    it builds all six targets from scratch (no build cache), runs `install.sh` against the
    built archives, writes `SHA256SUMS`, attests the files, and publishes the release with
-   generated notes. The run fails before anything is published in two cases: the tag does
-   not match the `Cargo.toml` version, or the tagged commit is not on `master`.
+   generated notes: the install and verify commands, the web app's CID, a "Networks" block
+   (the contract groups the binaries embed, read from `forge-contracts/deployments/` at the tag,
+   as `dg --version` prints them) and, if `docs/releases/v<version>.md` exists, a link to it.
+   The run fails before anything is published in two cases: the tag does not match the
+   `Cargo.toml` version, or the tagged commit is not on `master`.
 3. **Approve three times.** Three jobs use the protected `release` environment, and each
    waits for a reviewer: `attest + publish` (the GitHub Release), then, after it succeeds,
    `push forge-relay image` (pushes `ghcr.io/<owner>/forge-relay:<version>`, and `:latest`
@@ -246,9 +252,13 @@ workflow, so the tag must have been cut after `skip_ipfs` was added. A tag push 
 the web build. Do not use this for a flake: re-run it first. Ship the web CAR with the next
 release, and do not record a Forge release for the web app of a tag that has none.
 
-The dry run also runs on every PR that touches `crates/`, `Cargo.*` or the pipeline. It
-builds and packages every target and uploads the archives as workflow artifacts. It never
-attests anything or creates a release. Once `release.yml` is on `master`, you can also
+The dry run also runs on a PR that touches `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`,
+a crate's `Cargo.toml` or `build.rs`, `install.sh`, `build-support/`, the gateway Dockerfile, `release.yml` or
+`web-ipfs.yml`. A PR that changes only crate source does not trigger it: the six-platform build
+takes about an hour, so after a merge to `master` that touches `crates/` or any of those files
+the same dry run builds every target. It builds and packages every target and uploads the
+archives as workflow artifacts. It never attests anything or creates a release. Once
+`release.yml` is on `master`, you can also
 start one by hand: `gh workflow run release.yml --ref <branch> -f dry_run=true`.
 
 **One-time repository setup (admin).** The workflow only publishes from `master` commits,

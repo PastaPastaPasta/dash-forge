@@ -2,7 +2,8 @@ name: Release
 
 # Builds the prebuilt binaries users install instead of compiling the Platform SDK tree:
 #   dg, git-remote-dash, forge-relay, forge-import, forge-runner (not on Windows: it drives
-#   act and Linux containers), dg's shell completions, README, INSTALL
+#   act and Linux containers), dg's shell completions, README, INSTALL, the project's licenses
+#   and the third-party license notices (build-support/licenses)
 # for six targets, packaged as dash-forge-<version>-<target>.{tar.gz,zip}, listed in
 # SHA256SUMS, and covered by GitHub build-provenance attestations (Sigstore, keyless; no
 # signing key to leak or rotate). install.sh and `cargo binstall` both consume these names.
@@ -155,9 +156,70 @@ jobs:
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
           echo "### Release plan: \`$version\` (publish: $publish)" >> "$GITHUB_STEP_SUMMARY"
 
+      # The "Networks" block and the link to docs/releases/v<version>.md that `publish` appends to
+      # the generated notes. Written here, where the tagged commit is checked out, so `publish`
+      # (which checks out no code) only appends a file; dry runs write it too, to exercise it.
+      - name: Release notes extras
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          build-support/release-notes-extra.test.sh
+          mkdir -p notes-extra
+          build-support/release-notes-extra.sh "$VERSION" "$GITHUB_REPOSITORY" "$REF_NAME" > notes-extra/release-notes-extra.md
+          { echo '### Release notes extras'; echo; cat notes-extra/release-notes-extra.md; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-notes-extra
+          path: notes-extra/release-notes-extra.md
+          if-no-files-found: error
+          retention-days: 7
+
+  # The license notices every archive and image carries (build-support/licenses): the project's
+  # own licenses and a third-party notice listing every Rust crate in the lockfile, for all six
+  # targets, with OpenSSL's and musl's licenses beside it. Made once, from Cargo.lock, so the
+  # archives of one release agree; each build job downloads it. cargo-about is a pinned prebuilt
+  # binary (install-cargo-about.sh checks its SHA-256). Generation fails on a license that is not
+  # in build-support/licenses/about.toml, so a new dependency's license is read before it ships.
+  licenses:
+    name: license notices
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test the packaging scripts
+        run: build-support/licenses/selftest.sh
+      - name: Install the pinned Rust toolchain
+        run: |
+          set -euo pipefail
+          rustup show active-toolchain || rustup toolchain install
+          cargo --version
+      - name: Install cargo-about
+        run: |
+          set -euo pipefail
+          build-support/licenses/install-cargo-about.sh "${RUNNER_TEMP}/bin"
+          echo "${RUNNER_TEMP}/bin" >> "$GITHUB_PATH"
+      # Every target's dependencies (no --target): generate.sh then runs offline.
+      - name: Fetch the dependency sources
+        run: cargo fetch --locked
+      - name: Generate the notices
+        run: |
+          set -euo pipefail
+          build-support/licenses/generate.sh "${RUNNER_TEMP}/license-notices"
+          ls -lR "${RUNNER_TEMP}/license-notices"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: license-notices
+          path: ${{ runner.temp }}/license-notices
+          if-no-files-found: error
+          retention-days: 7
+
   build:
     name: build ${{ matrix.target }}
-    needs: plan
+    needs: [plan, licenses]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     strategy:
@@ -335,6 +397,11 @@ jobs:
               ;;
           esac
 
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: license-notices
+          path: license-notices
+
       - name: Package
         id: pkg
         run: |
@@ -353,6 +420,9 @@ jobs:
           "$dg" completions powershell > "$stage/completions/_dg.ps1"
           cp README.md "$stage/README.md"
           cp docs/INSTALL.md "$stage/INSTALL.md"
+          # The project's licenses and the third-party notices (build-support/licenses; OpenSSL's
+          # on Linux, musl's on the musl build). The SHA256SUMS job fails an archive without them.
+          sh build-support/licenses/stage.sh "$TARGET" license-notices "$stage"
 
           cd "${RUNNER_TEMP}/stage"
           if [ "$RUNNER_OS" = Windows ]; then
@@ -464,6 +534,10 @@ jobs:
       VERSION: ${{ needs.plan.outputs.version }}
       WEB_IPFS: ${{ needs.web-ipfs.result }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: build-support/licenses
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: dist-*
@@ -498,6 +572,18 @@ jobs:
           path: dist-web/
           if-no-files-found: error
           retention-days: 7
+      # No release, dry run or not, goes out with an archive that lacks the project's licenses or
+      # the third-party notices (or, on Linux, OpenSSL's; on musl, musl's).
+      - name: Every archive carries its license files
+        run: |
+          set -euo pipefail
+          for archive in dist/dash-forge-"${VERSION}"-*; do
+            base=$(basename "$archive")
+            target=${base#"dash-forge-${VERSION}-"}
+            target=${target%%.tar.gz}
+            target=${target%%.zip}
+            sh build-support/licenses/verify-archive.sh "$archive" "$target"
+          done
       - name: SHA256SUMS
         run: |
           set -euo pipefail
@@ -573,13 +659,23 @@ jobs:
           (cd dist && grep " ${name}.tar.gz\$" ../sums/SHA256SUMS | sha256sum --check --strict -)
           ctx="${RUNNER_TEMP}/relay-image"
           mkdir -p "$ctx"
-          tar -xzf "dist/${name}.tar.gz" -C "$ctx" --strip-components=1 "${name}/forge-relay"
+          # The binary and the license files the archive carries (Dockerfile.release puts those
+          # under /usr/share/doc/dash-forge).
+          tar -xzf "dist/${name}.tar.gz" -C "$ctx" --strip-components=1 \
+            "${name}/forge-relay" "${name}/LICENSE-MIT" "${name}/LICENSE-APACHE" \
+            "${name}/THIRD-PARTY-LICENSES" "${name}/licenses"
           cp crates/forge-relay/Dockerfile.release "$ctx/Dockerfile"
           image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/forge-relay"
           docker build --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
             --label "org.opencontainers.image.version=${VERSION}" \
             -t "${image}:${VERSION}" "$ctx"
           docker run --rm --entrypoint /usr/local/bin/forge-relay "${image}:${VERSION}" --version
+          # The image has no shell, so look for the license files by copying them out.
+          cid=$(docker create "${image}:${VERSION}")
+          for f in LICENSE-MIT LICENSE-APACHE THIRD-PARTY-LICENSES licenses/OPENSSL-LICENSE licenses/MUSL-COPYRIGHT; do
+            docker cp "${cid}:/usr/share/doc/dash-forge/${f}" - >/dev/null || { docker rm "$cid" >/dev/null; echo "::error::the image has no /usr/share/doc/dash-forge/${f}"; exit 1; }
+          done
+          docker rm "$cid" >/dev/null
           mkdir -p image
           docker save "${image}:${VERSION}" | gzip > image/forge-relay-image.tar.gz
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -767,6 +863,12 @@ jobs:
         with:
           name: sha256sums
           path: dist
+      # The notes' "Networks" block and release-notes link (made by `plan`, from the tagged commit).
+      # Not an asset: it goes in the notes only, in a directory of its own.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-notes-extra
+          path: notes-extra
       - name: Re-verify the archives against SHA256SUMS
         working-directory: dist
         run: |
@@ -851,6 +953,8 @@ jobs:
           from a later release.
           EOF
           fi
+          # Which networks the binaries have contracts for, and the hand-written release notes.
+          { echo; cat notes-extra/release-notes-extra.md; } >> "${RUNNER_TEMP}/notes.md"
           # Draft first, upload, then publish: the release never appears with missing assets.
           # Idempotent, so a failed run can simply be re-run: reuse an existing draft.
           if ! gh release view "$TAG" >/dev/null 2>&1; then
