@@ -16,7 +16,7 @@
   "dependencies": {
     "@cap.js/wasm": "^0.0.7",
     "@dashevo/evo-sdk": "5.0.0-rc.3",
-    "@noble/hashes": "^1.4.0",
+    "@noble/hashes": "^2.4.0",
     "@noble/secp256k1": "^2.1.0",
     "@scure/bip32": "^2.0.1",
     "@scure/bip39": "^2.0.1",
